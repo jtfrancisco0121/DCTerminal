@@ -29,17 +29,17 @@ However, do not blindly follow the plan if the actual codebase contradicts an as
 
 Paste the implementation plan below:
 
-\`\`\`text
+```text
 [PASTE APPROVED IMPLEMENTATION PLAN HERE]
-\`\`\`
+```
 
 ---
 
 ## ADDITIONAL CONTEXT
 
-\`\`\`text
+```text
 [OPTIONAL CONTEXT]
-\`\`\`
+```
 
 ---
 

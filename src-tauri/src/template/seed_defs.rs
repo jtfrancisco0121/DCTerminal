@@ -134,9 +134,10 @@ fn implementer_spec() -> RoleSeedSpec {
                 "[FEATURE / BUG FIX / REFACTOR / IMPROVEMENT / OTHER]",
                 vec![
                     "Feature".into(),
-                    "Bug".into(),
+                    "Bug Fix".into(),
                     "Refactor".into(),
-                    "Chore".into(),
+                    "Improvement".into(),
+                    "Other".into(),
                 ],
                 true,
             ),
