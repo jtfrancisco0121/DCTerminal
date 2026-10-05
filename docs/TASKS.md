@@ -56,9 +56,9 @@ Checklist aligned with [DCTerminal-Project-Blueprint.md](./DCTerminal-Project-Bl
 | T3.1 | Role picker (digits 1–5, folder-only compact) | FR-030, FR-101 | [ ] |
 | T3.2 | Role editor + schema confirmation UI | FR-021, FR-091 | [ ] |
 | T3.3 | Mode setting + header switcher | FR-009 | [ ] |
-| T3.4 | Tab manager (badges, restore `AwaitingInput`, restart) | FR-031–038, FR-100 | [ ] |
+| T3.4 | Tab manager (badges, restore `AwaitingInput`, restart) | FR-031–038, FR-100 | [~] |
 | T3.5 | Cursor extension UIs (plan, question, todos, task) | FR-010 | [ ] |
-| T3.6 | Form extras (conditional, preview, recall, drafts) | FR-094–098, FR-102 | [ ] |
+| T3.6 | Form extras (conditional, preview, recall, drafts) | FR-094–098, FR-102 | [~] |
 
 ---
 

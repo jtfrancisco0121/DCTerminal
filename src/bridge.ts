@@ -181,6 +181,38 @@ export async function getTab(tabId: string): Promise<{ tab: TabRecord }> {
   return invoke<{ tab: TabRecord }>("get_tab", { tabId });
 }
 
+export async function selectActiveTab(
+  tabId: string,
+): Promise<{ tab: TabRecord }> {
+  return invoke<{ tab: TabRecord }>("select_active_tab", { tabId });
+}
+
+export async function closeTab(tabId: string): Promise<AppStateSnapshot> {
+  return invoke<AppStateSnapshot>("close_tab", { tabId });
+}
+
+export async function newDraftTab(
+  roleId: string,
+  cwd: string,
+): Promise<{ tab: TabRecord }> {
+  return invoke<{ tab: TabRecord }>("new_draft_tab", { roleId, cwd });
+}
+
+export async function getFormRecall(
+  roleId: string,
+  defaultCwd: string,
+): Promise<{ cwd: string; values: Record<string, string> }> {
+  return invoke("get_form_recall", { roleId, defaultCwd });
+}
+
+export async function saveFormDraft(
+  roleId: string,
+  cwd: string,
+  values: Record<string, string>,
+): Promise<void> {
+  return invoke("save_form_draft", { roleId, cwd, values });
+}
+
 export async function roleSessionStart(
   roleId: string,
   values: Record<string, string>,

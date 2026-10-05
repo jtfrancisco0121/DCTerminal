@@ -1,7 +1,7 @@
 use crate::acp::PromptResult;
 use crate::commands::dev_session::{DevSessionInfo, DevSessionState};
 use crate::orchestrator::{injection_strategy_from_role, InjectionStrategy};
-use crate::store::{RolesStore, StateStore, TabSessionRef};
+use crate::store::{FormsStore, RolesStore, StateStore, TabSessionRef};
 use chrono::Utc;
 use crate::template::merge_role_prompt;
 use serde::Serialize;
@@ -33,6 +33,7 @@ pub fn role_session_start(
     store: State<Mutex<RolesStore>>,
     state: State<Mutex<DevSessionState>>,
     state_store: State<Mutex<StateStore>>,
+    forms_store: State<Mutex<FormsStore>>,
 ) -> Result<RoleSessionStartResult, String> {
     let role = {
         let store = store.lock().map_err(|e| e.to_string())?;
@@ -140,6 +141,11 @@ pub fn role_session_start(
         )?
     };
     guard.active_tab_id = Some(tab_id.clone());
+
+    {
+        let mut forms = forms_store.lock().map_err(|e| e.to_string())?;
+        forms.save_after_session_start(&role, &info.cwd, &values)?;
+    }
 
     Ok(RoleSessionStartResult {
         errors: vec![],

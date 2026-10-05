@@ -73,8 +73,7 @@ impl StateStore {
             created_at: Utc::now().to_rfc3339(),
             session: Some(session),
         };
-        // MVP: single active tab — replace list with the new session tab.
-        self.data.tabs = vec![record];
+        self.data.tabs.push(record);
         self.data.active_tab_id = Some(tab_id.clone());
         self.save()?;
         let _ = startup_injected;
@@ -91,6 +90,71 @@ impl StateStore {
         tab.phase = "awaitingInput".to_string();
         tab.session = None;
         self.save()
+    }
+
+    pub fn set_active_tab(&mut self, tab_id: &str) -> Result<(), String> {
+        if !self.data.tabs.iter().any(|t| t.id == tab_id) {
+            return Err(format!("unknown tab: {tab_id}"));
+        }
+        self.data.active_tab_id = Some(tab_id.to_string());
+        self.save()
+    }
+
+    pub fn close_tab(&mut self, tab_id: &str) -> Result<(), String> {
+        let idx = self
+            .data
+            .tabs
+            .iter()
+            .position(|t| t.id == tab_id)
+            .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
+        let tab = &self.data.tabs[idx];
+        if tab.phase == "running" {
+            return Err("cannot close a running tab — stop the session first".to_string());
+        }
+        self.data.tabs.remove(idx);
+        if self.data.active_tab_id.as_deref() == Some(tab_id) {
+            self.data.active_tab_id = self
+                .data
+                .tabs
+                .iter()
+                .max_by_key(|t| t.order)
+                .map(|t| t.id.clone());
+        }
+        self.save()
+    }
+
+    pub fn create_draft_tab(&mut self, role: &Role, cwd: &str) -> Result<String, String> {
+        let tab_id = new_tab_id();
+        let label = format!("New · {}", role.name);
+        let record = TabRecord {
+            id: tab_id.clone(),
+            label,
+            role_id: role.id.clone(),
+            role_snapshot: RoleSnapshot {
+                name: role.name.clone(),
+                template_version: role.template_version,
+                mode: role.default_mode.clone(),
+                injection: role.injection.clone(),
+            },
+            cwd: cwd.to_string(),
+            answers: HashMap::from([("cwd".to_string(), cwd.to_string())]),
+            merged_prompt: String::new(),
+            merged_prompt_hash: String::new(),
+            phase: "draft".to_string(),
+            order: next_tab_order(&self.data),
+            created_at: Utc::now().to_rfc3339(),
+            session: None,
+        };
+        self.data.tabs.push(record);
+        self.data.active_tab_id = Some(tab_id.clone());
+        self.save()?;
+        Ok(tab_id)
+    }
+
+    pub fn sorted_tabs(&self) -> Vec<&TabRecord> {
+        let mut tabs: Vec<&TabRecord> = self.data.tabs.iter().collect();
+        tabs.sort_by_key(|t| t.order);
+        tabs
     }
 
     pub fn set_injection_complete(&mut self, tab_id: &str) -> Result<(), String> {

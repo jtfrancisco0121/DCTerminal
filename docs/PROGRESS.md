@@ -8,13 +8,17 @@
 
 | Field | Value |
 |--------|--------|
-| **Last updated** | 2026-10-06 — state.json tab snapshots (local) |
+| **Last updated** | 2026-10-06 — multi-tab UI, forms.json, transcript |
 | **Branch** | `master` |
 | **Current phase** | Phase 2 — single-tab vertical slice |
-| **Active task** | T2.1 multi-tab store + T2.6 rich transcript |
+| **Active task** | T3.4 tab badges/persist running + markdown transcript |
 
 ## Completed since last push
 
+- [x] **Multi-tab** — TabBar, `new_draft_tab` / `select_active_tab` / `close_tab`
+- [x] **forms.json** — last-used + draft autosave + `remember` field recall
+- [x] **Transcript** — structured lines (agent / tool / thought / system)
+- [x] **Pushed** `24e4344` — state.json snapshots
 - [x] **Pushed** `aedff12` — Phase 2b session-update events + TabPhase
 - [x] **T2.3 (slice)** — `state.json` tab snapshot (answers, merged prompt, hash, session ref)
 - [x] **Restore** — `awaitingInput` tab prefills form on launch (no re-injection)

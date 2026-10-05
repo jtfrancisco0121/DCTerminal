@@ -1,12 +1,16 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  closeTab,
   devSessionSend,
   devSessionStop,
   getAppState,
+  getFormRecall,
   getRole,
-  getTab,
   listenSessionUpdates,
+  newDraftTab,
   roleSessionStart,
+  saveFormDraft,
+  selectActiveTab,
   validateAndPreview,
   type DevPromptResult,
   type DevSessionInfo,
@@ -17,6 +21,12 @@ import {
   type TabSummary,
   type ValidatePreviewResult,
 } from "./bridge";
+import { TabBar } from "./TabBar";
+import {
+  coalesceAgentLines,
+  sessionUpdateToLine,
+  type TranscriptLine,
+} from "./transcript";
 
 function fieldVisible(
   role: Role,
@@ -54,45 +64,59 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
     null,
   );
   const [busy, setBusy] = useState(false);
-  const [streamText, setStreamText] = useState("");
-  const [streamKinds, setStreamKinds] = useState<string[]>([]);
+  const [transcriptLines, setTranscriptLines] = useState<TranscriptLine[]>([]);
   const [savedTabs, setSavedTabs] = useState<TabSummary[]>([]);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const skipRecallRef = useRef(false);
+  const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [restoredTabId, setRestoredTabId] = useState<string | null>(null);
 
-  useEffect(() => {
-    getAppState()
-      .then((snap) => {
-        setSavedTabs(snap.tabs);
-        if (!snap.activeTabId) return;
-        const summary = snap.tabs.find((t) => t.id === snap.activeTabId);
-        if (!summary || summary.phase !== "awaitingInput") return;
-        return getTab(snap.activeTabId).then(({ tab }) => {
-          setRoleId(tab.roleId);
-          setValues({ ...tab.answers, cwd: tab.cwd });
-          setRestoredTabId(tab.id);
-        });
-      })
-      .catch(() => setSavedTabs([]));
+  const loadTabIntoForm = useCallback((tab: {
+    roleId: string;
+    cwd: string;
+    answers: Record<string, string>;
+    id: string;
+  }) => {
+    skipRecallRef.current = true;
+    setRoleId(tab.roleId);
+    setValues({ ...tab.answers, cwd: tab.cwd });
+    setActiveTabId(tab.id);
+    setPreview(null);
+    setRestoredTabId(tab.id);
+  }, []);
+
+  const refreshTabs = useCallback(async () => {
+    const snap = await getAppState();
+    setSavedTabs(snap.tabs);
+    setActiveTabId(snap.activeTabId);
+    return snap;
   }, []);
 
   useEffect(() => {
+    refreshTabs()
+      .then((snap) => {
+        if (!snap.activeTabId) return;
+        const summary = snap.tabs.find((t) => t.id === snap.activeTabId);
+        if (!summary) return;
+        if (summary.phase === "running") return;
+        return selectActiveTab(snap.activeTabId).then(({ tab }) => {
+          loadTabIntoForm(tab);
+        });
+      })
+      .catch(() => setSavedTabs([]));
+  }, [loadTabIntoForm, refreshTabs]);
+
+  useEffect(() => {
     if (!session) {
-      setStreamText("");
-      setStreamKinds([]);
+      setTranscriptLines([]);
       return;
     }
     let unlisten: (() => void) | undefined;
     listenSessionUpdates((evt) => {
       if (evt.sessionId !== session.sessionId) return;
-      if (evt.textDelta) {
-        setStreamText((prev) => prev + evt.textDelta);
-      }
-      setStreamKinds((prev) => {
-        if (prev.length > 0 && prev[prev.length - 1] === evt.kind) {
-          return prev;
-        }
-        return [...prev, evt.kind];
-      });
+      setTranscriptLines((prev) =>
+        coalesceAgentLines([...prev, sessionUpdateToLine(evt)]),
+      );
     }).then((fn) => {
       unlisten = fn;
     });
@@ -113,7 +137,6 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
       .then((r) => {
         if (!cancelled) {
           setRole(r);
-          setValues((prev) => ({ cwd: prev.cwd || defaultCwd }));
           setPreview(null);
           setStartResult(null);
         }
@@ -124,12 +147,39 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [roleId, defaultCwd]);
+  }, [roleId]);
+
+  useEffect(() => {
+    if (skipRecallRef.current) {
+      skipRecallRef.current = false;
+      return;
+    }
+    if (session) return;
+    getFormRecall(roleId, defaultCwd)
+      .then((recall) => {
+        setValues({ ...recall.values, cwd: recall.cwd });
+      })
+      .catch(() => {
+        setValues((prev) => ({ ...prev, cwd: prev.cwd || defaultCwd }));
+      });
+  }, [roleId, defaultCwd, session]);
 
   const formValues = useMemo((): Record<string, string> => {
     if (!role) return values;
     return { ...values, cwd: values.cwd ?? defaultCwd };
   }, [role, values, defaultCwd]);
+
+  useEffect(() => {
+    if (session || !role) return;
+    if (draftTimerRef.current) clearTimeout(draftTimerRef.current);
+    draftTimerRef.current = setTimeout(() => {
+      const cwd = values.cwd ?? defaultCwd;
+      saveFormDraft(roleId, cwd, formValues).catch(() => {});
+    }, 800);
+    return () => {
+      if (draftTimerRef.current) clearTimeout(draftTimerRef.current);
+    };
+  }, [formValues, roleId, session, role, values.cwd, defaultCwd]);
 
   const runPreview = useCallback(async () => {
     if (!role) return;
@@ -155,8 +205,7 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
     setBusy(true);
     setStartResult(null);
     setFollowUpResult(null);
-    setStreamText("");
-    setStreamKinds([]);
+    setTranscriptLines([]);
     try {
       const result = await roleSessionStart(roleId, formValues);
       setStartResult(result);
@@ -165,7 +214,8 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
         return;
       }
       setSession(result.session);
-      getAppState().then((snap) => setSavedTabs(snap.tabs)).catch(() => {});
+      if (result.tabId) setActiveTabId(result.tabId);
+      await refreshTabs();
       if (result.mergedChars != null) {
         const latest = await validateAndPreview(roleId, formValues);
         setPreview(latest);
@@ -188,7 +238,7 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
     } finally {
       setBusy(false);
     }
-  }, [roleId, formValues]);
+  }, [roleId, formValues, refreshTabs]);
 
   const stopSession = useCallback(async () => {
     setBusy(true);
@@ -197,11 +247,66 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
       setSession(null);
       setStartResult(null);
       setFollowUpResult(null);
-      getAppState().then((snap) => setSavedTabs(snap.tabs)).catch(() => {});
+      await refreshTabs();
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [refreshTabs]);
+
+  const handleSelectTab = useCallback(
+    async (tabId: string) => {
+      if (session) return;
+      setBusy(true);
+      try {
+        const { tab } = await selectActiveTab(tabId);
+        loadTabIntoForm(tab);
+        await refreshTabs();
+      } finally {
+        setBusy(false);
+      }
+    },
+    [session, loadTabIntoForm, refreshTabs],
+  );
+
+  const handleCloseTab = useCallback(
+    async (tabId: string) => {
+      if (session) return;
+      setBusy(true);
+      try {
+        const snap = await closeTab(tabId);
+        setSavedTabs(snap.tabs);
+        setActiveTabId(snap.activeTabId);
+        if (snap.activeTabId) {
+          const { tab } = await selectActiveTab(snap.activeTabId);
+          loadTabIntoForm(tab);
+        } else {
+          const recall = await getFormRecall(roleId, defaultCwd);
+          setValues({ ...recall.values, cwd: recall.cwd });
+        }
+      } finally {
+        setBusy(false);
+      }
+    },
+    [session, roleId, defaultCwd, loadTabIntoForm],
+  );
+
+  const handleNewTab = useCallback(async () => {
+    if (session) return;
+    setBusy(true);
+    try {
+      const cwd = values.cwd ?? defaultCwd;
+      const { tab } = await newDraftTab(roleId, cwd);
+      await refreshTabs();
+      skipRecallRef.current = true;
+      setRoleId(tab.roleId);
+      const recall = await getFormRecall(tab.roleId, cwd);
+      setValues({ ...recall.values, cwd: recall.cwd });
+      setActiveTabId(tab.id);
+      setRestoredTabId(tab.id);
+    } finally {
+      setBusy(false);
+    }
+  }, [session, roleId, values.cwd, defaultCwd, refreshTabs]);
 
   const sendFollowUp = useCallback(async () => {
     setBusy(true);
@@ -247,21 +352,19 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
         <code>send_on_start</code> injection. Answers and merged prompt persist
         in <code>state.json</code>.
       </p>
+      <TabBar
+        tabs={savedTabs}
+        activeTabId={activeTabId}
+        disabled={busy || !!session}
+        onSelect={handleSelectTab}
+        onClose={handleCloseTab}
+        onNew={handleNewTab}
+      />
       {restoredTabId && !session && (
         <p className="hint">
-          Restored tab <code>{restoredTabId}</code> (awaiting input — no
-          auto re-injection).
+          Tab <code>{restoredTabId}</code> — switch tabs when idle; stopped
+          sessions stay <code>awaitingInput</code> (no re-injection).
         </p>
-      )}
-      {savedTabs.length > 0 && (
-        <ul className="status-list">
-          {savedTabs.map((t) => (
-            <li key={t.id}>
-              <strong>{t.label}</strong> · {t.phase} ·{" "}
-              {t.mergedPromptChars.toLocaleString()} chars merged
-            </li>
-          ))}
-        </ul>
       )}
 
       <label className="field-label">
@@ -383,23 +486,31 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
         </p>
       )}
 
-      {(streamText || startResult?.injectionResult) && (
+      {(transcriptLines.length > 0 || startResult?.injectionResult) && (
         <div className="probe-result transcript-panel">
           <p>
             <strong>Transcript</strong>
-            {streamKinds.length > 0 && (
-              <span className="hint">
-                {" "}
-                · {streamKinds.length} update kind
-                {streamKinds.length === 1 ? "" : "s"}
-              </span>
+            {transcriptLines.length > 0 && (
+              <span className="hint"> · {transcriptLines.length} lines</span>
             )}
           </p>
-          <pre className="mono-snippet transcript-body">
-            {streamText ||
-              startResult?.injectionResult?.agentText ||
-              "(no text chunks yet — check event parser)"}
-          </pre>
+          <ul className="transcript-lines transcript-body">
+            {transcriptLines.length === 0 &&
+              startResult?.injectionResult?.agentText && (
+                <li className="transcript-line transcript-line-agent">
+                  {startResult.injectionResult.agentText}
+                </li>
+              )}
+            {transcriptLines.map((line) => (
+              <li
+                key={line.id}
+                className={`transcript-line transcript-line-${line.kind}`}
+              >
+                <div className="transcript-line-meta">{line.label}</div>
+                {line.text}
+              </li>
+            ))}
+          </ul>
           {startResult?.injectionResult && (
             <p className="hint">
               Startup turn:{" "}
