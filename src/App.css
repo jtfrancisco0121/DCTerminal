@@ -1,0 +1,97 @@
+:root {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  line-height: 1.5;
+  color: #e6edf3;
+  background-color: #0d1117;
+}
+
+.container {
+  max-width: 42rem;
+  margin: 0 auto;
+  padding: 2rem 1.25rem 3rem;
+}
+
+.app-header h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.75rem;
+  font-weight: 600;
+}
+
+.tagline {
+  margin: 0 0 1.5rem;
+  color: #8b949e;
+}
+
+.status-card {
+  padding: 1rem 1.25rem;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  background: #161b22;
+}
+
+.status-card h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.status-list {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.status-list code {
+  font-size: 0.875rem;
+  word-break: break-all;
+}
+
+.error {
+  color: #f85149;
+}
+
+.docs-hint {
+  margin-top: 1.5rem;
+  font-size: 0.875rem;
+  color: #8b949e;
+}
+
+.status-card + .status-card {
+  margin-top: 1rem;
+}
+
+.hint {
+  margin: 0 0 0.75rem;
+  font-size: 0.875rem;
+  color: #8b949e;
+}
+
+.primary-button {
+  padding: 0.5rem 1rem;
+  border: 1px solid #388bfd;
+  border-radius: 6px;
+  background: #238636;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.primary-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.mono-snippet {
+  margin: 0.35rem 0 0;
+  padding: 0.5rem;
+  overflow-x: auto;
+  font-size: 0.75rem;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.probe-result {
+  margin-top: 0.75rem;
+}

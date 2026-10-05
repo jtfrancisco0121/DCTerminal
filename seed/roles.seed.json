@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "_comment": "Replace templateText with JT's verbatim prompts. Run T0.5 to confirm fields before MVP.",
+  "roles": [
+    {
+      "id": "role_planner",
+      "name": "Planner",
+      "templateText": "TODO: paste Planner template from JT. Use {{taskType}}, {{title}}, etc. after schema confirmation.",
+      "templateVersion": 0,
+      "templateHash": "",
+      "schemaTemplateHash": "",
+      "defaultMode": "plan",
+      "injection": "send_on_start",
+      "color": "#58A6FF",
+      "isBuiltIn": true,
+      "fields": [],
+      "updatedAt": null
+    },
+    {
+      "id": "role_implementer",
+      "name": "Implementer",
+      "templateText": "TODO: paste Implementer template.",
+      "templateVersion": 0,
+      "defaultMode": "agent",
+      "injection": "send_on_start",
+      "color": "#F0883E",
+      "isBuiltIn": true,
+      "fields": []
+    },
+    {
+      "id": "role_pr_reviewer",
+      "name": "PR Reviewer",
+      "templateText": "TODO: paste PR Reviewer template.",
+      "templateVersion": 0,
+      "defaultMode": "agent",
+      "injection": "send_on_start",
+      "color": "#A371F7",
+      "isBuiltIn": true,
+      "fields": []
+    },
+    {
+      "id": "role_developer",
+      "name": "Developer",
+      "templateText": "TODO: paste Developer template (often folder-only).",
+      "templateVersion": 0,
+      "defaultMode": "agent",
+      "injection": "send_on_start",
+      "color": "#3FB950",
+      "isBuiltIn": true,
+      "fields": []
+    },
+    {
+      "id": "role_general",
+      "name": "General",
+      "templateText": "TODO: paste General template.",
+      "templateVersion": 0,
+      "defaultMode": "ask",
+      "injection": "send_on_start",
+      "color": "#8B949E",
+      "isBuiltIn": true,
+      "fields": []
+    }
+  ]
+}
