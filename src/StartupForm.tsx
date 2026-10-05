@@ -3,6 +3,7 @@ import {
   devSessionSend,
   devSessionStop,
   getRole,
+  listenSessionUpdates,
   roleSessionStart,
   validateAndPreview,
   type DevPromptResult,
@@ -50,6 +51,34 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
     null,
   );
   const [busy, setBusy] = useState(false);
+  const [streamText, setStreamText] = useState("");
+  const [streamKinds, setStreamKinds] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!session) {
+      setStreamText("");
+      setStreamKinds([]);
+      return;
+    }
+    let unlisten: (() => void) | undefined;
+    listenSessionUpdates((evt) => {
+      if (evt.sessionId !== session.sessionId) return;
+      if (evt.textDelta) {
+        setStreamText((prev) => prev + evt.textDelta);
+      }
+      setStreamKinds((prev) => {
+        if (prev.length > 0 && prev[prev.length - 1] === evt.kind) {
+          return prev;
+        }
+        return [...prev, evt.kind];
+      });
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, [session]);
 
   useEffect(() => {
     if (!roles.some((r) => r.id === roleId) && roles.length > 0) {
@@ -105,6 +134,8 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
     setBusy(true);
     setStartResult(null);
     setFollowUpResult(null);
+    setStreamText("");
+    setStreamKinds([]);
     try {
       const result = await roleSessionStart(roleId, formValues);
       setStartResult(result);
@@ -311,19 +342,29 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
         </p>
       )}
 
-      {startResult?.injectionResult && (
-        <div className="probe-result">
+      {(streamText || startResult?.injectionResult) && (
+        <div className="probe-result transcript-panel">
           <p>
-            <strong>Startup turn:</strong>{" "}
-            {startResult.injectionResult.stopReason ?? "finished"}
+            <strong>Transcript</strong>
+            {streamKinds.length > 0 && (
+              <span className="hint">
+                {" "}
+                · {streamKinds.length} update kind
+                {streamKinds.length === 1 ? "" : "s"}
+              </span>
+            )}
           </p>
-          <p>
-            <strong>Updates:</strong> {startResult.injectionResult.updateCount}
-          </p>
-          {startResult.injectionResult.agentText && (
-            <pre className="mono-snippet">
-              {startResult.injectionResult.agentText}
-            </pre>
+          <pre className="mono-snippet transcript-body">
+            {streamText ||
+              startResult?.injectionResult?.agentText ||
+              "(no text chunks yet — check event parser)"}
+          </pre>
+          {startResult?.injectionResult && (
+            <p className="hint">
+              Startup turn:{" "}
+              {startResult.injectionResult.stopReason ?? "finished"} ·{" "}
+              {startResult.injectionResult.updateCount} updates
+            </p>
           )}
         </div>
       )}

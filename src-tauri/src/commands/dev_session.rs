@@ -1,14 +1,17 @@
 use crate::acp::{AcpClient, PromptResult};
+use crate::commands::acp_events::emit_session_update;
+use crate::orchestrator::TabPhase;
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{AppHandle, State};
 
 pub struct DevSessionState {
     pub client: Option<AcpClient>,
     /// Merged startup prompt for `attach_to_first_message` roles.
     pub pending_startup_prompt: Option<String>,
     pub startup_injected: bool,
+    pub phase: TabPhase,
 }
 
 impl DevSessionState {
@@ -17,6 +20,7 @@ impl DevSessionState {
             client: None,
             pending_startup_prompt: None,
             startup_injected: false,
+            phase: TabPhase::AwaitingInput,
         }
     }
 }
@@ -50,11 +54,15 @@ pub fn dev_session_start(
         cwd: client.cwd().display().to_string(),
     };
     guard.client = Some(client);
+    guard.phase = TabPhase::AwaitingInput
+        .after_session_started()
+        .map_err(|e| e.to_string())?;
     Ok(info)
 }
 
 #[tauri::command]
 pub fn dev_session_send(
+    app: AppHandle,
     prompt: String,
     state: State<Mutex<DevSessionState>>,
 ) -> Result<PromptResult, String> {
@@ -69,7 +77,12 @@ pub fn dev_session_send(
         .client
         .as_mut()
         .ok_or_else(|| "no dev session — call dev_session_start first".to_string())?;
-    client.send_prompt(&prompt_to_send)
+    let session_id = client.session_id().to_string();
+    let app = app.clone();
+    let on_notification = Box::new(move |value: &serde_json::Value| {
+        emit_session_update(&app, &session_id, value);
+    });
+    client.send_prompt(&prompt_to_send, Some(on_notification))
 }
 
 #[tauri::command]
@@ -80,5 +93,6 @@ pub fn dev_session_stop(state: State<Mutex<DevSessionState>>) -> Result<(), Stri
     }
     guard.pending_startup_prompt = None;
     guard.startup_injected = false;
+    guard.phase = guard.phase.after_session_stopped();
     Ok(())
 }

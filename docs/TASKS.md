@@ -38,12 +38,12 @@ Checklist aligned with [DCTerminal-Project-Blueprint.md](./DCTerminal-Project-Bl
 
 | ID | Task | FR / ref | Status |
 |----|------|----------|--------|
-| T2.1 | Orchestrator FSM incl. `AwaitingInput` | FR-033 | [ ] |
-| T2.2 | Tauri commands/events bridge | §16.3 | [ ] |
+| T2.1 | Orchestrator FSM incl. `AwaitingInput` | FR-033 | [~] |
+| T2.2 | Tauri commands/events bridge | §16.3 | [~] |
 | T2.3 | Seed five roles; snapshot; `send_on_start` injection | FR-020, FR-022, FR-025 | [~] |
 | T2.4 | Input box + Send | FR-052, FR-054 | [ ] |
 | T2.5 | Scratch pad + Transfer | FR-050, FR-053 | [ ] |
-| T2.6 | Transcript renderer (MD, tools, plan, startup prompt) | FR-006 | [ ] |
+| T2.6 | Transcript renderer (MD, tools, plan, startup prompt) | FR-006 | [~] |
 | T2.7 | Permission card; error/empty/loading; auth guidance | FR-007, FR-081 | [ ] |
 | T2.8 | Schema-driven startup form | FR-092, FR-093, FR-101 | [~] |
 

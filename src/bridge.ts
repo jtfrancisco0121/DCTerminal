@@ -3,6 +3,7 @@
  * Add commands here as Rust handlers land — see blueprint §16.3.
  */
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export type CliDetectResult = {
   found: boolean;
@@ -167,4 +168,19 @@ export async function devSessionSend(prompt: string): Promise<DevPromptResult> {
 
 export async function devSessionStop(): Promise<void> {
   return invoke("dev_session_stop");
+}
+
+export type SessionUpdateEvent = {
+  sessionId: string;
+  kind: string;
+  textDelta: string | null;
+  rawJson: string;
+};
+
+export function listenSessionUpdates(
+  handler: (event: SessionUpdateEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<SessionUpdateEvent>("acp/session-update", (e) => {
+    handler(e.payload);
+  });
 }

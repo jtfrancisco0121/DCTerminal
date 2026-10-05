@@ -168,3 +168,12 @@
   cursor: pointer;
   color: #8b949e;
 }
+
+.transcript-panel {
+  margin-top: 0.75rem;
+}
+
+.transcript-body {
+  max-height: 16rem;
+  overflow-y: auto;
+}

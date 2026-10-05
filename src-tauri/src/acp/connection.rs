@@ -8,9 +8,35 @@ use std::time::{Duration, Instant};
 
 const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(30);
 
-#[derive(Default)]
 pub struct LineDispatch {
     pub notifications: Vec<Value>,
+    on_notification: Option<Box<dyn FnMut(&Value)>>,
+}
+
+impl LineDispatch {
+    pub fn new() -> Self {
+        Self {
+            notifications: Vec::new(),
+            on_notification: None,
+        }
+    }
+
+    pub fn set_on_notification(&mut self, handler: Box<dyn FnMut(&Value)>) {
+        self.on_notification = Some(handler);
+    }
+
+    fn record_notification(&mut self, value: &Value) {
+        self.notifications.push(value.clone());
+        if let Some(handler) = &mut self.on_notification {
+            handler(value);
+        }
+    }
+}
+
+impl Default for LineDispatch {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub struct AcpConnection {
@@ -99,7 +125,7 @@ impl AcpConnection {
         if let Some(method) = method {
             if let Some(req_id) = value.get("id").and_then(|v| v.as_u64()) {
                 if method == "session/update" {
-                    dispatch.notifications.push(value.clone());
+                    dispatch.record_notification(value);
                     return Ok(());
                 }
                 if method == "session/request_permission" || method.starts_with("cursor/") {
@@ -109,7 +135,7 @@ impl AcpConnection {
                     self.respond_error(req_id, -32601, "Method not found")?;
                 }
             } else {
-                dispatch.notifications.push(value.clone());
+                dispatch.record_notification(value);
             }
             return Ok(());
         }

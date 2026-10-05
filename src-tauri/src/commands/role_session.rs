@@ -7,9 +7,10 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use crate::acp::AcpClient;
+use crate::commands::acp_events::emit_session_update;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,6 +25,7 @@ pub struct RoleSessionStartResult {
 
 #[tauri::command]
 pub fn role_session_start(
+    app: AppHandle,
     role_id: String,
     values: HashMap<String, String>,
     store: State<Mutex<RolesStore>>,
@@ -67,6 +69,9 @@ pub fn role_session_start(
     };
 
     let mut guard = state.lock().map_err(|e| e.to_string())?;
+    if !guard.phase.can_submit_startup_form() {
+        return Err("a session is already running — stop it first".to_string());
+    }
     if let Some(mut existing) = guard.client.take() {
         existing.shutdown();
     }
@@ -85,7 +90,12 @@ pub fn role_session_start(
 
     match strategy {
         InjectionStrategy::SendOnStart => {
-            let result = client.send_prompt(&merged.text)?;
+            let session_id = client.session_id().to_string();
+            let app_handle = app.clone();
+            let on_notification = Box::new(move |value: &serde_json::Value| {
+                emit_session_update(&app_handle, &session_id, value);
+            });
+            let result = client.send_prompt(&merged.text, Some(on_notification))?;
             injection_result = Some(result);
             startup_injected = true;
             guard.startup_injected = true;
@@ -96,6 +106,11 @@ pub fn role_session_start(
             guard.client = Some(client);
         }
     }
+
+    guard.phase = guard
+        .phase
+        .after_session_started()
+        .map_err(|e| e.to_string())?;
 
     Ok(RoleSessionStartResult {
         errors: vec![],

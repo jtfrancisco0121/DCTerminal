@@ -1,3 +1,4 @@
+pub(crate) mod acp_events;
 mod dev_session;
 mod role_session;
 mod roles;

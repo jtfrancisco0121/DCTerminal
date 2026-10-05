@@ -8,13 +8,16 @@
 
 | Field | Value |
 |--------|--------|
-| **Last updated** | 2026-10-06 — Phase 2 startup form + role session |
+| **Last updated** | 2026-10-06 — session/update events + tab phase (local) |
 | **Branch** | `master` |
 | **Current phase** | Phase 2 — single-tab vertical slice |
-| **Active task** | T2.1 full tab FSM + T2.6 transcript events |
+| **Active task** | T2.1 multi-tab store + T2.6 rich transcript |
 
 ## Completed since last push
 
+- [x] **Pushed** `f72064e` — Phase 2 startup form + `role_session_start`
+- [x] **T2.6 (slice)** — `acp/session-update` Tauri events + live transcript panel
+- [x] **T2.1 (slice)** — `TabPhase` FSM gate on role session start/stop
 - [x] **T2.8 (MVP)** — Schema-driven `StartupForm`, `validate_and_preview`, role picker + cwd
 - [x] **`role_session_start`** — merge → ACP connect (role `defaultMode`) → `send_on_start` injection
 - [x] **Orchestrator (lite)** — `InjectionStrategy`, `attach_to_first_message` on first Send

@@ -52,13 +52,20 @@ impl AcpClient {
         &self.cwd
     }
 
-    pub fn send_prompt(&mut self, text: &str) -> Result<PromptResult, String> {
+    pub fn send_prompt(
+        &mut self,
+        text: &str,
+        on_notification: Option<Box<dyn FnMut(&Value)>>,
+    ) -> Result<PromptResult, String> {
         if text.trim().is_empty() {
             return Err("prompt text is empty".to_string());
         }
         let id = self.next_id;
         self.next_id += 1;
         let mut dispatch = LineDispatch::default();
+        if let Some(handler) = on_notification {
+            dispatch.set_on_notification(handler);
+        }
         let result = self.conn.call_with_dispatch(
             id,
             "session/prompt",
