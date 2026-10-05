@@ -58,3 +58,30 @@ export type RoleSummary = {
 export async function listRoles(): Promise<RoleSummary[]> {
   return invoke<RoleSummary[]>("list_roles");
 }
+
+export type DevSessionInfo = {
+  sessionId: string;
+  modeId: string;
+  cwd: string;
+};
+
+export type DevPromptResult = {
+  stopReason: string | null;
+  agentText: string;
+  updateCount: number;
+};
+
+export async function devSessionStart(
+  cwd: string,
+  modeId?: string,
+): Promise<DevSessionInfo> {
+  return invoke<DevSessionInfo>("dev_session_start", { cwd, modeId });
+}
+
+export async function devSessionSend(prompt: string): Promise<DevPromptResult> {
+  return invoke<DevPromptResult>("dev_session_send", { prompt });
+}
+
+export async function devSessionStop(): Promise<void> {
+  return invoke("dev_session_stop");
+}

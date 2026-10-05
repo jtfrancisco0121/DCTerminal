@@ -1,4 +1,5 @@
-use serde_json::Value;
+use super::request_handler::response_for_agent_request;
+use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -6,6 +7,11 @@ use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Default)]
+pub struct LineDispatch {
+    pub notifications: Vec<Value>,
+}
 
 pub struct AcpConnection {
     child: Child,
@@ -56,22 +62,80 @@ impl AcpConnection {
             "method": method,
             "params": params,
         });
+        self.write_line(&payload)
+    }
+
+    fn write_line(&mut self, payload: &Value) -> Result<(), String> {
         let line = format!("{}\n", payload);
         self.stdin
             .write_all(line.as_bytes())
-            .map_err(|e| format!("write {method}: {e}"))?;
-        self.stdin
-            .flush()
-            .map_err(|e| format!("flush {method}: {e}"))?;
+            .map_err(|e| format!("stdin write: {e}"))?;
+        self.stdin.flush().map_err(|e| format!("stdin flush: {e}"))?;
         Ok(())
     }
 
-    /// Read NDJSON lines until a JSON-RPC response for `id` arrives (skips notifications).
-    pub fn wait_response(
-        &self,
+    fn respond_result(&mut self, id: u64, result: Value) -> Result<(), String> {
+        self.write_line(&json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": result,
+        }))
+    }
+
+    fn respond_error(&mut self, id: u64, code: i32, message: &str) -> Result<(), String> {
+        self.write_line(&json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": { "code": code, "message": message },
+        }))
+    }
+
+    fn handle_incoming_line(
+        &mut self,
+        value: &Value,
+        dispatch: &mut LineDispatch,
+    ) -> Result<(), String> {
+        let method = value.get("method").and_then(|m| m.as_str());
+        if let Some(method) = method {
+            if let Some(req_id) = value.get("id").and_then(|v| v.as_u64()) {
+                if method == "session/update" {
+                    dispatch.notifications.push(value.clone());
+                    return Ok(());
+                }
+                if method == "session/request_permission" || method.starts_with("cursor/") {
+                    let result = response_for_agent_request(value);
+                    self.respond_result(req_id, result)?;
+                } else {
+                    self.respond_error(req_id, -32601, "Method not found")?;
+                }
+            } else {
+                dispatch.notifications.push(value.clone());
+            }
+            return Ok(());
+        }
+        Ok(())
+    }
+
+    pub fn call(
+        &mut self,
         id: u64,
+        method: &str,
+        params: Value,
         timeout: Duration,
     ) -> Result<Value, String> {
+        let mut dispatch = LineDispatch::default();
+        self.call_with_dispatch(id, method, params, timeout, &mut dispatch)
+    }
+
+    pub fn call_with_dispatch(
+        &mut self,
+        id: u64,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+        dispatch: &mut LineDispatch,
+    ) -> Result<Value, String> {
+        self.request(id, method, params)?;
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -83,13 +147,18 @@ impl AcpConnection {
                     }
                     let value: Value = serde_json::from_str(trimmed)
                         .map_err(|e| format!("invalid JSON line: {e}"))?;
+
+                    if value.get("method").is_some() {
+                        self.handle_incoming_line(&value, dispatch)?;
+                        continue;
+                    }
+
                     if value.get("id").and_then(|v| v.as_u64()) == Some(id) {
                         if let Some(err) = value.get("error") {
                             return Err(err.to_string());
                         }
                         return Ok(value.get("result").cloned().unwrap_or(Value::Null));
                     }
-                    // Notification or unrelated response — keep reading.
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     return Err(format!("timeout waiting for response id={id}"));
@@ -100,17 +169,6 @@ impl AcpConnection {
             }
         }
         Err(format!("timeout waiting for response id={id}"))
-    }
-
-    pub fn call(
-        &mut self,
-        id: u64,
-        method: &str,
-        params: Value,
-        timeout: Duration,
-    ) -> Result<Value, String> {
-        self.request(id, method, params)?;
-        self.wait_response(id, timeout)
     }
 
     pub fn kill(&mut self) {

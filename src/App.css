@@ -117,6 +117,32 @@
   margin-top: 0.75rem;
 }
 
+.field-label {
+  display: block;
+  margin: 0.5rem 0;
+  font-size: 0.875rem;
+}
+
+.text-input {
+  display: block;
+  width: 100%;
+  margin-top: 0.25rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  background: #0d1117;
+  color: #e6edf3;
+  font: inherit;
+  box-sizing: border-box;
+}
+
+.prompt-area {
+  resize: vertical;
+  min-height: 4rem;
+  font-family: ui-monospace, monospace;
+  font-size: 0.8125rem;
+}
+
 .role-dot {
   display: inline-block;
   width: 0.6rem;

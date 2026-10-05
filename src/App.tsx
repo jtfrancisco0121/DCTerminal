@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   detectCli,
+  devSessionSend,
+  devSessionStart,
+  devSessionStop,
   listRoles,
   probeAcp,
   probeAcpHandshake,
   type AcpHandshakeProbeResult,
   type AcpProbeResult,
   type CliDetectResult,
+  type DevPromptResult,
+  type DevSessionInfo,
   type RoleSummary,
 } from "./bridge";
 import "./App.css";
@@ -21,6 +26,13 @@ function App() {
   const [probeBusy, setProbeBusy] = useState(false);
   const [handshakeBusy, setHandshakeBusy] = useState(false);
   const [roles, setRoles] = useState<RoleSummary[]>([]);
+  const [devCwd, setDevCwd] = useState(
+    "C:\\Users\\user\\Documents\\Projects\\DCTerminal",
+  );
+  const [devSession, setDevSession] = useState<DevSessionInfo | null>(null);
+  const [devPrompt, setDevPrompt] = useState("Reply with exactly: DCTerminal OK");
+  const [devResult, setDevResult] = useState<DevPromptResult | null>(null);
+  const [devBusy, setDevBusy] = useState(false);
 
   useEffect(() => {
     detectCli()
@@ -48,6 +60,50 @@ function App() {
       });
     } finally {
       setProbeBusy(false);
+    }
+  }, []);
+
+  const startDevSession = useCallback(async () => {
+    setDevBusy(true);
+    setDevResult(null);
+    try {
+      setDevSession(await devSessionStart(devCwd, "agent"));
+    } catch (err: unknown) {
+      setDevSession(null);
+      setDevResult({
+        stopReason: null,
+        agentText: "",
+        updateCount: 0,
+        ...(err instanceof Error ? { stopReason: err.message } : {}),
+      });
+    } finally {
+      setDevBusy(false);
+    }
+  }, [devCwd]);
+
+  const sendDevPrompt = useCallback(async () => {
+    setDevBusy(true);
+    try {
+      setDevResult(await devSessionSend(devPrompt));
+    } catch (err: unknown) {
+      setDevResult({
+        stopReason: err instanceof Error ? err.message : String(err),
+        agentText: "",
+        updateCount: 0,
+      });
+    } finally {
+      setDevBusy(false);
+    }
+  }, [devPrompt]);
+
+  const stopDevSession = useCallback(async () => {
+    setDevBusy(true);
+    try {
+      await devSessionStop();
+      setDevSession(null);
+      setDevResult(null);
+    } finally {
+      setDevBusy(false);
     }
   }, []);
 
@@ -126,6 +182,84 @@ function App() {
               </li>
             ))}
           </ul>
+        )}
+      </section>
+
+      <section className="status-card">
+        <h2>Dev session (T1.2 / T1.3)</h2>
+        <p className="hint">
+          Persistent <code>agent acp</code> connection: start →{" "}
+          <code>session/prompt</code> → stop.
+        </p>
+        <label className="field-label">
+          Working folder
+          <input
+            className="text-input"
+            value={devCwd}
+            onChange={(e) => setDevCwd(e.target.value)}
+            disabled={!!devSession || devBusy}
+          />
+        </label>
+        <div className="button-row">
+          <button
+            type="button"
+            className="primary-button"
+            onClick={startDevSession}
+            disabled={devBusy || !cli?.found || !!devSession}
+          >
+            Start session
+          </button>
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={stopDevSession}
+            disabled={devBusy || !devSession}
+          >
+            Stop
+          </button>
+        </div>
+        {devSession && (
+          <p className="hint">
+            Session <code>{devSession.sessionId}</code> · {devSession.modeId}
+          </p>
+        )}
+        <label className="field-label">
+          Prompt
+          <textarea
+            className="text-input prompt-area"
+            value={devPrompt}
+            onChange={(e) => setDevPrompt(e.target.value)}
+            rows={3}
+            disabled={!devSession || devBusy}
+          />
+        </label>
+        <button
+          type="button"
+          className="primary-button"
+          onClick={sendDevPrompt}
+          disabled={!devSession || devBusy}
+        >
+          {devBusy ? "…" : "Send prompt"}
+        </button>
+        {devResult && (
+          <div className="probe-result">
+            {devResult.stopReason && (
+              <p>
+                <strong>Stop:</strong> {devResult.stopReason}
+              </p>
+            )}
+            <p>
+              <strong>Updates:</strong> {devResult.updateCount}
+            </p>
+            {devResult.agentText && (
+              <pre className="mono-snippet">{devResult.agentText}</pre>
+            )}
+            {!devResult.agentText && devResult.updateCount > 0 && (
+              <p className="hint">
+                Received updates but no text chunks matched — check parser.
+              </p>
+            )}
+          </div>
         )}
       </section>
 

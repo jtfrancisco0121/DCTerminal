@@ -8,28 +8,28 @@
 
 | Field | Value |
 |--------|--------|
-| **Last updated** | 2026-10-06 — Phase 1a (pending push) |
+| **Last updated** | 2026-10-06 — Phase 1b ACP client (pending push) |
 | **Branch** | `master` |
 | **Current phase** | Phase 1 — core plumbing |
-| **Active task** | T1.3 — ACP client hardening (per-tab session) |
+| **Active task** | T2.1 orchestrator + T2.8 startup form UI |
 
 ## Completed since last push
 
-- [x] **T0.5** — Roles built from `docs/roles/*.md` → `seed/roles.seed.json` (`build_roles_seed`)
-- [x] **T1.5 (core)** — Template merge, validate, confirmed schemas in `seed_defs.rs` + tests
-- [x] **T1.4 (roles)** — JSON atomic I/O, `roles.json` seed on first run, `list_roles` / `get_role` / `validate_and_preview`
+- [x] **T1.2** — `supervisor/` spawn/kill `agent acp`
+- [x] **T1.3 (core)** — `AcpClient`, interactive `call_with_dispatch`, permission/cursor auto-cancel, `-32601` for unknown requests
+- [x] Shared `session_connect::handshake`
+- [x] Dev commands: `dev_session_start` / `dev_session_send` / `dev_session_stop` + UI panel
 
 ## Next up
 
-1. T1.3 — Persistent ACP client per tab (reuse `connection.rs`)
-2. T2.8 — Startup form UI wired to `validate_and_preview`
-3. T1.2 — Process supervisor
+1. **T2.8** — Startup form → `validate_and_preview` → orchestrator
+2. **T2.1** — Tab FSM + `create_tab` with merged prompt injection
+3. **T2.6** — Stream `session/update` to UI (events)
 
 ## Quick commands
 
 ```bash
-npm run build:roles    # after editing docs/roles
-npm run build
 npm run tauri dev
 cd src-tauri && cargo test
+cargo test live_handshake_probe -- --ignored --nocapture
 ```
