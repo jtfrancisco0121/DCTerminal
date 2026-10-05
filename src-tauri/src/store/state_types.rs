@@ -1,0 +1,61 @@
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+pub const STATE_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppStateFile {
+    pub schema_version: u32,
+    pub active_tab_id: Option<String>,
+    pub tabs: Vec<TabRecord>,
+}
+
+impl Default for AppStateFile {
+    fn default() -> Self {
+        Self {
+            schema_version: STATE_SCHEMA_VERSION,
+            active_tab_id: None,
+            tabs: Vec::new(),
+        }
+    }
+}
+
+/// Persisted tab snapshot (blueprint §17.2 `state.json`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TabRecord {
+    pub id: String,
+    pub label: String,
+    pub role_id: String,
+    pub role_snapshot: RoleSnapshot,
+    pub cwd: String,
+    pub answers: HashMap<String, String>,
+    pub merged_prompt: String,
+    pub merged_prompt_hash: String,
+    /// `awaitingInput` | `running` (MVP; full FSM later).
+    pub phase: String,
+    pub order: u32,
+    pub created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<TabSessionRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleSnapshot {
+    pub name: String,
+    pub template_version: u32,
+    pub mode: String,
+    pub injection: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TabSessionRef {
+    pub acp_session_id: String,
+    pub mode_id: String,
+    pub injection_pending: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub injected_at: Option<String>,
+}

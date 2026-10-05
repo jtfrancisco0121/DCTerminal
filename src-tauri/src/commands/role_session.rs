@@ -1,7 +1,8 @@
 use crate::acp::PromptResult;
 use crate::commands::dev_session::{DevSessionInfo, DevSessionState};
 use crate::orchestrator::{injection_strategy_from_role, InjectionStrategy};
-use crate::store::RolesStore;
+use crate::store::{RolesStore, StateStore, TabSessionRef};
+use chrono::Utc;
 use crate::template::merge_role_prompt;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -21,6 +22,7 @@ pub struct RoleSessionStartResult {
     pub injection_strategy: Option<String>,
     pub startup_injected: bool,
     pub injection_result: Option<PromptResult>,
+    pub tab_id: Option<String>,
 }
 
 #[tauri::command]
@@ -30,6 +32,7 @@ pub fn role_session_start(
     values: HashMap<String, String>,
     store: State<Mutex<RolesStore>>,
     state: State<Mutex<DevSessionState>>,
+    state_store: State<Mutex<StateStore>>,
 ) -> Result<RoleSessionStartResult, String> {
     let role = {
         let store = store.lock().map_err(|e| e.to_string())?;
@@ -48,12 +51,14 @@ pub fn role_session_start(
             injection_strategy: None,
             startup_injected: false,
             injection_result: None,
+            tab_id: None,
         });
     }
 
     let merged = preview
         .merged
         .ok_or_else(|| "merge succeeded but produced no text".to_string())?;
+    let merged_text = merged.text.clone();
 
     let cwd = values
         .get("cwd")
@@ -95,14 +100,14 @@ pub fn role_session_start(
             let on_notification = Box::new(move |value: &serde_json::Value| {
                 emit_session_update(&app_handle, &session_id, value);
             });
-            let result = client.send_prompt(&merged.text, Some(on_notification))?;
+            let result = client.send_prompt(&merged_text, Some(on_notification))?;
             injection_result = Some(result);
             startup_injected = true;
             guard.startup_injected = true;
             guard.client = Some(client);
         }
         InjectionStrategy::AttachToFirstMessage => {
-            guard.pending_startup_prompt = Some(merged.text);
+            guard.pending_startup_prompt = Some(merged_text.clone());
             guard.client = Some(client);
         }
     }
@@ -112,6 +117,30 @@ pub fn role_session_start(
         .after_session_started()
         .map_err(|e| e.to_string())?;
 
+    let session_ref = TabSessionRef {
+        acp_session_id: info.session_id.clone(),
+        mode_id: info.mode_id.clone(),
+        injection_pending: strategy == InjectionStrategy::AttachToFirstMessage,
+        injected_at: if startup_injected {
+            Some(Utc::now().to_rfc3339())
+        } else {
+            None
+        },
+    };
+
+    let tab_id = {
+        let mut store = state_store.lock().map_err(|e| e.to_string())?;
+        store.upsert_running_tab(
+            &role,
+            &values,
+            &info.cwd,
+            &merged_text,
+            session_ref,
+            startup_injected,
+        )?
+    };
+    guard.active_tab_id = Some(tab_id.clone());
+
     Ok(RoleSessionStartResult {
         errors: vec![],
         session: Some(info),
@@ -119,5 +148,6 @@ pub fn role_session_start(
         injection_strategy: Some(strategy_label.to_string()),
         startup_injected,
         injection_result,
+        tab_id: Some(tab_id),
     })
 }

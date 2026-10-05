@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   devSessionSend,
   devSessionStop,
+  getAppState,
   getRole,
+  getTab,
   listenSessionUpdates,
   roleSessionStart,
   validateAndPreview,
@@ -12,6 +14,7 @@ import {
   type Role,
   type RoleSessionStartResult,
   type RoleSummary,
+  type TabSummary,
   type ValidatePreviewResult,
 } from "./bridge";
 
@@ -53,6 +56,24 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
   const [busy, setBusy] = useState(false);
   const [streamText, setStreamText] = useState("");
   const [streamKinds, setStreamKinds] = useState<string[]>([]);
+  const [savedTabs, setSavedTabs] = useState<TabSummary[]>([]);
+  const [restoredTabId, setRestoredTabId] = useState<string | null>(null);
+
+  useEffect(() => {
+    getAppState()
+      .then((snap) => {
+        setSavedTabs(snap.tabs);
+        if (!snap.activeTabId) return;
+        const summary = snap.tabs.find((t) => t.id === snap.activeTabId);
+        if (!summary || summary.phase !== "awaitingInput") return;
+        return getTab(snap.activeTabId).then(({ tab }) => {
+          setRoleId(tab.roleId);
+          setValues({ ...tab.answers, cwd: tab.cwd });
+          setRestoredTabId(tab.id);
+        });
+      })
+      .catch(() => setSavedTabs([]));
+  }, []);
 
   useEffect(() => {
     if (!session) {
@@ -144,6 +165,7 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
         return;
       }
       setSession(result.session);
+      getAppState().then((snap) => setSavedTabs(snap.tabs)).catch(() => {});
       if (result.mergedChars != null) {
         const latest = await validateAndPreview(roleId, formValues);
         setPreview(latest);
@@ -161,6 +183,7 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
         injectionStrategy: null,
         startupInjected: false,
         injectionResult: null,
+        tabId: null,
       });
     } finally {
       setBusy(false);
@@ -174,6 +197,7 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
       setSession(null);
       setStartResult(null);
       setFollowUpResult(null);
+      getAppState().then((snap) => setSavedTabs(snap.tabs)).catch(() => {});
     } finally {
       setBusy(false);
     }
@@ -220,8 +244,25 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
       <h2>Start role session (T2.8)</h2>
       <p className="hint">
         Schema-driven form → merge → <code>agent acp</code> with{" "}
-        <code>send_on_start</code> injection.
+        <code>send_on_start</code> injection. Answers and merged prompt persist
+        in <code>state.json</code>.
       </p>
+      {restoredTabId && !session && (
+        <p className="hint">
+          Restored tab <code>{restoredTabId}</code> (awaiting input — no
+          auto re-injection).
+        </p>
+      )}
+      {savedTabs.length > 0 && (
+        <ul className="status-list">
+          {savedTabs.map((t) => (
+            <li key={t.id}>
+              <strong>{t.label}</strong> · {t.phase} ·{" "}
+              {t.mergedPromptChars.toLocaleString()} chars merged
+            </li>
+          ))}
+        </ul>
+      )}
 
       <label className="field-label">
         Role

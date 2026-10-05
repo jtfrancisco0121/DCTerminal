@@ -8,13 +8,16 @@
 
 | Field | Value |
 |--------|--------|
-| **Last updated** | 2026-10-06 — session/update events + tab phase (local) |
+| **Last updated** | 2026-10-06 — state.json tab snapshots (local) |
 | **Branch** | `master` |
 | **Current phase** | Phase 2 — single-tab vertical slice |
 | **Active task** | T2.1 multi-tab store + T2.6 rich transcript |
 
 ## Completed since last push
 
+- [x] **Pushed** `aedff12` — Phase 2b session-update events + TabPhase
+- [x] **T2.3 (slice)** — `state.json` tab snapshot (answers, merged prompt, hash, session ref)
+- [x] **Restore** — `awaitingInput` tab prefills form on launch (no re-injection)
 - [x] **Pushed** `f72064e` — Phase 2 startup form + `role_session_start`
 - [x] **T2.6 (slice)** — `acp/session-update` Tauri events + live transcript panel
 - [x] **T2.1 (slice)** — `TabPhase` FSM gate on role session start/stop

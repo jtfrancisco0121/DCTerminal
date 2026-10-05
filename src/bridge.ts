@@ -131,7 +131,55 @@ export type RoleSessionStartResult = {
   injectionStrategy: string | null;
   startupInjected: boolean;
   injectionResult: DevPromptResult | null;
+  tabId: string | null;
 };
+
+export type TabSummary = {
+  id: string;
+  label: string;
+  roleId: string;
+  cwd: string;
+  phase: string;
+  mergedPromptChars: number;
+};
+
+export type AppStateSnapshot = {
+  activeTabId: string | null;
+  tabs: TabSummary[];
+};
+
+export type TabRecord = {
+  id: string;
+  label: string;
+  roleId: string;
+  roleSnapshot: {
+    name: string;
+    templateVersion: number;
+    mode: string;
+    injection: string;
+  };
+  cwd: string;
+  answers: Record<string, string>;
+  mergedPrompt: string;
+  mergedPromptHash: string;
+  phase: string;
+  order: number;
+  createdAt: string;
+  session?: {
+    acpSessionId: string;
+    modeId: string;
+    injectionPending: boolean;
+    injectedAt?: string;
+  };
+};
+
+export async function getAppState(): Promise<AppStateSnapshot> {
+  return invoke<AppStateSnapshot>("get_app_state");
+}
+
+export async function getTab(tabId: string): Promise<{ tab: TabRecord }> {
+  return invoke<{ tab: TabRecord }>("get_tab", { tabId });
+}
 
 export async function roleSessionStart(
   roleId: string,

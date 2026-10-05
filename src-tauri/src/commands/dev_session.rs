@@ -1,6 +1,7 @@
 use crate::acp::{AcpClient, PromptResult};
 use crate::commands::acp_events::emit_session_update;
 use crate::orchestrator::TabPhase;
+use crate::store::StateStore;
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -12,6 +13,7 @@ pub struct DevSessionState {
     pub pending_startup_prompt: Option<String>,
     pub startup_injected: bool,
     pub phase: TabPhase,
+    pub active_tab_id: Option<String>,
 }
 
 impl DevSessionState {
@@ -21,6 +23,7 @@ impl DevSessionState {
             pending_startup_prompt: None,
             startup_injected: false,
             phase: TabPhase::AwaitingInput,
+            active_tab_id: None,
         }
     }
 }
@@ -65,13 +68,21 @@ pub fn dev_session_send(
     app: AppHandle,
     prompt: String,
     state: State<Mutex<DevSessionState>>,
+    state_store: State<Mutex<StateStore>>,
 ) -> Result<PromptResult, String> {
     let mut guard = state.lock().map_err(|e| e.to_string())?;
-    let prompt_to_send = if let Some(startup) = guard.pending_startup_prompt.take() {
+    let attached_startup = guard.pending_startup_prompt.take();
+    let had_attached_startup = attached_startup.is_some();
+    let prompt_to_send = if let Some(startup) = attached_startup {
         guard.startup_injected = true;
         format!("{startup}\n\n---\n\n{prompt}")
     } else {
         prompt
+    };
+    let tab_id_for_injection = if had_attached_startup {
+        guard.active_tab_id.clone()
+    } else {
+        None
     };
     let client = guard
         .client
@@ -82,17 +93,31 @@ pub fn dev_session_send(
     let on_notification = Box::new(move |value: &serde_json::Value| {
         emit_session_update(&app, &session_id, value);
     });
-    client.send_prompt(&prompt_to_send, Some(on_notification))
+    let result = client.send_prompt(&prompt_to_send, Some(on_notification))?;
+    if let Some(tab_id) = tab_id_for_injection {
+        let mut store = state_store.lock().map_err(|e| e.to_string())?;
+        store.set_injection_complete(&tab_id)?;
+    }
+    Ok(result)
 }
 
 #[tauri::command]
-pub fn dev_session_stop(state: State<Mutex<DevSessionState>>) -> Result<(), String> {
+pub fn dev_session_stop(
+    state: State<Mutex<DevSessionState>>,
+    state_store: State<Mutex<StateStore>>,
+) -> Result<(), String> {
     let mut guard = state.lock().map_err(|e| e.to_string())?;
+    let tab_id = guard.active_tab_id.clone();
     if let Some(mut client) = guard.client.take() {
         client.shutdown();
     }
     guard.pending_startup_prompt = None;
     guard.startup_injected = false;
     guard.phase = guard.phase.after_session_stopped();
+    guard.active_tab_id = None;
+    if let Some(id) = tab_id {
+        let mut store = state_store.lock().map_err(|e| e.to_string())?;
+        store.mark_tab_awaiting_input(&id)?;
+    }
     Ok(())
 }

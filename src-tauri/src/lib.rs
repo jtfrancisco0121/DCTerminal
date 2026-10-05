@@ -10,10 +10,10 @@ pub mod template;
 use acp::{probe_acp, probe_acp_handshake};
 use cli_detect::detect_cli;
 use commands::{
-    dev_session_send, dev_session_start, dev_session_stop, get_role, list_roles,
-    role_session_start, validate_and_preview, DevSessionState,
+    dev_session_send, dev_session_start, dev_session_stop, get_app_state, get_role, get_tab,
+    list_roles, role_session_start, validate_and_preview, DevSessionState,
 };
-use store::RolesStore;
+use store::{RolesStore, StateStore};
 use std::sync::Mutex;
 use tauri::Manager;
 
@@ -23,7 +23,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let store = RolesStore::load_or_seed(app.handle())?;
+            let state_store = StateStore::load_or_default(app.handle())?;
             app.manage(Mutex::new(store));
+            app.manage(Mutex::new(state_store));
             app.manage(Mutex::new(DevSessionState::new()));
             Ok(())
         })
@@ -34,6 +36,8 @@ pub fn run() {
             list_roles,
             get_role,
             validate_and_preview,
+            get_app_state,
+            get_tab,
             dev_session_start,
             dev_session_send,
             dev_session_stop,
