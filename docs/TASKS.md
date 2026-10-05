@@ -15,7 +15,7 @@ Checklist aligned with [DCTerminal-Project-Blueprint.md](./DCTerminal-Project-Bl
 | T0.2 | Measure RAM/startup per `agent acp` process | Metrics for ADR-003 | [ ] |
 | T0.3 | Protocol probe: record JSON-RPC transcripts | `docs/acp-observed.md` + `fixtures/acp/*.ndjson` | [x] |
 | T0.4 | Evaluate Rust `agent-client-protocol` crate vs hand-rolled; React vs Svelte | ADR updates in `docs/adr/` | [ ] |
-| T0.5 | Placeholder grammar on five real templates | Confirmed schemas in `seed/roles.seed.json` | [ ] |
+| T0.5 | Placeholder grammar on five real templates | Confirmed schemas in `seed/roles.seed.json` | [x] |
 
 **Prerequisites:** Rust toolchain, Cursor CLI (`agent login`), WebView2 (Windows).
 
@@ -28,8 +28,8 @@ Checklist aligned with [DCTerminal-Project-Blueprint.md](./DCTerminal-Project-Bl
 | T1.1 | CLI detector | FR-001 | [x] |
 | T1.2 | Agent process supervisor (cwd, pipes, stderr ring, kill) | FR-002, FR-034, NFR-03 | [ ] |
 | T1.3 | ACP client (NDJSON, ids, timeouts, unknown-method -32601) | FR-003–008, FR-011 | [ ] |
-| T1.4 | `Store` trait + JSON (atomic, `.bak`, migrations, `forms.json`) | §17 | [ ] |
-| T1.5 | Template engine (extract, validate, merge, guard) + golden tests | FR-090–095, NFR-10 | [ ] |
+| T1.4 | `Store` trait + JSON (atomic, `.bak`, migrations, `forms.json`) | §17 | [~] |
+| T1.5 | Template engine (extract, validate, merge, guard) + golden tests | FR-090–095, NFR-10 | [~] |
 | T1.6 | Repo lint + CI matrix (Win/macOS/Linux) | §25 | [ ] |
 
 ---

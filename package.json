@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "build:roles": "cargo run --bin build_roles_seed --manifest-path src-tauri/Cargo.toml"
   },
   "dependencies": {
     "react": "^19.1.0",

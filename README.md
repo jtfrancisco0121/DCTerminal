@@ -31,7 +31,8 @@ npm run tauri dev      # full desktop app
 |------|---------|
 | `src/` | React UI, `bridge.ts` IPC |
 | `src-tauri/` | Rust core (ACP, store, template engine — in progress) |
-| `seed/roles.seed.json` | Built-in role templates (placeholders until JT’s text is added) |
+| `docs/roles/` | Source-of-truth role prompts (Markdown) |
+| `seed/roles.seed.json` | Generated via `npm run build:roles` |
 | `fixtures/` | Golden merges + ACP recordings |
 | `tools/fake-acp-agent/` | Test harness (planned) |
 | `docs/` | Blueprint, progress, tasks, ADRs |

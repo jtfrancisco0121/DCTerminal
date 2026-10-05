@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   detectCli,
+  listRoles,
   probeAcp,
   probeAcpHandshake,
   type AcpHandshakeProbeResult,
   type AcpProbeResult,
   type CliDetectResult,
+  type RoleSummary,
 } from "./bridge";
 import "./App.css";
 
@@ -18,6 +20,7 @@ function App() {
   );
   const [probeBusy, setProbeBusy] = useState(false);
   const [handshakeBusy, setHandshakeBusy] = useState(false);
+  const [roles, setRoles] = useState<RoleSummary[]>([]);
 
   useEffect(() => {
     detectCli()
@@ -25,6 +28,9 @@ function App() {
       .catch((err: unknown) => {
         setCliError(err instanceof Error ? err.message : String(err));
       });
+    listRoles()
+      .then(setRoles)
+      .catch(() => setRoles([]));
   }, []);
 
   const runProbe = useCallback(async () => {
@@ -69,8 +75,8 @@ function App() {
       <header className="app-header">
         <h1>DCTerminal</h1>
         <p className="tagline">
-          Role-aware tabs on top of the Cursor CLI (ACP). Phase 0 — ACP
-          handshake probe.
+          Role-aware tabs on top of the Cursor CLI (ACP). Phase 1 — roles
+          store and template merge.
         </p>
       </header>
 
@@ -100,6 +106,27 @@ function App() {
           </ul>
         )}
         {!cli && !cliError && <p>Checking…</p>}
+      </section>
+
+      <section className="status-card">
+        <h2>Roles (from store)</h2>
+        {roles.length === 0 ? (
+          <p className="hint">No roles loaded (run app via Tauri, not Vite-only).</p>
+        ) : (
+          <ul className="status-list">
+            {roles.map((r) => (
+              <li key={r.id}>
+                <span
+                  className="role-dot"
+                  style={{ backgroundColor: r.color }}
+                  aria-hidden
+                />
+                <strong>{r.name}</strong> — {r.defaultMode} · {r.fieldCount}{" "}
+                fields
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
 
       <section className="status-card">

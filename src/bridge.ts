@@ -46,3 +46,15 @@ export type AcpHandshakeProbeResult = {
 export async function probeAcpHandshake(): Promise<AcpHandshakeProbeResult> {
   return invoke<AcpHandshakeProbeResult>("probe_acp_handshake");
 }
+
+export type RoleSummary = {
+  id: string;
+  name: string;
+  defaultMode: string;
+  color: string;
+  fieldCount: number;
+};
+
+export async function listRoles(): Promise<RoleSummary[]> {
+  return invoke<RoleSummary[]>("list_roles");
+}

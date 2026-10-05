@@ -116,3 +116,12 @@
 .probe-result {
   margin-top: 0.75rem;
 }
+
+.role-dot {
+  display: inline-block;
+  width: 0.6rem;
+  height: 0.6rem;
+  margin-right: 0.35rem;
+  border-radius: 50%;
+  vertical-align: middle;
+}
