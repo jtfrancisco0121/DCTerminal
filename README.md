@@ -25,6 +25,15 @@ npm run build          # frontend TypeScript + Vite (no Rust)
 npm run tauri dev      # full desktop app
 ```
 
+**Windows:** If `tauri dev` says `cargo metadata` / `program not found`, Rust is not on your PATH. Either open a new terminal after installing Rust, or for this session:
+
+```powershell
+$env:Path = "$env:USERPROFILE\.cargo\bin;" + $env:Path
+npm run tauri dev
+```
+
+Permanent fix: add `%USERPROFILE%\.cargo\bin` to your user **Path** environment variable (Settings → System → About → Advanced system settings → Environment Variables).
+
 ## Project layout
 
 | Path | Purpose |

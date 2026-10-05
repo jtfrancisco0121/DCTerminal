@@ -14,6 +14,7 @@ import {
   type DevSessionInfo,
   type RoleSummary,
 } from "./bridge";
+import { StartupForm } from "./StartupForm";
 import "./App.css";
 
 function App() {
@@ -131,8 +132,8 @@ function App() {
       <header className="app-header">
         <h1>DCTerminal</h1>
         <p className="tagline">
-          Role-aware tabs on top of the Cursor CLI (ACP). Phase 1 — roles
-          store and template merge.
+          Role-aware tabs on top of the Cursor CLI (ACP). Phase 2 — startup
+          form and role sessions.
         </p>
       </header>
 
@@ -184,6 +185,12 @@ function App() {
           </ul>
         )}
       </section>
+
+      <StartupForm
+        roles={roles}
+        cliFound={!!cli?.found}
+        defaultCwd={devCwd}
+      />
 
       <section className="status-card">
         <h2>Dev session (T1.2 / T1.3)</h2>

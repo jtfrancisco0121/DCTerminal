@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Role-aware multi-tab UI for the Cursor CLI (ACP)"
 authors = ["JT Francisco"]
 edition = "2021"
+default-run = "dcterminal"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

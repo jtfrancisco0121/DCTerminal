@@ -1,9 +1,6 @@
 use crate::roles::Role;
 use crate::store::RolesStore;
-use crate::template::{
-    folder_name_from_cwd, merge_template, validate_values, BuiltinVars, FieldError,
-};
-use chrono::Utc;
+use crate::template::{merge_role_prompt, FieldError, MergedPreview};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -17,14 +14,6 @@ pub struct RoleSummary {
     pub default_mode: String,
     pub color: String,
     pub field_count: usize,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MergedPreview {
-    pub text: String,
-    pub chars: usize,
-    pub unresolved: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -71,45 +60,9 @@ pub fn validate_and_preview(
         .role_by_id(&role_id)
         .ok_or_else(|| format!("unknown role: {role_id}"))?;
 
-    let errors = validate_values(role, &values);
-    if !errors.is_empty() {
-        return Ok(ValidatePreviewResult {
-            errors,
-            merged: None,
-        });
-    }
-
-    let cwd = values.get("cwd").cloned().unwrap_or_default();
-    let mut merge_values = values.clone();
-    let builtins = BuiltinVars {
-        cwd: cwd.clone(),
-        folder_name: folder_name_from_cwd(&cwd),
-        date: Utc::now().format("%Y-%m-%d").to_string(),
-        role_name: role.name.clone(),
-    };
-    builtins.apply_to_map(&mut merge_values);
-
-    let result = merge_template(&role.template_text, &role.fields, &merge_values);
-    if !result.unresolved.is_empty() {
-        return Ok(ValidatePreviewResult {
-            errors: result
-                .unresolved
-                .iter()
-                .map(|token| FieldError {
-                    key: token.clone(),
-                    message: format!("Unresolved placeholder: {token}"),
-                })
-                .collect(),
-            merged: None,
-        });
-    }
-
+    let preview = merge_role_prompt(role, &values);
     Ok(ValidatePreviewResult {
-        errors: vec![],
-        merged: Some(MergedPreview {
-            text: result.text,
-            chars: result.char_count,
-            unresolved: result.unresolved,
-        }),
+        errors: preview.errors,
+        merged: preview.merged,
     })
 }

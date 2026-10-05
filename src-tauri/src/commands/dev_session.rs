@@ -6,11 +6,18 @@ use tauri::State;
 
 pub struct DevSessionState {
     pub client: Option<AcpClient>,
+    /// Merged startup prompt for `attach_to_first_message` roles.
+    pub pending_startup_prompt: Option<String>,
+    pub startup_injected: bool,
 }
 
 impl DevSessionState {
     pub fn new() -> Self {
-        Self { client: None }
+        Self {
+            client: None,
+            pending_startup_prompt: None,
+            startup_injected: false,
+        }
     }
 }
 
@@ -34,6 +41,8 @@ pub fn dev_session_start(
     if let Some(mut existing) = guard.client.take() {
         existing.shutdown();
     }
+    guard.pending_startup_prompt = None;
+    guard.startup_injected = false;
     let client = AcpClient::connect(&path, &mode)?;
     let info = DevSessionInfo {
         session_id: client.session_id().to_string(),
@@ -50,11 +59,17 @@ pub fn dev_session_send(
     state: State<Mutex<DevSessionState>>,
 ) -> Result<PromptResult, String> {
     let mut guard = state.lock().map_err(|e| e.to_string())?;
+    let prompt_to_send = if let Some(startup) = guard.pending_startup_prompt.take() {
+        guard.startup_injected = true;
+        format!("{startup}\n\n---\n\n{prompt}")
+    } else {
+        prompt
+    };
     let client = guard
         .client
         .as_mut()
         .ok_or_else(|| "no dev session — call dev_session_start first".to_string())?;
-    client.send_prompt(&prompt)
+    client.send_prompt(&prompt_to_send)
 }
 
 #[tauri::command]
@@ -63,5 +78,7 @@ pub fn dev_session_stop(state: State<Mutex<DevSessionState>>) -> Result<(), Stri
     if let Some(mut client) = guard.client.take() {
         client.shutdown();
     }
+    guard.pending_startup_prompt = None;
+    guard.startup_injected = false;
     Ok(())
 }

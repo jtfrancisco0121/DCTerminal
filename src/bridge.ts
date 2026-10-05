@@ -59,6 +59,89 @@ export async function listRoles(): Promise<RoleSummary[]> {
   return invoke<RoleSummary[]>("list_roles");
 }
 
+export type FieldType = "text" | "multiline" | "select" | "folder";
+
+export type ShowWhen = {
+  fieldKey: string;
+  equals: string[];
+};
+
+export type RoleField = {
+  key: string;
+  label: string;
+  type: FieldType;
+  required: boolean;
+  options?: string[];
+  placeholderToken?: string;
+  showWhen?: ShowWhen;
+  emptyBehavior?: string;
+  remember?: boolean;
+};
+
+export type Role = {
+  id: string;
+  name: string;
+  templateText: string;
+  templateVersion: number;
+  templateHash: string;
+  schemaTemplateHash: string;
+  defaultMode: string;
+  injection: string;
+  color: string;
+  isBuiltIn: boolean;
+  fields: RoleField[];
+  updatedAt?: string;
+};
+
+export async function getRole(roleId: string): Promise<Role> {
+  return invoke<Role>("get_role", { roleId });
+};
+
+export type FieldError = {
+  key: string;
+  message: string;
+};
+
+export type MergedPreview = {
+  text: string;
+  chars: number;
+  unresolved: string[];
+};
+
+export type ValidatePreviewResult = {
+  errors: FieldError[];
+  merged: MergedPreview | null;
+};
+
+export async function validateAndPreview(
+  roleId: string,
+  values: Record<string, string>,
+): Promise<ValidatePreviewResult> {
+  return invoke<ValidatePreviewResult>("validate_and_preview", {
+    roleId,
+    values,
+  });
+}
+
+export type RoleSessionStartResult = {
+  errors: FieldError[];
+  session: DevSessionInfo | null;
+  mergedChars: number | null;
+  injectionStrategy: string | null;
+  startupInjected: boolean;
+  injectionResult: DevPromptResult | null;
+};
+
+export async function roleSessionStart(
+  roleId: string,
+  values: Record<string, string>,
+): Promise<RoleSessionStartResult> {
+  return invoke<RoleSessionStartResult>("role_session_start", {
+    roleId,
+    values,
+  });
+}
+
 export type DevSessionInfo = {
   sessionId: string;
   modeId: string;
