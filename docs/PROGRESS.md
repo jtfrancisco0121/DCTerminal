@@ -18,21 +18,17 @@ Use this file to record **where we left off** before each commit/push. Keep it s
 
 | Field | Value |
 |--------|--------|
-| **Last updated** | 2026-10-06 — Phase 0 pushed (`c3a2bb6`) |
+| **Last updated** | 2026-10-06 — ACP full handshake (pending push) |
 | **Branch** | `master` |
-| **Current phase** | Phase 0 — spikes & setup |
-| **Active task** | T0.3 — extend protocol probe (auth, session/new, permissions) |
+| **Current phase** | Phase 0 — spikes & setup (nearly complete) |
+| **Active task** | T0.5 — role templates in `seed/roles.seed.json` |
 | **MVP target** | Blueprint §21 (P0 + most P1) |
 
 ## Completed since last push
 
-- [x] T0.0 — Tauri 2 + React + TypeScript scaffold
-- [x] Tracking docs + `seed/` / `fixtures/` layout
-- [x] Rust toolchain verified; `main.rs` crate name fix (`dcterminal_lib`)
-- [x] **T1.1** — `detect_cli` (PATH, PATHEXT, `%LOCALAPPDATA%\cursor-agent\agent.cmd`, `DCT_AGENT_PATH`)
-- [x] **T0.1** — spawn `agent acp` + piped stdio (see `acp/probe.rs`)
-- [x] **T0.3 (partial)** — `initialize` response recorded in `fixtures/acp/` + `docs/acp-observed.md`
-- [x] Dev UI: CLI status + **Probe ACP initialize** button
+- [x] **T0.3** — `initialize` → `authenticate` → `session/new` → `session/set_mode` (`acp/connection.rs`, `acp/handshake.rs`)
+- [x] Dev UI: **Full handshake** probe button
+- [x] Live handshake test on Windows (logged in CLI)
 
 ## Blockers
 
@@ -40,26 +36,23 @@ _None._
 
 ## Next up
 
-1. Commit current work; push (consider `develop` branch).
-2. Extend probe or scripted capture for `authenticate` → `session/new` → `set_mode` (finish T0.3).
-3. **T0.5** — JT’s five templates into `seed/roles.seed.json`.
-4. **T1.5** — template engine + golden tests.
+1. **T0.5** — JT’s five role templates → `seed/roles.seed.json`
+2. **Phase 1** — `Store` trait + template engine (T1.4, T1.5) + ACP client hardening (T1.3)
+3. **T0.2** / **T0.4** — RAM metrics + `agent-client-protocol` crate evaluation (optional before Phase 1)
 
 ## Environment notes
 
 - **Primary OS:** Windows
-- **Node:** v22+
-- **Rust:** 1.99.0 (`%USERPROFILE%\.cargo\bin` — ensure on PATH in new terminals / IDE)
+- **Rust:** 1.99.0 — add `%USERPROFILE%\.cargo\bin` to PATH in new shells
 - **Cursor CLI:** `2026.10.01-e373342`
 
 ## Quick commands
 
 ```bash
-npm install
 npm run build
 npm run tauri dev
 
 cd src-tauri
 cargo test
-cargo test live_acp_probe -- --ignored --nocapture
+cargo test live_handshake_probe -- --ignored --nocapture
 ```

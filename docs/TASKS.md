@@ -13,7 +13,7 @@ Checklist aligned with [DCTerminal-Project-Blueprint.md](./DCTerminal-Project-Bl
 | T0.0 | Repo scaffold: Tauri 2, React+TS, folders per §30, CI stub | Runnable `npm run build`; `src-tauri/` layout | [x] |
 | T0.1 | Spawn `agent acp` with piped stdio (Win shim, macOS PATH) | Notes in `docs/acp-observed.md` | [x] |
 | T0.2 | Measure RAM/startup per `agent acp` process | Metrics for ADR-003 | [ ] |
-| T0.3 | Protocol probe: record JSON-RPC transcripts | `docs/acp-observed.md` + `fixtures/acp/*.ndjson` | [~] |
+| T0.3 | Protocol probe: record JSON-RPC transcripts | `docs/acp-observed.md` + `fixtures/acp/*.ndjson` | [x] |
 | T0.4 | Evaluate Rust `agent-client-protocol` crate vs hand-rolled; React vs Svelte | ADR updates in `docs/adr/` | [ ] |
 | T0.5 | Placeholder grammar on five real templates | Confirmed schemas in `seed/roles.seed.json` | [ ] |
 

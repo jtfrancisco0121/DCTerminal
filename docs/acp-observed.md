@@ -1,6 +1,7 @@
 # ACP — observed behavior (T0.3)
 
-Recorded from the local **Phase 0** probe (`src-tauri/src/acp/probe.rs`).
+Recorded from local probes (`src-tauri/src/acp/`). Live tests:  
+`cargo test live_handshake_probe -- --ignored --nocapture` (from `src-tauri/`).
 
 ## Environment
 
@@ -9,53 +10,42 @@ Recorded from the local **Phase 0** probe (`src-tauri/src/acp/probe.rs`).
 | `agent --version` | `2026.10.01-e373342` |
 | Agent path | `C:\Users\user\AppData\Local\cursor-agent\agent.cmd` |
 | OS | Windows |
-| DCTerminal | Phase 0 probe (not yet tagged) |
+| Protocol | JSON-RPC 2.0, NDJSON lines on stdin/stdout |
 
-## T0.1 — Spawn `agent acp` with piped stdio
+## T0.1 — Spawn `agent acp`
 
-- **Result:** Success on Windows using `Command::new(agent.cmd).arg("acp")` with piped stdin/stdout/stderr.
-- **No** `cmd.exe /d /s /c` wrapper required for this install (direct `.cmd` execution works).
+- Direct `Command::new(agent.cmd).arg("acp")` with piped stdio works on Windows (no `cmd.exe` wrapper needed for this install).
 
-## `initialize` (protocolVersion 1)
+## Handshake sequence (verified)
 
-**Client request (sent):**
+| Step | Method | Result |
+|------|--------|--------|
+| 1 | `initialize` | `protocolVersion: 1`, `loadSession: true`, `sessionCapabilities.list`, `authMethods: [cursor_login]` |
+| 2 | `authenticate` | `{ "methodId": "cursor_login" }` → `{}` |
+| 3 | `session/new` | `{ "cwd", "mcpServers": [] }` → `sessionId` + **rich payload** (see below) |
+| 4 | `session/set_mode` | `{ "sessionId", "modeId": "agent" }` → `{}` |
 
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "initialize",
-  "params": {
-    "protocolVersion": 1,
-    "clientCapabilities": {
-      "fs": { "readTextFile": false, "writeTextFile": false },
-      "terminal": false
-    },
-    "clientInfo": {
-      "name": "DCTerminal",
-      "title": "DCTerminal",
-      "version": "0.1.0"
-    }
-  }
-}
-```
+Fixture for `initialize` only: [initialize-response-2026-10-06.ndjson](../fixtures/acp/initialize-response-2026-10-06.ndjson).
 
-**First response line:** saved in [fixtures/acp/initialize-response-2026-10-06.ndjson](../fixtures/acp/initialize-response-2026-10-06.ndjson).
+### `session/new` response shape (this CLI build)
 
-**Notable capabilities (this CLI build):**
+Beyond `sessionId`, the result includes:
 
-| Capability | Observed |
-|------------|----------|
-| `loadSession` | `true` (P2 resume is viable) |
-| `sessionCapabilities.list` | present (P3 `session/list`) |
-| `promptCapabilities.image` | `true` |
-| `authMethods` | `[{ "id": "cursor_login", ... }]` |
+- `modes.availableModes` — `agent`, `plan`, `ask` (matches blueprint)
+- `modes.currentModeId` — e.g. `agent`
+- `models` — large `availableModels` list (omit from fixtures; changes frequently)
+- `configOptions` — UI-oriented mode/model selectors
+
+**Implication:** `session/set_mode` works as documented; default mode may already be `agent` after `session/new`.
 
 ## Not yet probed
 
-- `authenticate` / `session/new` / `session/set_mode` / `session/prompt`
+- `session/prompt`, `session/cancel`, `session/update` streaming
 - `session/request_permission`, `cursor/create_plan`, `cursor/ask_question`
-- `session/cancel`, `session/load`, `session/list`
-- Timeouts under hang / malformed NDJSON (edge cases E6, E11)
+- `session/load`, `session/list`
+- Hang / malformed line edge cases
 
-Re-run live probe: `cargo test live_acp_probe -- --ignored --nocapture` from `src-tauri/`.
+## Client implementation notes
+
+- `acp/connection.rs` — NDJSON over stdio, skip notifications until matching `id` response.
+- Next (T1.3): persistent connection per tab, request map, timeouts, `-32601` for unknown agent requests.

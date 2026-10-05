@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import {
   detectCli,
   probeAcp,
+  probeAcpHandshake,
+  type AcpHandshakeProbeResult,
   type AcpProbeResult,
   type CliDetectResult,
 } from "./bridge";
@@ -11,7 +13,11 @@ function App() {
   const [cli, setCli] = useState<CliDetectResult | null>(null);
   const [cliError, setCliError] = useState<string | null>(null);
   const [probe, setProbe] = useState<AcpProbeResult | null>(null);
+  const [handshake, setHandshake] = useState<AcpHandshakeProbeResult | null>(
+    null,
+  );
   const [probeBusy, setProbeBusy] = useState(false);
+  const [handshakeBusy, setHandshakeBusy] = useState(false);
 
   useEffect(() => {
     detectCli()
@@ -39,13 +45,32 @@ function App() {
     }
   }, []);
 
+  const runHandshake = useCallback(async () => {
+    setHandshakeBusy(true);
+    setHandshake(null);
+    try {
+      setHandshake(await probeAcpHandshake());
+    } catch (err: unknown) {
+      setHandshake({
+        success: false,
+        agentPath: null,
+        sessionId: null,
+        modeId: null,
+        steps: [],
+        error: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setHandshakeBusy(false);
+    }
+  }, []);
+
   return (
     <main className="container">
       <header className="app-header">
         <h1>DCTerminal</h1>
         <p className="tagline">
-          Role-aware tabs on top of the Cursor CLI (ACP). Phase 0 — CLI + ACP
-          probe.
+          Role-aware tabs on top of the Cursor CLI (ACP). Phase 0 — ACP
+          handshake probe.
         </p>
       </header>
 
@@ -78,39 +103,65 @@ function App() {
       </section>
 
       <section className="status-card">
-        <h2>ACP handshake (dev)</h2>
+        <h2>ACP probes (dev)</h2>
         <p className="hint">
-          Spawns <code>agent acp</code> and sends one <code>initialize</code>{" "}
-          request (T0.1).
+          Full handshake: <code>initialize</code> → <code>authenticate</code> →{" "}
+          <code>session/new</code> → <code>session/set_mode</code> (T0.3).
         </p>
-        <button
-          type="button"
-          className="primary-button"
-          onClick={runProbe}
-          disabled={probeBusy || !cli?.found}
-        >
-          {probeBusy ? "Probing…" : "Probe ACP initialize"}
-        </button>
-        {probe && (
+        <div className="button-row">
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={runProbe}
+            disabled={probeBusy || handshakeBusy || !cli?.found}
+          >
+            {probeBusy ? "…" : "Initialize only"}
+          </button>
+          <button
+            type="button"
+            className="primary-button"
+            onClick={runHandshake}
+            disabled={probeBusy || handshakeBusy || !cli?.found}
+          >
+            {handshakeBusy ? "Handshaking…" : "Full handshake"}
+          </button>
+        </div>
+        {handshake && (
           <ul className="status-list probe-result">
             <li>
-              <strong>Success:</strong> {probe.success ? "yes" : "no"}
+              <strong>Handshake:</strong> {handshake.success ? "ok" : "failed"}
             </li>
-            {probe.error && (
+            {handshake.sessionId && (
               <li>
-                <strong>Error:</strong> {probe.error}
+                <strong>Session:</strong> <code>{handshake.sessionId}</code>
               </li>
             )}
+            {handshake.modeId && (
+              <li>
+                <strong>Mode:</strong> {handshake.modeId}
+              </li>
+            )}
+            {handshake.error && (
+              <li>
+                <strong>Error:</strong> {handshake.error}
+              </li>
+            )}
+            {handshake.steps.map((step) => (
+              <li key={step.method}>
+                <strong>{step.method}:</strong>{" "}
+                {step.success ? "ok" : `fail — ${step.error ?? "unknown"}`}
+              </li>
+            ))}
+          </ul>
+        )}
+        {probe && !handshake && (
+          <ul className="status-list probe-result">
+            <li>
+              <strong>Initialize:</strong> {probe.success ? "ok" : "failed"}
+            </li>
             {probe.firstResponseLine && (
               <li>
-                <strong>First line:</strong>
                 <pre className="mono-snippet">{probe.firstResponseLine}</pre>
-              </li>
-            )}
-            {probe.stderrTail && (
-              <li>
-                <strong>Stderr:</strong>
-                <pre className="mono-snippet">{probe.stderrTail}</pre>
               </li>
             )}
           </ul>
