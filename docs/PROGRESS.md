@@ -18,7 +18,7 @@ Use this file to record **where we left off** before each commit/push. Keep it s
 
 | Field | Value |
 |--------|--------|
-| **Last updated** | 2026-10-06 — Phase 0 pushed (`9c9b083`) |
+| **Last updated** | 2026-10-06 — Phase 0 pushed (`c3a2bb6`) |
 | **Branch** | `master` |
 | **Current phase** | Phase 0 — spikes & setup |
 | **Active task** | T0.3 — extend protocol probe (auth, session/new, permissions) |
