@@ -18,7 +18,7 @@ Use this file to record **where we left off** before each commit/push. Keep it s
 
 | Field | Value |
 |--------|--------|
-| **Last updated** | 2026-10-06 — ACP full handshake (pending push) |
+| **Last updated** | 2026-10-06 — handshake pushed (`6f27619`) |
 | **Branch** | `master` |
 | **Current phase** | Phase 0 — spikes & setup (nearly complete) |
 | **Active task** | T0.5 — role templates in `seed/roles.seed.json` |
