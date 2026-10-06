@@ -7,7 +7,7 @@
 ## You can use today (product path)
 
 1. **Cursor CLI** installed and `agent login`
-2. **Tab** → fill role form → **Start role session**
+2. Blank tab → pick a role and folder → fill the fields → **Start**
 3. **Follow-up** in the `›` box while the session runs (same agent thread)
 4. **Stop session** → edit form → **Start** again (new agent; startup prompt re-sent)
 5. **+ New tab** starts another task **without** stopping the one that's running. Each tab has its own agent. Switching tabs does not kill the others.

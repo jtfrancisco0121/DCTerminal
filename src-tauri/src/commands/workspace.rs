@@ -51,6 +51,8 @@ pub struct TranscriptLoad {
 #[serde(rename_all = "camelCase")]
 pub struct DiagnosticsStatus {
     pub capture_permission_payloads: bool,
+    pub app_data_dir: String,
+    pub transcripts_dir: String,
     pub log_path: String,
     pub last_error: Option<String>,
 }
@@ -188,31 +190,50 @@ pub fn diagnostics_status(
     settings: State<Mutex<SettingsStore>>,
 ) -> Result<DiagnosticsStatus, String> {
     let settings = settings.lock().map_err(|e| e.to_string())?;
-    let log_path = app
-        .path()
-        .app_data_dir()
-        .map(|dir| dir.join("logs").join("permission-payloads.jsonl"))
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|_| "logs/permission-payloads.jsonl".to_string());
+    let paths = diagnostic_paths(&app);
     Ok(DiagnosticsStatus {
         capture_permission_payloads: settings.capture_enabled(),
-        log_path,
+        app_data_dir: paths.0,
+        transcripts_dir: paths.1,
+        log_path: paths.2,
         last_error: settings.last_capture_error.clone(),
     })
 }
 
 #[tauri::command]
 pub fn diagnostics_set_capture(
+    app: tauri::AppHandle,
     enabled: bool,
     settings: State<Mutex<SettingsStore>>,
 ) -> Result<DiagnosticsStatus, String> {
     let mut settings = settings.lock().map_err(|e| e.to_string())?;
     settings.set_capture(enabled)?;
+    let paths = diagnostic_paths(&app);
     Ok(DiagnosticsStatus {
         capture_permission_payloads: settings.capture_enabled(),
-        log_path: String::new(),
+        app_data_dir: paths.0,
+        transcripts_dir: paths.1,
+        log_path: paths.2,
         last_error: settings.last_capture_error.clone(),
     })
+}
+
+fn diagnostic_paths(app: &tauri::AppHandle) -> (String, String, String) {
+    match app.path().app_data_dir() {
+        Ok(dir) => (
+            dir.display().to_string(),
+            dir.join("transcripts").display().to_string(),
+            dir.join("logs")
+                .join("permission-payloads.jsonl")
+                .display()
+                .to_string(),
+        ),
+        Err(_) => (
+            String::new(),
+            "transcripts".to_string(),
+            "logs/permission-payloads.jsonl".to_string(),
+        ),
+    }
 }
 
 fn listed_dto(item: crate::store::ListedProject) -> ListedProjectDto {

@@ -215,18 +215,20 @@ body,
 
 .tab-bar {
   display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
+  flex-wrap: nowrap;
+  align-items: center;
   gap: 0.5rem;
-  margin-bottom: 0.75rem;
+  margin-bottom: 0.5rem;
+  flex-shrink: 0;
 }
 
 .tab-list {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 0.35rem;
   flex: 1;
   min-width: 0;
+  overflow-x: auto;
 }
 
 .tab-chip {
@@ -272,6 +274,25 @@ body,
   flex-shrink: 0;
   padding: 0.35rem 0.65rem;
   font-size: 0.8125rem;
+}
+
+.tab-gear {
+  margin-left: auto;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+}
+
+.tab-gear-icon {
+  display: block;
+}
+
+.tab-gear-active {
+  border-color: #388bfd;
 }
 
 .tab-phase {
@@ -1102,4 +1123,178 @@ kbd {
   gap: 0.4rem;
   align-items: center;
   margin-top: 0.75rem;
+}
+
+.workspace {
+  height: 100%;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+
+.workspace-shell {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0.5rem 0.75rem 0.75rem;
+  box-sizing: border-box;
+}
+
+.empty-state {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+}
+
+.empty-state-card {
+  width: min(36rem, 100%);
+  padding: 1.25rem 1.5rem;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  background: #161b22;
+}
+
+.role-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.75rem;
+}
+
+.role-choice {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.35rem 0.7rem;
+  border: 1px solid #30363d;
+  border-radius: 999px;
+  background: #0d1117;
+  color: #e6edf3;
+  font: inherit;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.role-choice[aria-pressed="true"] {
+  border-color: #388bfd;
+  background: #1f2a3a;
+}
+
+.role-choice:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.settings-page {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.25rem 0.25rem 1.5rem;
+  max-width: 48rem;
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.settings-header h2 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.settings-section {
+  margin-bottom: 1.5rem;
+}
+
+.settings-section h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+}
+
+.settings-role-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.settings-role {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  background: #0d1117;
+  color: #e6edf3;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-role-active {
+  border-color: #388bfd;
+}
+
+.settings-role .hint {
+  margin: 0 0 0 auto;
+}
+
+.settings-role-detail {
+  margin-top: 0.75rem;
+}
+
+.settings-prompt {
+  max-height: 16rem;
+  overflow: auto;
+}
+
+.settings-shortcuts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.settings-shortcuts li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.25rem 0;
+  border-bottom: 1px solid #21262d;
+  font-size: 0.875rem;
+}
+
+.settings-shortcuts kbd {
+  font-family: ui-monospace, monospace;
+  font-size: 0.75rem;
+  padding: 0.1rem 0.35rem;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  background: #0d1117;
+}
+
+.settings-paths {
+  margin: 0;
+  font-size: 0.875rem;
+}
+
+.settings-paths dt {
+  color: #8b949e;
+  margin-top: 0.4rem;
+}
+
+.settings-paths dd {
+  margin: 0;
+  word-break: break-all;
 }

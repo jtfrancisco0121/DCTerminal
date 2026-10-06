@@ -22,6 +22,7 @@ export type ShortcutAction =
   | "splitDown"
   | "closeSplit"
   | "renameTab"
+  | "settings"
   | "closeDialog";
 
 export type Platform = "mac" | "windows" | "linux";
@@ -148,6 +149,12 @@ export const SHORTCUTS: ShortcutDef[] = [
     shift: false,
     alt: false,
     mod: false,
+  },
+  {
+    action: "settings",
+    label: "Settings",
+    description: "Open settings.",
+    code: "Comma",
   },
   {
     action: "renameTab",
@@ -292,6 +299,11 @@ export function bindingConflicts(bindings: Binding[]): string[] {
   return conflicts;
 }
 
+function isSettingsEvent(event: KeyEventLike, platform: Platform): boolean {
+  if (event.code !== "Comma" || event.shiftKey || event.altKey || event.repeat) return false;
+  return platform === "mac" ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+}
+
 function modPressed(event: KeyEventLike, platform: Platform): boolean {
   return platform === "mac" ? event.metaKey : event.ctrlKey;
 }
@@ -314,6 +326,7 @@ export function matchShortcut(
     if (event.code === "Escape" && !event.ctrlKey && !event.metaKey && !event.altKey) {
       return { action: "closeDialog" };
     }
+    if (isSettingsEvent(event, ctx.platform)) return { action: "settings" };
     return null;
   }
   const chord: Chord = {

@@ -28,6 +28,20 @@ describe("keymap", () => {
     expect(shortcutRows("windows").length).toBeGreaterThan(8);
   });
 
+  it("opens settings with Ctrl+, even while a dialog is open", () => {
+    expect(
+      matchShortcut(event({ code: "Comma", ctrlKey: true, key: "," }), {
+        platform: "windows",
+      })?.action,
+    ).toBe("settings");
+    expect(
+      matchShortcut(event({ code: "Comma", ctrlKey: true, key: "," }), {
+        platform: "windows",
+        dialogOpen: true,
+      })?.action,
+    ).toBe("settings");
+  });
+
   it("sends with Ctrl+Enter while focus is in a textarea", () => {
     const match = matchShortcut(
       event({ code: "Enter", ctrlKey: true, targetTag: "TEXTAREA" }),

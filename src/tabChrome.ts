@@ -99,6 +99,7 @@ export function buildPalette(opts: {
     { id: "transferPad", title: "Transfer scratch pad", group: "Composer" },
     { id: "send", title: "Send", group: "Composer" },
     { id: "shortcutsHelp", title: "Keyboard shortcuts", group: "Help" },
+    { id: "settings", title: "Settings", group: "Help" },
     {
       id: "toggleCapture",
       title: "Toggle permission payload capture",

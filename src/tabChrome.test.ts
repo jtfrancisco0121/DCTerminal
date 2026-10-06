@@ -75,5 +75,6 @@ describe("tab chrome", () => {
       true,
     );
     expect(commands.some((c) => c.id === "closeSplit")).toBe(false);
+    expect(commands.some((c) => c.id === "settings")).toBe(true);
   });
 });

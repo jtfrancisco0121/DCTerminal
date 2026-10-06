@@ -5,7 +5,7 @@ Use this when checking that DCTerminal's role classifier matches real Cursor ACP
 ## Turn it on
 
 1. Open DCTerminal.
-2. On the startup form, check **Record permission payloads**.
+2. Open **Settings** (gear in the tab bar, command palette, or Ctrl+,) and check **Record permission payloads**.
 3. Start a role session and let the agent hit a tool that asks for permission (or is auto-answered by the role policy).
 4. Each `session/request_permission` JSON-RPC request is appended as one line to:
 

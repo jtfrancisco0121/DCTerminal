@@ -8,14 +8,14 @@
 
 | Field | Value |
 |--------|--------|
-| **Last updated** | 2026-10-06 — native folder chooser; no hardcoded working-folder prefill |
+| **Last updated** | 2026-10-06 — workspace opens on a blank tab; role details and diagnostics live in Settings |
 | **Branch** | `cursor/scratch-keymap-chrome-75c2` |
 | **Current phase** | Finish MVP vertical slice (see [MVP-FINISH.md](./MVP-FINISH.md)) |
 | **Active task** | Installers / live Windows acceptance. E2–E5 controls are in this branch. |
 
 ## Product-ready today
 
-- Role **startup form** → **Start role session** → **follow-up** in session pane
+- Blank tab: pick a role and folder, then the startup fields and **Start**. A running session fills the tab, with the scratch pad under the transcript. Role details, diagnostics, shortcuts, and data paths are on **Settings** (gear, command palette, or Ctrl+,)
 - **Multi-tab live sessions** — each tab has its own `agent acp` process, transcript, and permission queue
 - **Role policy** — Implementer/Developer auto-allow; Reviewer allows shell + MCP and denies writes; Planner/General block write and shell; MCP allowed for every role. Auto-decisions show in the transcript
 - **Session UI** — full-height terminal-style pane, Markdown + tables; tool rows coalesce; activity + permission banners

@@ -454,19 +454,19 @@ export async function transcriptLoad(tabId: string): Promise<{
   return invoke("transcript_load", { tabId });
 }
 
-export async function diagnosticsStatus(): Promise<{
+export type DiagnosticsStatus = {
   capturePermissionPayloads: boolean;
+  appDataDir: string;
+  transcriptsDir: string;
   logPath: string;
   lastError: string | null;
-}> {
+};
+
+export async function diagnosticsStatus(): Promise<DiagnosticsStatus> {
   return invoke("diagnostics_status");
 }
 
-export async function diagnosticsSetCapture(enabled: boolean): Promise<{
-  capturePermissionPayloads: boolean;
-  logPath: string;
-  lastError: string | null;
-}> {
+export async function diagnosticsSetCapture(enabled: boolean): Promise<DiagnosticsStatus> {
   return invoke("diagnostics_set_capture", { enabled });
 }
 

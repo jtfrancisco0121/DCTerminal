@@ -30,6 +30,8 @@ import {
   type ClosedTabSummary,
   type FieldError,
   type PlanRequestEvent,
+  type CliDetectResult,
+  type DiagnosticsStatus,
   type Role,
   type RoleSessionStartResult,
   type RoleSummary,
@@ -51,7 +53,9 @@ import {
 } from "./liveTabs";
 import { CommandPalette } from "./components/CommandPalette";
 import { FolderPicker } from "./components/FolderPicker";
+import { SettingsPage } from "./components/SettingsPage";
 import { folderForTab } from "./projectsView";
+import { tabSurface, toggleSettings } from "./workspaceView";
 import { ScratchPad } from "./components/ScratchPad";
 import { SessionCards } from "./components/SessionCards";
 import { ShortcutsOverlay } from "./components/ShortcutsOverlay";
@@ -100,14 +104,18 @@ function visibleFields(role: Role, values: Record<string, string>) {
 
 type Props = {
   roles: RoleSummary[];
+  cli: CliDetectResult | null;
+  cliError: string | null;
   cliFound: boolean;
-  onSessionActiveChange?: (active: boolean) => void;
+  showDevTools: boolean;
 };
 
 export function StartupForm({
   roles,
+  cli,
+  cliError,
   cliFound,
-  onSessionActiveChange,
+  showDevTools,
 }: Props) {
   const [roleId, setRoleId] = useState("role_implementer");
   const [role, setRole] = useState<Role | null>(null);
@@ -127,7 +135,9 @@ export function StartupForm({
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [captureOn, setCaptureOn] = useState(false);
-  const [captureNote, setCaptureNote] = useState<string | null>(null);
+  const [diagnostics, setDiagnostics] = useState<DiagnosticsStatus | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [pickedRoleId, setPickedRoleId] = useState<string | null>(null);
   const [transcriptSaveError, setTranscriptSaveError] = useState<string | null>(null);
   const [historyCursor, setHistoryCursor] = useState(-1);
   const [chain, setChain] = useState<ChainCursor | null>(null);
@@ -161,7 +171,7 @@ export function StartupForm({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const waiterRef = useRef(createTurnWaiter());
   const chainAbortRef = useRef(false);
-  const dialogOpen = paletteOpen || switcherOpen || shortcutsOpen;
+  const dialogOpen = paletteOpen || switcherOpen || shortcutsOpen || settingsOpen;
   const platform = useMemo(
     () => detectPlatform(typeof navigator === "undefined" ? "" : navigator.platform),
     [],
@@ -205,6 +215,8 @@ export function StartupForm({
     }
     hydratedRef.current = true;
     setRoleId(tab.roleId);
+    const fresh = !folderForTab(tab.cwd) && !(tab.transcript?.trim());
+    setPickedRoleId(fresh ? null : tab.roleId);
     setValues({ ...tab.answers, cwd: folderForTab(tab.cwd) });
     setActiveTabId(tab.id);
     setPreview(null);
@@ -248,10 +260,6 @@ export function StartupForm({
   useEffect(() => {
     sessionActiveRef.current = !!session;
   }, [session]);
-
-  useEffect(() => {
-    onSessionActiveChange?.(!!session);
-  }, [session, onSessionActiveChange]);
 
   useEffect(() => {
     const pending = pendingUpdatesRef;
@@ -671,6 +679,7 @@ export function StartupForm({
       setRoleId(tab.roleId);
       const recall = await getFormRecall(tab.roleId);
       setValues({ ...recall.values, cwd: "" });
+      setPickedRoleId(null);
       setActiveTabId(tab.id);
       setSavedTranscript("");
       setPreview(null);
@@ -882,6 +891,14 @@ export function StartupForm({
         setPaletteOpen(false);
         setSwitcherOpen(false);
         setShortcutsOpen(false);
+        setSettingsOpen(false);
+        return;
+      }
+      if (match.action === "settings") {
+        setPaletteOpen(false);
+        setSwitcherOpen(false);
+        setShortcutsOpen(false);
+        setSettingsOpen((open) => toggleSettings(open));
         return;
       }
       if (match.action === "commandPalette") {
@@ -982,18 +999,22 @@ export function StartupForm({
   useEffect(() => {
     diagnosticsStatus()
       .then((status) => {
+        setDiagnostics(status);
         setCaptureOn(status.capturePermissionPayloads);
-        if (status.lastError) setCaptureNote(status.lastError);
       })
       .catch(() => {});
   }, []);
 
   const runPalette = (id: string) => {
     setPaletteOpen(false);
+    if (id === "settings") {
+      setSettingsOpen(true);
+      return;
+    }
     if (id === "toggleCapture") {
       void diagnosticsSetCapture(!captureOn).then((status) => {
+        setDiagnostics(status);
         setCaptureOn(status.capturePermissionPayloads);
-        setCaptureNote(status.lastError);
       });
       return;
     }
@@ -1025,33 +1046,97 @@ export function StartupForm({
         ? preview!.errors
         : [];
 
+  const surface = tabSurface({
+    sessionActive: !!session,
+    hasSavedHistory: canContinueSession || savedTranscript.trim().length > 0,
+    roleChosen: pickedRoleId !== null,
+    folder: folderForTab(values.cwd),
+  });
+
+  const chooseRole = (id: string) => {
+    setPickedRoleId(id);
+    setRoleId(id);
+  };
+
+  const tabBar = (
+    <TabBar
+      tabs={savedTabs}
+      activeTabId={activeTabId}
+      roleColors={roleColors}
+      disableSwitch={busy && !session}
+      disableNew={busy}
+      attentionTabIds={needsAttention}
+      canReopen={closedTabs.length > 0}
+      settingsOpen={settingsOpen}
+      onSelect={handleSelectTab}
+      onClose={handleCloseTab}
+      onNew={handleNewTab}
+      onReopen={() => void reopenTab()}
+      onSettings={() => setSettingsOpen((open) => toggleSettings(open))}
+      onColor={(tabId, color) => {
+        void setTabColor(tabId, color).then(() => refreshTabs());
+      }}
+    />
+  );
+
+  const settingsPage = (
+    <SettingsPage
+      roles={roles}
+      cli={cli}
+      cliError={cliError}
+      platform={platform}
+      diagnostics={diagnostics}
+      captureOn={captureOn}
+      showDevTools={showDevTools}
+      onToggleCapture={(enabled) => {
+        void diagnosticsSetCapture(enabled).then((status) => {
+          setDiagnostics(status);
+          setCaptureOn(status.capturePermissionPayloads);
+        });
+      }}
+      onClose={() => setSettingsOpen(false)}
+    />
+  );
+
+  const overlays = (
+    <>
+      {paletteOpen && (
+        <CommandPalette
+          tabs={savedTabs.map((tab) => ({ id: tab.id, label: tab.label }))}
+          canReopen={closedTabs.length > 0}
+          splitOpen={split.mode !== "single"}
+          onRun={runPalette}
+          onClose={() => setPaletteOpen(false)}
+        />
+      )}
+      {switcherOpen && (
+        <TabSwitcher
+          tabs={savedTabs}
+          onSelect={(tabId) => {
+            setSwitcherOpen(false);
+            void handleSelectTab(tabId);
+          }}
+          onClose={() => setSwitcherOpen(false)}
+        />
+      )}
+      {shortcutsOpen && (
+        <ShortcutsOverlay platform={platform} onClose={() => setShortcutsOpen(false)} />
+      )}
+    </>
+  );
+
   if (!role) {
     return (
-      <section className="status-card">
-        <h2>Start role session (T2.8)</h2>
-        <p className="hint">Loading role…</p>
+      <section className="workspace-shell">
+        {tabBar}
+        {settingsOpen ? settingsPage : <p className="hint empty-state">Loading…</p>}
+        {overlays}
       </section>
     );
   }
 
   const composerFields = (
-    <div className={session ? "composer-fields composer-fields-locked" : "composer-fields"}>
-      <label className="field-label">
-        Role
-        <select
-          className="text-input"
-          value={roleId}
-          onChange={(e) => setRoleId(e.target.value)}
-          disabled={!!session || busy}
-        >
-          {roles.map((r) => (
-            <option key={r.id} value={r.id}>
-              {r.name}
-            </option>
-          ))}
-        </select>
-      </label>
-
+    <div className="composer-fields">
       <div className="field-label">
         Working folder
         <FolderPicker
@@ -1067,7 +1152,7 @@ export function StartupForm({
         />
       </div>
 
-      {visibleFields(role, formValues).map((field) => (
+      {surface !== "pick" && visibleFields(role, formValues).map((field) => (
         <label key={field.key} className="field-label">
           {field.label}
           {field.required ? " *" : ""}
@@ -1105,7 +1190,7 @@ export function StartupForm({
         </label>
       ))}
 
-      {errors.length > 0 && (
+      {surface !== "pick" && errors.length > 0 && (
         <ul className="field-errors">
           {errors.map((e) => (
             <li key={`${e.key}-${e.message}`}>
@@ -1135,9 +1220,7 @@ export function StartupForm({
           onClick={() => void startSession()}
           disabled={busy || !cliFound}
         >
-          {canContinueSession && !resendStartup
-            ? "Continue session"
-            : "Start role session"}
+          {canContinueSession && !resendStartup ? "Continue session" : "Start"}
         </button>
         {savedTranscript && (
           <button
@@ -1175,54 +1258,13 @@ export function StartupForm({
     </>
   );
 
-  const overlays = (
-    <>
-      {paletteOpen && (
-        <CommandPalette
-          tabs={savedTabs.map((tab) => ({ id: tab.id, label: tab.label }))}
-          canReopen={closedTabs.length > 0}
-          splitOpen={split.mode !== "single"}
-          onRun={runPalette}
-          onClose={() => setPaletteOpen(false)}
-        />
-      )}
-      {switcherOpen && (
-        <TabSwitcher
-          tabs={savedTabs}
-          onSelect={(tabId) => {
-            setSwitcherOpen(false);
-            void handleSelectTab(tabId);
-          }}
-          onClose={() => setSwitcherOpen(false)}
-        />
-      )}
-      {shortcutsOpen && (
-        <ShortcutsOverlay platform={platform} onClose={() => setShortcutsOpen(false)} />
-      )}
-    </>
-  );
-
-  if (session) {
+  if (session && !settingsOpen) {
     const attachFirst =
       startResult?.injectionStrategy === "attach_to_first_message";
     return (
-      <section className="status-card status-card-session-full">
-        <TabBar
-          tabs={savedTabs}
-          activeTabId={activeTabId}
-          roleColors={roleColors}
-          disableSwitch={false}
-          disableNew={busy}
-          attentionTabIds={needsAttention}
-          canReopen={closedTabs.length > 0}
-          onSelect={handleSelectTab}
-          onClose={handleCloseTab}
-          onNew={handleNewTab}
-          onReopen={() => void reopenTab()}
-          onColor={(tabId, color) => {
-            void setTabColor(tabId, color).then(() => refreshTabs());
-          }}
-        />
+      <section className="workspace-shell">
+        {tabBar}
+        <section className="status-card status-card-session-full">
         <SessionCards
           cards={cardsByTab[activeTabId ?? ""] ?? emptySessionCards()}
           segments={streamSegments}
@@ -1324,99 +1366,56 @@ export function StartupForm({
             Last turn: {lastPromptResult.stopReason ?? "finished"}
           </p>
         )}
-        <details className="startup-form-details">
-          <summary>Startup form (read-only)</summary>
-          {composerFields}
-        </details>
         {overlays}
+        </section>
       </section>
     );
   }
 
   return (
-    <section className="status-card">
-      <h2>Start role session</h2>
-      <p className="hint">
-        One tab = one agent. <strong>Start</strong> opens a full-height agent
-        pane. Other tabs can keep their own sessions running. <strong>+ New
-        tab</strong> starts another task without stopping this one.
-      </p>
-      <TabBar
-        tabs={savedTabs}
-        activeTabId={activeTabId}
-        roleColors={roleColors}
-        disableSwitch={busy}
-        disableNew={busy}
-        attentionTabIds={needsAttention}
-        canReopen={closedTabs.length > 0}
-        onSelect={handleSelectTab}
-        onClose={handleCloseTab}
-        onNew={handleNewTab}
-        onReopen={() => void reopenTab()}
-        onColor={(tabId, color) => {
-          void setTabColor(tabId, color).then(() => refreshTabs());
-        }}
-      />
-      {canContinueSession && (
-        <p className="hint">
-          This tab has saved history. Use <strong>Continue session</strong> to
-          reconnect without re-sending the startup prompt — then send a
-          follow-up. Check the box above only if you want a full restart.
-        </p>
+    <section className="workspace-shell">
+      {tabBar}
+      {settingsOpen ? (
+        settingsPage
+      ) : (
+        <div className="empty-state">
+          <div className="empty-state-card">
+            <div className="role-choices" role="listbox" aria-label="Role">
+              {roles.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className="role-choice"
+                  aria-pressed={pickedRoleId === item.id}
+                  onClick={() => chooseRole(item.id)}
+                  disabled={busy}
+                >
+                  <span className="role-dot" style={{ background: item.color }} aria-hidden />
+                  {item.name}
+                </button>
+              ))}
+            </div>
+            {composerFields}
+            {surface !== "pick" && idleActions}
+            {surface === "restore" && savedTranscript && (
+              <details className="startup-form-details" open>
+                <summary>Last session transcript (read-only)</summary>
+                <pre className="mono-snippet transcript-saved">{savedTranscript}</pre>
+              </details>
+            )}
+            {activeTabSummary &&
+              folderStatusMessage(activeTabSummary.folderStatus, activeTabSummary.cwd) && (
+                <p className="error">
+                  {folderStatusMessage(activeTabSummary.folderStatus, activeTabSummary.cwd)}
+                </p>
+              )}
+            {transcriptSaveError && (
+              <p className="error">Could not save the transcript: {transcriptSaveError}</p>
+            )}
+            {!cliFound && <p className="error">Cursor CLI was not found.</p>}
+          </div>
+        </div>
       )}
-      {activeTabSummary &&
-        folderStatusMessage(activeTabSummary.folderStatus, activeTabSummary.cwd) && (
-          <p className="error">
-            {folderStatusMessage(activeTabSummary.folderStatus, activeTabSummary.cwd)}
-          </p>
-        )}
-      {composerFields}
-      {idleActions}
-      {savedTranscript && (
-        <details className="startup-form-details" open>
-          <summary>Last session transcript (read-only)</summary>
-          <p className="hint">
-            Restored history is read-only. Start a new session to talk to the agent
-            again. A missing folder does not hide this transcript.
-          </p>
-          <pre className="mono-snippet transcript-saved">{savedTranscript}</pre>
-        </details>
-      )}
-      {transcriptSaveError && (
-        <p className="error">Could not save the transcript: {transcriptSaveError}</p>
-      )}
-      <label className="field-label diagnostics-toggle">
-        <input
-          type="checkbox"
-          checked={captureOn}
-          onChange={(event) => {
-            void diagnosticsSetCapture(event.target.checked).then((status) => {
-              setCaptureOn(status.capturePermissionPayloads);
-              setCaptureNote(status.lastError);
-            });
-          }}
-        />
-        Record permission payloads (off by default, secrets redacted)
-      </label>
-      {captureNote && <p className="error">{captureNote}</p>}
-      <ScratchPad
-        ref={padRef}
-        content={scratch.content}
-        truncated={scratch.truncated}
-        persistError={scratch.persistError}
-        chain={chain}
-        disabled={busy}
-        onChange={(value) => {
-          if (activeTabId) scratch.setContent(activeTabId, value);
-        }}
-        onTransfer={transferPad}
-        onSend={sendFromPad}
-        onBlur={() => scratch.flush()}
-        onStopChain={() => {
-          chainAbortRef.current = true;
-          setChain((current) => (current ? chainStop(current) : current));
-        }}
-      />
       {overlays}
     </section>
   );
