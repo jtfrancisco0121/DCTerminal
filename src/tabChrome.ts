@@ -189,6 +189,18 @@ export function buildPalette(opts: {
     { id: "focusOtherPane", title: "Focus other pane", group: "Panes" },
     { id: "toggleFilePanel", title: "Toggle file panel", group: "Files", keywords: "tree explorer" },
     {
+      id: "find",
+      title: "Find in tab",
+      group: "Search",
+      keywords: "search text chat terminal scrollback",
+    },
+    {
+      id: "searchChats",
+      title: "Search all chats…",
+      group: "Search",
+      keywords: "find history transcript closed saved messages",
+    },
+    {
       id: "showChanges",
       title: "Show changes (diff)…",
       group: "Files",

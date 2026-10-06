@@ -5,6 +5,7 @@ mod commands;
 mod cursor_history;
 mod data_dir;
 mod files;
+mod history_search;
 mod models;
 mod orchestrator;
 mod paths;
@@ -21,6 +22,7 @@ pub mod worktree;
 
 use acp::{probe_acp, probe_acp_handshake};
 use cli_detect::detect_cli;
+use commands::history_search;
 use commands::{
     acp_set_model, check_working_folder, close_tab, cursor_approval_mode, dev_session_cancel,
     dev_session_send, dev_session_start, dev_session_stop, diagnostics_set_capture,
@@ -182,6 +184,7 @@ pub fn run() {
             changes_snapshot,
             changes_file_diff,
             changes_revert,
+            history_search,
             get_layout,
             set_layout,
             files_list,

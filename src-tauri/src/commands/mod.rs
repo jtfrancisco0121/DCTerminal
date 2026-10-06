@@ -30,7 +30,7 @@ pub use role_session::role_session_start;
 pub use roles::{get_role, list_roles, validate_and_preview};
 pub use workspace::{
     check_working_folder, cursor_approval_mode, diagnostics_set_capture, diagnostics_status,
-    projects_list, projects_remember, projects_remove, projects_toggle_favorite, scratch_load,
-    scratch_save, transcript_load, transcript_save,
+    history_search, projects_list, projects_remember, projects_remove, projects_toggle_favorite,
+    scratch_load, scratch_save, transcript_load, transcript_save,
 };
 pub use worktree_tabs::{git_repo_info, worktree_tab_check, worktree_tab_new, worktree_tab_remove};

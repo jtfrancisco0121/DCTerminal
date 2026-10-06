@@ -24,4 +24,4 @@ pub use settings_store::{
 pub use state_store::StateStore;
 pub(crate) use state_store::{tab_label, TerminalTabDraft};
 pub use state_types::{AppStateFile, LayoutState, RoleSnapshot, TabRecord, TabSessionRef};
-pub use transcript_store::TranscriptStore;
+pub use transcript_store::{TranscriptFile, TranscriptStore};

@@ -265,13 +265,30 @@ impl StateStore {
 
     /// Put the most recently closed tab back. The agent is not restarted.
     pub fn reopen_closed(&mut self, transcript: Option<String>) -> Result<TabRecord, String> {
-        let closed = self
-            .data
-            .closed_tabs
-            .first()
-            .cloned()
-            .ok_or_else(|| "no closed tab to reopen".to_string())?;
-        self.data.closed_tabs.remove(0);
+        self.reopen_closed_id(None, transcript)
+    }
+
+    /// Put a closed tab back: `tab_id`, or the most recent one when `None`.
+    pub fn reopen_closed_id(
+        &mut self,
+        tab_id: Option<&str>,
+        transcript: Option<String>,
+    ) -> Result<TabRecord, String> {
+        let index = match tab_id {
+            Some(id) => self
+                .data
+                .closed_tabs
+                .iter()
+                .position(|t| t.id == id)
+                .ok_or_else(|| "that closed tab is no longer in the list".to_string())?,
+            None => {
+                if self.data.closed_tabs.is_empty() {
+                    return Err("no closed tab to reopen".to_string());
+                }
+                0
+            }
+        };
+        let closed = self.data.closed_tabs.remove(index);
         if self.data.tabs.iter().any(|t| t.id == closed.id) {
             return Err("that tab is already open".to_string());
         }
@@ -1019,6 +1036,45 @@ mod tests {
         assert!(restored.session.is_none());
         assert_eq!(restored.phase, "awaitingInput");
         assert_eq!(restored.transcript.as_deref(), Some("saved scrollback"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_specific_closed_tab_can_be_reopened() {
+        let dir = std::env::temp_dir().join(format!(
+            "dcterminal_reopen_id_{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let role = crate::roles::Role {
+            id: "role_dev".to_string(),
+            name: "Developer".to_string(),
+            template_text: String::new(),
+            template_version: 1,
+            template_hash: String::new(),
+            schema_template_hash: String::new(),
+            default_mode: "agent".to_string(),
+            injection: "send_on_start".to_string(),
+            color: "#3fb950".to_string(),
+            is_built_in: true,
+            fields: vec![],
+            updated_at: None,
+        };
+        let mut store = StateStore {
+            path: dir.join("state.json"),
+            data: AppStateFile::default(),
+        };
+        let older = store.create_draft_tab(&role, "/w/a", true).unwrap();
+        let newer = store.create_draft_tab(&role, "/w/b", true).unwrap();
+        store.close_tab(&older).unwrap();
+        store.close_tab(&newer).unwrap();
+        let restored = store
+            .reopen_closed_id(Some(&older), Some("old text".into()))
+            .unwrap();
+        assert_eq!(restored.id, older);
+        assert_eq!(store.data.closed_tabs.len(), 1);
+        assert_eq!(store.data.closed_tabs[0].id, newer);
+        assert!(store.reopen_closed_id(Some("tab_gone"), None).is_err());
         let _ = std::fs::remove_dir_all(dir);
     }
 

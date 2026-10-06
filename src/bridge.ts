@@ -529,8 +529,29 @@ export async function diagnosticsSetCapture(enabled: boolean): Promise<Diagnosti
   return invoke("diagnostics_set_capture", { enabled });
 }
 
-export async function reopenClosedTab(): Promise<{ tab: TabRecord }> {
-  return invoke("reopen_closed_tab");
+/** Reopen `tabId`, or the most recently closed tab when omitted. */
+export async function reopenClosedTab(tabId?: string): Promise<{ tab: TabRecord }> {
+  return invoke("reopen_closed_tab", tabId ? { tabId } : {});
+}
+
+/** F5: one match in saved chat text (open, closed, or archived tab). */
+export type HistoryHit = {
+  /** "open" | "closed" | "archived" */
+  source: string;
+  tabId: string;
+  label: string;
+  cwd: string;
+  updatedAt: string | null;
+  /** 0-based index of this match in the source text. */
+  occurrence: number;
+  totalInSource: number;
+  before: string;
+  matched: string;
+  after: string;
+};
+
+export async function historySearch(query: string): Promise<HistoryHit[]> {
+  return invoke<HistoryHit[]>("history_search", { query });
 }
 
 export async function setTabLabel(tabId: string, label: string): Promise<void> {

@@ -243,17 +243,27 @@ fn snapshot_from_store(store: &StateStore) -> AppStateSnapshot {
 
 #[tauri::command]
 pub fn reopen_closed_tab(
+    tab_id: Option<String>,
     store: State<Mutex<StateStore>>,
     transcripts: State<Mutex<crate::store::TranscriptStore>>,
 ) -> Result<TabDetail, String> {
     let transcript = {
         let state = store.lock().map_err(|e| e.to_string())?;
-        let id = state
-            .data
-            .closed_tabs
-            .first()
-            .map(|t| t.id.clone())
-            .ok_or_else(|| "no closed tab to reopen".to_string())?;
+        let id = match tab_id.as_deref() {
+            Some(id) => state
+                .data
+                .closed_tabs
+                .iter()
+                .find(|t| t.id == id)
+                .map(|t| t.id.clone())
+                .ok_or_else(|| "that closed tab is no longer in the list".to_string())?,
+            None => state
+                .data
+                .closed_tabs
+                .first()
+                .map(|t| t.id.clone())
+                .ok_or_else(|| "no closed tab to reopen".to_string())?,
+        };
         let transcripts = transcripts.lock().map_err(|e| e.to_string())?;
         transcripts.load(&id)?.and_then(|loaded| {
             if loaded.text.trim().is_empty() {
@@ -264,7 +274,7 @@ pub fn reopen_closed_tab(
         })
     };
     let mut store = store.lock().map_err(|e| e.to_string())?;
-    let tab = store.reopen_closed(transcript)?;
+    let tab = store.reopen_closed_id(tab_id.as_deref(), transcript)?;
     Ok(TabDetail { tab })
 }
 

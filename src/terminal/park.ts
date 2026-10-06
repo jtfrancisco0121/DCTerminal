@@ -82,6 +82,8 @@ export function ensureParkedTerminal(id: string, fontSize: number): ParkedTermin
     theme: THEME,
     cursorBlink: true,
     rightClickSelectsWord: false,
+    // The search addon's match highlights use the decoration API.
+    allowProposedApi: true,
   });
   const fit = new FitAddon();
   const search = new SearchAddon();
@@ -150,8 +152,9 @@ export function refitTerminal(id: string): void {
   refitters.get(id)?.();
 }
 
-export function requestTerminalSearch(): void {
-  const id = focusedId || parked.keys().next().value;
+/** Open the search bar of terminal `id`, or the focused (else first) one. */
+export function requestTerminalSearch(target?: string | null): void {
+  const id = target || focusedId || parked.keys().next().value;
   if (id) searchOpeners.get(id)?.();
 }
 

@@ -23,6 +23,8 @@ import {
   respondPermissionRequest,
   respondPlanRequest,
   reopenClosedTab,
+  historySearch,
+  transcriptLoad,
   setTabColor,
   setTabLabel,
   transcriptSave,
@@ -128,6 +130,9 @@ import { ModelPicker } from "./components/ModelPicker";
 import { AgentToasts } from "./components/AgentToasts";
 import { WorktreeDialog, type WorktreeCreateInput } from "./components/WorktreeDialog";
 import { ChangesPanel } from "./components/ChangesPanel";
+import { ChatSearchDialog, type ChatSearchHit } from "./components/ChatSearchDialog";
+import { TranscriptView } from "./components/TranscriptView";
+import type { ChatFindRequest } from "./SessionTerminal";
 import { classifyPromptFinished, type NotificationSettings } from "./notify/agentNotify";
 import { showSystemNotification } from "./notify/systemNotify";
 import { useAgentNotifications } from "./notify/useAgentNotifications";
@@ -257,6 +262,20 @@ export function StartupForm({
   /** acceptKey()s per tab: files the user kept after review. */
   const [acceptedChanges, setAcceptedChanges] = useState<Record<string, string[]>>({});
   const [fileFocus, setFileFocus] = useState<{ path: string; nonce: number } | null>(null);
+  /** F5: Search all chats is open with this starting query. */
+  const [chatSearchQuery, setChatSearchQuery] = useState<string | null>(null);
+  /** F5: open the find bar in this chat tab (Mod+F, or a search jump). */
+  const [findRequest, setFindRequest] = useState<{ tabId: string; req: ChatFindRequest } | null>(
+    null,
+  );
+  /** F5: a jump into a tab's saved (read-only) transcript. */
+  const [transcriptFocus, setTranscriptFocus] = useState<{
+    tabId: string;
+    query: string;
+    occurrence: number;
+    text: string;
+    nonce: number;
+  } | null>(null);
   const refreshChangeCount = useCallback((tabId: string) => {
     changesList(tabId, "turn")
       .then((set) => {
@@ -372,7 +391,8 @@ export function StartupForm({
     handoffTarget !== null ||
     savedPlan !== null ||
     worktreeDialogOpen ||
-    changesTabId !== null;
+    changesTabId !== null ||
+    chatSearchQuery !== null;
   const platform = useMemo(
     () => detectPlatform(typeof navigator === "undefined" ? "" : navigator.platform),
     [],
@@ -839,6 +859,10 @@ export function StartupForm({
     () => savedTabs.find((t) => t.id === activeTabId) ?? null,
     [savedTabs, activeTabId],
   );
+  const focusedTranscript =
+    transcriptFocus && transcriptFocus.tabId === activeTabId
+      ? savedTranscript || transcriptFocus.text
+      : "";
 
   useEffect(() => {
     if (!activeTabId || !activeTabSummary || session) return;
@@ -1824,10 +1848,32 @@ export function StartupForm({
     setFocusedPane("primary");
   }, [handleSelectTab]);
 
+  /** Mod+F: the terminal's search, the chat's find bar, or Search all chats. */
+  const handleFind = useCallback(() => {
+    const secondaryId = splitOpen(split) ? split.secondaryTabId : null;
+    const tabId =
+      focusedPaneRef.current === "secondary" && secondaryId ? secondaryId : activeTabIdRef.current;
+    const summary = savedTabs.find((tab) => tab.id === tabId);
+    if (!tabId || !summary) {
+      setChatSearchQuery("");
+      return;
+    }
+    if (summary.kind === "terminal") {
+      requestTerminalSearch(tabId);
+      return;
+    }
+    if (runtimes[tabId]?.session) {
+      setFindRequest({ tabId, req: { query: "", nonce: Date.now() } });
+      return;
+    }
+    setChatSearchQuery("");
+  }, [runtimes, savedTabs, split]);
+
   const onShortcut = useCallback(
     (match: ShortcutMatch) => {
       if (match.action === "closeDialog") {
         setChangesTabId(null);
+        setChatSearchQuery(null);
         setWorktreeDialogOpen(false);
         setPaletteOpen(false);
         setSwitcherOpen(false);
@@ -1954,12 +2000,21 @@ export function StartupForm({
         setFilePanelOpen((open) => !open);
         return;
       }
+      if (match.action === "find") {
+        handleFind();
+        return;
+      }
+      if (match.action === "searchChats") {
+        setChatSearchQuery("");
+        return;
+      }
       if (match.action === "renameTab" && activeTabId) {
         setRenamingTabId(activeTabId);
       }
     },
     [
       activeTabId,
+      handleFind,
       cycleTab,
       handleCloseTab,
       handleNewTab,
@@ -2560,8 +2615,56 @@ export function StartupForm({
   );
 
   const changesTab = changesTabId ? savedTabs.find((tab) => tab.id === changesTabId) : undefined;
+
+  /** F5: open the hit's tab (reopening a closed one) and land on the match. */
+  const jumpToHit = async (hit: ChatSearchHit, query: string) => {
+    setChatSearchQuery(null);
+    const nonce = Date.now();
+    try {
+      if (hit.source === "live") {
+        await handleSelectTab(hit.tabId);
+        setFindRequest({
+          tabId: hit.tabId,
+          req: { query, segmentId: hit.segmentId, occurrence: hit.occurrence, nonce },
+        });
+        return;
+      }
+      const file = await transcriptLoad(hit.tabId).catch(() => null);
+      if (hit.source === "closed") {
+        stashActiveTab();
+        const { tab } = await reopenClosedTab(hit.tabId);
+        await refreshTabs();
+        loadTabIntoForm(tab);
+      } else {
+        await handleSelectTab(hit.tabId);
+      }
+      setTranscriptFocus({
+        tabId: hit.tabId,
+        query,
+        occurrence: hit.occurrence,
+        text: file?.text ?? "",
+        nonce,
+      });
+    } catch (err: unknown) {
+      showNotice("Could not open that chat", err instanceof Error ? err.message : String(err), "failed");
+    }
+  };
+
+  const liveChatSources = savedTabs
+    .filter((tab) => (runtimes[tab.id]?.segments.length ?? 0) > 0)
+    .map((tab) => ({ tabId: tab.id, label: tab.label, segments: runtimes[tab.id]!.segments }));
   const overlays = (
     <>
+      {chatSearchQuery !== null && (
+        <ChatSearchDialog
+          initialQuery={chatSearchQuery}
+          liveSources={liveChatSources}
+          search={historySearch}
+          loadTranscript={async (tabId) => (await transcriptLoad(tabId)).text}
+          onJump={(hit, query) => void jumpToHit(hit, query)}
+          onClose={() => setChatSearchQuery(null)}
+        />
+      )}
       {changesTab && (
         <ChangesPanel
           key={changesTab.id}
@@ -2733,6 +2836,8 @@ export function StartupForm({
         <SessionTerminal
           key={tab.id}
           title={tab.label}
+          findRequest={findRequest?.tabId === tab.id ? findRequest.req : null}
+          onSearchAllChats={(query) => setChatSearchQuery(query)}
           branch={tab.worktreeBranch ?? null}
           cwd={rt.session.cwd}
           sessionId={rt.session.sessionId}
@@ -3149,10 +3254,23 @@ export function StartupForm({
           This tab has saved text, but it cannot be continued. Start a new session.
         </p>
       )}
-      {savedTranscript && (
-        <details className="startup-form-details">
+      {(savedTranscript || focusedTranscript) && (
+        <details
+          className="startup-form-details"
+          open={focusedTranscript ? true : undefined}
+          key={transcriptFocus?.tabId === activeTabId ? `focus-${transcriptFocus?.nonce}` : "plain"}
+        >
           <summary>Last session transcript (read-only)</summary>
-          <pre className="mono-snippet transcript-preview">{savedTranscript}</pre>
+          {transcriptFocus && focusedTranscript ? (
+            <TranscriptView
+              text={savedTranscript || focusedTranscript}
+              query={transcriptFocus.query}
+              occurrence={transcriptFocus.occurrence}
+              label="Saved transcript"
+            />
+          ) : (
+            <pre className="mono-snippet transcript-preview">{savedTranscript}</pre>
+          )}
         </details>
       )}
     </div>
@@ -3252,6 +3370,10 @@ export function StartupForm({
               primary={
             <SessionTerminal
               title={activeTabSummary?.label ?? "Session"}
+              findRequest={
+                activeTabId && findRequest?.tabId === activeTabId ? findRequest.req : null
+              }
+              onSearchAllChats={(query) => setChatSearchQuery(query)}
               branch={activeTabSummary?.worktreeBranch ?? null}
               cwd={session.cwd}
               sessionId={session.sessionId}

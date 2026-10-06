@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./components/TerminalView", () => ({
@@ -56,6 +56,13 @@ vi.mock("./bridge", () => {
   respondPermissionRequest: vi.fn(),
   respondPlanRequest: vi.fn(),
   reopenClosedTab: vi.fn(),
+  historySearch: vi.fn(async () => []),
+  transcriptLoad: vi.fn(async () => ({
+    text: "",
+    cwd: "",
+    readOnly: true,
+    recoveredFromCorrupt: false,
+  })),
   setTabColor: vi.fn(),
   setTabLabel: vi.fn(async () => {}),
   transcriptSave: vi.fn(),
@@ -145,6 +152,9 @@ import {
   closeTab,
   getAppState,
   gitRepoInfo,
+  historySearch,
+  reopenClosedTab,
+  transcriptLoad,
   worktreeTabCheck,
   worktreeTabNew,
   worktreeTabRemove,
@@ -787,5 +797,98 @@ describe("changes (diff) panel", () => {
       expect(panel.contains(document.activeElement)).toBe(true),
     );
     expect(changesRevert).not.toHaveBeenCalled();
+  });
+});
+
+describe("search all chats", () => {
+  const summary = (id: string, label: string) => ({
+    id,
+    label,
+    roleId: "role_developer",
+    cwd: tab.cwd,
+    phase: "draft",
+    mergedPromptChars: 0,
+    startupPromptSent: false,
+    hasTranscript: id === "tab_old",
+    folderStatus: "ok",
+    color: "#3fb950",
+    kind: "role",
+    terminalLaunch: "",
+    acpSessionId: null,
+  });
+
+  beforeEach(() => {
+    vi.mocked(listCursorCliHistory).mockResolvedValue([]);
+    vi.mocked(getRole).mockResolvedValue(developer);
+    vi.mocked(getAppState).mockResolvedValue({
+      activeTabId: "tab_dev",
+      tabs: [summary("tab_dev", "Developer · Feature")],
+      closedTabs: [
+        { id: "tab_old", label: "Old chat", roleId: "role_developer", cwd: tab.cwd, color: "#3fb950" },
+      ],
+    });
+    vi.mocked(selectActiveTab).mockResolvedValue({ tab });
+  });
+
+  it("finds saved history from the palette and reopens the closed tab at the hit", async () => {
+    vi.mocked(historySearch).mockResolvedValue([
+      {
+        source: "closed",
+        tabId: "tab_old",
+        label: "Old chat",
+        cwd: tab.cwd,
+        updatedAt: "2026-10-05T00:00:00Z",
+        occurrence: 1,
+        totalInSource: 2,
+        before: "then the ",
+        matched: "login",
+        after: " page broke",
+      },
+    ]);
+    const transcript = "fixed login first; then the login page broke";
+    vi.mocked(transcriptLoad).mockResolvedValue({
+      text: transcript,
+      cwd: tab.cwd,
+      readOnly: true,
+      recoveredFromCorrupt: false,
+    });
+    vi.mocked(reopenClosedTab).mockImplementation(async () => {
+      vi.mocked(getAppState).mockResolvedValue({
+        activeTabId: "tab_old",
+        tabs: [summary("tab_dev", "Developer · Feature"), summary("tab_old", "Old chat")],
+        closedTabs: [],
+      });
+      return { tab: { ...tab, id: "tab_old", label: "Old chat", transcript } };
+    });
+    render(
+      <StartupForm
+        roles={[{ id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 }]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+    await screen.findByLabelText("Title");
+    fireEvent.keyDown(window, { key: "k", code: "KeyK", ctrlKey: true, metaKey: true });
+    fireEvent.click(await screen.findByRole("button", { name: /Search all chats/ }));
+    const dialog = await screen.findByRole("dialog", { name: "Search chats" });
+    fireEvent.change(within(dialog).getByRole("searchbox", { name: "Search chats" }), {
+      target: { value: "login" },
+    });
+    await waitFor(() => expect(historySearch).toHaveBeenCalledWith("login"));
+    fireEvent.click(await within(dialog).findByRole("option", { name: /Old chat/ }));
+
+    await waitFor(() => expect(reopenClosedTab).toHaveBeenCalledWith("tab_old"));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Search chats" })).toBeNull(),
+    );
+    const current = await waitFor(() => {
+      const mark = document.querySelector("mark.search-hit-current");
+      expect(mark).toBeTruthy();
+      return mark!;
+    });
+    expect(current.textContent).toBe("login");
+    expect(document.querySelectorAll("mark.search-hit")).toHaveLength(2);
   });
 });

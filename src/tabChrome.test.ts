@@ -142,6 +142,16 @@ describe("tab chrome", () => {
     ]);
   });
 
+  it("offers find in tab and search all chats", () => {
+    const commands = buildPalette({ tabs: [], canReopen: false, splitOpen: false });
+    expect(filterCommands(commands, "find").map((c) => c.id)).toEqual(
+      expect.arrayContaining(["find", "searchChats"]),
+    );
+    expect(filterCommands(commands, "transcript history").map((c) => c.id)).toContain(
+      "searchChats",
+    );
+  });
+
   it("finds the changes (diff) panel by diff, revert, or review", () => {
     const commands = buildPalette({ tabs: [], canReopen: false, splitOpen: false });
     for (const query of ["diff", "changes", "revert", "review edits"]) {

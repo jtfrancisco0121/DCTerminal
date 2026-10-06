@@ -161,6 +161,34 @@ pub fn transcript_save(
     )
 }
 
+/// F5: search saved chat text across open tabs, closed tabs, and older
+/// transcripts. Read-only.
+#[tauri::command]
+pub async fn history_search(
+    app: tauri::AppHandle,
+    query: String,
+) -> Result<Vec<crate::history_search::HistoryHit>, String> {
+    use tauri::Manager;
+    if query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let files = {
+        let transcripts = app.state::<Mutex<TranscriptStore>>();
+        let transcripts = transcripts.lock().map_err(|e| e.to_string())?;
+        transcripts.list_all()
+    };
+    let sources = {
+        let state = app.state::<Mutex<StateStore>>();
+        let state = state.lock().map_err(|e| e.to_string())?;
+        crate::history_search::collect_sources(&state, files)
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::history_search::search_sources(&sources, &query)
+    })
+    .await
+    .map_err(|err| err.to_string())
+}
+
 #[tauri::command]
 pub fn transcript_load(
     tab_id: String,
