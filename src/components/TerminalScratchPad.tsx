@@ -23,6 +23,8 @@ type Props = {
   onFocusTerminal: () => void;
   /** Blur a parked xterm so pad keystrokes cannot reach the PTY. */
   onFocusPad?: () => void;
+  /** Called after the pad is hidden or shown so the terminal can refit. */
+  onOpenChange?: (open: boolean) => void;
 };
 
 function padText(field: HTMLTextAreaElement | null, content: string): string {
@@ -47,6 +49,7 @@ export const TerminalScratchPad = forwardRef<TerminalPadHandle, Props>(
       bracketedPaste,
       onFocusTerminal,
       onFocusPad,
+      onOpenChange,
     },
     ref,
   ) {
@@ -69,6 +72,17 @@ export const TerminalScratchPad = forwardRef<TerminalPadHandle, Props>(
       },
       send: (submit: boolean) => deliver(submit),
     }));
+
+    const onOpenChangeRef = useRef(onOpenChange);
+    onOpenChangeRef.current = onOpenChange;
+    const firstOpenRef = useRef(true);
+    useEffect(() => {
+      if (firstOpenRef.current) {
+        firstOpenRef.current = false;
+        return;
+      }
+      onOpenChangeRef.current?.(open);
+    }, [open]);
 
     useEffect(() => {
       if (focusTick === 0 || !open) return;

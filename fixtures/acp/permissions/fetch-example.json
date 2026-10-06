@@ -1,0 +1,41 @@
+{
+  "label": "e-web-mcp: fetch Fetch https://example.com",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "session/request_permission",
+    "params": {
+      "sessionId": "427830a2-f380-4904-8508-2c3fec27aff7",
+      "toolCall": {
+        "toolCallId": "web_fetch_0",
+        "title": "Fetch https://example.com",
+        "kind": "fetch",
+        "status": "pending"
+      },
+      "options": [
+        {
+          "optionId": "allow-once",
+          "name": "Allow once",
+          "kind": "allow_once"
+        },
+        {
+          "optionId": "allow-always",
+          "name": "Allow always",
+          "kind": "allow_always"
+        },
+        {
+          "optionId": "reject-once",
+          "name": "Reject",
+          "kind": "reject_once"
+        }
+      ]
+    }
+  },
+  "precedingToolCallUpdates": [],
+  "answer": {
+    "outcome": {
+      "outcome": "selected",
+      "optionId": "allow-once"
+    }
+  }
+}

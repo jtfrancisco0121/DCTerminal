@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./components/TerminalView", () => ({
@@ -28,9 +28,17 @@ vi.mock("./bridge", () => {
   diagnosticsSetCapture: vi.fn(),
   diagnosticsStatus: vi.fn(async () => ({
     capturePermissionPayloads: false,
+    appDataDir: "",
     transcriptsDir: "",
     logPath: "",
     lastError: null,
+  })),
+  cursorApprovalMode: vi.fn(async () => ({
+    kind: "allowlist",
+    approvalMode: "allowlist",
+    configPath: null,
+    roleRulesOff: false,
+    note: null,
   })),
   listenPermissionAuto: listen,
   listenPermissionRequests: listen,
@@ -75,12 +83,37 @@ vi.mock("./bridge", () => {
   projectsRemove: vi.fn(),
   projectsToggleFavorite: vi.fn(),
   checkWorkingFolder: vi.fn(),
+  acpSetModel: vi.fn(),
+  getLayout: vi.fn(async () => ({
+    splitMode: "single",
+    secondaryTabId: null,
+    primarySize: 50,
+    filePanelOpen: false,
+    filePanelWidth: 280,
+  })),
+  setLayout: vi.fn(async (layout: unknown) => layout),
+  getModelSettings: vi.fn(async () => ({ defaultModel: "composer-2.5", roleModels: {} })),
+  setModelSettings: vi.fn(async (models: unknown) => models),
+  listModels: vi.fn(async () => ({
+    models: [{ id: "composer-2.5", label: "Composer 2.5", fast: false }],
+    source: "fallback",
+    fetchedAtMs: null,
+    error: null,
+  })),
+  setTabModel: vi.fn(async () => "composer-2.5"),
+  ptyKill: vi.fn(async () => {}),
+  filesList: vi.fn(),
+  filesRead: vi.fn(),
+  filesWrite: vi.fn(),
+  filesReveal: vi.fn(),
   };
 });
 
 import {
   getAppState,
+  getLayout,
   getRole,
+  setLayout,
   listCursorCliHistory,
   selectActiveTab,
   syncActiveTabForm,
@@ -256,4 +289,64 @@ describe("terminal tab scratch pad", () => {
       expect(editor.closest(".terminal-screen")).toBeTruthy();
     },
   );
+});
+
+describe("live split view", () => {
+  const terminalTab = (id: string, label: string, launch: string) => ({
+    id,
+    label,
+    roleId: "role_developer",
+    cwd: "/Users/jt/Koneksi",
+    phase: "running",
+    mergedPromptChars: 0,
+    startupPromptSent: false,
+    hasTranscript: false,
+    folderStatus: "ok",
+    color: "#3fb950",
+    kind: "terminal",
+    terminalLaunch: launch,
+    acpSessionId: null,
+  });
+
+  beforeEach(() => {
+    vi.mocked(listCursorCliHistory).mockResolvedValue([]);
+    vi.mocked(getRole).mockResolvedValue(developer);
+    vi.mocked(getAppState).mockResolvedValue({
+      activeTabId: "tab_a",
+      tabs: [terminalTab("tab_a", "Main terminal", "role"), terminalTab("tab_b", "Other terminal", "shell")],
+      closedTabs: [],
+    });
+  });
+
+  it("restores the saved split, shows the other tab live, and closes it", async () => {
+    vi.mocked(getLayout).mockResolvedValueOnce({
+      splitMode: "horizontal",
+      secondaryTabId: "tab_b",
+      primarySize: 60,
+      filePanelOpen: false,
+      filePanelWidth: 280,
+    });
+    render(
+      <StartupForm
+        roles={[{ id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 }]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+    const pane = await screen.findByLabelText("Second pane: Other terminal");
+    expect(pane.getAttribute("data-pane")).toBe("secondary");
+    // A role terminal shows its model; the default is composer-2.5.
+    expect(await screen.findByRole("button", { name: "Model for Main terminal" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Close split" }));
+    await waitFor(() => expect(screen.queryByLabelText("Second pane: Other terminal")).toBeNull());
+    await waitFor(
+      () =>
+        expect(vi.mocked(setLayout)).toHaveBeenLastCalledWith(
+          expect.objectContaining({ splitMode: "single", secondaryTabId: null }),
+        ),
+      { timeout: 2000 },
+    );
+  });
 });

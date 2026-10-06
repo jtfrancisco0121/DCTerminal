@@ -1424,8 +1424,9 @@ kbd {
 }
 
 /* The pad is a sibling of the terminal, outside .terminal-slot, so keystrokes
-   stay in the textarea. The slot's ResizeObserver refits xterm when this
-   pane grows, shrinks, or collapses. */
+   stay in the textarea. The terminal takes every pixel above the pad. The
+   slot's ResizeObserver, plus an explicit refit when the pad is hidden or
+   shown, refits xterm when this pane grows, shrinks, or collapses. */
 .terminal-screen > .terminal-scratch {
   flex: 0 0 auto;
   min-height: 0;
@@ -1460,11 +1461,25 @@ kbd {
   margin-bottom: 0.4rem;
 }
 
-.terminal-slot,
-.xterm-host {
-  flex: 1;
-  min-height: 12rem;
+/* The slot flexes to fill .terminal-view. The reparented xterm host is pinned
+   to the slot's box, so FitAddon measures the slot's real height instead of
+   xterm's current row count (which kept the terminal at its first size). */
+.terminal-slot {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
   background: #0d1117;
+}
+
+.xterm-host {
+  background: #0d1117;
+}
+
+.terminal-slot > .xterm-host {
+  position: absolute;
+  inset: 0;
 }
 
 .terminal-slot .xterm {
@@ -1508,4 +1523,423 @@ kbd {
   background: transparent;
   border: 0;
   padding: 0;
+}
+
+/* ---- Live split, file panel, model picker ---- */
+
+.split-handle[data-panel-group-direction="vertical"],
+.split-handle-row {
+  width: auto;
+  height: 4px;
+}
+
+.split-handle[data-resize-handle-state="hover"],
+.split-handle[data-resize-handle-state="drag"] {
+  background: #58a6ff;
+}
+
+.workspace-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 0.5rem;
+}
+
+.workspace-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.workspace-split {
+  flex: 1;
+  min-height: 0;
+}
+
+.split-pane {
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+
+.split-pane-primary > .empty-state,
+.split-pane-primary > .status-card-session-full {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Only show the focus ring while the split is open (two panes). */
+.split-pane-focused {
+  border-color: #388bfd66;
+}
+
+.split-pane-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.4rem;
+  border-bottom: 1px solid #30363d;
+}
+
+.split-pane-title {
+  font-weight: 600;
+  font-size: 0.85rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.split-pane-spacer {
+  flex: 1;
+}
+
+.split-pane-note {
+  margin: 0.25rem 0.5rem;
+}
+
+.split-pane-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0.25rem;
+}
+
+.split-pane-empty {
+  margin: auto;
+  text-align: center;
+}
+
+.model-notice {
+  margin: 0 0 0.4rem;
+}
+
+/* File panel */
+.file-panel-shell {
+  position: relative;
+  flex: 0 0 auto;
+  min-width: 160px;
+  max-width: 900px;
+  display: flex;
+  min-height: 0;
+}
+
+.file-panel-resizer {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 2;
+}
+
+.file-panel-resizer:hover {
+  background: #58a6ff55;
+}
+
+.file-panel {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  background: #0d1117;
+  font-size: 0.85rem;
+}
+
+.file-panel-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.3rem 0.4rem;
+  border-bottom: 1px solid #30363d;
+}
+
+.file-panel-root {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin: 0;
+}
+
+.file-panel-body {
+  flex: 1;
+  min-height: 0;
+}
+
+.file-panel-notice,
+.file-panel-empty {
+  margin: 0.4rem;
+}
+
+.file-tree {
+  height: 100%;
+  overflow: auto;
+}
+
+.file-tree-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.file-tree-item {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  padding: 0.1rem 0.4rem;
+  cursor: pointer;
+  font: inherit;
+  white-space: nowrap;
+}
+
+.file-tree-item:hover {
+  background: #161b22;
+}
+
+.file-tree-item-selected {
+  background: #1f6feb33;
+}
+
+.file-tree-icon {
+  width: 1rem;
+  flex: 0 0 auto;
+  color: #8b949e;
+}
+
+.file-tree-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-preview-wrap,
+.file-preview {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.file-preview-bar,
+.file-panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.3rem 0.4rem;
+  border-top: 1px solid #30363d;
+}
+
+.file-preview-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.file-conflict {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.3rem 0.4rem;
+  background: #bb800926;
+  border-top: 1px solid #bb8009;
+}
+
+.file-code,
+.file-editor {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  overflow: auto;
+  padding: 0.4rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  white-space: pre;
+  tab-size: 4;
+}
+
+.file-editor {
+  resize: none;
+  border: none;
+  outline: none;
+  background: #010409;
+  color: #e6edf3;
+}
+
+.file-preview-image {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.4rem;
+}
+
+.file-preview-image img {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Syntax colors (GitHub dark-like) */
+.hljs { color: #e6edf3; background: #010409; }
+.hljs-comment, .hljs-quote { color: #8b949e; font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-type { color: #ff7b72; }
+.hljs-string, .hljs-regexp, .hljs-addition { color: #a5d6ff; }
+.hljs-number, .hljs-symbol, .hljs-bullet, .hljs-variable, .hljs-template-variable { color: #79c0ff; }
+.hljs-title, .hljs-section, .hljs-function .hljs-title { color: #d2a8ff; }
+.hljs-attr, .hljs-attribute, .hljs-property, .hljs-name, .hljs-tag { color: #7ee787; }
+.hljs-built_in, .hljs-meta { color: #ffa657; }
+.hljs-deletion { color: #ffa198; }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 600; }
+
+/* Model picker */
+.model-picker {
+  position: relative;
+  display: inline-flex;
+}
+
+.model-picker-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: 18rem;
+  padding: 0.25rem 0.55rem;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  background: #161b22;
+  color: inherit;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.model-picker-compact .model-picker-button {
+  padding: 0.1rem 0.45rem;
+  font-size: 0.8rem;
+}
+
+.model-picker-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.model-picker-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-picker-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 30;
+  width: 20rem;
+  max-width: 80vw;
+  padding: 0.4rem;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  background: #161b22;
+  box-shadow: 0 8px 24px #01040999;
+}
+
+.model-picker-list {
+  list-style: none;
+  margin: 0.35rem 0 0;
+  padding: 0;
+  max-height: 18rem;
+  overflow: auto;
+}
+
+.model-option {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.4rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.model-option-active,
+.model-option:hover {
+  background: #1f6feb33;
+}
+
+.model-badge {
+  padding: 0 0.3rem;
+  border-radius: 4px;
+  background: #bb800933;
+  color: #e3b341;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.settings-model-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.25rem 0;
+}
+
+.settings-model-name {
+  font-size: 0.9rem;
+}
+
+.unrestricted-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 0 0 8px;
+  padding: 10px 12px;
+  border: 1px solid #d29922;
+  border-radius: 8px;
+  background: rgba(210, 153, 34, 0.12);
+}
+
+.unrestricted-banner-text {
+  margin: 0;
+  flex: 1;
+  color: #e3b341;
+  font-size: 0.92rem;
+  line-height: 1.4;
+}
+
+.tab-badge-warn {
+  background: rgba(210, 153, 34, 0.2);
+  color: #e3b341;
+  border: 1px solid rgba(210, 153, 34, 0.45);
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.permission-card-meta {
+  margin: 0 0 6px;
+  font-size: 0.8rem;
+  color: #8b949e;
+  text-transform: lowercase;
 }

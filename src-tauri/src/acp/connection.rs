@@ -79,7 +79,19 @@ pub struct AcpConnection {
 
 impl AcpConnection {
     pub fn spawn(agent_path: &Path, cwd: Option<&Path>) -> std::io::Result<Self> {
+        Self::spawn_with_args(agent_path, cwd, &[])
+    }
+
+    /// `global_args` go before `acp`, for example `--model <id>`.
+    pub fn spawn_with_args(
+        agent_path: &Path,
+        cwd: Option<&Path>,
+        global_args: &[String],
+    ) -> std::io::Result<Self> {
         let mut command = Command::new(agent_path);
+        for arg in global_args {
+            command.arg(arg);
+        }
         for arg in acp_launch_args() {
             command.arg(*arg);
         }

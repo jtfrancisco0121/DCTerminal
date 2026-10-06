@@ -17,6 +17,7 @@ import {
   focusParkedTerminal,
   pasteTerminalText,
   releaseParkedTerminal,
+  setTerminalRefitter,
   setTerminalSearchOpener,
   terminalSelection,
   terminalTailText,
@@ -44,6 +45,18 @@ type Props = {
   resumeSessionId?: string | null;
   menuActions?: TerminalMenuAction[];
 };
+
+/**
+ * True when keyboard focus is in a place that must keep it: the scratch pad,
+ * the file panel, a model picker, or the other split pane.
+ */
+export function focusBelongsElsewhere(slot: HTMLElement): boolean {
+  const active = document.activeElement;
+  if (!active || active === document.body) return false;
+  if (active.closest(".scratch-pad, .file-panel, .model-picker")) return true;
+  const otherPane = active.closest("[data-pane]");
+  return !!otherPane && otherPane !== slot.closest("[data-pane]");
+}
 
 export function readTerminalHandoff(ptyId: string): { selection: string; tail: string } {
   return { selection: terminalSelection(ptyId), tail: terminalTailText(ptyId) };
@@ -83,8 +96,7 @@ export function TerminalView({
     parked.term.options.fontSize = fontSize;
     // A focused scratch pad must keep the keystrokes. Refitting the terminal
     // must not move focus back onto xterm.
-    const padFocused = document.activeElement?.closest(".scratch-pad");
-    if (autoFocus && !padFocused) {
+    if (autoFocus && !focusBelongsElsewhere(slot)) {
       parked.term.focus();
       focusParkedTerminal(ptyId);
     }
@@ -118,6 +130,9 @@ export function TerminalView({
     });
 
     const fitNow = () => {
+      // A hidden or collapsed slot has no size. Fitting then would shrink
+      // the PTY to the minimum and garble the program's output.
+      if (!parked.host.isConnected || slot.clientWidth === 0 || slot.clientHeight === 0) return;
       parked.fit.fit();
       const cols = parked.term.cols;
       const rows = parked.term.rows;
@@ -125,13 +140,28 @@ export function TerminalView({
         void ptyResize(ptyId, cols, rows).catch(() => {});
       }
     };
-    const observer = new ResizeObserver(() => fitNow());
+    // Coalesce bursts (window drags, split drags, the pad toggling) into one
+    // fit per frame, after layout has settled.
+    let frame = 0;
+    const scheduleFit = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        fitNow();
+      });
+    };
+    const observer = new ResizeObserver(() => scheduleFit());
     observer.observe(slot);
+    window.addEventListener("resize", scheduleFit);
+    const unregisterRefit = setTerminalRefitter(ptyId, scheduleFit);
     const timer = window.setTimeout(fitNow, 0);
 
     return () => {
       window.clearTimeout(timer);
+      if (frame) window.cancelAnimationFrame(frame);
       observer.disconnect();
+      window.removeEventListener("resize", scheduleFit);
+      unregisterRefit();
       onData.dispose();
       detach?.();
       blurParkedTerminal(ptyId);

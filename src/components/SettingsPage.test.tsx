@@ -41,15 +41,44 @@ describe("SettingsPage", () => {
         onToggleCapture={() => {}}
         terminalSettings={{ shell: "", fontSize: 14, roleSurface: {}, roleRunMode: {} }}
         onTerminalSettings={() => {}}
+        approvalMode={null}
         onClose={onClose}
       />,
     );
     expect(await screen.findByText(/Deny write and shell/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /Developer/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^Developer/ }));
     expect(await screen.findByText(/Auto-allow write, shell, and MCP/)).toBeTruthy();
     expect(screen.getByLabelText("Shell program")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("notes allowlist creates/edits are not routed through DCTerminal", () => {
+    render(
+      <SettingsPage
+        roles={roles}
+        cli={{ found: true, path: "/agent", version: "2026.10.01", error: null }}
+        cliError={null}
+        platform="mac"
+        diagnostics={null}
+        captureOn={false}
+        showDevTools={false}
+        onToggleCapture={() => {}}
+        terminalSettings={null}
+        onTerminalSettings={() => {}}
+        approvalMode={{
+          kind: "allowlist",
+          approvalMode: "allowlist",
+          configPath: "/tmp/cfg/cli-config.json",
+          roleRulesOff: false,
+          note: "note",
+        }}
+        onClose={() => {}}
+      />,
+    );
+    expect(screen.getByText(/file creates and edits are not routed/i)).toBeTruthy();
+    expect(screen.getByText(/Current/i)).toBeTruthy();
+    expect(screen.getByText("allowlist")).toBeTruthy();
   });
 
   it("shows guidance when the Cursor CLI is missing", () => {
@@ -65,6 +94,7 @@ describe("SettingsPage", () => {
         onToggleCapture={() => {}}
         terminalSettings={null}
         onTerminalSettings={() => {}}
+        approvalMode={null}
         onClose={() => {}}
       />,
     );

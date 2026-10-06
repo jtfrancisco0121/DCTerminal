@@ -110,6 +110,7 @@ impl StateStore {
             color: Some(role.color.clone()),
             kind: crate::store::state_types::default_tab_kind(),
             terminal_launch: String::new(),
+            model: None,
         };
         self.data.tabs.push(record);
         self.data.active_tab_id = Some(tab_id.clone());
@@ -235,9 +236,14 @@ impl StateStore {
                     .as_ref()
                     .map(|session| session.acp_session_id.clone()),
                 mode_id: tab.session.as_ref().map(|session| session.mode_id.clone()),
+                model: tab.model.clone(),
             },
         );
         self.data.closed_tabs.truncate(15);
+        if self.data.layout.secondary_tab_id.as_deref() == Some(tab_id) {
+            self.data.layout.secondary_tab_id = None;
+            self.data.layout = self.data.layout.clone().sanitized();
+        }
         if self.data.active_tab_id.as_deref() == Some(tab_id) {
             self.data.active_tab_id = self
                 .data
@@ -304,6 +310,7 @@ impl StateStore {
             color: closed.color,
             kind: closed.kind.clone(),
             terminal_launch: closed.terminal_launch.clone(),
+            model: closed.model.clone(),
         };
         let id = record.id.clone();
         self.data.tabs.push(record);
@@ -312,6 +319,34 @@ impl StateStore {
         self.tab_by_id(&id)
             .cloned()
             .ok_or_else(|| "reopened tab missing".to_string())
+    }
+
+    pub fn set_tab_model(&mut self, tab_id: &str, model: Option<String>) -> Result<(), String> {
+        let tab = self
+            .data
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == tab_id)
+            .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
+        tab.model = model;
+        self.save()
+    }
+
+    pub fn layout(&self) -> &crate::store::LayoutState {
+        &self.data.layout
+    }
+
+    /// A secondary pane that names a closed tab is dropped.
+    pub fn set_layout(&mut self, next: crate::store::LayoutState) -> Result<(), String> {
+        let mut next = next.sanitized();
+        if let Some(id) = next.secondary_tab_id.clone() {
+            if !self.data.tabs.iter().any(|t| t.id == id) {
+                next.secondary_tab_id = None;
+                next = next.sanitized();
+            }
+        }
+        self.data.layout = next;
+        self.save()
     }
 
     pub fn set_tab_label(&mut self, tab_id: &str, label: &str) -> Result<(), String> {
@@ -375,6 +410,7 @@ impl StateStore {
             color: Some(role.color.clone()),
             kind: crate::store::state_types::default_tab_kind(),
             terminal_launch: String::new(),
+            model: None,
         };
         self.data.tabs.push(record);
         if make_active {
@@ -420,6 +456,7 @@ impl StateStore {
             color: None,
             kind: "terminal".to_string(),
             terminal_launch: String::new(),
+            model: None,
         };
         apply_terminal_draft(&mut record, &draft);
         self.data.tabs.push(record);
@@ -503,8 +540,20 @@ fn apply_terminal_draft(tab: &mut TabRecord, draft: &TerminalTabDraft) {
     tab.session = None;
 }
 
+/// Millisecond ids, bumped so two tabs made in the same millisecond still get
+/// distinct ids.
 fn new_tab_id() -> String {
-    format!("tab_{:x}", Utc::now().timestamp_millis())
+    use std::sync::atomic::{AtomicI64, Ordering};
+    static LAST: AtomicI64 = AtomicI64::new(0);
+    let now = Utc::now().timestamp_millis();
+    let mut prev = LAST.load(Ordering::Relaxed);
+    loop {
+        let next = now.max(prev + 1);
+        match LAST.compare_exchange_weak(prev, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return format!("tab_{next:x}"),
+            Err(actual) => prev = actual,
+        }
+    }
 }
 
 fn next_tab_order(data: &AppStateFile) -> u32 {
@@ -624,6 +673,95 @@ mod tests {
             r"C:\Users\user\Documents\Projects\Encryptor".to_string(),
         );
         assert_eq!(tab_label("Developer", &answers), "Developer · Encryptor");
+    }
+
+    #[test]
+    fn tab_model_and_layout_survive_close_reopen_and_reload() {
+        use crate::roles::Role;
+        use crate::store::LayoutState;
+        let dir = std::env::temp_dir().join(format!(
+            "dcterminal_layout_test_{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        let role = Role {
+            id: "role_dev".to_string(),
+            name: "Developer".to_string(),
+            template_text: String::new(),
+            template_version: 1,
+            template_hash: String::new(),
+            schema_template_hash: String::new(),
+            default_mode: "agent".to_string(),
+            injection: "send_on_start".to_string(),
+            color: "#fff".to_string(),
+            is_built_in: true,
+            fields: vec![],
+            updated_at: None,
+        };
+        let mut store = StateStore {
+            path: path.clone(),
+            data: AppStateFile::default(),
+        };
+        let first = store.create_draft_tab(&role, "/tmp/a", true).unwrap();
+        let second = store.create_draft_tab(&role, "/tmp/b", true).unwrap();
+        store
+            .set_tab_model(&first, Some("gpt-5".to_string()))
+            .unwrap();
+        store
+            .set_layout(LayoutState {
+                split_mode: "horizontal".to_string(),
+                secondary_tab_id: Some(second.clone()),
+                primary_size: 99.0,
+                file_panel_open: true,
+                file_panel_width: 300.0,
+            })
+            .unwrap();
+        assert_eq!(store.layout().primary_size, 85.0);
+        let loaded: AppStateFile = crate::store::read_json(&path).unwrap();
+        assert_eq!(
+            loaded.layout.secondary_tab_id.as_deref(),
+            Some(second.as_str())
+        );
+        assert_eq!(
+            loaded
+                .tabs
+                .iter()
+                .find(|t| t.id == first)
+                .and_then(|t| t.model.clone()),
+            Some("gpt-5".to_string())
+        );
+        store.close_tab(&second).unwrap();
+        assert_eq!(store.layout().split_mode, "single");
+        assert!(store.layout().secondary_tab_id.is_none());
+        store.close_tab(&first).unwrap();
+        let reopened = store.reopen_closed(None).unwrap();
+        assert_eq!(reopened.id, first);
+        assert_eq!(reopened.model.as_deref(), Some("gpt-5"));
+        store
+            .set_layout(LayoutState {
+                split_mode: "vertical".to_string(),
+                secondary_tab_id: Some("gone".to_string()),
+                ..LayoutState::default()
+            })
+            .unwrap();
+        assert_eq!(store.layout().split_mode, "single");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn tab_ids_made_back_to_back_are_unique() {
+        let ids: std::collections::HashSet<String> =
+            (0..1000).map(|_| super::new_tab_id()).collect();
+        assert_eq!(ids.len(), 1000);
+    }
+
+    #[test]
+    fn old_state_files_without_layout_or_model_load() {
+        let raw = r#"{"schemaVersion":1,"activeTabId":null,"tabs":[]}"#;
+        let parsed: AppStateFile = serde_json::from_str(raw).unwrap();
+        assert_eq!(parsed.layout.split_mode, "single");
+        assert!(!parsed.layout.file_panel_open);
     }
 
     #[test]

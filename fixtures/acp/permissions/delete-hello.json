@@ -1,0 +1,74 @@
+{
+  "label": "d-delete: edit Delete `/tmp/dct-perm-capture/project/hello.txt`",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "session/request_permission",
+    "params": {
+      "sessionId": "427830a2-f380-4904-8508-2c3fec27aff7",
+      "toolCall": {
+        "toolCallId": "call-c267c84e-1429-4421-8147-a6742a0faa7c-5\nfc_p47g13L-6jKPYy-1b19d8b8-aws_ue1_0",
+        "title": "Delete `/tmp/dct-perm-capture/project/hello.txt`",
+        "kind": "edit",
+        "status": "pending"
+      },
+      "options": [
+        {
+          "optionId": "allow-once",
+          "name": "Allow once",
+          "kind": "allow_once"
+        },
+        {
+          "optionId": "allow-always",
+          "name": "Allow always",
+          "kind": "allow_always"
+        },
+        {
+          "optionId": "reject-once",
+          "name": "Reject",
+          "kind": "reject_once"
+        }
+      ]
+    }
+  },
+  "precedingToolCallUpdates": [
+    {
+      "update": {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "call-c267c84e-1429-4421-8147-a6742a0faa7c-5\nfc_p47g13L-6jKPYy-1b19d8b8-aws_ue1_0",
+        "title": "Delete File",
+        "kind": "delete",
+        "status": "pending",
+        "rawInput": {}
+      }
+    },
+    {
+      "update": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-c267c84e-1429-4421-8147-a6742a0faa7c-5\nfc_p47g13L-6jKPYy-1b19d8b8-aws_ue1_0",
+        "title": "Delete `/tmp/dct-perm-capture/project/hello.txt`",
+        "rawInput": {
+          "path": "/tmp/dct-perm-capture/project/hello.txt"
+        },
+        "locations": [
+          {
+            "path": "/tmp/dct-perm-capture/project/hello.txt"
+          }
+        ]
+      }
+    },
+    {
+      "update": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-c267c84e-1429-4421-8147-a6742a0faa7c-5\nfc_p47g13L-6jKPYy-1b19d8b8-aws_ue1_0",
+        "status": "in_progress"
+      }
+    }
+  ],
+  "answer": {
+    "outcome": {
+      "outcome": "selected",
+      "optionId": "allow-once"
+    }
+  }
+}

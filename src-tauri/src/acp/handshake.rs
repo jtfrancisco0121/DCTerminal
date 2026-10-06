@@ -58,7 +58,7 @@ pub fn probe_handshake(cwd: Option<PathBuf>) -> AcpHandshakeProbeResult {
     };
 
     match run_handshake(&mut conn, &work_dir, "agent") {
-        Ok((session_id, mode_id)) => {
+        Ok((session_id, mode_id, _models)) => {
             conn.kill();
             AcpHandshakeProbeResult {
                 success: true,

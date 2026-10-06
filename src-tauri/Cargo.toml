@@ -28,6 +28,7 @@ sha2 = "0.10"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 portable-pty = "0.9.0"
 base64 = "0.23.1"
+ignore = "0.4"
 
 [[bin]]
 name = "build_roles_seed"

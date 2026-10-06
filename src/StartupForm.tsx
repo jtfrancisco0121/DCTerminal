@@ -1,9 +1,20 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  acpSetModel,
   closeTab,
   devSessionCancel,
+  getLayout,
+  getModelSettings,
+  listModels,
+  setModelSettings,
+  ptyKill,
+  setLayout,
+  setTabModel,
+  type ModelList,
+  type ModelSettings,
   devSessionSend,
   devSessionStop,
+  cursorApprovalMode,
   diagnosticsSetCapture,
   diagnosticsStatus,
   listenPermissionAuto,
@@ -43,6 +54,7 @@ import {
   type FieldError,
   type PlanRequestEvent,
   type CliDetectResult,
+  type ApprovalModeStatus,
   type DiagnosticsStatus,
   type Role,
   type RoleSessionStartResult,
@@ -87,6 +99,7 @@ import {
 } from "./handoff/map";
 import { FolderPicker } from "./components/FolderPicker";
 import { SettingsPage } from "./components/SettingsPage";
+import { UnrestrictedBanner } from "./components/UnrestrictedBanner";
 import { folderForTab } from "./projectsView";
 import {
   canContinueStoredSession,
@@ -103,6 +116,11 @@ import { TerminalScratchPad, type TerminalPadHandle } from "./components/Termina
 import { SessionCards } from "./components/SessionCards";
 import { ShortcutsOverlay } from "./components/ShortcutsOverlay";
 import { SplitPanes } from "./components/SplitPanes";
+import { WorkspaceSplit } from "./components/WorkspaceSplit";
+import { FilePanel } from "./components/FilePanel";
+import { ModelPicker } from "./components/ModelPicker";
+import { appendReference } from "./files/paths";
+import { effectiveModel, modelChangeNote } from "./models";
 import { TabSwitcher } from "./components/TabSwitcher";
 import { detectPlatform, type ShortcutMatch, type TerminalAction } from "./keymap";
 import { beginLivePty, dropLivePty, livePty, rekeyLivePty } from "./terminal/live";
@@ -113,6 +131,7 @@ import {
   focusedTerminalId,
   parkedTerminal,
   pasteTerminalText,
+  refitTerminal,
   requestTerminalSearch,
   terminalBracketedPaste,
 } from "./terminal/park";
@@ -139,7 +158,18 @@ import {
   type CursorHistoryEntry,
 } from "./cursorHistory";
 import { TabBar } from "./TabBar";
-import { closeSplit, emptySplit, openSplit, tabAtIndex, type SplitState } from "./tabChrome";
+import {
+  clampSplitSize,
+  closeSplit,
+  emptySplit,
+  reconcileSplit,
+  splitCandidates,
+  splitFromLayout,
+  splitOpen,
+  swapSplit,
+  tabAtIndex,
+  type SplitState,
+} from "./tabChrome";
 import { useAppShortcuts } from "./useAppShortcuts";
 import { useScratchPads } from "./useScratchPads";
 import {
@@ -195,11 +225,26 @@ export function StartupForm({
   const [cardsByTab, setCardsByTab] = useState<Record<string, Cards>>({});
   const [planRequest, setPlanRequest] = useState<PlanRequestEvent | null>(null);
   const [split, setSplit] = useState<SplitState>(emptySplit());
+  const [splitPicker, setSplitPicker] = useState<"horizontal" | "vertical" | null>(null);
+  const [focusedPane, setFocusedPane] = useState<"primary" | "secondary">("primary");
+  const focusedPaneRef = useRef(focusedPane);
+  focusedPaneRef.current = focusedPane;
+  const [filePanelOpen, setFilePanelOpen] = useState(false);
+  const [filePanelWidth, setFilePanelWidth] = useState(280);
+  const layoutLoadedRef = useRef(false);
+  const previousActiveRef = useRef<string | null>(null);
+  const secondaryInputRef = useRef<HTMLTextAreaElement>(null);
+  const [modelList, setModelList] = useState<ModelList | null>(null);
+  const [modelSettings, setModelSettingsState] = useState<ModelSettings | null>(null);
+  const [modelNotice, setModelNotice] = useState<string | null>(null);
+  const [modelsRefreshing, setModelsRefreshing] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [captureOn, setCaptureOn] = useState(false);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsStatus | null>(null);
+  const [approvalMode, setApprovalMode] = useState<ApprovalModeStatus | null>(null);
+  const [unrestrictedDismissed, setUnrestrictedDismissed] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [handoffs, setHandoffs] = useState<HandoffRecord[]>([]);
   const [handoffTarget, setHandoffTarget] = useState<HandoffTargetId | null>(null);
@@ -277,7 +322,13 @@ export function StartupForm({
   const waiterRef = useRef(createTurnWaiter());
   const chainAbortRef = useRef(false);
   const dialogOpen =
-    paletteOpen || switcherOpen || shortcutsOpen || settingsOpen || handoffTarget !== null || savedPlan !== null;
+    paletteOpen ||
+    switcherOpen ||
+    shortcutsOpen ||
+    settingsOpen ||
+    splitPicker !== null ||
+    handoffTarget !== null ||
+    savedPlan !== null;
   const platform = useMemo(
     () => detectPlatform(typeof navigator === "undefined" ? "" : navigator.platform),
     [],
@@ -516,6 +567,65 @@ export function StartupForm({
       .then(setTerminalSettingsState)
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    getLayout()
+      .then((layout) => {
+        if (cancelled) return;
+        setSplit(splitFromLayout(layout));
+        setFilePanelOpen(layout.filePanelOpen);
+        setFilePanelWidth(layout.filePanelWidth);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) layoutLoadedRef.current = true;
+      });
+    getModelSettings()
+      .then((value) => {
+        if (!cancelled) setModelSettingsState(value);
+      })
+      .catch(() => {});
+    listModels(false)
+      .then((list) => {
+        if (!cancelled) setModelList(list);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Split and file panel survive a restart (state.json).
+  useEffect(() => {
+    if (!layoutLoadedRef.current) return;
+    const timer = window.setTimeout(() => {
+      const open = splitOpen(split);
+      void setLayout({
+        splitMode: open ? split.mode : "single",
+        secondaryTabId: open ? split.secondaryTabId : null,
+        primarySize: clampSplitSize(split.primarySize),
+        filePanelOpen,
+        filePanelWidth,
+      }).catch(() => {});
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [split, filePanelOpen, filePanelWidth]);
+
+  // One tab is never in both panes. Selecting the second pane's tab swaps.
+  useEffect(() => {
+    const previous = previousActiveRef.current;
+    previousActiveRef.current = activeTabId;
+    if (savedTabs.length === 0) return;
+    const ids = savedTabs.map((tab) => tab.id);
+    setSplit((current) =>
+      reconcileSplit(current, ids, previous === activeTabId ? null : previous, activeTabId),
+    );
+  }, [activeTabId, savedTabs]);
+
+  useEffect(() => {
+    if (!splitOpen(split)) setFocusedPane("primary");
+  }, [split]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1045,6 +1155,22 @@ export function StartupForm({
     [roleId, startSession],
   );
 
+  /** Stop a chat shown in the second pane. The main pane's tab is untouched. */
+  const stopSecondarySession = useCallback(
+    async (tabId: string) => {
+      setBusy(true);
+      try {
+        const scrollback = segmentsToPlainText(runtimesRef.current[tabId]?.segments ?? []);
+        await devSessionStop(scrollback || undefined, tabId);
+        patchRuntime(tabId, (rt) => clearLiveSession(rt));
+        await refreshTabs();
+      } finally {
+        setBusy(false);
+      }
+    },
+    [patchRuntime, refreshTabs],
+  );
+
   const stopSession = useCallback(async () => {
     if (!activeTabId) return;
     setBusy(true);
@@ -1171,12 +1297,12 @@ export function StartupForm({
     }
   }, [applyDraft, roleId, roles, stashActiveTab]);
 
-  const cancelTurn = useCallback(async () => {
-    if (!activeTabId) return;
+  const cancelTurnFor = useCallback(async (tabId: string | null) => {
+    if (!tabId) return;
     setBusy(true);
     try {
-      await devSessionCancel(activeTabId);
-      patchRuntime(activeTabId, (rt) => ({
+      await devSessionCancel(tabId);
+      patchRuntime(tabId, (rt) => ({
         ...rt,
         segments: [
           ...rt.segments,
@@ -1185,51 +1311,47 @@ export function StartupForm({
       }));
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      patchRuntime(activeTabId, (rt) => ({ ...rt, promptError: message }));
+      patchRuntime(tabId, (rt) => ({ ...rt, promptError: message }));
     } finally {
       setBusy(false);
     }
-  }, [activeTabId, patchRuntime]);
+  }, [patchRuntime]);
 
-  const handlePermissionSelect = useCallback(
-    async (optionId: string) => {
-      if (!activeTabId || !permissionRequest) return;
+  const cancelTurn = useCallback(() => cancelTurnFor(activeTabId), [activeTabId, cancelTurnFor]);
+
+  /** Answer a permission card on any tab (main or second pane). */
+  const respondPermissionFor = useCallback(
+    async (tabId: string | null, optionId: string | null) => {
+      if (!tabId) return;
+      const request = runtimesRef.current[tabId]?.permission;
+      if (!request) return;
       setBusy(true);
       try {
-        await respondPermissionRequest(
-          activeTabId,
-          permissionRequest.jsonRpcId,
-          "selected",
-          optionId,
-        );
-        patchRuntime(activeTabId, (rt) => ({ ...rt, permission: null }));
+        if (optionId === null) {
+          await respondPermissionRequest(tabId, request.jsonRpcId, "cancelled");
+        } else {
+          await respondPermissionRequest(tabId, request.jsonRpcId, "selected", optionId);
+        }
+        patchRuntime(tabId, (rt) => ({ ...rt, permission: null }));
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
-        patchRuntime(activeTabId, (rt) => ({ ...rt, promptError: message }));
+        patchRuntime(tabId, (rt) => ({ ...rt, promptError: message }));
       } finally {
         setBusy(false);
       }
     },
-    [activeTabId, permissionRequest, patchRuntime],
+    [patchRuntime],
   );
 
-  const handlePermissionCancel = useCallback(async () => {
-    if (!activeTabId || !permissionRequest) return;
-    setBusy(true);
-    try {
-      await respondPermissionRequest(
-        activeTabId,
-        permissionRequest.jsonRpcId,
-        "cancelled",
-      );
-      patchRuntime(activeTabId, (rt) => ({ ...rt, permission: null }));
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      patchRuntime(activeTabId, (rt) => ({ ...rt, promptError: message }));
-    } finally {
-      setBusy(false);
-    }
-  }, [activeTabId, permissionRequest, patchRuntime]);
+  const handlePermissionSelect = useCallback(
+    (optionId: string) => respondPermissionFor(activeTabId, optionId),
+    [activeTabId, respondPermissionFor],
+  );
+
+  const handlePermissionCancel = useCallback(
+    () => respondPermissionFor(activeTabId, null),
+    [activeTabId, respondPermissionFor],
+  );
 
   const sendText = useCallback(
     async (tabId: string, text: string) => {
@@ -1262,16 +1384,26 @@ export function StartupForm({
     [patchRuntime, scratch],
   );
 
-  const sendFollowUp = useCallback(async () => {
-    const text = followUp.trim();
-    if (!text || !activeTabId || activeRuntime.agentExited || promptInFlight) return;
-    setBusy(true);
-    try {
-      await sendText(activeTabId, text);
-    } finally {
-      setBusy(false);
-    }
-  }, [followUp, activeTabId, activeRuntime.agentExited, promptInFlight, sendText]);
+  const sendFollowUpFor = useCallback(
+    async (tabId: string | null) => {
+      if (!tabId) return;
+      const rt = runtimesRef.current[tabId];
+      const text = rt?.followUp.trim() ?? "";
+      if (!text || !rt || rt.agentExited || rt.promptInFlight) return;
+      setBusy(true);
+      try {
+        await sendText(tabId, text);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [sendText],
+  );
+
+  const sendFollowUp = useCallback(
+    () => sendFollowUpFor(activeTabId),
+    [activeTabId, sendFollowUpFor],
+  );
 
   const transferPad = useCallback(() => {
     if (!activeTabId) return;
@@ -1369,6 +1501,117 @@ export function StartupForm({
     }
   }, [loadTabIntoForm, refreshTabs, stashActiveTab]);
 
+  const splitRef = useRef(split);
+  splitRef.current = split;
+
+  /** Settings role key for a tab: its role, or "cursor-cli" for CLI tabs. */
+  const modelRoleKey = (tab: TabSummary | null | undefined): string | null => {
+    if (!tab) return null;
+    if (tab.kind === "terminal" && tab.terminalLaunch === "cursor-cli") return "cursor-cli";
+    return tab.roleId || null;
+  };
+
+  const inheritedModel = (tab: TabSummary | null | undefined): string =>
+    effectiveModel(modelSettings, modelRoleKey(tab), null);
+
+  /**
+   * Change one tab's model. A live chat switches in place (or restarts the
+   * agent with --model and reloads the session). A running terminal must be
+   * restarted, so we ask first.
+   */
+  const changeTabModel = useCallback(
+    async (tab: TabSummary, model: string | null) => {
+      setModelNotice(null);
+      const rt = runtimesRef.current[tab.id];
+      try {
+        if (tab.kind !== "terminal" && rt?.session && !rt.agentExited) {
+          const target = model ?? effectiveModel(modelSettings, modelRoleKey(tab), null);
+          const result = await acpSetModel(tab.id, target);
+          if (model === null) await setTabModel(tab.id, null);
+          patchRuntime(tab.id, (current) => ({
+            ...current,
+            session: current.session ? { ...current.session, model: result.model } : current.session,
+            segments: appendStreamSegment(current.segments, {
+              id: `model-${Date.now()}`,
+              kind: "system",
+              text: modelChangeNote(result.model, result.via, result.restarted),
+            }),
+          }));
+        } else {
+          await setTabModel(tab.id, model);
+          const live = livePty(tab.id);
+          if (tab.kind === "terminal" && live && live.exitCode == null) {
+            const restart = window.confirm(
+              "The new model applies when the terminal restarts. Stop the running agent now?",
+            );
+            if (restart) {
+              await ptyKill(tab.id).catch(() => {});
+              setModelNotice("The agent stopped. Press Restart to use the new model.");
+            } else {
+              setModelNotice("The new model applies the next time this terminal starts.");
+            }
+          }
+        }
+        await refreshTabs();
+      } catch (err: unknown) {
+        setModelNotice(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [modelSettings, patchRuntime, refreshTabs],
+  );
+
+  const modelPickerFor = (tab: TabSummary | null | undefined, liveModel?: string | null) => {
+    if (!tab) return null;
+    if (tab.kind === "terminal" && tab.terminalLaunch !== "role" && tab.terminalLaunch !== "cursor-cli") {
+      return null;
+    }
+    const inherited = inheritedModel(tab);
+    const models = modelList?.models ?? [];
+    return (
+      <ModelPicker
+        compact
+        models={models}
+        value={liveModel && liveModel !== (tab.model ?? inherited) ? liveModel : (tab.model ?? null)}
+        inherited={{ model: inherited, label: "Default" }}
+        ariaLabel={`Model for ${tab.label}`}
+        disabled={busy || !!runtimes[tab.id]?.promptInFlight}
+        onChange={(model) => void changeTabModel(tab, model)}
+      />
+    );
+  };
+
+  /** Move keyboard focus into the main pane or the second pane. */
+  const focusPane = useCallback(
+    (pane: "primary" | "secondary") => {
+      const tabId =
+        pane === "secondary"
+          ? splitOpen(splitRef.current)
+            ? splitRef.current.secondaryTabId
+            : null
+          : activeTabIdRef.current;
+      if (!tabId) return;
+      setFocusedPane(pane);
+      const summary = savedTabs.find((tab) => tab.id === tabId);
+      if (summary?.kind === "terminal") {
+        focusParkedTerminal(tabId);
+        parkedTerminal(tabId)?.term.focus();
+        return;
+      }
+      if (pane === "secondary") secondaryInputRef.current?.focus();
+      else inputRef.current?.focus();
+    },
+    [savedTabs],
+  );
+
+  /** The second pane's tab becomes active; the active tab moves across. */
+  const swapPanes = useCallback(() => {
+    const swapped = swapSplit(splitRef.current, activeTabIdRef.current);
+    if (!swapped) return;
+    // reconcileSplit moves the previous active tab into the second pane.
+    void handleSelectTab(swapped.activate);
+    setFocusedPane("primary");
+  }, [handleSelectTab]);
+
   const onShortcut = useCallback(
     (match: ShortcutMatch) => {
       if (match.action === "closeDialog") {
@@ -1376,6 +1619,7 @@ export function StartupForm({
         setSwitcherOpen(false);
         setShortcutsOpen(false);
         setSettingsOpen(false);
+        setSplitPicker(null);
         return;
       }
       if (match.action === "settings") {
@@ -1395,6 +1639,17 @@ export function StartupForm({
       }
       if (match.action === "shortcutsHelp") {
         setShortcutsOpen(true);
+        return;
+      }
+      const secondaryId = splitOpen(split) ? split.secondaryTabId : null;
+      const inSecondary =
+        !!secondaryId && !!document.activeElement?.closest("[data-pane='secondary']");
+      if (match.action === "send" && inSecondary) {
+        if (document.activeElement === secondaryInputRef.current) void sendFollowUpFor(secondaryId);
+        return;
+      }
+      if (match.action === "focusInput" && inSecondary && secondaryId) {
+        focusPane("secondary");
         return;
       }
       if (match.action === "send") {
@@ -1463,9 +1718,26 @@ export function StartupForm({
         return;
       }
       if (match.action === "splitRight" || match.action === "splitDown") {
-        const other = savedTabs.find((tab) => tab.id !== activeTabId);
-        if (!other) return;
-        setSplit(openSplit(split, match.action === "splitRight" ? "horizontal" : "vertical", other.id));
+        if (splitCandidates(savedTabs, activeTabId).length === 0) return;
+        setSplitPicker(match.action === "splitRight" ? "horizontal" : "vertical");
+        return;
+      }
+      if (match.action === "swapPanes") {
+        swapPanes();
+        return;
+      }
+      if (match.action === "focusOtherPane") {
+        if (!secondaryId) return;
+        focusPane(focusedPaneRef.current === "secondary" ? "primary" : "secondary");
+        return;
+      }
+      if (match.action === "closeSplit") {
+        setSplit((current) => closeSplit(current));
+        focusPane("primary");
+        return;
+      }
+      if (match.action === "toggleFilePanel") {
+        setFilePanelOpen((open) => !open);
         return;
       }
       if (match.action === "renameTab" && activeTabId) {
@@ -1486,8 +1758,11 @@ export function StartupForm({
       savedTabs,
       selectTabByIndex,
       sendFollowUp,
+      sendFollowUpFor,
       sendFromPad,
       split,
+      swapPanes,
+      focusPane,
       transferPad,
     ],
   );
@@ -1568,15 +1843,24 @@ export function StartupForm({
     parkedTerminal(tabId)?.term.focus();
   }, []);
 
+  const secondaryInFlight =
+    splitOpen(split) && !!split.secondaryTabId && !!runtimes[split.secondaryTabId]?.promptInFlight;
+
   useAppShortcuts({
     platform,
     dialogOpen,
-    promptInFlight: !!promptInFlight,
+    promptInFlight: !!promptInFlight || secondaryInFlight,
     getSurface,
     onAction: onShortcut,
     onTerminal: onTerminalAction,
     onCancelTurn: () => {
-      void cancelTurn();
+      // Escape cancels the turn in the pane that has focus.
+      const inSecondary = !!document.activeElement?.closest("[data-pane='secondary']");
+      if (inSecondary) {
+        if (secondaryInFlight) void cancelTurnFor(split.secondaryTabId);
+        return;
+      }
+      if (promptInFlight) void cancelTurn();
     },
     onPadEscape: () => {
       const summary = savedTabs.find((tab) => tab.id === activeTabIdRef.current);
@@ -1600,6 +1884,29 @@ export function StartupForm({
       })
       .catch(() => {});
   }, []);
+
+  const refreshApprovalMode = useCallback(() => {
+    cursorApprovalMode()
+      .then((status) => {
+        setApprovalMode(status);
+        if (!status.roleRulesOff) setUnrestrictedDismissed(false);
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    refreshApprovalMode();
+    const onFocus = () => refreshApprovalMode();
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") refreshApprovalMode();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [refreshApprovalMode]);
 
   const loadHandoffFields = useCallback((target: HandoffTargetId) => {
     setHandoffFields(null);
@@ -1663,7 +1970,9 @@ export function StartupForm({
         return;
       }
       setTerminalCapture(null);
-      const screen = document.querySelector("[data-session-screen]");
+      const screen =
+        document.querySelector("[data-pane='primary'] [data-session-screen]") ??
+        document.querySelector("[data-session-screen]");
       setHandoffSelection(selectionInside(screen instanceof HTMLElement ? screen : null));
       setHandoffError(null);
       setHandoffTarget(target);
@@ -1863,10 +2172,6 @@ export function StartupForm({
       });
       return;
     }
-    if (id === "closeSplit") {
-      setSplit(closeSplit());
-      return;
-    }
     if (id.startsWith("goto:")) {
       void handleSelectTab(id.slice("goto:".length));
       return;
@@ -1874,10 +2179,11 @@ export function StartupForm({
     onShortcut({ action: id as ShortcutMatch["action"] });
   };
 
-  const setFollowUp = (value: string) => {
-    if (!activeTabId) return;
-    patchRuntime(activeTabId, (rt) => ({ ...rt, followUp: value }));
+  const setFollowUpFor = (tabId: string | null, value: string) => {
+    if (!tabId) return;
+    patchRuntime(tabId, (rt) => ({ ...rt, followUp: value }));
   };
+  const setFollowUp = (value: string) => setFollowUpFor(activeTabId, value);
 
   const setField = (key: string, value: string) => {
     setValues((prev) => {
@@ -1949,6 +2255,15 @@ export function StartupForm({
     }
   };
 
+  const showUnrestrictedBanner =
+    !!approvalMode?.roleRulesOff && !unrestrictedDismissed && !settingsOpen;
+  const unrestrictedBanner = (
+    <UnrestrictedBanner
+      visible={showUnrestrictedBanner}
+      onDismiss={() => setUnrestrictedDismissed(true)}
+    />
+  );
+
   const tabBar = (
     <TabBar
       tabs={savedTabs}
@@ -1959,6 +2274,7 @@ export function StartupForm({
       attentionTabIds={needsAttention}
       canReopen={closedTabs.length > 0}
       settingsOpen={settingsOpen}
+      roleRulesOff={!!approvalMode?.roleRulesOff}
       onSelect={handleSelectTab}
       onClose={handleCloseTab}
       onNew={handleNewTab}
@@ -1987,6 +2303,23 @@ export function StartupForm({
       }}
       terminalSettings={terminalSettings}
       onTerminalSettings={updateTerminalSettings}
+      modelList={modelList}
+      modelSettings={modelSettings}
+      onModelSettings={(next) => {
+        setModelSettingsState(next);
+        void setModelSettings(next)
+          .then(setModelSettingsState)
+          .catch(() => {});
+      }}
+      modelsRefreshing={modelsRefreshing}
+      onRefreshModels={() => {
+        setModelsRefreshing(true);
+        void listModels(true)
+          .then(setModelList)
+          .catch(() => {})
+          .finally(() => setModelsRefreshing(false));
+      }}
+      approvalMode={approvalMode}
       onClose={() => setSettingsOpen(false)}
     />
   );
@@ -1997,7 +2330,7 @@ export function StartupForm({
         <CommandPalette
           tabs={savedTabs.map((tab) => ({ id: tab.id, label: tab.label }))}
           canReopen={closedTabs.length > 0}
-          splitOpen={split.mode !== "single"}
+          splitOpen={splitOpen(split)}
           canSendPlan={(roleId === "role_planner" && !!session) || !!isPlannerTerminal}
           onRun={runPalette}
           onClose={() => setPaletteOpen(false)}
@@ -2011,6 +2344,23 @@ export function StartupForm({
             void handleSelectTab(tabId);
           }}
           onClose={() => setSwitcherOpen(false)}
+        />
+      )}
+      {splitPicker && (
+        <TabSwitcher
+          title={splitPicker === "horizontal" ? "Split right with tab" : "Split down with tab"}
+          placeholder="Show which tab in the second pane?"
+          tabs={splitCandidates(savedTabs, activeTabId)}
+          onSelect={(tabId) => {
+            const mode = splitPicker;
+            setSplitPicker(null);
+            setSplit((current) => ({
+              mode,
+              secondaryTabId: tabId,
+              primarySize: clampSplitSize(current.primarySize),
+            }));
+          }}
+          onClose={() => setSplitPicker(null)}
         />
       )}
       {shortcutsOpen && (
@@ -2059,6 +2409,218 @@ export function StartupForm({
   );
 
   const fontSize = terminalSettings?.fontSize ?? 14;
+
+  const secondaryTab =
+    !settingsOpen && splitOpen(split) && split.secondaryTabId !== activeTabId
+      ? savedTabs.find((tab) => tab.id === split.secondaryTabId)
+      : undefined;
+
+  const renderSecondary = (tab: TabSummary) => {
+    const rt = runtimes[tab.id];
+    const liveChat = tab.kind !== "terminal" && !!rt?.session;
+    let body: ReactNode;
+    if (tab.kind === "terminal") {
+      const tabLaunch =
+        tab.terminalLaunch === "cursor-cli"
+          ? "cursor-cli"
+          : tab.terminalLaunch === "role"
+            ? "role"
+            : "shell";
+      body = (
+        <TerminalView
+          key={tab.id}
+          ptyId={tab.id}
+          cwd={tab.cwd}
+          launch={tabLaunch}
+          roleId={tab.roleId}
+          fontSize={fontSize}
+          resumeSessionId={tab.resumeSessionId}
+          autoOpen={!livePty(tab.id)}
+          autoFocus={false}
+        />
+      );
+    } else if (rt?.session) {
+      const attach = rt.startResult?.injectionStrategy === "attach_to_first_message";
+      body = (
+        <SessionTerminal
+          key={tab.id}
+          title={tab.label}
+          cwd={rt.session.cwd}
+          sessionId={rt.session.sessionId}
+          segments={rt.segments}
+          promptInFlight={rt.promptInFlight}
+          followUp={rt.followUp}
+          busy={busy}
+          canSendFollowUp={!attach || !rt.startResult?.startupInjected}
+          promptError={rt.promptError}
+          permissionRequest={rt.permission}
+          onPermissionSelect={(optionId) => void respondPermissionFor(tab.id, optionId)}
+          onPermissionCancel={() => void respondPermissionFor(tab.id, null)}
+          onCancelTurn={() => void cancelTurnFor(tab.id)}
+          onFollowUpChange={(value) => setFollowUpFor(tab.id, value)}
+          onSendFollowUp={() => void sendFollowUpFor(tab.id)}
+          onStop={() => void stopSecondarySession(tab.id)}
+          folderWarning={rt.folderWarning}
+          agentExited={rt.agentExited}
+          onRestart={() => void stopSecondarySession(tab.id)}
+          inputRef={secondaryInputRef}
+          headerExtra={modelPickerFor(tab, rt.session.model)}
+        />
+      );
+    } else {
+      body = (
+        <div className="split-pane-empty">
+          <p className="hint">This tab has no running session.</p>
+          <button type="button" className="secondary-button" onClick={swapPanes}>
+            Open in main pane
+          </button>
+        </div>
+      );
+    }
+    const planWaiting = planRequest?.tabId === tab.id;
+    return (
+      <div
+        className={
+          focusedPane === "secondary" ? "split-pane split-pane-focused" : "split-pane"
+        }
+        data-pane="secondary"
+        aria-label={`Second pane: ${tab.label}`}
+        onFocusCapture={() => setFocusedPane("secondary")}
+        onMouseDown={() => setFocusedPane("secondary")}
+      >
+        <div className="split-pane-bar">
+          <span className="split-pane-title" title={tab.cwd}>
+            {tab.label}
+          </span>
+          {!liveChat && modelPickerFor(tab)}
+          <span className="split-pane-spacer" />
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={swapPanes}
+            title="Swap panes"
+            aria-label="Swap panes"
+          >
+            Swap
+          </button>
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => {
+              setSplit((current) => closeSplit(current));
+              setFocusedPane("primary");
+            }}
+            title="Close split"
+            aria-label="Close split"
+          >
+            Close
+          </button>
+        </div>
+        {planWaiting && (
+          <p className="hint split-pane-note">
+            A plan is waiting for review. Swap panes to answer it.
+          </p>
+        )}
+        <div className="split-pane-body">{body}</div>
+      </div>
+    );
+  };
+
+  const activeCwd = activeTabSummary?.cwd ?? "";
+  const filePanel =
+    filePanelOpen && !settingsOpen && activeTabId ? (
+      <div className="file-panel-shell" style={{ width: filePanelWidth }}>
+        {activeCwd ? (
+          <FilePanel
+            key={activeTabId}
+            tabId={activeTabId}
+            cwd={activeCwd}
+            platform={platform}
+            onInsertReference={(path) => {
+              scratch.setContent(activeTabId, appendReference(scratch.content, path));
+            }}
+            onClose={() => setFilePanelOpen(false)}
+          />
+        ) : (
+          <div className="file-panel">
+            <p className="hint">Choose a working folder to see its files.</p>
+          </div>
+        )}
+        <div
+          className="file-panel-resizer"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize file panel"
+          onMouseDown={(event) => {
+            event.preventDefault();
+            const startX = event.clientX;
+            const startWidth = filePanelWidth;
+            const onMove = (move: MouseEvent) => {
+              const next = Math.min(900, Math.max(160, startWidth + move.clientX - startX));
+              setFilePanelWidth(next);
+            };
+            const onUp = () => {
+              window.removeEventListener("mousemove", onMove);
+              window.removeEventListener("mouseup", onUp);
+            };
+            window.addEventListener("mousemove", onMove);
+            window.addEventListener("mouseup", onUp);
+          }}
+        />
+      </div>
+    ) : null;
+
+  const shell = (content: ReactNode) => (
+    <section className="workspace-shell">
+      {tabBar}
+      {unrestrictedBanner}
+      <div className="workspace-body">
+        {filePanel}
+        <div className="workspace-main">
+          <WorkspaceSplit
+            mode={secondaryTab ? split.mode : "single"}
+            primarySize={clampSplitSize(split.primarySize)}
+            onResize={(size) => {
+              const next = clampSplitSize(size);
+              setSplit((current) =>
+                Math.abs(clampSplitSize(current.primarySize) - next) < 0.5
+                  ? current
+                  : { ...current, primarySize: next },
+              );
+            }}
+            primary={
+              <div
+                className={
+                  secondaryTab && focusedPane === "primary"
+                    ? "split-pane split-pane-primary split-pane-focused"
+                    : "split-pane split-pane-primary"
+                }
+                data-pane="primary"
+                onFocusCapture={() => setFocusedPane("primary")}
+                onMouseDown={() => setFocusedPane("primary")}
+              >
+                {modelNotice && (
+                  <p className="hint model-notice" role="status">
+                    {modelNotice}{" "}
+                    <button
+                      type="button"
+                      className="link-button"
+                      onClick={() => setModelNotice(null)}
+                    >
+                      Dismiss
+                    </button>
+                  </p>
+                )}
+                {content}
+              </div>
+            }
+            secondary={secondaryTab ? renderSecondary(secondaryTab) : null}
+          />
+        </div>
+      </div>
+      {overlays}
+    </section>
+  );
   if (activeTabSummary?.kind === "terminal" && !settingsOpen) {
     const linked = handoffs.find((item) => item.targetTabId === activeTabId) ?? null;
     const launch =
@@ -2067,9 +2629,8 @@ export function StartupForm({
         : activeTabSummary.terminalLaunch === "role"
           ? "role"
           : "shell";
-    return (
-      <section className="workspace-shell">
-        {tabBar}
+    const terminalModelPicker = modelPickerFor(activeTabSummary);
+    return shell(
         <section className="status-card status-card-session-full terminal-screen">
           {linked && (
             <HandoffBanner
@@ -2080,16 +2641,19 @@ export function StartupForm({
             />
           )}
           {terminalError && <p className="error">{terminalError}</p>}
-          {isPlannerTerminal && (
+          {(isPlannerTerminal || terminalModelPicker) && (
             <div className="terminal-toolbar">
-              <HandoffActions
-                enabled
-                reason={null}
-                busy={busy}
-                onSend={(target) => {
-                  void openTerminalHandoff(target);
-                }}
-              />
+              {terminalModelPicker}
+              {isPlannerTerminal && (
+                <HandoffActions
+                  enabled
+                  reason={null}
+                  busy={busy}
+                  onSend={(target) => {
+                    void openTerminalHandoff(target);
+                  }}
+                />
+              )}
             </div>
           )}
           <TerminalView
@@ -2135,21 +2699,24 @@ export function StartupForm({
             bracketedPaste={terminalBracketedPaste(activeTabSummary.id)}
             onFocusTerminal={focusActiveTerminal}
             onFocusPad={() => blurParkedTerminal(activeTabSummary.id)}
+            onOpenChange={() => refitTerminal(activeTabSummary.id)}
           />
-        </section>
-        {overlays}
-      </section>
+        </section>,
     );
   }
 
   if (!role) {
-    return (
-      <section className="workspace-shell">
-        {tabBar}
-        {settingsOpen ? settingsPage : <p className="hint empty-state">Loading…</p>}
-        {overlays}
-      </section>
-    );
+    if (settingsOpen) {
+      return (
+        <section className="workspace-shell">
+          {tabBar}
+          {unrestrictedBanner}
+          {settingsPage}
+          {overlays}
+        </section>
+      );
+    }
+    return shell(<p className="hint empty-state">Loading…</p>);
   }
 
   const activeHandoff = handoffs.find((item) => item.targetTabId === activeTabId) ?? null;
@@ -2223,6 +2790,28 @@ export function StartupForm({
       </div>
   );
 
+  const blankRoleKey =
+    launchChoice === "cursor-cli" ? "cursor-cli" : launchChoice === "shell" ? null : roleId || null;
+  const blankModelPicker =
+    activeTabSummary && blankRoleKey ? (
+      <ModelPicker
+        compact
+        models={modelList?.models ?? []}
+        value={activeTabSummary.model ?? null}
+        inherited={{ model: effectiveModel(modelSettings, blankRoleKey, null), label: "Default" }}
+        ariaLabel="Model for this tab"
+        disabled={busy}
+        onChange={(model) => {
+          const tabId = activeTabSummary.id;
+          void setTabModel(tabId, model)
+            .then(() => refreshTabs())
+            .catch((err: unknown) =>
+              setModelNotice(err instanceof Error ? err.message : String(err)),
+            );
+        }}
+      />
+    ) : null;
+
   const restoreActions = surface === "restore" && (
     <div className="restore-compact">
       <div className="button-row">
@@ -2283,6 +2872,7 @@ export function StartupForm({
         >
           {rememberedSurface(roleId) === "terminal" ? "Start terminal" : "Start"}
         </button>
+        {blankModelPicker}
       </div>
       {surface === "restore" && (
         <label className="field-label continue-option">
@@ -2319,9 +2909,7 @@ export function StartupForm({
   if (session && !settingsOpen) {
     const attachFirst =
       startResult?.injectionStrategy === "attach_to_first_message";
-    return (
-      <section className="workspace-shell">
-        {tabBar}
+    return shell(
         <section className="status-card status-card-session-full">
         {handoffBanner}
         <SessionCards
@@ -2345,9 +2933,6 @@ export function StartupForm({
           }}
           handoff={handoffOffer}
         />
-        <SplitPanes
-          mode={split.mode}
-          primary={
             <SplitPanes
               mode={
                 paneByTab[activeTabId ?? ""]?.open
@@ -2382,6 +2967,7 @@ export function StartupForm({
               historyCursor={historyCursor}
               onHistoryCursor={setHistoryCursor}
               handoff={handoffOffer}
+              headerExtra={modelPickerFor(activeTabSummary, session.model)}
             />
               }
               secondary={
@@ -2418,30 +3004,6 @@ export function StartupForm({
                 ) : null
               }
             />
-          }
-          secondary={
-            split.secondaryTabId ? (
-              <aside className="split-secondary" aria-label="Second tab">
-                <p className="hint">
-                  {savedTabs.find((tab) => tab.id === split.secondaryTabId)?.label ??
-                    "Other tab"}
-                </p>
-                <pre className="mono-snippet">
-                  {segmentsToPlainText(
-                    runtimes[split.secondaryTabId]?.segments ?? [],
-                  ) || "No live output in this tab yet."}
-                </pre>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => setSplit(closeSplit())}
-                >
-                  Close split
-                </button>
-              </aside>
-            ) : null
-          }
-        />
         <ScratchPad
           ref={padRef}
           content={scratch.content}
@@ -2472,18 +3034,21 @@ export function StartupForm({
             Last turn: {lastPromptResult.stopReason ?? "finished"}
           </p>
         )}
+        </section>,
+    );
+  }
+
+  if (settingsOpen) {
+    return (
+      <section className="workspace-shell">
+        {tabBar}
+        {settingsPage}
         {overlays}
-        </section>
       </section>
     );
   }
 
-  return (
-    <section className="workspace-shell">
-      {tabBar}
-      {settingsOpen ? (
-        settingsPage
-      ) : (
+  return shell(
         <div
           className="empty-state"
           ref={emptyStateRef}
@@ -2599,6 +3164,7 @@ export function StartupForm({
                 >
                   {launchChoice === "cursor-cli" ? "Start Cursor CLI" : "Start terminal"}
                 </button>
+                {launchChoice === "cursor-cli" && blankModelPicker}
               </div>
             ) : (
               <>
@@ -2623,9 +3189,6 @@ export function StartupForm({
             )}
             {!cliFound && <p className="error">Cursor CLI was not found.</p>}
           </div>
-        </div>
-      )}
-      {overlays}
-    </section>
+        </div>,
   );
 }

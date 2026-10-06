@@ -25,6 +25,12 @@ npm run check
 ./install.sh
 ```
 
+### Manual checks for the split view, file panel, and models (Job 1)
+
+- Split: open two tabs (one terminal, one chat). Cmd+\\ and pick the other tab. Type in each pane and check keys only reach the focused one. Cmd+Alt+S swaps, Cmd+Alt+O moves focus, Cmd+Alt+W closes. Drag the divider, quit, reopen: the split and size come back. The terminal in the second pane must be the same process (`ps` shows one `agent`/shell per tab).
+- Files: Cmd+B. Open folders, check `.git`, `node_modules`, `target`, and ignored files are hidden. Preview a source file and an image. Edit, Cmd+S, then change the file in another editor and save again: the conflict bar appears. A symlink to a file outside the folder must not open. Reveal in Finder, Copy path, Insert @file.
+- Models: Settings > Models shows the `agent --list-models` list (or the cached/built-in list with a note). Change a role default and a tab override. A role terminal restarts with `--model <id>`. On a running chat, the transcript says how the model changed (in place, or restarted and reloaded).
+
 ## Linux checks that also cover the Windows build
 
 ```bash

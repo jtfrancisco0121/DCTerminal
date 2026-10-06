@@ -1,11 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
   buildPalette,
+  clampSplitSize,
   closeSplit,
+  emptySplit,
   filterCommands,
   openSplit,
   pushClosed,
+  reconcileSplit,
   reopenLast,
+  splitCandidates,
+  splitFromLayout,
+  splitOpen,
+  swapSplit,
   tabAtIndex,
   CLOSED_TAB_LIMIT,
 } from "./tabChrome";
@@ -54,8 +61,34 @@ describe("tab chrome", () => {
 
   it("opens a side-by-side view of two tabs and can close it", () => {
     const split = openSplit({ mode: "single", secondaryTabId: null }, "horizontal", "tab_b");
-    expect(split).toEqual({ mode: "horizontal", secondaryTabId: "tab_b" });
+    expect(split).toEqual({ mode: "horizontal", secondaryTabId: "tab_b", primarySize: 50 });
     expect(closeSplit().mode).toBe("single");
+    expect(closeSplit({ ...split, primarySize: 30 }).primarySize).toBe(30);
+  });
+
+  it("swaps panes so the second tab becomes active", () => {
+    const split = openSplit(emptySplit(), "vertical", "b");
+    const swapped = swapSplit(split, "a");
+    expect(swapped).toEqual({ split: { ...split, secondaryTabId: "a" }, activate: "b" });
+    expect(swapSplit(emptySplit(), "a")).toBeNull();
+  });
+
+  it("never shows one tab in both panes and closes for a closed tab", () => {
+    const split = openSplit(emptySplit(), "horizontal", "b");
+    expect(reconcileSplit(split, ["a", "b"], "a", "b").secondaryTabId).toBe("a");
+    expect(reconcileSplit(split, ["a", "b", "c"], "a", "c")).toBe(split);
+    expect(splitOpen(reconcileSplit(split, ["a"], "a", "a"))).toBe(false);
+    expect(splitCandidates([{ id: "a" }, { id: "b" }], "a")).toEqual([{ id: "b" }]);
+  });
+
+  it("restores a persisted layout and clamps the divider", () => {
+    expect(
+      splitFromLayout({ splitMode: "vertical", secondaryTabId: "b", primarySize: 99 }),
+    ).toEqual({ mode: "vertical", secondaryTabId: "b", primarySize: 85 });
+    expect(splitFromLayout({ splitMode: "nope", secondaryTabId: "b", primarySize: 40 }).mode).toBe(
+      "single",
+    );
+    expect(clampSplitSize(Number.NaN)).toBe(50);
   });
 
   it("goes to a tab by 1-based position", () => {
@@ -75,6 +108,8 @@ describe("tab chrome", () => {
       true,
     );
     expect(commands.some((c) => c.id === "closeSplit")).toBe(false);
+    expect(commands.some((c) => c.id === "swapPanes")).toBe(false);
+    expect(commands.some((c) => c.id === "toggleFilePanel")).toBe(true);
     expect(commands.some((c) => c.id === "settings")).toBe(true);
     expect(commands.some((c) => c.id === "sendPlanImplementer")).toBe(false);
   });

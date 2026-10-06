@@ -22,6 +22,9 @@ export type ShortcutAction =
   | "splitRight"
   | "splitDown"
   | "closeSplit"
+  | "swapPanes"
+  | "focusOtherPane"
+  | "toggleFilePanel"
   | "renameTab"
   | "settings"
   | "closeDialog";
@@ -132,24 +135,42 @@ export const SHORTCUTS: ShortcutDef[] = [
   {
     action: "splitRight",
     label: "Split right",
-    description: "View the active tab beside another tab.",
+    description: "Pick a tab to show live beside the active tab.",
     code: "Backslash",
   },
   {
     action: "splitDown",
     label: "Split down",
-    description: "View the active tab above another tab.",
+    description: "Pick a tab to show live below the active tab.",
     code: "Backslash",
+    alt: true,
+  },
+  {
+    action: "swapPanes",
+    label: "Swap panes",
+    description: "Swap the main pane and the second pane.",
+    code: "KeyS",
+    alt: true,
+  },
+  {
+    action: "focusOtherPane",
+    label: "Move focus to the other pane",
+    description: "Keystrokes go only to the focused pane.",
+    code: "KeyO",
     alt: true,
   },
   {
     action: "closeSplit",
     label: "Close split",
-    description: "Return to a single pane.",
-    code: "Backslash",
-    shift: false,
-    alt: false,
-    mod: false,
+    description: "Close the second pane. Its tab keeps running.",
+    code: "KeyW",
+    alt: true,
+  },
+  {
+    action: "toggleFilePanel",
+    label: "Toggle file panel",
+    description: "Show or hide the tab folder's file tree.",
+    code: "KeyB",
   },
   {
     action: "settings",
@@ -166,8 +187,8 @@ export const SHORTCUTS: ShortcutDef[] = [
   },
 ];
 
-/** closeSplit without a modifier would steal `\`. It is palette-only. */
-const PALETTE_ONLY = new Set<ShortcutAction>(["closeSplit"]);
+/** Actions with no default chord. They run from the command palette. */
+const PALETTE_ONLY = new Set<ShortcutAction>([]);
 
 export type Binding = Chord & {
   action: ShortcutAction;
@@ -363,6 +384,9 @@ export function matchShortcut(
   // The other modifier (Ctrl on mac, Cmd on Windows) is not our Mod key.
   if (ctx.platform === "mac" && event.ctrlKey && !event.metaKey) return null;
   if (ctx.platform !== "mac" && event.metaKey && !event.ctrlKey) return null;
+  // Ctrl+Alt is AltGr on many Windows and Linux layouts. A printed
+  // non-ASCII character means the user is typing, not using a shortcut.
+  if (isAltGrText(event, ctx.platform)) return null;
 
   for (const binding of defaultBindings()) {
     if (binding.code !== chord.code) continue;
@@ -375,6 +399,11 @@ export function matchShortcut(
     return { action: binding.action, tabIndex: binding.tabIndex };
   }
   return null;
+}
+
+export function isAltGrText(event: KeyEventLike, platform: Platform): boolean {
+  if (platform === "mac" || !event.ctrlKey || !event.altKey) return false;
+  return event.key.length === 1 && !/^[\x20-\x7e]$/.test(event.key);
 }
 
 export function formatChord(chord: Chord, platform: Platform): string {
@@ -433,7 +462,22 @@ const TERMINAL_GLOBALS = new Set<ShortcutAction>([
   "settings",
   // Mod+J must leave the shell and land in the scratch pad.
   "focusPad",
+  // Pane chords use Mod+Alt, which shells do not need.
+  "splitDown",
+  "swapPanes",
+  "focusOtherPane",
+  "closeSplit",
 ]);
+
+/**
+ * Ctrl+\ is SIGQUIT and Ctrl+B is a common tmux prefix, so on Windows and
+ * Linux a focused terminal keeps them. Cmd on macOS never reaches the shell.
+ */
+const TERMINAL_GLOBALS_MAC = new Set<ShortcutAction>(["splitRight", "toggleFilePanel"]);
+
+function terminalGlobal(action: ShortcutAction, platform: Platform): boolean {
+  return TERMINAL_GLOBALS.has(action) || (platform === "mac" && TERMINAL_GLOBALS_MAC.has(action));
+}
 
 const TERMINAL_BY_CODE: Record<string, TerminalAction> = {
   Backquote: "togglePane",
@@ -471,7 +515,7 @@ export function routeKey(
   const terminalAction = terminalActionFor(chord);
   if (ctx.surface === "terminal") {
     const match = matchShortcut(event, ctx);
-    if (match && TERMINAL_GLOBALS.has(match.action)) return { kind: "app", match };
+    if (match && terminalGlobal(match.action, ctx.platform)) return { kind: "app", match };
     if (terminalAction) return { kind: "terminal", action: terminalAction };
     return { kind: "shell" };
   }
@@ -566,6 +610,12 @@ export function shortcutRows(platform: Platform): ShortcutRow[] {
       label: "Search terminal",
       description: "Search the terminal scrollback.",
       keys: `${mod}+Shift+F`,
+    },
+    {
+      action: "toggleFilePanel",
+      label: "Save file",
+      description: "Save the file being edited in the file panel. Asks first if it changed on disk.",
+      keys: `${mod}+S`,
     },
   );
   return rows;

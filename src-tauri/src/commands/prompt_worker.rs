@@ -68,6 +68,11 @@ fn run_prompt_turn(
         let tab_for_emit = tab_id.to_string();
         let tab_for_perm = tab_id.to_string();
         let on_notification = Box::new(move |value: &serde_json::Value| {
+            if let Ok(mut guard) = app_emit.state::<Mutex<SessionRegistry>>().lock() {
+                if let Some(session) = guard.get_mut(&tab_for_emit) {
+                    session.tool_call_cache.observe_notification(value);
+                }
+            }
             emit_session_update(&app_emit, &tab_for_emit, &session_id_for_emit, value);
         });
         let on_agent_request = Box::new(

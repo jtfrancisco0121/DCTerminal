@@ -47,8 +47,22 @@ Beyond `sessionId`, the result includes:
 ## Not yet probed on a live CLI
 
 - Hang / malformed line edge cases beyond the unit tests
+- Models (Job 1): whether `session/new` returns `configOptions` with a `model` category (DCTerminal then sends `session/set_config_option {sessionId, configId, value}`) or a `models` field (`session/set_model {sessionId, modelId}`). Without either, DCTerminal restarts `agent --model <id> acp` and calls `session/load` with the same session id. `agent --list-models` is parsed as a header line, then `<id> - <label>` lines with zero-width spaces, double spaces, `(current)`, and `(default)` removed. The fake agent in `tools/fake-acp-agent` covers both paths (`DCT_FAKE_MODELS=none` turns the config option off).
 
 ## Client implementation notes
 
 - `acp/connection.rs` — NDJSON over stdio, skip notifications until matching `id` response.
 - Next (T1.3): persistent connection per tab, request map, timeouts, `-32601` for unknown agent requests.
+
+## `session/request_permission` (CLI 2026.10.01, allowlist)
+
+See [permission-payload-capture.md](./permission-payload-capture.md) and fixtures under `fixtures/acp/permissions/`. Summary:
+
+| Tool | Request `kind` | Notes |
+|------|----------------|-------|
+| Shell | `execute` | No `rawInput` on the request; content text may say `Shell allowlist is empty`. |
+| Delete | `edit` | Title `Delete \`path\``. Cached tool_call kind is `delete`. |
+| Fetch | `fetch` | `toolCallId` is `web_fetch_0`; may arrive before `tool_call`. |
+| Create/Edit file | — | No permission request under allowlist. |
+
+MCP request shapes are not yet captured.

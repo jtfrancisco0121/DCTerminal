@@ -1,7 +1,7 @@
 use crate::acp::AcpClient;
 use crate::commands::prompt_worker::spawn_prompt_turn;
 use crate::paths::validate_working_folder;
-use crate::permissions::cancelled_permission_result;
+use crate::permissions::{cancelled_permission_result, ToolCallCache};
 use crate::process_tree::SharedProcess;
 use crate::store::StateStore;
 use serde::Serialize;
@@ -31,6 +31,7 @@ pub struct LiveSession {
     pub outbox: Arc<Mutex<Vec<(u64, Value)>>>,
     pub pending_permissions: HashMap<u64, ()>,
     pub pending_plans: HashMap<u64, ()>,
+    pub tool_call_cache: ToolCallCache,
     pub pending_startup_prompt: Option<String>,
     pub startup_injected: bool,
     pub prompt_in_flight: bool,
@@ -54,6 +55,7 @@ impl LiveSession {
             outbox,
             pending_permissions: HashMap::new(),
             pending_plans: HashMap::new(),
+            tool_call_cache: ToolCallCache::new(),
             pending_startup_prompt: None,
             startup_injected: false,
             prompt_in_flight: false,
@@ -140,6 +142,11 @@ impl SessionRegistry {
             .collect()
     }
 
+    /// Remove a session without shutting it down. The caller owns it.
+    pub fn take(&mut self, tab_id: &str) -> Option<LiveSession> {
+        self.sessions.remove(tab_id)
+    }
+
     pub fn shutdown_tab(&mut self, tab_id: &str) {
         if let Some(mut session) = self.sessions.remove(tab_id) {
             session.shutdown();
@@ -166,6 +173,8 @@ pub struct DevSessionInfo {
     pub session_id: String,
     pub mode_id: String,
     pub cwd: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -203,6 +212,7 @@ pub fn dev_session_start(
         session_id: client.session_id().to_string(),
         mode_id: client.mode_id().to_string(),
         cwd: client.cwd().display().to_string(),
+        model: client.current_model().map(String::from),
     };
     let session = LiveSession::from_client(DEV_TAB_ID, "role_developer", client);
     let mut guard = state.lock().map_err(|e| e.to_string())?;

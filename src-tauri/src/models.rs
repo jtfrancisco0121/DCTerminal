@@ -1,0 +1,578 @@
+//! Model list and model choice.
+//!
+//! The list comes from `agent --list-models`: a header line, then one
+//! `<id> - <label>` line per model. The CLI pads some lines with U+200B and
+//! double spaces, and marks one entry `(current)` or `(default)`. The parsed
+//! list is cached in app data. A static list is used when the CLI is missing
+//! and nothing is cached. Nothing here reads or writes `~/.cursor`.
+
+use crate::cli_detect::{agent_missing_message, resolve_agent_executable};
+use crate::store::{read_json, write_json_atomic, ModelSettings, SettingsStore, StateStore};
+use serde::{Deserialize, Serialize};
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+use tauri::{AppHandle, State};
+
+/// The app default. Not `composer-2.5-fast`.
+pub const DEFAULT_MODEL_ID: &str = "composer-2.5";
+const LIST_TIMEOUT: Duration = Duration::from_secs(20);
+const CACHE_TTL_MS: i64 = 24 * 60 * 60 * 1000;
+const MAX_MODELS: usize = 400;
+const MAX_ID_CHARS: usize = 100;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelEntry {
+    pub id: String,
+    pub label: String,
+    /// A speed-tuned variant (`-fast` id, or `Fast` in the label).
+    pub fast: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCache {
+    pub fetched_at_ms: i64,
+    pub models: Vec<ModelEntry>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelList {
+    pub models: Vec<ModelEntry>,
+    /// `cli`, `cache`, or `fallback`.
+    pub source: String,
+    pub fetched_at_ms: Option<i64>,
+    pub error: Option<String>,
+}
+
+/// A model id is passed as one argv element after `--model`, so it must not
+/// look like a flag and must not carry whitespace or shell metacharacters.
+pub fn valid_model_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.chars().count() <= MAX_ID_CHARS
+        && !id.starts_with('-')
+        && id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | ':' | '/'))
+}
+
+pub fn effective_model(settings: &ModelSettings, role_id: &str, tab_model: Option<&str>) -> String {
+    if let Some(model) = tab_model.map(str::trim).filter(|m| valid_model_id(m)) {
+        return model.to_string();
+    }
+    if let Some(model) = settings
+        .role_models
+        .get(role_id)
+        .map(|m| m.trim())
+        .filter(|m| valid_model_id(m))
+    {
+        return model.to_string();
+    }
+    let global = settings.default_model.trim();
+    if valid_model_id(global) {
+        global.to_string()
+    } else {
+        DEFAULT_MODEL_ID.to_string()
+    }
+}
+
+fn strip_ansi(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for next in chars.by_ref() {
+                    if next.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// Remove zero-width characters and collapse runs of whitespace.
+fn clean_line(raw: &str) -> String {
+    let no_ansi = strip_ansi(raw);
+    let visible: String = no_ansi
+        .chars()
+        .filter(|ch| !matches!(ch, '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{FEFF}'))
+        .collect();
+    visible.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn strip_markers(label: &str) -> String {
+    let mut text = label.trim().to_string();
+    loop {
+        let lower = text.to_ascii_lowercase();
+        let mut changed = false;
+        for marker in ["(current)", "(default)"] {
+            if lower.ends_with(marker) {
+                text.truncate(text.len() - marker.len());
+                text = text.trim_end().to_string();
+                changed = true;
+                break;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    text
+}
+
+fn is_fast(id: &str, label: &str) -> bool {
+    let id = id.to_ascii_lowercase();
+    id.ends_with("-fast")
+        || id.contains("-fast-")
+        || label
+            .split(|ch: char| !ch.is_ascii_alphanumeric())
+            .any(|word| word.eq_ignore_ascii_case("fast"))
+}
+
+/// Parse `agent --list-models` output. Lines that are not `<id> - <label>`
+/// (the header, blank lines, tips) are skipped. Duplicate ids keep the first.
+pub fn parse_list_models(stdout: &str) -> Vec<ModelEntry> {
+    let mut models: Vec<ModelEntry> = Vec::new();
+    for raw in stdout.lines() {
+        let line = clean_line(raw);
+        let Some((id, label)) = line.split_once(" - ") else {
+            continue;
+        };
+        let id = strip_markers(id.trim().trim_start_matches(['*', '•', '>']).trim());
+        if !valid_model_id(&id) {
+            continue;
+        }
+        let mut label = strip_markers(label);
+        if label.is_empty() {
+            label = id.clone();
+        }
+        if models.iter().any(|m| m.id == id) {
+            continue;
+        }
+        let fast = is_fast(&id, &label);
+        models.push(ModelEntry { id, label, fast });
+        if models.len() >= MAX_MODELS {
+            break;
+        }
+    }
+    models
+}
+
+/// Used when the CLI cannot be run and nothing is cached.
+pub fn static_fallback() -> Vec<ModelEntry> {
+    [
+        ("composer-2.5", "Composer 2.5"),
+        ("composer-2.5-fast", "Composer 2.5 Fast"),
+        ("auto", "Auto"),
+        ("sonnet-4.5", "Claude Sonnet 4.5"),
+        ("sonnet-4.5-thinking", "Claude Sonnet 4.5 Thinking"),
+        ("opus-4.5", "Claude Opus 4.5"),
+        ("gpt-5", "GPT-5"),
+        ("gpt-5-codex", "GPT-5 Codex"),
+        ("gemini-3-pro", "Gemini 3 Pro"),
+        ("grok", "Grok"),
+    ]
+    .into_iter()
+    .map(|(id, label)| ModelEntry {
+        id: id.to_string(),
+        label: label.to_string(),
+        fast: is_fast(id, label),
+    })
+    .collect()
+}
+
+fn cache_path(dir: &Path) -> PathBuf {
+    dir.join("models-cache.json")
+}
+
+pub fn read_cache(dir: &Path) -> Option<ModelCache> {
+    let path = cache_path(dir);
+    if !path.is_file() {
+        return None;
+    }
+    read_json::<ModelCache>(&path)
+        .ok()
+        .filter(|cache| !cache.models.is_empty())
+}
+
+pub fn write_cache(dir: &Path, cache: &ModelCache) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|err| format!("model cache dir: {err}"))?;
+    write_json_atomic(&cache_path(dir), cache)
+}
+
+/// Pick what to show. A fresh cache wins unless `refresh` is set. A failed
+/// CLI run falls back to any cache, then to the static list.
+pub fn choose_list(
+    refresh: bool,
+    now_ms: i64,
+    cache: Option<ModelCache>,
+    run_cli: impl FnOnce() -> Result<Vec<ModelEntry>, String>,
+) -> (ModelList, Option<ModelCache>) {
+    if !refresh {
+        if let Some(cache) = cache.as_ref() {
+            if now_ms - cache.fetched_at_ms < CACHE_TTL_MS {
+                return (
+                    ModelList {
+                        models: cache.models.clone(),
+                        source: "cache".to_string(),
+                        fetched_at_ms: Some(cache.fetched_at_ms),
+                        error: None,
+                    },
+                    None,
+                );
+            }
+        }
+    }
+    match run_cli() {
+        Ok(models) if !models.is_empty() => {
+            let fresh = ModelCache {
+                fetched_at_ms: now_ms,
+                models: models.clone(),
+            };
+            (
+                ModelList {
+                    models,
+                    source: "cli".to_string(),
+                    fetched_at_ms: Some(now_ms),
+                    error: None,
+                },
+                Some(fresh),
+            )
+        }
+        outcome => {
+            let error = match outcome {
+                Err(err) => err,
+                Ok(_) => "agent --list-models printed no models".to_string(),
+            };
+            if let Some(cache) = cache {
+                return (
+                    ModelList {
+                        models: cache.models,
+                        source: "cache".to_string(),
+                        fetched_at_ms: Some(cache.fetched_at_ms),
+                        error: Some(error),
+                    },
+                    None,
+                );
+            }
+            (
+                ModelList {
+                    models: static_fallback(),
+                    source: "fallback".to_string(),
+                    fetched_at_ms: None,
+                    error: Some(error),
+                },
+                None,
+            )
+        }
+    }
+}
+
+fn run_list_models() -> Result<Vec<ModelEntry>, String> {
+    let agent = resolve_agent_executable().ok_or_else(agent_missing_message)?;
+    let mut command = Command::new(&agent);
+    command
+        .arg("--list-models")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|err| format!("could not run agent --list-models: {err}"))?;
+    let mut stdout = child.stdout.take().ok_or("no stdout")?;
+    let mut stderr = child.stderr.take().ok_or("no stderr")?;
+    let out_thread = std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = stdout.read_to_string(&mut text);
+        text
+    });
+    let err_thread = std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = stderr.read_to_string(&mut text);
+        text
+    });
+    let deadline = Instant::now() + LIST_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("agent --list-models timed out".to_string());
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(err) => return Err(err.to_string()),
+        }
+    };
+    let text = out_thread.join().unwrap_or_default();
+    let err_text = err_thread.join().unwrap_or_default();
+    if !status.success() {
+        let detail: String = err_text.trim().chars().take(300).collect();
+        return Err(format!(
+            "agent --list-models exited with {status}{}",
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!(": {detail}")
+            }
+        ));
+    }
+    Ok(parse_list_models(&text))
+}
+
+#[tauri::command]
+pub async fn list_models(app: AppHandle, refresh: Option<bool>) -> Result<ModelList, String> {
+    let dir = crate::data_dir::app_data_dir(&app).path;
+    let refresh = refresh.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || {
+        let now = chrono::Utc::now().timestamp_millis();
+        let (list, fresh) = choose_list(refresh, now, read_cache(&dir), run_list_models);
+        if let Some(cache) = fresh {
+            if let Err(err) = write_cache(&dir, &cache) {
+                return ModelList {
+                    error: Some(format!("could not cache the model list: {err}")),
+                    ..list
+                };
+            }
+        }
+        list
+    })
+    .await
+    .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub fn get_model_settings(settings: State<Mutex<SettingsStore>>) -> Result<ModelSettings, String> {
+    let settings = settings.lock().map_err(|err| err.to_string())?;
+    Ok(settings.models().clone())
+}
+
+#[tauri::command]
+pub fn set_model_settings(
+    models: ModelSettings,
+    settings: State<Mutex<SettingsStore>>,
+) -> Result<ModelSettings, String> {
+    let mut settings = settings.lock().map_err(|err| err.to_string())?;
+    settings.set_models(models)?;
+    Ok(settings.models().clone())
+}
+
+/// Per-tab override. `None` (or blank) clears it so the role default applies.
+#[tauri::command]
+pub fn set_tab_model(
+    tab_id: String,
+    model: Option<String>,
+    store: State<Mutex<StateStore>>,
+    settings: State<Mutex<SettingsStore>>,
+) -> Result<String, String> {
+    let model = model
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty());
+    if let Some(id) = &model {
+        if !valid_model_id(id) {
+            return Err(format!("not a model id: {id}"));
+        }
+    }
+    let role_id = {
+        let mut store = store.lock().map_err(|err| err.to_string())?;
+        store.set_tab_model(&tab_id, model.clone())?;
+        store
+            .tab_by_id(&tab_id)
+            .map(|tab| tab.role_id.clone())
+            .unwrap_or_default()
+    };
+    let settings = settings.lock().map_err(|err| err.to_string())?;
+    Ok(settings.effective_model(&role_id, model.as_deref()))
+}
+
+/// Model for an `agent` launched for this tab. `None` for an unknown tab id
+/// falls back to the role default, then the global default.
+pub fn model_for_tab(
+    store: &Mutex<StateStore>,
+    settings: &Mutex<SettingsStore>,
+    tab_id: Option<&str>,
+    role_id: &str,
+) -> Result<String, String> {
+    let (role, tab_model) = {
+        let store = store.lock().map_err(|err| err.to_string())?;
+        let tab = tab_id.and_then(|id| store.tab_by_id(id));
+        let role = tab
+            .map(|t| t.role_id.clone())
+            .filter(|r| !r.is_empty() && role_id.is_empty())
+            .unwrap_or_else(|| role_id.to_string());
+        (role, tab.and_then(|t| t.model.clone()))
+    };
+    let settings = settings.lock().map_err(|err| err.to_string())?;
+    Ok(settings.effective_model(&role, tab_model.as_deref()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    const SAMPLE: &str = "Available models\n\
+\u{200B}composer-2.5 - Composer 2.5  (current)\n\
+composer-2.5-fast - Composer 2.5 Fast (default)\n\
+auto  -  Auto\n\
+sonnet-4.5-thinking - Claude  Sonnet 4.5 Thinking\n\
+\n\
+Tip: use --model <id> to pick one\n";
+
+    #[test]
+    fn parses_header_then_id_label_lines() {
+        let models = parse_list_models(SAMPLE);
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "composer-2.5",
+                "composer-2.5-fast",
+                "auto",
+                "sonnet-4.5-thinking"
+            ]
+        );
+        assert_eq!(models[0].label, "Composer 2.5");
+        assert_eq!(models[1].label, "Composer 2.5 Fast");
+        assert_eq!(models[3].label, "Claude Sonnet 4.5 Thinking");
+    }
+
+    #[test]
+    fn flags_fast_variants() {
+        let models = parse_list_models(SAMPLE);
+        assert!(!models[0].fast);
+        assert!(models[1].fast);
+        assert!(!models[2].fast);
+    }
+
+    #[test]
+    fn strips_ansi_zero_width_and_duplicate_ids() {
+        let text = "Models\n\u{1b}[1mgpt-5\u{1b}[0m - GPT-5 (current) (default)\ngpt-5 - again\n";
+        let models = parse_list_models(text);
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].label, "GPT-5");
+    }
+
+    #[test]
+    fn sixty_entries_parse() {
+        let mut text = String::from("Available models\n");
+        for n in 0..60 {
+            text.push_str(&format!("model-{n} - Model {n}\n"));
+        }
+        assert_eq!(parse_list_models(&text).len(), 60);
+    }
+
+    #[test]
+    fn model_ids_cannot_be_flags_or_carry_spaces() {
+        assert!(valid_model_id("composer-2.5"));
+        assert!(valid_model_id("vendor/model:latest"));
+        assert!(!valid_model_id("--yolo"));
+        assert!(!valid_model_id("a b"));
+        assert!(!valid_model_id("x;rm"));
+        assert!(!valid_model_id(""));
+    }
+
+    #[test]
+    fn default_is_composer_not_fast() {
+        assert_eq!(DEFAULT_MODEL_ID, "composer-2.5");
+        let settings = ModelSettings::default();
+        assert_eq!(
+            effective_model(&settings, "role_implementer", None),
+            "composer-2.5"
+        );
+    }
+
+    #[test]
+    fn tab_beats_role_beats_global() {
+        let settings = ModelSettings {
+            default_model: "auto".to_string(),
+            role_models: HashMap::from([("role_planner".to_string(), "gpt-5".to_string())]),
+        };
+        assert_eq!(effective_model(&settings, "role_general", None), "auto");
+        assert_eq!(effective_model(&settings, "role_planner", None), "gpt-5");
+        assert_eq!(
+            effective_model(&settings, "role_planner", Some("sonnet-4.5")),
+            "sonnet-4.5"
+        );
+        assert_eq!(
+            effective_model(&settings, "role_planner", Some("  ")),
+            "gpt-5"
+        );
+    }
+
+    #[test]
+    fn fresh_cache_is_used_without_running_the_cli() {
+        let cache = ModelCache {
+            fetched_at_ms: 1_000,
+            models: static_fallback(),
+        };
+        let (list, fresh) = choose_list(false, 2_000, Some(cache), || {
+            panic!("the CLI must not run while the cache is fresh")
+        });
+        assert_eq!(list.source, "cache");
+        assert!(fresh.is_none());
+    }
+
+    #[test]
+    fn failed_cli_uses_stale_cache_then_static_list() {
+        let cache = ModelCache {
+            fetched_at_ms: 0,
+            models: vec![ModelEntry {
+                id: "x".to_string(),
+                label: "X".to_string(),
+                fast: false,
+            }],
+        };
+        let (list, _) = choose_list(true, CACHE_TTL_MS * 2, Some(cache), || {
+            Err("missing".to_string())
+        });
+        assert_eq!(list.source, "cache");
+        assert_eq!(list.models[0].id, "x");
+        assert_eq!(list.error.as_deref(), Some("missing"));
+        let (list, _) = choose_list(true, 0, None, || Err("missing".to_string()));
+        assert_eq!(list.source, "fallback");
+        assert!(list.models.iter().any(|m| m.id == DEFAULT_MODEL_ID));
+    }
+
+    #[test]
+    fn cli_result_is_returned_and_cached() {
+        let (list, fresh) = choose_list(true, 5, None, || Ok(parse_list_models(SAMPLE)));
+        assert_eq!(list.source, "cli");
+        assert_eq!(fresh.map(|c| c.fetched_at_ms), Some(5));
+    }
+
+    #[test]
+    fn cache_round_trips() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("dcterminal_model_cache_{nanos}"));
+        assert!(read_cache(&dir).is_none());
+        let cache = ModelCache {
+            fetched_at_ms: 42,
+            models: static_fallback(),
+        };
+        write_cache(&dir, &cache).unwrap();
+        let back = read_cache(&dir).unwrap();
+        assert_eq!(back.fetched_at_ms, 42);
+        assert_eq!(back.models, cache.models);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

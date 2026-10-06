@@ -21,6 +21,7 @@ const parked = new Map<string, ParkedTerminal>();
 let parkRoot: HTMLDivElement | null = null;
 let focusedId = "";
 const searchOpeners = new Map<string, () => void>();
+const refitters = new Map<string, () => void>();
 
 const THEME = {
   background: "#0d1117",
@@ -106,6 +107,7 @@ export function releaseParkedTerminal(id: string): void {
   entry.host.remove();
   parked.delete(id);
   searchOpeners.delete(id);
+  refitters.delete(id);
   if (focusedId === id) focusedId = "";
 }
 
@@ -129,6 +131,23 @@ export function setTerminalSearchOpener(id: string, open: () => void): () => voi
   return () => {
     if (searchOpeners.get(id) === open) searchOpeners.delete(id);
   };
+}
+
+/** The mounted view registers how to refit its xterm to the slot. */
+export function setTerminalRefitter(id: string, refit: () => void): () => void {
+  refitters.set(id, refit);
+  return () => {
+    if (refitters.get(id) === refit) refitters.delete(id);
+  };
+}
+
+/**
+ * Refit a mounted terminal after a sibling changed size, for example when the
+ * scratch pad is hidden or shown. A parked terminal has no slot, so this is a
+ * no-op until its tab is visible again.
+ */
+export function refitTerminal(id: string): void {
+  refitters.get(id)?.();
 }
 
 export function requestTerminalSearch(): void {

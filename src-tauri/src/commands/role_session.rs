@@ -1,4 +1,4 @@
-use crate::acp::{map_session_update, AcpClient, SessionUpdateEvent};
+use crate::acp::{map_session_update, AcpClient, ModelVia, SessionUpdateEvent};
 use crate::commands::dev_session::{DevSessionInfo, LiveSession, SessionRegistry};
 use crate::commands::prompt_worker::spawn_prompt_turn;
 use crate::orchestrator::{injection_strategy_from_role, InjectionStrategy};
@@ -29,6 +29,9 @@ pub struct RoleSessionStartResult {
     pub replay_message_count: usize,
     pub replay_truncated: bool,
     pub replay: Vec<SessionUpdateEvent>,
+    /// How the model reached the agent: `unchanged`, `configOption`,
+    /// `setModel`, `spawnFlag`, or `unsupported`.
+    pub model_via: Option<ModelVia>,
 }
 
 fn empty_start(errors: Vec<FieldError>) -> RoleSessionStartResult {
@@ -47,6 +50,7 @@ fn empty_start(errors: Vec<FieldError>) -> RoleSessionStartResult {
         replay_message_count: 0,
         replay_truncated: false,
         replay: Vec::new(),
+        model_via: None,
     }
 }
 
@@ -70,6 +74,7 @@ pub fn role_session_start(
     state_store: State<Mutex<StateStore>>,
     forms_store: State<Mutex<FormsStore>>,
     projects: State<Mutex<crate::store::ProjectsStore>>,
+    settings: State<Mutex<crate::store::SettingsStore>>,
 ) -> Result<RoleSessionStartResult, String> {
     let role = {
         let store = store.lock().map_err(|e| e.to_string())?;
@@ -135,7 +140,8 @@ pub fn role_session_start(
     }
 
     let mode_id = load_mode_id(&state_store, tab_id.as_deref(), &bind, &role.default_mode)?;
-    let (client, replay_notes) = match connect_client(&path, &mode_id, &bind) {
+    let model = crate::models::model_for_tab(&state_store, &settings, tab_id.as_deref(), &role.id)?;
+    let (client, replay_notes, model_via) = match connect_client(&path, &mode_id, &bind, &model) {
         Err(e) if e.starts_with("AUTH_ERROR:") || e.contains("AUTH_ERROR:") => {
             finish_starting(&state, &start_key);
             let msg = e
@@ -176,6 +182,10 @@ pub fn role_session_start(
         session_id: client.session_id().to_string(),
         mode_id: client.mode_id().to_string(),
         cwd: client.cwd().display().to_string(),
+        model: client
+            .current_model()
+            .map(String::from)
+            .or(Some(model.clone())),
     };
     let mut folder_warning = {
         let guard = state.lock().map_err(|e| e.to_string())?;
@@ -280,6 +290,7 @@ pub fn role_session_start(
         replay_message_count,
         replay_truncated,
         replay,
+        model_via: Some(model_via),
     })
 }
 
@@ -314,12 +325,14 @@ fn connect_client(
     path: &std::path::Path,
     mode_id: &str,
     bind: &SessionStartBind,
-) -> Result<(AcpClient, Vec<Value>), String> {
+    model: &str,
+) -> Result<(AcpClient, Vec<Value>, ModelVia), String> {
     match bind {
-        SessionStartBind::CreateNew => {
-            AcpClient::connect(path, mode_id).map(|client| (client, Vec::new()))
+        SessionStartBind::CreateNew => AcpClient::connect_with_model(path, mode_id, Some(model))
+            .map(|(client, via)| (client, Vec::new(), via)),
+        SessionStartBind::LoadExisting { session_id } => {
+            AcpClient::load_with_model(path, mode_id, session_id, Some(model), false)
         }
-        SessionStartBind::LoadExisting { session_id } => AcpClient::load(path, mode_id, session_id),
     }
 }
 

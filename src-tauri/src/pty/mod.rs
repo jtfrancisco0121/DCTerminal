@@ -8,7 +8,8 @@ mod shell;
 use crate::cli_detect::{agent_missing_message, resolve_agent_executable};
 use crate::paths::validate_working_folder;
 use crate::pty::launch::{
-    deliver_prompt, handoff_terminal_prompt, plain_agent_args, role_agent_command, RunMode,
+    deliver_prompt, handoff_terminal_prompt, plain_agent_args, role_agent_command, with_model,
+    RunMode,
 };
 use crate::pty::plans::{cursor_plans_dir, newest_plan_since};
 use crate::pty::session::{PtyOutput, PtySession, SpawnSpec};
@@ -250,9 +251,11 @@ pub fn shell_terminal_start(
         } else {
             plain_agent_args()
         };
+        let model =
+            crate::models::model_for_tab(&store, &settings, input.tab_id.as_deref(), "cursor-cli")?;
         launch::ProgramArgs {
             program: program.display().to_string(),
-            args,
+            args: with_model(Some(&model), args),
         }
     } else {
         let resolved = resolve_shell_for_host(&configured);
@@ -373,6 +376,7 @@ pub fn role_terminal_start(
         RunMode::parse(&settings.run_mode_for(&role.id))
     };
     let program = resolve_agent_executable().ok_or_else(agent_missing_message)?;
+    let model = crate::models::model_for_tab(&store, &settings, input.tab_id.as_deref(), &role.id)?;
     let tab_id = {
         let mut store = store.lock().map_err(|err| err.to_string())?;
         let title_answers = input.values.clone();
@@ -406,6 +410,7 @@ pub fn role_terminal_start(
         &program.display().to_string(),
         &role.id,
         mode,
+        Some(&model),
         Some(&delivery.argument),
     );
     let mut registry = registry.lock().map_err(|err| err.to_string())?;
@@ -450,6 +455,7 @@ pub fn pty_open(
     input: PtyOpenInput,
     on_output: Channel<PtyPacket>,
     settings: State<Mutex<SettingsStore>>,
+    store: State<Mutex<StateStore>>,
     registry: State<Mutex<PtyRegistry>>,
 ) -> Result<u32, String> {
     let cwd = validate_working_folder(&input.cwd).map_err(|err| err.message())?;
@@ -474,10 +480,16 @@ pub fn pty_open(
             } else {
                 plain_agent_args()
             };
-            (program.display().to_string(), args)
+            let model =
+                crate::models::model_for_tab(&store, &settings, Some(&input.id), "cursor-cli")?;
+            (
+                program.display().to_string(),
+                with_model(Some(&model), args),
+            )
         }
         "role" => {
             let role_id = input.role_id.unwrap_or_default();
+            let model = crate::models::model_for_tab(&store, &settings, Some(&input.id), &role_id)?;
             let mode = {
                 let settings = settings.lock().map_err(|err| err.to_string())?;
                 RunMode::parse(&settings.run_mode_for(&role_id))
@@ -488,7 +500,8 @@ pub fn pty_open(
                 .as_deref()
                 .map(str::trim)
                 .filter(|text| !text.is_empty());
-            let mut command_args = launch::role_terminal_flags(&role_id, mode);
+            let mut command_args =
+                with_model(Some(&model), launch::role_terminal_flags(&role_id, mode));
             if let Some(text) = prompt {
                 let file = prompt_file(&app, &input.id)?;
                 let delivery = deliver_prompt(text, &file);

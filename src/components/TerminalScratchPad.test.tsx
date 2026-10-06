@@ -26,6 +26,7 @@ function renderPad(
     onFocusTerminal: () => void;
     onFocusPad: () => void;
     onChange: (value: string) => void;
+    onOpenChange: (open: boolean) => void;
   }> = {},
   ref?: Ref<TerminalPadHandle>,
 ) {
@@ -45,6 +46,7 @@ function renderPad(
       bracketedPaste={overrides.bracketedPaste ?? true}
       onFocusTerminal={onFocusTerminal}
       onFocusPad={overrides.onFocusPad}
+      onOpenChange={overrides.onOpenChange}
     />,
   );
   return { write, onFocusTerminal, ...view };
@@ -142,6 +144,22 @@ describe("terminal scratch pad", () => {
     });
     expect(editor().hidden).toBe(false);
     expect(document.activeElement).toBe(editor());
+  });
+
+  it("asks the terminal to refit when the pad is hidden or shown, not on mount", () => {
+    const onOpenChange = vi.fn();
+    const ref = createRef<TerminalPadHandle>();
+    renderPad({ onOpenChange }, ref);
+    expect(onOpenChange).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Hide pad" }));
+    expect(onOpenChange).toHaveBeenLastCalledWith(false);
+    fireEvent.click(screen.getByRole("button", { name: "Show pad" }));
+    expect(onOpenChange).toHaveBeenLastCalledWith(true);
+    expect(onOpenChange).toHaveBeenCalledTimes(2);
+    act(() => {
+      ref.current?.focus();
+    });
+    expect(onOpenChange).toHaveBeenCalledTimes(2);
   });
 
   it("keeps a separate pad for each tab", async () => {
