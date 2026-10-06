@@ -193,6 +193,8 @@ export const PALETTE_ACTIONS = [
   "transferToTerminal",
   "firstRunSetup",
   "shortcutsHelp",
+  "toggleShortcutBar",
+  "switchTheme",
   "settings",
   "toggleCapture",
 ] as const;
@@ -354,6 +356,18 @@ export function buildPalette(opts: {
       keywords: "setup onboarding welcome cursor cli agent login sign in detect folder role",
     },
     { id: "shortcutsHelp", title: "Keyboard shortcuts", group: "Help" },
+    {
+      id: "toggleShortcutBar",
+      title: "Toggle shortcut bar",
+      group: "Help",
+      keywords: "shortcut bar hints keys bottom status show hide",
+    },
+    {
+      id: "switchTheme",
+      title: "Switch theme (GitHub Dark / Light)",
+      group: "Help",
+      keywords: "theme appearance dark light colors github",
+    },
     { id: "settings", title: "Settings", group: "Help" },
     {
       id: "toggleCapture",

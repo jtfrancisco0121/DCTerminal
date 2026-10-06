@@ -290,6 +290,17 @@ describe("tab chrome", () => {
       expect(ids).toEqual(["changeModel", "refreshModels"]);
     });
 
+    it("toggles the shortcut bar and switches theme (U7, U8)", () => {
+      const commands = everything();
+      expect(filterCommands(commands, "shortcut bar").map((c) => c.id)).toContain(
+        "toggleShortcutBar",
+      );
+      expect(filterCommands(commands, "hints").map((c) => c.id)).toContain("toggleShortcutBar");
+      expect(filterCommands(commands, "theme").map((c) => c.id)).toContain("switchTheme");
+      expect(filterCommands(commands, "light").map((c) => c.id)).toContain("switchTheme");
+      expect(parsePaletteId("toggleShortcutBar")).toEqual({ kind: "action", id: "toggleShortcutBar" });
+    });
+
     it("finds chat history by resume, past, or sessions", () => {
       const commands = everything();
       for (const query of ["history", "resume", "past chats", "sessions"]) {

@@ -181,6 +181,7 @@ import {
   workspacesList,
   checkWorkingFolder,
   setTerminalSettings,
+  setUiSettings,
   cliLoginStatus,
   firstRunComplete,
   firstRunStatus,
@@ -274,6 +275,32 @@ describe("blank tab card", () => {
       },
     ]);
     vi.mocked(syncActiveTabForm).mockClear();
+  });
+
+  it("shows the first-use tip once and can turn on the shortcut bar (U7)", async () => {
+    vi.mocked(setUiSettings).mockClear();
+    render(
+      <StartupForm
+        roles={[
+          { id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 },
+        ]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+    const tip = await screen.findByRole("status", { name: "Tip" });
+    expect(screen.queryByRole("group", { name: "Shortcut bar" })).toBeNull();
+    fireEvent.click(within(tip).getByRole("button", { name: "Show shortcut bar" }));
+    await waitFor(() => expect(screen.queryByRole("status", { name: "Tip" })).toBeNull());
+    const bar = await screen.findByRole("group", { name: "Shortcut bar" });
+    expect(within(bar).getByRole("button", { name: /Commands/ })).toBeTruthy();
+    await waitFor(() =>
+      expect(setUiSettings).toHaveBeenLastCalledWith(
+        expect.objectContaining({ shortcutBar: true, tipsSeen: ["welcome"] }),
+      ),
+    );
   });
 
   it("keeps role, folder, and Start on one row with history as a side list (U5)", async () => {

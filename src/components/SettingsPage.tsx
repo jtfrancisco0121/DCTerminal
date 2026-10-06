@@ -441,6 +441,25 @@ export function SettingsPage({
           {category === "Shortcuts" && (
             <section className="settings-section" aria-label="Shortcuts">
               <h3>Shortcuts</h3>
+              <div className="settings-toolbar">
+                <label className="field-label diagnostics-toggle">
+                  <input
+                    type="checkbox"
+                    checked={uiSettings?.shortcutBar ?? false}
+                    disabled={!onUiSettings}
+                    onChange={(event) => onUiSettings?.({ shortcutBar: event.target.checked })}
+                  />
+                  Show shortcut bar in the status strip
+                </label>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={!onUiSettings || !uiSettings?.tipsSeen.length}
+                  onClick={() => onUiSettings?.({ tipsSeen: [] })}
+                >
+                  Show tips again
+                </button>
+              </div>
               <ul className="settings-shortcuts">
                 {rows.map((row) => (
                   <li key={`${row.action}-${row.keys}`}>

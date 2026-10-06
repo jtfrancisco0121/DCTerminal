@@ -268,3 +268,38 @@ describe("SettingsPage notifications", () => {
     expect(onTestNotification).toHaveBeenCalledOnce();
   });
 });
+
+describe("SettingsPage shortcuts (U7)", () => {
+  it("toggles the shortcut bar and resets first-use tips", () => {
+    const onUiSettings = vi.fn();
+    render(
+      <SettingsPage
+        roles={roles}
+        cli={null}
+        cliError={null}
+        platform="mac"
+        diagnostics={null}
+        captureOn={false}
+        showDevTools={false}
+        onToggleCapture={() => {}}
+        terminalSettings={null}
+        onTerminalSettings={() => {}}
+        approvalMode={null}
+        uiSettings={{
+          theme: "github-dark",
+          shortcutBar: false,
+          tipsSeen: ["welcome"],
+          padHeight: 0,
+          padHidden: false,
+        }}
+        onUiSettings={onUiSettings}
+        initialCategory="Shortcuts"
+        onClose={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("Show shortcut bar in the status strip"));
+    expect(onUiSettings).toHaveBeenCalledWith({ shortcutBar: true });
+    fireEvent.click(screen.getByRole("button", { name: "Show tips again" }));
+    expect(onUiSettings).toHaveBeenCalledWith({ tipsSeen: [] });
+  });
+});

@@ -199,6 +199,9 @@ import { createTurnWaiter } from "./scratch/turnWait";
 import { SessionTerminal } from "./SessionTerminal";
 import { answersForRole, fieldsForForm } from "./startupFields";
 import { CursorHistoryList } from "./components/CursorHistoryList";
+import { ShortcutBar } from "./components/ShortcutBar";
+import { FIRST_USE_TIP_ID, FirstUseTip, shouldShowTip } from "./components/FirstUseTip";
+import { normalizeTheme, THEMES } from "./theme";
 import { ChatHistoryDialog } from "./components/ChatHistoryDialog";
 import {
   resumeIdForStart,
@@ -2633,6 +2636,15 @@ export function StartupForm({
       case "firstRunSetup":
         setFirstRunOpen(true);
         return;
+      case "toggleShortcutBar":
+        uiSettings.update({ shortcutBar: !uiSettings.ui.shortcutBar });
+        return;
+      case "switchTheme": {
+        const current = normalizeTheme(uiSettings.ui.theme);
+        const index = THEMES.findIndex((theme) => theme.id === current);
+        uiSettings.update({ theme: THEMES[(index + 1) % THEMES.length].id });
+        return;
+      }
       case "workspaces":
       case "saveWorkspace":
         openWorkspaces(id === "saveWorkspace");
@@ -3465,8 +3477,29 @@ export function StartupForm({
       branch={activeTabSummary?.worktreeBranch ?? null}
       roleRulesOff={!!approvalMode?.roleRulesOff}
       messages={statusMessages}
+      trailing={
+        uiSettings.ui.shortcutBar ? (
+          <ShortcutBar
+            platform={platform}
+            onRun={(action) => onShortcut({ action })}
+            onHide={() => uiSettings.update({ shortcutBar: false })}
+          />
+        ) : null
+      }
     />
   );
+  const firstUseTip = shouldShowTip({
+    loaded: uiSettings.loaded,
+    tipsSeen: uiSettings.ui.tipsSeen,
+    blocked: dialogOpen,
+  }) ? (
+    <FirstUseTip
+      platform={platform}
+      barOn={uiSettings.ui.shortcutBar}
+      onShowBar={() => uiSettings.update({ shortcutBar: true })}
+      onDismiss={() => uiSettings.markTipSeen(FIRST_USE_TIP_ID)}
+    />
+  ) : null;
 
   const shell = (content: ReactNode) => (
     <section className="workspace-shell">
@@ -3503,6 +3536,7 @@ export function StartupForm({
           />
         </div>
       </div>
+      {firstUseTip}
       {statusBar}
       {overlays}
     </section>
