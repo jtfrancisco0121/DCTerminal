@@ -1494,7 +1494,7 @@ Do not port ADE's PTY-first agent launch, Claude transcript usage parser, projec
 
 ## 33. Edge cases and failure handling
 
-Each tab owns one `agent acp` process, one ACP session, one transcript, and one permission queue. Closing or stopping a tab kills only that process tree (Unix process group, Windows job object plus `taskkill /T` so `agent.cmd` does not leave `node` behind). Quitting the app kills every live child.
+Each tab owns one `agent acp` process, one ACP session, one transcript, and one permission queue. Closing or stopping a tab kills only that process tree. On Unix the child is its own process group. On Windows the process is created suspended, assigned to a job object, then resumed, so `agent.cmd` cannot start `node` before the job exists; the job and `taskkill /T` then kill that tree. Quitting the app kills every live child.
 
 | Case | What the app does |
 |---|---|

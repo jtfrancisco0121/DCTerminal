@@ -95,7 +95,9 @@ impl AcpConnection {
         let stdin = child.stdin.take().expect("stdin piped");
         let stdout = child.stdout.take().expect("stdout piped");
         let stderr = child.stderr.take();
-        let process = SharedProcess::from_child(child);
+        // Windows: still suspended and already in its job. Readers attach
+        // before resume so the first ACP bytes are not written unread.
+        let process = SharedProcess::from_child(child)?;
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
@@ -149,6 +151,7 @@ impl AcpConnection {
                 }
             });
         }
+        process.resume()?;
         Ok(Self {
             process,
             stdin,
