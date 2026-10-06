@@ -12,6 +12,8 @@ cargo clippy --all-targets -- -D warnings
 
 Component tests use Vitest, React Testing Library, and jsdom. They cover the startup form, the blank-tab card, the tab bar, the folder chooser, Cursor CLI history, the hand-off dialog, and Settings. The Tauri bridge is mocked, so those tests do not start a webview.
 
+Node 22 through 26 are supported. Node 25+ ships a `localStorage` global that is unusable unless `--localstorage-file` is set, and that global hides jsdom's store (`ExperimentalWarning: localStorage is not available`). The Vitest setup installs an in-memory Storage when the global is missing or unusable. Scratch drafts use that same fallback, so a missing `localStorage` does not throw.
+
 ## macOS
 
 On a Mac, verify with `npm run check`, then `./install.sh` to build and install

@@ -8,7 +8,7 @@
 
 | Field | Value |
 |--------|--------|
-| **Last updated** | 2026-10-06 — Terminal tabs have the same per-tab scratch pad as chat. Send uses bracketed paste plus one Enter. Paste does not press Enter. |
+| **Last updated** | 2026-10-06 — Scratch drafts and Vitest tolerate Node 25+ `localStorage` (undefined without `--localstorage-file`). `npm ci` allows the optional `fsevents` install script. |
 | **Branch** | `cursor/integrate-terminal-history-0dcf` |
 | **Current phase** | Finish MVP vertical slice (see [MVP-FINISH.md](./MVP-FINISH.md)) |
 | **Active task** | Windows acceptance of the terminal, resume, and history list. See [cursor-cli-history.md](./cursor-cli-history.md). |
