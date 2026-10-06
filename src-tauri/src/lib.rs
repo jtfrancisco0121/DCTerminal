@@ -18,7 +18,7 @@ pub mod template;
 use acp::{probe_acp, probe_acp_handshake};
 use cli_detect::detect_cli;
 use commands::{
-    check_working_folder, close_tab, dev_session_cancel, dev_session_send, dev_session_start,
+    check_working_folder, close_tab, cursor_approval_mode, dev_session_cancel, dev_session_send, dev_session_start,
     dev_session_stop, diagnostics_set_capture, diagnostics_status, get_app_state, get_form_recall,
     get_role, get_tab, handoff_bind_tab, handoff_get, handoff_list, handoff_save,
     list_cursor_cli_history, list_roles, new_draft_tab, open_in_cursor_cli, projects_list,
@@ -120,6 +120,7 @@ pub fn run() {
             projects_toggle_favorite,
             projects_remove,
             check_working_folder,
+            cursor_approval_mode,
             list_cursor_cli_history,
             open_in_cursor_cli,
             transcript_save,

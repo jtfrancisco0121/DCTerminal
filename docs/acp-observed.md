@@ -52,3 +52,16 @@ Beyond `sessionId`, the result includes:
 
 - `acp/connection.rs` — NDJSON over stdio, skip notifications until matching `id` response.
 - Next (T1.3): persistent connection per tab, request map, timeouts, `-32601` for unknown agent requests.
+
+## `session/request_permission` (CLI 2026.10.01, allowlist)
+
+See [permission-payload-capture.md](./permission-payload-capture.md) and fixtures under `fixtures/acp/permissions/`. Summary:
+
+| Tool | Request `kind` | Notes |
+|------|----------------|-------|
+| Shell | `execute` | No `rawInput` on the request; content text may say `Shell allowlist is empty`. |
+| Delete | `edit` | Title `Delete \`path\``. Cached tool_call kind is `delete`. |
+| Fetch | `fetch` | `toolCallId` is `web_fetch_0`; may arrive before `tool_call`. |
+| Create/Edit file | — | No permission request under allowlist. |
+
+MCP request shapes are not yet captured.

@@ -1,9 +1,10 @@
 //! Per-role answers for ACP `session/request_permission`.
 //!
-//! Cursor's live payloads were not fully captured (see `docs/acp-observed.md`).
-//! Classification follows the Agent Client Protocol `toolCall.kind` values and
-//! falls back to titles / raw input. Ambiguous requests are not auto-allowed
-//! except for Implementer and Developer.
+//! Live Cursor CLI payloads (2026.10.01) often omit `rawInput` on the permission
+//! request itself. Enrich from the per-session tool-call cache first, then parse
+//! the title. Classification follows ACP `toolCall.kind` (delete → Write, fetch →
+//! Read). MCP payloads are still unverified; `mcp_signal` remains best-effort.
+//! Ambiguous requests are not auto-allowed except for Implementer and Developer.
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -55,6 +56,10 @@ pub struct DecisionOutcome {
     pub decision: PolicyDecision,
     pub title: String,
     pub message: String,
+    /// UI / log label (`delete`, `execute`, `fetch`, …). May differ from class.
+    pub display_kind: String,
+    /// True when this is a network fetch (permission log labels it).
+    pub network: bool,
     pub options: Vec<PermissionChoice>,
     /// JSON-RPC result body when the decision is automatic.
     pub auto_result: Option<Value>,
@@ -66,10 +71,12 @@ pub fn evaluate_permission(role_id: &str, params: &Value) -> DecisionOutcome {
     let decision = decide_for_role(role_id, class);
     let title = permission_title(params);
     let message = permission_message(params);
+    let display_kind = display_kind_label(params, class);
+    let network = is_network_fetch(params, class);
     let options = permission_options(params);
     let transcript_line = match decision {
         PolicyDecision::Ask => None,
-        other => Some(auto_decision_line(other, class, &title)),
+        other => Some(auto_decision_line(other, class, &title, network)),
     };
     let auto_result = match decision {
         PolicyDecision::AllowOnce => Some(selected_result(&choice_id(&options, true))),
@@ -81,6 +88,8 @@ pub fn evaluate_permission(role_id: &str, params: &Value) -> DecisionOutcome {
         decision,
         title,
         message,
+        display_kind,
+        network,
         options,
         auto_result,
         transcript_line,
@@ -125,23 +134,30 @@ pub fn classify_permission_params(params: &Value) -> ToolClass {
     ToolClass::Unknown
 }
 
-pub fn auto_decision_line(decision: PolicyDecision, class: ToolClass, title: &str) -> String {
+pub fn auto_decision_line(
+    decision: PolicyDecision,
+    class: ToolClass,
+    title: &str,
+    network: bool,
+) -> String {
     let title = if title.trim().is_empty() {
         "permission request"
     } else {
         title.trim()
     };
+    let label = if network {
+        format!("{}, network", class.as_str())
+    } else {
+        class.as_str().to_string()
+    };
     match decision {
         PolicyDecision::AllowOnce => {
-            format!("Permission auto-allowed ({}): {title}", class.as_str())
+            format!("Permission auto-allowed ({label}): {title}")
         }
         PolicyDecision::Reject => {
-            format!(
-                "Permission denied by role policy ({}): {title}",
-                class.as_str()
-            )
+            format!("Permission denied by role policy ({label}): {title}")
         }
-        PolicyDecision::Ask => format!("Permission needs a decision ({}): {title}", class.as_str()),
+        PolicyDecision::Ask => format!("Permission needs a decision ({label}): {title}"),
     }
 }
 
@@ -372,38 +388,141 @@ fn permission_title(params: &Value) -> String {
 
 fn permission_message(params: &Value) -> String {
     let tool = tool_object(params);
+    let mut parts: Vec<String> = Vec::new();
+
     for source in [params, tool] {
         for key in ["message", "description"] {
             if let Some(text) = source.get(key).and_then(|v| v.as_str()) {
                 let trimmed = text.trim();
                 if !trimmed.is_empty() {
-                    return trimmed.to_string();
+                    push_unique(&mut parts, trimmed);
                 }
             }
         }
     }
-    if let Some(raw) = tool
-        .get("rawInput")
-        .or_else(|| tool.get("raw_input"))
-        .or_else(|| params.get("rawInput"))
-    {
-        if let Some(cmd) = raw
-            .get("command")
-            .or_else(|| raw.get("cmd"))
-            .and_then(|v| v.as_str())
-        {
-            return cmd.trim().to_string();
+
+    if let Some(reason) = content_text_reason(tool).or_else(|| content_text_reason(params)) {
+        push_unique(&mut parts, &reason);
+    }
+
+    if let Some(detail) = raw_input_detail(tool).or_else(|| raw_input_detail(params)) {
+        push_unique(&mut parts, &detail);
+    } else if let Some(from_title) = detail_from_title(permission_title(params).as_str()) {
+        push_unique(&mut parts, &from_title);
+    }
+
+    if parts.is_empty() {
+        let title = permission_title(params);
+        if title != "Permission required" {
+            return title;
         }
-        if let Some(path) = raw
-            .get("path")
-            .or_else(|| raw.get("filePath"))
-            .or_else(|| raw.get("file_path"))
+        return "Permission required".to_string();
+    }
+    parts.join(" — ")
+}
+
+fn push_unique(parts: &mut Vec<String>, text: &str) {
+    if parts.iter().any(|p| p == text) {
+        return;
+    }
+    parts.push(text.to_string());
+}
+
+fn content_text_reason(value: &Value) -> Option<String> {
+    let content = value.get("content")?;
+    let arr = content.as_array()?;
+    for item in arr {
+        if item.get("type").and_then(|v| v.as_str()) != Some("content") {
+            // Also accept a bare text content block.
+        }
+        let text = item
+            .pointer("/content/text")
+            .or_else(|| item.get("text"))
             .and_then(|v| v.as_str())
-        {
-            return path.trim().to_string();
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        if let Some(text) = text {
+            return Some(text.to_string());
         }
     }
-    String::new()
+    None
+}
+
+fn raw_input_detail(value: &Value) -> Option<String> {
+    let raw = value.get("rawInput").or_else(|| value.get("raw_input"))?;
+    if let Some(cmd) = raw
+        .get("command")
+        .or_else(|| raw.get("cmd"))
+        .and_then(|v| v.as_str())
+    {
+        let trimmed = cmd.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    if let Some(path) = raw
+        .get("path")
+        .or_else(|| raw.get("filePath"))
+        .or_else(|| raw.get("file_path"))
+        .and_then(|v| v.as_str())
+    {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    if let Some(url) = raw.get("url").and_then(|v| v.as_str()) {
+        let trimmed = url.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    None
+}
+
+fn detail_from_title(title: &str) -> Option<String> {
+    use super::tool_cache::{parse_backticked_command, parse_delete_path, parse_fetch_url};
+    parse_backticked_command(title)
+        .or_else(|| parse_delete_path(title))
+        .or_else(|| parse_fetch_url(title))
+}
+
+pub fn display_kind_label(params: &Value, class: ToolClass) -> String {
+    let tool = tool_object(params);
+    let kind = kind_string(tool)
+        .or_else(|| kind_string(params))
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let title = permission_title(params);
+    if kind == "delete" || title.trim().to_ascii_lowercase().starts_with("delete") {
+        return "delete".to_string();
+    }
+    if kind == "fetch" || is_network_fetch(params, class) {
+        return "fetch".to_string();
+    }
+    if !kind.is_empty() {
+        return kind;
+    }
+    class.as_str().to_string()
+}
+
+pub fn is_network_fetch(params: &Value, class: ToolClass) -> bool {
+    let tool = tool_object(params);
+    if let Some(kind) = kind_string(tool).or_else(|| kind_string(params)) {
+        if kind.eq_ignore_ascii_case("fetch") {
+            return true;
+        }
+    }
+    let title = permission_title(params).to_ascii_lowercase();
+    if title.starts_with("fetch ") || title.starts_with("web fetch") {
+        return true;
+    }
+    if let Some(raw) = tool.get("rawInput").or_else(|| tool.get("raw_input")) {
+        if raw.get("url").and_then(|v| v.as_str()).is_some() && class == ToolClass::Read {
+            return true;
+        }
+    }
+    false
 }
 
 fn permission_options(params: &Value) -> Vec<PermissionChoice> {
@@ -461,6 +580,7 @@ fn permission_options(params: &Value) -> Vec<PermissionChoice> {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::path::PathBuf;
 
     fn params_kind(kind: &str) -> Value {
         json!({
@@ -665,6 +785,125 @@ mod tests {
         assert_eq!(
             outcome.auto_result.unwrap()["outcome"]["outcome"],
             "cancelled"
+        );
+    }
+
+    fn fixture_params(name: &str) -> (Value, Option<Value>) {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../fixtures/acp/permissions")
+            .join(name);
+        let raw: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let params = raw["request"]["params"].clone();
+        let preceding = raw.get("precedingToolCallUpdates").cloned();
+        (params, preceding)
+    }
+
+    fn enrich_from_fixture(name: &str) -> Value {
+        use crate::permissions::ToolCallCache;
+        let (params, preceding) = fixture_params(name);
+        let mut cache = ToolCallCache::new();
+        if let Some(Value::Array(items)) = preceding {
+            for item in items {
+                if let Some(update) = item.get("update") {
+                    cache.observe_tool_update(update);
+                }
+            }
+        }
+        cache.enrich_params(&params)
+    }
+
+    #[test]
+    fn captured_shell_message_includes_allowlist_reason_and_command() {
+        let enriched = enrich_from_fixture("shell-ls.json");
+        let outcome = evaluate_permission("role_developer", &enriched);
+        assert_eq!(outcome.class, ToolClass::Shell);
+        assert_eq!(outcome.display_kind, "execute");
+        assert!(outcome.message.contains("Shell allowlist is empty"));
+        assert!(outcome.message.contains("ls -la"));
+        assert!(!outcome.message.is_empty());
+    }
+
+    #[test]
+    fn captured_delete_displays_as_delete_and_classifies_write() {
+        let enriched = enrich_from_fixture("delete-hello.json");
+        let outcome = evaluate_permission("role_pr_reviewer", &enriched);
+        assert_eq!(outcome.class, ToolClass::Write);
+        assert_eq!(outcome.display_kind, "delete");
+        assert_eq!(outcome.decision, PolicyDecision::Reject);
+        assert!(outcome.message.contains("hello.txt"));
+    }
+
+    #[test]
+    fn captured_fetch_is_read_network_and_allowed_for_planner() {
+        let enriched = enrich_from_fixture("fetch-example.json");
+        assert_eq!(classify_permission_params(&enriched), ToolClass::Read);
+        for role in ["role_planner", "role_general", "role_pr_reviewer"] {
+            let outcome = evaluate_permission(role, &enriched);
+            assert_eq!(outcome.decision, PolicyDecision::AllowOnce, "{role}");
+            assert!(outcome.network, "{role}");
+            assert_eq!(outcome.display_kind, "fetch");
+            assert!(
+                outcome
+                    .transcript_line
+                    .as_deref()
+                    .unwrap()
+                    .contains("network"),
+                "{role}"
+            );
+            assert!(outcome.message.contains("https://example.com"));
+        }
+        let implementer = evaluate_permission("role_implementer", &enriched);
+        assert_eq!(implementer.decision, PolicyDecision::AllowOnce);
+        let unknown = evaluate_permission("role_custom", &enriched);
+        assert_eq!(unknown.decision, PolicyDecision::Ask);
+    }
+
+    #[test]
+    fn captured_shell_role_matrix() {
+        let enriched = enrich_from_fixture("shell-echo.json");
+        assert_eq!(
+            evaluate_permission("role_implementer", &enriched).decision,
+            PolicyDecision::AllowOnce
+        );
+        assert_eq!(
+            evaluate_permission("role_developer", &enriched).decision,
+            PolicyDecision::AllowOnce
+        );
+        assert_eq!(
+            evaluate_permission("role_pr_reviewer", &enriched).decision,
+            PolicyDecision::AllowOnce
+        );
+        assert_eq!(
+            evaluate_permission("role_planner", &enriched).decision,
+            PolicyDecision::Reject
+        );
+        assert_eq!(
+            evaluate_permission("role_general", &enriched).decision,
+            PolicyDecision::Reject
+        );
+        assert_eq!(
+            evaluate_permission("role_custom", &enriched).decision,
+            PolicyDecision::Ask
+        );
+    }
+
+    #[test]
+    fn fetch_without_cache_parses_title() {
+        let (params, _) = fixture_params("fetch-example.json");
+        let outcome = evaluate_permission("role_planner", &params);
+        assert!(outcome.message.contains("https://example.com"));
+        assert!(outcome.network);
+    }
+
+    #[test]
+    fn planner_allows_fetch_read_class() {
+        assert_eq!(
+            decide_for_role("role_planner", ToolClass::Read),
+            PolicyDecision::AllowOnce
+        );
+        assert_eq!(
+            decide_for_role("role_general", ToolClass::Read),
+            PolicyDecision::AllowOnce
         );
     }
 }

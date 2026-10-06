@@ -27,3 +27,6 @@ seed/*.json.bak
 *.njsproj
 *.sln
 *.sw?
+
+# Local ACP wire captures (convert into fixtures/acp/permissions/ instead)
+captures/

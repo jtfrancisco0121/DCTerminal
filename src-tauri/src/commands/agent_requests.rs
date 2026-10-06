@@ -1,7 +1,7 @@
 use crate::commands::dev_session::SessionRegistry;
 use crate::permissions::{
-    append_permission_log, cancelled_permission_result, evaluate_permission, permission_log_record,
-    DecisionOutcome, PolicyDecision,
+    append_permission_log, cancelled_permission_result, evaluate_permission,
+    permission_log_record_with_meta, DecisionOutcome, PolicyDecision, ToolCallCache,
 };
 use crate::store::SettingsStore;
 use serde::Serialize;
@@ -22,6 +22,8 @@ pub struct PermissionRequestEvent {
     pub title: String,
     pub message: String,
     pub tool_class: String,
+    pub display_kind: String,
+    pub network: bool,
     pub options: Vec<PermissionOption>,
     pub raw_params: String,
 }
@@ -41,6 +43,8 @@ pub struct PermissionAutoEvent {
     pub json_rpc_id: u64,
     pub title: String,
     pub tool_class: String,
+    pub display_kind: String,
+    pub network: bool,
     pub decision: String,
     pub line: String,
 }
@@ -68,9 +72,26 @@ pub fn stage_permission_request(
         }
     };
 
-    capture_permission_payload(app, tab_id, &role_id, request);
-
-    let outcome = evaluate_permission(&role_id, &params);
+    let cache_snapshot = {
+        let guard = state.lock().map_err(|e| e.to_string())?;
+        match guard.get(tab_id) {
+            Some(session) => session.tool_call_cache.clone(),
+            None => ToolCallCache::new(),
+        }
+    };
+    let enriched = cache_snapshot.enrich_params(&params);
+    let outcome = evaluate_permission(&role_id, &enriched);
+    capture_permission_payload(
+        app,
+        tab_id,
+        &role_id,
+        request,
+        Some((
+            outcome.display_kind.as_str(),
+            outcome.network,
+            outcome.class.as_str(),
+        )),
+    );
     if outcome.decision != PolicyDecision::Ask {
         if let Some(line) = outcome.transcript_line.clone() {
             let _ = app.emit(
@@ -102,6 +123,8 @@ pub fn stage_permission_request(
         title: outcome.title,
         message: outcome.message,
         tool_class: outcome.class.as_str().to_string(),
+        display_kind: outcome.display_kind.clone(),
+        network: outcome.network,
         options: outcome
             .options
             .into_iter()
@@ -134,6 +157,8 @@ fn auto_event(
         json_rpc_id,
         title: outcome.title.clone(),
         tool_class: outcome.class.as_str().to_string(),
+        display_kind: outcome.display_kind.clone(),
+        network: outcome.network,
         decision: decision.to_string(),
         line: line.to_string(),
     }
@@ -295,7 +320,13 @@ fn plan_entries(params: &Value) -> Vec<PlanEntryDto> {
         .collect()
 }
 
-fn capture_permission_payload(app: &AppHandle, tab_id: &str, role_id: &str, request: &Value) {
+fn capture_permission_payload(
+    app: &AppHandle,
+    tab_id: &str,
+    role_id: &str,
+    request: &Value,
+    meta: Option<(&str, bool, &str)>,
+) {
     let enabled = app
         .try_state::<Mutex<SettingsStore>>()
         .and_then(|state| state.lock().ok().map(|settings| settings.capture_enabled()))
@@ -305,7 +336,24 @@ fn capture_permission_payload(app: &AppHandle, tab_id: &str, role_id: &str, requ
     }
     let dir = crate::data_dir::app_data_dir(app).path;
     let path = dir.join("logs").join("permission-payloads.jsonl");
-    let record = permission_log_record(tab_id, role_id, &chrono::Utc::now().to_rfc3339(), request);
+    let (display_kind, network, tool_class) = meta.unwrap_or(("", false, ""));
+    let record = permission_log_record_with_meta(
+        tab_id,
+        role_id,
+        &chrono::Utc::now().to_rfc3339(),
+        request,
+        if display_kind.is_empty() {
+            None
+        } else {
+            Some(display_kind)
+        },
+        network,
+        if tool_class.is_empty() {
+            None
+        } else {
+            Some(tool_class)
+        },
+    );
     if let Err(err) = append_permission_log(&path, &record) {
         note_capture_error(app, &err);
     }

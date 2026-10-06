@@ -8,10 +8,10 @@
 
 | Field | Value |
 |--------|--------|
-| **Last updated** | 2026-10-06 — Scratch drafts and Vitest tolerate Node 25+ `localStorage` (undefined without `--localstorage-file`). `npm ci` allows the optional `fsevents` install script. |
-| **Branch** | `cursor/integrate-terminal-history-0dcf` |
+| **Last updated** | 2026-10-06 — Permission fixes from live Mac captures (`feat/permission-fixes`): enrich rawInput from tool-call cache / title, delete+fetch display, unrestricted banner, Settings > Permissions note. |
+| **Branch** | `feat/permission-fixes` |
 | **Current phase** | Finish MVP vertical slice (see [MVP-FINISH.md](./MVP-FINISH.md)) |
-| **Active task** | Windows acceptance of the terminal, resume, and history list. See [cursor-cli-history.md](./cursor-cli-history.md). |
+| **Active task** | Mac verification of permission UX against a logged-in Cursor CLI. |
 
 ## Product-ready today
 
@@ -21,7 +21,8 @@
 - **Resume and history** — Continue uses `session/load` for an ACP session. The blank-tab card lists sessions for the folder. A CLI chat opens in the terminal. An ACP session resumes in the app. See [cursor-cli-history.md](./cursor-cli-history.md)
 - **Local install** — `./install.sh` (macOS and Linux), `install.ps1` (Windows PowerShell 5.1 and 7), or `npm run install-app`. Windows install succeeded. `install.sh` tests skip themselves when bash is not a POSIX shell (the WSL stub).
 - **Multi-tab live sessions** — each tab has its own `agent acp` process, transcript, and permission queue
-- **Role policy** — Implementer/Developer auto-allow; Reviewer allows shell + MCP and denies writes; Planner/General block write and shell; MCP allowed for every role. Auto-decisions show in the transcript
+- **Role policy** — Implementer/Developer auto-allow; Reviewer allows shell + MCP and denies writes; Planner/General block write and shell (fetch/read still allowed); MCP allowed for every role. Auto-decisions show in the transcript. Live allowlist captures: shell/delete/fetch only — file create/edit never ask. Unrestricted CLI skips `request_permission` entirely; UI warns and does not override `~/.cursor/cli-config.json`.
+- **Permission payload fixtures** — `fixtures/acp/permissions/` holds the four captured requests plus sample cli-config files
 - **Session UI** — full-height terminal-style pane, Markdown + tables; tool rows coalesce; activity + permission banners
 - **Release UI** — dev probes / duplicate dev session hidden (`import.meta.env.DEV` only)
 

@@ -55,3 +55,17 @@ The decision code is `src-tauri/src/permissions/policy.rs` (`evaluate_permission
 4. `allow-always` is never chosen. DCTerminal does not write `~/.cursor` or the project.
 
 Auto-decisions also show up in the transcript as a system line. The log still records those requests so you can see the payload even when no card was shown.
+
+## Live Cursor CLI notes (2026.10.01)
+
+Captured on JT's Mac with `approvalMode: allowlist` and an empty shell allowlist:
+
+- Permission request params do **not** include `rawInput`. The command, path, or URL is on the preceding (or following) `tool_call` / `tool_call_update` with the same `toolCallId`, or only in the title.
+- Delete arrives as `kind: "edit"` with title `Delete \`path\``. DCTerminal displays it as delete; classification remains Write.
+- Fetch uses `toolCallId: "web_fetch_0"` (does not match the real tool call) and can arrive **before** any `tool_call`. Title parsing supplies the URL.
+- File create/edit under allowlist never send `request_permission`.
+- With `approvalMode: unrestricted` (Run Everything), the agent never sends `request_permission`, so role rules never apply. DCTerminal only reads `cli-config.json` and warns; it never writes or overrides that setting.
+
+### MCP
+
+MCP permission payloads are still **unverified** on a live CLI. The classifier keeps `mcp_signal` (server fields, `kind: mcp`, titles like `mcp:…`) as a best-effort signal. Do not treat MCP auto-allow as proven until a capture lands in `fixtures/acp/permissions/`.

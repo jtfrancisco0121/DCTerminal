@@ -1,0 +1,70 @@
+{
+  "label": "c-shell: execute `ls -la`",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 0,
+    "method": "session/request_permission",
+    "params": {
+      "sessionId": "427830a2-f380-4904-8508-2c3fec27aff7",
+      "toolCall": {
+        "toolCallId": "call-baf16cbb-335f-4248-ba7f-3d630f1b143c-2\nfc_p47fxvz-6jKPYy-5c42c685-aws_ue1_0",
+        "title": "`ls -la`",
+        "kind": "execute",
+        "status": "pending",
+        "content": [
+          {
+            "type": "content",
+            "content": {
+              "type": "text",
+              "text": "Shell allowlist is empty"
+            }
+          }
+        ]
+      },
+      "options": [
+        {
+          "optionId": "allow-once",
+          "name": "Allow once",
+          "kind": "allow_once"
+        },
+        {
+          "optionId": "allow-always",
+          "name": "Allow always",
+          "kind": "allow_always"
+        },
+        {
+          "optionId": "reject-once",
+          "name": "Reject",
+          "kind": "reject_once"
+        }
+      ]
+    }
+  },
+  "precedingToolCallUpdates": [
+    {
+      "update": {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "call-baf16cbb-335f-4248-ba7f-3d630f1b143c-2\nfc_p47fxvz-6jKPYy-5c42c685-aws_ue1_0",
+        "title": "`ls -la`",
+        "kind": "execute",
+        "status": "pending",
+        "rawInput": {
+          "command": "ls -la"
+        }
+      }
+    },
+    {
+      "update": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-baf16cbb-335f-4248-ba7f-3d630f1b143c-2\nfc_p47fxvz-6jKPYy-5c42c685-aws_ue1_0",
+        "status": "in_progress"
+      }
+    }
+  ],
+  "answer": {
+    "outcome": {
+      "outcome": "selected",
+      "optionId": "allow-once"
+    }
+  }
+}

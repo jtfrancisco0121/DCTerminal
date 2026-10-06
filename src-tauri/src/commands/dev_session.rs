@@ -1,7 +1,7 @@
 use crate::acp::AcpClient;
 use crate::commands::prompt_worker::spawn_prompt_turn;
 use crate::paths::validate_working_folder;
-use crate::permissions::cancelled_permission_result;
+use crate::permissions::{cancelled_permission_result, ToolCallCache};
 use crate::process_tree::SharedProcess;
 use crate::store::StateStore;
 use serde::Serialize;
@@ -31,6 +31,7 @@ pub struct LiveSession {
     pub outbox: Arc<Mutex<Vec<(u64, Value)>>>,
     pub pending_permissions: HashMap<u64, ()>,
     pub pending_plans: HashMap<u64, ()>,
+    pub tool_call_cache: ToolCallCache,
     pub pending_startup_prompt: Option<String>,
     pub startup_injected: bool,
     pub prompt_in_flight: bool,
@@ -54,6 +55,7 @@ impl LiveSession {
             outbox,
             pending_permissions: HashMap::new(),
             pending_plans: HashMap::new(),
+            tool_call_cache: ToolCallCache::new(),
             pending_startup_prompt: None,
             startup_injected: false,
             prompt_in_flight: false,

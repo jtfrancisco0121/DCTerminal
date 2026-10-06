@@ -357,6 +357,8 @@ export type PermissionRequestEvent = {
   title: string;
   message: string;
   toolClass: string;
+  displayKind: string;
+  network: boolean;
   options: PermissionOption[];
   rawParams: string;
 };
@@ -367,9 +369,25 @@ export type PermissionAutoEvent = {
   jsonRpcId: number;
   title: string;
   toolClass: string;
+  displayKind: string;
+  network: boolean;
   decision: string;
   line: string;
 };
+
+export type ApprovalModeKind = "unrestricted" | "allowlist" | "other" | "unknown";
+
+export type ApprovalModeStatus = {
+  kind: ApprovalModeKind;
+  approvalMode: string | null;
+  configPath: string | null;
+  roleRulesOff: boolean;
+  note: string | null;
+};
+
+export async function cursorApprovalMode(): Promise<ApprovalModeStatus> {
+  return invoke("cursor_approval_mode");
+}
 
 export function listenPermissionRequests(
   handler: (event: PermissionRequestEvent) => void,

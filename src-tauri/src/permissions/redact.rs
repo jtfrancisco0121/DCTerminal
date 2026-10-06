@@ -74,7 +74,7 @@ fn redact_string(key: Option<&str>, text: &str) -> String {
 
 fn keep_long(key: &str) -> bool {
     let key = key.to_ascii_lowercase();
-    key == "command" || key == "title" || key == "path" || key == "cwd"
+    key == "command" || key == "title" || key == "path" || key == "cwd" || key == "url"
 }
 
 fn looks_like_secret(text: &str) -> bool {
@@ -108,19 +108,41 @@ pub fn append_permission_log(path: &std::path::Path, line: &Value) -> Result<(),
     Ok(())
 }
 
-pub fn permission_log_record(
+pub fn permission_log_record_with_meta(
     tab_id: &str,
     role_id: &str,
     captured_at: &str,
     request: &Value,
+    display_kind: Option<&str>,
+    network: bool,
+    tool_class: Option<&str>,
 ) -> Value {
-    json!({
+    let mut record = json!({
         "capturedAt": captured_at,
         "tabId": tab_id,
         "roleId": role_id,
         "method": request.get("method").and_then(|m| m.as_str()).unwrap_or("session/request_permission"),
         "payload": redact_permission_payload(request),
-    })
+    });
+    if let Some(kind) = display_kind {
+        record
+            .as_object_mut()
+            .unwrap()
+            .insert("displayKind".into(), json!(kind));
+    }
+    if network {
+        record
+            .as_object_mut()
+            .unwrap()
+            .insert("network".into(), json!(true));
+    }
+    if let Some(class) = tool_class {
+        record
+            .as_object_mut()
+            .unwrap()
+            .insert("toolClass".into(), json!(class));
+    }
+    record
 }
 
 #[cfg(test)]

@@ -4,6 +4,7 @@ import {
   devSessionCancel,
   devSessionSend,
   devSessionStop,
+  cursorApprovalMode,
   diagnosticsSetCapture,
   diagnosticsStatus,
   listenPermissionAuto,
@@ -43,6 +44,7 @@ import {
   type FieldError,
   type PlanRequestEvent,
   type CliDetectResult,
+  type ApprovalModeStatus,
   type DiagnosticsStatus,
   type Role,
   type RoleSessionStartResult,
@@ -87,6 +89,7 @@ import {
 } from "./handoff/map";
 import { FolderPicker } from "./components/FolderPicker";
 import { SettingsPage } from "./components/SettingsPage";
+import { UnrestrictedBanner } from "./components/UnrestrictedBanner";
 import { folderForTab } from "./projectsView";
 import {
   canContinueStoredSession,
@@ -200,6 +203,8 @@ export function StartupForm({
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [captureOn, setCaptureOn] = useState(false);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsStatus | null>(null);
+  const [approvalMode, setApprovalMode] = useState<ApprovalModeStatus | null>(null);
+  const [unrestrictedDismissed, setUnrestrictedDismissed] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [handoffs, setHandoffs] = useState<HandoffRecord[]>([]);
   const [handoffTarget, setHandoffTarget] = useState<HandoffTargetId | null>(null);
@@ -1601,6 +1606,29 @@ export function StartupForm({
       .catch(() => {});
   }, []);
 
+  const refreshApprovalMode = useCallback(() => {
+    cursorApprovalMode()
+      .then((status) => {
+        setApprovalMode(status);
+        if (!status.roleRulesOff) setUnrestrictedDismissed(false);
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    refreshApprovalMode();
+    const onFocus = () => refreshApprovalMode();
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") refreshApprovalMode();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [refreshApprovalMode]);
+
   const loadHandoffFields = useCallback((target: HandoffTargetId) => {
     setHandoffFields(null);
     getRole(target)
@@ -1949,6 +1977,15 @@ export function StartupForm({
     }
   };
 
+  const showUnrestrictedBanner =
+    !!approvalMode?.roleRulesOff && !unrestrictedDismissed && !settingsOpen;
+  const unrestrictedBanner = (
+    <UnrestrictedBanner
+      visible={showUnrestrictedBanner}
+      onDismiss={() => setUnrestrictedDismissed(true)}
+    />
+  );
+
   const tabBar = (
     <TabBar
       tabs={savedTabs}
@@ -1959,6 +1996,7 @@ export function StartupForm({
       attentionTabIds={needsAttention}
       canReopen={closedTabs.length > 0}
       settingsOpen={settingsOpen}
+      roleRulesOff={!!approvalMode?.roleRulesOff}
       onSelect={handleSelectTab}
       onClose={handleCloseTab}
       onNew={handleNewTab}
@@ -1987,6 +2025,7 @@ export function StartupForm({
       }}
       terminalSettings={terminalSettings}
       onTerminalSettings={updateTerminalSettings}
+      approvalMode={approvalMode}
       onClose={() => setSettingsOpen(false)}
     />
   );
@@ -2070,6 +2109,7 @@ export function StartupForm({
     return (
       <section className="workspace-shell">
         {tabBar}
+        {unrestrictedBanner}
         <section className="status-card status-card-session-full terminal-screen">
           {linked && (
             <HandoffBanner
@@ -2146,6 +2186,7 @@ export function StartupForm({
     return (
       <section className="workspace-shell">
         {tabBar}
+        {unrestrictedBanner}
         {settingsOpen ? settingsPage : <p className="hint empty-state">Loading…</p>}
         {overlays}
       </section>
@@ -2322,6 +2363,7 @@ export function StartupForm({
     return (
       <section className="workspace-shell">
         {tabBar}
+        {unrestrictedBanner}
         <section className="status-card status-card-session-full">
         {handoffBanner}
         <SessionCards
