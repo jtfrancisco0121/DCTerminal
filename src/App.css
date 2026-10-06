@@ -301,3 +301,31 @@
   color: #6e7681;
   margin-bottom: 0.15rem;
 }
+
+.session-panel {
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid #388bfd;
+  border-radius: 8px;
+  background: #0d1117;
+}
+
+.session-panel-title {
+  margin: 0 0 0.35rem;
+  font-weight: 600;
+}
+
+.session-running {
+  margin: 0.5rem 0 0;
+  color: #3fb950;
+  font-size: 0.875rem;
+}
+
+.composer-fields-locked {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.composer-locked {
+  margin: 0 0 0.5rem;
+}

@@ -85,7 +85,12 @@ function App() {
   const sendDevPrompt = useCallback(async () => {
     setDevBusy(true);
     try {
-      setDevResult(await devSessionSend(devPrompt));
+      await devSessionSend(devPrompt);
+      setDevResult({
+        stopReason: "dispatched (listen for updates)",
+        agentText: "",
+        updateCount: 0,
+      });
     } catch (err: unknown) {
       setDevResult({
         stopReason: err instanceof Error ? err.message : String(err),

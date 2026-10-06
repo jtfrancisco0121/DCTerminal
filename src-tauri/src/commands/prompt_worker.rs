@@ -1,0 +1,104 @@
+use crate::acp::PromptResult;
+use crate::commands::acp_events::emit_session_update;
+use crate::commands::dev_session::DevSessionState;
+use crate::store::StateStore;
+use serde::Serialize;
+use std::sync::Mutex;
+use tauri::{AppHandle, Emitter, Manager};
+
+pub const PROMPT_FINISHED_EVENT: &str = "role_session/prompt-finished";
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptFinishedEvent {
+    pub session_id: String,
+    pub tab_id: Option<String>,
+    pub success: bool,
+    pub result: Option<PromptResult>,
+    pub error: Option<String>,
+}
+
+/// Run `session/prompt` off the IPC thread so the UI stays responsive.
+pub fn spawn_prompt_turn(
+    app: AppHandle,
+    prompt_text: String,
+    tab_id: Option<String>,
+    mark_startup_injected: bool,
+    mark_tab_injection_complete: bool,
+) {
+    std::thread::spawn(move || {
+        let finished = run_prompt_turn(
+            &app,
+            &prompt_text,
+            tab_id.clone(),
+            mark_startup_injected,
+            mark_tab_injection_complete,
+        );
+        let _ = app.emit(PROMPT_FINISHED_EVENT, finished);
+    });
+}
+
+fn run_prompt_turn(
+    app: &AppHandle,
+    prompt_text: &str,
+    tab_id: Option<String>,
+    mark_startup_injected: bool,
+    mark_tab_injection_complete: bool,
+) -> PromptFinishedEvent {
+    let state = app.state::<Mutex<DevSessionState>>();
+    let outcome: Result<(PromptResult, String), String> = (|| {
+        let mut guard = state.lock().map_err(|e| e.to_string())?;
+        let client = guard
+            .client
+            .as_mut()
+            .ok_or_else(|| "no active agent session".to_string())?;
+        let session_id = client.session_id().to_string();
+        let session_id_for_emit = session_id.clone();
+        let app_emit = app.clone();
+        let on_notification = Box::new(move |value: &serde_json::Value| {
+            emit_session_update(&app_emit, &session_id_for_emit, value);
+        });
+        let result = client.send_prompt(prompt_text, Some(on_notification))?;
+        if mark_startup_injected {
+            guard.startup_injected = true;
+        }
+        guard.prompt_in_flight = false;
+        Ok((result, session_id))
+    })();
+
+    match outcome {
+        Ok((result, session_id)) => {
+            if mark_tab_injection_complete {
+                if let Some(id) = &tab_id {
+                    if let Ok(mut store) = app.state::<Mutex<StateStore>>().lock() {
+                        let _ = store.set_injection_complete(id);
+                    }
+                }
+            }
+            PromptFinishedEvent {
+                session_id,
+                tab_id,
+                success: true,
+                result: Some(result),
+                error: None,
+            }
+        }
+        Err(err) => {
+            if let Ok(mut guard) = state.lock() {
+                guard.prompt_in_flight = false;
+            }
+            let session_id = state
+                .lock()
+                .ok()
+                .and_then(|g| g.client.as_ref().map(|c| c.session_id().to_string()))
+                .unwrap_or_default();
+            PromptFinishedEvent {
+                session_id,
+                tab_id,
+                success: false,
+                result: None,
+                error: Some(err),
+            }
+        }
+    }
+}

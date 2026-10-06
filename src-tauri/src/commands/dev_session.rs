@@ -1,5 +1,5 @@
-use crate::acp::{AcpClient, PromptResult};
-use crate::commands::acp_events::emit_session_update;
+use crate::acp::AcpClient;
+use crate::commands::prompt_worker::spawn_prompt_turn;
 use crate::orchestrator::TabPhase;
 use crate::store::StateStore;
 use serde::Serialize;
@@ -14,6 +14,7 @@ pub struct DevSessionState {
     pub startup_injected: bool,
     pub phase: TabPhase,
     pub active_tab_id: Option<String>,
+    pub prompt_in_flight: bool,
 }
 
 impl DevSessionState {
@@ -24,6 +25,7 @@ impl DevSessionState {
             startup_injected: false,
             phase: TabPhase::AwaitingInput,
             active_tab_id: None,
+            prompt_in_flight: false,
         }
     }
 }
@@ -63,18 +65,28 @@ pub fn dev_session_start(
     Ok(info)
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptDispatchResult {
+    pub dispatched: bool,
+}
+
 #[tauri::command]
 pub fn dev_session_send(
     app: AppHandle,
     prompt: String,
     state: State<Mutex<DevSessionState>>,
-    state_store: State<Mutex<StateStore>>,
-) -> Result<PromptResult, String> {
+) -> Result<PromptDispatchResult, String> {
     let mut guard = state.lock().map_err(|e| e.to_string())?;
+    if guard.prompt_in_flight {
+        return Err("a prompt is already running — wait or stop the session".to_string());
+    }
+    if guard.client.is_none() {
+        return Err("no dev session — call dev_session_start first".to_string());
+    }
     let attached_startup = guard.pending_startup_prompt.take();
     let had_attached_startup = attached_startup.is_some();
     let prompt_to_send = if let Some(startup) = attached_startup {
-        guard.startup_injected = true;
         format!("{startup}\n\n---\n\n{prompt}")
     } else {
         prompt
@@ -84,21 +96,15 @@ pub fn dev_session_send(
     } else {
         None
     };
-    let client = guard
-        .client
-        .as_mut()
-        .ok_or_else(|| "no dev session — call dev_session_start first".to_string())?;
-    let session_id = client.session_id().to_string();
-    let app = app.clone();
-    let on_notification = Box::new(move |value: &serde_json::Value| {
-        emit_session_update(&app, &session_id, value);
-    });
-    let result = client.send_prompt(&prompt_to_send, Some(on_notification))?;
-    if let Some(tab_id) = tab_id_for_injection {
-        let mut store = state_store.lock().map_err(|e| e.to_string())?;
-        store.set_injection_complete(&tab_id)?;
-    }
-    Ok(result)
+    guard.prompt_in_flight = true;
+    spawn_prompt_turn(
+        app,
+        prompt_to_send,
+        tab_id_for_injection,
+        had_attached_startup,
+        had_attached_startup,
+    );
+    Ok(PromptDispatchResult { dispatched: true })
 }
 
 #[tauri::command]
@@ -115,6 +121,7 @@ pub fn dev_session_stop(
     guard.startup_injected = false;
     guard.phase = guard.phase.after_session_stopped();
     guard.active_tab_id = None;
+    guard.prompt_in_flight = false;
     if let Some(id) = tab_id {
         let mut store = state_store.lock().map_err(|e| e.to_string())?;
         store.mark_tab_awaiting_input(&id)?;

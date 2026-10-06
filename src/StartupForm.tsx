@@ -6,6 +6,7 @@ import {
   getAppState,
   getFormRecall,
   getRole,
+  listenPromptFinished,
   listenSessionUpdates,
   newDraftTab,
   roleSessionStart,
@@ -59,10 +60,12 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
   const [startResult, setStartResult] = useState<RoleSessionStartResult | null>(
     null,
   );
-  const [followUp, setFollowUp] = useState("");
-  const [followUpResult, setFollowUpResult] = useState<DevPromptResult | null>(
+  const [promptInFlight, setPromptInFlight] = useState(false);
+  const [lastPromptResult, setLastPromptResult] = useState<DevPromptResult | null>(
     null,
   );
+  const [promptError, setPromptError] = useState<string | null>(null);
+  const [followUp, setFollowUp] = useState("");
   const [busy, setBusy] = useState(false);
   const [transcriptLines, setTranscriptLines] = useState<TranscriptLine[]>([]);
   const [savedTabs, setSavedTabs] = useState<TabSummary[]>([]);
@@ -123,6 +126,27 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
     return () => {
       unlisten?.();
     };
+  }, [session]);
+
+  useEffect(() => {
+    if (!session) return;
+    let unlisten: (() => void) | undefined;
+    listenPromptFinished((evt) => {
+      if (evt.sessionId !== session.sessionId) return;
+      setPromptInFlight(false);
+      if (evt.success && evt.result) {
+        setLastPromptResult(evt.result);
+        setPromptError(null);
+        setStartResult((prev) =>
+          prev ? { ...prev, startupInjected: true } : prev,
+        );
+      } else if (evt.error) {
+        setPromptError(evt.error);
+      }
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => unlisten?.();
   }, [session]);
 
   useEffect(() => {
@@ -204,17 +228,27 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
   const startSession = useCallback(async () => {
     setBusy(true);
     setStartResult(null);
-    setFollowUpResult(null);
-    setTranscriptLines([]);
+    setLastPromptResult(null);
+    setPromptError(null);
+    setTranscriptLines([
+      {
+        id: "startup_status",
+        kind: "system",
+        label: "session",
+        text: "Connecting to agent and sending startup prompt…",
+      },
+    ]);
     try {
       const result = await roleSessionStart(roleId, formValues);
       setStartResult(result);
       if (result.errors.length > 0) {
         setSession(null);
+        setTranscriptLines([]);
         return;
       }
       setSession(result.session);
       if (result.tabId) setActiveTabId(result.tabId);
+      setPromptInFlight(result.injectionInFlight);
       await refreshTabs();
       if (result.mergedChars != null) {
         const latest = await validateAndPreview(roleId, formValues);
@@ -232,7 +266,7 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
         mergedChars: null,
         injectionStrategy: null,
         startupInjected: false,
-        injectionResult: null,
+        injectionInFlight: false,
         tabId: null,
       });
     } finally {
@@ -246,7 +280,10 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
       await devSessionStop();
       setSession(null);
       setStartResult(null);
-      setFollowUpResult(null);
+      setLastPromptResult(null);
+      setPromptInFlight(false);
+      setPromptError(null);
+      setTranscriptLines([]);
       await refreshTabs();
     } finally {
       setBusy(false);
@@ -310,14 +347,13 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
 
   const sendFollowUp = useCallback(async () => {
     setBusy(true);
+    setPromptError(null);
     try {
-      setFollowUpResult(await devSessionSend(followUp));
+      await devSessionSend(followUp);
+      setPromptInFlight(true);
+      setFollowUp("");
     } catch (err: unknown) {
-      setFollowUpResult({
-        stopReason: err instanceof Error ? err.message : String(err),
-        agentText: "",
-        updateCount: 0,
-      });
+      setPromptError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
@@ -367,6 +403,14 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
         </p>
       )}
 
+      {session && (
+        <p className="hint composer-locked">
+          Session running — use <strong>Stop</strong> to return to the startup
+          form. Switch tabs only after stopping.
+        </p>
+      )}
+
+      <div className={session ? "composer-fields composer-fields-locked" : "composer-fields"}>
       <label className="field-label">
         Role
         <select
@@ -441,6 +485,8 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
         </ul>
       )}
 
+      </div>
+
       <div className="button-row">
         <button
           type="button"
@@ -464,7 +510,7 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
           onClick={stopSession}
           disabled={busy || !session}
         >
-          Stop
+          Stop session
         </button>
       </div>
 
@@ -478,15 +524,32 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
       )}
 
       {session && (
-        <p className="hint">
-          Session <code>{session.sessionId}</code> · mode {session.modeId}
-          {startResult?.injectionStrategy && (
-            <> · injection {startResult.injectionStrategy}</>
+        <div className="session-panel">
+          <p className="session-panel-title">
+            Active session
+            {activeTabId && (
+              <span className="hint">
+                {" "}
+                · tab <code>{activeTabId}</code>
+              </span>
+            )}
+          </p>
+          <p className="hint">
+            <code>{session.sessionId}</code> · {session.modeId}
+            {startResult?.injectionStrategy && (
+              <> · {startResult.injectionStrategy}</>
+            )}
+          </p>
+          {promptInFlight && (
+            <p className="session-running" role="status">
+              Agent is working… (updates stream below; UI stays responsive)
+            </p>
           )}
-        </p>
+          {promptError && <p className="error">{promptError}</p>}
+        </div>
       )}
 
-      {(transcriptLines.length > 0 || startResult?.injectionResult) && (
+      {session && (
         <div className="probe-result transcript-panel">
           <p>
             <strong>Transcript</strong>
@@ -495,12 +558,6 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
             )}
           </p>
           <ul className="transcript-lines transcript-body">
-            {transcriptLines.length === 0 &&
-              startResult?.injectionResult?.agentText && (
-                <li className="transcript-line transcript-line-agent">
-                  {startResult.injectionResult.agentText}
-                </li>
-              )}
             {transcriptLines.map((line) => (
               <li
                 key={line.id}
@@ -511,11 +568,10 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
               </li>
             ))}
           </ul>
-          {startResult?.injectionResult && (
+          {lastPromptResult && !promptInFlight && (
             <p className="hint">
-              Startup turn:{" "}
-              {startResult.injectionResult.stopReason ?? "finished"} ·{" "}
-              {startResult.injectionResult.updateCount} updates
+              Last turn: {lastPromptResult.stopReason ?? "finished"} ·{" "}
+              {lastPromptResult.updateCount} updates
             </p>
           )}
         </div>
@@ -541,25 +597,11 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
           >
             Send
           </button>
-          {followUpResult && (
-            <div className="probe-result">
-              <p>
-                <strong>Stop:</strong> {followUpResult.stopReason ?? "—"}
-              </p>
-              <p>
-                <strong>Updates:</strong> {followUpResult.updateCount}
-              </p>
-              {followUpResult.agentText && (
-                <pre className="mono-snippet">{followUpResult.agentText}</pre>
-              )}
-            </div>
-          )}
         </>
       )}
 
       {session &&
-        startResult?.startupInjected &&
-        startResult.injectionStrategy === "send_on_start" && (
+        startResult?.injectionStrategy === "send_on_start" && (
           <>
             <label className="field-label">
               Follow-up message
@@ -579,16 +621,6 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
             >
               Send follow-up
             </button>
-            {followUpResult && (
-              <div className="probe-result">
-                <p>
-                  <strong>Stop:</strong> {followUpResult.stopReason ?? "—"}
-                </p>
-                {followUpResult.agentText && (
-                  <pre className="mono-snippet">{followUpResult.agentText}</pre>
-                )}
-              </div>
-            )}
           </>
         )}
     </section>

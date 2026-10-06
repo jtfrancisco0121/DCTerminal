@@ -130,8 +130,20 @@ export type RoleSessionStartResult = {
   mergedChars: number | null;
   injectionStrategy: string | null;
   startupInjected: boolean;
-  injectionResult: DevPromptResult | null;
+  injectionInFlight: boolean;
   tabId: string | null;
+};
+
+export type PromptFinishedEvent = {
+  sessionId: string;
+  tabId: string | null;
+  success: boolean;
+  result: DevPromptResult | null;
+  error: string | null;
+};
+
+export type PromptDispatchResult = {
+  dispatched: boolean;
 };
 
 export type TabSummary = {
@@ -242,8 +254,18 @@ export async function devSessionStart(
   return invoke<DevSessionInfo>("dev_session_start", { cwd, modeId });
 }
 
-export async function devSessionSend(prompt: string): Promise<DevPromptResult> {
-  return invoke<DevPromptResult>("dev_session_send", { prompt });
+export async function devSessionSend(
+  prompt: string,
+): Promise<PromptDispatchResult> {
+  return invoke<PromptDispatchResult>("dev_session_send", { prompt });
+}
+
+export function listenPromptFinished(
+  handler: (event: PromptFinishedEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<PromptFinishedEvent>("role_session/prompt-finished", (e) => {
+    handler(e.payload);
+  });
 }
 
 export async function devSessionStop(): Promise<void> {
