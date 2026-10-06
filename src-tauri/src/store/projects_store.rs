@@ -72,7 +72,9 @@ impl ProjectsStore {
             return;
         }
         let key = folder_key(path);
-        self.data.recent.retain(|item| folder_key(&item.path) != key);
+        self.data
+            .recent
+            .retain(|item| folder_key(&item.path) != key);
         self.data.recent.insert(
             0,
             ProjectRef {
@@ -137,7 +139,10 @@ impl ProjectsStore {
             .iter()
             .map(|item| listed(item, true))
             .collect::<Vec<_>>();
-        let fav_keys: Vec<String> = favorites.iter().map(|item| folder_key(&item.path)).collect();
+        let fav_keys: Vec<String> = favorites
+            .iter()
+            .map(|item| folder_key(&item.path))
+            .collect();
         let recent = self
             .data
             .recent

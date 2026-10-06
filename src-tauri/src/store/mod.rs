@@ -19,6 +19,6 @@ pub use roles_store::{docs_roles_dir, seed_output_path, write_seed_file, RolesSt
 pub use scratch_store::ScratchStore;
 pub use settings_store::{SettingsStore, TerminalSettings};
 pub use state_store::StateStore;
-pub use state_types::{AppStateFile, RoleSnapshot, TabRecord, TabSessionRef};
 pub(crate) use state_store::{tab_label, TerminalTabDraft};
+pub use state_types::{AppStateFile, RoleSnapshot, TabRecord, TabSessionRef};
 pub use transcript_store::TranscriptStore;

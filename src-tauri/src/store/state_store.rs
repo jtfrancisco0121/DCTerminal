@@ -25,8 +25,7 @@ impl StateStore {
             if loaded.schema_version != STATE_SCHEMA_VERSION {
                 return Err(format!(
                     "unsupported state.json schemaVersion {} (expected {})",
-                    loaded.schema_version,
-                    STATE_SCHEMA_VERSION
+                    loaded.schema_version, STATE_SCHEMA_VERSION
                 ));
             }
             loaded
@@ -159,8 +158,11 @@ impl StateStore {
                 continue;
             }
             if tab.phase == "running" {
-                tab.phase = TabPhase::Running.after_session_stopped().as_store_str().to_string();
-                tab.session = None;
+                tab.phase = TabPhase::Running
+                    .after_session_stopped()
+                    .as_store_str()
+                    .to_string();
+                // The process is gone. The ACP session id stays so Continue can session/load.
                 changed = true;
             }
         }
@@ -181,8 +183,10 @@ impl StateStore {
             .iter_mut()
             .find(|t| t.id == tab_id)
             .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
-        tab.phase = TabPhase::Running.after_session_stopped().as_store_str().to_string();
-        tab.session = None;
+        tab.phase = TabPhase::Running
+            .after_session_stopped()
+            .as_store_str()
+            .to_string();
         if let Some(text) = transcript {
             let trimmed = text.trim();
             if !trimmed.is_empty() {
@@ -226,6 +230,11 @@ impl StateStore {
                 closed_at: Utc::now().to_rfc3339(),
                 kind: tab.kind.clone(),
                 terminal_launch: tab.terminal_launch.clone(),
+                acp_session_id: tab
+                    .session
+                    .as_ref()
+                    .map(|session| session.acp_session_id.clone()),
+                mode_id: tab.session.as_ref().map(|session| session.mode_id.clone()),
             },
         );
         self.data.closed_tabs.truncate(15);
@@ -253,8 +262,24 @@ impl StateStore {
             return Err("that tab is already open".to_string());
         }
         let has_history = closed.startup_prompt_sent
-            || transcript.as_ref().is_some_and(|text| !text.trim().is_empty());
+            || transcript
+                .as_ref()
+                .is_some_and(|text| !text.trim().is_empty());
         let terminal = closed.kind == "terminal";
+        let mode_id = closed
+            .mode_id
+            .clone()
+            .unwrap_or_else(|| closed.role_snapshot.mode.clone());
+        let session = if terminal {
+            None
+        } else {
+            closed.acp_session_id.as_ref().map(|id| TabSessionRef {
+                acp_session_id: id.clone(),
+                mode_id,
+                injection_pending: false,
+                injected_at: None,
+            })
+        };
         let record = TabRecord {
             id: closed.id.clone(),
             label: closed.label,
@@ -273,7 +298,7 @@ impl StateStore {
             },
             order: next_tab_order(&self.data),
             created_at: Utc::now().to_rfc3339(),
-            session: None,
+            session,
             transcript,
             startup_prompt_sent: closed.startup_prompt_sent || has_history,
             color: closed.color,
@@ -516,14 +541,12 @@ pub(crate) fn tab_label(role_name: &str, answers: &HashMap<String, String>) -> S
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
     {
-        return format!("{role_name} · {title}");
+        return format!("{role_name} · {}", label_snippet(title));
     }
-    if let Some(task_type) = answers
-        .get("taskType")
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-    {
-        return format!("{role_name} · {task_type}");
+    for key in ["request", "description", "originalTask"] {
+        if let Some(text) = answers.get(key).map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            return format!("{role_name} · {}", label_snippet(text));
+        }
     }
     if let Some(cwd) = answers
         .get("cwd")
@@ -534,6 +557,20 @@ pub(crate) fn tab_label(role_name: &str, answers: &HashMap<String, String>) -> S
         return format!("{role_name} · {folder}");
     }
     role_name.to_string()
+}
+
+fn label_snippet(text: &str) -> String {
+    let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let max = 42;
+    if one_line.chars().count() <= max {
+        return one_line;
+    }
+    let end = one_line
+        .char_indices()
+        .nth(max - 1)
+        .map(|(index, _)| index)
+        .unwrap_or(one_line.len());
+    format!("{}…", one_line[..end].trim_end())
 }
 
 /// Last path segment, treating both `/` and `\` as separators so Windows
@@ -565,7 +602,10 @@ mod tests {
     fn tab_label_uses_title_when_present() {
         let mut answers = HashMap::new();
         answers.insert("title".to_string(), "Fix login".to_string());
-        assert_eq!(tab_label("Implementer", &answers), "Implementer · Fix login");
+        assert_eq!(
+            tab_label("Implementer", &answers),
+            "Implementer · Fix login"
+        );
     }
 
     #[test]
@@ -573,6 +613,17 @@ mod tests {
         let mut answers = HashMap::new();
         answers.insert("cwd".to_string(), r"C:\Projects\DCTerminal".to_string());
         assert_eq!(tab_label("Developer", &answers), "Developer · DCTerminal");
+    }
+
+    #[test]
+    fn tab_label_ignores_task_type_and_uses_the_folder() {
+        let mut answers = HashMap::new();
+        answers.insert("taskType".to_string(), "Feature".to_string());
+        answers.insert(
+            "cwd".to_string(),
+            r"C:\Users\user\Documents\Projects\Encryptor".to_string(),
+        );
+        assert_eq!(tab_label("Developer", &answers), "Developer · Encryptor");
     }
 
     #[test]
@@ -665,6 +716,76 @@ mod tests {
         assert!(restored.session.is_none());
         assert_eq!(restored.phase, "awaitingInput");
         assert_eq!(restored.transcript.as_deref(), Some("saved scrollback"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stop_and_relaunch_keep_the_acp_session_id() {
+        let dir = std::env::temp_dir().join(format!(
+            "dcterminal_keep_sid_{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let role = crate::roles::Role {
+            id: "role_dev".to_string(),
+            name: "Developer".to_string(),
+            template_text: String::new(),
+            template_version: 1,
+            template_hash: String::new(),
+            schema_template_hash: String::new(),
+            default_mode: "agent".to_string(),
+            injection: "send_on_start".to_string(),
+            color: "#3fb950".to_string(),
+            is_built_in: true,
+            fields: vec![],
+            updated_at: None,
+        };
+        let mut store = StateStore {
+            path: dir.join("state.json"),
+            data: AppStateFile::default(),
+        };
+        let id = store.create_draft_tab(&role, r"C:\Work\App", true).unwrap();
+        store
+            .promote_tab_to_running(
+                Some(&id),
+                &role,
+                &HashMap::from([("cwd".to_string(), r"C:\Work\App".to_string())]),
+                r"C:\Work\App",
+                "merged",
+                TabSessionRef {
+                    acp_session_id: "11111111-2222-3333-4444-555555555555".to_string(),
+                    mode_id: "agent".to_string(),
+                    injection_pending: false,
+                    injected_at: None,
+                },
+            )
+            .unwrap();
+        store
+            .mark_tab_awaiting_input(&id, Some("scrollback".into()))
+            .unwrap();
+        assert_eq!(
+            store
+                .tab_by_id(&id)
+                .unwrap()
+                .session
+                .as_ref()
+                .unwrap()
+                .acp_session_id,
+            "11111111-2222-3333-4444-555555555555"
+        );
+        store.data.tabs[0].phase = "running".to_string();
+        store.reconcile_stale_running_tabs().unwrap();
+        assert_eq!(store.data.tabs[0].phase, "awaitingInput");
+        assert_eq!(
+            store.data.tabs[0].session.as_ref().unwrap().acp_session_id,
+            "11111111-2222-3333-4444-555555555555"
+        );
+        store.close_tab(&id).unwrap();
+        let restored = store.reopen_closed(Some("scrollback".into())).unwrap();
+        assert_eq!(
+            restored.session.as_ref().unwrap().acp_session_id,
+            "11111111-2222-3333-4444-555555555555"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }

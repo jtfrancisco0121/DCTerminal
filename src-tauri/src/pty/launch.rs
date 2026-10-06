@@ -46,7 +46,6 @@ impl RunMode {
             _ => Self::Default,
         }
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,7 +216,10 @@ mod tests {
     fn reviewer_keeps_approval_prompts() {
         let flags = role_terminal_flags("role_pr_reviewer", RunMode::Default);
         assert_eq!(flags, vec!["--approve-mcps", "--trust"]);
-        assert!(!flags.iter().any(|flag| flag == "--yolo" || flag == "--force" || flag == "--mode" || flag == "--plan"));
+        assert!(!flags.iter().any(|flag| flag == "--yolo"
+            || flag == "--force"
+            || flag == "--mode"
+            || flag == "--plan"));
     }
 
     #[test]
@@ -245,7 +247,8 @@ mod tests {
 
     #[test]
     fn short_prompt_is_the_positional_argument() {
-        let command = role_agent_command("agent", "role_planner", RunMode::Default, Some("Ship it"));
+        let command =
+            role_agent_command("agent", "role_planner", RunMode::Default, Some("Ship it"));
         assert_eq!(command.program, "agent");
         assert_eq!(command.args.last().map(String::as_str), Some("Ship it"));
         assert_eq!(command.args[0], "--plan");

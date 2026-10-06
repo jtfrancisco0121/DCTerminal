@@ -14,7 +14,11 @@ pub struct SessionUpdateEvent {
     pub raw_json: String,
 }
 
-pub fn map_session_update(tab_id: &str, session_id: &str, line: &Value) -> Option<SessionUpdateEvent> {
+pub fn map_session_update(
+    tab_id: &str,
+    session_id: &str,
+    line: &Value,
+) -> Option<SessionUpdateEvent> {
     let method = line.get("method").and_then(|m| m.as_str());
     if let Some(method) = method {
         if method == "cursor/update_todos" || method == "cursor/task" {

@@ -135,6 +135,10 @@ export type RoleSessionStartResult = {
   resumedSession: boolean;
   skippedStartupInjection: boolean;
   folderWarning: string | null;
+  loadedViaSessionLoad: boolean;
+  replayMessageCount: number;
+  replayTruncated: boolean;
+  replay: SessionUpdateEvent[];
 };
 
 export type PromptFinishedEvent = {
@@ -165,6 +169,9 @@ export type TabSummary = {
   kind?: string;
   /** "" | "shell" | "cursor-cli" | "role" */
   terminalLaunch?: string;
+  acpSessionId: string | null;
+  /** CLI chat id when this tab runs `agent --resume`. */
+  resumeSessionId?: string | null;
 };
 
 export type ClosedTabSummary = {
@@ -254,13 +261,28 @@ export async function roleSessionStart(
   values: Record<string, string>,
   tabId?: string | null,
   resendStartup?: boolean,
+  resumeSessionId?: string | null,
 ): Promise<RoleSessionStartResult> {
   return invoke<RoleSessionStartResult>("role_session_start", {
     roleId,
     values,
     tabId: tabId ?? null,
     resendStartup: resendStartup ?? false,
+    resumeSessionId: resumeSessionId ?? null,
   });
+}
+
+export async function listCursorCliHistory(
+  cwd: string,
+): Promise<import("./cursorHistory").CursorHistoryEntry[]> {
+  return invoke("list_cursor_cli_history", { cwd });
+}
+
+export async function openInCursorCli(
+  sessionId: string,
+  cwd: string,
+): Promise<string> {
+  return invoke("open_in_cursor_cli", { sessionId, cwd });
 }
 
 export async function syncActiveTabForm(
@@ -601,6 +623,7 @@ export async function shellTerminalStart(input: {
   tabId?: string | null;
   cwd: string;
   launch: "shell" | "cursor-cli";
+  resumeSessionId?: string | null;
   cols: number;
   rows: number;
   onOutput: Channel<PtyPacket>;
@@ -610,6 +633,7 @@ export async function shellTerminalStart(input: {
       tabId: input.tabId ?? null,
       cwd: input.cwd,
       launch: input.launch,
+      resumeSessionId: input.resumeSessionId ?? null,
       cols: input.cols,
       rows: input.rows,
     },
@@ -645,6 +669,7 @@ export async function ptyOpen(input: {
   launch: TerminalLaunch;
   roleId?: string | null;
   prompt?: string | null;
+  resumeSessionId?: string | null;
   cols: number;
   rows: number;
   onOutput: Channel<PtyPacket>;
@@ -656,6 +681,7 @@ export async function ptyOpen(input: {
       launch: input.launch,
       roleId: input.roleId ?? null,
       prompt: input.prompt ?? null,
+      resumeSessionId: input.resumeSessionId ?? null,
       cols: input.cols,
       rows: input.rows,
     },

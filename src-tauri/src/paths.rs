@@ -16,9 +16,9 @@ impl FolderError {
     pub fn message(&self) -> String {
         match self {
             FolderError::Empty => "Working folder is required".to_string(),
-            FolderError::Missing { path } => format!(
-                "Working folder was not found (it may have been moved or deleted): {path}"
-            ),
+            FolderError::Missing { path } => {
+                format!("Working folder was not found (it may have been moved or deleted): {path}")
+            }
             FolderError::NotDirectory { path } => {
                 format!("Working folder must be a directory, not a file: {path}")
             }
@@ -94,8 +94,7 @@ pub fn folder_key(path: &str) -> String {
 }
 
 fn is_windows_style_path(unified: &str) -> bool {
-    unified.starts_with("//")
-        || (unified.len() >= 2 && unified.as_bytes().get(1) == Some(&b':'))
+    unified.starts_with("//") || (unified.len() >= 2 && unified.as_bytes().get(1) == Some(&b':'))
 }
 
 pub fn same_folder_warning(
@@ -107,9 +106,9 @@ pub fn same_folder_warning(
         return None;
     }
     let key = folder_key(new_cwd);
-    let conflict = others.iter().any(|(cwd, mode)| {
-        *mode == "agent" && folder_key(cwd) == key
-    });
+    let conflict = others
+        .iter()
+        .any(|(cwd, mode)| *mode == "agent" && folder_key(cwd) == key);
     if !conflict {
         return None;
     }
@@ -150,15 +149,15 @@ mod tests {
         let file = dir.join("not-a-dir.txt");
         fs::write(&file, b"x").unwrap();
         let err = validate_working_folder(&file.display().to_string()).unwrap_err();
-        assert!(
-            matches!(err, FolderError::NotDirectory { .. }),
-            "{err:?}"
-        );
+        assert!(matches!(err, FolderError::NotDirectory { .. }), "{err:?}");
         assert!(validate_working_folder(&dir.display().to_string()).is_ok());
         let _ = fs::remove_dir_all(dir);
         assert_eq!(folder_status_code(""), "empty");
         assert_eq!(folder_status_code("   "), "empty");
-        assert_eq!(folder_status_code(&missing.display().to_string()), "missing");
+        assert_eq!(
+            folder_status_code(&missing.display().to_string()),
+            "missing"
+        );
     }
 
     #[test]
@@ -171,10 +170,7 @@ mod tests {
             folder_key(r"\\Server\Share\Proj\"),
             folder_key("//server/share/proj")
         );
-        assert_ne!(
-            folder_key(r"C:\Work\one"),
-            folder_key(r"C:\Work\two")
-        );
+        assert_ne!(folder_key(r"C:\Work\one"), folder_key(r"C:\Work\two"));
     }
 
     #[test]

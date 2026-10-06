@@ -23,6 +23,10 @@ pub struct TabSummary {
     pub kind: String,
     #[serde(default)]
     pub terminal_launch: String,
+    pub acp_session_id: Option<String>,
+    /// Set when this terminal tab was opened with `agent --resume`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_session_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -161,9 +165,8 @@ fn attach_transcript(tab: &mut TabRecord, transcripts: &TranscriptStore) -> Resu
             .map(|text| text.trim().is_empty())
             .unwrap_or(true);
         if empty {
-            tab.transcript = Some(
-                "This tab's transcript file was damaged and moved aside.".to_string(),
-            );
+            tab.transcript =
+                Some("This tab's transcript file was damaged and moved aside.".to_string());
         }
         return Ok(());
     }
@@ -188,10 +191,7 @@ fn snapshot_from_store(store: &StateStore) -> AppStateSnapshot {
                 phase: t.phase.clone(),
                 merged_prompt_chars: t.merged_prompt.len(),
                 startup_prompt_sent: t.startup_prompt_sent,
-                has_transcript: t
-                    .transcript
-                    .as_ref()
-                    .is_some_and(|s| !s.trim().is_empty())
+                has_transcript: t.transcript.as_ref().is_some_and(|s| !s.trim().is_empty())
                     || transcript_dir.as_ref().is_some_and(|dir| {
                         std::fs::metadata(dir.join(format!("{}.json", t.id)))
                             .map(|meta| meta.len() > 32)
@@ -201,6 +201,15 @@ fn snapshot_from_store(store: &StateStore) -> AppStateSnapshot {
                 color: t.color.clone().unwrap_or_default(),
                 kind: t.kind.clone(),
                 terminal_launch: t.terminal_launch.clone(),
+                acp_session_id: t
+                    .session
+                    .as_ref()
+                    .map(|session| session.acp_session_id.clone()),
+                resume_session_id: t
+                    .answers
+                    .get("resumeSessionId")
+                    .map(|id| id.trim().to_string())
+                    .filter(|id| !id.is_empty()),
             })
             .collect(),
         closed_tabs: store

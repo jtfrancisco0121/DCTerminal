@@ -1,9 +1,7 @@
 //! Scratch pads, recent projects, transcripts, tab chrome, and diagnostics.
 
 use crate::paths::validate_working_folder;
-use crate::store::{
-    ProjectsStore, ScratchStore, SettingsStore, StateStore, TranscriptStore,
-};
+use crate::store::{ProjectsStore, ScratchStore, SettingsStore, StateStore, TranscriptStore};
 use serde::Serialize;
 use std::sync::Mutex;
 use tauri::{Manager, State};

@@ -207,5 +207,10 @@ describe("keymap", () => {
     ).toEqual({ kind: "app", match: { action: "prevTab" } });
     expect(routeKey(event({ code: "KeyP", ctrlKey: true }), term).kind).toBe("app");
     expect(routeKey(event({ code: "Comma", ctrlKey: true, key: "," }), term).kind).toBe("app");
+    expect(routeKey(event({ code: "KeyK", ctrlKey: true, key: "k" }), term)).toEqual({
+      kind: "app",
+      match: { action: "commandPalette" },
+    });
+    expect(routeKey(event({ code: "KeyC", ctrlKey: true }), term).kind).toBe("shell");
   });
 });

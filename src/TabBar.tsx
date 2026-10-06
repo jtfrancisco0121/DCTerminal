@@ -48,13 +48,13 @@ export function TabBar({
             <div
               key={t.id}
               className={`tab-chip${active ? " tab-chip-active" : ""}${needsAttention ? " tab-chip-attention" : ""}`}
-              role="tab"
-              aria-selected={active}
               style={{ boxShadow: `inset 0 3px 0 ${color}` }}
             >
               <button
                 type="button"
                 className="tab-chip-label"
+                role="tab"
+                aria-selected={active}
                 onClick={() => onSelect(t.id)}
                 disabled={disableSwitch}
                 title={`${t.label} · ${t.phase}`}

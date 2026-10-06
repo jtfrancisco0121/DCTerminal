@@ -44,6 +44,7 @@ pub fn merge_role_prompt(role: &Role, values: &HashMap<String, String>) -> Merge
     builtins.apply_to_map(&mut merge_values);
 
     let result = merge_template(&role.template_text, &role.fields, &merge_values);
+    let text = prepend_loose_context(&role.template_text, &result.text, &merge_values);
     if !result.unresolved.is_empty() {
         return MergePreviewResult {
             errors: result
@@ -61,9 +62,62 @@ pub fn merge_role_prompt(role: &Role, values: &HashMap<String, String>) -> Merge
     MergePreviewResult {
         errors: vec![],
         merged: Some(MergedPreview {
-            text: result.text,
-            chars: result.char_count,
+            text: text.clone(),
+            chars: text.len(),
             unresolved: result.unresolved,
         }),
+    }
+}
+
+/// Developer and General have no `{{title}}` token. A filled Title or
+/// "What to work on" is placed above the persona so the agent still sees it.
+fn prepend_loose_context(template: &str, merged: &str, values: &HashMap<String, String>) -> String {
+    let mut lines = Vec::new();
+    if !template.contains("{{title}}") {
+        if let Some(title) = values
+            .get("title")
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            lines.push(format!("Title: {title}"));
+        }
+    }
+    if !template.contains("{{request}}") {
+        if let Some(request) = values
+            .get("request")
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            lines.push(request.to_string());
+        }
+    }
+    if lines.is_empty() {
+        return merged.to_string();
+    }
+    format!("{}\n\n---\n\n{merged}", lines.join("\n\n"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prepend_loose_context;
+    use std::collections::HashMap;
+
+    #[test]
+    fn a_developer_title_is_placed_above_the_persona() {
+        let mut values = HashMap::new();
+        values.insert("title".into(), "Encrypt the login".into());
+        values.insert("request".into(), "Look at the vault module.".into());
+        let text = prepend_loose_context("# SENIOR SOFTWARE ENGINEER", "persona", &values);
+        assert!(text.starts_with("Title: Encrypt the login"));
+        assert!(text.contains("Look at the vault module."));
+        assert!(text.ends_with("persona"));
+    }
+
+    #[test]
+    fn a_role_that_already_has_a_title_token_is_not_prefixed() {
+        let mut values = HashMap::new();
+        values.insert("title".into(), "Login".into());
+        let text = prepend_loose_context("Title {{title}}", "Title Login", &values);
+        assert_eq!(text, "Title Login");
     }
 }

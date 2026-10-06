@@ -11,6 +11,7 @@
     "dev:stable": "npm run build && tauri dev --no-dev-server",
     "build": "tsc && vite build",
     "test": "vitest run",
+    "e2e": "node e2e/run.mjs",
     "check": "node scripts/local-check.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
@@ -35,9 +36,12 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/react": "^16.3.3",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^6.0.2",
+    "jsdom": "^29.1.1",
     "typescript": "~6.0.3",
     "vite": "^8.0.16",
     "vitest": "^4.1.11"

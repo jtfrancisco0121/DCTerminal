@@ -72,6 +72,7 @@ pub fn newest_plan_since(dir: &Path, started: SystemTime) -> Result<Option<PlanF
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::OpenOptions;
     use std::time::{Duration, UNIX_EPOCH};
 
     #[test]
@@ -90,14 +91,18 @@ mod tests {
         fs::write(&older, "old plan").unwrap();
         fs::write(&newer, "new plan").unwrap();
         fs::create_dir_all(&ignored).unwrap();
-        fs::File::open(&older)
-            .unwrap()
-            .set_modified(started - Duration::from_secs(5))
-            .unwrap();
-        fs::File::open(&newer)
-            .unwrap()
-            .set_modified(started + Duration::from_secs(5))
-            .unwrap();
+        // A read-only handle cannot set mtime on Windows (os error 5).
+        // Drop the handle before the directory is removed.
+        {
+            let older_file = OpenOptions::new().write(true).open(&older).unwrap();
+            older_file
+                .set_modified(started - Duration::from_secs(5))
+                .unwrap();
+            let newer_file = OpenOptions::new().write(true).open(&newer).unwrap();
+            newer_file
+                .set_modified(started + Duration::from_secs(5))
+                .unwrap();
+        }
 
         let found = newest_plan_since(&dir, started).unwrap().expect("plan");
         assert_eq!(found.name, "newer.md");

@@ -11,10 +11,8 @@ mod tests {
             .into_iter()
             .find(|s| s.id == "role_planner")
             .expect("planner spec");
-        let md = fs::read_to_string(
-            crate::store::docs_roles_dir().join(spec.source_file),
-        )
-        .expect("read planner md");
+        let md = fs::read_to_string(crate::store::docs_roles_dir().join(spec.source_file))
+            .expect("read planner md");
         let role = build_role_from_markdown(&spec, &md);
         let mut values = HashMap::new();
         values.insert("taskType".into(), "Bug".into());
@@ -23,7 +21,11 @@ mod tests {
         values.insert("expectedBehavior".into(), "Return 401".into());
         values.insert("currentBehavior".into(), "Unhandled error".into());
         let merged = merge_template(&role.template_text, &role.fields, &values);
-        assert!(merged.unresolved.is_empty(), "{}", merged.unresolved.join(", "));
+        assert!(
+            merged.unresolved.is_empty(),
+            "{}",
+            merged.unresolved.join(", ")
+        );
         assert!(merged.text.contains("Login 500"));
         assert!(!merged.text.contains("{{title}}"));
         assert!(merged.text.contains("Unhandled error"));
@@ -35,10 +37,8 @@ mod tests {
             .into_iter()
             .find(|s| s.id == "role_developer")
             .expect("developer spec");
-        let md = fs::read_to_string(
-            crate::store::docs_roles_dir().join(spec.source_file),
-        )
-        .expect("read developer md");
+        let md = fs::read_to_string(crate::store::docs_roles_dir().join(spec.source_file))
+            .expect("read developer md");
         let role = build_role_from_markdown(&spec, &md);
         let values = HashMap::new();
         let merged = merge_template(&role.template_text, &role.fields, &values);

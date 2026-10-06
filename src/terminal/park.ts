@@ -108,6 +108,13 @@ export function focusParkedTerminal(id: string): void {
   focusedId = id;
 }
 
+/** A parked terminal must not keep keyboard focus after its tab is hidden. */
+export function blurParkedTerminal(id: string): void {
+  const entry = parked.get(id);
+  entry?.term.blur();
+  if (focusedId === id) focusedId = "";
+}
+
 export function focusedTerminalId(): string {
   return focusedId;
 }

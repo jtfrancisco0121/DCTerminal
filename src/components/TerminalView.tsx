@@ -13,6 +13,7 @@ import {
 import {
   copyTerminalSelection,
   ensureParkedTerminal,
+  blurParkedTerminal,
   focusParkedTerminal,
   pasteTerminalText,
   releaseParkedTerminal,
@@ -35,8 +36,12 @@ type Props = {
   fontSize: number;
   /** Open a fresh PTY when this view has no live session yet. */
   autoOpen?: boolean;
+  /** A side pane does not take focus away from the composer. */
+  autoFocus?: boolean;
   /** Restored tabs omit the startup prompt so /resume still works. */
   prompt?: string | null;
+  /** When set, the process is `agent --resume <id>`. */
+  resumeSessionId?: string | null;
   menuActions?: TerminalMenuAction[];
 };
 
@@ -51,7 +56,9 @@ export function TerminalView({
   roleId,
   fontSize,
   autoOpen = false,
+  autoFocus = true,
   prompt = null,
+  resumeSessionId = null,
   menuActions = [],
 }: Props) {
   const slotRef = useRef<HTMLDivElement>(null);
@@ -74,8 +81,10 @@ export function TerminalView({
     const parked = ensureParkedTerminal(ptyId, fontSize);
     slot.appendChild(parked.host);
     parked.term.options.fontSize = fontSize;
-    parked.term.focus();
-    focusParkedTerminal(ptyId);
+    if (autoFocus) {
+      parked.term.focus();
+      focusParkedTerminal(ptyId);
+    }
 
     const live = livePty(ptyId);
     const detach = live?.buffer.attach({
@@ -121,10 +130,11 @@ export function TerminalView({
       observer.disconnect();
       onData.dispose();
       detach?.();
+      blurParkedTerminal(ptyId);
       const root = document.getElementById("terminal-park");
       if (root && parked.host.parentElement !== root) root.appendChild(parked.host);
     };
-  }, [ptyId, fontSize, generation]);
+  }, [autoFocus, ptyId, fontSize, generation]);
 
   useEffect(() => {
     if (!autoOpen || !cwd) return;
@@ -138,6 +148,7 @@ export function TerminalView({
       launch,
       roleId,
       prompt,
+      resumeSessionId,
       cols: Math.max(parked.term.cols, 80),
       rows: Math.max(parked.term.rows, 24),
       onOutput: live.channel,
@@ -145,7 +156,7 @@ export function TerminalView({
       clearPtyOpening(ptyId);
       setFailed(err instanceof Error ? err.message : String(err));
     });
-  }, [autoOpen, cwd, fontSize, launch, prompt, ptyId, roleId]);
+  }, [autoOpen, cwd, fontSize, launch, prompt, ptyId, resumeSessionId, roleId]);
 
   const restart = () => {
     setExitCode(null);
@@ -159,6 +170,7 @@ export function TerminalView({
       launch,
       roleId,
       prompt: null,
+      resumeSessionId,
       cols: Math.max(parked.term.cols, 80),
       rows: Math.max(parked.term.rows, 24),
       onOutput: live.channel,

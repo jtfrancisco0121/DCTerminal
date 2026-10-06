@@ -48,7 +48,9 @@ pub fn read_capped_line<R: BufRead>(reader: &mut R, max: usize) -> Result<Capped
     let mut out = Vec::new();
     loop {
         let (newline_at, available) = {
-            let buf = reader.fill_buf().map_err(|e| Error::new(e.kind(), e.to_string()))?;
+            let buf = reader
+                .fill_buf()
+                .map_err(|e| Error::new(e.kind(), e.to_string()))?;
             if buf.is_empty() {
                 break;
             }
@@ -159,10 +161,7 @@ mod tests {
             read_capped_line(&mut cur, 64).unwrap(),
             CappedRead::Line(br#"{"b":2}"#.to_vec())
         );
-        assert_eq!(
-            read_capped_line(&mut cur, 4).unwrap(),
-            CappedRead::TooLarge
-        );
+        assert_eq!(read_capped_line(&mut cur, 4).unwrap(), CappedRead::TooLarge);
         assert_eq!(
             read_capped_line(&mut cur, 64).unwrap(),
             CappedRead::Line(br#"{"c":3}"#.to_vec())

@@ -78,10 +78,10 @@ impl ProcessTree {
         #[cfg(windows)]
         {
             self.job.terminate();
-            let pid = self.child.id().to_string();
-            let _ = Command::new("taskkill")
-                .args(["/F", "/T", "/PID", &pid])
-                .status();
+            let already_exited = matches!(self.child.try_wait(), Ok(Some(_)));
+            if taskkill_needed(already_exited) {
+                quiet_taskkill(self.child.id());
+            }
         }
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -121,6 +121,23 @@ impl SharedProcess {
             .map_err(|err| io::Error::other(err.to_string()))?;
         tree.try_wait()
     }
+}
+
+/// `taskkill` writes `ERROR: The process "<pid>" not found.` when the pid is already gone.
+#[cfg(any(windows, test))]
+pub(crate) fn taskkill_needed(already_exited: bool) -> bool {
+    !already_exited
+}
+
+#[cfg(windows)]
+fn quiet_taskkill(pid: u32) {
+    use std::process::Stdio;
+    let _ = Command::new("taskkill")
+        .args(["/F", "/T", "/PID", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 pub fn prepare_command(cmd: &mut Command) {
@@ -360,7 +377,8 @@ mod winjob {
                     return Err(io::Error::last_os_error());
                 }
                 let process = OwnedHandle::from_raw_handle(proc_raw);
-                let assigned = AssignProcessToJobObject(job.as_raw_handle(), process.as_raw_handle());
+                let assigned =
+                    AssignProcessToJobObject(job.as_raw_handle(), process.as_raw_handle());
                 if assigned == 0 {
                     return Err(io::Error::last_os_error());
                 }
@@ -432,6 +450,17 @@ mod winjob {
 
     fn invalid_handle() -> RawHandle {
         (-1isize) as RawHandle
+    }
+}
+
+#[cfg(test)]
+mod taskkill_tests {
+    use super::taskkill_needed;
+
+    #[test]
+    fn taskkill_is_skipped_when_the_process_already_exited() {
+        assert!(!taskkill_needed(true));
+        assert!(taskkill_needed(false));
     }
 }
 

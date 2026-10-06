@@ -7,10 +7,7 @@ pub fn is_permission_method(method: &str) -> bool {
 
 /// FR-007 / FR-011: never leave agent requests unanswered; deny by default in dev.
 pub fn response_for_agent_request(request: &Value) -> Value {
-    let method = request
-        .get("method")
-        .and_then(|m| m.as_str())
-        .unwrap_or("");
+    let method = request.get("method").and_then(|m| m.as_str()).unwrap_or("");
 
     match method {
         "session/request_permission" => json!({

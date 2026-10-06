@@ -46,6 +46,11 @@ pub struct ClosedTabRecord {
     /// `shell`, `cursor-cli`, or `role`. Empty on chat tabs.
     #[serde(default)]
     pub terminal_launch: String,
+    /// Kept so a reopened tab can `session/load` the same ACP thread.
+    #[serde(default)]
+    pub acp_session_id: Option<String>,
+    #[serde(default)]
+    pub mode_id: Option<String>,
 }
 
 /// Persisted tab snapshot (blueprint §17.2 `state.json`).

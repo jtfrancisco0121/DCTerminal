@@ -38,12 +38,15 @@ Beyond `sessionId`, the result includes:
 
 **Implication:** `session/set_mode` works as documented; default mode may already be `agent` after `session/new`.
 
-## Not yet probed
+## Probed on a logged-in CLI (2026-10-06, CLI 2026.10.01)
 
-- `session/prompt`, `session/cancel`, `session/update` streaming
-- `session/request_permission`, `cursor/create_plan`, `cursor/ask_question`
-- `session/load`, `session/list`
-- Hang / malformed line edge cases
+- `session/load` of a previous ACP `sessionId` replayed the thread (the probe code word was in the replay) and a follow-up prompt on that session worked. DCTerminal uses this for Continue and for ACP rows in Cursor CLI history. Details: [cursor-cli-history.md](./cursor-cli-history.md).
+- `agent --resume <acpSessionId>` exited 1. `agent ls` does not list ACP ids. `session/new` did not bind to an `agent create-chat` id.
+- `session/list` is advertised and is not called. The history list reads `meta.json` only.
+
+## Not yet probed on a live CLI
+
+- Hang / malformed line edge cases beyond the unit tests
 
 ## Client implementation notes
 

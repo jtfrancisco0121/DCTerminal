@@ -121,7 +121,8 @@ impl SettingsStore {
             return Err("shell path cannot contain a newline".to_string());
         }
         next.font_size = next.font_size.clamp(8, 32);
-        next.role_surface.retain(|_, value| value == "chat" || value == "terminal");
+        next.role_surface
+            .retain(|_, value| value == "chat" || value == "terminal");
         next.role_run_mode.retain(|_, value| is_run_mode(value));
         self.data.terminal = next;
         self.save()
@@ -129,10 +130,7 @@ impl SettingsStore {
 }
 
 fn is_run_mode(value: &str) -> bool {
-    matches!(
-        value,
-        "default" | "yolo" | "auto-review" | "plan" | "ask"
-    )
+    matches!(value, "default" | "yolo" | "auto-review" | "plan" | "ask")
 }
 
 #[cfg(test)]

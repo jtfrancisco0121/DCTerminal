@@ -72,10 +72,7 @@ fn run_prompt_turn(
         });
         let on_agent_request = Box::new(
             move |value: &serde_json::Value| -> Result<Option<serde_json::Value>, String> {
-                let method = value
-                    .get("method")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("");
+                let method = value.get("method").and_then(|m| m.as_str()).unwrap_or("");
                 if crate::acp::request_handler::is_permission_method(method) {
                     let session_mtx = app_perm.state::<Mutex<SessionRegistry>>();
                     return stage_permission_request(
@@ -96,9 +93,9 @@ fn run_prompt_turn(
                         &session_mtx,
                     );
                 }
-                Ok(Some(crate::acp::request_handler::response_for_agent_request(
-                    value,
-                )))
+                Ok(Some(
+                    crate::acp::request_handler::response_for_agent_request(value),
+                ))
             },
         );
         let result = {

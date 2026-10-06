@@ -21,6 +21,7 @@ import {
   getRole,
   listenPromptFinished,
   listenSessionUpdates,
+  listCursorCliHistory,
   newDraftTab,
   roleSessionStart,
   saveFormDraft,
@@ -123,6 +124,14 @@ import {
 } from "./scratch/pad";
 import { createTurnWaiter } from "./scratch/turnWait";
 import { SessionTerminal } from "./SessionTerminal";
+import { answersForRole, fieldsForForm } from "./startupFields";
+import { CursorHistoryList } from "./components/CursorHistoryList";
+import {
+  resumeIdForStart,
+  segmentsAfterResume,
+  segmentsWhileStarting,
+  type CursorHistoryEntry,
+} from "./cursorHistory";
 import { TabBar } from "./TabBar";
 import { closeSplit, emptySplit, openSplit, tabAtIndex, type SplitState } from "./tabChrome";
 import { useAppShortcuts } from "./useAppShortcuts";
@@ -146,7 +155,7 @@ function fieldVisible(
 }
 
 function visibleFields(role: Role, values: Record<string, string>) {
-  return role.fields.filter((f) => fieldVisible(role, f.key, values));
+  return fieldsForForm(role).filter((field) => fieldVisible(role, field.key, values));
 }
 
 type Props = {
@@ -208,6 +217,9 @@ export function StartupForm({
   );
   const [newSessionOpen, setNewSessionOpenState] = useState(false);
   const [transcriptSaveError, setTranscriptSaveError] = useState<string | null>(null);
+  const [historyEntries, setHistoryEntries] = useState<CursorHistoryEntry[]>([]);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [cliLaunchNote, setCliLaunchNote] = useState<string | null>(null);
   const [historyCursor, setHistoryCursor] = useState(-1);
   const [chain, setChain] = useState<ChainCursor | null>(null);
   const [resendStartup, setResendStartup] = useState(false);
@@ -333,10 +345,13 @@ export function StartupForm({
     }
     const cwd = folderToWrite(knownFoldersRef.current[leaving] ?? "", snap.values.cwd ?? "");
     if (cwd) knownFoldersRef.current[leaving] = cwd;
-    const payload = { ...snap.values, cwd };
+    // A role switch can still be loading its schema. Skip the write then so
+    // another role's keys are not saved under this tab.
+    if (!role || role.id !== snap.roleId) return;
+    const payload = answersForRole({ ...snap.values, cwd }, fieldsForForm(role));
     void syncActiveTabForm(leaving, snap.roleId, cwd, payload).catch(() => {});
     if (cwd) void saveFormDraft(snap.roleId, cwd, payload).catch(() => {});
-  }, [captureDraft]);
+  }, [captureDraft, role]);
 
   const loadTabIntoForm = useCallback((tab: {
     roleId: string;
@@ -501,6 +516,13 @@ export function StartupForm({
       .then((r) => {
         if (!cancelled) {
           setRole(r);
+          setValues((prev) => {
+            const next = answersForRole(prev, fieldsForForm(r));
+            const same =
+              Object.keys(prev).length === Object.keys(next).length &&
+              Object.keys(next).every((key) => next[key] === prev[key]);
+            return same ? prev : next;
+          });
           if (!sessionActiveRef.current) {
             setPreview(null);
             const tabId = activeTabIdRef.current;
@@ -575,12 +597,39 @@ export function StartupForm({
     if (!activeTabSummary) return false;
     return (
       activeTabSummary.phase === "awaitingInput" &&
-      (activeTabSummary.startupPromptSent || activeTabSummary.hasTranscript)
+      !!activeTabSummary.acpSessionId
     );
   }, [activeTabSummary]);
 
+  const historyFolder = folderForTab(values.cwd);
   useEffect(() => {
-    if (!hydratedRef.current || session || !role || !activeTabId) return;
+    if (session || !historyFolder) {
+      setHistoryEntries([]);
+      setHistoryError(null);
+      return;
+    }
+    let cancelled = false;
+    listCursorCliHistory(historyFolder)
+      .then((rows) => {
+        if (!cancelled) {
+          setHistoryEntries(rows);
+          setHistoryError(null);
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setHistoryError(err instanceof Error ? err.message : String(err));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [historyFolder, session]);
+
+  useEffect(() => {
+    // Wait until the loaded schema matches the tab. Saving earlier would
+    // write the previous role's answers (for example taskType) onto this role.
+    if (!hydratedRef.current || session || !role || role.id !== roleId || !activeTabId) return;
     const visible = savedTabsRef.current.find((tab) => tab.id === activeTabId);
     if (visible?.kind === "terminal") return;
     const tabId = activeTabId;
@@ -605,9 +654,16 @@ export function StartupForm({
         knownFoldersRef.current[tabId] ?? "",
         draftsRef.current[tabId]?.values.cwd ?? "",
       );
-      const payload = { ...(draftsRef.current[tabId]?.values ?? formValues), cwd: writeCwd };
-      if (writeCwd) saveFormDraft(roleId, writeCwd, payload).catch(() => {});
-      syncActiveTabForm(tabId, roleId, writeCwd, payload)
+      const payload = answersForRole(
+        { ...(draftsRef.current[tabId]?.values ?? formValues), cwd: writeCwd },
+        fieldsForForm(role),
+      );
+      // A failed draft save must not skip the tab update, and a non-promise
+      // result must not throw out of this timer.
+      if (writeCwd) {
+        void Promise.resolve(saveFormDraft(roleId, writeCwd, payload)).catch(() => {});
+      }
+      void Promise.resolve(syncActiveTabForm(tabId, roleId, writeCwd, payload))
         .then(() => {
           if (activeTabIdRef.current === tabId) void refreshTabs();
         })
@@ -660,53 +716,60 @@ export function StartupForm({
     resumedSession: false,
     skippedStartupInjection: false,
     folderWarning: null,
+    loadedViaSessionLoad: false,
+    replayMessageCount: 0,
+    replayTruncated: false,
+    replay: [],
   });
 
-  const startSession = useCallback(async (forceResend = false) => {
+  const startSession = useCallback(async (
+    forceResend = false,
+    resume?: {
+      sessionId?: string;
+      tabId?: string;
+      cwd?: string;
+      /** Continue button: load the id stored on this tab. Start new session does not. */
+      resumeStored?: boolean;
+    },
+  ) => {
     if (startLockRef.current) return;
     startLockRef.current = true;
     setBusy(true);
-    const tabKey = activeTabId;
+    const tabKey = resume?.tabId ?? activeTabId;
     const resend = forceResend;
-    const continuing = canContinueSession && !resend;
+    const resumeId = resumeIdForStart({
+      explicitSessionId: resume?.sessionId,
+      storedSessionId: activeTabSummary?.acpSessionId,
+      resumeStored: resume?.resumeStored,
+      forceResend: resend,
+    });
+    const continuing = !!resumeId;
+    const startValues = resume?.cwd
+      ? { ...formValues, cwd: resume.cwd }
+      : formValues;
     if (tabKey) {
-      patchRuntime(tabKey, (rt) => {
-        const prior =
-          rt.segments.length > 0
-            ? rt.segments
-            : savedTranscript
-              ? [
-                  {
-                    id: "saved_transcript",
-                    kind: "agent" as const,
-                    text: savedTranscript,
-                  },
-                ]
-              : [];
-        return {
-          ...rt,
-          accepting: true,
-          promptError: null,
-          agentExited: false,
-          startResult: null,
-          lastResult: null,
-          segments: [
-            ...prior,
-            streamSegmentFromSystemMessage(
-              continuing
-                ? "Reconnecting to agent (startup prompt skipped). Send a follow-up below to continue."
-                : "Connecting to agent and sending startup prompt…",
-            ),
-          ],
-        };
-      });
+      patchRuntime(tabKey, (rt) => ({
+        ...rt,
+        accepting: true,
+        promptError: null,
+        agentExited: false,
+        startResult: null,
+        lastResult: null,
+        segments: segmentsWhileStarting({
+          continuing,
+          sessionId: resumeId,
+          savedTranscript,
+          existing: rt.segments,
+        }),
+      }));
     }
     try {
       const result = await roleSessionStart(
         roleId,
-        formValues,
-        activeTabId,
+        startValues,
+        tabKey,
         resend,
+        resumeId,
       );
       const targetId = result.tabId ?? tabKey;
       if (result.errors.length > 0 || !result.session || !targetId) {
@@ -721,10 +784,14 @@ export function StartupForm({
       }
       setActiveTabId(targetId);
       patchRuntime(targetId, (rt) => {
-        let segments = rt.segments.filter(
-          (s) =>
-            s.kind !== "system" || !s.text.includes("Connecting to agent"),
-        );
+        let segments = segmentsAfterResume({
+          segments: rt.segments,
+          loaded: result.loadedViaSessionLoad,
+          replay: result.replay ?? [],
+          replayMessageCount: result.replayMessageCount ?? 0,
+          savedTranscript,
+          folderWarning: result.folderWarning,
+        });
         if (result.injectionInFlight && !continuing) {
           const startupText = preview?.merged?.text?.trim();
           segments = startupText
@@ -734,10 +801,12 @@ export function StartupForm({
                 streamSegmentFromSystemMessage("Startup prompt sent to agent."),
               ];
         }
-        if (result.folderWarning) {
+        if (result.replayTruncated) {
           segments = appendStreamSegment(
             segments,
-            streamSegmentFromSystemMessage(result.folderWarning),
+            streamSegmentFromSystemMessage(
+              "The CLI replayed more history than this tab kept. You are still in the same session.",
+            ),
           );
         }
         return {
@@ -771,7 +840,7 @@ export function StartupForm({
     formValues,
     refreshTabs,
     activeTabId,
-    canContinueSession,
+    activeTabSummary,
     preview,
     patchRuntime,
     savedTranscript,
@@ -911,6 +980,65 @@ export function StartupForm({
       }
     },
     [activeTabId, refreshTabs, values.cwd],
+  );
+
+  const openCursorCli = useCallback(async (sessionId: string, cwd: string) => {
+    if (startLockRef.current) return;
+    setCliLaunchNote(null);
+    setTerminalError(null);
+    startLockRef.current = true;
+    setBusy(true);
+    const pendingId = `starting-${Date.now()}`;
+    const live = beginLivePty(pendingId);
+    try {
+      const result = await shellTerminalStart({
+        tabId: null,
+        cwd,
+        launch: "cursor-cli",
+        resumeSessionId: sessionId,
+        cols: 80,
+        rows: 24,
+        onOutput: live.channel,
+      });
+      if (result.errors.length > 0 || !result.tabId) {
+        dropLivePty(pendingId);
+        const message = result.errors[0]?.message ?? "The terminal did not start.";
+        setCliLaunchNote(message);
+        return;
+      }
+      if (result.tabId !== pendingId) rekeyLivePty(pendingId, result.tabId);
+      setActiveTabId(result.tabId);
+      setCliLaunchNote("Opened this chat in a terminal tab.");
+      await refreshTabs();
+    } catch (err: unknown) {
+      dropLivePty(pendingId);
+      setCliLaunchNote(err instanceof Error ? err.message : String(err));
+    } finally {
+      startLockRef.current = false;
+      setBusy(false);
+    }
+  }, [refreshTabs]);
+
+  const resumeHistoryEntry = useCallback(
+    async (entry: CursorHistoryEntry) => {
+      if (startLockRef.current) return;
+      setBusy(true);
+      try {
+        const { tab } = await newDraftTab(roleId, entry.cwd);
+        activeTabIdRef.current = tab.id;
+        setActiveTabId(tab.id);
+        setValues((prev) => ({ ...prev, cwd: entry.cwd }));
+        await startSession(false, {
+          sessionId: entry.id,
+          tabId: tab.id,
+          cwd: entry.cwd,
+        });
+      } catch (err: unknown) {
+        setHistoryError(err instanceof Error ? err.message : String(err));
+        setBusy(false);
+      }
+    },
+    [roleId, startSession],
   );
 
   const stopSession = useCallback(async () => {
@@ -1925,6 +2053,7 @@ export function StartupForm({
             launch={launch}
             roleId={activeTabSummary.roleId}
             fontSize={fontSize}
+            resumeSessionId={activeTabSummary.resumeSessionId}
             autoOpen={!livePty(activeTabSummary.id)}
             menuActions={
               isPlannerTerminal
@@ -2041,8 +2170,9 @@ export function StartupForm({
           <button
             type="button"
             className="primary-button"
-            onClick={() => void startSession(false)}
+            onClick={() => void startSession(false, { resumeStored: true })}
             disabled={busy || !cliFound}
+            title="Continues this session in DCTerminal."
           >
             Continue session
           </button>
@@ -2057,6 +2187,11 @@ export function StartupForm({
           Start new session
         </button>
       </div>
+      {savedTranscript && !activeTabSummary?.acpSessionId && (
+        <p className="hint">
+          This tab has saved text, but it cannot be continued. Start a new session.
+        </p>
+      )}
       {savedTranscript && (
         <details className="startup-form-details">
           <summary>Last session transcript (read-only)</summary>
@@ -2217,6 +2352,7 @@ export function StartupForm({
                       launch="shell"
                       fontSize={fontSize}
                       autoOpen
+                      autoFocus={false}
                     />
                   </div>
                 ) : null
@@ -2408,9 +2544,19 @@ export function StartupForm({
               <>
                 {restoreActions}
                 {composerFields}
+                {historyFolder && (
+                  <CursorHistoryList
+                    entries={historyEntries}
+                    error={historyError}
+                    busy={busy}
+                    onResume={(entry) => void resumeHistoryEntry(entry)}
+                    onOpenCli={(entry) => void openCursorCli(entry.id, entry.cwd)}
+                  />
+                )}
                 {idleActions}
               </>
             )}
+            {cliLaunchNote && <p className="hint">{cliLaunchNote}</p>}
             {terminalError && <p className="error">{terminalError}</p>}
             {transcriptSaveError && (
               <p className="error">Could not save the transcript: {transcriptSaveError}</p>

@@ -188,6 +188,9 @@ pub struct ShellTerminalInput {
     pub launch: String,
     pub cols: u16,
     pub rows: u16,
+    /// CLI chat id. When set, the tab runs `agent --resume <id>`.
+    #[serde(default)]
+    pub resume_session_id: Option<String>,
 }
 
 #[tauri::command]
@@ -227,11 +230,31 @@ pub fn shell_terminal_start(
         let settings = settings.lock().map_err(|err| err.to_string())?;
         settings.terminal().shell.clone()
     };
+    let resume_id = input
+        .resume_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(|id| id.to_string());
+    if resume_id.is_some() && launch != "cursor-cli" {
+        return Err("agent --resume is only used for a Cursor CLI terminal.".to_string());
+    }
+    if let Some(id) = &resume_id {
+        let root = crate::cursor_history::cursor_data_dir().ok_or_else(|| {
+            "Cursor's home folder was not found, so this chat cannot be opened.".to_string()
+        })?;
+        crate::cursor_history::cli_chat_required(&root, &cwd.display().to_string(), id)?;
+    }
     let command = if launch == "cursor-cli" {
         let program = resolve_agent_executable().ok_or_else(agent_missing_message)?;
+        let args = if let Some(id) = &resume_id {
+            crate::cli_launch::resume_agent_args(id)?
+        } else {
+            plain_agent_args()
+        };
         launch::ProgramArgs {
             program: program.display().to_string(),
-            args: plain_agent_args(),
+            args,
         }
     } else {
         let resolved = resolve_shell_for_host(&configured);
@@ -251,7 +274,14 @@ pub fn shell_terminal_start(
                 role_id,
                 role_snapshot: snapshot,
                 color,
-                answers: HashMap::from([("cwd".to_string(), cwd.display().to_string())]),
+                answers: {
+                    let mut answers =
+                        HashMap::from([("cwd".to_string(), cwd.display().to_string())]);
+                    if let Some(id) = &resume_id {
+                        answers.insert("resumeSessionId".to_string(), id.clone());
+                    }
+                    answers
+                },
                 merged_prompt: String::new(),
                 startup_prompt_sent: false,
             },
@@ -411,6 +441,9 @@ pub struct PtyOpenInput {
     pub prompt: Option<String>,
     pub cols: u16,
     pub rows: u16,
+    /// CLI chat id. When set, argv is `agent --resume <id>`.
+    #[serde(default)]
+    pub resume_session_id: Option<String>,
 }
 
 #[tauri::command]
@@ -429,7 +462,21 @@ pub fn pty_open(
     let (program, mut args) = match input.launch.as_str() {
         "cursor-cli" => {
             let program = resolve_agent_executable().ok_or_else(agent_missing_message)?;
-            (program.display().to_string(), plain_agent_args())
+            let args = if let Some(id) = input
+                .resume_session_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+            {
+                let root = crate::cursor_history::cursor_data_dir().ok_or_else(|| {
+                    "Cursor's home folder was not found, so this chat cannot be opened.".to_string()
+                })?;
+                crate::cursor_history::cli_chat_required(&root, &cwd.display().to_string(), id)?;
+                crate::cli_launch::resume_agent_args(id)?
+            } else {
+                plain_agent_args()
+            };
+            (program.display().to_string(), args)
         }
         "role" => {
             let role_id = input.role_id.unwrap_or_default();
@@ -438,7 +485,11 @@ pub fn pty_open(
                 RunMode::parse(&settings.run_mode_for(&role_id))
             };
             let program = resolve_agent_executable().ok_or_else(agent_missing_message)?;
-            let prompt = input.prompt.as_deref().map(str::trim).filter(|text| !text.is_empty());
+            let prompt = input
+                .prompt
+                .as_deref()
+                .map(str::trim)
+                .filter(|text| !text.is_empty());
             let mut command_args = launch::role_terminal_flags(&role_id, mode);
             if let Some(text) = prompt {
                 let file = prompt_file(&app, &input.id)?;
@@ -455,8 +506,17 @@ pub fn pty_open(
             (resolved.program, resolved.args)
         }
     };
-    if input.launch == "cursor-cli" {
-        if let Some(text) = input.prompt.as_deref().map(str::trim).filter(|text| !text.is_empty()) {
+    let resuming = input
+        .resume_session_id
+        .as_deref()
+        .is_some_and(|id| !id.trim().is_empty());
+    if input.launch == "cursor-cli" && !resuming {
+        if let Some(text) = input
+            .prompt
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        {
             args.push(text.to_string());
         }
     }

@@ -51,10 +51,7 @@ impl ScratchStore {
         if data.schema_version > SCRATCH_SCHEMA_VERSION {
             let _ = std::fs::rename(
                 &path,
-                path.with_extension(format!(
-                    "json.corrupt-schema-{}",
-                    data.schema_version
-                )),
+                path.with_extension(format!("json.corrupt-schema-{}", data.schema_version)),
             );
             data = ScratchFile::default();
         }
@@ -122,7 +119,12 @@ mod tests {
         let dir = dir();
         let mut store = ScratchStore::open(&dir).unwrap();
         let huge = "é".repeat(MAX_PAD_CHARS + 10);
-        store.upsert("tab_1", &huge, &["  hello  ".into(), "hello".into()], "2026-10-06T00:00:00Z");
+        store.upsert(
+            "tab_1",
+            &huge,
+            &["  hello  ".into(), "hello".into()],
+            "2026-10-06T00:00:00Z",
+        );
         store.save().unwrap();
         let loaded = ScratchStore::open(&dir).unwrap();
         let pad = loaded.data.pads.get("tab_1").unwrap();

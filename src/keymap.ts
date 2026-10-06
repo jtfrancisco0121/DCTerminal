@@ -52,7 +52,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   {
     action: "send",
     label: "Send",
-    description: "Send the composer. The next step waits for the ACP turn to end.",
+    description: "Send the composer. The next step waits until the reply finishes.",
     code: "Enter",
   },
   {
@@ -426,6 +426,10 @@ const TERMINAL_GLOBALS = new Set<ShortcutAction>([
   "nextTab",
   "prevTab",
   "tabSwitcher",
+  "commandPalette",
+  "shortcutsHelp",
+  "reopenClosedTab",
+  "renameTab",
   "settings",
 ]);
 

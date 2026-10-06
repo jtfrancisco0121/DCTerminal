@@ -179,7 +179,9 @@ impl AcpConnection {
         self.stdin
             .write_all(line.as_bytes())
             .map_err(|e| format!("stdin write: {e}"))?;
-        self.stdin.flush().map_err(|e| format!("stdin flush: {e}"))?;
+        self.stdin
+            .flush()
+            .map_err(|e| format!("stdin flush: {e}"))?;
         Ok(())
     }
 

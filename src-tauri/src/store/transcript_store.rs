@@ -195,9 +195,7 @@ mod tests {
         let dir = dir();
         let store = TranscriptStore::open(&dir).unwrap();
         let huge = "x".repeat(MAX_TRANSCRIPT_CHARS + 50);
-        store
-            .save("tab_big", &huge, "C:\\w", "t", &[])
-            .unwrap();
+        store.save("tab_big", &huge, "C:\\w", "t", &[]).unwrap();
         let loaded = store.load("tab_big").unwrap().unwrap();
         assert!(loaded.text.starts_with("[earlier transcript truncated]"));
         assert!(loaded.text.chars().count() < MAX_TRANSCRIPT_CHARS + 80);

@@ -255,32 +255,90 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    fn test_shell() -> Option<String> {
+    fn test_shell() -> Option<(String, Vec<String>)> {
         if cfg!(windows) {
             let cmd = PathBuf::from(r"C:\Windows\System32\cmd.exe");
             if cmd.is_file() {
-                Some(cmd.display().to_string())
-            } else {
-                None
+                // /Q turns command echo off. /D skips AutoRun. /K stays open.
+                return Some((
+                    cmd.display().to_string(),
+                    vec!["/Q".into(), "/D".into(), "/K".into()],
+                ));
             }
+            let powershell =
+                PathBuf::from(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe");
+            if powershell.is_file() {
+                return Some((
+                    powershell.display().to_string(),
+                    vec!["-NoProfile".into(), "-NoLogo".into(), "-NoExit".into()],
+                ));
+            }
+            None
         } else if std::path::Path::new("/bin/sh").is_file() {
-            Some("/bin/sh".to_string())
+            Some(("/bin/sh".to_string(), Vec::new()))
         } else {
             None
         }
     }
 
-    fn wait_for_marker(session: &PtySession, marker: &str) -> bool {
-        let mut collected = String::new();
-        for _ in 0..40 {
-            match session.recv_timeout(Duration::from_millis(100)) {
+    /// ConPTY inserts cursor sequences between echoed characters. The marker
+    /// is the command's output after those sequences are removed.
+    fn strip_vt(input: &str) -> String {
+        let mut out = String::with_capacity(input.len());
+        let mut chars = input.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch != '\u{1b}' {
+                out.push(ch);
+                continue;
+            }
+            match chars.peek() {
+                Some('[') => {
+                    chars.next();
+                    for next in chars.by_ref() {
+                        if ('@'..='~').contains(&next) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    chars.next();
+                    while let Some(next) = chars.next() {
+                        if next == '\u{7}' {
+                            break;
+                        }
+                        if next == '\u{1b}' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                Some(_) => {
+                    chars.next();
+                }
+                None => {}
+            }
+        }
+        out
+    }
+
+    fn wait_for_output(session: &PtySession, marker: &str) -> bool {
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        let mut raw = Vec::new();
+        while std::time::Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            let slice = remaining.min(Duration::from_millis(200));
+            match session.recv_timeout(slice) {
                 Ok(Some(PtyOutput::Data(bytes))) => {
-                    collected.push_str(&String::from_utf8_lossy(&bytes));
-                    if collected.contains(marker) {
+                    raw.extend_from_slice(&bytes);
+                    let text = strip_vt(&String::from_utf8_lossy(&raw));
+                    if text.contains(marker) {
                         return true;
                     }
                 }
-                Ok(Some(PtyOutput::Exit { .. })) => return collected.contains(marker),
+                Ok(Some(PtyOutput::Exit { .. })) => {
+                    let text = strip_vt(&String::from_utf8_lossy(&raw));
+                    return text.contains(marker);
+                }
                 _ => {}
             }
         }
@@ -288,15 +346,21 @@ mod tests {
     }
 
     #[test]
+    fn ansi_sequences_do_not_hide_the_marker() {
+        let wrapped = "\u{1b}[0mp\u{1b}[32mty_marker\u{1b}[0m";
+        assert!(strip_vt(wrapped).contains("pty_marker"));
+    }
+
+    #[test]
     fn pty_spawn_write_resize_and_kill() {
-        let Some(program) = test_shell() else {
-            eprintln!("ignored: this platform has no cmd.exe or /bin/sh");
+        let Some((program, args)) = test_shell() else {
+            eprintln!("ignored: this platform has no cmd.exe, powershell, or /bin/sh");
             return;
         };
         let cwd = std::env::temp_dir();
         let session = PtySession::spawn(SpawnSpec {
             program,
-            args: Vec::new(),
+            args,
             cwd,
             cols: 80,
             rows: 24,
@@ -304,15 +368,16 @@ mod tests {
         .expect("spawn shell");
         let pid = session.pid();
         assert!(pid > 0, "shell pid");
+        // cmd /Q does not echo the typed line. Wait for the command's output.
         let line: &[u8] = if cfg!(windows) {
-            b"echo pty_marker\r\n"
+            b"echo pty_marker\r"
         } else {
             b"printf 'pty_marker\\n'\n"
         };
         session.write(line).expect("write");
         assert!(
-            wait_for_marker(&session, "pty_marker"),
-            "shell did not echo the marker"
+            wait_for_output(&session, "pty_marker"),
+            "shell did not print the marker"
         );
         session.resize(40, 12).expect("resize");
         let (cols, rows) = session.size().expect("size");
@@ -343,15 +408,8 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn process_alive(pid: u32) -> bool {
-        #[cfg(unix)]
-        {
-            std::path::Path::new(&format!("/proc/{pid}")).exists()
-        }
-        #[cfg(windows)]
-        {
-            let _ = pid;
-            false
-        }
+        std::path::Path::new(&format!("/proc/{pid}")).exists()
     }
 }

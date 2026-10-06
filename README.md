@@ -16,14 +16,14 @@ Local desktop app: **role-aware, multi-tab UI** on top of the Cursor CLI via **A
 2. Run `npm run dev:ui` + `npm run dev:app` (or a release build when available).
 3. The window opens on a tab bar and one blank tab. Pick a **role** and **Choose folder…**. That tab then shows the role’s startup fields and **Start**.
 4. **Continue the same agent** with the `›` follow-up box (Ctrl+Enter) — do not press Stop.
-5. Draft long prompts in the **scratch pad** under the session. Ctrl+. copies the selection (or the whole pad) into the input. A line that is only `---` splits the pad into steps; Send waits for each ACP turn to finish before the next step.
+5. Draft long prompts in the **scratch pad** under the session. Ctrl+. copies the selection (or the whole pad) into the input. A line that is only `---` splits the pad into steps; Send waits for each reply to finish before the next step.
 6. **Choose folder…** opens the system folder dialog. The form shows the folder name and path, and does not start the session. Recent and favorites are in the menu on that control. A new tab asks you to choose a folder. A restored tab keeps the folder it already had.
 7. **Stop session** when done — the transcript is saved on the tab and in the app data folder. After a restart it comes back as read-only history. **Start new session** begins a fresh agent. A missing folder does not hide that history, but Start stays blocked until the folder exists.
-8. On a restored tab, **Continue session** and **Start new session** sit under the role and folder. Continue does not re-inject the startup prompt. **Start new session** opens the startup fields.
+8. On a restored tab, **Continue session** loads the same ACP session and does not re-inject the startup prompt. **Start new session** opens the startup fields and starts a new session. **Cursor CLI history** lists sessions for the folder. **Resume** continues one in the app. **Open in Cursor CLI** is only for a saved chat, and it opens a terminal tab running `agent --resume`.
 9. **+ New tab** for another task. The tab you left keeps its agent running. Close (×) stops only that tab. Ctrl+K opens the command palette; Ctrl+/ lists shortcuts. Ctrl+\\ splits the view so two tabs can be read side by side.
 10. The gear in the tab bar, **Settings** in the command palette, and Ctrl+, open **Settings**: role details, the diagnostics toggle, shortcuts, data locations, and version. **Record permission payloads** lives there (off by default) and writes redacted `session/request_permission` lines for classifier checks. See [docs/permission-payload-capture.md](docs/permission-payload-capture.md).
 
-Not supported yet: true ACP thread resume after quit (`session/load`) — Continue reconnects a new agent with your saved scrollback. Ctrl+Shift shortcuts are reserved for a future terminal pane.
+**Continue session** resumes the same thread when the CLI allows it, using the session id stored on the tab. See [docs/cursor-cli-history.md](docs/cursor-cli-history.md). Ctrl+Shift+` toggles the terminal pane. Ctrl+Shift+. sends the scratch pad to the terminal.
 
 ## Prerequisites
 
