@@ -5,6 +5,58 @@ import { describe, expect, it } from "vitest";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
+export function installShSkipReason(probe) {
+  if (probe?.ok) {
+    return "";
+  }
+  const detail = probe?.detail || "bash -c 'echo ok' failed";
+  return (
+    "skipped: bash is not a working POSIX shell " +
+    `(${detail}). install.sh tests need POSIX bash. ` +
+    "On Windows, bash.exe is the WSL stub and fails when no distro is installed."
+  );
+}
+
+function bashProbeDetail(error) {
+  if (error?.code === "ENOENT") {
+    return "bash was not found on PATH";
+  }
+  const stderr = error?.stderr?.toString?.() ?? "";
+  const stdout = error?.stdout?.toString?.() ?? "";
+  const line = `${stderr}\n${stdout}`
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .find(Boolean);
+  if (!line) {
+    return "bash -c 'echo ok' failed";
+  }
+  return line.length > 180 ? `${line.slice(0, 177)}...` : line;
+}
+
+function probePosixBash() {
+  try {
+    const stdout = execFileSync("bash", ["-c", "echo ok"], {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 15_000,
+      windowsHide: true,
+    });
+    if (stdout.trim() === "ok") {
+      return { ok: true, detail: "" };
+    }
+    return {
+      ok: false,
+      detail: `bash -c 'echo ok' printed ${JSON.stringify(stdout.trim())}`,
+    };
+  } catch (error) {
+    return { ok: false, detail: bashProbeDetail(error) };
+  }
+}
+
+const bashProbe = probePosixBash();
+const bashSkipReason = installShSkipReason(bashProbe);
+
 function bash(body) {
   return execFileSync("bash", ["-c", body], {
     cwd: root,
@@ -31,7 +83,23 @@ function bashResult(body) {
 
 const source = "source ./install.sh";
 
-describe("install.sh decisions", () => {
+describe("install.sh bash probe", () => {
+  it("skips with a WSL-stub reason when bash cannot run", () => {
+    const reason = installShSkipReason({
+      ok: false,
+      detail: "execvpe(/bin/bash) failed: No such file or directory",
+    });
+    expect(reason).toContain("not a working POSIX shell");
+    expect(reason).toContain("WSL stub");
+    expect(reason).toContain("execvpe(/bin/bash)");
+    expect(installShSkipReason({ ok: true })).toBe("");
+    expect(installShSkipReason({})).toContain("bash -c 'echo ok' failed");
+  });
+});
+
+describe.skipIf(!bashProbe.ok)(
+  bashSkipReason ? `install.sh decisions — ${bashSkipReason}` : "install.sh decisions",
+  () => {
   it("does not start an install when the file is sourced", () => {
     const output = bash(`set -euo pipefail
 ${source}

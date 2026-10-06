@@ -696,6 +696,13 @@ function Install-NsisBundle {
   }
 }
 
+function Get-WindowsLaunchCommand {
+  param([Parameter(Mandatory = $true)][string]$Executable)
+  # cmd start uses the first quoted string as the window title. An empty
+  # title, then the quoted exe: start "" "C:\path\dcterminal.exe"
+  return 'start "" "' + $Executable + '"'
+}
+
 function Show-InstalledSummary {
   param()
   $dir = Get-InstallDirectory
@@ -705,7 +712,7 @@ function Show-InstalledSummary {
   Write-User 'DCTerminal is installed.'
   Write-User ''
   Write-User "  App:    $exe"
-  Write-User "  Launch: start `"`"$exe`"`""
+  Write-User ("  Launch: " + (Get-WindowsLaunchCommand -Executable $exe))
   Write-User '          or the DCTerminal shortcut on the Start menu / desktop'
   Write-User ''
   Write-User "  Data:   $data"

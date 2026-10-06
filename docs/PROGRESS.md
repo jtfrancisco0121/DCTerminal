@@ -8,7 +8,7 @@
 
 | Field | Value |
 |--------|--------|
-| **Last updated** | 2026-10-06 — `install.ps1` calls `npm.cmd` / `.exe` shims so Windows PowerShell 5.1 does not enter `npm.ps1` |
+| **Last updated** | 2026-10-06 — Windows install succeeded. `start` quoting fixed. `install.sh` tests skip when bash is the WSL stub. |
 | **Branch** | `cursor/local-install-scripts-28f8` |
 | **Current phase** | Finish MVP vertical slice (see [MVP-FINISH.md](./MVP-FINISH.md)) |
 | **Active task** | Local install scripts. `install.ps1` targets Windows PowerShell 5.1 and 7. Live three-OS acceptance is still manual. |

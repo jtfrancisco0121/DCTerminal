@@ -205,6 +205,19 @@ describe.skipIf(!pwshAvailable())("install.ps1", () => {
     expect(output).toContain("resolve-ok");
   });
 
+  it("prints start with an empty title and a separate quoted exe path", () => {
+    const output = pwsh(`
+      . ./install.ps1
+      $exe = 'C:\\Users\\jt\\AppData\\Local\\DCTerminal\\dcterminal.exe'
+      $cmd = Get-WindowsLaunchCommand -Executable $exe
+      $expected = 'start "" "C:\\Users\\jt\\AppData\\Local\\DCTerminal\\dcterminal.exe"'
+      if ($cmd -ne $expected) { throw $cmd }
+      if ($cmd -match '""C:') { throw "quotes glued to the path: $cmd" }
+      'launch-ok'
+    `);
+    expect(output).toContain("launch-ok");
+  });
+
   it("prints the script stack trace only when DCT_DEBUG=1", () => {
     const debug = pwsh(`
       . ./install.ps1
