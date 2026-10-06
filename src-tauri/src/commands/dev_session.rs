@@ -140,6 +140,11 @@ impl SessionRegistry {
             .collect()
     }
 
+    /// Remove a session without shutting it down. The caller owns it.
+    pub fn take(&mut self, tab_id: &str) -> Option<LiveSession> {
+        self.sessions.remove(tab_id)
+    }
+
     pub fn shutdown_tab(&mut self, tab_id: &str) {
         if let Some(mut session) = self.sessions.remove(tab_id) {
             session.shutdown();
@@ -166,6 +171,8 @@ pub struct DevSessionInfo {
     pub session_id: String,
     pub mode_id: String,
     pub cwd: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -203,6 +210,7 @@ pub fn dev_session_start(
         session_id: client.session_id().to_string(),
         mode_id: client.mode_id().to_string(),
         cwd: client.cwd().display().to_string(),
+        model: client.current_model().map(String::from),
     };
     let session = LiveSession::from_client(DEV_TAB_ID, "role_developer", client);
     let mut guard = state.lock().map_err(|e| e.to_string())?;

@@ -6,6 +6,26 @@
  */
 import readline from "node:readline";
 
+const FAKE_MODELS = [
+  ["composer-2.5", "Composer 2.5"],
+  ["composer-2.5-fast", "Composer 2.5 Fast"],
+  ["auto", "Auto"],
+  ["gpt-5", "GPT-5"],
+];
+
+function modelConfigOptions() {
+  return [
+    {
+      id: "model",
+      name: "Model",
+      category: "model",
+      type: "select",
+      currentValue: currentModel,
+      options: FAKE_MODELS.map(([value, name]) => ({ value, name })),
+    },
+  ];
+}
+
 const args = process.argv.slice(2);
 
 if (args.includes("--version") || args.includes("-v")) {
@@ -13,12 +33,24 @@ if (args.includes("--version") || args.includes("-v")) {
   process.exit(0);
 }
 
+if (args.includes("--list-models")) {
+  process.stdout.write("Available models\n");
+  for (const [id, label] of FAKE_MODELS) {
+    process.stdout.write(`${id} - ${label}${id === "composer-2.5" ? "  (current)" : ""}\n`);
+  }
+  process.exit(0);
+}
+
+const modelAt = args.indexOf("--model");
+let currentModel = modelAt !== -1 ? (args[modelAt + 1] ?? "composer-2.5") : "composer-2.5";
+const acpAt = args.indexOf("acp");
+
 const resumeAt = args.indexOf("--resume");
 if (resumeAt !== -1) {
   const id = args[resumeAt + 1] ?? "";
   process.stdout.write(`resumed ${id}\n`);
   echoStdin();
-} else if (args[0] === "acp") {
+} else if (acpAt !== -1 && args.slice(0, acpAt).every((arg, i) => i === modelAt || i === modelAt + 1)) {
   runAcp();
 } else {
   process.stdout.write("fake-agent ready\n");
@@ -108,7 +140,21 @@ function handle(id, method, params) {
     return;
   }
   if (method === "session/new") {
-    result(id, { sessionId: sessionId() });
+    // DCT_FAKE_MODELS=none hides model options, so the app restarts with --model.
+    if (process.env.DCT_FAKE_MODELS === "none") {
+      result(id, { sessionId: sessionId() });
+      return;
+    }
+    result(id, { sessionId: sessionId(), configOptions: modelConfigOptions() });
+    return;
+  }
+  if (method === "session/set_config_option" && process.env.DCT_FAKE_MODELS !== "none") {
+    if (params.configId !== "model" || !FAKE_MODELS.some(([value]) => value === params.value)) {
+      failure(id, "unknown config value");
+      return;
+    }
+    currentModel = params.value;
+    result(id, { configOptions: modelConfigOptions() });
     return;
   }
   if (method === "session/set_mode" || method === "session/cancel") {

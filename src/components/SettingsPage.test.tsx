@@ -45,7 +45,7 @@ describe("SettingsPage", () => {
       />,
     );
     expect(await screen.findByText(/Deny write and shell/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /Developer/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^Developer/ }));
     expect(await screen.findByText(/Auto-allow write, shell, and MCP/)).toBeTruthy();
     expect(screen.getByLabelText("Shell program")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Close" }));

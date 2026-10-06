@@ -47,6 +47,7 @@ Beyond `sessionId`, the result includes:
 ## Not yet probed on a live CLI
 
 - Hang / malformed line edge cases beyond the unit tests
+- Models (Job 1): whether `session/new` returns `configOptions` with a `model` category (DCTerminal then sends `session/set_config_option {sessionId, configId, value}`) or a `models` field (`session/set_model {sessionId, modelId}`). Without either, DCTerminal restarts `agent --model <id> acp` and calls `session/load` with the same session id. `agent --list-models` is parsed as a header line, then `<id> - <label>` lines with zero-width spaces, double spaces, `(current)`, and `(default)` removed. The fake agent in `tools/fake-acp-agent` covers both paths (`DCT_FAKE_MODELS=none` turns the config option off).
 
 ## Client implementation notes
 

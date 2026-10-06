@@ -11,6 +11,77 @@ pub struct AppStateFile {
     pub tabs: Vec<TabRecord>,
     #[serde(default)]
     pub closed_tabs: Vec<ClosedTabRecord>,
+    #[serde(default)]
+    pub layout: LayoutState,
+}
+
+/// Split view and file panel. Restored on relaunch.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LayoutState {
+    /// `single`, `horizontal`, or `vertical`.
+    #[serde(default = "default_split_mode")]
+    pub split_mode: String,
+    #[serde(default)]
+    pub secondary_tab_id: Option<String>,
+    /// Size of the main pane, in percent.
+    #[serde(default = "default_split_size")]
+    pub primary_size: f64,
+    #[serde(default)]
+    pub file_panel_open: bool,
+    /// File panel width, in pixels.
+    #[serde(default = "default_file_panel_width")]
+    pub file_panel_width: f64,
+}
+
+fn default_split_mode() -> String {
+    "single".to_string()
+}
+
+fn default_split_size() -> f64 {
+    50.0
+}
+
+fn default_file_panel_width() -> f64 {
+    280.0
+}
+
+impl Default for LayoutState {
+    fn default() -> Self {
+        Self {
+            split_mode: default_split_mode(),
+            secondary_tab_id: None,
+            primary_size: default_split_size(),
+            file_panel_open: false,
+            file_panel_width: default_file_panel_width(),
+        }
+    }
+}
+
+impl LayoutState {
+    pub fn sanitized(mut self) -> Self {
+        if !matches!(
+            self.split_mode.as_str(),
+            "single" | "horizontal" | "vertical"
+        ) {
+            self.split_mode = default_split_mode();
+        }
+        if self.split_mode == "single" {
+            self.secondary_tab_id = None;
+        }
+        if self.secondary_tab_id.is_none() {
+            self.split_mode = default_split_mode();
+        }
+        if !self.primary_size.is_finite() {
+            self.primary_size = default_split_size();
+        }
+        self.primary_size = self.primary_size.clamp(15.0, 85.0);
+        if !self.file_panel_width.is_finite() {
+            self.file_panel_width = default_file_panel_width();
+        }
+        self.file_panel_width = self.file_panel_width.clamp(160.0, 900.0);
+        self
+    }
 }
 
 impl Default for AppStateFile {
@@ -20,6 +91,7 @@ impl Default for AppStateFile {
             active_tab_id: None,
             tabs: Vec::new(),
             closed_tabs: Vec::new(),
+            layout: LayoutState::default(),
         }
     }
 }
@@ -51,6 +123,8 @@ pub struct ClosedTabRecord {
     pub acp_session_id: Option<String>,
     #[serde(default)]
     pub mode_id: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// Persisted tab snapshot (blueprint §17.2 `state.json`).
@@ -86,6 +160,9 @@ pub struct TabRecord {
     /// `shell`, `cursor-cli`, or `role`. Empty on chat tabs.
     #[serde(default)]
     pub terminal_launch: String,
+    /// Per-tab model override. `None` uses the role default, then the global one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 pub fn default_tab_kind() -> String {

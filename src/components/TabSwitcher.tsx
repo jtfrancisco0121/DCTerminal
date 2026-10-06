@@ -11,9 +11,17 @@ type Props = {
   tabs: TabItem[];
   onSelect: (tabId: string) => void;
   onClose: () => void;
+  title?: string;
+  placeholder?: string;
 };
 
-export function TabSwitcher({ tabs, onSelect, onClose }: Props) {
+export function TabSwitcher({
+  tabs,
+  onSelect,
+  onClose,
+  title = "Go to tab",
+  placeholder = "Go to tab by name or folder",
+}: Props) {
   const [query, setQuery] = useState("");
   const matches = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -28,13 +36,13 @@ export function TabSwitcher({ tabs, onSelect, onClose }: Props) {
       <div
         className="overlay-panel overlay-panel-palette"
         role="dialog"
-        aria-label="Go to tab"
+        aria-label={title}
         onClick={(event) => event.stopPropagation()}
       >
         <input
           className="text-input"
           autoFocus
-          placeholder="Go to tab by name or folder"
+          placeholder={placeholder}
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={(event) => {

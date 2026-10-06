@@ -3,12 +3,16 @@ import {
   getRole,
   type CliDetectResult,
   type DiagnosticsStatus,
+  type ModelList,
+  type ModelSettings,
   type Role,
   type RoleSummary,
   type TerminalSettings,
 } from "../bridge";
 import { DevToolsPanel } from "../DevToolsPanel";
 import { shortcutRows, type Platform } from "../keymap";
+import { DEFAULT_MODEL_ID } from "../models";
+import { ModelPicker } from "./ModelPicker";
 import { APP_VERSION, rolePermissionSummary } from "../workspaceView";
 
 type Props = {
@@ -22,6 +26,11 @@ type Props = {
   onToggleCapture: (enabled: boolean) => void;
   terminalSettings: TerminalSettings | null;
   onTerminalSettings: (next: TerminalSettings) => void;
+  modelList?: ModelList | null;
+  modelSettings?: ModelSettings | null;
+  onModelSettings?: (next: ModelSettings) => void;
+  onRefreshModels?: () => void;
+  modelsRefreshing?: boolean;
   onClose: () => void;
 };
 
@@ -44,6 +53,11 @@ export function SettingsPage({
   onToggleCapture,
   terminalSettings,
   onTerminalSettings,
+  modelList = null,
+  modelSettings = null,
+  onModelSettings,
+  onRefreshModels,
+  modelsRefreshing = false,
   onClose,
 }: Props) {
   const [selectedId, setSelectedId] = useState(roles[0]?.id ?? "");
@@ -172,6 +186,77 @@ export function SettingsPage({
           that runs agent takes no extra flags. There is no CLI flag that denies writes while
           still allowing the shell, so PR Reviewer keeps the CLI&apos;s own approval prompts.
         </p>
+      </section>
+
+      <section className="settings-section" aria-label="Models">
+        <h3>Models</h3>
+        {(() => {
+          const models = modelList?.models ?? [];
+          const current = modelSettings ?? { defaultModel: DEFAULT_MODEL_ID, roleModels: {} };
+          const roleRows = [
+            ...roles.map((role) => ({ id: role.id, name: role.name })),
+            { id: "cursor-cli", name: "Cursor CLI tabs" },
+          ];
+          return (
+            <>
+              <p className="hint">
+                New tabs use the role&apos;s model, or the default model when the role has none.
+                Each tab can override this from its header.
+              </p>
+              <div className="settings-model-row">
+                <span className="settings-model-name">Default model</span>
+                <ModelPicker
+                  models={models}
+                  value={current.defaultModel}
+                  ariaLabel="Default model"
+                  disabled={!onModelSettings}
+                  onChange={(model) =>
+                    onModelSettings?.({ ...current, defaultModel: model ?? DEFAULT_MODEL_ID })
+                  }
+                />
+              </div>
+              {roleRows.map((row) => (
+                <div className="settings-model-row" key={row.id}>
+                  <span className="settings-model-name">{row.name}</span>
+                  <ModelPicker
+                    models={models}
+                    value={current.roleModels[row.id] ?? null}
+                    inherited={{ model: current.defaultModel, label: "Default model" }}
+                    ariaLabel={`Model for ${row.name}`}
+                    disabled={!onModelSettings}
+                    onChange={(model) => {
+                      const roleModels = { ...current.roleModels };
+                      if (model === null) delete roleModels[row.id];
+                      else roleModels[row.id] = model;
+                      onModelSettings?.({ ...current, roleModels });
+                    }}
+                  />
+                </div>
+              ))}
+              <div className="button-row">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={onRefreshModels}
+                  disabled={!onRefreshModels || modelsRefreshing}
+                >
+                  {modelsRefreshing ? "Refreshing…" : "Refresh model list"}
+                </button>
+                <span className="hint">
+                  {models.length} models
+                  {modelList?.source === "cli"
+                    ? " from agent --list-models"
+                    : modelList?.source === "cache"
+                      ? " (cached list)"
+                      : modelList?.source === "fallback"
+                        ? " (built-in list; agent --list-models was not available)"
+                        : ""}
+                </span>
+              </div>
+              {modelList?.error && <p className="hint">{modelList.error}</p>}
+            </>
+          );
+        })()}
       </section>
 
       <section className="settings-section">

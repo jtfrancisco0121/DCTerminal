@@ -46,6 +46,30 @@ impl Default for TerminalSettings {
     }
 }
 
+/// Model choices. `default_model` applies to every tab unless the tab's role
+/// has an entry in `role_models`, or the tab has its own override.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelSettings {
+    #[serde(default = "default_model_id")]
+    pub default_model: String,
+    #[serde(default)]
+    pub role_models: HashMap<String, String>,
+}
+
+fn default_model_id() -> String {
+    crate::models::DEFAULT_MODEL_ID.to_string()
+}
+
+impl Default for ModelSettings {
+    fn default() -> Self {
+        Self {
+            default_model: default_model_id(),
+            role_models: HashMap::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsFile {
@@ -54,6 +78,8 @@ pub struct SettingsFile {
     pub diagnostics: DiagnosticsSettings,
     #[serde(default)]
     pub terminal: TerminalSettings,
+    #[serde(default)]
+    pub models: ModelSettings,
 }
 
 impl Default for SettingsFile {
@@ -62,6 +88,7 @@ impl Default for SettingsFile {
             schema_version: SETTINGS_SCHEMA_VERSION,
             diagnostics: DiagnosticsSettings::default(),
             terminal: TerminalSettings::default(),
+            models: ModelSettings::default(),
         }
     }
 }
@@ -129,6 +156,32 @@ impl SettingsStore {
     }
 }
 
+impl SettingsStore {
+    pub fn models(&self) -> &ModelSettings {
+        &self.data.models
+    }
+
+    /// Tab override, then the role default, then the global default.
+    pub fn effective_model(&self, role_id: &str, tab_model: Option<&str>) -> String {
+        crate::models::effective_model(&self.data.models, role_id, tab_model)
+    }
+
+    pub fn set_models(&mut self, mut next: ModelSettings) -> Result<(), String> {
+        next.default_model = next.default_model.trim().to_string();
+        if !crate::models::valid_model_id(&next.default_model) {
+            next.default_model = default_model_id();
+        }
+        next.role_models = next
+            .role_models
+            .into_iter()
+            .map(|(role, model)| (role, model.trim().to_string()))
+            .filter(|(role, model)| !role.trim().is_empty() && crate::models::valid_model_id(model))
+            .collect();
+        self.data.models = next;
+        self.save()
+    }
+}
+
 fn is_run_mode(value: &str) -> bool {
     matches!(value, "default" | "yolo" | "auto-review" | "plan" | "ask")
 }
@@ -151,5 +204,42 @@ mod tests {
         let again = SettingsStore::open(&dir).unwrap();
         assert!(again.capture_enabled());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn model_defaults_to_composer_and_drops_bad_ids() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("dcterminal_models_{nanos}"));
+        let mut store = SettingsStore::open(&dir).unwrap();
+        assert_eq!(store.models().default_model, "composer-2.5");
+        assert_eq!(store.effective_model("role_planner", None), "composer-2.5");
+        store
+            .set_models(ModelSettings {
+                default_model: "--yolo".to_string(),
+                role_models: HashMap::from([
+                    ("role_planner".to_string(), "gpt-5".to_string()),
+                    ("role_general".to_string(), "bad id".to_string()),
+                ]),
+            })
+            .unwrap();
+        let again = SettingsStore::open(&dir).unwrap();
+        assert_eq!(again.models().default_model, "composer-2.5");
+        assert_eq!(again.effective_model("role_planner", None), "gpt-5");
+        assert_eq!(again.effective_model("role_general", None), "composer-2.5");
+        assert_eq!(
+            again.effective_model("role_planner", Some("sonnet-4.5")),
+            "sonnet-4.5"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn settings_without_models_section_still_load() {
+        let raw = r#"{"schemaVersion":1,"terminal":{"shell":"","fontSize":14}}"#;
+        let parsed: SettingsFile = serde_json::from_str(raw).unwrap();
+        assert_eq!(parsed.models.default_model, "composer-2.5");
     }
 }

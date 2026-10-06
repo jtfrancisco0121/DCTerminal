@@ -13,7 +13,15 @@ impl AgentSupervisor {
     }
 
     pub fn spawn_acp(agent_path: &Path, cwd: &Path) -> Result<AcpConnection, String> {
-        AcpConnection::spawn(agent_path, Some(cwd)).map_err(|e| {
+        Self::spawn_acp_with(agent_path, cwd, &[])
+    }
+
+    pub fn spawn_acp_with(
+        agent_path: &Path,
+        cwd: &Path,
+        global_args: &[String],
+    ) -> Result<AcpConnection, String> {
+        AcpConnection::spawn_with_args(agent_path, Some(cwd), global_args).map_err(|e| {
             if e.kind() == ErrorKind::NotFound {
                 agent_missing_message()
             } else {
@@ -28,7 +36,11 @@ impl AgentSupervisor {
     }
 
     pub fn spawn_default(cwd: &Path) -> Result<AcpConnection, String> {
+        Self::spawn_default_with(cwd, &[])
+    }
+
+    pub fn spawn_default_with(cwd: &Path, global_args: &[String]) -> Result<AcpConnection, String> {
         let agent = Self::resolve_agent()?;
-        Self::spawn_acp(&agent, cwd)
+        Self::spawn_acp_with(&agent, cwd, global_args)
     }
 }

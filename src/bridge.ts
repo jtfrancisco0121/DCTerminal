@@ -139,6 +139,8 @@ export type RoleSessionStartResult = {
   replayMessageCount: number;
   replayTruncated: boolean;
   replay: SessionUpdateEvent[];
+  /** How the model reached the agent. Missing on older builds. */
+  modelVia?: ModelVia | null;
 };
 
 export type PromptFinishedEvent = {
@@ -172,6 +174,8 @@ export type TabSummary = {
   acpSessionId: string | null;
   /** CLI chat id when this tab runs `agent --resume`. */
   resumeSessionId?: string | null;
+  /** Per-tab model override. Missing means the role or global default. */
+  model?: string | null;
 };
 
 export type ClosedTabSummary = {
@@ -298,6 +302,8 @@ export type DevSessionInfo = {
   sessionId: string;
   modeId: string;
   cwd: string;
+  /** Model the agent reported (or was started with). */
+  model?: string | null;
 };
 
 export type DevPromptResult = {
@@ -713,4 +719,130 @@ export async function setTerminalSettings(
 
 export async function terminalPlanFile(startedAtMs: number): Promise<PlanFileInfo | null> {
   return invoke<PlanFileInfo | null>("terminal_plan_file", { startedAtMs });
+}
+
+export type ModelEntry = {
+  id: string;
+  label: string;
+  fast: boolean;
+};
+
+export type ModelList = {
+  models: ModelEntry[];
+  /** "cli" | "cache" | "fallback" */
+  source: string;
+  fetchedAtMs: number | null;
+  error: string | null;
+};
+
+export type ModelSettings = {
+  defaultModel: string;
+  roleModels: Record<string, string>;
+};
+
+export type ModelVia =
+  | "unchanged"
+  | "configOption"
+  | "setModel"
+  | "spawnFlag"
+  | "unsupported";
+
+export type SetModelResult = {
+  model: string;
+  via: ModelVia | null;
+  restarted: boolean;
+};
+
+export async function listModels(refresh = false): Promise<ModelList> {
+  return invoke<ModelList>("list_models", { refresh });
+}
+
+export async function getModelSettings(): Promise<ModelSettings> {
+  return invoke<ModelSettings>("get_model_settings");
+}
+
+export async function setModelSettings(models: ModelSettings): Promise<ModelSettings> {
+  return invoke<ModelSettings>("set_model_settings", { models });
+}
+
+/** Per-tab override. `null` clears it. Returns the effective model. */
+export async function setTabModel(tabId: string, model: string | null): Promise<string> {
+  return invoke<string>("set_tab_model", { tabId, model });
+}
+
+/** Change a running chat tab's model (in place, or restart + session/load). */
+export async function acpSetModel(tabId: string, model: string | null): Promise<SetModelResult> {
+  return invoke<SetModelResult>("acp_set_model", { tabId, model });
+}
+
+export type LayoutState = {
+  /** "single" | "horizontal" | "vertical" */
+  splitMode: string;
+  secondaryTabId: string | null;
+  /** Main pane size in percent. */
+  primarySize: number;
+  filePanelOpen: boolean;
+  filePanelWidth: number;
+};
+
+export async function getLayout(): Promise<LayoutState> {
+  return invoke<LayoutState>("get_layout");
+}
+
+export async function setLayout(layout: LayoutState): Promise<LayoutState> {
+  return invoke<LayoutState>("set_layout", { layout });
+}
+
+export type FileEntry = {
+  name: string;
+  path: string;
+  isDir: boolean;
+  size: number;
+};
+
+export type DirListing = {
+  root: string;
+  path: string;
+  entries: FileEntry[];
+  truncated: boolean;
+};
+
+export type FileContent = {
+  path: string;
+  absPath: string;
+  size: number;
+  mtimeMs: number;
+  /** "text" | "image" | "binary" | "tooLarge" */
+  kind: string;
+  text: string | null;
+  dataBase64: string | null;
+  mime: string | null;
+};
+
+export type FileWriteResult = {
+  mtimeMs: number;
+  size: number;
+};
+
+/** Paths are relative to the tab's working folder. */
+export async function filesList(tabId: string, path = ""): Promise<DirListing> {
+  return invoke<DirListing>("files_list", { tabId, path });
+}
+
+export async function filesRead(tabId: string, path: string): Promise<FileContent> {
+  return invoke<FileContent>("files_read", { tabId, path });
+}
+
+export async function filesWrite(
+  tabId: string,
+  path: string,
+  text: string,
+  expectedMtimeMs: number | null,
+  force = false,
+): Promise<FileWriteResult> {
+  return invoke<FileWriteResult>("files_write", { tabId, path, text, expectedMtimeMs, force });
+}
+
+export async function filesReveal(tabId: string, path: string): Promise<void> {
+  return invoke("files_reveal", { tabId, path });
 }

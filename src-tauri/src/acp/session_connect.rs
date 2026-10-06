@@ -36,12 +36,102 @@ pub fn load_session_params(session_id: &str, cwd: &str) -> Value {
     })
 }
 
+/// What `session/new` (or `session/load`) said about models.
+/// `configOptions` (category `model`) is preferred over the older `models` field.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionModels {
+    pub current: Option<String>,
+    pub available: Vec<String>,
+    /// Id of the `configOptions` entry whose category (or id) is `model`.
+    pub config_id: Option<String>,
+    /// `models` was present, so `session/set_model` is worth trying.
+    pub set_model_api: bool,
+}
+
+fn option_values(options: &Value, out: &mut Vec<String>) {
+    let Some(items) = options.as_array() else {
+        return;
+    };
+    for item in items {
+        if let Some(value) = item.get("value").and_then(Value::as_str) {
+            out.push(value.to_string());
+        } else if let Some(nested) = item.get("options") {
+            option_values(nested, out);
+        }
+    }
+}
+
+pub fn parse_session_models(result: &Value) -> SessionModels {
+    let mut info = SessionModels::default();
+    if let Some(options) = result.get("configOptions").and_then(Value::as_array) {
+        let model_option = options
+            .iter()
+            .find(|opt| opt.get("category").and_then(Value::as_str) == Some("model"))
+            .or_else(|| {
+                options
+                    .iter()
+                    .find(|opt| opt.get("id").and_then(Value::as_str) == Some("model"))
+            });
+        if let Some(opt) = model_option {
+            info.config_id = opt.get("id").and_then(Value::as_str).map(String::from);
+            info.current = opt
+                .get("currentValue")
+                .and_then(Value::as_str)
+                .map(String::from);
+            if let Some(values) = opt.get("options") {
+                option_values(values, &mut info.available);
+            }
+        }
+    }
+    if let Some(models) = result.get("models").filter(|m| m.is_object()) {
+        info.set_model_api = true;
+        if info.current.is_none() {
+            info.current = models
+                .get("currentModelId")
+                .and_then(Value::as_str)
+                .map(String::from);
+        }
+        if info.available.is_empty() {
+            if let Some(list) = models.get("availableModels").and_then(Value::as_array) {
+                info.available = list
+                    .iter()
+                    .filter_map(|m| m.get("modelId").and_then(Value::as_str).map(String::from))
+                    .collect();
+            }
+        }
+    }
+    info
+}
+
+/// Requests to try, in order, to switch the session's model. Empty when the
+/// agent advertised neither `configOptions` nor `models`.
+pub fn model_requests(
+    models: &SessionModels,
+    session_id: &str,
+    model: &str,
+) -> Vec<(String, Value)> {
+    let mut requests = Vec::new();
+    if let Some(config_id) = &models.config_id {
+        requests.push((
+            "session/set_config_option".to_string(),
+            json!({ "sessionId": session_id, "configId": config_id, "value": model }),
+        ));
+    }
+    if models.set_model_api {
+        requests.push((
+            "session/set_model".to_string(),
+            json!({ "sessionId": session_id, "modelId": model }),
+        ));
+    }
+    requests
+}
+
 /// FR-003–004, FR-009: initialize → authenticate → session/new → set_mode.
 pub fn handshake(
     conn: &mut AcpConnection,
     cwd: &Path,
     mode_id: &str,
-) -> Result<(String, String), String> {
+) -> Result<(String, String, SessionModels), String> {
     let timeout = default_io_timeout();
 
     conn.call(1, "initialize", initialize_params(), timeout)?;
@@ -75,6 +165,8 @@ pub fn handshake(
         .ok_or_else(|| "session/new missing sessionId".to_string())?
         .to_string();
 
+    let models = parse_session_models(&new_result);
+
     conn.call(
         4,
         "session/set_mode",
@@ -85,7 +177,7 @@ pub fn handshake(
         timeout,
     )?;
 
-    Ok((session_id, mode_id.to_string()))
+    Ok((session_id, mode_id.to_string(), models))
 }
 
 /// Resume one ACP session. Caller must already know `loadSession` may be false;
@@ -95,7 +187,7 @@ pub fn handshake_load(
     cwd: &Path,
     mode_id: &str,
     session_id: &str,
-) -> Result<(String, String, Vec<Value>), String> {
+) -> Result<(String, String, Vec<Value>, SessionModels), String> {
     let timeout = default_io_timeout();
     let init = conn.call(1, "initialize", initialize_params(), timeout)?;
     let caps = capabilities_from_initialize(&init);
@@ -121,7 +213,7 @@ pub fn handshake_load(
     }
 
     let mut dispatch = LineDispatch::default();
-    conn.call_with_dispatch(
+    let load_result = conn.call_with_dispatch(
         3,
         "session/load",
         load_session_params(session_id, &cwd.display().to_string()),
@@ -144,6 +236,7 @@ pub fn handshake_load(
         session_id.to_string(),
         mode_id.to_string(),
         dispatch.notifications,
+        parse_session_models(&load_result),
     ))
 }
 
@@ -192,6 +285,56 @@ mod tests {
         assert_eq!(params["sessionId"], "sess_789xyz");
         assert_eq!(params["cwd"], r"C:\Work\App");
         assert_eq!(params["mcpServers"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn config_option_model_is_preferred_over_models_field() {
+        let result = json!({
+            "sessionId": "s",
+            "models": { "currentModelId": "auto", "availableModels": [{ "modelId": "auto" }] },
+            "configOptions": [
+                { "id": "mode", "category": "mode", "currentValue": "agent", "options": [] },
+                {
+                    "id": "model_picker",
+                    "category": "model",
+                    "currentValue": "composer-2.5",
+                    "options": [
+                        { "group": "a", "name": "A", "options": [{ "value": "composer-2.5", "name": "C" }] },
+                        { "value": "gpt-5", "name": "G" }
+                    ]
+                }
+            ]
+        });
+        let models = parse_session_models(&result);
+        assert_eq!(models.config_id.as_deref(), Some("model_picker"));
+        assert_eq!(models.current.as_deref(), Some("composer-2.5"));
+        assert_eq!(models.available, vec!["composer-2.5", "gpt-5"]);
+        assert!(models.set_model_api);
+        let requests = model_requests(&models, "s", "gpt-5");
+        assert_eq!(requests[0].0, "session/set_config_option");
+        assert_eq!(requests[0].1["configId"], "model_picker");
+        assert_eq!(requests[0].1["value"], "gpt-5");
+        assert_eq!(requests[1].0, "session/set_model");
+        assert_eq!(requests[1].1["modelId"], "gpt-5");
+    }
+
+    #[test]
+    fn models_field_alone_uses_set_model() {
+        let models = parse_session_models(&json!({
+            "models": { "currentModelId": "auto", "availableModels": [{ "modelId": "auto" }, { "modelId": "gpt-5" }] }
+        }));
+        assert_eq!(models.current.as_deref(), Some("auto"));
+        assert_eq!(models.available, vec!["auto", "gpt-5"]);
+        let requests = model_requests(&models, "s", "gpt-5");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].0, "session/set_model");
+    }
+
+    #[test]
+    fn no_model_info_means_no_requests() {
+        let models = parse_session_models(&json!({ "sessionId": "s" }));
+        assert_eq!(models, SessionModels::default());
+        assert!(model_requests(&models, "s", "gpt-5").is_empty());
     }
 
     #[test]
