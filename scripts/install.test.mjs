@@ -352,8 +352,14 @@ printf 'blocked\\n'`);
     expect(help).toContain("--yes");
     const unknown = bashResult("./install.sh --not-a-flag");
     expect(unknown.status).not.toBe(0);
-    const universal = bashResult("./install.sh --universal");
-    expect(universal.status).not.toBe(0);
-    expect(`${universal.stdout}\n${universal.stderr}`.toLowerCase()).toContain("macos");
+    // --universal is a real install on macOS. The rejection only happens off
+    // macOS. flags_are_supported covers the decision without a build. macOS
+    // has no timeout(1) command, so this must not start the installer at all.
+    if (process.platform !== "darwin") {
+      const universal = bashResult("./install.sh --universal");
+      expect(universal.status).not.toBe(0);
+      const text = `${universal.stdout}\n${universal.stderr}`.toLowerCase();
+      expect(text).toContain("macos");
+    }
   });
 });

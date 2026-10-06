@@ -12,6 +12,15 @@ cargo clippy --all-targets -- -D warnings
 
 Component tests use Vitest, React Testing Library, and jsdom. They cover the startup form, the blank-tab card, the tab bar, the folder chooser, Cursor CLI history, the hand-off dialog, and Settings. The Tauri bridge is mocked, so those tests do not start a webview.
 
+## macOS
+
+On a Mac, verify with `npm run check`, then `./install.sh` to build and install the app. The WebdriverIO end-to-end suite does not run on macOS: tauri-driver has no WKWebView driver.
+
+```bash
+npm run check
+./install.sh
+```
+
 ## Linux checks that also cover the Windows build
 
 ```bash
@@ -22,6 +31,8 @@ npm run build
 The Windows target check needs the `x86_64-pc-windows-gnu` rustup target. It does not replace a run on Windows.
 
 ## End-to-end tests
+
+The WebdriverIO suite does not run on macOS (tauri-driver has no WKWebView driver). It runs on Linux with WebKitWebDriver and on Windows with msedgedriver.
 
 ```bash
 npm run e2e
@@ -68,7 +79,7 @@ cargo install tauri-driver --locked
 
 ### Windows
 
-Windows is the primary target. Install a Microsoft Edge WebDriver (`msedgedriver`) that matches the installed WebView2 runtime, and put it on `PATH`. WebView2's version is under Settings → Apps → Installed apps, or:
+On Windows, install a Microsoft Edge WebDriver (`msedgedriver`) that matches the installed WebView2 runtime, and put it on `PATH`. WebView2's version is under Settings → Apps → Installed apps, or:
 
 ```powershell
 (Get-ItemProperty "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}").pv
