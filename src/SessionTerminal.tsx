@@ -31,6 +31,9 @@ type Props = {
   onFollowUpChange: (value: string) => void;
   onSendFollowUp: () => void;
   onStop: () => void;
+  folderWarning?: string | null;
+  agentExited?: boolean;
+  onRestart?: () => void;
 };
 
 export function SessionTerminal({
@@ -50,6 +53,9 @@ export function SessionTerminal({
   onFollowUpChange,
   onSendFollowUp,
   onStop,
+  folderWarning,
+  agentExited = false,
+  onRestart,
 }: Props) {
   const screenRef = useRef<HTMLDivElement>(null);
   const permissionRef = useRef<HTMLDivElement>(null);
@@ -116,6 +122,17 @@ export function SessionTerminal({
           >
             Cancel turn
           </button>
+          {agentExited && onRestart && (
+            <button
+              type="button"
+              className="primary-button"
+              onClick={onRestart}
+              disabled={busy}
+              title="Stop this agent and return to the form so you can start it again"
+            >
+              Restart
+            </button>
+          )}
           <button
             type="button"
             className="secondary-button session-stop"
@@ -126,6 +143,12 @@ export function SessionTerminal({
           </button>
         </div>
       </header>
+
+      {folderWarning && (
+        <p className="folder-warning" role="status">
+          {folderWarning}
+        </p>
+      )}
 
       {activity && (
         <p
@@ -235,7 +258,7 @@ export function SessionTerminal({
           type="button"
           className="primary-button session-terminal-send"
           onClick={onSendFollowUp}
-          disabled={busy || !followUp.trim()}
+          disabled={busy || agentExited || !followUp.trim()}
         >
           Send
         </button>

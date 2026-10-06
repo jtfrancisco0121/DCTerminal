@@ -1,13 +1,17 @@
 use crate::acp::AcpClient;
 use crate::commands::prompt_worker::spawn_prompt_turn;
-use crate::orchestrator::TabPhase;
+use crate::paths::validate_working_folder;
+use crate::permissions::cancelled_permission_result;
+use crate::process_tree::SharedProcess;
 use crate::store::StateStore;
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, State};
+
+pub const DEV_TAB_ID: &str = "__dev__";
 
 pub type SharedAcpClient = Arc<Mutex<AcpClient>>;
 
@@ -15,32 +19,138 @@ pub fn wrap_client(client: AcpClient) -> SharedAcpClient {
     Arc::new(Mutex::new(client))
 }
 
-pub struct DevSessionState {
-    pub client: Option<SharedAcpClient>,
-    /// Merged startup prompt for `attach_to_first_message` roles.
+pub struct LiveSession {
+    pub tab_id: String,
+    pub role_id: String,
+    pub mode_id: String,
+    pub cwd: String,
+    pub session_id: String,
+    pub client: SharedAcpClient,
+    pub process: SharedProcess,
+    pub cancel: Arc<AtomicBool>,
+    pub outbox: Arc<Mutex<Vec<(u64, Value)>>>,
+    pub pending_permissions: HashMap<u64, ()>,
     pub pending_startup_prompt: Option<String>,
     pub startup_injected: bool,
-    pub phase: TabPhase,
-    pub active_tab_id: Option<String>,
     pub prompt_in_flight: bool,
-    /// JSON-RPC ids waiting for a permission result from the UI.
-    pub pending_permission_ids: VecDeque<u64>,
-    /// Results to write to the agent while `session/prompt` is in flight.
-    pub agent_response_outbox: Arc<Mutex<Vec<(u64, Value)>>>,
+    pub exited: bool,
 }
 
-impl DevSessionState {
-    pub fn new() -> Self {
+impl LiveSession {
+    pub fn from_client(tab_id: &str, role_id: &str, client: AcpClient) -> Self {
+        let process = client.process_handle();
+        let cancel = client.cancel_flag();
+        let outbox = client.outbox();
         Self {
-            client: None,
+            tab_id: tab_id.to_string(),
+            role_id: role_id.to_string(),
+            mode_id: client.mode_id().to_string(),
+            cwd: client.cwd().display().to_string(),
+            session_id: client.session_id().to_string(),
+            client: wrap_client(client),
+            process,
+            cancel,
+            outbox,
+            pending_permissions: HashMap::new(),
             pending_startup_prompt: None,
             startup_injected: false,
-            phase: TabPhase::AwaitingInput,
-            active_tab_id: None,
             prompt_in_flight: false,
-            pending_permission_ids: VecDeque::new(),
-            agent_response_outbox: Arc::new(Mutex::new(Vec::new())),
+            exited: false,
         }
+    }
+
+    pub fn shutdown(&mut self) {
+        let pending: Vec<u64> = self.pending_permissions.drain().map(|(id, _)| id).collect();
+        if let Ok(mut outbox) = self.outbox.lock() {
+            for id in pending {
+                outbox.push((id, cancelled_permission_result()));
+            }
+        }
+        self.cancel.store(true, Ordering::SeqCst);
+        self.process.kill_tree();
+        self.exited = true;
+        self.prompt_in_flight = false;
+    }
+}
+
+/// One `agent acp` process per tab. Handles are cloned so stop/cancel
+/// do not need the client mutex the prompt thread holds.
+pub struct SessionRegistry {
+    sessions: HashMap<String, LiveSession>,
+    starting: HashSet<String>,
+}
+
+impl SessionRegistry {
+    pub fn new() -> Self {
+        Self {
+            sessions: HashMap::new(),
+            starting: HashSet::new(),
+        }
+    }
+
+    pub fn try_begin_start(&mut self, tab_key: &str) -> Result<(), String> {
+        if self.starting.contains(tab_key) {
+            return Err(
+                "Start already in progress for this tab — wait for the first click to finish"
+                    .to_string(),
+            );
+        }
+        if let Some(existing) = self.sessions.get(tab_key) {
+            if !existing.exited {
+                return Err(
+                    "this tab already has a live session — stop it before starting again"
+                        .to_string(),
+                );
+            }
+        }
+        if let Some(mut old) = self.sessions.remove(tab_key) {
+            old.shutdown();
+        }
+        self.starting.insert(tab_key.to_string());
+        Ok(())
+    }
+
+    pub fn finish_start(&mut self, tab_key: &str) {
+        self.starting.remove(tab_key);
+    }
+
+    pub fn insert(&mut self, session: LiveSession) {
+        self.sessions.insert(session.tab_id.clone(), session);
+    }
+
+    pub fn get(&self, tab_id: &str) -> Option<&LiveSession> {
+        self.sessions.get(tab_id)
+    }
+
+    pub fn get_mut(&mut self, tab_id: &str) -> Option<&mut LiveSession> {
+        self.sessions.get_mut(tab_id)
+    }
+
+    pub fn agent_folders_except(&self, tab_id: &str) -> Vec<(String, String)> {
+        self.sessions
+            .values()
+            .filter(|session| session.tab_id != tab_id && !session.exited)
+            .map(|session| (session.cwd.clone(), session.mode_id.clone()))
+            .collect()
+    }
+
+    pub fn shutdown_tab(&mut self, tab_id: &str) {
+        if let Some(mut session) = self.sessions.remove(tab_id) {
+            session.shutdown();
+        }
+    }
+
+    pub fn shutdown_all(&mut self) {
+        let ids: Vec<String> = self.sessions.keys().cloned().collect();
+        for id in ids {
+            self.shutdown_tab(&id);
+        }
+    }
+}
+
+impl Drop for SessionRegistry {
+    fn drop(&mut self) {
+        self.shutdown_all();
     }
 }
 
@@ -52,59 +162,70 @@ pub struct DevSessionInfo {
     pub cwd: String,
 }
 
-fn shutdown_shared(client: &SharedAcpClient) {
-    if let Ok(mut c) = client.lock() {
-        c.shutdown();
-    }
-}
-
-#[tauri::command]
-pub fn dev_session_start(
-    cwd: String,
-    mode_id: Option<String>,
-    state: State<Mutex<DevSessionState>>,
-) -> Result<DevSessionInfo, String> {
-    let mode = mode_id.unwrap_or_else(|| "agent".to_string());
-    let path = PathBuf::from(cwd.trim());
-    let mut guard = state.lock().map_err(|e| e.to_string())?;
-    if let Some(existing) = guard.client.take() {
-        shutdown_shared(&existing);
-    }
-    guard.pending_startup_prompt = None;
-    guard.startup_injected = false;
-    let client = AcpClient::connect(&path, &mode)?;
-    let info = DevSessionInfo {
-        session_id: client.session_id().to_string(),
-        mode_id: client.mode_id().to_string(),
-        cwd: client.cwd().display().to_string(),
-    };
-    guard.client = Some(wrap_client(client));
-    guard.phase = TabPhase::AwaitingInput
-        .after_session_started()
-        .map_err(|e| e.to_string())?;
-    Ok(info)
-}
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptDispatchResult {
     pub dispatched: bool,
 }
 
+fn resolve_tab_id(tab_id: Option<String>) -> String {
+    tab_id.unwrap_or_else(|| DEV_TAB_ID.to_string())
+}
+
+#[tauri::command]
+pub fn dev_session_start(
+    cwd: String,
+    mode_id: Option<String>,
+    state: State<Mutex<SessionRegistry>>,
+) -> Result<DevSessionInfo, String> {
+    let mode = mode_id.unwrap_or_else(|| "agent".to_string());
+    let path = validate_working_folder(&cwd).map_err(|err| err.message())?;
+    {
+        let mut guard = state.lock().map_err(|e| e.to_string())?;
+        guard.try_begin_start(DEV_TAB_ID)?;
+    }
+    let client = match AcpClient::connect(&path, &mode) {
+        Ok(client) => client,
+        Err(err) => {
+            if let Ok(mut guard) = state.lock() {
+                guard.finish_start(DEV_TAB_ID);
+            }
+            return Err(err);
+        }
+    };
+    let info = DevSessionInfo {
+        session_id: client.session_id().to_string(),
+        mode_id: client.mode_id().to_string(),
+        cwd: client.cwd().display().to_string(),
+    };
+    let session = LiveSession::from_client(DEV_TAB_ID, "role_developer", client);
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+    guard.finish_start(DEV_TAB_ID);
+    guard.insert(session);
+    Ok(info)
+}
+
 #[tauri::command]
 pub fn dev_session_send(
     app: AppHandle,
     prompt: String,
-    state: State<Mutex<DevSessionState>>,
+    tab_id: Option<String>,
+    state: State<Mutex<SessionRegistry>>,
 ) -> Result<PromptDispatchResult, String> {
+    let tab_id = resolve_tab_id(tab_id);
     let mut guard = state.lock().map_err(|e| e.to_string())?;
-    if guard.prompt_in_flight {
-        return Err("a prompt is already running — wait or stop the session".to_string());
+    let session = guard
+        .get_mut(&tab_id)
+        .ok_or_else(|| "no session for this tab — start it first".to_string())?;
+    if session.exited {
+        return Err(
+            "the agent process exited — restart this tab before sending another prompt".to_string(),
+        );
     }
-    if guard.client.is_none() {
-        return Err("no dev session — call dev_session_start first".to_string());
+    if session.prompt_in_flight {
+        return Err("a prompt is already running — wait or cancel the turn".to_string());
     }
-    let attached_startup = guard.pending_startup_prompt.take();
+    let attached_startup = session.pending_startup_prompt.take();
     let had_attached_startup = attached_startup.is_some();
     let prompt_to_send = if let Some(startup) = attached_startup {
         format!("{startup}\n\n---\n\n{prompt}")
@@ -112,57 +233,61 @@ pub fn dev_session_send(
         prompt
     };
     let tab_id_for_injection = if had_attached_startup {
-        guard.active_tab_id.clone()
+        Some(tab_id.clone())
     } else {
         None
     };
-    guard.prompt_in_flight = true;
+    session.prompt_in_flight = true;
+    drop(guard);
     spawn_prompt_turn(
         app,
+        tab_id,
         prompt_to_send,
-        tab_id_for_injection,
-        had_attached_startup,
+        tab_id_for_injection.is_some(),
         had_attached_startup,
     );
     Ok(PromptDispatchResult { dispatched: true })
 }
 
 #[tauri::command]
-pub fn dev_session_cancel(state: State<Mutex<DevSessionState>>) -> Result<(), String> {
-    let client_arc = {
-        let guard = state.lock().map_err(|e| e.to_string())?;
-        guard.client.clone().ok_or_else(|| "no active session".to_string())?
-    };
-    {
-        let mut client = client_arc.lock().map_err(|e| e.to_string())?;
-        client.cancel_turn()?;
-    }
+pub fn dev_session_cancel(
+    tab_id: Option<String>,
+    state: State<Mutex<SessionRegistry>>,
+) -> Result<(), String> {
+    let tab_id = resolve_tab_id(tab_id);
     let mut guard = state.lock().map_err(|e| e.to_string())?;
-    guard.prompt_in_flight = false;
-    guard.pending_permission_ids.clear();
+    let session = guard
+        .get_mut(&tab_id)
+        .ok_or_else(|| "no active session".to_string())?;
+    let pending: Vec<u64> = session.pending_permissions.drain().map(|(id, _)| id).collect();
+    let outbox = Arc::clone(&session.outbox);
+    let cancel = Arc::clone(&session.cancel);
+    drop(guard);
+    {
+        let mut queue = outbox.lock().map_err(|e| e.to_string())?;
+        for id in pending {
+            queue.push((id, cancelled_permission_result()));
+        }
+    }
+    cancel.store(true, Ordering::SeqCst);
     Ok(())
 }
 
 #[tauri::command]
 pub fn dev_session_stop(
     transcript: Option<String>,
-    state: State<Mutex<DevSessionState>>,
+    tab_id: Option<String>,
+    state: State<Mutex<SessionRegistry>>,
     state_store: State<Mutex<StateStore>>,
 ) -> Result<(), String> {
-    let mut guard = state.lock().map_err(|e| e.to_string())?;
-    let tab_id = guard.active_tab_id.clone();
-    if let Some(client_arc) = guard.client.take() {
-        shutdown_shared(&client_arc);
+    let tab_id = resolve_tab_id(tab_id);
+    {
+        let mut guard = state.lock().map_err(|e| e.to_string())?;
+        guard.shutdown_tab(&tab_id);
     }
-    guard.pending_startup_prompt = None;
-    guard.startup_injected = false;
-    guard.phase = guard.phase.after_session_stopped();
-    guard.active_tab_id = None;
-    guard.prompt_in_flight = false;
-    guard.pending_permission_ids.clear();
-    if let Some(id) = tab_id {
+    if tab_id != DEV_TAB_ID {
         let mut store = state_store.lock().map_err(|e| e.to_string())?;
-        store.mark_tab_awaiting_input(&id, transcript)?;
+        store.mark_tab_awaiting_input(&tab_id, transcript)?;
     }
     Ok(())
 }

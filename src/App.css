@@ -288,6 +288,17 @@ body,
   background: #3fb950;
 }
 
+.tab-chip-attention .tab-phase {
+  background: #f85149;
+  box-shadow: 0 0 0 2px rgba(248, 81, 73, 0.45);
+}
+
+.folder-warning {
+  margin: 0.35rem 0.75rem 0;
+  color: #d29922;
+  font-size: 0.85rem;
+}
+
 .tab-phase-awaitingInput,
 .tab-phase-draft {
   background: #d29922;

@@ -10,6 +10,8 @@
 | Protocol baseline | Cursor CLI ACP: JSON-RPC 2.0 over stdio, newline-delimited; `protocolVersion: 1` (per cursor.com/docs/cli/acp) |
 
 > **How to read this:** sections 1–11 cover the *what* and *why*. Sections 12–20 cover the *how*. Sections 21–30 cover *when, risk, and decisions*. Every feature traces back to a user problem (see §7.3, Traceability Matrix).
+>
+> **2026-10-06 addendum:** §31 records decisions that are not to be reopened. §32 is the ADE-controls adoption order. §33 is the operational edge-case and failure-handling behavior the app implements.
 
 ---
 
@@ -1149,6 +1151,8 @@ Migrate to `rusqlite` (WAL, `dcterminal.db`) **when**: transcripts are persisted
 
 **Avoided:** Mod+Shift+I (devtools), Ctrl+Alt+T (Linux terminal), Cmd+H/Q/M (macOS), Alt alone (Windows menu), Super/Win combos. The keymap loader rejects duplicates and lists them in Settings.
 
+**Keymap decision (2026-10-06):** plain Ctrl (Mod) shortcuts apply while focus is in the chat, the scratch pad, or a form. Ctrl+Shift variants are reserved for when a future embedded terminal pane has focus, so the shell and the Cursor TUI keep plain Ctrl. The optional xterm pane is post-MVP (§32 step E6). Until that pane exists, only the plain Ctrl bindings are in the product.
+
 ---
 
 ## 19. Integrations
@@ -1207,6 +1211,8 @@ Migrate to `rusqlite` (WAL, `dcterminal.db`) **when**: transcripts are persisted
 | E30 | Keyboard layouts / macOS Option characters | Match `event.key` plus modifiers. No Alt-letter defaults. Editable keymap. |
 | E31 | Linux Wayland/X11, HiDPI | Tested on both. Tracked in the risks. |
 | E32 | 15+ tabs | Soft warning at 8 running. Restored tabs don't spawn until started. |
+
+Operational failure handling for these cases (what the tab shows, what gets killed, what is denied) is in **§33**.
 
 ---
 
@@ -1451,6 +1457,58 @@ CI never calls the real Cursor service. Live tests are opt-in (`DCT_LIVE=1`).
 6. Build the Template Engine with golden tests (T1.5) early. It is pure logic, quick to finish, and the foundation of the essential form feature.
 7. Ship the **single-tab vertical slice** (form → spawn → handshake → inject → stream → permission) on all three OSes before multi-tab work.
 8. Re-evaluate ADR-002 and ADR-003 at the end of Phase 0 using measured data.
+
+---
+
+## 31. Decisions locked 2026-10-06
+
+These came out of the ADE controls study (`uploads/ade-controls-study.md`, reference `alvin-reyes/better-agentic-ide`). Do not reopen them in implementation PRs.
+
+| Decision | Choice |
+|---|---|
+| Architecture | Keep the ACP chat-first model. ADE-style controls go *around* the session pane. An optional embedded xterm terminal is post-MVP. |
+| Keymap | Plain Ctrl in the chat and scratch pad. Ctrl+Shift is reserved for a future terminal pane (§18). |
+| Token / cost tracking | Out of MVP. Cursor does not expose usage data on ACP or stream-json. |
+| Role policy enforcement | Do **not** write `~/.cursor/hooks.json`, `cli-config.json`, or project files (`CLAUDE.md`, `.cursor/`). Answer each ACP `session/request_permission` inside the tab. |
+| UI state libraries | `zustand` and `react-resizable-panels` may be added when a control actually needs them. The per-tab session slice does not. |
+| Permissions | Implementer and Developer auto-allow write, shell, and MCP (`allow-once` only, never `allow-always`). PR Reviewer may run shell and MCP; file writes are denied. Planner stays in plan mode (no write/shell). General stays in ask mode (no write/shell). MCP is allowed for every role. Ambiguous Reviewer requests are not auto-allowed; the card is shown. |
+| Same folder, two tabs | Allowed. Warn when two **agent-mode** tabs share a folder. |
+| ADE source | No ADE code is copied in the per-tab session work, so `THIRD_PARTY_NOTICES.md` is not added yet. Add it, with the MIT notice `Copyright (c) 2025-2026 Alvin Reyes`, when a file is substantially copied. Do not reuse ADE branding. |
+
+## 32. ADE controls adoption roadmap
+
+Order from the study §11.2. E0 and E1 are the per-tab session and role-policy work. Later steps stay out of that PR.
+
+| Step | Change | Status |
+|---|---|---|
+| E0 | Per-tab `agent acp` supervisor. Permissions keyed by tab id + JSON-RPC id. | Landed |
+| E1 | Per-role permission auto-policy in Rust, with auto-decisions in the transcript | Landed |
+| E2 | Scratch pad + Transfer/Send (history, notes, `---` chaining on `stopReason`) | Later |
+| E3 | Keymap matcher + shortcuts overlay (focus-scoped; §31) | Later |
+| E4 | Tab chrome: busy / finished / needs-permission, rename, color, reorder, go-to-tab, command palette | Later |
+| E5 | Transcript persist + plan/question/todo cards; `cursor/task` activity strip | Later |
+| E6 | Optional xterm pane (post-MVP). Role policy is **not** enforced inside an interactive `agent` TUI | Post-MVP |
+| E7 | File preview / editor, workspaces, themes, notifications | Later |
+
+Do not port ADE's PTY-first agent launch, Claude transcript usage parser, project-setup writers, or orchestrator.
+
+## 33. Edge cases and failure handling
+
+Each tab owns one `agent acp` process, one ACP session, one transcript, and one permission queue. Closing or stopping a tab kills only that process tree. On Unix the child is its own process group. On Windows the process is created suspended, assigned to a job object, then resumed, so `agent.cmd` cannot start `node` before the job exists; the job and `taskkill /T` then kill that tree. Quitting the app kills every live child.
+
+| Case | What the app does |
+|---|---|
+| `agent` missing, not on PATH, or `DCT_AGENT_PATH` invalid | Start does not crash. The form shows install guidance (`agent` install URL, Windows shim path, `agent login`). |
+| Not logged in | Handshake or a dead process that reports auth becomes `_auth`: run `agent login`, then start again. Answers stay in the form. |
+| Folder missing, moved, unreadable, or a file | Start is blocked with a specific cwd error. A restored tab whose folder is gone shows the same message and does not spawn. |
+| Agent crash or exit mid-turn | The turn ends (no hung spinner). The tab shows the error and **Restart**, which returns to the prefilled form. Other tabs keep running. |
+| Malformed, partial, or huge ACP lines | Blank lines are skipped. Bad JSON is skipped. 50 in a row ends the turn with an error. Lines over 8 MB are discarded. Prompts are JSON on stdin, never argv, so a long prompt cannot inject shell arguments. |
+| Permission for a closed tab | The request is answered `cancelled`. It is not shown. |
+| Cancel while a tool is waiting | Pending permission ids on that tab are cancelled, then `session/cancel` is written from the prompt loop (it does not take the client lock). If the agent never returns, the turn ends as cancelled after a short grace period. |
+| Duplicate Start | A second click while that tab is starting or already live is rejected. Other tabs are unaffected. |
+| Two tabs, one folder | Allowed. Agent-mode pairs get a one-time warning in the transcript. Plan and ask tabs do not warn. |
+| Required field of only whitespace | Validation error. Optional blanks follow `emptyBehavior`: `literal:…` inserts that text, `remove_line` drops the line, `empty` inserts nothing. |
+| Windows paths with spaces, Unicode, or UNC | Passed as a `PathBuf` to `current_dir` and `session/new.cwd`. No shell quoting. |
 
 ---
 *End of blueprint.*

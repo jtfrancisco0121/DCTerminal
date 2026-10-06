@@ -7,13 +7,14 @@ pub const SESSION_UPDATE_EVENT: &str = "acp/session-update";
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionUpdateEvent {
+    pub tab_id: String,
     pub session_id: String,
     pub kind: String,
     pub text_delta: Option<String>,
     pub raw_json: String,
 }
 
-pub fn map_session_update(session_id: &str, line: &Value) -> Option<SessionUpdateEvent> {
+pub fn map_session_update(tab_id: &str, session_id: &str, line: &Value) -> Option<SessionUpdateEvent> {
     let method = line.get("method").and_then(|m| m.as_str());
     let params = if method == Some("session/update") {
         line.get("params").cloned().unwrap_or_else(|| line.clone())
@@ -35,6 +36,7 @@ pub fn map_session_update(session_id: &str, line: &Value) -> Option<SessionUpdat
     let text_delta = text_from_session_params(&params);
 
     Some(SessionUpdateEvent {
+        tab_id: tab_id.to_string(),
         session_id: session_id.to_string(),
         kind,
         text_delta,
@@ -59,7 +61,7 @@ mod tests {
                 }
             }
         });
-        let evt = map_session_update("sess_1", &line).expect("event");
+        let evt = map_session_update("tab_1", "sess_1", &line).expect("event");
         assert_eq!(evt.text_delta.as_deref(), Some("Hi"));
     }
 
@@ -74,7 +76,7 @@ mod tests {
                 }
             }
         });
-        let evt = map_session_update("sess_1", &line).expect("event");
+        let evt = map_session_update("tab_1", "sess_1", &line).expect("event");
         assert_eq!(evt.session_id, "sess_1");
         assert_eq!(evt.text_delta.as_deref(), Some("Hello"));
     }
@@ -91,7 +93,7 @@ mod tests {
                 }
             }
         });
-        let evt = map_session_update("sess_1", &line).expect("event");
+        let evt = map_session_update("tab_1", "sess_1", &line).expect("event");
         assert_eq!(evt.kind, "tool_call_update");
         assert_eq!(evt.text_delta.as_deref(), Some("read_file (completed)"));
     }
@@ -113,7 +115,7 @@ mod tests {
                 }
             }
         });
-        let evt = map_session_update("sess_1", &line).expect("event");
+        let evt = map_session_update("tab_1", "sess_1", &line).expect("event");
         assert_eq!(
             evt.text_delta.as_deref(),
             Some("Read app/main.py (in_progress)")

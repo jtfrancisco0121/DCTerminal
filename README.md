@@ -4,7 +4,7 @@ Local desktop app: **role-aware, multi-tab UI** on top of the Cursor CLI via **A
 
 ## Status
 
-**Pre-MVP** — core role sessions work; finishing P0 items (permissions, cancel, polish). Track:
+**Pre-MVP** — each tab can run its own `agent acp` session, with role permission policy. Still finishing transcript persist, scratch pad, and installers. Track:
 
 - **[docs/MVP-FINISH.md](docs/MVP-FINISH.md)** — what “done” means and finish order
 - **[docs/PROGRESS.md](docs/PROGRESS.md)** — snapshot before each push
@@ -18,7 +18,7 @@ Local desktop app: **role-aware, multi-tab UI** on top of the Cursor CLI via **A
 4. **Continue the same agent** with the `›` follow-up box (Ctrl+Enter) — do not press Stop.
 5. **Stop session** when done — transcript is saved on the tab.
 6. On an **awaitingInput** tab with history, use **Continue session** (no startup re-inject); check **Re-send startup prompt** only for a full restart.
-7. **+ New tab** for another task.
+7. **+ New tab** for another task. The tab you left keeps its agent running. Close (×) stops only that tab.
 
 Not supported yet: true ACP thread resume after quit (`session/load`) — Continue reconnects a new agent with your saved scrollback.
 

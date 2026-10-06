@@ -134,6 +134,7 @@ export type RoleSessionStartResult = {
   tabId: string | null;
   resumedSession: boolean;
   skippedStartupInjection: boolean;
+  folderWarning: string | null;
 };
 
 export type PromptFinishedEvent = {
@@ -142,6 +143,7 @@ export type PromptFinishedEvent = {
   success: boolean;
   result: DevPromptResult | null;
   error: string | null;
+  agentExited: boolean;
 };
 
 export type PromptDispatchResult = {
@@ -157,6 +159,7 @@ export type TabSummary = {
   mergedPromptChars: number;
   startupPromptSent: boolean;
   hasTranscript: boolean;
+  folderStatus: string;
 };
 
 export type AppStateSnapshot = {
@@ -275,8 +278,12 @@ export async function devSessionStart(
 
 export async function devSessionSend(
   prompt: string,
+  tabId?: string | null,
 ): Promise<PromptDispatchResult> {
-  return invoke<PromptDispatchResult>("dev_session_send", { prompt });
+  return invoke<PromptDispatchResult>("dev_session_send", {
+    prompt,
+    tabId: tabId ?? null,
+  });
 }
 
 export function listenPromptFinished(
@@ -287,12 +294,18 @@ export function listenPromptFinished(
   });
 }
 
-export async function devSessionStop(transcript?: string): Promise<void> {
-  return invoke("dev_session_stop", { transcript: transcript ?? null });
+export async function devSessionStop(
+  transcript?: string,
+  tabId?: string | null,
+): Promise<void> {
+  return invoke("dev_session_stop", {
+    transcript: transcript ?? null,
+    tabId: tabId ?? null,
+  });
 }
 
-export async function devSessionCancel(): Promise<void> {
-  return invoke("dev_session_cancel");
+export async function devSessionCancel(tabId?: string | null): Promise<void> {
+  return invoke("dev_session_cancel", { tabId: tabId ?? null });
 }
 
 export type PermissionOption = {
@@ -301,12 +314,24 @@ export type PermissionOption = {
 };
 
 export type PermissionRequestEvent = {
+  tabId: string;
   sessionId: string;
   jsonRpcId: number;
   title: string;
   message: string;
+  toolClass: string;
   options: PermissionOption[];
   rawParams: string;
+};
+
+export type PermissionAutoEvent = {
+  tabId: string;
+  sessionId: string;
+  jsonRpcId: number;
+  title: string;
+  toolClass: string;
+  decision: string;
+  line: string;
 };
 
 export function listenPermissionRequests(
@@ -318,13 +343,29 @@ export function listenPermissionRequests(
 }
 
 export async function respondPermissionRequest(
+  tabId: string,
+  jsonRpcId: number,
   outcome: "selected" | "cancelled",
   optionId?: string,
 ): Promise<void> {
-  return invoke("respond_permission_request", { outcome, optionId });
+  return invoke("respond_permission_request", {
+    tabId,
+    jsonRpcId,
+    outcome,
+    optionId: optionId ?? null,
+  });
+}
+
+export function listenPermissionAuto(
+  handler: (event: PermissionAutoEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<PermissionAutoEvent>("acp/permission-auto", (e) => {
+    handler(e.payload);
+  });
 }
 
 export type SessionUpdateEvent = {
+  tabId: string;
   sessionId: string;
   kind: string;
   textDelta: string | null;

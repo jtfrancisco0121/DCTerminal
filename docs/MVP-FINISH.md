@@ -10,7 +10,8 @@
 2. **Tab** → fill role form → **Start role session**
 3. **Follow-up** in the `›` box while the session runs (same agent thread)
 4. **Stop session** → edit form → **Start** again (new agent; startup prompt re-sent)
-5. **+ New tab** for another task (during a live session: draft only until Stop)
+5. **+ New tab** starts another task **without** stopping the one that's running. Each tab has its own agent. Switching tabs does not kill the others.
+6. **Restart** on a tab whose agent crashed returns to the form. Close (×) on a running tab stops only that agent.
 
 Dev-only panels (ACP probes, duplicate dev session) are hidden in release builds.
 
@@ -18,11 +19,11 @@ Dev-only panels (ACP probes, duplicate dev session) are hidden in release builds
 
 | # | Criterion | Status |
 |---|-----------|--------|
-| A | Multi-tab: Planner + Implementer + Reviewer + General, each injects once | [~] tabs yes; one live agent at a time |
-| B | Validation + schema guard on start | [~] merge/validate yes; schema confirm UI no |
-| C | Kill one agent → only that tab; restart works | [~] stop/kill yes; no “resume” |
+| A | Multi-tab: Planner + Implementer + Reviewer + General, each injects once | [~] each tab can run its own agent; role policy auto-answers permissions. Not yet verified live on Windows with four concurrent CLIs |
+| B | Validation + schema guard on start | [~] merge/validate yes (whitespace required, emptyBehavior); schema confirm UI no |
+| C | Kill one agent → only that tab; restart works | [~] close/stop kills that process tree; Restart returns to the form. No `session/load` resume |
 | D | Drafts restored after force-kill | [x] forms.json + state.json |
-| E | Auth error + retry | [ ] |
+| E | Auth error + retry | [~] form shows `_auth` / `_cli` with `agent login` guidance; not exercised against a live logged-out CLI on this machine |
 | F | Relaunch → tabs `awaitingInput`, no auto re-inject | [x] |
 
 ## Finish order (do in this sequence)
@@ -55,5 +56,5 @@ Dev-only panels (ACP probes, duplicate dev session) are hidden in release builds
 
 ## Definition of “finished” for v0.1
 
-- JT can run a **Developer** or **Implementer** session on a repo, approve permissions, send follow-ups, cancel a turn, stop without orphan `agent` processes, and use **multiple tabs** for different forms.
+- JT can run a **Developer** or **Implementer** session on a repo, approve (or auto-allow) permissions, send follow-ups, cancel a turn, stop without orphan `agent` processes, and run **more than one tab's agent at the same time**.
 - `npm run build` + `cargo test` pass; README explains daily use (not just dev setup).
