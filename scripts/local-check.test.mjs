@@ -5,14 +5,14 @@ import {
   spawnCommand,
   steps,
   windowsCmdPayload,
+  windowsInvocation,
 } from "./local-check.mjs";
 
 /** Undo cmd.exe `/d /s /c` outer-quote stripping, then split argv. */
 function argvFromCmdPayload(payload) {
   expect(payload.startsWith('"')).toBe(true);
-  const lastQuote = payload.lastIndexOf('"');
-  expect(lastQuote).toBe(payload.length - 1);
-  const inner = payload.slice(1, lastQuote);
+  expect(payload.endsWith('"')).toBe(true);
+  const inner = payload.slice(1, -1);
   const tokens = [];
   let index = 0;
   while (index < inner.length) {
@@ -22,26 +22,33 @@ function argvFromCmdPayload(payload) {
     if (index >= inner.length) {
       break;
     }
-    expect(inner[index]).toBe('"');
-    index += 1;
     let token = "";
-    while (index < inner.length) {
-      if (inner[index] === '"') {
-        if (inner[index + 1] === '"') {
-          token += '"';
+    if (inner[index] === '"') {
+      index += 1;
+      while (index < inner.length) {
+        if (inner[index] === '"') {
+          if (inner[index + 1] === '"') {
+            token += '"';
+            index += 2;
+            continue;
+          }
+          index += 1;
+          break;
+        }
+        if (inner[index] === "%" && inner[index + 1] === "%") {
+          token += "%";
           index += 2;
           continue;
         }
+        token += inner[index];
         index += 1;
-        break;
       }
-      if (inner[index] === "%" && inner[index + 1] === "%") {
-        token += "%";
-        index += 2;
-        continue;
+    } else {
+      const start = index;
+      while (index < inner.length && inner[index] !== " ") {
+        index += 1;
       }
-      token += inner[index];
-      index += 1;
+      token = inner.slice(start, index);
     }
     tokens.push(token);
   }
@@ -73,6 +80,28 @@ describe("windows command quoting", () => {
 
   it("doubles quotes and percent signs inside the cmd token", () => {
     expect(quoteCmdArg('a"b%')).toBe('"a""b%%"');
+    expect(quoteCmdArg("test")).toBe("test");
+  });
+
+  it("leaves the npm command unquoted so %~dp0 is the nodejs directory", () => {
+    const npmTest = steps.find((step) => step.name === "npm test");
+    expect(npmTest).toBeDefined();
+    const payload = windowsCmdPayload(npmTest.cmd, npmTest.args);
+    const invocation = windowsInvocation(npmTest.cmd, npmTest.args);
+    // Outer quotes are only for cmd /s. The command itself is bare.
+    expect(payload).toBe('"npm test"');
+    expect(payload.includes('"npm"')).toBe(false);
+    expect(payload.includes("\\")).toBe(false);
+    expect(invocation.windowsVerbatimArguments).toBe(true);
+    expect(invocation.args).toEqual(["/d", "/s", "/c", '"npm test"']);
+    expect(argvFromCmdPayload(payload)).toEqual(["npm", "test"]);
+  });
+
+  it("quotes an absolute npm.cmd path that contains spaces", () => {
+    const command = "C:\\Program Files\\nodejs\\npm.cmd";
+    const payload = windowsCmdPayload(command, ["test"]);
+    expect(payload).toBe(`""${command}" test"`);
+    expect(argvFromCmdPayload(payload)).toEqual([command, "test"]);
   });
 });
 

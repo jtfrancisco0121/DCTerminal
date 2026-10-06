@@ -56,41 +56,79 @@ function assertReleaseVersionsMatch() {
   console.log(`release version ${npmVersion} matches across npm, Tauri, and Cargo`);
 }
 
+// cmd metacharacters. `%` still expands inside quotes, so it is doubled there.
+const CMD_SPECIAL = /[\s"&|<>^%!()]/;
+
 /**
- * Quote one argv element for cmd.exe. The result is always wrapped in
- * double quotes. `%` is doubled so cmd does not expand variables, and
- * embedded quotes are doubled (cmd's quote escape, not backslash).
+ * Quote one argv element for cmd.exe only when it needs it.
+ * `%` is doubled so cmd does not expand variables. Embedded quotes are
+ * doubled (cmd's quote escape). Do not backslash-escape: cmd does not
+ * treat `\"` as a quote, and Node must not add a second escape pass.
  */
 export function quoteCmdArg(value) {
-  const text = String(value).replaceAll("%", "%%").replaceAll('"', '""');
-  return `"${text}"`;
+  const text = String(value);
+  if (text.length > 0 && !CMD_SPECIAL.test(text)) {
+    return text;
+  }
+  const escaped = text.replaceAll("%", "%%").replaceAll('"', '""');
+  return `"${escaped}"`;
+}
+
+/**
+ * Bare command token. A quoted name with no path (`"npm"`) makes cmd set
+ * `%~dp0` to the current directory, so npm.cmd looks for npm-cli.js under
+ * the project instead of `C:\Program Files\nodejs`. Leave bare names
+ * unquoted. A path may be quoted; `%~dp0` is correct when the name contains
+ * a separator.
+ */
+export function quoteCmdCommand(command) {
+  const text = String(command);
+  const token = quoteCmdArg(text);
+  const hasPath = /[\\/]/.test(text);
+  if (!hasPath && token.startsWith('"')) {
+    throw new Error(
+      `refusing to quote bare command ${JSON.stringify(text)}; ` +
+        "cmd %~dp0 breaks for a quoted name with no path",
+    );
+  }
+  return token;
 }
 
 /**
  * Argument to `cmd.exe /d /s /c`. `/s` strips one leading quote and the
  * final quote on the line, so the payload keeps an extra outer pair.
- * Each original argument stays quoted inside that pair.
  */
 export function windowsCmdPayload(command, args) {
-  const joined = [command, ...args].map(quoteCmdArg).join(" ");
+  const joined = [quoteCmdCommand(command), ...args.map(quoteCmdArg)].join(" ");
   return `"${joined}"`;
+}
+
+/**
+ * Spawn args for Windows. `windowsVerbatimArguments` must stay true: Node
+ * otherwise re-quotes the `/c` string with backslashes, which cmd ignores.
+ */
+export function windowsInvocation(command, args, comspec = process.env.ComSpec) {
+  const shell = comspec && /\\cmd(?:\.exe)?$/i.test(comspec) ? comspec : "cmd.exe";
+  return {
+    file: shell,
+    args: ["/d", "/s", "/c", windowsCmdPayload(command, args)],
+    windowsVerbatimArguments: true,
+  };
 }
 
 /**
  * Run a command. On Windows, npm and npx are `.cmd` shims, and some Cargo
  * installs are `.cmd` too. Node refuses to spawn those without a shell
- * (CVE-2024-27980, EINVAL). Always go through `cmd.exe /d /s /c` there so
- * cargo, npm, and npx share one quoted path. Clippy's `-- -D warnings`
- * stays separate arguments.
+ * (CVE-2024-27980, EINVAL). Always go through `cmd.exe /d /s /c` there.
+ * Clippy's `-- -D warnings` stays separate arguments.
  */
 export function spawnCommand(command, args, options = {}) {
   const stdio = options.stdio ?? "inherit";
   if (process.platform === "win32") {
-    const comspec = process.env.ComSpec;
-    const shell = comspec && /\\cmd(?:\.exe)?$/i.test(comspec) ? comspec : "cmd.exe";
-    return spawnSync(shell, ["/d", "/s", "/c", windowsCmdPayload(command, args)], {
+    const invocation = windowsInvocation(command, args);
+    return spawnSync(invocation.file, invocation.args, {
       stdio,
-      windowsVerbatimArguments: true,
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       encoding: options.encoding,
     });
   }
