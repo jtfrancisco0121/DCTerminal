@@ -40,16 +40,45 @@ Launch it with `open -a DCTerminal`, `dcterminal`, the AppImage path, or the Sta
 
 1. Install Cursor CLI and run `agent login`.
 2. Run `npm run dev:ui` + `npm run dev:app` (or a release build when available).
-3. The window opens on a tab bar and one blank tab. Pick a **role** and **Choose folder…**. That tab then shows the role’s startup fields and **Start**.
+3. The window opens on a tab bar and one blank tab. One row holds the **role**, Chat or Terminal, the **folder** (click the name to choose another; ▾ for recent and favorites), the model, **Preview**, and **Start**. The role’s startup fields sit under it, with **Cursor CLI history** for that folder as a list on the right. A fresh profile first gets **Set up DCTerminal** (palette: **Run first-run setup…**).
 4. **Continue the same agent** with the `›` follow-up box (Ctrl+Enter) — do not press Stop.
-5. Draft long prompts in the **scratch pad** under the session. Ctrl+. copies the selection (or the whole pad) into the input. A line that is only `---` splits the pad into steps; Send waits for each reply to finish before the next step.
+5. Draft long prompts in the **scratch pad** under the session (chat or terminal). It starts at three rows; drag its top edge (or focus the edge and use ↑/↓) to make it taller. **Hide pad** / **Show pad** and the height are shared by chat and terminal tabs and saved. Ctrl+. copies the selection (or the whole pad) into the input. A line that is only `---` splits the pad into steps; Send waits for each reply to finish before the next step.
 6. **Choose folder…** opens the system folder dialog. The form shows the folder name and path, and does not start the session. Recent and favorites are in the menu on that control. A new tab asks you to choose a folder. A restored tab keeps the folder it already had.
 7. **Stop session** when done — the transcript is saved on the tab and in the app data folder. After a restart it comes back as read-only history. **Start new session** begins a fresh agent. A missing folder does not hide that history, but Start stays blocked until the folder exists.
 8. On a restored tab, **Continue session** loads the same ACP session and does not re-inject the startup prompt. **Start new session** opens the startup fields and starts a new session. **Cursor CLI history** lists sessions for the folder. **Resume** continues one in the app. **Open in Cursor CLI** is only for a saved chat, and it opens a terminal tab running `agent --resume`.
 9. **+ New tab** for another task. The tab you left keeps its agent running. Close (×) stops only that tab. Ctrl+K opens the command palette; Ctrl+/ lists shortcuts. Ctrl+\\ (or Ctrl+Alt+\\ for below) picks a tab to show live in a second pane: a terminal there is the same process, and a chat there has its own composer. Ctrl+Alt+S swaps panes, Ctrl+Alt+O moves focus, Ctrl+Alt+W closes the split. Ctrl+B opens the file panel (tree, preview, Edit + Ctrl+S, Insert @file). Cmd replaces Ctrl on macOS.
-10. The gear in the tab bar, **Settings** in the command palette, and Ctrl+, open **Settings**: role details, default models (global, per role, Cursor CLI; each tab can override from its header; default `composer-2.5`), the diagnostics toggle, shortcuts, data locations, and version. **Record permission payloads** lives there (off by default) and writes redacted `session/request_permission` lines for classifier checks. See [docs/permission-payload-capture.md](docs/permission-payload-capture.md).
+10. The gear in the tab bar, **Settings** in the command palette, and Ctrl+, open **Settings**. A menu on the left picks one category: **Roles** (details and prompt preview), **Models** (global, per role, Cursor CLI; each tab can override from its header; default `composer-2.5`), **Terminal** (theme, shell, font size, run mode per role), **Permissions** (Cursor CLI approval mode and the diagnostics toggle), **Notifications**, **Shortcuts** (the list, the shortcut bar switch, **Show tips again**), and **Data** (app data paths and version). **Record permission payloads** lives there (off by default) and writes redacted `session/request_permission` lines for classifier checks. See [docs/permission-payload-capture.md](docs/permission-payload-capture.md).
 
 **Continue session** resumes the same thread when the CLI allows it, using the session id stored on the tab. See [docs/cursor-cli-history.md](docs/cursor-cli-history.md). Ctrl+Shift+` toggles the terminal pane. Ctrl+Shift+. sends the scratch pad to the terminal.
+
+The status bar at the bottom shows the active tab’s status, model, folder, and **⚠ Run Everything** when Cursor CLI skips permission prompts. Hover a tab chip for its role, folder, branch, model, and status. The look is **GitHub Dark** by default; **GitHub Light** is in Settings > Terminal or **Switch theme** in the palette.
+
+### Keyboard shortcuts
+
+Cmd replaces Ctrl on macOS (⌘). Settings > Shortcuts and Ctrl+/ show the same list for your platform. The optional **shortcut bar** (Settings > Shortcuts, **Toggle shortcut bar** in the palette, or the first-use tip) puts the everyday keys at the right end of the status bar; click a hint to run it.
+
+| Keys | Action |
+|------|--------|
+| Ctrl+K | Command palette (every action below, plus hand-off, worktree, model, history, prompts, workspaces, theme, shortcut bar) |
+| Ctrl+P | Go to tab (matches name, folder, status) |
+| Ctrl+/ | Keyboard shortcuts |
+| Ctrl+T / Ctrl+W | New tab / close tab |
+| F6 | Reopen closed tab |
+| F2 | Rename tab (or double-click the chip) |
+| Ctrl+1…9 | Go to tab 1–9 |
+| Ctrl+PageDown / Ctrl+PageUp (Ctrl+Tab / Ctrl+Shift+Tab) | Next / previous tab |
+| Ctrl+Enter | Send the composer |
+| Ctrl+. | Transfer the scratch pad into the input |
+| Ctrl+J / Ctrl+L | Focus the scratch pad / focus the input |
+| Ctrl+F | Find in tab (in a terminal tab: ⌘F on macOS, Ctrl+Shift+F elsewhere) |
+| Ctrl+Shift+F | Search all chats (from a chat tab) |
+| Ctrl+B | File panel (Ctrl+S saves while editing) |
+| Ctrl+\ / Ctrl+Alt+\ | Split right / split down |
+| Ctrl+Alt+S / Ctrl+Alt+O / Ctrl+Alt+W | Swap panes / focus other pane / close split |
+| Ctrl+Shift+` | Toggle the terminal pane on a chat tab |
+| Ctrl+Shift+. | Send the scratch pad to the terminal (terminal tabs) |
+| Esc | Back to the terminal from its scratch pad; closes dialogs |
+| Ctrl+, | Settings |
 
 ## Prerequisites
 

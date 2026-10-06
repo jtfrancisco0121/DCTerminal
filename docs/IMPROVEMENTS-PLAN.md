@@ -53,8 +53,9 @@ Checklist for the ADE-inspired controls pass. Tick items in this file after they
   *Accept:* Chips shorter; header one line; hover shows path/role/model.  
   *Done (`bac5dfe`):* Chips are 24 px tall with smaller text. The close × shows only on hover and on the active tab, and the colour picker only on hover of the active tab. "Terminal" is now a `›_` icon. **+**, **⎇**, and **↺** are icon buttons, and their names are in the tooltips. A chip's hover text lists the name, role, folder, branch, model, status, and the rename hint, one per line (`tabTooltip`). The chat header is one 30 px row: title, folder name (and branch chip) on the left, model, Changes, Cancel, and Stop on the right. Hovering the title shows the full folder, branch, session id, role, and model. Buttons are smaller across the app.
 
-- [ ] **U2. Scratch pad 2–3 rows, drag-to-expand** — Same in chat and terminal; Keep Hide/Show.  
-  *Accept:* Default ~3 rows; drag grows; Hide/Show still works.
+- [x] **U2. Scratch pad 2–3 rows, drag-to-expand** — Same in chat and terminal; Keep Hide/Show.  
+  *Accept:* Default ~3 rows; drag grows; Hide/Show still works.  
+  *Done (`ad830da`):* The pad textarea starts at three rows (no 7rem minimum, no browser resize grip). A thin handle on its top edge (`role="separator"`, "Resize scratch pad") grows it when dragged up, between 40 and 600 px; ↑/↓ on the focused handle step 24 px. Chat and terminal tabs share one height and one **Hide pad / Show pad** state (the button is now on both), saved as `ui.padHeight` / `ui.padHidden` in `settings.json` (app data; Rust clamps the height). Mod+J on a chat with the pad hidden shows it and focuses it. The pad bar is one compact line.
 
 - [x] **U3. One status bar** — Status, model, folder, Run Everything warning (no stacked banners).  
   *Accept:* Single bottom/status strip carries those facts.  
@@ -64,14 +65,17 @@ Checklist for the ADE-inspired controls pass. Tick items in this file after they
   *Accept:* No long text badge; icon + tooltip only.  
   *Done (`bac5dfe`):* The "role permission rules are off" text badge on chat tabs is now a ⚠ icon. Its tooltip and accessible name say the rules are off because Cursor CLI is set to Run Everything, and how to change it.
 
-- [ ] **U5. Compact start screen** — Role, folder, Start on one row; history as side list.  
-  *Accept:* Startup fits one row + side history.
+- [x] **U5. Compact start screen** — Role, folder, Start on one row; history as side list.  
+  *Accept:* Startup fits one row + side history.  
+  *Done (`25e24ca`):* The centred 36rem card is gone. A sticky row ("Start a tab") holds the role segmented buttons (plus Terminal and Cursor CLI), Chat / `›_` (terminal) once a role is picked, a compact folder picker (folder-name button with the full path on hover, ☆, ▾ for recent, favorites, and a typed path), the model picker, **Preview** (Validate & preview), and **Start**. It stays one row down to about 1024 px (the role buttons scroll sideways if needed). The role fields are a grid under the row, multiline fields full width, and Cursor CLI history is a ~19rem list on the right (stacks below under 760 px). `FolderPicker` keeps its full layout for first-run setup.
 
-- [ ] **U6. Settings left category menu** — Roles, Models, Terminal, Permissions, Notifications, Shortcuts, Data.  
-  *Accept:* Settings uses left nav with those categories.
+- [x] **U6. Settings left category menu** — Roles, Models, Terminal, Permissions, Notifications, Shortcuts, Data.  
+  *Accept:* Settings uses left nav with those categories.  
+  *Done (`c62c498`):* Settings has a left menu ("Settings categories") with exactly those seven, showing one category at a time (Roles first; `initialCategory` can open another). Terminal holds theme, shell, font size, and a run-mode row for every role (it no longer depends on which role is selected under Roles). Permissions holds the approval-mode notes and the diagnostics capture toggle. Data holds the paths, About, and (dev builds) the developer probes. Rows are label-left, control-right to stay dense.
 
-- [ ] **U7. Easier shortcuts** — Optional bottom shortcut bar + first-use tips.  
-  *Accept:* Toggleable bar; first-run tip once.
+- [x] **U7. Easier shortcuts** — Optional bottom shortcut bar + first-use tips.  
+  *Accept:* Toggleable bar; first-run tip once.  
+  *Done (`688af23`):* **Shortcut bar** (off by default): the right end of the status bar shows Commands, Go to tab, New tab, Find, Files, Split, and All shortcuts with this platform's keys; clicking a hint runs it, and × hides the bar. It is toggled from Settings > Shortcuts, **Toggle shortcut bar** in the palette, or the tip; saved as `ui.shortcutBar`. **First-use tip**: a small card above the status bar names Mod+K, Mod+P, and Mod+/, with **Show shortcut bar** and **Got it**. Either button records `welcome` in `ui.tipsSeen`, so it shows once; it waits while a dialog (first-run setup, palette, settings) is open. **Show tips again** in Settings > Shortcuts clears it. Also added **Switch theme** to the palette.
 
 - [x] **U8. Theme CSS variables** — GitHub Dark default + one alternative.  
   *Accept:* Themes switch via CSS vars; default is GitHub Dark.  
@@ -79,11 +83,13 @@ Checklist for the ADE-inspired controls pass. Tick items in this file after they
 
 ## Docs & quality
 
-- [ ] **Tests** — Coverage for each feature above (unit/component as fits).  
-  *Accept:* New/updated tests green under `npm run check`.
+- [x] **Tests** — Coverage for each feature above (unit/component as fits).  
+  *Accept:* New/updated tests green under `npm run check`.  
+  *Done:* Each F# and U# landed with Vitest component/unit tests (and Rust tests for new stores); `npm run check` is green (cargo test 205, clippy, Vitest 385 passed / 6 skipped, build).
 
-- [ ] **README shortcuts + docs/PROGRESS.md** — Document new shortcuts; progress snapshot before push.  
-  *Accept:* README lists new shortcuts; PROGRESS updated on push.
+- [x] **README shortcuts + docs/PROGRESS.md** — Document new shortcuts; progress snapshot before push.  
+  *Accept:* README lists new shortcuts; PROGRESS updated on push.  
+  *Done:* README has a **Keyboard shortcuts** table (Mod+P, Mod+F / Mod+Shift+F, F2, F6, splits, Mod+B, …), the shortcut bar, themes, the pad resize, the start row, and the Settings categories. PROGRESS is updated with each push.
 
 ## Skip (explicit)
 
