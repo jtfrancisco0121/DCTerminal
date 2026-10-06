@@ -76,7 +76,14 @@ function mapEventKind(kind: string): StreamSegmentKind {
   if (k.includes("agentmessage") || k === "text") return "agent";
   if (k.includes("toolcall") || k.includes("tool")) return "tool";
   if (k.includes("thought")) return "thought";
-  if (k.includes("plan") || k.includes("mode")) return "system";
+  if (
+    k.includes("plan") ||
+    k.includes("mode") ||
+    k.includes("todo") ||
+    k.includes("task")
+  ) {
+    return "system";
+  }
   return "agent";
 }
 

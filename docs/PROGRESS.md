@@ -8,10 +8,10 @@
 
 | Field | Value |
 |--------|--------|
-| **Last updated** | 2026-10-06 — per-tab live sessions and role permission policy |
-| **Branch** | `cursor/per-tab-sessions-afe9` |
+| **Last updated** | 2026-10-06 — scratch pad, keymap, tab chrome, transcripts, session cards |
+| **Branch** | `cursor/scratch-keymap-chrome-75c2` |
 | **Current phase** | Finish MVP vertical slice (see [MVP-FINISH.md](./MVP-FINISH.md)) |
-| **Active task** | P1: transcript persist, scratch pad (ADE roadmap E2+) |
+| **Active task** | Installers / live Windows acceptance. E2–E5 controls are in this branch. |
 
 ## Product-ready today
 
@@ -27,14 +27,14 @@ See blueprint §31. ACP chat stays primary. No token tracking. No writes to `~/.
 
 ## Not MVP-done yet
 
-- Transcript persist across Stop / relaunch (saved scrollback on Stop only)
-- Scratch pad, keymap overlay (ADE roadmap E2–E3)
-- `session/load` resume (P2)
+- `session/load` resume (P2) — restored transcripts are read-only history, not a resumed ACP thread
 - Installers / §21 acceptance on three OSes
+- Optional xterm pane (E6). Ctrl+Shift stays unbound until that pane exists
+- Live Windows check of folder browse, chaining, and permission-payload capture against a logged-in Cursor CLI
 
 ## Next up (strict order)
 
-See **[MVP-FINISH.md](./MVP-FINISH.md)** — remaining P1 items, then ADE roadmap E2+.
+See **[MVP-FINISH.md](./MVP-FINISH.md)** — remaining acceptance, then ADE roadmap E6+.
 
 ## Quick commands
 

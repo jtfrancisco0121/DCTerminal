@@ -58,6 +58,7 @@ pub fn role_session_start(
     state: State<Mutex<SessionRegistry>>,
     state_store: State<Mutex<StateStore>>,
     forms_store: State<Mutex<FormsStore>>,
+    projects: State<Mutex<crate::store::ProjectsStore>>,
 ) -> Result<RoleSessionStartResult, String> {
     let role = {
         let store = store.lock().map_err(|e| e.to_string())?;
@@ -146,7 +147,7 @@ pub fn role_session_start(
         mode_id: client.mode_id().to_string(),
         cwd: client.cwd().display().to_string(),
     };
-    let folder_warning = {
+    let mut folder_warning = {
         let guard = state.lock().map_err(|e| e.to_string())?;
         let others = guard.agent_folders_except(&start_key);
         let refs: Vec<(&str, &str)> = others
@@ -213,6 +214,17 @@ pub fn role_session_start(
     {
         let mut forms = forms_store.lock().map_err(|e| e.to_string())?;
         forms.save_after_session_start(&role, &info.cwd, &values)?;
+    }
+
+    if let Ok(mut projects) = projects.lock() {
+        projects.remember(&info.cwd, &chrono::Utc::now().to_rfc3339());
+        if let Err(err) = projects.save() {
+            let note = format!("Could not save this folder to recent projects ({err}).");
+            folder_warning = Some(match folder_warning {
+                Some(existing) => format!("{existing} {note}"),
+                None => note,
+            });
+        }
     }
 
     if injection_in_flight {

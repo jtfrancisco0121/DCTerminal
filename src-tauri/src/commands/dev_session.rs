@@ -5,7 +5,7 @@ use crate::permissions::cancelled_permission_result;
 use crate::process_tree::SharedProcess;
 use crate::store::StateStore;
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -30,6 +30,7 @@ pub struct LiveSession {
     pub cancel: Arc<AtomicBool>,
     pub outbox: Arc<Mutex<Vec<(u64, Value)>>>,
     pub pending_permissions: HashMap<u64, ()>,
+    pub pending_plans: HashMap<u64, ()>,
     pub pending_startup_prompt: Option<String>,
     pub startup_injected: bool,
     pub prompt_in_flight: bool,
@@ -52,6 +53,7 @@ impl LiveSession {
             cancel,
             outbox,
             pending_permissions: HashMap::new(),
+            pending_plans: HashMap::new(),
             pending_startup_prompt: None,
             startup_injected: false,
             prompt_in_flight: false,
@@ -61,9 +63,13 @@ impl LiveSession {
 
     pub fn shutdown(&mut self) {
         let pending: Vec<u64> = self.pending_permissions.drain().map(|(id, _)| id).collect();
+        let plans: Vec<u64> = self.pending_plans.drain().map(|(id, _)| id).collect();
         if let Ok(mut outbox) = self.outbox.lock() {
             for id in pending {
                 outbox.push((id, cancelled_permission_result()));
+            }
+            for id in plans {
+                outbox.push((id, json!({ "outcome": "cancelled" })));
             }
         }
         self.cancel.store(true, Ordering::SeqCst);
@@ -260,6 +266,7 @@ pub fn dev_session_cancel(
         .get_mut(&tab_id)
         .ok_or_else(|| "no active session".to_string())?;
     let pending: Vec<u64> = session.pending_permissions.drain().map(|(id, _)| id).collect();
+    let plans: Vec<u64> = session.pending_plans.drain().map(|(id, _)| id).collect();
     let outbox = Arc::clone(&session.outbox);
     let cancel = Arc::clone(&session.cancel);
     drop(guard);
@@ -267,6 +274,9 @@ pub fn dev_session_cancel(
         let mut queue = outbox.lock().map_err(|e| e.to_string())?;
         for id in pending {
             queue.push((id, cancelled_permission_result()));
+        }
+        for id in plans {
+            queue.push((id, json!({ "outcome": "cancelled" })));
         }
     }
     cancel.store(true, Ordering::SeqCst);
@@ -279,6 +289,7 @@ pub fn dev_session_stop(
     tab_id: Option<String>,
     state: State<Mutex<SessionRegistry>>,
     state_store: State<Mutex<StateStore>>,
+    transcripts: State<Mutex<crate::store::TranscriptStore>>,
 ) -> Result<(), String> {
     let tab_id = resolve_tab_id(tab_id);
     {
@@ -286,8 +297,26 @@ pub fn dev_session_stop(
         guard.shutdown_tab(&tab_id);
     }
     if tab_id != DEV_TAB_ID {
+        let cwd = {
+            let store = state_store.lock().map_err(|e| e.to_string())?;
+            store
+                .tab_by_id(&tab_id)
+                .map(|tab| tab.cwd.clone())
+                .unwrap_or_default()
+        };
         let mut store = state_store.lock().map_err(|e| e.to_string())?;
-        store.mark_tab_awaiting_input(&tab_id, transcript)?;
+        store.mark_tab_awaiting_input(&tab_id, transcript.clone())?;
+        if let Some(text) = transcript.as_ref().filter(|text| !text.trim().is_empty()) {
+            let keep = store.data.tabs.iter().map(|tab| tab.id.clone()).collect::<Vec<_>>();
+            let transcripts = transcripts.lock().map_err(|e| e.to_string())?;
+            transcripts.save(
+                &tab_id,
+                text,
+                &cwd,
+                &chrono::Utc::now().to_rfc3339(),
+                &keep,
+            )?;
+        }
     }
     Ok(())
 }

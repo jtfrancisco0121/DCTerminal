@@ -9,6 +9,8 @@ pub struct AppStateFile {
     pub schema_version: u32,
     pub active_tab_id: Option<String>,
     pub tabs: Vec<TabRecord>,
+    #[serde(default)]
+    pub closed_tabs: Vec<ClosedTabRecord>,
 }
 
 impl Default for AppStateFile {
@@ -17,8 +19,27 @@ impl Default for AppStateFile {
             schema_version: STATE_SCHEMA_VERSION,
             active_tab_id: None,
             tabs: Vec::new(),
+            closed_tabs: Vec::new(),
         }
     }
+}
+
+/// A closed tab can be reopened without its agent process.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClosedTabRecord {
+    pub id: String,
+    pub label: String,
+    pub role_id: String,
+    pub role_snapshot: RoleSnapshot,
+    pub cwd: String,
+    pub answers: HashMap<String, String>,
+    #[serde(default)]
+    pub color: Option<String>,
+    pub merged_prompt: String,
+    pub merged_prompt_hash: String,
+    pub startup_prompt_sent: bool,
+    pub closed_at: String,
 }
 
 /// Persisted tab snapshot (blueprint §17.2 `state.json`).
@@ -45,6 +66,9 @@ pub struct TabRecord {
     /// Startup prompt was already sent for this tab (do not re-inject on Continue).
     #[serde(default)]
     pub startup_prompt_sent: bool,
+    /// Optional chip color. Falls back to the role color in the UI.
+    #[serde(default)]
+    pub color: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

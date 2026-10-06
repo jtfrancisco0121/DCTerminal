@@ -4,9 +4,17 @@ import {
   devSessionCancel,
   devSessionSend,
   devSessionStop,
+  diagnosticsSetCapture,
+  diagnosticsStatus,
   listenPermissionAuto,
   listenPermissionRequests,
+  listenPlanRequests,
   respondPermissionRequest,
+  respondPlanRequest,
+  reopenClosedTab,
+  setTabColor,
+  setTabLabel,
+  transcriptSave,
   getAppState,
   getTab,
   getFormRecall,
@@ -19,7 +27,9 @@ import {
   selectActiveTab,
   syncActiveTabForm,
   validateAndPreview,
+  type ClosedTabSummary,
   type FieldError,
+  type PlanRequestEvent,
   type Role,
   type RoleSessionStartResult,
   type RoleSummary,
@@ -39,8 +49,32 @@ import {
   runtimeFor,
   type TabRuntime,
 } from "./liveTabs";
+import { CommandPalette } from "./components/CommandPalette";
+import { FolderPicker } from "./components/FolderPicker";
+import { ScratchPad } from "./components/ScratchPad";
+import { SessionCards } from "./components/SessionCards";
+import { ShortcutsOverlay } from "./components/ShortcutsOverlay";
+import { SplitPanes } from "./components/SplitPanes";
+import { TabSwitcher } from "./components/TabSwitcher";
+import { detectPlatform, type ShortcutMatch } from "./keymap";
+import { emptySessionCards, reduceSessionCards, type SessionCards as Cards } from "./sessionCards";
+import {
+  chainMarkBlocked,
+  chainMarkSent,
+  chainMarkSettled,
+  chainStart,
+  chainStepToSend,
+  chainStop,
+  splitChainSteps,
+  transferToInput,
+  type ChainCursor,
+} from "./scratch/pad";
+import { createTurnWaiter } from "./scratch/turnWait";
 import { SessionTerminal } from "./SessionTerminal";
 import { TabBar } from "./TabBar";
+import { closeSplit, emptySplit, openSplit, tabAtIndex, type SplitState } from "./tabChrome";
+import { useAppShortcuts } from "./useAppShortcuts";
+import { useScratchPads } from "./useScratchPads";
 import {
   appendStreamSegment,
   streamSegmentFromSystemMessage,
@@ -85,12 +119,26 @@ export function StartupForm({
   const [busy, setBusy] = useState(false);
   const [savedTranscript, setSavedTranscript] = useState("");
   const [savedTabs, setSavedTabs] = useState<TabSummary[]>([]);
+  const [closedTabs, setClosedTabs] = useState<ClosedTabSummary[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const [cardsByTab, setCardsByTab] = useState<Record<string, Cards>>({});
+  const [planRequest, setPlanRequest] = useState<PlanRequestEvent | null>(null);
+  const [split, setSplit] = useState<SplitState>(emptySplit());
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [switcherOpen, setSwitcherOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [captureOn, setCaptureOn] = useState(false);
+  const [captureNote, setCaptureNote] = useState<string | null>(null);
+  const [transcriptSaveError, setTranscriptSaveError] = useState<string | null>(null);
+  const [historyCursor, setHistoryCursor] = useState(-1);
+  const [chain, setChain] = useState<ChainCursor | null>(null);
   const [resendStartup, setResendStartup] = useState(false);
   const skipRecallRef = useRef(false);
   const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionActiveRef = useRef(false);
   const pendingUpdatesRef = useRef<Record<string, SessionUpdateEvent[]>>({});
+  const runtimesRef = useRef(runtimes);
+  runtimesRef.current = runtimes;
   const flushRafRef = useRef<number | null>(null);
   const tabsBootstrappedRef = useRef(false);
   const startLockRef = useRef(false);
@@ -106,6 +154,16 @@ export function StartupForm({
   const streamSegments = activeRuntime.segments;
   const permissionRequest = activeRuntime.permission;
   const needsAttention = useMemo(() => attentionTabIds(runtimes), [runtimes]);
+  const scratch = useScratchPads(activeTabId);
+  const padRef = useRef<HTMLTextAreaElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const waiterRef = useRef(createTurnWaiter());
+  const chainAbortRef = useRef(false);
+  const dialogOpen = paletteOpen || switcherOpen || shortcutsOpen;
+  const platform = useMemo(
+    () => detectPlatform(typeof navigator === "undefined" ? "" : navigator.platform),
+    [],
+  );
 
   const patchRuntime = useCallback(
     (tabId: string, update: (rt: TabRuntime) => TabRuntime) => {
@@ -116,6 +174,22 @@ export function StartupForm({
     },
     [],
   );
+
+  const persistTranscripts = useCallback(async (snapshot: Record<string, TabRuntime>) => {
+    const jobs = Object.entries(snapshot)
+      .filter(([, rt]) => rt.segments.length > 0)
+      .map(async ([tabId, rt]) => {
+        const cwd = rt.session?.cwd ?? "";
+        try {
+          await transcriptSave(tabId, segmentsToPlainText(rt.segments), cwd);
+          setTranscriptSaveError(null);
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          setTranscriptSaveError(message);
+        }
+      });
+    await Promise.all(jobs);
+  }, []);
 
   const loadTabIntoForm = useCallback((tab: {
     roleId: string;
@@ -135,6 +209,7 @@ export function StartupForm({
   const refreshTabs = useCallback(async () => {
     const snap = await getAppState();
     setSavedTabs(snap.tabs);
+    setClosedTabs(snap.closedTabs ?? []);
     setActiveTabId(snap.activeTabId);
     return snap;
   }, []);
@@ -198,6 +273,10 @@ export function StartupForm({
     void Promise.all([
       listenSessionUpdates((evt) => {
         if (!evt.tabId) return;
+        setCardsByTab((prev) => ({
+          ...prev,
+          [evt.tabId]: reduceSessionCards(prev[evt.tabId] ?? emptySessionCards(), evt),
+        }));
         const queue = pending.current[evt.tabId] ?? [];
         queue.push(evt);
         pending.current[evt.tabId] = queue;
@@ -210,6 +289,7 @@ export function StartupForm({
       }),
       listenPermissionRequests((evt) => {
         if (!evt.tabId) return;
+        setChain((current) => (current ? chainMarkBlocked(current) : current));
         patchRuntime(evt.tabId, (rt) => applyPermission(rt, evt));
       }),
       listenPermissionAuto((evt) => {
@@ -218,7 +298,18 @@ export function StartupForm({
       }),
       listenPromptFinished((evt) => {
         if (!evt.tabId) return;
+        waiterRef.current.notify({
+          tabId: evt.tabId,
+          success: evt.success,
+          stopReason: evt.result?.stopReason,
+          error: evt.error,
+        });
         patchRuntime(evt.tabId, (rt) => applyPromptFinished(rt, evt));
+      }),
+      listenPlanRequests((evt) => {
+        if (!evt.tabId) return;
+        setPlanRequest(evt);
+        setChain((current) => (current ? chainMarkBlocked(current) : current));
       }),
     ]).then((fns) => {
       if (cancelled) {
@@ -237,6 +328,21 @@ export function StartupForm({
       }
     };
   }, [patchRuntime]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void persistTranscripts(runtimes);
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [runtimes, persistTranscripts]);
+
+  useEffect(() => {
+    const onHide = () => {
+      void persistTranscripts(runtimesRef.current);
+    };
+    window.addEventListener("pagehide", onHide);
+    return () => window.removeEventListener("pagehide", onHide);
+  }, [persistTranscripts]);
 
   useEffect(() => {
     if (!roles.some((r) => r.id === roleId) && roles.length > 0) {
@@ -363,12 +469,13 @@ export function StartupForm({
     folderWarning: null,
   });
 
-  const startSession = useCallback(async () => {
+  const startSession = useCallback(async (forceResend = false) => {
     if (startLockRef.current) return;
     startLockRef.current = true;
     setBusy(true);
     const tabKey = activeTabId;
-    const continuing = canContinueSession && !resendStartup;
+    const resend = forceResend || resendStartup;
+    const continuing = canContinueSession && !resend;
     if (tabKey) {
       patchRuntime(tabKey, (rt) => {
         const prior =
@@ -406,7 +513,7 @@ export function StartupForm({
         roleId,
         formValues,
         activeTabId,
-        resendStartup,
+        resend,
       );
       const targetId = result.tabId ?? tabKey;
       if (result.errors.length > 0 || !result.session || !targetId) {
@@ -510,6 +617,17 @@ export function StartupForm({
     async (tabId: string) => {
       setBusy(true);
       try {
+        const rt = runtimes[tabId];
+        if (rt && rt.segments.length > 0) {
+          const cwd = rt.session?.cwd ?? values.cwd ?? defaultCwd;
+          await transcriptSave(tabId, segmentsToPlainText(rt.segments), cwd).catch(
+            (err: unknown) => {
+              const message = err instanceof Error ? err.message : String(err);
+              setTranscriptSaveError(message);
+            },
+          );
+        }
+        scratch.flush();
         const snap = await closeTab(tabId);
         setRuntimes((prev) => {
           const next = { ...prev };
@@ -517,6 +635,7 @@ export function StartupForm({
           return next;
         });
         setSavedTabs(snap.tabs);
+        setClosedTabs(snap.closedTabs ?? []);
         setActiveTabId(snap.activeTabId);
         if (snap.activeTabId) {
           const { tab } = await selectActiveTab(snap.activeTabId);
@@ -530,7 +649,7 @@ export function StartupForm({
         setBusy(false);
       }
     },
-    [roleId, defaultCwd, loadTabIntoForm],
+    [roleId, defaultCwd, loadTabIntoForm, runtimes, values.cwd, scratch],
   );
 
   const handleNewTab = useCallback(async () => {
@@ -575,18 +694,6 @@ export function StartupForm({
     }
   }, [activeTabId, patchRuntime]);
 
-  useEffect(() => {
-    if (!session || !promptInFlight) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        cancelTurn();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [session, promptInFlight, cancelTurn]);
-
   const handlePermissionSelect = useCallback(
     async (optionId: string) => {
       if (!activeTabId || !permissionRequest) return;
@@ -627,30 +734,274 @@ export function StartupForm({
     }
   }, [activeTabId, permissionRequest, patchRuntime]);
 
+  const sendText = useCallback(
+    async (tabId: string, text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return "error" as const;
+      const pending = waiterRef.current.expect(tabId);
+      setHistoryCursor(-1);
+      scratch.remember(tabId, trimmed);
+      patchRuntime(tabId, (rt) => ({
+        ...rt,
+        promptError: null,
+        followUp: "",
+        promptInFlight: true,
+        segments: appendStreamSegment(rt.segments, streamSegmentFromUserMessage(trimmed)),
+      }));
+      try {
+        await devSessionSend(trimmed, tabId);
+      } catch (err: unknown) {
+        waiterRef.current.cancel(tabId);
+        const message = err instanceof Error ? err.message : String(err);
+        patchRuntime(tabId, (rt) => ({
+          ...rt,
+          promptError: message,
+          promptInFlight: false,
+        }));
+        return "error" as const;
+      }
+      return pending;
+    },
+    [patchRuntime, scratch],
+  );
+
   const sendFollowUp = useCallback(async () => {
     const text = followUp.trim();
-    if (!text || !activeTabId || activeRuntime.agentExited) return;
+    if (!text || !activeTabId || activeRuntime.agentExited || promptInFlight) return;
     setBusy(true);
-    patchRuntime(activeTabId, (rt) => ({
-      ...rt,
-      promptError: null,
-      followUp: "",
-      promptInFlight: true,
-      segments: appendStreamSegment(rt.segments, streamSegmentFromUserMessage(text)),
-    }));
     try {
-      await devSessionSend(text, activeTabId);
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      patchRuntime(activeTabId, (rt) => ({
-        ...rt,
-        promptError: message,
-        promptInFlight: false,
-      }));
+      await sendText(activeTabId, text);
     } finally {
       setBusy(false);
     }
-  }, [followUp, activeTabId, activeRuntime.agentExited, patchRuntime]);
+  }, [followUp, activeTabId, activeRuntime.agentExited, promptInFlight, sendText]);
+
+  const transferPad = useCallback(() => {
+    if (!activeTabId) return;
+    const selected = padRef.current
+      ? padRef.current.value.slice(
+          padRef.current.selectionStart,
+          padRef.current.selectionEnd,
+        )
+      : "";
+    const next = transferToInput(followUp, scratch.content, selected);
+    setFollowUp(next);
+    inputRef.current?.focus();
+  }, [activeTabId, followUp, scratch.content]);
+
+  const runChain = useCallback(async () => {
+    if (!activeTabId || promptInFlight || permissionRequest) return;
+    const started = chainStart(scratch.content);
+    if (!started) return;
+    chainAbortRef.current = false;
+    let cursor = started;
+    setChain(cursor);
+    while (cursor.phase !== "done" && cursor.phase !== "stopped") {
+      if (chainAbortRef.current) {
+        cursor = chainStop(cursor);
+        setChain(cursor);
+        break;
+      }
+      const step = chainStepToSend(cursor);
+      if (!step) break;
+      cursor = chainMarkSent(cursor);
+      setChain(cursor);
+      const outcome = await sendText(activeTabId, step);
+      if (chainAbortRef.current) {
+        cursor = chainStop(cursor);
+        setChain(cursor);
+        break;
+      }
+      cursor = chainMarkSettled(cursor, outcome);
+      setChain(cursor);
+    }
+  }, [activeTabId, permissionRequest, promptInFlight, scratch.content, sendText]);
+
+  const sendFromPad = useCallback(() => {
+    if (!activeTabId) return;
+    if (splitChainSteps(scratch.content).length > 1 && !followUp.trim()) {
+      void runChain();
+      return;
+    }
+    if (followUp.trim()) {
+      void sendFollowUp();
+      return;
+    }
+    if (scratch.content.trim()) {
+      void sendText(activeTabId, scratch.content);
+    }
+  }, [activeTabId, followUp, runChain, scratch.content, sendFollowUp, sendText]);
+
+  const roleColors = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const item of roles) map[item.id] = item.color;
+    return map;
+  }, [roles]);
+
+  const selectTabByIndex = useCallback(
+    (index: number) => {
+      const tab = tabAtIndex(savedTabs, index);
+      if (tab) void handleSelectTab(tab.id);
+    },
+    [savedTabs, handleSelectTab],
+  );
+
+  const cycleTab = useCallback(
+    (delta: number) => {
+      if (savedTabs.length === 0) return;
+      const current = savedTabs.findIndex((tab) => tab.id === activeTabId);
+      const next = (current + delta + savedTabs.length) % savedTabs.length;
+      const tab = savedTabs[next];
+      if (tab) void handleSelectTab(tab.id);
+    },
+    [savedTabs, activeTabId, handleSelectTab],
+  );
+
+  const reopenTab = useCallback(async () => {
+    setBusy(true);
+    try {
+      const { tab } = await reopenClosedTab();
+      await refreshTabs();
+      loadTabIntoForm(tab);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setPreview({ errors: [{ key: "_session", message }], merged: null });
+    } finally {
+      setBusy(false);
+    }
+  }, [loadTabIntoForm, refreshTabs]);
+
+  const onShortcut = useCallback(
+    (match: ShortcutMatch) => {
+      if (match.action === "closeDialog") {
+        setPaletteOpen(false);
+        setSwitcherOpen(false);
+        setShortcutsOpen(false);
+        return;
+      }
+      if (match.action === "commandPalette") {
+        setPaletteOpen(true);
+        return;
+      }
+      if (match.action === "tabSwitcher") {
+        setSwitcherOpen(true);
+        return;
+      }
+      if (match.action === "shortcutsHelp") {
+        setShortcutsOpen(true);
+        return;
+      }
+      if (match.action === "send") {
+        if (document.activeElement === padRef.current) sendFromPad();
+        else void sendFollowUp();
+        return;
+      }
+      if (match.action === "transferPad") {
+        transferPad();
+        return;
+      }
+      if (match.action === "focusPad") {
+        padRef.current?.focus();
+        return;
+      }
+      if (match.action === "focusInput") {
+        inputRef.current?.focus();
+        return;
+      }
+      if (match.action === "newTab") {
+        void handleNewTab();
+        return;
+      }
+      if (match.action === "closeTab" && activeTabId) {
+        const running = savedTabs.find((tab) => tab.id === activeTabId)?.phase === "running";
+        if (running && !window.confirm("Stop this tab's agent and close it?")) return;
+        void handleCloseTab(activeTabId);
+        return;
+      }
+      if (match.action === "nextTab") {
+        cycleTab(1);
+        return;
+      }
+      if (match.action === "prevTab") {
+        cycleTab(-1);
+        return;
+      }
+      if (match.action === "goToTab" && match.tabIndex != null) {
+        selectTabByIndex(match.tabIndex);
+        return;
+      }
+      if (match.action === "reopenClosedTab") {
+        void reopenTab();
+        return;
+      }
+      if (match.action === "splitRight" || match.action === "splitDown") {
+        const other = savedTabs.find((tab) => tab.id !== activeTabId);
+        if (!other) return;
+        setSplit(openSplit(split, match.action === "splitRight" ? "horizontal" : "vertical", other.id));
+        return;
+      }
+      if (match.action === "renameTab" && activeTabId) {
+        const current = savedTabs.find((tab) => tab.id === activeTabId)?.label ?? "";
+        const next = window.prompt("Tab name", current);
+        if (next && next.trim()) {
+          void setTabLabel(activeTabId, next.trim()).then(() => refreshTabs());
+        }
+      }
+    },
+    [
+      activeTabId,
+      cycleTab,
+      handleCloseTab,
+      handleNewTab,
+      refreshTabs,
+      reopenTab,
+      savedTabs,
+      selectTabByIndex,
+      sendFollowUp,
+      sendFromPad,
+      split,
+      transferPad,
+    ],
+  );
+
+  useAppShortcuts({
+    platform,
+    dialogOpen,
+    promptInFlight: !!promptInFlight,
+    onAction: onShortcut,
+    onCancelTurn: () => {
+      void cancelTurn();
+    },
+  });
+
+  useEffect(() => {
+    diagnosticsStatus()
+      .then((status) => {
+        setCaptureOn(status.capturePermissionPayloads);
+        if (status.lastError) setCaptureNote(status.lastError);
+      })
+      .catch(() => {});
+  }, []);
+
+  const runPalette = (id: string) => {
+    setPaletteOpen(false);
+    if (id === "toggleCapture") {
+      void diagnosticsSetCapture(!captureOn).then((status) => {
+        setCaptureOn(status.capturePermissionPayloads);
+        setCaptureNote(status.lastError);
+      });
+      return;
+    }
+    if (id === "closeSplit") {
+      setSplit(closeSplit());
+      return;
+    }
+    if (id.startsWith("goto:")) {
+      void handleSelectTab(id.slice("goto:".length));
+      return;
+    }
+    onShortcut({ action: id as ShortcutMatch["action"] });
+  };
 
   const setFollowUp = (value: string) => {
     if (!activeTabId) return;
@@ -698,11 +1049,10 @@ export function StartupForm({
 
       <label className="field-label">
         Working folder
-        <input
-          className="text-input"
+        <FolderPicker
           value={values.cwd ?? defaultCwd}
-          onChange={(e) => setField("cwd", e.target.value)}
           disabled={!!session || busy}
+          onChange={(path) => setField("cwd", path)}
         />
       </label>
 
@@ -771,13 +1121,26 @@ export function StartupForm({
         <button
           type="button"
           className="primary-button"
-          onClick={startSession}
+          onClick={() => void startSession()}
           disabled={busy || !cliFound}
         >
           {canContinueSession && !resendStartup
             ? "Continue session"
             : "Start role session"}
         </button>
+        {savedTranscript && (
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => {
+              setResendStartup(true);
+              void startSession(true);
+            }}
+            disabled={busy || !cliFound}
+          >
+            Start new session
+          </button>
+        )}
       </div>
       {canContinueSession && (
         <label className="field-label continue-option">
@@ -801,6 +1164,33 @@ export function StartupForm({
     </>
   );
 
+  const overlays = (
+    <>
+      {paletteOpen && (
+        <CommandPalette
+          tabs={savedTabs.map((tab) => ({ id: tab.id, label: tab.label }))}
+          canReopen={closedTabs.length > 0}
+          splitOpen={split.mode !== "single"}
+          onRun={runPalette}
+          onClose={() => setPaletteOpen(false)}
+        />
+      )}
+      {switcherOpen && (
+        <TabSwitcher
+          tabs={savedTabs}
+          onSelect={(tabId) => {
+            setSwitcherOpen(false);
+            void handleSelectTab(tabId);
+          }}
+          onClose={() => setSwitcherOpen(false)}
+        />
+      )}
+      {shortcutsOpen && (
+        <ShortcutsOverlay platform={platform} onClose={() => setShortcutsOpen(false)} />
+      )}
+    </>
+  );
+
   if (session) {
     const attachFirst =
       startResult?.injectionStrategy === "attach_to_first_message";
@@ -809,34 +1199,115 @@ export function StartupForm({
         <TabBar
           tabs={savedTabs}
           activeTabId={activeTabId}
+          roleColors={roleColors}
           disableSwitch={false}
           disableNew={busy}
           attentionTabIds={needsAttention}
+          canReopen={closedTabs.length > 0}
           onSelect={handleSelectTab}
           onClose={handleCloseTab}
           onNew={handleNewTab}
+          onReopen={() => void reopenTab()}
+          onColor={(tabId, color) => {
+            void setTabColor(tabId, color).then(() => refreshTabs());
+          }}
         />
-        <SessionTerminal
-          title={activeTabSummary?.label ?? "Session"}
-          cwd={session.cwd}
-          sessionId={session.sessionId}
+        <SessionCards
+          cards={cardsByTab[activeTabId ?? ""] ?? emptySessionCards()}
           segments={streamSegments}
-          promptInFlight={promptInFlight}
-          followUp={followUp}
+          planRequest={
+            planRequest && planRequest.tabId === activeTabId ? planRequest : null
+          }
           busy={busy}
-          canSendFollowUp={!attachFirst || !startResult?.startupInjected}
-          promptError={promptError}
-          permissionRequest={permissionRequest}
-          onPermissionSelect={handlePermissionSelect}
-          onPermissionCancel={handlePermissionCancel}
-          onCancelTurn={cancelTurn}
-          onFollowUpChange={setFollowUp}
-          onSendFollowUp={sendFollowUp}
-          onStop={stopSession}
-          folderWarning={activeRuntime.folderWarning}
-          agentExited={activeRuntime.agentExited}
-          onRestart={stopSession}
+          onAcceptPlan={() => {
+            if (!activeTabId || !planRequest) return;
+            void respondPlanRequest(activeTabId, planRequest.jsonRpcId, "accepted").then(
+              () => setPlanRequest(null),
+            );
+          }}
+          onRejectPlan={() => {
+            if (!activeTabId || !planRequest) return;
+            void respondPlanRequest(activeTabId, planRequest.jsonRpcId, "cancelled").then(
+              () => setPlanRequest(null),
+            );
+          }}
         />
+        <SplitPanes
+          mode={split.mode}
+          primary={
+            <SessionTerminal
+              title={activeTabSummary?.label ?? "Session"}
+              cwd={session.cwd}
+              sessionId={session.sessionId}
+              segments={streamSegments}
+              promptInFlight={promptInFlight}
+              followUp={followUp}
+              busy={busy}
+              canSendFollowUp={!attachFirst || !startResult?.startupInjected}
+              promptError={promptError}
+              permissionRequest={permissionRequest}
+              onPermissionSelect={handlePermissionSelect}
+              onPermissionCancel={handlePermissionCancel}
+              onCancelTurn={cancelTurn}
+              onFollowUpChange={setFollowUp}
+              onSendFollowUp={sendFollowUp}
+              onStop={stopSession}
+              folderWarning={activeRuntime.folderWarning}
+              agentExited={activeRuntime.agentExited}
+              onRestart={stopSession}
+              inputRef={inputRef}
+              history={scratch.history}
+              historyCursor={historyCursor}
+              onHistoryCursor={setHistoryCursor}
+            />
+          }
+          secondary={
+            split.secondaryTabId ? (
+              <aside className="split-secondary" aria-label="Second tab">
+                <p className="hint">
+                  {savedTabs.find((tab) => tab.id === split.secondaryTabId)?.label ??
+                    "Other tab"}
+                </p>
+                <pre className="mono-snippet">
+                  {segmentsToPlainText(
+                    runtimes[split.secondaryTabId]?.segments ?? [],
+                  ) || "No live output in this tab yet."}
+                </pre>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => setSplit(closeSplit())}
+                >
+                  Close split
+                </button>
+              </aside>
+            ) : null
+          }
+        />
+        <ScratchPad
+          ref={padRef}
+          content={scratch.content}
+          truncated={scratch.truncated}
+          persistError={scratch.persistError}
+          chain={chain}
+          disabled={busy || !!permissionRequest}
+          onChange={(value) => {
+            if (activeTabId) scratch.setContent(activeTabId, value);
+          }}
+          onTransfer={transferPad}
+          onSend={sendFromPad}
+          onBlur={() => scratch.flush()}
+          onStopChain={() => {
+            chainAbortRef.current = true;
+            setChain((current) => (current ? chainStop(current) : current));
+            void cancelTurn();
+          }}
+        />
+        {transcriptSaveError && (
+          <p className="error scratch-pad-status">
+            Could not save the transcript: {transcriptSaveError}
+          </p>
+        )}
         {lastPromptResult && !promptInFlight && (
           <p className="hint session-turn-hint">
             Last turn: {lastPromptResult.stopReason ?? "finished"}
@@ -846,6 +1317,7 @@ export function StartupForm({
           <summary>Startup form (read-only)</summary>
           {composerFields}
         </details>
+        {overlays}
       </section>
     );
   }
@@ -861,12 +1333,18 @@ export function StartupForm({
       <TabBar
         tabs={savedTabs}
         activeTabId={activeTabId}
+        roleColors={roleColors}
         disableSwitch={busy}
         disableNew={busy}
         attentionTabIds={needsAttention}
+        canReopen={closedTabs.length > 0}
         onSelect={handleSelectTab}
         onClose={handleCloseTab}
         onNew={handleNewTab}
+        onReopen={() => void reopenTab()}
+        onColor={(tabId, color) => {
+          void setTabColor(tabId, color).then(() => refreshTabs());
+        }}
       />
       {canContinueSession && (
         <p className="hint">
@@ -885,10 +1363,50 @@ export function StartupForm({
       {idleActions}
       {savedTranscript && (
         <details className="startup-form-details" open>
-          <summary>Last session transcript (saved on Stop)</summary>
+          <summary>Last session transcript (read-only)</summary>
+          <p className="hint">
+            Restored history is read-only. Start a new session to talk to the agent
+            again. A missing folder does not hide this transcript.
+          </p>
           <pre className="mono-snippet transcript-saved">{savedTranscript}</pre>
         </details>
       )}
+      {transcriptSaveError && (
+        <p className="error">Could not save the transcript: {transcriptSaveError}</p>
+      )}
+      <label className="field-label diagnostics-toggle">
+        <input
+          type="checkbox"
+          checked={captureOn}
+          onChange={(event) => {
+            void diagnosticsSetCapture(event.target.checked).then((status) => {
+              setCaptureOn(status.capturePermissionPayloads);
+              setCaptureNote(status.lastError);
+            });
+          }}
+        />
+        Record permission payloads (off by default, secrets redacted)
+      </label>
+      {captureNote && <p className="error">{captureNote}</p>}
+      <ScratchPad
+        ref={padRef}
+        content={scratch.content}
+        truncated={scratch.truncated}
+        persistError={scratch.persistError}
+        chain={chain}
+        disabled={busy}
+        onChange={(value) => {
+          if (activeTabId) scratch.setContent(activeTabId, value);
+        }}
+        onTransfer={transferPad}
+        onSend={sendFromPad}
+        onBlur={() => scratch.flush()}
+        onStopChain={() => {
+          chainAbortRef.current = true;
+          setChain((current) => (current ? chainStop(current) : current));
+        }}
+      />
+      {overlays}
     </section>
   );
 }
