@@ -969,12 +969,18 @@ export type UiSettings = {
   theme: string;
   shortcutBar: boolean;
   tipsSeen: string[];
+  /** U2: scratch pad height in px; 0 = the 3-row default. */
+  padHeight: number;
+  /** U2: scratch pad hidden in chat and terminal tabs. */
+  padHidden: boolean;
 };
 
 export const DEFAULT_UI_SETTINGS: UiSettings = {
   theme: "github-dark",
   shortcutBar: false,
   tipsSeen: [],
+  padHeight: 0,
+  padHidden: false,
 };
 
 export async function getUiSettings(): Promise<UiSettings> {

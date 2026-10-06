@@ -3363,3 +3363,95 @@ mark.search-hit-current {
 .status-bar-spacer {
   flex: 1;
 }
+
+/* ---------------------------------------------------------------------
+   U2: scratch pad starts at three rows; drag the top edge to grow it.
+   --------------------------------------------------------------------- */
+.scratch-pad {
+  position: relative;
+  margin-top: 0.3rem;
+  padding: 0.2rem 0.5rem 0.35rem;
+  border-radius: 6px;
+}
+
+.scratch-pad-handle {
+  position: absolute;
+  top: -4px;
+  left: 0;
+  right: 0;
+  height: 8px;
+  cursor: ns-resize;
+  z-index: 1;
+}
+
+.scratch-pad-handle::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 50%;
+  width: 2.5rem;
+  height: 2px;
+  margin-left: -1.25rem;
+  border-radius: 1px;
+  background: var(--border);
+}
+
+.scratch-pad-handle:hover::after,
+.scratch-pad-handle:focus-visible::after {
+  background: var(--accent-fg);
+}
+
+.scratch-pad-handle:focus-visible {
+  outline: none;
+}
+
+.scratch-pad-bar {
+  gap: 0.35rem;
+  flex-wrap: nowrap;
+  min-height: 1.5rem;
+}
+
+.scratch-pad-title {
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.scratch-pad-hint {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.7rem;
+}
+
+.scratch-pad-actions {
+  gap: 0.25rem;
+  flex-wrap: nowrap;
+  margin-left: auto;
+}
+
+.scratch-pad-actions .secondary-button,
+.scratch-pad-actions .primary-button {
+  padding: 0.1rem 0.5rem;
+  font-size: 0.75rem;
+}
+
+.scratch-pad-input {
+  min-height: 0;
+  max-height: none;
+  resize: none;
+  margin-top: 0.2rem;
+  padding: 0.3rem 0.45rem;
+  line-height: 1.4;
+}
+
+.terminal-screen > .terminal-scratch {
+  max-height: 65%;
+}
+
+.terminal-scratch .scratch-pad {
+  margin-top: 0.3rem;
+  overflow: visible;
+}

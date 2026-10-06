@@ -166,6 +166,54 @@ describe("terminal scratch pad", () => {
     expect(onOpenChange).toHaveBeenCalledTimes(2);
   });
 
+  it("can share Hide/Show and the pad height with the chat pad (U2)", () => {
+    const onOpenToggle = vi.fn();
+    const onHeightCommit = vi.fn();
+    const { rerender } = render(
+      <TerminalScratchPad
+        tabId="tab-1"
+        ptyId="pty-1"
+        content="x"
+        truncated={false}
+        persistError={null}
+        platform="mac"
+        onChange={() => {}}
+        write={vi.fn(async () => {})}
+        bracketedPaste
+        onFocusTerminal={() => {}}
+        open
+        onOpenToggle={onOpenToggle}
+        height={120}
+        onHeightChange={() => {}}
+        onHeightCommit={onHeightCommit}
+      />,
+    );
+    expect(editor().style.height).toBe("120px");
+    fireEvent.keyDown(screen.getByRole("separator", { name: "Resize scratch pad" }), { key: "ArrowUp" });
+    expect(onHeightCommit).toHaveBeenCalledWith(144);
+    fireEvent.click(screen.getByRole("button", { name: "Hide pad" }));
+    expect(onOpenToggle).toHaveBeenCalledWith(false);
+    // Controlled: stays open until the parent says otherwise.
+    expect(editor().hidden).toBe(false);
+    rerender(
+      <TerminalScratchPad
+        tabId="tab-1"
+        ptyId="pty-1"
+        content="x"
+        truncated={false}
+        persistError={null}
+        platform="mac"
+        onChange={() => {}}
+        write={vi.fn(async () => {})}
+        bracketedPaste
+        onFocusTerminal={() => {}}
+        open={false}
+        onOpenToggle={onOpenToggle}
+      />,
+    );
+    expect((document.querySelector(".scratch-pad-input") as HTMLTextAreaElement).hidden).toBe(true);
+  });
+
   it("keeps a separate pad for each tab", async () => {
     vi.mocked(scratchLoad).mockResolvedValue({
       pads: [

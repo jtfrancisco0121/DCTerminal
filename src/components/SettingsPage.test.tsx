@@ -118,7 +118,7 @@ describe("SettingsPage theme (U8)", () => {
         terminalSettings={null}
         onTerminalSettings={() => {}}
         approvalMode={null}
-        uiSettings={{ theme: "github-dark", shortcutBar: false, tipsSeen: [] }}
+        uiSettings={{ theme: "github-dark", shortcutBar: false, tipsSeen: [], padHeight: 0, padHidden: false }}
         onUiSettings={onUiSettings}
         onClose={() => {}}
       />,

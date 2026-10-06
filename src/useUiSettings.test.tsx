@@ -3,8 +3,8 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./bridge", () => ({
-  DEFAULT_UI_SETTINGS: { theme: "github-dark", shortcutBar: false, tipsSeen: [] },
-  getUiSettings: vi.fn(async () => ({ theme: "github-light", shortcutBar: false, tipsSeen: [] })),
+  DEFAULT_UI_SETTINGS: { theme: "github-dark", shortcutBar: false, tipsSeen: [], padHeight: 0, padHidden: false },
+  getUiSettings: vi.fn(async () => ({ theme: "github-light", shortcutBar: false, tipsSeen: [], padHeight: 0, padHidden: false })),
   setUiSettings: vi.fn(async (ui: unknown) => ui),
 }));
 vi.mock("./terminal/park", () => ({ setTerminalTheme: vi.fn() }));
@@ -30,6 +30,8 @@ describe("useUiSettings (U7/U8)", () => {
       theme: "github-dark",
       shortcutBar: true,
       tipsSeen: [],
+      padHeight: 0,
+      padHidden: false,
     });
   });
 

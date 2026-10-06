@@ -111,10 +111,18 @@ pub struct UiSettings {
     pub shortcut_bar: bool,
     #[serde(default)]
     pub tips_seen: Vec<String>,
+    /// U2: scratch pad editor height in px; 0 keeps the 3-row default.
+    #[serde(default)]
+    pub pad_height: u32,
+    /// U2: scratch pad hidden (shared by chat and terminal tabs).
+    #[serde(default)]
+    pub pad_hidden: bool,
 }
 
 pub const UI_THEMES: &[&str] = &["github-dark", "github-light"];
 const TIPS_SEEN_LIMIT: usize = 50;
+const PAD_MIN_HEIGHT: u32 = 40;
+const PAD_MAX_HEIGHT: u32 = 600;
 
 fn default_theme() -> String {
     UI_THEMES[0].to_string()
@@ -126,6 +134,8 @@ impl Default for UiSettings {
             theme: default_theme(),
             shortcut_bar: false,
             tips_seen: Vec::new(),
+            pad_height: 0,
+            pad_hidden: false,
         }
     }
 }
@@ -307,10 +317,16 @@ impl SettingsStore {
             }
         }
         tips_seen.truncate(TIPS_SEEN_LIMIT);
+        let pad_height = match next.pad_height {
+            0 => 0,
+            h => h.clamp(PAD_MIN_HEIGHT, PAD_MAX_HEIGHT),
+        };
         self.data.ui = UiSettings {
             theme,
             shortcut_bar: next.shortcut_bar,
             tips_seen,
+            pad_height,
+            pad_hidden: next.pad_hidden,
         };
         self.save()
     }
@@ -394,10 +410,14 @@ mod tests {
                 theme: "no-such-theme".into(),
                 shortcut_bar: true,
                 tips_seen: vec!["palette".into(), "palette".into(), " ".into(), "pad".into()],
+                pad_height: 5000,
+                pad_hidden: true,
             })
             .unwrap();
         assert_eq!(store.ui().theme, "github-dark");
         assert_eq!(store.ui().tips_seen, vec!["palette", "pad"]);
+        assert_eq!(store.ui().pad_height, 600);
+        assert!(store.ui().pad_hidden);
         store
             .set_ui(UiSettings {
                 theme: "github-light".into(),

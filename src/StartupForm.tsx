@@ -774,6 +774,20 @@ export function StartupForm({
   }, [planRequest, runtimes, savedTabs, tabMarks, terminalBusy]);
 
   const uiSettings = useUiSettings();
+  // U2: one pad size for chat and terminal tabs; saved when a drag ends.
+  const [padHeight, setPadHeight] = useState<number | null>(null);
+  const savedPadHeight = uiSettings.ui.padHeight;
+  useEffect(() => {
+    setPadHeight(savedPadHeight > 0 ? savedPadHeight : null);
+  }, [savedPadHeight]);
+  const padOpen = !uiSettings.ui.padHidden;
+  const padHiddenNow = uiSettings.ui.padHidden;
+  const updateUi = uiSettings.update;
+  const padSizeProps = {
+    height: padHeight,
+    onHeightChange: setPadHeight,
+    onHeightCommit: (height: number) => uiSettings.update({ padHeight: height }),
+  };
 
   const notificationSettingsRef = useRef(notificationSettings);
   notificationSettingsRef.current = notificationSettings;
@@ -2056,6 +2070,11 @@ export function StartupForm({
           terminalPadRef.current?.focus();
           return;
         }
+        if (padHiddenNow) {
+          updateUi({ padHidden: false });
+          window.setTimeout(() => padRef.current?.focus(), 0);
+          return;
+        }
         padRef.current?.focus();
         return;
       }
@@ -2151,6 +2170,8 @@ export function StartupForm({
       swapPanes,
       focusPane,
       transferPad,
+      padHiddenNow,
+      updateUi,
     ],
   );
 
@@ -3583,6 +3604,9 @@ export function StartupForm({
             onFocusTerminal={focusActiveTerminal}
             onFocusPad={() => blurParkedTerminal(activeTabSummary.id)}
             onOpenChange={() => refitTerminal(activeTabSummary.id)}
+            open={padOpen}
+            onOpenToggle={(open) => uiSettings.update({ padHidden: !open })}
+            {...padSizeProps}
           />
         </section>,
     );
@@ -3934,6 +3958,9 @@ export function StartupForm({
             scratch.flush();
           }}
           onOpenLibrary={() => openPromptLibrary(false)}
+          collapsed={!padOpen}
+          onToggle={() => uiSettings.update({ padHidden: padOpen })}
+          {...padSizeProps}
           onStopChain={() => {
             chainAbortRef.current = true;
             setChain((current) => (current ? chainStop(current) : current));
