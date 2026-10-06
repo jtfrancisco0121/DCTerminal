@@ -1146,17 +1146,38 @@ kbd {
   flex: 1;
   min-height: 0;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   overflow: auto;
 }
 
 .empty-state-card {
   width: min(36rem, 100%);
+  margin-top: auto;
+  margin-bottom: auto;
+  flex-shrink: 0;
   padding: 1.25rem 1.5rem;
   border: 1px solid #30363d;
   border-radius: 8px;
   background: #161b22;
+}
+
+.empty-state-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #161b22;
+  padding-bottom: 0.35rem;
+}
+
+.restore-compact {
+  margin: 0.35rem 0 0.75rem;
+}
+
+.transcript-preview {
+  max-height: 8rem;
+  overflow: auto;
 }
 
 .role-choices {

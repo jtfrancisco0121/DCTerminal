@@ -47,7 +47,7 @@ import {
   attentionTabIds,
   clearLiveSession,
   emptyRuntime,
-  folderStatusMessage,
+  folderTabNotice,
   runtimeFor,
   type TabRuntime,
 } from "./liveTabs";
@@ -55,7 +55,15 @@ import { CommandPalette } from "./components/CommandPalette";
 import { FolderPicker } from "./components/FolderPicker";
 import { SettingsPage } from "./components/SettingsPage";
 import { folderForTab } from "./projectsView";
-import { tabSurface, toggleSettings } from "./workspaceView";
+import {
+  folderToWrite,
+  mergeTabDraft,
+  showStartupFields,
+  tabFormFromRecord,
+  tabSurface,
+  toggleSettings,
+  type TabDraft,
+} from "./workspaceView";
 import { ScratchPad } from "./components/ScratchPad";
 import { SessionCards } from "./components/SessionCards";
 import { ShortcutsOverlay } from "./components/ShortcutsOverlay";
@@ -138,6 +146,7 @@ export function StartupForm({
   const [diagnostics, setDiagnostics] = useState<DiagnosticsStatus | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [pickedRoleId, setPickedRoleId] = useState<string | null>(null);
+  const [newSessionOpen, setNewSessionOpenState] = useState(false);
   const [transcriptSaveError, setTranscriptSaveError] = useState<string | null>(null);
   const [historyCursor, setHistoryCursor] = useState(-1);
   const [chain, setChain] = useState<ChainCursor | null>(null);
@@ -156,6 +165,23 @@ export function StartupForm({
   activeTabIdRef.current = activeTabId;
   const roleIdRef = useRef(roleId);
   roleIdRef.current = roleId;
+  const valuesRef = useRef(values);
+  valuesRef.current = values;
+  const pickedRoleRef = useRef(pickedRoleId);
+  pickedRoleRef.current = pickedRoleId;
+  const transcriptRef = useRef(savedTranscript);
+  transcriptRef.current = savedTranscript;
+  const newSessionOpenRef = useRef(newSessionOpen);
+  newSessionOpenRef.current = newSessionOpen;
+  const resendRef = useRef(resendStartup);
+  resendRef.current = resendStartup;
+  const draftsRef = useRef<Record<string, TabDraft>>({});
+  const knownFoldersRef = useRef<Record<string, string>>({});
+  const previewsRef = useRef<Record<string, ValidatePreviewResult | null>>({});
+  const scrollPositions = useRef<Record<string, number>>({});
+  const emptyStateRef = useRef<HTMLDivElement | null>(null);
+  const ignoreScrollRef = useRef(false);
+  const recallTokenRef = useRef(0);
   const activeRuntime = runtimeFor(runtimes, activeTabId);
   const session = activeRuntime.session;
   const startResult = activeRuntime.startResult;
@@ -203,6 +229,54 @@ export function StartupForm({
     await Promise.all(jobs);
   }, []);
 
+  const captureDraft = useCallback((): TabDraft => {
+    return {
+      roleId: roleIdRef.current,
+      pickedRoleId: pickedRoleRef.current,
+      values: { ...valuesRef.current },
+      transcript: transcriptRef.current,
+      newSessionOpen: newSessionOpenRef.current,
+      resendStartup: resendRef.current,
+    };
+  }, []);
+
+  const applyDraft = useCallback((tabId: string, draft: TabDraft) => {
+    if (draft.roleId !== roleIdRef.current) skipRecallRef.current = true;
+    recallTokenRef.current += 1;
+    hydratedRef.current = true;
+    const cwd = folderForTab(draft.values.cwd);
+    if (cwd) knownFoldersRef.current[tabId] = cwd;
+    const stored = { ...draft, values: { ...draft.values, cwd } };
+    draftsRef.current[tabId] = stored;
+    setRoleId(stored.roleId);
+    setPickedRoleId(stored.pickedRoleId);
+    setValues(stored.values);
+    setSavedTranscript(stored.transcript);
+    setNewSessionOpenState(stored.newSessionOpen);
+    setResendStartup(stored.resendStartup);
+    setActiveTabId(tabId);
+    setPreview(previewsRef.current[tabId] ?? null);
+  }, []);
+
+  const stashActiveTab = useCallback(() => {
+    const leaving = activeTabIdRef.current;
+    if (!leaving || !hydratedRef.current) return;
+    const snap = captureDraft();
+    draftsRef.current[leaving] = snap;
+    if (emptyStateRef.current) {
+      scrollPositions.current[leaving] = emptyStateRef.current.scrollTop;
+    }
+    if (draftTimerRef.current) {
+      clearTimeout(draftTimerRef.current);
+      draftTimerRef.current = null;
+    }
+    const cwd = folderToWrite(knownFoldersRef.current[leaving] ?? "", snap.values.cwd ?? "");
+    if (cwd) knownFoldersRef.current[leaving] = cwd;
+    const payload = { ...snap.values, cwd };
+    void syncActiveTabForm(leaving, snap.roleId, cwd, payload).catch(() => {});
+    if (cwd) void saveFormDraft(snap.roleId, cwd, payload).catch(() => {});
+  }, [captureDraft]);
+
   const loadTabIntoForm = useCallback((tab: {
     roleId: string;
     cwd: string;
@@ -210,24 +284,14 @@ export function StartupForm({
     id: string;
     transcript?: string | null;
   }) => {
-    if (tab.roleId !== roleIdRef.current) {
-      skipRecallRef.current = true;
-    }
-    hydratedRef.current = true;
-    setRoleId(tab.roleId);
-    const fresh = !folderForTab(tab.cwd) && !(tab.transcript?.trim());
-    setPickedRoleId(fresh ? null : tab.roleId);
-    setValues({ ...tab.answers, cwd: folderForTab(tab.cwd) });
-    setActiveTabId(tab.id);
-    setPreview(null);
-    setSavedTranscript(tab.transcript?.trim() ?? "");
-  }, []);
+    const incoming = tabFormFromRecord(tab);
+    applyDraft(tab.id, mergeTabDraft(draftsRef.current[tab.id], incoming));
+  }, [applyDraft]);
 
   const refreshTabs = useCallback(async () => {
     const snap = await getAppState();
     setSavedTabs(snap.tabs);
     setClosedTabs(snap.closedTabs ?? []);
-    setActiveTabId(snap.activeTabId);
     return snap;
   }, []);
 
@@ -397,9 +461,24 @@ export function StartupForm({
       return;
     }
     if (session) return;
+    const tabId = activeTabIdRef.current;
+    const draft = tabId ? draftsRef.current[tabId] : null;
+    if (draft && (folderForTab(draft.values.cwd) || draft.transcript.trim())) return;
+    const token = ++recallTokenRef.current;
     getFormRecall(roleId)
       .then((recall) => {
-        setValues({ ...recall.values, cwd: folderForTab(recall.cwd) });
+        if (token !== recallTokenRef.current) return;
+        if (activeTabIdRef.current !== tabId) return;
+        setValues((prev) => {
+          const cwd = folderForTab(prev.cwd) || folderForTab(recall.cwd);
+          const next = { ...recall.values, cwd };
+          if (tabId) {
+            const current = draftsRef.current[tabId];
+            if (current) draftsRef.current[tabId] = { ...current, values: next };
+            if (cwd) knownFoldersRef.current[tabId] = cwd;
+          }
+          return next;
+        });
       })
       .catch(() => {});
   }, [roleId, session]);
@@ -414,6 +493,16 @@ export function StartupForm({
     [savedTabs, activeTabId],
   );
 
+  useEffect(() => {
+    if (!activeTabId || !activeTabSummary || session) return;
+    const saved = folderForTab(activeTabSummary.cwd);
+    if (!saved) return;
+    if (!knownFoldersRef.current[activeTabId]) knownFoldersRef.current[activeTabId] = saved;
+    if (!folderForTab(valuesRef.current.cwd)) {
+      setValues((prev) => (folderForTab(prev.cwd) ? prev : { ...prev, cwd: saved }));
+    }
+  }, [activeTabId, activeTabSummary, session]);
+
   const canContinueSession = useMemo(() => {
     if (!activeTabSummary) return false;
     return (
@@ -423,16 +512,36 @@ export function StartupForm({
   }, [activeTabSummary]);
 
   useEffect(() => {
-    if (!hydratedRef.current || session || !role) return;
+    if (!hydratedRef.current || session || !role || !activeTabId) return;
+    const tabId = activeTabId;
+    const cwd = folderToWrite(knownFoldersRef.current[tabId] ?? "", formValues.cwd ?? "");
+    if (cwd) knownFoldersRef.current[tabId] = cwd;
+    const draft: TabDraft = {
+      roleId,
+      pickedRoleId,
+      values: { ...formValues, cwd },
+      transcript: savedTranscript,
+      newSessionOpen,
+      resendStartup,
+    };
+    draftsRef.current[tabId] = draft;
+    if (cwd && !folderForTab(formValues.cwd)) {
+      setValues((prev) => (folderForTab(prev.cwd) ? prev : { ...prev, cwd }));
+    }
     if (draftTimerRef.current) clearTimeout(draftTimerRef.current);
     draftTimerRef.current = setTimeout(() => {
-      const cwd = values.cwd ?? "";
-      saveFormDraft(roleId, cwd, formValues).catch(() => {});
-      if (activeTabId) {
-        syncActiveTabForm(activeTabId, roleId, cwd, formValues)
-          .then(() => refreshTabs())
-          .catch(() => {});
-      }
+      if (activeTabIdRef.current !== tabId) return;
+      const writeCwd = folderToWrite(
+        knownFoldersRef.current[tabId] ?? "",
+        draftsRef.current[tabId]?.values.cwd ?? "",
+      );
+      const payload = { ...(draftsRef.current[tabId]?.values ?? formValues), cwd: writeCwd };
+      if (writeCwd) saveFormDraft(roleId, writeCwd, payload).catch(() => {});
+      syncActiveTabForm(tabId, roleId, writeCwd, payload)
+        .then(() => {
+          if (activeTabIdRef.current === tabId) void refreshTabs();
+        })
+        .catch(() => {});
     }, 800);
     return () => {
       if (draftTimerRef.current) clearTimeout(draftTimerRef.current);
@@ -440,9 +549,12 @@ export function StartupForm({
   }, [
     formValues,
     roleId,
+    pickedRoleId,
+    savedTranscript,
+    newSessionOpen,
+    resendStartup,
     session,
     role,
-    values.cwd,
     activeTabId,
     refreshTabs,
   ]);
@@ -485,7 +597,7 @@ export function StartupForm({
     startLockRef.current = true;
     setBusy(true);
     const tabKey = activeTabId;
-    const resend = forceResend || resendStartup;
+    const resend = forceResend;
     const continuing = canContinueSession && !resend;
     if (tabKey) {
       patchRuntime(tabKey, (rt) => {
@@ -590,7 +702,6 @@ export function StartupForm({
     refreshTabs,
     activeTabId,
     canContinueSession,
-    resendStartup,
     preview,
     patchRuntime,
     savedTranscript,
@@ -612,6 +723,10 @@ export function StartupForm({
 
   const handleSelectTab = useCallback(
     async (tabId: string) => {
+      if (tabId === activeTabIdRef.current) return;
+      stashActiveTab();
+      const cached = draftsRef.current[tabId];
+      if (cached) applyDraft(tabId, cached);
       setBusy(true);
       try {
         const { tab } = await selectActiveTab(tabId);
@@ -621,7 +736,7 @@ export function StartupForm({
         setBusy(false);
       }
     },
-    [loadTabIntoForm, refreshTabs],
+    [applyDraft, loadTabIntoForm, refreshTabs, stashActiveTab],
   );
 
   const handleCloseTab = useCallback(
@@ -639,6 +754,10 @@ export function StartupForm({
           );
         }
         scratch.flush();
+        if (tabId === activeTabIdRef.current) stashActiveTab();
+        delete draftsRef.current[tabId];
+        delete knownFoldersRef.current[tabId];
+        delete scrollPositions.current[tabId];
         const snap = await closeTab(tabId);
         setRuntimes((prev) => {
           const next = { ...prev };
@@ -647,46 +766,46 @@ export function StartupForm({
         });
         setSavedTabs(snap.tabs);
         setClosedTabs(snap.closedTabs ?? []);
-        setActiveTabId(snap.activeTabId);
-        if (snap.activeTabId) {
+        if (snap.activeTabId && snap.activeTabId !== tabId) {
           const { tab } = await selectActiveTab(snap.activeTabId);
           loadTabIntoForm(tab);
-        } else {
+        } else if (!snap.activeTabId) {
           const recall = await getFormRecall(roleId);
           setValues({ ...recall.values, cwd: folderForTab(recall.cwd) });
           setSavedTranscript("");
+          setPickedRoleId(null);
+          setActiveTabId(null);
         }
       } finally {
         setBusy(false);
       }
     },
-    [roleId, loadTabIntoForm, runtimes, values.cwd, scratch],
+    [roleId, loadTabIntoForm, runtimes, values.cwd, scratch, stashActiveTab],
   );
 
   const handleNewTab = useCallback(async () => {
     setBusy(true);
     try {
+      stashActiveTab();
       await newDraftTab(roleId, "");
       const snap = await getAppState();
       setSavedTabs(snap.tabs);
+      setClosedTabs(snap.closedTabs ?? []);
       const newActive = snap.activeTabId;
       if (!newActive) return;
       const { tab } = await getTab(newActive);
-      if (tab.roleId !== roleId) {
-        skipRecallRef.current = true;
-      }
-      hydratedRef.current = true;
-      setRoleId(tab.roleId);
-      const recall = await getFormRecall(tab.roleId);
-      setValues({ ...recall.values, cwd: "" });
-      setPickedRoleId(null);
-      setActiveTabId(tab.id);
-      setSavedTranscript("");
-      setPreview(null);
+      applyDraft(tab.id, {
+        roleId: tab.roleId,
+        pickedRoleId: null,
+        values: { cwd: "" },
+        transcript: "",
+        newSessionOpen: false,
+        resendStartup: false,
+      });
     } finally {
       setBusy(false);
     }
-  }, [roleId]);
+  }, [applyDraft, roleId, stashActiveTab]);
 
   const cancelTurn = useCallback(async () => {
     if (!activeTabId) return;
@@ -874,6 +993,7 @@ export function StartupForm({
   const reopenTab = useCallback(async () => {
     setBusy(true);
     try {
+      stashActiveTab();
       const { tab } = await reopenClosedTab();
       await refreshTabs();
       loadTabIntoForm(tab);
@@ -883,7 +1003,7 @@ export function StartupForm({
     } finally {
       setBusy(false);
     }
-  }, [loadTabIntoForm, refreshTabs]);
+  }, [loadTabIntoForm, refreshTabs, stashActiveTab]);
 
   const onShortcut = useCallback(
     (match: ShortcutMatch) => {
@@ -1035,9 +1155,40 @@ export function StartupForm({
   };
 
   const setField = (key: string, value: string) => {
-    setValues((prev) => ({ ...prev, [key]: value }));
+    setValues((prev) => {
+      const next = { ...prev, [key]: value };
+      const tabId = activeTabIdRef.current;
+      if (tabId) {
+        const current = draftsRef.current[tabId] ?? captureDraft();
+        draftsRef.current[tabId] = { ...current, values: next };
+        if (key === "cwd" && folderForTab(value)) knownFoldersRef.current[tabId] = folderForTab(value);
+      }
+      return next;
+    });
     setPreview(null);
+    const tabId = activeTabIdRef.current;
+    if (tabId) previewsRef.current[tabId] = null;
   };
+
+  const openNewSessionForm = () => {
+    setNewSessionOpenState(true);
+    setResendStartup(true);
+    const tabId = activeTabIdRef.current;
+    if (!tabId) return;
+    const current = draftsRef.current[tabId] ?? captureDraft();
+    draftsRef.current[tabId] = { ...current, newSessionOpen: true, resendStartup: true };
+  };
+
+  useEffect(() => {
+    const el = emptyStateRef.current;
+    if (!el || !activeTabId || session || settingsOpen) return;
+    ignoreScrollRef.current = true;
+    el.scrollTop = scrollPositions.current[activeTabId] ?? 0;
+    const timer = window.setTimeout(() => {
+      ignoreScrollRef.current = false;
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [activeTabId, session, settingsOpen]);
 
   const errors: FieldError[] =
     (startResult?.errors?.length ?? 0) > 0
@@ -1054,8 +1205,22 @@ export function StartupForm({
   });
 
   const chooseRole = (id: string) => {
+    const tabId = activeTabIdRef.current;
+    const existing = tabId ? draftsRef.current[tabId] : null;
+    const keepSaved =
+      !!existing &&
+      (folderForTab(existing.values.cwd).length > 0 || existing.transcript.trim().length > 0);
+    skipRecallRef.current = keepSaved;
+    pickedRoleRef.current = id;
     setPickedRoleId(id);
     setRoleId(id);
+    if (tabId) {
+      draftsRef.current[tabId] = {
+        ...(existing ?? captureDraft()),
+        roleId: id,
+        pickedRoleId: id,
+      };
+    }
   };
 
   const tabBar = (
@@ -1135,24 +1300,17 @@ export function StartupForm({
     );
   }
 
+  const showFields = showStartupFields({ surface, newSessionOpen });
+  const displayedFolder = folderForTab(values.cwd);
+  const folderNotice = folderTabNotice({
+    status: activeTabSummary?.folderStatus ?? "",
+    savedCwd: activeTabSummary?.cwd ?? "",
+    displayedCwd: displayedFolder,
+  });
+
   const composerFields = (
     <div className="composer-fields">
-      <div className="field-label">
-        Working folder
-        <FolderPicker
-          value={folderForTab(values.cwd)}
-          unavailable={
-            !!activeTabSummary &&
-            folderForTab(activeTabSummary.cwd) === folderForTab(values.cwd) &&
-            activeTabSummary.folderStatus !== "ok" &&
-            folderForTab(values.cwd).length > 0
-          }
-          disabled={!!session || busy}
-          onChange={(path) => setField("cwd", path)}
-        />
-      </div>
-
-      {surface !== "pick" && visibleFields(role, formValues).map((field) => (
+      {showFields && visibleFields(role, formValues).map((field) => (
         <label key={field.key} className="field-label">
           {field.label}
           {field.required ? " *" : ""}
@@ -1190,7 +1348,7 @@ export function StartupForm({
         </label>
       ))}
 
-      {surface !== "pick" && errors.length > 0 && (
+      {showFields && errors.length > 0 && (
         <ul className="field-errors">
           {errors.map((e) => (
             <li key={`${e.key}-${e.message}`}>
@@ -1203,7 +1361,39 @@ export function StartupForm({
       </div>
   );
 
-  const idleActions = (
+  const restoreActions = surface === "restore" && (
+    <div className="restore-compact">
+      <div className="button-row">
+        {canContinueSession && (
+          <button
+            type="button"
+            className="primary-button"
+            onClick={() => void startSession(false)}
+            disabled={busy || !cliFound}
+          >
+            Continue session
+          </button>
+        )}
+        <button
+          type="button"
+          className="secondary-button"
+          aria-expanded={newSessionOpen}
+          onClick={openNewSessionForm}
+          disabled={busy}
+        >
+          Start new session
+        </button>
+      </div>
+      {savedTranscript && (
+        <details className="startup-form-details">
+          <summary>Last session transcript (read-only)</summary>
+          <pre className="mono-snippet transcript-preview">{savedTranscript}</pre>
+        </details>
+      )}
+    </div>
+  );
+
+  const idleActions = showFields && (
     <>
       <div className="button-row">
         <button
@@ -1217,31 +1407,28 @@ export function StartupForm({
         <button
           type="button"
           className="primary-button"
-          onClick={() => void startSession()}
+          onClick={() => void startSession(surface === "restore" && resendStartup)}
           disabled={busy || !cliFound}
         >
-          {canContinueSession && !resendStartup ? "Continue session" : "Start"}
+          Start
         </button>
-        {savedTranscript && (
-          <button
-            type="button"
-            className="secondary-button"
-            onClick={() => {
-              setResendStartup(true);
-              void startSession(true);
-            }}
-            disabled={busy || !cliFound}
-          >
-            Start new session
-          </button>
-        )}
       </div>
-      {canContinueSession && (
+      {surface === "restore" && (
         <label className="field-label continue-option">
           <input
             type="checkbox"
             checked={resendStartup}
-            onChange={(e) => setResendStartup(e.target.checked)}
+            onChange={(e) => {
+              const checked = e.target.checked;
+              setResendStartup(checked);
+              const tabId = activeTabIdRef.current;
+              if (tabId && draftsRef.current[tabId]) {
+                draftsRef.current[tabId] = {
+                  ...draftsRef.current[tabId],
+                  resendStartup: checked,
+                };
+              }
+            }}
             disabled={busy}
           />
           Re-send startup prompt (full restart with merged role template)
@@ -1378,37 +1565,47 @@ export function StartupForm({
       {settingsOpen ? (
         settingsPage
       ) : (
-        <div className="empty-state">
+        <div
+          className="empty-state"
+          ref={emptyStateRef}
+          key={activeTabId ?? "new"}
+          onScroll={(event) => {
+            if (ignoreScrollRef.current) return;
+            const tabId = activeTabIdRef.current;
+            if (tabId) scrollPositions.current[tabId] = event.currentTarget.scrollTop;
+          }}
+        >
           <div className="empty-state-card">
-            <div className="role-choices" role="group" aria-label="Role">
-              {roles.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  className="role-choice"
-                  aria-pressed={pickedRoleId === item.id}
-                  onClick={() => chooseRole(item.id)}
+            <div className="empty-state-header">
+              <div className="role-choices" role="group" aria-label="Role">
+                {roles.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className="role-choice"
+                    aria-pressed={pickedRoleId === item.id}
+                    onClick={() => chooseRole(item.id)}
+                    disabled={busy}
+                  >
+                    <span className="role-dot" style={{ background: item.color }} aria-hidden />
+                    {item.name}
+                  </button>
+                ))}
+              </div>
+              <div className="field-label">
+                Working folder
+                <FolderPicker
+                  value={displayedFolder}
+                  unavailable={folderNotice?.tone === "error"}
                   disabled={busy}
-                >
-                  <span className="role-dot" style={{ background: item.color }} aria-hidden />
-                  {item.name}
-                </button>
-              ))}
+                  onChange={(path) => setField("cwd", path)}
+                />
+              </div>
+              {folderNotice?.tone === "error" && <p className="error">{folderNotice.text}</p>}
             </div>
+            {restoreActions}
             {composerFields}
-            {surface !== "pick" && idleActions}
-            {surface === "restore" && savedTranscript && (
-              <details className="startup-form-details" open>
-                <summary>Last session transcript (read-only)</summary>
-                <pre className="mono-snippet transcript-saved">{savedTranscript}</pre>
-              </details>
-            )}
-            {activeTabSummary &&
-              folderStatusMessage(activeTabSummary.folderStatus, activeTabSummary.cwd) && (
-                <p className="error">
-                  {folderStatusMessage(activeTabSummary.folderStatus, activeTabSummary.cwd)}
-                </p>
-              )}
+            {idleActions}
             {transcriptSaveError && (
               <p className="error">Could not save the transcript: {transcriptSaveError}</p>
             )}

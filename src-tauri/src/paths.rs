@@ -30,7 +30,8 @@ impl FolderError {
 
     pub fn status_code(&self) -> &'static str {
         match self {
-            FolderError::Empty | FolderError::Missing { .. } => "missing",
+            FolderError::Empty => "empty",
+            FolderError::Missing { .. } => "missing",
             FolderError::NotDirectory { .. } => "not-a-directory",
             FolderError::Unreadable { .. } => "unreadable",
         }
@@ -155,6 +156,9 @@ mod tests {
         );
         assert!(validate_working_folder(&dir.display().to_string()).is_ok());
         let _ = fs::remove_dir_all(dir);
+        assert_eq!(folder_status_code(""), "empty");
+        assert_eq!(folder_status_code("   "), "empty");
+        assert_eq!(folder_status_code(&missing.display().to_string()), "missing");
     }
 
     #[test]

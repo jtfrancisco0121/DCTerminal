@@ -8,7 +8,7 @@
 
 | Field | Value |
 |--------|--------|
-| **Last updated** | 2026-10-06 — workspace opens on a blank tab; role details and diagnostics live in Settings |
+| **Last updated** | 2026-10-06 — restored tabs keep their own folder and scroll; startup fields stay collapsed until Start new session |
 | **Branch** | `cursor/scratch-keymap-chrome-75c2` |
 | **Current phase** | Finish MVP vertical slice (see [MVP-FINISH.md](./MVP-FINISH.md)) |
 | **Active task** | Installers / live Windows acceptance. E2–E5 controls are in this branch. |

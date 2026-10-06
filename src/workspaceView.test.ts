@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   appRoute,
+  folderToWrite,
+  mergeTabDraft,
+  rememberScroll,
   rolePermissionSummary,
+  scrollForTab,
+  showStartupFields,
+  switchTabForm,
+  tabFormFromRecord,
   tabSurface,
   toggleSettings,
 } from "./workspaceView";
@@ -72,6 +79,86 @@ describe("workspace routing", () => {
         folder: "C:\\Repos\\Demo",
       }),
     ).toBe("session");
+  });
+});
+
+describe("per-tab form state", () => {
+  const planner = tabFormFromRecord({
+    roleId: "role_planner",
+    cwd: "C:\\Users\\user\\Documents\\Projects\\personal-hub",
+    answers: { title: "Plan the hub", cwd: "ignored-when-tab-cwd-is-set" },
+    transcript: "planner transcript",
+  });
+  const implementer = tabFormFromRecord({
+    roleId: "role_implementer",
+    cwd: "C:\\Repos\\DCTerminal",
+    answers: { title: "Build it" },
+    transcript: "implementer transcript",
+  });
+
+  it("keeps role, folder, and fields isolated across tab switches", () => {
+    let forms: Record<string, typeof planner> = {};
+    let step = switchTabForm(forms, null, null, "tab_planner", planner);
+    forms = step.forms;
+    const edited = {
+      ...forms.tab_planner,
+      values: { ...forms.tab_planner.values, title: "Plan edited" },
+    };
+    forms = { ...forms, tab_planner: edited };
+    step = switchTabForm(forms, "tab_planner", edited, "tab_implementer", implementer);
+    expect(step.active.roleId).toBe("role_implementer");
+    expect(step.active.values.cwd).toBe("C:\\Repos\\DCTerminal");
+    expect(step.active.values.title).toBe("Build it");
+    expect(step.active.pickedRoleId).toBe("role_implementer");
+    step = switchTabForm(
+      step.forms,
+      "tab_implementer",
+      step.active,
+      "tab_planner",
+      planner,
+    );
+    expect(step.active.roleId).toBe("role_planner");
+    expect(step.active.values.title).toBe("Plan edited");
+    expect(step.active.values.cwd).toContain("personal-hub");
+    expect(step.forms.tab_implementer.values.title).toBe("Build it");
+    expect(step.forms.tab_implementer.values.cwd).toBe("C:\\Repos\\DCTerminal");
+  });
+
+  it("fills a blank tab cwd from the saved answers and does not drop a known folder", () => {
+    const restored = tabFormFromRecord({
+      roleId: "role_planner",
+      cwd: "",
+      answers: {
+        cwd: "C:\\Users\\user\\Documents\\Projects\\personal-hub",
+        title: "Hub",
+      },
+      transcript: "saved",
+    });
+    expect(restored.values.cwd).toContain("personal-hub");
+    expect(restored.pickedRoleId).toBe("role_planner");
+    expect(restored.newSessionOpen).toBe(false);
+    const merged = mergeTabDraft(
+      { ...restored, values: { ...restored.values, cwd: "" } },
+      restored,
+    );
+    expect(merged.values.cwd).toContain("personal-hub");
+    expect(folderToWrite("C:\\Repos\\Planner", "")).toBe("C:\\Repos\\Planner");
+    expect(folderToWrite("C:\\Repos\\Planner", "C:\\Other")).toBe("C:\\Other");
+    expect(folderToWrite("", "")).toBe("");
+  });
+
+  it("restores each tab's scroll position", () => {
+    expect(scrollForTab({}, "tab_planner")).toBe(0);
+    const positions = rememberScroll(rememberScroll({}, "tab_planner", 240), "tab_implementer", 12);
+    expect(scrollForTab(positions, "tab_planner")).toBe(240);
+    expect(scrollForTab(positions, "tab_implementer")).toBe(12);
+  });
+
+  it("keeps restored startup fields collapsed until a new session is chosen", () => {
+    expect(showStartupFields({ surface: "pick", newSessionOpen: false })).toBe(false);
+    expect(showStartupFields({ surface: "compose", newSessionOpen: false })).toBe(true);
+    expect(showStartupFields({ surface: "restore", newSessionOpen: false })).toBe(false);
+    expect(showStartupFields({ surface: "restore", newSessionOpen: true })).toBe(true);
   });
 });
 

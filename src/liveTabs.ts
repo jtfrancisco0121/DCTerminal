@@ -138,7 +138,8 @@ export function attentionTabIds(runtimes: Record<string, TabRuntime>): string[] 
 }
 
 export function folderStatusMessage(status: string, cwd: string): string | null {
-  if (status === "ok" || status === "") return null;
+  if (status === "ok" || status === "" || status === "empty") return null;
+  if (!cwd.trim()) return null;
   if (status === "not-a-directory") {
     return `Working folder is a file, not a directory: ${cwd}`;
   }
@@ -146,4 +147,26 @@ export function folderStatusMessage(status: string, cwd: string): string | null 
     return `Working folder is not readable: ${cwd}`;
   }
   return `Working folder was not found (it may have been moved or deleted): ${cwd}`;
+}
+
+/**
+ * Folder line for the open tab. An empty path is "Choose a folder", never
+ * the not-found error. A status computed for a different path is ignored.
+ */
+export function folderTabNotice(input: {
+  status: string;
+  savedCwd: string;
+  displayedCwd: string;
+}): { tone: "hint" | "error"; text: string } | null {
+  const displayed = input.displayedCwd.trim();
+  const saved = input.savedCwd.trim();
+  if (!displayed) {
+    if (saved) return { tone: "hint", text: "Choose a folder" };
+    if (input.status === "ok" || input.status === "") return null;
+    return { tone: "hint", text: "Choose a folder" };
+  }
+  if (saved !== displayed) return null;
+  const message = folderStatusMessage(input.status, displayed);
+  if (!message) return null;
+  return { tone: "error", text: message };
 }
