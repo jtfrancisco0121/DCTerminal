@@ -15,8 +15,9 @@ Checklist for the ADE-inspired controls pass. Tick items in this file after they
   *Accept:* Background tab firing those events shows toast; focused window stays quiet (or quieter per toggle); Settings Notifications can disable.
   *Done (`a0dfece`):* chat (ACP) tabs only — terminal tabs are not tracked yet (F2 territory). "Asks a question" = turn ends on a `?` line, or a `cursor/create_plan` review; `cursor/ask_question` is still auto-cancelled by the backend. Mac smoke still needed for the OS permission prompt and focus/blur behavior in WKWebView.
 
-- [ ] **F2. Tab status** — Pulse while busy; unseen-finished dot; needs-you flag; rename tab; jump-to-tab search (Mod+K or similar).  
+- [x] **F2. Tab status** — Pulse while busy; unseen-finished dot; needs-you flag; rename tab; jump-to-tab search (Mod+K or similar).  
   *Accept:* Busy/finished/needs-you visible on chips; rename persists; palette/switcher finds tabs by name/folder.
+  *Done (`68f8595`):* chat tabs use ACP signals (prompt in flight, permission, plan, finished/question/error). Terminal tabs get busy + finished dot from output activity (3 s quiet, keystroke echo and terminal query replies ignored; no finished dot before the user typed). Rename is inline (double-click or F2) and survives form edits, Start, and close/reopen (`customLabel` in `state.json`). Go to tab stays on Mod+P (Mod+Shift is reserved for the terminal); Mod+K palette also matches tabs by folder. No toasts for terminal tabs (F1 scope unchanged).
 
 - [ ] **F3. Git worktree per tab** — "New tab in worktree…" creates/picks a branch, `git worktree add` under `<repo>-worktrees/<branch>` only on user ask; show branch in header; remove with confirm and refuse dirty trees.  
   *Accept:* Worktree tab cwd is the sibling folder; header shows branch; remove confirms and blocks on uncommitted changes; never runs unless user chose the action.
