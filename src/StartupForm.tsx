@@ -21,7 +21,9 @@ import {
   getRole,
   listenPromptFinished,
   listenSessionUpdates,
+  listCursorCliHistory,
   newDraftTab,
+  openInCursorCli,
   roleSessionStart,
   saveFormDraft,
   selectActiveTab,
@@ -106,6 +108,13 @@ import {
 } from "./scratch/pad";
 import { createTurnWaiter } from "./scratch/turnWait";
 import { SessionTerminal } from "./SessionTerminal";
+import { CursorHistoryList } from "./components/CursorHistoryList";
+import {
+  resumeIdForStart,
+  segmentsAfterResume,
+  segmentsWhileStarting,
+  type CursorHistoryEntry,
+} from "./cursorHistory";
 import { TabBar } from "./TabBar";
 import { closeSplit, emptySplit, openSplit, tabAtIndex, type SplitState } from "./tabChrome";
 import { useAppShortcuts } from "./useAppShortcuts";
@@ -177,6 +186,9 @@ export function StartupForm({
   const [pickedRoleId, setPickedRoleId] = useState<string | null>(null);
   const [newSessionOpen, setNewSessionOpenState] = useState(false);
   const [transcriptSaveError, setTranscriptSaveError] = useState<string | null>(null);
+  const [historyEntries, setHistoryEntries] = useState<CursorHistoryEntry[]>([]);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [cliLaunchNote, setCliLaunchNote] = useState<string | null>(null);
   const [historyCursor, setHistoryCursor] = useState(-1);
   const [chain, setChain] = useState<ChainCursor | null>(null);
   const [resendStartup, setResendStartup] = useState(false);
@@ -537,9 +549,34 @@ export function StartupForm({
     if (!activeTabSummary) return false;
     return (
       activeTabSummary.phase === "awaitingInput" &&
-      (activeTabSummary.startupPromptSent || activeTabSummary.hasTranscript)
+      !!activeTabSummary.acpSessionId
     );
   }, [activeTabSummary]);
+
+  const historyFolder = folderForTab(values.cwd);
+  useEffect(() => {
+    if (session || !historyFolder) {
+      setHistoryEntries([]);
+      setHistoryError(null);
+      return;
+    }
+    let cancelled = false;
+    listCursorCliHistory(historyFolder)
+      .then((rows) => {
+        if (!cancelled) {
+          setHistoryEntries(rows);
+          setHistoryError(null);
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setHistoryError(err instanceof Error ? err.message : String(err));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [historyFolder, session]);
 
   useEffect(() => {
     if (!hydratedRef.current || session || !role || !activeTabId) return;
@@ -620,53 +657,60 @@ export function StartupForm({
     resumedSession: false,
     skippedStartupInjection: false,
     folderWarning: null,
+    loadedViaSessionLoad: false,
+    replayMessageCount: 0,
+    replayTruncated: false,
+    replay: [],
   });
 
-  const startSession = useCallback(async (forceResend = false) => {
+  const startSession = useCallback(async (
+    forceResend = false,
+    resume?: {
+      sessionId?: string;
+      tabId?: string;
+      cwd?: string;
+      /** Continue button: load the id stored on this tab. Start new session does not. */
+      resumeStored?: boolean;
+    },
+  ) => {
     if (startLockRef.current) return;
     startLockRef.current = true;
     setBusy(true);
-    const tabKey = activeTabId;
+    const tabKey = resume?.tabId ?? activeTabId;
     const resend = forceResend;
-    const continuing = canContinueSession && !resend;
+    const resumeId = resumeIdForStart({
+      explicitSessionId: resume?.sessionId,
+      storedSessionId: activeTabSummary?.acpSessionId,
+      resumeStored: resume?.resumeStored,
+      forceResend: resend,
+    });
+    const continuing = !!resumeId;
+    const startValues = resume?.cwd
+      ? { ...formValues, cwd: resume.cwd }
+      : formValues;
     if (tabKey) {
-      patchRuntime(tabKey, (rt) => {
-        const prior =
-          rt.segments.length > 0
-            ? rt.segments
-            : savedTranscript
-              ? [
-                  {
-                    id: "saved_transcript",
-                    kind: "agent" as const,
-                    text: savedTranscript,
-                  },
-                ]
-              : [];
-        return {
-          ...rt,
-          accepting: true,
-          promptError: null,
-          agentExited: false,
-          startResult: null,
-          lastResult: null,
-          segments: [
-            ...prior,
-            streamSegmentFromSystemMessage(
-              continuing
-                ? "Reconnecting to agent (startup prompt skipped). Send a follow-up below to continue."
-                : "Connecting to agent and sending startup prompt…",
-            ),
-          ],
-        };
-      });
+      patchRuntime(tabKey, (rt) => ({
+        ...rt,
+        accepting: true,
+        promptError: null,
+        agentExited: false,
+        startResult: null,
+        lastResult: null,
+        segments: segmentsWhileStarting({
+          continuing,
+          sessionId: resumeId,
+          savedTranscript,
+          existing: rt.segments,
+        }),
+      }));
     }
     try {
       const result = await roleSessionStart(
         roleId,
-        formValues,
-        activeTabId,
+        startValues,
+        tabKey,
         resend,
+        resumeId,
       );
       const targetId = result.tabId ?? tabKey;
       if (result.errors.length > 0 || !result.session || !targetId) {
@@ -681,10 +725,14 @@ export function StartupForm({
       }
       setActiveTabId(targetId);
       patchRuntime(targetId, (rt) => {
-        let segments = rt.segments.filter(
-          (s) =>
-            s.kind !== "system" || !s.text.includes("Connecting to agent"),
-        );
+        let segments = segmentsAfterResume({
+          segments: rt.segments,
+          loaded: result.loadedViaSessionLoad,
+          replay: result.replay ?? [],
+          replayMessageCount: result.replayMessageCount ?? 0,
+          savedTranscript,
+          folderWarning: result.folderWarning,
+        });
         if (result.injectionInFlight && !continuing) {
           const startupText = preview?.merged?.text?.trim();
           segments = startupText
@@ -694,10 +742,12 @@ export function StartupForm({
                 streamSegmentFromSystemMessage("Startup prompt sent to agent."),
               ];
         }
-        if (result.folderWarning) {
+        if (result.replayTruncated) {
           segments = appendStreamSegment(
             segments,
-            streamSegmentFromSystemMessage(result.folderWarning),
+            streamSegmentFromSystemMessage(
+              "The CLI replayed more history than this tab kept. The live session is still the loaded ACP thread.",
+            ),
           );
         }
         return {
@@ -731,11 +781,43 @@ export function StartupForm({
     formValues,
     refreshTabs,
     activeTabId,
-    canContinueSession,
+    activeTabSummary,
     preview,
     patchRuntime,
     savedTranscript,
   ]);
+
+  const openCursorCli = useCallback(async (sessionId: string, cwd: string) => {
+    setCliLaunchNote(null);
+    try {
+      const where = await openInCursorCli(sessionId, cwd);
+      setCliLaunchNote(`Opened ${where} with agent --resume for this session.`);
+    } catch (err: unknown) {
+      setCliLaunchNote(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+
+  const resumeHistoryEntry = useCallback(
+    async (entry: CursorHistoryEntry) => {
+      if (startLockRef.current) return;
+      setBusy(true);
+      try {
+        const { tab } = await newDraftTab(roleId, entry.cwd);
+        activeTabIdRef.current = tab.id;
+        setActiveTabId(tab.id);
+        setValues((prev) => ({ ...prev, cwd: entry.cwd }));
+        await startSession(false, {
+          sessionId: entry.id,
+          tabId: tab.id,
+          cwd: entry.cwd,
+        });
+      } catch (err: unknown) {
+        setHistoryError(err instanceof Error ? err.message : String(err));
+        setBusy(false);
+      }
+    },
+    [roleId, startSession],
+  );
 
   const stopSession = useCallback(async () => {
     if (!activeTabId) return;
@@ -1600,10 +1682,25 @@ export function StartupForm({
           <button
             type="button"
             className="primary-button"
-            onClick={() => void startSession(false)}
+            onClick={() => void startSession(false, { resumeStored: true })}
             disabled={busy || !cliFound}
           >
             Continue session
+          </button>
+        )}
+        {activeTabSummary?.acpSessionId && (
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={busy}
+            onClick={() =>
+              void openCursorCli(
+                activeTabSummary.acpSessionId ?? "",
+                folderForTab(values.cwd) || activeTabSummary.cwd,
+              )
+            }
+          >
+            Open in Cursor CLI
           </button>
         )}
         <button
@@ -1616,12 +1713,18 @@ export function StartupForm({
           Start new session
         </button>
       </div>
+      {savedTranscript && !activeTabSummary?.acpSessionId && (
+        <p className="hint">
+          This tab has local scrollback but no ACP session id, so Continue cannot resume the thread.
+        </p>
+      )}
       {savedTranscript && (
         <details className="startup-form-details">
           <summary>Last session transcript (read-only)</summary>
           <pre className="mono-snippet transcript-preview">{savedTranscript}</pre>
         </details>
       )}
+      {cliLaunchNote && <p className="hint">{cliLaunchNote}</p>}
     </div>
   );
 
@@ -1734,6 +1837,9 @@ export function StartupForm({
               historyCursor={historyCursor}
               onHistoryCursor={setHistoryCursor}
               handoff={handoffOffer}
+              onOpenInCursorCli={() =>
+                void openCursorCli(session.sessionId, session.cwd)
+              }
             />
           }
           secondary={
@@ -1859,6 +1965,15 @@ export function StartupForm({
             </div>
             {restoreActions}
             {composerFields}
+            {historyFolder && (
+              <CursorHistoryList
+                entries={historyEntries}
+                error={historyError}
+                busy={busy}
+                onResume={(entry) => void resumeHistoryEntry(entry)}
+                onOpenCli={(entry) => void openCursorCli(entry.id, entry.cwd)}
+              />
+            )}
             {idleActions}
             {transcriptSaveError && (
               <p className="error">Could not save the transcript: {transcriptSaveError}</p>

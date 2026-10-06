@@ -19,6 +19,7 @@ pub struct TabSummary {
     pub has_transcript: bool,
     pub folder_status: String,
     pub color: String,
+    pub acp_session_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -193,6 +194,7 @@ fn snapshot_from_store(store: &StateStore) -> AppStateSnapshot {
                     }),
                 folder_status: folder_status_code(&t.cwd),
                 color: t.color.clone().unwrap_or_default(),
+                acp_session_id: t.session.as_ref().map(|session| session.acp_session_id.clone()),
             })
             .collect(),
         closed_tabs: store

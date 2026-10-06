@@ -38,12 +38,10 @@ Beyond `sessionId`, the result includes:
 
 **Implication:** `session/set_mode` works as documented; default mode may already be `agent` after `session/new`.
 
-## Not yet probed
+## Not yet probed on a live CLI
 
-- `session/prompt`, `session/cancel`, `session/update` streaming
-- `session/request_permission`, `cursor/create_plan`, `cursor/ask_question`
-- `session/load`, `session/list`
-- Hang / malformed line edge cases
+- `session/load` and `session/list` against a logged-in CLI. The captured `initialize` advertises both `loadSession` and `sessionCapabilities.list`, and not `sessionCapabilities.resume`. What that does on disk is recorded in [cursor-cli-history.md](./cursor-cli-history.md). Probe: `cargo test live_cli_history_probe -- --ignored --nocapture --test-threads=1` from `src-tauri/`.
+- Hang / malformed line edge cases beyond the unit tests
 
 ## Client implementation notes
 

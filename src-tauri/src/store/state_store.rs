@@ -155,7 +155,7 @@ impl StateStore {
         for tab in &mut self.data.tabs {
             if tab.phase == "running" {
                 tab.phase = TabPhase::Running.after_session_stopped().as_store_str().to_string();
-                tab.session = None;
+                // The process is gone. The ACP session id stays so Continue can session/load.
                 changed = true;
             }
         }
@@ -177,7 +177,6 @@ impl StateStore {
             .find(|t| t.id == tab_id)
             .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
         tab.phase = TabPhase::Running.after_session_stopped().as_store_str().to_string();
-        tab.session = None;
         if let Some(text) = transcript {
             let trimmed = text.trim();
             if !trimmed.is_empty() {
@@ -219,6 +218,8 @@ impl StateStore {
                 merged_prompt_hash: tab.merged_prompt_hash.clone(),
                 startup_prompt_sent: tab.startup_prompt_sent,
                 closed_at: Utc::now().to_rfc3339(),
+                acp_session_id: tab.session.as_ref().map(|session| session.acp_session_id.clone()),
+                mode_id: tab.session.as_ref().map(|session| session.mode_id.clone()),
             },
         );
         self.data.closed_tabs.truncate(15);
@@ -247,6 +248,16 @@ impl StateStore {
         }
         let has_history = closed.startup_prompt_sent
             || transcript.as_ref().is_some_and(|text| !text.trim().is_empty());
+        let mode_id = closed
+            .mode_id
+            .clone()
+            .unwrap_or_else(|| closed.role_snapshot.mode.clone());
+        let session = closed.acp_session_id.as_ref().map(|id| TabSessionRef {
+            acp_session_id: id.clone(),
+            mode_id,
+            injection_pending: false,
+            injected_at: None,
+        });
         let record = TabRecord {
             id: closed.id.clone(),
             label: closed.label,
@@ -259,7 +270,7 @@ impl StateStore {
             phase: if has_history { "awaitingInput" } else { "draft" }.to_string(),
             order: next_tab_order(&self.data),
             created_at: Utc::now().to_rfc3339(),
-            session: None,
+            session,
             transcript,
             startup_prompt_sent: closed.startup_prompt_sent || has_history,
             color: closed.color,
@@ -575,6 +586,70 @@ mod tests {
         assert!(restored.session.is_none());
         assert_eq!(restored.phase, "awaitingInput");
         assert_eq!(restored.transcript.as_deref(), Some("saved scrollback"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stop_and_relaunch_keep_the_acp_session_id() {
+        let dir = std::env::temp_dir().join(format!(
+            "dcterminal_keep_sid_{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let role = crate::roles::Role {
+            id: "role_dev".to_string(),
+            name: "Developer".to_string(),
+            template_text: String::new(),
+            template_version: 1,
+            template_hash: String::new(),
+            schema_template_hash: String::new(),
+            default_mode: "agent".to_string(),
+            injection: "send_on_start".to_string(),
+            color: "#3fb950".to_string(),
+            is_built_in: true,
+            fields: vec![],
+            updated_at: None,
+        };
+        let mut store = StateStore {
+            path: dir.join("state.json"),
+            data: AppStateFile::default(),
+        };
+        let id = store.create_draft_tab(&role, r"C:\Work\App", true).unwrap();
+        store
+            .promote_tab_to_running(
+                Some(&id),
+                &role,
+                &HashMap::from([("cwd".to_string(), r"C:\Work\App".to_string())]),
+                r"C:\Work\App",
+                "merged",
+                TabSessionRef {
+                    acp_session_id: "11111111-2222-3333-4444-555555555555".to_string(),
+                    mode_id: "agent".to_string(),
+                    injection_pending: false,
+                    injected_at: None,
+                },
+            )
+            .unwrap();
+        store
+            .mark_tab_awaiting_input(&id, Some("scrollback".into()))
+            .unwrap();
+        assert_eq!(
+            store.tab_by_id(&id).unwrap().session.as_ref().unwrap().acp_session_id,
+            "11111111-2222-3333-4444-555555555555"
+        );
+        store.data.tabs[0].phase = "running".to_string();
+        store.reconcile_stale_running_tabs().unwrap();
+        assert_eq!(store.data.tabs[0].phase, "awaitingInput");
+        assert_eq!(
+            store.data.tabs[0].session.as_ref().unwrap().acp_session_id,
+            "11111111-2222-3333-4444-555555555555"
+        );
+        store.close_tab(&id).unwrap();
+        let restored = store.reopen_closed(Some("scrollback".into())).unwrap();
+        assert_eq!(
+            restored.session.as_ref().unwrap().acp_session_id,
+            "11111111-2222-3333-4444-555555555555"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }

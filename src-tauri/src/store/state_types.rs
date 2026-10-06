@@ -40,6 +40,11 @@ pub struct ClosedTabRecord {
     pub merged_prompt_hash: String,
     pub startup_prompt_sent: bool,
     pub closed_at: String,
+    /// Kept so a reopened tab can `session/load` the same ACP thread.
+    #[serde(default)]
+    pub acp_session_id: Option<String>,
+    #[serde(default)]
+    pub mode_id: Option<String>,
 }
 
 /// Persisted tab snapshot (blueprint §17.2 `state.json`).

@@ -86,7 +86,7 @@ Checklist aligned with [DCTerminal-Project-Blueprint.md](./DCTerminal-Project-Bl
 
 ## Phase 6+ — P2 backlog (after MVP)
 
-- [ ] `session/load` resume
+- [x] `session/load` resume (Continue). Live Windows probe still required — [cursor-cli-history.md](./cursor-cli-history.md)
 - [ ] Plan hand-off (Planner → Implementer / PR Reviewer)
 - [ ] Custom roles, keymap UI, notifications, transcript export, input history
 
