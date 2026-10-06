@@ -11,8 +11,12 @@
     "dev:stable": "npm run build && tauri dev --no-dev-server",
     "build": "tsc && vite build",
     "test": "vitest run",
+    "check": "node scripts/local-check.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
+    "release:win": "tauri build --bundles nsis,msi",
+    "release:mac": "tauri build --bundles app,dmg",
+    "release:linux": "tauri build --bundles deb,appimage",
     "build:roles": "cargo run --bin build_roles_seed --manifest-path src-tauri/Cargo.toml"
   },
   "dependencies": {
@@ -32,6 +36,6 @@
     "@vitejs/plugin-react": "^6.0.2",
     "typescript": "~6.0.3",
     "vite": "^8.0.16",
-    "vitest": "^3.2.4"
+    "vitest": "^4.1.11"
   }
 }
