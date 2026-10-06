@@ -11,8 +11,9 @@ Checklist for the ADE-inspired controls pass. Tick items in this file after they
 
 ## Features
 
-- [ ] **F1. Background-tab notifications** — System + in-app toast when an agent finishes a turn, needs permission, or asks a question; respect window focus; Settings toggle.  
+- [x] **F1. Background-tab notifications** — System + in-app toast when an agent finishes a turn, needs permission, or asks a question; respect window focus; Settings toggle.  
   *Accept:* Background tab firing those events shows toast; focused window stays quiet (or quieter per toggle); Settings Notifications can disable.
+  *Done (`a0dfece`):* chat (ACP) tabs only — terminal tabs are not tracked yet (F2 territory). "Asks a question" = turn ends on a `?` line, or a `cursor/create_plan` review; `cursor/ask_question` is still auto-cancelled by the backend. Mac smoke still needed for the OS permission prompt and focus/blur behavior in WKWebView.
 
 - [ ] **F2. Tab status** — Pulse while busy; unseen-finished dot; needs-you flag; rename tab; jump-to-tab search (Mod+K or similar).  
   *Accept:* Busy/finished/needs-you visible on chips; rename persists; palette/switcher finds tabs by name/folder.

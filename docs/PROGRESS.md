@@ -8,10 +8,10 @@
 
 | Field | Value |
 |--------|--------|
-| **Last updated** | 2026-10-06 — Combined branch: live split view, file panel, and model picker (#10) plus permission fixes from live Mac captures (#9): enrich rawInput from tool-call cache / title, delete+fetch display, unrestricted banner, Settings > Permissions note. Draft PR, not merged. |
-| **Branch** | `feat/split-files-models-permissions` |
+| **Last updated** | 2026-10-06 — Improvements pass (PR #12, `feat/improvements-plan`): **F1 background-tab notifications** landed (toasts + OS notifications, Settings > Notifications). F2+ not started. |
+| **Branch** | `feat/improvements-plan` (draft PR #12) |
 | **Current phase** | Finish MVP vertical slice (see [MVP-FINISH.md](./MVP-FINISH.md)) |
-| **Active task** | Mac verification of permission UX against a logged-in Cursor CLI. |
+| **Active task** | [IMPROVEMENTS-PLAN.md](./IMPROVEMENTS-PLAN.md): F1 done; next F2 (tab status). Mac smoke of F1 notifications pending. |
 
 ## Product-ready today
 
@@ -27,6 +27,7 @@
 - **Live split view** — Mod+\\ (split right) or Mod+Alt+\\ (split down) opens a tab picker. The second pane shows that tab live: a terminal tab is the same xterm on the same PTY (no second process), and a chat tab is the live chat with its own composer and permission cards. Mod+Alt+S swaps the panes, Mod+Alt+O moves focus, Mod+Alt+W closes the split. Keys go only to the focused pane (blue ring). The divider is resizable. Split mode, the second tab, and the size are saved in `state.json` (`layout`) and come back after a restart. Selecting the second pane's tab in the tab bar swaps the panes, so one tab is never shown twice. Cmd on macOS, Ctrl elsewhere. The chords are listed in Settings > Keyboard shortcuts
 - **File panel** — Mod+B (or the command palette) shows a tree of the active tab's folder. Folders load when opened. `.gitignore` is respected; `.git`, `node_modules`, and `target` are hidden. A folder shows at most 1000 entries. Preview is read-only with syntax highlighting (highlight.js core, 24 languages) and image preview; text over 1 MB and images over 8 MB are not loaded. **Edit** then Mod+S (or Save) writes the file. The Rust side canonicalizes every path, rejects `..`, refuses symlinks that leave the folder, writes only existing files inside the tab's folder, and refuses a save when the file's mtime changed since it was opened (Overwrite or Reload). **Reveal in Finder** (Show in folder elsewhere), **Copy path**, and **Insert @file** (adds `@path` to the tab's scratch pad)
 - **Model picker** — a global default model and per-role defaults (including Cursor CLI tabs) in Settings > Models, and a per-tab override from the tab header, the terminal toolbar, the second pane, or next to Start on a blank tab. The default is `composer-2.5`. The list comes from `agent --list-models` (cached 24 h in `models-cache.json`, with a built-in fallback list) and is searchable; Fast variants have a badge. Terminal tabs pass `--model <id>`. A live chat switches with `session/set_config_option` (model category) or `session/set_model` when the agent advertises them; otherwise the agent restarts with `--model` and the same session is reopened with `session/load`. The per-tab choice is saved in `state.json`
+- **Agent notifications (F1)** — when a chat tab finishes a turn, ends on a question, needs permission, sends a plan for review, or fails, DCTerminal shows a toast (bottom right; click opens the tab). The tab on screen stays quiet while the window is focused. Other tabs get a toast. When DCTerminal is not the focused window, every tab raises an OS notification (`tauri-plugin-notification`) and a toast that waits until focus returns. Settings > Notifications: master switch, system notifications, focused-window toasts, and **Send test notification**; saved in app data `settings.json` (`notifications`). Terminal tabs are not tracked yet
 - **Release UI** — dev probes / duplicate dev session hidden (`import.meta.env.DEV` only)
 
 ## Locked product decisions (2026-10-06)
