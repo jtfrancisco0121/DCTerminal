@@ -134,17 +134,25 @@ export function tabSurface(input: {
   return "pick";
 }
 
+const BUILT_IN_PERMISSION_SUMMARY: Record<string, string> = {
+  role_implementer: "Auto-allow write, shell, and MCP (allow-once).",
+  role_developer: "Auto-allow write, shell, and MCP (allow-once).",
+  role_pr_reviewer:
+    "Allow shell and MCP. Deny file writes. Ask when a request is ambiguous.",
+  role_codebase_audit:
+    "Allow shell and MCP. Deny file writes. Ask when a request is ambiguous.",
+  role_planner: "Deny write and shell. Allow MCP. Ask when a request is ambiguous.",
+  role_general: "Deny write and shell. Allow MCP. Ask when a request is ambiguous.",
+  role_recommendation:
+    "Deny write and shell. Allow MCP. Ask when a request is ambiguous.",
+};
+
 /** Short permission line for the settings role list. Matches the Rust policy. */
 export function rolePermissionSummary(roleId: string): string {
-  const id = roleId.trim().toLowerCase().replace(/-/g, "_");
-  if (id.includes("implementer") || id.includes("developer")) {
-    return "Auto-allow write, shell, and MCP (allow-once).";
+  const id = roleId.trim();
+  if (BUILT_IN_PERMISSION_SUMMARY[id]) {
+    return BUILT_IN_PERMISSION_SUMMARY[id];
   }
-  if (id.includes("review") || id.includes("audit")) {
-    return "Allow shell and MCP. Deny file writes. Ask when a request is ambiguous.";
-  }
-  if (id.includes("planner") || id.includes("general") || id.includes("recommendation")) {
-    return "Deny write and shell. Allow MCP. Ask when a request is ambiguous.";
-  }
-  return "Ask for every permission.";
+  const normalized = id.toLowerCase().replace(/-/g, "_");
+  return BUILT_IN_PERMISSION_SUMMARY[normalized] ?? "Ask for every permission.";
 }

@@ -309,6 +309,26 @@ mod tests {
     }
 
     #[test]
+    fn built_in_role_templates_fit_terminal_inline_prompt_limit() {
+        use crate::roles::RolesFile;
+        use crate::store::{read_json, seed_output_path};
+        let seed: RolesFile = read_json(&seed_output_path()).expect("roles.seed.json");
+        const HEADROOM: usize = 1_500;
+        let limit = MAX_PROMPT_ARG_BYTES.saturating_sub(HEADROOM);
+        for role in &seed.roles {
+            let bytes = role.template_text.len();
+            assert!(
+                bytes <= limit,
+                "{} template is {} bytes (limit {} with {} headroom for argv flags)",
+                role.id,
+                bytes,
+                limit,
+                HEADROOM
+            );
+        }
+    }
+
+    #[test]
     fn long_prompt_is_stored_and_the_argument_points_at_the_file() {
         let prompt = "x".repeat(MAX_PROMPT_ARG_BYTES + 8);
         let path = PathBuf::from("/tmp/dcterminal/prompt.txt");
