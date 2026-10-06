@@ -4,6 +4,7 @@
  */
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { NotificationSettings } from "./notify/agentNotify";
 
 export type CliDetectResult = {
   found: boolean;
@@ -791,6 +792,16 @@ export async function setTabModel(tabId: string, model: string | null): Promise<
 /** Change a running chat tab's model (in place, or restart + session/load). */
 export async function acpSetModel(tabId: string, model: string | null): Promise<SetModelResult> {
   return invoke<SetModelResult>("acp_set_model", { tabId, model });
+}
+
+export async function getNotificationSettings(): Promise<NotificationSettings> {
+  return invoke<NotificationSettings>("get_notification_settings");
+}
+
+export async function setNotificationSettings(
+  notifications: NotificationSettings,
+): Promise<NotificationSettings> {
+  return invoke<NotificationSettings>("set_notification_settings", { notifications });
 }
 
 export type LayoutState = {

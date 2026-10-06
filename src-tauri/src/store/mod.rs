@@ -17,7 +17,10 @@ pub use json_io::{read_json, write_json_atomic};
 pub use projects_store::{ListedProject, ProjectsStore};
 pub use roles_store::{docs_roles_dir, seed_output_path, write_seed_file, RolesStore};
 pub use scratch_store::ScratchStore;
-pub use settings_store::{ModelSettings, SettingsStore, TerminalSettings};
+pub use settings_store::{
+    get_notification_settings, set_notification_settings, ModelSettings, NotificationSettings,
+    SettingsStore, TerminalSettings,
+};
 pub use state_store::StateStore;
 pub(crate) use state_store::{tab_label, TerminalTabDraft};
 pub use state_types::{AppStateFile, LayoutState, RoleSnapshot, TabRecord, TabSessionRef};

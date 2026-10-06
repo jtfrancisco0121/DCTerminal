@@ -39,6 +39,8 @@ import {
   selectActiveTab,
   syncActiveTabForm,
   getTerminalSettings,
+  getNotificationSettings,
+  setNotificationSettings,
   handoffBindTab,
   handoffGet,
   handoffList,
@@ -119,6 +121,11 @@ import { SplitPanes } from "./components/SplitPanes";
 import { WorkspaceSplit } from "./components/WorkspaceSplit";
 import { FilePanel } from "./components/FilePanel";
 import { ModelPicker } from "./components/ModelPicker";
+import { AgentToasts } from "./components/AgentToasts";
+import { classifyPromptFinished, type NotificationSettings } from "./notify/agentNotify";
+import { showSystemNotification } from "./notify/systemNotify";
+import { useAgentNotifications } from "./notify/useAgentNotifications";
+import { useWindowFocused } from "./notify/windowFocus";
 import { appendReference } from "./files/paths";
 import { effectiveModel, modelChangeNote } from "./models";
 import { TabSwitcher } from "./components/TabSwitcher";
@@ -256,6 +263,8 @@ export function StartupForm({
   const [pickedRoleId, setPickedRoleId] = useState<string | null>(null);
   const [launchChoice, setLaunchChoice] = useState<"shell" | "cursor-cli" | null>(null);
   const [terminalSettings, setTerminalSettingsState] = useState<TerminalSettings | null>(null);
+  const [notificationSettings, setNotificationSettingsState] =
+    useState<NotificationSettings | null>(null);
   const [terminalError, setTerminalError] = useState<string | null>(null);
   const [terminalCapture, setTerminalCapture] = useState<{
     selection: string;
@@ -343,6 +352,19 @@ export function StartupForm({
     },
     [],
   );
+
+  // F1: toasts and OS notifications for agent events on tabs you are not watching.
+  const windowFocused = useWindowFocused();
+  const agentNotifications = useAgentNotifications({
+    settings: notificationSettings,
+    visibleTabIds: () => {
+      const current = splitRef.current;
+      return [activeTabIdRef.current, splitOpen(current) ? current.secondaryTabId : null];
+    },
+    tabLabel: (tabId) => savedTabsRef.current.find((tab) => tab.id === tabId)?.label ?? "",
+  });
+  const notifyAgent = agentNotifications.notify;
+  const dismissTabToasts = agentNotifications.dismissTab;
 
   const persistTranscripts = useCallback(async (snapshot: Record<string, TabRuntime>) => {
     const jobs = Object.entries(snapshot)
@@ -502,6 +524,7 @@ export function StartupForm({
         if (!evt.tabId) return;
         setChain((current) => (current ? chainMarkBlocked(current) : current));
         patchRuntime(evt.tabId, (rt) => applyPermission(rt, evt));
+        notifyAgent(evt.tabId, { kind: "permission", detail: evt.title || evt.message });
       }),
       listenPermissionAuto((evt) => {
         if (!evt.tabId) return;
@@ -516,11 +539,14 @@ export function StartupForm({
           error: evt.error,
         });
         patchRuntime(evt.tabId, (rt) => applyPromptFinished(rt, evt));
+        const event = classifyPromptFinished(evt);
+        if (event) notifyAgent(evt.tabId, event);
       }),
       listenPlanRequests((evt) => {
         if (!evt.tabId) return;
         setPlanRequest(evt);
         setChain((current) => (current ? chainMarkBlocked(current) : current));
+        notifyAgent(evt.tabId, { kind: "plan", detail: evt.title });
       }),
     ]).then((fns) => {
       if (cancelled) {
@@ -538,7 +564,7 @@ export function StartupForm({
         flushRafRef.current = null;
       }
     };
-  }, [patchRuntime]);
+  }, [notifyAgent, patchRuntime]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -565,6 +591,32 @@ export function StartupForm({
   useEffect(() => {
     getTerminalSettings()
       .then(setTerminalSettingsState)
+      .catch(() => {});
+    getNotificationSettings()
+      .then(setNotificationSettingsState)
+      .catch(() => {});
+  }, []);
+
+  // A tab's toasts are stale once it is on screen in a focused window.
+  useEffect(() => {
+    if (!windowFocused) return;
+    if (activeTabId) dismissTabToasts(activeTabId);
+    if (splitOpen(split) && split.secondaryTabId) dismissTabToasts(split.secondaryTabId);
+  }, [activeTabId, dismissTabToasts, split, windowFocused]);
+
+  const notificationSettingsRef = useRef(notificationSettings);
+  notificationSettingsRef.current = notificationSettings;
+  const updateNotificationSettings = useCallback((next: NotificationSettings) => {
+    const prev = notificationSettingsRef.current;
+    // Turning system notifications on is a click, so ask the OS now.
+    if (next.enabled && next.system && !(prev?.enabled && prev?.system)) {
+      void showSystemNotification("DCTerminal notifications", "System notifications are on.", {
+        askAgain: true,
+      });
+    }
+    setNotificationSettingsState(next);
+    void setNotificationSettings(next)
+      .then(setNotificationSettingsState)
       .catch(() => {});
   }, []);
 
@@ -2303,6 +2355,9 @@ export function StartupForm({
       }}
       terminalSettings={terminalSettings}
       onTerminalSettings={updateTerminalSettings}
+      notificationSettings={notificationSettings}
+      onNotificationSettings={updateNotificationSettings}
+      onTestNotification={agentNotifications.sendTest}
       modelList={modelList}
       modelSettings={modelSettings}
       onModelSettings={(next) => {
@@ -2326,6 +2381,18 @@ export function StartupForm({
 
   const overlays = (
     <>
+      <AgentToasts
+        toasts={agentNotifications.toasts}
+        paused={!windowFocused}
+        onDismiss={agentNotifications.dismiss}
+        onOpen={(toast) => {
+          agentNotifications.dismiss(toast.id);
+          if (savedTabsRef.current.some((tab) => tab.id === toast.tabId)) {
+            setSettingsOpen(false);
+            void handleSelectTab(toast.tabId);
+          }
+        }}
+      />
       {paletteOpen && (
         <CommandPalette
           tabs={savedTabs.map((tab) => ({ id: tab.id, label: tab.label }))}

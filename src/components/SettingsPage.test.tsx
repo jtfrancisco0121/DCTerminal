@@ -101,3 +101,75 @@ describe("SettingsPage", () => {
     expect(screen.getAllByText(/not found/i).length).toBeGreaterThan(0);
   });
 });
+
+describe("SettingsPage notifications", () => {
+  const baseProps = {
+    roles,
+    cli: null,
+    cliError: null,
+    platform: "mac" as const,
+    diagnostics: null,
+    captureOn: false,
+    showDevTools: false,
+    onToggleCapture: () => {},
+    terminalSettings: null,
+    onTerminalSettings: () => {},
+    approvalMode: null,
+    onClose: () => {},
+  };
+
+  it("toggles agent notifications off and leaves the sub-options disabled", () => {
+    const onNotificationSettings = vi.fn();
+    const { rerender } = render(
+      <SettingsPage
+        {...baseProps}
+        notificationSettings={{ enabled: true, system: true, toastWhenFocused: true }}
+        onNotificationSettings={onNotificationSettings}
+      />,
+    );
+    const section = screen.getByRole("region", { name: "Notifications" });
+    expect(section).toBeTruthy();
+    fireEvent.click(screen.getByLabelText(/Notify when an agent finishes/));
+    expect(onNotificationSettings).toHaveBeenCalledWith({
+      enabled: false,
+      system: true,
+      toastWhenFocused: true,
+    });
+    rerender(
+      <SettingsPage
+        {...baseProps}
+        notificationSettings={{ enabled: false, system: true, toastWhenFocused: true }}
+        onNotificationSettings={onNotificationSettings}
+      />,
+    );
+    expect((screen.getByLabelText(/System notifications/) as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText(/In-app toasts/) as HTMLInputElement).disabled).toBe(true);
+  });
+
+  it("changes the system and toast options and sends a test", () => {
+    const onNotificationSettings = vi.fn();
+    const onTestNotification = vi.fn();
+    render(
+      <SettingsPage
+        {...baseProps}
+        notificationSettings={{ enabled: true, system: true, toastWhenFocused: true }}
+        onNotificationSettings={onNotificationSettings}
+        onTestNotification={onTestNotification}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText(/System notifications/));
+    expect(onNotificationSettings).toHaveBeenLastCalledWith({
+      enabled: true,
+      system: false,
+      toastWhenFocused: true,
+    });
+    fireEvent.click(screen.getByLabelText(/In-app toasts/));
+    expect(onNotificationSettings).toHaveBeenLastCalledWith({
+      enabled: true,
+      system: true,
+      toastWhenFocused: false,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send test notification" }));
+    expect(onTestNotification).toHaveBeenCalledOnce();
+  });
+});

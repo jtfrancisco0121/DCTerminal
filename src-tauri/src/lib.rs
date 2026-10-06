@@ -38,8 +38,8 @@ use pty::{
 };
 use std::sync::Mutex;
 use store::{
-    FormsStore, HandoffStore, ProjectsStore, RolesStore, ScratchStore, SettingsStore, StateStore,
-    TranscriptStore,
+    get_notification_settings, set_notification_settings, FormsStore, HandoffStore, ProjectsStore,
+    RolesStore, ScratchStore, SettingsStore, StateStore, TranscriptStore,
 };
 use tauri::Manager;
 
@@ -69,6 +69,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let store = RolesStore::load_or_seed(app.handle())?;
             let mut state_store = StateStore::load_or_default(app.handle())?;
@@ -153,6 +154,8 @@ pub fn run() {
             set_model_settings,
             set_tab_model,
             acp_set_model,
+            get_notification_settings,
+            set_notification_settings,
             get_layout,
             set_layout,
             files_list,

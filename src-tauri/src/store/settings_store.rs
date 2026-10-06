@@ -70,6 +70,36 @@ impl Default for ModelSettings {
     }
 }
 
+fn default_true() -> bool {
+    true
+}
+
+/// F1 agent notifications. Everything defaults on; a settings file from
+/// before this section existed loads with the defaults.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationSettings {
+    /// Master switch.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// OS notification while the window is not focused.
+    #[serde(default = "default_true")]
+    pub system: bool,
+    /// In-app toast for background tabs while the window is focused.
+    #[serde(default = "default_true")]
+    pub toast_when_focused: bool,
+}
+
+impl Default for NotificationSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            system: true,
+            toast_when_focused: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsFile {
@@ -80,6 +110,8 @@ pub struct SettingsFile {
     pub terminal: TerminalSettings,
     #[serde(default)]
     pub models: ModelSettings,
+    #[serde(default)]
+    pub notifications: NotificationSettings,
 }
 
 impl Default for SettingsFile {
@@ -89,6 +121,7 @@ impl Default for SettingsFile {
             diagnostics: DiagnosticsSettings::default(),
             terminal: TerminalSettings::default(),
             models: ModelSettings::default(),
+            notifications: NotificationSettings::default(),
         }
     }
 }
@@ -182,6 +215,37 @@ impl SettingsStore {
     }
 }
 
+impl SettingsStore {
+    pub fn notifications(&self) -> &NotificationSettings {
+        &self.data.notifications
+    }
+
+    pub fn set_notifications(&mut self, next: NotificationSettings) -> Result<(), String> {
+        self.data.notifications = next;
+        self.save()
+    }
+}
+
+/// Read the F1 notification toggles.
+#[tauri::command]
+pub fn get_notification_settings(
+    settings: tauri::State<std::sync::Mutex<SettingsStore>>,
+) -> Result<NotificationSettings, String> {
+    let settings = settings.lock().map_err(|err| err.to_string())?;
+    Ok(settings.notifications().clone())
+}
+
+/// Save the F1 notification toggles (app data `settings.json`).
+#[tauri::command]
+pub fn set_notification_settings(
+    notifications: NotificationSettings,
+    settings: tauri::State<std::sync::Mutex<SettingsStore>>,
+) -> Result<NotificationSettings, String> {
+    let mut settings = settings.lock().map_err(|err| err.to_string())?;
+    settings.set_notifications(notifications)?;
+    Ok(settings.notifications().clone())
+}
+
 fn is_run_mode(value: &str) -> bool {
     matches!(value, "default" | "yolo" | "auto-review" | "plan" | "ask")
 }
@@ -234,6 +298,43 @@ mod tests {
             "sonnet-4.5"
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn notifications_default_on_and_persist() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("dcterminal_notify_{nanos}"));
+        let mut store = SettingsStore::open(&dir).unwrap();
+        assert_eq!(store.notifications(), &NotificationSettings::default());
+        assert!(store.notifications().enabled);
+        store
+            .set_notifications(NotificationSettings {
+                enabled: false,
+                system: true,
+                toast_when_focused: false,
+            })
+            .unwrap();
+        let again = SettingsStore::open(&dir).unwrap();
+        assert!(!again.notifications().enabled);
+        assert!(again.notifications().system);
+        assert!(!again.notifications().toast_when_focused);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn settings_without_notifications_section_default_on() {
+        let raw = r#"{"schemaVersion":1,"notifications":{"system":false}}"#;
+        let parsed: SettingsFile = serde_json::from_str(raw).unwrap();
+        assert!(parsed.notifications.enabled);
+        assert!(!parsed.notifications.system);
+        assert!(parsed.notifications.toast_when_focused);
+        let bare: SettingsFile = serde_json::from_str(r#"{"schemaVersion":1}"#).unwrap();
+        assert_eq!(bare.notifications, NotificationSettings::default());
+        let json = serde_json::to_value(&bare.notifications).unwrap();
+        assert_eq!(json["toastWhenFocused"], serde_json::json!(true));
     }
 
     #[test]

@@ -2015,3 +2015,101 @@ kbd {
   color: #8b949e;
   text-transform: lowercase;
 }
+
+/* ---- F1 agent notifications ---- */
+
+.agent-toasts {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: min(22rem, calc(100vw - 2rem));
+  pointer-events: none;
+}
+
+.agent-toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-left: 3px solid #3fb950;
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  animation: agent-toast-in 0.2s ease-out;
+}
+
+.agent-toast-permission,
+.agent-toast-question,
+.agent-toast-plan {
+  border-left-color: #f0c14b;
+}
+
+.agent-toast-failed {
+  border-left-color: #f85149;
+}
+
+.agent-toast-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.55rem 0.4rem 0.55rem 0.75rem;
+  background: transparent;
+  border: 0;
+  color: #e6edf3;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-toast-title {
+  font-size: 0.875rem;
+}
+
+.agent-toast-text {
+  font-size: 0.8125rem;
+  color: #8b949e;
+  overflow-wrap: anywhere;
+}
+
+.agent-toast-close {
+  background: transparent;
+  border: 0;
+  color: #8b949e;
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0.5rem 0.6rem;
+  cursor: pointer;
+}
+
+.agent-toast-close:hover,
+.agent-toast-body:hover .agent-toast-title {
+  color: #e6edf3;
+}
+
+.settings-sub-toggle {
+  margin-left: 1.4rem;
+  margin-top: 0.35rem;
+}
+
+@keyframes agent-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-toast {
+    animation: none;
+  }
+}

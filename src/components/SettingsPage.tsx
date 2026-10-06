@@ -14,6 +14,7 @@ import { DevToolsPanel } from "../DevToolsPanel";
 import { shortcutRows, type Platform } from "../keymap";
 import { DEFAULT_MODEL_ID } from "../models";
 import { ModelPicker } from "./ModelPicker";
+import type { NotificationSettings } from "../notify/agentNotify";
 import { APP_VERSION, rolePermissionSummary } from "../workspaceView";
 
 type Props = {
@@ -33,6 +34,9 @@ type Props = {
   onRefreshModels?: () => void;
   modelsRefreshing?: boolean;
   approvalMode: ApprovalModeStatus | null;
+  notificationSettings?: NotificationSettings | null;
+  onNotificationSettings?: (next: NotificationSettings) => void;
+  onTestNotification?: () => void;
   onClose: () => void;
 };
 
@@ -61,6 +65,9 @@ export function SettingsPage({
   onRefreshModels,
   modelsRefreshing = false,
   approvalMode,
+  notificationSettings = null,
+  onNotificationSettings,
+  onTestNotification,
   onClose,
 }: Props) {
   const [selectedId, setSelectedId] = useState(roles[0]?.id ?? "");
@@ -165,6 +172,65 @@ export function SettingsPage({
             unreadable config). No warning is shown in the session UI.
           </p>
         )}
+      </section>
+
+      <section className="settings-section" aria-label="Notifications">
+        <h3>Notifications</h3>
+        {(() => {
+          const current = notificationSettings;
+          const update = (patch: Partial<NotificationSettings>) => {
+            if (!current) return;
+            onNotificationSettings?.({ ...current, ...patch });
+          };
+          const unavailable = !current || !onNotificationSettings;
+          return (
+            <>
+              <label className="field-label diagnostics-toggle">
+                <input
+                  type="checkbox"
+                  checked={current?.enabled ?? false}
+                  disabled={unavailable}
+                  onChange={(event) => update({ enabled: event.target.checked })}
+                />
+                Notify when an agent finishes, needs permission, or asks a question
+              </label>
+              <label className="field-label diagnostics-toggle settings-sub-toggle">
+                <input
+                  type="checkbox"
+                  checked={current?.system ?? false}
+                  disabled={unavailable || !current?.enabled}
+                  onChange={(event) => update({ system: event.target.checked })}
+                />
+                System notifications while DCTerminal is in the background
+              </label>
+              <label className="field-label diagnostics-toggle settings-sub-toggle">
+                <input
+                  type="checkbox"
+                  checked={current?.toastWhenFocused ?? false}
+                  disabled={unavailable || !current?.enabled}
+                  onChange={(event) => update({ toastWhenFocused: event.target.checked })}
+                />
+                In-app toasts for other tabs while DCTerminal is focused
+              </label>
+              <p className="hint">
+                The tab you are looking at stays quiet while the window is focused. When
+                DCTerminal is not the focused window, events from every tab raise a system
+                notification and a toast that waits for you. Covers chat tabs; terminal tabs
+                are not tracked yet.
+              </p>
+              <div className="button-row">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={onTestNotification}
+                  disabled={!onTestNotification || !current?.enabled}
+                >
+                  Send test notification
+                </button>
+              </div>
+            </>
+          );
+        })()}
       </section>
 
       <section className="settings-section">

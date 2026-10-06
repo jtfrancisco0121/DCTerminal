@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./components/TerminalView", () => ({
@@ -17,6 +17,13 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async () => () => {}),
 }));
+
+const captured = vi.hoisted(() => ({
+  permission: null as null | ((evt: unknown) => void),
+  finished: null as null | ((evt: unknown) => void),
+}));
+
+vi.mock("./notify/systemNotify", () => ({ showSystemNotification: vi.fn(async () => true) }));
 
 vi.mock("./bridge", () => {
   const listen = vi.fn(async () => () => {});
@@ -41,7 +48,10 @@ vi.mock("./bridge", () => {
     note: null,
   })),
   listenPermissionAuto: listen,
-  listenPermissionRequests: listen,
+  listenPermissionRequests: vi.fn(async (handler: (evt: unknown) => void) => {
+    captured.permission = handler;
+    return () => {};
+  }),
   listenPlanRequests: listen,
   respondPermissionRequest: vi.fn(),
   respondPlanRequest: vi.fn(),
@@ -53,7 +63,10 @@ vi.mock("./bridge", () => {
   getTab: vi.fn(),
   getFormRecall: vi.fn(async () => ({ cwd: "", values: {} })),
   getRole: vi.fn(),
-  listenPromptFinished: listen,
+  listenPromptFinished: vi.fn(async (handler: (evt: unknown) => void) => {
+    captured.finished = handler;
+    return () => {};
+  }),
   listenSessionUpdates: listen,
   listCursorCliHistory: vi.fn(),
   newDraftTab: vi.fn(),
@@ -76,6 +89,12 @@ vi.mock("./bridge", () => {
   scratchSave: vi.fn(async () => {}),
   scratchLoad: vi.fn(async () => ({ pads: [] })),
   setTerminalSettings: vi.fn(),
+  getNotificationSettings: vi.fn(async () => ({
+    enabled: true,
+    system: true,
+    toastWhenFocused: true,
+  })),
+  setNotificationSettings: vi.fn(async (value: unknown) => value),
   shellTerminalStart: vi.fn(),
   terminalPlanFile: vi.fn(),
   validateAndPreview: vi.fn(),
@@ -347,6 +366,85 @@ describe("live split view", () => {
           expect.objectContaining({ splitMode: "single", secondaryTabId: null }),
         ),
       { timeout: 2000 },
+    );
+  });
+});
+
+describe("background tab notifications", () => {
+  const terminalTab = (id: string, label: string) => ({
+    id,
+    label,
+    roleId: "role_developer",
+    cwd: "/Users/jt/Koneksi",
+    phase: "running",
+    mergedPromptChars: 0,
+    startupPromptSent: false,
+    hasTranscript: false,
+    folderStatus: "ok",
+    color: "#3fb950",
+    kind: "terminal",
+    terminalLaunch: "shell",
+    acpSessionId: null,
+  });
+
+  beforeEach(() => {
+    vi.mocked(listCursorCliHistory).mockResolvedValue([]);
+    vi.mocked(getRole).mockResolvedValue(developer);
+    vi.mocked(selectActiveTab).mockResolvedValue({ tab: { ...tab, id: "tab_b", kind: "terminal" } });
+    vi.mocked(getAppState).mockResolvedValue({
+      activeTabId: "tab_a",
+      tabs: [terminalTab("tab_a", "Main"), terminalTab("tab_b", "Reviewer · PR 12")],
+      closedTabs: [],
+    });
+  });
+
+  it("toasts a background tab's permission request and finished turn, and opens it on click", async () => {
+    render(
+      <StartupForm
+        roles={[{ id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 }]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+    await screen.findByRole("region", { name: "Scratch pad" });
+    await waitFor(() => expect(captured.permission).toBeTruthy());
+    act(() => {
+      captured.permission?.({
+        tabId: "tab_b",
+        sessionId: "s1",
+        jsonRpcId: 7,
+        title: "Run npm test",
+        message: "",
+        toolClass: "shell",
+        displayKind: "shell",
+        network: false,
+        options: [],
+        rawParams: "{}",
+      });
+    });
+    const toast = await screen.findByRole("button", { name: /Reviewer · PR 12 needs permission/ });
+    expect(toast.textContent).toContain("Run npm test");
+
+    act(() => {
+      captured.finished?.({
+        tabId: "tab_b",
+        sessionId: "s1",
+        success: true,
+        result: { stopReason: "end_turn", agentText: "Should I also update the docs?", updateCount: 2 },
+        error: null,
+        agentExited: false,
+      });
+    });
+    const question = await screen.findByRole("button", { name: /Reviewer · PR 12 has a question/ });
+    expect(screen.queryByRole("button", { name: /needs permission/ })).toBeNull();
+
+    vi.mocked(selectActiveTab).mockClear();
+    fireEvent.click(question);
+    await waitFor(() => expect(vi.mocked(selectActiveTab)).toHaveBeenCalledWith("tab_b"));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: /Reviewer · PR 12 has a question/ })).toBeNull(),
     );
   });
 });
