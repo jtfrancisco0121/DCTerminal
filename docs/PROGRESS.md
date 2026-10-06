@@ -8,10 +8,10 @@
 
 | Field | Value |
 |--------|--------|
-| **Last updated** | 2026-10-06 — Continue uses ACP `session/load`; CLI history is read-only |
+| **Last updated** | 2026-10-06 — Probe on CLI 2026.10.01: `session/load` works; `agent --resume` does not open ACP ids |
 | **Branch** | `cursor/cli-history-resume-e7c1` |
 | **Current phase** | Finish MVP vertical slice (see [MVP-FINISH.md](./MVP-FINISH.md)) |
-| **Active task** | JT runs `scripts/probe-cursor-cli-history.ps1` on a logged-in Windows CLI. See [cursor-cli-history.md](./cursor-cli-history.md). |
+| **Active task** | Open in Cursor CLI stays an external window until the in-app Terminal tab is on master. See [cursor-cli-history.md](./cursor-cli-history.md). |
 
 ## Product-ready today
 
@@ -28,7 +28,7 @@ See blueprint §31. ACP chat stays primary. No token tracking. No writes to `~/.
 
 ## Not MVP-done yet
 
-- Live confirmation of `session/load` replay and `agent --resume` on JT's CLI (probe in [cursor-cli-history.md](./cursor-cli-history.md))
+- In-app Terminal tab for **Open in Cursor CLI** (external Windows Terminal / PowerShell until that branch is on master)
 - Installers / §21 acceptance on three OSes
 - Optional xterm pane (E6). Ctrl+Shift stays unbound until that pane exists
 - Live Windows check of folder browse, chaining, and permission-payload capture against a logged-in Cursor CLI

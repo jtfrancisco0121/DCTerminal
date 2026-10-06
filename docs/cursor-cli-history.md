@@ -2,7 +2,15 @@
 
 DCTerminal talks to Cursor CLI only through `agent acp`. On JT's machine (Cursor CLI `2026.10.01-e373342`) those sessions are stored under `%USERPROFILE%\.cursor\acp-sessions\<sessionId>\`, while `agent ls`, `agent resume`, and `/resume` read a different tree: `%USERPROFILE%\.cursor\chats\<project-hash>\<chatId>\store.db`.
 
-This note separates what the docs and the captured `initialize` response already say from what still has to be observed on a logged-in CLI. The live probe was **not** run in the environment that wrote this file (no logged-in Cursor CLI here). Do not treat the probe's verdict lines as filled in until JT runs it.
+JT ran the live probe on 2026-10-06 against Cursor CLI `2026.10.01` with a logged-in CLI. Results:
+
+```text
+(a) create-chat bind: No — session/new did not return the create-chat id and did not land under chats/
+(b) agent --resume <acpSessionId>: No — exit 1, and agent ls does not contain the ACP id
+(c) session/load: Yes — the replay contained the code word, and a follow-up prompt worked
+```
+
+DCTerminal therefore resumes ACP sessions with `session/load`. It does not call `create-chat`, and it does not offer `agent --resume` for an ACP id.
 
 ## What the docs and the captured handshake say
 
@@ -24,7 +32,7 @@ Sources:
 
 `loadSession` is true. `sessionCapabilities.list` is present. `sessionCapabilities.resume` and `sessionCapabilities.close` are absent. DCTerminal therefore sends `session/load` and does not send `session/resume`.
 
-A Cursor forum thread records that `session/load` replay of `user_message_chunk` / `agent_message_chunk` was missing on CLI builds through `2026.05.16` and landed in `2026.06.04-5fd875e`. JT's build is later than that. Replay still has to be checked with the probe; a changelog is not a substitute for this machine.
+A Cursor forum thread records that `session/load` replay of `user_message_chunk` / `agent_message_chunk` was missing on CLI builds through `2026.05.16` and landed in `2026.06.04-5fd875e`. The 2026-10-06 probe confirmed replay on `2026.10.01`: the loaded thread contained the code word, and a follow-up prompt on that same session worked.
 
 ## The three options
 
@@ -32,7 +40,7 @@ A Cursor forum thread records that `session/load` replay of `user_message_chunk`
 
 **Not supported by the public docs.** `session/new` is documented as `{ cwd, mcpServers }`. Nothing in the Cursor ACP page or the ACP schema says a `create-chat` id can be passed as `sessionId`, `chatId`, or `_meta.chatId`. Assuming `_meta` would violate the ACP rule that clients must not invent meaning for those keys.
 
-DCTerminal does **not** call `create-chat` and does **not** send those extra fields. The probe tries them and prints whether the returned `sessionId` equals the chat id, and whether a directory appears under `chats/` or only under `acp-sessions/`.
+DCTerminal does **not** call `create-chat` and does **not** send those extra fields. The 2026-10-06 probe tried them: `session/new` did not return the `create-chat` id, and the session did not appear under `chats/`.
 
 ### (b) `agent --resume <acpSessionId>`
 
@@ -42,11 +50,11 @@ DCTerminal does **not** call `create-chat` and does **not** send those extra fie
 agent --resume <acpSessionId> -p "What code word did I give you? Reply with that word only."
 ```
 
-after an ACP turn that was told the code word `ORCHID`. Exit 0 without that word is inconclusive (some session may have opened; it is not proof this ACP thread resumed). A not-found error is a no.
+after an ACP turn that was told the code word `ORCHID`. On 2026-10-06 this exited 1, and `agent ls` did not contain the ACP id.
 
-**Open in Cursor CLI** still launches that command, because it is the only interactive CLI entry point the task can call, and because CLI chats listed from `chats/` *are* the ids `--resume` is documented to take. For an ACP id, treat the window as unverified until the probe summary says `(b)` is `Yes`.
+**Open in Cursor CLI** is offered only for a real CLI chat (`chats/<hash>/<id>/meta.json` for the chosen folder). The button is hidden on ACP rows, on the live ACP session, and on Continue. The backend refuses an id that is not a CLI chat for that folder, so a direct invoke cannot launch `agent --resume` for an ACP session. ACP rows use **Resume**, which is `session/load` in a new tab.
 
-On Windows the app tries `wt.exe -d <folder> powershell.exe -NoExit -Command "& '<agent>' --resume <id>"`, then a new PowerShell console. The id is restricted to ASCII letters, digits, `_`, and `-`. There is no in-app ConPTY tab on this branch.
+On Windows a CLI chat opens with `wt.exe -d <folder> powershell.exe -NoExit -Command "& '<agent>' --resume <id>"`, then a new PowerShell console if Windows Terminal cannot start. The id is restricted to ASCII letters, digits, `_`, and `-`. An in-app Terminal tab that runs interactive `agent` is on another branch and is not on master yet. When that tab lands, Open in Cursor CLI should use it. Until then the external window is the fallback.
 
 ### (c) ACP `session/load`
 
@@ -71,7 +79,10 @@ On the blank-tab card (and on a restored tab's card), **Cursor CLI history** sho
 - `%USERPROFILE%\.cursor\acp-sessions\<id>\meta.json` (or `~/.cursor/...` off Windows), matched on `cwd`
 - `%USERPROFILE%\.cursor\chats\<hash>\<id>\meta.json`, matched the same way
 
-`store.db` is not opened. Opening SQLite can create `-wal` / `-shm` files, and DCTerminal does not write under `~/.cursor`. Chats that have no `meta.json` are omitted rather than guessed. **Resume** opens a new tab and `session/load`s that id. **Open in Cursor CLI** runs `agent --resume` as in (b).
+`store.db` is not opened. Opening SQLite can create `-wal` / `-shm` files, and DCTerminal does not write under `~/.cursor`. Chats that have no `meta.json` are omitted rather than guessed.
+
+- **Resume** is shown for ACP sessions. It opens a new tab and `session/load`s that id. The tooltip says ACP sessions stay in DCTerminal because `agent --resume` cannot open them.
+- **Open in Cursor CLI** is shown for CLI chats only. The tooltip says it runs `agent --resume` in Windows Terminal or PowerShell, and that ACP sessions are resumed in the app instead.
 
 ## Probe JT runs
 
@@ -88,7 +99,7 @@ cd src-tauri
 cargo test live_cli_history_probe -- --ignored --nocapture --test-threads=1
 ```
 
-The probe is ignored by a normal `cargo test`. It prints help text, `create-chat`, one real ACP session (a short prompt containing `ORCHID`), three undocumented `session/new` shapes, `agent --resume` of the ACP id, `agent ls` (killed after 8 seconds if it is interactive), and `session/load` plus a follow-up prompt. The last lines are:
+The probe is ignored by a normal `cargo test`. It prints help text, `create-chat`, one real ACP session (a short prompt containing `ORCHID`), three undocumented `session/new` shapes, `agent --resume` of the ACP id, `agent ls` (killed after 8 seconds if it is interactive), and `session/load` plus a follow-up prompt. Cleanup skips `taskkill` when that process has already exited, and discards `taskkill` console output, so an already-gone pid does not print `ERROR: The process "…" not found.` The last lines are:
 
 ```text
 === summary ===

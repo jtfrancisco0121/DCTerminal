@@ -38,9 +38,14 @@ Beyond `sessionId`, the result includes:
 
 **Implication:** `session/set_mode` works as documented; default mode may already be `agent` after `session/new`.
 
+## Probed on a logged-in CLI (2026-10-06, CLI 2026.10.01)
+
+- `session/load` of a previous ACP `sessionId` replayed the thread (the probe code word was in the replay) and a follow-up prompt on that session worked. DCTerminal uses this for Continue and for ACP rows in Cursor CLI history. Details: [cursor-cli-history.md](./cursor-cli-history.md).
+- `agent --resume <acpSessionId>` exited 1. `agent ls` does not list ACP ids. `session/new` did not bind to an `agent create-chat` id.
+- `session/list` is advertised and is not called. The history list reads `meta.json` only.
+
 ## Not yet probed on a live CLI
 
-- `session/load` and `session/list` against a logged-in CLI. The captured `initialize` advertises both `loadSession` and `sessionCapabilities.list`, and not `sessionCapabilities.resume`. What that does on disk is recorded in [cursor-cli-history.md](./cursor-cli-history.md). Probe: `cargo test live_cli_history_probe -- --ignored --nocapture --test-threads=1` from `src-tauri/`.
 - Hang / malformed line edge cases beyond the unit tests
 
 ## Client implementation notes

@@ -1,5 +1,11 @@
 import type { CursorHistoryEntry } from "../cursorHistory";
-import { historySourceLabel } from "../cursorHistory";
+import {
+  canOpenInCursorCli,
+  canResumeInApp,
+  historySourceLabel,
+  OPEN_IN_CURSOR_CLI_TITLE,
+  RESUME_ACP_TITLE,
+} from "../cursorHistory";
 
 type Props = {
   entries: CursorHistoryEntry[];
@@ -14,8 +20,10 @@ export function CursorHistoryList({ entries, error, busy, onResume, onOpenCli }:
     <section className="history-list" aria-label="Cursor CLI history">
       <h3>Cursor CLI history</h3>
       <p className="hint">
-        Previous ACP sessions and CLI chats for this folder. Read from the Cursor home
-        folder. DCTerminal does not write there.
+        ACP sessions for this folder resume here with session/load. CLI chats, saved
+        under chats/, can open in Cursor CLI with agent --resume. ACP sessions cannot:
+        on CLI 2026.10.01 that command exited 1 and agent ls did not list the ACP id.
+        DCTerminal only reads the Cursor home folder.
       </p>
       {error && <p className="error">{error}</p>}
       {entries.length === 0 && !error && (
@@ -32,23 +40,28 @@ export function CursorHistoryList({ entries, error, busy, onResume, onOpenCli }:
               </span>
             </div>
             <div className="history-row-actions">
-              <button
-                type="button"
-                className="secondary-button"
-                disabled={busy}
-                onClick={() => onResume(entry)}
-              >
-                Resume
-              </button>
-              <button
-                type="button"
-                className="secondary-button"
-                disabled={busy}
-                onClick={() => onOpenCli(entry)}
-                title="Open Windows Terminal or PowerShell running agent --resume"
-              >
-                Open in Cursor CLI
-              </button>
+              {canResumeInApp(entry.source) && (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={busy}
+                  onClick={() => onResume(entry)}
+                  title={RESUME_ACP_TITLE}
+                >
+                  Resume
+                </button>
+              )}
+              {canOpenInCursorCli(entry.source) && (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={busy}
+                  onClick={() => onOpenCli(entry)}
+                  title={OPEN_IN_CURSOR_CLI_TITLE}
+                >
+                  Open in Cursor CLI
+                </button>
+              )}
             </div>
           </li>
         ))}

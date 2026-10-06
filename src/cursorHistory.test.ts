@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  canOpenInCursorCli,
+  canResumeInApp,
   historySourceLabel,
   resumeIdForStart,
   segmentsAfterResume,
@@ -49,6 +51,13 @@ describe("cursor history resume", () => {
   it("labels ACP sessions and CLI chats", () => {
     expect(historySourceLabel("acp")).toBe("ACP session");
     expect(historySourceLabel("cli")).toBe("CLI chat");
+  });
+
+  it("opens Cursor CLI only for chats, and resumes ACP sessions in the app", () => {
+    expect(canOpenInCursorCli("cli")).toBe(true);
+    expect(canOpenInCursorCli("acp")).toBe(false);
+    expect(canResumeInApp("acp")).toBe(true);
+    expect(canResumeInApp("cli")).toBe(false);
   });
 
   it("does not paste saved scrollback while session/load is starting", () => {

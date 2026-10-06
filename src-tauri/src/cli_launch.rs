@@ -1,8 +1,13 @@
-//! Launch the interactive Cursor CLI in an external terminal.
+//! Launch the interactive Cursor CLI for a chat id from `chats/`.
+//!
+//! Callers must already reject ACP session ids. `agent --resume` does not
+//! open those (probe on CLI 2026.10.01: exit 1, and `agent ls` omits the id).
 //!
 //! Windows is the primary target: Windows Terminal when `wt.exe` can be
-//! spawned, otherwise a new PowerShell console. The session id is validated
-//! before it is placed in the PowerShell command string.
+//! spawned, otherwise a new PowerShell console. When the in-app Terminal tab
+//! that runs interactive `agent` is on master, Open in Cursor CLI should use
+//! that tab. This module is the external-window fallback until then.
+//! The session id is validated before it is placed in the PowerShell command string.
 
 use crate::cli_detect::resolve_agent_executable;
 use crate::paths::validate_working_folder;

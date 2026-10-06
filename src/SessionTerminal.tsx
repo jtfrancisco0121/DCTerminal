@@ -46,7 +46,6 @@ type Props = {
     reason: string | null;
     onSend: (target: HandoffTargetId) => void;
   } | null;
-  onOpenInCursorCli?: () => void;
 };
 
 export function SessionTerminal({
@@ -74,7 +73,6 @@ export function SessionTerminal({
   historyCursor = -1,
   onHistoryCursor,
   handoff,
-  onOpenInCursorCli,
 }: Props) {
   const screenRef = useRef<HTMLDivElement>(null);
   const permissionRef = useRef<HTMLDivElement>(null);
@@ -153,17 +151,6 @@ export function SessionTerminal({
           </p>
         </div>
         <div className="session-terminal-chrome-actions">
-          {onOpenInCursorCli && (
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={onOpenInCursorCli}
-              disabled={busy}
-              title="Open Windows Terminal or PowerShell running agent --resume for this ACP session"
-            >
-              Open in Cursor CLI
-            </button>
-          )}
           <button
             type="button"
             className="secondary-button"

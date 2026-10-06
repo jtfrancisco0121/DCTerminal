@@ -22,6 +22,22 @@ export function historySourceLabel(source: string): string {
   return source;
 }
 
+/** `agent --resume` opens chats under `chats/`. It does not open ACP sessions. */
+export function canOpenInCursorCli(source: string): boolean {
+  return source === "cli";
+}
+
+/** ACP sessions resume in DCTerminal with `session/load`. */
+export function canResumeInApp(source: string): boolean {
+  return source === "acp";
+}
+
+export const OPEN_IN_CURSOR_CLI_TITLE =
+  "Open this CLI chat with agent --resume in Windows Terminal or PowerShell. ACP sessions stay in DCTerminal: the 2026.10.01 probe showed agent --resume cannot open them.";
+
+export const RESUME_ACP_TITLE =
+  "Resume this ACP session in DCTerminal with session/load. agent --resume does not open ACP sessions.";
+
 /**
  * Which ACP session id a start should load.
  * Continue uses the id stored on the tab. Start new session always creates one.

@@ -44,6 +44,41 @@ pub fn cursor_data_dir() -> Option<PathBuf> {
     Some(home.join(".cursor"))
 }
 
+/// True when `session_id` is a CLI chat for `folder` (`chats/<hash>/<id>/meta.json`).
+/// ACP sessions under `acp-sessions/` are not CLI chats.
+pub fn is_cli_chat(cursor_dir: &Path, folder: &str, session_id: &str) -> bool {
+    let wanted = folder_key(folder);
+    let id = session_id.trim();
+    if wanted.is_empty() || id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
+        return false;
+    }
+    let Ok(projects) = fs::read_dir(cursor_dir.join("chats")) else {
+        return false;
+    };
+    for project in projects.flatten() {
+        if !project.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let Some(meta) = read_meta(&project.path().join(id).join("meta.json")) else {
+            continue;
+        };
+        if meta.cwd.as_deref().is_some_and(|cwd| folder_key(cwd) == wanted) {
+            return true;
+        }
+    }
+    false
+}
+
+pub fn cli_chat_required(cursor_dir: &Path, folder: &str, session_id: &str) -> Result<(), String> {
+    if is_cli_chat(cursor_dir, folder, session_id) {
+        return Ok(());
+    }
+    Err(
+        "Open in Cursor CLI is only for chats saved under chats/. ACP sessions resume in DCTerminal with session/load; agent --resume does not open them."
+            .to_string(),
+    )
+}
+
 /// Sessions whose `meta.json` `cwd` matches `folder`. Missing folders yield an empty list.
 pub fn list_cursor_history(cursor_dir: &Path, folder: &str) -> Vec<CursorHistoryEntry> {
     let wanted = folder_key(folder);
@@ -209,6 +244,15 @@ mod tests {
         assert_eq!(fs::read(&db_path).unwrap(), before);
         assert!(!cli_dir.join("store.db-wal").exists());
         assert!(!cli_dir.join("store.db-shm").exists());
+        assert!(is_cli_chat(
+            &root,
+            cwd,
+            "cccccccc-bbbb-cccc-dddd-eeeeeeeeeeee"
+        ));
+        assert!(cli_chat_required(&root, cwd, "cccccccc-bbbb-cccc-dddd-eeeeeeeeeeee").is_ok());
+        let acp_only = cli_chat_required(&root, cwd, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+        assert!(acp_only.is_err());
+        assert!(acp_only.unwrap_err().contains("session/load"));
         let _ = fs::remove_dir_all(&root);
     }
 

@@ -1684,23 +1684,9 @@ export function StartupForm({
             className="primary-button"
             onClick={() => void startSession(false, { resumeStored: true })}
             disabled={busy || !cliFound}
+            title="Resume this ACP session in DCTerminal with session/load. agent --resume does not open ACP sessions."
           >
             Continue session
-          </button>
-        )}
-        {activeTabSummary?.acpSessionId && (
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={busy}
-            onClick={() =>
-              void openCursorCli(
-                activeTabSummary.acpSessionId ?? "",
-                folderForTab(values.cwd) || activeTabSummary.cwd,
-              )
-            }
-          >
-            Open in Cursor CLI
           </button>
         )}
         <button
@@ -1724,7 +1710,6 @@ export function StartupForm({
           <pre className="mono-snippet transcript-preview">{savedTranscript}</pre>
         </details>
       )}
-      {cliLaunchNote && <p className="hint">{cliLaunchNote}</p>}
     </div>
   );
 
@@ -1837,9 +1822,6 @@ export function StartupForm({
               historyCursor={historyCursor}
               onHistoryCursor={setHistoryCursor}
               handoff={handoffOffer}
-              onOpenInCursorCli={() =>
-                void openCursorCli(session.sessionId, session.cwd)
-              }
             />
           }
           secondary={
@@ -1974,6 +1956,7 @@ export function StartupForm({
                 onOpenCli={(entry) => void openCursorCli(entry.id, entry.cwd)}
               />
             )}
+            {cliLaunchNote && <p className="hint">{cliLaunchNote}</p>}
             {idleActions}
             {transcriptSaveError && (
               <p className="error">Could not save the transcript: {transcriptSaveError}</p>

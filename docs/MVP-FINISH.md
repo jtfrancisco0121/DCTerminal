@@ -44,7 +44,7 @@ Dev-only panels (ACP probes, duplicate dev session) are hidden in release builds
 
 ### P2 — Blueprint “future” (after MVP tag)
 
-- Live Windows probe of `session/load` replay ([cursor-cli-history.md](./cursor-cli-history.md))
+- Live Windows probe of `session/load` replay — done on CLI 2026.10.01 ([cursor-cli-history.md](./cursor-cli-history.md)). `agent --resume` does not open ACP ids.
 - Plan / question / todo cards (FR-010) — plan accept/reject, todos, and task cards are in the session view; `cursor/ask_question` is still auto-cancelled
 - Installers + CI matrix (T5.x)
 
