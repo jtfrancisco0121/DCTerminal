@@ -228,11 +228,22 @@ export async function saveFormDraft(
 export async function roleSessionStart(
   roleId: string,
   values: Record<string, string>,
+  tabId?: string | null,
 ): Promise<RoleSessionStartResult> {
   return invoke<RoleSessionStartResult>("role_session_start", {
     roleId,
     values,
+    tabId: tabId ?? null,
   });
+}
+
+export async function syncActiveTabForm(
+  tabId: string,
+  roleId: string,
+  cwd: string,
+  values: Record<string, string>,
+): Promise<void> {
+  return invoke("sync_active_tab_form", { tabId, roleId, cwd, values });
 }
 
 export type DevSessionInfo = {
@@ -270,6 +281,39 @@ export function listenPromptFinished(
 
 export async function devSessionStop(): Promise<void> {
   return invoke("dev_session_stop");
+}
+
+export async function devSessionCancel(): Promise<void> {
+  return invoke("dev_session_cancel");
+}
+
+export type PermissionOption = {
+  id: string;
+  label: string;
+};
+
+export type PermissionRequestEvent = {
+  sessionId: string;
+  jsonRpcId: number;
+  title: string;
+  message: string;
+  options: PermissionOption[];
+  rawParams: string;
+};
+
+export function listenPermissionRequests(
+  handler: (event: PermissionRequestEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<PermissionRequestEvent>("acp/permission-request", (e) => {
+    handler(e.payload);
+  });
+}
+
+export async function respondPermissionRequest(
+  outcome: "selected" | "cancelled",
+  optionId?: string,
+): Promise<void> {
+  return invoke("respond_permission_request", { outcome, optionId });
 }
 
 export type SessionUpdateEvent = {

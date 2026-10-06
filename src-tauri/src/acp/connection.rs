@@ -11,6 +11,7 @@ const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct LineDispatch {
     pub notifications: Vec<Value>,
     on_notification: Option<Box<dyn FnMut(&Value)>>,
+    pub on_agent_request: Option<Box<dyn FnMut(&Value) -> Result<Value, String>>>,
 }
 
 impl LineDispatch {
@@ -18,7 +19,15 @@ impl LineDispatch {
         Self {
             notifications: Vec::new(),
             on_notification: None,
+            on_agent_request: None,
         }
+    }
+
+    pub fn set_on_agent_request(
+        &mut self,
+        handler: Box<dyn FnMut(&Value) -> Result<Value, String>>,
+    ) {
+        self.on_agent_request = Some(handler);
     }
 
     pub fn set_on_notification(&mut self, handler: Box<dyn FnMut(&Value)>) {
@@ -128,7 +137,14 @@ impl AcpConnection {
                     dispatch.record_notification(value);
                     return Ok(());
                 }
-                if method == "session/request_permission" || method.starts_with("cursor/") {
+                if method == "session/request_permission" {
+                    let result = if let Some(handler) = &mut dispatch.on_agent_request {
+                        handler(value)?
+                    } else {
+                        response_for_agent_request(value)
+                    };
+                    self.respond_result(req_id, result)?;
+                } else if method.starts_with("cursor/") {
                     let result = response_for_agent_request(value);
                     self.respond_result(req_id, result)?;
                 } else {

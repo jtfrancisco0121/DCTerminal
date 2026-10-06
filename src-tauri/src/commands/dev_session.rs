@@ -3,7 +3,9 @@ use crate::commands::prompt_worker::spawn_prompt_turn;
 use crate::orchestrator::TabPhase;
 use crate::store::StateStore;
 use serde::Serialize;
+use serde_json::Value;
 use std::path::PathBuf;
+use std::sync::mpsc::Sender;
 use std::sync::Mutex;
 use tauri::{AppHandle, State};
 
@@ -15,6 +17,7 @@ pub struct DevSessionState {
     pub phase: TabPhase,
     pub active_tab_id: Option<String>,
     pub prompt_in_flight: bool,
+    pub permission_responder: Option<Sender<Value>>,
 }
 
 impl DevSessionState {
@@ -26,6 +29,7 @@ impl DevSessionState {
             phase: TabPhase::AwaitingInput,
             active_tab_id: None,
             prompt_in_flight: false,
+            permission_responder: None,
         }
     }
 }
@@ -108,6 +112,17 @@ pub fn dev_session_send(
 }
 
 #[tauri::command]
+pub fn dev_session_cancel(state: State<Mutex<DevSessionState>>) -> Result<(), String> {
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+    let client = guard
+        .client
+        .as_mut()
+        .ok_or_else(|| "no active session".to_string())?;
+    client.cancel_turn()?;
+    Ok(())
+}
+
+#[tauri::command]
 pub fn dev_session_stop(
     state: State<Mutex<DevSessionState>>,
     state_store: State<Mutex<StateStore>>,
@@ -122,6 +137,7 @@ pub fn dev_session_stop(
     guard.phase = guard.phase.after_session_stopped();
     guard.active_tab_id = None;
     guard.prompt_in_flight = false;
+    guard.permission_responder = None;
     if let Some(id) = tab_id {
         let mut store = state_store.lock().map_err(|e| e.to_string())?;
         store.mark_tab_awaiting_input(&id)?;

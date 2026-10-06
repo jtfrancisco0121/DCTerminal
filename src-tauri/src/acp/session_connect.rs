@@ -12,7 +12,13 @@ pub fn handshake(
 
     conn.call(1, "initialize", initialize_params(), timeout)?;
 
-    conn.call(2, "authenticate", json!({ "methodId": "cursor_login" }), timeout)?;
+    match conn.call(2, "authenticate", json!({ "methodId": "cursor_login" }), timeout) {
+        Ok(_) => {}
+        Err(e) if is_auth_failure(&e) => {
+            return Err(format!("AUTH_ERROR: {e}"));
+        }
+        Err(e) => return Err(e),
+    }
 
     let new_result = conn.call(
         3,
@@ -41,6 +47,14 @@ pub fn handshake(
     )?;
 
     Ok((session_id, mode_id.to_string()))
+}
+
+fn is_auth_failure(err: &str) -> bool {
+    let lower = err.to_lowercase();
+    lower.contains("auth")
+        || lower.contains("login")
+        || lower.contains("unauthorized")
+        || lower.contains("not authenticated")
 }
 
 fn initialize_params() -> Value {

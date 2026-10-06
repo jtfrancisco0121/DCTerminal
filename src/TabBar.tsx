@@ -3,7 +3,10 @@ import type { TabSummary } from "./bridge";
 type Props = {
   tabs: TabSummary[];
   activeTabId: string | null;
-  disabled: boolean;
+  /** Disables switching/closing tabs (e.g. while a live session is open). */
+  disableSwitch?: boolean;
+  /** Disables + New tab (e.g. while a command is in flight). */
+  disableNew?: boolean;
   onSelect: (tabId: string) => void;
   onClose: (tabId: string) => void;
   onNew: () => void;
@@ -12,7 +15,8 @@ type Props = {
 export function TabBar({
   tabs,
   activeTabId,
-  disabled,
+  disableSwitch = false,
+  disableNew = false,
   onSelect,
   onClose,
   onNew,
@@ -33,7 +37,7 @@ export function TabBar({
                 type="button"
                 className="tab-chip-label"
                 onClick={() => onSelect(t.id)}
-                disabled={disabled}
+                disabled={disableSwitch}
                 title={`${t.label} · ${t.phase}`}
               >
                 <span
@@ -47,7 +51,7 @@ export function TabBar({
                   type="button"
                   className="tab-chip-close"
                   onClick={() => onClose(t.id)}
-                  disabled={disabled}
+                  disabled={disableSwitch}
                   aria-label={`Close ${t.label}`}
                 >
                   ×
@@ -61,7 +65,12 @@ export function TabBar({
         type="button"
         className="secondary-button tab-new"
         onClick={onNew}
-        disabled={disabled}
+        disabled={disableNew}
+        title={
+          disableSwitch && !disableNew
+            ? "Creates a draft tab — stop the session to switch to it"
+            : undefined
+        }
       >
         + New tab
       </button>

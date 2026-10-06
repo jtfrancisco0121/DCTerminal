@@ -56,6 +56,7 @@ impl AcpClient {
         &mut self,
         text: &str,
         on_notification: Option<Box<dyn FnMut(&Value)>>,
+        on_agent_request: Option<Box<dyn FnMut(&Value) -> Result<Value, String>>>,
     ) -> Result<PromptResult, String> {
         if text.trim().is_empty() {
             return Err("prompt text is empty".to_string());
@@ -65,6 +66,9 @@ impl AcpClient {
         let mut dispatch = LineDispatch::default();
         if let Some(handler) = on_notification {
             dispatch.set_on_notification(handler);
+        }
+        if let Some(handler) = on_agent_request {
+            dispatch.set_on_agent_request(handler);
         }
         let result = self.conn.call_with_dispatch(
             id,
@@ -106,38 +110,26 @@ impl AcpClient {
 }
 
 fn extract_agent_text(dispatch: &LineDispatch) -> String {
+    use super::text_extract::text_from_session_params;
     let mut parts = Vec::new();
     for note in &dispatch.notifications {
         if note.get("method").and_then(|m| m.as_str()) != Some("session/update") {
             continue;
         }
         let params = note.get("params").unwrap_or(note);
-        append_text_from_update(params, &mut parts);
-    }
-    parts.join("")
-}
-
-fn append_text_from_update(params: &Value, parts: &mut Vec<String>) {
-    if let Some(update) = params.get("update") {
-        append_text_from_update(update, parts);
-        return;
-    }
-    let kind = params
-        .get("type")
-        .or_else(|| params.get("updateType"))
-        .and_then(|v| v.as_str());
-    if matches!(
-        kind,
-        Some("agent_message_chunk") | Some("agentMessageChunk") | Some("text")
-    ) || params.get("text").is_some()
-    {
-        if let Some(text) = params.get("text").and_then(|t| t.as_str()) {
-            parts.push(text.to_string());
-        } else if let Some(content) = params.get("content").and_then(|c| c.as_str()) {
-            parts.push(content.to_string());
+        let kind = params
+            .get("update")
+            .and_then(|u| u.get("type"))
+            .or_else(|| params.get("type"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let normalized = kind.replace('_', "").to_lowercase();
+        if normalized.contains("thought") || normalized.contains("toolcall") {
+            continue;
+        }
+        if let Some(text) = text_from_session_params(params) {
+            parts.push(text);
         }
     }
-    if let Some(chunk) = params.get("chunk") {
-        append_text_from_update(chunk, parts);
-    }
+    parts.join("")
 }

@@ -1,0 +1,175 @@
+import { useEffect, useMemo, useRef, type KeyboardEvent } from "react";
+import ReactMarkdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
+import type { PermissionRequestEvent } from "./bridge";
+import { PermissionCard } from "./PermissionCard";
+import type { StreamSegment } from "./transcript";
+
+const markdownComponents: Components = {
+  table: ({ children }) => (
+    <div className="session-markdown-table-wrap">
+      <table>{children}</table>
+    </div>
+  ),
+};
+
+type Props = {
+  title: string;
+  cwd: string;
+  sessionId: string;
+  segments: StreamSegment[];
+  promptInFlight: boolean;
+  followUp: string;
+  busy: boolean;
+  canSendFollowUp: boolean;
+  promptError: string | null;
+  permissionRequest: PermissionRequestEvent | null;
+  onPermissionSelect: (optionId: string) => void;
+  onPermissionCancel: () => void;
+  onCancelTurn: () => void;
+  onFollowUpChange: (value: string) => void;
+  onSendFollowUp: () => void;
+  onStop: () => void;
+};
+
+export function SessionTerminal({
+  title,
+  cwd,
+  sessionId,
+  segments,
+  promptInFlight,
+  followUp,
+  busy,
+  canSendFollowUp,
+  promptError,
+  permissionRequest,
+  onPermissionSelect,
+  onPermissionCancel,
+  onCancelTurn,
+  onFollowUpChange,
+  onSendFollowUp,
+  onStop,
+}: Props) {
+  const screenRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = screenRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [segments, promptInFlight]);
+
+  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      if (!busy && followUp.trim()) onSendFollowUp();
+    }
+  };
+
+  const hasContent = segments.some((s) => s.text.length > 0);
+  const remarkPlugins = useMemo(() => [remarkGfm], []);
+
+  return (
+    <div className="session-terminal">
+      <header className="session-terminal-chrome">
+        <div className="session-terminal-chrome-titles">
+          <h2 className="session-terminal-title">{title}</h2>
+          <p className="session-terminal-subtitle" title={sessionId}>
+            {cwd}
+          </p>
+        </div>
+        <div className="session-terminal-chrome-actions">
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={onCancelTurn}
+            disabled={busy || !promptInFlight}
+            title="Cancel in-flight turn (Esc)"
+          >
+            Cancel turn
+          </button>
+          <button
+            type="button"
+            className="secondary-button session-stop"
+            onClick={onStop}
+            disabled={busy}
+          >
+            Stop session
+          </button>
+        </div>
+      </header>
+
+      {permissionRequest && (
+        <PermissionCard
+          request={permissionRequest}
+          busy={busy}
+          onSelect={onPermissionSelect}
+          onCancel={onPermissionCancel}
+        />
+      )}
+
+      <div className="session-terminal-screen-wrap">
+        <div ref={screenRef} className="session-terminal-screen" role="log">
+          {!hasContent && promptInFlight && (
+            <p className="session-terminal-placeholder">Agent is thinking…</p>
+          )}
+          {segments.map((seg) => (
+            <div
+              key={seg.id}
+              className={`session-stream session-stream-${seg.kind}`}
+            >
+              {seg.kind === "agent" || seg.kind === "user" ? (
+                <ReactMarkdown
+                  remarkPlugins={remarkPlugins}
+                  components={markdownComponents}
+                >
+                  {seg.text}
+                </ReactMarkdown>
+              ) : seg.kind === "tool" ? (
+                <div className="session-stream-tool">▸ {seg.text}</div>
+              ) : seg.kind === "thought" ? (
+                <details className="session-stream-thought">
+                  <summary>Thought</summary>
+                  <pre>{seg.text}</pre>
+                </details>
+              ) : (
+                <div className="session-stream-system"># {seg.text}</div>
+              )}
+            </div>
+          ))}
+          {promptInFlight && hasContent && (
+            <span className="session-terminal-cursor" aria-hidden>▌</span>
+          )}
+        </div>
+      </div>
+
+      {promptError && (
+        <p className="error session-terminal-error">{promptError}</p>
+      )}
+
+      <div className="session-terminal-composer">
+        <span className="session-terminal-prompt" aria-hidden>›</span>
+        <textarea
+          className="session-terminal-input"
+          rows={3}
+          placeholder={
+            canSendFollowUp
+              ? "Follow-up message (Ctrl+Enter to send)"
+              : "Message"
+          }
+          value={followUp}
+          onChange={(e) => onFollowUpChange(e.target.value)}
+          onKeyDown={handleKeyDown}
+          disabled={busy}
+        />
+        <button
+          type="button"
+          className="primary-button session-terminal-send"
+          onClick={onSendFollowUp}
+          disabled={busy || !followUp.trim()}
+        >
+          Send
+        </button>
+      </div>
+    </div>
+  );
+}

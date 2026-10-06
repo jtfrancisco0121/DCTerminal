@@ -1,5 +1,6 @@
 mod client;
 pub(crate) mod connection;
+pub(crate) mod text_extract;
 mod session_update;
 mod handshake;
 mod probe;

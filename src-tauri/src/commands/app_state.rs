@@ -1,6 +1,7 @@
 use crate::commands::dev_session::DevSessionState;
 use crate::store::{RolesStore, StateStore, TabRecord};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::State;
 
@@ -100,10 +101,10 @@ pub fn new_draft_tab(
     store: State<Mutex<StateStore>>,
     session: State<Mutex<DevSessionState>>,
 ) -> Result<TabDetail, String> {
-    let session = session.lock().map_err(|e| e.to_string())?;
-    if session.client.is_some() {
-        return Err("stop the current session before opening a new tab".to_string());
-    }
+    let make_active = {
+        let session = session.lock().map_err(|e| e.to_string())?;
+        session.client.is_none()
+    };
     let role = {
         let roles = roles.lock().map_err(|e| e.to_string())?;
         roles
@@ -112,12 +113,38 @@ pub fn new_draft_tab(
             .ok_or_else(|| format!("unknown role: {role_id}"))
     }?;
     let mut store = store.lock().map_err(|e| e.to_string())?;
-    let tab_id = store.create_draft_tab(&role, cwd.trim())?;
+    let tab_id = store.create_draft_tab(&role, cwd.trim(), make_active)?;
     let tab = store
         .tab_by_id(&tab_id)
         .cloned()
         .ok_or_else(|| "draft tab missing after create".to_string())?;
     Ok(TabDetail { tab })
+}
+
+#[tauri::command]
+pub fn sync_active_tab_form(
+    tab_id: String,
+    role_id: String,
+    cwd: String,
+    values: HashMap<String, String>,
+    roles: State<Mutex<RolesStore>>,
+    store: State<Mutex<StateStore>>,
+    session: State<Mutex<DevSessionState>>,
+) -> Result<(), String> {
+    let session = session.lock().map_err(|e| e.to_string())?;
+    if session.client.is_some() {
+        return Ok(());
+    }
+    let role = {
+        let roles = roles.lock().map_err(|e| e.to_string())?;
+        roles
+            .role_by_id(&role_id)
+            .cloned()
+            .ok_or_else(|| format!("unknown role: {role_id}"))?
+    };
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    store.sync_tab_form(&tab_id, &role, &values, cwd.trim())?;
+    Ok(())
 }
 
 fn snapshot_from_store(store: &StateStore) -> AppStateSnapshot {

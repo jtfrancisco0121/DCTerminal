@@ -8,38 +8,38 @@
 
 | Field | Value |
 |--------|--------|
-| **Last updated** | 2026-10-06 — multi-tab UI, forms.json, transcript |
+| **Last updated** | 2026-10-06 — product shell, session terminal, MVP finish plan |
 | **Branch** | `master` |
-| **Current phase** | Phase 2 — single-tab vertical slice |
-| **Active task** | T3.4 tab badges/persist running + markdown transcript |
+| **Current phase** | Finish MVP vertical slice (see [MVP-FINISH.md](./MVP-FINISH.md)) |
+| **Active task** | P1: transcript persist, scratch pad |
 
-## Completed since last push
+## Product-ready today
 
-- [x] **Multi-tab** — TabBar, `new_draft_tab` / `select_active_tab` / `close_tab`
-- [x] **forms.json** — last-used + draft autosave + `remember` field recall
-- [x] **Transcript** — structured lines (agent / tool / thought / system)
-- [x] **Pushed** `24e4344` — state.json snapshots
-- [x] **Pushed** `aedff12` — Phase 2b session-update events + TabPhase
-- [x] **T2.3 (slice)** — `state.json` tab snapshot (answers, merged prompt, hash, session ref)
-- [x] **Restore** — `awaitingInput` tab prefills form on launch (no re-injection)
-- [x] **Pushed** `f72064e` — Phase 2 startup form + `role_session_start`
-- [x] **T2.6 (slice)** — `acp/session-update` Tauri events + live transcript panel
-- [x] **T2.1 (slice)** — `TabPhase` FSM gate on role session start/stop
-- [x] **T2.8 (MVP)** — Schema-driven `StartupForm`, `validate_and_preview`, role picker + cwd
-- [x] **`role_session_start`** — merge → ACP connect (role `defaultMode`) → `send_on_start` injection
-- [x] **Orchestrator (lite)** — `InjectionStrategy`, `attach_to_first_message` on first Send
-- [x] **`merge_role_prompt`** shared helper; `default-run = dcterminal` + README Windows PATH note
+- Role **startup form** → **Start role session** → **follow-up** in session pane (same agent until Stop)
+- **Multi-tab** drafts; **+ New tab** during live session (draft queued until Stop)
+- **Session UI** — full-height terminal-style pane, Markdown + tables
+- **Release UI** — dev probes / duplicate dev session hidden (`import.meta.env.DEV` only)
 
-## Next up
+## P0 landed (2026-10-06)
 
-1. **T2.1** — Tab FSM + `create_tab` / `AwaitingInput` persistence
-2. **T2.6** — Stream `session/update` to UI (Tauri events)
-3. **T2.3** — Merged-prompt snapshot on tab state
+- **Permission card** — `acp/permission-request` + `respond_permission_request`
+- **Cancel turn** — `dev_session_cancel`, Esc, toolbar button
+- **Auth** — `AUTH_ERROR` from handshake → `_auth` form error
+- **Product shell** — release UI without dev probes
+
+## Not MVP-done yet
+- Transcript persist across Stop / relaunch
+- `session/load` resume (P2)
+- Installers / §21 acceptance on three OSes
+
+## Next up (strict order)
+
+See **[MVP-FINISH.md](./MVP-FINISH.md)** — P0 items 1–4, then P1.
 
 ## Quick commands
 
 ```bash
-npm run tauri dev
+npm run dev:ui    # terminal 1
+npm run dev:app   # terminal 2
 cd src-tauri && cargo test
-cargo test live_handshake_probe -- --ignored --nocapture
 ```

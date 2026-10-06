@@ -4,11 +4,22 @@ Local desktop app: **role-aware, multi-tab UI** on top of the Cursor CLI via **A
 
 ## Status
 
-Early scaffold — track progress in:
+**Pre-MVP** — core role sessions work; finishing P0 items (permissions, cancel, polish). Track:
 
-- **[docs/PROGRESS.md](docs/PROGRESS.md)** — update before each commit/push (where we left off)
-- **[docs/TASKS.md](docs/TASKS.md)** — phased checklist
-- **[docs/plans/2026-10-06-mvp-implementation-plan.md](docs/plans/2026-10-06-mvp-implementation-plan.md)** — build order
+- **[docs/MVP-FINISH.md](docs/MVP-FINISH.md)** — what “done” means and finish order
+- **[docs/PROGRESS.md](docs/PROGRESS.md)** — snapshot before each push
+- **[docs/TASKS.md](docs/TASKS.md)** — full checklist
+
+## Using the app (daily)
+
+1. Install Cursor CLI and run `agent login`.
+2. Run `npm run dev:ui` + `npm run dev:app` (or a release build when available).
+3. Pick a **tab** → fill the role form → **Start role session**.
+4. **Continue the same agent** with the `›` follow-up box (Ctrl+Enter) — do not press Stop.
+5. **Stop session** when done; **Start** again only if you want a **new** agent (startup prompt re-sent).
+6. **+ New tab** for another task.
+
+Not supported yet: resume chat after quit (`session/load`), saved transcript after Stop.
 
 ## Prerequisites
 

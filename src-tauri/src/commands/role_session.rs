@@ -28,6 +28,7 @@ pub fn role_session_start(
     app: AppHandle,
     role_id: String,
     values: HashMap<String, String>,
+    tab_id: Option<String>,
     store: State<Mutex<RolesStore>>,
     state: State<Mutex<DevSessionState>>,
     state_store: State<Mutex<StateStore>>,
@@ -85,7 +86,30 @@ pub fn role_session_start(
     guard.pending_startup_prompt = None;
     guard.startup_injected = false;
 
-    let client = AcpClient::connect(&path, &role.default_mode)?;
+    let client = match AcpClient::connect(&path, &role.default_mode) {
+        Err(e) if e.starts_with("AUTH_ERROR:") => {
+            let msg = e
+                .trim_start_matches("AUTH_ERROR:")
+                .trim()
+                .to_string();
+            return Ok(RoleSessionStartResult {
+                errors: vec![crate::template::FieldError {
+                    key: "_auth".to_string(),
+                    message: format!(
+                        "Cursor CLI is not authenticated. Run `agent login` in a terminal, then Retry. ({msg})"
+                    ),
+                }],
+                session: None,
+                merged_chars: None,
+                injection_strategy: None,
+                startup_injected: false,
+                injection_in_flight: false,
+                tab_id: None,
+            });
+        }
+        Err(e) => return Err(e),
+        Ok(client) => client,
+    };
     let info = DevSessionInfo {
         session_id: client.session_id().to_string(),
         mode_id: client.mode_id().to_string(),
@@ -101,13 +125,13 @@ pub fn role_session_start(
 
     let tab_id = {
         let mut store = state_store.lock().map_err(|e| e.to_string())?;
-        store.upsert_running_tab(
+        store.promote_tab_to_running(
+            tab_id.as_deref(),
             &role,
             &values,
             &info.cwd,
             &merged_text,
             session_ref,
-            false,
         )?
     };
 

@@ -1,5 +1,6 @@
 use crate::acp::PromptResult;
 use crate::commands::acp_events::emit_session_update;
+use crate::commands::agent_requests::wait_for_permission_ui;
 use crate::commands::dev_session::DevSessionState;
 use crate::store::StateStore;
 use serde::Serialize;
@@ -54,11 +55,21 @@ fn run_prompt_turn(
             .ok_or_else(|| "no active agent session".to_string())?;
         let session_id = client.session_id().to_string();
         let session_id_for_emit = session_id.clone();
+        let session_id_for_perm = session_id.clone();
         let app_emit = app.clone();
+        let app_perm = app.clone();
         let on_notification = Box::new(move |value: &serde_json::Value| {
             emit_session_update(&app_emit, &session_id_for_emit, value);
         });
-        let result = client.send_prompt(prompt_text, Some(on_notification))?;
+        let on_agent_request = Box::new(move |value: &serde_json::Value| {
+            let session_mtx = app_perm.state::<Mutex<DevSessionState>>();
+            wait_for_permission_ui(&app_perm, &session_id_for_perm, value, &*session_mtx)
+        });
+        let result = client.send_prompt(
+            prompt_text,
+            Some(on_notification),
+            Some(on_agent_request),
+        )?;
         if mark_startup_injected {
             guard.startup_injected = true;
         }

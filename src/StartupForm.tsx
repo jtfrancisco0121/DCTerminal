@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   closeTab,
+  devSessionCancel,
   devSessionSend,
   devSessionStop,
+  listenPermissionRequests,
+  respondPermissionRequest,
   getAppState,
+  getTab,
   getFormRecall,
   getRole,
   listenPromptFinished,
@@ -12,6 +16,7 @@ import {
   roleSessionStart,
   saveFormDraft,
   selectActiveTab,
+  syncActiveTabForm,
   validateAndPreview,
   type DevPromptResult,
   type DevSessionInfo,
@@ -20,14 +25,18 @@ import {
   type RoleSessionStartResult,
   type RoleSummary,
   type TabSummary,
+  type PermissionRequestEvent,
   type SessionUpdateEvent,
   type ValidatePreviewResult,
 } from "./bridge";
+import { SessionTerminal } from "./SessionTerminal";
 import { TabBar } from "./TabBar";
 import {
-  coalesceAgentLines,
-  sessionUpdateToLine,
-  type TranscriptLine,
+  appendStreamSegment,
+  reconcileAgentStream,
+  streamSegmentFromEvent,
+  streamSegmentFromSystemMessage,
+  type StreamSegment,
 } from "./transcript";
 
 function fieldVisible(
@@ -49,9 +58,15 @@ type Props = {
   roles: RoleSummary[];
   cliFound: boolean;
   defaultCwd: string;
+  onSessionActiveChange?: (active: boolean) => void;
 };
 
-export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
+export function StartupForm({
+  roles,
+  cliFound,
+  defaultCwd,
+  onSessionActiveChange,
+}: Props) {
   const [roleId, setRoleId] = useState("role_implementer");
   const [role, setRole] = useState<Role | null>(null);
   const [values, setValues] = useState<Record<string, string>>({ cwd: defaultCwd });
@@ -68,7 +83,7 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
   const [promptError, setPromptError] = useState<string | null>(null);
   const [followUp, setFollowUp] = useState("");
   const [busy, setBusy] = useState(false);
-  const [transcriptLines, setTranscriptLines] = useState<TranscriptLine[]>([]);
+  const [streamSegments, setStreamSegments] = useState<StreamSegment[]>([]);
   const [savedTabs, setSavedTabs] = useState<TabSummary[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const skipRecallRef = useRef(false);
@@ -77,6 +92,7 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
   const pendingUpdatesRef = useRef<SessionUpdateEvent[]>([]);
   const flushRafRef = useRef<number | null>(null);
   const [restoredTabId, setRestoredTabId] = useState<string | null>(null);
+  const tabsBootstrappedRef = useRef(false);
 
   const loadTabIntoForm = useCallback((tab: {
     roleId: string;
@@ -100,21 +116,49 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
   }, []);
 
   useEffect(() => {
+    if (tabsBootstrappedRef.current) return;
+    tabsBootstrappedRef.current = true;
+    const seedRoleId = roles[0]?.id ?? "role_implementer";
     refreshTabs()
-      .then((snap) => {
-        if (!snap.activeTabId) return;
-        const summary = snap.tabs.find((t) => t.id === snap.activeTabId);
-        if (!summary) return;
-        if (summary.phase === "running") return;
-        return selectActiveTab(snap.activeTabId).then(({ tab }) => {
+      .then(async (snap) => {
+        if (snap.tabs.length === 0) {
+          const { tab } = await newDraftTab(seedRoleId, defaultCwd);
+          await refreshTabs();
           loadTabIntoForm(tab);
-        });
+          return;
+        }
+        const activeId = snap.activeTabId ?? snap.tabs[snap.tabs.length - 1]?.id;
+        if (!activeId) return;
+        const summary = snap.tabs.find((t) => t.id === activeId);
+        if (!summary) return;
+        if (summary.phase === "running") {
+          setActiveTabId(activeId);
+          return;
+        }
+        const { tab } = await selectActiveTab(activeId);
+        loadTabIntoForm(tab);
       })
       .catch(() => setSavedTabs([]));
-  }, [loadTabIntoForm, refreshTabs]);
+  }, [loadTabIntoForm, refreshTabs, defaultCwd, roles]);
 
   useEffect(() => {
     sessionActiveRef.current = !!session;
+  }, [session]);
+
+  useEffect(() => {
+    onSessionActiveChange?.(!!session);
+  }, [session, onSessionActiveChange]);
+
+  useEffect(() => {
+    if (!session) return;
+    let unlisten: (() => void) | undefined;
+    listenPermissionRequests((evt) => {
+      if (evt.sessionId !== session.sessionId) return;
+      setPermissionRequest(evt);
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => unlisten?.();
   }, [session]);
 
   useEffect(() => {
@@ -125,10 +169,11 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
       const batch = pendingUpdatesRef.current;
       if (batch.length === 0) return;
       pendingUpdatesRef.current = [];
-      setTranscriptLines((prev) => {
+      setStreamSegments((prev) => {
         let next = prev;
         for (const evt of batch) {
-          next = coalesceAgentLines([...next, sessionUpdateToLine(evt)]);
+          const seg = streamSegmentFromEvent(evt);
+          if (seg) next = appendStreamSegment(next, seg);
         }
         return next;
       });
@@ -166,6 +211,9 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
       if (evt.success && evt.result) {
         setLastPromptResult(evt.result);
         setPromptError(null);
+        setStreamSegments((prev) =>
+          reconcileAgentStream(prev, evt.result?.agentText ?? ""),
+        );
         setStartResult((prev) =>
           prev ? { ...prev, startupInjected: true } : prev,
         );
@@ -230,11 +278,25 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
     draftTimerRef.current = setTimeout(() => {
       const cwd = values.cwd ?? defaultCwd;
       saveFormDraft(roleId, cwd, formValues).catch(() => {});
+      if (activeTabId) {
+        syncActiveTabForm(activeTabId, roleId, cwd, formValues)
+          .then(() => refreshTabs())
+          .catch(() => {});
+      }
     }, 800);
     return () => {
       if (draftTimerRef.current) clearTimeout(draftTimerRef.current);
     };
-  }, [formValues, roleId, session, role, values.cwd, defaultCwd]);
+  }, [
+    formValues,
+    roleId,
+    session,
+    role,
+    values.cwd,
+    defaultCwd,
+    activeTabId,
+    refreshTabs,
+  ]);
 
   const runPreview = useCallback(async () => {
     if (!role) return;
@@ -261,20 +323,17 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
     setStartResult(null);
     setLastPromptResult(null);
     setPromptError(null);
-    setTranscriptLines([
-      {
-        id: "startup_status",
-        kind: "system",
-        label: "session",
-        text: "Connecting to agent and sending startup prompt…",
-      },
+    setStreamSegments([
+      streamSegmentFromSystemMessage(
+        "Connecting to agent and sending startup prompt…",
+      ),
     ]);
     try {
-      const result = await roleSessionStart(roleId, formValues);
+      const result = await roleSessionStart(roleId, formValues, activeTabId);
       setStartResult(result);
       if (result.errors.length > 0) {
         setSession(null);
-        setTranscriptLines([]);
+        setStreamSegments([]);
         return;
       }
       setSession(result.session);
@@ -300,7 +359,7 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
     } finally {
       setBusy(false);
     }
-  }, [roleId, formValues, refreshTabs]);
+  }, [roleId, formValues, refreshTabs, activeTabId]);
 
   const stopSession = useCallback(async () => {
     setBusy(true);
@@ -311,7 +370,6 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
       setLastPromptResult(null);
       setPromptInFlight(false);
       setPromptError(null);
-      setTranscriptLines([]);
       await refreshTabs();
     } finally {
       setBusy(false);
@@ -324,6 +382,9 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
       setBusy(true);
       try {
         const { tab } = await selectActiveTab(tabId);
+        setSession(null);
+        setStartResult(null);
+        setStreamSegments([]);
         loadTabIntoForm(tab);
         await refreshTabs();
       } finally {
@@ -355,13 +416,25 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
     [session, roleId, defaultCwd, loadTabIntoForm],
   );
 
+  const [draftQueuedHint, setDraftQueuedHint] = useState(false);
+  const [permissionRequest, setPermissionRequest] =
+    useState<PermissionRequestEvent | null>(null);
+
   const handleNewTab = useCallback(async () => {
-    if (session) return;
     setBusy(true);
+    setDraftQueuedHint(false);
     try {
-      const cwd = values.cwd ?? defaultCwd;
-      const { tab } = await newDraftTab(roleId, cwd);
+      const cwd = session?.cwd ?? values.cwd ?? defaultCwd;
+      await newDraftTab(roleId, cwd);
       await refreshTabs();
+      if (session) {
+        setDraftQueuedHint(true);
+        return;
+      }
+      const snap = await getAppState();
+      const newActive = snap.activeTabId;
+      if (!newActive) return;
+      const { tab } = await getTab(newActive);
       skipRecallRef.current = true;
       setRoleId(tab.roleId);
       const recall = await getFormRecall(tab.roleId, cwd);
@@ -372,6 +445,53 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
       setBusy(false);
     }
   }, [session, roleId, values.cwd, defaultCwd, refreshTabs]);
+
+  const cancelTurn = useCallback(async () => {
+    setBusy(true);
+    try {
+      await devSessionCancel();
+    } catch (err: unknown) {
+      setPromptError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!session || !promptInFlight) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        cancelTurn();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [session, promptInFlight, cancelTurn]);
+
+  const handlePermissionSelect = useCallback(async (optionId: string) => {
+    setBusy(true);
+    try {
+      await respondPermissionRequest("selected", optionId);
+      setPermissionRequest(null);
+    } catch (err: unknown) {
+      setPromptError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  const handlePermissionCancel = useCallback(async () => {
+    setBusy(true);
+    try {
+      await respondPermissionRequest("cancelled");
+      setPermissionRequest(null);
+    } catch (err: unknown) {
+      setPromptError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }, []);
 
   const sendFollowUp = useCallback(async () => {
     setBusy(true);
@@ -399,6 +519,11 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
         ? preview!.errors
         : [];
 
+  const activeTabSummary = useMemo(
+    () => savedTabs.find((t) => t.id === activeTabId) ?? null,
+    [savedTabs, activeTabId],
+  );
+
   if (!role) {
     return (
       <section className="status-card">
@@ -408,37 +533,8 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
     );
   }
 
-  return (
-    <section className="status-card">
-      <h2>Start role session (T2.8)</h2>
-      <p className="hint">
-        Schema-driven form → merge → <code>agent acp</code> with{" "}
-        <code>send_on_start</code> injection. Answers and merged prompt persist
-        in <code>state.json</code>.
-      </p>
-      <TabBar
-        tabs={savedTabs}
-        activeTabId={activeTabId}
-        disabled={busy || !!session}
-        onSelect={handleSelectTab}
-        onClose={handleCloseTab}
-        onNew={handleNewTab}
-      />
-      {restoredTabId && !session && (
-        <p className="hint">
-          Tab <code>{restoredTabId}</code> — switch tabs when idle; stopped
-          sessions stay <code>awaitingInput</code> (no re-injection).
-        </p>
-      )}
-
-      {session && (
-        <p className="hint composer-locked">
-          Session running — use <strong>Stop</strong> to return to the startup
-          form. Switch tabs only after stopping.
-        </p>
-      )}
-
-      <div className={session ? "composer-fields composer-fields-locked" : "composer-fields"}>
+  const composerFields = (
+    <div className={session ? "composer-fields composer-fields-locked" : "composer-fields"}>
       <label className="field-label">
         Role
         <select
@@ -514,13 +610,16 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
       )}
 
       </div>
+  );
 
+  const idleActions = (
+    <>
       <div className="button-row">
         <button
           type="button"
           className="secondary-button"
           onClick={runPreview}
-          disabled={busy || !!session || previewBusy}
+          disabled={busy || previewBusy}
         >
           {previewBusy ? "…" : "Validate & preview"}
         </button>
@@ -528,21 +627,12 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
           type="button"
           className="primary-button"
           onClick={startSession}
-          disabled={busy || !cliFound || !!session}
+          disabled={busy || !cliFound}
         >
           Start role session
         </button>
-        <button
-          type="button"
-          className="secondary-button"
-          onClick={stopSession}
-          disabled={!session}
-        >
-          Stop session
-        </button>
       </div>
-
-      {preview?.merged && preview.merged.text && !session && (
+      {preview?.merged && preview.merged.text && (
         <details className="preview-details">
           <summary>
             Merged prompt ({preview.merged.chars.toLocaleString()} chars)
@@ -550,107 +640,85 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
           <pre className="mono-snippet">{preview.merged.text}</pre>
         </details>
       )}
+    </>
+  );
 
-      {session && (
-        <div className="session-panel">
-          <p className="session-panel-title">
-            Active session
-            {activeTabId && (
-              <span className="hint">
-                {" "}
-                · tab <code>{activeTabId}</code>
-              </span>
-            )}
+  if (session) {
+    const attachFirst =
+      startResult?.injectionStrategy === "attach_to_first_message";
+    return (
+      <section className="status-card status-card-session-full">
+        <TabBar
+          tabs={savedTabs}
+          activeTabId={activeTabId}
+          disableSwitch={true}
+          disableNew={busy}
+          onSelect={handleSelectTab}
+          onClose={handleCloseTab}
+          onNew={handleNewTab}
+        />
+        {draftQueuedHint && (
+          <p className="hint tab-draft-hint">
+            Draft tab added — <strong>Stop session</strong> to switch to it and
+            edit the form.
           </p>
-          <p className="hint">
-            <code>{session.sessionId}</code> · {session.modeId}
-            {startResult?.injectionStrategy && (
-              <> · {startResult.injectionStrategy}</>
-            )}
-          </p>
-          {promptInFlight && (
-            <p className="session-running" role="status">
-              Agent is working… (updates stream below; UI stays responsive)
-            </p>
-          )}
-          {promptError && <p className="error">{promptError}</p>}
-        </div>
-      )}
-
-      {session && (
-        <div className="probe-result transcript-panel">
-          <p>
-            <strong>Transcript</strong>
-            {transcriptLines.length > 0 && (
-              <span className="hint"> · {transcriptLines.length} lines</span>
-            )}
-          </p>
-          <ul className="transcript-lines transcript-body">
-            {transcriptLines.map((line) => (
-              <li
-                key={line.id}
-                className={`transcript-line transcript-line-${line.kind}`}
-              >
-                <div className="transcript-line-meta">{line.label}</div>
-                {String(line.text)}
-              </li>
-            ))}
-          </ul>
-          {lastPromptResult && !promptInFlight && (
-            <p className="hint">
-              Last turn: {lastPromptResult.stopReason ?? "finished"} ·{" "}
-              {lastPromptResult.updateCount} updates
-            </p>
-          )}
-        </div>
-      )}
-
-      {session && startResult?.injectionStrategy === "attach_to_first_message" && (
-        <>
-          <label className="field-label">
-            First message (startup prompt will attach)
-            <textarea
-              className="text-input prompt-area"
-              rows={2}
-              value={followUp}
-              onChange={(e) => setFollowUp(e.target.value)}
-              disabled={busy}
-            />
-          </label>
-          <button
-            type="button"
-            className="primary-button"
-            onClick={sendFollowUp}
-            disabled={busy || !followUp.trim()}
-          >
-            Send
-          </button>
-        </>
-      )}
-
-      {session &&
-        startResult?.injectionStrategy === "send_on_start" && (
-          <>
-            <label className="field-label">
-              Follow-up message
-              <textarea
-                className="text-input prompt-area"
-                rows={2}
-                value={followUp}
-                onChange={(e) => setFollowUp(e.target.value)}
-                disabled={busy}
-              />
-            </label>
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={sendFollowUp}
-              disabled={busy || !followUp.trim()}
-            >
-              Send follow-up
-            </button>
-          </>
         )}
+        <SessionTerminal
+          title={activeTabSummary?.label ?? "Session"}
+          cwd={session.cwd}
+          sessionId={session.sessionId}
+          segments={streamSegments}
+          promptInFlight={promptInFlight}
+          followUp={followUp}
+          busy={busy}
+          canSendFollowUp={!attachFirst || !startResult?.startupInjected}
+          promptError={promptError}
+          permissionRequest={permissionRequest}
+          onPermissionSelect={handlePermissionSelect}
+          onPermissionCancel={handlePermissionCancel}
+          onCancelTurn={cancelTurn}
+          onFollowUpChange={setFollowUp}
+          onSendFollowUp={sendFollowUp}
+          onStop={stopSession}
+        />
+        {lastPromptResult && !promptInFlight && (
+          <p className="hint session-turn-hint">
+            Last turn: {lastPromptResult.stopReason ?? "finished"}
+          </p>
+        )}
+        <details className="startup-form-details">
+          <summary>Startup form (read-only)</summary>
+          {composerFields}
+        </details>
+      </section>
+    );
+  }
+
+  return (
+    <section className="status-card">
+      <h2>Start role session</h2>
+      <p className="hint">
+        One tab = one workspace. <strong>Start</strong> opens a full-height agent
+        pane (structured stream from <code>agent acp</code>, not a shell PTY).
+        Use <strong>+ New tab</strong> for another task.
+      </p>
+      <TabBar
+        tabs={savedTabs}
+        activeTabId={activeTabId}
+        disableSwitch={busy}
+        disableNew={busy}
+        onSelect={handleSelectTab}
+        onClose={handleCloseTab}
+        onNew={handleNewTab}
+      />
+      {restoredTabId && (
+        <p className="hint">
+          Stopped sessions stay on this tab as{" "}
+          <code>awaitingInput</code> — edit and press Start again.
+        </p>
+      )}
+      {composerFields}
+      {idleActions}
     </section>
   );
 }

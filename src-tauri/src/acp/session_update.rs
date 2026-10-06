@@ -1,3 +1,4 @@
+use super::text_extract::text_from_session_params;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -22,77 +23,23 @@ pub fn map_session_update(session_id: &str, line: &Value) -> Option<SessionUpdat
         line.clone()
     };
 
-    let (kind, text_delta) = classify_update(&params);
+    let update = params.get("update").unwrap_or(&params);
+    let kind = update
+        .get("type")
+        .or_else(|| update.get("updateType"))
+        .or_else(|| update.get("sessionUpdate"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let text_delta = text_from_session_params(&params);
+
     Some(SessionUpdateEvent {
         session_id: session_id.to_string(),
         kind,
         text_delta,
         raw_json: params.to_string(),
     })
-}
-
-fn classify_update(params: &Value) -> (String, Option<String>) {
-    let update = params.get("update").unwrap_or(params);
-    let kind = update
-        .get("type")
-        .or_else(|| update.get("updateType"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-
-    let normalized = kind.replace('_', "").to_lowercase();
-    let text_delta = if normalized.contains("agentmessage")
-        || normalized == "text"
-        || kind == "agent_message_chunk"
-    {
-        extract_text_delta(update)
-    } else {
-        None
-    };
-
-    (kind, text_delta)
-}
-
-fn extract_text_delta(value: &Value) -> Option<String> {
-    extract_text_from_value(value)
-}
-
-fn extract_text_from_value(value: &Value) -> Option<String> {
-    if let Some(s) = value.as_str() {
-        return Some(s.to_string());
-    }
-    if let Some(text) = value.get("text") {
-        if let Some(s) = text.as_str() {
-            return Some(s.to_string());
-        }
-        if let Some(nested) = extract_text_from_value(text) {
-            return Some(nested);
-        }
-    }
-    if let Some(content) = value.get("content") {
-        if let Some(s) = content.as_str() {
-            return Some(s.to_string());
-        }
-        if let Some(nested) = extract_text_from_value(content) {
-            return Some(nested);
-        }
-        if let Some(parts) = content.as_array() {
-            let joined: String = parts
-                .iter()
-                .filter_map(extract_text_from_value)
-                .collect();
-            if !joined.is_empty() {
-                return Some(joined);
-            }
-        }
-    }
-    if let Some(chunk) = value.get("chunk") {
-        return extract_text_from_value(chunk);
-    }
-    if let Some(delta) = value.get("delta") {
-        return extract_text_from_value(delta);
-    }
-    None
 }
 
 #[cfg(test)]
@@ -105,8 +52,11 @@ mod tests {
         let line = json!({
             "method": "session/update",
             "params": {
-                "type": "agent_message_chunk",
-                "text": { "type": "text", "text": "Hi" }
+                "sessionId": "s1",
+                "update": {
+                    "type": "agent_message_chunk",
+                    "text": { "type": "text", "text": "Hi" }
+                }
             }
         });
         let evt = map_session_update("sess_1", &line).expect("event");
@@ -118,12 +68,31 @@ mod tests {
         let line = json!({
             "method": "session/update",
             "params": {
-                "type": "agent_message_chunk",
-                "text": "Hello"
+                "update": {
+                    "type": "agent_message_chunk",
+                    "text": "Hello"
+                }
             }
         });
         let evt = map_session_update("sess_1", &line).expect("event");
         assert_eq!(evt.session_id, "sess_1");
         assert_eq!(evt.text_delta.as_deref(), Some("Hello"));
+    }
+
+    #[test]
+    fn maps_tool_call_update() {
+        let line = json!({
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "type": "tool_call_update",
+                    "toolName": "read_file",
+                    "status": "completed"
+                }
+            }
+        });
+        let evt = map_session_update("sess_1", &line).expect("event");
+        assert_eq!(evt.kind, "tool_call_update");
+        assert_eq!(evt.text_delta.as_deref(), Some("read_file (completed)"));
     }
 }
