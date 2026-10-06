@@ -177,6 +177,9 @@ export type TabSummary = {
   resumeSessionId?: string | null;
   /** Per-tab model override. Missing means the role or global default. */
   model?: string | null;
+  /** F3: branch checked out in this tab's worktree. Missing on plain tabs. */
+  worktreeBranch?: string | null;
+  worktreePath?: string | null;
 };
 
 export type ClosedTabSummary = {
@@ -222,6 +225,7 @@ export type TabRecord = {
   terminalLaunch?: string;
   /** The user renamed this tab; form edits and starts keep the name. */
   customLabel?: boolean;
+  worktree?: WorktreeRef | null;
 };
 
 export async function getAppState(): Promise<AppStateSnapshot> {
@@ -804,6 +808,58 @@ export async function setNotificationSettings(
   notifications: NotificationSettings,
 ): Promise<NotificationSettings> {
   return invoke<NotificationSettings>("set_notification_settings", { notifications });
+}
+
+export type WorktreeRef = {
+  repoRoot: string;
+  path: string;
+  branch: string;
+};
+
+export type RepoInfo = {
+  mainRoot: string;
+  currentBranch: string | null;
+  branches: string[];
+  checkedOut: string[];
+  worktreesDir: string;
+};
+
+export type WorktreeCheck = {
+  worktree: WorktreeRef;
+  branch: string | null;
+  /** `git status --porcelain` lines. Removal is refused unless empty. */
+  dirty: string[];
+};
+
+/** Read-only: branches and the sibling folder new worktrees go into. */
+export async function gitRepoInfo(path: string): Promise<RepoInfo> {
+  return invoke<RepoInfo>("git_repo_info", { path });
+}
+
+/** Runs `git worktree add` (user clicked Create), then opens a draft tab there. */
+export async function worktreeTabNew(input: {
+  roleId: string;
+  repoPath: string;
+  branch: string;
+  createBranch: boolean;
+  base: string | null;
+}): Promise<{ tab: TabRecord }> {
+  return invoke<{ tab: TabRecord }>("worktree_tab_new", {
+    roleId: input.roleId,
+    repoPath: input.repoPath,
+    branch: input.branch,
+    createBranch: input.createBranch,
+    base: input.base,
+  });
+}
+
+export async function worktreeTabCheck(tabId: string): Promise<WorktreeCheck> {
+  return invoke<WorktreeCheck>("worktree_tab_check", { tabId });
+}
+
+/** `git worktree remove` (never forced) for a tab the user already closed. */
+export async function worktreeTabRemove(tabId: string, confirmed: boolean): Promise<void> {
+  return invoke("worktree_tab_remove", { tabId, confirmed });
 }
 
 export type LayoutState = {

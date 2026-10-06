@@ -16,6 +16,7 @@ mod session_id;
 pub mod store;
 pub mod supervisor;
 pub mod template;
+pub mod worktree;
 
 use acp::{probe_acp, probe_acp_handshake};
 use cli_detect::detect_cli;
@@ -30,6 +31,7 @@ use commands::{
     set_tab_color, set_tab_label, sync_active_tab_form, transcript_load, transcript_save,
     validate_and_preview, SessionRegistry,
 };
+use commands::{git_repo_info, worktree_tab_check, worktree_tab_new, worktree_tab_remove};
 use files::{files_list, files_read, files_reveal, files_write};
 use models::{get_model_settings, list_models, set_model_settings, set_tab_model};
 use pty::{
@@ -156,6 +158,10 @@ pub fn run() {
             acp_set_model,
             get_notification_settings,
             set_notification_settings,
+            git_repo_info,
+            worktree_tab_new,
+            worktree_tab_check,
+            worktree_tab_remove,
             get_layout,
             set_layout,
             files_list,

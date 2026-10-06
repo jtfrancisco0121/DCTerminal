@@ -10,6 +10,7 @@ mod prompt_worker;
 mod role_session;
 mod roles;
 mod workspace;
+mod worktree_tabs;
 
 pub use agent_requests::{respond_permission_request, respond_plan_request};
 pub use app_state::{
@@ -30,3 +31,4 @@ pub use workspace::{
     projects_list, projects_remember, projects_remove, projects_toggle_favorite, scratch_load,
     scratch_save, transcript_load, transcript_save,
 };
+pub use worktree_tabs::{git_repo_info, worktree_tab_check, worktree_tab_new, worktree_tab_remove};

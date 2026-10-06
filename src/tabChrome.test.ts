@@ -126,6 +126,22 @@ describe("tab chrome", () => {
     expect(goto("planner encryptor")).toBe(false);
   });
 
+  it("offers New tab in worktree always and Remove worktree only on a worktree tab", () => {
+    const plain = buildPalette({ tabs: [], canReopen: false, splitOpen: false });
+    expect(filterCommands(plain, "worktree").map((c) => c.id)).toEqual(["newWorktreeTab"]);
+    expect(filterCommands(plain, "git branch").map((c) => c.id)).toContain("newWorktreeTab");
+    const wt = buildPalette({
+      tabs: [],
+      canReopen: false,
+      splitOpen: false,
+      canRemoveWorktree: true,
+    });
+    expect(filterCommands(wt, "worktree").map((c) => c.id)).toEqual([
+      "newWorktreeTab",
+      "removeWorktree",
+    ]);
+  });
+
   it("offers plan hand-off commands on a Planner session", () => {
     const commands = buildPalette({
       tabs: [],

@@ -155,6 +155,8 @@ export function buildPalette(opts: {
   canReopen: boolean;
   splitOpen: boolean;
   canSendPlan?: boolean;
+  /** The active tab was opened in a worktree. */
+  canRemoveWorktree?: boolean;
 }): PaletteCommand[] {
   const commands: PaletteCommand[] = [
     { id: "newTab", title: "New tab", group: "Tabs" },
@@ -164,6 +166,22 @@ export function buildPalette(opts: {
     { id: "prevTab", title: "Previous tab", group: "Tabs" },
     { id: "renameTab", title: "Rename tab", group: "Tabs" },
     { id: "tabSwitcher", title: "Go to tab…", group: "Tabs" },
+    {
+      id: "newWorktreeTab",
+      title: "New tab in worktree…",
+      group: "Tabs",
+      keywords: "git branch worktree",
+    },
+    ...(opts.canRemoveWorktree
+      ? [
+          {
+            id: "removeWorktree",
+            title: "Remove this tab's worktree…",
+            group: "Tabs",
+            keywords: "git branch worktree delete",
+          },
+        ]
+      : []),
     { id: "splitRight", title: "Split right", group: "Panes" },
     { id: "splitDown", title: "Split down", group: "Panes" },
     { id: "closeSplit", title: "Close split", group: "Panes" },

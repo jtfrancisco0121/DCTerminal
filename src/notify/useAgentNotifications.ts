@@ -7,6 +7,7 @@ import {
   notificationMessage,
   pushToast,
   type AgentEvent,
+  type AgentEventKind,
   type AgentToast,
   type NotificationSettings,
 } from "./agentNotify";
@@ -77,5 +78,12 @@ export function useAgentNotifications(options: Options) {
     void (opts.showSystem ?? showSystemNotification)(title, body, { askAgain: true });
   }, []);
 
-  return { toasts, notify, dismiss, dismissTab, sendTest };
+  /** App message (not an agent event): always a toast, never an OS notification. */
+  const notice = useCallback((title: string, body: string, kind: AgentEventKind = "finished") => {
+    setToasts((prev) =>
+      pushToast(prev, { id: nextToastId(), tabId: "__notice__", kind, title, body }),
+    );
+  }, []);
+
+  return { toasts, notify, dismiss, dismissTab, sendTest, notice };
 }

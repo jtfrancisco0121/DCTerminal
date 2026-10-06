@@ -114,6 +114,7 @@ impl StateStore {
             terminal_launch: String::new(),
             model: None,
             custom_label: false,
+            worktree: None,
         };
         self.data.tabs.push(record);
         self.data.active_tab_id = Some(tab_id.clone());
@@ -243,6 +244,7 @@ impl StateStore {
                 mode_id: tab.session.as_ref().map(|session| session.mode_id.clone()),
                 model: tab.model.clone(),
                 custom_label: tab.custom_label,
+                worktree: tab.worktree.clone(),
             },
         );
         self.data.closed_tabs.truncate(15);
@@ -318,6 +320,7 @@ impl StateStore {
             terminal_launch: closed.terminal_launch.clone(),
             model: closed.model.clone(),
             custom_label: closed.custom_label,
+            worktree: closed.worktree.clone(),
         };
         let id = record.id.clone();
         self.data.tabs.push(record);
@@ -373,6 +376,40 @@ impl StateStore {
         self.save()
     }
 
+    /// Draft tab whose folder is a worktree the user just created.
+    pub fn create_worktree_tab(
+        &mut self,
+        role: &Role,
+        worktree: crate::worktree::WorktreeRef,
+    ) -> Result<String, String> {
+        let tab_id = self.create_draft_tab(role, &worktree.path, true)?;
+        if let Some(tab) = self.data.tabs.iter_mut().find(|t| t.id == tab_id) {
+            tab.worktree = Some(worktree);
+        }
+        self.save()?;
+        Ok(tab_id)
+    }
+
+    /// Worktree of an open or recently closed tab.
+    pub fn worktree_for(&self, tab_id: &str) -> Option<crate::worktree::WorktreeRef> {
+        self.data
+            .tabs
+            .iter()
+            .find(|t| t.id == tab_id)
+            .and_then(|t| t.worktree.clone())
+            .or_else(|| {
+                self.data
+                    .closed_tabs
+                    .iter()
+                    .find(|t| t.id == tab_id)
+                    .and_then(|t| t.worktree.clone())
+            })
+    }
+
+    pub fn is_tab_open(&self, tab_id: &str) -> bool {
+        self.data.tabs.iter().any(|t| t.id == tab_id)
+    }
+
     pub fn set_tab_color(&mut self, tab_id: &str, color: &str) -> Result<(), String> {
         if !valid_tab_color(color) {
             return Err("color must be a #rgb or #rrggbb value".to_string());
@@ -420,6 +457,7 @@ impl StateStore {
             terminal_launch: String::new(),
             model: None,
             custom_label: false,
+            worktree: None,
         };
         self.data.tabs.push(record);
         if make_active {
@@ -467,6 +505,7 @@ impl StateStore {
             terminal_launch: String::new(),
             model: None,
             custom_label: false,
+            worktree: None,
         };
         apply_terminal_draft(&mut record, &draft);
         self.data.tabs.push(record);
@@ -774,6 +813,56 @@ mod tests {
         let parsed: AppStateFile = serde_json::from_str(raw).unwrap();
         assert_eq!(parsed.layout.split_mode, "single");
         assert!(!parsed.layout.file_panel_open);
+    }
+
+    #[test]
+    fn worktree_tab_keeps_its_worktree_through_close_and_reopen() {
+        let dir = std::env::temp_dir().join(format!(
+            "dcterminal_wt_tab_{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let role = crate::roles::Role {
+            id: "role_dev".to_string(),
+            name: "Developer".to_string(),
+            template_text: String::new(),
+            template_version: 1,
+            template_hash: String::new(),
+            schema_template_hash: String::new(),
+            default_mode: "agent".to_string(),
+            injection: "send_on_start".to_string(),
+            color: "#3fb950".to_string(),
+            is_built_in: true,
+            fields: vec![],
+            updated_at: None,
+        };
+        let mut store = StateStore {
+            path: dir.join("state.json"),
+            data: AppStateFile::default(),
+        };
+        let wt = crate::worktree::WorktreeRef {
+            repo_root: "/r/app".to_string(),
+            path: "/r/app-worktrees/feat-x".to_string(),
+            branch: "feat/x".to_string(),
+        };
+        let plain = store.create_draft_tab(&role, "/r/app", false).unwrap();
+        let id = store.create_worktree_tab(&role, wt.clone()).unwrap();
+        let tab = store.tab_by_id(&id).unwrap();
+        assert_eq!(tab.cwd, "/r/app-worktrees/feat-x");
+        assert_eq!(
+            tab.answers.get("cwd").map(String::as_str),
+            Some("/r/app-worktrees/feat-x")
+        );
+        assert_eq!(store.data.active_tab_id.as_deref(), Some(id.as_str()));
+        assert_eq!(store.worktree_for(&id), Some(wt.clone()));
+        assert_eq!(store.worktree_for(&plain), None);
+        assert!(store.is_tab_open(&id));
+        store.close_tab(&id).unwrap();
+        assert!(!store.is_tab_open(&id));
+        assert_eq!(store.worktree_for(&id), Some(wt.clone()));
+        let reopened = store.reopen_closed(None).unwrap();
+        assert_eq!(reopened.worktree, Some(wt));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

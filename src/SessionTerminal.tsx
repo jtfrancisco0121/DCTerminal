@@ -55,6 +55,8 @@ type Props = {
   } | null;
   /** Extra header controls, for example the model picker or pane buttons. */
   headerExtra?: ReactNode;
+  /** F3: branch of a worktree tab. */
+  branch?: string | null;
 };
 
 export function SessionTerminal({
@@ -83,6 +85,7 @@ export function SessionTerminal({
   onHistoryCursor,
   handoff,
   headerExtra,
+  branch = null,
 }: Props) {
   const screenRef = useRef<HTMLDivElement>(null);
   const permissionRef = useRef<HTMLDivElement>(null);
@@ -157,6 +160,11 @@ export function SessionTerminal({
         <div className="session-terminal-chrome-titles">
           <h2 className="session-terminal-title">{title}</h2>
           <p className="session-terminal-subtitle" title={sessionId}>
+            {branch && (
+              <span className="session-branch" aria-label="Git branch">
+                ⎇ {branch}
+              </span>
+            )}
             {cwd}
           </p>
         </div>

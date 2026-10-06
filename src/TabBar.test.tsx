@@ -178,3 +178,28 @@ describe("TabBar rename", () => {
     expect(onRename).toHaveBeenCalledWith("tab_1", "Renamed");
   });
 });
+
+describe("TabBar worktree", () => {
+  it("shows a worktree tab's branch and offers New tab in worktree", () => {
+    const onNewWorktree = vi.fn();
+    render(
+      <TabBar
+        tabs={[
+          tab({ id: "wt", label: "Developer · feat-login", worktreeBranch: "feat/login" }),
+          tab({ id: "plain", label: "Planner · UI" }),
+        ]}
+        activeTabId="wt"
+        onSelect={() => {}}
+        onClose={() => {}}
+        onNew={() => {}}
+        onNewWorktree={onNewWorktree}
+      />,
+    );
+    expect(screen.getByRole("tab", { name: /Developer · feat-login/ }).textContent).toContain(
+      "feat/login",
+    );
+    expect(screen.getByRole("tab", { name: /Planner · UI/ }).querySelector(".tab-branch")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "New tab in worktree…" }));
+    expect(onNewWorktree).toHaveBeenCalledOnce();
+  });
+});

@@ -6,6 +6,7 @@ type Props = {
   canReopen: boolean;
   splitOpen: boolean;
   canSendPlan?: boolean;
+  canRemoveWorktree?: boolean;
   onRun: (id: string) => void;
   onClose: () => void;
 };
@@ -15,14 +16,19 @@ export function CommandPalette({
   canReopen,
   splitOpen,
   canSendPlan = false,
+  canRemoveWorktree = false,
   onRun,
   onClose,
 }: Props) {
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
   const commands = useMemo(
-    () => filterCommands(buildPalette({ tabs, canReopen, splitOpen, canSendPlan }), query),
-    [tabs, canReopen, splitOpen, canSendPlan, query],
+    () =>
+      filterCommands(
+        buildPalette({ tabs, canReopen, splitOpen, canSendPlan, canRemoveWorktree }),
+        query,
+      ),
+    [tabs, canReopen, splitOpen, canSendPlan, canRemoveWorktree, query],
   );
 
   useEffect(() => {

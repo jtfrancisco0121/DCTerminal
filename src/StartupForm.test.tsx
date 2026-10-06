@@ -95,6 +95,10 @@ vi.mock("./bridge", () => {
     toastWhenFocused: true,
   })),
   setNotificationSettings: vi.fn(async (value: unknown) => value),
+  gitRepoInfo: vi.fn(),
+  worktreeTabNew: vi.fn(),
+  worktreeTabCheck: vi.fn(),
+  worktreeTabRemove: vi.fn(async () => {}),
   shellTerminalStart: vi.fn(),
   terminalPlanFile: vi.fn(),
   validateAndPreview: vi.fn(),
@@ -129,7 +133,12 @@ vi.mock("./bridge", () => {
 });
 
 import {
+  closeTab,
   getAppState,
+  gitRepoInfo,
+  worktreeTabCheck,
+  worktreeTabNew,
+  worktreeTabRemove,
   getLayout,
   getRole,
   setLayout,
@@ -513,5 +522,159 @@ describe("background tab notifications", () => {
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: /Reviewer · PR 12 has a question/ })).toBeNull(),
     );
+  });
+});
+
+describe("worktree tabs", () => {
+  const roles = [
+    { id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 },
+  ];
+  const worktreeRef = {
+    repoRoot: "/Users/jt/Koneksi",
+    path: "/Users/jt/Koneksi-worktrees/feat-login",
+    branch: "feat/login",
+  };
+  const shellTab = (id: string, label: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    label,
+    roleId: "role_developer",
+    cwd: "/Users/jt/Koneksi",
+    phase: "running",
+    mergedPromptChars: 0,
+    startupPromptSent: false,
+    hasTranscript: false,
+    folderStatus: "ok",
+    color: "#3fb950",
+    kind: "terminal",
+    terminalLaunch: "shell",
+    acpSessionId: null,
+    ...extra,
+  });
+  const worktreeTab = shellTab("tab_wt", "Koneksi · feat/login", {
+    cwd: worktreeRef.path,
+    worktreeBranch: "feat/login",
+    worktreePath: worktreeRef.path,
+  });
+  const renderForm = () =>
+    render(
+      <StartupForm
+        roles={roles}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+  const openPalette = () =>
+    fireEvent.keyDown(window, { key: "k", code: "KeyK", ctrlKey: true, metaKey: true });
+
+  beforeEach(() => {
+    vi.mocked(listCursorCliHistory).mockResolvedValue([]);
+    vi.mocked(getRole).mockResolvedValue(developer);
+    vi.mocked(gitRepoInfo).mockReset();
+    vi.mocked(worktreeTabNew).mockReset();
+    vi.mocked(worktreeTabCheck).mockReset();
+    vi.mocked(worktreeTabRemove).mockReset();
+    vi.mocked(closeTab).mockReset();
+  });
+
+  it("never touches git until the user creates one, then opens the new tab", async () => {
+    vi.mocked(getAppState).mockResolvedValue({
+      activeTabId: "tab_a",
+      tabs: [shellTab("tab_a", "Main")],
+      closedTabs: [],
+    });
+    renderForm();
+    await screen.findByRole("region", { name: "Scratch pad" });
+    expect(gitRepoInfo).not.toHaveBeenCalled();
+    expect(worktreeTabNew).not.toHaveBeenCalled();
+
+    vi.mocked(gitRepoInfo).mockResolvedValue({
+      mainRoot: "/Users/jt/Koneksi",
+      currentBranch: "main",
+      branches: ["main"],
+      checkedOut: ["main"],
+      worktreesDir: "/Users/jt/Koneksi-worktrees",
+    });
+    vi.mocked(worktreeTabNew).mockResolvedValue({
+      tab: { ...tab, id: "tab_wt", kind: "role", cwd: worktreeRef.path, worktree: worktreeRef },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "New tab in worktree…" }));
+    const dialog = await screen.findByRole("dialog", { name: "New tab in worktree" });
+    expect(dialog).toBeTruthy();
+    await waitFor(() => expect(gitRepoInfo).toHaveBeenCalledWith("/Users/jt/Koneksi"));
+    expect(worktreeTabNew).not.toHaveBeenCalled();
+
+    fireEvent.change(await screen.findByLabelText("New branch name"), {
+      target: { value: "feat/login" },
+    });
+    expect(screen.getByText("/Users/jt/Koneksi-worktrees/feat-login")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Create worktree and open tab" }));
+    await waitFor(() =>
+      expect(worktreeTabNew).toHaveBeenCalledWith({
+        repoPath: "/Users/jt/Koneksi",
+        branch: "feat/login",
+        createBranch: true,
+        base: "main",
+        roleId: "role_developer",
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "New tab in worktree" })).toBeNull(),
+    );
+    expect(await screen.findByText("Worktree created")).toBeTruthy();
+  });
+
+  it("shows the branch, refuses a dirty tree, and removes a clean one after confirming", async () => {
+    vi.mocked(getAppState).mockResolvedValue({
+      activeTabId: "tab_wt",
+      tabs: [worktreeTab, shellTab("tab_a", "Main")],
+      closedTabs: [],
+    });
+    renderForm();
+    await screen.findByRole("region", { name: "Scratch pad" });
+    expect(screen.getAllByLabelText("Git branch")[0].textContent).toContain("feat/login");
+    expect(screen.getByRole("tab", { name: /Koneksi · feat\/login/ }).closest(".tab-chip")!.textContent)
+      .toContain("⎇ feat/login");
+
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.mocked(worktreeTabCheck).mockResolvedValue({
+      worktree: worktreeRef,
+      branch: "feat/login",
+      dirty: [" M src/app.ts"],
+    });
+    openPalette();
+    fireEvent.click(await screen.findByRole("button", { name: /Remove this tab's worktree/ }));
+    expect(await screen.findByText("Worktree not removed")).toBeTruthy();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(closeTab).not.toHaveBeenCalled();
+    expect(worktreeTabRemove).not.toHaveBeenCalled();
+
+    vi.mocked(worktreeTabCheck).mockResolvedValue({
+      worktree: worktreeRef,
+      branch: "feat/login",
+      dirty: [],
+    });
+    vi.mocked(closeTab).mockResolvedValue({
+      activeTabId: "tab_a",
+      tabs: [shellTab("tab_a", "Main")],
+      closedTabs: [],
+    });
+    confirm.mockReturnValueOnce(false);
+    openPalette();
+    fireEvent.click(await screen.findByRole("button", { name: /Remove this tab's worktree/ }));
+    await waitFor(() => expect(confirm).toHaveBeenCalledTimes(1));
+    expect(closeTab).not.toHaveBeenCalled();
+    expect(worktreeTabRemove).not.toHaveBeenCalled();
+
+    openPalette();
+    fireEvent.click(await screen.findByRole("button", { name: /Remove this tab's worktree/ }));
+    await waitFor(() => expect(worktreeTabRemove).toHaveBeenCalledWith("tab_wt", true));
+    expect(closeTab).toHaveBeenCalledWith("tab_wt");
+    expect(vi.mocked(closeTab).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(worktreeTabRemove).mock.invocationCallOrder[0],
+    );
+    expect(await screen.findByText("Worktree removed")).toBeTruthy();
+    confirm.mockRestore();
   });
 });

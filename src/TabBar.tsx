@@ -16,6 +16,8 @@ type Props = {
   onSelect: (tabId: string) => void;
   onClose: (tabId: string) => void;
   onNew: () => void;
+  /** F3: open the "New tab in worktree…" dialog. */
+  onNewWorktree?: () => void;
   onReopen?: () => void;
   onColor?: (tabId: string, color: string) => void;
   settingsOpen?: boolean;
@@ -84,6 +86,7 @@ export function TabBar({
   onSelect,
   onClose,
   onNew,
+  onNewWorktree,
   onReopen,
   onColor,
   settingsOpen = false,
@@ -155,6 +158,11 @@ export function TabBar({
                 )}
                 {unseen && <span className="tab-unseen-dot" aria-hidden />}
                 {statusText && <span className="sr-only">, {statusText}</span>}
+                {t.worktreeBranch && (
+                  <span className="tab-badge tab-branch" title={t.worktreePath ?? undefined}>
+                    ⎇ {t.worktreeBranch}
+                  </span>
+                )}
                 {t.terminalLaunch === "role" && <span className="tab-badge">Terminal</span>}
                 {roleRulesOff && t.kind !== "terminal" && t.roleId && (
                   <span
@@ -222,6 +230,18 @@ export function TabBar({
       >
         + New tab
       </button>
+      {onNewWorktree && (
+        <button
+          type="button"
+          className="secondary-button tab-new"
+          onClick={onNewWorktree}
+          disabled={disableNew}
+          aria-label="New tab in worktree…"
+          title="Create a git worktree in a sibling folder and open a tab there"
+        >
+          ⎇ Worktree
+        </button>
+      )}
       {onSettings && (
         <button
           type="button"

@@ -82,6 +82,17 @@ describe("useAgentNotifications", () => {
     expect(result.current.toasts).toHaveLength(0);
   });
 
+  it("shows an app notice as a toast without a system notification", () => {
+    const { result, showSystem } = setup({ focused: true });
+    act(() => result.current.notice("Worktree removed", "feat/x", "finished"));
+    expect(result.current.toasts[0]).toMatchObject({
+      tabId: "__notice__",
+      title: "Worktree removed",
+      body: "feat/x",
+    });
+    expect(showSystem).not.toHaveBeenCalled();
+  });
+
   it("sends a test notification regardless of focus", () => {
     const { result, showSystem } = setup({ focused: true });
     act(() => result.current.sendTest());

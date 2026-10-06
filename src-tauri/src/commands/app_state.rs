@@ -30,6 +30,11 @@ pub struct TabSummary {
     /// Per-tab model override. The UI resolves the effective model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Branch of a worktree tab, read from its HEAD file (F3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -214,6 +219,11 @@ fn snapshot_from_store(store: &StateStore) -> AppStateSnapshot {
                     .map(|id| id.trim().to_string())
                     .filter(|id| !id.is_empty()),
                 model: t.model.clone(),
+                worktree_branch: t.worktree.as_ref().map(|wt| {
+                    crate::worktree::head_branch(std::path::Path::new(&wt.path))
+                        .unwrap_or_else(|| wt.branch.clone())
+                }),
+                worktree_path: t.worktree.as_ref().map(|wt| wt.path.clone()),
             })
             .collect(),
         closed_tabs: store

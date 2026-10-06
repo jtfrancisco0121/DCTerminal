@@ -41,6 +41,10 @@ import {
   getTerminalSettings,
   getNotificationSettings,
   setNotificationSettings,
+  gitRepoInfo,
+  worktreeTabCheck,
+  worktreeTabNew,
+  worktreeTabRemove,
   handoffBindTab,
   handoffGet,
   handoffList,
@@ -121,6 +125,7 @@ import { WorkspaceSplit } from "./components/WorkspaceSplit";
 import { FilePanel } from "./components/FilePanel";
 import { ModelPicker } from "./components/ModelPicker";
 import { AgentToasts } from "./components/AgentToasts";
+import { WorktreeDialog, type WorktreeCreateInput } from "./components/WorktreeDialog";
 import { classifyPromptFinished, type NotificationSettings } from "./notify/agentNotify";
 import { showSystemNotification } from "./notify/systemNotify";
 import { useAgentNotifications } from "./notify/useAgentNotifications";
@@ -242,6 +247,7 @@ export function StartupForm({
   const [tabMarks, setTabMarks] = useState<Record<string, TabMark>>({});
   const [terminalBusy, setTerminalBusy] = useState<string[]>([]);
   const [renamingTabId, setRenamingTabId] = useState<string | null>(null);
+  const [worktreeDialogOpen, setWorktreeDialogOpen] = useState(false);
   const [split, setSplit] = useState<SplitState>(emptySplit());
   const [splitPicker, setSplitPicker] = useState<"horizontal" | "vertical" | null>(null);
   const [focusedPane, setFocusedPane] = useState<"primary" | "secondary">("primary");
@@ -347,7 +353,8 @@ export function StartupForm({
     settingsOpen ||
     splitPicker !== null ||
     handoffTarget !== null ||
-    savedPlan !== null;
+    savedPlan !== null ||
+    worktreeDialogOpen;
   const platform = useMemo(
     () => detectPlatform(typeof navigator === "undefined" ? "" : navigator.platform),
     [],
@@ -384,6 +391,7 @@ export function StartupForm({
     );
   }, []);
   const dismissTabToasts = agentNotifications.dismissTab;
+  const showNotice = agentNotifications.notice;
 
   const persistTranscripts = useCallback(async (snapshot: Record<string, TabRuntime>) => {
     const jobs = Object.entries(snapshot)
@@ -1383,6 +1391,64 @@ export function StartupForm({
     [roleId, loadTabIntoForm, runtimes, values.cwd, scratch, stashActiveTab],
   );
 
+  /** F3: the user clicked Create in "New tab in worktree…". */
+  const createWorktreeTab = useCallback(
+    async (input: WorktreeCreateInput) => {
+      stashActiveTab();
+      const { tab } = await worktreeTabNew(input);
+      setWorktreeDialogOpen(false);
+      await refreshTabs();
+      loadTabIntoForm(tab);
+      showNotice(
+        "Worktree created",
+        `${tab.worktree?.branch ?? input.branch} · ${tab.cwd}`,
+      );
+    },
+    [loadTabIntoForm, refreshTabs, showNotice, stashActiveTab],
+  );
+
+  /**
+   * F3 removal: refuse a dirty tree, confirm, close the tab (stops its agent
+   * or shell), then `git worktree remove` without --force.
+   */
+  const removeWorktreeFor = useCallback(
+    async (tabId: string | null) => {
+      if (!tabId) return;
+      const summary = savedTabsRef.current.find((tab) => tab.id === tabId);
+      if (!summary?.worktreePath) return;
+      try {
+        const check = await worktreeTabCheck(tabId);
+        const branch = check.branch ?? check.worktree.branch;
+        if (check.dirty.length > 0) {
+          showNotice(
+            "Worktree not removed",
+            `${branch} has ${check.dirty.length} uncommitted or untracked change${
+              check.dirty.length === 1 ? "" : "s"
+            }. Commit, stash, or discard them first.`,
+            "failed",
+          );
+          return;
+        }
+        const ok = window.confirm(
+          `Remove the worktree for ${branch}?\n\n${check.worktree.path}\n\n` +
+            "This closes the tab, stops its agent or shell, and deletes that folder. " +
+            "The branch and its commits are kept.",
+        );
+        if (!ok) return;
+        await handleCloseTab(tabId);
+        await worktreeTabRemove(tabId, true);
+        showNotice("Worktree removed", `${branch} · ${check.worktree.path}`);
+      } catch (err: unknown) {
+        showNotice(
+          "Worktree not removed",
+          err instanceof Error ? err.message : String(err),
+          "failed",
+        );
+      }
+    },
+    [handleCloseTab, showNotice],
+  );
+
   const handleNewTab = useCallback(async () => {
     setBusy(true);
     try {
@@ -2282,6 +2348,14 @@ export function StartupForm({
       });
       return;
     }
+    if (id === "newWorktreeTab") {
+      setWorktreeDialogOpen(true);
+      return;
+    }
+    if (id === "removeWorktree") {
+      void removeWorktreeFor(activeTabId);
+      return;
+    }
     if (id.startsWith("goto:")) {
       void handleSelectTab(id.slice("goto:".length));
       return;
@@ -2396,6 +2470,7 @@ export function StartupForm({
       onSelect={handleSelectTab}
       onClose={handleCloseTab}
       onNew={handleNewTab}
+      onNewWorktree={() => setWorktreeDialogOpen(true)}
       onReopen={() => void reopenTab()}
       onSettings={() => setSettingsOpen((open) => toggleSettings(open))}
       onColor={(tabId, color) => {
@@ -2447,6 +2522,18 @@ export function StartupForm({
 
   const overlays = (
     <>
+      {worktreeDialogOpen && (
+        <WorktreeDialog
+          initialRepo={activeTabSummary?.cwd || values.cwd || ""}
+          roles={roles}
+          defaultRoleId={
+            roles.some((item) => item.id === roleId) ? roleId : (roles[0]?.id ?? "")
+          }
+          loadRepo={gitRepoInfo}
+          onCreate={createWorktreeTab}
+          onClose={() => setWorktreeDialogOpen(false)}
+        />
+      )}
       <AgentToasts
         toasts={agentNotifications.toasts}
         paused={!windowFocused}
@@ -2465,6 +2552,7 @@ export function StartupForm({
           canReopen={closedTabs.length > 0}
           splitOpen={splitOpen(split)}
           canSendPlan={(roleId === "role_planner" && !!session) || !!isPlannerTerminal}
+          canRemoveWorktree={!!activeTabSummary?.worktreePath}
           onRun={runPalette}
           onClose={() => setPaletteOpen(false)}
         />
@@ -2580,6 +2668,7 @@ export function StartupForm({
         <SessionTerminal
           key={tab.id}
           title={tab.label}
+          branch={tab.worktreeBranch ?? null}
           cwd={rt.session.cwd}
           sessionId={rt.session.sessionId}
           segments={rt.segments}
@@ -2776,8 +2865,17 @@ export function StartupForm({
             />
           )}
           {terminalError && <p className="error">{terminalError}</p>}
-          {(isPlannerTerminal || terminalModelPicker) && (
+          {(isPlannerTerminal || terminalModelPicker || activeTabSummary.worktreeBranch) && (
             <div className="terminal-toolbar">
+              {activeTabSummary.worktreeBranch && (
+                <span
+                  className="session-branch"
+                  aria-label="Git branch"
+                  title={activeTabSummary.worktreePath ?? undefined}
+                >
+                  ⎇ {activeTabSummary.worktreeBranch}
+                </span>
+              )}
               {terminalModelPicker}
               {isPlannerTerminal && (
                 <HandoffActions
@@ -3079,6 +3177,7 @@ export function StartupForm({
               primary={
             <SessionTerminal
               title={activeTabSummary?.label ?? "Session"}
+              branch={activeTabSummary?.worktreeBranch ?? null}
               cwd={session.cwd}
               sessionId={session.sessionId}
               segments={streamSegments}
@@ -3286,6 +3385,12 @@ export function StartupForm({
                 />
               </div>
               {folderNotice?.tone === "error" && <p className="error">{folderNotice.text}</p>}
+              {activeTabSummary?.worktreeBranch && (
+                <p className="hint">
+                  Worktree on branch <strong>{activeTabSummary.worktreeBranch}</strong>. Remove it
+                  from the command palette when you are done.
+                </p>
+              )}
             </div>
             {launchChoice ? (
               <div className="button-row">

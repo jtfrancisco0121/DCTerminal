@@ -2201,3 +2201,47 @@ kbd {
     box-shadow: 0 0 0 2px rgba(63, 185, 80, 0.5);
   }
 }
+
+/* F3: worktree tabs. Branch chip on tabs, session header, and terminal toolbar. */
+.tab-branch {
+  border-color: rgba(163, 113, 247, 0.55);
+  color: #d2a8ff;
+  max-width: 10rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-branch {
+  display: inline-block;
+  margin-right: 0.5rem;
+  padding: 0 0.4rem;
+  border: 1px solid rgba(163, 113, 247, 0.55);
+  border-radius: 999px;
+  color: #d2a8ff;
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.worktree-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  max-height: 85vh;
+}
+
+.worktree-dialog h3 {
+  margin: 0;
+}
+
+.worktree-dialog code {
+  word-break: break-all;
+}
+
+.worktree-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-right: 1rem;
+  cursor: pointer;
+}
