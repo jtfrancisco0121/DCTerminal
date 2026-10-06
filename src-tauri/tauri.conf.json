@@ -23,13 +23,30 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis", "msi", "app", "dmg", "deb", "appimage"],
+    "publisher": "JT Francisco",
+    "homepage": "https://github.com/jtfrancisco0121/DCTerminal",
+    "category": "DeveloperTool",
+    "shortDescription": "Role-aware multi-tab UI for the Cursor CLI",
+    "longDescription": "DCTerminal is a local desktop app that runs role-aware, multi-tab sessions on top of the Cursor CLI via ACP.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    }
   }
 }

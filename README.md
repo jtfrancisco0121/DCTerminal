@@ -28,7 +28,7 @@ Not supported yet: true ACP thread resume after quit (`session/load`) — Contin
 ## Prerequisites
 
 - [Node.js](https://nodejs.org/) 20+
-- [Rust](https://www.rust-lang.org/tools/install) + [Tauri prerequisites](https://tauri.app/start/prerequisites/) (for `tauri dev` / `tauri build`)
+- [Rust](https://www.rust-lang.org/tools/install) 1.90+ (the locked Tauri 2.12 crates require it) + [Tauri prerequisites](https://tauri.app/start/prerequisites/) (for `tauri dev` / `tauri build`)
 - [Cursor CLI](https://cursor.com/docs/cli) with `agent login` (for real agent sessions later)
 - Windows: WebView2 (usually preinstalled on Windows 10/11)
 
@@ -62,6 +62,24 @@ npm run dev:app
 
 IPC-only checks (roles list, etc.) need the Tauri window — `npm run dev:ui` alone is browser-only and cannot call Rust commands.
 
+### Checks and installers
+
+Automatic GitHub Actions is **disabled** (no Actions subscription). Before merging, run:
+
+```bash
+npm run check
+```
+
+That runs Rust tests, Clippy (`-D warnings`), `npm test`, and `npm run build`. Installers are built locally, not in CI:
+
+```bash
+npm run release:win      # NSIS + MSI, on Windows
+npm run release:mac      # .app + .dmg, on macOS
+npm run release:linux    # .deb + .AppImage, on Linux
+```
+
+Unsigned Windows installers trip SmartScreen until they are code-signed. Cut a release, output paths, and how to add signing later: **[docs/RELEASE.md](docs/RELEASE.md)**.
+
 **Windows:** If `tauri dev` says `cargo metadata` / `program not found`, Rust is not on your PATH. Either open a new terminal after installing Rust, or for this session:
 
 ```powershell
@@ -94,7 +112,7 @@ Permanent fix: add `%USERPROFILE%\.cargo\bin` to your user **Path** environment 
 | `seed/roles.seed.json` | Generated via `npm run build:roles` |
 | `fixtures/` | Golden merges + ACP recordings |
 | `tools/fake-acp-agent/` | Test harness (planned) |
-| `docs/` | Blueprint, progress, tasks, ADRs |
+| `docs/` | Blueprint, progress, tasks, ADRs, [release steps](docs/RELEASE.md) |
 
 ## License
 
