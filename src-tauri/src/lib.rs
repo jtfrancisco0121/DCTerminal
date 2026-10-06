@@ -14,12 +14,14 @@ use acp::{probe_acp, probe_acp_handshake};
 use cli_detect::detect_cli;
 use commands::{
     close_tab, dev_session_cancel, dev_session_send, dev_session_start, dev_session_stop,
-    get_app_state, respond_permission_request,
-    get_form_recall, get_role, get_tab, list_roles, new_draft_tab, role_session_start,
-    save_form_draft, select_active_tab, sync_active_tab_form, validate_and_preview,
-    SessionRegistry,
+    diagnostics_set_capture, diagnostics_status, get_app_state, get_form_recall, get_role,
+    get_tab, list_roles, new_draft_tab, check_working_folder, projects_list, projects_remember,
+    projects_remove, projects_toggle_favorite, reopen_closed_tab, respond_permission_request,
+    respond_plan_request, role_session_start, save_form_draft, scratch_load, scratch_save,
+    select_active_tab, set_tab_color, set_tab_label, sync_active_tab_form, transcript_load,
+    transcript_save, validate_and_preview, SessionRegistry,
 };
-use store::{FormsStore, RolesStore, StateStore};
+use store::{FormsStore, ProjectsStore, RolesStore, ScratchStore, SettingsStore, StateStore, TranscriptStore};
 use std::sync::Mutex;
 use tauri::Manager;
 
@@ -27,14 +29,24 @@ use tauri::Manager;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let store = RolesStore::load_or_seed(app.handle())?;
             let mut state_store = StateStore::load_or_default(app.handle())?;
             state_store.reconcile_stale_running_tabs()?;
             let forms_store = FormsStore::load_or_default(app.handle())?;
+            let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+            let scratch_store = ScratchStore::open(&data_dir)?;
+            let projects_store = ProjectsStore::open(&data_dir)?;
+            let settings_store = SettingsStore::open(&data_dir)?;
+            let transcript_store = TranscriptStore::open(&data_dir)?;
             app.manage(Mutex::new(store));
             app.manage(Mutex::new(state_store));
             app.manage(Mutex::new(forms_store));
+            app.manage(Mutex::new(scratch_store));
+            app.manage(Mutex::new(projects_store));
+            app.manage(Mutex::new(settings_store));
+            app.manage(Mutex::new(transcript_store));
             app.manage(Mutex::new(SessionRegistry::new()));
             Ok(())
         })
@@ -58,7 +70,22 @@ pub fn run() {
             dev_session_cancel,
             dev_session_stop,
             respond_permission_request,
+            respond_plan_request,
             role_session_start,
+            scratch_load,
+            scratch_save,
+            projects_list,
+            projects_remember,
+            projects_toggle_favorite,
+            projects_remove,
+            check_working_folder,
+            transcript_save,
+            transcript_load,
+            diagnostics_status,
+            diagnostics_set_capture,
+            reopen_closed_tab,
+            set_tab_label,
+            set_tab_color,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

@@ -1,13 +1,21 @@
 mod forms_store;
 mod forms_types;
 mod json_io;
+mod projects_store;
 mod roles_store;
+mod scratch_store;
+mod settings_store;
 mod state_store;
 mod state_types;
+mod transcript_store;
 
 pub use forms_store::FormsStore;
 pub use forms_types::FormSnapshot;
 pub use json_io::{read_json, write_json_atomic};
+pub use projects_store::{ListedProject, ProjectsStore};
 pub use roles_store::{RolesStore, docs_roles_dir, seed_output_path, write_seed_file};
+pub use scratch_store::ScratchStore;
+pub use settings_store::SettingsStore;
 pub use state_store::StateStore;
 pub use state_types::{AppStateFile, TabRecord, TabSessionRef};
+pub use transcript_store::TranscriptStore;

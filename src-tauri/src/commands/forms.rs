@@ -14,7 +14,6 @@ pub struct FormRecallResult {
 #[tauri::command]
 pub fn get_form_recall(
     role_id: String,
-    default_cwd: String,
     roles: State<Mutex<RolesStore>>,
     forms: State<Mutex<FormsStore>>,
 ) -> Result<FormRecallResult, String> {
@@ -25,14 +24,10 @@ pub fn get_form_recall(
     let forms = forms.lock().map_err(|e| e.to_string())?;
     let recall = forms.recall_for_role(&role_id);
     let values = match recall {
-        Some(snapshot) => forms.apply_recall_to_values(role, &snapshot, &default_cwd),
-        None => HashMap::from([("cwd".to_string(), default_cwd.clone())]),
+        Some(snapshot) => forms.apply_recall_to_values(role, &snapshot),
+        None => HashMap::new(),
     };
-    let cwd = values
-        .get("cwd")
-        .cloned()
-        .filter(|s| !s.is_empty())
-        .unwrap_or(default_cwd);
+    let cwd = values.get("cwd").cloned().unwrap_or_default();
     Ok(FormRecallResult { cwd, values })
 }
 

@@ -16,6 +16,18 @@ pub struct SessionUpdateEvent {
 
 pub fn map_session_update(tab_id: &str, session_id: &str, line: &Value) -> Option<SessionUpdateEvent> {
     let method = line.get("method").and_then(|m| m.as_str());
+    if let Some(method) = method {
+        if method == "cursor/update_todos" || method == "cursor/task" {
+            let params = line.get("params").cloned().unwrap_or_else(|| line.clone());
+            return Some(SessionUpdateEvent {
+                tab_id: tab_id.to_string(),
+                session_id: session_id.to_string(),
+                kind: method.to_string(),
+                text_delta: None,
+                raw_json: params.to_string(),
+            });
+        }
+    }
     let params = if method == Some("session/update") {
         line.get("params").cloned().unwrap_or_else(|| line.clone())
     } else if method.is_some() {
@@ -120,5 +132,23 @@ mod tests {
             evt.text_delta.as_deref(),
             Some("Read app/main.py (in_progress)")
         );
+    }
+
+    #[test]
+    fn forwards_todo_and_task_notifications() {
+        let todos = json!({
+            "method": "cursor/update_todos",
+            "params": { "todos": [{ "id": "1", "content": "Write tests", "status": "pending" }] }
+        });
+        let evt = map_session_update("tab_1", "sess_1", &todos).expect("todos");
+        assert_eq!(evt.kind, "cursor/update_todos");
+        assert!(evt.raw_json.contains("Write tests"));
+
+        let task = json!({
+            "method": "cursor/task",
+            "params": { "agentId": "a1", "description": "Explore", "status": "running" }
+        });
+        let evt = map_session_update("tab_1", "sess_1", &task).expect("task");
+        assert_eq!(evt.kind, "cursor/task");
     }
 }

@@ -33,3 +33,29 @@ pub fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, Strin
     let data = fs::read_to_string(path).map_err(|e| e.to_string())?;
     serde_json::from_str(&data).map_err(|e| e.to_string())
 }
+
+/// Load JSON, or move a damaged file aside and fall back to `.bak` then `Default`.
+/// A corrupt transcript or scratch file must not stop the app from opening.
+pub fn read_json_or_recover<T>(path: &Path) -> Result<T, String>
+where
+    T: serde::de::DeserializeOwned + Default,
+{
+    if !path.exists() {
+        return Ok(T::default());
+    }
+    match read_json::<T>(path) {
+        Ok(value) => Ok(value),
+        Err(_) => {
+            let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%3f");
+            let corrupt = path.with_extension(format!("json.corrupt-{stamp}"));
+            let _ = fs::rename(path, &corrupt);
+            let bak = path.with_extension("json.bak");
+            if bak.exists() {
+                if let Ok(value) = read_json::<T>(&bak) {
+                    return Ok(value);
+                }
+            }
+            Ok(T::default())
+        }
+    }
+}

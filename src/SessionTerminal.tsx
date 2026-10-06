@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, type KeyboardEvent, type RefObject } from "react";
+import { historyNavigate } from "./scratch/pad";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { PermissionRequestEvent } from "./bridge";
@@ -34,6 +35,10 @@ type Props = {
   folderWarning?: string | null;
   agentExited?: boolean;
   onRestart?: () => void;
+  inputRef?: RefObject<HTMLTextAreaElement | null>;
+  history?: string[];
+  historyCursor?: number;
+  onHistoryCursor?: (cursor: number) => void;
 };
 
 export function SessionTerminal({
@@ -56,6 +61,10 @@ export function SessionTerminal({
   folderWarning,
   agentExited = false,
   onRestart,
+  inputRef,
+  history = [],
+  historyCursor = -1,
+  onHistoryCursor,
 }: Props) {
   const screenRef = useRef<HTMLDivElement>(null);
   const permissionRef = useRef<HTMLDivElement>(null);
@@ -72,7 +81,22 @@ export function SessionTerminal({
   }, [permissionRequest]);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+    if ((e.key === "ArrowUp" || e.key === "ArrowDown") && onHistoryCursor) {
+      const navigated = historyNavigate({
+        history,
+        cursor: historyCursor,
+        direction: e.key === "ArrowUp" ? "older" : "newer",
+        draft: followUp,
+        caretAtStart: e.currentTarget.selectionStart === 0,
+      });
+      if (navigated.handled) {
+        e.preventDefault();
+        onHistoryCursor(navigated.cursor);
+        onFollowUpChange(navigated.text);
+        return;
+      }
+    }
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
       e.preventDefault();
       if (!busy && followUp.trim()) onSendFollowUp();
     }
@@ -242,6 +266,7 @@ export function SessionTerminal({
       <div className="session-terminal-composer">
         <span className="session-terminal-prompt" aria-hidden>›</span>
         <textarea
+          ref={inputRef}
           className="session-terminal-input"
           rows={3}
           placeholder={

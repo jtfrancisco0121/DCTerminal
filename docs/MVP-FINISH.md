@@ -7,7 +7,7 @@
 ## You can use today (product path)
 
 1. **Cursor CLI** installed and `agent login`
-2. **Tab** → fill role form → **Start role session**
+2. Blank tab → pick a role and folder → fill the fields → **Start**
 3. **Follow-up** in the `›` box while the session runs (same agent thread)
 4. **Stop session** → edit form → **Start** again (new agent; startup prompt re-sent)
 5. **+ New tab** starts another task **without** stopping the one that's running. Each tab has its own agent. Switching tabs does not kill the others.
@@ -37,15 +37,15 @@ Dev-only panels (ACP probes, duplicate dev session) are hidden in release builds
 
 ### P1 — Feels complete
 
-5. **Transcript persist** per tab (read-only after Stop; optional restore on relaunch).
-6. **Continue vs restart** copy — “Follow-up” while live; “Start” = new session (documented in README).
-7. **Scratch pad + Transfer** (FR-050–053).
-8. **Keymap** defaults (Mod+Enter send, Mod+T new tab) (FR-061).
+5. **Transcript persist** per tab (read-only after Stop; restore on relaunch). [x] app-data JSON, rotation, corrupt-file handling. Not `session/load`.
+6. **Continue vs restart** copy — “Follow-up” while live; “Start” = new session (documented in README). [x]
+7. **Scratch pad + Transfer** (FR-050–053). [x] per-tab pad, debounce + flush, `---` chaining. No global pad (P1 in the blueprint).
+8. **Keymap** defaults (Ctrl+Enter send, Ctrl+T new tab, Ctrl+. transfer) (FR-061). [x] overlay. Ctrl+Shift is reserved and not bound.
 
 ### P2 — Blueprint “future” (after MVP tag)
 
 - `session/load` resume (true continue after quit)
-- Plan / question / todo cards (FR-010)
+- Plan / question / todo cards (FR-010) — plan accept/reject, todos, and task cards are in the session view; `cursor/ask_question` is still auto-cancelled
 - Installers + CI matrix (T5.x)
 
 ## Out of scope for first MVP tag

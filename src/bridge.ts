@@ -160,11 +160,21 @@ export type TabSummary = {
   startupPromptSent: boolean;
   hasTranscript: boolean;
   folderStatus: string;
+  color: string;
+};
+
+export type ClosedTabSummary = {
+  id: string;
+  label: string;
+  roleId: string;
+  cwd: string;
+  color: string;
 };
 
 export type AppStateSnapshot = {
   activeTabId: string | null;
   tabs: TabSummary[];
+  closedTabs: ClosedTabSummary[];
 };
 
 export type TabRecord = {
@@ -221,9 +231,8 @@ export async function newDraftTab(
 
 export async function getFormRecall(
   roleId: string,
-  defaultCwd: string,
 ): Promise<{ cwd: string; values: Record<string, string> }> {
-  return invoke("get_form_recall", { roleId, defaultCwd });
+  return invoke("get_form_recall", { roleId });
 }
 
 export async function saveFormDraft(
@@ -378,4 +387,121 @@ export function listenSessionUpdates(
   return listen<SessionUpdateEvent>("acp/session-update", (e) => {
     handler(e.payload);
   });
+}
+
+export type ScratchPadEntry = {
+  tabId: string;
+  content: string;
+  updatedAt: string;
+  history: string[];
+};
+
+export async function scratchLoad(): Promise<{ pads: ScratchPadEntry[] }> {
+  return invoke("scratch_load");
+}
+
+export async function scratchSave(
+  tabId: string,
+  content: string,
+  history: string[],
+): Promise<void> {
+  return invoke("scratch_save", { tabId, content, history });
+}
+
+export type ListedProject = {
+  path: string;
+  available: boolean;
+  favorite: boolean;
+};
+
+export async function projectsList(): Promise<{
+  favorites: ListedProject[];
+  recent: ListedProject[];
+}> {
+  return invoke("projects_list");
+}
+
+export async function projectsRemember(path: string): Promise<void> {
+  return invoke("projects_remember", { path });
+}
+
+export async function projectsToggleFavorite(path: string): Promise<boolean> {
+  return invoke("projects_toggle_favorite", { path });
+}
+
+export async function projectsRemove(path: string, favorite: boolean): Promise<void> {
+  return invoke("projects_remove", { path, favorite });
+}
+
+export async function checkWorkingFolder(path: string): Promise<string> {
+  return invoke<string>("check_working_folder", { path });
+}
+
+export async function transcriptSave(
+  tabId: string,
+  text: string,
+  cwd: string,
+): Promise<void> {
+  return invoke("transcript_save", { tabId, text, cwd });
+}
+
+export async function transcriptLoad(tabId: string): Promise<{
+  text: string;
+  cwd: string;
+  readOnly: boolean;
+  recoveredFromCorrupt: boolean;
+}> {
+  return invoke("transcript_load", { tabId });
+}
+
+export type DiagnosticsStatus = {
+  capturePermissionPayloads: boolean;
+  appDataDir: string;
+  transcriptsDir: string;
+  logPath: string;
+  lastError: string | null;
+};
+
+export async function diagnosticsStatus(): Promise<DiagnosticsStatus> {
+  return invoke("diagnostics_status");
+}
+
+export async function diagnosticsSetCapture(enabled: boolean): Promise<DiagnosticsStatus> {
+  return invoke("diagnostics_set_capture", { enabled });
+}
+
+export async function reopenClosedTab(): Promise<{ tab: TabRecord }> {
+  return invoke("reopen_closed_tab");
+}
+
+export async function setTabLabel(tabId: string, label: string): Promise<void> {
+  return invoke("set_tab_label", { tabId, label });
+}
+
+export async function setTabColor(tabId: string, color: string): Promise<void> {
+  return invoke("set_tab_color", { tabId, color });
+}
+
+export type PlanRequestEvent = {
+  tabId: string;
+  sessionId: string;
+  jsonRpcId: number;
+  title: string;
+  entries: { content: string; status: string; priority?: string }[];
+};
+
+export function listenPlanRequests(
+  handler: (event: PlanRequestEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<PlanRequestEvent>("acp/plan-request", (e) => {
+    handler(e.payload);
+  });
+}
+
+export async function respondPlanRequest(
+  tabId: string,
+  jsonRpcId: number,
+  outcome: "accepted" | "cancelled",
+): Promise<void> {
+  return invoke("respond_plan_request", { tabId, jsonRpcId, outcome });
 }

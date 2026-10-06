@@ -14,6 +14,7 @@ import {
   clearLiveSession,
   emptyRuntime,
   folderStatusMessage,
+  folderTabNotice,
   type TabRuntime,
 } from "./liveTabs";
 
@@ -130,5 +131,28 @@ describe("restored folder status", () => {
     expect(folderStatusMessage("missing", "C:\\gone")).toContain("not found");
     expect(folderStatusMessage("unreadable", "C:\\secret")).toContain("not readable");
     expect(folderStatusMessage("not-a-directory", "C:\\file.txt")).toContain("not a directory");
+  });
+
+  it("asks to choose a folder when the path is empty", () => {
+    expect(folderStatusMessage("missing", "")).toBeNull();
+    expect(folderStatusMessage("missing", "   ")).toBeNull();
+    expect(folderStatusMessage("empty", "")).toBeNull();
+    const notice = folderTabNotice({ status: "missing", savedCwd: "", displayedCwd: "" });
+    expect(notice).toEqual({ tone: "hint", text: "Choose a folder" });
+    expect(notice?.text).not.toContain("not found");
+    expect(
+      folderTabNotice({
+        status: "missing",
+        savedCwd: "",
+        displayedCwd: "C:\\Users\\user\\Documents\\Projects\\personal-hub",
+      }),
+    ).toBeNull();
+    expect(
+      folderTabNotice({
+        status: "missing",
+        savedCwd: "C:\\gone",
+        displayedCwd: "C:\\gone",
+      })?.text,
+    ).toContain("C:\\gone");
   });
 });

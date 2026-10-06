@@ -4,7 +4,7 @@ Local desktop app: **role-aware, multi-tab UI** on top of the Cursor CLI via **A
 
 ## Status
 
-**Pre-MVP** — each tab can run its own `agent acp` session, with role permission policy. Still finishing transcript persist, scratch pad, and installers. Track:
+**Pre-MVP** — each tab can run its own `agent acp` session, with role permission policy, a scratch pad, and local transcripts. Installers are still unfinished. Track:
 
 - **[docs/MVP-FINISH.md](docs/MVP-FINISH.md)** — what “done” means and finish order
 - **[docs/PROGRESS.md](docs/PROGRESS.md)** — snapshot before each push
@@ -14,13 +14,16 @@ Local desktop app: **role-aware, multi-tab UI** on top of the Cursor CLI via **A
 
 1. Install Cursor CLI and run `agent login`.
 2. Run `npm run dev:ui` + `npm run dev:app` (or a release build when available).
-3. Pick a **tab** → fill the role form → **Start role session**.
+3. The window opens on a tab bar and one blank tab. Pick a **role** and **Choose folder…**. That tab then shows the role’s startup fields and **Start**.
 4. **Continue the same agent** with the `›` follow-up box (Ctrl+Enter) — do not press Stop.
-5. **Stop session** when done — transcript is saved on the tab.
-6. On an **awaitingInput** tab with history, use **Continue session** (no startup re-inject); check **Re-send startup prompt** only for a full restart.
-7. **+ New tab** for another task. The tab you left keeps its agent running. Close (×) stops only that tab.
+5. Draft long prompts in the **scratch pad** under the session. Ctrl+. copies the selection (or the whole pad) into the input. A line that is only `---` splits the pad into steps; Send waits for each ACP turn to finish before the next step.
+6. **Choose folder…** opens the system folder dialog. The form shows the folder name and path, and does not start the session. Recent and favorites are in the menu on that control. A new tab asks you to choose a folder. A restored tab keeps the folder it already had.
+7. **Stop session** when done — the transcript is saved on the tab and in the app data folder. After a restart it comes back as read-only history. **Start new session** begins a fresh agent. A missing folder does not hide that history, but Start stays blocked until the folder exists.
+8. On a restored tab, **Continue session** and **Start new session** sit under the role and folder. Continue does not re-inject the startup prompt. **Start new session** opens the startup fields.
+9. **+ New tab** for another task. The tab you left keeps its agent running. Close (×) stops only that tab. Ctrl+K opens the command palette; Ctrl+/ lists shortcuts. Ctrl+\\ splits the view so two tabs can be read side by side.
+10. The gear in the tab bar, **Settings** in the command palette, and Ctrl+, open **Settings**: role details, the diagnostics toggle, shortcuts, data locations, and version. **Record permission payloads** lives there (off by default) and writes redacted `session/request_permission` lines for classifier checks. See [docs/permission-payload-capture.md](docs/permission-payload-capture.md).
 
-Not supported yet: true ACP thread resume after quit (`session/load`) — Continue reconnects a new agent with your saved scrollback.
+Not supported yet: true ACP thread resume after quit (`session/load`) — Continue reconnects a new agent with your saved scrollback. Ctrl+Shift shortcuts are reserved for a future terminal pane.
 
 ## Prerequisites
 
@@ -77,7 +80,7 @@ Permanent fix: add `%USERPROFILE%\.cargo\bin` to your user **Path** environment 
 | `Chrome_WidgetWin_0` on exit | Harmless WebView2 message when closing the window or pressing Ctrl+C. |
 | Agent stuck / no output | Yellow **status bar** = waiting for permission or tools still running. Scroll up for the **permission** card; use **Cancel turn** if a tool hangs. |
 | Long list of `pending` tools | Tool rows **update in place** when the agent reports completion; reasoning stays in collapsed **Reasoning**. |
-| “Not authenticated” | Run `agent login` in a terminal, then **Start role session** again. |
+| “Not authenticated” | Run `agent login` in a terminal, then **Start** again. |
 
 `devUrl` is **`http://127.0.0.1:1420`** (must match Vite’s host).
 

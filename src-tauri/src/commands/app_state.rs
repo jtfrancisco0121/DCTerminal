@@ -1,6 +1,6 @@
 use crate::commands::dev_session::SessionRegistry;
 use crate::paths::folder_status_code;
-use crate::store::{RolesStore, StateStore, TabRecord};
+use crate::store::{RolesStore, StateStore, TabRecord, TranscriptStore};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -18,6 +18,17 @@ pub struct TabSummary {
     pub startup_prompt_sent: bool,
     pub has_transcript: bool,
     pub folder_status: String,
+    pub color: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClosedTabSummary {
+    pub id: String,
+    pub label: String,
+    pub role_id: String,
+    pub cwd: String,
+    pub color: String,
 }
 
 #[derive(Serialize)]
@@ -25,6 +36,7 @@ pub struct TabSummary {
 pub struct AppStateSnapshot {
     pub active_tab_id: Option<String>,
     pub tabs: Vec<TabSummary>,
+    pub closed_tabs: Vec<ClosedTabSummary>,
 }
 
 #[derive(Serialize)]
@@ -36,36 +48,22 @@ pub struct TabDetail {
 #[tauri::command]
 pub fn get_app_state(store: State<Mutex<StateStore>>) -> Result<AppStateSnapshot, String> {
     let store = store.lock().map_err(|e| e.to_string())?;
-    Ok(AppStateSnapshot {
-        active_tab_id: store.data.active_tab_id.clone(),
-        tabs: store
-            .sorted_tabs()
-            .iter()
-            .map(|t| TabSummary {
-                id: t.id.clone(),
-                label: t.label.clone(),
-                role_id: t.role_id.clone(),
-                cwd: t.cwd.clone(),
-                phase: t.phase.clone(),
-                merged_prompt_chars: t.merged_prompt.len(),
-                startup_prompt_sent: t.startup_prompt_sent,
-                has_transcript: t
-                    .transcript
-                    .as_ref()
-                    .is_some_and(|s| !s.trim().is_empty()),
-                folder_status: folder_status_code(&t.cwd),
-            })
-            .collect(),
-    })
+    Ok(snapshot_from_store(&store))
 }
 
 #[tauri::command]
-pub fn get_tab(tab_id: String, store: State<Mutex<StateStore>>) -> Result<TabDetail, String> {
+pub fn get_tab(
+    tab_id: String,
+    store: State<Mutex<StateStore>>,
+    transcripts: State<Mutex<TranscriptStore>>,
+) -> Result<TabDetail, String> {
     let store = store.lock().map_err(|e| e.to_string())?;
-    let tab = store
+    let mut tab = store
         .tab_by_id(&tab_id)
         .cloned()
         .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
+    let transcripts = transcripts.lock().map_err(|e| e.to_string())?;
+    attach_transcript(&mut tab, &transcripts)?;
     Ok(TabDetail { tab })
 }
 
@@ -73,13 +71,17 @@ pub fn get_tab(tab_id: String, store: State<Mutex<StateStore>>) -> Result<TabDet
 pub fn select_active_tab(
     tab_id: String,
     store: State<Mutex<StateStore>>,
+    transcripts: State<Mutex<TranscriptStore>>,
 ) -> Result<TabDetail, String> {
     let mut store = store.lock().map_err(|e| e.to_string())?;
     store.set_active_tab(&tab_id)?;
-    let tab = store
+    let mut tab = store
         .tab_by_id(&tab_id)
         .cloned()
         .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
+    drop(store);
+    let transcripts = transcripts.lock().map_err(|e| e.to_string())?;
+    attach_transcript(&mut tab, &transcripts)?;
     Ok(TabDetail { tab })
 }
 
@@ -142,7 +144,31 @@ pub fn sync_active_tab_form(
     Ok(())
 }
 
+fn attach_transcript(tab: &mut TabRecord, transcripts: &TranscriptStore) -> Result<(), String> {
+    let Some(loaded) = transcripts.load(&tab.id)? else {
+        return Ok(());
+    };
+    if loaded.recovered_from_corrupt {
+        let empty = tab
+            .transcript
+            .as_ref()
+            .map(|text| text.trim().is_empty())
+            .unwrap_or(true);
+        if empty {
+            tab.transcript = Some(
+                "This tab's transcript file was damaged and moved aside.".to_string(),
+            );
+        }
+        return Ok(());
+    }
+    if !loaded.text.trim().is_empty() {
+        tab.transcript = Some(loaded.text);
+    }
+    Ok(())
+}
+
 fn snapshot_from_store(store: &StateStore) -> AppStateSnapshot {
+    let transcript_dir = store.path.parent().map(|parent| parent.join("transcripts"));
     AppStateSnapshot {
         active_tab_id: store.data.active_tab_id.clone(),
         tabs: store
@@ -159,9 +185,74 @@ fn snapshot_from_store(store: &StateStore) -> AppStateSnapshot {
                 has_transcript: t
                     .transcript
                     .as_ref()
-                    .is_some_and(|s| !s.trim().is_empty()),
+                    .is_some_and(|s| !s.trim().is_empty())
+                    || transcript_dir.as_ref().is_some_and(|dir| {
+                        std::fs::metadata(dir.join(format!("{}.json", t.id)))
+                            .map(|meta| meta.len() > 32)
+                            .unwrap_or(false)
+                    }),
                 folder_status: folder_status_code(&t.cwd),
+                color: t.color.clone().unwrap_or_default(),
+            })
+            .collect(),
+        closed_tabs: store
+            .data
+            .closed_tabs
+            .iter()
+            .map(|t| ClosedTabSummary {
+                id: t.id.clone(),
+                label: t.label.clone(),
+                role_id: t.role_id.clone(),
+                cwd: t.cwd.clone(),
+                color: t.color.clone().unwrap_or_default(),
             })
             .collect(),
     }
+}
+
+#[tauri::command]
+pub fn reopen_closed_tab(
+    store: State<Mutex<StateStore>>,
+    transcripts: State<Mutex<crate::store::TranscriptStore>>,
+) -> Result<TabDetail, String> {
+    let transcript = {
+        let state = store.lock().map_err(|e| e.to_string())?;
+        let id = state
+            .data
+            .closed_tabs
+            .first()
+            .map(|t| t.id.clone())
+            .ok_or_else(|| "no closed tab to reopen".to_string())?;
+        let transcripts = transcripts.lock().map_err(|e| e.to_string())?;
+        transcripts.load(&id)?.and_then(|loaded| {
+            if loaded.text.trim().is_empty() {
+                None
+            } else {
+                Some(loaded.text)
+            }
+        })
+    };
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    let tab = store.reopen_closed(transcript)?;
+    Ok(TabDetail { tab })
+}
+
+#[tauri::command]
+pub fn set_tab_label(
+    tab_id: String,
+    label: String,
+    store: State<Mutex<StateStore>>,
+) -> Result<(), String> {
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    store.set_tab_label(&tab_id, &label)
+}
+
+#[tauri::command]
+pub fn set_tab_color(
+    tab_id: String,
+    color: String,
+    store: State<Mutex<StateStore>>,
+) -> Result<(), String> {
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    store.set_tab_color(&tab_id, &color)
 }

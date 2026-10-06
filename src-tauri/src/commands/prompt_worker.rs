@@ -86,6 +86,16 @@ fn run_prompt_turn(
                         &session_mtx,
                     );
                 }
+                if method == "cursor/create_plan" {
+                    let session_mtx = app_perm.state::<Mutex<SessionRegistry>>();
+                    return crate::commands::agent_requests::stage_plan_request(
+                        &app_perm,
+                        &tab_for_perm,
+                        &session_id_for_perm,
+                        value,
+                        &session_mtx,
+                    );
+                }
                 Ok(Some(crate::acp::request_handler::response_for_agent_request(
                     value,
                 )))
@@ -103,6 +113,7 @@ fn run_prompt_turn(
                 }
                 session.prompt_in_flight = false;
                 session.pending_permissions.clear();
+                session.pending_plans.clear();
             }
         }
         Ok((result, session_id))
@@ -130,6 +141,7 @@ fn run_prompt_turn(
                 if let Some(session) = guard.get_mut(tab_id) {
                     session.prompt_in_flight = false;
                     session.pending_permissions.clear();
+                    session.pending_plans.clear();
                     if agent_exited {
                         session.exited = true;
                         session.process.kill_tree();

@@ -25,9 +25,7 @@ export function DevToolsPanel({ cli, cliError }: Props) {
   );
   const [probeBusy, setProbeBusy] = useState(false);
   const [handshakeBusy, setHandshakeBusy] = useState(false);
-  const [devCwd, setDevCwd] = useState(
-    "C:\\Users\\user\\Documents\\Projects\\DCTerminal",
-  );
+  const [devCwd, setDevCwd] = useState("");
   const [devSession, setDevSession] = useState<DevSessionInfo | null>(null);
   const [devPrompt, setDevPrompt] = useState("Reply with exactly: DCTerminal OK");
   const [devResult, setDevResult] = useState<DevPromptResult | null>(null);
@@ -146,8 +144,7 @@ export function DevToolsPanel({ cli, cliError }: Props) {
       <section className="status-card">
         <h2>Dev session (T1.2 / T1.3)</h2>
         <p className="hint">
-          Low-level probe — use <strong>Start role session</strong> above for
-          normal work.
+          Low-level probe. Normal work starts from a tab with Start.
         </p>
         <label className="field-label">
           Working folder

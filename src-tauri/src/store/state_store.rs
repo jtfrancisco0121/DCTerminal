@@ -108,6 +108,7 @@ impl StateStore {
             session: Some(session),
             transcript: None,
             startup_prompt_sent: false,
+            color: Some(role.color.clone()),
         };
         self.data.tabs.push(record);
         self.data.active_tab_id = Some(tab_id.clone());
@@ -202,7 +203,25 @@ impl StateStore {
             .iter()
             .position(|t| t.id == tab_id)
             .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
-        self.data.tabs.remove(idx);
+        let tab = self.data.tabs.remove(idx);
+        self.data.closed_tabs.retain(|closed| closed.id != tab.id);
+        self.data.closed_tabs.insert(
+            0,
+            crate::store::state_types::ClosedTabRecord {
+                id: tab.id.clone(),
+                label: tab.label.clone(),
+                role_id: tab.role_id.clone(),
+                role_snapshot: tab.role_snapshot.clone(),
+                cwd: tab.cwd.clone(),
+                answers: tab.answers.clone(),
+                color: tab.color.clone(),
+                merged_prompt: tab.merged_prompt.clone(),
+                merged_prompt_hash: tab.merged_prompt_hash.clone(),
+                startup_prompt_sent: tab.startup_prompt_sent,
+                closed_at: Utc::now().to_rfc3339(),
+            },
+        );
+        self.data.closed_tabs.truncate(15);
         if self.data.active_tab_id.as_deref() == Some(tab_id) {
             self.data.active_tab_id = self
                 .data
@@ -211,6 +230,76 @@ impl StateStore {
                 .max_by_key(|t| t.order)
                 .map(|t| t.id.clone());
         }
+        self.save()
+    }
+
+    /// Put the most recently closed tab back. The agent is not restarted.
+    pub fn reopen_closed(&mut self, transcript: Option<String>) -> Result<TabRecord, String> {
+        let closed = self
+            .data
+            .closed_tabs
+            .first()
+            .cloned()
+            .ok_or_else(|| "no closed tab to reopen".to_string())?;
+        self.data.closed_tabs.remove(0);
+        if self.data.tabs.iter().any(|t| t.id == closed.id) {
+            return Err("that tab is already open".to_string());
+        }
+        let has_history = closed.startup_prompt_sent
+            || transcript.as_ref().is_some_and(|text| !text.trim().is_empty());
+        let record = TabRecord {
+            id: closed.id.clone(),
+            label: closed.label,
+            role_id: closed.role_id,
+            role_snapshot: closed.role_snapshot,
+            cwd: closed.cwd,
+            answers: closed.answers,
+            merged_prompt: closed.merged_prompt,
+            merged_prompt_hash: closed.merged_prompt_hash,
+            phase: if has_history { "awaitingInput" } else { "draft" }.to_string(),
+            order: next_tab_order(&self.data),
+            created_at: Utc::now().to_rfc3339(),
+            session: None,
+            transcript,
+            startup_prompt_sent: closed.startup_prompt_sent || has_history,
+            color: closed.color,
+        };
+        let id = record.id.clone();
+        self.data.tabs.push(record);
+        self.data.active_tab_id = Some(id.clone());
+        self.save()?;
+        self.tab_by_id(&id)
+            .cloned()
+            .ok_or_else(|| "reopened tab missing".to_string())
+    }
+
+    pub fn set_tab_label(&mut self, tab_id: &str, label: &str) -> Result<(), String> {
+        let label = label.trim();
+        if label.is_empty() {
+            return Err("tab name is empty".to_string());
+        }
+        let label: String = label.chars().take(80).collect();
+        let tab = self
+            .data
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == tab_id)
+            .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
+        tab.label = label;
+        self.save()
+    }
+
+    pub fn set_tab_color(&mut self, tab_id: &str, color: &str) -> Result<(), String> {
+        if !valid_tab_color(color) {
+            return Err("color must be a #rgb or #rrggbb value".to_string());
+        }
+        let tab = self
+            .data
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == tab_id)
+            .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
+        tab.color = Some(color.to_string());
         self.save()
     }
 
@@ -242,6 +331,7 @@ impl StateStore {
             session: None,
             transcript: None,
             startup_prompt_sent: false,
+            color: Some(role.color.clone()),
         };
         self.data.tabs.push(record);
         if make_active {
@@ -358,6 +448,13 @@ pub(crate) fn tab_label(role_name: &str, answers: &HashMap<String, String>) -> S
 
 /// Last path segment, treating both `/` and `\` as separators so Windows
 /// paths still label tabs when the host (or a test) is not Windows.
+fn valid_tab_color(color: &str) -> bool {
+    let Some(rest) = color.strip_prefix('#') else {
+        return false;
+    };
+    (rest.len() == 3 || rest.len() == 6) && rest.chars().all(|ch| ch.is_ascii_hexdigit())
+}
+
 fn folder_display_name(cwd: &str) -> &str {
     let trimmed = cwd.trim().trim_end_matches(['/', '\\']);
     trimmed
@@ -440,6 +537,44 @@ mod tests {
         assert_eq!(store.data.tabs.len(), 1);
         assert_eq!(store.data.tabs[0].phase, "running");
         assert_eq!(store.data.tabs[0].label, "Developer · Onboarding");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn close_then_reopen_restores_the_tab_without_a_session() {
+        let dir = std::env::temp_dir().join(format!(
+            "dcterminal_reopen_{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let role = crate::roles::Role {
+            id: "role_dev".to_string(),
+            name: "Developer".to_string(),
+            template_text: String::new(),
+            template_version: 1,
+            template_hash: String::new(),
+            schema_template_hash: String::new(),
+            default_mode: "agent".to_string(),
+            injection: "send_on_start".to_string(),
+            color: "#3fb950".to_string(),
+            is_built_in: true,
+            fields: vec![],
+            updated_at: None,
+        };
+        let mut store = StateStore {
+            path: dir.join("state.json"),
+            data: AppStateFile::default(),
+        };
+        let id = store.create_draft_tab(&role, r"C:\Work\App", true).unwrap();
+        store.close_tab(&id).unwrap();
+        assert!(store.data.tabs.is_empty());
+        let restored = store
+            .reopen_closed(Some("saved scrollback".into()))
+            .unwrap();
+        assert_eq!(restored.id, id);
+        assert!(restored.session.is_none());
+        assert_eq!(restored.phase, "awaitingInput");
+        assert_eq!(restored.transcript.as_deref(), Some("saved scrollback"));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

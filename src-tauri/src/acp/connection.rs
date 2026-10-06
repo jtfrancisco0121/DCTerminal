@@ -224,7 +224,8 @@ impl AcpConnection {
                     return Ok(());
                 }
                 let is_permission = is_permission_method(method);
-                if is_permission {
+                let is_plan = method == "cursor/create_plan";
+                if is_permission || is_plan {
                     if let Some(handler) = &mut dispatch.on_agent_request {
                         if let Some(result) = handler(value)? {
                             self.respond_result(req_id, result)?;
