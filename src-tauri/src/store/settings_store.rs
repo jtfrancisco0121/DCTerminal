@@ -112,6 +112,18 @@ pub struct SettingsFile {
     pub models: ModelSettings,
     #[serde(default)]
     pub notifications: NotificationSettings,
+    #[serde(default)]
+    pub setup: SetupSettings,
+}
+
+/// F8: first-run setup was finished or skipped.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SetupSettings {
+    #[serde(default)]
+    pub completed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
 }
 
 impl Default for SettingsFile {
@@ -122,6 +134,7 @@ impl Default for SettingsFile {
             terminal: TerminalSettings::default(),
             models: ModelSettings::default(),
             notifications: NotificationSettings::default(),
+            setup: SetupSettings::default(),
         }
     }
 }
@@ -226,6 +239,33 @@ impl SettingsStore {
     }
 }
 
+impl SettingsStore {
+    pub fn setup_completed(&self) -> bool {
+        self.data.setup.completed
+    }
+
+    pub fn mark_setup_complete(&mut self, now: &str) -> Result<(), String> {
+        self.data.setup = SetupSettings {
+            completed: true,
+            completed_at: Some(now.to_string()),
+        };
+        self.save()
+    }
+}
+
+/// F8: show first-run setup only on a fresh profile. An existing profile
+/// (a tab with a folder, a running or terminal tab, or closed tabs) counts as
+/// set up even without the flag, so upgrades are not interrupted.
+pub fn first_run_needed(completed: bool, state: &crate::store::AppStateFile) -> bool {
+    if completed || !state.closed_tabs.is_empty() {
+        return false;
+    }
+    !state
+        .tabs
+        .iter()
+        .any(|tab| !tab.cwd.trim().is_empty() || tab.kind == "terminal" || tab.session.is_some())
+}
+
 /// Read the F1 notification toggles.
 #[tauri::command]
 pub fn get_notification_settings(
@@ -254,6 +294,56 @@ fn is_run_mode(value: &str) -> bool {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn setup_flag_defaults_off_and_persists() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("dcterminal_setup_{nanos}"));
+        let mut store = SettingsStore::open(&dir).unwrap();
+        assert!(!store.setup_completed());
+        store.mark_setup_complete("2026-10-06T00:00:00Z").unwrap();
+        let again = SettingsStore::open(&dir).unwrap();
+        assert!(again.setup_completed());
+        assert_eq!(
+            again.data.setup.completed_at.as_deref(),
+            Some("2026-10-06T00:00:00Z")
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn first_run_is_only_for_a_fresh_profile() {
+        use crate::store::AppStateFile;
+        let fresh = AppStateFile::default();
+        assert!(first_run_needed(false, &fresh));
+        assert!(!first_run_needed(true, &fresh));
+
+        let mut seeded: AppStateFile = serde_json::from_value(serde_json::json!({
+            "schemaVersion": fresh.schema_version,
+            "tabs": [{
+                "id": "tab_1", "label": "New · Developer", "roleId": "role_developer",
+                "roleSnapshot": {"name": "Developer", "templateVersion": 1, "mode": "agent", "injection": "send_on_start"},
+                "cwd": "", "answers": {}, "mergedPrompt": "", "mergedPromptHash": "",
+                "phase": "draft", "order": 1, "createdAt": "2026-10-06T00:00:00Z"
+            }]
+        }))
+        .unwrap();
+        assert!(
+            first_run_needed(false, &seeded),
+            "the blank seed tab is still fresh"
+        );
+        seeded.tabs[0].cwd = "/Users/jt/Koneksi".into();
+        assert!(
+            !first_run_needed(false, &seeded),
+            "an existing profile with a folder"
+        );
+        seeded.tabs[0].cwd = String::new();
+        seeded.tabs[0].kind = "terminal".into();
+        assert!(!first_run_needed(false, &seeded));
+    }
 
     #[test]
     fn capture_defaults_off_and_persists() {

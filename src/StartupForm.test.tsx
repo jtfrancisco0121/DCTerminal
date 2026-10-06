@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./components/TerminalView", () => ({
   TerminalView: () => null,
@@ -64,6 +64,10 @@ vi.mock("./bridge", () => {
   promptRecordSend: vi.fn(async () => {}),
   promptClearRecent: vi.fn(),
   workspacesList: vi.fn(async () => ({ workspaces: [], path: "" })),
+  detectCli: vi.fn(),
+  cliLoginStatus: vi.fn(async () => ({ state: "loggedIn", account: null, detail: null, apiKeyEnv: false })),
+  firstRunStatus: vi.fn(async () => ({ needed: false, completed: true })),
+  firstRunComplete: vi.fn(async () => {}),
   workspaceSave: vi.fn(),
   workspaceDelete: vi.fn(),
   workspaceOpen: vi.fn(),
@@ -172,6 +176,13 @@ import {
   workspaceOpen,
   workspaceSave,
   workspacesList,
+  checkWorkingFolder,
+  setTerminalSettings,
+  cliLoginStatus,
+  firstRunComplete,
+  firstRunStatus,
+  newDraftTab,
+  roleSessionStart,
   worktreeTabCheck,
   worktreeTabNew,
   worktreeTabRemove,
@@ -1126,5 +1137,154 @@ describe("workspaces (F7)", () => {
     await waitFor(() =>
       expect(document.querySelector('.folder-picker-chosen[title="/Users/jt/Koneksi"]')).toBeTruthy(),
     );
+  });
+});
+
+describe("first-run setup (F8)", () => {
+  beforeEach(() => {
+    vi.mocked(listCursorCliHistory).mockResolvedValue([]);
+    vi.mocked(getRole).mockResolvedValue(developer);
+    vi.mocked(getAppState).mockResolvedValue({ activeTabId: null, tabs: [], closedTabs: [] });
+    vi.mocked(newDraftTab).mockImplementation(async () => {
+      vi.mocked(getAppState).mockResolvedValue({
+        activeTabId: "tab_dev",
+        tabs: [
+          {
+            id: "tab_dev",
+            label: "New · Developer",
+            roleId: "role_developer",
+            cwd: "",
+            phase: "draft",
+            mergedPromptChars: 0,
+            startupPromptSent: false,
+            hasTranscript: false,
+            folderStatus: "ok",
+            color: "#3fb950",
+            kind: "role",
+            terminalLaunch: "",
+            acpSessionId: null,
+          },
+        ],
+        closedTabs: [],
+      });
+      return { tab: { ...tab, cwd: "", answers: { cwd: "" }, label: "New · Developer" } };
+    });
+    vi.mocked(cliLoginStatus).mockResolvedValue({
+      state: "loggedOut",
+      account: null,
+      detail: null,
+      apiKeyEnv: false,
+    });
+    vi.mocked(roleSessionStart).mockReset();
+    vi.mocked(roleSessionStart).mockResolvedValue({
+      errors: [{ key: "_session", message: "test stop" }],
+      session: null,
+      tabId: "tab_dev",
+    } as never);
+    vi.mocked(firstRunComplete).mockClear();
+    vi.mocked(setTerminalSettings).mockImplementation(async (value) => value);
+  });
+
+  afterEach(() => {
+    vi.mocked(firstRunStatus).mockResolvedValue({ needed: false, completed: true });
+  });
+
+  const renderFresh = () =>
+    render(
+      <StartupForm
+        roles={[{ id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 }]}
+        cli={{ found: true, path: "/usr/local/bin/agent", version: "2026.10.01", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+
+  it("walks a fresh profile from detect to Start and starts the chosen role in the folder", async () => {
+    vi.mocked(firstRunStatus).mockResolvedValue({ needed: true, completed: false });
+    renderFresh();
+    const dialog = await screen.findByRole("dialog", { name: "Set up DCTerminal" });
+    expect(dialog.textContent).toContain("/usr/local/bin/agent");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Next" }));
+    expect(await within(dialog).findByText(/Not signed in/)).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Next" }));
+    vi.mocked(checkWorkingFolder).mockResolvedValue("/Users/jt/Koneksi");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Recent" }));
+    const pathInput = within(dialog).getByRole("textbox", { name: "Enter a folder path" });
+    fireEvent.change(pathInput, { target: { value: "/Users/jt/Koneksi" } });
+    fireEvent.submit(pathInput.closest("form")!);
+    await waitFor(() =>
+      expect(
+        (within(dialog).getByRole("button", { name: "Next" }) as HTMLButtonElement).disabled,
+      ).toBe(false),
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "Next" }));
+    fireEvent.click(within(dialog).getByRole("radio", { name: /Developer/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Start" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Set up DCTerminal" })).toBeNull(),
+    );
+    expect(firstRunComplete).toHaveBeenCalled();
+    await waitFor(() =>
+      expect(roleSessionStart).toHaveBeenCalledWith(
+        "role_developer",
+        expect.objectContaining({ cwd: "/Users/jt/Koneksi" }),
+        "tab_dev",
+        false,
+        null,
+      ),
+    );
+  });
+
+  it("waits for a role's required fields instead of starting", async () => {
+    vi.mocked(firstRunStatus).mockResolvedValue({ needed: true, completed: false });
+    vi.mocked(getRole).mockResolvedValue({
+      ...developer,
+      fields: [
+        { key: "title", label: "Title", type: "text", required: true, remember: false },
+      ],
+    } as never);
+    vi.mocked(checkWorkingFolder).mockResolvedValue("/Users/jt/Koneksi");
+    renderFresh();
+    const dialog = await screen.findByRole("dialog", { name: "Set up DCTerminal" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Next" }));
+    await within(dialog).findByText(/Not signed in/);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Next" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Recent" }));
+    const pathInput = within(dialog).getByRole("textbox", { name: "Enter a folder path" });
+    fireEvent.change(pathInput, { target: { value: "/Users/jt/Koneksi" } });
+    fireEvent.submit(pathInput.closest("form")!);
+    await waitFor(() =>
+      expect(
+        (within(dialog).getByRole("button", { name: "Next" }) as HTMLButtonElement).disabled,
+      ).toBe(false),
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "Next" }));
+    fireEvent.click(within(dialog).getByRole("radio", { name: /Developer/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Start" }));
+    expect(await screen.findByText(/Fill in Title, then press Start/)).toBeTruthy();
+    await waitFor(() => expect(document.activeElement?.getAttribute("data-field-key")).toBe("title"));
+    expect(roleSessionStart).not.toHaveBeenCalled();
+  });
+
+  it("does not appear for an existing profile, and Skip setup remembers the choice", async () => {
+    vi.mocked(firstRunStatus).mockClear();
+    renderFresh();
+    await screen.findByRole("tab", { name: /New · Developer/ });
+    await waitFor(() => expect(firstRunStatus).toHaveBeenCalled());
+    await act(async () => {});
+    expect(screen.queryByRole("dialog", { name: "Set up DCTerminal" })).toBeNull();
+    cleanup();
+
+    vi.mocked(firstRunStatus).mockResolvedValue({ needed: true, completed: false });
+    renderFresh();
+    const dialog = await screen.findByRole("dialog", { name: "Set up DCTerminal" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Skip setup" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Set up DCTerminal" })).toBeNull(),
+    );
+    expect(firstRunComplete).toHaveBeenCalled();
+    expect(roleSessionStart).not.toHaveBeenCalled();
   });
 });

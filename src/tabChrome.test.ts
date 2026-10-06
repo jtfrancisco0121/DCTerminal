@@ -142,6 +142,12 @@ describe("tab chrome", () => {
     ]);
   });
 
+  it("can run first-run setup again", () => {
+    const commands = buildPalette({ tabs: [], canReopen: false, splitOpen: false });
+    expect(filterCommands(commands, "setup").map((c) => c.id)).toContain("firstRunSetup");
+    expect(filterCommands(commands, "login cli").map((c) => c.id)).toContain("firstRunSetup");
+  });
+
   it("opens and saves workspaces", () => {
     const commands = buildPalette({ tabs: [], canReopen: false, splitOpen: false });
     expect(filterCommands(commands, "workspace").map((c) => c.id)).toEqual(

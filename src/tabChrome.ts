@@ -189,6 +189,12 @@ export function buildPalette(opts: {
     { id: "focusOtherPane", title: "Focus other pane", group: "Panes" },
     { id: "toggleFilePanel", title: "Toggle file panel", group: "Files", keywords: "tree explorer" },
     {
+      id: "firstRunSetup",
+      title: "Run first-run setup…",
+      group: "Setup",
+      keywords: "setup onboarding welcome cursor cli agent login sign in detect folder role",
+    },
+    {
       id: "workspaces",
       title: "Open workspace…",
       group: "Workspaces",

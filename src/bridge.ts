@@ -17,6 +17,31 @@ export async function detectCli(): Promise<CliDetectResult> {
   return invoke<CliDetectResult>("detect_cli");
 }
 
+/** F8: sign-in state from `agent status` (the CLI's own check). */
+export type LoginStatus = {
+  /** "loggedIn" | "loggedOut" | "unknown" | "noCli" */
+  state: string;
+  account: string | null;
+  detail: string | null;
+  /** CURSOR_API_KEY is set in DCTerminal's environment. */
+  apiKeyEnv: boolean;
+};
+
+export async function cliLoginStatus(): Promise<LoginStatus> {
+  return invoke<LoginStatus>("cli_login_status");
+}
+
+export type FirstRunStatus = { needed: boolean; completed: boolean };
+
+/** F8: show first-run setup? Only on a fresh profile that has not finished it. */
+export async function firstRunStatus(): Promise<FirstRunStatus> {
+  return invoke<FirstRunStatus>("first_run_status");
+}
+
+export async function firstRunComplete(): Promise<void> {
+  return invoke("first_run_complete");
+}
+
 export type AcpProbeResult = {
   success: boolean;
   agentPath: string | null;

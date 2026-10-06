@@ -21,7 +21,7 @@ pub mod turn_changes;
 pub mod worktree;
 
 use acp::{probe_acp, probe_acp_handshake};
-use cli_detect::detect_cli;
+use cli_detect::{cli_login_status, detect_cli};
 use commands::history_search;
 use commands::{
     acp_set_model, check_working_folder, close_tab, cursor_approval_mode, dev_session_cancel,
@@ -35,6 +35,7 @@ use commands::{
     validate_and_preview, SessionRegistry,
 };
 use commands::{changes_file_diff, changes_list, changes_revert, changes_snapshot, ChangesRoot};
+use commands::{first_run_complete, first_run_status};
 use commands::{git_repo_info, worktree_tab_check, worktree_tab_new, worktree_tab_remove};
 use commands::{
     prompt_clear_recent, prompt_delete, prompt_library_get, prompt_mark_used, prompt_record_send,
@@ -129,6 +130,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             detect_cli,
+            cli_login_status,
+            first_run_status,
+            first_run_complete,
             probe_acp,
             probe_acp_handshake,
             list_roles,

@@ -11,6 +11,7 @@ mod prompt_worker;
 mod prompts;
 mod role_session;
 mod roles;
+mod setup;
 mod workspace;
 mod workspaces;
 mod worktree_tabs;
@@ -34,6 +35,7 @@ pub use prompts::{
 };
 pub use role_session::role_session_start;
 pub use roles::{get_role, list_roles, validate_and_preview};
+pub use setup::{first_run_complete, first_run_status};
 pub use workspace::{
     check_working_folder, cursor_approval_mode, diagnostics_set_capture, diagnostics_status,
     history_search, projects_list, projects_remember, projects_remove, projects_toggle_favorite,

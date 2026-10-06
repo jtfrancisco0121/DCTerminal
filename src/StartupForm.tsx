@@ -37,6 +37,10 @@ import {
   workspaceSave,
   workspacesList,
   type WorkspaceList,
+  cliLoginStatus,
+  detectCli,
+  firstRunComplete,
+  firstRunStatus,
   setTabColor,
   setTabLabel,
   transcriptSave,
@@ -146,6 +150,7 @@ import { ChatSearchDialog, type ChatSearchHit } from "./components/ChatSearchDia
 import { TranscriptView } from "./components/TranscriptView";
 import { PromptLibraryDialog } from "./components/PromptLibraryDialog";
 import { WorkspacesDialog } from "./components/WorkspacesDialog";
+import { FirstRunSetup, type FirstRunFinish } from "./components/FirstRunSetup";
 import { insertIntoPad, type PadSelection } from "./prompts/library";
 import type { ChatFindRequest } from "./SessionTerminal";
 import { classifyPromptFinished, type NotificationSettings } from "./notify/agentNotify";
@@ -241,6 +246,8 @@ type Props = {
   cliError: string | null;
   cliFound: boolean;
   showDevTools: boolean;
+  /** F8: re-run CLI detection (App keeps the result). */
+  onRedetectCli?: () => Promise<CliDetectResult>;
 };
 
 export function StartupForm({
@@ -249,6 +256,7 @@ export function StartupForm({
   cliError,
   cliFound,
   showDevTools,
+  onRedetectCli,
 }: Props) {
   const [roleId, setRoleId] = useState("role_implementer");
   const [role, setRole] = useState<Role | null>(null);
@@ -277,6 +285,10 @@ export function StartupForm({
   /** acceptKey()s per tab: files the user kept after review. */
   const [acceptedChanges, setAcceptedChanges] = useState<Record<string, string[]>>({});
   const [fileFocus, setFileFocus] = useState<{ path: string; nonce: number } | null>(null);
+  /** F8: first-run setup is showing. */
+  const [firstRunOpen, setFirstRunOpen] = useState(false);
+  /** F8: after setup, start this role once the form has it and the folder. */
+  const [pendingStart, setPendingStart] = useState<FirstRunFinish | null>(null);
   /** F7: workspaces dialog; focusSave starts on the name field. */
   const [workspacesOpen, setWorkspacesOpen] = useState<{ focusSave: boolean } | null>(null);
   const [workspaceList, setWorkspaceList] = useState<WorkspaceList | null>(null);
@@ -421,7 +433,8 @@ export function StartupForm({
     changesTabId !== null ||
     chatSearchQuery !== null ||
     promptLibraryOpen !== null ||
-    workspacesOpen !== null;
+    workspacesOpen !== null ||
+    firstRunOpen;
   const platform = useMemo(
     () => detectPlatform(typeof navigator === "undefined" ? "" : navigator.platform),
     [],
@@ -1713,6 +1726,45 @@ export function StartupForm({
     }
   }, [activeTabId, followUp, runChain, scratch.content, sendFollowUp, sendText]);
 
+  // F8: show first-run setup on a fresh profile only.
+  useEffect(() => {
+    let cancelled = false;
+    firstRunStatus()
+      .then((status) => {
+        if (!cancelled && status?.needed) setFirstRunOpen(true);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // F8: once the form shows the chosen role and folder, press Start for the
+  // user. A role with required fields waits for them instead.
+  useEffect(() => {
+    if (!pendingStart || busy || !role) return;
+    if (role.id !== pendingStart.roleId || roleId !== pendingStart.roleId) return;
+    if (folderForTab(values.cwd) !== pendingStart.folder) return;
+    setPendingStart(null);
+    const missing = visibleFields(role, formValues).filter(
+      (field) => field.required && field.key !== "cwd" && !(formValues[field.key] ?? "").trim(),
+    );
+    if (missing.length > 0) {
+      showNotice(
+        "Almost ready",
+        `Fill in ${missing.map((field) => field.label).join(", ")}, then press Start.`,
+        "question",
+      );
+      window.setTimeout(() => {
+        const el = document.querySelector<HTMLElement>(`[data-field-key="${missing[0].key}"]`);
+        el?.focus();
+      }, 0);
+      return;
+    }
+    if (pendingStart.surface === "terminal") void startRoleTerminal();
+    else void startSession(false);
+  }, [busy, formValues, pendingStart, role, roleId, showNotice, startRoleTerminal, startSession, values.cwd]);
+
   const roleColors = useMemo(() => {
     const map: Record<string, string> = {};
     for (const item of roles) map[item.id] = item.color;
@@ -2470,6 +2522,10 @@ export function StartupForm({
       });
       return;
     }
+    if (id === "firstRunSetup") {
+      setFirstRunOpen(true);
+      return;
+    }
     if (id === "workspaces" || id === "saveWorkspace") {
       openWorkspaces(id === "saveWorkspace");
       return;
@@ -2660,6 +2716,21 @@ export function StartupForm({
 
   const changesTab = changesTabId ? savedTabs.find((tab) => tab.id === changesTabId) : undefined;
 
+  /** F8: setup finished: put the role and folder on the active draft tab, then Start. */
+  const finishFirstRun = (choice: FirstRunFinish) => {
+    setFirstRunOpen(false);
+    void firstRunComplete().catch(() => {});
+    chooseRole(choice.roleId);
+    setField("cwd", choice.folder);
+    setPendingStart(choice);
+    rememberSurface(choice.roleId, choice.surface);
+  };
+
+  const skipFirstRun = () => {
+    setFirstRunOpen(false);
+    void firstRunComplete().catch(() => {});
+  };
+
   /** F7: open the workspaces dialog (and push the active form to state.json). */
   function openWorkspaces(focusSave: boolean) {
     stashActiveTab();
@@ -2849,6 +2920,17 @@ export function StartupForm({
     .map((tab) => ({ tabId: tab.id, label: tab.label, segments: runtimes[tab.id]!.segments }));
   const overlays = (
     <>
+      {firstRunOpen && (
+        <FirstRunSetup
+          cli={cli}
+          detect={onRedetectCli ?? detectCli}
+          loginStatus={cliLoginStatus}
+          roles={roles}
+          initialFolder={folderForTab(values.cwd)}
+          onFinish={finishFirstRun}
+          onSkip={skipFirstRun}
+        />
+      )}
       {workspacesOpen && (
         <WorkspacesDialog
           list={workspaceList}
@@ -3384,6 +3466,7 @@ export function StartupForm({
             <textarea
               className="text-input prompt-area"
               rows={4}
+              data-field-key={field.key}
               value={values[field.key] ?? ""}
               onChange={(e) => setField(field.key, e.target.value)}
               disabled={!!session || busy}
@@ -3406,6 +3489,7 @@ export function StartupForm({
             <input
               className="text-input"
               type="text"
+              data-field-key={field.key}
               value={values[field.key] ?? ""}
               onChange={(e) => setField(field.key, e.target.value)}
               disabled={!!session || busy}

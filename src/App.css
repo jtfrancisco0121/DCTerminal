@@ -1293,7 +1293,8 @@ kbd {
   cursor: pointer;
 }
 
-.role-choice[aria-pressed="true"] {
+.role-choice[aria-pressed="true"],
+.role-choice[aria-checked="true"] {
   border-color: #388bfd;
   background: #1f2a3a;
 }
@@ -2910,4 +2911,81 @@ mark.search-hit-current {
 
 .workspaces-path code {
   word-break: break-all;
+}
+
+/* F8: first-run setup. */
+.first-run {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  width: min(36rem, 94vw);
+}
+
+.first-run h3 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.first-run-steps {
+  display: flex;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: first-run;
+}
+
+.first-run-steps li {
+  flex: 1;
+  padding: 0.25rem 0.4rem;
+  border-bottom: 2px solid #30363d;
+  color: #8b949e;
+  font-size: 0.8rem;
+  counter-increment: first-run;
+}
+
+.first-run-steps li::before {
+  content: counter(first-run) ". ";
+}
+
+.first-run-steps li.done {
+  border-color: #3fb950;
+  color: #c9d1d9;
+}
+
+.first-run-steps li.active {
+  border-color: #388bfd;
+  color: #e6edf3;
+  font-weight: 600;
+}
+
+.first-run-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  align-items: flex-start;
+  min-height: 8rem;
+}
+
+.first-run-panel p {
+  margin: 0;
+}
+
+.first-run-panel .ok {
+  color: #3fb950;
+}
+
+.first-run-path {
+  font-size: 0.8rem;
+  word-break: break-all;
+}
+
+.first-run-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.first-run-actions .link-button {
+  margin-left: auto;
 }

@@ -21,8 +21,8 @@ pub use prompt_store::{PromptStore, RecentSend, SavedPrompt};
 pub use roles_store::{docs_roles_dir, seed_output_path, write_seed_file, RolesStore};
 pub use scratch_store::ScratchStore;
 pub use settings_store::{
-    get_notification_settings, set_notification_settings, ModelSettings, NotificationSettings,
-    SettingsStore, TerminalSettings,
+    first_run_needed, get_notification_settings, set_notification_settings, ModelSettings,
+    NotificationSettings, SettingsStore, TerminalSettings,
 };
 pub use state_store::StateStore;
 pub(crate) use state_store::{tab_label, TerminalTabDraft};

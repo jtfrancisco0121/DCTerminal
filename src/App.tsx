@@ -23,6 +23,13 @@ function App() {
       .catch(() => setRoles([]));
   }, []);
 
+  const redetectCli = async () => {
+    const result = await detectCli();
+    setCli(result);
+    setCliError(null);
+    return result;
+  };
+
   return (
     <main className="workspace">
       <StartupForm
@@ -31,6 +38,7 @@ function App() {
         cliError={cliError}
         cliFound={!!cli?.found}
         showDevTools={showDevTools}
+        onRedetectCli={redetectCli}
       />
     </main>
   );
