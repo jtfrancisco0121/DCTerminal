@@ -5,6 +5,7 @@ import {
   type DiagnosticsStatus,
   type Role,
   type RoleSummary,
+  type TerminalSettings,
 } from "../bridge";
 import { DevToolsPanel } from "../DevToolsPanel";
 import { shortcutRows, type Platform } from "../keymap";
@@ -19,8 +20,18 @@ type Props = {
   captureOn: boolean;
   showDevTools: boolean;
   onToggleCapture: (enabled: boolean) => void;
+  terminalSettings: TerminalSettings | null;
+  onTerminalSettings: (next: TerminalSettings) => void;
   onClose: () => void;
 };
+
+const RUN_MODES: { id: string; label: string }[] = [
+  { id: "default", label: "Default" },
+  { id: "yolo", label: "Run Everything" },
+  { id: "auto-review", label: "Auto-review" },
+  { id: "plan", label: "Plan" },
+  { id: "ask", label: "Ask" },
+];
 
 export function SettingsPage({
   roles,
@@ -31,6 +42,8 @@ export function SettingsPage({
   captureOn,
   showDevTools,
   onToggleCapture,
+  terminalSettings,
+  onTerminalSettings,
   onClose,
 }: Props) {
   const [selectedId, setSelectedId] = useState(roles[0]?.id ?? "");
@@ -98,6 +111,70 @@ export function SettingsPage({
       </section>
 
       <section className="settings-section">
+        <h3>Terminal</h3>
+        <label className="field-label">
+          Shell program
+          <input
+            className="text-input"
+            value={terminalSettings?.shell ?? ""}
+            placeholder="Blank uses pwsh, then PowerShell, or $SHELL"
+            disabled={!terminalSettings}
+            onChange={(event) => {
+              if (!terminalSettings) return;
+              onTerminalSettings({ ...terminalSettings, shell: event.target.value });
+            }}
+          />
+        </label>
+        <label className="field-label">
+          Font size
+          <input
+            className="text-input"
+            type="number"
+            min={8}
+            max={32}
+            value={terminalSettings?.fontSize ?? 14}
+            disabled={!terminalSettings}
+            onChange={(event) => {
+              if (!terminalSettings) return;
+              const fontSize = Number(event.target.value);
+              if (!Number.isFinite(fontSize)) return;
+              onTerminalSettings({ ...terminalSettings, fontSize });
+            }}
+          />
+        </label>
+        {detail && terminalSettings && (
+          <label className="field-label">
+            {detail.name} terminal run mode
+            <select
+              className="text-input"
+              value={terminalSettings.roleRunMode[detail.id] ?? "default"}
+              onChange={(event) => {
+                onTerminalSettings({
+                  ...terminalSettings,
+                  roleRunMode: {
+                    ...terminalSettings.roleRunMode,
+                    [detail.id]: event.target.value,
+                  },
+                });
+              }}
+            >
+              {RUN_MODES.map((mode) => (
+                <option key={mode.id} value={mode.id}>
+                  {mode.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <p className="hint">
+          Run mode replaces only the role&apos;s mode flag. --approve-mcps and --trust stay on
+          every role terminal. Default keeps the role&apos;s own flags. A plain Terminal tab
+          that runs agent takes no extra flags. There is no CLI flag that denies writes while
+          still allowing the shell, so PR Reviewer keeps the CLI&apos;s own approval prompts.
+        </p>
+      </section>
+
+      <section className="settings-section">
         <h3>Diagnostics</h3>
         <label className="field-label diagnostics-toggle">
           <input
@@ -122,7 +199,7 @@ export function SettingsPage({
         <h3>Keyboard shortcuts</h3>
         <ul className="settings-shortcuts">
           {rows.map((row) => (
-            <li key={row.action}>
+            <li key={`${row.action}-${row.keys}`}>
               <span>{row.label}</span>
               <kbd>{row.keys}</kbd>
             </li>

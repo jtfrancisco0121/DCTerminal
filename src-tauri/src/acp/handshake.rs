@@ -65,14 +65,12 @@ pub fn probe_handshake(cwd: Option<PathBuf>) -> AcpHandshakeProbeResult {
                 agent_path: Some(agent_path.display().to_string()),
                 session_id: Some(session_id),
                 mode_id: Some(mode_id),
-                steps: vec![
-                    HandshakeStepResult {
-                        method: "initialize → authenticate → session/new → set_mode".into(),
-                        success: true,
-                        response_json: None,
-                        error: None,
-                    },
-                ],
+                steps: vec![HandshakeStepResult {
+                    method: "initialize → authenticate → session/new → set_mode".into(),
+                    success: true,
+                    response_json: None,
+                    error: None,
+                }],
                 error: None,
             }
         }

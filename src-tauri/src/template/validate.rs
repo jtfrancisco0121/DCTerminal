@@ -25,8 +25,7 @@ pub fn validate_values(role: &Role, values: &HashMap<String, String>) -> Vec<Fie
         if field.field_type == crate::roles::FieldType::Select {
             if let Some(options) = &field.options {
                 let trimmed = raw.trim();
-                if (field.required || !trimmed.is_empty())
-                    && !options.iter().any(|o| o == trimmed)
+                if (field.required || !trimmed.is_empty()) && !options.iter().any(|o| o == trimmed)
                 {
                     errors.push(FieldError {
                         key: field.key.clone(),
@@ -52,10 +51,7 @@ pub fn field_visible(field: &RoleField, values: &HashMap<String, String>) -> boo
     match &field.show_when {
         None => true,
         Some(when) => {
-            let current = values
-                .get(&when.field_key)
-                .map(|s| s.trim())
-                .unwrap_or("");
+            let current = values.get(&when.field_key).map(|s| s.trim()).unwrap_or("");
             when.equals.iter().any(|v| v == current)
         }
     }
@@ -101,9 +97,6 @@ mod tests {
         values.insert("title".into(), "  \t ".into());
         values.insert("cwd".into(), std::env::temp_dir().display().to_string());
         let errors = validate_values(&role, &values);
-        assert!(
-            errors.iter().any(|err| err.key == "title"),
-            "{errors:?}"
-        );
+        assert!(errors.iter().any(|err| err.key == "title"), "{errors:?}");
     }
 }

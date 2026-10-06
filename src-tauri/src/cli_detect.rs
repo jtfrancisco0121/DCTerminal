@@ -131,11 +131,7 @@ pub fn known_install_candidates() -> Vec<PathBuf> {
     #[cfg(windows)]
     {
         if let Ok(local) = std::env::var("LOCALAPPDATA") {
-            candidates.push(
-                PathBuf::from(local)
-                    .join("cursor-agent")
-                    .join("agent.cmd"),
-            );
+            candidates.push(PathBuf::from(local).join("cursor-agent").join("agent.cmd"));
         }
     }
     #[cfg(not(windows))]

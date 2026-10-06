@@ -63,9 +63,21 @@ fn tool_display_label(update: &Value) -> String {
         .get("toolName")
         .or_else(|| update.get("name"))
         .and_then(|v| v.as_str())
-        .or_else(|| tool_call.and_then(|t| t.get("name")).and_then(|v| v.as_str()))
-        .or_else(|| tool_call.and_then(|t| t.get("toolName")).and_then(|v| v.as_str()))
-        .or_else(|| tool_call.and_then(|t| t.get("kind")).and_then(|v| v.as_str()));
+        .or_else(|| {
+            tool_call
+                .and_then(|t| t.get("name"))
+                .and_then(|v| v.as_str())
+        })
+        .or_else(|| {
+            tool_call
+                .and_then(|t| t.get("toolName"))
+                .and_then(|v| v.as_str())
+        })
+        .or_else(|| {
+            tool_call
+                .and_then(|t| t.get("kind"))
+                .and_then(|v| v.as_str())
+        });
 
     if let Some(name) = name {
         if let Some(detail) = tool_arguments_hint(tool_call.or(Some(update))) {
@@ -129,13 +141,7 @@ pub fn extract_text_from_value(value: &Value) -> Option<String> {
     }
     if let Some(obj) = value.as_object() {
         for key in [
-            "text",
-            "delta",
-            "content",
-            "message",
-            "chunk",
-            "value",
-            "data",
+            "text", "delta", "content", "message", "chunk", "value", "data",
         ] {
             if let Some(v) = obj.get(key) {
                 if let Some(s) = extract_text_from_value(v) {

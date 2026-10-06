@@ -1,6 +1,6 @@
 use super::connection::{AcpConnection, LineDispatch, TurnControl};
 use super::ndjson::session_prompt_params;
-use super::session_connect::handshake;
+use super::session_connect::{handshake, handshake_load};
 use crate::process_tree::SharedProcess;
 use crate::supervisor::AgentSupervisor;
 use serde::Serialize;
@@ -35,16 +35,42 @@ impl AcpClient {
         let folder = crate::paths::validate_working_folder(&cwd.display().to_string())
             .map_err(|err| err.message())?;
         let mut conn = AgentSupervisor::spawn_default(&folder)?;
-        let (session_id, mode) = handshake(&mut conn, &folder, mode_id)?;
-        Ok(Self {
+        match handshake(&mut conn, &folder, mode_id) {
+            Ok((session_id, mode)) => Ok(Self::from_parts(conn, session_id, mode, folder)),
+            Err(err) => {
+                conn.kill();
+                Err(err)
+            }
+        }
+    }
+
+    /// Resume `session_id` with `session/load`. Replay notifications are returned
+    /// to the caller; they are not written anywhere under `~/.cursor`.
+    pub fn load(cwd: &Path, mode_id: &str, session_id: &str) -> Result<(Self, Vec<Value>), String> {
+        let folder = crate::paths::validate_working_folder(&cwd.display().to_string())
+            .map_err(|err| err.message())?;
+        let mut conn = AgentSupervisor::spawn_default(&folder)?;
+        match handshake_load(&mut conn, &folder, mode_id, session_id) {
+            Ok((loaded_id, mode, replay)) => {
+                Ok((Self::from_parts(conn, loaded_id, mode, folder), replay))
+            }
+            Err(err) => {
+                conn.kill();
+                Err(err)
+            }
+        }
+    }
+
+    fn from_parts(conn: AcpConnection, session_id: String, mode_id: String, cwd: PathBuf) -> Self {
+        Self {
             conn,
             session_id,
-            mode_id: mode,
-            cwd: folder,
+            mode_id,
+            cwd,
             next_id: 5,
             cancel: Arc::new(AtomicBool::new(false)),
             outbox: Arc::new(Mutex::new(Vec::new())),
-        })
+        }
     }
 
     pub fn process_handle(&self) -> SharedProcess {
@@ -118,7 +144,6 @@ impl AcpClient {
             update_count: dispatch.notifications.len(),
         })
     }
-
 }
 
 fn extract_agent_text(dispatch: &LineDispatch) -> String {

@@ -1,11 +1,16 @@
 mod acp;
 mod cli_detect;
+mod cli_launch;
 mod commands;
+mod cursor_history;
+mod data_dir;
 mod orchestrator;
 mod paths;
 mod permissions;
 mod process_tree;
+mod pty;
 pub mod roles;
+mod session_id;
 pub mod store;
 pub mod supervisor;
 pub mod template;
@@ -15,11 +20,16 @@ use cli_detect::detect_cli;
 use commands::{
     check_working_folder, close_tab, dev_session_cancel, dev_session_send, dev_session_start,
     dev_session_stop, diagnostics_set_capture, diagnostics_status, get_app_state, get_form_recall,
-    get_role, get_tab, handoff_bind_tab, handoff_get, handoff_list, handoff_save, list_roles,
-    new_draft_tab, projects_list, projects_remember, projects_remove, projects_toggle_favorite,
-    reopen_closed_tab, respond_permission_request, respond_plan_request, role_session_start,
-    save_form_draft, scratch_load, scratch_save, select_active_tab, set_tab_color, set_tab_label,
+    get_role, get_tab, handoff_bind_tab, handoff_get, handoff_list, handoff_save,
+    list_cursor_cli_history, list_roles, new_draft_tab, open_in_cursor_cli, projects_list,
+    projects_remember, projects_remove, projects_toggle_favorite, reopen_closed_tab,
+    respond_permission_request, respond_plan_request, role_session_start, save_form_draft,
+    scratch_load, scratch_save, select_active_tab, set_tab_color, set_tab_label,
     sync_active_tab_form, transcript_load, transcript_save, validate_and_preview, SessionRegistry,
+};
+use pty::{
+    get_terminal_settings, pty_kill, pty_open, pty_resize, pty_write, role_terminal_start,
+    set_terminal_settings, shell_terminal_start, terminal_plan_file, PtyRegistry,
 };
 use std::sync::Mutex;
 use store::{
@@ -28,8 +38,29 @@ use store::{
 };
 use tauri::Manager;
 
+/// WebView2 ignores `APPDATA` and would otherwise share the real profile.
+/// The runner usually sets `WEBVIEW2_USER_DATA_FOLDER` itself. This covers a
+/// launch that only set `DCT_DATA_DIR`. Called before any other thread starts.
+fn isolate_webview_data_dir() {
+    #[cfg(windows)]
+    {
+        if std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").is_some_and(|value| !value.is_empty()) {
+            return;
+        }
+        let Some(data) = std::env::var_os("DCT_DATA_DIR").filter(|value| !value.is_empty()) else {
+            return;
+        };
+        let dir = std::path::PathBuf::from(data).join("webview2");
+        if std::fs::create_dir_all(&dir).is_ok() {
+            // Safety: this runs on the main thread before the runtime starts.
+            unsafe { std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &dir) };
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    isolate_webview_data_dir();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -38,7 +69,11 @@ pub fn run() {
             let mut state_store = StateStore::load_or_default(app.handle())?;
             state_store.reconcile_stale_running_tabs()?;
             let forms_store = FormsStore::load_or_default(app.handle())?;
-            let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+            let resolved = data_dir::app_data_dir(app.handle());
+            if let Some(warning) = &resolved.warning {
+                eprintln!("DCTerminal: {warning}");
+            }
+            let data_dir = resolved.path;
             let scratch_store = ScratchStore::open(&data_dir)?;
             let projects_store = ProjectsStore::open(&data_dir)?;
             let settings_store = SettingsStore::open(&data_dir)?;
@@ -53,6 +88,7 @@ pub fn run() {
             app.manage(Mutex::new(transcript_store));
             app.manage(Mutex::new(handoff_store));
             app.manage(Mutex::new(SessionRegistry::new()));
+            app.manage(Mutex::new(PtyRegistry::new()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -84,6 +120,8 @@ pub fn run() {
             projects_toggle_favorite,
             projects_remove,
             check_working_folder,
+            list_cursor_cli_history,
+            open_in_cursor_cli,
             transcript_save,
             transcript_load,
             handoff_save,
@@ -95,12 +133,26 @@ pub fn run() {
             reopen_closed_tab,
             set_tab_label,
             set_tab_color,
+            shell_terminal_start,
+            role_terminal_start,
+            pty_open,
+            pty_write,
+            pty_resize,
+            pty_kill,
+            get_terminal_settings,
+            set_terminal_settings,
+            terminal_plan_file,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         .run(|app_handle, event| {
             if matches!(event, tauri::RunEvent::Exit) {
                 if let Some(state) = app_handle.try_state::<Mutex<SessionRegistry>>() {
+                    if let Ok(mut guard) = state.lock() {
+                        guard.shutdown_all();
+                    }
+                }
+                if let Some(state) = app_handle.try_state::<Mutex<PtyRegistry>>() {
                     if let Ok(mut guard) = state.lock() {
                         guard.shutdown_all();
                     }

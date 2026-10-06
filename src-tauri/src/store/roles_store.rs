@@ -1,7 +1,7 @@
 use crate::roles::{Role, RolesFile};
 use crate::store::json_io::{read_json, write_json_atomic};
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 pub struct RolesStore {
     pub path: PathBuf,
@@ -10,7 +10,7 @@ pub struct RolesStore {
 
 impl RolesStore {
     pub fn load_or_seed(app: &AppHandle) -> Result<Self, String> {
-        let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let dir = crate::data_dir::app_data_dir(app).path;
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join("roles.json");
         if !path.exists() {

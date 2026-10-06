@@ -121,10 +121,16 @@ fn implementer_spec() -> RoleSeedSpec {
         default_mode: "agent",
         color: "#F0883E",
         substitutions: &[
-            ("[FEATURE / BUG FIX / REFACTOR / IMPROVEMENT / OTHER]", "{{taskType}}"),
+            (
+                "[FEATURE / BUG FIX / REFACTOR / IMPROVEMENT / OTHER]",
+                "{{taskType}}",
+            ),
             ("[SHORT TITLE]", "{{title}}"),
             ("[DESCRIBE WHAT NEEDS TO BE DONE]", "{{description}}"),
-            ("[PASTE APPROVED IMPLEMENTATION PLAN HERE]", "{{approvedPlan}}"),
+            (
+                "[PASTE APPROVED IMPLEMENTATION PLAN HERE]",
+                "{{approvedPlan}}",
+            ),
             ("[OPTIONAL CONTEXT]", "{{additionalContext}}"),
         ],
         fields: vec![
@@ -159,7 +165,11 @@ fn implementer_spec() -> RoleSeedSpec {
                 empty_behavior: None,
                 remember: Some(true),
             },
-            field_multiline_optional("additionalContext", "Additional Context", "[OPTIONAL CONTEXT]"),
+            field_multiline_optional(
+                "additionalContext",
+                "Additional Context",
+                "[OPTIONAL CONTEXT]",
+            ),
         ],
     }
 }

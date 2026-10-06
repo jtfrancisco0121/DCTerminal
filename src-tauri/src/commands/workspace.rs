@@ -1,12 +1,10 @@
 //! Scratch pads, recent projects, transcripts, tab chrome, and diagnostics.
 
 use crate::paths::validate_working_folder;
-use crate::store::{
-    ProjectsStore, ScratchStore, SettingsStore, StateStore, TranscriptStore,
-};
+use crate::store::{ProjectsStore, ScratchStore, SettingsStore, StateStore, TranscriptStore};
 use serde::Serialize;
 use std::sync::Mutex;
-use tauri::{Manager, State};
+use tauri::State;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -219,21 +217,15 @@ pub fn diagnostics_set_capture(
 }
 
 fn diagnostic_paths(app: &tauri::AppHandle) -> (String, String, String) {
-    match app.path().app_data_dir() {
-        Ok(dir) => (
-            dir.display().to_string(),
-            dir.join("transcripts").display().to_string(),
-            dir.join("logs")
-                .join("permission-payloads.jsonl")
-                .display()
-                .to_string(),
-        ),
-        Err(_) => (
-            String::new(),
-            "transcripts".to_string(),
-            "logs/permission-payloads.jsonl".to_string(),
-        ),
-    }
+    let dir = crate::data_dir::app_data_dir(app).path;
+    (
+        dir.display().to_string(),
+        dir.join("transcripts").display().to_string(),
+        dir.join("logs")
+            .join("permission-payloads.jsonl")
+            .display()
+            .to_string(),
+    )
 }
 
 fn listed_dto(item: crate::store::ListedProject) -> ListedProjectDto {

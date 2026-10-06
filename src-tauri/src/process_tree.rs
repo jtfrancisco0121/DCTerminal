@@ -78,10 +78,10 @@ impl ProcessTree {
         #[cfg(windows)]
         {
             self.job.terminate();
-            let pid = self.child.id().to_string();
-            let _ = Command::new("taskkill")
-                .args(["/F", "/T", "/PID", &pid])
-                .status();
+            let already_exited = matches!(self.child.try_wait(), Ok(Some(_)));
+            if taskkill_needed(already_exited) {
+                quiet_taskkill(self.child.id());
+            }
         }
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -123,6 +123,23 @@ impl SharedProcess {
     }
 }
 
+/// `taskkill` writes `ERROR: The process "<pid>" not found.` when the pid is already gone.
+#[cfg(any(windows, test))]
+pub(crate) fn taskkill_needed(already_exited: bool) -> bool {
+    !already_exited
+}
+
+#[cfg(windows)]
+fn quiet_taskkill(pid: u32) {
+    use std::process::Stdio;
+    let _ = Command::new("taskkill")
+        .args(["/F", "/T", "/PID", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
 pub fn prepare_command(cmd: &mut Command) {
     #[cfg(unix)]
     {
@@ -139,6 +156,57 @@ pub fn prepare_command(cmd: &mut Command) {
         // `std::process::Command` closes that thread handle, so resume uses toolhelp.
         const CREATE_SUSPENDED: u32 = 0x0000_0004;
         cmd.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED);
+    }
+}
+
+/// Kills a PTY child and the processes it has already spawned.
+///
+/// Unix: the child is a session leader (`setsid` inside portable-pty), so a
+/// negative-pid signal covers the group. Windows: a job object with
+/// `KILL_ON_JOB_CLOSE`, plus `taskkill /T`, matching ACP sessions.
+pub struct PidGuard {
+    pid: u32,
+    #[cfg(windows)]
+    job: Option<winjob::Job>,
+}
+
+impl PidGuard {
+    pub fn adopt(pid: u32) -> Self {
+        #[cfg(windows)]
+        {
+            Self {
+                pid,
+                job: winjob::Job::create_and_assign_pid(pid).ok(),
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            Self { pid }
+        }
+    }
+
+    pub fn kill(&self) {
+        if self.pid == 0 {
+            return;
+        }
+        #[cfg(unix)]
+        {
+            kill_process_group(self.pid);
+        }
+        #[cfg(windows)]
+        {
+            if let Some(job) = &self.job {
+                job.terminate();
+            }
+            // An already-dead pid makes taskkill print "process not found" on the console.
+            quiet_taskkill(self.pid);
+        }
+    }
+}
+
+impl Drop for PidGuard {
+    fn drop(&mut self) {
+        self.kill();
     }
 }
 
@@ -234,6 +302,7 @@ mod winjob {
         fn Thread32Next(snapshot: RawHandle, entry: *mut ThreadEntry32) -> i32;
         fn OpenThread(access: u32, inherit_handle: i32, thread_id: u32) -> RawHandle;
         fn ResumeThread(thread: RawHandle) -> u32;
+        fn OpenProcess(access: u32, inherit_handle: i32, process_id: u32) -> RawHandle;
     }
 
     /// Owns one Win32 job-object handle.
@@ -271,6 +340,43 @@ mod winjob {
                     return Err(io::Error::last_os_error());
                 }
                 let assigned = AssignProcessToJobObject(job.as_raw_handle(), child.as_raw_handle());
+                if assigned == 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(Job(job))
+            }
+        }
+
+        /// Assign an already-running process. Used for ConPTY children, which
+        /// portable-pty starts itself so they cannot be created suspended.
+        pub fn create_and_assign_pid(pid: u32) -> io::Result<Self> {
+            const PROCESS_SET_QUOTA: u32 = 0x0100;
+            const PROCESS_TERMINATE: u32 = 0x0001;
+            assert_job_is_threadsafe();
+            unsafe {
+                let raw = CreateJobObjectW(std::ptr::null_mut(), std::ptr::null());
+                if raw.is_null() {
+                    return Err(io::Error::last_os_error());
+                }
+                let job = OwnedHandle::from_raw_handle(raw);
+                let mut info: ExtendedLimit = std::mem::zeroed();
+                info.basic.limit_flags = KILL_ON_JOB_CLOSE;
+                let configured = SetInformationJobObject(
+                    job.as_raw_handle(),
+                    EXTENDED_LIMIT_CLASS,
+                    &info as *const ExtendedLimit as *const c_void,
+                    std::mem::size_of::<ExtendedLimit>() as u32,
+                );
+                if configured == 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                let proc_raw = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
+                if proc_raw.is_null() {
+                    return Err(io::Error::last_os_error());
+                }
+                let process = OwnedHandle::from_raw_handle(proc_raw);
+                let assigned =
+                    AssignProcessToJobObject(job.as_raw_handle(), process.as_raw_handle());
                 if assigned == 0 {
                     return Err(io::Error::last_os_error());
                 }
@@ -342,6 +448,17 @@ mod winjob {
 
     fn invalid_handle() -> RawHandle {
         (-1isize) as RawHandle
+    }
+}
+
+#[cfg(test)]
+mod taskkill_tests {
+    use super::taskkill_needed;
+
+    #[test]
+    fn taskkill_is_skipped_when_the_process_already_exited() {
+        assert!(!taskkill_needed(true));
+        assert!(taskkill_needed(false));
     }
 }
 

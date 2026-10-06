@@ -1,12 +1,10 @@
 use crate::roles::Role;
-use crate::store::forms_types::{
-    FormSnapshot, FormsFile, FORMS_SCHEMA_VERSION, push_recent,
-};
+use crate::store::forms_types::{push_recent, FormSnapshot, FormsFile, FORMS_SCHEMA_VERSION};
 use crate::store::json_io::{read_json, write_json_atomic};
 use chrono::Utc;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 pub struct FormsStore {
     pub path: PathBuf,
@@ -15,7 +13,7 @@ pub struct FormsStore {
 
 impl FormsStore {
     pub fn load_or_default(app: &AppHandle) -> Result<Self, String> {
-        let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let dir = crate::data_dir::app_data_dir(app).path;
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join("forms.json");
         let data = if path.exists() {
@@ -23,8 +21,7 @@ impl FormsStore {
             if loaded.schema_version != FORMS_SCHEMA_VERSION {
                 return Err(format!(
                     "unsupported forms.json schemaVersion {} (expected {})",
-                    loaded.schema_version,
-                    FORMS_SCHEMA_VERSION
+                    loaded.schema_version, FORMS_SCHEMA_VERSION
                 ));
             }
             loaded
@@ -50,7 +47,20 @@ impl FormsStore {
         role: &Role,
         recall: &FormSnapshot,
     ) -> HashMap<String, String> {
-        let mut values = recall.values.clone();
+        let mut values = HashMap::new();
+        // Keep this role's fields, plus Title / What to work on. Drop another
+        // role's answers (a Developer tab must not keep taskType "Feature").
+        let mut allowed: Vec<String> = role.fields.iter().map(|field| field.key.clone()).collect();
+        for key in ["title", "request"] {
+            if !allowed.iter().any(|existing| existing == key) {
+                allowed.push(key.to_string());
+            }
+        }
+        for key in allowed {
+            if let Some(value) = recall.values.get(&key) {
+                values.insert(key, value.clone());
+            }
+        }
         // An empty saved folder stays empty. Callers must not invent a path.
         if recall.cwd.trim().is_empty() {
             values.remove("cwd");
@@ -61,7 +71,11 @@ impl FormsStore {
             if field.remember != Some(true) {
                 continue;
             }
-            if values.get(&field.key).map(|s| !s.is_empty()).unwrap_or(false) {
+            if values
+                .get(&field.key)
+                .map(|s| !s.is_empty())
+                .unwrap_or(false)
+            {
                 continue;
             }
             if let Some(recent) = self.recent_value(&role.id, &field.key) {
@@ -96,11 +110,7 @@ impl FormsStore {
             saved_at: saved_at.clone(),
         };
 
-        let entry = self
-            .data
-            .by_role
-            .entry(role.id.clone())
-            .or_default();
+        let entry = self.data.by_role.entry(role.id.clone()).or_default();
         entry.last_used = Some(snapshot);
         entry.draft = None;
 

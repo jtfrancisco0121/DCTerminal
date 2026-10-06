@@ -43,12 +43,9 @@ fn redact_value(value: &Value, key: Option<&str>) -> Value {
             }
             Value::Object(out)
         }
-        Value::Array(items) => Value::Array(
-            items
-                .iter()
-                .map(|item| redact_value(item, key))
-                .collect(),
-        ),
+        Value::Array(items) => {
+            Value::Array(items.iter().map(|item| redact_value(item, key)).collect())
+        }
         Value::String(text) => Value::String(redact_string(key, text)),
         other => other.clone(),
     }

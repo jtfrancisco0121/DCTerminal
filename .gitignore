@@ -10,6 +10,9 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+e2e/artifacts/
+e2e/.tmp/
+e2e/node_modules/
 seed/*.bak
 seed/*.json.bak
 *.local

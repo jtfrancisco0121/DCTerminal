@@ -3,7 +3,9 @@ import {
   bindingConflicts,
   defaultBindings,
   isImeEvent,
+  isReservedForTerminal,
   matchShortcut,
+  routeKey,
   shortcutRows,
   type KeyEventLike,
 } from "./keymap";
@@ -24,7 +26,9 @@ describe("keymap", () => {
   it("has one binding per action and no conflicts with editing, IME, or system keys", () => {
     const bindings = defaultBindings();
     expect(bindingConflicts(bindings)).toEqual([]);
-    expect(bindings.some((b) => b.mod && b.shift)).toBe(false);
+    const shifted = bindings.filter((b) => b.mod && b.shift);
+    expect(shifted.every((b) => b.code === "Tab")).toBe(true);
+    expect(shifted).toHaveLength(1);
     expect(shortcutRows("windows").length).toBeGreaterThan(8);
   });
 
@@ -130,5 +134,98 @@ describe("keymap", () => {
         dialogOpen: true,
       })?.action,
     ).toBe("closeDialog");
+  });
+
+  it("cycles tabs with Ctrl+Tab and keeps Ctrl+Shift+Tab out of the terminal set", () => {
+    expect(
+      matchShortcut(event({ code: "Tab", ctrlKey: true }), { platform: "windows" })?.action,
+    ).toBe("nextTab");
+    expect(
+      matchShortcut(event({ code: "Tab", ctrlKey: true, shiftKey: true }), {
+        platform: "windows",
+      })?.action,
+    ).toBe("prevTab");
+    expect(
+      isReservedForTerminal({
+        code: "KeyC",
+        mod: true,
+        shift: true,
+        alt: false,
+        meta: false,
+      }),
+    ).toBe(true);
+    expect(
+      isReservedForTerminal({
+        code: "Tab",
+        mod: true,
+        shift: true,
+        alt: false,
+        meta: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("sends terminal chords to the shell pane and leaves Ctrl+C with the shell", () => {
+    const chat = { platform: "windows" as const, surface: "chat" as const };
+    const term = { platform: "windows" as const, surface: "terminal" as const };
+    expect(routeKey(event({ code: "Backquote", ctrlKey: true, shiftKey: true }), chat)).toEqual({
+      kind: "terminal",
+      action: "togglePane",
+    });
+    expect(routeKey(event({ code: "Period", ctrlKey: true, shiftKey: true }), chat)).toEqual({
+      kind: "terminal",
+      action: "transferToTerminal",
+    });
+    expect(routeKey(event({ code: "KeyC", ctrlKey: true, shiftKey: true }), chat).kind).toBe(
+      "none",
+    );
+    expect(routeKey(event({ code: "KeyC", ctrlKey: true, shiftKey: true }), term)).toEqual({
+      kind: "terminal",
+      action: "copy",
+    });
+    expect(routeKey(event({ code: "KeyV", ctrlKey: true, shiftKey: true }), term).kind).toBe(
+      "terminal",
+    );
+    expect(routeKey(event({ code: "KeyF", ctrlKey: true, shiftKey: true }), term)).toEqual({
+      kind: "terminal",
+      action: "search",
+    });
+    expect(routeKey(event({ code: "KeyC", ctrlKey: true }), term).kind).toBe("shell");
+    expect(routeKey(event({ code: "Enter", ctrlKey: true }), term).kind).toBe("shell");
+    expect(routeKey(event({ code: "KeyT", ctrlKey: true }), term)).toEqual({
+      kind: "app",
+      match: { action: "newTab" },
+    });
+    expect(routeKey(event({ code: "KeyW", ctrlKey: true }), term).kind).toBe("app");
+    expect(routeKey(event({ code: "Digit1", ctrlKey: true }), term)).toEqual({
+      kind: "app",
+      match: { action: "goToTab", tabIndex: 0 },
+    });
+    expect(routeKey(event({ code: "Tab", ctrlKey: true }), term).kind).toBe("app");
+    expect(
+      routeKey(event({ code: "Tab", ctrlKey: true, shiftKey: true }), term),
+    ).toEqual({ kind: "app", match: { action: "prevTab" } });
+    expect(routeKey(event({ code: "KeyP", ctrlKey: true }), term).kind).toBe("app");
+    expect(routeKey(event({ code: "Comma", ctrlKey: true, key: "," }), term).kind).toBe("app");
+    expect(routeKey(event({ code: "KeyK", ctrlKey: true, key: "k" }), term)).toEqual({
+      kind: "app",
+      match: { action: "commandPalette" },
+    });
+    expect(routeKey(event({ code: "KeyC", ctrlKey: true }), term).kind).toBe("shell");
+  });
+
+  it("labels mac shortcuts with ⌘ and focuses the pad from a terminal", () => {
+    const rows = shortcutRows("mac");
+    expect(rows.find((row) => row.label === "Focus scratch pad")?.keys).toBe("⌘+J");
+    expect(rows.find((row) => row.label === "Send to terminal")?.keys).toBe("⌘+Shift+.");
+    expect(rows.find((row) => row.label === "Paste to terminal")?.keys).toBe(
+      "Paste to terminal",
+    );
+    expect(rows.find((row) => row.label === "Return to terminal")?.keys).toBe("Esc");
+    const term = { platform: "mac" as const, surface: "terminal" as const };
+    expect(routeKey(event({ code: "KeyJ", metaKey: true, key: "j" }), term)).toEqual({
+      kind: "app",
+      match: { action: "focusPad" },
+    });
   });
 });

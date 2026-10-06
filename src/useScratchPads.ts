@@ -11,28 +11,22 @@ import {
   type DraftFile,
   type DraftStorage,
 } from "./scratch/pad";
-
-const memoryStorage = new Map<string, string>();
+import { ensureWebStorage } from "./storage/webStorage";
 
 function browserStorage(): DraftStorage {
-  if (typeof localStorage === "undefined") {
-    return {
-      read: (key) => memoryStorage.get(key) ?? null,
-      write: (key, value) => {
-        memoryStorage.set(key, value);
-      },
-    };
-  }
+  // Use the returned store. On Node 25+ the global can stay undefined even
+  // after a failed replace, and a direct localStorage.getItem would throw.
+  const storage = ensureWebStorage().localStorage;
   return {
     read: (key) => {
       try {
-        return localStorage.getItem(key);
+        return storage.getItem(key);
       } catch {
         return null;
       }
     },
     write: (key, value) => {
-      localStorage.setItem(key, value);
+      storage.setItem(key, value);
     },
   };
 }

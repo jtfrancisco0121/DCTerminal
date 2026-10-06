@@ -1,7 +1,7 @@
 use crate::commands::dev_session::SessionRegistry;
 use crate::permissions::{
-    append_permission_log, cancelled_permission_result, evaluate_permission,
-    permission_log_record, DecisionOutcome, PolicyDecision,
+    append_permission_log, cancelled_permission_result, evaluate_permission, permission_log_record,
+    DecisionOutcome, PolicyDecision,
 };
 use crate::store::SettingsStore;
 use serde::Serialize;
@@ -303,17 +303,9 @@ fn capture_permission_payload(app: &AppHandle, tab_id: &str, role_id: &str, requ
     if !enabled {
         return;
     }
-    let Ok(dir) = app.path().app_data_dir() else {
-        note_capture_error(app, "app data directory is unavailable");
-        return;
-    };
+    let dir = crate::data_dir::app_data_dir(app).path;
     let path = dir.join("logs").join("permission-payloads.jsonl");
-    let record = permission_log_record(
-        tab_id,
-        role_id,
-        &chrono::Utc::now().to_rfc3339(),
-        request,
-    );
+    let record = permission_log_record(tab_id, role_id, &chrono::Utc::now().to_rfc3339(), request);
     if let Err(err) = append_permission_log(&path, &record) {
         note_capture_error(app, &err);
     }

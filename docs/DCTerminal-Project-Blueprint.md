@@ -1153,7 +1153,7 @@ Migrate to `rusqlite` (WAL, `dcterminal.db`) **when**: transcripts are persisted
 
 **Avoided:** Mod+Shift+I (devtools), Ctrl+Alt+T (Linux terminal), Cmd+H/Q/M (macOS), Alt alone (Windows menu), Super/Win combos. The keymap loader rejects duplicates and lists them in Settings.
 
-**Keymap decision (2026-10-06):** plain Ctrl (Mod) shortcuts apply while focus is in the chat, the scratch pad, or a form. Ctrl+Shift variants are reserved for when a future embedded terminal pane has focus, so the shell and the Cursor TUI keep plain Ctrl. The optional xterm pane is post-MVP (§32 step E6). Until that pane exists, only the plain Ctrl bindings are in the product.
+**Keymap decision (2026-10-06):** plain Ctrl (Mod) shortcuts apply while focus is in the chat, the scratch pad, or a form. Ctrl+Shift (Cmd+Shift on macOS) belongs to the embedded terminal. While xterm has focus, keys go to the shell except Ctrl+T, Ctrl+W, Ctrl+1–9, Ctrl+Tab, Ctrl+Shift+Tab, Ctrl+P, and Ctrl+,. Ctrl+C is not stolen. Terminal chords: Ctrl+Shift+` toggles the shell pane, Ctrl+Shift+. transfers the scratch pad, Ctrl+Shift+C copies, Ctrl+Shift+V pastes, Ctrl+Shift+F searches. E6 has landed (§32).
 
 ---
 
@@ -1468,8 +1468,8 @@ These came out of the ADE controls study (`uploads/ade-controls-study.md`, refer
 
 | Decision | Choice |
 |---|---|
-| Architecture | Keep the ACP chat-first model. ADE-style controls go *around* the session pane. An optional embedded xterm terminal is post-MVP. |
-| Keymap | Plain Ctrl in the chat and scratch pad. Ctrl+Shift is reserved for a future terminal pane (§18). |
+| Architecture | Keep the ACP chat-first model. ADE-style controls go *around* the session pane. The embedded xterm terminal is optional (E6 landed); it does not replace ACP chat. |
+| Keymap | Plain Ctrl in the chat and scratch pad. Ctrl+Shift is the terminal pane (§18). |
 | Token / cost tracking | Out of MVP. Cursor does not expose usage data on ACP or stream-json. |
 | Role policy enforcement | Do **not** write `~/.cursor/hooks.json`, `cli-config.json`, or project files (`CLAUDE.md`, `.cursor/`). Answer each ACP `session/request_permission` inside the tab. |
 | UI state libraries | `zustand` and `react-resizable-panels` may be added when a control actually needs them. The per-tab session slice does not. |
@@ -1489,12 +1489,23 @@ Order from the study §11.2. E0 and E1 are the per-tab session and role-policy w
 | E3 | Keymap matcher + shortcuts overlay (focus-scoped; §31) | Later |
 | E4 | Tab chrome: busy / finished / needs-permission, rename, color, reorder, go-to-tab, command palette | Later |
 | E5 | Transcript persist + plan/question/todo cards; `cursor/task` activity strip | Later |
-| E6 | Optional xterm pane (post-MVP). Role policy is **not** enforced inside an interactive `agent` TUI | Post-MVP |
+| E6 | Optional xterm pane, shell tab, and role terminal. Role policy inside the interactive `agent` TUI is CLI flags, not ACP permission cards | Landed |
 | E7 | File preview / editor, workspaces, themes, notifications | Later |
 
 Do not port ADE's PTY-first agent launch, Claude transcript usage parser, project-setup writers, or orchestrator.
 
-Plan hand-off (FR-099) sits beside this list. A finished Planner turn can open an Implementer or Developer tab with the plan filled in. The hand-off file stays in app data.
+Plan hand-off (FR-099) sits beside this list. A finished Planner turn can open an Implementer or Developer tab with the plan filled in. The dialog also offers **Terminal**, which launches `agent` with the role flags and the mapped plan. A terminal-mode Planner can send the selection, the last 200 plain lines, or the newest file in `.cursor/plans` modified after that terminal started. The hand-off file stays in app data. The plans directory is read only and is never created by the app.
+
+**Role terminal flags** (Cursor CLI 2026.10.01, from JT's `agent --help`; not guessed):
+
+| Role | Default flags |
+|---|---|
+| Implementer, Developer | `--yolo --approve-mcps --trust` |
+| Planner | `--plan --approve-mcps --trust` |
+| General | `--mode ask --approve-mcps --trust` |
+| PR Reviewer | `--approve-mcps --trust` only |
+
+Settings can replace the mode portion per role with Default, Run Everything (`--yolo`), Auto-review (`--auto-review`), Plan (`--plan`), or Ask (`--mode ask`). `--approve-mcps` and `--trust` stay on every role terminal. A plain Terminal tab that runs `agent` takes no extra flags. `--trust` is included because JT confirmed it on this CLI build. There is no flag that denies writes while still allowing the shell, so Reviewer does not use `--mode ask` and does not use `--sandbox`. Global `approvalMode` stays `allowlist`. A prompt longer than 24,000 UTF-8 bytes is written under app data and the CLI is told to read that file. A restored terminal starts a fresh process in the same folder and does not send the startup prompt again (`/resume` still works).
 
 ## 33. Edge cases and failure handling
 
@@ -1517,7 +1528,9 @@ Each tab owns one `agent acp` process, one ACP session, one transcript, and one 
 | Source Planner tab closed after a hand-off | **From Planner: title** opens the saved plan from app data instead of the tab. |
 | Working folder missing at hand-off | The new tab still opens. Start stays blocked with the folder error until a real folder is chosen. |
 | Plan longer than the form | The form shows the first 100,000 characters and a warning. The full text is kept in `handoffs.json`, or in `handoff-plans/<id>.txt` when it is over 1 MB, capped at 8 MB. Nothing is written to the user's repo or `~/.cursor`. |
-| App restart | `handoffs.json` and the prefilled tab answers are read back. The new tab does not start an agent by itself. |
+| App restart | `handoffs.json` and the prefilled tab answers are read back. A chat hand-off does not start an agent by itself. A terminal hand-off launches `agent` when JT confirms Terminal. |
+| Terminal Planner hand-off | Toolbar and right-click offer Send to Implementer and Send to Developer. Default content is the newest plan file modified after the terminal started, otherwise the selection. The plans directory is not created. |
+| No plan file yet | The selection is the default. The last 200 lines stay available. ANSI codes are stripped from that tail. |
 
 ---
 *End of blueprint.*

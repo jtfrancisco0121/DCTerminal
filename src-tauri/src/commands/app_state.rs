@@ -19,6 +19,14 @@ pub struct TabSummary {
     pub has_transcript: bool,
     pub folder_status: String,
     pub color: String,
+    #[serde(default = "crate::store::state_types::default_tab_kind")]
+    pub kind: String,
+    #[serde(default)]
+    pub terminal_launch: String,
+    pub acp_session_id: Option<String>,
+    /// Set when this terminal tab was opened with `agent --resume`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_session_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -90,11 +98,13 @@ pub fn close_tab(
     tab_id: String,
     store: State<Mutex<StateStore>>,
     session: State<Mutex<SessionRegistry>>,
+    terminals: State<Mutex<crate::pty::PtyRegistry>>,
 ) -> Result<AppStateSnapshot, String> {
     {
         let mut session = session.lock().map_err(|e| e.to_string())?;
         session.shutdown_tab(&tab_id);
     }
+    crate::pty::kill_tab_pty(&terminals, &tab_id);
     let mut store = store.lock().map_err(|e| e.to_string())?;
     store.close_tab(&tab_id)?;
     Ok(snapshot_from_store(&store))
@@ -155,9 +165,8 @@ fn attach_transcript(tab: &mut TabRecord, transcripts: &TranscriptStore) -> Resu
             .map(|text| text.trim().is_empty())
             .unwrap_or(true);
         if empty {
-            tab.transcript = Some(
-                "This tab's transcript file was damaged and moved aside.".to_string(),
-            );
+            tab.transcript =
+                Some("This tab's transcript file was damaged and moved aside.".to_string());
         }
         return Ok(());
     }
@@ -182,10 +191,7 @@ fn snapshot_from_store(store: &StateStore) -> AppStateSnapshot {
                 phase: t.phase.clone(),
                 merged_prompt_chars: t.merged_prompt.len(),
                 startup_prompt_sent: t.startup_prompt_sent,
-                has_transcript: t
-                    .transcript
-                    .as_ref()
-                    .is_some_and(|s| !s.trim().is_empty())
+                has_transcript: t.transcript.as_ref().is_some_and(|s| !s.trim().is_empty())
                     || transcript_dir.as_ref().is_some_and(|dir| {
                         std::fs::metadata(dir.join(format!("{}.json", t.id)))
                             .map(|meta| meta.len() > 32)
@@ -193,6 +199,17 @@ fn snapshot_from_store(store: &StateStore) -> AppStateSnapshot {
                     }),
                 folder_status: folder_status_code(&t.cwd),
                 color: t.color.clone().unwrap_or_default(),
+                kind: t.kind.clone(),
+                terminal_launch: t.terminal_launch.clone(),
+                acp_session_id: t
+                    .session
+                    .as_ref()
+                    .map(|session| session.acp_session_id.clone()),
+                resume_session_id: t
+                    .answers
+                    .get("resumeSessionId")
+                    .map(|id| id.trim().to_string())
+                    .filter(|id| !id.is_empty()),
             })
             .collect(),
         closed_tabs: store

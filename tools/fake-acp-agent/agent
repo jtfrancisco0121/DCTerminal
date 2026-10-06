@@ -1,0 +1,4 @@
+#!/bin/sh
+# Lets DCT_AGENT_PATH point at a real executable. The script does not touch ~/.cursor.
+cd "$(dirname "$0")" || exit 1
+exec node "./fake-agent.mjs" "$@"

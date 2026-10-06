@@ -204,6 +204,43 @@ describe("handoff mapping", () => {
     ).toBe("final plan");
   });
 
+  it("defaults a terminal Planner to the plan file, then the selection", () => {
+    const file = source({
+      fromTerminal: true,
+      turnInFlight: true,
+      planFileText: "# Written by the CLI",
+      planFileName: "login.plan.md",
+      selection: "selected line",
+      terminalTail: "tail line",
+    });
+    expect(handoffBlockReason(file)).toBeNull();
+    expect(defaultScope(file)).toBe("plan_file");
+    expect(composePlanText(file, "plan_file").text).toBe("# Written by the CLI");
+    const choices = scopeChoices(file);
+    expect(choices.map((choice) => choice.id)).toEqual([
+      "plan_file",
+      "selection",
+      "terminal_tail",
+    ]);
+    expect(choices[0].label).toContain("login.plan.md");
+    const selectionOnly = source({
+      fromTerminal: true,
+      latestMessage: "",
+      plan: [],
+      todos: [],
+      selection: "only the selection",
+      terminalTail: "tail",
+    });
+    expect(defaultScope(selectionOnly)).toBe("selection");
+    expect(handoffBlockReason(selectionOnly)).toBeNull();
+    const mapped = mapHandoff(file, "plan_file", {
+      roleId: "role_implementer",
+      fields: IMPLEMENTER_FIELDS,
+    });
+    expect(mapped.answers.approvedPlan).toContain("Written by the CLI");
+    expect(mapped.planText).toContain("Written by the CLI");
+  });
+
   it("formats a card that has to-dos and no plan entries", () => {
     expect(formatPlanCard([], [{ content: "Write tests", status: "completed" }])).toBe(
       "## To-dos\n- [completed] Write tests",

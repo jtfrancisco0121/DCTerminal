@@ -308,7 +308,13 @@ fn class_from_label(text: &str) -> Option<ToolClass> {
     ];
     const SHELL: &[&str] = &["shell", "bash", "terminal", "execute", "command"];
     const READ: &[&str] = &[
-        "read", "grep", "glob", "search", "webfetch", "websearch", "fetch",
+        "read",
+        "grep",
+        "glob",
+        "search",
+        "webfetch",
+        "websearch",
+        "fetch",
     ];
     if WRITE.iter().any(|w| label_has_word(&lower, w)) {
         return Some(ToolClass::Write);
@@ -592,13 +598,22 @@ mod tests {
     #[test]
     fn planner_and_general_block_write_and_shell_but_allow_mcp() {
         for role in ["role_planner", "role_general"] {
-            assert_eq!(decide_for_role(role, ToolClass::Write), PolicyDecision::Reject);
-            assert_eq!(decide_for_role(role, ToolClass::Shell), PolicyDecision::Reject);
+            assert_eq!(
+                decide_for_role(role, ToolClass::Write),
+                PolicyDecision::Reject
+            );
+            assert_eq!(
+                decide_for_role(role, ToolClass::Shell),
+                PolicyDecision::Reject
+            );
             assert_eq!(
                 decide_for_role(role, ToolClass::Mcp),
                 PolicyDecision::AllowOnce
             );
-            assert_eq!(decide_for_role(role, ToolClass::Unknown), PolicyDecision::Ask);
+            assert_eq!(
+                decide_for_role(role, ToolClass::Unknown),
+                PolicyDecision::Ask
+            );
         }
     }
 

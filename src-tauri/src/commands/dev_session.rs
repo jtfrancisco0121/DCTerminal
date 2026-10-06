@@ -265,7 +265,11 @@ pub fn dev_session_cancel(
     let session = guard
         .get_mut(&tab_id)
         .ok_or_else(|| "no active session".to_string())?;
-    let pending: Vec<u64> = session.pending_permissions.drain().map(|(id, _)| id).collect();
+    let pending: Vec<u64> = session
+        .pending_permissions
+        .drain()
+        .map(|(id, _)| id)
+        .collect();
     let plans: Vec<u64> = session.pending_plans.drain().map(|(id, _)| id).collect();
     let outbox = Arc::clone(&session.outbox);
     let cancel = Arc::clone(&session.cancel);
@@ -307,15 +311,14 @@ pub fn dev_session_stop(
         let mut store = state_store.lock().map_err(|e| e.to_string())?;
         store.mark_tab_awaiting_input(&tab_id, transcript.clone())?;
         if let Some(text) = transcript.as_ref().filter(|text| !text.trim().is_empty()) {
-            let keep = store.data.tabs.iter().map(|tab| tab.id.clone()).collect::<Vec<_>>();
+            let keep = store
+                .data
+                .tabs
+                .iter()
+                .map(|tab| tab.id.clone())
+                .collect::<Vec<_>>();
             let transcripts = transcripts.lock().map_err(|e| e.to_string())?;
-            transcripts.save(
-                &tab_id,
-                text,
-                &cwd,
-                &chrono::Utc::now().to_rfc3339(),
-                &keep,
-            )?;
+            transcripts.save(&tab_id, text, &cwd, &chrono::Utc::now().to_rfc3339(), &keep)?;
         }
     }
     Ok(())

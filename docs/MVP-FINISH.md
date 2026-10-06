@@ -21,7 +21,7 @@ Dev-only panels (ACP probes, duplicate dev session) are hidden in release builds
 |---|-----------|--------|
 | A | Multi-tab: Planner + Implementer + Reviewer + General, each injects once | [~] each tab can run its own agent; role policy auto-answers permissions. Not yet verified live on Windows with four concurrent CLIs |
 | B | Validation + schema guard on start | [~] merge/validate yes (whitespace required, emptyBehavior); schema confirm UI no |
-| C | Kill one agent → only that tab; restart works | [~] close/stop kills that process tree; Restart returns to the form. No `session/load` resume |
+| C | Kill one agent → only that tab; restart works | [~] close/stop kills that process tree; Restart returns to the form. Continue uses `session/load` when the tab has an ACP session id |
 | D | Drafts restored after force-kill | [x] forms.json + state.json |
 | E | Auth error + retry | [~] form shows `_auth` / `_cli` with `agent login` guidance; not exercised against a live logged-out CLI on this machine |
 | F | Relaunch → tabs `awaitingInput`, no auto re-inject | [x] |
@@ -40,18 +40,19 @@ Dev-only panels (ACP probes, duplicate dev session) are hidden in release builds
 5. **Transcript persist** per tab (read-only after Stop; restore on relaunch). [x] app-data JSON, rotation, corrupt-file handling. Not `session/load`.
 6. **Continue vs restart** copy — “Follow-up” while live; “Start” = new session (documented in README). [x]
 7. **Scratch pad + Transfer** (FR-050–053). [x] per-tab pad, debounce + flush, `---` chaining. No global pad (P1 in the blueprint).
-8. **Keymap** defaults (Ctrl+Enter send, Ctrl+T new tab, Ctrl+. transfer) (FR-061). [x] overlay. Ctrl+Shift is reserved and not bound.
+8. **Keymap** defaults (Ctrl+Enter send, Ctrl+T new tab, Ctrl+. transfer) (FR-061). [x] overlay. Ctrl+Shift is the embedded terminal (toggle, transfer, copy, paste, search). Ctrl+C still goes to the shell.
 
 ### P2 — Blueprint “future” (after MVP tag)
 
-- `session/load` resume (true continue after quit)
+- Live Windows probe of `session/load` replay — done on CLI 2026.10.01 ([cursor-cli-history.md](./cursor-cli-history.md)). `agent --resume` does not open ACP ids.
 - Plan / question / todo cards (FR-010) — plan accept/reject, todos, and task cards are in the session view; `cursor/ask_question` is still auto-cancelled
 - Installers + CI matrix (T5.x)
 
 ## Out of scope for first MVP tag
 
-- PTY / xterm shell
 - Custom roles editor
+
+The embedded terminal (E6) is an optional tab and pane. ACP chat stays the primary session.
 - Transcript export, notifications, auto-update
 
 ## Definition of “finished” for v0.1

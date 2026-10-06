@@ -22,12 +22,13 @@ export function ShortcutsOverlay({ platform, onClose }: Props) {
           </button>
         </header>
         <p className="hint">
-          Plain Ctrl in the chat and scratch pad (⌘ on macOS). Ctrl+Shift is reserved for a
-          future terminal pane. Copy, paste, undo, and IME composition are left alone.
+          Plain Ctrl in the chat and scratch pad (⌘ on macOS). Ctrl+Shift is for the terminal:
+          copy, paste, search, the shell pane, and transfer. Ctrl+C still goes to the shell.
+          Copy, paste, undo, and IME composition in text fields are left alone.
         </p>
         <ul className="shortcut-list">
           {rows.map((row) => (
-            <li key={row.action}>
+            <li key={`${row.action}-${row.keys}`}>
               <kbd>{row.keys}</kbd>
               <span>
                 <strong>{row.label}</strong>

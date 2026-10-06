@@ -3,6 +3,7 @@
 
 use crate::store::json_io::{read_json_or_recover, write_json_atomic};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 pub const SETTINGS_SCHEMA_VERSION: u32 = 1;
@@ -14,12 +15,45 @@ pub struct DiagnosticsSettings {
     pub capture_permission_payloads: bool,
 }
 
+fn default_font_size() -> u32 {
+    14
+}
+
+/// Shell program, terminal font, and per-role terminal choices.
+/// `role_surface` is `chat` or `terminal`. `role_run_mode` is
+/// `default`, `yolo`, `auto-review`, `plan`, or `ask`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalSettings {
+    #[serde(default)]
+    pub shell: String,
+    #[serde(default = "default_font_size")]
+    pub font_size: u32,
+    #[serde(default)]
+    pub role_surface: HashMap<String, String>,
+    #[serde(default)]
+    pub role_run_mode: HashMap<String, String>,
+}
+
+impl Default for TerminalSettings {
+    fn default() -> Self {
+        Self {
+            shell: String::new(),
+            font_size: default_font_size(),
+            role_surface: HashMap::new(),
+            role_run_mode: HashMap::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsFile {
     pub schema_version: u32,
     #[serde(default)]
     pub diagnostics: DiagnosticsSettings,
+    #[serde(default)]
+    pub terminal: TerminalSettings,
 }
 
 impl Default for SettingsFile {
@@ -27,6 +61,7 @@ impl Default for SettingsFile {
         Self {
             schema_version: SETTINGS_SCHEMA_VERSION,
             diagnostics: DiagnosticsSettings::default(),
+            terminal: TerminalSettings::default(),
         }
     }
 }
@@ -65,6 +100,37 @@ impl SettingsStore {
         self.data.diagnostics.capture_permission_payloads = enabled;
         self.save()
     }
+
+    pub fn terminal(&self) -> &TerminalSettings {
+        &self.data.terminal
+    }
+
+    pub fn run_mode_for(&self, role_id: &str) -> String {
+        self.data
+            .terminal
+            .role_run_mode
+            .get(role_id)
+            .cloned()
+            .filter(|mode| is_run_mode(mode))
+            .unwrap_or_else(|| "default".to_string())
+    }
+
+    pub fn set_terminal(&mut self, mut next: TerminalSettings) -> Result<(), String> {
+        next.shell = next.shell.trim().chars().take(400).collect();
+        if next.shell.contains(['\n', '\r']) {
+            return Err("shell path cannot contain a newline".to_string());
+        }
+        next.font_size = next.font_size.clamp(8, 32);
+        next.role_surface
+            .retain(|_, value| value == "chat" || value == "terminal");
+        next.role_run_mode.retain(|_, value| is_run_mode(value));
+        self.data.terminal = next;
+        self.save()
+    }
+}
+
+fn is_run_mode(value: &str) -> bool {
+    matches!(value, "default" | "yolo" | "auto-review" | "plan" | "ask")
 }
 
 #[cfg(test)]

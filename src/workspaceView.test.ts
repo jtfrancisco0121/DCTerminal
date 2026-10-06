@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   appRoute,
+  canContinueStoredSession,
   folderToWrite,
   mergeTabDraft,
   rememberScroll,
@@ -152,6 +153,19 @@ describe("per-tab form state", () => {
     const positions = rememberScroll(rememberScroll({}, "tab_planner", 240), "tab_implementer", 12);
     expect(scrollForTab(positions, "tab_planner")).toBe(240);
     expect(scrollForTab(positions, "tab_implementer")).toBe(12);
+  });
+
+  it("continues only a stored session, not a tab that never started", () => {
+    expect(canContinueStoredSession(null)).toBe(false);
+    expect(
+      canContinueStoredSession({ phase: "awaitingInput", acpSessionId: null }),
+    ).toBe(false);
+    expect(
+      canContinueStoredSession({ phase: "draft", acpSessionId: "session-1" }),
+    ).toBe(false);
+    expect(
+      canContinueStoredSession({ phase: "awaitingInput", acpSessionId: "session-1" }),
+    ).toBe(true);
   });
 
   it("keeps restored startup fields collapsed until a new session is chosen", () => {
