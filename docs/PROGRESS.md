@@ -8,10 +8,10 @@
 
 | Field | Value |
 |--------|--------|
-| **Last updated** | 2026-10-06 — Improvements pass (PR #12, `feat/improvements-plan`): F1 background-tab notifications and **F2 tab status** (busy pulse, unseen dot, needs-you flag, inline rename, Go to tab search) landed. F3+ not started. |
+| **Last updated** | 2026-10-06 — Improvements pass (PR #12, `feat/improvements-plan`): F1 background-tab notifications, F2 tab status (busy pulse, unseen dot, needs-you flag, inline rename, Go to tab search), and **F3 git worktree per tab** landed. F4+ not started. |
 | **Branch** | `feat/improvements-plan` (draft PR #12) |
 | **Current phase** | Finish MVP vertical slice (see [MVP-FINISH.md](./MVP-FINISH.md)) |
-| **Active task** | [IMPROVEMENTS-PLAN.md](./IMPROVEMENTS-PLAN.md): F1–F2 done; next F3 (git worktree per tab). Mac smoke of F1 notifications and F2 chips pending. |
+| **Active task** | [IMPROVEMENTS-PLAN.md](./IMPROVEMENTS-PLAN.md): F1–F3 done; next F4. Mac smoke of F1 notifications, F2 chips, and F3 worktree create/remove pending. |
 
 ## Product-ready today
 
@@ -29,6 +29,7 @@
 - **Model picker** — a global default model and per-role defaults (including Cursor CLI tabs) in Settings > Models, and a per-tab override from the tab header, the terminal toolbar, the second pane, or next to Start on a blank tab. The default is `composer-2.5`. The list comes from `agent --list-models` (cached 24 h in `models-cache.json`, with a built-in fallback list) and is searchable; Fast variants have a badge. Terminal tabs pass `--model <id>`. A live chat switches with `session/set_config_option` (model category) or `session/set_model` when the agent advertises them; otherwise the agent restarts with `--model` and the same session is reopened with `session/load`. The per-tab choice is saved in `state.json`
 - **Agent notifications (F1)** — when a chat tab finishes a turn, ends on a question, needs permission, sends a plan for review, or fails, DCTerminal shows a toast (bottom right; click opens the tab). The tab on screen stays quiet while the window is focused. Other tabs get a toast. When DCTerminal is not the focused window, every tab raises an OS notification (`tauri-plugin-notification`) and a toast that waits until focus returns. Settings > Notifications: master switch, system notifications, focused-window toasts, and **Send test notification**; saved in app data `settings.json` (`notifications`). Terminal tabs are not tracked yet
 - **Tab status (F2)** — tab chips pulse while a chat turn runs or a terminal is streaming output, show a blue dot when a turn finished while the tab was off screen (cleared once it is on screen in a focused window), and a yellow **!** when the tab needs you: a permission request, a plan to review, a turn that ended on a question, or an error. Hover or a screen reader gives the status in words. **Rename** in place: double-click a chip, or F2 / command palette; Enter saves, Esc cancels. The name is kept through form edits, Start, and close/reopen. **Go to tab** (Mod+P) matches every word against the name, folder name, and path (and status words like "needs"), with arrow keys and Esc; rows show the folder, status, and current tab. The command palette (Mod+K) finds tabs by folder too
+- **Worktree tabs (F3)** — **New tab in worktree…** (tab bar "⎇ Worktree" or command palette) picks a repository, then a new branch (with start point) or a free existing branch, and a role. Clicking **Create** runs `git worktree add` into `<repo>-worktrees/<branch>` next to the repository and opens a tab there; nothing runs git before that click. The branch shows on the tab chip, the session header, and the terminal toolbar. **Remove this tab's worktree…** (palette) refuses uncommitted or untracked changes, asks to confirm, closes the tab, and runs `git worktree remove` without `--force`; the branch is kept. The link is saved on the tab in `state.json` (`worktree`) and survives close/reopen
 - **Release UI** — dev probes / duplicate dev session hidden (`import.meta.env.DEV` only)
 
 ## Locked product decisions (2026-10-06)
