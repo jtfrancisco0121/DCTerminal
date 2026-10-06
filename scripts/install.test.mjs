@@ -85,6 +85,13 @@ rustup_install_command`);
     );
   });
 
+  it("uses a repo-local stable override when the default toolchain is pinned old", () => {
+    const output = bash(`${source}
+rust_toolchain_fix_message`);
+    expect(output).toContain("rustup update stable");
+    expect(output).toContain("rustup override set stable");
+  });
+
   it("lists the Tauri Linux packages for apt, dnf, and pacman", () => {
     const output = bash(`${source}
 printf 'APT\\n'

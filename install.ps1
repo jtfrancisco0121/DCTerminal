@@ -94,6 +94,16 @@ function Get-RustupInstallCommand {
   'winget install --id Rustlang.Rustup -e --accept-source-agreements --accept-package-agreements'
 }
 
+function Get-RustToolchainFixMessage {
+  @"
+rustc is missing or older than $($script:MinRust), or it is not the MSVC toolchain.
+  rustup update stable
+  rustup toolchain install stable-msvc
+If rustc is still old, the active toolchain is a pin. Use stable-msvc in this repo only:
+  rustup override set stable-msvc
+"@
+}
+
 function Get-MsvcFixMessage {
   @"
 MSVC Build Tools are required (the "Desktop development with C++" workload).
@@ -272,15 +282,19 @@ function Initialize-NodePrerequisite {
 
 function Initialize-MsvcRustToolchain {
   $active = (& rustup show active-toolchain | Out-String).Trim()
-  if ($active -notmatch 'msvc') {
-    Write-User 'Tauri on Windows needs the MSVC Rust toolchain (not GNU).'
-    Write-User '  rustup default stable-msvc'
-    if (Request-InstallConsent 'Switch the default toolchain to stable-msvc?') {
-      Invoke-Native -File 'rustup' -Arguments @('default', 'stable-msvc')
-    }
-    else {
-      throw 'The MSVC Rust toolchain is required. npm run release:win uses it.'
-    }
+  $rustVersion = (& rustc --version | Out-String).Trim()
+  $versionOk = Test-RustVersionSupported $rustVersion
+  if ($versionOk -and $active -match 'msvc') {
+    return
+  }
+  # Directory override, not `rustup default`, so a pin used by other projects stays.
+  Write-User (Get-RustToolchainFixMessage)
+  if (Request-InstallConsent 'Use stable-msvc for this repo?') {
+    Invoke-Native -File 'rustup' -Arguments @('toolchain', 'install', 'stable-msvc')
+    Invoke-Native -File 'rustup' -Arguments @('override', 'set', 'stable-msvc')
+  }
+  else {
+    throw 'The MSVC Rust toolchain is required. npm run release:win uses it.'
   }
 }
 
@@ -303,18 +317,23 @@ function Initialize-RustPrerequisite {
     $rustVersion = (& rustc --version | Out-String).Trim()
   }
   if (-not (Test-RustVersionSupported $rustVersion)) {
-    Write-User "rustc is missing or older than $($script:MinRust)."
-    Write-User '  rustup update stable'
+    Write-User (Get-RustToolchainFixMessage)
     if (Request-InstallConsent 'Update the stable Rust toolchain now?') {
       Invoke-Native -File 'rustup' -Arguments @('update', 'stable')
       Update-ProcessPath
+      $rustVersion = (& rustc --version | Out-String).Trim()
+      if (-not (Test-RustVersionSupported $rustVersion)) {
+        Write-Info "Active rustc is still older than $($script:MinRust); pinning stable-msvc in this repo"
+        Invoke-Native -File 'rustup' -Arguments @('toolchain', 'install', 'stable-msvc')
+        Invoke-Native -File 'rustup' -Arguments @('override', 'set', 'stable-msvc')
+      }
     }
     else {
       throw "Rust $($script:MinRust)+ is required."
     }
     $rustVersion = (& rustc --version | Out-String).Trim()
     if (-not (Test-RustVersionSupported $rustVersion)) {
-      throw "rustc is still older than $($script:MinRust). Run: rustup update stable"
+      throw "rustc is still older than $($script:MinRust). Run: rustup update stable; rustup override set stable-msvc"
     }
   }
   Initialize-MsvcRustToolchain

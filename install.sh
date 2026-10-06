@@ -178,6 +178,18 @@ rustup_install_command() {
   printf '%s\n' "curl --proto '=https' --tlsv1.2 https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain stable"
 }
 
+# Printed when rustc is too old. `rustup update stable` refreshes the stable
+# channel and does not move a pinned default (this VM's default is 1.83.0).
+# The override applies only in this repo, so other projects keep their pin.
+rust_toolchain_fix_message() {
+  cat <<EOF
+rustc is missing or older than ${MIN_RUST_VERSION}.
+  rustup update stable
+If rustc is still old, the active toolchain is a pin. Use stable in this repo only:
+  rustup override set stable
+EOF
+}
+
 xcode_fix_message() {
   cat <<'EOF'
 Xcode Command Line Tools are required to compile DCTerminal on macOS.
@@ -535,17 +547,22 @@ ensure_rust() {
     fi
   fi
   if ! command -v rustc >/dev/null 2>&1 || ! rust_is_supported "$(rustc --version 2>/dev/null || true)"; then
-    printf 'rustc is missing or older than %s.\n' "$MIN_RUST_VERSION"
-    printf '  rustup update stable\n'
+    rust_toolchain_fix_message
     if confirm "Update the stable Rust toolchain now?"; then
       rustup update stable
+      hash -r
       prepend_tool_paths
+      if ! rust_is_supported "$(rustc --version 2>/dev/null || true)"; then
+        log "Active rustc is still older than ${MIN_RUST_VERSION}; pinning stable in this repo"
+        rustup override set stable
+        hash -r
+      fi
     else
       die "Rust ${MIN_RUST_VERSION}+ is required."
     fi
   fi
   if ! rust_is_supported "$(rustc --version 2>/dev/null || true)"; then
-    die "rustc is still older than ${MIN_RUST_VERSION}. Run: rustup update stable"
+    die "rustc is still older than ${MIN_RUST_VERSION}. Run: rustup update stable && rustup override set stable"
   fi
   # npm run check runs clippy -D warnings. The default rustup profile includes
   # it; a minimal profile does not.

@@ -60,6 +60,9 @@ describe.skipIf(!pwshAvailable())("install.ps1", () => {
       }
       if ((Get-NodeFixMessage) -notmatch 'OpenJS.NodeJS.LTS') { throw 'node cmd' }
       if ((Get-RustupInstallCommand) -notmatch 'Rustlang.Rustup') { throw 'rustup cmd' }
+      $refresh = Get-RustToolchainFixMessage
+      if ($refresh -notmatch 'rustup update stable') { throw 'rust update' }
+      if ($refresh -notmatch 'rustup override set stable-msvc') { throw 'rust override' }
       if ((Get-MsvcFixMessage) -notmatch 'VCTools') { throw 'msvc cmd' }
       if ((Get-WebView2FixMessage) -notmatch 'EdgeWebView2Runtime') { throw 'webview cmd' }
       $agent = Get-AgentWarning
