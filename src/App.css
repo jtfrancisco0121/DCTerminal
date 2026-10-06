@@ -1061,6 +1061,53 @@ kbd {
   font-size: 0.8rem;
 }
 
+.handoff-actions {
+  margin-top: 0.45rem;
+}
+
+.handoff-banner {
+  margin: 0 0 0.65rem;
+  font-size: 0.85rem;
+}
+
+.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #58a6ff;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.handoff-fieldset {
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  margin: 0.6rem 0;
+  padding: 0.4rem 0.7rem 0.6rem;
+}
+
+.handoff-fieldset legend {
+  padding: 0 0.3rem;
+  color: #8b949e;
+}
+
+.handoff-choice {
+  display: flex;
+  gap: 0.45rem;
+  align-items: flex-start;
+  margin: 0.3rem 0;
+}
+
+.handoff-preview {
+  max-height: 8rem;
+  white-space: pre-wrap;
+}
+
+.handoff-preview-full {
+  max-height: 50vh;
+}
+
 .session-card-list {
   list-style: none;
   margin: 0;

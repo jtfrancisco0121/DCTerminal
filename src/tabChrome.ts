@@ -82,6 +82,7 @@ export function buildPalette(opts: {
   tabs: { id: string; label: string }[];
   canReopen: boolean;
   splitOpen: boolean;
+  canSendPlan?: boolean;
 }): PaletteCommand[] {
   const commands: PaletteCommand[] = [
     { id: "newTab", title: "New tab", group: "Tabs" },
@@ -100,6 +101,22 @@ export function buildPalette(opts: {
     { id: "send", title: "Send", group: "Composer" },
     { id: "shortcutsHelp", title: "Keyboard shortcuts", group: "Help" },
     { id: "settings", title: "Settings", group: "Help" },
+    ...(opts.canSendPlan
+      ? [
+          {
+            id: "sendPlanImplementer",
+            title: "Send plan to Implementer",
+            group: "Hand-off",
+            keywords: "planner plan implementer",
+          },
+          {
+            id: "sendPlanDeveloper",
+            title: "Send plan to Developer",
+            group: "Hand-off",
+            keywords: "planner plan developer",
+          },
+        ]
+      : []),
     {
       id: "toggleCapture",
       title: "Toggle permission payload capture",

@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, type KeyboardEvent, type RefObject } from "react";
+import { HandoffActions } from "./components/HandoffDialog";
+import type { HandoffTargetId } from "./handoff/map";
 import { historyNavigate } from "./scratch/pad";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -39,6 +41,11 @@ type Props = {
   history?: string[];
   historyCursor?: number;
   onHistoryCursor?: (cursor: number) => void;
+  handoff?: {
+    enabled: boolean;
+    reason: string | null;
+    onSend: (target: HandoffTargetId) => void;
+  } | null;
 };
 
 export function SessionTerminal({
@@ -65,6 +72,7 @@ export function SessionTerminal({
   history = [],
   historyCursor = -1,
   onHistoryCursor,
+  handoff,
 }: Props) {
   const screenRef = useRef<HTMLDivElement>(null);
   const permissionRef = useRef<HTMLDivElement>(null);
@@ -108,6 +116,12 @@ export function SessionTerminal({
     promptInFlight,
     waitingPermission: !!permissionRequest,
   });
+  const lastAgentId = useMemo(() => {
+    for (let i = segments.length - 1; i >= 0; i -= 1) {
+      if (segments[i].kind === "agent" && segments[i].text.trim()) return segments[i].id;
+    }
+    return null;
+  }, [segments]);
 
   const toolStatusLabel = (status?: ToolStatus): string => {
     switch (status) {
@@ -195,7 +209,7 @@ export function SessionTerminal({
       )}
 
       <div className="session-terminal-screen-wrap">
-        <div ref={screenRef} className="session-terminal-screen" role="log">
+        <div ref={screenRef} className="session-terminal-screen" data-session-screen role="log">
           {!hasContent && promptInFlight && (
             <p className="session-terminal-placeholder">Agent is thinking…</p>
           )}
@@ -229,6 +243,14 @@ export function SessionTerminal({
                       {seg.text}
                     </ReactMarkdown>
                   </div>
+                  {handoff && seg.id === lastAgentId && (
+                    <HandoffActions
+                      enabled={handoff.enabled}
+                      reason={handoff.reason}
+                      busy={busy}
+                      onSend={handoff.onSend}
+                    />
+                  )}
                 </div>
               ) : seg.kind === "tool" ? (
                 <div

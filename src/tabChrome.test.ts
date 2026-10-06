@@ -76,5 +76,18 @@ describe("tab chrome", () => {
     );
     expect(commands.some((c) => c.id === "closeSplit")).toBe(false);
     expect(commands.some((c) => c.id === "settings")).toBe(true);
+    expect(commands.some((c) => c.id === "sendPlanImplementer")).toBe(false);
+  });
+
+  it("offers plan hand-off commands on a Planner session", () => {
+    const commands = buildPalette({
+      tabs: [],
+      canReopen: false,
+      splitOpen: false,
+      canSendPlan: true,
+    });
+    expect(commands.map((command) => command.id)).toEqual(
+      expect.arrayContaining(["sendPlanImplementer", "sendPlanDeveloper"]),
+    );
   });
 });

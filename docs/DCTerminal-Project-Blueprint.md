@@ -176,7 +176,7 @@ Priority key: **P0** = MVP blocker · **P1** = MVP, can slip one iteration · **
 | FR-096 | **Preview:** a "Preview prompt" toggle in the form shows the final merged prompt (read-only, with a copy button) and its character and approximate token count | P1 |
 | FR-097 | **Recall:** prefill fields from the last submission for that role (per field, configurable `remember: true/false`). Offer a "recent values" dropdown for long fields like Approved Implementation Plan (last 5). | P1 |
 | FR-098 | **Large paste support:** multiline fields accept 100k+ characters (plans, task descriptions) with a monospace editor, plus "Load from scratch pad" and "Paste from clipboard" buttons | P0 (multiline) / P1 (buttons) |
-| FR-099 | **Plan hand-off:** from an accepted plan in a Planner tab, "Start Implementer with this plan" or "Start PR Reviewer with this plan" opens that role's form prefilled (Title, Task Type, Plan, Original Task) | P2 |
+| FR-099 | **Plan hand-off:** on a finished Planner turn, **Send to Implementer** (plan card, final assistant message, and command palette) opens an Implementer tab in the same folder. JT chooses the latest plan plus to-dos (default), the whole latest plan message, the plan card, or a selection. The text is mapped onto the Implementer's own fields (task type, title, description, approved plan, additional context). **Send to Developer** uses the same hand-off; Developer has no plan field, so the text lands in that tab's scratch pad. Nothing starts until Start. The record (plan text, source tab, folder, timestamp) is stored in app data. The new tab shows **From Planner: title**, linking to the source tab or to the saved plan if that tab was closed. PR Reviewer fields use the same map; there is no separate Reviewer button yet. | P2, shipped for Implementer and Developer |
 | FR-100 | **Restart semantics:** restarting or restoring a tab reopens the form **prefilled with that tab's saved answers**, so JT can confirm or adjust before the startup prompt runs again (no silent re-run) | P0 |
 | FR-101 | **Lightweight roles:** if a role's schema has only the folder field (Developer, General), the form collapses to the compact role picker with no extra step. Enter starts immediately. | P0 |
 | FR-102 | **Draft safety:** form input is autosaved as a draft (per role) while typing, so cancelling or crashing doesn't lose a pasted plan | P1 |
@@ -231,7 +231,7 @@ Priority key: **P0** = MVP blocker · **P1** = MVP, can slip one iteration · **
 |---|---|
 | **P0** | CLI detection · spawn/handshake/auth · session new/prompt/update/cancel · permissions · unknown-method safety · **5 built-in roles** · **placeholder extraction plus stored schema · startup form with validation · deterministic merge plus unresolved-placeholder guard · prefilled form on restart** · once-per-session injection · merged-prompt snapshot · tabs (new/switch/close/status/restart) · per-tab cwd · per-tab scratch pad · Transfer and Send hotkeys · auth guidance |
 | **P1** | Mode per role/tab · Cursor plan/question UIs · schema editor UI · conditional fields · prompt preview · field recall · form drafts · tab restore · rename · MRU · settings · keymap JSON · copy · log drawer · global scratch |
-| **P2** | session/load resume · plan hand-off (Planner → Implementer/Reviewer) · custom roles · keymap UI · input history · transcript export · themes · notifications |
+| **P2** | session/load resume · plan hand-off to PR Reviewer (Implementer and Developer hand-off shipped, FR-099) · custom roles · keymap UI · input history · transcript export · themes · notifications |
 | **P3** | session/list · re-inject · role import/export · snippets · drag-reorder · transcript persistence · auto-approve allowlists · PTY panel · GitHub auto-fill of fields |
 
 ### 7.3 Traceability matrix (User Problem → Requirement → Feature → Workflow → Architecture → Implementation Task)
@@ -276,8 +276,8 @@ Priority key: **P0** = MVP blocker · **P1** = MVP, can slip one iteration · **
 6. The agent investigates and returns a plan via `cursor/create_plan`. JT reviews it and clicks **Accept**.
 
 ### J2: Implement, then review (the pipeline)
-1. JT copies the accepted plan (or, in P2, clicks **Start Implementer with this plan**).
-2. Mod+T → Implementer. The form asks for Task Type, Title, Description, **Approved Implementation Plan** (he pastes it, or picks it from "recent values"), and Additional Context. He submits, and the Implementer tab starts in `agent` mode and begins executing. He approves permission prompts for edits and `npm test` as they come.
+1. When the Planner turn finishes, JT clicks **Send to Implementer** (or picks it from the command palette). He keeps the default, latest plan plus to-dos, and confirms. A new Implementer tab opens on the same folder with the form already filled. He edits it and presses **Start**. The agent does not start before that.
+2. The Implementer form shows Task Type, Title, Description, **Approved Implementation Plan**, and Additional Context, mapped from the Planner answers and the chosen plan text. He submits, and the Implementer tab starts in `agent` mode and begins executing. He approves permission prompts for edits and `npm test` as they come. The tab keeps a **From Planner: title** link back to the Planner tab.
 3. When it finishes, Mod+T → PR Reviewer. The form asks for **Original Task** and **Approved Implementation Plan** (both recall-prefilled) plus Additional Context. He submits, and the reviewer starts in `agent` mode with write-deny policy (shell + MCP allowed), reviewing the working tree or branch.
 4. Three tabs are now side by side: Planner, Implementer, Reviewer. Each has its own filled prompt and its own ACP session.
 
@@ -1018,6 +1018,8 @@ Tauri `app_data_dir()`:
 | `forms.json` | Per-role `last_used` values, drafts, recent values for long fields | Debounced 500 ms while the form is open. On submit. |
 | `state.json` | Tabs (incl. submitted answers and merged-prompt snapshot), active tab, window, MRU | Debounced 1 s |
 | `scratch.json` | Scratch pads | Debounced 500 ms |
+| `handoffs.json` | Planner hand-offs: plan text, source tab, folder, timestamp, target tab | When JT sends a plan |
+| `handoff-plans/` | Sidecar file for a plan larger than 1 MB. Not written into the user's repo | With that hand-off |
 | `logs/` | Rolling logs | Continuous |
 
 The high-frequency writers (scratch, forms) are separate files so they can't corrupt roles or settings.
@@ -1231,7 +1233,7 @@ Operational failure handling for these cases (what the tab shows, what gets kill
 - Empty, loading, error, and restored states. Log drawer.
 - Installers: Windows NSIS, macOS DMG, Linux AppImage plus deb.
 
-**Out:** session resume, plan hand-off button, custom roles, keymap UI, transcript persistence/export, notifications, images, auto-approve, PTY, signing and auto-update.
+**Out:** session resume, plan hand-off to PR Reviewer (Implementer and Developer are shipped, FR-099), custom roles, keymap UI, transcript export, notifications, images, auto-approve, PTY, signing and auto-update.
 
 **MVP acceptance criteria:**
 1. On each OS, open Planner, Implementer, and PR Reviewer tabs on one repo plus a General tab on another. Every form validates, and each tab's first turn is its merged prompt. Approve a permission, cancel a turn, and close a tab with no orphan processes.
@@ -1248,7 +1250,7 @@ Operational failure handling for these cases (what the tab shows, what gets kill
 | Priority | Item | Notes |
 |---|---|---|
 | P2 | `session/load` resume | Restored tabs continue without re-injection |
-| P2 | **Plan hand-off**: "Start Implementer / PR Reviewer from this plan" | Prefill from the accepted `cursor/create_plan` plus the Planner's answers (title, task type, request → original task) |
+| Shipped | **Plan hand-off**: Send to Implementer / Developer | Prefills the target role's own fields from the Planner message, plan card, or a selection. Saved in app data (`handoffs.json`). See FR-099 and §33. |
 | P2 | Custom roles, full schema editor polish, keymap UI | — |
 | P2 | OS notifications (permission needed / turn done in a background tab) | `tauri-plugin-notification` |
 | P2 | Transcript export (incl. the startup prompt and answers) | — |
@@ -1431,7 +1433,7 @@ CI never calls the real Cursor service. Live tests are opt-in (`DCT_LIVE=1`).
 | Q7 | Scratch pad: per-tab, global, or both? After Transfer, keep or clear? Append or replace? | Both. Keep. Append. |
 | Q8 | On relaunch: restore tabs as awaiting-input (re-run startup on confirm), or don't restore at all until `session/load` (P2)? | Restore as awaiting-input |
 | Q9 | Should DCTerminal store transcripts locally? | No (MVP). Export in P2. |
-| Q10 | Is the plan hand-off (Planner → Implementer → Reviewer prefill) worth pulling into the MVP? | P2 |
+| Q10 | Is the plan hand-off (Planner → Implementer → Reviewer prefill) worth pulling into the MVP? | Implementer and Developer shipped (FR-099). Reviewer button still open. |
 | Q11 | React or Svelte? Primary dev OS (Windows assumed)? Mac access for testing? | React. Windows. macOS via CI plus occasional manual testing. |
 | Q12 | Extra CLI flags or proxy needs? | None |
 
@@ -1492,6 +1494,8 @@ Order from the study §11.2. E0 and E1 are the per-tab session and role-policy w
 
 Do not port ADE's PTY-first agent launch, Claude transcript usage parser, project-setup writers, or orchestrator.
 
+Plan hand-off (FR-099) sits beside this list. A finished Planner turn can open an Implementer or Developer tab with the plan filled in. The hand-off file stays in app data.
+
 ## 33. Edge cases and failure handling
 
 Each tab owns one `agent acp` process, one ACP session, one transcript, and one permission queue. Closing or stopping a tab kills only that process tree. On Unix the child is its own process group. On Windows the process is created suspended, assigned to a job object, then resumed, so `agent.cmd` cannot start `node` before the job exists; the job and `taskkill /T` then kill that tree. Quitting the app kills every live child.
@@ -1509,6 +1513,11 @@ Each tab owns one `agent acp` process, one ACP session, one transcript, and one 
 | Two tabs, one folder | Allowed. Agent-mode pairs get a one-time warning in the transcript. Plan and ask tabs do not warn. |
 | Required field of only whitespace | Validation error. Optional blanks follow `emptyBehavior`: `literal:…` inserts that text, `remove_line` drops the line, `empty` inserts nothing. |
 | Windows paths with spaces, Unicode, or UNC | Passed as a `PathBuf` to `current_dir` and `session/new.cwd`. No shell quoting. |
+| Planner turn still streaming | **Send to Implementer** and **Send to Developer** stay disabled until the turn finishes. |
+| Source Planner tab closed after a hand-off | **From Planner: title** opens the saved plan from app data instead of the tab. |
+| Working folder missing at hand-off | The new tab still opens. Start stays blocked with the folder error until a real folder is chosen. |
+| Plan longer than the form | The form shows the first 100,000 characters and a warning. The full text is kept in `handoffs.json`, or in `handoff-plans/<id>.txt` when it is over 1 MB, capped at 8 MB. Nothing is written to the user's repo or `~/.cursor`. |
+| App restart | `handoffs.json` and the prefilled tab answers are read back. The new tab does not start an agent by itself. |
 
 ---
 *End of blueprint.*

@@ -2,11 +2,19 @@ import type { ReactNode } from "react";
 import type { PlanEntry, SessionCards as Cards, TaskUpdate, TodoItem } from "../sessionCards";
 import { activeToolProgress } from "../sessionCards";
 import type { StreamSegment } from "../transcript";
+import { HandoffActions } from "./HandoffDialog";
+import type { HandoffTargetId } from "../handoff/map";
 
 type PlanRequest = {
   jsonRpcId: number;
   title: string;
   entries: PlanEntry[];
+};
+
+type HandoffOffer = {
+  enabled: boolean;
+  reason: string | null;
+  onSend: (target: HandoffTargetId) => void;
 };
 
 type Props = {
@@ -16,6 +24,7 @@ type Props = {
   busy: boolean;
   onAcceptPlan?: () => void;
   onRejectPlan?: () => void;
+  handoff?: HandoffOffer | null;
 };
 
 export function SessionCards({
@@ -25,11 +34,26 @@ export function SessionCards({
   busy,
   onAcceptPlan,
   onRejectPlan,
+  handoff,
 }: Props) {
   const plan = cards.plan.length > 0 ? cards.plan : (planRequest?.entries ?? []);
   const tools = activeToolProgress(segments);
   const hasTools = tools.length > 0;
-  if (plan.length === 0 && cards.todos.length === 0 && cards.tasks.length === 0 && !hasTools) {
+  const handoffActions = handoff ? (
+    <HandoffActions
+      enabled={handoff.enabled}
+      reason={handoff.reason}
+      busy={busy}
+      onSend={handoff.onSend}
+    />
+  ) : null;
+  if (
+    plan.length === 0 &&
+    cards.todos.length === 0 &&
+    cards.tasks.length === 0 &&
+    !hasTools &&
+    !handoffActions
+  ) {
     return null;
   }
   return (
@@ -51,6 +75,7 @@ export function SessionCards({
               </button>
             </div>
           )}
+          {handoffActions}
         </Card>
       )}
       {cards.todos.length > 0 && (
@@ -62,7 +87,11 @@ export function SessionCards({
               status: todo.status,
             }))}
           />
+          {plan.length === 0 ? handoffActions : null}
         </Card>
+      )}
+      {plan.length === 0 && cards.todos.length === 0 && handoffActions && (
+        <Card title="Hand-off">{handoffActions}</Card>
       )}
       {cards.tasks.length > 0 && (
         <Card title="Sub-agents">

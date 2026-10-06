@@ -505,3 +505,51 @@ export async function respondPlanRequest(
 ): Promise<void> {
   return invoke("respond_plan_request", { tabId, jsonRpcId, outcome });
 }
+
+export type HandoffRecord = {
+  id: string;
+  createdAt: string;
+  sourceTabId: string;
+  sourceRoleId: string;
+  sourceLabel: string;
+  targetRoleId: string;
+  targetTabId: string | null;
+  title: string;
+  cwd: string;
+  scope: string;
+  planText: string;
+  truncated: boolean;
+  warning: string | null;
+  planFile: string | null;
+  planField: string | null;
+};
+
+export type HandoffSaveInput = {
+  sourceTabId: string;
+  sourceRoleId: string;
+  sourceLabel: string;
+  targetRoleId: string;
+  title: string;
+  cwd: string;
+  scope: string;
+  planText: string;
+  truncated: boolean;
+  warning: string | null;
+  planField: string | null;
+};
+
+export async function handoffSave(input: HandoffSaveInput): Promise<HandoffRecord> {
+  return invoke<HandoffRecord>("handoff_save", { input });
+}
+
+export async function handoffBindTab(id: string, tabId: string): Promise<HandoffRecord> {
+  return invoke<HandoffRecord>("handoff_bind_tab", { id, tabId });
+}
+
+export async function handoffList(): Promise<HandoffRecord[]> {
+  return invoke<HandoffRecord[]>("handoff_list");
+}
+
+export async function handoffGet(id: string): Promise<HandoffRecord> {
+  return invoke<HandoffRecord>("handoff_get", { id });
+}
