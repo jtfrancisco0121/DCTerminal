@@ -73,7 +73,9 @@ impl StateStore {
             if tab.phase == "running" {
                 return Err("this tab is already running — stop it or open a new tab".to_string());
             }
-            tab.label = label;
+            if !tab.custom_label {
+                tab.label = label;
+            }
             tab.role_id = role.id.clone();
             tab.role_snapshot = snapshot;
             tab.cwd = cwd.to_string();
@@ -111,6 +113,7 @@ impl StateStore {
             kind: crate::store::state_types::default_tab_kind(),
             terminal_launch: String::new(),
             model: None,
+            custom_label: false,
         };
         self.data.tabs.push(record);
         self.data.active_tab_id = Some(tab_id.clone());
@@ -135,7 +138,9 @@ impl StateStore {
         if tab.phase == "running" || tab.kind == "terminal" || tab.phase == "terminal" {
             return Ok(());
         }
-        tab.label = tab_label(&role.name, answers);
+        if !tab.custom_label {
+            tab.label = tab_label(&role.name, answers);
+        }
         tab.role_id = role.id.clone();
         tab.cwd = cwd.to_string();
         tab.answers = answers.clone();
@@ -237,6 +242,7 @@ impl StateStore {
                     .map(|session| session.acp_session_id.clone()),
                 mode_id: tab.session.as_ref().map(|session| session.mode_id.clone()),
                 model: tab.model.clone(),
+                custom_label: tab.custom_label,
             },
         );
         self.data.closed_tabs.truncate(15);
@@ -311,6 +317,7 @@ impl StateStore {
             kind: closed.kind.clone(),
             terminal_launch: closed.terminal_launch.clone(),
             model: closed.model.clone(),
+            custom_label: closed.custom_label,
         };
         let id = record.id.clone();
         self.data.tabs.push(record);
@@ -362,6 +369,7 @@ impl StateStore {
             .find(|t| t.id == tab_id)
             .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
         tab.label = label;
+        tab.custom_label = true;
         self.save()
     }
 
@@ -411,6 +419,7 @@ impl StateStore {
             kind: crate::store::state_types::default_tab_kind(),
             terminal_launch: String::new(),
             model: None,
+            custom_label: false,
         };
         self.data.tabs.push(record);
         if make_active {
@@ -457,6 +466,7 @@ impl StateStore {
             kind: "terminal".to_string(),
             terminal_launch: String::new(),
             model: None,
+            custom_label: false,
         };
         apply_terminal_draft(&mut record, &draft);
         self.data.tabs.push(record);
@@ -525,7 +535,9 @@ pub struct TerminalTabDraft {
 }
 
 fn apply_terminal_draft(tab: &mut TabRecord, draft: &TerminalTabDraft) {
-    tab.label = draft.label.clone();
+    if !tab.custom_label {
+        tab.label = draft.label.clone();
+    }
     tab.role_id = draft.role_id.clone();
     tab.role_snapshot = draft.role_snapshot.clone();
     tab.cwd = draft.cwd.clone();
@@ -762,6 +774,70 @@ mod tests {
         let parsed: AppStateFile = serde_json::from_str(raw).unwrap();
         assert_eq!(parsed.layout.split_mode, "single");
         assert!(!parsed.layout.file_panel_open);
+    }
+
+    #[test]
+    fn renamed_tab_keeps_its_name_through_form_sync_start_reopen_and_reload() {
+        let dir = std::env::temp_dir().join(format!(
+            "dcterminal_rename_{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let role = crate::roles::Role {
+            id: "role_dev".to_string(),
+            name: "Developer".to_string(),
+            template_text: String::new(),
+            template_version: 1,
+            template_hash: String::new(),
+            schema_template_hash: String::new(),
+            default_mode: "agent".to_string(),
+            injection: "send_on_start".to_string(),
+            color: "#3fb950".to_string(),
+            is_built_in: true,
+            fields: vec![],
+            updated_at: None,
+        };
+        let path = dir.join("state.json");
+        let mut store = StateStore {
+            path: path.clone(),
+            data: AppStateFile::default(),
+        };
+        let id = store.create_draft_tab(&role, "/tmp/app", true).unwrap();
+        store.set_tab_label(&id, "  Auth bug  ").unwrap();
+        let answers = HashMap::from([
+            ("cwd".to_string(), "/tmp/app".to_string()),
+            ("title".to_string(), "Onboarding".to_string()),
+        ]);
+        store
+            .sync_tab_form(&id, &role, &answers, "/tmp/app")
+            .unwrap();
+        assert_eq!(store.tab_by_id(&id).unwrap().label, "Auth bug");
+        store
+            .promote_tab_to_running(
+                Some(&id),
+                &role,
+                &answers,
+                "/tmp/app",
+                "merged",
+                TabSessionRef {
+                    acp_session_id: "s1".to_string(),
+                    mode_id: "agent".to_string(),
+                    injection_pending: false,
+                    injected_at: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(store.tab_by_id(&id).unwrap().label, "Auth bug");
+        store.close_tab(&id).unwrap();
+        let reopened = store.reopen_closed(None).unwrap();
+        assert_eq!(reopened.label, "Auth bug");
+        assert!(reopened.custom_label);
+        let reloaded: AppStateFile =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(reloaded.tabs[0].label, "Auth bug");
+        assert!(reloaded.tabs[0].custom_label);
+        assert!(store.set_tab_label(&id, "   ").is_err());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

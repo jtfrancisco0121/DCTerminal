@@ -140,17 +140,18 @@ export type PaletteCommand = {
   keywords?: string;
 };
 
+/** Every word in the query must appear in the title, group, or keywords. */
 export function filterCommands(commands: PaletteCommand[], query: string): PaletteCommand[] {
-  const q = query.trim().toLowerCase();
-  if (!q) return commands;
+  const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return commands;
   return commands.filter((cmd) => {
     const hay = `${cmd.title} ${cmd.group} ${cmd.keywords ?? ""}`.toLowerCase();
-    return hay.includes(q);
+    return tokens.every((token) => hay.includes(token));
   });
 }
 
 export function buildPalette(opts: {
-  tabs: { id: string; label: string }[];
+  tabs: { id: string; label: string; cwd?: string }[];
   canReopen: boolean;
   splitOpen: boolean;
   canSendPlan?: boolean;
@@ -222,7 +223,7 @@ export function buildPalette(opts: {
       id: `goto:${tab.id}`,
       title: `Switch to: ${tab.label}`,
       group: "Tabs",
-      keywords: tab.label,
+      keywords: `${tab.label} ${tab.cwd ?? ""} go to tab`,
     });
   }
   return commands;

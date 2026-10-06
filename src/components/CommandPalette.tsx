@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { buildPalette, filterCommands } from "../tabChrome";
 
 type Props = {
-  tabs: { id: string; label: string }[];
+  tabs: { id: string; label: string; cwd?: string }[];
   canReopen: boolean;
   splitOpen: boolean;
   canSendPlan?: boolean;

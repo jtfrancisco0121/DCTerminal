@@ -125,6 +125,8 @@ pub struct ClosedTabRecord {
     pub mode_id: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
+    #[serde(default)]
+    pub custom_label: bool,
 }
 
 /// Persisted tab snapshot (blueprint §17.2 `state.json`).
@@ -163,6 +165,9 @@ pub struct TabRecord {
     /// Per-tab model override. `None` uses the role default, then the global one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// The user renamed this tab. Form edits and session starts keep the name.
+    #[serde(default)]
+    pub custom_label: bool,
 }
 
 pub fn default_tab_kind() -> String {

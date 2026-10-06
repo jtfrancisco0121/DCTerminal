@@ -116,8 +116,8 @@ export const SHORTCUTS: ShortcutDef[] = [
   },
   {
     action: "tabSwitcher",
-    label: "Tab switcher",
-    description: "Search open tabs by name or folder.",
+    label: "Go to tab",
+    description: "Search open tabs by name, folder, or status (needs you, working).",
     code: "KeyP",
   },
   {
@@ -181,7 +181,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   {
     action: "renameTab",
     label: "Rename tab",
-    description: "Rename the active tab.",
+    description: "Rename the active tab in place. Double-click a tab also works.",
     code: "F2",
     mod: false,
   },

@@ -57,7 +57,7 @@ vi.mock("./bridge", () => {
   respondPlanRequest: vi.fn(),
   reopenClosedTab: vi.fn(),
   setTabColor: vi.fn(),
-  setTabLabel: vi.fn(),
+  setTabLabel: vi.fn(async () => {}),
   transcriptSave: vi.fn(),
   getAppState: vi.fn(),
   getTab: vi.fn(),
@@ -135,6 +135,7 @@ import {
   setLayout,
   listCursorCliHistory,
   selectActiveTab,
+  setTabLabel,
   syncActiveTabForm,
 } from "./bridge";
 import { StartupForm } from "./StartupForm";
@@ -396,6 +397,72 @@ describe("background tab notifications", () => {
       tabs: [terminalTab("tab_a", "Main"), terminalTab("tab_b", "Reviewer · PR 12")],
       closedTabs: [],
     });
+  });
+
+  it("flags needs-you and the unseen dot on chips, clears them when viewed, and renames inline", async () => {
+    const focus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    render(
+      <StartupForm
+        roles={[{ id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 }]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+    await screen.findByRole("region", { name: "Scratch pad" });
+    await waitFor(() => expect(captured.finished).toBeTruthy());
+    const chipOf = (name: RegExp) => screen.getByRole("tab", { name }).closest(".tab-chip")!;
+
+    act(() => {
+      captured.finished?.({
+        tabId: "tab_b",
+        sessionId: "s1",
+        success: true,
+        result: { stopReason: "end_turn", agentText: "All done.", updateCount: 1 },
+        error: null,
+        agentExited: false,
+      });
+    });
+    await waitFor(() => expect(chipOf(/Reviewer · PR 12/).className).toContain("tab-chip-unseen"));
+    expect(screen.getByRole("tab", { name: /Reviewer · PR 12/ }).textContent).toContain(
+      "Finished, not viewed yet",
+    );
+
+    act(() => {
+      captured.finished?.({
+        tabId: "tab_b",
+        sessionId: "s1",
+        success: true,
+        result: { stopReason: "end_turn", agentText: "Merge it now?", updateCount: 1 },
+        error: null,
+        agentExited: false,
+      });
+    });
+    await waitFor(() => expect(chipOf(/Reviewer · PR 12/).className).toContain("tab-chip-needs"));
+
+    // The visible tab never gets a mark.
+    act(() => {
+      captured.finished?.({
+        tabId: "tab_a",
+        sessionId: "s0",
+        success: true,
+        result: { stopReason: "end_turn", agentText: "ok", updateCount: 1 },
+        error: null,
+        agentExited: false,
+      });
+    });
+    expect(chipOf(/^Main/).getAttribute("data-status")).toBe("idle");
+
+    fireEvent.click(screen.getByRole("tab", { name: /Reviewer · PR 12/ }));
+    await waitFor(() => expect(chipOf(/Reviewer · PR 12/).getAttribute("data-status")).toBe("idle"));
+
+    fireEvent.doubleClick(screen.getByRole("tab", { name: /^Main/ }));
+    const input = screen.getByLabelText("Rename Main");
+    fireEvent.change(input, { target: { value: "Build fix" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(vi.mocked(setTabLabel)).toHaveBeenCalledWith("tab_a", "Build fix"));
+    focus.mockRestore();
   });
 
   it("toasts a background tab's permission request and finished turn, and opens it on click", async () => {

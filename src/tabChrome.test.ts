@@ -114,6 +114,18 @@ describe("tab chrome", () => {
     expect(commands.some((c) => c.id === "sendPlanImplementer")).toBe(false);
   });
 
+  it("finds a tab in the palette by folder and by several words", () => {
+    const commands = buildPalette({
+      tabs: [{ id: "tab_1", label: "Planner · UI", cwd: "/Users/jt/Projects/Koneksi" }],
+      canReopen: false,
+      splitOpen: false,
+    });
+    const goto = (q: string) => filterCommands(commands, q).some((c) => c.id === "goto:tab_1");
+    expect(goto("koneksi")).toBe(true);
+    expect(goto("planner koneksi")).toBe(true);
+    expect(goto("planner encryptor")).toBe(false);
+  });
+
   it("offers plan hand-off commands on a Planner session", () => {
     const commands = buildPalette({
       tabs: [],

@@ -220,6 +220,8 @@ export type TabRecord = {
   startupPromptSent?: boolean;
   kind?: string;
   terminalLaunch?: string;
+  /** The user renamed this tab; form edits and starts keep the name. */
+  customLabel?: boolean;
 };
 
 export async function getAppState(): Promise<AppStateSnapshot> {

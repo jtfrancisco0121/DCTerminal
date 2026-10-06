@@ -72,7 +72,6 @@ import {
   applyPermission,
   applyPromptFinished,
   applySessionUpdate,
-  attentionTabIds,
   clearLiveSession,
   emptyRuntime,
   folderStatusMessage,
@@ -125,7 +124,15 @@ import { AgentToasts } from "./components/AgentToasts";
 import { classifyPromptFinished, type NotificationSettings } from "./notify/agentNotify";
 import { showSystemNotification } from "./notify/systemNotify";
 import { useAgentNotifications } from "./notify/useAgentNotifications";
-import { useWindowFocused } from "./notify/windowFocus";
+import { isWindowFocused, useWindowFocused } from "./notify/windowFocus";
+import { terminalActivity } from "./terminal/activity";
+import {
+  clearMarks,
+  computeTabStatus,
+  markAfterTurn,
+  type TabMark,
+  type TabStatus,
+} from "./tabStatus";
 import { appendReference } from "./files/paths";
 import { effectiveModel, modelChangeNote } from "./models";
 import { TabSwitcher } from "./components/TabSwitcher";
@@ -231,6 +238,10 @@ export function StartupForm({
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [cardsByTab, setCardsByTab] = useState<Record<string, Cards>>({});
   const [planRequest, setPlanRequest] = useState<PlanRequestEvent | null>(null);
+  // F2: finished/question/error left on a tab the user was not watching.
+  const [tabMarks, setTabMarks] = useState<Record<string, TabMark>>({});
+  const [terminalBusy, setTerminalBusy] = useState<string[]>([]);
+  const [renamingTabId, setRenamingTabId] = useState<string | null>(null);
   const [split, setSplit] = useState<SplitState>(emptySplit());
   const [splitPicker, setSplitPicker] = useState<"horizontal" | "vertical" | null>(null);
   const [focusedPane, setFocusedPane] = useState<"primary" | "secondary">("primary");
@@ -323,7 +334,6 @@ export function StartupForm({
   const followUp = activeRuntime.followUp;
   const streamSegments = activeRuntime.segments;
   const permissionRequest = activeRuntime.permission;
-  const needsAttention = useMemo(() => attentionTabIds(runtimes), [runtimes]);
   const scratch = useScratchPads(activeTabId);
   const padRef = useRef<HTMLTextAreaElement>(null);
   const terminalPadRef = useRef<TerminalPadHandle>(null);
@@ -364,6 +374,15 @@ export function StartupForm({
     tabLabel: (tabId) => savedTabsRef.current.find((tab) => tab.id === tabId)?.label ?? "",
   });
   const notifyAgent = agentNotifications.notify;
+  /** On screen in a focused window: nothing is left unseen. */
+  const isWatchingTab = useCallback((tabId: string) => {
+    if (!isWindowFocused()) return false;
+    const current = splitRef.current;
+    return (
+      tabId === activeTabIdRef.current ||
+      (splitOpen(current) && current.secondaryTabId === tabId)
+    );
+  }, []);
   const dismissTabToasts = agentNotifications.dismissTab;
 
   const persistTranscripts = useCallback(async (snapshot: Record<string, TabRuntime>) => {
@@ -541,6 +560,8 @@ export function StartupForm({
         patchRuntime(evt.tabId, (rt) => applyPromptFinished(rt, evt));
         const event = classifyPromptFinished(evt);
         if (event) notifyAgent(evt.tabId, event);
+        const watching = isWatchingTab(evt.tabId);
+        setTabMarks((marks) => markAfterTurn(marks, evt.tabId!, event?.kind ?? null, watching));
       }),
       listenPlanRequests((evt) => {
         if (!evt.tabId) return;
@@ -564,7 +585,7 @@ export function StartupForm({
         flushRafRef.current = null;
       }
     };
-  }, [notifyAgent, patchRuntime]);
+  }, [isWatchingTab, notifyAgent, patchRuntime]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -600,9 +621,49 @@ export function StartupForm({
   // A tab's toasts are stale once it is on screen in a focused window.
   useEffect(() => {
     if (!windowFocused) return;
+    const secondary = splitOpen(split) ? split.secondaryTabId : null;
     if (activeTabId) dismissTabToasts(activeTabId);
-    if (splitOpen(split) && split.secondaryTabId) dismissTabToasts(split.secondaryTabId);
+    if (secondary) dismissTabToasts(secondary);
+    setTabMarks((marks) => clearMarks(marks, [activeTabId, secondary]));
   }, [activeTabId, dismissTabToasts, split, windowFocused]);
+
+  // Terminal tabs: busy while output streams; a finished dot when a busy
+  // tab goes quiet off screen. Polls only while terminal tabs exist.
+  const hasTerminalTabs = savedTabs.some((tab) => tab.kind === "terminal");
+  useEffect(() => {
+    if (!hasTerminalTabs) {
+      setTerminalBusy((prev) => (prev.length === 0 ? prev : []));
+      return;
+    }
+    const timer = window.setInterval(() => {
+      const { busy, settled } = terminalActivity.sweep();
+      setTerminalBusy((prev) =>
+        prev.length === busy.length && prev.every((id, i) => id === busy[i]) ? prev : busy,
+      );
+      if (settled.length > 0) {
+        setTabMarks((marks) =>
+          settled.reduce(
+            (acc, id) => markAfterTurn(acc, id, "finished", isWatchingTab(id)),
+            marks,
+          ),
+        );
+      }
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [hasTerminalTabs, isWatchingTab]);
+
+  const tabStatuses = useMemo(() => {
+    const out: Record<string, TabStatus> = {};
+    for (const tab of savedTabs) {
+      out[tab.id] = computeTabStatus({
+        runtime: runtimes[tab.id],
+        mark: tabMarks[tab.id],
+        planPending: planRequest?.tabId === tab.id,
+        terminalBusy: terminalBusy.includes(tab.id),
+      });
+    }
+    return out;
+  }, [planRequest, runtimes, savedTabs, tabMarks, terminalBusy]);
 
   const notificationSettingsRef = useRef(notificationSettings);
   notificationSettingsRef.current = notificationSettings;
@@ -1793,11 +1854,7 @@ export function StartupForm({
         return;
       }
       if (match.action === "renameTab" && activeTabId) {
-        const current = savedTabs.find((tab) => tab.id === activeTabId)?.label ?? "";
-        const next = window.prompt("Tab name", current);
-        if (next && next.trim()) {
-          void setTabLabel(activeTabId, next.trim()).then(() => refreshTabs());
-        }
+        setRenamingTabId(activeTabId);
       }
     },
     [
@@ -1854,6 +1911,7 @@ export function StartupForm({
     if (!payload.trim()) return;
     for (let attempt = 0; attempt < 20; attempt += 1) {
       try {
+        terminalActivity.input(target);
         await ptyWrite(target, payload);
         setTerminalError(null);
         return;
@@ -2323,7 +2381,15 @@ export function StartupForm({
       roleColors={roleColors}
       disableSwitch={busy && !session}
       disableNew={busy}
-      attentionTabIds={needsAttention}
+      statuses={tabStatuses}
+      renamingTabId={renamingTabId}
+      onRenameStart={setRenamingTabId}
+      onRename={(tabId, label) => {
+        void setTabLabel(tabId, label)
+          .then(() => refreshTabs())
+          .catch(() => {});
+      }}
+      onRenameEnd={() => setRenamingTabId(null)}
       canReopen={closedTabs.length > 0}
       settingsOpen={settingsOpen}
       roleRulesOff={!!approvalMode?.roleRulesOff}
@@ -2395,7 +2461,7 @@ export function StartupForm({
       />
       {paletteOpen && (
         <CommandPalette
-          tabs={savedTabs.map((tab) => ({ id: tab.id, label: tab.label }))}
+          tabs={savedTabs.map((tab) => ({ id: tab.id, label: tab.label, cwd: tab.cwd }))}
           canReopen={closedTabs.length > 0}
           splitOpen={splitOpen(split)}
           canSendPlan={(roleId === "role_planner" && !!session) || !!isPlannerTerminal}
@@ -2406,6 +2472,8 @@ export function StartupForm({
       {switcherOpen && (
         <TabSwitcher
           tabs={savedTabs}
+          activeTabId={activeTabId}
+          statuses={tabStatuses}
           onSelect={(tabId) => {
             setSwitcherOpen(false);
             void handleSelectTab(tabId);
