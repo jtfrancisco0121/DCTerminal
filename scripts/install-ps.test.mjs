@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -37,6 +38,29 @@ function pwshResult(command) {
     };
   }
 }
+
+describe("install.ps1 source", () => {
+  const bytes = readFileSync(path.join(root, "install.ps1"));
+  const text = bytes.toString("utf8");
+
+  it("stays ASCII without a BOM so Windows PowerShell 5.1 parses it", () => {
+    expect(bytes.length).toBeGreaterThan(0);
+    expect(bytes[0]).not.toBe(0xef);
+    expect(bytes[1]).not.toBe(0xbb);
+    expect(bytes[2]).not.toBe(0xbf);
+    for (const byte of bytes) {
+      expect(byte).toBeLessThanOrEqual(127);
+    }
+  });
+
+  it("avoids syntax Windows PowerShell 5.1 does not have", () => {
+    expect(text).not.toMatch(/\?\?/);
+    expect(text).not.toMatch(/&&/);
+    expect(text).not.toMatch(/\|\|/);
+    expect(text).toMatch(/PSVersionTable\.PSVersion\.Major -ge 6/);
+    expect(text).not.toMatch(/-AdditionalChildPath/);
+  });
+});
 
 describe.skipIf(!pwshAvailable())("install.ps1", () => {
   it("keeps the same version gates, NSIS path, and install commands as install.sh", () => {
@@ -88,5 +112,114 @@ describe.skipIf(!pwshAvailable())("install.ps1", () => {
     const host = pwshResult("pwsh -NoProfile -File ./install.ps1");
     expect(host.status).not.toBe(0);
     expect(`${host.stdout}\n${host.stderr}`.toLowerCase()).toContain("windows");
+  });
+
+  it("prefers cmd and exe shims and refuses a ps1-only shim", () => {
+    const output = pwsh(`
+      . ./install.ps1
+      $npm = Select-ShimFileName -Name 'npm' -Available @('npm.ps1', 'npm', 'npm.cmd')
+      if ($npm -ne 'npm.cmd') { throw "npm:$npm" }
+      $npx = Select-ShimFileName -Name 'npx' -Available @('npx.ps1', 'npx.cmd')
+      if ($npx -ne 'npx.cmd') { throw "npx:$npx" }
+      $explicit = Select-ShimFileName -Name 'npm.cmd' -Available @('npm.ps1', 'npm.cmd')
+      if ($explicit -ne 'npm.cmd') { throw "explicit:$explicit" }
+      $rustc = Select-ShimFileName -Name 'rustc' -Available @('rustc.ps1', 'rustc.exe')
+      if ($rustc -ne 'rustc.exe') { throw "rustc:$rustc" }
+      $winget = Select-ShimFileName -Name 'winget' -Available @('winget.exe', 'winget.ps1')
+      if ($winget -ne 'winget.exe') { throw "winget:$winget" }
+      $node = Select-ShimFileName -Name 'node' -Available @('node.exe')
+      if ($node -ne 'node.exe') { throw "node:$node" }
+      $bare = Select-ShimFileName -Name 'rustup' -Available @('rustup')
+      if ($bare -ne 'rustup') { throw "bare:$bare" }
+      $com = Select-ShimFileName -Name 'agent' -Available @('agent.com', 'agent')
+      if ($com -ne 'agent.com') { throw "com:$com" }
+      $failed = $false
+      try {
+        Select-ShimFileName -Name 'npm' -Available @('npm.ps1')
+      }
+      catch {
+        $failed = $true
+        $message = $_.Exception.Message
+        if ($message -notmatch 'Statement') { throw $message }
+        if ($message -notmatch 'npm.cmd') { throw $message }
+        if ($message -notmatch 'StrictMode') { throw $message }
+      }
+      if (-not $failed) { throw 'ps1 was accepted' }
+      'shim-ok'
+    `);
+    expect(output).toContain("shim-ok");
+  });
+
+  it("resolves npm to npm.cmd when a ps1 shim is also on PATH", () => {
+    const output = pwsh(`
+      . ./install.ps1
+      $td = Join-Path ([System.IO.Path]::GetTempPath()) ('shim-' + [guid]::NewGuid().ToString('n'))
+      New-Item -ItemType Directory -Path $td | Out-Null
+      try {
+        $cmdPath = Join-Path $td 'npm.cmd'
+        $ps1Path = Join-Path $td 'npm.ps1'
+        $unix = $false
+        if ($PSVersionTable.PSVersion.Major -ge 6) {
+          $unix = $IsLinux -or $IsMacOS
+        }
+        if ($unix) {
+          Set-Content -LiteralPath $cmdPath -Value "#!/bin/sh\`necho cmd-ok\`n" -Encoding utf8NoBOM
+          Set-Content -LiteralPath $ps1Path -Value "Write-Output ps1-ran\`n" -Encoding utf8NoBOM
+          chmod +x $cmdPath $ps1Path
+        }
+        else {
+          Set-Content -LiteralPath $cmdPath -Value "@echo off\`r\`necho cmd-ok\`r\`n" -Encoding ascii
+          Set-Content -LiteralPath $ps1Path -Value "Write-Output ps1-ran\`r\`n" -Encoding ascii
+        }
+        $env:PATH = $td + [IO.Path]::PathSeparator + $env:PATH
+        $resolved = Get-ExternalExecutable -Name 'npm'
+        if ($resolved -ne $cmdPath) { throw "resolved:$resolved" }
+        $text = Invoke-ExternalText -Name 'npm' -Arguments @('-v')
+        if ($text -ne 'cmd-ok') { throw "text:$text" }
+        $only = Join-Path $td 'dcterminal-shim-only.ps1'
+        if ($unix) {
+          Set-Content -LiteralPath $only -Value "Write-Output no\`n" -Encoding utf8NoBOM
+          chmod +x $only
+        }
+        else {
+          Set-Content -LiteralPath $only -Value "Write-Output no\`r\`n" -Encoding ascii
+        }
+        $refused = $false
+        try {
+          Get-ExternalExecutable -Name 'dcterminal-shim-only'
+        }
+        catch {
+          $refused = $true
+          if ($_.Exception.Message -notmatch 'Statement') { throw $_.Exception.Message }
+        }
+        if (-not $refused) { throw 'ps1-only was accepted' }
+        if ($null -ne (Find-ExternalExecutable -Name 'dcterminal-shim-only')) {
+          throw 'find should ignore a ps1-only shim'
+        }
+        'resolve-ok'
+      }
+      finally {
+        Remove-Item -LiteralPath $td -Recurse -Force -ErrorAction SilentlyContinue
+      }
+    `);
+    expect(output).toContain("resolve-ok");
+  });
+
+  it("prints the script stack trace only when DCT_DEBUG=1", () => {
+    const debug = pwsh(`
+      . ./install.ps1
+      $env:DCT_DEBUG = '1'
+      try { throw 'debug-stack-marker' } catch { Write-InstallFailure $_ }
+    `);
+    expect(debug).toContain("error: debug-stack-marker");
+    expect(debug).toMatch(/\bat\b/);
+
+    const quiet = pwsh(`
+      . ./install.ps1
+      Remove-Item Env:DCT_DEBUG -ErrorAction SilentlyContinue
+      try { throw 'quiet-marker' } catch { Write-InstallFailure $_ }
+    `);
+    expect(quiet).toContain("error: quiet-marker");
+    expect(quiet).not.toMatch(/\bat\b/);
   });
 });

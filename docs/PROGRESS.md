@@ -8,10 +8,10 @@
 
 | Field | Value |
 |--------|--------|
-| **Last updated** | 2026-10-06 — Local `./install.sh` / `install.ps1` build and install for the host OS |
+| **Last updated** | 2026-10-06 — `install.ps1` calls `npm.cmd` / `.exe` shims so Windows PowerShell 5.1 does not enter `npm.ps1` |
 | **Branch** | `cursor/local-install-scripts-28f8` |
 | **Current phase** | Finish MVP vertical slice (see [MVP-FINISH.md](./MVP-FINISH.md)) |
-| **Active task** | Local install scripts (`./install.sh`, `install.ps1`). Live three-OS acceptance is still manual. |
+| **Active task** | Local install scripts. `install.ps1` targets Windows PowerShell 5.1 and 7. Live three-OS acceptance is still manual. |
 
 ## Product-ready today
 
@@ -29,7 +29,7 @@ See blueprint §31. ACP chat stays primary. No token tracking. No writes to `~/.
 ## Not MVP-done yet
 
 - `session/load` resume (P2) — restored transcripts are read-only history, not a resumed ACP thread
-- §21 acceptance on three OSes (local install scripts exist; macOS and Windows were not executed here)
+- §21 acceptance on three OSes (Linux install was run here; macOS was not. Windows PowerShell 5.1 failed on `npm.ps1` at `2cb3f48` and the shim fix has not been re-run on that PC)
 - Optional xterm pane (E6). Ctrl+Shift stays unbound until that pane exists
 - Live Windows check of folder browse, chaining, and permission-payload capture against a logged-in Cursor CLI
 

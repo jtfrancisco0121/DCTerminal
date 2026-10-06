@@ -11,7 +11,7 @@ One command builds DCTerminal for this computer and installs it. There is no cod
 npm run install-app   # same thing, including Windows
 ```
 
-Windows PowerShell:
+Windows PowerShell 5.1 or PowerShell 7:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1

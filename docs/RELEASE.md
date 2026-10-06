@@ -17,6 +17,8 @@ npm run install-app                  # either OS, including Windows
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
+`install.ps1` runs in Windows PowerShell 5.1 and in PowerShell 7. It calls `npm.cmd` and `npx.cmd` by the full path from `Get-Command`, not the `npm.ps1` shim. StrictMode makes that shim fail on 5.1 because `$MyInvocation.Statement` does not exist there. Set `DCT_DEBUG=1` to print the script stack when the installer stops.
+
 | Flag | Effect |
 |------|--------|
 | `--yes` | Install missing prerequisites without prompting |

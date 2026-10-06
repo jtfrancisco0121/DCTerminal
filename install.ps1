@@ -10,9 +10,19 @@
   place on uninstall.
 
   Flags match install.sh: --yes --skip-checks --universal --uninstall --help
+
+  Windows PowerShell 5.1 and PowerShell 7 both run this file. StrictMode stays
+  on. External tools are invoked by the full path of the .cmd/.exe shim, never
+  by a bare name that PowerShell binds to npm.ps1.
 #>
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+# PowerShell 7.4+ turns native stderr into a terminating error when
+# ErrorActionPreference is Stop. npm.cmd and winget write warnings there.
+# Windows PowerShell 5.1 does not define this preference, so Test-Path is false.
+if (Test-Path -Path 'Variable:PSNativeCommandUseErrorActionPreference') {
+  $PSNativeCommandUseErrorActionPreference = $false
+}
 
 $script:ProductName = 'DCTerminal'
 # Cargo package name (src-tauri/Cargo.toml default-run). The exe is not DCTerminal.exe.
@@ -189,16 +199,250 @@ function Update-ProcessPath {
   $env:Path = "$user;$machine;$cargo"
 }
 
+function Get-ShimStem {
+  param([Parameter(Mandatory = $true)][string]$Name)
+  $leaf = [System.IO.Path]::GetFileName($Name)
+  if ([string]::IsNullOrWhiteSpace($leaf)) {
+    return $Name
+  }
+  # -replace is case-insensitive, so NPM.CMD and npm.cmd share a stem.
+  return ($leaf -replace '\.(cmd|exe|bat|com|ps1)$', '')
+}
+
+function Get-Ps1ShimRefusal {
+  param([Parameter(Mandatory = $true)][string]$Stem)
+  # Single quotes keep $MyInvocation as text. That property is missing on 5.1.
+  $template = 'On Windows PowerShell 5.1, {0}.ps1 reads $MyInvocation.Statement, which does not exist.'
+  $cause = $template -f $Stem
+  $fix = "Invoke $Stem.cmd, or the full path from (Get-Command $Stem.cmd).Source."
+  return "Refusing to run $Stem.ps1. Set-StrictMode leaks into PowerShell shims. $cause $fix"
+}
+
+function Get-ShimSearchName {
+  param([Parameter(Mandatory = $true)][string]$Name)
+  $leaf = [System.IO.Path]::GetFileName($Name)
+  # An explicit native shim is used as-is. Never add the .ps1 name to this list.
+  if ($leaf -match '\.(cmd|exe|bat|com)$') {
+    return @($leaf)
+  }
+  $stem = Get-ShimStem -Name $leaf
+  return @("$stem.cmd", "$stem.exe", "$stem.bat", "$stem.com", $stem)
+}
+
+function Test-SameShimName {
+  param([string]$Left, [string]$Right)
+  if ([string]::IsNullOrWhiteSpace($Left) -or [string]::IsNullOrWhiteSpace($Right)) {
+    return $false
+  }
+  return $Left.Equals($Right, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Select-ShimFileName {
+  <#
+    Pick the file PowerShell must call. .cmd before .exe/.bat/.com, then a
+    name with no extension. A lone .ps1 is refused: Set-StrictMode is inherited
+    by scripts in this session, and npm.ps1 touches $MyInvocation.Statement.
+  #>
+  param(
+    [Parameter(Mandatory = $true)][string]$Name,
+    [Parameter(Mandatory = $true)]
+    [AllowEmptyCollection()]
+    [string[]]$Available
+  )
+  foreach ($candidate in @(Get-ShimSearchName -Name $Name)) {
+    foreach ($item in @($Available)) {
+      if (Test-SameShimName $item $candidate) {
+        return $item
+      }
+    }
+  }
+  $stem = Get-ShimStem -Name $Name
+  foreach ($item in @($Available)) {
+    if (Test-SameShimName $item "$stem.ps1") {
+      throw (Get-Ps1ShimRefusal -Stem $stem)
+    }
+  }
+  throw "$Name was not found on PATH. Install it and re-run."
+}
+
+function Get-CommandSourceText {
+  param($CommandInfo)
+  if ($null -eq $CommandInfo) {
+    return ''
+  }
+  $sourceProp = $CommandInfo.PSObject.Properties['Source']
+  if ($null -eq $sourceProp) {
+    return ''
+  }
+  return [string]$sourceProp.Value
+}
+
+function Get-AvailableShimName {
+  param([Parameter(Mandatory = $true)][string]$Name)
+  $stem = Get-ShimStem -Name $Name
+  # Look up each suffix ourselves. Get-Command npm returns npm.ps1 first and
+  # hides npm.cmd, which is the Windows PowerShell 5.1 failure.
+  $lookups = @(
+    @{ Name = "$stem.cmd"; Type = 'Application' },
+    @{ Name = "$stem.exe"; Type = 'Application' },
+    @{ Name = "$stem.bat"; Type = 'Application' },
+    @{ Name = "$stem.com"; Type = 'Application' },
+    @{ Name = $stem; Type = 'Application' },
+    @{ Name = "$stem.ps1"; Type = 'ExternalScript' }
+  )
+  $available = @()
+  foreach ($lookup in $lookups) {
+    $lookupName = [string]$lookup['Name']
+    $lookupType = [string]$lookup['Type']
+    $cmds = @(Get-Command -Name $lookupName -CommandType $lookupType `
+        -ErrorAction SilentlyContinue)
+    foreach ($cmd in $cmds) {
+      $fileName = [System.IO.Path]::GetFileName((Get-CommandSourceText $cmd))
+      if ([string]::IsNullOrWhiteSpace($fileName)) {
+        continue
+      }
+      $already = $false
+      foreach ($existing in $available) {
+        if (Test-SameShimName $existing $fileName) {
+          $already = $true
+          break
+        }
+      }
+      if (-not $already) {
+        $available += $fileName
+      }
+    }
+  }
+  # Pipeline output keeps a one-item result an array for the caller.
+  foreach ($fileName in $available) {
+    Write-Output $fileName
+  }
+}
+
+function Resolve-LiteralExecutable {
+  param([Parameter(Mandatory = $true)][string]$Name)
+  $hasSeparator = $Name.Contains('\') -or $Name.Contains('/')
+  if (-not $hasSeparator -and -not [System.IO.Path]::IsPathRooted($Name)) {
+    return $null
+  }
+  if (-not (Test-Path -LiteralPath $Name)) {
+    return $null
+  }
+  $item = Get-Item -LiteralPath $Name
+  $ext = [string]$item.Extension
+  if ($ext.Equals('.ps1', [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw (Get-Ps1ShimRefusal -Stem (Get-ShimStem -Name $item.Name))
+  }
+  return [string]$item.FullName
+}
+
+function Get-SelectedShimSource {
+  param([Parameter(Mandatory = $true)][string]$SelectedName)
+  $cmds = @(Get-Command -Name $SelectedName -CommandType Application -ErrorAction SilentlyContinue)
+  foreach ($cmd in $cmds) {
+    $source = Get-CommandSourceText $cmd
+    if ([string]::IsNullOrWhiteSpace($source)) {
+      continue
+    }
+    if ($source.EndsWith('.ps1', [System.StringComparison]::OrdinalIgnoreCase)) {
+      throw (Get-Ps1ShimRefusal -Stem (Get-ShimStem -Name $SelectedName))
+    }
+    return $source
+  }
+  throw "$SelectedName was not found on PATH. Install it and re-run."
+}
+
+function Get-ExternalExecutable {
+  param([Parameter(Mandatory = $true)][string]$Name)
+  $literal = Resolve-LiteralExecutable -Name $Name
+  if (-not [string]::IsNullOrWhiteSpace($literal)) {
+    return $literal
+  }
+  $available = @(Get-AvailableShimName -Name $Name)
+  $selected = Select-ShimFileName -Name $Name -Available $available
+  return (Get-SelectedShimSource -SelectedName $selected)
+}
+
+function Find-ExternalExecutable {
+  # Missing tools and .ps1-only shims are $null so a warning can continue.
+  param([Parameter(Mandatory = $true)][string]$Name)
+  $literal = Resolve-LiteralExecutable -Name $Name
+  if (-not [string]::IsNullOrWhiteSpace($literal)) {
+    return $literal
+  }
+  $available = @(Get-AvailableShimName -Name $Name)
+  if ($available.Count -eq 0) {
+    return $null
+  }
+  try {
+    $selected = Select-ShimFileName -Name $Name -Available $available
+  }
+  catch {
+    return $null
+  }
+  return (Get-SelectedShimSource -SelectedName $selected)
+}
+
+function Invoke-Resolved {
+  param(
+    [Parameter(Mandatory = $true)][string]$Name,
+    [AllowEmptyCollection()][string[]]$Arguments = @()
+  )
+  $exe = Get-ExternalExecutable -Name $Name
+  if ($null -eq $Arguments) {
+    $Arguments = @()
+  }
+  # Full path of npm.cmd / tool.exe. A bare name would re-bind to the .ps1 shim.
+  & $exe @Arguments
+}
+
+function Invoke-ExternalText {
+  param(
+    [Parameter(Mandatory = $true)][string]$Name,
+    [AllowEmptyCollection()][string[]]$Arguments = @()
+  )
+  $output = @(Invoke-Resolved -Name $Name -Arguments $Arguments)
+  if ($LASTEXITCODE -ne 0) {
+    throw "$Name exited with code $LASTEXITCODE"
+  }
+  return (($output | Out-String).Trim())
+}
+
 function Invoke-Native {
   param(
     [Parameter(Mandatory = $true)][string]$File,
     [Parameter(Mandatory = $true)][string[]]$Arguments
   )
-  & $File @Arguments
+  Invoke-Resolved -Name $File -Arguments $Arguments
   # winget returns -1978335189 when the package is already installed.
   $alreadyInstalled = -1978335189
   if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne $alreadyInstalled) {
     throw "$File exited with code $LASTEXITCODE"
+  }
+}
+
+function Write-InstallFailure {
+  param($ErrorRecord)
+  $message = ''
+  if ($null -ne $ErrorRecord) {
+    $exProp = $ErrorRecord.PSObject.Properties['Exception']
+    if ($null -ne $exProp -and $null -ne $exProp.Value) {
+      $messageProp = $exProp.Value.PSObject.Properties['Message']
+      if ($null -ne $messageProp) {
+        $message = [string]$messageProp.Value
+      }
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace($message)) {
+    $message = "$ErrorRecord"
+  }
+  Write-InstallError $message
+  # DCT_DEBUG=1 prints the script stack. The default stays a one-line error.
+  if ($env:DCT_DEBUG -eq '1' -and $null -ne $ErrorRecord) {
+    $stackProp = $ErrorRecord.PSObject.Properties['ScriptStackTrace']
+    if ($null -ne $stackProp -and -not [string]::IsNullOrWhiteSpace([string]$stackProp.Value)) {
+      Write-User ([string]$stackProp.Value)
+    }
   }
 }
 
@@ -223,17 +467,19 @@ function Test-WebView2Installed {
 function Test-MsvcCompiler {
   $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
   if (Test-Path -LiteralPath $vswhere) {
+    # Already the full path of vswhere.exe, so this cannot bind to a .ps1 shim.
     $found = & $vswhere -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
     if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace("$found")) {
       return $true
     }
   }
-  $cl = Get-Command cl.exe -ErrorAction SilentlyContinue
+  # cl.exe, not a bare name. A cl.ps1 shim is not the MSVC compiler.
+  $cl = Find-ExternalExecutable -Name 'cl.exe'
   return $null -ne $cl
 }
 
 function Install-NodeWithWinget {
-  if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+  if ($null -eq (Find-ExternalExecutable -Name 'winget')) {
     throw 'winget is not installed. Install Node.js 20+ from https://nodejs.org/ and re-run.'
   }
   Invoke-Native -File 'winget' -Arguments @(
@@ -244,7 +490,7 @@ function Install-NodeWithWinget {
 }
 
 function Install-RustupWithWinget {
-  if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+  if ($null -eq (Find-ExternalExecutable -Name 'winget')) {
     throw 'winget is not installed. Install rustup from https://rustup.rs/ and re-run.'
   }
   Invoke-Native -File 'winget' -Arguments @(
@@ -256,14 +502,15 @@ function Install-RustupWithWinget {
 
 function Initialize-NodePrerequisite {
   Update-ProcessPath
-  $node = Get-Command node -ErrorAction SilentlyContinue
-  $npm = Get-Command npm -ErrorAction SilentlyContinue
+  $node = Find-ExternalExecutable -Name 'node'
+  $npm = Find-ExternalExecutable -Name 'npm'
   $version = ''
   if ($null -ne $node) {
-    $version = (& node -v).Trim()
+    $version = Invoke-ExternalText -Name 'node' -Arguments @('-v')
   }
   if ((Test-NodeVersionSupported $version) -and $null -ne $npm) {
-    Write-Info "Node $version, npm $((& npm -v).Trim())"
+    $npmVersion = Invoke-ExternalText -Name 'npm' -Arguments @('-v')
+    Write-Info "Node $version, npm $npmVersion"
     return
   }
   Write-User (Get-NodeFixMessage)
@@ -273,7 +520,7 @@ function Initialize-NodePrerequisite {
   else {
     throw "Node.js $($script:MinNodeMajor)+ is required."
   }
-  $version = (& node -v).Trim()
+  $version = Invoke-ExternalText -Name 'node' -Arguments @('-v')
   if (-not (Test-NodeVersionSupported $version)) {
     throw "Node is still older than $($script:MinNodeMajor). Open a new terminal so PATH updates, then re-run."
   }
@@ -281,8 +528,8 @@ function Initialize-NodePrerequisite {
 }
 
 function Initialize-MsvcRustToolchain {
-  $active = (& rustup show active-toolchain | Out-String).Trim()
-  $rustVersion = (& rustc --version | Out-String).Trim()
+  $active = Invoke-ExternalText -Name 'rustup' -Arguments @('show', 'active-toolchain')
+  $rustVersion = Invoke-ExternalText -Name 'rustc' -Arguments @('--version')
   $versionOk = Test-RustVersionSupported $rustVersion
   if ($versionOk -and $active -match 'msvc') {
     return
@@ -300,7 +547,7 @@ function Initialize-MsvcRustToolchain {
 
 function Initialize-RustPrerequisite {
   Update-ProcessPath
-  if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
+  if ($null -eq (Find-ExternalExecutable -Name 'rustup')) {
     Write-User "Rust must come from rustup. Tauri 2.12 needs rustc $($script:MinRust) or newer."
     Write-User "  $(Get-RustupInstallCommand)"
     Write-User 'Choose the MSVC host triple (x86_64-pc-windows-msvc on a 64-bit PC) if the installer asks.'
@@ -311,17 +558,17 @@ function Initialize-RustPrerequisite {
       throw 'Rust via rustup is required.'
     }
   }
-  $rustc = Get-Command rustc -ErrorAction SilentlyContinue
+  $rustc = Find-ExternalExecutable -Name 'rustc'
   $rustVersion = ''
   if ($null -ne $rustc) {
-    $rustVersion = (& rustc --version | Out-String).Trim()
+    $rustVersion = Invoke-ExternalText -Name 'rustc' -Arguments @('--version')
   }
   if (-not (Test-RustVersionSupported $rustVersion)) {
     Write-User (Get-RustToolchainFixMessage)
     if (Request-InstallConsent 'Update the stable Rust toolchain now?') {
       Invoke-Native -File 'rustup' -Arguments @('update', 'stable')
       Update-ProcessPath
-      $rustVersion = (& rustc --version | Out-String).Trim()
+      $rustVersion = Invoke-ExternalText -Name 'rustc' -Arguments @('--version')
       if (-not (Test-RustVersionSupported $rustVersion)) {
         Write-Info "Active rustc is still older than $($script:MinRust); pinning stable-msvc in this repo"
         Invoke-Native -File 'rustup' -Arguments @('toolchain', 'install', 'stable-msvc')
@@ -331,18 +578,18 @@ function Initialize-RustPrerequisite {
     else {
       throw "Rust $($script:MinRust)+ is required."
     }
-    $rustVersion = (& rustc --version | Out-String).Trim()
+    $rustVersion = Invoke-ExternalText -Name 'rustc' -Arguments @('--version')
     if (-not (Test-RustVersionSupported $rustVersion)) {
       throw "rustc is still older than $($script:MinRust). Run: rustup update stable; rustup override set stable-msvc"
     }
   }
   Initialize-MsvcRustToolchain
-  $components = & rustup component list --installed
+  $components = Invoke-ExternalText -Name 'rustup' -Arguments @('component', 'list', '--installed')
   if ("$components" -notmatch '(?m)^clippy') {
     Write-Info 'Installing the clippy component (npm run check uses it)'
     Invoke-Native -File 'rustup' -Arguments @('component', 'add', 'clippy')
   }
-  Write-Info "Rust $((& rustc --version | Out-String).Trim())"
+  Write-Info "Rust $(Invoke-ExternalText -Name 'rustc' -Arguments @('--version'))"
 }
 
 function Initialize-MsvcPrerequisite {
@@ -352,7 +599,7 @@ function Initialize-MsvcPrerequisite {
   }
   Write-User (Get-MsvcFixMessage)
   if (Request-InstallConsent 'Install the MSVC Build Tools now?') {
-    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+    if ($null -eq (Find-ExternalExecutable -Name 'winget')) {
       throw 'winget is not installed. Install Build Tools from https://visualstudio.microsoft.com/visual-cpp-build-tools/'
     }
     Invoke-Native -File 'winget' -Arguments @(
@@ -376,7 +623,7 @@ function Initialize-WebView2Prerequisite {
   }
   Write-User (Get-WebView2FixMessage)
   if (Request-InstallConsent 'Install the WebView2 runtime now?') {
-    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+    if ($null -eq (Find-ExternalExecutable -Name 'winget')) {
       throw 'winget is not installed. Download the Evergreen Bootstrapper from the link above.'
     }
     Invoke-Native -File 'winget' -Arguments @(
@@ -391,9 +638,10 @@ function Initialize-WebView2Prerequisite {
 
 function Write-AgentWarningIfMissing {
   param()
-  $agent = Get-Command agent -ErrorAction SilentlyContinue
+  # agent.cmd / agent.exe only. A .ps1 shim is not something the app can spawn.
+  $agent = Find-ExternalExecutable -Name 'agent'
   if ($null -ne $agent) {
-    Write-Info "Cursor CLI: $($agent.Source)"
+    Write-Info "Cursor CLI: $agent"
     return
   }
   # Warning only. --yes does not run the Cursor installer.
@@ -402,11 +650,17 @@ function Write-AgentWarningIfMissing {
 }
 
 function Get-AppVersion {
-  $config = Get-Content -LiteralPath (Join-Path $script:Root 'src-tauri\tauri.conf.json') -Raw | ConvertFrom-Json
-  if ([string]::IsNullOrWhiteSpace($config.version)) {
+  $configPath = Join-Path $script:Root 'src-tauri\tauri.conf.json'
+  $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+  # StrictMode throws on a missing property. Read the note if it is absent.
+  $versionProp = $null
+  if ($null -ne $config) {
+    $versionProp = $config.PSObject.Properties['version']
+  }
+  if ($null -eq $versionProp -or [string]::IsNullOrWhiteSpace([string]$versionProp.Value)) {
     throw 'src-tauri/tauri.conf.json has no version'
   }
-  return [string]$config.version
+  return [string]$versionProp.Value
 }
 
 function Stop-DcTerminalIfRunning {
@@ -496,6 +750,10 @@ function Invoke-HostBuild {
 
 function Invoke-DcTerminalInstall {
   param([string[]]$ArgumentList)
+  # A missing list is "no flags". foreach over $null is a StrictMode hazard.
+  if ($null -eq $ArgumentList) {
+    $ArgumentList = @()
+  }
   $skipChecks = $false
   $universal = $false
   $doUninstall = $false
@@ -558,7 +816,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     Invoke-DcTerminalInstall -ArgumentList @($args)
   }
   catch {
-    Write-InstallError $_.Exception.Message
+    Write-InstallFailure $_
     exit 1
   }
 }
