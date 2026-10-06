@@ -40,7 +40,7 @@ Dev-only panels (ACP probes, duplicate dev session) are hidden in release builds
 5. **Transcript persist** per tab (read-only after Stop; restore on relaunch). [x] app-data JSON, rotation, corrupt-file handling. Not `session/load`.
 6. **Continue vs restart** copy — “Follow-up” while live; “Start” = new session (documented in README). [x]
 7. **Scratch pad + Transfer** (FR-050–053). [x] per-tab pad, debounce + flush, `---` chaining. No global pad (P1 in the blueprint).
-8. **Keymap** defaults (Ctrl+Enter send, Ctrl+T new tab, Ctrl+. transfer) (FR-061). [x] overlay. Ctrl+Shift is reserved and not bound.
+8. **Keymap** defaults (Ctrl+Enter send, Ctrl+T new tab, Ctrl+. transfer) (FR-061). [x] overlay. Ctrl+Shift is the embedded terminal (toggle, transfer, copy, paste, search). Ctrl+C still goes to the shell.
 
 ### P2 — Blueprint “future” (after MVP tag)
 
@@ -50,8 +50,9 @@ Dev-only panels (ACP probes, duplicate dev session) are hidden in release builds
 
 ## Out of scope for first MVP tag
 
-- PTY / xterm shell
 - Custom roles editor
+
+The embedded terminal (E6) is an optional tab and pane. ACP chat stays the primary session.
 - Transcript export, notifications, auto-update
 
 ## Definition of “finished” for v0.1

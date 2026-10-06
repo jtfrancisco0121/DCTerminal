@@ -1,11 +1,21 @@
 import { useEffect } from "react";
-import { detectPlatform, isImeEvent, matchShortcut, type Platform, type ShortcutMatch } from "./keymap";
+import {
+  detectPlatform,
+  isImeEvent,
+  routeKey,
+  type KeySurface,
+  type Platform,
+  type ShortcutMatch,
+  type TerminalAction,
+} from "./keymap";
 
 type Options = {
   platform?: Platform;
   dialogOpen: boolean;
   promptInFlight: boolean;
+  getSurface?: () => KeySurface;
   onAction: (match: ShortcutMatch) => void;
+  onTerminal?: (action: TerminalAction) => void;
   onCancelTurn: () => void;
 };
 
@@ -13,7 +23,9 @@ export function useAppShortcuts({
   platform,
   dialogOpen,
   promptInFlight,
+  getSurface,
   onAction,
+  onTerminal,
   onCancelTurn,
 }: Options) {
   useEffect(() => {
@@ -35,7 +47,8 @@ export function useAppShortcuts({
       })) {
         return;
       }
-      const match = matchShortcut(
+      const surface = getSurface?.() ?? "chat";
+      const routed = routeKey(
         {
           code: event.code,
           key: event.key,
@@ -48,13 +61,21 @@ export function useAppShortcuts({
           keyCode: event.keyCode,
           targetTag,
         },
-        { platform: host, dialogOpen },
+        { platform: host, dialogOpen, surface },
       );
-      if (match) {
+      if (routed.kind === "app") {
         event.preventDefault();
-        onAction(match);
+        event.stopPropagation();
+        onAction(routed.match);
         return;
       }
+      if (routed.kind === "terminal") {
+        event.preventDefault();
+        event.stopPropagation();
+        onTerminal?.(routed.action);
+        return;
+      }
+      if (routed.kind === "shell") return;
       if (
         !dialogOpen &&
         event.key === "Escape" &&
@@ -67,7 +88,7 @@ export function useAppShortcuts({
         onCancelTurn();
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [platform, dialogOpen, promptInFlight, onAction, onCancelTurn]);
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [platform, dialogOpen, promptInFlight, getSurface, onAction, onTerminal, onCancelTurn]);
 }

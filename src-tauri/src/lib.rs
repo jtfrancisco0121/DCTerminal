@@ -5,6 +5,7 @@ mod orchestrator;
 mod paths;
 mod permissions;
 mod process_tree;
+mod pty;
 pub mod roles;
 pub mod store;
 pub mod supervisor;
@@ -20,6 +21,10 @@ use commands::{
     reopen_closed_tab, respond_permission_request, respond_plan_request, role_session_start,
     save_form_draft, scratch_load, scratch_save, select_active_tab, set_tab_color, set_tab_label,
     sync_active_tab_form, transcript_load, transcript_save, validate_and_preview, SessionRegistry,
+};
+use pty::{
+    get_terminal_settings, pty_kill, pty_open, pty_resize, pty_write, role_terminal_start,
+    set_terminal_settings, shell_terminal_start, terminal_plan_file, PtyRegistry,
 };
 use std::sync::Mutex;
 use store::{
@@ -53,6 +58,7 @@ pub fn run() {
             app.manage(Mutex::new(transcript_store));
             app.manage(Mutex::new(handoff_store));
             app.manage(Mutex::new(SessionRegistry::new()));
+            app.manage(Mutex::new(PtyRegistry::new()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -95,12 +101,26 @@ pub fn run() {
             reopen_closed_tab,
             set_tab_label,
             set_tab_color,
+            shell_terminal_start,
+            role_terminal_start,
+            pty_open,
+            pty_write,
+            pty_resize,
+            pty_kill,
+            get_terminal_settings,
+            set_terminal_settings,
+            terminal_plan_file,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         .run(|app_handle, event| {
             if matches!(event, tauri::RunEvent::Exit) {
                 if let Some(state) = app_handle.try_state::<Mutex<SessionRegistry>>() {
+                    if let Ok(mut guard) = state.lock() {
+                        guard.shutdown_all();
+                    }
+                }
+                if let Some(state) = app_handle.try_state::<Mutex<PtyRegistry>>() {
                     if let Ok(mut guard) = state.lock() {
                         guard.shutdown_all();
                     }

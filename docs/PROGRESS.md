@@ -8,15 +8,16 @@
 
 | Field | Value |
 |--------|--------|
-| **Last updated** | 2026-10-06 — Planner hand-off opens a prefilled Implementer tab and waits for Start |
-| **Branch** | `cursor/planner-implementer-handoff-561b` |
+| **Last updated** | 2026-10-06 — Embedded terminal, role terminals, and terminal hand-off |
+| **Branch** | `cursor/embedded-terminal-6ee2` |
 | **Current phase** | Finish MVP vertical slice (see [MVP-FINISH.md](./MVP-FINISH.md)) |
-| **Active task** | Installers / live Windows acceptance. Plan hand-off is in this branch. |
+| **Active task** | Installers / live Windows acceptance. The terminal pane (E6) is in this branch. |
 
 ## Product-ready today
 
 - Blank tab: pick a role and folder, then the startup fields and **Start**. A running session fills the tab, with the scratch pad under the transcript. Role details, diagnostics, shortcuts, and data paths are on **Settings** (gear, command palette, or Ctrl+,)
-- **Planner hand-off** — when a Planner turn has finished, **Send to Implementer** (plan card, last assistant message, or command palette) opens an Implementer tab in the same folder. The form is filled from the latest plan plus its to-dos, or from the message, the plan card, or a selection. JT edits it and presses Start. **Send to Developer** uses the same path and puts the plan in the scratch pad. Each hand-off is saved in app data (`handoffs.json`). The new tab links back with **From Planner: title**
+- **Planner hand-off** — when a Planner turn has finished, **Send to Implementer** (plan card, last assistant message, or command palette) opens an Implementer tab in the same folder. The form is filled from the latest plan plus its to-dos, or from the message, the plan card, or a selection. JT edits it and presses Start. **Send to Developer** uses the same path and puts the plan in the scratch pad. Each hand-off is saved in app data (`handoffs.json`). The new tab links back with **From Planner: title**. The same dialog can open the target as a **Terminal** tab, which launches `agent` with that role's flags and the mapped plan as the initial prompt. A terminal-mode Planner has **Send to Implementer** and **Send to Developer** on its toolbar and right-click menu. The content can be the selection, the last 200 lines (ANSI stripped), or the newest plan file under `%USERPROFILE%\.cursor\plans` (read-only, modified after that terminal started). The plan file is the default when one exists
+- **Terminal** — a blank tab can start a shell or interactive `agent` (no extra flags). After a role is picked, **Chat** or **Terminal** is remembered per role. A role terminal uses the same startup form, then launches `agent` in that folder. Ctrl+Shift+` toggles a shell pane on a chat tab. Ctrl+Shift+. sends the scratch pad to the terminal. The xterm buffer stays alive while the tab is hidden. Closing the tab kills the process tree
 - **Multi-tab live sessions** — each tab has its own `agent acp` process, transcript, and permission queue
 - **Role policy** — Implementer/Developer auto-allow; Reviewer allows shell + MCP and denies writes; Planner/General block write and shell; MCP allowed for every role. Auto-decisions show in the transcript
 - **Session UI** — full-height terminal-style pane, Markdown + tables; tool rows coalesce; activity + permission banners
@@ -24,18 +25,17 @@
 
 ## Locked product decisions (2026-10-06)
 
-See blueprint §31. ACP chat stays primary. No token tracking. No writes to `~/.cursor` or the user's repo. Plain Ctrl in chat; Ctrl+Shift reserved for a future terminal pane.
+See blueprint §31. ACP chat stays primary. No token tracking. No writes to `~/.cursor` or the user's repo. The app only reads `%USERPROFILE%\.cursor\plans` (or `$HOME/.cursor/plans`) when a terminal Planner sends a hand-off. Plain Ctrl stays with chat. Ctrl+Shift is the terminal (E6 has landed). Global `approvalMode` is left at `allowlist`.
 
 ## Not MVP-done yet
 
 - `session/load` resume (P2) — restored transcripts are read-only history, not a resumed ACP thread
 - Installers / §21 acceptance on three OSes
-- Optional xterm pane (E6). Ctrl+Shift stays unbound until that pane exists
-- Live Windows check of folder browse, chaining, and permission-payload capture against a logged-in Cursor CLI
+- Live Windows check of the embedded terminal, folder browse, chaining, and permission-payload capture against a logged-in Cursor CLI
 
 ## Next up (strict order)
 
-See **[MVP-FINISH.md](./MVP-FINISH.md)** — remaining acceptance, then ADE roadmap E6+.
+See **[MVP-FINISH.md](./MVP-FINISH.md)** — remaining acceptance. E6 (embedded terminal) is in this branch.
 
 ## Quick commands
 

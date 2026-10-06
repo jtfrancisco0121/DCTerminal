@@ -99,6 +99,12 @@ export function buildPalette(opts: {
     { id: "focusInput", title: "Focus input", group: "Composer" },
     { id: "transferPad", title: "Transfer scratch pad", group: "Composer" },
     { id: "send", title: "Send", group: "Composer" },
+    { id: "toggleTerminal", title: "Toggle terminal pane", group: "Terminal" },
+    {
+      id: "transferToTerminal",
+      title: "Transfer scratch pad to terminal",
+      group: "Terminal",
+    },
     { id: "shortcutsHelp", title: "Keyboard shortcuts", group: "Help" },
     { id: "settings", title: "Settings", group: "Help" },
     ...(opts.canSendPlan

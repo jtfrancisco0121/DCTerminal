@@ -2,7 +2,7 @@
  * Single IPC surface for the UI (ADR-002: keeps Electron swap possible).
  * Add commands here as Rust handlers land — see blueprint §16.3.
  */
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export type CliDetectResult = {
@@ -161,6 +161,10 @@ export type TabSummary = {
   hasTranscript: boolean;
   folderStatus: string;
   color: string;
+  /** "role" or "terminal". Missing on older snapshots means a role tab. */
+  kind?: string;
+  /** "" | "shell" | "cursor-cli" | "role" */
+  terminalLaunch?: string;
 };
 
 export type ClosedTabSummary = {
@@ -202,6 +206,8 @@ export type TabRecord = {
   };
   transcript?: string | null;
   startupPromptSent?: boolean;
+  kind?: string;
+  terminalLaunch?: string;
 };
 
 export async function getAppState(): Promise<AppStateSnapshot> {
@@ -552,4 +558,133 @@ export async function handoffList(): Promise<HandoffRecord[]> {
 
 export async function handoffGet(id: string): Promise<HandoffRecord> {
   return invoke<HandoffRecord>("handoff_get", { id });
+}
+
+export type PtyPacket = {
+  kind: string;
+  data: string;
+  code: number | null;
+};
+
+export type TerminalStartResult = {
+  errors: FieldError[];
+  tabId: string | null;
+  pid: number | null;
+  usedPromptFile: boolean;
+};
+
+export type PlanFileInfo = {
+  path: string;
+  name: string;
+  modifiedMs: number;
+  text: string;
+};
+
+export type TerminalSettings = {
+  shell: string;
+  fontSize: number;
+  roleSurface: Record<string, string>;
+  roleRunMode: Record<string, string>;
+};
+
+export type TerminalLaunch = "shell" | "cursor-cli" | "role";
+
+export function createPtyChannel(
+  onPacket: (packet: PtyPacket) => void,
+): Channel<PtyPacket> {
+  const channel = new Channel<PtyPacket>();
+  channel.onmessage = onPacket;
+  return channel;
+}
+
+export async function shellTerminalStart(input: {
+  tabId?: string | null;
+  cwd: string;
+  launch: "shell" | "cursor-cli";
+  cols: number;
+  rows: number;
+  onOutput: Channel<PtyPacket>;
+}): Promise<TerminalStartResult> {
+  return invoke<TerminalStartResult>("shell_terminal_start", {
+    input: {
+      tabId: input.tabId ?? null,
+      cwd: input.cwd,
+      launch: input.launch,
+      cols: input.cols,
+      rows: input.rows,
+    },
+    onOutput: input.onOutput,
+  });
+}
+
+export async function roleTerminalStart(input: {
+  roleId: string;
+  values: Record<string, string>;
+  tabId?: string | null;
+  handoffPlan?: string | null;
+  cols: number;
+  rows: number;
+  onOutput: Channel<PtyPacket>;
+}): Promise<TerminalStartResult> {
+  return invoke<TerminalStartResult>("role_terminal_start", {
+    input: {
+      roleId: input.roleId,
+      values: input.values,
+      tabId: input.tabId ?? null,
+      handoffPlan: input.handoffPlan ?? null,
+      cols: input.cols,
+      rows: input.rows,
+    },
+    onOutput: input.onOutput,
+  });
+}
+
+export async function ptyOpen(input: {
+  id: string;
+  cwd: string;
+  launch: TerminalLaunch;
+  roleId?: string | null;
+  prompt?: string | null;
+  cols: number;
+  rows: number;
+  onOutput: Channel<PtyPacket>;
+}): Promise<number> {
+  return invoke<number>("pty_open", {
+    input: {
+      id: input.id,
+      cwd: input.cwd,
+      launch: input.launch,
+      roleId: input.roleId ?? null,
+      prompt: input.prompt ?? null,
+      cols: input.cols,
+      rows: input.rows,
+    },
+    onOutput: input.onOutput,
+  });
+}
+
+export async function ptyWrite(id: string, data: string): Promise<void> {
+  return invoke("pty_write", { id, data });
+}
+
+export async function ptyResize(id: string, cols: number, rows: number): Promise<void> {
+  return invoke("pty_resize", { id, cols, rows });
+}
+
+export async function ptyKill(id: string): Promise<void> {
+  return invoke("pty_kill", { id });
+}
+
+export async function getTerminalSettings(): Promise<TerminalSettings> {
+  return invoke<TerminalSettings>("get_terminal_settings");
+}
+
+export async function setTerminalSettings(
+  terminal: TerminalSettings,
+): Promise<TerminalSettings> {
+  return invoke<TerminalSettings>("set_terminal_settings", { terminal });
+}
+
+export async function terminalPlanFile(startedAtMs: number): Promise<PlanFileInfo | null> {
+  return invoke<PlanFileInfo | null>("terminal_plan_file", { startedAtMs });
 }

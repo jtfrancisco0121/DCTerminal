@@ -65,6 +65,7 @@ export function TabBar({
                   style={{ background: color }}
                 />
                 {t.label}
+                {t.terminalLaunch === "role" && <span className="tab-badge">Terminal</span>}
               </button>
               {onColor && (
                 <select

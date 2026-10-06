@@ -19,6 +19,10 @@ pub struct TabSummary {
     pub has_transcript: bool,
     pub folder_status: String,
     pub color: String,
+    #[serde(default = "crate::store::state_types::default_tab_kind")]
+    pub kind: String,
+    #[serde(default)]
+    pub terminal_launch: String,
 }
 
 #[derive(Serialize)]
@@ -90,11 +94,13 @@ pub fn close_tab(
     tab_id: String,
     store: State<Mutex<StateStore>>,
     session: State<Mutex<SessionRegistry>>,
+    terminals: State<Mutex<crate::pty::PtyRegistry>>,
 ) -> Result<AppStateSnapshot, String> {
     {
         let mut session = session.lock().map_err(|e| e.to_string())?;
         session.shutdown_tab(&tab_id);
     }
+    crate::pty::kill_tab_pty(&terminals, &tab_id);
     let mut store = store.lock().map_err(|e| e.to_string())?;
     store.close_tab(&tab_id)?;
     Ok(snapshot_from_store(&store))
@@ -193,6 +199,8 @@ fn snapshot_from_store(store: &StateStore) -> AppStateSnapshot {
                     }),
                 folder_status: folder_status_code(&t.cwd),
                 color: t.color.clone().unwrap_or_default(),
+                kind: t.kind.clone(),
+                terminal_launch: t.terminal_launch.clone(),
             })
             .collect(),
         closed_tabs: store

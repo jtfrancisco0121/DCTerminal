@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   composePlanText,
   defaultScope,
@@ -9,6 +9,7 @@ import {
   type HandoffField,
   type HandoffScope,
   type HandoffSource,
+  type HandoffSurface,
   type HandoffTargetId,
 } from "../handoff/map";
 
@@ -24,8 +25,9 @@ type Props = {
   folderWarning: string | null;
   busy: boolean;
   error: string | null;
+  preferredSurface: HandoffSurface;
   onTarget: (id: HandoffTargetId) => void;
-  onConfirm: (scope: HandoffScope) => void;
+  onConfirm: (scope: HandoffScope, surface: HandoffSurface) => void;
   onClose: () => void;
 };
 
@@ -36,11 +38,16 @@ export function HandoffDialog({
   folderWarning,
   busy,
   error,
+  preferredSurface,
   onTarget,
   onConfirm,
   onClose,
 }: Props) {
   const [scope, setScope] = useState<HandoffScope>(() => defaultScope(source));
+  const [surface, setSurface] = useState<HandoffSurface>(preferredSurface);
+  useEffect(() => {
+    setSurface(preferredSurface);
+  }, [preferredSurface, targetRoleId]);
   const choices = scopeChoices(source);
   const block = handoffBlockReason(source);
   const mapped = useMemo(
@@ -66,8 +73,9 @@ export function HandoffDialog({
       >
         <h2>Send plan</h2>
         <p className="hint">
-          Opens a new tab in the same folder with the plan filled in. Review it, then press
-          Start. Nothing starts on its own.
+          {surface === "terminal"
+            ? "Starts Cursor CLI in a terminal tab with this role's flags and the plan as the first prompt."
+            : "Opens a new tab in the same folder with the plan filled in. Review it, then press Start. Nothing starts on its own."}
         </p>
         <fieldset className="handoff-fieldset">
           <legend>Send to</legend>
@@ -83,6 +91,29 @@ export function HandoffDialog({
               <span>{target.label}</span>
             </label>
           ))}
+        </fieldset>
+        <fieldset className="handoff-fieldset">
+          <legend>Open as</legend>
+          <label className="handoff-choice">
+            <input
+              type="radio"
+              name="handoff-surface"
+              checked={surface === "chat"}
+              onChange={() => setSurface("chat")}
+              disabled={busy}
+            />
+            <span>Chat</span>
+          </label>
+          <label className="handoff-choice">
+            <input
+              type="radio"
+              name="handoff-surface"
+              checked={surface === "terminal"}
+              onChange={() => setSurface("terminal")}
+              disabled={busy}
+            />
+            <span>Terminal</span>
+          </label>
         </fieldset>
         <fieldset className="handoff-fieldset">
           <legend>What to send</legend>
@@ -117,9 +148,13 @@ export function HandoffDialog({
             type="button"
             className="primary-button"
             disabled={!canConfirm}
-            onClick={() => onConfirm(scope)}
+            onClick={() => onConfirm(scope, surface)}
           >
-            {busy ? "Opening…" : `Open ${targetLabel} tab`}
+            {busy
+              ? "Opening…"
+              : surface === "terminal"
+                ? `Start ${targetLabel} terminal`
+                : `Open ${targetLabel} tab`}
           </button>
         </div>
       </div>

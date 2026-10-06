@@ -9,6 +9,7 @@ type Props = {
   disabled: boolean;
   onChange: (value: string) => void;
   onTransfer: () => void;
+  onTransferTerminal?: () => void;
   onSend: () => void;
   onStopChain: () => void;
   onBlur?: () => void;
@@ -23,6 +24,7 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
     disabled,
     onChange,
     onTransfer,
+    onTransferTerminal,
     onSend,
     onStopChain,
     onBlur,
@@ -51,6 +53,17 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
           <button type="button" className="secondary-button" onClick={onTransfer} disabled={disabled}>
             Transfer
           </button>
+          {onTransferTerminal && (
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={onTransferTerminal}
+              disabled={disabled}
+              title="Send the selection, or the whole pad, to the terminal"
+            >
+              To terminal
+            </button>
+          )}
           <button type="button" className="primary-button" onClick={onSend} disabled={disabled}>
             {chained ? "Send steps" : "Send"}
           </button>

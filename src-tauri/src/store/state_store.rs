@@ -109,6 +109,8 @@ impl StateStore {
             transcript: None,
             startup_prompt_sent: false,
             color: Some(role.color.clone()),
+            kind: crate::store::state_types::default_tab_kind(),
+            terminal_launch: String::new(),
         };
         self.data.tabs.push(record);
         self.data.active_tab_id = Some(tab_id.clone());
@@ -130,7 +132,7 @@ impl StateStore {
             .iter_mut()
             .find(|t| t.id == tab_id)
             .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
-        if tab.phase == "running" {
+        if tab.phase == "running" || tab.kind == "terminal" || tab.phase == "terminal" {
             return Ok(());
         }
         tab.label = tab_label(&role.name, answers);
@@ -153,6 +155,9 @@ impl StateStore {
     pub fn reconcile_stale_running_tabs(&mut self) -> Result<(), String> {
         let mut changed = false;
         for tab in &mut self.data.tabs {
+            if tab.kind == "terminal" || tab.phase == "terminal" {
+                continue;
+            }
             if tab.phase == "running" {
                 tab.phase = TabPhase::Running.after_session_stopped().as_store_str().to_string();
                 tab.session = None;
@@ -219,6 +224,8 @@ impl StateStore {
                 merged_prompt_hash: tab.merged_prompt_hash.clone(),
                 startup_prompt_sent: tab.startup_prompt_sent,
                 closed_at: Utc::now().to_rfc3339(),
+                kind: tab.kind.clone(),
+                terminal_launch: tab.terminal_launch.clone(),
             },
         );
         self.data.closed_tabs.truncate(15);
@@ -247,6 +254,7 @@ impl StateStore {
         }
         let has_history = closed.startup_prompt_sent
             || transcript.as_ref().is_some_and(|text| !text.trim().is_empty());
+        let terminal = closed.kind == "terminal";
         let record = TabRecord {
             id: closed.id.clone(),
             label: closed.label,
@@ -256,13 +264,21 @@ impl StateStore {
             answers: closed.answers,
             merged_prompt: closed.merged_prompt,
             merged_prompt_hash: closed.merged_prompt_hash,
-            phase: if has_history { "awaitingInput" } else { "draft" }.to_string(),
+            phase: if terminal {
+                "terminal".to_string()
+            } else if has_history {
+                "awaitingInput".to_string()
+            } else {
+                "draft".to_string()
+            },
             order: next_tab_order(&self.data),
             created_at: Utc::now().to_rfc3339(),
             session: None,
             transcript,
             startup_prompt_sent: closed.startup_prompt_sent || has_history,
             color: closed.color,
+            kind: closed.kind.clone(),
+            terminal_launch: closed.terminal_launch.clone(),
         };
         let id = record.id.clone();
         self.data.tabs.push(record);
@@ -332,11 +348,57 @@ impl StateStore {
             transcript: None,
             startup_prompt_sent: false,
             color: Some(role.color.clone()),
+            kind: crate::store::state_types::default_tab_kind(),
+            terminal_launch: String::new(),
         };
         self.data.tabs.push(record);
         if make_active {
             self.data.active_tab_id = Some(tab_id.clone());
         }
+        self.save()?;
+        Ok(tab_id)
+    }
+
+    /// Convert a draft tab, or create one, for a shell / CLI / role terminal.
+    /// A live ACP tab is left alone and a new tab is created instead.
+    pub fn save_terminal_tab(
+        &mut self,
+        preferred_id: Option<&str>,
+        draft: TerminalTabDraft,
+    ) -> Result<String, String> {
+        if let Some(id) = preferred_id {
+            if let Some(tab) = self.data.tabs.iter_mut().find(|tab| tab.id == id) {
+                if tab.phase != "running" {
+                    apply_terminal_draft(tab, &draft);
+                    self.data.active_tab_id = Some(id.to_string());
+                    self.save()?;
+                    return Ok(id.to_string());
+                }
+            }
+        }
+        let tab_id = new_tab_id();
+        let mut record = TabRecord {
+            id: tab_id.clone(),
+            label: String::new(),
+            role_id: String::new(),
+            role_snapshot: draft.role_snapshot.clone(),
+            cwd: String::new(),
+            answers: HashMap::new(),
+            merged_prompt: String::new(),
+            merged_prompt_hash: String::new(),
+            phase: "terminal".to_string(),
+            order: next_tab_order(&self.data),
+            created_at: Utc::now().to_rfc3339(),
+            session: None,
+            transcript: None,
+            startup_prompt_sent: false,
+            color: None,
+            kind: "terminal".to_string(),
+            terminal_launch: String::new(),
+        };
+        apply_terminal_draft(&mut record, &draft);
+        self.data.tabs.push(record);
+        self.data.active_tab_id = Some(tab_id.clone());
         self.save()?;
         Ok(tab_id)
     }
@@ -386,6 +448,34 @@ impl StateStore {
                     .as_ref()
                     .is_some_and(|s| !s.trim().is_empty()))
     }
+}
+
+pub struct TerminalTabDraft {
+    pub launch: String,
+    pub cwd: String,
+    pub label: String,
+    pub role_id: String,
+    pub role_snapshot: RoleSnapshot,
+    pub color: String,
+    pub answers: HashMap<String, String>,
+    pub merged_prompt: String,
+    pub startup_prompt_sent: bool,
+}
+
+fn apply_terminal_draft(tab: &mut TabRecord, draft: &TerminalTabDraft) {
+    tab.label = draft.label.clone();
+    tab.role_id = draft.role_id.clone();
+    tab.role_snapshot = draft.role_snapshot.clone();
+    tab.cwd = draft.cwd.clone();
+    tab.answers = draft.answers.clone();
+    tab.merged_prompt = draft.merged_prompt.clone();
+    tab.merged_prompt_hash = template_hash(&draft.merged_prompt);
+    tab.phase = "terminal".to_string();
+    tab.kind = "terminal".to_string();
+    tab.terminal_launch = draft.launch.clone();
+    tab.color = Some(draft.color.clone());
+    tab.startup_prompt_sent = draft.startup_prompt_sent;
+    tab.session = None;
 }
 
 fn new_tab_id() -> String {

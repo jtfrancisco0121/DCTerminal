@@ -4,10 +4,13 @@
  * The plan text is mapped onto the target role's own form fields
  * (Implementer `approvedPlan`, PR Reviewer `originalTask`, and so on).
  * Roles with no plan field (Developer) keep the text for the scratch pad.
- * Nothing here starts a session.
+ * This module only maps text. The UI decides whether the target opens as
+ * a chat tab or a terminal tab.
  *
  * Character limits match `handoff_store.rs`.
  */
+
+import { TERMINAL_TAIL_LINES } from "../terminal/text";
 
 export const INLINE_PLAN_CHARS = 100_000;
 export const JSON_PLAN_CHARS = 1_000_000;
@@ -16,7 +19,15 @@ export const FILE_PLAN_CHARS = 8_000_000;
 export const HANDOFF_TARGETS = ["role_implementer", "role_developer"] as const;
 export type HandoffTargetId = (typeof HANDOFF_TARGETS)[number];
 
-export type HandoffScope = "plan_and_todos" | "message" | "card" | "selection";
+export type HandoffScope =
+  | "plan_and_todos"
+  | "message"
+  | "card"
+  | "selection"
+  | "plan_file"
+  | "terminal_tail";
+
+export type HandoffSurface = "chat" | "terminal";
 
 export type HandoffPlanEntry = {
   content: string;
@@ -45,6 +56,13 @@ export type HandoffSource = {
   todos: HandoffTodo[];
   selection: string;
   turnInFlight: boolean;
+  /** Set when the source is a terminal-mode Planner tab. */
+  fromTerminal?: boolean;
+  /** Body of the newest plan file written after the terminal started. */
+  planFileText?: string;
+  planFileName?: string;
+  /** Last lines of the terminal buffer, already stripped of ANSI codes. */
+  terminalTail?: string;
 };
 
 export type HandoffLimits = {
@@ -128,6 +146,14 @@ export function handoffBlockReason(source: HandoffSource): string | null {
   if (source.sourceRoleId !== "role_planner") {
     return "Send a plan from a Planner tab.";
   }
+  if (source.fromTerminal) {
+    const hasTerminal =
+      (source.planFileText ?? "").trim().length > 0 ||
+      source.selection.trim().length > 0 ||
+      (source.terminalTail ?? "").trim().length > 0;
+    if (!hasTerminal) return "There is no plan to send yet.";
+    return null;
+  }
   if (source.turnInFlight) {
     return "Wait until the Planner finishes this turn.";
   }
@@ -167,6 +193,8 @@ export function composePlanText(
   if (scope === "message") text = source.latestMessage.trim();
   else if (scope === "card") text = formatPlanCard(source.plan, source.todos);
   else if (scope === "selection") text = source.selection.trim();
+  else if (scope === "plan_file") text = (source.planFileText ?? "").trim();
+  else if (scope === "terminal_tail") text = (source.terminalTail ?? "").trim();
   else {
     const message = source.latestMessage.trim();
     const card = formatPlanCard(source.plan, source.todos);
@@ -183,6 +211,28 @@ export type ScopeChoice = {
 };
 
 export function scopeChoices(source: HandoffSource): ScopeChoice[] {
+  if (source.fromTerminal) {
+    const fileLabel = source.planFileName
+      ? `Newest plan file (${source.planFileName})`
+      : "Newest plan file";
+    return [
+      {
+        id: "plan_file",
+        label: fileLabel,
+        enabled: composePlanText(source, "plan_file").text.length > 0,
+      },
+      {
+        id: "selection",
+        label: "Selected text",
+        enabled: composePlanText(source, "selection").text.length > 0,
+      },
+      {
+        id: "terminal_tail",
+        label: `Last ${TERMINAL_TAIL_LINES} lines`,
+        enabled: composePlanText(source, "terminal_tail").text.length > 0,
+      },
+    ];
+  }
   return [
     {
       id: "plan_and_todos",
@@ -208,6 +258,12 @@ export function scopeChoices(source: HandoffSource): ScopeChoice[] {
 }
 
 export function defaultScope(source: HandoffSource): HandoffScope {
+  if (source.fromTerminal) {
+    if (composePlanText(source, "plan_file").text) return "plan_file";
+    if (composePlanText(source, "selection").text) return "selection";
+    if (composePlanText(source, "terminal_tail").text) return "terminal_tail";
+    return "plan_file";
+  }
   const preferred: HandoffScope[] = ["plan_and_todos", "message", "card", "selection"];
   for (const scope of preferred) {
     if (composePlanText(source, scope).text) return scope;

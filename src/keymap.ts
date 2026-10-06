@@ -1,7 +1,8 @@
 /**
  * One keymap for the whole app. Bindings use `KeyboardEvent.code` so a
- * different layout does not retarget them. Plain Ctrl (Cmd on macOS).
- * Ctrl+Shift is reserved for a future terminal pane and is not used here.
+ * different layout does not retarget them. Plain Ctrl (Cmd on macOS) is
+ * for chat. Ctrl+Shift (Cmd+Shift on macOS) is for the terminal, except
+ * Ctrl+Shift+Tab, which is the previous tab.
  */
 
 export type ShortcutAction =
@@ -242,8 +243,9 @@ export function isSystemChord(chord: Chord): boolean {
   return false;
 }
 
+/** Mod+Shift belongs to the terminal. Tab is the previous-tab exception. */
 export function isReservedForTerminal(chord: Chord): boolean {
-  return chord.mod && chord.shift && !chord.alt;
+  return chord.mod && chord.shift && !chord.alt && chord.code !== "Tab";
 }
 
 export function defaultBindings(): Binding[] {
@@ -273,6 +275,23 @@ export function defaultBindings(): Binding[] {
       meta: false,
     });
   }
+  // Pair of the terminal's Ctrl+Tab / Ctrl+Shift+Tab. PageUp/PageDown stay.
+  bindings.push({
+    action: "nextTab",
+    code: "Tab",
+    mod: true,
+    shift: false,
+    alt: false,
+    meta: false,
+  });
+  bindings.push({
+    action: "prevTab",
+    code: "Tab",
+    mod: true,
+    shift: true,
+    alt: false,
+    meta: false,
+  });
   return bindings;
 }
 
@@ -385,8 +404,80 @@ export type ShortcutRow = {
   keys: string;
 };
 
+export type TerminalAction =
+  | "togglePane"
+  | "transferToTerminal"
+  | "search"
+  | "copy"
+  | "paste";
+
+export type KeySurface = "chat" | "terminal";
+
+export type RoutedKey =
+  | { kind: "app"; match: ShortcutMatch }
+  | { kind: "terminal"; action: TerminalAction }
+  | { kind: "shell" }
+  | { kind: "none" };
+
+const TERMINAL_GLOBALS = new Set<ShortcutAction>([
+  "newTab",
+  "closeTab",
+  "goToTab",
+  "nextTab",
+  "prevTab",
+  "tabSwitcher",
+  "settings",
+]);
+
+const TERMINAL_BY_CODE: Record<string, TerminalAction> = {
+  Backquote: "togglePane",
+  Period: "transferToTerminal",
+  KeyF: "search",
+  KeyC: "copy",
+  KeyV: "paste",
+};
+
+function terminalActionFor(chord: Chord): TerminalAction | null {
+  if (!chord.mod || !chord.shift || chord.alt) return null;
+  return TERMINAL_BY_CODE[chord.code] ?? null;
+}
+
+/**
+ * Chat keeps plain Ctrl. A focused terminal keeps the shell's keys, except
+ * the global tab shortcuts and the Ctrl+Shift terminal chords.
+ */
+export function routeKey(
+  event: KeyEventLike,
+  ctx: MatchContext & { surface: KeySurface },
+): RoutedKey {
+  if (isImeEvent(event)) return { kind: "none" };
+  if (ctx.dialogOpen) {
+    const match = matchShortcut(event, ctx);
+    return match ? { kind: "app", match } : { kind: "none" };
+  }
+  const chord: Chord = {
+    code: event.code,
+    mod: modPressed(event, ctx.platform),
+    shift: event.shiftKey,
+    alt: event.altKey,
+    meta: event.metaKey,
+  };
+  const terminalAction = terminalActionFor(chord);
+  if (ctx.surface === "terminal") {
+    const match = matchShortcut(event, ctx);
+    if (match && TERMINAL_GLOBALS.has(match.action)) return { kind: "app", match };
+    if (terminalAction) return { kind: "terminal", action: terminalAction };
+    return { kind: "shell" };
+  }
+  if (terminalAction === "togglePane" || terminalAction === "transferToTerminal") {
+    return { kind: "terminal", action: terminalAction };
+  }
+  const match = matchShortcut(event, ctx);
+  return match ? { kind: "app", match } : { kind: "none" };
+}
+
 export function shortcutRows(platform: Platform): ShortcutRow[] {
-  return SHORTCUTS.filter((def) => !PALETTE_ONLY.has(def.action)).map((def) => {
+  const rows = SHORTCUTS.filter((def) => !PALETTE_ONLY.has(def.action)).map((def) => {
     if (def.digits) {
       const mod = platform === "mac" ? "⌘" : "Ctrl";
       return {
@@ -410,4 +501,50 @@ export function shortcutRows(platform: Platform): ShortcutRow[] {
       keys: formatChord(chord, platform),
     };
   });
+  const mod = platform === "mac" ? "⌘" : "Ctrl";
+  rows.push(
+    {
+      action: "nextTab",
+      label: "Next tab",
+      description: "Switch to the next tab. Also works while the terminal has focus.",
+      keys: `${mod}+Tab`,
+    },
+    {
+      action: "prevTab",
+      label: "Previous tab",
+      description: "Switch to the previous tab. Also works while the terminal has focus.",
+      keys: `${mod}+Shift+Tab`,
+    },
+    {
+      action: "transferPad",
+      label: "Toggle terminal pane",
+      description: "Show or hide the shell pane beside the chat.",
+      keys: `${mod}+Shift+\``,
+    },
+    {
+      action: "transferPad",
+      label: "Transfer to terminal",
+      description: "Send the scratch selection, or the whole pad, to the terminal.",
+      keys: `${mod}+Shift+.`,
+    },
+    {
+      action: "focusInput",
+      label: "Copy terminal selection",
+      description: "Copy the selected terminal text. Ctrl+C still goes to the shell.",
+      keys: `${mod}+Shift+C`,
+    },
+    {
+      action: "focusInput",
+      label: "Paste into terminal",
+      description: "Paste into the terminal.",
+      keys: `${mod}+Shift+V`,
+    },
+    {
+      action: "focusInput",
+      label: "Search terminal",
+      description: "Search the terminal scrollback.",
+      keys: `${mod}+Shift+F`,
+    },
+  );
+  return rows;
 }

@@ -40,6 +40,12 @@ pub struct ClosedTabRecord {
     pub merged_prompt_hash: String,
     pub startup_prompt_sent: bool,
     pub closed_at: String,
+    /// `role` for a chat tab. `terminal` for a shell, Cursor CLI, or role terminal.
+    #[serde(default = "default_tab_kind")]
+    pub kind: String,
+    /// `shell`, `cursor-cli`, or `role`. Empty on chat tabs.
+    #[serde(default)]
+    pub terminal_launch: String,
 }
 
 /// Persisted tab snapshot (blueprint §17.2 `state.json`).
@@ -69,6 +75,16 @@ pub struct TabRecord {
     /// Optional chip color. Falls back to the role color in the UI.
     #[serde(default)]
     pub color: Option<String>,
+    /// `role` for a chat tab. `terminal` for a shell, Cursor CLI, or role terminal.
+    #[serde(default = "default_tab_kind")]
+    pub kind: String,
+    /// `shell`, `cursor-cli`, or `role`. Empty on chat tabs.
+    #[serde(default)]
+    pub terminal_launch: String,
+}
+
+pub fn default_tab_kind() -> String {
+    "role".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
