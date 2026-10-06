@@ -42,6 +42,7 @@ import {
   getNotificationSettings,
   setNotificationSettings,
   gitRepoInfo,
+  changesList,
   worktreeTabCheck,
   worktreeTabNew,
   worktreeTabRemove,
@@ -126,6 +127,7 @@ import { FilePanel } from "./components/FilePanel";
 import { ModelPicker } from "./components/ModelPicker";
 import { AgentToasts } from "./components/AgentToasts";
 import { WorktreeDialog, type WorktreeCreateInput } from "./components/WorktreeDialog";
+import { ChangesPanel } from "./components/ChangesPanel";
 import { classifyPromptFinished, type NotificationSettings } from "./notify/agentNotify";
 import { showSystemNotification } from "./notify/systemNotify";
 import { useAgentNotifications } from "./notify/useAgentNotifications";
@@ -248,6 +250,21 @@ export function StartupForm({
   const [terminalBusy, setTerminalBusy] = useState<string[]>([]);
   const [renamingTabId, setRenamingTabId] = useState<string | null>(null);
   const [worktreeDialogOpen, setWorktreeDialogOpen] = useState(false);
+  /** F4: the tab whose changes (diff) panel is open. */
+  const [changesTabId, setChangesTabId] = useState<string | null>(null);
+  /** Files changed in each tab's last turn (shown on the Changes button). */
+  const [changeCounts, setChangeCounts] = useState<Record<string, number>>({});
+  /** acceptKey()s per tab: files the user kept after review. */
+  const [acceptedChanges, setAcceptedChanges] = useState<Record<string, string[]>>({});
+  const [fileFocus, setFileFocus] = useState<{ path: string; nonce: number } | null>(null);
+  const refreshChangeCount = useCallback((tabId: string) => {
+    changesList(tabId, "turn")
+      .then((set) => {
+        const count = set.state === "ok" ? set.files.length : 0;
+        setChangeCounts((prev) => (prev[tabId] === count ? prev : { ...prev, [tabId]: count }));
+      })
+      .catch(() => {});
+  }, []);
   const [split, setSplit] = useState<SplitState>(emptySplit());
   const [splitPicker, setSplitPicker] = useState<"horizontal" | "vertical" | null>(null);
   const [focusedPane, setFocusedPane] = useState<"primary" | "secondary">("primary");
@@ -354,7 +371,8 @@ export function StartupForm({
     splitPicker !== null ||
     handoffTarget !== null ||
     savedPlan !== null ||
-    worktreeDialogOpen;
+    worktreeDialogOpen ||
+    changesTabId !== null;
   const platform = useMemo(
     () => detectPlatform(typeof navigator === "undefined" ? "" : navigator.platform),
     [],
@@ -570,6 +588,7 @@ export function StartupForm({
         if (event) notifyAgent(evt.tabId, event);
         const watching = isWatchingTab(evt.tabId);
         setTabMarks((marks) => markAfterTurn(marks, evt.tabId!, event?.kind ?? null, watching));
+        refreshChangeCount(evt.tabId);
       }),
       listenPlanRequests((evt) => {
         if (!evt.tabId) return;
@@ -593,7 +612,7 @@ export function StartupForm({
         flushRafRef.current = null;
       }
     };
-  }, [isWatchingTab, notifyAgent, patchRuntime]);
+  }, [isWatchingTab, notifyAgent, patchRuntime, refreshChangeCount]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1739,6 +1758,20 @@ export function StartupForm({
     [modelSettings, patchRuntime, refreshTabs],
   );
 
+  const changesButton = (tabId: string) => {
+    const count = changeCounts[tabId] ?? 0;
+    return (
+      <button
+        type="button"
+        className="secondary-button changes-button"
+        onClick={() => setChangesTabId(tabId)}
+        title="Files changed since the last turn started: review, accept, or revert"
+      >
+        {count > 0 ? `Changes (${count})` : "Changes"}
+      </button>
+    );
+  };
+
   const modelPickerFor = (tab: TabSummary | null | undefined, liveModel?: string | null) => {
     if (!tab) return null;
     if (tab.kind === "terminal" && tab.terminalLaunch !== "role" && tab.terminalLaunch !== "cursor-cli") {
@@ -1794,6 +1827,8 @@ export function StartupForm({
   const onShortcut = useCallback(
     (match: ShortcutMatch) => {
       if (match.action === "closeDialog") {
+        setChangesTabId(null);
+        setWorktreeDialogOpen(false);
         setPaletteOpen(false);
         setSwitcherOpen(false);
         setShortcutsOpen(false);
@@ -2348,6 +2383,10 @@ export function StartupForm({
       });
       return;
     }
+    if (id === "showChanges") {
+      if (activeTabId) setChangesTabId(activeTabId);
+      return;
+    }
     if (id === "newWorktreeTab") {
       setWorktreeDialogOpen(true);
       return;
@@ -2520,8 +2559,34 @@ export function StartupForm({
     />
   );
 
+  const changesTab = changesTabId ? savedTabs.find((tab) => tab.id === changesTabId) : undefined;
   const overlays = (
     <>
+      {changesTab && (
+        <ChangesPanel
+          key={changesTab.id}
+          tabId={changesTab.id}
+          tabLabel={changesTab.label}
+          busy={!!tabStatuses[changesTab.id]?.busy}
+          accepted={new Set(acceptedChanges[changesTab.id] ?? [])}
+          onAccept={(key) =>
+            setAcceptedChanges((prev) => ({
+              ...prev,
+              [changesTab.id]: [...(prev[changesTab.id] ?? []), key],
+            }))
+          }
+          onOpenInFilePanel={(path) => {
+            setChangesTabId(null);
+            if (changesTab.id !== activeTabId) void handleSelectTab(changesTab.id);
+            setFilePanelOpen(true);
+            setFileFocus({ path, nonce: Date.now() });
+          }}
+          onClose={() => {
+            setChangesTabId(null);
+            refreshChangeCount(changesTab.id);
+          }}
+        />
+      )}
       {worktreeDialogOpen && (
         <WorktreeDialog
           initialRepo={activeTabSummary?.cwd || values.cwd || ""}
@@ -2688,7 +2753,12 @@ export function StartupForm({
           agentExited={rt.agentExited}
           onRestart={() => void stopSecondarySession(tab.id)}
           inputRef={secondaryInputRef}
-          headerExtra={modelPickerFor(tab, rt.session.model)}
+          headerExtra={
+            <>
+              {modelPickerFor(tab, rt.session.model)}
+              {changesButton(tab.id)}
+            </>
+          }
         />
       );
     } else {
@@ -2760,6 +2830,7 @@ export function StartupForm({
             tabId={activeTabId}
             cwd={activeCwd}
             platform={platform}
+            focusFile={fileFocus}
             onInsertReference={(path) => {
               scratch.setContent(activeTabId, appendReference(scratch.content, path));
             }}
@@ -2865,7 +2936,10 @@ export function StartupForm({
             />
           )}
           {terminalError && <p className="error">{terminalError}</p>}
-          {(isPlannerTerminal || terminalModelPicker || activeTabSummary.worktreeBranch) && (
+          {(isPlannerTerminal ||
+            terminalModelPicker ||
+            activeTabSummary.worktreeBranch ||
+            activeTabSummary.cwd) && (
             <div className="terminal-toolbar">
               {activeTabSummary.worktreeBranch && (
                 <span
@@ -2877,6 +2951,7 @@ export function StartupForm({
                 </span>
               )}
               {terminalModelPicker}
+              {activeTabSummary.cwd && changesButton(activeTabSummary.id)}
               {isPlannerTerminal && (
                 <HandoffActions
                   enabled
@@ -3201,7 +3276,12 @@ export function StartupForm({
               historyCursor={historyCursor}
               onHistoryCursor={setHistoryCursor}
               handoff={handoffOffer}
-              headerExtra={modelPickerFor(activeTabSummary, session.model)}
+              headerExtra={
+                <>
+                  {modelPickerFor(activeTabSummary, session.model)}
+                  {activeTabSummary && changesButton(activeTabSummary.id)}
+                </>
+              }
             />
               }
               secondary={

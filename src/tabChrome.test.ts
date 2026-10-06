@@ -142,6 +142,13 @@ describe("tab chrome", () => {
     ]);
   });
 
+  it("finds the changes (diff) panel by diff, revert, or review", () => {
+    const commands = buildPalette({ tabs: [], canReopen: false, splitOpen: false });
+    for (const query of ["diff", "changes", "revert", "review edits"]) {
+      expect(filterCommands(commands, query).map((c) => c.id)).toContain("showChanges");
+    }
+  });
+
   it("offers plan hand-off commands on a Planner session", () => {
     const commands = buildPalette({
       tabs: [],

@@ -16,6 +16,7 @@ mod session_id;
 pub mod store;
 pub mod supervisor;
 pub mod template;
+pub mod turn_changes;
 pub mod worktree;
 
 use acp::{probe_acp, probe_acp_handshake};
@@ -31,6 +32,7 @@ use commands::{
     set_tab_color, set_tab_label, sync_active_tab_form, transcript_load, transcript_save,
     validate_and_preview, SessionRegistry,
 };
+use commands::{changes_file_diff, changes_list, changes_revert, changes_snapshot, ChangesRoot};
 use commands::{git_repo_info, worktree_tab_check, worktree_tab_new, worktree_tab_remove};
 use files::{files_list, files_read, files_reveal, files_write};
 use models::{get_model_settings, list_models, set_model_settings, set_tab_model};
@@ -87,6 +89,20 @@ pub fn run() {
             let settings_store = SettingsStore::open(&data_dir)?;
             let transcript_store = TranscriptStore::open(&data_dir)?;
             let handoff_store = HandoffStore::open(&data_dir)?;
+            let known_tabs: Vec<String> = state_store
+                .data
+                .tabs
+                .iter()
+                .map(|tab| tab.id.clone())
+                .chain(
+                    state_store
+                        .data
+                        .closed_tabs
+                        .iter()
+                        .map(|tab| tab.id.clone()),
+                )
+                .collect();
+            app.manage(ChangesRoot::open(&data_dir, &known_tabs));
             app.manage(Mutex::new(store));
             app.manage(Mutex::new(state_store));
             app.manage(Mutex::new(forms_store));
@@ -162,6 +178,10 @@ pub fn run() {
             worktree_tab_new,
             worktree_tab_check,
             worktree_tab_remove,
+            changes_list,
+            changes_snapshot,
+            changes_file_diff,
+            changes_revert,
             get_layout,
             set_layout,
             files_list,

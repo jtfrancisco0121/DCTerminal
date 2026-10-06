@@ -99,6 +99,10 @@ vi.mock("./bridge", () => {
   worktreeTabNew: vi.fn(),
   worktreeTabCheck: vi.fn(),
   worktreeTabRemove: vi.fn(async () => {}),
+  changesList: vi.fn(async () => ({ state: "noRepo", files: [] })),
+  changesSnapshot: vi.fn(),
+  changesFileDiff: vi.fn(),
+  changesRevert: vi.fn(),
   shellTerminalStart: vi.fn(),
   terminalPlanFile: vi.fn(),
   validateAndPreview: vi.fn(),
@@ -133,6 +137,11 @@ vi.mock("./bridge", () => {
 });
 
 import {
+  changesFileDiff,
+  changesList,
+  changesRevert,
+  filesList,
+  filesRead,
   closeTab,
   getAppState,
   gitRepoInfo,
@@ -676,5 +685,107 @@ describe("worktree tabs", () => {
     );
     expect(await screen.findByText("Worktree removed")).toBeTruthy();
     confirm.mockRestore();
+  });
+});
+
+describe("changes (diff) panel", () => {
+  const terminalTab = {
+    id: "tab_a",
+    label: "Main",
+    roleId: "role_developer",
+    cwd: "/Users/jt/Koneksi",
+    phase: "running",
+    mergedPromptChars: 0,
+    startupPromptSent: false,
+    hasTranscript: false,
+    folderStatus: "ok",
+    color: "#3fb950",
+    kind: "terminal",
+    terminalLaunch: "cursor-cli",
+    acpSessionId: null,
+  };
+  const base = "a".repeat(40);
+  const now = "b".repeat(40);
+  const file = {
+    path: "src/app.ts",
+    cwdPath: "src/app.ts",
+    status: "modified",
+    oldBlob: "1".repeat(40),
+    newBlob: "2".repeat(40),
+    additions: 1,
+    deletions: 1,
+    binary: false,
+  };
+
+  beforeEach(() => {
+    vi.mocked(listCursorCliHistory).mockResolvedValue([]);
+    vi.mocked(getRole).mockResolvedValue(developer);
+    vi.mocked(getAppState).mockResolvedValue({
+      activeTabId: "tab_a",
+      tabs: [terminalTab],
+      closedTabs: [],
+    });
+    vi.mocked(changesList).mockResolvedValue({
+      state: "ok",
+      scope: "turn",
+      repoRoot: "/Users/jt/Koneksi",
+      baseTree: base,
+      nowTree: now,
+      baselineAt: "2026-10-06T10:00:00Z",
+      files: [file],
+    });
+    vi.mocked(changesFileDiff).mockResolvedValue({
+      path: "src/app.ts",
+      binary: false,
+      text: "@@ -1 +1 @@\n-old\n+new\n",
+      truncated: false,
+    });
+    vi.mocked(filesList).mockImplementation(async (_tab: string, path = "") => ({
+      root: "/Users/jt/Koneksi",
+      path,
+      truncated: false,
+      entries:
+        path === ""
+          ? [{ name: "src", path: "src", isDir: true, size: 0 }]
+          : [{ name: "app.ts", path: "src/app.ts", isDir: false, size: 3 }],
+    }));
+    vi.mocked(filesRead).mockResolvedValue({
+      path: "src/app.ts",
+      absPath: "/Users/jt/Koneksi/src/app.ts",
+      size: 4,
+      mtimeMs: 1,
+      kind: "text",
+      text: "new\n",
+      dataBase64: null,
+      mime: null,
+    });
+  });
+
+  it("opens from the tab, never reverts on its own, and Open in file panel focuses the file", async () => {
+    render(
+      <StartupForm
+        roles={[{ id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 }]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /^Changes/ }));
+    const dialog = await screen.findByRole("dialog", { name: "Changes in Main" });
+    expect(await screen.findByRole("table", { name: "Diff of src/app.ts" })).toBeTruthy();
+    expect(dialog.textContent).toContain("src/app.ts");
+    expect(changesRevert).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Open in file panel" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Changes in Main" })).toBeNull(),
+    );
+    const panel = await screen.findByRole("complementary", { name: "Files" });
+    await waitFor(() => expect(vi.mocked(filesRead)).toHaveBeenCalledWith("tab_a", "src/app.ts"));
+    await waitFor(() =>
+      expect(panel.contains(document.activeElement)).toBe(true),
+    );
+    expect(changesRevert).not.toHaveBeenCalled();
   });
 });

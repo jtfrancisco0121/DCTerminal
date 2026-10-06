@@ -35,7 +35,7 @@ pub struct RepoInfo {
     pub worktrees_dir: String,
 }
 
-fn git_command(dir: &Path) -> Command {
+pub(crate) fn git_command(dir: &Path) -> Command {
     let mut cmd = Command::new("git");
     cmd.arg("-C")
         .arg(dir)

@@ -188,6 +188,12 @@ export function buildPalette(opts: {
     { id: "swapPanes", title: "Swap panes", group: "Panes" },
     { id: "focusOtherPane", title: "Focus other pane", group: "Panes" },
     { id: "toggleFilePanel", title: "Toggle file panel", group: "Files", keywords: "tree explorer" },
+    {
+      id: "showChanges",
+      title: "Show changes (diff)…",
+      group: "Files",
+      keywords: "diff revert accept review edits git agent",
+    },
     { id: "focusPad", title: "Focus scratch pad", group: "Composer" },
     { id: "focusInput", title: "Focus input", group: "Composer" },
     { id: "transferPad", title: "Transfer scratch pad", group: "Composer" },

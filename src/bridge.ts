@@ -862,6 +862,69 @@ export async function worktreeTabRemove(tabId: string, confirmed: boolean): Prom
   return invoke("worktree_tab_remove", { tabId, confirmed });
 }
 
+// --- F4: changes since the turn (or tab) started ---
+
+export type ChangeScope = "turn" | "tab";
+
+export type ChangedFile = {
+  /** Relative to the repository root. */
+  path: string;
+  /** Relative to the tab's folder (for the file panel), when inside it. */
+  cwdPath: string | null;
+  status: "added" | "modified" | "deleted" | "typeChanged" | string;
+  oldBlob: string;
+  newBlob: string;
+  additions: number | null;
+  deletions: number | null;
+  binary: boolean;
+};
+
+export type ChangeSet = {
+  /** "ok" | "noRepo" | "noBaseline" */
+  state: string;
+  scope: ChangeScope;
+  repoRoot: string | null;
+  baseTree: string | null;
+  nowTree: string | null;
+  baselineAt: string | null;
+  files: ChangedFile[];
+};
+
+export type FileDiff = { path: string; binary: boolean; text: string; truncated: boolean };
+
+export type RevertOutcome = {
+  reverted: string[];
+  skipped: { path: string; reason: string }[];
+};
+
+export async function changesList(tabId: string, scope: ChangeScope): Promise<ChangeSet> {
+  return invoke<ChangeSet>("changes_list", { tabId, scope });
+}
+
+/** Start a new "this turn" baseline now (snapshot kept in app data). */
+export async function changesSnapshot(tabId: string): Promise<ChangeSet> {
+  return invoke<ChangeSet>("changes_snapshot", { tabId });
+}
+
+export async function changesFileDiff(
+  tabId: string,
+  base: string,
+  now: string,
+  path: string,
+): Promise<FileDiff> {
+  return invoke<FileDiff>("changes_file_diff", { tabId, base, now, path });
+}
+
+/** Restores files to the baseline. Only after the user confirmed. */
+export async function changesRevert(
+  tabId: string,
+  base: string,
+  files: { path: string; newBlob: string }[],
+  confirmed: boolean,
+): Promise<RevertOutcome> {
+  return invoke<RevertOutcome>("changes_revert", { tabId, base, files, confirmed });
+}
+
 export type LayoutState = {
   /** "single" | "horizontal" | "vertical" */
   splitMode: string;

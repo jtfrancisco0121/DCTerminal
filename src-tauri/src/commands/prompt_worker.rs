@@ -47,6 +47,8 @@ fn run_prompt_turn(
     mark_startup_injected: bool,
     mark_tab_injection_complete: bool,
 ) -> PromptFinishedEvent {
+    // F4: the "this turn" baseline for the diff panel (app data only).
+    crate::commands::changes::snapshot_turn(app, tab_id);
     let state = app.state::<Mutex<SessionRegistry>>();
     let outcome: Result<(PromptResult, String), String> = (|| {
         let client_arc = {

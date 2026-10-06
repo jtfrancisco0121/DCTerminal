@@ -1,6 +1,7 @@
 pub(crate) mod acp_events;
 mod agent_requests;
 mod app_state;
+pub(crate) mod changes;
 mod cursor_cli;
 mod dev_session;
 mod forms;
@@ -17,6 +18,7 @@ pub use app_state::{
     close_tab, get_app_state, get_layout, get_tab, new_draft_tab, reopen_closed_tab,
     select_active_tab, set_layout, set_tab_color, set_tab_label, sync_active_tab_form,
 };
+pub use changes::{changes_file_diff, changes_list, changes_revert, changes_snapshot, ChangesRoot};
 pub use cursor_cli::{list_cursor_cli_history, open_in_cursor_cli};
 pub use dev_session::{
     dev_session_cancel, dev_session_send, dev_session_start, dev_session_stop, SessionRegistry,
