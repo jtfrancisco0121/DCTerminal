@@ -22,8 +22,30 @@ Early scaffold — track progress in:
 ```bash
 npm install
 npm run build          # frontend TypeScript + Vite (no Rust)
-npm run tauri dev      # full desktop app
+npm run dev:full       # desktop app (starts Vite if needed)
 ```
+
+### Hot reload (recommended daily workflow)
+
+Keep the UI dev server running in one terminal; restart only the Rust shell when you change `src-tauri/`.
+
+**Terminal 1 — leave running**
+
+```bash
+npm run dev:ui
+```
+
+**Terminal 2 — desktop app**
+
+```bash
+npm run dev:app
+```
+
+- **React / CSS (`src/`)** — Vite HMR updates the open window (no restart).
+- **Rust (`src-tauri/`)** — `tauri dev` recompiles and relaunches the app (Vite keeps running).
+- **Single terminal** — `npm run dev:full` still works; if Vite is already on port `1420`, Tauri reuses it instead of failing.
+
+IPC-only checks (roles list, etc.) need the Tauri window — `npm run dev:ui` alone is browser-only and cannot call Rust commands.
 
 **Windows:** If `tauri dev` says `cargo metadata` / `program not found`, Rust is not on your PATH. Either open a new terminal after installing Rust, or for this session:
 
