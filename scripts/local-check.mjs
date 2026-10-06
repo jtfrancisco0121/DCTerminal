@@ -56,22 +56,50 @@ function assertReleaseVersionsMatch() {
   console.log(`release version ${npmVersion} matches across npm, Tauri, and Cargo`);
 }
 
-// cmd metacharacters. `%` still expands inside quotes, so it is doubled there.
-const CMD_SPECIAL = /[\s"&|<>^%!()]/;
+// Characters that must be quoted. `%` is handled separately: cmd /c does
+// not turn `%%` back into `%` inside a quoted argument, so a percent is
+// written as `^%` outside quotes.
+const CMD_QUOTED = /[\s"&|<>^!()]/;
 
 /**
  * Quote one argv element for cmd.exe only when it needs it.
- * `%` is doubled so cmd does not expand variables. Embedded quotes are
- * doubled (cmd's quote escape). Do not backslash-escape: cmd does not
- * treat `\"` as a quote, and Node must not add a second escape pass.
+ * Embedded quotes are doubled. A `%` is escaped as `^%` outside quotes so
+ * `cmd /c` passes a single percent through to the child. Do not
+ * backslash-escape: cmd does not treat `\"` as a quote.
  */
 export function quoteCmdArg(value) {
   const text = String(value);
-  if (text.length > 0 && !CMD_SPECIAL.test(text)) {
-    return text;
+  if (text.length === 0) {
+    return '""';
   }
-  const escaped = text.replaceAll("%", "%%").replaceAll('"', '""');
-  return `"${escaped}"`;
+  if (!CMD_QUOTED.test(text)) {
+    return text.replaceAll("%", "^%");
+  }
+  let quoted = "";
+  let open = false;
+  const ensureOpen = () => {
+    if (!open) {
+      quoted += '"';
+      open = true;
+    }
+  };
+  const ensureClosed = () => {
+    if (open) {
+      quoted += '"';
+      open = false;
+    }
+  };
+  for (const char of text) {
+    if (char === "%") {
+      ensureClosed();
+      quoted += "^%";
+      continue;
+    }
+    ensureOpen();
+    quoted += char === '"' ? '""' : char;
+  }
+  ensureClosed();
+  return quoted;
 }
 
 /**
@@ -117,14 +145,28 @@ export function windowsInvocation(command, args, comspec = process.env.ComSpec) 
 }
 
 /**
- * Run a command. On Windows, npm and npx are `.cmd` shims, and some Cargo
- * installs are `.cmd` too. Node refuses to spawn those without a shell
- * (CVE-2024-27980, EINVAL). Always go through `cmd.exe /d /s /c` there.
- * Clippy's `-- -D warnings` stays separate arguments.
+ * npm and npx are `.cmd` shims. Spawning those without a shell throws
+ * EINVAL (CVE-2024-27980). `.exe` targets, including `node.exe` and
+ * `cargo.exe`, are spawned directly so cmd does not rewrite arguments.
+ */
+export function usesCmdShim(command) {
+  const base = path.win32.basename(String(command)).toLowerCase();
+  if (base.endsWith(".cmd") || base.endsWith(".bat")) {
+    return true;
+  }
+  if (base.endsWith(".exe") || base.endsWith(".com")) {
+    return false;
+  }
+  return base === "npm" || base === "npx";
+}
+
+/**
+ * Run a command. Clippy's `-- -D warnings` stays separate arguments.
+ * On Windows only `.cmd`/`.bat` shims go through `cmd.exe /d /s /c`.
  */
 export function spawnCommand(command, args, options = {}) {
   const stdio = options.stdio ?? "inherit";
-  if (process.platform === "win32") {
+  if (process.platform === "win32" && usesCmdShim(command)) {
     const invocation = windowsInvocation(command, args);
     return spawnSync(invocation.file, invocation.args, {
       stdio,

@@ -4,11 +4,16 @@ import {
   quoteCmdArg,
   spawnCommand,
   steps,
+  usesCmdShim,
   windowsCmdPayload,
   windowsInvocation,
 } from "./local-check.mjs";
 
-/** Undo cmd.exe `/d /s /c` outer-quote stripping, then split argv. */
+/**
+ * Undo cmd.exe `/d /s /c` outer-quote stripping, then split argv.
+ * `^` outside quotes escapes the next character, so `^%` is one `%`.
+ * Adjacent quoted and unquoted pieces stay one argument.
+ */
 function argvFromCmdPayload(payload) {
   expect(payload.startsWith('"')).toBe(true);
   expect(payload.endsWith('"')).toBe(true);
@@ -23,32 +28,29 @@ function argvFromCmdPayload(payload) {
       break;
     }
     let token = "";
-    if (inner[index] === '"') {
-      index += 1;
-      while (index < inner.length) {
-        if (inner[index] === '"') {
-          if (inner[index + 1] === '"') {
-            token += '"';
-            index += 2;
-            continue;
-          }
-          index += 1;
-          break;
-        }
-        if (inner[index] === "%" && inner[index + 1] === "%") {
-          token += "%";
+    let inQuotes = false;
+    while (index < inner.length) {
+      const char = inner[index];
+      if (!inQuotes && char === " ") {
+        break;
+      }
+      if (!inQuotes && char === "^") {
+        token += inner[index + 1] ?? "";
+        index += 2;
+        continue;
+      }
+      if (char === '"') {
+        if (inQuotes && inner[index + 1] === '"') {
+          token += '"';
           index += 2;
           continue;
         }
-        token += inner[index];
+        inQuotes = !inQuotes;
         index += 1;
+        continue;
       }
-    } else {
-      const start = index;
-      while (index < inner.length && inner[index] !== " ") {
-        index += 1;
-      }
-      token = inner.slice(start, index);
+      token += char;
+      index += 1;
     }
     tokens.push(token);
   }
@@ -78,9 +80,20 @@ describe("windows command quoting", () => {
     expect(argvFromCmdPayload(windowsCmdPayload("npm", args))).toEqual(["npm", ...args]);
   });
 
-  it("doubles quotes and percent signs inside the cmd token", () => {
-    expect(quoteCmdArg('a"b%')).toBe('"a""b%%"');
+  it("escapes percent signs with a caret outside quotes", () => {
+    expect(quoteCmdArg("100%")).toBe("100^%");
+    expect(quoteCmdArg('a"b%')).toBe('"a""b"^%');
+    expect(quoteCmdArg("hello 100% world")).toBe('"hello 100"^%" world"');
     expect(quoteCmdArg("test")).toBe("test");
+    expect(argvFromCmdPayload(windowsCmdPayload("npm", ["100%"]))).toEqual(["npm", "100%"]);
+  });
+
+  it("uses cmd only for batch shims", () => {
+    expect(usesCmdShim("npm")).toBe(true);
+    expect(usesCmdShim("npx")).toBe(true);
+    expect(usesCmdShim("C:\\Program Files\\nodejs\\npm.cmd")).toBe(true);
+    expect(usesCmdShim("C:\\Program Files\\nodejs\\node.exe")).toBe(false);
+    expect(usesCmdShim("cargo")).toBe(false);
   });
 
   it("leaves the npm command unquoted so %~dp0 is the nodejs directory", () => {
