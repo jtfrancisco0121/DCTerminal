@@ -4,6 +4,7 @@ import {
   devSessionCancel,
   devSessionSend,
   devSessionStop,
+  listenPermissionAuto,
   listenPermissionRequests,
   respondPermissionRequest,
   getAppState,
@@ -18,28 +19,33 @@ import {
   selectActiveTab,
   syncActiveTabForm,
   validateAndPreview,
-  type DevPromptResult,
-  type DevSessionInfo,
   type FieldError,
   type Role,
   type RoleSessionStartResult,
   type RoleSummary,
-  type TabSummary,
-  type PermissionRequestEvent,
   type SessionUpdateEvent,
+  type TabSummary,
   type ValidatePreviewResult,
 } from "./bridge";
+import {
+  applyAutoPermission,
+  applyPermission,
+  applyPromptFinished,
+  applySessionUpdate,
+  attentionTabIds,
+  clearLiveSession,
+  emptyRuntime,
+  folderStatusMessage,
+  runtimeFor,
+  type TabRuntime,
+} from "./liveTabs";
 import { SessionTerminal } from "./SessionTerminal";
 import { TabBar } from "./TabBar";
 import {
   appendStreamSegment,
-  finalizeInFlightTools,
-  reconcileAgentStream,
-  streamSegmentFromEvent,
   streamSegmentFromSystemMessage,
   streamSegmentFromUserMessage,
   segmentsToPlainText,
-  type StreamSegment,
 } from "./transcript";
 
 function fieldVisible(
@@ -75,27 +81,41 @@ export function StartupForm({
   const [values, setValues] = useState<Record<string, string>>({ cwd: defaultCwd });
   const [preview, setPreview] = useState<ValidatePreviewResult | null>(null);
   const [previewBusy, setPreviewBusy] = useState(false);
-  const [session, setSession] = useState<DevSessionInfo | null>(null);
-  const [startResult, setStartResult] = useState<RoleSessionStartResult | null>(
-    null,
-  );
-  const [promptInFlight, setPromptInFlight] = useState(false);
-  const [lastPromptResult, setLastPromptResult] = useState<DevPromptResult | null>(
-    null,
-  );
-  const [promptError, setPromptError] = useState<string | null>(null);
-  const [followUp, setFollowUp] = useState("");
+  const [runtimes, setRuntimes] = useState<Record<string, TabRuntime>>({});
   const [busy, setBusy] = useState(false);
-  const [streamSegments, setStreamSegments] = useState<StreamSegment[]>([]);
+  const [savedTranscript, setSavedTranscript] = useState("");
   const [savedTabs, setSavedTabs] = useState<TabSummary[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [resendStartup, setResendStartup] = useState(false);
   const skipRecallRef = useRef(false);
   const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionActiveRef = useRef(false);
-  const pendingUpdatesRef = useRef<SessionUpdateEvent[]>([]);
+  const pendingUpdatesRef = useRef<Record<string, SessionUpdateEvent[]>>({});
   const flushRafRef = useRef<number | null>(null);
   const tabsBootstrappedRef = useRef(false);
+  const startLockRef = useRef(false);
+  const activeTabIdRef = useRef(activeTabId);
+  activeTabIdRef.current = activeTabId;
+  const activeRuntime = runtimeFor(runtimes, activeTabId);
+  const session = activeRuntime.session;
+  const startResult = activeRuntime.startResult;
+  const promptInFlight = activeRuntime.promptInFlight;
+  const lastPromptResult = activeRuntime.lastResult;
+  const promptError = activeRuntime.promptError;
+  const followUp = activeRuntime.followUp;
+  const streamSegments = activeRuntime.segments;
+  const permissionRequest = activeRuntime.permission;
+  const needsAttention = useMemo(() => attentionTabIds(runtimes), [runtimes]);
+
+  const patchRuntime = useCallback(
+    (tabId: string, update: (rt: TabRuntime) => TabRuntime) => {
+      setRuntimes((prev) => ({
+        ...prev,
+        [tabId]: update(prev[tabId] ?? emptyRuntime()),
+      }));
+    },
+    [],
+  );
 
   const loadTabIntoForm = useCallback((tab: {
     roleId: string;
@@ -109,17 +129,7 @@ export function StartupForm({
     setValues({ ...tab.answers, cwd: tab.cwd });
     setActiveTabId(tab.id);
     setPreview(null);
-    if (tab.transcript?.trim()) {
-      setStreamSegments([
-        {
-          id: "restored_transcript",
-          kind: "agent",
-          text: tab.transcript,
-        },
-      ]);
-    } else {
-      setStreamSegments([]);
-    }
+    setSavedTranscript(tab.transcript?.trim() ?? "");
   }, []);
 
   const refreshTabs = useCallback(async () => {
@@ -164,86 +174,69 @@ export function StartupForm({
   }, [session, onSessionActiveChange]);
 
   useEffect(() => {
-    if (!session) return;
-    let unlisten: (() => void) | undefined;
-    listenPermissionRequests((evt) => {
-      if (evt.sessionId !== session.sessionId) return;
-      setPermissionRequest(evt);
-    }).then((fn) => {
-      unlisten = fn;
-    });
-    return () => unlisten?.();
-  }, [session]);
-
-  useEffect(() => {
-    if (!session) return;
-    const sessionId = session.sessionId;
-
+    const pending = pendingUpdatesRef;
     const flushUpdates = () => {
-      const batch = pendingUpdatesRef.current;
-      if (batch.length === 0) return;
-      pendingUpdatesRef.current = [];
-      setStreamSegments((prev) => {
-        let next = prev;
-        for (const evt of batch) {
-          const seg = streamSegmentFromEvent(evt);
-          if (seg) next = appendStreamSegment(next, seg);
+      const batches = pending.current;
+      pending.current = {};
+      const tabIds = Object.keys(batches);
+      if (tabIds.length === 0) return;
+      setRuntimes((prev) => {
+        const next = { ...prev };
+        for (const tabId of tabIds) {
+          let rt = next[tabId] ?? emptyRuntime();
+          for (const evt of batches[tabId]) {
+            rt = applySessionUpdate(rt, evt);
+          }
+          next[tabId] = rt;
         }
         return next;
       });
     };
 
-    let unlisten: (() => void) | undefined;
-    listenSessionUpdates((evt) => {
-      if (evt.sessionId !== sessionId) return;
-      pendingUpdatesRef.current.push(evt);
-      if (flushRafRef.current === null) {
-        flushRafRef.current = requestAnimationFrame(() => {
-          flushRafRef.current = null;
-          flushUpdates();
-        });
+    let cancelled = false;
+    const unlisteners: Array<() => void> = [];
+    void Promise.all([
+      listenSessionUpdates((evt) => {
+        if (!evt.tabId) return;
+        const queue = pending.current[evt.tabId] ?? [];
+        queue.push(evt);
+        pending.current[evt.tabId] = queue;
+        if (flushRafRef.current === null) {
+          flushRafRef.current = requestAnimationFrame(() => {
+            flushRafRef.current = null;
+            flushUpdates();
+          });
+        }
+      }),
+      listenPermissionRequests((evt) => {
+        if (!evt.tabId) return;
+        patchRuntime(evt.tabId, (rt) => applyPermission(rt, evt));
+      }),
+      listenPermissionAuto((evt) => {
+        if (!evt.tabId) return;
+        patchRuntime(evt.tabId, (rt) => applyAutoPermission(rt, evt));
+      }),
+      listenPromptFinished((evt) => {
+        if (!evt.tabId) return;
+        patchRuntime(evt.tabId, (rt) => applyPromptFinished(rt, evt));
+      }),
+    ]).then((fns) => {
+      if (cancelled) {
+        fns.forEach((fn) => fn());
+        return;
       }
-    }).then((fn) => {
-      unlisten = fn;
+      unlisteners.push(...fns);
     });
+
     return () => {
-      unlisten?.();
+      cancelled = true;
+      unlisteners.forEach((fn) => fn());
       if (flushRafRef.current !== null) {
         cancelAnimationFrame(flushRafRef.current);
         flushRafRef.current = null;
       }
-      pendingUpdatesRef.current = [];
     };
-  }, [session]);
-
-  useEffect(() => {
-    if (!session) return;
-    let unlisten: (() => void) | undefined;
-    listenPromptFinished((evt) => {
-      if (evt.sessionId !== session.sessionId) return;
-      setPromptInFlight(false);
-      setPermissionRequest(null);
-      if (evt.success && evt.result) {
-        setLastPromptResult(evt.result);
-        setPromptError(null);
-        setStreamSegments((prev) =>
-          finalizeInFlightTools(
-            reconcileAgentStream(prev, evt.result?.agentText ?? ""),
-            "completed",
-          ),
-        );
-        setStartResult((prev) =>
-          prev ? { ...prev, startupInjected: true } : prev,
-        );
-      } else if (evt.error) {
-        setPromptError(evt.error);
-        setStreamSegments((prev) => finalizeInFlightTools(prev, "cancelled"));
-      }
-    }).then((fn) => {
-      unlisten = fn;
-    });
-    return () => unlisten?.();
-  }, [session]);
+  }, [patchRuntime]);
 
   useEffect(() => {
     if (!roles.some((r) => r.id === roleId) && roles.length > 0) {
@@ -259,7 +252,14 @@ export function StartupForm({
           setRole(r);
           if (!sessionActiveRef.current) {
             setPreview(null);
-            setStartResult(null);
+            const tabId = activeTabIdRef.current;
+            if (tabId) {
+              setRuntimes((prev) => {
+                const rt = prev[tabId];
+                if (!rt?.startResult) return prev;
+                return { ...prev, [tabId]: { ...rt, startResult: null } };
+              });
+            }
           }
         }
       })
@@ -350,25 +350,56 @@ export function StartupForm({
     }
   }, [role, roleId, formValues]);
 
+  const failedStart = (message: string, key = "_session"): RoleSessionStartResult => ({
+    errors: [{ key, message }],
+    session: null,
+    mergedChars: null,
+    injectionStrategy: null,
+    startupInjected: false,
+    injectionInFlight: false,
+    tabId: null,
+    resumedSession: false,
+    skippedStartupInjection: false,
+    folderWarning: null,
+  });
+
   const startSession = useCallback(async () => {
+    if (startLockRef.current) return;
+    startLockRef.current = true;
     setBusy(true);
-    setStartResult(null);
-    setLastPromptResult(null);
-    setPromptError(null);
+    const tabKey = activeTabId;
     const continuing = canContinueSession && !resendStartup;
-    if (continuing) {
-      setStreamSegments((prev) => [
-        ...prev,
-        streamSegmentFromSystemMessage(
-          "Reconnecting to agent (startup prompt skipped). Send a follow-up below to continue.",
-        ),
-      ]);
-    } else {
-      setStreamSegments([
-        streamSegmentFromSystemMessage(
-          "Connecting to agent and sending startup prompt…",
-        ),
-      ]);
+    if (tabKey) {
+      patchRuntime(tabKey, (rt) => {
+        const prior =
+          rt.segments.length > 0
+            ? rt.segments
+            : savedTranscript
+              ? [
+                  {
+                    id: "saved_transcript",
+                    kind: "agent" as const,
+                    text: savedTranscript,
+                  },
+                ]
+              : [];
+        return {
+          ...rt,
+          accepting: true,
+          promptError: null,
+          agentExited: false,
+          startResult: null,
+          lastResult: null,
+          segments: [
+            ...prior,
+            streamSegmentFromSystemMessage(
+              continuing
+                ? "Reconnecting to agent (startup prompt skipped). Send a follow-up below to continue."
+                : "Connecting to agent and sending startup prompt…",
+            ),
+          ],
+        };
+      });
     }
     try {
       const result = await roleSessionStart(
@@ -377,55 +408,62 @@ export function StartupForm({
         activeTabId,
         resendStartup,
       );
-      setStartResult(result);
-      if (result.errors.length > 0) {
-        setSession(null);
-        setStreamSegments([]);
+      const targetId = result.tabId ?? tabKey;
+      if (result.errors.length > 0 || !result.session || !targetId) {
+        if (targetId) {
+          patchRuntime(targetId, (rt) => ({
+            ...clearLiveSession(rt),
+            startResult: result.errors.length > 0 ? result : failedStart("Session did not start"),
+            accepting: false,
+          }));
+        }
         return;
       }
-      setSession(result.session);
-      if (result.tabId) setActiveTabId(result.tabId);
-      setPromptInFlight(!!result.injectionInFlight);
-      if (result.injectionInFlight && !continuing) {
-        setStreamSegments((prev) => {
-          const withoutConnecting = prev.filter(
-            (s) =>
-              s.kind !== "system" ||
-              !s.text.includes("Connecting to agent"),
-          );
+      setActiveTabId(targetId);
+      patchRuntime(targetId, (rt) => {
+        let segments = rt.segments.filter(
+          (s) =>
+            s.kind !== "system" || !s.text.includes("Connecting to agent"),
+        );
+        if (result.injectionInFlight && !continuing) {
           const startupText = preview?.merged?.text?.trim();
-          if (startupText) {
-            return appendStreamSegment(
-              withoutConnecting,
-              streamSegmentFromUserMessage(startupText),
-            );
-          }
-          return [
-            ...withoutConnecting,
-            streamSegmentFromSystemMessage("Startup prompt sent to agent."),
-          ];
-        });
-      }
+          segments = startupText
+            ? appendStreamSegment(segments, streamSegmentFromUserMessage(startupText))
+            : [
+                ...segments,
+                streamSegmentFromSystemMessage("Startup prompt sent to agent."),
+              ];
+        }
+        if (result.folderWarning) {
+          segments = appendStreamSegment(
+            segments,
+            streamSegmentFromSystemMessage(result.folderWarning),
+          );
+        }
+        return {
+          ...rt,
+          session: result.session,
+          startResult: result,
+          promptInFlight: !!result.injectionInFlight,
+          folderWarning: result.folderWarning,
+          promptError: null,
+          agentExited: false,
+          accepting: true,
+          segments,
+        };
+      });
       setPreview(null);
       await refreshTabs();
     } catch (err: unknown) {
-      setStartResult({
-        errors: [
-          {
-            key: "_session",
-            message: err instanceof Error ? err.message : String(err),
-          },
-        ],
-        session: null,
-        mergedChars: null,
-        injectionStrategy: null,
-        startupInjected: false,
-        injectionInFlight: false,
-        tabId: null,
-        resumedSession: false,
-        skippedStartupInjection: false,
-      });
+      const message = err instanceof Error ? err.message : String(err);
+      if (tabKey) {
+        patchRuntime(tabKey, (rt) => ({
+          ...clearLiveSession(rt),
+          startResult: failedStart(message),
+        }));
+      }
     } finally {
+      startLockRef.current = false;
       setBusy(false);
     }
   }, [
@@ -436,48 +474,48 @@ export function StartupForm({
     canContinueSession,
     resendStartup,
     preview,
+    patchRuntime,
+    savedTranscript,
   ]);
 
   const stopSession = useCallback(async () => {
+    if (!activeTabId) return;
     setBusy(true);
     try {
       const scrollback = segmentsToPlainText(streamSegments);
-      await devSessionStop(scrollback || undefined);
-      setSession(null);
-      setStartResult(null);
-      setLastPromptResult(null);
-      setPromptInFlight(false);
-      setPromptError(null);
+      setSavedTranscript(scrollback);
+      await devSessionStop(scrollback || undefined, activeTabId);
+      patchRuntime(activeTabId, (rt) => clearLiveSession(rt));
       await refreshTabs();
     } finally {
       setBusy(false);
     }
-  }, [refreshTabs, streamSegments]);
+  }, [refreshTabs, streamSegments, activeTabId, patchRuntime]);
 
   const handleSelectTab = useCallback(
     async (tabId: string) => {
-      if (session) return;
       setBusy(true);
       try {
         const { tab } = await selectActiveTab(tabId);
-        setSession(null);
-        setStartResult(null);
-        setStreamSegments([]);
         loadTabIntoForm(tab);
         await refreshTabs();
       } finally {
         setBusy(false);
       }
     },
-    [session, loadTabIntoForm, refreshTabs],
+    [loadTabIntoForm, refreshTabs],
   );
 
   const handleCloseTab = useCallback(
     async (tabId: string) => {
-      if (session) return;
       setBusy(true);
       try {
         const snap = await closeTab(tabId);
+        setRuntimes((prev) => {
+          const next = { ...prev };
+          delete next[tabId];
+          return next;
+        });
         setSavedTabs(snap.tabs);
         setActiveTabId(snap.activeTabId);
         if (snap.activeTabId) {
@@ -486,30 +524,22 @@ export function StartupForm({
         } else {
           const recall = await getFormRecall(roleId, defaultCwd);
           setValues({ ...recall.values, cwd: recall.cwd });
+          setSavedTranscript("");
         }
       } finally {
         setBusy(false);
       }
     },
-    [session, roleId, defaultCwd, loadTabIntoForm],
+    [roleId, defaultCwd, loadTabIntoForm],
   );
-
-  const [draftQueuedHint, setDraftQueuedHint] = useState(false);
-  const [permissionRequest, setPermissionRequest] =
-    useState<PermissionRequestEvent | null>(null);
 
   const handleNewTab = useCallback(async () => {
     setBusy(true);
-    setDraftQueuedHint(false);
     try {
       const cwd = session?.cwd ?? values.cwd ?? defaultCwd;
       await newDraftTab(roleId, cwd);
-      await refreshTabs();
-      if (session) {
-        setDraftQueuedHint(true);
-        return;
-      }
       const snap = await getAppState();
+      setSavedTabs(snap.tabs);
       const newActive = snap.activeTabId;
       if (!newActive) return;
       const { tab } = await getTab(newActive);
@@ -518,24 +548,32 @@ export function StartupForm({
       const recall = await getFormRecall(tab.roleId, cwd);
       setValues({ ...recall.values, cwd: recall.cwd });
       setActiveTabId(tab.id);
+      setSavedTranscript("");
+      setPreview(null);
     } finally {
       setBusy(false);
     }
-  }, [session, roleId, values.cwd, defaultCwd, refreshTabs]);
+  }, [session, roleId, values.cwd, defaultCwd]);
 
   const cancelTurn = useCallback(async () => {
+    if (!activeTabId) return;
     setBusy(true);
     try {
-      await devSessionCancel();
-      setPromptInFlight(false);
-      setPermissionRequest(null);
-      setStreamSegments((prev) => finalizeInFlightTools(prev, "cancelled"));
+      await devSessionCancel(activeTabId);
+      patchRuntime(activeTabId, (rt) => ({
+        ...rt,
+        segments: [
+          ...rt.segments,
+          streamSegmentFromSystemMessage("Cancelling the current turn…"),
+        ],
+      }));
     } catch (err: unknown) {
-      setPromptError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      patchRuntime(activeTabId, (rt) => ({ ...rt, promptError: message }));
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [activeTabId, patchRuntime]);
 
   useEffect(() => {
     if (!session || !promptInFlight) return;
@@ -549,48 +587,75 @@ export function StartupForm({
     return () => window.removeEventListener("keydown", onKey);
   }, [session, promptInFlight, cancelTurn]);
 
-  const handlePermissionSelect = useCallback(async (optionId: string) => {
-    setBusy(true);
-    try {
-      await respondPermissionRequest("selected", optionId);
-      setPermissionRequest(null);
-    } catch (err: unknown) {
-      setPromptError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  }, []);
+  const handlePermissionSelect = useCallback(
+    async (optionId: string) => {
+      if (!activeTabId || !permissionRequest) return;
+      setBusy(true);
+      try {
+        await respondPermissionRequest(
+          activeTabId,
+          permissionRequest.jsonRpcId,
+          "selected",
+          optionId,
+        );
+        patchRuntime(activeTabId, (rt) => ({ ...rt, permission: null }));
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        patchRuntime(activeTabId, (rt) => ({ ...rt, promptError: message }));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [activeTabId, permissionRequest, patchRuntime],
+  );
 
   const handlePermissionCancel = useCallback(async () => {
+    if (!activeTabId || !permissionRequest) return;
     setBusy(true);
     try {
-      await respondPermissionRequest("cancelled");
-      setPermissionRequest(null);
+      await respondPermissionRequest(
+        activeTabId,
+        permissionRequest.jsonRpcId,
+        "cancelled",
+      );
+      patchRuntime(activeTabId, (rt) => ({ ...rt, permission: null }));
     } catch (err: unknown) {
-      setPromptError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      patchRuntime(activeTabId, (rt) => ({ ...rt, promptError: message }));
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [activeTabId, permissionRequest, patchRuntime]);
 
   const sendFollowUp = useCallback(async () => {
     const text = followUp.trim();
-    if (!text) return;
+    if (!text || !activeTabId || activeRuntime.agentExited) return;
     setBusy(true);
-    setPromptError(null);
-    setStreamSegments((prev) =>
-      appendStreamSegment(prev, streamSegmentFromUserMessage(text)),
-    );
+    patchRuntime(activeTabId, (rt) => ({
+      ...rt,
+      promptError: null,
+      followUp: "",
+      promptInFlight: true,
+      segments: appendStreamSegment(rt.segments, streamSegmentFromUserMessage(text)),
+    }));
     try {
-      await devSessionSend(text);
-      setPromptInFlight(true);
-      setFollowUp("");
+      await devSessionSend(text, activeTabId);
     } catch (err: unknown) {
-      setPromptError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      patchRuntime(activeTabId, (rt) => ({
+        ...rt,
+        promptError: message,
+        promptInFlight: false,
+      }));
     } finally {
       setBusy(false);
     }
-  }, [followUp]);
+  }, [followUp, activeTabId, activeRuntime.agentExited, patchRuntime]);
+
+  const setFollowUp = (value: string) => {
+    if (!activeTabId) return;
+    patchRuntime(activeTabId, (rt) => ({ ...rt, followUp: value }));
+  };
 
   const setField = (key: string, value: string) => {
     setValues((prev) => ({ ...prev, [key]: value }));
@@ -744,18 +809,13 @@ export function StartupForm({
         <TabBar
           tabs={savedTabs}
           activeTabId={activeTabId}
-          disableSwitch={true}
+          disableSwitch={false}
           disableNew={busy}
+          attentionTabIds={needsAttention}
           onSelect={handleSelectTab}
           onClose={handleCloseTab}
           onNew={handleNewTab}
         />
-        {draftQueuedHint && (
-          <p className="hint tab-draft-hint">
-            Draft tab added — <strong>Stop session</strong> to switch to it and
-            edit the form.
-          </p>
-        )}
         <SessionTerminal
           title={activeTabSummary?.label ?? "Session"}
           cwd={session.cwd}
@@ -773,6 +833,9 @@ export function StartupForm({
           onFollowUpChange={setFollowUp}
           onSendFollowUp={sendFollowUp}
           onStop={stopSession}
+          folderWarning={activeRuntime.folderWarning}
+          agentExited={activeRuntime.agentExited}
+          onRestart={stopSession}
         />
         {lastPromptResult && !promptInFlight && (
           <p className="hint session-turn-hint">
@@ -791,15 +854,16 @@ export function StartupForm({
     <section className="status-card">
       <h2>Start role session</h2>
       <p className="hint">
-        One tab = one workspace. <strong>Start</strong> opens a full-height agent
-        pane (structured stream from <code>agent acp</code>, not a shell PTY).
-        Use <strong>+ New tab</strong> for another task.
+        One tab = one agent. <strong>Start</strong> opens a full-height agent
+        pane. Other tabs can keep their own sessions running. <strong>+ New
+        tab</strong> starts another task without stopping this one.
       </p>
       <TabBar
         tabs={savedTabs}
         activeTabId={activeTabId}
         disableSwitch={busy}
         disableNew={busy}
+        attentionTabIds={needsAttention}
         onSelect={handleSelectTab}
         onClose={handleCloseTab}
         onNew={handleNewTab}
@@ -811,14 +875,18 @@ export function StartupForm({
           follow-up. Check the box above only if you want a full restart.
         </p>
       )}
+      {activeTabSummary &&
+        folderStatusMessage(activeTabSummary.folderStatus, activeTabSummary.cwd) && (
+          <p className="error">
+            {folderStatusMessage(activeTabSummary.folderStatus, activeTabSummary.cwd)}
+          </p>
+        )}
       {composerFields}
       {idleActions}
-      {streamSegments.length > 0 && (
+      {savedTranscript && (
         <details className="startup-form-details" open>
           <summary>Last session transcript (saved on Stop)</summary>
-          <pre className="mono-snippet transcript-saved">
-            {segmentsToPlainText(streamSegments)}
-          </pre>
+          <pre className="mono-snippet transcript-saved">{savedTranscript}</pre>
         </details>
       )}
     </section>

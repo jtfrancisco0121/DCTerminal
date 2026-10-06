@@ -8,33 +8,33 @@
 
 | Field | Value |
 |--------|--------|
-| **Last updated** | 2026-10-06 — session stream polish (tools, status bar) |
-| **Branch** | `master` |
+| **Last updated** | 2026-10-06 — per-tab live sessions and role permission policy |
+| **Branch** | `cursor/per-tab-sessions-afe9` |
 | **Current phase** | Finish MVP vertical slice (see [MVP-FINISH.md](./MVP-FINISH.md)) |
-| **Active task** | P1: transcript persist, scratch pad |
+| **Active task** | P1: transcript persist, scratch pad (ADE roadmap E2+) |
 
 ## Product-ready today
 
-- Role **startup form** → **Start role session** → **follow-up** in session pane (same agent until Stop)
-- **Multi-tab** drafts; **+ New tab** during live session (draft queued until Stop)
+- Role **startup form** → **Start role session** → **follow-up** in session pane
+- **Multi-tab live sessions** — each tab has its own `agent acp` process, transcript, and permission queue
+- **Role policy** — Implementer/Developer auto-allow; Reviewer allows shell + MCP and denies writes; Planner/General block write and shell; MCP allowed for every role. Auto-decisions show in the transcript
 - **Session UI** — full-height terminal-style pane, Markdown + tables; tool rows coalesce; activity + permission banners
 - **Release UI** — dev probes / duplicate dev session hidden (`import.meta.env.DEV` only)
 
-## P0 landed (2026-10-06)
+## Locked product decisions (2026-10-06)
 
-- **Permission card** — `acp/permission-request` + `respond_permission_request`
-- **Cancel turn** — `dev_session_cancel`, Esc, toolbar button
-- **Auth** — `AUTH_ERROR` from handshake → `_auth` form error
-- **Product shell** — release UI without dev probes
+See blueprint §31. ACP chat stays primary. No token tracking. No writes to `~/.cursor` or the user's repo. Plain Ctrl in chat; Ctrl+Shift reserved for a future terminal pane.
 
 ## Not MVP-done yet
-- Transcript persist across Stop / relaunch
+
+- Transcript persist across Stop / relaunch (saved scrollback on Stop only)
+- Scratch pad, keymap overlay (ADE roadmap E2–E3)
 - `session/load` resume (P2)
 - Installers / §21 acceptance on three OSes
 
 ## Next up (strict order)
 
-See **[MVP-FINISH.md](./MVP-FINISH.md)** — P0 items 1–4, then P1.
+See **[MVP-FINISH.md](./MVP-FINISH.md)** — remaining P1 items, then ADE roadmap E2+.
 
 ## Quick commands
 
@@ -42,4 +42,5 @@ See **[MVP-FINISH.md](./MVP-FINISH.md)** — P0 items 1–4, then P1.
 npm run dev:ui    # terminal 1
 npm run dev:app   # terminal 2
 cd src-tauri && cargo test
+npm test
 ```

@@ -10,6 +10,7 @@
     "dev:full": "tauri dev",
     "dev:stable": "npm run build && tauri dev --no-dev-server",
     "build": "tsc && vite build",
+    "test": "vitest run",
     "preview": "vite preview",
     "tauri": "tauri",
     "build:roles": "cargo run --bin build_roles_seed --manifest-path src-tauri/Cargo.toml"
@@ -28,6 +29,7 @@
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^6.0.2",
     "typescript": "~6.0.3",
+    "vitest": "^3.2.4",
     "vite": "^8.0.16"
   }
 }

@@ -7,6 +7,7 @@ type Props = {
   disableSwitch?: boolean;
   /** Disables + New tab (e.g. while a command is in flight). */
   disableNew?: boolean;
+  attentionTabIds?: string[];
   onSelect: (tabId: string) => void;
   onClose: (tabId: string) => void;
   onNew: () => void;
@@ -17,6 +18,7 @@ export function TabBar({
   activeTabId,
   disableSwitch = false,
   disableNew = false,
+  attentionTabIds = [],
   onSelect,
   onClose,
   onNew,
@@ -26,10 +28,11 @@ export function TabBar({
       <div className="tab-list" role="tablist">
         {tabs.map((t) => {
           const active = t.id === activeTabId;
+          const needsAttention = attentionTabIds.includes(t.id);
           return (
             <div
               key={t.id}
-              className={`tab-chip${active ? " tab-chip-active" : ""}`}
+              className={`tab-chip${active ? " tab-chip-active" : ""}${needsAttention ? " tab-chip-attention" : ""}`}
               role="tab"
               aria-selected={active}
             >
@@ -46,17 +49,24 @@ export function TabBar({
                 />
                 {t.label}
               </button>
-              {t.phase !== "running" && (
-                <button
-                  type="button"
-                  className="tab-chip-close"
-                  onClick={() => onClose(t.id)}
-                  disabled={disableSwitch}
-                  aria-label={`Close ${t.label}`}
-                >
-                  ×
-                </button>
-              )}
+              <button
+                type="button"
+                className="tab-chip-close"
+                onClick={() => onClose(t.id)}
+                disabled={disableSwitch}
+                aria-label={
+                  t.phase === "running"
+                    ? `Stop and close ${t.label}`
+                    : `Close ${t.label}`
+                }
+                title={
+                  t.phase === "running"
+                    ? "Stops this tab's agent and closes the tab"
+                    : undefined
+                }
+              >
+                ×
+              </button>
             </div>
           );
         })}
@@ -66,11 +76,7 @@ export function TabBar({
         className="secondary-button tab-new"
         onClick={onNew}
         disabled={disableNew}
-        title={
-          disableSwitch && !disableNew
-            ? "Creates a draft tab — stop the session to switch to it"
-            : undefined
-        }
+        title="Open another tab. Other sessions keep running."
       >
         + New tab
       </button>

@@ -1,20 +1,19 @@
-use crate::commands::dev_session::{wrap_client, DevSessionInfo, DevSessionState};
+use crate::acp::AcpClient;
+use crate::commands::dev_session::{DevSessionInfo, LiveSession, SessionRegistry};
 use crate::commands::prompt_worker::spawn_prompt_turn;
 use crate::orchestrator::{injection_strategy_from_role, InjectionStrategy};
+use crate::paths::{same_folder_warning, validate_working_folder};
 use crate::store::{FormsStore, RolesStore, StateStore, TabSessionRef};
-use crate::template::merge_role_prompt;
+use crate::template::{merge_role_prompt, FieldError};
 use serde::Serialize;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{AppHandle, State};
-
-use crate::acp::AcpClient;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RoleSessionStartResult {
-    pub errors: Vec<crate::template::FieldError>,
+    pub errors: Vec<FieldError>,
     pub session: Option<DevSessionInfo>,
     pub merged_chars: Option<usize>,
     pub injection_strategy: Option<String>,
@@ -23,9 +22,32 @@ pub struct RoleSessionStartResult {
     pub tab_id: Option<String>,
     pub resumed_session: bool,
     pub skipped_startup_injection: bool,
+    pub folder_warning: Option<String>,
+}
+
+fn empty_start(errors: Vec<FieldError>) -> RoleSessionStartResult {
+    RoleSessionStartResult {
+        errors,
+        session: None,
+        merged_chars: None,
+        injection_strategy: None,
+        startup_injected: false,
+        injection_in_flight: false,
+        tab_id: None,
+        resumed_session: false,
+        skipped_startup_injection: false,
+        folder_warning: None,
+    }
+}
+
+fn finish_starting(state: &Mutex<SessionRegistry>, key: &str) {
+    if let Ok(mut guard) = state.lock() {
+        guard.finish_start(key);
+    }
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri injects each managed state as its own argument.
 pub fn role_session_start(
     app: AppHandle,
     role_id: String,
@@ -33,7 +55,7 @@ pub fn role_session_start(
     tab_id: Option<String>,
     resend_startup: Option<bool>,
     store: State<Mutex<RolesStore>>,
-    state: State<Mutex<DevSessionState>>,
+    state: State<Mutex<SessionRegistry>>,
     state_store: State<Mutex<StateStore>>,
     forms_store: State<Mutex<FormsStore>>,
 ) -> Result<RoleSessionStartResult, String> {
@@ -47,17 +69,7 @@ pub fn role_session_start(
 
     let preview = merge_role_prompt(&role, &values);
     if !preview.errors.is_empty() {
-        return Ok(RoleSessionStartResult {
-            errors: preview.errors,
-            session: None,
-            merged_chars: None,
-            injection_strategy: None,
-            startup_injected: false,
-            injection_in_flight: false,
-            tab_id: None,
-            resumed_session: false,
-            skipped_startup_injection: false,
-        });
+        return Ok(empty_start(preview.errors));
     }
 
     let merged = preview
@@ -65,12 +77,20 @@ pub fn role_session_start(
         .ok_or_else(|| "merge succeeded but produced no text".to_string())?;
     let merged_text = merged.text.clone();
 
-    let cwd = values
+    let cwd_raw = values
         .get("cwd")
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .ok_or_else(|| "cwd is required".to_string())?;
-    let path = PathBuf::from(cwd);
+    let path = match validate_working_folder(cwd_raw) {
+        Ok(path) => path,
+        Err(err) => {
+            return Ok(empty_start(vec![FieldError {
+                key: "cwd".to_string(),
+                message: err.message(),
+            }]));
+        }
+    };
 
     let strategy = injection_strategy_from_role(&role.injection);
     let strategy_label = match strategy {
@@ -78,51 +98,62 @@ pub fn role_session_start(
         InjectionStrategy::AttachToFirstMessage => "attach_to_first_message",
     };
 
-    let mut guard = state.lock().map_err(|e| e.to_string())?;
-    if !guard.phase.can_submit_startup_form() {
-        return Err("a session is already running — stop it first".to_string());
-    }
-    if guard.prompt_in_flight {
-        return Err("a prompt is already running".to_string());
-    }
-    if let Some(existing) = guard.client.take() {
-        if let Ok(mut c) = existing.lock() {
-            c.shutdown();
+    let start_key = tab_id
+        .clone()
+        .unwrap_or_else(|| "__role_start__".to_string());
+    {
+        let mut guard = state.lock().map_err(|e| e.to_string())?;
+        if let Err(err) = guard.try_begin_start(&start_key) {
+            return Ok(empty_start(vec![FieldError {
+                key: "_session".to_string(),
+                message: err,
+            }]));
         }
     }
-    guard.pending_startup_prompt = None;
-    guard.startup_injected = false;
 
     let client = match AcpClient::connect(&path, &role.default_mode) {
-        Err(e) if e.starts_with("AUTH_ERROR:") => {
+        Err(e) if e.starts_with("AUTH_ERROR:") || e.contains("AUTH_ERROR:") => {
+            finish_starting(&state, &start_key);
             let msg = e
-                .trim_start_matches("AUTH_ERROR:")
+                .split("AUTH_ERROR:")
+                .nth(1)
+                .unwrap_or(e.as_str())
                 .trim()
                 .to_string();
-            return Ok(RoleSessionStartResult {
-                errors: vec![crate::template::FieldError {
-                    key: "_auth".to_string(),
-                    message: format!(
-                        "Cursor CLI is not authenticated. Run `agent login` in a terminal, then Retry. ({msg})"
-                    ),
-                }],
-                session: None,
-                merged_chars: None,
-                injection_strategy: None,
-                startup_injected: false,
-                injection_in_flight: false,
-                tab_id: None,
-                resumed_session: false,
-                skipped_startup_injection: false,
-            });
+            return Ok(empty_start(vec![FieldError {
+                key: "_auth".to_string(),
+                message: format!(
+                    "Cursor CLI is not authenticated. Run `agent login` in a terminal, then Retry. ({msg})"
+                ),
+            }]));
         }
-        Err(e) => return Err(e),
+        Err(e) if is_cli_missing(&e) => {
+            finish_starting(&state, &start_key);
+            return Ok(empty_start(vec![FieldError {
+                key: "_cli".to_string(),
+                message: e,
+            }]));
+        }
+        Err(e) => {
+            finish_starting(&state, &start_key);
+            return Err(e);
+        }
         Ok(client) => client,
     };
+
     let info = DevSessionInfo {
         session_id: client.session_id().to_string(),
         mode_id: client.mode_id().to_string(),
         cwd: client.cwd().display().to_string(),
+    };
+    let folder_warning = {
+        let guard = state.lock().map_err(|e| e.to_string())?;
+        let others = guard.agent_folders_except(&start_key);
+        let refs: Vec<(&str, &str)> = others
+            .iter()
+            .map(|(cwd, mode)| (cwd.as_str(), mode.as_str()))
+            .collect();
+        same_folder_warning(&info.cwd, &info.mode_id, &refs)
     };
 
     let session_ref = TabSessionRef {
@@ -138,51 +169,60 @@ pub fn role_session_start(
         store.should_skip_startup_injection(tab_id.as_deref(), resend)
     };
 
-    let tab_id = {
+    let persisted_tab_id = {
         let mut store = state_store.lock().map_err(|e| e.to_string())?;
-        store.promote_tab_to_running(
+        match store.promote_tab_to_running(
             tab_id.as_deref(),
             &role,
             &values,
             &info.cwd,
             &merged_text,
             session_ref,
-        )?
+        ) {
+            Ok(id) => id,
+            Err(err) => {
+                finish_starting(&state, &start_key);
+                // Drop the process we just spawned.
+                let mut live = LiveSession::from_client(&start_key, &role.id, client);
+                live.shutdown();
+                return Err(err);
+            }
+        }
     };
 
-    guard.client = Some(wrap_client(client));
-    guard.phase = guard
-        .phase
-        .after_session_started()
-        .map_err(|e| e.to_string())?;
-    guard.active_tab_id = Some(tab_id.clone());
+    let mut live = LiveSession::from_client(&persisted_tab_id, &role.id, client);
+    let mut injection_in_flight = false;
+    if skip_startup {
+        live.startup_injected = true;
+    } else if strategy == InjectionStrategy::AttachToFirstMessage {
+        live.pending_startup_prompt = Some(merged_text.clone());
+    } else {
+        live.prompt_in_flight = true;
+        injection_in_flight = true;
+    }
+
+    {
+        let mut guard = state.lock().map_err(|e| e.to_string())?;
+        guard.finish_start(&start_key);
+        if persisted_tab_id != start_key {
+            guard.finish_start(&persisted_tab_id);
+        }
+        guard.insert(live);
+    }
 
     {
         let mut forms = forms_store.lock().map_err(|e| e.to_string())?;
         forms.save_after_session_start(&role, &info.cwd, &values)?;
     }
 
-    let mut injection_in_flight = false;
-
-    if skip_startup {
-        guard.startup_injected = true;
-    } else {
-        match strategy {
-            InjectionStrategy::SendOnStart => {
-                guard.prompt_in_flight = true;
-                injection_in_flight = true;
-                spawn_prompt_turn(
-                    app,
-                    merged_text,
-                    Some(tab_id.clone()),
-                    true,
-                    true,
-                );
-            }
-            InjectionStrategy::AttachToFirstMessage => {
-                guard.pending_startup_prompt = Some(merged_text);
-            }
-        }
+    if injection_in_flight {
+        spawn_prompt_turn(
+            app,
+            persisted_tab_id.clone(),
+            merged_text,
+            true,
+            true,
+        );
     }
 
     Ok(RoleSessionStartResult {
@@ -192,8 +232,16 @@ pub fn role_session_start(
         injection_strategy: Some(strategy_label.to_string()),
         startup_injected: skip_startup,
         injection_in_flight,
-        tab_id: Some(tab_id),
+        tab_id: Some(persisted_tab_id),
         resumed_session: skip_startup,
         skipped_startup_injection: skip_startup,
+        folder_warning,
     })
+}
+
+fn is_cli_missing(err: &str) -> bool {
+    let lower = err.to_lowercase();
+    lower.contains("was not found")
+        || lower.contains("not found")
+        || lower.contains("dct_agent_path")
 }

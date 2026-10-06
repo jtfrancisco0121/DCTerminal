@@ -1,9 +1,12 @@
-use super::connection::{AcpConnection, LineDispatch};
+use super::connection::{AcpConnection, LineDispatch, TurnControl};
+use super::ndjson::session_prompt_params;
 use super::session_connect::handshake;
+use crate::process_tree::SharedProcess;
 use crate::supervisor::AgentSupervisor;
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -15,6 +18,8 @@ pub struct AcpClient {
     mode_id: String,
     cwd: PathBuf,
     next_id: u64,
+    cancel: Arc<AtomicBool>,
+    outbox: Arc<Mutex<Vec<(u64, Value)>>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -27,18 +32,31 @@ pub struct PromptResult {
 
 impl AcpClient {
     pub fn connect(cwd: &Path, mode_id: &str) -> Result<Self, String> {
-        if !cwd.is_dir() {
-            return Err(format!("working folder does not exist: {}", cwd.display()));
-        }
-        let mut conn = AgentSupervisor::spawn_default(cwd)?;
-        let (session_id, mode) = handshake(&mut conn, cwd, mode_id)?;
+        let folder = crate::paths::validate_working_folder(&cwd.display().to_string())
+            .map_err(|err| err.message())?;
+        let mut conn = AgentSupervisor::spawn_default(&folder)?;
+        let (session_id, mode) = handshake(&mut conn, &folder, mode_id)?;
         Ok(Self {
             conn,
             session_id,
             mode_id: mode,
-            cwd: cwd.to_path_buf(),
+            cwd: folder,
             next_id: 5,
+            cancel: Arc::new(AtomicBool::new(false)),
+            outbox: Arc::new(Mutex::new(Vec::new())),
         })
+    }
+
+    pub fn process_handle(&self) -> SharedProcess {
+        self.conn.process_handle()
+    }
+
+    pub fn cancel_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.cancel)
+    }
+
+    pub fn outbox(&self) -> Arc<Mutex<Vec<(u64, Value)>>> {
+        Arc::clone(&self.outbox)
     }
 
     pub fn session_id(&self) -> &str {
@@ -56,13 +74,14 @@ impl AcpClient {
     pub fn send_prompt(
         &mut self,
         text: &str,
-        on_notification: Option<Box<dyn FnMut(&Value)>>,
+        on_notification: Option<super::connection::NotificationHandler>,
         on_agent_request: Option<super::connection::AgentRequestHandler>,
-        agent_response_outbox: Option<Arc<Mutex<Vec<(u64, Value)>>>>,
     ) -> Result<PromptResult, String> {
         if text.trim().is_empty() {
             return Err("prompt text is empty".to_string());
         }
+        // A cancel that arrived before this turn is stale.
+        self.cancel.store(false, Ordering::SeqCst);
         let id = self.next_id;
         self.next_id += 1;
         let mut dispatch = LineDispatch::default();
@@ -72,16 +91,21 @@ impl AcpClient {
         if let Some(handler) = on_agent_request {
             dispatch.set_on_agent_request(handler);
         }
+        let outbox = Arc::clone(&self.outbox);
+        let session_for_prompt = self.session_id.clone();
+        let mut turn = TurnControl {
+            cancel: self.cancel.as_ref(),
+            session_id: &session_for_prompt,
+            next_id: &mut self.next_id,
+            outbox: Some(outbox),
+        };
         let result = self.conn.call_with_dispatch(
             id,
             "session/prompt",
-            json!({
-                "sessionId": self.session_id,
-                "prompt": [{ "type": "text", "text": text }]
-            }),
+            session_prompt_params(&session_for_prompt, text),
             PROMPT_TIMEOUT,
             &mut dispatch,
-            agent_response_outbox,
+            Some(&mut turn),
         )?;
         let stop_reason = result
             .get("stopReason")
@@ -95,21 +119,6 @@ impl AcpClient {
         })
     }
 
-    pub fn cancel_turn(&mut self) -> Result<(), String> {
-        let id = self.next_id;
-        self.next_id += 1;
-        self.conn.call(
-            id,
-            "session/cancel",
-            json!({ "sessionId": self.session_id }),
-            Duration::from_secs(10),
-        )?;
-        Ok(())
-    }
-
-    pub fn shutdown(&mut self) {
-        self.conn.kill();
-    }
 }
 
 fn extract_agent_text(dispatch: &LineDispatch) -> String {

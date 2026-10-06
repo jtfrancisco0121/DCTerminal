@@ -1,3 +1,4 @@
+use crate::orchestrator::TabPhase;
 use crate::roles::Role;
 use crate::store::json_io::{read_json, write_json_atomic};
 use crate::store::state_types::{
@@ -80,7 +81,11 @@ impl StateStore {
             tab.answers = answers.clone();
             tab.merged_prompt = merged_prompt.to_string();
             tab.merged_prompt_hash = merged_hash;
-            tab.phase = "running".to_string();
+            tab.phase = TabPhase::AwaitingInput
+                .after_session_started()
+                .map_err(|err| err.to_string())?
+                .as_store_str()
+                .to_string();
             tab.session = Some(session);
             self.data.active_tab_id = Some(tab_id.clone());
             self.save()?;
@@ -97,7 +102,7 @@ impl StateStore {
             answers: answers.clone(),
             merged_prompt: merged_prompt.to_string(),
             merged_prompt_hash: merged_hash,
-            phase: "running".to_string(),
+            phase: TabPhase::Running.as_store_str().to_string(),
             order: next_tab_order(&self.data),
             created_at: Utc::now().to_rfc3339(),
             session: Some(session),
@@ -148,7 +153,7 @@ impl StateStore {
         let mut changed = false;
         for tab in &mut self.data.tabs {
             if tab.phase == "running" {
-                tab.phase = "awaitingInput".to_string();
+                tab.phase = TabPhase::Running.after_session_stopped().as_store_str().to_string();
                 tab.session = None;
                 changed = true;
             }
@@ -170,7 +175,7 @@ impl StateStore {
             .iter_mut()
             .find(|t| t.id == tab_id)
             .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
-        tab.phase = "awaitingInput".to_string();
+        tab.phase = TabPhase::Running.after_session_stopped().as_store_str().to_string();
         tab.session = None;
         if let Some(text) = transcript {
             let trimmed = text.trim();
@@ -197,10 +202,6 @@ impl StateStore {
             .iter()
             .position(|t| t.id == tab_id)
             .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
-        let tab = &self.data.tabs[idx];
-        if tab.phase == "running" {
-            return Err("cannot close a running tab — stop the session first".to_string());
-        }
         self.data.tabs.remove(idx);
         if self.data.active_tab_id.as_deref() == Some(tab_id) {
             self.data.active_tab_id = self
@@ -349,13 +350,21 @@ pub(crate) fn tab_label(role_name: &str, answers: &HashMap<String, String>) -> S
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
     {
-        let folder = std::path::Path::new(cwd)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(cwd);
+        let folder = folder_display_name(cwd);
         return format!("{role_name} · {folder}");
     }
     role_name.to_string()
+}
+
+/// Last path segment, treating both `/` and `\` as separators so Windows
+/// paths still label tabs when the host (or a test) is not Windows.
+fn folder_display_name(cwd: &str) -> &str {
+    let trimmed = cwd.trim().trim_end_matches(['/', '\\']);
+    trimmed
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|part| !part.is_empty())
+        .unwrap_or(trimmed)
 }
 
 #[cfg(test)]

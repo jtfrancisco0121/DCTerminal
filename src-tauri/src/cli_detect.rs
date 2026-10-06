@@ -24,13 +24,16 @@ pub fn resolve_agent_executable() -> Option<PathBuf> {
         return Some(path);
     }
 
-    for candidate in known_install_candidates() {
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
+    known_install_candidates()
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+}
 
-    None
+pub fn agent_missing_message() -> String {
+    "Cursor CLI (agent) was not found. Install it from https://cursor.com/docs/cli/installation, \
+     add it to PATH (on Windows the shim is often %LOCALAPPDATA%\\cursor-agent\\agent.cmd), \
+     or set DCT_AGENT_PATH to the executable. Then run `agent login` in a terminal."
+        .to_string()
 }
 
 pub fn detect_agent() -> CliDetectResult {
@@ -48,9 +51,7 @@ pub fn detect_agent() -> CliDetectResult {
             found: false,
             path: None,
             version: None,
-            error: Some(
-                "Cursor CLI (agent) not found. Install the Cursor CLI, add it to PATH, or set DCT_AGENT_PATH.".to_string(),
-            ),
+            error: Some(agent_missing_message()),
         },
     }
 }

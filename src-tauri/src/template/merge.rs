@@ -17,19 +17,15 @@ pub fn merge_template(
 ) -> MergeResult {
     let mut text = template.to_string();
     for field in fields {
-        if !field_visible(field, values) {
-            let token = format!("{{{{{}}}}}", field.key);
-            text = text.replace(&token, "");
+        let token = format!("{{{{{}}}}}", field.key);
+        let raw = values.get(&field.key).map(|s| s.as_str()).unwrap_or("");
+        let blank = raw.trim().is_empty();
+        let hidden = !field_visible(field, values);
+        if hidden || (blank && !field.required) {
+            text = apply_empty_behavior(&text, &token, field);
             continue;
         }
-        let raw = values.get(&field.key).map(|s| s.as_str()).unwrap_or("");
-        let replacement = if raw.trim().is_empty() && !field.required {
-            empty_replacement(field)
-        } else {
-            raw.to_string()
-        };
-        let token = format!("{{{{{}}}}}", field.key);
-        text = text.replace(&token, &replacement);
+        text = text.replace(&token, raw);
     }
 
     for (key, value) in values {
@@ -39,7 +35,6 @@ pub fn merge_template(
         }
     }
 
-    text = apply_remove_line_cleanup(&text);
     let unresolved = find_unresolved_tokens(&text);
     let char_count = text.len();
     MergeResult {
@@ -49,20 +44,43 @@ pub fn merge_template(
     }
 }
 
-fn empty_replacement(field: &RoleField) -> String {
+/// Optional blanks and hidden fields follow `emptyBehavior`.
+/// `remove_line` (the default) drops the line when it is only the token or a label.
+/// `literal:…` inserts that text. `empty` inserts nothing and keeps the line.
+fn apply_empty_behavior(text: &str, token: &str, field: &RoleField) -> String {
     match field.empty_behavior.as_deref() {
-        Some(s) if s.starts_with("literal:") => s.trim_start_matches("literal:").to_string(),
-        Some("empty") => String::new(),
-        _ => String::new(),
+        Some(s) if s.starts_with("literal:") => {
+            text.replace(token, s.trim_start_matches("literal:"))
+        }
+        Some("empty") => text.replace(token, ""),
+        _ => remove_token_line(text, token),
     }
 }
 
-/// Drop lines that are empty or only whitespace after optional-field removal.
-fn apply_remove_line_cleanup(text: &str) -> String {
-    text.lines()
-        .filter(|line| !line.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
+fn remove_token_line(text: &str, token: &str) -> String {
+    let mut kept = Vec::new();
+    for line in text.lines() {
+        if !line.contains(token) {
+            kept.push(line.to_string());
+            continue;
+        }
+        let rest = line.replace(token, "");
+        let trimmed = rest.trim();
+        if trimmed.is_empty() || is_label_only(trimmed) {
+            continue;
+        }
+        kept.push(rest);
+    }
+    kept.join("\n")
+}
+
+fn is_label_only(trimmed: &str) -> bool {
+    let without_colon = trimmed.trim().trim_end_matches(':').trim();
+    trimmed.ends_with(':')
+        && !without_colon.is_empty()
+        && without_colon
+            .chars()
+            .all(|c| c.is_alphanumeric() || c.is_whitespace() || c == '-' || c == '_')
 }
 
 fn find_unresolved_tokens(text: &str) -> Vec<String> {

@@ -22,4 +22,11 @@ impl TabPhase {
     pub fn after_session_stopped(self) -> TabPhase {
         TabPhase::AwaitingInput
     }
+
+    pub fn as_store_str(self) -> &'static str {
+        match self {
+            TabPhase::AwaitingInput => "awaitingInput",
+            TabPhase::Running => "running",
+        }
+    }
 }

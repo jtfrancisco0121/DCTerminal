@@ -1,6 +1,9 @@
 mod acp;
 mod cli_detect;
 mod commands;
+mod paths;
+mod permissions;
+mod process_tree;
 mod orchestrator;
 pub mod roles;
 pub mod store;
@@ -14,7 +17,7 @@ use commands::{
     get_app_state, respond_permission_request,
     get_form_recall, get_role, get_tab, list_roles, new_draft_tab, role_session_start,
     save_form_draft, select_active_tab, sync_active_tab_form, validate_and_preview,
-    DevSessionState,
+    SessionRegistry,
 };
 use store::{FormsStore, RolesStore, StateStore};
 use std::sync::Mutex;
@@ -32,7 +35,7 @@ pub fn run() {
             app.manage(Mutex::new(store));
             app.manage(Mutex::new(state_store));
             app.manage(Mutex::new(forms_store));
-            app.manage(Mutex::new(DevSessionState::new()));
+            app.manage(Mutex::new(SessionRegistry::new()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -57,6 +60,15 @@ pub fn run() {
             respond_permission_request,
             role_session_start,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app_handle, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                if let Some(state) = app_handle.try_state::<Mutex<SessionRegistry>>() {
+                    if let Ok(mut guard) = state.lock() {
+                        guard.shutdown_all();
+                    }
+                }
+            }
+        });
 }

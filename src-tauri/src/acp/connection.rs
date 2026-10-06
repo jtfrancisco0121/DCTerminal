@@ -1,19 +1,41 @@
+use super::ndjson::{
+    acp_launch_args, consecutive_malformed_limit, parse_acp_line, read_capped_line, CappedRead,
+    ParsedLine, MAX_ACP_LINE_BYTES,
+};
 use super::request_handler::{is_permission_method, response_for_agent_request};
+use crate::process_tree::{prepare_command, SharedProcess};
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Write};
 use std::path::Path;
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::{Arc, Mutex, mpsc::{self, Receiver}};
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(30);
-const STDERR_RING_MAX: usize = 200;
+const STDERR_RING_MAX: usize = 40;
+const CANCEL_GRACE: Duration = Duration::from_secs(20);
 
 pub type AgentRequestHandler = Box<dyn FnMut(&Value) -> Result<Option<Value>, String>>;
+pub type NotificationHandler = Box<dyn FnMut(&Value)>;
+pub type AgentOutbox = Arc<Mutex<Vec<(u64, Value)>>>;
+
+enum ReaderMsg {
+    Line(String),
+    TooLarge,
+}
+
+pub struct TurnControl<'a> {
+    pub cancel: &'a AtomicBool,
+    pub session_id: &'a str,
+    pub next_id: &'a mut u64,
+    pub outbox: Option<AgentOutbox>,
+}
 
 pub struct LineDispatch {
     pub notifications: Vec<Value>,
-    on_notification: Option<Box<dyn FnMut(&Value)>>,
+    on_notification: Option<NotificationHandler>,
     pub on_agent_request: Option<AgentRequestHandler>,
 }
 
@@ -30,7 +52,7 @@ impl LineDispatch {
         self.on_agent_request = Some(handler);
     }
 
-    pub fn set_on_notification(&mut self, handler: Box<dyn FnMut(&Value)>) {
+    pub fn set_on_notification(&mut self, handler: NotificationHandler) {
         self.on_notification = Some(handler);
     }
 
@@ -49,66 +71,94 @@ impl Default for LineDispatch {
 }
 
 pub struct AcpConnection {
-    child: Child,
-    stdin: ChildStdin,
-    lines: Receiver<String>,
+    process: SharedProcess,
+    stdin: std::process::ChildStdin,
+    lines: Receiver<ReaderMsg>,
+    stderr_tail: Arc<Mutex<Vec<String>>>,
 }
 
 impl AcpConnection {
     pub fn spawn(agent_path: &Path, cwd: Option<&Path>) -> std::io::Result<Self> {
         let mut command = Command::new(agent_path);
+        for arg in acp_launch_args() {
+            command.arg(*arg);
+        }
         command
-            .arg("acp")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         if let Some(dir) = cwd {
             command.current_dir(dir);
         }
+        prepare_command(&mut command);
         let mut child = command.spawn()?;
         let stdin = child.stdin.take().expect("stdin piped");
         let stdout = child.stdout.take().expect("stdout piped");
         let stderr = child.stderr.take();
+        let process = SharedProcess::from_child(child);
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
-            let mut line = String::new();
-            while reader.read_line(&mut line).is_ok() {
-                if line.trim().is_empty() {
-                    line.clear();
-                    continue;
-                }
-                if tx.send(line.clone()).is_err() {
-                    break;
-                }
-                line.clear();
-            }
-        });
-        if let Some(stderr) = stderr {
-            std::thread::spawn(move || {
-                let mut reader = BufReader::new(stderr);
-                let mut line = String::new();
-                let ring: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-                while reader.read_line(&mut line).is_ok() {
-                    let trimmed = line.trim();
-                    if !trimmed.is_empty() {
-                        if let Ok(mut buf) = ring.lock() {
-                            buf.push(trimmed.to_string());
-                            if buf.len() > STDERR_RING_MAX {
-                                let drop = buf.len() - STDERR_RING_MAX;
-                                buf.drain(0..drop);
-                            }
+            loop {
+                match read_capped_line(&mut reader, MAX_ACP_LINE_BYTES) {
+                    Ok(CappedRead::Line(bytes)) => {
+                        let line = String::from_utf8_lossy(&bytes).into_owned();
+                        if tx.send(ReaderMsg::Line(line)).is_err() {
+                            break;
                         }
                     }
-                    line.clear();
+                    Ok(CappedRead::TooLarge) => {
+                        if tx.send(ReaderMsg::TooLarge).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(CappedRead::EofPartial(bytes)) => {
+                        if !bytes.is_empty() {
+                            let line = String::from_utf8_lossy(&bytes).into_owned();
+                            let _ = tx.send(ReaderMsg::Line(line));
+                        }
+                        break;
+                    }
+                    Ok(CappedRead::Eof) | Err(_) => break,
+                }
+            }
+        });
+        let stderr_tail = Arc::new(Mutex::new(Vec::new()));
+        if let Some(stderr) = stderr {
+            let ring = Arc::clone(&stderr_tail);
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(stderr);
+                loop {
+                    match read_capped_line(&mut reader, 64 * 1024) {
+                        Ok(CappedRead::Line(bytes)) => {
+                            let trimmed = String::from_utf8_lossy(&bytes).trim().to_string();
+                            if trimmed.is_empty() {
+                                continue;
+                            }
+                            if let Ok(mut buf) = ring.lock() {
+                                buf.push(trimmed);
+                                if buf.len() > STDERR_RING_MAX {
+                                    let drop_n = buf.len() - STDERR_RING_MAX;
+                                    buf.drain(0..drop_n);
+                                }
+                            }
+                        }
+                        Ok(CappedRead::TooLarge) | Ok(CappedRead::EofPartial(_)) => continue,
+                        Ok(CappedRead::Eof) | Err(_) => break,
+                    }
                 }
             });
         }
         Ok(Self {
-            child,
+            process,
             stdin,
             lines: rx,
+            stderr_tail,
         })
+    }
+
+    pub fn process_handle(&self) -> SharedProcess {
+        self.process.clone()
     }
 
     pub fn request(&mut self, id: u64, method: &str, params: Value) -> Result<(), String> {
@@ -146,10 +196,7 @@ impl AcpConnection {
         }))
     }
 
-    fn flush_agent_response_outbox(
-        &mut self,
-        outbox: &Arc<Mutex<Vec<(u64, Value)>>>,
-    ) -> Result<(), String> {
+    fn flush_agent_response_outbox(&mut self, outbox: &AgentOutbox) -> Result<(), String> {
         let pending: Vec<(u64, Value)> = outbox
             .lock()
             .map_err(|e| e.to_string())?
@@ -176,9 +223,8 @@ impl AcpConnection {
                 let is_permission = is_permission_method(method);
                 if is_permission {
                     if let Some(handler) = &mut dispatch.on_agent_request {
-                        match handler(value)? {
-                            Some(result) => self.respond_result(req_id, result)?,
-                            None => {}
+                        if let Some(result) = handler(value)? {
+                            self.respond_result(req_id, result)?;
                         }
                     } else {
                         let result = response_for_agent_request(value);
@@ -188,9 +234,8 @@ impl AcpConnection {
                     let result = response_for_agent_request(value);
                     self.respond_result(req_id, result)?;
                 } else if let Some(handler) = &mut dispatch.on_agent_request {
-                    match handler(value)? {
-                        Some(result) => self.respond_result(req_id, result)?,
-                        None => {}
+                    if let Some(result) = handler(value)? {
+                        self.respond_result(req_id, result)?;
                     }
                 } else {
                     self.respond_error(req_id, -32601, "Method not found")?;
@@ -221,53 +266,127 @@ impl AcpConnection {
         params: Value,
         timeout: Duration,
         dispatch: &mut LineDispatch,
-        agent_response_outbox: Option<Arc<Mutex<Vec<(u64, Value)>>>>,
+        mut turn: Option<&mut TurnControl<'_>>,
     ) -> Result<Value, String> {
         self.request(id, method, params)?;
         let deadline = Instant::now() + timeout;
+        let mut consecutive_bad = 0u32;
+        let mut cancel_deadline: Option<Instant> = None;
         while Instant::now() < deadline {
-            if let Some(outbox) = &agent_response_outbox {
-                self.flush_agent_response_outbox(outbox)?;
+            if let Some(ctrl) = turn.as_deref_mut() {
+                if let Some(outbox) = ctrl.outbox.clone() {
+                    self.flush_agent_response_outbox(&outbox)?;
+                }
+            }
+            let cancel_now = if let Some(ctrl) = turn.as_deref_mut() {
+                if ctrl.cancel.swap(false, Ordering::SeqCst) {
+                    let cid = *ctrl.next_id;
+                    *ctrl.next_id += 1;
+                    Some((cid, ctrl.session_id.to_string()))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            if let Some((cid, sid)) = cancel_now {
+                self.request(cid, "session/cancel", json!({ "sessionId": sid }))?;
+                cancel_deadline = Some(Instant::now() + CANCEL_GRACE);
+            }
+            if let Some(limit) = cancel_deadline {
+                if Instant::now() >= limit {
+                    return Ok(json!({ "stopReason": "cancelled" }));
+                }
+            }
+            if let Ok(Some(status)) = self.process.try_wait() {
+                return Err(self.exit_error(Some(status.to_string())));
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             let wait = remaining.min(Duration::from_millis(50));
             match self.lines.recv_timeout(wait) {
-                Ok(line) => {
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() {
-                        continue;
+                Ok(ReaderMsg::TooLarge) => {
+                    consecutive_bad += 1;
+                    if consecutive_bad >= consecutive_malformed_limit() {
+                        return Err(
+                            "agent stdout sent too many oversized or malformed lines (line exceeded size limit)"
+                                .to_string(),
+                        );
                     }
-                    let value: Value = serde_json::from_str(trimmed)
-                        .map_err(|e| format!("invalid JSON line: {e}"))?;
-
-                    if value.get("method").is_some() {
-                        self.handle_incoming_line(&value, dispatch)?;
-                        continue;
-                    }
-
-                    if value.get("id").and_then(|v| v.as_u64()) == Some(id) {
-                        if let Some(err) = value.get("error") {
-                            return Err(err.to_string());
-                        }
-                        return Ok(value.get("result").cloned().unwrap_or(Value::Null));
-                    }
+                    continue;
                 }
+                Ok(ReaderMsg::Line(line)) => match parse_acp_line(&line) {
+                    ParsedLine::Empty => continue,
+                    ParsedLine::Malformed(msg) => {
+                        consecutive_bad += 1;
+                        if consecutive_bad >= consecutive_malformed_limit() {
+                            return Err(format!(
+                                "agent stdout sent too many oversized or malformed lines ({msg})"
+                            ));
+                        }
+                        continue;
+                    }
+                    ParsedLine::Value(value) => {
+                        consecutive_bad = 0;
+                        if value.get("method").is_some() {
+                            self.handle_incoming_line(&value, dispatch)?;
+                            continue;
+                        }
+                        if value.get("id").and_then(|v| v.as_u64()) == Some(id) {
+                            if let Some(err) = value.get("error") {
+                                return Err(err.to_string());
+                            }
+                            return Ok(value.get("result").cloned().unwrap_or(Value::Null));
+                        }
+                    }
+                },
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if remaining <= Duration::from_millis(50) {
+                    if remaining <= Duration::from_millis(50) && cancel_deadline.is_none() {
                         return Err(format!("timeout waiting for response id={id}"));
                     }
                     continue;
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err("agent stdout closed".to_string());
+                    return Err(self.exit_error(None));
                 }
             }
+        }
+        if cancel_deadline.is_some() {
+            return Ok(json!({ "stopReason": "cancelled" }));
         }
         Err(format!("timeout waiting for response id={id}"))
     }
 
     pub fn kill(&mut self) {
-        let _ = self.child.kill();
+        self.process.kill_tree();
+    }
+
+    fn exit_error(&self, status: Option<String>) -> String {
+        let tail = self
+            .stderr_tail
+            .lock()
+            .map(|buf| buf.join(" | "))
+            .unwrap_or_default();
+        let base = match status {
+            Some(status) => format!("agent exited ({status})"),
+            None => "agent stdout closed — the Cursor agent process exited".to_string(),
+        };
+        let lower = tail.to_lowercase();
+        if lower.contains("auth")
+            || lower.contains("login")
+            || lower.contains("unauthorized")
+            || lower.contains("not authenticated")
+        {
+            return format!(
+                "AUTH_ERROR: {base}. {tail}. Run `agent login` in a terminal, then start the tab again."
+            );
+        }
+        if tail.is_empty() {
+            format!(
+                "{base}. Restart this tab. If it keeps happening, run `agent login` and confirm `agent` is on PATH."
+            )
+        } else {
+            format!("{base}: {tail}")
+        }
     }
 }
 
