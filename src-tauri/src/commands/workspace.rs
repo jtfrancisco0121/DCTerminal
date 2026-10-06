@@ -1,6 +1,6 @@
 //! Scratch pads, recent projects, transcripts, tab chrome, and diagnostics.
 
-use crate::folder_dialog::pick_folder_blocking;
+use crate::paths::validate_working_folder;
 use crate::store::{
     ProjectsStore, ScratchStore, SettingsStore, StateStore, TranscriptStore,
 };
@@ -125,11 +125,12 @@ pub fn projects_remove(
     store.save()
 }
 
+/// Same rules as session start: the path must exist, be a directory, and be readable.
 #[tauri::command]
-pub async fn pick_folder() -> Result<Option<String>, String> {
-    tauri::async_runtime::spawn_blocking(pick_folder_blocking)
-        .await
-        .map_err(|e| e.to_string())?
+pub fn check_working_folder(path: String) -> Result<String, String> {
+    let trimmed = path.trim();
+    validate_working_folder(trimmed).map_err(|err| err.message())?;
+    Ok(trimmed.to_string())
 }
 
 #[tauri::command]
@@ -219,5 +220,23 @@ fn listed_dto(item: crate::store::ListedProject) -> ListedProjectDto {
         path: item.path,
         available: item.available,
         favorite: item.favorite,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_working_folder;
+
+    #[test]
+    fn pasted_path_uses_the_same_folder_rules() {
+        let err = check_working_folder("   ".into()).unwrap_err();
+        assert!(err.contains("required"));
+
+        let missing = check_working_folder(r"C:\no\such\dcterminal-folder".into()).unwrap_err();
+        assert!(missing.contains("not found"));
+
+        let real = std::env::temp_dir();
+        let ok = check_working_folder(format!("  {}  ", real.display())).unwrap();
+        assert_eq!(ok, real.display().to_string().trim());
     }
 }

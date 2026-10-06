@@ -12,7 +12,6 @@ function App() {
   const [cli, setCli] = useState<CliDetectResult | null>(null);
   const [cliError, setCliError] = useState<string | null>(null);
   const [roles, setRoles] = useState<RoleSummary[]>([]);
-  const defaultCwd = "C:\\Users\\user\\Documents\\Projects\\DCTerminal";
   const [roleSessionActive, setRoleSessionActive] = useState(false);
 
   useEffect(() => {
@@ -84,7 +83,6 @@ function App() {
       <StartupForm
         roles={roles}
         cliFound={!!cli?.found}
-        defaultCwd={defaultCwd}
         onSessionActiveChange={setRoleSessionActive}
       />
 

@@ -1,7 +1,6 @@
 mod acp;
 mod cli_detect;
 mod commands;
-mod folder_dialog;
 mod paths;
 mod permissions;
 mod process_tree;
@@ -16,7 +15,7 @@ use cli_detect::detect_cli;
 use commands::{
     close_tab, dev_session_cancel, dev_session_send, dev_session_start, dev_session_stop,
     diagnostics_set_capture, diagnostics_status, get_app_state, get_form_recall, get_role,
-    get_tab, list_roles, new_draft_tab, pick_folder, projects_list, projects_remember,
+    get_tab, list_roles, new_draft_tab, check_working_folder, projects_list, projects_remember,
     projects_remove, projects_toggle_favorite, reopen_closed_tab, respond_permission_request,
     respond_plan_request, role_session_start, save_form_draft, scratch_load, scratch_save,
     select_active_tab, set_tab_color, set_tab_label, sync_active_tab_form, transcript_load,
@@ -30,6 +29,7 @@ use tauri::Manager;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let store = RolesStore::load_or_seed(app.handle())?;
             let mut state_store = StateStore::load_or_default(app.handle())?;
@@ -78,7 +78,7 @@ pub fn run() {
             projects_remember,
             projects_toggle_favorite,
             projects_remove,
-            pick_folder,
+            check_working_folder,
             transcript_save,
             transcript_load,
             diagnostics_status,

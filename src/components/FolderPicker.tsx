@@ -1,23 +1,34 @@
 import { useCallback, useEffect, useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
-  pickFolder,
+  checkWorkingFolder,
   projectsList,
   projectsRemove,
   projectsToggleFavorite,
   type ListedProject,
 } from "../bridge";
-import { folderPickFillsField, normalizeFolderPath, projectRowLabel } from "../projectsView";
+import {
+  CHOOSE_FOLDER_PROMPT,
+  folderName,
+  folderPickFillsField,
+  nativeDialogPath,
+  normalizeFolderPath,
+  pastedFolderPath,
+  projectRowLabel,
+} from "../projectsView";
 
 type Props = {
   value: string;
   disabled?: boolean;
+  unavailable?: boolean;
   onChange: (path: string) => void;
 };
 
-export function FolderPicker({ value, disabled, onChange }: Props) {
+export function FolderPicker({ value, disabled, unavailable, onChange }: Props) {
   const [favorites, setFavorites] = useState<ListedProject[]>([]);
   const [recent, setRecent] = useState<ListedProject[]>([]);
-  const [open, setOpen] = useState(false);
+  const [openMenu, setOpenMenu] = useState(false);
+  const [pasted, setPasted] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -25,7 +36,6 @@ export function FolderPicker({ value, disabled, onChange }: Props) {
       const lists = await projectsList();
       setFavorites(lists.favorites);
       setRecent(lists.recent);
-      setError(null);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -38,13 +48,21 @@ export function FolderPicker({ value, disabled, onChange }: Props) {
   const choose = (path: string) => {
     const picked = folderPickFillsField(path);
     onChange(picked.cwd);
-    setOpen(false);
+    setOpenMenu(false);
+    setPasted("");
+    setError(null);
   };
 
   const browse = async () => {
     setError(null);
     try {
-      const path = await pickFolder();
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "Choose a working folder",
+        defaultPath: value.trim() || undefined,
+      });
+      const path = nativeDialogPath(selected);
       if (path) choose(path);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
@@ -70,44 +88,72 @@ export function FolderPicker({ value, disabled, onChange }: Props) {
     }
   };
 
+  const usePastedPath = async () => {
+    const path = pastedFolderPath(pasted);
+    if (!path) {
+      setError("Enter a folder path.");
+      return;
+    }
+    try {
+      const checked = await checkWorkingFolder(path);
+      choose(checked);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   const starred = favorites.some(
     (item) => normalizeFolderPath(item.path) === normalizeFolderPath(value),
   );
+  const trimmed = value.trim();
+  const name = folderName(trimmed);
 
   return (
     <div className="folder-picker">
       <div className="folder-picker-row">
-        <input
-          className="text-input"
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
+        <button
+          type="button"
+          className="primary-button"
+          onClick={() => void browse()}
           disabled={disabled}
-          aria-label="Working folder path"
-        />
-        <button type="button" className="secondary-button" onClick={browse} disabled={disabled}>
-          Browse…
+        >
+          Choose folder…
         </button>
         <button
           type="button"
           className="secondary-button"
           onClick={() => void star()}
-          disabled={disabled || !value.trim()}
+          disabled={disabled || !trimmed}
           title={starred ? "Remove favorite" : "Star as favorite"}
+          aria-pressed={starred}
         >
           {starred ? "★" : "☆"}
         </button>
         <button
           type="button"
           className="secondary-button"
-          onClick={() => setOpen((current) => !current)}
+          onClick={() => setOpenMenu((current) => !current)}
           disabled={disabled}
+          aria-expanded={openMenu}
+          aria-haspopup="menu"
         >
           Recent
         </button>
       </div>
+      {trimmed ? (
+        <div className="folder-picker-chosen" title={trimmed}>
+          <div className="folder-picker-name-row">
+            <span className="folder-picker-name">{name}</span>
+            {unavailable && <span className="error">unavailable</span>}
+          </div>
+          <span className="hint folder-picker-full">{trimmed}</span>
+        </div>
+      ) : (
+        <p className="folder-picker-prompt">{CHOOSE_FOLDER_PROMPT}</p>
+      )}
       {error && <p className="error">{error}</p>}
-      {open && (
-        <div className="folder-picker-menu" role="listbox" aria-label="Recent and favorite folders">
+      {openMenu && (
+        <div className="folder-picker-menu" role="menu" aria-label="Saved folders">
           <ProjectSection
             title="Favorites"
             items={favorites}
@@ -121,8 +167,30 @@ export function FolderPicker({ value, disabled, onChange }: Props) {
             onRemove={(path) => void remove(path, false)}
           />
           {favorites.length === 0 && recent.length === 0 && (
-            <p className="hint">No saved folders yet. Browse or start a session to add one.</p>
+            <p className="hint">No saved folders yet.</p>
           )}
+          <form
+            className="folder-picker-paste"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void usePastedPath();
+            }}
+          >
+            <label className="field-label">
+              Enter path
+              <input
+                className="text-input"
+                value={pasted}
+                onChange={(event) => setPasted(event.target.value)}
+                disabled={disabled}
+                spellCheck={false}
+                aria-label="Enter a folder path"
+              />
+            </label>
+            <button type="submit" className="secondary-button" disabled={disabled}>
+              Use path
+            </button>
+          </form>
         </div>
       )}
     </div>
@@ -150,6 +218,7 @@ function ProjectSection({
             <button
               type="button"
               className="folder-picker-path"
+              role="menuitem"
               onClick={() => onPick(item.path)}
             >
               {projectRowLabel(item.path, item.available)}

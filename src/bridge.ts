@@ -231,9 +231,8 @@ export async function newDraftTab(
 
 export async function getFormRecall(
   roleId: string,
-  defaultCwd: string,
 ): Promise<{ cwd: string; values: Record<string, string> }> {
-  return invoke("get_form_recall", { roleId, defaultCwd });
+  return invoke("get_form_recall", { roleId });
 }
 
 export async function saveFormDraft(
@@ -434,8 +433,8 @@ export async function projectsRemove(path: string, favorite: boolean): Promise<v
   return invoke("projects_remove", { path, favorite });
 }
 
-export async function pickFolder(): Promise<string | null> {
-  return invoke("pick_folder");
+export async function checkWorkingFolder(path: string): Promise<string> {
+  return invoke<string>("check_working_folder", { path });
 }
 
 export async function transcriptSave(

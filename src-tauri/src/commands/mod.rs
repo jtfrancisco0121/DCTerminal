@@ -20,7 +20,7 @@ pub use dev_session::{
 pub use role_session::role_session_start;
 pub use roles::{get_role, list_roles, validate_and_preview};
 pub use workspace::{
-    diagnostics_set_capture, diagnostics_status, pick_folder, projects_list, projects_remember,
-    projects_remove, projects_toggle_favorite, scratch_load, scratch_save, transcript_load,
-    transcript_save,
+    check_working_folder, diagnostics_set_capture, diagnostics_status, projects_list,
+    projects_remember, projects_remove, projects_toggle_favorite, scratch_load, scratch_save,
+    transcript_load, transcript_save,
 };

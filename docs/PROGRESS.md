@@ -8,7 +8,7 @@
 
 | Field | Value |
 |--------|--------|
-| **Last updated** | 2026-10-06 — scratch pad, keymap, tab chrome, transcripts, session cards |
+| **Last updated** | 2026-10-06 — native folder chooser; no hardcoded working-folder prefill |
 | **Branch** | `cursor/scratch-keymap-chrome-75c2` |
 | **Current phase** | Finish MVP vertical slice (see [MVP-FINISH.md](./MVP-FINISH.md)) |
 | **Active task** | Installers / live Windows acceptance. E2–E5 controls are in this branch. |

@@ -51,6 +51,7 @@ import {
 } from "./liveTabs";
 import { CommandPalette } from "./components/CommandPalette";
 import { FolderPicker } from "./components/FolderPicker";
+import { folderForTab } from "./projectsView";
 import { ScratchPad } from "./components/ScratchPad";
 import { SessionCards } from "./components/SessionCards";
 import { ShortcutsOverlay } from "./components/ShortcutsOverlay";
@@ -100,19 +101,17 @@ function visibleFields(role: Role, values: Record<string, string>) {
 type Props = {
   roles: RoleSummary[];
   cliFound: boolean;
-  defaultCwd: string;
   onSessionActiveChange?: (active: boolean) => void;
 };
 
 export function StartupForm({
   roles,
   cliFound,
-  defaultCwd,
   onSessionActiveChange,
 }: Props) {
   const [roleId, setRoleId] = useState("role_implementer");
   const [role, setRole] = useState<Role | null>(null);
-  const [values, setValues] = useState<Record<string, string>>({ cwd: defaultCwd });
+  const [values, setValues] = useState<Record<string, string>>({ cwd: "" });
   const [preview, setPreview] = useState<ValidatePreviewResult | null>(null);
   const [previewBusy, setPreviewBusy] = useState(false);
   const [runtimes, setRuntimes] = useState<Record<string, TabRuntime>>({});
@@ -141,9 +140,12 @@ export function StartupForm({
   runtimesRef.current = runtimes;
   const flushRafRef = useRef<number | null>(null);
   const tabsBootstrappedRef = useRef(false);
+  const hydratedRef = useRef(false);
   const startLockRef = useRef(false);
   const activeTabIdRef = useRef(activeTabId);
   activeTabIdRef.current = activeTabId;
+  const roleIdRef = useRef(roleId);
+  roleIdRef.current = roleId;
   const activeRuntime = runtimeFor(runtimes, activeTabId);
   const session = activeRuntime.session;
   const startResult = activeRuntime.startResult;
@@ -198,9 +200,12 @@ export function StartupForm({
     id: string;
     transcript?: string | null;
   }) => {
-    skipRecallRef.current = true;
+    if (tab.roleId !== roleIdRef.current) {
+      skipRecallRef.current = true;
+    }
+    hydratedRef.current = true;
     setRoleId(tab.roleId);
-    setValues({ ...tab.answers, cwd: tab.cwd });
+    setValues({ ...tab.answers, cwd: folderForTab(tab.cwd) });
     setActiveTabId(tab.id);
     setPreview(null);
     setSavedTranscript(tab.transcript?.trim() ?? "");
@@ -221,7 +226,7 @@ export function StartupForm({
     refreshTabs()
       .then(async (snap) => {
         if (snap.tabs.length === 0) {
-          const { tab } = await newDraftTab(seedRoleId, defaultCwd);
+          const { tab } = await newDraftTab(seedRoleId, "");
           await refreshTabs();
           loadTabIntoForm(tab);
           return;
@@ -238,7 +243,7 @@ export function StartupForm({
         loadTabIntoForm(tab);
       })
       .catch(() => setSavedTabs([]));
-  }, [loadTabIntoForm, refreshTabs, defaultCwd, roles]);
+  }, [loadTabIntoForm, refreshTabs, roles]);
 
   useEffect(() => {
     sessionActiveRef.current = !!session;
@@ -378,24 +383,23 @@ export function StartupForm({
   }, [roleId]);
 
   useEffect(() => {
+    if (!hydratedRef.current) return;
     if (skipRecallRef.current) {
       skipRecallRef.current = false;
       return;
     }
     if (session) return;
-    getFormRecall(roleId, defaultCwd)
+    getFormRecall(roleId)
       .then((recall) => {
-        setValues({ ...recall.values, cwd: recall.cwd });
+        setValues({ ...recall.values, cwd: folderForTab(recall.cwd) });
       })
-      .catch(() => {
-        setValues((prev) => ({ ...prev, cwd: prev.cwd || defaultCwd }));
-      });
-  }, [roleId, defaultCwd, session]);
+      .catch(() => {});
+  }, [roleId, session]);
 
   const formValues = useMemo((): Record<string, string> => {
     if (!role) return values;
-    return { ...values, cwd: values.cwd ?? defaultCwd };
-  }, [role, values, defaultCwd]);
+    return { ...values, cwd: values.cwd ?? "" };
+  }, [role, values]);
 
   const activeTabSummary = useMemo(
     () => savedTabs.find((t) => t.id === activeTabId) ?? null,
@@ -411,10 +415,10 @@ export function StartupForm({
   }, [activeTabSummary]);
 
   useEffect(() => {
-    if (session || !role) return;
+    if (!hydratedRef.current || session || !role) return;
     if (draftTimerRef.current) clearTimeout(draftTimerRef.current);
     draftTimerRef.current = setTimeout(() => {
-      const cwd = values.cwd ?? defaultCwd;
+      const cwd = values.cwd ?? "";
       saveFormDraft(roleId, cwd, formValues).catch(() => {});
       if (activeTabId) {
         syncActiveTabForm(activeTabId, roleId, cwd, formValues)
@@ -431,7 +435,6 @@ export function StartupForm({
     session,
     role,
     values.cwd,
-    defaultCwd,
     activeTabId,
     refreshTabs,
   ]);
@@ -619,7 +622,7 @@ export function StartupForm({
       try {
         const rt = runtimes[tabId];
         if (rt && rt.segments.length > 0) {
-          const cwd = rt.session?.cwd ?? values.cwd ?? defaultCwd;
+          const cwd = rt.session?.cwd ?? values.cwd ?? "";
           await transcriptSave(tabId, segmentsToPlainText(rt.segments), cwd).catch(
             (err: unknown) => {
               const message = err instanceof Error ? err.message : String(err);
@@ -641,38 +644,40 @@ export function StartupForm({
           const { tab } = await selectActiveTab(snap.activeTabId);
           loadTabIntoForm(tab);
         } else {
-          const recall = await getFormRecall(roleId, defaultCwd);
-          setValues({ ...recall.values, cwd: recall.cwd });
+          const recall = await getFormRecall(roleId);
+          setValues({ ...recall.values, cwd: folderForTab(recall.cwd) });
           setSavedTranscript("");
         }
       } finally {
         setBusy(false);
       }
     },
-    [roleId, defaultCwd, loadTabIntoForm, runtimes, values.cwd, scratch],
+    [roleId, loadTabIntoForm, runtimes, values.cwd, scratch],
   );
 
   const handleNewTab = useCallback(async () => {
     setBusy(true);
     try {
-      const cwd = session?.cwd ?? values.cwd ?? defaultCwd;
-      await newDraftTab(roleId, cwd);
+      await newDraftTab(roleId, "");
       const snap = await getAppState();
       setSavedTabs(snap.tabs);
       const newActive = snap.activeTabId;
       if (!newActive) return;
       const { tab } = await getTab(newActive);
-      skipRecallRef.current = true;
+      if (tab.roleId !== roleId) {
+        skipRecallRef.current = true;
+      }
+      hydratedRef.current = true;
       setRoleId(tab.roleId);
-      const recall = await getFormRecall(tab.roleId, cwd);
-      setValues({ ...recall.values, cwd: recall.cwd });
+      const recall = await getFormRecall(tab.roleId);
+      setValues({ ...recall.values, cwd: "" });
       setActiveTabId(tab.id);
       setSavedTranscript("");
       setPreview(null);
     } finally {
       setBusy(false);
     }
-  }, [session, roleId, values.cwd, defaultCwd]);
+  }, [roleId]);
 
   const cancelTurn = useCallback(async () => {
     if (!activeTabId) return;
@@ -1047,14 +1052,20 @@ export function StartupForm({
         </select>
       </label>
 
-      <label className="field-label">
+      <div className="field-label">
         Working folder
         <FolderPicker
-          value={values.cwd ?? defaultCwd}
+          value={folderForTab(values.cwd)}
+          unavailable={
+            !!activeTabSummary &&
+            folderForTab(activeTabSummary.cwd) === folderForTab(values.cwd) &&
+            activeTabSummary.folderStatus !== "ok" &&
+            folderForTab(values.cwd).length > 0
+          }
           disabled={!!session || busy}
           onChange={(path) => setField("cwd", path)}
         />
-      </label>
+      </div>
 
       {visibleFields(role, formValues).map((field) => (
         <label key={field.key} className="field-label">

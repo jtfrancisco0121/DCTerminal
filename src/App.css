@@ -916,6 +916,44 @@ body,
   font-size: 0.75rem;
 }
 
+.folder-picker-chosen {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin-top: 0.45rem;
+}
+
+.folder-picker-name-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.folder-picker-name {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.folder-picker-full {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.75rem;
+  word-break: break-all;
+}
+
+.folder-picker-prompt {
+  margin: 0.45rem 0 0;
+  color: #8b949e;
+}
+
+.folder-picker-paste {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 0.65rem;
+  padding-top: 0.55rem;
+  border-top: 1px solid #30363d;
+}
+
 .tab-color-select {
   background: transparent;
   color: #8b949e;

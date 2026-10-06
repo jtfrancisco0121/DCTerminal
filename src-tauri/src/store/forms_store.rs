@@ -49,11 +49,11 @@ impl FormsStore {
         &self,
         role: &Role,
         recall: &FormSnapshot,
-        base_cwd: &str,
     ) -> HashMap<String, String> {
         let mut values = recall.values.clone();
+        // An empty saved folder stays empty. Callers must not invent a path.
         if recall.cwd.trim().is_empty() {
-            values.insert("cwd".to_string(), base_cwd.to_string());
+            values.remove("cwd");
         } else {
             values.insert("cwd".to_string(), recall.cwd.clone());
         }
