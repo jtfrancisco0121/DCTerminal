@@ -28,9 +28,17 @@ vi.mock("./bridge", () => {
   diagnosticsSetCapture: vi.fn(),
   diagnosticsStatus: vi.fn(async () => ({
     capturePermissionPayloads: false,
+    appDataDir: "",
     transcriptsDir: "",
     logPath: "",
     lastError: null,
+  })),
+  cursorApprovalMode: vi.fn(async () => ({
+    kind: "allowlist",
+    approvalMode: "allowlist",
+    configPath: null,
+    roleRulesOff: false,
+    note: null,
   })),
   listenPermissionAuto: listen,
   listenPermissionRequests: listen,

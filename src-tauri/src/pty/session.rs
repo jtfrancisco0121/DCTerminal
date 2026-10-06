@@ -526,7 +526,9 @@ mod tests {
         if cfg!(windows) {
             // ConPTY emits CSI 6 n at startup and will not run the command
             // until something answers with a cursor position report.
-            session.write(b"\x1b[1;1R").expect("answer device status report");
+            session
+                .write(b"\x1b[1;1R")
+                .expect("answer device status report");
         }
         session.write(line).expect("write");
         assert!(

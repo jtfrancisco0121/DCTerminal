@@ -36,6 +36,8 @@ describe("per-tab session events", () => {
       title: "Edit file",
       message: "src/main.rs",
       toolClass: "write",
+      displayKind: "edit",
+      network: false,
       options: [],
       rawParams: "{}",
     };
@@ -52,6 +54,8 @@ describe("per-tab session events", () => {
       jsonRpcId: 3,
       title: "Shell",
       toolClass: "shell",
+      displayKind: "execute",
+      network: false,
       decision: "allow-once",
       line: "Permission auto-allowed (shell): Shell",
     };
@@ -116,6 +120,8 @@ describe("per-tab session events", () => {
         title: "Shell",
         message: "",
         toolClass: "shell",
+        displayKind: "execute",
+        network: false,
         options: [],
         rawParams: "",
       } },

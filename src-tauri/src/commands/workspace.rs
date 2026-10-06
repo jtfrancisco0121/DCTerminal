@@ -1,6 +1,7 @@
 //! Scratch pads, recent projects, transcripts, tab chrome, and diagnostics.
 
 use crate::paths::validate_working_folder;
+use crate::permissions::{read_approval_mode, ApprovalModeStatus};
 use crate::store::{ProjectsStore, ScratchStore, SettingsStore, StateStore, TranscriptStore};
 use serde::Serialize;
 use std::sync::Mutex;
@@ -252,4 +253,9 @@ mod tests {
         let ok = check_working_folder(format!("  {}  ", real.display())).unwrap();
         assert_eq!(ok, real.display().to_string().trim());
     }
+}
+
+#[tauri::command]
+pub fn cursor_approval_mode() -> ApprovalModeStatus {
+    read_approval_mode()
 }

@@ -17,6 +17,8 @@ type Props = {
   onColor?: (tabId: string, color: string) => void;
   settingsOpen?: boolean;
   onSettings?: () => void;
+  /** When Cursor CLI is unrestricted, role tabs show that rules are off. */
+  roleRulesOff?: boolean;
 };
 
 const CHIP_COLORS = ["#58a6ff", "#3fb950", "#d29922", "#f0883e", "#bc8cff", "#f85149", "#8b949e"];
@@ -36,6 +38,7 @@ export function TabBar({
   onColor,
   settingsOpen = false,
   onSettings,
+  roleRulesOff = false,
 }: Props) {
   return (
     <div className="tab-bar">
@@ -66,6 +69,14 @@ export function TabBar({
                 />
                 {t.label}
                 {t.terminalLaunch === "role" && <span className="tab-badge">Terminal</span>}
+                {roleRulesOff && t.kind !== "terminal" && t.roleId && (
+                  <span
+                    className="tab-badge tab-badge-warn"
+                    title="Cursor CLI is set to Run Everything, so role permission rules are off"
+                  >
+                    role permission rules are off
+                  </span>
+                )}
               </button>
               {onColor && (
                 <select

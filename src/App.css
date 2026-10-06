@@ -1892,3 +1892,39 @@ kbd {
 .settings-model-name {
   font-size: 0.9rem;
 }
+
+.unrestricted-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 0 0 8px;
+  padding: 10px 12px;
+  border: 1px solid #d29922;
+  border-radius: 8px;
+  background: rgba(210, 153, 34, 0.12);
+}
+
+.unrestricted-banner-text {
+  margin: 0;
+  flex: 1;
+  color: #e3b341;
+  font-size: 0.92rem;
+  line-height: 1.4;
+}
+
+.tab-badge-warn {
+  background: rgba(210, 153, 34, 0.2);
+  color: #e3b341;
+  border: 1px solid rgba(210, 153, 34, 0.45);
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.permission-card-meta {
+  margin: 0 0 6px;
+  font-size: 0.8rem;
+  color: #8b949e;
+  text-transform: lowercase;
+}

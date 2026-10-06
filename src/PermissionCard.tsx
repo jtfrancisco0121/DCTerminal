@@ -13,6 +13,11 @@ export function PermissionCard({ request, busy, onSelect, onCancel }: Props) {
       <p id="perm-title" className="permission-card-title">
         {request.title}
       </p>
+      <p className="permission-card-meta">
+        {request.displayKind || request.toolClass}
+        {request.network ? " · network" : ""}
+        {request.toolClass ? ` · ${request.toolClass}` : ""}
+      </p>
       <p className="permission-card-hint">
         The agent is paused until you choose an action below.
       </p>

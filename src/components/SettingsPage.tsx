@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   getRole,
+  type ApprovalModeStatus,
   type CliDetectResult,
   type DiagnosticsStatus,
   type ModelList,
@@ -31,6 +32,7 @@ type Props = {
   onModelSettings?: (next: ModelSettings) => void;
   onRefreshModels?: () => void;
   modelsRefreshing?: boolean;
+  approvalMode: ApprovalModeStatus | null;
   onClose: () => void;
 };
 
@@ -58,6 +60,7 @@ export function SettingsPage({
   onModelSettings,
   onRefreshModels,
   modelsRefreshing = false,
+  approvalMode,
   onClose,
 }: Props) {
   const [selectedId, setSelectedId] = useState(roles[0]?.id ?? "");
@@ -121,6 +124,46 @@ export function SettingsPage({
               <pre className="mono-snippet settings-prompt">{detail.templateText}</pre>
             </details>
           </div>
+        )}
+      </section>
+
+      <section className="settings-section">
+        <h3>Permissions</h3>
+        <p className="hint">
+          DCTerminal follows your global Cursor CLI approval setting. It never
+          writes <code>~/.cursor/cli-config.json</code> and does not override{" "}
+          <code>approvalMode</code>.
+        </p>
+        {approvalMode?.kind === "unrestricted" && (
+          <p className="error">
+            Cursor CLI is set to Run Everything, so role permission rules are
+            off. Change it in Cursor CLI settings to enable them.
+          </p>
+        )}
+        {approvalMode?.kind === "allowlist" && (
+          <p className="hint">
+            Under allowlist, file creates and edits are not routed through
+            DCTerminal. Only shell, delete, fetch, and MCP prompts reach role
+            policy.
+          </p>
+        )}
+        {approvalMode?.approvalMode && (
+          <p className="hint">
+            Current <code>approvalMode</code>:{" "}
+            <code>{approvalMode.approvalMode}</code>
+            {approvalMode.configPath ? (
+              <>
+                {" "}
+                (<code>{approvalMode.configPath}</code>)
+              </>
+            ) : null}
+          </p>
+        )}
+        {!approvalMode?.approvalMode && (
+          <p className="hint">
+            Cursor CLI approval mode could not be determined (missing or
+            unreadable config). No warning is shown in the session UI.
+          </p>
         )}
       </section>
 
