@@ -1,6 +1,6 @@
 /**
- * Tauri `beforeDevCommand`: start Vite only if :1420 is free.
- * Lets you keep `npm run dev` running and restart `tauri dev` without port conflicts.
+ * Tauri `beforeDevCommand`: start Vite if :1420 is free, or reuse an existing server.
+ * Waits until the port accepts connections before exiting (reuse path).
  */
 import { spawn } from "node:child_process";
 import net from "node:net";
@@ -11,7 +11,7 @@ const HOST = "127.0.0.1";
 function isPortOpen(port) {
   return new Promise((resolve) => {
     const socket = net.createConnection({ port, host: HOST });
-    socket.setTimeout(400);
+    socket.setTimeout(500);
     socket.on("connect", () => {
       socket.destroy();
       resolve(true);
@@ -24,8 +24,17 @@ function isPortOpen(port) {
   });
 }
 
+async function waitForPort(maxMs = 30_000) {
+  const start = Date.now();
+  while (Date.now() - start < maxMs) {
+    if (await isPortOpen(PORT)) return true;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return false;
+}
+
 if (await isPortOpen(PORT)) {
-  console.log(`[dev] Vite already listening on http://${HOST}:${PORT} — reusing`);
+  console.log(`[dev] Vite already on http://${HOST}:${PORT} — reusing`);
   process.exit(0);
 }
 
@@ -35,6 +44,13 @@ const child = spawn("npm run dev", {
   shell: true,
   env: process.env,
 });
+
+const ready = await waitForPort();
+if (!ready) {
+  console.error(`[dev] Timed out waiting for Vite on port ${PORT}`);
+  child.kill();
+  process.exit(1);
+}
 
 child.on("exit", (code, signal) => {
   if (signal) {

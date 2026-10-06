@@ -8,6 +8,7 @@
     "dev:ui": "vite",
     "dev:app": "tauri dev",
     "dev:full": "tauri dev",
+    "dev:stable": "npm run build && tauri dev --no-dev-server",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",

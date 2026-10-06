@@ -36,6 +36,7 @@ import {
   reconcileAgentStream,
   streamSegmentFromEvent,
   streamSegmentFromSystemMessage,
+  segmentsToPlainText,
   type StreamSegment,
 } from "./transcript";
 
@@ -99,6 +100,7 @@ export function StartupForm({
     cwd: string;
     answers: Record<string, string>;
     id: string;
+    transcript?: string | null;
   }) => {
     skipRecallRef.current = true;
     setRoleId(tab.roleId);
@@ -106,6 +108,17 @@ export function StartupForm({
     setActiveTabId(tab.id);
     setPreview(null);
     setRestoredTabId(tab.id);
+    if (tab.transcript?.trim()) {
+      setStreamSegments([
+        {
+          id: "restored_transcript",
+          kind: "agent",
+          text: tab.transcript,
+        },
+      ]);
+    } else {
+      setStreamSegments([]);
+    }
   }, []);
 
   const refreshTabs = useCallback(async () => {
@@ -364,7 +377,8 @@ export function StartupForm({
   const stopSession = useCallback(async () => {
     setBusy(true);
     try {
-      await devSessionStop();
+      const scrollback = segmentsToPlainText(streamSegments);
+      await devSessionStop(scrollback || undefined);
       setSession(null);
       setStartResult(null);
       setLastPromptResult(null);
@@ -374,7 +388,7 @@ export function StartupForm({
     } finally {
       setBusy(false);
     }
-  }, [refreshTabs]);
+  }, [refreshTabs, streamSegments]);
 
   const handleSelectTab = useCallback(
     async (tabId: string) => {
@@ -719,6 +733,14 @@ export function StartupForm({
       )}
       {composerFields}
       {idleActions}
+      {streamSegments.length > 0 && (
+        <details className="startup-form-details" open>
+          <summary>Last session transcript (saved on Stop)</summary>
+          <pre className="mono-snippet transcript-saved">
+            {segmentsToPlainText(streamSegments)}
+          </pre>
+        </details>
+      )}
     </section>
   );
 }

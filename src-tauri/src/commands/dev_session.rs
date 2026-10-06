@@ -124,6 +124,7 @@ pub fn dev_session_cancel(state: State<Mutex<DevSessionState>>) -> Result<(), St
 
 #[tauri::command]
 pub fn dev_session_stop(
+    transcript: Option<String>,
     state: State<Mutex<DevSessionState>>,
     state_store: State<Mutex<StateStore>>,
 ) -> Result<(), String> {
@@ -140,7 +141,7 @@ pub fn dev_session_stop(
     guard.permission_responder = None;
     if let Some(id) = tab_id {
         let mut store = state_store.lock().map_err(|e| e.to_string())?;
-        store.mark_tab_awaiting_input(&id)?;
+        store.mark_tab_awaiting_input(&id, transcript)?;
     }
     Ok(())
 }

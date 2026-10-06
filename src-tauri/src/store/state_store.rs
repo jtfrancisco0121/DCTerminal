@@ -101,6 +101,7 @@ impl StateStore {
             order: next_tab_order(&self.data),
             created_at: Utc::now().to_rfc3339(),
             session: Some(session),
+            transcript: None,
         };
         self.data.tabs.push(record);
         self.data.active_tab_id = Some(tab_id.clone());
@@ -157,7 +158,11 @@ impl StateStore {
         Ok(())
     }
 
-    pub fn mark_tab_awaiting_input(&mut self, tab_id: &str) -> Result<(), String> {
+    pub fn mark_tab_awaiting_input(
+        &mut self,
+        tab_id: &str,
+        transcript: Option<String>,
+    ) -> Result<(), String> {
         let tab = self
             .data
             .tabs
@@ -166,6 +171,12 @@ impl StateStore {
             .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
         tab.phase = "awaitingInput".to_string();
         tab.session = None;
+        if let Some(text) = transcript {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                tab.transcript = Some(trimmed.chars().take(500_000).collect());
+            }
+        }
         self.save()
     }
 
@@ -226,6 +237,7 @@ impl StateStore {
             order: next_tab_order(&self.data),
             created_at: Utc::now().to_rfc3339(),
             session: None,
+            transcript: None,
         };
         self.data.tabs.push(record);
         if make_active {

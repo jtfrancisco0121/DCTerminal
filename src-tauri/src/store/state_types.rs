@@ -39,6 +39,9 @@ pub struct TabRecord {
     pub created_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session: Option<TabSessionRef>,
+    /// Read-only scrollback after Stop (MVP transcript persist).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcript: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -183,6 +183,7 @@ export type TabRecord = {
     injectionPending: boolean;
     injectedAt?: string;
   };
+  transcript?: string | null;
 };
 
 export async function getAppState(): Promise<AppStateSnapshot> {
@@ -279,8 +280,8 @@ export function listenPromptFinished(
   });
 }
 
-export async function devSessionStop(): Promise<void> {
-  return invoke("dev_session_stop");
+export async function devSessionStop(transcript?: string): Promise<void> {
+  return invoke("dev_session_stop", { transcript: transcript ?? null });
 }
 
 export async function devSessionCancel(): Promise<void> {

@@ -67,6 +67,18 @@ npm run tauri dev
 
 Permanent fix: add `%USERPROFILE%\.cargo\bin` to your user **Path** environment variable (Settings → System → About → Advanced system settings → Environment Variables).
 
+### Troubleshooting
+
+| Symptom | What to try |
+|---------|-------------|
+| Blank window / UI not loading | Use **two terminals** (`dev:ui` + `dev:app`), or run **`npm run dev:stable`** (bundled UI, no Vite). |
+| Port 1420 in use | Stop other `vite`/`tauri` processes, or keep one `npm run dev:ui` running and only restart `dev:app`. |
+| `Chrome_WidgetWin_0` on exit | Harmless WebView2 message when closing the window or pressing Ctrl+C. |
+| Agent stuck / no output | Check for a **permission** card at the top of the session; approve or reject. |
+| “Not authenticated” | Run `agent login` in a terminal, then **Start role session** again. |
+
+`devUrl` is **`http://127.0.0.1:1420`** (must match Vite’s host).
+
 ## Project layout
 
 | Path | Purpose |
