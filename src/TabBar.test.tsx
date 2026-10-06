@@ -42,7 +42,7 @@ describe("TabBar", () => {
     expect(screen.getByRole("tab", { name: /Developer · Encryptor/ })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Close Developer · Encryptor" }));
     expect(onClose).toHaveBeenCalledWith("tab_2");
-    fireEvent.click(screen.getByRole("button", { name: "+ New tab" }));
+    fireEvent.click(screen.getByRole("button", { name: "New tab" }));
     expect(onNew).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole("tab", { name: /Planner · UI Overhaul/ }));
     expect(onSelect).toHaveBeenCalledWith("tab_1");
@@ -58,7 +58,74 @@ describe("TabBar", () => {
         onNew={() => {}}
       />,
     );
-    expect(screen.getByText("Terminal")).toBeTruthy();
+    expect(screen.getByLabelText("Role terminal")).toBeTruthy();
+    expect(screen.queryByText("Terminal")).toBeNull();
+  });
+});
+
+describe("TabBar density (U1/U4)", () => {
+  it("puts the role, folder, model, and status in the chip's hover text", () => {
+    render(
+      <TabBar
+        tabs={[tab({ id: "tab_1", label: "Login fix", model: null, worktreeBranch: "feat/login" })]}
+        activeTabId="tab_1"
+        roleNames={{ role_developer: "Developer" }}
+        modelFor={() => "composer-2.5"}
+        statuses={{ tab_1: { busy: true, unseen: false, needsYou: null } }}
+        onSelect={() => {}}
+        onClose={() => {}}
+        onNew={() => {}}
+        onRenameStart={() => {}}
+      />,
+    );
+    const title = screen.getByRole("tab", { name: /Login fix/ }).getAttribute("title") ?? "";
+    expect(title.split("\n")).toEqual([
+      "Login fix",
+      "Role: Developer",
+      "Folder: C:\\Projects\\Encryptor",
+      "Branch: feat/login",
+      "Model: composer-2.5",
+      "Status: Working",
+      "Double-click to rename",
+    ]);
+  });
+
+  it("shows a warn icon with a tooltip instead of the long rules-off badge", () => {
+    render(
+      <TabBar
+        tabs={[tab({ id: "tab_1", label: "Login fix" }), tab({ id: "t", label: "zsh", kind: "terminal" })]}
+        activeTabId="tab_1"
+        roleRulesOff
+        onSelect={() => {}}
+        onClose={() => {}}
+        onNew={() => {}}
+      />,
+    );
+    expect(screen.queryByText(/role permission rules are off/)).toBeNull();
+    const icons = screen.getAllByLabelText(/Role permission rules are off/);
+    expect(icons).toHaveLength(1);
+    expect(icons[0].textContent).toBe("⚠");
+    expect(icons[0].getAttribute("title")).toMatch(/Run Everything/);
+  });
+
+  it("uses compact icon buttons for new, worktree, and reopen", () => {
+    const onReopen = vi.fn();
+    render(
+      <TabBar
+        tabs={[tab({})]}
+        activeTabId="tab_1"
+        canReopen
+        onReopen={onReopen}
+        onNewWorktree={() => {}}
+        onSelect={() => {}}
+        onClose={() => {}}
+        onNew={() => {}}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "New tab" }).textContent).toBe("+");
+    expect(screen.getByRole("button", { name: "New tab in worktree…" }).textContent).toBe("⎇");
+    fireEvent.click(screen.getByRole("button", { name: "Reopen closed tab" }));
+    expect(onReopen).toHaveBeenCalledOnce();
   });
 });
 

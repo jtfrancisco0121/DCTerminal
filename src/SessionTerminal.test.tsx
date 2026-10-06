@@ -34,6 +34,47 @@ describe("SessionTerminal header", () => {
   });
 });
 
+describe("SessionTerminal one-line header (U1/U3)", () => {
+  it("keeps the title and folder on one line with details on hover", () => {
+    render(
+      <SessionTerminal {...base} branch="feat/login" details={"Role: Developer\nModel: composer-2.5"} />,
+    );
+    const titles = document.querySelector(".session-terminal-chrome-titles")!;
+    expect(titles.querySelector("p")).toBeNull();
+    expect(titles.textContent).toContain("feat-login");
+    expect(titles.getAttribute("title")!.split("\n")).toEqual([
+      "Developer · feat-login",
+      "Folder: /Users/jt/Koneksi-worktrees/feat-login",
+      "Branch: feat/login",
+      "Session: s1",
+      "Role: Developer",
+      "Model: composer-2.5",
+    ]);
+    expect(screen.getByRole("button", { name: "Cancel turn" }).textContent).toBe("Cancel");
+    expect(screen.getByRole("button", { name: "Stop session" }).textContent).toBe("Stop");
+  });
+
+  it("leaves activity and folder warnings to the status bar when asked", () => {
+    const segments = [{ id: "t1", kind: "tool" as const, text: "Edit file", toolStatus: "in_progress" }];
+    const { rerender } = render(
+      <SessionTerminal {...base} segments={segments as never} promptInFlight folderWarning="Folder moved" />,
+    );
+    expect(screen.getByText("Folder moved")).toBeTruthy();
+    expect(document.querySelector(".session-activity")).toBeTruthy();
+    rerender(
+      <SessionTerminal
+        {...base}
+        segments={segments as never}
+        promptInFlight
+        folderWarning="Folder moved"
+        statusInBar
+      />,
+    );
+    expect(screen.queryByText("Folder moved")).toBeNull();
+    expect(document.querySelector(".session-activity")).toBeNull();
+  });
+});
+
 describe("SessionTerminal find (F5)", () => {
   const segments = [
     { id: "u1", kind: "user" as const, text: "Fix the login bug" },

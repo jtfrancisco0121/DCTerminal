@@ -106,7 +106,16 @@ type Props = {
   /** F5: a new nonce opens the find bar (Mod+F or a Search all chats jump). */
   findRequest?: ChatFindRequest | null;
   onSearchAllChats?: (query: string) => void;
+  /** U1: extra hover lines for the header (role, model). */
+  details?: string;
+  /** U3: the workspace status bar shows activity and folder warnings. */
+  statusInBar?: boolean;
 };
+
+function folderName(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] ?? path;
+}
 
 export function SessionTerminal({
   title,
@@ -137,6 +146,8 @@ export function SessionTerminal({
   branch = null,
   findRequest = null,
   onSearchAllChats,
+  details,
+  statusInBar = false,
 }: Props) {
   const screenRef = useRef<HTMLDivElement>(null);
   const permissionRef = useRef<HTMLDivElement>(null);
@@ -278,16 +289,25 @@ export function SessionTerminal({
   return (
     <div className="session-terminal">
       <header className="session-terminal-chrome">
-        <div className="session-terminal-chrome-titles">
+        <div
+          className="session-terminal-chrome-titles"
+          title={[
+            title,
+            `Folder: ${cwd}`,
+            ...(branch ? [`Branch: ${branch}`] : []),
+            `Session: ${sessionId}`,
+            ...(details ? [details] : []),
+          ].join("\n")}
+        >
           <h2 className="session-terminal-title">{title}</h2>
-          <p className="session-terminal-subtitle" title={sessionId}>
+          <span className="session-terminal-subtitle">
             {branch && (
               <span className="session-branch" aria-label="Git branch">
                 ⎇ {branch}
               </span>
             )}
-            {cwd}
-          </p>
+            {folderName(cwd)}
+          </span>
         </div>
         <div className="session-terminal-chrome-actions">
           {headerExtra}
@@ -296,9 +316,10 @@ export function SessionTerminal({
             className="secondary-button"
             onClick={onCancelTurn}
             disabled={busy || !promptInFlight}
+            aria-label="Cancel turn"
             title="Cancel in-flight turn (Esc)"
           >
-            Cancel turn
+            Cancel
           </button>
           {agentExited && onRestart && (
             <button
@@ -316,19 +337,21 @@ export function SessionTerminal({
             className="secondary-button session-stop"
             onClick={onStop}
             disabled={busy}
+            aria-label="Stop session"
+            title="Stop this session"
           >
-            Stop session
+            Stop
           </button>
         </div>
       </header>
 
-      {folderWarning && (
+      {folderWarning && !statusInBar && (
         <p className="folder-warning" role="status">
           {folderWarning}
         </p>
       )}
 
-      {activity && (
+      {activity && !statusInBar && (
         <p
           className={`session-activity${permissionRequest ? " session-activity-urgent" : ""}`}
           role="status"

@@ -123,7 +123,8 @@ import {
 } from "./handoff/map";
 import { FolderPicker } from "./components/FolderPicker";
 import { SettingsPage } from "./components/SettingsPage";
-import { UnrestrictedBanner } from "./components/UnrestrictedBanner";
+import { StatusBar, type StatusMessage, type StatusTone } from "./components/StatusBar";
+import { summarizeSessionActivity } from "./sessionActivity";
 import { folderForTab } from "./projectsView";
 import {
   canContinueStoredSession,
@@ -162,6 +163,7 @@ import {
   clearMarks,
   computeTabStatus,
   markAfterTurn,
+  tabStatusLabel,
   type TabMark,
   type TabStatus,
 } from "./tabStatus";
@@ -360,7 +362,6 @@ export function StartupForm({
   const [captureOn, setCaptureOn] = useState(false);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsStatus | null>(null);
   const [approvalMode, setApprovalMode] = useState<ApprovalModeStatus | null>(null);
-  const [unrestrictedDismissed, setUnrestrictedDismissed] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [handoffs, setHandoffs] = useState<HandoffRecord[]>([]);
   const [handoffTarget, setHandoffTarget] = useState<HandoffTargetId | null>(null);
@@ -1785,6 +1786,11 @@ export function StartupForm({
     else void startSession(false);
   }, [busy, formValues, pendingStart, role, roleId, showNotice, startRoleTerminal, startSession, values.cwd]);
 
+  const roleNames = useMemo(
+    () => Object.fromEntries(roles.map((item) => [item.id, item.name])),
+    [roles],
+  );
+
   const roleColors = useMemo(() => {
     const map: Record<string, string> = {};
     for (const item of roles) map[item.id] = item.color;
@@ -2269,10 +2275,7 @@ export function StartupForm({
 
   const refreshApprovalMode = useCallback(() => {
     cursorApprovalMode()
-      .then((status) => {
-        setApprovalMode(status);
-        if (!status.roleRulesOff) setUnrestrictedDismissed(false);
-      })
+      .then(setApprovalMode)
       .catch(() => {});
   }, []);
 
@@ -2748,14 +2751,10 @@ export function StartupForm({
     }
   };
 
-  const showUnrestrictedBanner =
-    !!approvalMode?.roleRulesOff && !unrestrictedDismissed && !settingsOpen;
-  const unrestrictedBanner = (
-    <UnrestrictedBanner
-      visible={showUnrestrictedBanner}
-      onDismiss={() => setUnrestrictedDismissed(true)}
-    />
-  );
+  const modelForTab = (tab: TabSummary): string | null => {
+    if (!tabHasModel(tab)) return null;
+    return runtimes[tab.id]?.session?.model ?? tab.model ?? inheritedModel(tab);
+  };
 
   const tabBar = (
     <TabBar
@@ -2776,6 +2775,8 @@ export function StartupForm({
       canReopen={closedTabs.length > 0}
       settingsOpen={settingsOpen}
       roleRulesOff={!!approvalMode?.roleRulesOff}
+      roleNames={roleNames}
+      modelFor={modelForTab}
       onSelect={handleSelectTab}
       onClose={handleCloseTab}
       onNew={handleNewTab}
@@ -3403,10 +3404,52 @@ export function StartupForm({
       </div>
     ) : null;
 
+  const activeStatus = ((): { tone: StatusTone; text: string } => {
+    const tab = activeTabSummary;
+    const marks = activeTabId ? tabStatuses[activeTabId] : undefined;
+    if (!tab) return { tone: "idle", text: "No tab" };
+    if (marks?.needsYou) return { tone: "needs", text: tabStatusLabel(marks) };
+    if (tab.kind === "terminal") {
+      const kind =
+        tab.terminalLaunch === "cursor-cli"
+          ? "Cursor CLI"
+          : tab.terminalLaunch === "role"
+            ? "Role terminal"
+            : "Terminal";
+      return marks?.busy ? { tone: "busy", text: `${kind} · working` } : { tone: "ok", text: kind };
+    }
+    if (session) {
+      const activity = summarizeSessionActivity(streamSegments, {
+        promptInFlight: !!promptInFlight,
+        waitingPermission: !!permissionRequest,
+      });
+      if (activity) return { tone: permissionRequest ? "needs" : "busy", text: activity };
+      return { tone: "ok", text: activeRuntime.agentExited ? "Agent exited" : "Ready" };
+    }
+    return { tone: "idle", text: "Not started" };
+  })();
+  const statusMessages: StatusMessage[] = [
+    ...(session && activeRuntime.folderWarning
+      ? [{ id: "folder", text: activeRuntime.folderWarning, tone: "warn" as const }]
+      : []),
+    ...(modelNotice
+      ? [{ id: "model", text: modelNotice, tone: "info" as const, onDismiss: () => setModelNotice(null) }]
+      : []),
+  ];
+  const statusBar = (
+    <StatusBar
+      status={activeStatus}
+      model={activeTabSummary ? modelForTab(activeTabSummary) : null}
+      folder={session?.cwd || activeTabSummary?.cwd || folderForTab(values.cwd) || null}
+      branch={activeTabSummary?.worktreeBranch ?? null}
+      roleRulesOff={!!approvalMode?.roleRulesOff}
+      messages={statusMessages}
+    />
+  );
+
   const shell = (content: ReactNode) => (
     <section className="workspace-shell">
       {tabBar}
-      {unrestrictedBanner}
       <div className="workspace-body">
         {filePanel}
         <div className="workspace-main">
@@ -3432,18 +3475,6 @@ export function StartupForm({
                 onFocusCapture={() => setFocusedPane("primary")}
                 onMouseDown={() => setFocusedPane("primary")}
               >
-                {modelNotice && (
-                  <p className="hint model-notice" role="status">
-                    {modelNotice}{" "}
-                    <button
-                      type="button"
-                      className="link-button"
-                      onClick={() => setModelNotice(null)}
-                    >
-                      Dismiss
-                    </button>
-                  </p>
-                )}
                 {content}
               </div>
             }
@@ -3451,6 +3482,7 @@ export function StartupForm({
           />
         </div>
       </div>
+      {statusBar}
       {overlays}
     </section>
   );
@@ -3561,7 +3593,6 @@ export function StartupForm({
       return (
         <section className="workspace-shell">
           {tabBar}
-          {unrestrictedBanner}
           {settingsPage}
           {overlays}
         </section>
@@ -3838,6 +3869,11 @@ export function StartupForm({
               historyCursor={historyCursor}
               onHistoryCursor={setHistoryCursor}
               handoff={handoffOffer}
+              statusInBar
+              details={[
+                `Role: ${roleNames[roleId] ?? roleId}`,
+                `Model: ${session.model ?? (activeTabSummary ? modelForTab(activeTabSummary) : "") ?? ""}`,
+              ].join("\n")}
               headerExtra={
                 <>
                   {modelPickerFor(activeTabSummary, session.model)}

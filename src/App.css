@@ -191,7 +191,8 @@ body,
 }
 
 .primary-button {
-  padding: 0.5rem 1rem;
+  padding: 0.25rem 0.75rem;
+  font-size: 0.8125rem;
   border: 1px solid var(--accent);
   border-radius: 6px;
   background: var(--success-emphasis);
@@ -212,7 +213,8 @@ body,
 }
 
 .secondary-button {
-  padding: 0.5rem 1rem;
+  padding: 0.25rem 0.65rem;
+  font-size: 0.8125rem;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg-muted);
@@ -2071,35 +2073,6 @@ kbd {
   font-size: 0.9rem;
 }
 
-.unrestricted-banner {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  margin: 0 0 8px;
-  padding: 10px 12px;
-  border: 1px solid var(--warning);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--warning) 12%, transparent);
-}
-
-.unrestricted-banner-text {
-  margin: 0;
-  flex: 1;
-  color: var(--warning-bright);
-  font-size: 0.92rem;
-  line-height: 1.4;
-}
-
-.tab-badge-warn {
-  background: color-mix(in srgb, var(--warning) 20%, transparent);
-  color: var(--warning-bright);
-  border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
-  max-width: 14rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .permission-card-meta {
   margin: 0 0 6px;
   font-size: 0.8rem;
@@ -3092,4 +3065,301 @@ mark.search-hit-current {
 
 .chat-history-dialog:focus {
   outline: none;
+}
+
+/* ---------------------------------------------------------------------
+   U1: slim tab chips and a one-line session header (details on hover).
+   --------------------------------------------------------------------- */
+.workspace-shell {
+  padding: 0.3rem 0.4rem 0;
+}
+
+.tab-bar {
+  gap: 0.25rem;
+  margin-bottom: 0.3rem;
+}
+
+.tab-list {
+  gap: 0.2rem;
+}
+
+.tab-chip {
+  height: 1.5rem;
+  border-radius: 5px;
+}
+
+.tab-chip-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  height: 100%;
+  padding: 0 0.45rem;
+  font-size: 0.75rem;
+  max-width: 13rem;
+}
+
+.tab-chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.tab-phase {
+  flex-shrink: 0;
+  margin-right: 0;
+  width: 0.4rem;
+  height: 0.4rem;
+}
+
+.tab-chip-close {
+  height: 100%;
+  padding: 0 0.3rem;
+  border-left: none;
+  font-size: 0.85rem;
+  visibility: hidden;
+}
+
+.tab-chip:hover .tab-chip-close,
+.tab-chip-active .tab-chip-close,
+.tab-chip-close:focus-visible {
+  visibility: visible;
+}
+
+.tab-color-select {
+  display: none;
+  height: 100%;
+  font-size: 0.7rem;
+}
+
+.tab-chip-active:hover .tab-color-select,
+.tab-color-select:focus {
+  display: inline-block;
+}
+
+.tab-badge {
+  margin-left: 0;
+  font-size: 0.625rem;
+  line-height: 1.2;
+}
+
+.tab-branch {
+  max-width: 7rem;
+}
+
+.tab-icon {
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  line-height: 1;
+  color: var(--accent-bright);
+}
+
+.tab-icon-warn {
+  color: var(--warning-bright);
+  cursor: help;
+}
+
+.tab-bar-icon,
+.tab-new {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.6rem;
+  height: 1.5rem;
+  padding: 0 0.4rem;
+  font-size: 0.85rem;
+  line-height: 1;
+}
+
+.tab-gear {
+  width: 1.6rem;
+  height: 1.5rem;
+}
+
+.session-terminal {
+  border-radius: 6px;
+}
+
+.session-terminal-chrome {
+  gap: 0.5rem;
+  min-height: 1.9rem;
+  padding: 0.15rem 0.4rem 0.15rem 0.6rem;
+}
+
+.session-terminal-chrome-titles {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.session-terminal-title {
+  font-size: 0.8125rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 1;
+  min-width: 3rem;
+}
+
+.session-terminal-subtitle {
+  margin: 0;
+  max-width: none;
+  flex-shrink: 2;
+  min-width: 0;
+}
+
+.session-terminal-chrome-actions {
+  gap: 0.3rem;
+  align-items: center;
+}
+
+.session-terminal-chrome-actions .secondary-button,
+.session-terminal-chrome-actions .primary-button,
+.terminal-toolbar .secondary-button,
+.split-pane-bar .secondary-button {
+  padding: 0.1rem 0.5rem;
+  font-size: 0.75rem;
+}
+
+.session-terminal-screen {
+  padding: 0.5rem 0.75rem 0.75rem;
+}
+
+.terminal-toolbar {
+  gap: 0.3rem;
+  margin-bottom: 0.25rem;
+}
+
+/* ---------------------------------------------------------------------
+   U3: one status strip instead of stacked banners.
+   --------------------------------------------------------------------- */
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+  flex-shrink: 0;
+  min-height: 1.35rem;
+  margin: 0.25rem -0.4rem 0;
+  padding: 0 0.5rem;
+  border-top: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+  font-size: 0.7rem;
+  line-height: 1.35rem;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.status-bar-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-width: 0;
+  padding: 0 0.45rem;
+  border-right: 1px solid var(--border);
+}
+
+.status-bar-item:last-of-type {
+  border-right: none;
+}
+
+.status-bar-status {
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status-bar-dot {
+  flex-shrink: 0;
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: var(--fg-subtle);
+}
+
+.status-tone-ok .status-bar-dot {
+  background: var(--success);
+}
+
+.status-tone-busy .status-bar-dot {
+  background: var(--accent-fg);
+  animation: tab-busy-pulse 1.4s ease-in-out infinite;
+}
+
+.status-tone-needs .status-bar-dot {
+  background: var(--attention);
+}
+
+.status-tone-needs {
+  color: var(--attention);
+}
+
+.status-tone-error .status-bar-dot {
+  background: var(--danger);
+}
+
+.status-bar-label {
+  color: var(--fg-subtle);
+}
+
+.status-bar-folder {
+  cursor: default;
+}
+
+.status-bar-branch {
+  color: var(--done-bright);
+}
+
+.status-bar-warn {
+  color: var(--warning-bright);
+  cursor: help;
+}
+
+.status-bar-message {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-width: 0;
+  max-width: 40%;
+  margin-left: 0.35rem;
+  padding: 0 0.4rem;
+  border-radius: 4px;
+}
+
+.status-bar-message-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status-bar-message-info {
+  color: var(--accent-bright);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.status-bar-message-warn {
+  color: var(--warning-bright);
+  background: color-mix(in srgb, var(--warning) 14%, transparent);
+}
+
+.status-bar-message-error {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+}
+
+.status-bar-dismiss {
+  padding: 0 0.15rem;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: 0.8rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.status-bar-spacer {
+  flex: 1;
 }
