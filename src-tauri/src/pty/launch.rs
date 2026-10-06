@@ -10,10 +10,14 @@
 //! - `--auto-review` — only when a role's Settings override selects it
 //! - `--approve-mcps` — MCP is allowed for every role
 //! - `--trust` — included on every role terminal launch
+//! - `--model <id>` — the tab's model (tab override, role default, or the
+//!   global default `composer-2.5`). Ids are checked by `valid_model_id`
+//!   so one can never be read as a flag.
 //!
 //! Not used, on purpose:
 //! - `--sandbox` — no role policy maps to enabled or disabled
-//! - `--model`, `--resume`, `--continue` — the interactive CLI owns those
+//! - `--continue` — the interactive CLI owns it. `--resume` is used only for
+//!   a Cursor CLI chat picked from history.
 //! - `--force` — same switch as `--yolo`; the confirmed set uses `--yolo`
 //! - There is no flag that denies file writes while still allowing shell.
 //!   PR Reviewer's default therefore omits `--yolo` and `--mode`, so the CLI
@@ -73,6 +77,22 @@ pub fn role_terminal_flags(role_id: &str, mode: RunMode) -> Vec<String> {
     args
 }
 
+/// Put `--model <id>` first. An invalid id is dropped, so the CLI's own
+/// default applies instead of a bad argument.
+pub fn with_model(model: Option<&str>, args: Vec<String>) -> Vec<String> {
+    match model
+        .map(str::trim)
+        .filter(|id| crate::models::valid_model_id(id))
+    {
+        Some(id) => {
+            let mut out = vec!["--model".to_string(), id.to_string()];
+            out.extend(args);
+            out
+        }
+        None => args,
+    }
+}
+
 /// Interactive `agent` with no policy flags. Used by the plain Cursor CLI tab.
 pub fn plain_agent_args() -> Vec<String> {
     Vec::new()
@@ -127,9 +147,10 @@ pub fn role_agent_command(
     program: &str,
     role_id: &str,
     mode: RunMode,
+    model: Option<&str>,
     prompt: Option<&str>,
 ) -> ProgramArgs {
-    let mut args = role_terminal_flags(role_id, mode);
+    let mut args = with_model(model, role_terminal_flags(role_id, mode));
     if let Some(prompt) = prompt.map(str::trim).filter(|text| !text.is_empty()) {
         args.push(prompt.to_string());
     }
@@ -241,14 +262,30 @@ mod tests {
     }
 
     #[test]
+    fn model_goes_first_and_bad_ids_are_dropped() {
+        let args = with_model(
+            Some("composer-2.5"),
+            role_terminal_flags("role_planner", RunMode::Default),
+        );
+        assert_eq!(&args[..3], &["--model", "composer-2.5", "--plan"]);
+        assert_eq!(with_model(Some("--yolo"), vec!["x".to_string()]), vec!["x"]);
+        assert_eq!(with_model(None, Vec::new()), Vec::<String>::new());
+    }
+
+    #[test]
     fn plain_cursor_cli_tab_has_no_flags() {
         assert!(plain_agent_args().is_empty());
     }
 
     #[test]
     fn short_prompt_is_the_positional_argument() {
-        let command =
-            role_agent_command("agent", "role_planner", RunMode::Default, Some("Ship it"));
+        let command = role_agent_command(
+            "agent",
+            "role_planner",
+            RunMode::Default,
+            None,
+            Some("Ship it"),
+        );
         assert_eq!(command.program, "agent");
         assert_eq!(command.args.last().map(String::as_str), Some("Ship it"));
         assert_eq!(command.args[0], "--plan");

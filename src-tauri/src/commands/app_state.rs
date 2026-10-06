@@ -27,6 +27,9 @@ pub struct TabSummary {
     /// Set when this terminal tab was opened with `agent --resume`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_session_id: Option<String>,
+    /// Per-tab model override. The UI resolves the effective model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -210,6 +213,7 @@ fn snapshot_from_store(store: &StateStore) -> AppStateSnapshot {
                     .get("resumeSessionId")
                     .map(|id| id.trim().to_string())
                     .filter(|id| !id.is_empty()),
+                model: t.model.clone(),
             })
             .collect(),
         closed_tabs: store
@@ -272,4 +276,20 @@ pub fn set_tab_color(
 ) -> Result<(), String> {
     let mut store = store.lock().map_err(|e| e.to_string())?;
     store.set_tab_color(&tab_id, &color)
+}
+
+#[tauri::command]
+pub fn get_layout(store: State<Mutex<StateStore>>) -> Result<crate::store::LayoutState, String> {
+    let store = store.lock().map_err(|e| e.to_string())?;
+    Ok(store.layout().clone())
+}
+
+#[tauri::command]
+pub fn set_layout(
+    layout: crate::store::LayoutState,
+    store: State<Mutex<StateStore>>,
+) -> Result<crate::store::LayoutState, String> {
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    store.set_layout(layout)?;
+    Ok(store.layout().clone())
 }

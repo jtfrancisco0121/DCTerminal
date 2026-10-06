@@ -1,6 +1,9 @@
+use super::connection::default_io_timeout;
 use super::connection::{AcpConnection, LineDispatch, TurnControl};
 use super::ndjson::session_prompt_params;
-use super::session_connect::{handshake, handshake_load};
+use super::session_connect::{
+    handshake, handshake_load, model_requests, parse_session_models, SessionModels,
+};
 use crate::process_tree::SharedProcess;
 use crate::supervisor::AgentSupervisor;
 use serde::Serialize;
@@ -20,6 +23,11 @@ pub struct AcpClient {
     next_id: u64,
     cancel: Arc<AtomicBool>,
     outbox: Arc<Mutex<Vec<(u64, Value)>>>,
+    models: SessionModels,
+}
+
+fn model_flag(model: &str) -> Vec<String> {
+    vec!["--model".to_string(), model.to_string()]
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -30,13 +38,57 @@ pub struct PromptResult {
     pub update_count: usize,
 }
 
+/// How a model choice reached the agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ModelVia {
+    /// No model was asked for, or the session already used it.
+    Unchanged,
+    ConfigOption,
+    SetModel,
+    /// `agent --model <id> acp` at spawn.
+    SpawnFlag,
+    /// The agent offered no way to change the model in this session.
+    Unsupported,
+}
+
 impl AcpClient {
     pub fn connect(cwd: &Path, mode_id: &str) -> Result<Self, String> {
+        Self::connect_with_model(cwd, mode_id, None).map(|(client, _)| client)
+    }
+
+    /// New session. A model the session cannot switch to in place is applied
+    /// by restarting `agent` with `--model` and opening a fresh session.
+    pub fn connect_with_model(
+        cwd: &Path,
+        mode_id: &str,
+        model: Option<&str>,
+    ) -> Result<(Self, ModelVia), String> {
         let folder = crate::paths::validate_working_folder(&cwd.display().to_string())
             .map_err(|err| err.message())?;
-        let mut conn = AgentSupervisor::spawn_default(&folder)?;
-        match handshake(&mut conn, &folder, mode_id) {
-            Ok((session_id, mode)) => Ok(Self::from_parts(conn, session_id, mode, folder)),
+        let mut client = Self::spawn_new(&folder, mode_id, &[])?;
+        let Some(model) = model else {
+            return Ok((client, ModelVia::Unchanged));
+        };
+        match client.apply_model(model)? {
+            ModelVia::Unsupported => {
+                client.conn.kill();
+                let mut flagged = Self::spawn_new(&folder, mode_id, &model_flag(model))?;
+                flagged.models.current = Some(model.to_string());
+                Ok((flagged, ModelVia::SpawnFlag))
+            }
+            via => Ok((client, via)),
+        }
+    }
+
+    fn spawn_new(folder: &Path, mode_id: &str, args: &[String]) -> Result<Self, String> {
+        let mut conn = AgentSupervisor::spawn_default_with(folder, args)?;
+        match handshake(&mut conn, folder, mode_id) {
+            Ok((session_id, mode, models)) => {
+                let mut client = Self::from_parts(conn, session_id, mode, folder.to_path_buf());
+                client.models = models;
+                Ok(client)
+            }
             Err(err) => {
                 conn.kill();
                 Err(err)
@@ -46,19 +98,106 @@ impl AcpClient {
 
     /// Resume `session_id` with `session/load`. Replay notifications are returned
     /// to the caller; they are not written anywhere under `~/.cursor`.
-    pub fn load(cwd: &Path, mode_id: &str, session_id: &str) -> Result<(Self, Vec<Value>), String> {
+    /// `session/load` with a model. `spawn_flag` skips the in-place attempt
+    /// (the caller already knows the session cannot switch).
+    pub fn load_with_model(
+        cwd: &Path,
+        mode_id: &str,
+        session_id: &str,
+        model: Option<&str>,
+        spawn_flag: bool,
+    ) -> Result<(Self, Vec<Value>, ModelVia), String> {
         let folder = crate::paths::validate_working_folder(&cwd.display().to_string())
             .map_err(|err| err.message())?;
-        let mut conn = AgentSupervisor::spawn_default(&folder)?;
-        match handshake_load(&mut conn, &folder, mode_id, session_id) {
-            Ok((loaded_id, mode, replay)) => {
-                Ok((Self::from_parts(conn, loaded_id, mode, folder), replay))
+        if let (Some(model), true) = (model, spawn_flag) {
+            let (mut client, replay) =
+                Self::spawn_load(&folder, mode_id, session_id, &model_flag(model))?;
+            client.models.current = Some(model.to_string());
+            return Ok((client, replay, ModelVia::SpawnFlag));
+        }
+        let (mut client, replay) = Self::spawn_load(&folder, mode_id, session_id, &[])?;
+        let Some(model) = model else {
+            return Ok((client, replay, ModelVia::Unchanged));
+        };
+        match client.apply_model(model)? {
+            ModelVia::Unsupported => {
+                client.conn.kill();
+                let (mut flagged, replay) =
+                    Self::spawn_load(&folder, mode_id, session_id, &model_flag(model))?;
+                flagged.models.current = Some(model.to_string());
+                Ok((flagged, replay, ModelVia::SpawnFlag))
+            }
+            via => Ok((client, replay, via)),
+        }
+    }
+
+    fn spawn_load(
+        folder: &Path,
+        mode_id: &str,
+        session_id: &str,
+        args: &[String],
+    ) -> Result<(Self, Vec<Value>), String> {
+        let mut conn = AgentSupervisor::spawn_default_with(folder, args)?;
+        match handshake_load(&mut conn, folder, mode_id, session_id) {
+            Ok((loaded_id, mode, replay, models)) => {
+                let mut client = Self::from_parts(conn, loaded_id, mode, folder.to_path_buf());
+                client.models = models;
+                Ok((client, replay))
             }
             Err(err) => {
                 conn.kill();
                 Err(err)
             }
         }
+    }
+
+    /// Switch this session's model in place: `session/set_config_option`
+    /// (category `model`), then `session/set_model`. `Unsupported` means the
+    /// caller has to restart the agent with `--model`.
+    pub fn apply_model(&mut self, model: &str) -> Result<ModelVia, String> {
+        if !crate::models::valid_model_id(model) {
+            return Err(format!("not a model id: {model}"));
+        }
+        if self.models.current.as_deref() == Some(model) {
+            return Ok(ModelVia::Unchanged);
+        }
+        let requests = model_requests(&self.models, &self.session_id, model);
+        let mut last_error: Option<String> = None;
+        for (method, params) in requests {
+            let id = self.next_id;
+            self.next_id += 1;
+            match self.conn.call(id, &method, params, default_io_timeout()) {
+                Ok(result) => {
+                    if result.get("configOptions").is_some() {
+                        let refreshed = parse_session_models(&result);
+                        if refreshed.config_id.is_some() {
+                            self.models.current = refreshed.current;
+                            self.models.available = refreshed.available;
+                        }
+                    }
+                    self.models.current = Some(model.to_string());
+                    return Ok(if method == "session/set_config_option" {
+                        ModelVia::ConfigOption
+                    } else {
+                        ModelVia::SetModel
+                    });
+                }
+                Err(err) if err.contains("agent exited") || err.contains("stdout closed") => {
+                    return Err(err);
+                }
+                // Method not found, or the agent rejected the value: try the
+                // next request, then fall back to a restart with `--model`.
+                Err(err) => last_error = Some(err),
+            }
+        }
+        if let Some(err) = last_error {
+            eprintln!("DCTerminal: in-place model switch failed, restarting with --model ({err})");
+        }
+        Ok(ModelVia::Unsupported)
+    }
+
+    pub fn current_model(&self) -> Option<&str> {
+        self.models.current.as_deref()
     }
 
     fn from_parts(conn: AcpConnection, session_id: String, mode_id: String, cwd: PathBuf) -> Self {
@@ -70,6 +209,7 @@ impl AcpClient {
             next_id: 5,
             cancel: Arc::new(AtomicBool::new(false)),
             outbox: Arc::new(Mutex::new(Vec::new())),
+            models: SessionModels::default(),
         }
     }
 
