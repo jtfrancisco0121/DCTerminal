@@ -229,3 +229,47 @@ describe("keymap", () => {
     });
   });
 });
+
+describe("pane and file panel shortcuts", () => {
+  const key = (code: string, extra: Partial<import("./keymap").KeyEventLike> = {}) => ({
+    code,
+    key: "",
+    ctrlKey: false,
+    metaKey: false,
+    altKey: false,
+    shiftKey: false,
+    ...extra,
+  });
+
+  it("binds swap, focus and close with Mod+Alt", async () => {
+    const { matchShortcut } = await import("./keymap");
+    expect(matchShortcut(key("KeyS", { ctrlKey: true, altKey: true, key: "s" }), { platform: "windows" })?.action).toBe("swapPanes");
+    expect(matchShortcut(key("KeyO", { metaKey: true, altKey: true, key: "ø" }), { platform: "mac" })?.action).toBe("focusOtherPane");
+    expect(matchShortcut(key("KeyW", { ctrlKey: true, altKey: true, key: "w" }), { platform: "linux" })?.action).toBe("closeSplit");
+    expect(matchShortcut(key("Backslash", { metaKey: true, key: "\\" }), { platform: "mac" })?.action).toBe("splitRight");
+    expect(matchShortcut(key("KeyB", { ctrlKey: true, key: "b" }), { platform: "windows" })?.action).toBe("toggleFilePanel");
+  });
+
+  it("leaves AltGr text alone on Windows", async () => {
+    const { matchShortcut } = await import("./keymap");
+    expect(matchShortcut(key("KeyS", { ctrlKey: true, altKey: true, key: "ś" }), { platform: "windows" })).toBeNull();
+  });
+
+  it("routes pane chords out of a focused terminal, but keeps Ctrl+\\ and Ctrl+B for the shell", async () => {
+    const { routeKey } = await import("./keymap");
+    const ctx = (platform: "mac" | "windows") => ({ platform, surface: "terminal" as const });
+    expect(routeKey(key("KeyO", { ctrlKey: true, altKey: true, key: "o" }), ctx("windows")).kind).toBe("app");
+    expect(routeKey(key("Backslash", { ctrlKey: true, key: "\\" }), ctx("windows")).kind).toBe("shell");
+    expect(routeKey(key("KeyB", { ctrlKey: true, key: "b" }), ctx("windows")).kind).toBe("shell");
+    expect(routeKey(key("Backslash", { metaKey: true, key: "\\" }), ctx("mac")).kind).toBe("app");
+  });
+
+  it("lists every pane shortcut in Settings", async () => {
+    const { shortcutRows, bindingConflicts, defaultBindings } = await import("./keymap");
+    const labels = shortcutRows("mac").map((row) => row.label);
+    for (const label of ["Split right", "Split down", "Swap panes", "Move focus to the other pane", "Close split", "Toggle file panel", "Save file"]) {
+      expect(labels).toContain(label);
+    }
+    expect(bindingConflicts(defaultBindings())).toEqual([]);
+  });
+});

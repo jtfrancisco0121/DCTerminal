@@ -45,6 +45,18 @@ type Props = {
   menuActions?: TerminalMenuAction[];
 };
 
+/**
+ * True when keyboard focus is in a place that must keep it: the scratch pad,
+ * the file panel, a model picker, or the other split pane.
+ */
+export function focusBelongsElsewhere(slot: HTMLElement): boolean {
+  const active = document.activeElement;
+  if (!active || active === document.body) return false;
+  if (active.closest(".scratch-pad, .file-panel, .model-picker")) return true;
+  const otherPane = active.closest("[data-pane]");
+  return !!otherPane && otherPane !== slot.closest("[data-pane]");
+}
+
 export function readTerminalHandoff(ptyId: string): { selection: string; tail: string } {
   return { selection: terminalSelection(ptyId), tail: terminalTailText(ptyId) };
 }
@@ -83,8 +95,7 @@ export function TerminalView({
     parked.term.options.fontSize = fontSize;
     // A focused scratch pad must keep the keystrokes. Refitting the terminal
     // must not move focus back onto xterm.
-    const padFocused = document.activeElement?.closest(".scratch-pad");
-    if (autoFocus && !padFocused) {
+    if (autoFocus && !focusBelongsElsewhere(slot)) {
       parked.term.focus();
       focusParkedTerminal(ptyId);
     }

@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, type KeyboardEvent, type RefObject } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  type KeyboardEvent,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { HandoffActions } from "./components/HandoffDialog";
 import type { HandoffTargetId } from "./handoff/map";
 import { historyNavigate } from "./scratch/pad";
@@ -46,6 +53,8 @@ type Props = {
     reason: string | null;
     onSend: (target: HandoffTargetId) => void;
   } | null;
+  /** Extra header controls, for example the model picker or pane buttons. */
+  headerExtra?: ReactNode;
 };
 
 export function SessionTerminal({
@@ -73,6 +82,7 @@ export function SessionTerminal({
   historyCursor = -1,
   onHistoryCursor,
   handoff,
+  headerExtra,
 }: Props) {
   const screenRef = useRef<HTMLDivElement>(null);
   const permissionRef = useRef<HTMLDivElement>(null);
@@ -151,6 +161,7 @@ export function SessionTerminal({
           </p>
         </div>
         <div className="session-terminal-chrome-actions">
+          {headerExtra}
           <button
             type="button"
             className="secondary-button"

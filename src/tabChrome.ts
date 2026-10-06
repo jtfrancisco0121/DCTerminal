@@ -25,10 +25,81 @@ export type SplitMode = "single" | "horizontal" | "vertical";
 export type SplitState = {
   mode: SplitMode;
   secondaryTabId: string | null;
+  /** Main pane size in percent. Kept when the split closes. */
+  primarySize?: number;
 };
 
-export function emptySplit(): SplitState {
-  return { mode: "single", secondaryTabId: null };
+export const DEFAULT_SPLIT_SIZE = 50;
+
+export function emptySplit(primarySize = DEFAULT_SPLIT_SIZE): SplitState {
+  return { mode: "single", secondaryTabId: null, primarySize };
+}
+
+export function splitOpen(state: SplitState): boolean {
+  return state.mode !== "single" && !!state.secondaryTabId;
+}
+
+export function clampSplitSize(size: number | undefined): number {
+  if (size === undefined || !Number.isFinite(size)) return DEFAULT_SPLIT_SIZE;
+  return Math.min(85, Math.max(15, size));
+}
+
+/** Tabs the second pane may show: every open tab except the active one. */
+export function splitCandidates<T extends { id: string }>(tabs: T[], activeId: string | null): T[] {
+  return tabs.filter((tab) => tab.id !== activeId);
+}
+
+/**
+ * Swap the panes. The second pane's tab becomes active and the active tab
+ * moves to the second pane. Returns null when there is nothing to swap.
+ */
+export function swapSplit(
+  state: SplitState,
+  activeId: string | null,
+): { split: SplitState; activate: string } | null {
+  if (!splitOpen(state) || !activeId || !state.secondaryTabId) return null;
+  if (state.secondaryTabId === activeId) return null;
+  return {
+    split: { ...state, secondaryTabId: activeId },
+    activate: state.secondaryTabId,
+  };
+}
+
+/**
+ * Keep the split valid after a tab change. Selecting the tab that is in the
+ * second pane swaps the panes, so one tab is never shown twice. A closed
+ * tab closes the split.
+ */
+export function reconcileSplit(
+  state: SplitState,
+  tabIds: string[],
+  previousActive: string | null,
+  nextActive: string | null,
+): SplitState {
+  if (!splitOpen(state)) return state;
+  if (!state.secondaryTabId || !tabIds.includes(state.secondaryTabId)) {
+    return emptySplit(state.primarySize);
+  }
+  if (nextActive && state.secondaryTabId === nextActive) {
+    if (previousActive && previousActive !== nextActive && tabIds.includes(previousActive)) {
+      return { ...state, secondaryTabId: previousActive };
+    }
+    return emptySplit(state.primarySize);
+  }
+  return state;
+}
+
+export function splitFromLayout(layout: {
+  splitMode: string;
+  secondaryTabId: string | null;
+  primarySize: number;
+}): SplitState {
+  const mode: SplitMode =
+    layout.splitMode === "horizontal" || layout.splitMode === "vertical"
+      ? layout.splitMode
+      : "single";
+  if (mode === "single" || !layout.secondaryTabId) return emptySplit(clampSplitSize(layout.primarySize));
+  return { mode, secondaryTabId: layout.secondaryTabId, primarySize: clampSplitSize(layout.primarySize) };
 }
 
 export function pushClosed(stack: ClosedTab[], tab: ClosedTab): ClosedTab[] {
@@ -46,15 +117,15 @@ export function reopenLast(stack: ClosedTab[]): {
 }
 
 export function openSplit(
-  _state: SplitState,
+  state: SplitState,
   mode: "horizontal" | "vertical",
   secondaryTabId: string,
 ): SplitState {
-  return { mode, secondaryTabId };
+  return { mode, secondaryTabId, primarySize: clampSplitSize(state.primarySize) };
 }
 
-export function closeSplit(): SplitState {
-  return emptySplit();
+export function closeSplit(state?: SplitState): SplitState {
+  return emptySplit(clampSplitSize(state?.primarySize));
 }
 
 export function tabAtIndex<T>(tabs: T[], index: number): T | null {
@@ -95,6 +166,9 @@ export function buildPalette(opts: {
     { id: "splitRight", title: "Split right", group: "Panes" },
     { id: "splitDown", title: "Split down", group: "Panes" },
     { id: "closeSplit", title: "Close split", group: "Panes" },
+    { id: "swapPanes", title: "Swap panes", group: "Panes" },
+    { id: "focusOtherPane", title: "Focus other pane", group: "Panes" },
+    { id: "toggleFilePanel", title: "Toggle file panel", group: "Files", keywords: "tree explorer" },
     { id: "focusPad", title: "Focus scratch pad", group: "Composer" },
     { id: "focusInput", title: "Focus input", group: "Composer" },
     { id: "transferPad", title: "Transfer scratch pad", group: "Composer" },
@@ -136,10 +210,12 @@ export function buildPalette(opts: {
     );
   }
   if (!opts.splitOpen) {
-    commands.splice(
-      commands.findIndex((c) => c.id === "closeSplit"),
-      1,
-    );
+    for (const id of ["closeSplit", "swapPanes", "focusOtherPane"]) {
+      commands.splice(
+        commands.findIndex((c) => c.id === id),
+        1,
+      );
+    }
   }
   for (const tab of opts.tabs) {
     commands.push({

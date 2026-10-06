@@ -50,6 +50,8 @@ export function useAppShortcuts({
       })) {
         return;
       }
+      // Popovers such as the model picker close themselves on Escape.
+      if (event.key === "Escape" && target?.closest?.("[data-own-escape]")) return;
       const surface = getSurface?.() ?? "chat";
       const routed = routeKey(
         {
