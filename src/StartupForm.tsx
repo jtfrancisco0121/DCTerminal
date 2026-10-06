@@ -131,6 +131,7 @@ import {
   focusedTerminalId,
   parkedTerminal,
   pasteTerminalText,
+  refitTerminal,
   requestTerminalSearch,
   terminalBracketedPaste,
 } from "./terminal/park";
@@ -2698,6 +2699,7 @@ export function StartupForm({
             bracketedPaste={terminalBracketedPaste(activeTabSummary.id)}
             onFocusTerminal={focusActiveTerminal}
             onFocusPad={() => blurParkedTerminal(activeTabSummary.id)}
+            onOpenChange={() => refitTerminal(activeTabSummary.id)}
           />
         </section>,
     );

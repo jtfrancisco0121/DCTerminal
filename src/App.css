@@ -1424,8 +1424,9 @@ kbd {
 }
 
 /* The pad is a sibling of the terminal, outside .terminal-slot, so keystrokes
-   stay in the textarea. The slot's ResizeObserver refits xterm when this
-   pane grows, shrinks, or collapses. */
+   stay in the textarea. The terminal takes every pixel above the pad. The
+   slot's ResizeObserver, plus an explicit refit when the pad is hidden or
+   shown, refits xterm when this pane grows, shrinks, or collapses. */
 .terminal-screen > .terminal-scratch {
   flex: 0 0 auto;
   min-height: 0;
@@ -1460,11 +1461,25 @@ kbd {
   margin-bottom: 0.4rem;
 }
 
-.terminal-slot,
-.xterm-host {
-  flex: 1;
-  min-height: 12rem;
+/* The slot flexes to fill .terminal-view. The reparented xterm host is pinned
+   to the slot's box, so FitAddon measures the slot's real height instead of
+   xterm's current row count (which kept the terminal at its first size). */
+.terminal-slot {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
   background: #0d1117;
+}
+
+.xterm-host {
+  background: #0d1117;
+}
+
+.terminal-slot > .xterm-host {
+  position: absolute;
+  inset: 0;
 }
 
 .terminal-slot .xterm {

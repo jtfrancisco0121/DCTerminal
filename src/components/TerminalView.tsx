@@ -17,6 +17,7 @@ import {
   focusParkedTerminal,
   pasteTerminalText,
   releaseParkedTerminal,
+  setTerminalRefitter,
   setTerminalSearchOpener,
   terminalSelection,
   terminalTailText,
@@ -129,6 +130,9 @@ export function TerminalView({
     });
 
     const fitNow = () => {
+      // A hidden or collapsed slot has no size. Fitting then would shrink
+      // the PTY to the minimum and garble the program's output.
+      if (!parked.host.isConnected || slot.clientWidth === 0 || slot.clientHeight === 0) return;
       parked.fit.fit();
       const cols = parked.term.cols;
       const rows = parked.term.rows;
@@ -136,13 +140,28 @@ export function TerminalView({
         void ptyResize(ptyId, cols, rows).catch(() => {});
       }
     };
-    const observer = new ResizeObserver(() => fitNow());
+    // Coalesce bursts (window drags, split drags, the pad toggling) into one
+    // fit per frame, after layout has settled.
+    let frame = 0;
+    const scheduleFit = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        fitNow();
+      });
+    };
+    const observer = new ResizeObserver(() => scheduleFit());
     observer.observe(slot);
+    window.addEventListener("resize", scheduleFit);
+    const unregisterRefit = setTerminalRefitter(ptyId, scheduleFit);
     const timer = window.setTimeout(fitNow, 0);
 
     return () => {
       window.clearTimeout(timer);
+      if (frame) window.cancelAnimationFrame(frame);
       observer.disconnect();
+      window.removeEventListener("resize", scheduleFit);
+      unregisterRefit();
       onData.dispose();
       detach?.();
       blurParkedTerminal(ptyId);
