@@ -7,6 +7,8 @@ export type TerminalPadHandle = {
   focus: () => void;
   /** true submits with one Enter after the paste. */
   send: (submit: boolean) => void;
+  /** The pad's editor, for inserting a library prompt at the cursor. */
+  field: () => HTMLTextAreaElement | null;
 };
 
 type Props = {
@@ -25,6 +27,10 @@ type Props = {
   onFocusPad?: () => void;
   /** Called after the pad is hidden or shown so the terminal can refit. */
   onOpenChange?: (open: boolean) => void;
+  /** F6: a prompt was sent with Enter (feeds Recent sends). */
+  onSent?: (text: string) => void;
+  /** F6: open the prompt library. */
+  onOpenLibrary?: () => void;
 };
 
 function padText(field: HTMLTextAreaElement | null, content: string): string {
@@ -50,6 +56,8 @@ export const TerminalScratchPad = forwardRef<TerminalPadHandle, Props>(
       onFocusTerminal,
       onFocusPad,
       onOpenChange,
+      onSent,
+      onOpenLibrary,
     },
     ref,
   ) {
@@ -63,6 +71,7 @@ export const TerminalScratchPad = forwardRef<TerminalPadHandle, Props>(
       if (!text.trim()) return;
       const data = encodeTerminalPaste(text, { bracketedPaste, submit });
       void write(ptyId, data);
+      if (submit) onSent?.(text);
     };
 
     useImperativeHandle(ref, () => ({
@@ -71,6 +80,7 @@ export const TerminalScratchPad = forwardRef<TerminalPadHandle, Props>(
         setFocusTick((tick) => tick + 1);
       },
       send: (submit: boolean) => deliver(submit),
+      field: () => fieldRef.current,
     }));
 
     const onOpenChangeRef = useRef(onOpenChange);
@@ -110,6 +120,7 @@ export const TerminalScratchPad = forwardRef<TerminalPadHandle, Props>(
           onFocus={onFocusPad}
           onEscape={onFocusTerminal}
           onToggle={() => setOpen((value) => !value)}
+          onOpenLibrary={onOpenLibrary}
         />
       </div>
     );

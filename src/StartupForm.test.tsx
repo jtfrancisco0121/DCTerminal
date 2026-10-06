@@ -57,6 +57,12 @@ vi.mock("./bridge", () => {
   respondPlanRequest: vi.fn(),
   reopenClosedTab: vi.fn(),
   historySearch: vi.fn(async () => []),
+  promptLibraryGet: vi.fn(async () => ({ prompts: [], recent: [], path: "" })),
+  promptSave: vi.fn(),
+  promptDelete: vi.fn(),
+  promptMarkUsed: vi.fn(async () => ({ prompts: [], recent: [], path: "" })),
+  promptRecordSend: vi.fn(async () => {}),
+  promptClearRecent: vi.fn(),
   transcriptLoad: vi.fn(async () => ({
     text: "",
     cwd: "",
@@ -153,6 +159,10 @@ import {
   getAppState,
   gitRepoInfo,
   historySearch,
+  promptLibraryGet,
+  promptMarkUsed,
+  promptRecordSend,
+  promptSave,
   reopenClosedTab,
   transcriptLoad,
   worktreeTabCheck,
@@ -890,5 +900,101 @@ describe("search all chats", () => {
     });
     expect(current.textContent).toBe("login");
     expect(document.querySelectorAll("mark.search-hit")).toHaveLength(2);
+  });
+});
+
+describe("prompt library (F6)", () => {
+  const appData = "/Users/jt/Library/Application Support/com.jtfrancisco.dcterminal/prompts.json";
+  const saved = {
+    id: "p_review",
+    name: "Review diff",
+    body: "Review the diff.",
+    createdAt: "2026-10-06T00:00:00Z",
+    updatedAt: "2026-10-06T00:00:00Z",
+    lastUsedAt: null,
+  };
+
+  beforeEach(() => {
+    vi.mocked(listCursorCliHistory).mockResolvedValue([]);
+    vi.mocked(getRole).mockResolvedValue(developer);
+    vi.mocked(getAppState).mockResolvedValue({
+      activeTabId: "tab_term",
+      tabs: [
+        {
+          id: "tab_term",
+          label: "Shell · Koneksi",
+          roleId: "role_developer",
+          cwd: "/Users/jt/Koneksi",
+          phase: "running",
+          mergedPromptChars: 0,
+          startupPromptSent: false,
+          hasTranscript: false,
+          folderStatus: "ok",
+          color: "#3fb950",
+          kind: "terminal",
+          terminalLaunch: "shell",
+          acpSessionId: null,
+        },
+      ],
+      closedTabs: [],
+    });
+    vi.mocked(promptLibraryGet).mockResolvedValue({ prompts: [saved], recent: [], path: appData });
+    vi.mocked(promptRecordSend).mockClear();
+    vi.mocked(promptMarkUsed).mockClear();
+  });
+
+  const renderForm = () =>
+    render(
+      <StartupForm
+        roles={[{ id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 }]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+
+  it("inserts a saved prompt into the pad and records terminal sends", async () => {
+    renderForm();
+    await screen.findByRole("region", { name: "Scratch pad" });
+    const editor = screen.getByLabelText("Scratch pad editor") as HTMLTextAreaElement;
+    fireEvent.change(editor, { target: { value: "draft notes" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Prompts" }));
+    const dialog = await screen.findByRole("dialog", { name: "Prompt library" });
+    await waitFor(() => expect(dialog.textContent).toContain(appData));
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Insert into scratch pad" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Prompt library" })).toBeNull(),
+    );
+    await waitFor(() => expect(editor.value).toBe("draft notes\n\nReview the diff."));
+    expect(promptMarkUsed).toHaveBeenCalledWith("p_review");
+
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(promptRecordSend).toHaveBeenCalledWith("draft notes\n\nReview the diff.", "terminal");
+  });
+
+  it("saves the scratch pad as a named prompt from the palette", async () => {
+    vi.mocked(promptSave).mockResolvedValue({
+      prompts: [saved, { ...saved, id: "p_new", name: "Run checks", body: "npm run check" }],
+      recent: [],
+      path: appData,
+    });
+    renderForm();
+    await screen.findByRole("region", { name: "Scratch pad" });
+    fireEvent.change(screen.getByLabelText("Scratch pad editor"), {
+      target: { value: "npm run check" },
+    });
+    fireEvent.keyDown(window, { key: "k", code: "KeyK", ctrlKey: true, metaKey: true });
+    fireEvent.click(await screen.findByRole("button", { name: /Save scratch pad as prompt/ }));
+    const name = (await screen.findByRole("textbox", { name: "Prompt name" })) as HTMLInputElement;
+    expect((screen.getByRole("textbox", { name: "Prompt text" }) as HTMLTextAreaElement).value).toBe(
+      "npm run check",
+    );
+    fireEvent.change(name, { target: { value: "Run checks" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save prompt" }));
+    await waitFor(() => expect(promptSave).toHaveBeenCalledWith(null, "Run checks", "npm run check"));
+    expect(await screen.findByRole("option", { name: /Run checks/ })).toBeTruthy();
   });
 });

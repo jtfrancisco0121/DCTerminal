@@ -27,6 +27,8 @@ function renderPad(
     onFocusPad: () => void;
     onChange: (value: string) => void;
     onOpenChange: (open: boolean) => void;
+    onSent: (text: string) => void;
+    onOpenLibrary: () => void;
   }> = {},
   ref?: Ref<TerminalPadHandle>,
 ) {
@@ -47,6 +49,8 @@ function renderPad(
       onFocusTerminal={onFocusTerminal}
       onFocusPad={overrides.onFocusPad}
       onOpenChange={overrides.onOpenChange}
+      onSent={overrides.onSent}
+      onOpenLibrary={overrides.onOpenLibrary}
     />,
   );
   return { write, onFocusTerminal, ...view };
@@ -218,5 +222,25 @@ describe("terminal scratch pad", () => {
       "tab-a",
       `${PASTE_START}edited a${PASTE_END}\r`,
     );
+  });
+});
+
+describe("terminal scratch pad and the prompt library (F6)", () => {
+  it("reports a submitted send for recent sends, but not a plain paste", async () => {
+    const onSent = vi.fn();
+    const ref = createRef<TerminalPadHandle>();
+    renderPad({ content: "  run the tests  ", onSent }, ref);
+    fireEvent.click(screen.getByRole("button", { name: "Paste to terminal" }));
+    expect(onSent).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(onSent).toHaveBeenCalledWith("  run the tests  ");
+    expect(ref.current?.field()).toBe(editor());
+  });
+
+  it("opens the prompt library from the pad", () => {
+    const onOpenLibrary = vi.fn();
+    renderPad({ onOpenLibrary });
+    fireEvent.click(screen.getByRole("button", { name: "Prompts" }));
+    expect(onOpenLibrary).toHaveBeenCalledTimes(1);
   });
 });

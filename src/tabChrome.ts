@@ -189,6 +189,18 @@ export function buildPalette(opts: {
     { id: "focusOtherPane", title: "Focus other pane", group: "Panes" },
     { id: "toggleFilePanel", title: "Toggle file panel", group: "Files", keywords: "tree explorer" },
     {
+      id: "promptLibrary",
+      title: "Prompt library…",
+      group: "Prompts",
+      keywords: "saved prompts snippets templates recent sends history insert scratch pad",
+    },
+    {
+      id: "savePrompt",
+      title: "Save scratch pad as prompt…",
+      group: "Prompts",
+      keywords: "prompt library snippet template name",
+    },
+    {
       id: "find",
       title: "Find in tab",
       group: "Search",

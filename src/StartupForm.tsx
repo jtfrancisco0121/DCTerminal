@@ -25,6 +25,13 @@ import {
   reopenClosedTab,
   historySearch,
   transcriptLoad,
+  promptClearRecent,
+  promptDelete,
+  promptLibraryGet,
+  promptMarkUsed,
+  promptRecordSend,
+  promptSave,
+  type PromptLibrary,
   setTabColor,
   setTabLabel,
   transcriptSave,
@@ -132,6 +139,8 @@ import { WorktreeDialog, type WorktreeCreateInput } from "./components/WorktreeD
 import { ChangesPanel } from "./components/ChangesPanel";
 import { ChatSearchDialog, type ChatSearchHit } from "./components/ChatSearchDialog";
 import { TranscriptView } from "./components/TranscriptView";
+import { PromptLibraryDialog } from "./components/PromptLibraryDialog";
+import { insertIntoPad, type PadSelection } from "./prompts/library";
 import type { ChatFindRequest } from "./SessionTerminal";
 import { classifyPromptFinished, type NotificationSettings } from "./notify/agentNotify";
 import { showSystemNotification } from "./notify/systemNotify";
@@ -262,6 +271,14 @@ export function StartupForm({
   /** acceptKey()s per tab: files the user kept after review. */
   const [acceptedChanges, setAcceptedChanges] = useState<Record<string, string[]>>({});
   const [fileFocus, setFileFocus] = useState<{ path: string; nonce: number } | null>(null);
+  /** F6: prompt library dialog; saveDraft opens it on "Save as prompt". */
+  const [promptLibraryOpen, setPromptLibraryOpen] = useState<{ saveDraft: string | null } | null>(
+    null,
+  );
+  const [promptLibrary, setPromptLibrary] = useState<PromptLibrary | null>(null);
+  const [promptLibraryError, setPromptLibraryError] = useState<string | null>(null);
+  /** Last cursor/selection in a tab's pad, so a library insert lands there. */
+  const padSelectionRef = useRef<(PadSelection & { tabId: string }) | null>(null);
   /** F5: Search all chats is open with this starting query. */
   const [chatSearchQuery, setChatSearchQuery] = useState<string | null>(null);
   /** F5: open the find bar in this chat tab (Mod+F, or a search jump). */
@@ -392,7 +409,8 @@ export function StartupForm({
     savedPlan !== null ||
     worktreeDialogOpen ||
     changesTabId !== null ||
-    chatSearchQuery !== null;
+    chatSearchQuery !== null ||
+    promptLibraryOpen !== null;
   const platform = useMemo(
     () => detectPlatform(typeof navigator === "undefined" ? "" : navigator.platform),
     [],
@@ -1582,6 +1600,7 @@ export function StartupForm({
       const pending = waiterRef.current.expect(tabId);
       setHistoryCursor(-1);
       scratch.remember(tabId, trimmed);
+      void promptRecordSend(trimmed, "chat").catch(() => {});
       patchRuntime(tabId, (rt) => ({
         ...rt,
         promptError: null,
@@ -1874,6 +1893,7 @@ export function StartupForm({
       if (match.action === "closeDialog") {
         setChangesTabId(null);
         setChatSearchQuery(null);
+        setPromptLibraryOpen(null);
         setWorktreeDialogOpen(false);
         setPaletteOpen(false);
         setSwitcherOpen(false);
@@ -2438,6 +2458,14 @@ export function StartupForm({
       });
       return;
     }
+    if (id === "promptLibrary") {
+      openPromptLibrary(false);
+      return;
+    }
+    if (id === "savePrompt") {
+      openPromptLibrary(true);
+      return;
+    }
     if (id === "showChanges") {
       if (activeTabId) setChangesTabId(activeTabId);
       return;
@@ -2616,6 +2644,74 @@ export function StartupForm({
 
   const changesTab = changesTabId ? savedTabs.find((tab) => tab.id === changesTabId) : undefined;
 
+  /** The active tab's pad editor (chat pad or terminal pad), if mounted. */
+  const activePadField = (): HTMLTextAreaElement | null => {
+    const summary = savedTabs.find((tab) => tab.id === activeTabIdRef.current);
+    if (summary?.kind === "terminal") return terminalPadRef.current?.field() ?? null;
+    return padRef.current;
+  };
+
+  function notePadSelection() {
+    const field = activePadField();
+    const tabId = activeTabIdRef.current;
+    if (!field || !tabId) return;
+    padSelectionRef.current = { tabId, start: field.selectionStart, end: field.selectionEnd };
+  }
+
+  const reloadPromptLibrary = () =>
+    promptLibraryGet()
+      .then((lib) => {
+        setPromptLibrary(lib);
+        setPromptLibraryError(null);
+      })
+      .catch((err: unknown) =>
+        setPromptLibraryError(err instanceof Error ? err.message : String(err)),
+      );
+
+  /** F6: open the library; `save` starts "Save as prompt" with the pad (or its selection). */
+  function openPromptLibrary(save: boolean) {
+    const field = activePadField();
+    if (field && document.activeElement === field) notePadSelection();
+    let saveDraft: string | null = null;
+    if (save) {
+      const sel = padSelectionRef.current;
+      const content = scratch.content;
+      const picked =
+        sel && sel.tabId === activeTabIdRef.current && sel.end > sel.start
+          ? content.slice(sel.start, sel.end)
+          : "";
+      saveDraft = picked.trim() ? picked : content;
+    }
+    setPromptLibraryOpen({ saveDraft });
+    void reloadPromptLibrary();
+  }
+
+  const insertLibraryPrompt = (text: string, promptId: string | null) => {
+    const tabId = activeTabIdRef.current;
+    if (!tabId) return;
+    const sel = padSelectionRef.current?.tabId === tabId ? padSelectionRef.current : null;
+    const next = insertIntoPad(scratch.content, text, sel);
+    scratch.setContent(tabId, next.content);
+    padSelectionRef.current = { tabId, start: next.caret, end: next.caret };
+    setPromptLibraryOpen(null);
+    if (promptId) {
+      void promptMarkUsed(promptId)
+        .then(setPromptLibrary)
+        .catch(() => {});
+    }
+    const terminal = savedTabs.find((tab) => tab.id === tabId)?.kind === "terminal";
+    if (terminal) {
+      blurParkedTerminal(tabId);
+      terminalPadRef.current?.focus();
+    }
+    window.setTimeout(() => {
+      const field = activePadField();
+      if (!field) return;
+      field.focus();
+      field.setSelectionRange(next.caret, next.caret);
+    }, 0);
+  };
+
   /** F5: open the hit's tab (reopening a closed one) and land on the match. */
   const jumpToHit = async (hit: ChatSearchHit, query: string) => {
     setChatSearchQuery(null);
@@ -2655,6 +2751,19 @@ export function StartupForm({
     .map((tab) => ({ tabId: tab.id, label: tab.label, segments: runtimes[tab.id]!.segments }));
   const overlays = (
     <>
+      {promptLibraryOpen && (
+        <PromptLibraryDialog
+          library={promptLibrary}
+          loadError={promptLibraryError}
+          canInsert={!!activeTabId}
+          saveDraft={promptLibraryOpen.saveDraft}
+          onInsert={insertLibraryPrompt}
+          onSave={async (id, name, body) => setPromptLibrary(await promptSave(id, name, body))}
+          onDelete={async (id) => setPromptLibrary(await promptDelete(id))}
+          onClearRecent={async () => setPromptLibrary(await promptClearRecent())}
+          onClose={() => setPromptLibraryOpen(null)}
+        />
+      )}
       {chatSearchQuery !== null && (
         <ChatSearchDialog
           initialQuery={chatSearchQuery}
@@ -3107,7 +3216,12 @@ export function StartupForm({
             persistError={scratch.persistError}
             platform={platform}
             onChange={(value) => scratch.setContent(activeTabSummary.id, value)}
-            onBlur={() => scratch.flush()}
+            onBlur={() => {
+              notePadSelection();
+              scratch.flush();
+            }}
+            onSent={(text) => void promptRecordSend(text, "terminal").catch(() => {})}
+            onOpenLibrary={() => openPromptLibrary(false)}
             write={ptyWrite}
             bracketedPaste={terminalBracketedPaste(activeTabSummary.id)}
             onFocusTerminal={focusActiveTerminal}
@@ -3453,7 +3567,11 @@ export function StartupForm({
           onTransfer={transferPad}
           onTransferTerminal={() => void transferToTerminalNow()}
           onSend={sendFromPad}
-          onBlur={() => scratch.flush()}
+          onBlur={() => {
+            notePadSelection();
+            scratch.flush();
+          }}
+          onOpenLibrary={() => openPromptLibrary(false)}
           onStopChain={() => {
             chainAbortRef.current = true;
             setChain((current) => (current ? chainStop(current) : current));

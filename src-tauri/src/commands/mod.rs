@@ -8,6 +8,7 @@ mod forms;
 mod handoff;
 mod model_session;
 mod prompt_worker;
+mod prompts;
 mod role_session;
 mod roles;
 mod workspace;
@@ -26,6 +27,10 @@ pub use dev_session::{
 pub use forms::{get_form_recall, save_form_draft};
 pub use handoff::{handoff_bind_tab, handoff_get, handoff_list, handoff_save};
 pub use model_session::acp_set_model;
+pub use prompts::{
+    prompt_clear_recent, prompt_delete, prompt_library_get, prompt_mark_used, prompt_record_send,
+    prompt_save,
+};
 pub use role_session::role_session_start;
 pub use roles::{get_role, list_roles, validate_and_preview};
 pub use workspace::{

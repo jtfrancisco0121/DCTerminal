@@ -36,6 +36,10 @@ use commands::{
 };
 use commands::{changes_file_diff, changes_list, changes_revert, changes_snapshot, ChangesRoot};
 use commands::{git_repo_info, worktree_tab_check, worktree_tab_new, worktree_tab_remove};
+use commands::{
+    prompt_clear_recent, prompt_delete, prompt_library_get, prompt_mark_used, prompt_record_send,
+    prompt_save,
+};
 use files::{files_list, files_read, files_reveal, files_write};
 use models::{get_model_settings, list_models, set_model_settings, set_tab_model};
 use pty::{
@@ -45,7 +49,7 @@ use pty::{
 use std::sync::Mutex;
 use store::{
     get_notification_settings, set_notification_settings, FormsStore, HandoffStore, ProjectsStore,
-    RolesStore, ScratchStore, SettingsStore, StateStore, TranscriptStore,
+    PromptStore, RolesStore, ScratchStore, SettingsStore, StateStore, TranscriptStore,
 };
 use tauri::Manager;
 
@@ -91,6 +95,7 @@ pub fn run() {
             let settings_store = SettingsStore::open(&data_dir)?;
             let transcript_store = TranscriptStore::open(&data_dir)?;
             let handoff_store = HandoffStore::open(&data_dir)?;
+            let prompt_store = PromptStore::open(&data_dir)?;
             let known_tabs: Vec<String> = state_store
                 .data
                 .tabs
@@ -113,6 +118,7 @@ pub fn run() {
             app.manage(Mutex::new(settings_store));
             app.manage(Mutex::new(transcript_store));
             app.manage(Mutex::new(handoff_store));
+            app.manage(Mutex::new(prompt_store));
             app.manage(Mutex::new(SessionRegistry::new()));
             app.manage(Mutex::new(PtyRegistry::new()));
             Ok(())
@@ -140,6 +146,12 @@ pub fn run() {
             respond_plan_request,
             role_session_start,
             scratch_load,
+            prompt_library_get,
+            prompt_save,
+            prompt_delete,
+            prompt_mark_used,
+            prompt_record_send,
+            prompt_clear_recent,
             scratch_save,
             projects_list,
             projects_remember,

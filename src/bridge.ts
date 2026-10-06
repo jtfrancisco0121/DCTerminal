@@ -626,6 +626,60 @@ export async function handoffBindTab(id: string, tabId: string): Promise<Handoff
   return invoke<HandoffRecord>("handoff_bind_tab", { id, tabId });
 }
 
+/** F6: a named prompt in the library (`prompts.json` in app data). */
+export type SavedPrompt = {
+  id: string;
+  name: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+  lastUsedAt: string | null;
+};
+
+/** F6: one sent prompt, newest first. */
+export type RecentSend = {
+  text: string;
+  sentAt: string;
+  /** "chat" | "terminal" */
+  source: string;
+};
+
+export type PromptLibrary = {
+  prompts: SavedPrompt[];
+  recent: RecentSend[];
+  /** Absolute path of prompts.json in DCTerminal's app data dir. */
+  path: string;
+};
+
+export async function promptLibraryGet(): Promise<PromptLibrary> {
+  return invoke<PromptLibrary>("prompt_library_get");
+}
+
+/** Create (id null) or edit a saved prompt. Names are unique. */
+export async function promptSave(
+  id: string | null,
+  name: string,
+  body: string,
+): Promise<PromptLibrary> {
+  return invoke<PromptLibrary>("prompt_save", { id, name, body });
+}
+
+export async function promptDelete(id: string): Promise<PromptLibrary> {
+  return invoke<PromptLibrary>("prompt_delete", { id });
+}
+
+export async function promptMarkUsed(id: string): Promise<PromptLibrary> {
+  return invoke<PromptLibrary>("prompt_mark_used", { id });
+}
+
+export async function promptRecordSend(text: string, source: "chat" | "terminal"): Promise<void> {
+  return invoke("prompt_record_send", { text, source });
+}
+
+export async function promptClearRecent(): Promise<PromptLibrary> {
+  return invoke<PromptLibrary>("prompt_clear_recent");
+}
+
 export async function handoffList(): Promise<HandoffRecord[]> {
   return invoke<HandoffRecord[]>("handoff_list");
 }

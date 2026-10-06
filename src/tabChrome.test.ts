@@ -142,6 +142,15 @@ describe("tab chrome", () => {
     ]);
   });
 
+  it("opens the prompt library and saves the pad as a prompt", () => {
+    const commands = buildPalette({ tabs: [], canReopen: false, splitOpen: false });
+    expect(filterCommands(commands, "prompt").map((c) => c.id)).toEqual(
+      expect.arrayContaining(["promptLibrary", "savePrompt"]),
+    );
+    expect(filterCommands(commands, "recent sends").map((c) => c.id)).toContain("promptLibrary");
+    expect(filterCommands(commands, "snippet").map((c) => c.id)).toContain("promptLibrary");
+  });
+
   it("offers find in tab and search all chats", () => {
     const commands = buildPalette({ tabs: [], canReopen: false, splitOpen: false });
     expect(filterCommands(commands, "find").map((c) => c.id)).toEqual(

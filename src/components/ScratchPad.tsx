@@ -21,6 +21,8 @@ type Props = {
   onFocus?: () => void;
   onEscape?: () => void;
   onToggle?: () => void;
+  /** F6: open the prompt library (saved prompts and recent sends). */
+  onOpenLibrary?: () => void;
 };
 
 export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function ScratchPad(
@@ -43,6 +45,7 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
     onFocus,
     onEscape,
     onToggle,
+    onOpenLibrary,
   },
   ref,
 ) {
@@ -75,6 +78,17 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
               }`}
         </span>
         <div className="scratch-pad-actions">
+          {onOpenLibrary && (
+            <button
+              type="button"
+              className="secondary-button"
+              onMouseDown={terminal ? (event) => event.preventDefault() : undefined}
+              onClick={onOpenLibrary}
+              title="Prompt library: insert a saved prompt or a recent send, or save this pad"
+            >
+              Prompts
+            </button>
+          )}
           {terminal && onToggle && (
             <button
               type="button"

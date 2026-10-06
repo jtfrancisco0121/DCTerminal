@@ -2642,3 +2642,141 @@ mark.search-hit-current {
   max-height: none;
   overflow: auto;
 }
+
+/* F6: prompt library. */
+.prompt-library {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: min(52rem, 94vw);
+  max-height: 85vh;
+  overflow: hidden;
+}
+
+.prompt-library-head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.prompt-library-head h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.prompt-library-tabs {
+  display: inline-flex;
+  gap: 0.25rem;
+  flex: 1;
+}
+
+.prompt-library-tab {
+  padding: 0.2rem 0.6rem;
+  border: 1px solid #30363d;
+  border-radius: 999px;
+  background: transparent;
+  color: #8b949e;
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.prompt-library-tab.active {
+  border-color: #388bfd;
+  background: rgba(56, 139, 253, 0.15);
+  color: #e6edf3;
+}
+
+.prompt-library-body-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+  gap: 0.6rem;
+  min-height: 12rem;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.prompt-library-empty {
+  grid-column: 1 / -1;
+}
+
+.prompt-library-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  min-height: 0;
+}
+
+.prompt-library-item {
+  display: flex;
+  flex-direction: column;
+  padding: 0.35rem 0.5rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.prompt-library-item:hover,
+.prompt-library-item.active {
+  background: #21262d;
+}
+
+.prompt-library-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prompt-library-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  min-height: 0;
+}
+
+.prompt-library-preview pre {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.prompt-library-actions {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.prompt-library-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.prompt-library-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.85rem;
+}
+
+.prompt-library-body {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  resize: vertical;
+}
+
+.prompt-library-clear {
+  align-self: flex-start;
+}
+
+.prompt-library-path {
+  margin: 0;
+  font-size: 0.75rem;
+}
+
+.prompt-library-path code {
+  word-break: break-all;
+}
