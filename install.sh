@@ -489,7 +489,10 @@ install_node() {
       case "$manager" in
         apt)
           curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            -o Dpkg::Options::="--force-confdef" \
+            -o Dpkg::Options::="--force-confold" \
+            nodejs
           ;;
         dnf)
           sudo dnf install -y nodejs npm
@@ -669,9 +672,13 @@ run_package_install() {
         [[ -z "$pkg" ]] && continue
         packages+=("$pkg")
       done < <(apt_packages)
-      # noninteractive so a package question cannot hang a one-command install.
+      # DEBIAN_FRONTEND does not answer dpkg conffile questions (Y/I/N/O/D/Z).
+      # Keep the existing config file so the install cannot hang on one.
       sudo DEBIAN_FRONTEND=noninteractive apt-get update
-      sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "${packages[@]}"
+      sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        -o Dpkg::Options::="--force-confdef" \
+        -o Dpkg::Options::="--force-confold" \
+        "${packages[@]}"
       ;;
     dnf)
       while IFS= read -r pkg; do
@@ -863,7 +870,9 @@ install_built_deb() {
   log "Installing ${deb} (package $(deb_package_name))"
   if ! sudo dpkg -i "$deb"; then
     log "dpkg reported a dependency problem; running apt-get install -f"
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -f -y
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -f -y \
+      -o Dpkg::Options::="--force-confdef" \
+      -o Dpkg::Options::="--force-confold"
   fi
   if ! dpkg -s "$(deb_package_name)" >/dev/null 2>&1; then
     die "Package $(deb_package_name) is not installed."
