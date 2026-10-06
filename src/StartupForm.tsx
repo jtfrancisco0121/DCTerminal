@@ -87,6 +87,7 @@ export function StartupForm({
   const [streamSegments, setStreamSegments] = useState<StreamSegment[]>([]);
   const [savedTabs, setSavedTabs] = useState<TabSummary[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const [resendStartup, setResendStartup] = useState(false);
   const skipRecallRef = useRef(false);
   const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionActiveRef = useRef(false);
@@ -466,7 +467,6 @@ export function StartupForm({
   );
 
   const [draftQueuedHint, setDraftQueuedHint] = useState(false);
-  const [resendStartup, setResendStartup] = useState(false);
   const [permissionRequest, setPermissionRequest] =
     useState<PermissionRequestEvent | null>(null);
 
