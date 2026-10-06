@@ -9,6 +9,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal } from "@xterm/xterm";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { lastLines, TERMINAL_TAIL_LINES } from "./text";
+import { cachedTheme, terminalTheme } from "../theme";
 
 export type ParkedTerminal = {
   host: HTMLDivElement;
@@ -23,29 +24,13 @@ let focusedId = "";
 const searchOpeners = new Map<string, () => void>();
 const refitters = new Map<string, () => void>();
 
-const THEME = {
-  background: "#0d1117",
-  foreground: "#e6edf3",
-  cursor: "#58a6ff",
-  cursorAccent: "#0d1117",
-  selectionBackground: "#264f78",
-  black: "#484f58",
-  red: "#ff7b72",
-  green: "#3fb950",
-  yellow: "#d29922",
-  blue: "#58a6ff",
-  magenta: "#bc8cff",
-  cyan: "#39c5cf",
-  white: "#b1bac4",
-  brightBlack: "#6e7681",
-  brightRed: "#ffa198",
-  brightGreen: "#56d364",
-  brightYellow: "#e3b341",
-  brightBlue: "#79c0ff",
-  brightMagenta: "#d2a8ff",
-  brightCyan: "#56d4dd",
-  brightWhite: "#f0f6fc",
-};
+let currentTheme = terminalTheme(cachedTheme());
+
+/** U8: repaint every terminal (and future ones) in the app theme. */
+export function setTerminalTheme(id: string): void {
+  currentTheme = terminalTheme(id);
+  for (const entry of parked.values()) entry.term.options.theme = currentTheme;
+}
 
 function parkHost(): HTMLDivElement {
   if (parkRoot && parkRoot.isConnected) return parkRoot;
@@ -79,7 +64,7 @@ export function ensureParkedTerminal(id: string, fontSize: number): ParkedTermin
     fontFamily: '"Cascadia Code", "Cascadia Mono", Consolas, ui-monospace, monospace',
     fontSize,
     scrollback: 10000,
-    theme: THEME,
+    theme: currentTheme,
     cursorBlink: true,
     rightClickSelectsWord: false,
     // The search addon's match highlights use the decoration API.

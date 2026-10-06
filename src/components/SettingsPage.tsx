@@ -9,7 +9,9 @@ import {
   type Role,
   type RoleSummary,
   type TerminalSettings,
+  type UiSettings,
 } from "../bridge";
+import { normalizeTheme, THEMES } from "../theme";
 import { DevToolsPanel } from "../DevToolsPanel";
 import { shortcutRows, type Platform } from "../keymap";
 import { DEFAULT_MODEL_ID } from "../models";
@@ -37,6 +39,8 @@ type Props = {
   notificationSettings?: NotificationSettings | null;
   onNotificationSettings?: (next: NotificationSettings) => void;
   onTestNotification?: () => void;
+  uiSettings?: UiSettings | null;
+  onUiSettings?: (patch: Partial<UiSettings>) => void;
   onClose: () => void;
 };
 
@@ -68,6 +72,8 @@ export function SettingsPage({
   notificationSettings = null,
   onNotificationSettings,
   onTestNotification,
+  uiSettings = null,
+  onUiSettings,
   onClose,
 }: Props) {
   const [selectedId, setSelectedId] = useState(roles[0]?.id ?? "");
@@ -235,6 +241,21 @@ export function SettingsPage({
 
       <section className="settings-section">
         <h3>Terminal</h3>
+        <label className="field-label">
+          Theme
+          <select
+            className="text-input"
+            value={normalizeTheme(uiSettings?.theme)}
+            disabled={!onUiSettings}
+            onChange={(event) => onUiSettings?.({ theme: event.target.value })}
+          >
+            {THEMES.map((theme) => (
+              <option key={theme.id} value={theme.id}>
+                {theme.label}
+              </option>
+            ))}
+          </select>
+        </label>
         <label className="field-label">
           Shell program
           <input

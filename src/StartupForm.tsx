@@ -222,6 +222,7 @@ import {
 } from "./tabChrome";
 import { useAppShortcuts } from "./useAppShortcuts";
 import { useScratchPads } from "./useScratchPads";
+import { useUiSettings } from "./useUiSettings";
 import {
   appendStreamSegment,
   streamSegmentFromSystemMessage,
@@ -770,6 +771,8 @@ export function StartupForm({
     }
     return out;
   }, [planRequest, runtimes, savedTabs, tabMarks, terminalBusy]);
+
+  const uiSettings = useUiSettings();
 
   const notificationSettingsRef = useRef(notificationSettings);
   notificationSettingsRef.current = notificationSettings;
@@ -2804,6 +2807,8 @@ export function StartupForm({
       onTerminalSettings={updateTerminalSettings}
       notificationSettings={notificationSettings}
       onNotificationSettings={updateNotificationSettings}
+      uiSettings={uiSettings.ui}
+      onUiSettings={uiSettings.update}
       onTestNotification={agentNotifications.sendTest}
       modelList={modelList}
       modelSettings={modelSettings}

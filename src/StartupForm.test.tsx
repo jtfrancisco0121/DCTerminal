@@ -110,6 +110,9 @@ vi.mock("./bridge", () => {
   scratchSave: vi.fn(async () => {}),
   scratchLoad: vi.fn(async () => ({ pads: [] })),
   setTerminalSettings: vi.fn(),
+  DEFAULT_UI_SETTINGS: { theme: "github-dark", shortcutBar: false, tipsSeen: [] },
+  getUiSettings: vi.fn(async () => ({ theme: "github-dark", shortcutBar: false, tipsSeen: [] })),
+  setUiSettings: vi.fn(async (ui: unknown) => ui),
   getNotificationSettings: vi.fn(async () => ({
     enabled: true,
     system: true,

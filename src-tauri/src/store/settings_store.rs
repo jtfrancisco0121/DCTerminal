@@ -100,6 +100,36 @@ impl Default for NotificationSettings {
     }
 }
 
+/// U7/U8 look and feel: colour theme, the optional shortcut bar, and which
+/// one-time tips were dismissed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UiSettings {
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    #[serde(default)]
+    pub shortcut_bar: bool,
+    #[serde(default)]
+    pub tips_seen: Vec<String>,
+}
+
+pub const UI_THEMES: &[&str] = &["github-dark", "github-light"];
+const TIPS_SEEN_LIMIT: usize = 50;
+
+fn default_theme() -> String {
+    UI_THEMES[0].to_string()
+}
+
+impl Default for UiSettings {
+    fn default() -> Self {
+        Self {
+            theme: default_theme(),
+            shortcut_bar: false,
+            tips_seen: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsFile {
@@ -114,6 +144,8 @@ pub struct SettingsFile {
     pub notifications: NotificationSettings,
     #[serde(default)]
     pub setup: SetupSettings,
+    #[serde(default)]
+    pub ui: UiSettings,
 }
 
 /// F8: first-run setup was finished or skipped.
@@ -135,6 +167,7 @@ impl Default for SettingsFile {
             models: ModelSettings::default(),
             notifications: NotificationSettings::default(),
             setup: SetupSettings::default(),
+            ui: UiSettings::default(),
         }
     }
 }
@@ -253,6 +286,36 @@ impl SettingsStore {
     }
 }
 
+impl SettingsStore {
+    pub fn ui(&self) -> &UiSettings {
+        &self.data.ui
+    }
+
+    /// Unknown themes fall back to GitHub Dark; tip ids are trimmed,
+    /// de-duplicated, and capped.
+    pub fn set_ui(&mut self, next: UiSettings) -> Result<(), String> {
+        let theme = if UI_THEMES.contains(&next.theme.as_str()) {
+            next.theme
+        } else {
+            default_theme()
+        };
+        let mut tips_seen: Vec<String> = Vec::new();
+        for tip in next.tips_seen {
+            let tip = tip.trim().to_string();
+            if !tip.is_empty() && tip.len() <= 64 && !tips_seen.contains(&tip) {
+                tips_seen.push(tip);
+            }
+        }
+        tips_seen.truncate(TIPS_SEEN_LIMIT);
+        self.data.ui = UiSettings {
+            theme,
+            shortcut_bar: next.shortcut_bar,
+            tips_seen,
+        };
+        self.save()
+    }
+}
+
 /// F8: show first-run setup only on a fresh profile. An existing profile
 /// (a tab with a folder, a running or terminal tab, or closed tabs) counts as
 /// set up even without the flag, so upgrades are not interrupted.
@@ -286,6 +349,26 @@ pub fn set_notification_settings(
     Ok(settings.notifications().clone())
 }
 
+/// Read the U7/U8 look-and-feel settings.
+#[tauri::command]
+pub fn get_ui_settings(
+    settings: tauri::State<std::sync::Mutex<SettingsStore>>,
+) -> Result<UiSettings, String> {
+    let settings = settings.lock().map_err(|err| err.to_string())?;
+    Ok(settings.ui().clone())
+}
+
+/// Save theme, shortcut bar, and dismissed tips (app data `settings.json`).
+#[tauri::command]
+pub fn set_ui_settings(
+    ui: UiSettings,
+    settings: tauri::State<std::sync::Mutex<SettingsStore>>,
+) -> Result<UiSettings, String> {
+    let mut settings = settings.lock().map_err(|err| err.to_string())?;
+    settings.set_ui(ui)?;
+    Ok(settings.ui().clone())
+}
+
 fn is_run_mode(value: &str) -> bool {
     matches!(value, "default" | "yolo" | "auto-review" | "plan" | "ask")
 }
@@ -294,6 +377,41 @@ fn is_run_mode(value: &str) -> bool {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn ui_settings_default_to_github_dark_and_clean_input() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("dcterminal_ui_{nanos}"));
+        let mut store = SettingsStore::open(&dir).unwrap();
+        assert_eq!(store.ui().theme, "github-dark");
+        assert!(!store.ui().shortcut_bar);
+        assert!(store.ui().tips_seen.is_empty());
+        store
+            .set_ui(UiSettings {
+                theme: "no-such-theme".into(),
+                shortcut_bar: true,
+                tips_seen: vec!["palette".into(), "palette".into(), " ".into(), "pad".into()],
+            })
+            .unwrap();
+        assert_eq!(store.ui().theme, "github-dark");
+        assert_eq!(store.ui().tips_seen, vec!["palette", "pad"]);
+        store
+            .set_ui(UiSettings {
+                theme: "github-light".into(),
+                ..store.ui().clone()
+            })
+            .unwrap();
+        let again = SettingsStore::open(&dir).unwrap();
+        assert_eq!(again.ui().theme, "github-light");
+        assert!(again.ui().shortcut_bar);
+        let old: SettingsFile =
+            serde_json::from_value(serde_json::json!({ "schemaVersion": 1 })).unwrap();
+        assert_eq!(old.ui, UiSettings::default());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn setup_flag_defaults_off_and_persists() {

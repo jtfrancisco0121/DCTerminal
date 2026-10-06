@@ -102,6 +102,35 @@ describe("SettingsPage", () => {
   });
 });
 
+describe("SettingsPage theme (U8)", () => {
+  it("defaults to GitHub Dark and switches to the alternative", () => {
+    const onUiSettings = vi.fn();
+    render(
+      <SettingsPage
+        roles={roles}
+        cli={null}
+        cliError={null}
+        platform="mac"
+        diagnostics={null}
+        captureOn={false}
+        showDevTools={false}
+        onToggleCapture={() => {}}
+        terminalSettings={null}
+        onTerminalSettings={() => {}}
+        approvalMode={null}
+        uiSettings={{ theme: "github-dark", shortcutBar: false, tipsSeen: [] }}
+        onUiSettings={onUiSettings}
+        onClose={() => {}}
+      />,
+    );
+    const select = screen.getByLabelText("Theme") as HTMLSelectElement;
+    expect(select.value).toBe("github-dark");
+    expect(select.selectedOptions[0].textContent).toBe("GitHub Dark");
+    fireEvent.change(select, { target: { value: "github-light" } });
+    expect(onUiSettings).toHaveBeenCalledWith({ theme: "github-light" });
+  });
+});
+
 describe("SettingsPage notifications", () => {
   const baseProps = {
     roles,

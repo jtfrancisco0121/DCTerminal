@@ -50,9 +50,9 @@ use pty::{
 };
 use std::sync::Mutex;
 use store::{
-    get_notification_settings, set_notification_settings, FormsStore, HandoffStore, ProjectsStore,
-    PromptStore, RolesStore, ScratchStore, SettingsStore, StateStore, TranscriptStore,
-    WorkspaceStore,
+    get_notification_settings, get_ui_settings, set_notification_settings, set_ui_settings,
+    FormsStore, HandoffStore, ProjectsStore, PromptStore, RolesStore, ScratchStore, SettingsStore,
+    StateStore, TranscriptStore, WorkspaceStore,
 };
 use tauri::Manager;
 
@@ -200,6 +200,8 @@ pub fn run() {
             acp_set_model,
             get_notification_settings,
             set_notification_settings,
+            get_ui_settings,
+            set_ui_settings,
             git_repo_info,
             worktree_tab_new,
             worktree_tab_check,

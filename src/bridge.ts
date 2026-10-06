@@ -964,6 +964,27 @@ export async function setNotificationSettings(
   return invoke<NotificationSettings>("set_notification_settings", { notifications });
 }
 
+/** U7/U8: colour theme, optional shortcut bar, dismissed one-time tips. */
+export type UiSettings = {
+  theme: string;
+  shortcutBar: boolean;
+  tipsSeen: string[];
+};
+
+export const DEFAULT_UI_SETTINGS: UiSettings = {
+  theme: "github-dark",
+  shortcutBar: false,
+  tipsSeen: [],
+};
+
+export async function getUiSettings(): Promise<UiSettings> {
+  return invoke<UiSettings>("get_ui_settings");
+}
+
+export async function setUiSettings(ui: UiSettings): Promise<UiSettings> {
+  return invoke<UiSettings>("set_ui_settings", { ui });
+}
+
 export type WorktreeRef = {
   repoRoot: string;
   path: string;
