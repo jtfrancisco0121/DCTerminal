@@ -49,17 +49,20 @@ Checklist for the ADE-inspired controls pass. Tick items in this file after they
 
 ## UI (dense)
 
-- [ ] **U1. Slimmer tab chips + one-line session header** — Details on hover.  
-  *Accept:* Chips shorter; header one line; hover shows path/role/model.
+- [x] **U1. Slimmer tab chips + one-line session header** — Details on hover.  
+  *Accept:* Chips shorter; header one line; hover shows path/role/model.  
+  *Done (`bac5dfe`):* Chips are 24 px tall with smaller text. The close × shows only on hover and on the active tab, and the colour picker only on hover of the active tab. "Terminal" is now a `›_` icon. **+**, **⎇**, and **↺** are icon buttons, and their names are in the tooltips. A chip's hover text lists the name, role, folder, branch, model, status, and the rename hint, one per line (`tabTooltip`). The chat header is one 30 px row: title, folder name (and branch chip) on the left, model, Changes, Cancel, and Stop on the right. Hovering the title shows the full folder, branch, session id, role, and model. Buttons are smaller across the app.
 
 - [ ] **U2. Scratch pad 2–3 rows, drag-to-expand** — Same in chat and terminal; Keep Hide/Show.  
   *Accept:* Default ~3 rows; drag grows; Hide/Show still works.
 
-- [ ] **U3. One status bar** — Status, model, folder, Run Everything warning (no stacked banners).  
-  *Accept:* Single bottom/status strip carries those facts.
+- [x] **U3. One status bar** — Status, model, folder, Run Everything warning (no stacked banners).  
+  *Accept:* Single bottom/status strip carries those facts.  
+  *Done (`bac5dfe`):* A 22 px `StatusBar` runs under the workspace. It shows the active tab's status (Not started / Ready / Agent working — n tools / Needs you: … / Terminal · working), its model, its folder name (hover for the full path and branch), and **⚠ Run Everything** (tooltip explains it). The Run Everything banner is removed (`UnrestrictedBanner` deleted). The model-change notice and the chat's folder warning now appear as short notices in the bar, and the model notice has a ×. The main chat no longer shows its own activity line or folder warning above the transcript; a chat in the second pane keeps them because the bar shows only the active tab.
 
-- [ ] **U4. Role-rules-off badge → warn icon + tooltip**  
-  *Accept:* No long text badge; icon + tooltip only.
+- [x] **U4. Role-rules-off badge → warn icon + tooltip**  
+  *Accept:* No long text badge; icon + tooltip only.  
+  *Done (`bac5dfe`):* The "role permission rules are off" text badge on chat tabs is now a ⚠ icon. Its tooltip and accessible name say the rules are off because Cursor CLI is set to Run Everything, and how to change it.
 
 - [ ] **U5. Compact start screen** — Role, folder, Start on one row; history as side list.  
   *Accept:* Startup fits one row + side history.
@@ -70,8 +73,9 @@ Checklist for the ADE-inspired controls pass. Tick items in this file after they
 - [ ] **U7. Easier shortcuts** — Optional bottom shortcut bar + first-use tips.  
   *Accept:* Toggleable bar; first-run tip once.
 
-- [ ] **U8. Theme CSS variables** — GitHub Dark default + one alternative.  
-  *Accept:* Themes switch via CSS vars; default is GitHub Dark.
+- [x] **U8. Theme CSS variables** — GitHub Dark default + one alternative.  
+  *Accept:* Themes switch via CSS vars; default is GitHub Dark.  
+  *Done (`0a88368`):* Every colour in `App.css` is now a CSS variable. The GitHub Dark values are on `:root` and are the default. `[data-theme="github-light"]` overrides them with GitHub Light, including syntax-highlight colours, and sets `color-scheme` for native controls. Tints use `color-mix`. `src/theme.ts` switches `data-theme`, caches the choice in localStorage so the next start paints correctly before settings load, and has matching xterm palettes (`setTerminalTheme` repaints open terminals). The choice is saved as `ui.theme` in `settings.json` in app data. Unknown values fall back to GitHub Dark (Rust `set_ui` and TS `normalizeTheme`). The theme picker is in Settings.
 
 ## Docs & quality
 
