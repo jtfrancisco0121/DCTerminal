@@ -20,6 +20,7 @@ import {
   type RoleSessionStartResult,
   type RoleSummary,
   type TabSummary,
+  type SessionUpdateEvent,
   type ValidatePreviewResult,
 } from "./bridge";
 import { TabBar } from "./TabBar";
@@ -72,6 +73,9 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const skipRecallRef = useRef(false);
   const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sessionActiveRef = useRef(false);
+  const pendingUpdatesRef = useRef<SessionUpdateEvent[]>([]);
+  const flushRafRef = useRef<number | null>(null);
   const [restoredTabId, setRestoredTabId] = useState<string | null>(null);
 
   const loadTabIntoForm = useCallback((tab: {
@@ -110,21 +114,46 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
   }, [loadTabIntoForm, refreshTabs]);
 
   useEffect(() => {
-    if (!session) {
-      setTranscriptLines([]);
-      return;
-    }
+    sessionActiveRef.current = !!session;
+  }, [session]);
+
+  useEffect(() => {
+    if (!session) return;
+    const sessionId = session.sessionId;
+
+    const flushUpdates = () => {
+      const batch = pendingUpdatesRef.current;
+      if (batch.length === 0) return;
+      pendingUpdatesRef.current = [];
+      setTranscriptLines((prev) => {
+        let next = prev;
+        for (const evt of batch) {
+          next = coalesceAgentLines([...next, sessionUpdateToLine(evt)]);
+        }
+        return next;
+      });
+    };
+
     let unlisten: (() => void) | undefined;
     listenSessionUpdates((evt) => {
-      if (evt.sessionId !== session.sessionId) return;
-      setTranscriptLines((prev) =>
-        coalesceAgentLines([...prev, sessionUpdateToLine(evt)]),
-      );
+      if (evt.sessionId !== sessionId) return;
+      pendingUpdatesRef.current.push(evt);
+      if (flushRafRef.current === null) {
+        flushRafRef.current = requestAnimationFrame(() => {
+          flushRafRef.current = null;
+          flushUpdates();
+        });
+      }
     }).then((fn) => {
       unlisten = fn;
     });
     return () => {
       unlisten?.();
+      if (flushRafRef.current !== null) {
+        cancelAnimationFrame(flushRafRef.current);
+        flushRafRef.current = null;
+      }
+      pendingUpdatesRef.current = [];
     };
   }, [session]);
 
@@ -161,8 +190,10 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
       .then((r) => {
         if (!cancelled) {
           setRole(r);
-          setPreview(null);
-          setStartResult(null);
+          if (!sessionActiveRef.current) {
+            setPreview(null);
+            setStartResult(null);
+          }
         }
       })
       .catch(() => {
@@ -248,12 +279,9 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
       }
       setSession(result.session);
       if (result.tabId) setActiveTabId(result.tabId);
-      setPromptInFlight(result.injectionInFlight);
+      setPromptInFlight(!!result.injectionInFlight);
+      setPreview(null);
       await refreshTabs();
-      if (result.mergedChars != null) {
-        const latest = await validateAndPreview(roleId, formValues);
-        setPreview(latest);
-      }
     } catch (err: unknown) {
       setStartResult({
         errors: [
@@ -365,10 +393,10 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
   };
 
   const errors: FieldError[] =
-    startResult?.errors.length
-      ? startResult.errors
-      : preview?.errors.length
-        ? preview.errors
+    (startResult?.errors?.length ?? 0) > 0
+      ? startResult!.errors
+      : (preview?.errors?.length ?? 0) > 0
+        ? preview!.errors
         : [];
 
   if (!role) {
@@ -508,13 +536,13 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
           type="button"
           className="secondary-button"
           onClick={stopSession}
-          disabled={busy || !session}
+          disabled={!session}
         >
           Stop session
         </button>
       </div>
 
-      {preview?.merged && preview.merged.text && (
+      {preview?.merged && preview.merged.text && !session && (
         <details className="preview-details">
           <summary>
             Merged prompt ({preview.merged.chars.toLocaleString()} chars)

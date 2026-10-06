@@ -7,6 +7,8 @@ export type TranscriptLine = {
   text: string;
 };
 
+export const MAX_TRANSCRIPT_LINES = 400;
+
 let lineSeq = 0;
 
 function nextId(): string {
@@ -94,5 +96,7 @@ export function coalesceAgentLines(lines: TranscriptLine[]): TranscriptLine[] {
     }
     out.push({ ...line });
   }
-  return out;
+  return out.length > MAX_TRANSCRIPT_LINES
+    ? out.slice(out.length - MAX_TRANSCRIPT_LINES)
+    : out;
 }
