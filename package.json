@@ -12,6 +12,7 @@
     "build": "tsc && vite build",
     "test": "vitest run",
     "check": "node scripts/local-check.mjs",
+    "install-app": "node scripts/install-app.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
     "release:win": "tauri build --bundles nsis,msi",

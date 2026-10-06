@@ -8,10 +8,10 @@
 
 | Field | Value |
 |--------|--------|
-| **Last updated** | 2026-10-06 — Planner hand-off opens a prefilled Implementer tab and waits for Start |
-| **Branch** | `cursor/planner-implementer-handoff-561b` |
+| **Last updated** | 2026-10-06 — Local `./install.sh` / `install.ps1` build and install for the host OS |
+| **Branch** | `cursor/local-install-scripts-28f8` |
 | **Current phase** | Finish MVP vertical slice (see [MVP-FINISH.md](./MVP-FINISH.md)) |
-| **Active task** | Installers / live Windows acceptance. Plan hand-off is in this branch. |
+| **Active task** | Local install scripts (`./install.sh`, `install.ps1`). Live three-OS acceptance is still manual. |
 
 ## Product-ready today
 
@@ -29,7 +29,7 @@ See blueprint §31. ACP chat stays primary. No token tracking. No writes to `~/.
 ## Not MVP-done yet
 
 - `session/load` resume (P2) — restored transcripts are read-only history, not a resumed ACP thread
-- Installers / §21 acceptance on three OSes
+- §21 acceptance on three OSes (local install scripts exist; macOS and Windows were not executed here)
 - Optional xterm pane (E6). Ctrl+Shift stays unbound until that pane exists
 - Live Windows check of folder browse, chaining, and permission-payload capture against a logged-in Cursor CLI
 
