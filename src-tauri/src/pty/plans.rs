@@ -17,11 +17,12 @@ pub struct PlanFile {
 }
 
 pub fn cursor_plans_dir() -> PathBuf {
-    let home = std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    home.join(".cursor").join("plans")
+    // Same home as the history list, including `DCT_CURSOR_HOME` in tests.
+    // A missing home stays a relative `.cursor/plans` and is not created.
+    crate::cursor_history::cursor_home()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".cursor")
+        .join("plans")
 }
 
 /// Newest regular file in `dir` whose mtime is strictly after `started`.

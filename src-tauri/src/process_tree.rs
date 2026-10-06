@@ -198,10 +198,8 @@ impl PidGuard {
             if let Some(job) = &self.job {
                 job.terminate();
             }
-            let pid = self.pid.to_string();
-            let _ = Command::new("taskkill")
-                .args(["/F", "/T", "/PID", &pid])
-                .status();
+            // An already-dead pid makes taskkill print "process not found" on the console.
+            quiet_taskkill(self.pid);
         }
     }
 }

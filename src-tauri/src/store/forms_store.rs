@@ -4,7 +4,7 @@ use crate::store::json_io::{read_json, write_json_atomic};
 use chrono::Utc;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 pub struct FormsStore {
     pub path: PathBuf,
@@ -13,7 +13,7 @@ pub struct FormsStore {
 
 impl FormsStore {
     pub fn load_or_default(app: &AppHandle) -> Result<Self, String> {
-        let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let dir = crate::data_dir::app_data_dir(app).path;
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join("forms.json");
         let data = if path.exists() {

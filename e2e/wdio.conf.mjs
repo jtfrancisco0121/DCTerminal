@@ -29,6 +29,8 @@ export const config = {
   reporters: ["spec"],
   mochaOpts: {
     timeout: 120000,
+    // Stop if the app is not using the isolated data dir. Later specs write state.
+    bail: true,
   },
   hostname: "127.0.0.1",
   port: 4444,

@@ -26,7 +26,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, UNIX_EPOCH};
 use tauri::ipc::Channel;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -126,10 +126,8 @@ fn open_session(
 }
 
 fn prompt_file(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|err| err.to_string())?
+    let dir = crate::data_dir::app_data_dir(app)
+        .path
         .join("terminal-prompts");
     std::fs::create_dir_all(&dir).map_err(|err| format!("prompt dir: {err}"))?;
     let safe: String = id

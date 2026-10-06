@@ -87,15 +87,16 @@ export function TerminalView({
     }
 
     const live = livePty(ptyId);
+    // Subscribe before replaying. ConPTY's first bytes are often a cursor
+    // query, and xterm answers that only through onData.
+    const onData = parked.term.onData((data) => {
+      void ptyWrite(ptyId, data).catch(() => {});
+    });
     const detach = live?.buffer.attach({
       data: (bytes) => parked.term.write(bytes),
       exit: (code) => setExitCode(code),
     });
     if (live?.exitCode != null) setExitCode(live.exitCode);
-
-    const onData = parked.term.onData((data) => {
-      void ptyWrite(ptyId, data).catch(() => {});
-    });
     const platform = detectPlatform(navigator.platform);
     parked.term.attachCustomKeyEventHandler((event) => {
       const routed = routeKey(

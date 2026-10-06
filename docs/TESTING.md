@@ -31,7 +31,22 @@ npm run e2e
 
 The app's `npm audit` stays at 0. WebdriverIO currently pulls `extract-zip` and `braces` versions that have no patched release, so those packages live only in the e2e folder.
 
-The runner gives the app its own data directory under `e2e/.tmp`. It does not write the user's `~/.cursor`, app data, or repositories. A temporary home directory holds two fixture `meta.json` files so the history list has one session and one chat.
+The runner gives the app its own data directory under `e2e/.tmp` through `DCT_DATA_DIR`
+and `DCT_CURSOR_HOME`. It does not override `USERPROFILE` (a fake profile makes
+Tauri panic with `unknown path` on Windows) and it does not point Cargo at that
+directory. WebView2's user data folder is `e2e/.tmp/webview2`. The first spec
+reads Settings → App data and stops the run if that path is not the isolated
+directory. A temporary cursor home holds two fixture `meta.json` files so the
+history list has one session and one chat. The runner does not write the user's
+`~/.cursor`, app data, or repositories.
+
+On Windows, from the repository root in PowerShell, with `tauri-driver` and a
+matching `msedgedriver` on `PATH`:
+
+```powershell
+npm run check
+npm run e2e
+```
 
 ### Fake agent
 

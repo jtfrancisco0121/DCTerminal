@@ -6,9 +6,16 @@
 use crate::process_tree::PidGuard;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::{self, Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+
+/// ConPTY's cursor-position query. It sends this on startup and blocks
+/// further output until a cursor position report comes back.
+const DSR_QUERY: &[u8] = b"\x1b[6n";
+const DSR_REPLY: &[u8] = b"\x1b[1;1R";
 
 #[derive(Debug, Clone)]
 pub struct SpawnSpec {
@@ -27,6 +34,8 @@ pub enum PtyOutput {
 
 enum Ctrl {
     Write(Vec<u8>),
+    /// A cursor-position report we generated. Does not mean the frontend is listening.
+    Reply(Vec<u8>),
     Resize {
         cols: u16,
         rows: u16,
@@ -86,13 +95,16 @@ impl PtySession {
         let (ctrl_tx, ctrl_rx) = mpsc::channel();
         let (out_tx, out_rx) = mpsc::channel();
         let read_out = out_tx.clone();
+        let attached = Arc::new(AtomicBool::new(false));
+        let read_ctrl = ctrl_tx.clone();
+        let read_attached = Arc::clone(&attached);
         thread::Builder::new()
             .name("pty-read".into())
-            .spawn(move || read_loop(reader, read_out))
+            .spawn(move || read_loop(reader, read_out, read_ctrl, read_attached))
             .map_err(|err| io::Error::other(err.to_string()))?;
         thread::Builder::new()
             .name("pty-ctrl".into())
-            .spawn(move || control_loop(master, writer, child, guard, ctrl_rx, out_tx))
+            .spawn(move || control_loop(master, writer, child, guard, ctrl_rx, out_tx, attached))
             .map_err(|err| io::Error::other(err.to_string()))?;
         Ok(Self {
             ctrl: ctrl_tx,
@@ -163,17 +175,77 @@ impl Drop for PtySession {
     }
 }
 
-fn read_loop(mut reader: Box<dyn Read + Send>, output: Sender<PtyOutput>) {
+fn read_loop(
+    mut reader: Box<dyn Read + Send>,
+    output: Sender<PtyOutput>,
+    ctrl: Sender<Ctrl>,
+    attached: Arc<AtomicBool>,
+) {
+    let mut gate = DsrGate::default();
     let mut buf = [0u8; 8192];
     loop {
         match reader.read(&mut buf) {
-            Ok(0) | Err(_) => break,
+            Ok(0) | Err(_) => {
+                let tail = gate.finish();
+                if !tail.is_empty() {
+                    let _ = output.send(PtyOutput::Data(tail));
+                }
+                break;
+            }
             Ok(n) => {
-                if output.send(PtyOutput::Data(buf[..n].to_vec())).is_err() {
+                let (forward, reply) = gate.push(&buf[..n], attached.load(Ordering::Relaxed));
+                if !reply.is_empty() && ctrl.send(Ctrl::Reply(reply)).is_err() {
+                    break;
+                }
+                if !forward.is_empty() && output.send(PtyOutput::Data(forward)).is_err() {
                     break;
                 }
             }
         }
+    }
+}
+
+/// Holds a split `ESC [ 6 n` and answers it until xterm is attached.
+#[derive(Default)]
+struct DsrGate {
+    held: Vec<u8>,
+}
+
+impl DsrGate {
+    fn push(&mut self, input: &[u8], frontend_attached: bool) -> (Vec<u8>, Vec<u8>) {
+        self.held.extend_from_slice(input);
+        let bytes = std::mem::take(&mut self.held);
+        let mut forward = Vec::new();
+        let mut reply = Vec::new();
+        let mut index = 0;
+        while index < bytes.len() {
+            if bytes[index] != 0x1b {
+                forward.push(bytes[index]);
+                index += 1;
+                continue;
+            }
+            let rest = &bytes[index..];
+            if rest.starts_with(DSR_QUERY) {
+                if frontend_attached {
+                    forward.extend_from_slice(DSR_QUERY);
+                } else {
+                    reply.extend_from_slice(DSR_REPLY);
+                }
+                index += DSR_QUERY.len();
+                continue;
+            }
+            if DSR_QUERY.starts_with(rest) {
+                self.held.extend_from_slice(rest);
+                break;
+            }
+            forward.push(bytes[index]);
+            index += 1;
+        }
+        (forward, reply)
+    }
+
+    fn finish(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.held)
     }
 }
 
@@ -184,15 +256,23 @@ fn control_loop(
     guard: PidGuard,
     ctrl: Receiver<Ctrl>,
     output: Sender<PtyOutput>,
+    attached: Arc<AtomicBool>,
 ) {
     let mut exited = false;
     loop {
         match ctrl.recv_timeout(Duration::from_millis(200)) {
             Ok(Ctrl::Write(data)) => {
+                // A frontend write means xterm is listening and will answer later queries.
+                attached.store(true, Ordering::Relaxed);
+                let _ = writer.write_all(&data);
+                let _ = writer.flush();
+            }
+            Ok(Ctrl::Reply(data)) => {
                 let _ = writer.write_all(&data);
                 let _ = writer.flush();
             }
             Ok(Ctrl::Resize { cols, rows, ack }) => {
+                attached.store(true, Ordering::Relaxed);
                 let result = master
                     .resize(PtySize {
                         rows,
@@ -346,6 +426,75 @@ mod tests {
     }
 
     #[test]
+    fn an_unattached_terminal_answers_conpty_dsr() {
+        let mut gate = DsrGate::default();
+        let (forward, reply) = gate.push(b"\x1b[6nC:\\>", false);
+        assert_eq!(reply, b"\x1b[1;1R");
+        assert_eq!(forward, b"C:\\>");
+
+        let (again, no_reply) = gate.push(b"\x1b[6nready", true);
+        assert!(no_reply.is_empty());
+        assert_eq!(again, b"\x1b[6nready");
+    }
+
+    #[test]
+    fn a_split_dsr_is_answered_once_the_query_is_complete() {
+        let mut gate = DsrGate::default();
+        let (forward, reply) = gate.push(b"\x1b[6", false);
+        assert!(forward.is_empty());
+        assert!(reply.is_empty());
+        let (forward, reply) = gate.push(b"nprompt", false);
+        assert_eq!(reply, b"\x1b[1;1R");
+        assert_eq!(forward, b"prompt");
+    }
+
+    /// The read loop, not the test, writes the cursor report. No frontend is attached.
+    #[cfg(unix)]
+    #[test]
+    fn the_backend_answers_dsr_before_a_frontend_is_attached() {
+        if std::process::Command::new("node")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("ignored: node is not on PATH");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("dcterminal-dsr-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dsr temp dir");
+        let script = dir.join("dsr.mjs");
+        std::fs::write(
+            &script,
+            "import fs from \"node:fs\";\n\
+             fs.writeSync(1, Buffer.from(\"\\u001b[6n\"));\n\
+             try { process.stdin.setRawMode(true); } catch { /* not a tty */ }\n\
+             process.stdin.resume();\n\
+             let pending = Buffer.alloc(0);\n\
+             process.stdin.on(\"data\", (chunk) => {\n\
+             pending = Buffer.concat([pending, chunk]);\n\
+             if (pending.includes(Buffer.from(\"\\u001b[1;1R\"))) {\n\
+             fs.writeSync(1, \"pty_marker\\n\");\n\
+             }\n\
+             });\n\
+             setInterval(() => {}, 1000);\n",
+        )
+        .expect("write dsr script");
+        let session = PtySession::spawn(SpawnSpec {
+            program: "node".into(),
+            args: vec![script.display().to_string()],
+            cwd: dir.clone(),
+            cols: 80,
+            rows: 24,
+        })
+        .expect("spawn node");
+        let answered = wait_for_output(&session, "pty_marker");
+        session.kill();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(answered, "backend did not answer the cursor query");
+    }
+
+    #[test]
     fn ansi_sequences_do_not_hide_the_marker() {
         let wrapped = "\u{1b}[0mp\u{1b}[32mty_marker\u{1b}[0m";
         assert!(strip_vt(wrapped).contains("pty_marker"));
@@ -374,6 +523,11 @@ mod tests {
         } else {
             b"printf 'pty_marker\\n'\n"
         };
+        if cfg!(windows) {
+            // ConPTY emits CSI 6 n at startup and will not run the command
+            // until something answers with a cursor position report.
+            session.write(b"\x1b[1;1R").expect("answer device status report");
+        }
         session.write(line).expect("write");
         assert!(
             wait_for_output(&session, "pty_marker"),

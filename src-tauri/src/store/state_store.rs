@@ -8,7 +8,7 @@ use crate::template::template_hash;
 use chrono::Utc;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 pub struct StateStore {
     pub path: PathBuf,
@@ -17,7 +17,7 @@ pub struct StateStore {
 
 impl StateStore {
     pub fn load_or_default(app: &AppHandle) -> Result<Self, String> {
-        let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let dir = crate::data_dir::app_data_dir(app).path;
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join("state.json");
         let data = if path.exists() {

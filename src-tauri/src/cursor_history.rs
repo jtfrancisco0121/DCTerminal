@@ -41,13 +41,50 @@ struct MetaFile {
     title: Option<String>,
 }
 
+/// Home used to find `~/.cursor`. `DCT_CURSOR_HOME` is the test override.
+/// The real CLI still lives under the user profile. This crate only reads it.
+pub fn cursor_home() -> Option<PathBuf> {
+    resolve_cursor_home(
+        std::env::var_os("DCT_CURSOR_HOME").as_deref(),
+        std::env::var_os("USERPROFILE").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+        cfg!(windows),
+    )
+}
+
 pub fn cursor_data_dir() -> Option<PathBuf> {
-    let home = if cfg!(windows) {
-        std::env::var_os("USERPROFILE").map(PathBuf::from)
+    cursor_home().map(|home| home.join(".cursor"))
+}
+
+pub fn resolve_cursor_home(
+    override_dir: Option<&std::ffi::OsStr>,
+    userprofile: Option<&std::ffi::OsStr>,
+    home: Option<&std::ffi::OsStr>,
+    windows: bool,
+) -> Option<PathBuf> {
+    if let Some(path) = nonempty_path(override_dir) {
+        return Some(path);
+    }
+    if windows {
+        nonempty_path(userprofile)
     } else {
-        std::env::var_os("HOME").map(PathBuf::from)
-    }?;
-    Some(home.join(".cursor"))
+        nonempty_path(home)
+    }
+}
+
+fn nonempty_path(value: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+    let raw = value?;
+    if raw.is_empty() {
+        return None;
+    }
+    if let Some(text) = raw.to_str() {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        return Some(PathBuf::from(trimmed));
+    }
+    Some(PathBuf::from(raw))
 }
 
 /// True when `session_id` is a CLI chat for `folder` (`chats/<hash>/<id>/meta.json`).
@@ -315,6 +352,31 @@ fn mtime_rfc3339(path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cursor_home_prefers_the_override_over_the_user_profile() {
+        let home = resolve_cursor_home(
+            Some(std::ffi::OsStr::new("/tmp/e2e-home")),
+            Some(std::ffi::OsStr::new("C:\\Users\\jt")),
+            Some(std::ffi::OsStr::new("/home/jt")),
+            true,
+        );
+        assert_eq!(home, Some(PathBuf::from("/tmp/e2e-home")));
+        let windows = resolve_cursor_home(
+            None,
+            Some(std::ffi::OsStr::new("C:\\Users\\jt")),
+            Some(std::ffi::OsStr::new("/home/jt")),
+            true,
+        );
+        assert_eq!(windows, Some(PathBuf::from("C:\\Users\\jt")));
+        let unix = resolve_cursor_home(
+            Some(std::ffi::OsStr::new("  ")),
+            Some(std::ffi::OsStr::new("C:\\Users\\jt")),
+            Some(std::ffi::OsStr::new("/home/jt")),
+            false,
+        );
+        assert_eq!(unix, Some(PathBuf::from("/home/jt")));
+    }
 
     fn write_meta(dir: &Path, cwd: &str, title: &str) {
         fs::create_dir_all(dir).unwrap();

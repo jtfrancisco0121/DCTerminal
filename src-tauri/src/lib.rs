@@ -3,6 +3,7 @@ mod cli_detect;
 mod cli_launch;
 mod commands;
 mod cursor_history;
+mod data_dir;
 mod orchestrator;
 mod paths;
 mod permissions;
@@ -37,8 +38,29 @@ use store::{
 };
 use tauri::Manager;
 
+/// WebView2 ignores `APPDATA` and would otherwise share the real profile.
+/// The runner usually sets `WEBVIEW2_USER_DATA_FOLDER` itself. This covers a
+/// launch that only set `DCT_DATA_DIR`. Called before any other thread starts.
+fn isolate_webview_data_dir() {
+    #[cfg(windows)]
+    {
+        if std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").is_some_and(|value| !value.is_empty()) {
+            return;
+        }
+        let Some(data) = std::env::var_os("DCT_DATA_DIR").filter(|value| !value.is_empty()) else {
+            return;
+        };
+        let dir = std::path::PathBuf::from(data).join("webview2");
+        if std::fs::create_dir_all(&dir).is_ok() {
+            // Safety: this runs on the main thread before the runtime starts.
+            unsafe { std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &dir) };
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    isolate_webview_data_dir();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -47,7 +69,11 @@ pub fn run() {
             let mut state_store = StateStore::load_or_default(app.handle())?;
             state_store.reconcile_stale_running_tabs()?;
             let forms_store = FormsStore::load_or_default(app.handle())?;
-            let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+            let resolved = data_dir::app_data_dir(app.handle());
+            if let Some(warning) = &resolved.warning {
+                eprintln!("DCTerminal: {warning}");
+            }
+            let data_dir = resolved.path;
             let scratch_store = ScratchStore::open(&data_dir)?;
             let projects_store = ProjectsStore::open(&data_dir)?;
             let settings_store = SettingsStore::open(&data_dir)?;

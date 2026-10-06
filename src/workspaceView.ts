@@ -75,6 +75,16 @@ export function folderToWrite(known: string, next: string): string {
   return folderForTab(next) || folderForTab(known);
 }
 
+/**
+ * Continue calls session/load. A restored tab with only local text, or a
+ * role tab that never started, has no session id and cannot be continued.
+ */
+export function canContinueStoredSession(
+  tab: { phase: string; acpSessionId: string | null } | null,
+): boolean {
+  return !!tab && tab.phase === "awaitingInput" && !!tab.acpSessionId;
+}
+
 export function showStartupFields(input: {
   surface: TabSurface;
   newSessionOpen: boolean;

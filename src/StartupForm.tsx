@@ -89,6 +89,7 @@ import { FolderPicker } from "./components/FolderPicker";
 import { SettingsPage } from "./components/SettingsPage";
 import { folderForTab } from "./projectsView";
 import {
+  canContinueStoredSession,
   folderToWrite,
   mergeTabDraft,
   showStartupFields,
@@ -593,13 +594,10 @@ export function StartupForm({
     }
   }, [activeTabId, activeTabSummary, session]);
 
-  const canContinueSession = useMemo(() => {
-    if (!activeTabSummary) return false;
-    return (
-      activeTabSummary.phase === "awaitingInput" &&
-      !!activeTabSummary.acpSessionId
-    );
-  }, [activeTabSummary]);
+  const canContinueSession = useMemo(
+    () => canContinueStoredSession(activeTabSummary),
+    [activeTabSummary],
+  );
 
   const historyFolder = folderForTab(values.cwd);
   useEffect(() => {
