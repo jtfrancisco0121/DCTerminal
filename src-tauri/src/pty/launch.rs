@@ -197,8 +197,10 @@ fn role_family(role_id: &str) -> Family {
     match normalized.as_str() {
         "role_implementer" | "implementer" | "role_developer" | "developer" => Family::FullAccess,
         "role_planner" | "planner" => Family::Planner,
+        "role_recommendation" | "recommendation" => Family::Planner,
         "role_general" | "general" => Family::General,
         "role_pr_reviewer" | "role_reviewer" | "pr_reviewer" | "reviewer" => Family::Reviewer,
+        "role_codebase_audit" | "codebase_audit" => Family::Reviewer,
         _ => Family::Other,
     }
 }
@@ -241,6 +243,21 @@ mod tests {
             || flag == "--force"
             || flag == "--mode"
             || flag == "--plan"));
+    }
+
+    #[test]
+    fn recommendation_uses_plan_like_planner() {
+        assert_eq!(
+            role_terminal_flags("role_recommendation", RunMode::Default),
+            vec!["--plan", "--approve-mcps", "--trust"]
+        );
+    }
+
+    #[test]
+    fn codebase_audit_uses_reviewer_flags() {
+        let flags = role_terminal_flags("role_codebase_audit", RunMode::Default);
+        assert_eq!(flags, vec!["--approve-mcps", "--trust"]);
+        assert!(!flags.iter().any(|flag| flag == "--plan" || flag == "--yolo"));
     }
 
     #[test]

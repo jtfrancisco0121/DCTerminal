@@ -49,6 +49,25 @@ mod tests {
     }
 
     #[test]
+    fn recommendation_and_codebase_audit_have_no_unresolved_when_empty_values() {
+        for role_id in ["role_recommendation", "role_codebase_audit"] {
+            let spec = all_role_specs()
+                .into_iter()
+                .find(|s| s.id == role_id)
+                .unwrap_or_else(|| panic!("{role_id} spec"));
+            let md = fs::read_to_string(crate::store::docs_roles_dir().join(spec.source_file))
+                .unwrap_or_else(|e| panic!("read {}: {}", spec.source_file, e));
+            let role = build_role_from_markdown(&spec, &md);
+            let merged = merge_template(&role.template_text, &role.fields, &HashMap::new());
+            assert!(
+                merged.unresolved.is_empty(),
+                "{role_id}: {}",
+                merged.unresolved.join(", ")
+            );
+        }
+    }
+
+    #[test]
     fn optional_blank_follows_empty_behavior() {
         use crate::roles::{FieldType, RoleField};
         let fields = vec![

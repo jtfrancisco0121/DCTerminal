@@ -140,10 +140,10 @@ export function rolePermissionSummary(roleId: string): string {
   if (id.includes("implementer") || id.includes("developer")) {
     return "Auto-allow write, shell, and MCP (allow-once).";
   }
-  if (id.includes("review")) {
+  if (id.includes("review") || id.includes("audit")) {
     return "Allow shell and MCP. Deny file writes. Ask when a request is ambiguous.";
   }
-  if (id.includes("planner") || id.includes("general")) {
+  if (id.includes("planner") || id.includes("general") || id.includes("recommendation")) {
     return "Deny write and shell. Allow MCP. Ask when a request is ambiguous.";
   }
   return "Ask for every permission.";
