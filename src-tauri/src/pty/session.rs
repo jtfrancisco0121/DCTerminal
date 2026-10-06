@@ -32,6 +32,7 @@ enum Ctrl {
         rows: u16,
         ack: Sender<io::Result<()>>,
     },
+    #[cfg(test)]
     Size(Sender<io::Result<(u16, u16)>>),
     Kill,
 }
@@ -128,6 +129,7 @@ impl PtySession {
             .map_err(|err| io::Error::other(err.to_string()))?
     }
 
+    #[cfg(test)]
     pub fn size(&self) -> io::Result<(u16, u16)> {
         let (ack_tx, ack_rx) = mpsc::channel();
         self.ctrl
@@ -142,6 +144,7 @@ impl PtySession {
         let _ = self.ctrl.send(Ctrl::Kill);
     }
 
+    #[cfg(test)]
     pub fn recv_timeout(&self, timeout: Duration) -> io::Result<Option<PtyOutput>> {
         let Some(output) = self.output.as_ref() else {
             return Ok(None);
@@ -200,6 +203,7 @@ fn control_loop(
                     .map_err(|err| io::Error::other(err.to_string()));
                 let _ = ack.send(result);
             }
+            #[cfg(test)]
             Ok(Ctrl::Size(ack)) => {
                 let result = master
                     .get_size()
