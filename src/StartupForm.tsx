@@ -197,6 +197,7 @@ import { createTurnWaiter } from "./scratch/turnWait";
 import { SessionTerminal } from "./SessionTerminal";
 import { answersForRole, fieldsForForm } from "./startupFields";
 import { CursorHistoryList } from "./components/CursorHistoryList";
+import { ChatHistoryDialog } from "./components/ChatHistoryDialog";
 import {
   resumeIdForStart,
   segmentsAfterResume,
@@ -215,6 +216,9 @@ import {
   swapSplit,
   tabAtIndex,
   type SplitState,
+  parsePaletteId,
+  type PaletteAction,
+  type PaletteModelOptions,
 } from "./tabChrome";
 import { useAppShortcuts } from "./useAppShortcuts";
 import { useScratchPads } from "./useScratchPads";
@@ -224,6 +228,15 @@ import {
   streamSegmentFromUserMessage,
   segmentsToPlainText,
 } from "./transcript";
+
+/** Plain shells have no model; chats, role terminals, and Cursor CLI do. */
+function tabHasModel(tab: TabSummary): boolean {
+  return !(
+    tab.kind === "terminal" &&
+    tab.terminalLaunch !== "role" &&
+    tab.terminalLaunch !== "cursor-cli"
+  );
+}
 
 function fieldVisible(
   role: Role,
@@ -338,6 +351,9 @@ export function StartupForm({
   const [modelNotice, setModelNotice] = useState<string | null>(null);
   const [modelsRefreshing, setModelsRefreshing] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  /** Text the palette opens with, and a key so reopening resets it. */
+  const [palettePrefill, setPalettePrefill] = useState({ query: "", key: 0 });
+  const [chatHistoryOpen, setChatHistoryOpen] = useState(false);
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [captureOn, setCaptureOn] = useState(false);
@@ -434,6 +450,7 @@ export function StartupForm({
     chatSearchQuery !== null ||
     promptLibraryOpen !== null ||
     workspacesOpen !== null ||
+    chatHistoryOpen ||
     firstRunOpen;
   const platform = useMemo(
     () => detectPlatform(typeof navigator === "undefined" ? "" : navigator.platform),
@@ -1878,11 +1895,18 @@ export function StartupForm({
     );
   };
 
+  const refreshModelList = useCallback(() => {
+    setModelsRefreshing(true);
+    return listModels(true)
+      .then((list) => {
+        setModelList(list);
+        return list;
+      })
+      .finally(() => setModelsRefreshing(false));
+  }, []);
+
   const modelPickerFor = (tab: TabSummary | null | undefined, liveModel?: string | null) => {
-    if (!tab) return null;
-    if (tab.kind === "terminal" && tab.terminalLaunch !== "role" && tab.terminalLaunch !== "cursor-cli") {
-      return null;
-    }
+    if (!tab || !tabHasModel(tab)) return null;
     const inherited = inheritedModel(tab);
     const models = modelList?.models ?? [];
     return (
@@ -1958,6 +1982,7 @@ export function StartupForm({
         setChatSearchQuery(null);
         setPromptLibraryOpen(null);
         setWorkspacesOpen(null);
+        setChatHistoryOpen(false);
         setWorktreeDialogOpen(false);
         setPaletteOpen(false);
         setSwitcherOpen(false);
@@ -1974,6 +1999,7 @@ export function StartupForm({
         return;
       }
       if (match.action === "commandPalette") {
+        setPalettePrefill((current) => ({ query: "", key: current.key + 1 }));
         setPaletteOpen(true);
         return;
       }
@@ -2062,7 +2088,10 @@ export function StartupForm({
         return;
       }
       if (match.action === "splitRight" || match.action === "splitDown") {
-        if (splitCandidates(savedTabs, activeTabId).length === 0) return;
+        if (splitCandidates(savedTabs, activeTabId).length === 0) {
+          showNotice("Nothing to split with", "Open another tab first, then split.", "question");
+          return;
+        }
         setSplitPicker(match.action === "splitRight" ? "horizontal" : "vertical");
         return;
       }
@@ -2493,68 +2522,151 @@ export function StartupForm({
       .finally(() => setSavedPlanLoading(false));
   }, [handleSelectTab, savedTabs]);
 
+  const openPaletteWith = (query: string) => {
+    setPalettePrefill((current) => ({ query, key: current.key + 1 }));
+    setPaletteOpen(true);
+  };
+
+  const paletteModel: PaletteModelOptions | null =
+    activeTabSummary && tabHasModel(activeTabSummary) && (modelList?.models.length ?? 0) > 0
+      ? {
+          current: activeTabSummary.model ?? null,
+          inherited: inheritedModel(activeTabSummary),
+          models: (modelList?.models ?? []).map(({ id, label }) => ({ id, label })),
+        }
+      : null;
+
+  const runPaletteModel = (model: string | null) => {
+    const tab = activeTabSummary;
+    if (!tab || !tabHasModel(tab)) {
+      showNotice("No model here", "This tab is a plain shell. Pick a chat or Cursor CLI tab.", "question");
+      return;
+    }
+    if (busy || runtimes[tab.id]?.promptInFlight) {
+      showNotice("Model not changed", "Wait for the current turn to finish, then try again.", "question");
+      return;
+    }
+    void changeTabModel(tab, model);
+  };
+
+  /** Run one palette command. Every PaletteAction must have a case here. */
+  const runPaletteAction = (id: PaletteAction) => {
+    switch (id) {
+      case "sendPlanImplementer":
+        openHandoffDialog("role_implementer");
+        return;
+      case "sendPlanDeveloper":
+        openHandoffDialog("role_developer");
+        return;
+      case "handoffHelp":
+        showNotice(
+          "Nothing to hand off",
+          "Hand-off sends a plan to an Implementer or Developer. Open a Planner chat or Planner terminal that has a plan, then try again.",
+          "question",
+        );
+        return;
+      case "changeModel":
+        if (!paletteModel) {
+          runPaletteModel(null);
+          return;
+        }
+        openPaletteWith("use model ");
+        return;
+      case "refreshModels":
+        void refreshModelList()
+          .then((list) =>
+            showNotice("Model list refreshed", `${list.models.length} models available.`),
+          )
+          .catch((err: unknown) =>
+            showNotice(
+              "Could not refresh models",
+              err instanceof Error ? err.message : String(err),
+              "question",
+            ),
+          );
+        return;
+      case "chatHistory":
+        setChatHistoryOpen(true);
+        return;
+      case "toggleTerminal":
+        togglePane();
+        return;
+      case "transferToTerminal":
+        void transferToTerminalNow();
+        return;
+      case "settings":
+        setSettingsOpen(true);
+        return;
+      case "toggleCapture":
+        void diagnosticsSetCapture(!captureOn).then((status) => {
+          setDiagnostics(status);
+          setCaptureOn(status.capturePermissionPayloads);
+        });
+        return;
+      case "firstRunSetup":
+        setFirstRunOpen(true);
+        return;
+      case "workspaces":
+      case "saveWorkspace":
+        openWorkspaces(id === "saveWorkspace");
+        return;
+      case "promptLibrary":
+        openPromptLibrary(false);
+        return;
+      case "savePrompt":
+        openPromptLibrary(true);
+        return;
+      case "showChanges":
+        if (activeTabId) setChangesTabId(activeTabId);
+        return;
+      case "newWorktreeTab":
+        setWorktreeDialogOpen(true);
+        return;
+      case "removeWorktree":
+        void removeWorktreeFor(activeTabId);
+        return;
+      case "newTab":
+      case "closeTab":
+      case "reopenClosedTab":
+      case "nextTab":
+      case "prevTab":
+      case "renameTab":
+      case "tabSwitcher":
+      case "splitRight":
+      case "splitDown":
+      case "closeSplit":
+      case "swapPanes":
+      case "focusOtherPane":
+      case "toggleFilePanel":
+      case "find":
+      case "searchChats":
+      case "focusPad":
+      case "focusInput":
+      case "transferPad":
+      case "send":
+      case "shortcutsHelp":
+        onShortcut({ action: id });
+        return;
+      default: {
+        const unhandled: never = id;
+        throw new Error(`Unhandled palette action: ${String(unhandled)}`);
+      }
+    }
+  };
+
   const runPalette = (id: string) => {
     setPaletteOpen(false);
-    if (id === "sendPlanImplementer") {
-      openHandoffDialog("role_implementer");
+    const route = parsePaletteId(id);
+    if (!route) return;
+    if (route.kind === "goto") {
+      void handleSelectTab(route.tabId);
       return;
     }
-    if (id === "sendPlanDeveloper") {
-      openHandoffDialog("role_developer");
+    if (route.kind === "model") {
+      runPaletteModel(route.model);
       return;
     }
-    if (id === "toggleTerminal") {
-      togglePane();
-      return;
-    }
-    if (id === "transferToTerminal") {
-      void transferToTerminalNow();
-      return;
-    }
-    if (id === "settings") {
-      setSettingsOpen(true);
-      return;
-    }
-    if (id === "toggleCapture") {
-      void diagnosticsSetCapture(!captureOn).then((status) => {
-        setDiagnostics(status);
-        setCaptureOn(status.capturePermissionPayloads);
-      });
-      return;
-    }
-    if (id === "firstRunSetup") {
-      setFirstRunOpen(true);
-      return;
-    }
-    if (id === "workspaces" || id === "saveWorkspace") {
-      openWorkspaces(id === "saveWorkspace");
-      return;
-    }
-    if (id === "promptLibrary") {
-      openPromptLibrary(false);
-      return;
-    }
-    if (id === "savePrompt") {
-      openPromptLibrary(true);
-      return;
-    }
-    if (id === "showChanges") {
-      if (activeTabId) setChangesTabId(activeTabId);
-      return;
-    }
-    if (id === "newWorktreeTab") {
-      setWorktreeDialogOpen(true);
-      return;
-    }
-    if (id === "removeWorktree") {
-      void removeWorktreeFor(activeTabId);
-      return;
-    }
-    if (id.startsWith("goto:")) {
-      void handleSelectTab(id.slice("goto:".length));
-      return;
-    }
-    onShortcut({ action: id as ShortcutMatch["action"] });
+    runPaletteAction(route.id);
   };
 
   const setFollowUpFor = (tabId: string | null, value: string) => {
@@ -2703,11 +2815,7 @@ export function StartupForm({
       }}
       modelsRefreshing={modelsRefreshing}
       onRefreshModels={() => {
-        setModelsRefreshing(true);
-        void listModels(true)
-          .then(setModelList)
-          .catch(() => {})
-          .finally(() => setModelsRefreshing(false));
+        void refreshModelList().catch(() => {});
       }}
       approvalMode={approvalMode}
       onClose={() => setSettingsOpen(false)}
@@ -2931,6 +3039,22 @@ export function StartupForm({
           onSkip={skipFirstRun}
         />
       )}
+      {chatHistoryOpen && (
+        <ChatHistoryDialog
+          folder={folderForTab(activeTabSummary?.cwd || values.cwd)}
+          load={listCursorCliHistory}
+          busy={busy}
+          onResume={(entry) => {
+            setChatHistoryOpen(false);
+            void resumeHistoryEntry(entry);
+          }}
+          onOpenCli={(entry) => {
+            setChatHistoryOpen(false);
+            void openCursorCli(entry.id, entry.cwd);
+          }}
+          onClose={() => setChatHistoryOpen(false)}
+        />
+      )}
       {workspacesOpen && (
         <WorkspacesDialog
           list={workspaceList}
@@ -3022,6 +3146,9 @@ export function StartupForm({
           splitOpen={splitOpen(split)}
           canSendPlan={(roleId === "role_planner" && !!session) || !!isPlannerTerminal}
           canRemoveWorktree={!!activeTabSummary?.worktreePath}
+          model={paletteModel}
+          initialQuery={palettePrefill.query}
+          key={palettePrefill.key}
           onRun={runPalette}
           onClose={() => setPaletteOpen(false)}
         />

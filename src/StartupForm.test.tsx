@@ -190,6 +190,8 @@ import {
   getRole,
   setLayout,
   listCursorCliHistory,
+  listModels,
+  setTabModel,
   selectActiveTab,
   setTabLabel,
   syncActiveTabForm,
@@ -1286,5 +1288,139 @@ describe("first-run setup (F8)", () => {
     );
     expect(firstRunComplete).toHaveBeenCalled();
     expect(roleSessionStart).not.toHaveBeenCalled();
+  });
+});
+
+describe("command palette (F9)", () => {
+  const folder = "/Users/jt/Koneksi";
+  const summary = (id: string, label: string) => ({
+    id,
+    label,
+    roleId: "role_developer",
+    cwd: folder,
+    phase: "draft",
+    mergedPromptChars: 0,
+    startupPromptSent: false,
+    hasTranscript: false,
+    folderStatus: "ok",
+    color: "#3fb950",
+    kind: "role",
+    terminalLaunch: "",
+    acpSessionId: null,
+  });
+  const historyEntry = {
+    id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    source: "acp",
+    cwd: folder,
+    title: "Login",
+    updatedAt: null,
+    roleName: "Developer",
+    userText: "Fix the login",
+  };
+
+  beforeEach(() => {
+    vi.mocked(listCursorCliHistory).mockResolvedValue([]);
+    vi.mocked(getRole).mockResolvedValue(developer);
+    vi.mocked(getAppState).mockResolvedValue({
+      activeTabId: "tab_dev",
+      tabs: [summary("tab_dev", "Developer · Feature"), summary("tab_b", "Developer · Other")],
+      closedTabs: [],
+    });
+    vi.mocked(selectActiveTab).mockResolvedValue({
+      tab: { ...tab, cwd: folder, answers: { cwd: folder } },
+    });
+    vi.mocked(listModels).mockResolvedValue({
+      models: [
+        { id: "composer-2.5", label: "Composer 2.5", fast: false },
+        { id: "gpt-5", label: "GPT-5", fast: false },
+      ],
+      source: "fallback",
+      fetchedAtMs: null,
+      error: null,
+    });
+    vi.mocked(setTabModel).mockClear();
+    vi.mocked(newDraftTab).mockReset();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  const renderForm = () =>
+    render(
+      <StartupForm
+        roles={[{ id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 }]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+  const openPalette = async () => {
+    fireEvent.keyDown(window, { key: "k", code: "KeyK", ctrlKey: true, metaKey: true });
+    return screen.findByRole("dialog", { name: "Command palette" });
+  };
+
+  it("lists hand-off, worktree, split, model, history, search, prompts, and workspaces", async () => {
+    renderForm();
+    await screen.findByLabelText("Title");
+    const palette = await openPalette();
+    for (const [title, group] of [
+      ["Hand off plan…", "Hand-off"],
+      ["New tab in worktree…", "Worktree"],
+      ["Split right", "Split"],
+      ["Change model…", "Model"],
+      ["Chat history for this folder…", "History"],
+      ["Search all chats…", "Search"],
+      ["Prompt library…", "Prompts"],
+      ["Open workspace…", "Workspaces"],
+    ]) {
+      const button = within(palette).getByRole("button", { name: new RegExp(`^${title}`) });
+      expect(button.textContent).toContain(group);
+    }
+  });
+
+  it("changes the active tab's model from the palette", async () => {
+    renderForm();
+    await screen.findByLabelText("Title");
+    const palette = await openPalette();
+    fireEvent.click(within(palette).getByRole("button", { name: /^Change model…/ }));
+    const again = await screen.findByRole("dialog", { name: "Command palette" });
+    expect((within(again).getByPlaceholderText("Type a command") as HTMLInputElement).value).toBe(
+      "use model ",
+    );
+    fireEvent.click(await within(again).findByRole("button", { name: /Use model: GPT-5/ }));
+    await waitFor(() => expect(setTabModel).toHaveBeenCalledWith("tab_dev", "gpt-5"));
+    expect(screen.queryByRole("dialog", { name: "Command palette" })).toBeNull();
+  });
+
+  it("opens the folder's chat history and resumes a chat in a new tab", async () => {
+    renderForm();
+    await screen.findByLabelText("Title");
+    vi.mocked(listCursorCliHistory).mockResolvedValue([historyEntry]);
+    vi.mocked(newDraftTab).mockRejectedValue(new Error("stop here"));
+    const palette = await openPalette();
+    fireEvent.click(within(palette).getByRole("button", { name: /^Chat history for this folder…/ }));
+    const dialog = await screen.findByRole("dialog", { name: "Chat history" });
+    expect(dialog.textContent).toContain(folder);
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Resume" }));
+    await waitFor(() => expect(newDraftTab).toHaveBeenCalledWith("role_developer", folder));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Chat history" })).toBeNull());
+  });
+
+  it("splits with another tab, and explains hand-off when there is no plan", async () => {
+    renderForm();
+    await screen.findByLabelText("Title");
+    let palette = await openPalette();
+    fireEvent.click(within(palette).getByRole("button", { name: /^Split right/ }));
+    expect(await screen.findByRole("dialog", { name: "Split right with tab" })).toBeTruthy();
+    fireEvent.keyDown(window, { key: "Escape", code: "Escape" });
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Split right with tab" })).toBeNull(),
+    );
+
+    palette = await openPalette();
+    fireEvent.click(within(palette).getByRole("button", { name: /^Hand off plan…/ }));
+    expect(await screen.findByText(/Open a Planner chat or Planner terminal/)).toBeTruthy();
   });
 });

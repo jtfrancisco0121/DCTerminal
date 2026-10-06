@@ -2989,3 +2989,17 @@ mark.search-hit-current {
 .first-run-actions .link-button {
   margin-left: auto;
 }
+
+/* F9: chat history from the palette. */
+.chat-history-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  width: min(40rem, 94vw);
+  max-height: 80vh;
+  overflow: auto;
+}
+
+.chat-history-dialog:focus {
+  outline: none;
+}
