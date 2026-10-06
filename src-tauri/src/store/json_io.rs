@@ -15,7 +15,10 @@ pub fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), Str
     }
 
     let tmp = path.with_extension("json.tmp");
-    let data = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
+    let mut data = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
+    if !data.ends_with(b"\n") {
+        data.push(b'\n');
+    }
     {
         let mut file = fs::File::create(&tmp).map_err(|e| e.to_string())?;
         file.write_all(&data).map_err(|e| e.to_string())?;

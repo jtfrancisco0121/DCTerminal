@@ -18,6 +18,8 @@ pub fn all_role_specs() -> Vec<RoleSeedSpec> {
         pr_reviewer_spec(),
         developer_spec(),
         general_spec(),
+        recommendation_spec(),
+        codebase_audit_spec(),
     ]
 }
 
@@ -235,6 +237,30 @@ fn general_spec() -> RoleSeedSpec {
         source_file: "role-general.md",
         default_mode: "ask",
         color: "#8B949E",
+        substitutions: &[],
+        fields: vec![],
+    }
+}
+
+fn recommendation_spec() -> RoleSeedSpec {
+    RoleSeedSpec {
+        id: "role_recommendation",
+        name: "Recommendation",
+        source_file: "role-recommendation.md",
+        default_mode: "plan",
+        color: "#D29922",
+        substitutions: &[],
+        fields: vec![],
+    }
+}
+
+fn codebase_audit_spec() -> RoleSeedSpec {
+    RoleSeedSpec {
+        id: "role_codebase_audit",
+        name: "Codebase Audit",
+        source_file: "role-codebase-audit.md",
+        default_mode: "agent",
+        color: "#F85149",
         substitutions: &[],
         fields: vec![],
     }

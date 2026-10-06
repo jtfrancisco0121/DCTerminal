@@ -183,5 +183,13 @@ describe("role permission summaries", () => {
     expect(rolePermissionSummary("role_pr_reviewer")).toContain("Deny file writes");
     expect(rolePermissionSummary("role_planner")).toContain("Deny write and shell");
     expect(rolePermissionSummary("role_general")).toContain("Deny write and shell");
+    expect(rolePermissionSummary("role_recommendation")).toContain("Deny write and shell");
+    expect(rolePermissionSummary("role_codebase_audit")).toContain("Deny file writes");
+  });
+
+  it("does not infer policy from substrings in custom role ids", () => {
+    expect(rolePermissionSummary("role_my_audit_helper")).toBe(
+      "Ask for every permission.",
+    );
   });
 });

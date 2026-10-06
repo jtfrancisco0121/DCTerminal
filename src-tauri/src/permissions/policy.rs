@@ -227,7 +227,9 @@ fn canonical_role(role_id: &str) -> RoleKind {
     match normalized.as_str() {
         "role_implementer" | "implementer" | "role_developer" | "developer" => RoleKind::FullAccess,
         "role_pr_reviewer" | "role_reviewer" | "pr_reviewer" | "reviewer" => RoleKind::Reviewer,
-        "role_planner" | "planner" | "role_general" | "general" => RoleKind::ReadOnlyMode,
+        "role_planner" | "planner" | "role_general" | "general" | "role_recommendation"
+        | "recommendation" => RoleKind::ReadOnlyMode,
+        "role_codebase_audit" | "codebase_audit" => RoleKind::Reviewer,
         _ => RoleKind::Unknown,
     }
 }
@@ -693,31 +695,38 @@ mod tests {
 
     #[test]
     fn reviewer_allows_shell_and_mcp_and_rejects_writes() {
-        assert_eq!(
-            decide_for_role("role_pr_reviewer", ToolClass::Shell),
-            PolicyDecision::AllowOnce
-        );
-        assert_eq!(
-            decide_for_role("role_pr_reviewer", ToolClass::Mcp),
-            PolicyDecision::AllowOnce
-        );
-        assert_eq!(
-            decide_for_role("role_pr_reviewer", ToolClass::Read),
-            PolicyDecision::AllowOnce
-        );
-        assert_eq!(
-            decide_for_role("role_pr_reviewer", ToolClass::Write),
-            PolicyDecision::Reject
-        );
-        assert_eq!(
-            decide_for_role("role_pr_reviewer", ToolClass::Unknown),
-            PolicyDecision::Ask
-        );
+        for role in ["role_pr_reviewer", "role_codebase_audit"] {
+            assert_eq!(
+                decide_for_role(role, ToolClass::Shell),
+                PolicyDecision::AllowOnce,
+                "{role}"
+            );
+            assert_eq!(
+                decide_for_role(role, ToolClass::Mcp),
+                PolicyDecision::AllowOnce,
+                "{role}"
+            );
+            assert_eq!(
+                decide_for_role(role, ToolClass::Read),
+                PolicyDecision::AllowOnce,
+                "{role}"
+            );
+            assert_eq!(
+                decide_for_role(role, ToolClass::Write),
+                PolicyDecision::Reject,
+                "{role}"
+            );
+            assert_eq!(
+                decide_for_role(role, ToolClass::Unknown),
+                PolicyDecision::Ask,
+                "{role}"
+            );
+        }
     }
 
     #[test]
     fn planner_and_general_block_write_and_shell_but_allow_mcp() {
-        for role in ["role_planner", "role_general"] {
+        for role in ["role_planner", "role_general", "role_recommendation"] {
             assert_eq!(
                 decide_for_role(role, ToolClass::Write),
                 PolicyDecision::Reject
@@ -873,13 +882,16 @@ mod tests {
             evaluate_permission("role_pr_reviewer", &enriched).decision,
             PolicyDecision::AllowOnce
         );
+        for role in ["role_planner", "role_general", "role_recommendation"] {
+            assert_eq!(
+                evaluate_permission(role, &enriched).decision,
+                PolicyDecision::Reject,
+                "{role}"
+            );
+        }
         assert_eq!(
-            evaluate_permission("role_planner", &enriched).decision,
-            PolicyDecision::Reject
-        );
-        assert_eq!(
-            evaluate_permission("role_general", &enriched).decision,
-            PolicyDecision::Reject
+            evaluate_permission("role_codebase_audit", &enriched).decision,
+            PolicyDecision::AllowOnce
         );
         assert_eq!(
             evaluate_permission("role_custom", &enriched).decision,

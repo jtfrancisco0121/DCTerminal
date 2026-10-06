@@ -197,8 +197,10 @@ fn role_family(role_id: &str) -> Family {
     match normalized.as_str() {
         "role_implementer" | "implementer" | "role_developer" | "developer" => Family::FullAccess,
         "role_planner" | "planner" => Family::Planner,
+        "role_recommendation" | "recommendation" => Family::Planner,
         "role_general" | "general" => Family::General,
         "role_pr_reviewer" | "role_reviewer" | "pr_reviewer" | "reviewer" => Family::Reviewer,
+        "role_codebase_audit" | "codebase_audit" => Family::Reviewer,
         _ => Family::Other,
     }
 }
@@ -241,6 +243,21 @@ mod tests {
             || flag == "--force"
             || flag == "--mode"
             || flag == "--plan"));
+    }
+
+    #[test]
+    fn recommendation_uses_plan_like_planner() {
+        assert_eq!(
+            role_terminal_flags("role_recommendation", RunMode::Default),
+            vec!["--plan", "--approve-mcps", "--trust"]
+        );
+    }
+
+    #[test]
+    fn codebase_audit_uses_reviewer_flags() {
+        let flags = role_terminal_flags("role_codebase_audit", RunMode::Default);
+        assert_eq!(flags, vec!["--approve-mcps", "--trust"]);
+        assert!(!flags.iter().any(|flag| flag == "--plan" || flag == "--yolo"));
     }
 
     #[test]
@@ -289,6 +306,26 @@ mod tests {
         assert_eq!(command.program, "agent");
         assert_eq!(command.args.last().map(String::as_str), Some("Ship it"));
         assert_eq!(command.args[0], "--plan");
+    }
+
+    #[test]
+    fn built_in_role_templates_fit_terminal_inline_prompt_limit() {
+        use crate::roles::RolesFile;
+        use crate::store::{read_json, seed_output_path};
+        let seed: RolesFile = read_json(&seed_output_path()).expect("roles.seed.json");
+        const HEADROOM: usize = 1_500;
+        let limit = MAX_PROMPT_ARG_BYTES.saturating_sub(HEADROOM);
+        for role in &seed.roles {
+            let bytes = role.template_text.len();
+            assert!(
+                bytes <= limit,
+                "{} template is {} bytes (limit {} with {} headroom for argv flags)",
+                role.id,
+                bytes,
+                limit,
+                HEADROOM
+            );
+        }
     }
 
     #[test]
