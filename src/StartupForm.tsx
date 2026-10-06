@@ -32,6 +32,11 @@ import {
   promptRecordSend,
   promptSave,
   type PromptLibrary,
+  workspaceDelete,
+  workspaceOpen,
+  workspaceSave,
+  workspacesList,
+  type WorkspaceList,
   setTabColor,
   setTabLabel,
   transcriptSave,
@@ -140,6 +145,7 @@ import { ChangesPanel } from "./components/ChangesPanel";
 import { ChatSearchDialog, type ChatSearchHit } from "./components/ChatSearchDialog";
 import { TranscriptView } from "./components/TranscriptView";
 import { PromptLibraryDialog } from "./components/PromptLibraryDialog";
+import { WorkspacesDialog } from "./components/WorkspacesDialog";
 import { insertIntoPad, type PadSelection } from "./prompts/library";
 import type { ChatFindRequest } from "./SessionTerminal";
 import { classifyPromptFinished, type NotificationSettings } from "./notify/agentNotify";
@@ -271,6 +277,10 @@ export function StartupForm({
   /** acceptKey()s per tab: files the user kept after review. */
   const [acceptedChanges, setAcceptedChanges] = useState<Record<string, string[]>>({});
   const [fileFocus, setFileFocus] = useState<{ path: string; nonce: number } | null>(null);
+  /** F7: workspaces dialog; focusSave starts on the name field. */
+  const [workspacesOpen, setWorkspacesOpen] = useState<{ focusSave: boolean } | null>(null);
+  const [workspaceList, setWorkspaceList] = useState<WorkspaceList | null>(null);
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   /** F6: prompt library dialog; saveDraft opens it on "Save as prompt". */
   const [promptLibraryOpen, setPromptLibraryOpen] = useState<{ saveDraft: string | null } | null>(
     null,
@@ -410,7 +420,8 @@ export function StartupForm({
     worktreeDialogOpen ||
     changesTabId !== null ||
     chatSearchQuery !== null ||
-    promptLibraryOpen !== null;
+    promptLibraryOpen !== null ||
+    workspacesOpen !== null;
   const platform = useMemo(
     () => detectPlatform(typeof navigator === "undefined" ? "" : navigator.platform),
     [],
@@ -1894,6 +1905,7 @@ export function StartupForm({
         setChangesTabId(null);
         setChatSearchQuery(null);
         setPromptLibraryOpen(null);
+        setWorkspacesOpen(null);
         setWorktreeDialogOpen(false);
         setPaletteOpen(false);
         setSwitcherOpen(false);
@@ -2458,6 +2470,10 @@ export function StartupForm({
       });
       return;
     }
+    if (id === "workspaces" || id === "saveWorkspace") {
+      openWorkspaces(id === "saveWorkspace");
+      return;
+    }
     if (id === "promptLibrary") {
       openPromptLibrary(false);
       return;
@@ -2644,6 +2660,88 @@ export function StartupForm({
 
   const changesTab = changesTabId ? savedTabs.find((tab) => tab.id === changesTabId) : undefined;
 
+  /** F7: open the workspaces dialog (and push the active form to state.json). */
+  function openWorkspaces(focusSave: boolean) {
+    stashActiveTab();
+    setWorkspacesOpen({ focusSave });
+    setWorkspaceError(null);
+    void workspacesList()
+      .then(setWorkspaceList)
+      .catch((err: unknown) =>
+        setWorkspaceError(err instanceof Error ? err.message : String(err)),
+      );
+  }
+
+  const saveWorkspaceAs = async (name: string, replace: boolean) => {
+    stashActiveTab();
+    setWorkspaceList(await workspaceSave(name, replace));
+  };
+
+  /** F7: open a saved workspace as new tabs; `replace` closes the open ones. */
+  const openWorkspace = async (id: string, replace: boolean) => {
+    const old = savedTabs;
+    if (replace) {
+      const live = old.filter(
+        (t) => t.phase === "running" || (t.kind === "terminal" && livePty(t.id)),
+      );
+      if (
+        live.length > 0 &&
+        !window.confirm(
+          `Replace the open tabs? ${live.length} running agent or terminal${
+            live.length === 1 ? "" : "s"
+          } will be stopped. Closed tabs stay in Reopen closed tab.`,
+        )
+      ) {
+        return;
+      }
+      for (const t of old) {
+        const rt = runtimes[t.id];
+        if (rt && rt.segments.length > 0) {
+          await transcriptSave(t.id, segmentsToPlainText(rt.segments), rt.session?.cwd ?? t.cwd).catch(
+            () => {},
+          );
+        }
+      }
+    }
+    scratch.flush();
+    stashActiveTab();
+    const result = await workspaceOpen(id, replace);
+    if (replace) {
+      for (const t of old) {
+        delete draftsRef.current[t.id];
+        delete knownFoldersRef.current[t.id];
+        delete scrollPositions.current[t.id];
+        dropLivePty(t.id);
+        destroyTerminal(t.id);
+      }
+      setRuntimes((prev) => {
+        const next = { ...prev };
+        for (const t of old) delete next[t.id];
+        return next;
+      });
+      setSplit((current) => closeSplit(current));
+    }
+    setSavedTabs(result.state.tabs);
+    setClosedTabs(result.state.closedTabs ?? []);
+    setWorkspacesOpen(null);
+    const activeId = result.state.activeTabId;
+    const summary = result.state.tabs.find((t) => t.id === activeId);
+    if (activeId && summary?.kind === "terminal") {
+      setActiveTabId(activeId);
+    } else if (activeId) {
+      const { tab } = await selectActiveTab(activeId);
+      if (tab.kind === "terminal") setActiveTabId(tab.id);
+      else loadTabIntoForm(tab);
+    }
+    if (result.skipped.length > 0) {
+      showNotice(
+        "Some workspace tabs were not opened",
+        `Their role no longer exists: ${result.skipped.join(", ")}`,
+        "failed",
+      );
+    }
+  };
+
   /** The active tab's pad editor (chat pad or terminal pad), if mounted. */
   const activePadField = (): HTMLTextAreaElement | null => {
     const summary = savedTabs.find((tab) => tab.id === activeTabIdRef.current);
@@ -2751,6 +2849,18 @@ export function StartupForm({
     .map((tab) => ({ tabId: tab.id, label: tab.label, segments: runtimes[tab.id]!.segments }));
   const overlays = (
     <>
+      {workspacesOpen && (
+        <WorkspacesDialog
+          list={workspaceList}
+          loadError={workspaceError}
+          openTabCount={savedTabs.length}
+          focusSave={workspacesOpen.focusSave}
+          onSave={saveWorkspaceAs}
+          onOpen={openWorkspace}
+          onDelete={async (id) => setWorkspaceList(await workspaceDelete(id))}
+          onClose={() => setWorkspacesOpen(null)}
+        />
+      )}
       {promptLibraryOpen && (
         <PromptLibraryDialog
           library={promptLibrary}

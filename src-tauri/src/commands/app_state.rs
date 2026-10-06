@@ -184,7 +184,7 @@ fn attach_transcript(tab: &mut TabRecord, transcripts: &TranscriptStore) -> Resu
     Ok(())
 }
 
-fn snapshot_from_store(store: &StateStore) -> AppStateSnapshot {
+pub(crate) fn snapshot_from_store(store: &StateStore) -> AppStateSnapshot {
     let transcript_dir = store.path.parent().map(|parent| parent.join("transcripts"));
     AppStateSnapshot {
         active_tab_id: store.data.active_tab_id.clone(),

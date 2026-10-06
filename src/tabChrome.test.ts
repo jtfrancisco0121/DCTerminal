@@ -142,6 +142,16 @@ describe("tab chrome", () => {
     ]);
   });
 
+  it("opens and saves workspaces", () => {
+    const commands = buildPalette({ tabs: [], canReopen: false, splitOpen: false });
+    expect(filterCommands(commands, "workspace").map((c) => c.id)).toEqual(
+      expect.arrayContaining(["workspaces", "saveWorkspace"]),
+    );
+    expect(filterCommands(commands, "restore session layout").map((c) => c.id)).toContain(
+      "workspaces",
+    );
+  });
+
   it("opens the prompt library and saves the pad as a prompt", () => {
     const commands = buildPalette({ tabs: [], canReopen: false, splitOpen: false });
     expect(filterCommands(commands, "prompt").map((c) => c.id)).toEqual(

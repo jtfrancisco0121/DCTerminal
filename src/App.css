@@ -2780,3 +2780,134 @@ mark.search-hit-current {
 .prompt-library-path code {
   word-break: break-all;
 }
+
+/* F7: workspaces. */
+.workspaces-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  width: min(50rem, 94vw);
+  max-height: 85vh;
+  overflow: hidden;
+}
+
+.workspaces-dialog h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.workspaces-save {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.workspaces-save .text-input {
+  flex: 1;
+}
+
+.workspaces-body {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+  gap: 0.6rem;
+  min-height: 10rem;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.workspaces-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  min-height: 0;
+  outline: none;
+}
+
+.workspaces-item {
+  display: flex;
+  flex-direction: column;
+  padding: 0.35rem 0.5rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.workspaces-item:hover,
+.workspaces-item.active {
+  background: #21262d;
+}
+
+.workspaces-list:focus-visible .workspaces-item.active {
+  outline: 1px solid #388bfd;
+}
+
+.workspaces-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspaces-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-height: 0;
+  overflow: auto;
+}
+
+.workspaces-tabs {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.workspaces-tabs li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  column-gap: 0.4rem;
+  align-items: center;
+  padding: 0.25rem 0.4rem;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+}
+
+.workspaces-tabs li.active {
+  border-color: #388bfd;
+}
+
+.workspaces-dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: #6e7681;
+}
+
+.workspaces-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspaces-folder {
+  grid-column: 2 / -1;
+  font-size: 0.75rem;
+  color: #8b949e;
+  word-break: break-all;
+}
+
+.workspaces-actions {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.workspaces-path {
+  margin: 0;
+  font-size: 0.75rem;
+}
+
+.workspaces-path code {
+  word-break: break-all;
+}

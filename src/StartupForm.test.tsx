@@ -63,6 +63,10 @@ vi.mock("./bridge", () => {
   promptMarkUsed: vi.fn(async () => ({ prompts: [], recent: [], path: "" })),
   promptRecordSend: vi.fn(async () => {}),
   promptClearRecent: vi.fn(),
+  workspacesList: vi.fn(async () => ({ workspaces: [], path: "" })),
+  workspaceSave: vi.fn(),
+  workspaceDelete: vi.fn(),
+  workspaceOpen: vi.fn(),
   transcriptLoad: vi.fn(async () => ({
     text: "",
     cwd: "",
@@ -165,6 +169,9 @@ import {
   promptSave,
   reopenClosedTab,
   transcriptLoad,
+  workspaceOpen,
+  workspaceSave,
+  workspacesList,
   worktreeTabCheck,
   worktreeTabNew,
   worktreeTabRemove,
@@ -996,5 +1003,128 @@ describe("prompt library (F6)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save prompt" }));
     await waitFor(() => expect(promptSave).toHaveBeenCalledWith(null, "Run checks", "npm run check"));
     expect(await screen.findByRole("option", { name: /Run checks/ })).toBeTruthy();
+  });
+});
+
+describe("workspaces (F7)", () => {
+  const wsPath = "/Users/jt/Library/Application Support/com.jtfrancisco.dcterminal/workspaces.json";
+  const summary = (id: string, label: string, cwd: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    label,
+    roleId: "role_developer",
+    cwd,
+    phase: "draft",
+    mergedPromptChars: 0,
+    startupPromptSent: false,
+    hasTranscript: false,
+    folderStatus: "ok",
+    color: "#3fb950",
+    kind: "role",
+    terminalLaunch: "",
+    acpSessionId: null,
+    ...extra,
+  });
+  const saved = {
+    id: "ws_daily",
+    name: "Koneksi daily",
+    savedAt: "2026-10-06T09:00:00Z",
+    tabs: [
+      {
+        label: "Developer · Login fix",
+        customLabel: true,
+        roleId: "role_developer",
+        roleSnapshot: { name: "Developer", templateVersion: 1, mode: "agent", injection: "send_on_start" },
+        cwd: "/Users/jt/Koneksi",
+        kind: "role",
+        terminalLaunch: "",
+        color: null,
+        model: null,
+        answers: {},
+      },
+    ],
+    activeIndex: 0,
+  };
+
+  beforeEach(() => {
+    vi.mocked(listCursorCliHistory).mockResolvedValue([]);
+    vi.mocked(getRole).mockResolvedValue(developer);
+    vi.mocked(getAppState).mockResolvedValue({
+      activeTabId: "tab_dev",
+      tabs: [summary("tab_dev", "Developer · Feature", tab.cwd)],
+      closedTabs: [],
+    });
+    vi.mocked(selectActiveTab).mockResolvedValue({ tab });
+    vi.mocked(workspacesList).mockResolvedValue({ workspaces: [saved], path: wsPath });
+    vi.mocked(workspaceOpen).mockReset();
+    vi.mocked(workspaceSave).mockReset();
+    vi.mocked(syncActiveTabForm).mockClear();
+  });
+
+  const renderForm = () =>
+    render(
+      <StartupForm
+        roles={[{ id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 }]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+  const openPalette = () =>
+    fireEvent.keyDown(window, { key: "k", code: "KeyK", ctrlKey: true, metaKey: true });
+
+  it("saves the open tabs as a named workspace from the palette", async () => {
+    vi.mocked(workspaceSave).mockResolvedValue({
+      workspaces: [{ ...saved, id: "ws_new", name: "Morning" }, saved],
+      path: wsPath,
+    });
+    renderForm();
+    await screen.findByLabelText("Title");
+    openPalette();
+    fireEvent.click(await screen.findByRole("button", { name: /Save tabs as workspace/ }));
+    const dialog = await screen.findByRole("dialog", { name: "Workspaces" });
+    await waitFor(() => expect(dialog.textContent).toContain(wsPath));
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Workspace name" }), {
+      target: { value: "Morning" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: /Save 1 tab/ }));
+    await waitFor(() => expect(workspaceSave).toHaveBeenCalledWith("Morning", false));
+    expect(syncActiveTabForm).toHaveBeenCalled();
+    expect(await within(dialog).findByRole("option", { name: /Morning/ })).toBeTruthy();
+  });
+
+  it("opens a workspace and shows its restored tab title, folder, and role", async () => {
+    const restored = summary("tab_ws1", "Developer · Login fix", "/Users/jt/Koneksi");
+    vi.mocked(workspaceOpen).mockImplementation(async () => {
+      const state = {
+        activeTabId: "tab_ws1",
+        tabs: [summary("tab_dev", "Developer · Feature", tab.cwd), restored],
+        closedTabs: [],
+      };
+      vi.mocked(getAppState).mockResolvedValue(state);
+      vi.mocked(selectActiveTab).mockResolvedValue({
+        tab: {
+          ...tab,
+          id: "tab_ws1",
+          label: "Developer · Login fix",
+          cwd: "/Users/jt/Koneksi",
+          answers: { cwd: "/Users/jt/Koneksi" },
+        },
+      });
+      return { state, tabIds: ["tab_ws1"], skipped: [] };
+    });
+    renderForm();
+    await screen.findByLabelText("Title");
+    openPalette();
+    fireEvent.click(await screen.findByRole("button", { name: /Open workspace/ }));
+    const dialog = await screen.findByRole("dialog", { name: "Workspaces" });
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Open" }));
+    await waitFor(() => expect(workspaceOpen).toHaveBeenCalledWith("ws_daily", false));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Workspaces" })).toBeNull());
+    expect((await screen.findAllByText("Developer · Login fix")).length).toBeGreaterThan(0);
+    await waitFor(() => expect(selectActiveTab).toHaveBeenCalledWith("tab_ws1"));
+    await waitFor(() =>
+      expect(document.querySelector('.folder-picker-chosen[title="/Users/jt/Koneksi"]')).toBeTruthy(),
+    );
   });
 });

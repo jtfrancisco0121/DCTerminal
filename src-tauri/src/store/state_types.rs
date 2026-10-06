@@ -179,7 +179,7 @@ pub fn default_tab_kind() -> String {
     "role".to_string()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RoleSnapshot {
     pub name: String,

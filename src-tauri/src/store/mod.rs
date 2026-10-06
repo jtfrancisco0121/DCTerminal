@@ -10,6 +10,7 @@ mod settings_store;
 mod state_store;
 mod state_types;
 mod transcript_store;
+mod workspace_store;
 
 pub use forms_store::FormsStore;
 pub use forms_types::FormSnapshot;
@@ -27,3 +28,4 @@ pub use state_store::StateStore;
 pub(crate) use state_store::{tab_label, TerminalTabDraft};
 pub use state_types::{AppStateFile, LayoutState, RoleSnapshot, TabRecord, TabSessionRef};
 pub use transcript_store::{TranscriptFile, TranscriptStore};
+pub use workspace_store::{Workspace, WorkspaceStore, WorkspaceTab};

@@ -626,6 +626,60 @@ export async function handoffBindTab(id: string, tabId: string): Promise<Handoff
   return invoke<HandoffRecord>("handoff_bind_tab", { id, tabId });
 }
 
+/** F7: one tab of a saved workspace (no live session). */
+export type WorkspaceTab = {
+  label: string;
+  customLabel: boolean;
+  roleId: string;
+  roleSnapshot: { name: string; templateVersion: number; mode: string; injection: string };
+  cwd: string;
+  /** "role" (chat) | "terminal" */
+  kind: string;
+  terminalLaunch: string;
+  color: string | null;
+  model: string | null;
+  answers: Record<string, string>;
+};
+
+export type Workspace = {
+  id: string;
+  name: string;
+  savedAt: string;
+  tabs: WorkspaceTab[];
+  activeIndex: number | null;
+};
+
+export type WorkspaceList = {
+  workspaces: Workspace[];
+  /** Absolute path of workspaces.json in DCTerminal's app data dir. */
+  path: string;
+};
+
+export type WorkspaceOpened = {
+  state: AppStateSnapshot;
+  tabIds: string[];
+  /** Labels of tabs left out because their role no longer exists. */
+  skipped: string[];
+};
+
+export async function workspacesList(): Promise<WorkspaceList> {
+  return invoke<WorkspaceList>("workspaces_list");
+}
+
+/** Save the open tabs under `name`; `replace` overwrites a workspace with that name. */
+export async function workspaceSave(name: string, replace: boolean): Promise<WorkspaceList> {
+  return invoke<WorkspaceList>("workspace_save", { name, replace });
+}
+
+export async function workspaceDelete(id: string): Promise<WorkspaceList> {
+  return invoke<WorkspaceList>("workspace_delete", { id });
+}
+
+/** Open a workspace as new tabs; `replace` closes the tabs open now. */
+export async function workspaceOpen(id: string, replace: boolean): Promise<WorkspaceOpened> {
+  return invoke<WorkspaceOpened>("workspace_open", { id, replace });
+}
+
 /** F6: a named prompt in the library (`prompts.json` in app data). */
 export type SavedPrompt = {
   id: string;

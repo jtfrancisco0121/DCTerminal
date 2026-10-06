@@ -12,6 +12,7 @@ mod prompts;
 mod role_session;
 mod roles;
 mod workspace;
+mod workspaces;
 mod worktree_tabs;
 
 pub use agent_requests::{respond_permission_request, respond_plan_request};
@@ -38,4 +39,5 @@ pub use workspace::{
     history_search, projects_list, projects_remember, projects_remove, projects_toggle_favorite,
     scratch_load, scratch_save, transcript_load, transcript_save,
 };
+pub use workspaces::{workspace_delete, workspace_open, workspace_save, workspaces_list};
 pub use worktree_tabs::{git_repo_info, worktree_tab_check, worktree_tab_new, worktree_tab_remove};

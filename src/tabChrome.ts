@@ -189,6 +189,18 @@ export function buildPalette(opts: {
     { id: "focusOtherPane", title: "Focus other pane", group: "Panes" },
     { id: "toggleFilePanel", title: "Toggle file panel", group: "Files", keywords: "tree explorer" },
     {
+      id: "workspaces",
+      title: "Open workspace…",
+      group: "Workspaces",
+      keywords: "workspaces restore load saved tabs folders session layout",
+    },
+    {
+      id: "saveWorkspace",
+      title: "Save tabs as workspace…",
+      group: "Workspaces",
+      keywords: "workspace save tabs folders roles layout",
+    },
+    {
       id: "promptLibrary",
       title: "Prompt library…",
       group: "Prompts",
