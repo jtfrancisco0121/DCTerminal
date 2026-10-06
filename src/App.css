@@ -1813,10 +1813,11 @@ kbd {
 .hljs-emphasis { font-style: italic; }
 .hljs-strong { font-weight: 600; }
 
-/* Model picker */
+/* Model picker — popover is portaled + position:fixed (see ModelPicker.tsx) */
 .model-picker {
   position: relative;
   display: inline-flex;
+  vertical-align: middle;
 }
 
 .model-picker-button {
@@ -1851,40 +1852,100 @@ kbd {
 }
 
 .model-picker-popover {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
-  z-index: 30;
-  width: 20rem;
-  max-width: 80vw;
-  padding: 0.4rem;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  padding: 0.45rem;
   border: 1px solid #30363d;
   border-radius: 8px;
   background: #161b22;
-  box-shadow: 0 8px 24px #01040999;
+  box-shadow: 0 12px 32px #010409cc;
+  overflow: hidden;
+}
+
+.model-picker-search {
+  margin: 0 0 0.35rem;
+  flex-shrink: 0;
+}
+
+.model-picker-search:focus {
+  outline: 2px solid #388bfd;
+  outline-offset: 0;
+  border-color: #388bfd;
 }
 
 .model-picker-list {
   list-style: none;
-  margin: 0.35rem 0 0;
+  margin: 0;
   padding: 0;
-  max-height: 18rem;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
+}
+
+.model-picker-empty {
+  padding: 0.5rem 0.4rem;
+  color: #8b949e;
+  font-size: 0.85rem;
 }
 
 .model-option {
   display: flex;
   align-items: center;
-  gap: 0.35rem;
-  padding: 0.2rem 0.4rem;
-  border-radius: 4px;
-  cursor: pointer;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+  margin: 0;
+  padding: 0.35rem 0.45rem;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
   font-size: 0.85rem;
+  text-align: left;
+  cursor: pointer;
+  box-sizing: border-box;
 }
 
 .model-option-active,
 .model-option:hover {
   background: #1f6feb33;
+}
+
+.model-option[aria-selected="true"] {
+  background: #1f6feb44;
+}
+
+.model-option-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.model-option-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.model-option-id {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.72rem;
+  color: #8b949e;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.model-option-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-shrink: 0;
 }
 
 .model-badge {
@@ -1894,6 +1955,17 @@ kbd {
   color: #e3b341;
   font-size: 0.7rem;
   font-weight: 600;
+  line-height: 1.4;
+}
+
+.model-default-badge {
+  padding: 0 0.3rem;
+  border-radius: 4px;
+  background: #388bfd33;
+  color: #79c0ff;
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 1.4;
 }
 
 .settings-model-row {

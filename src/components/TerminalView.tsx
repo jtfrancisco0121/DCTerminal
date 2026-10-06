@@ -53,7 +53,7 @@ type Props = {
 export function focusBelongsElsewhere(slot: HTMLElement): boolean {
   const active = document.activeElement;
   if (!active || active === document.body) return false;
-  if (active.closest(".scratch-pad, .file-panel, .model-picker")) return true;
+  if (active.closest(".scratch-pad, .file-panel, .model-picker, .model-picker-popover")) return true;
   const otherPane = active.closest("[data-pane]");
   return !!otherPane && otherPane !== slot.closest("[data-pane]");
 }

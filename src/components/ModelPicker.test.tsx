@@ -23,10 +23,17 @@ describe("ModelPicker", () => {
     );
     const button = screen.getByRole("button", { name: "Model for tab" });
     expect(button.textContent).toContain("Composer 2.5");
+    expect(button.textContent).toContain("default");
     fireEvent.click(button);
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.className).toContain("model-picker-popover");
+    // Portaled to document.body so overflow parents cannot clip it.
+    expect(dialog.parentElement).toBe(document.body);
     fireEvent.change(screen.getByLabelText("Search models"), { target: { value: "gpt" } });
     const options = screen.getAllByRole("option");
     expect(options).toHaveLength(1);
+    expect(options[0].className).toContain("model-option");
+    expect(options[0].querySelector(".hint")).toBeNull();
     fireEvent.click(options[0]);
     expect(onChange).toHaveBeenCalledWith("gpt-5");
   });
@@ -58,5 +65,26 @@ describe("ModelPicker", () => {
     fireEvent.keyDown(screen.getByLabelText("Search models"), { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("renders each option as one full-width row with label and id", () => {
+    render(
+      <ModelPicker
+        models={models}
+        value="composer-2.5"
+        ariaLabel="Model"
+        onChange={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+    const options = screen.getAllByRole("option");
+    expect(options.length).toBeGreaterThanOrEqual(3);
+    for (const option of options) {
+      expect(option.tagName).toBe("BUTTON");
+      expect(option.querySelector(".model-option-label")).not.toBeNull();
+      expect(option.querySelector(".model-option-main")).not.toBeNull();
+    }
+    const fast = options.find((o) => o.textContent?.includes("Composer 2.5 Fast"));
+    expect(fast?.querySelector(".model-badge")?.textContent).toBe("Fast");
   });
 });
