@@ -81,7 +81,10 @@ export function TerminalView({
     const parked = ensureParkedTerminal(ptyId, fontSize);
     slot.appendChild(parked.host);
     parked.term.options.fontSize = fontSize;
-    if (autoFocus) {
+    // A focused scratch pad must keep the keystrokes. Refitting the terminal
+    // must not move focus back onto xterm.
+    const padFocused = document.activeElement?.closest(".scratch-pad");
+    if (autoFocus && !padFocused) {
       parked.term.focus();
       focusParkedTerminal(ptyId);
     }

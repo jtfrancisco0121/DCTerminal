@@ -213,4 +213,19 @@ describe("keymap", () => {
     });
     expect(routeKey(event({ code: "KeyC", ctrlKey: true }), term).kind).toBe("shell");
   });
+
+  it("labels mac shortcuts with ⌘ and focuses the pad from a terminal", () => {
+    const rows = shortcutRows("mac");
+    expect(rows.find((row) => row.label === "Focus scratch pad")?.keys).toBe("⌘+J");
+    expect(rows.find((row) => row.label === "Send to terminal")?.keys).toBe("⌘+Shift+.");
+    expect(rows.find((row) => row.label === "Paste to terminal")?.keys).toBe(
+      "Paste to terminal",
+    );
+    expect(rows.find((row) => row.label === "Return to terminal")?.keys).toBe("Esc");
+    const term = { platform: "mac" as const, surface: "terminal" as const };
+    expect(routeKey(event({ code: "KeyJ", metaKey: true, key: "j" }), term)).toEqual({
+      kind: "app",
+      match: { action: "focusPad" },
+    });
+  });
 });

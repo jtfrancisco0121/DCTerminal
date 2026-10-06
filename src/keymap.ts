@@ -431,6 +431,8 @@ const TERMINAL_GLOBALS = new Set<ShortcutAction>([
   "reopenClosedTab",
   "renameTab",
   "settings",
+  // Mod+J must leave the shell and land in the scratch pad.
+  "focusPad",
 ]);
 
 const TERMINAL_BY_CODE: Record<string, TerminalAction> = {
@@ -527,9 +529,25 @@ export function shortcutRows(platform: Platform): ShortcutRow[] {
     },
     {
       action: "transferPad",
-      label: "Transfer to terminal",
-      description: "Send the scratch selection, or the whole pad, to the terminal.",
+      label: "Send to terminal",
+      description:
+        "Send the selection, or the whole pad, as one prompt. " +
+        "Newlines stay in the prompt, then Enter is pressed once.",
       keys: `${mod}+Shift+.`,
+    },
+    {
+      action: "transferPad",
+      label: "Paste to terminal",
+      description:
+        "Insert the selection, or the whole pad, without pressing Enter. " +
+        "Use the Paste to terminal button.",
+      keys: "Paste to terminal",
+    },
+    {
+      action: "focusPad",
+      label: "Return to terminal",
+      description: "From the scratch pad, move focus back to the terminal.",
+      keys: "Esc",
     },
     {
       action: "focusInput",

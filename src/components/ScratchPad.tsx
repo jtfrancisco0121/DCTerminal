@@ -7,12 +7,20 @@ type Props = {
   persistError: string | null;
   chain: ChainCursor | null;
   disabled: boolean;
+  /** Terminal tabs send into the PTY. Chat tabs transfer and chain. */
+  mode?: "chat" | "terminal";
+  modLabel?: string;
+  collapsed?: boolean;
   onChange: (value: string) => void;
   onTransfer: () => void;
   onTransferTerminal?: () => void;
+  onPasteTerminal?: () => void;
   onSend: () => void;
   onStopChain: () => void;
   onBlur?: () => void;
+  onFocus?: () => void;
+  onEscape?: () => void;
+  onToggle?: () => void;
 };
 
 export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function ScratchPad(
@@ -22,19 +30,33 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
     persistError,
     chain,
     disabled,
+    mode = "chat",
+    modLabel = "Ctrl",
+    collapsed = false,
     onChange,
     onTransfer,
     onTransferTerminal,
+    onPasteTerminal,
     onSend,
     onStopChain,
     onBlur,
+    onFocus,
+    onEscape,
+    onToggle,
   },
   ref,
 ) {
-  const chained = content.split(/\r?\n/).some((line) => /^\s*-{3,}\s*$/.test(line));
-  const running = chain?.phase === "inFlight" || chain?.phase === "paused";
+  const terminal = mode === "terminal";
+  const chained = !terminal && content.split(/\r?\n/).some((line) => /^\s*-{3,}\s*$/.test(line));
+  const running = !terminal && (chain?.phase === "inFlight" || chain?.phase === "paused");
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Escape" && terminal && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      onEscape?.();
+      return;
+    }
     if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !event.shiftKey) {
       event.preventDefault();
       if (!disabled) onSend();
@@ -46,14 +68,29 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
       <div className="scratch-pad-bar">
         <span className="scratch-pad-title">Scratch pad</span>
         <span className="hint scratch-pad-hint">
-          Ctrl+. transfer · Ctrl+Enter send
-          {chained ? " · --- starts the next step after the turn ends" : ""}
+          {terminal
+            ? `${modLabel}+Shift+. send · ${modLabel}+J focus · Esc terminal`
+            : `Ctrl+. transfer · Ctrl+Enter send${
+                chained ? " · --- starts the next step after the turn ends" : ""
+              }`}
         </span>
         <div className="scratch-pad-actions">
-          <button type="button" className="secondary-button" onClick={onTransfer} disabled={disabled}>
-            Transfer
-          </button>
-          {onTransferTerminal && (
+          {terminal && onToggle && (
+            <button
+              type="button"
+              className="secondary-button"
+              aria-expanded={!collapsed}
+              onClick={onToggle}
+            >
+              {collapsed ? "Show pad" : "Hide pad"}
+            </button>
+          )}
+          {!terminal && (
+            <button type="button" className="secondary-button" onClick={onTransfer} disabled={disabled}>
+              Transfer
+            </button>
+          )}
+          {!terminal && onTransferTerminal && (
             <button
               type="button"
               className="secondary-button"
@@ -64,7 +101,24 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
               To terminal
             </button>
           )}
-          <button type="button" className="primary-button" onClick={onSend} disabled={disabled}>
+          {terminal && (
+            <button
+              type="button"
+              className="secondary-button"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={onPasteTerminal}
+              disabled={disabled || !content.trim()}
+            >
+              Paste to terminal
+            </button>
+          )}
+          <button
+            type="button"
+            className="primary-button"
+            onMouseDown={terminal ? (event) => event.preventDefault() : undefined}
+            onClick={onSend}
+            disabled={disabled || (terminal && !content.trim())}
+          >
             {chained ? "Send steps" : "Send"}
           </button>
           {running && (
@@ -74,17 +128,17 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
           )}
         </div>
       </div>
-      {chain?.phase === "paused" && (
+      {!terminal && chain?.phase === "paused" && (
         <p className="hint scratch-pad-status">
           Chain paused until the permission request finishes. The next step is not sent yet.
         </p>
       )}
-      {chain?.phase === "inFlight" && (
+      {!terminal && chain?.phase === "inFlight" && (
         <p className="hint scratch-pad-status">
           Waiting for this turn to end ({chain.nextIndex}/{chain.steps.length}).
         </p>
       )}
-      {chain?.phase === "stopped" && (
+      {!terminal && chain?.phase === "stopped" && (
         <p className="error scratch-pad-status">
           Chain stopped ({chain.reason ?? "cancelled"}).
         </p>
@@ -103,11 +157,17 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
         value={content}
         onChange={(event) => onChange(event.target.value)}
         onBlur={onBlur}
+        onFocus={onFocus}
         onKeyDown={onKeyDown}
         rows={6}
         spellCheck={false}
-        placeholder="Draft a long prompt. Separate steps with a line that is only ---."
+        placeholder={
+          terminal
+            ? "Draft a prompt for this terminal. Newlines stay in the prompt."
+            : "Draft a long prompt. Separate steps with a line that is only ---."
+        }
         aria-label="Scratch pad editor"
+        hidden={terminal && collapsed}
       />
     </section>
   );

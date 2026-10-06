@@ -194,3 +194,66 @@ describe("blank tab card", () => {
     expect(values?.cwd).toContain("Encryptor");
   });
 });
+
+describe("terminal tab scratch pad", () => {
+  beforeEach(() => {
+    vi.mocked(listCursorCliHistory).mockResolvedValue([]);
+    vi.mocked(getRole).mockImplementation(async (id: string) => {
+      if (id === "role_developer") return developer;
+      return { ...developer, id, name: "Implementer", fields: [] };
+    });
+  });
+
+  it.each(["shell", "role", "cursor-cli"])(
+    "renders the pad under a %s terminal and hides chat-only actions",
+    async (launch) => {
+      vi.mocked(getAppState).mockResolvedValue({
+        activeTabId: "tab_term",
+        tabs: [
+          {
+            id: "tab_term",
+            label: "Developer · Koneksi (Terminal)",
+            roleId: "role_developer",
+            cwd: "/Users/jt/Koneksi",
+            phase: "running",
+            mergedPromptChars: 0,
+            startupPromptSent: false,
+            hasTranscript: false,
+            folderStatus: "ok",
+            color: "#3fb950",
+            kind: "terminal",
+            terminalLaunch: launch,
+            acpSessionId: null,
+          },
+        ],
+        closedTabs: [],
+      });
+      render(
+        <StartupForm
+          roles={[
+            {
+              id: "role_developer",
+              name: "Developer",
+              defaultMode: "agent",
+              color: "#3fb950",
+              fieldCount: 0,
+            },
+          ]}
+          cli={{ found: true, path: "agent", version: "test", error: null }}
+          cliError={null}
+          cliFound
+          showDevTools={false}
+        />,
+      );
+      expect(await screen.findByRole("region", { name: "Scratch pad" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Paste to terminal" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Transfer" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "To terminal" })).toBeNull();
+      expect(screen.queryByText(/---/)).toBeNull();
+      const editor = screen.getByLabelText("Scratch pad editor");
+      expect(editor.closest(".terminal-slot, .xterm")).toBeNull();
+      expect(editor.closest(".terminal-screen")).toBeTruthy();
+    },
+  );
+});

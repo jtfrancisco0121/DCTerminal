@@ -61,6 +61,11 @@ export function parkedTerminal(id: string): ParkedTerminal | undefined {
   return parked.get(id);
 }
 
+/** True after the program has sent CSI ? 2004 h. xterm tracks that mode. */
+export function terminalBracketedPaste(id: string): boolean {
+  return parked.get(id)?.term.modes.bracketedPasteMode === true;
+}
+
 export function ensureParkedTerminal(id: string, fontSize: number): ParkedTerminal {
   const existing = parked.get(id);
   if (existing) {

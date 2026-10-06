@@ -1423,6 +1423,23 @@ kbd {
   letter-spacing: 0.02em;
 }
 
+/* The pad is a sibling of the terminal, outside .terminal-slot, so keystrokes
+   stay in the textarea. The slot's ResizeObserver refits xterm when this
+   pane grows, shrinks, or collapses. */
+.terminal-screen > .terminal-scratch {
+  flex: 0 0 auto;
+  min-height: 0;
+  max-height: 40%;
+  display: flex;
+  flex-direction: column;
+}
+
+.terminal-scratch .scratch-pad {
+  margin-top: 0.5rem;
+  max-height: 100%;
+  overflow: auto;
+}
+
 .terminal-screen,
 .terminal-view,
 .terminal-pane {

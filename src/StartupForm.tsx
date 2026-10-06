@@ -99,6 +99,7 @@ import {
   type TabDraft,
 } from "./workspaceView";
 import { ScratchPad } from "./components/ScratchPad";
+import { TerminalScratchPad, type TerminalPadHandle } from "./components/TerminalScratchPad";
 import { SessionCards } from "./components/SessionCards";
 import { ShortcutsOverlay } from "./components/ShortcutsOverlay";
 import { SplitPanes } from "./components/SplitPanes";
@@ -106,10 +107,14 @@ import { TabSwitcher } from "./components/TabSwitcher";
 import { detectPlatform, type ShortcutMatch, type TerminalAction } from "./keymap";
 import { beginLivePty, dropLivePty, livePty, rekeyLivePty } from "./terminal/live";
 import {
+  blurParkedTerminal,
   copyTerminalSelection,
+  focusParkedTerminal,
   focusedTerminalId,
+  parkedTerminal,
   pasteTerminalText,
   requestTerminalSearch,
+  terminalBracketedPaste,
 } from "./terminal/park";
 import { emptySessionCards, reduceSessionCards, type SessionCards as Cards } from "./sessionCards";
 import {
@@ -267,6 +272,7 @@ export function StartupForm({
   const needsAttention = useMemo(() => attentionTabIds(runtimes), [runtimes]);
   const scratch = useScratchPads(activeTabId);
   const padRef = useRef<HTMLTextAreaElement>(null);
+  const terminalPadRef = useRef<TerminalPadHandle>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const waiterRef = useRef(createTurnWaiter());
   const chainAbortRef = useRef(false);
@@ -1392,19 +1398,41 @@ export function StartupForm({
         return;
       }
       if (match.action === "send") {
+        const summary = savedTabs.find((tab) => tab.id === activeTabIdRef.current);
+        const inPad = document.activeElement?.closest(".scratch-pad");
+        if (summary?.kind === "terminal" && inPad) {
+          terminalPadRef.current?.send(true);
+          return;
+        }
         if (document.activeElement === padRef.current) sendFromPad();
         else void sendFollowUp();
         return;
       }
       if (match.action === "transferPad") {
+        const summary = savedTabs.find((tab) => tab.id === activeTabIdRef.current);
+        if (summary?.kind === "terminal") return;
         transferPad();
         return;
       }
       if (match.action === "focusPad") {
+        const tabId = activeTabIdRef.current;
+        const summary = savedTabs.find((tab) => tab.id === tabId);
+        if (summary?.kind === "terminal" && tabId) {
+          blurParkedTerminal(tabId);
+          terminalPadRef.current?.focus();
+          return;
+        }
         padRef.current?.focus();
         return;
       }
       if (match.action === "focusInput") {
+        const tabId = activeTabIdRef.current;
+        const summary = savedTabs.find((tab) => tab.id === tabId);
+        if (summary?.kind === "terminal" && tabId) {
+          focusParkedTerminal(tabId);
+          parkedTerminal(tabId)?.term.focus();
+          return;
+        }
         inputRef.current?.focus();
         return;
       }
@@ -1479,7 +1507,11 @@ export function StartupForm({
     const tabId = activeTabIdRef.current;
     if (!tabId) return;
     const summary = savedTabs.find((tab) => tab.id === tabId);
-    const target = summary?.kind === "terminal" ? tabId : `${tabId}::pane`;
+    if (summary?.kind === "terminal") {
+      terminalPadRef.current?.send(true);
+      return;
+    }
+    const target = `${tabId}::pane`;
     if (summary?.kind !== "terminal") {
       setPaneByTab((prev) => ({
         ...prev,
@@ -1523,8 +1555,17 @@ export function StartupForm({
 
   const getSurface = useCallback(() => {
     const el = document.activeElement;
+    // The pad is not the PTY. Keys typed there must stay in the textarea.
+    if (el?.closest(".scratch-pad")) return "chat" as const;
     if (el?.closest(".terminal-slot, .xterm")) return "terminal" as const;
     return "chat" as const;
+  }, []);
+
+  const focusActiveTerminal = useCallback(() => {
+    const tabId = activeTabIdRef.current;
+    if (!tabId) return;
+    focusParkedTerminal(tabId);
+    parkedTerminal(tabId)?.term.focus();
   }, []);
 
   useAppShortcuts({
@@ -1536,6 +1577,12 @@ export function StartupForm({
     onTerminal: onTerminalAction,
     onCancelTurn: () => {
       void cancelTurn();
+    },
+    onPadEscape: () => {
+      const summary = savedTabs.find((tab) => tab.id === activeTabIdRef.current);
+      if (summary?.kind !== "terminal") return false;
+      focusActiveTerminal();
+      return true;
     },
   });
 
@@ -2073,6 +2120,21 @@ export function StartupForm({
                   ]
                 : []
             }
+          />
+          <TerminalScratchPad
+            ref={terminalPadRef}
+            tabId={activeTabSummary.id}
+            ptyId={activeTabSummary.id}
+            content={scratch.content}
+            truncated={scratch.truncated}
+            persistError={scratch.persistError}
+            platform={platform}
+            onChange={(value) => scratch.setContent(activeTabSummary.id, value)}
+            onBlur={() => scratch.flush()}
+            write={ptyWrite}
+            bracketedPaste={terminalBracketedPaste(activeTabSummary.id)}
+            onFocusTerminal={focusActiveTerminal}
+            onFocusPad={() => blurParkedTerminal(activeTabSummary.id)}
           />
         </section>
         {overlays}

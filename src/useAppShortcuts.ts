@@ -17,6 +17,8 @@ type Options = {
   onAction: (match: ShortcutMatch) => void;
   onTerminal?: (action: TerminalAction) => void;
   onCancelTurn: () => void;
+  /** Return true when Escape in the pad should move focus instead of cancelling. */
+  onPadEscape?: () => boolean;
 };
 
 export function useAppShortcuts({
@@ -27,6 +29,7 @@ export function useAppShortcuts({
   onAction,
   onTerminal,
   onCancelTurn,
+  onPadEscape,
 }: Options) {
   useEffect(() => {
     const host = platform ?? detectPlatform(
@@ -77,6 +80,19 @@ export function useAppShortcuts({
       }
       if (routed.kind === "shell") return;
       if (
+        event.key === "Escape" &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey &&
+        !event.shiftKey &&
+        target?.closest(".scratch-pad") &&
+        onPadEscape?.()
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      if (
         !dialogOpen &&
         event.key === "Escape" &&
         !event.ctrlKey &&
@@ -90,5 +106,14 @@ export function useAppShortcuts({
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [platform, dialogOpen, promptInFlight, getSurface, onAction, onTerminal, onCancelTurn]);
+  }, [
+    platform,
+    dialogOpen,
+    promptInFlight,
+    getSurface,
+    onAction,
+    onTerminal,
+    onCancelTurn,
+    onPadEscape,
+  ]);
 }
