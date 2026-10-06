@@ -5,16 +5,24 @@ type Props = {
   tabs: { id: string; label: string }[];
   canReopen: boolean;
   splitOpen: boolean;
+  canSendPlan?: boolean;
   onRun: (id: string) => void;
   onClose: () => void;
 };
 
-export function CommandPalette({ tabs, canReopen, splitOpen, onRun, onClose }: Props) {
+export function CommandPalette({
+  tabs,
+  canReopen,
+  splitOpen,
+  canSendPlan = false,
+  onRun,
+  onClose,
+}: Props) {
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
   const commands = useMemo(
-    () => filterCommands(buildPalette({ tabs, canReopen, splitOpen }), query),
-    [tabs, canReopen, splitOpen, query],
+    () => filterCommands(buildPalette({ tabs, canReopen, splitOpen, canSendPlan }), query),
+    [tabs, canReopen, splitOpen, canSendPlan, query],
   );
 
   useEffect(() => {

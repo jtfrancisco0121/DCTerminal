@@ -1,10 +1,10 @@
 mod acp;
 mod cli_detect;
 mod commands;
+mod orchestrator;
 mod paths;
 mod permissions;
 mod process_tree;
-mod orchestrator;
 pub mod roles;
 pub mod store;
 pub mod supervisor;
@@ -13,16 +13,19 @@ pub mod template;
 use acp::{probe_acp, probe_acp_handshake};
 use cli_detect::detect_cli;
 use commands::{
-    close_tab, dev_session_cancel, dev_session_send, dev_session_start, dev_session_stop,
-    diagnostics_set_capture, diagnostics_status, get_app_state, get_form_recall, get_role,
-    get_tab, list_roles, new_draft_tab, check_working_folder, projects_list, projects_remember,
-    projects_remove, projects_toggle_favorite, reopen_closed_tab, respond_permission_request,
-    respond_plan_request, role_session_start, save_form_draft, scratch_load, scratch_save,
-    select_active_tab, set_tab_color, set_tab_label, sync_active_tab_form, transcript_load,
-    transcript_save, validate_and_preview, SessionRegistry,
+    check_working_folder, close_tab, dev_session_cancel, dev_session_send, dev_session_start,
+    dev_session_stop, diagnostics_set_capture, diagnostics_status, get_app_state, get_form_recall,
+    get_role, get_tab, handoff_bind_tab, handoff_get, handoff_list, handoff_save, list_roles,
+    new_draft_tab, projects_list, projects_remember, projects_remove, projects_toggle_favorite,
+    reopen_closed_tab, respond_permission_request, respond_plan_request, role_session_start,
+    save_form_draft, scratch_load, scratch_save, select_active_tab, set_tab_color, set_tab_label,
+    sync_active_tab_form, transcript_load, transcript_save, validate_and_preview, SessionRegistry,
 };
-use store::{FormsStore, ProjectsStore, RolesStore, ScratchStore, SettingsStore, StateStore, TranscriptStore};
 use std::sync::Mutex;
+use store::{
+    FormsStore, HandoffStore, ProjectsStore, RolesStore, ScratchStore, SettingsStore, StateStore,
+    TranscriptStore,
+};
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -40,6 +43,7 @@ pub fn run() {
             let projects_store = ProjectsStore::open(&data_dir)?;
             let settings_store = SettingsStore::open(&data_dir)?;
             let transcript_store = TranscriptStore::open(&data_dir)?;
+            let handoff_store = HandoffStore::open(&data_dir)?;
             app.manage(Mutex::new(store));
             app.manage(Mutex::new(state_store));
             app.manage(Mutex::new(forms_store));
@@ -47,6 +51,7 @@ pub fn run() {
             app.manage(Mutex::new(projects_store));
             app.manage(Mutex::new(settings_store));
             app.manage(Mutex::new(transcript_store));
+            app.manage(Mutex::new(handoff_store));
             app.manage(Mutex::new(SessionRegistry::new()));
             Ok(())
         })
@@ -81,6 +86,10 @@ pub fn run() {
             check_working_folder,
             transcript_save,
             transcript_load,
+            handoff_save,
+            handoff_bind_tab,
+            handoff_list,
+            handoff_get,
             diagnostics_status,
             diagnostics_set_capture,
             reopen_closed_tab,

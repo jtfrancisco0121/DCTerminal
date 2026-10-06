@@ -8,14 +8,15 @@
 
 | Field | Value |
 |--------|--------|
-| **Last updated** | 2026-10-06 — restored tabs keep their own folder and scroll; startup fields stay collapsed until Start new session |
-| **Branch** | `cursor/scratch-keymap-chrome-75c2` |
+| **Last updated** | 2026-10-06 — Planner hand-off opens a prefilled Implementer tab and waits for Start |
+| **Branch** | `cursor/planner-implementer-handoff-561b` |
 | **Current phase** | Finish MVP vertical slice (see [MVP-FINISH.md](./MVP-FINISH.md)) |
-| **Active task** | Installers / live Windows acceptance. E2–E5 controls are in this branch. |
+| **Active task** | Installers / live Windows acceptance. Plan hand-off is in this branch. |
 
 ## Product-ready today
 
 - Blank tab: pick a role and folder, then the startup fields and **Start**. A running session fills the tab, with the scratch pad under the transcript. Role details, diagnostics, shortcuts, and data paths are on **Settings** (gear, command palette, or Ctrl+,)
+- **Planner hand-off** — when a Planner turn has finished, **Send to Implementer** (plan card, last assistant message, or command palette) opens an Implementer tab in the same folder. The form is filled from the latest plan plus its to-dos, or from the message, the plan card, or a selection. JT edits it and presses Start. **Send to Developer** uses the same path and puts the plan in the scratch pad. Each hand-off is saved in app data (`handoffs.json`). The new tab links back with **From Planner: title**
 - **Multi-tab live sessions** — each tab has its own `agent acp` process, transcript, and permission queue
 - **Role policy** — Implementer/Developer auto-allow; Reviewer allows shell + MCP and denies writes; Planner/General block write and shell; MCP allowed for every role. Auto-decisions show in the transcript
 - **Session UI** — full-height terminal-style pane, Markdown + tables; tool rows coalesce; activity + permission banners

@@ -26,6 +26,11 @@ import {
   saveFormDraft,
   selectActiveTab,
   syncActiveTabForm,
+  handoffBindTab,
+  handoffGet,
+  handoffList,
+  handoffSave,
+  scratchSave,
   validateAndPreview,
   type ClosedTabSummary,
   type FieldError,
@@ -34,6 +39,7 @@ import {
   type DiagnosticsStatus,
   type Role,
   type RoleSessionStartResult,
+  type HandoffRecord,
   type RoleSummary,
   type SessionUpdateEvent,
   type TabSummary,
@@ -47,11 +53,27 @@ import {
   attentionTabIds,
   clearLiveSession,
   emptyRuntime,
+  folderStatusMessage,
   folderTabNotice,
   runtimeFor,
   type TabRuntime,
 } from "./liveTabs";
 import { CommandPalette } from "./components/CommandPalette";
+import {
+  HandoffBanner,
+  HandoffDialog,
+  SavedPlanDialog,
+} from "./components/HandoffDialog";
+import {
+  handoffBlockReason,
+  latestAgentMessage,
+  mapHandoff,
+  selectionInside,
+  type HandoffField,
+  type HandoffScope,
+  type HandoffSource,
+  type HandoffTargetId,
+} from "./handoff/map";
 import { FolderPicker } from "./components/FolderPicker";
 import { SettingsPage } from "./components/SettingsPage";
 import { folderForTab } from "./projectsView";
@@ -145,6 +167,13 @@ export function StartupForm({
   const [captureOn, setCaptureOn] = useState(false);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsStatus | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [handoffs, setHandoffs] = useState<HandoffRecord[]>([]);
+  const [handoffTarget, setHandoffTarget] = useState<HandoffTargetId | null>(null);
+  const [handoffFields, setHandoffFields] = useState<HandoffField[] | null>(null);
+  const [handoffSelection, setHandoffSelection] = useState("");
+  const [handoffError, setHandoffError] = useState<string | null>(null);
+  const [savedPlan, setSavedPlan] = useState<HandoffRecord | null>(null);
+  const [savedPlanLoading, setSavedPlanLoading] = useState(false);
   const [pickedRoleId, setPickedRoleId] = useState<string | null>(null);
   const [newSessionOpen, setNewSessionOpenState] = useState(false);
   const [transcriptSaveError, setTranscriptSaveError] = useState<string | null>(null);
@@ -197,7 +226,8 @@ export function StartupForm({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const waiterRef = useRef(createTurnWaiter());
   const chainAbortRef = useRef(false);
-  const dialogOpen = paletteOpen || switcherOpen || shortcutsOpen || settingsOpen;
+  const dialogOpen =
+    paletteOpen || switcherOpen || shortcutsOpen || settingsOpen || handoffTarget !== null || savedPlan !== null;
   const platform = useMemo(
     () => detectPlatform(typeof navigator === "undefined" ? "" : navigator.platform),
     [],
@@ -1117,6 +1147,12 @@ export function StartupForm({
   });
 
   useEffect(() => {
+    handoffList()
+      .then(setHandoffs)
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
     diagnosticsStatus()
       .then((status) => {
         setDiagnostics(status);
@@ -1125,8 +1161,158 @@ export function StartupForm({
       .catch(() => {});
   }, []);
 
+  const loadHandoffFields = useCallback((target: HandoffTargetId) => {
+    setHandoffFields(null);
+    getRole(target)
+      .then((loaded) => {
+        setHandoffFields(
+          loaded.fields.map((field) => ({ key: field.key, options: field.options })),
+        );
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        setHandoffError(message);
+      });
+  }, []);
+
+  const openHandoffDialog = useCallback(
+    (target: HandoffTargetId) => {
+      const screen = document.querySelector("[data-session-screen]");
+      setHandoffSelection(selectionInside(screen instanceof HTMLElement ? screen : null));
+      setHandoffError(null);
+      setHandoffTarget(target);
+      loadHandoffFields(target);
+    },
+    [loadHandoffFields],
+  );
+
+  const handoffSource = useMemo((): HandoffSource => {
+    const cards = cardsByTab[activeTabId ?? ""] ?? emptySessionCards();
+    return {
+      sourceRoleId: roleId,
+      sourceTabId: activeTabId ?? "",
+      sourceLabel: savedTabs.find((tab) => tab.id === activeTabId)?.label ?? "Planner",
+      cwd: session?.cwd || values.cwd || "",
+      answers: values,
+      latestMessage: latestAgentMessage(streamSegments),
+      plan: cards.plan,
+      todos: cards.todos,
+      selection: handoffSelection,
+      turnInFlight: !!promptInFlight,
+    };
+  }, [
+    activeTabId,
+    cardsByTab,
+    handoffSelection,
+    promptInFlight,
+    roleId,
+    savedTabs,
+    session?.cwd,
+    streamSegments,
+    values,
+  ]);
+
+  const handoffOffer =
+    roleId === "role_planner" && session
+      ? {
+          enabled: handoffBlockReason({ ...handoffSource, selection: "" }) === null,
+          reason: handoffBlockReason({ ...handoffSource, selection: "" }),
+          onSend: openHandoffDialog,
+        }
+      : null;
+
+  const confirmHandoff = useCallback(
+    async (scope: HandoffScope) => {
+      if (!handoffTarget || !handoffSource.sourceTabId) return;
+      const mapped = mapHandoff(handoffSource, scope, {
+        roleId: handoffTarget,
+        fields: handoffFields ?? [],
+      });
+      if (!mapped.planText) {
+        setHandoffError(mapped.warning ?? "That choice has no content.");
+        return;
+      }
+      setBusy(true);
+      setHandoffError(null);
+      try {
+        const saved = await handoffSave({
+          sourceTabId: handoffSource.sourceTabId,
+          sourceRoleId: handoffSource.sourceRoleId,
+          sourceLabel: handoffSource.sourceLabel,
+          targetRoleId: handoffTarget,
+          title: mapped.title,
+          cwd: handoffSource.cwd,
+          scope,
+          planText: mapped.planText,
+          truncated: mapped.truncated,
+          warning: mapped.warning,
+          planField: mapped.planField,
+        });
+        stashActiveTab();
+        const { tab } = await newDraftTab(handoffTarget, handoffSource.cwd);
+        const nextValues = { ...mapped.answers, cwd: handoffSource.cwd };
+        await syncActiveTabForm(tab.id, handoffTarget, handoffSource.cwd, nextValues);
+        const bound = await handoffBindTab(saved.id, tab.id);
+        if (mapped.usesScratchPad) {
+          scratch.setContent(tab.id, mapped.inlinePlan);
+          await scratchSave(tab.id, mapped.inlinePlan, []);
+        }
+        applyDraft(tab.id, {
+          roleId: handoffTarget,
+          pickedRoleId: handoffTarget,
+          values: nextValues,
+          transcript: "",
+          newSessionOpen: false,
+          resendStartup: false,
+        });
+        setHandoffs((prev) => [bound, ...prev.filter((item) => item.id !== bound.id)]);
+        setHandoffTarget(null);
+        await refreshTabs();
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        setHandoffError(message);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [
+      applyDraft,
+      handoffFields,
+      handoffSource,
+      handoffTarget,
+      refreshTabs,
+      scratch,
+      stashActiveTab,
+    ],
+  );
+
+  const openSavedHandoff = useCallback((record: HandoffRecord) => {
+    if (savedTabs.some((tab) => tab.id === record.sourceTabId)) {
+      void handleSelectTab(record.sourceTabId);
+      return;
+    }
+    setSavedPlan(record);
+    setSavedPlanLoading(true);
+    setHandoffError(null);
+    handoffGet(record.id)
+      .then((full) => setSavedPlan(full))
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        setHandoffError(message);
+      })
+      .finally(() => setSavedPlanLoading(false));
+  }, [handleSelectTab, savedTabs]);
+
   const runPalette = (id: string) => {
     setPaletteOpen(false);
+    if (id === "sendPlanImplementer") {
+      openHandoffDialog("role_implementer");
+      return;
+    }
+    if (id === "sendPlanDeveloper") {
+      openHandoffDialog("role_developer");
+      return;
+    }
     if (id === "settings") {
       setSettingsOpen(true);
       return;
@@ -1270,6 +1456,7 @@ export function StartupForm({
           tabs={savedTabs.map((tab) => ({ id: tab.id, label: tab.label }))}
           canReopen={closedTabs.length > 0}
           splitOpen={split.mode !== "single"}
+          canSendPlan={roleId === "role_planner" && !!session}
           onRun={runPalette}
           onClose={() => setPaletteOpen(false)}
         />
@@ -1287,6 +1474,41 @@ export function StartupForm({
       {shortcutsOpen && (
         <ShortcutsOverlay platform={platform} onClose={() => setShortcutsOpen(false)} />
       )}
+      {handoffTarget && (
+        <HandoffDialog
+          source={handoffSource}
+          targetRoleId={handoffTarget}
+          targetFields={handoffFields}
+          folderWarning={folderStatusMessage(
+            savedTabs.find((tab) => tab.id === activeTabId)?.folderStatus ?? "",
+            handoffSource.cwd,
+          )}
+          busy={busy}
+          error={handoffError}
+          onTarget={(target) => {
+            setHandoffTarget(target);
+            setHandoffError(null);
+            loadHandoffFields(target);
+          }}
+          onConfirm={(scope) => {
+            void confirmHandoff(scope);
+          }}
+          onClose={() => {
+            if (!busy) setHandoffTarget(null);
+          }}
+        />
+      )}
+      {savedPlan && (
+        <SavedPlanDialog
+          title={savedPlan.title}
+          cwd={savedPlan.cwd}
+          createdAt={savedPlan.createdAt}
+          planText={savedPlan.planText}
+          loading={savedPlanLoading}
+          error={handoffError}
+          onClose={() => setSavedPlan(null)}
+        />
+      )}
     </>
   );
 
@@ -1299,6 +1521,16 @@ export function StartupForm({
       </section>
     );
   }
+
+  const activeHandoff = handoffs.find((item) => item.targetTabId === activeTabId) ?? null;
+  const handoffBanner = activeHandoff ? (
+    <HandoffBanner
+      sourceRoleId={activeHandoff.sourceRoleId}
+      title={activeHandoff.title}
+      warning={activeHandoff.warning}
+      onOpen={() => openSavedHandoff(activeHandoff)}
+    />
+  ) : null;
 
   const showFields = showStartupFields({ surface, newSessionOpen });
   const displayedFolder = folderForTab(values.cwd);
@@ -1452,6 +1684,7 @@ export function StartupForm({
       <section className="workspace-shell">
         {tabBar}
         <section className="status-card status-card-session-full">
+        {handoffBanner}
         <SessionCards
           cards={cardsByTab[activeTabId ?? ""] ?? emptySessionCards()}
           segments={streamSegments}
@@ -1471,6 +1704,7 @@ export function StartupForm({
               () => setPlanRequest(null),
             );
           }}
+          handoff={handoffOffer}
         />
         <SplitPanes
           mode={split.mode}
@@ -1499,6 +1733,7 @@ export function StartupForm({
               history={scratch.history}
               historyCursor={historyCursor}
               onHistoryCursor={setHistoryCursor}
+              handoff={handoffOffer}
             />
           }
           secondary={
@@ -1576,6 +1811,25 @@ export function StartupForm({
           }}
         >
           <div className="empty-state-card">
+            {handoffBanner}
+            {activeHandoff && !activeHandoff.planField && (
+              <label className="field-label">
+                Plan from Planner
+                <textarea
+                  className="text-input prompt-area"
+                  rows={8}
+                  value={scratch.content}
+                  onChange={(event) => {
+                    if (activeTabId) scratch.setContent(activeTabId, event.target.value);
+                  }}
+                  disabled={busy}
+                />
+                <span className="hint">
+                  This role has no plan field. The text is in the scratch pad. Start does not
+                  send it. After the session is running, Transfer moves it into the input.
+                </span>
+              </label>
+            )}
             <div className="empty-state-header">
               <div className="role-choices" role="group" aria-label="Role">
                 {roles.map((item) => (
