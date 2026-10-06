@@ -3455,3 +3455,270 @@ mark.search-hit-current {
   margin-top: 0.3rem;
   overflow: visible;
 }
+
+/* ---------------------------------------------------------------------
+   U5: compact start screen. Role, folder, model and Start share one row;
+   role fields sit below with Cursor CLI history as a side list.
+   --------------------------------------------------------------------- */
+.empty-state {
+  align-items: stretch;
+}
+
+.empty-state-card.start-screen {
+  width: 100%;
+  max-width: 80rem;
+  margin: 0 auto;
+  padding: 0.5rem 0.75rem;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-sizing: border-box;
+}
+
+.start-row {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elev);
+}
+
+.start-row .role-choices {
+  flex-wrap: nowrap;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+  gap: 0;
+  margin: 0;
+}
+
+.start-row .role-choices::-webkit-scrollbar {
+  display: none;
+}
+
+.start-row .role-choice,
+.start-row > * {
+  flex-shrink: 0;
+}
+
+.start-row > .role-choices:first-child {
+  flex-shrink: 1;
+}
+
+.start-row > .role-choices + .role-choices {
+  overflow: visible;
+}
+
+.start-row .role-choice {
+  padding: 0.2rem 0.45rem;
+  border-radius: 0;
+  margin-left: -1px;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.start-row .role-choice:first-child {
+  border-radius: 6px 0 0 6px;
+  margin-left: 0;
+}
+
+.start-row .role-choice:last-child {
+  border-radius: 0 6px 6px 0;
+}
+
+.start-row .role-choice[aria-pressed="true"] {
+  position: relative;
+  z-index: 1;
+}
+
+.start-row .role-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-right: 0.3rem;
+}
+
+.start-row-spacer {
+  flex: 1;
+}
+
+.start-row .primary-button,
+.start-row .secondary-button {
+  white-space: nowrap;
+}
+
+.folder-picker-compact {
+  position: relative;
+  min-width: 0;
+}
+
+.folder-picker-compact .folder-picker-row {
+  display: flex;
+  gap: 0;
+  margin: 0;
+}
+
+.folder-picker-compact .folder-picker-chosen {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.3rem;
+  max-width: 16rem;
+  margin: 0;
+  border-radius: 6px 0 0 6px;
+}
+
+.folder-picker-compact .folder-picker-name {
+  font-size: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.folder-picker-compact .folder-picker-unavailable {
+  border-color: var(--danger);
+}
+
+.folder-picker-compact .folder-picker-icon {
+  margin-left: -1px;
+  border-radius: 0;
+  padding-left: 0.45rem;
+  padding-right: 0.45rem;
+}
+
+.folder-picker-compact .folder-picker-icon:last-child {
+  border-radius: 0 6px 6px 0;
+}
+
+.folder-picker-compact .folder-picker-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  width: 26rem;
+  max-width: 80vw;
+  box-shadow: var(--shadow);
+}
+
+.folder-picker-compact > .error {
+  position: absolute;
+  top: 100%;
+  margin: 0.15rem 0 0;
+  white-space: nowrap;
+  font-size: 0.75rem;
+}
+
+.start-screen > .error,
+.start-screen > .hint {
+  margin: 0.35rem 0 0;
+}
+
+.start-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.start-body-with-history {
+  grid-template-columns: minmax(0, 1fr) minmax(14rem, 19rem);
+}
+
+@media (max-width: 760px) {
+  .start-body-with-history {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.start-main {
+  min-width: 0;
+}
+
+.start-main .composer-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: 0.4rem 0.6rem;
+}
+
+.start-main .composer-fields .field-label {
+  margin: 0;
+  gap: 0.15rem;
+  font-size: 0.78rem;
+}
+
+.start-main .composer-fields .field-label-wide,
+.start-main .composer-fields .field-errors {
+  grid-column: 1 / -1;
+}
+
+.start-main .composer-fields .text-input {
+  padding: 0.25rem 0.45rem;
+}
+
+.start-main .restore-compact {
+  margin: 0 0 0.5rem;
+}
+
+.start-main .preview-details,
+.start-main .continue-option {
+  margin-top: 0.4rem;
+}
+
+.start-history {
+  min-width: 0;
+  border-left: 1px solid var(--border);
+  padding-left: 0.75rem;
+}
+
+.start-history .history-list {
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+.start-history .history-list h3 {
+  font-size: 0.8rem;
+  margin-bottom: 0.1rem;
+}
+
+.start-history .history-list > .hint {
+  margin: 0;
+  font-size: 0.72rem;
+}
+
+.start-history .history-list ul {
+  gap: 0.15rem;
+  margin-top: 0.35rem;
+}
+
+.start-history .history-row {
+  flex-wrap: nowrap;
+  gap: 0.35rem;
+  padding: 0.25rem 0.35rem;
+  border-radius: 6px;
+}
+
+.start-history .history-row:hover {
+  background: var(--bg-hover);
+}
+
+.start-history .history-title {
+  font-size: 0.8rem;
+}
+
+.start-history .history-row-text .hint {
+  margin: 0;
+  font-size: 0.7rem;
+}
+
+.start-history .history-row-actions .secondary-button {
+  padding: 0.1rem 0.4rem;
+  font-size: 0.72rem;
+}

@@ -276,6 +276,34 @@ describe("blank tab card", () => {
     vi.mocked(syncActiveTabForm).mockClear();
   });
 
+  it("keeps role, folder, and Start on one row with history as a side list (U5)", async () => {
+    render(
+      <StartupForm
+        roles={[
+          { id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 },
+        ]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+    await screen.findByLabelText("Title");
+    const row = screen.getByRole("group", { name: "Start a tab" });
+    expect(within(row).getByRole("group", { name: "Role" })).toBeTruthy();
+    expect(row.querySelector(".folder-picker-compact")).toBeTruthy();
+    expect(
+      row.querySelector(`.folder-picker-chosen[title="${tab.cwd.replace(/\\/g, "\\\\")}"]`),
+    ).toBeTruthy();
+    expect(within(row).getByRole("button", { name: "Start" })).toBeTruthy();
+    expect(within(row).getByRole("button", { name: "Validate & preview" })).toBeTruthy();
+    const history = await screen.findByRole("region", { name: "Cursor CLI history" });
+    expect(history.closest(".start-history")).toBeTruthy();
+    expect(row.contains(history)).toBe(false);
+    // Fields sit under the row, not in it.
+    expect(row.contains(screen.getByLabelText("Title"))).toBe(false);
+  });
+
   it("shows Developer fields, a plain history line, and does not keep another role's task type", async () => {
     render(
       <StartupForm

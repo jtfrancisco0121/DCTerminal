@@ -3646,13 +3646,16 @@ export function StartupForm({
   const composerFields = (
     <div className="composer-fields">
       {showFields && visibleFields(role, formValues).map((field) => (
-        <label key={field.key} className="field-label">
+        <label
+          key={field.key}
+          className={`field-label${field.type === "multiline" ? " field-label-wide" : ""}`}
+        >
           {field.label}
           {field.required ? " *" : ""}
           {field.type === "multiline" ? (
             <textarea
               className="text-input prompt-area"
-              rows={4}
+              rows={3}
               data-field-key={field.key}
               value={values[field.key] ?? ""}
               onChange={(e) => setField(field.key, e.target.value)}
@@ -3771,30 +3774,36 @@ export function StartupForm({
     </div>
   );
 
+  // U5: model, preview, and Start sit on the start row; extras go under it.
+  const startButtons = showFields && (
+    <>
+      {blankModelPicker}
+      <button
+        type="button"
+        className="secondary-button"
+        onClick={runPreview}
+        disabled={busy || previewBusy}
+        aria-label="Validate & preview"
+        title="Check the fields and show the merged startup prompt"
+      >
+        {previewBusy ? "…" : "Preview"}
+      </button>
+      <button
+        type="button"
+        className="primary-button"
+        onClick={() => {
+          if (rememberedSurface(roleId) === "terminal") void startRoleTerminal();
+          else void startSession(surface === "restore" && resendStartup);
+        }}
+        disabled={busy || !cliFound}
+      >
+        {rememberedSurface(roleId) === "terminal" ? "Start terminal" : "Start"}
+      </button>
+    </>
+  );
+
   const idleActions = showFields && (
     <>
-      <div className="button-row">
-        <button
-          type="button"
-          className="secondary-button"
-          onClick={runPreview}
-          disabled={busy || previewBusy}
-        >
-          {previewBusy ? "…" : "Validate & preview"}
-        </button>
-        <button
-          type="button"
-          className="primary-button"
-          onClick={() => {
-            if (rememberedSurface(roleId) === "terminal") void startRoleTerminal();
-            else void startSession(surface === "restore" && resendStartup);
-          }}
-          disabled={busy || !cliFound}
-        >
-          {rememberedSurface(roleId) === "terminal" ? "Start terminal" : "Start"}
-        </button>
-        {blankModelPicker}
-      </div>
       {surface === "restore" && (
         <label className="field-label continue-option">
           <input
@@ -4002,7 +4011,7 @@ export function StartupForm({
             if (tabId) scrollPositions.current[tabId] = event.currentTarget.scrollTop;
           }}
         >
-          <div className="empty-state-card">
+          <div className="empty-state-card start-screen">
             {handoffBanner}
             {activeHandoff && !activeHandoff.planField && (
               <label className="field-label">
@@ -4022,7 +4031,7 @@ export function StartupForm({
                 </span>
               </label>
             )}
-            <div className="empty-state-header">
+            <div className="start-row" role="group" aria-label="Start a tab">
               <div className="role-choices" role="group" aria-label="Role">
                 {roles.map((item) => (
                   <button
@@ -4070,6 +4079,7 @@ export function StartupForm({
                     aria-pressed={rememberedSurface(pickedRoleId) === "chat"}
                     onClick={() => rememberSurface(pickedRoleId, "chat")}
                     disabled={busy}
+                    title="Open as chat"
                   >
                     Chat
                   </button>
@@ -4079,47 +4089,66 @@ export function StartupForm({
                     aria-pressed={rememberedSurface(pickedRoleId) === "terminal"}
                     onClick={() => rememberSurface(pickedRoleId, "terminal")}
                     disabled={busy}
+                    aria-label="Terminal"
+                    title="Open as terminal (agent CLI in a terminal)"
                   >
-                    Terminal
+                    <span aria-hidden>›_</span>
                   </button>
                 </div>
               )}
-              <div className="field-label">
-                Working folder
-                <FolderPicker
-                  value={displayedFolder}
-                  unavailable={folderNotice?.tone === "error"}
-                  disabled={busy}
-                  onChange={(path) => setField("cwd", path)}
-                />
-              </div>
-              {folderNotice?.tone === "error" && <p className="error">{folderNotice.text}</p>}
-              {activeTabSummary?.worktreeBranch && (
-                <p className="hint">
-                  Worktree on branch <strong>{activeTabSummary.worktreeBranch}</strong>. Remove it
-                  from the command palette when you are done.
-                </p>
+              <FolderPicker
+                compact
+                value={displayedFolder}
+                unavailable={folderNotice?.tone === "error"}
+                disabled={busy}
+                onChange={(path) => setField("cwd", path)}
+              />
+              <span className="start-row-spacer" aria-hidden />
+              {launchChoice ? (
+                <>
+                  {launchChoice === "cursor-cli" && blankModelPicker}
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={() => void startBlankTerminal(launchChoice)}
+                    disabled={
+                      busy || !displayedFolder || (launchChoice === "cursor-cli" && !cliFound)
+                    }
+                  >
+                    {launchChoice === "cursor-cli" ? "Start Cursor CLI" : "Start terminal"}
+                  </button>
+                </>
+              ) : (
+                startButtons
               )}
             </div>
-            {launchChoice ? (
-              <div className="button-row">
-                <button
-                  type="button"
-                  className="primary-button"
-                  onClick={() => void startBlankTerminal(launchChoice)}
-                  disabled={
-                    busy || !displayedFolder || (launchChoice === "cursor-cli" && !cliFound)
-                  }
-                >
-                  {launchChoice === "cursor-cli" ? "Start Cursor CLI" : "Start terminal"}
-                </button>
-                {launchChoice === "cursor-cli" && blankModelPicker}
+            {folderNotice?.tone === "error" && <p className="error">{folderNotice.text}</p>}
+            {activeTabSummary?.worktreeBranch && (
+              <p className="hint">
+                Worktree on branch <strong>{activeTabSummary.worktreeBranch}</strong>. Remove it
+                from the command palette when you are done.
+              </p>
+            )}
+            <div
+              className={`start-body${historyFolder && !launchChoice ? " start-body-with-history" : ""}`}
+            >
+              <div className="start-main">
+                {!launchChoice && (
+                  <>
+                    {restoreActions}
+                    {composerFields}
+                    {idleActions}
+                  </>
+                )}
+                {cliLaunchNote && <p className="hint">{cliLaunchNote}</p>}
+                {terminalError && <p className="error">{terminalError}</p>}
+                {transcriptSaveError && (
+                  <p className="error">Could not save the transcript: {transcriptSaveError}</p>
+                )}
+                {!cliFound && <p className="error">Cursor CLI was not found.</p>}
               </div>
-            ) : (
-              <>
-                {restoreActions}
-                {composerFields}
-                {historyFolder && (
+              {historyFolder && !launchChoice && (
+                <aside className="start-history">
                   <CursorHistoryList
                     entries={historyEntries}
                     error={historyError}
@@ -4127,16 +4156,9 @@ export function StartupForm({
                     onResume={(entry) => void resumeHistoryEntry(entry)}
                     onOpenCli={(entry) => void openCursorCli(entry.id, entry.cwd)}
                   />
-                )}
-                {idleActions}
-              </>
-            )}
-            {cliLaunchNote && <p className="hint">{cliLaunchNote}</p>}
-            {terminalError && <p className="error">{terminalError}</p>}
-            {transcriptSaveError && (
-              <p className="error">Could not save the transcript: {transcriptSaveError}</p>
-            )}
-            {!cliFound && <p className="error">Cursor CLI was not found.</p>}
+                </aside>
+              )}
+            </div>
           </div>
         </div>,
   );

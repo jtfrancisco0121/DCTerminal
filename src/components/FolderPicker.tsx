@@ -22,9 +22,11 @@ type Props = {
   disabled?: boolean;
   unavailable?: boolean;
   onChange: (path: string) => void;
+  /** U5: one-row picker (folder button, star, Recent menu) for the start row. */
+  compact?: boolean;
 };
 
-export function FolderPicker({ value, disabled, unavailable, onChange }: Props) {
+export function FolderPicker({ value, disabled, unavailable, onChange, compact = false }: Props) {
   const [favorites, setFavorites] = useState<ListedProject[]>([]);
   const [recent, setRecent] = useState<ListedProject[]>([]);
   const [openMenu, setOpenMenu] = useState(false);
@@ -108,6 +110,99 @@ export function FolderPicker({ value, disabled, unavailable, onChange }: Props) 
   const trimmed = value.trim();
   const name = folderName(trimmed);
 
+  const menu = openMenu ? (
+        <div className="folder-picker-menu" role="menu" aria-label="Saved folders">
+          <ProjectSection
+            title="Favorites"
+            items={favorites}
+            onPick={choose}
+            onRemove={(path) => void remove(path, true)}
+          />
+          <ProjectSection
+            title="Recent"
+            items={recent}
+            onPick={choose}
+            onRemove={(path) => void remove(path, false)}
+          />
+          {favorites.length === 0 && recent.length === 0 && (
+            <p className="hint">No saved folders yet.</p>
+          )}
+          <form
+            className="folder-picker-paste"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void usePastedPath();
+            }}
+          >
+            <label className="field-label">
+              Enter path
+              <input
+                className="text-input"
+                value={pasted}
+                onChange={(event) => setPasted(event.target.value)}
+                disabled={disabled}
+                spellCheck={false}
+                aria-label="Enter a folder path"
+              />
+            </label>
+            <button type="submit" className="secondary-button" disabled={disabled}>
+              Use path
+            </button>
+          </form>
+        </div>
+  ) : null;
+
+  if (compact) {
+    return (
+      <div className="folder-picker folder-picker-compact">
+        <div className="folder-picker-row">
+          <button
+            type="button"
+            className={`secondary-button folder-picker-chosen${unavailable ? " folder-picker-unavailable" : ""}`}
+            title={trimmed || undefined}
+            aria-label={trimmed ? `Working folder ${trimmed}. Choose folder…` : "Choose folder…"}
+            onClick={() => void browse()}
+            disabled={disabled}
+          >
+            <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+              <path
+                fill="currentColor"
+                d="M1.75 2.5h4l1.5 1.5h7a.75.75 0 0 1 .75.75v8.5a.75.75 0 0 1-.75.75H1.75a.75.75 0 0 1-.75-.75v-10a.75.75 0 0 1 .75-.75z"
+              />
+            </svg>
+            <span className="folder-picker-name">{trimmed ? name : "Choose folder…"}</span>
+            {unavailable && <span className="error">unavailable</span>}
+          </button>
+          <button
+            type="button"
+            className="secondary-button folder-picker-icon"
+            onClick={() => void star()}
+            disabled={disabled || !trimmed}
+            title={starred ? "Remove favorite" : "Star as favorite"}
+            aria-label={starred ? "Remove favorite" : "Star as favorite"}
+            aria-pressed={starred}
+          >
+            {starred ? "★" : "☆"}
+          </button>
+          <button
+            type="button"
+            className="secondary-button folder-picker-icon"
+            onClick={() => setOpenMenu((current) => !current)}
+            disabled={disabled}
+            aria-expanded={openMenu}
+            aria-haspopup="menu"
+            aria-label="Recent"
+            title="Recent and favorite folders, or type a path"
+          >
+            ▾
+          </button>
+        </div>
+        {error && <p className="error">{error}</p>}
+        {menu}
+      </div>
+    );
+  }
+
   return (
     <div className="folder-picker">
       <div className="folder-picker-row">
@@ -152,47 +247,7 @@ export function FolderPicker({ value, disabled, unavailable, onChange }: Props) 
         <p className="folder-picker-prompt">{CHOOSE_FOLDER_PROMPT}</p>
       )}
       {error && <p className="error">{error}</p>}
-      {openMenu && (
-        <div className="folder-picker-menu" role="menu" aria-label="Saved folders">
-          <ProjectSection
-            title="Favorites"
-            items={favorites}
-            onPick={choose}
-            onRemove={(path) => void remove(path, true)}
-          />
-          <ProjectSection
-            title="Recent"
-            items={recent}
-            onPick={choose}
-            onRemove={(path) => void remove(path, false)}
-          />
-          {favorites.length === 0 && recent.length === 0 && (
-            <p className="hint">No saved folders yet.</p>
-          )}
-          <form
-            className="folder-picker-paste"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void usePastedPath();
-            }}
-          >
-            <label className="field-label">
-              Enter path
-              <input
-                className="text-input"
-                value={pasted}
-                onChange={(event) => setPasted(event.target.value)}
-                disabled={disabled}
-                spellCheck={false}
-                aria-label="Enter a folder path"
-              />
-            </label>
-            <button type="submit" className="secondary-button" disabled={disabled}>
-              Use path
-            </button>
-          </form>
-        </div>
-      )}
+      {menu}
     </div>
   );
 }
