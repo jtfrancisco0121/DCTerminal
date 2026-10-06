@@ -25,6 +25,28 @@ function normalizeKind(kind: string): TranscriptLine["kind"] {
   return "other";
 }
 
+/** ACP often sends `{ type, text }` blocks instead of plain strings. */
+export function coerceDisplayText(value: unknown): string {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map(coerceDisplayText).filter(Boolean).join("");
+  }
+  if (typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    if (typeof obj.text === "string") return obj.text;
+    if (obj.text !== undefined) return coerceDisplayText(obj.text);
+    if (typeof obj.content === "string") return obj.content;
+    if (obj.content !== undefined) return coerceDisplayText(obj.content);
+    if (typeof obj.delta === "string") return obj.delta;
+    if (obj.delta !== undefined) return coerceDisplayText(obj.delta);
+  }
+  return "";
+}
+
 function toolSummary(raw: Record<string, unknown>): string {
   const name =
     (raw.toolName as string) ||
@@ -40,12 +62,13 @@ function toolSummary(raw: Record<string, unknown>): string {
 
 export function sessionUpdateToLine(evt: SessionUpdateEvent): TranscriptLine {
   const kind = normalizeKind(evt.kind);
-  if (evt.textDelta) {
+  const delta = coerceDisplayText(evt.textDelta);
+  if (delta) {
     return {
       id: nextId(),
       kind: kind === "other" ? "agent" : kind,
       label: evt.kind,
-      text: evt.textDelta,
+      text: delta,
     };
   }
 
@@ -63,8 +86,9 @@ export function sessionUpdateToLine(evt: SessionUpdateEvent): TranscriptLine {
       };
     }
     const text =
-      (update.text as string) ||
-      (update.content as string) ||
+      coerceDisplayText(update.text) ||
+      coerceDisplayText(update.content) ||
+      coerceDisplayText(update.chunk) ||
       JSON.stringify(update).slice(0, 200);
     return {
       id: nextId(),

@@ -54,17 +54,43 @@ fn classify_update(params: &Value) -> (String, Option<String>) {
 }
 
 fn extract_text_delta(value: &Value) -> Option<String> {
-    if let Some(text) = value.get("text").and_then(|t| t.as_str()) {
-        return Some(text.to_string());
+    extract_text_from_value(value)
+}
+
+fn extract_text_from_value(value: &Value) -> Option<String> {
+    if let Some(s) = value.as_str() {
+        return Some(s.to_string());
     }
-    if let Some(content) = value.get("content").and_then(|c| c.as_str()) {
-        return Some(content.to_string());
+    if let Some(text) = value.get("text") {
+        if let Some(s) = text.as_str() {
+            return Some(s.to_string());
+        }
+        if let Some(nested) = extract_text_from_value(text) {
+            return Some(nested);
+        }
+    }
+    if let Some(content) = value.get("content") {
+        if let Some(s) = content.as_str() {
+            return Some(s.to_string());
+        }
+        if let Some(nested) = extract_text_from_value(content) {
+            return Some(nested);
+        }
+        if let Some(parts) = content.as_array() {
+            let joined: String = parts
+                .iter()
+                .filter_map(extract_text_from_value)
+                .collect();
+            if !joined.is_empty() {
+                return Some(joined);
+            }
+        }
     }
     if let Some(chunk) = value.get("chunk") {
-        return extract_text_delta(chunk);
+        return extract_text_from_value(chunk);
     }
-    if let Some(delta) = value.get("delta").and_then(|d| d.as_str()) {
-        return Some(delta.to_string());
+    if let Some(delta) = value.get("delta") {
+        return extract_text_from_value(delta);
     }
     None
 }
@@ -73,6 +99,19 @@ fn extract_text_delta(value: &Value) -> Option<String> {
 mod tests {
     use super::map_session_update;
     use serde_json::json;
+
+    #[test]
+    fn maps_chunk_with_text_object() {
+        let line = json!({
+            "method": "session/update",
+            "params": {
+                "type": "agent_message_chunk",
+                "text": { "type": "text", "text": "Hi" }
+            }
+        });
+        let evt = map_session_update("sess_1", &line).expect("event");
+        assert_eq!(evt.text_delta.as_deref(), Some("Hi"));
+    }
 
     #[test]
     fn maps_agent_message_chunk() {

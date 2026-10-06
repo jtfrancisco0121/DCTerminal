@@ -592,7 +592,7 @@ export function StartupForm({ roles, cliFound, defaultCwd }: Props) {
                 className={`transcript-line transcript-line-${line.kind}`}
               >
                 <div className="transcript-line-meta">{line.label}</div>
-                {line.text}
+                {String(line.text)}
               </li>
             ))}
           </ul>
