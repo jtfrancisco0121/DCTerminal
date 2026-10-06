@@ -540,8 +540,20 @@ fn apply_terminal_draft(tab: &mut TabRecord, draft: &TerminalTabDraft) {
     tab.session = None;
 }
 
+/// Millisecond ids, bumped so two tabs made in the same millisecond still get
+/// distinct ids.
 fn new_tab_id() -> String {
-    format!("tab_{:x}", Utc::now().timestamp_millis())
+    use std::sync::atomic::{AtomicI64, Ordering};
+    static LAST: AtomicI64 = AtomicI64::new(0);
+    let now = Utc::now().timestamp_millis();
+    let mut prev = LAST.load(Ordering::Relaxed);
+    loop {
+        let next = now.max(prev + 1);
+        match LAST.compare_exchange_weak(prev, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return format!("tab_{next:x}"),
+            Err(actual) => prev = actual,
+        }
+    }
 }
 
 fn next_tab_order(data: &AppStateFile) -> u32 {
@@ -735,6 +747,13 @@ mod tests {
             .unwrap();
         assert_eq!(store.layout().split_mode, "single");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn tab_ids_made_back_to_back_are_unique() {
+        let ids: std::collections::HashSet<String> =
+            (0..1000).map(|_| super::new_tab_id()).collect();
+        assert_eq!(ids.len(), 1000);
     }
 
     #[test]
