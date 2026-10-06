@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
+import { isUserInput, terminalActivity } from "../terminal/activity";
 import "@xterm/xterm/css/xterm.css";
 import { ptyOpen, ptyResize, ptyWrite, type TerminalLaunch } from "../bridge";
 import { detectPlatform, routeKey } from "../keymap";
+import { TerminalSearchBar } from "./TerminalSearchBar";
 import {
   beginLivePty,
   clearPtyOpening,
@@ -77,7 +79,6 @@ export function TerminalView({
   const slotRef = useRef<HTMLDivElement>(null);
   const [exitCode, setExitCode] = useState<number | null>(livePty(ptyId)?.exitCode ?? null);
   const [searchOpen, setSearchOpen] = useState(false);
-  const [query, setQuery] = useState("");
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const [generation, setGeneration] = useState(0);
@@ -105,6 +106,7 @@ export function TerminalView({
     // Subscribe before replaying. ConPTY's first bytes are often a cursor
     // query, and xterm answers that only through onData.
     const onData = parked.term.onData((data) => {
+      if (isUserInput(data)) terminalActivity.input(ptyId);
       void ptyWrite(ptyId, data).catch(() => {});
     });
     const detach = live?.buffer.attach({
@@ -213,13 +215,6 @@ export function TerminalView({
     });
   };
 
-  const runSearch = (previous: boolean) => {
-    const search = ensureParkedTerminal(ptyId, fontSize).search;
-    if (!query) return;
-    if (previous) search.findPrevious(query);
-    else search.findNext(query);
-  };
-
   return (
     <div
       className="terminal-view"
@@ -229,30 +224,14 @@ export function TerminalView({
       }}
     >
       {searchOpen && (
-        <form
-          className="terminal-search"
-          onSubmit={(event) => {
-            event.preventDefault();
-            runSearch(false);
+        <TerminalSearchBar
+          search={ensureParkedTerminal(ptyId, fontSize).search}
+          onClose={() => {
+            setSearchOpen(false);
+            ensureParkedTerminal(ptyId, fontSize).term.focus();
+            focusParkedTerminal(ptyId);
           }}
-        >
-          <input
-            className="text-input"
-            aria-label="Search terminal"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            autoFocus
-          />
-          <button type="submit" className="secondary-button">
-            Next
-          </button>
-          <button type="button" className="secondary-button" onClick={() => runSearch(true)}>
-            Previous
-          </button>
-          <button type="button" className="secondary-button" onClick={() => setSearchOpen(false)}>
-            Close
-          </button>
-        </form>
+        />
       )}
       <div
         ref={slotRef}

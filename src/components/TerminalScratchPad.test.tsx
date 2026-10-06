@@ -27,6 +27,8 @@ function renderPad(
     onFocusPad: () => void;
     onChange: (value: string) => void;
     onOpenChange: (open: boolean) => void;
+    onSent: (text: string) => void;
+    onOpenLibrary: () => void;
   }> = {},
   ref?: Ref<TerminalPadHandle>,
 ) {
@@ -47,6 +49,8 @@ function renderPad(
       onFocusTerminal={onFocusTerminal}
       onFocusPad={overrides.onFocusPad}
       onOpenChange={overrides.onOpenChange}
+      onSent={overrides.onSent}
+      onOpenLibrary={overrides.onOpenLibrary}
     />,
   );
   return { write, onFocusTerminal, ...view };
@@ -162,6 +166,54 @@ describe("terminal scratch pad", () => {
     expect(onOpenChange).toHaveBeenCalledTimes(2);
   });
 
+  it("can share Hide/Show and the pad height with the chat pad (U2)", () => {
+    const onOpenToggle = vi.fn();
+    const onHeightCommit = vi.fn();
+    const { rerender } = render(
+      <TerminalScratchPad
+        tabId="tab-1"
+        ptyId="pty-1"
+        content="x"
+        truncated={false}
+        persistError={null}
+        platform="mac"
+        onChange={() => {}}
+        write={vi.fn(async () => {})}
+        bracketedPaste
+        onFocusTerminal={() => {}}
+        open
+        onOpenToggle={onOpenToggle}
+        height={120}
+        onHeightChange={() => {}}
+        onHeightCommit={onHeightCommit}
+      />,
+    );
+    expect(editor().style.height).toBe("120px");
+    fireEvent.keyDown(screen.getByRole("separator", { name: "Resize scratch pad" }), { key: "ArrowUp" });
+    expect(onHeightCommit).toHaveBeenCalledWith(144);
+    fireEvent.click(screen.getByRole("button", { name: "Hide pad" }));
+    expect(onOpenToggle).toHaveBeenCalledWith(false);
+    // Controlled: stays open until the parent says otherwise.
+    expect(editor().hidden).toBe(false);
+    rerender(
+      <TerminalScratchPad
+        tabId="tab-1"
+        ptyId="pty-1"
+        content="x"
+        truncated={false}
+        persistError={null}
+        platform="mac"
+        onChange={() => {}}
+        write={vi.fn(async () => {})}
+        bracketedPaste
+        onFocusTerminal={() => {}}
+        open={false}
+        onOpenToggle={onOpenToggle}
+      />,
+    );
+    expect((document.querySelector(".scratch-pad-input") as HTMLTextAreaElement).hidden).toBe(true);
+  });
+
   it("keeps a separate pad for each tab", async () => {
     vi.mocked(scratchLoad).mockResolvedValue({
       pads: [
@@ -218,5 +270,25 @@ describe("terminal scratch pad", () => {
       "tab-a",
       `${PASTE_START}edited a${PASTE_END}\r`,
     );
+  });
+});
+
+describe("terminal scratch pad and the prompt library (F6)", () => {
+  it("reports a submitted send for recent sends, but not a plain paste", async () => {
+    const onSent = vi.fn();
+    const ref = createRef<TerminalPadHandle>();
+    renderPad({ content: "  run the tests  ", onSent }, ref);
+    fireEvent.click(screen.getByRole("button", { name: "Paste to terminal" }));
+    expect(onSent).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(onSent).toHaveBeenCalledWith("  run the tests  ");
+    expect(ref.current?.field()).toBe(editor());
+  });
+
+  it("opens the prompt library from the pad", () => {
+    const onOpenLibrary = vi.fn();
+    renderPad({ onOpenLibrary });
+    fireEvent.click(screen.getByRole("button", { name: "Prompts" }));
+    expect(onOpenLibrary).toHaveBeenCalledTimes(1);
   });
 });

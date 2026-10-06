@@ -272,4 +272,40 @@ describe("pane and file panel shortcuts", () => {
     }
     expect(bindingConflicts(defaultBindings())).toEqual([]);
   });
+
+  it("F5: Mod+F finds in the tab; Mod+Shift+F searches all chats from chat", () => {
+    const winChat = { platform: "windows" as const, surface: "chat" as const };
+    const winTerm = { platform: "windows" as const, surface: "terminal" as const };
+    const macChat = { platform: "mac" as const, surface: "chat" as const };
+    const macTerm = { platform: "mac" as const, surface: "terminal" as const };
+    expect(routeKey(event({ code: "KeyF", key: "f", ctrlKey: true }), winChat)).toEqual({
+      kind: "app",
+      match: { action: "find" },
+    });
+    expect(routeKey(event({ code: "KeyF", key: "f", metaKey: true }), macChat)).toEqual({
+      kind: "app",
+      match: { action: "find" },
+    });
+    // Cmd+F never reaches a shell on macOS, so it searches the terminal.
+    expect(routeKey(event({ code: "KeyF", key: "f", metaKey: true }), macTerm)).toEqual({
+      kind: "terminal",
+      action: "search",
+    });
+    // Ctrl+F is readline's forward-char: the shell keeps it on Windows/Linux.
+    expect(routeKey(event({ code: "KeyF", key: "f", ctrlKey: true }), winTerm).kind).toBe("shell");
+    expect(
+      routeKey(event({ code: "KeyF", key: "F", ctrlKey: true, shiftKey: true }), winTerm),
+    ).toEqual({ kind: "terminal", action: "search" });
+    expect(
+      routeKey(event({ code: "KeyF", key: "F", ctrlKey: true, shiftKey: true }), winChat),
+    ).toEqual({ kind: "app", match: { action: "searchChats" } });
+    const rows = shortcutRows("mac").map((r) => `${r.label}=${r.keys}`);
+    expect(rows).toContain("Find in tab=⌘+F");
+    expect(rows).toContain("Search all chats=⌘+Shift+F");
+    expect(rows).toContain("Search terminal=⌘+F");
+    expect(shortcutRows("windows").map((r) => `${r.label}=${r.keys}`)).toContain(
+      "Search terminal=Ctrl+Shift+F",
+    );
+    expect(bindingConflicts(defaultBindings())).toEqual([]);
+  });
 });

@@ -97,6 +97,25 @@ impl TranscriptStore {
         }
     }
 
+    /// Every readable transcript, newest first. Read-only: unreadable files
+    /// are skipped, not moved aside (that is `load`'s job).
+    pub fn list_all(&self) -> Vec<TranscriptFile> {
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return Vec::new();
+        };
+        let mut files: Vec<TranscriptFile> = entries
+            .flatten()
+            .filter(|entry| {
+                let name = entry.file_name().to_string_lossy().to_string();
+                name.ends_with(".json") && !name.contains(".corrupt")
+            })
+            .filter_map(|entry| read_json::<TranscriptFile>(&entry.path()).ok())
+            .filter(|file| safe_tab_id(&file.tab_id))
+            .collect();
+        files.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        files
+    }
+
     fn path_for(&self, tab_id: &str) -> PathBuf {
         self.dir.join(format!("{tab_id}.json"))
     }
@@ -212,6 +231,25 @@ mod tests {
         assert!(loaded.recovered_from_corrupt);
         assert!(loaded.text.is_empty());
         assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn list_all_reads_every_transcript_and_leaves_bad_files_alone() {
+        let dir = dir();
+        let store = TranscriptStore::open(&dir).unwrap();
+        store
+            .save("tab_a", "alpha", "/w", "2026-01-01", &[])
+            .unwrap();
+        store
+            .save("tab_b", "beta", "/w", "2026-02-01", &[])
+            .unwrap();
+        let bad = store.dir.join("tab_bad.json");
+        std::fs::write(&bad, b"{broken").unwrap();
+        let all = store.list_all();
+        let ids: Vec<&str> = all.iter().map(|f| f.tab_id.as_str()).collect();
+        assert_eq!(ids, vec!["tab_b", "tab_a"]);
+        assert!(bad.exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 

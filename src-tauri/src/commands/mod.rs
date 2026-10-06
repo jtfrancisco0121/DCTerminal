@@ -1,21 +1,27 @@
 pub(crate) mod acp_events;
 mod agent_requests;
 mod app_state;
+pub(crate) mod changes;
 mod cursor_cli;
 mod dev_session;
 mod forms;
 mod handoff;
 mod model_session;
 mod prompt_worker;
+mod prompts;
 mod role_session;
 mod roles;
+mod setup;
 mod workspace;
+mod workspaces;
+mod worktree_tabs;
 
 pub use agent_requests::{respond_permission_request, respond_plan_request};
 pub use app_state::{
     close_tab, get_app_state, get_layout, get_tab, new_draft_tab, reopen_closed_tab,
     select_active_tab, set_layout, set_tab_color, set_tab_label, sync_active_tab_form,
 };
+pub use changes::{changes_file_diff, changes_list, changes_revert, changes_snapshot, ChangesRoot};
 pub use cursor_cli::{list_cursor_cli_history, open_in_cursor_cli};
 pub use dev_session::{
     dev_session_cancel, dev_session_send, dev_session_start, dev_session_stop, SessionRegistry,
@@ -23,10 +29,17 @@ pub use dev_session::{
 pub use forms::{get_form_recall, save_form_draft};
 pub use handoff::{handoff_bind_tab, handoff_get, handoff_list, handoff_save};
 pub use model_session::acp_set_model;
+pub use prompts::{
+    prompt_clear_recent, prompt_delete, prompt_library_get, prompt_mark_used, prompt_record_send,
+    prompt_save,
+};
 pub use role_session::role_session_start;
 pub use roles::{get_role, list_roles, validate_and_preview};
+pub use setup::{first_run_complete, first_run_status};
 pub use workspace::{
     check_working_folder, cursor_approval_mode, diagnostics_set_capture, diagnostics_status,
-    projects_list, projects_remember, projects_remove, projects_toggle_favorite, scratch_load,
-    scratch_save, transcript_load, transcript_save,
+    history_search, projects_list, projects_remember, projects_remove, projects_toggle_favorite,
+    scratch_load, scratch_save, transcript_load, transcript_save,
 };
+pub use workspaces::{workspace_delete, workspace_open, workspace_save, workspaces_list};
+pub use worktree_tabs::{git_repo_info, worktree_tab_check, worktree_tab_new, worktree_tab_remove};

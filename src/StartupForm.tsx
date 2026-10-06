@@ -23,6 +23,24 @@ import {
   respondPermissionRequest,
   respondPlanRequest,
   reopenClosedTab,
+  historySearch,
+  transcriptLoad,
+  promptClearRecent,
+  promptDelete,
+  promptLibraryGet,
+  promptMarkUsed,
+  promptRecordSend,
+  promptSave,
+  type PromptLibrary,
+  workspaceDelete,
+  workspaceOpen,
+  workspaceSave,
+  workspacesList,
+  type WorkspaceList,
+  cliLoginStatus,
+  detectCli,
+  firstRunComplete,
+  firstRunStatus,
   setTabColor,
   setTabLabel,
   transcriptSave,
@@ -39,6 +57,13 @@ import {
   selectActiveTab,
   syncActiveTabForm,
   getTerminalSettings,
+  getNotificationSettings,
+  setNotificationSettings,
+  gitRepoInfo,
+  changesList,
+  worktreeTabCheck,
+  worktreeTabNew,
+  worktreeTabRemove,
   handoffBindTab,
   handoffGet,
   handoffList,
@@ -70,7 +95,6 @@ import {
   applyPermission,
   applyPromptFinished,
   applySessionUpdate,
-  attentionTabIds,
   clearLiveSession,
   emptyRuntime,
   folderStatusMessage,
@@ -99,7 +123,8 @@ import {
 } from "./handoff/map";
 import { FolderPicker } from "./components/FolderPicker";
 import { SettingsPage } from "./components/SettingsPage";
-import { UnrestrictedBanner } from "./components/UnrestrictedBanner";
+import { StatusBar, type StatusMessage, type StatusTone } from "./components/StatusBar";
+import { summarizeSessionActivity } from "./sessionActivity";
 import { folderForTab } from "./projectsView";
 import {
   canContinueStoredSession,
@@ -119,6 +144,29 @@ import { SplitPanes } from "./components/SplitPanes";
 import { WorkspaceSplit } from "./components/WorkspaceSplit";
 import { FilePanel } from "./components/FilePanel";
 import { ModelPicker } from "./components/ModelPicker";
+import { AgentToasts } from "./components/AgentToasts";
+import { WorktreeDialog, type WorktreeCreateInput } from "./components/WorktreeDialog";
+import { ChangesPanel } from "./components/ChangesPanel";
+import { ChatSearchDialog, type ChatSearchHit } from "./components/ChatSearchDialog";
+import { TranscriptView } from "./components/TranscriptView";
+import { PromptLibraryDialog } from "./components/PromptLibraryDialog";
+import { WorkspacesDialog } from "./components/WorkspacesDialog";
+import { FirstRunSetup, type FirstRunFinish } from "./components/FirstRunSetup";
+import { insertIntoPad, type PadSelection } from "./prompts/library";
+import type { ChatFindRequest } from "./SessionTerminal";
+import { classifyPromptFinished, type NotificationSettings } from "./notify/agentNotify";
+import { showSystemNotification } from "./notify/systemNotify";
+import { useAgentNotifications } from "./notify/useAgentNotifications";
+import { isWindowFocused, useWindowFocused } from "./notify/windowFocus";
+import { terminalActivity } from "./terminal/activity";
+import {
+  clearMarks,
+  computeTabStatus,
+  markAfterTurn,
+  tabStatusLabel,
+  type TabMark,
+  type TabStatus,
+} from "./tabStatus";
 import { appendReference } from "./files/paths";
 import { effectiveModel, modelChangeNote } from "./models";
 import { TabSwitcher } from "./components/TabSwitcher";
@@ -151,6 +199,10 @@ import { createTurnWaiter } from "./scratch/turnWait";
 import { SessionTerminal } from "./SessionTerminal";
 import { answersForRole, fieldsForForm } from "./startupFields";
 import { CursorHistoryList } from "./components/CursorHistoryList";
+import { ShortcutBar } from "./components/ShortcutBar";
+import { FIRST_USE_TIP_ID, FirstUseTip, shouldShowTip } from "./components/FirstUseTip";
+import { normalizeTheme, THEMES } from "./theme";
+import { ChatHistoryDialog } from "./components/ChatHistoryDialog";
 import {
   resumeIdForStart,
   segmentsAfterResume,
@@ -169,15 +221,28 @@ import {
   swapSplit,
   tabAtIndex,
   type SplitState,
+  parsePaletteId,
+  type PaletteAction,
+  type PaletteModelOptions,
 } from "./tabChrome";
 import { useAppShortcuts } from "./useAppShortcuts";
 import { useScratchPads } from "./useScratchPads";
+import { useUiSettings } from "./useUiSettings";
 import {
   appendStreamSegment,
   streamSegmentFromSystemMessage,
   streamSegmentFromUserMessage,
   segmentsToPlainText,
 } from "./transcript";
+
+/** Plain shells have no model; chats, role terminals, and Cursor CLI do. */
+function tabHasModel(tab: TabSummary): boolean {
+  return !(
+    tab.kind === "terminal" &&
+    tab.terminalLaunch !== "role" &&
+    tab.terminalLaunch !== "cursor-cli"
+  );
+}
 
 function fieldVisible(
   role: Role,
@@ -200,6 +265,8 @@ type Props = {
   cliError: string | null;
   cliFound: boolean;
   showDevTools: boolean;
+  /** F8: re-run CLI detection (App keeps the result). */
+  onRedetectCli?: () => Promise<CliDetectResult>;
 };
 
 export function StartupForm({
@@ -208,6 +275,7 @@ export function StartupForm({
   cliError,
   cliFound,
   showDevTools,
+  onRedetectCli,
 }: Props) {
   const [roleId, setRoleId] = useState("role_implementer");
   const [role, setRole] = useState<Role | null>(null);
@@ -224,6 +292,56 @@ export function StartupForm({
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [cardsByTab, setCardsByTab] = useState<Record<string, Cards>>({});
   const [planRequest, setPlanRequest] = useState<PlanRequestEvent | null>(null);
+  // F2: finished/question/error left on a tab the user was not watching.
+  const [tabMarks, setTabMarks] = useState<Record<string, TabMark>>({});
+  const [terminalBusy, setTerminalBusy] = useState<string[]>([]);
+  const [renamingTabId, setRenamingTabId] = useState<string | null>(null);
+  const [worktreeDialogOpen, setWorktreeDialogOpen] = useState(false);
+  /** F4: the tab whose changes (diff) panel is open. */
+  const [changesTabId, setChangesTabId] = useState<string | null>(null);
+  /** Files changed in each tab's last turn (shown on the Changes button). */
+  const [changeCounts, setChangeCounts] = useState<Record<string, number>>({});
+  /** acceptKey()s per tab: files the user kept after review. */
+  const [acceptedChanges, setAcceptedChanges] = useState<Record<string, string[]>>({});
+  const [fileFocus, setFileFocus] = useState<{ path: string; nonce: number } | null>(null);
+  /** F8: first-run setup is showing. */
+  const [firstRunOpen, setFirstRunOpen] = useState(false);
+  /** F8: after setup, start this role once the form has it and the folder. */
+  const [pendingStart, setPendingStart] = useState<FirstRunFinish | null>(null);
+  /** F7: workspaces dialog; focusSave starts on the name field. */
+  const [workspacesOpen, setWorkspacesOpen] = useState<{ focusSave: boolean } | null>(null);
+  const [workspaceList, setWorkspaceList] = useState<WorkspaceList | null>(null);
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  /** F6: prompt library dialog; saveDraft opens it on "Save as prompt". */
+  const [promptLibraryOpen, setPromptLibraryOpen] = useState<{ saveDraft: string | null } | null>(
+    null,
+  );
+  const [promptLibrary, setPromptLibrary] = useState<PromptLibrary | null>(null);
+  const [promptLibraryError, setPromptLibraryError] = useState<string | null>(null);
+  /** Last cursor/selection in a tab's pad, so a library insert lands there. */
+  const padSelectionRef = useRef<(PadSelection & { tabId: string }) | null>(null);
+  /** F5: Search all chats is open with this starting query. */
+  const [chatSearchQuery, setChatSearchQuery] = useState<string | null>(null);
+  /** F5: open the find bar in this chat tab (Mod+F, or a search jump). */
+  const [findRequest, setFindRequest] = useState<{ tabId: string; req: ChatFindRequest } | null>(
+    null,
+  );
+  /** F5: a jump into a tab's saved (read-only) transcript. */
+  const [transcriptFocus, setTranscriptFocus] = useState<{
+    tabId: string;
+    query: string;
+    occurrence: number;
+    text: string;
+    nonce: number;
+  } | null>(null);
+  const refreshChangeCount = useCallback((tabId: string) => {
+    changesList(tabId, "turn")
+      .then((set) => {
+        const count = set.state === "ok" ? set.files.length : 0;
+        setChangeCounts((prev) => (prev[tabId] === count ? prev : { ...prev, [tabId]: count }));
+      })
+      .catch(() => {});
+  }, []);
   const [split, setSplit] = useState<SplitState>(emptySplit());
   const [splitPicker, setSplitPicker] = useState<"horizontal" | "vertical" | null>(null);
   const [focusedPane, setFocusedPane] = useState<"primary" | "secondary">("primary");
@@ -239,12 +357,14 @@ export function StartupForm({
   const [modelNotice, setModelNotice] = useState<string | null>(null);
   const [modelsRefreshing, setModelsRefreshing] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  /** Text the palette opens with, and a key so reopening resets it. */
+  const [palettePrefill, setPalettePrefill] = useState({ query: "", key: 0 });
+  const [chatHistoryOpen, setChatHistoryOpen] = useState(false);
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [captureOn, setCaptureOn] = useState(false);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsStatus | null>(null);
   const [approvalMode, setApprovalMode] = useState<ApprovalModeStatus | null>(null);
-  const [unrestrictedDismissed, setUnrestrictedDismissed] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [handoffs, setHandoffs] = useState<HandoffRecord[]>([]);
   const [handoffTarget, setHandoffTarget] = useState<HandoffTargetId | null>(null);
@@ -256,6 +376,8 @@ export function StartupForm({
   const [pickedRoleId, setPickedRoleId] = useState<string | null>(null);
   const [launchChoice, setLaunchChoice] = useState<"shell" | "cursor-cli" | null>(null);
   const [terminalSettings, setTerminalSettingsState] = useState<TerminalSettings | null>(null);
+  const [notificationSettings, setNotificationSettingsState] =
+    useState<NotificationSettings | null>(null);
   const [terminalError, setTerminalError] = useState<string | null>(null);
   const [terminalCapture, setTerminalCapture] = useState<{
     selection: string;
@@ -314,7 +436,6 @@ export function StartupForm({
   const followUp = activeRuntime.followUp;
   const streamSegments = activeRuntime.segments;
   const permissionRequest = activeRuntime.permission;
-  const needsAttention = useMemo(() => attentionTabIds(runtimes), [runtimes]);
   const scratch = useScratchPads(activeTabId);
   const padRef = useRef<HTMLTextAreaElement>(null);
   const terminalPadRef = useRef<TerminalPadHandle>(null);
@@ -328,7 +449,14 @@ export function StartupForm({
     settingsOpen ||
     splitPicker !== null ||
     handoffTarget !== null ||
-    savedPlan !== null;
+    savedPlan !== null ||
+    worktreeDialogOpen ||
+    changesTabId !== null ||
+    chatSearchQuery !== null ||
+    promptLibraryOpen !== null ||
+    workspacesOpen !== null ||
+    chatHistoryOpen ||
+    firstRunOpen;
   const platform = useMemo(
     () => detectPlatform(typeof navigator === "undefined" ? "" : navigator.platform),
     [],
@@ -343,6 +471,29 @@ export function StartupForm({
     },
     [],
   );
+
+  // F1: toasts and OS notifications for agent events on tabs you are not watching.
+  const windowFocused = useWindowFocused();
+  const agentNotifications = useAgentNotifications({
+    settings: notificationSettings,
+    visibleTabIds: () => {
+      const current = splitRef.current;
+      return [activeTabIdRef.current, splitOpen(current) ? current.secondaryTabId : null];
+    },
+    tabLabel: (tabId) => savedTabsRef.current.find((tab) => tab.id === tabId)?.label ?? "",
+  });
+  const notifyAgent = agentNotifications.notify;
+  /** On screen in a focused window: nothing is left unseen. */
+  const isWatchingTab = useCallback((tabId: string) => {
+    if (!isWindowFocused()) return false;
+    const current = splitRef.current;
+    return (
+      tabId === activeTabIdRef.current ||
+      (splitOpen(current) && current.secondaryTabId === tabId)
+    );
+  }, []);
+  const dismissTabToasts = agentNotifications.dismissTab;
+  const showNotice = agentNotifications.notice;
 
   const persistTranscripts = useCallback(async (snapshot: Record<string, TabRuntime>) => {
     const jobs = Object.entries(snapshot)
@@ -502,6 +653,7 @@ export function StartupForm({
         if (!evt.tabId) return;
         setChain((current) => (current ? chainMarkBlocked(current) : current));
         patchRuntime(evt.tabId, (rt) => applyPermission(rt, evt));
+        notifyAgent(evt.tabId, { kind: "permission", detail: evt.title || evt.message });
       }),
       listenPermissionAuto((evt) => {
         if (!evt.tabId) return;
@@ -516,11 +668,17 @@ export function StartupForm({
           error: evt.error,
         });
         patchRuntime(evt.tabId, (rt) => applyPromptFinished(rt, evt));
+        const event = classifyPromptFinished(evt);
+        if (event) notifyAgent(evt.tabId, event);
+        const watching = isWatchingTab(evt.tabId);
+        setTabMarks((marks) => markAfterTurn(marks, evt.tabId!, event?.kind ?? null, watching));
+        refreshChangeCount(evt.tabId);
       }),
       listenPlanRequests((evt) => {
         if (!evt.tabId) return;
         setPlanRequest(evt);
         setChain((current) => (current ? chainMarkBlocked(current) : current));
+        notifyAgent(evt.tabId, { kind: "plan", detail: evt.title });
       }),
     ]).then((fns) => {
       if (cancelled) {
@@ -538,7 +696,7 @@ export function StartupForm({
         flushRafRef.current = null;
       }
     };
-  }, [patchRuntime]);
+  }, [isWatchingTab, notifyAgent, patchRuntime, refreshChangeCount]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -565,6 +723,88 @@ export function StartupForm({
   useEffect(() => {
     getTerminalSettings()
       .then(setTerminalSettingsState)
+      .catch(() => {});
+    getNotificationSettings()
+      .then(setNotificationSettingsState)
+      .catch(() => {});
+  }, []);
+
+  // A tab's toasts are stale once it is on screen in a focused window.
+  useEffect(() => {
+    if (!windowFocused) return;
+    const secondary = splitOpen(split) ? split.secondaryTabId : null;
+    if (activeTabId) dismissTabToasts(activeTabId);
+    if (secondary) dismissTabToasts(secondary);
+    setTabMarks((marks) => clearMarks(marks, [activeTabId, secondary]));
+  }, [activeTabId, dismissTabToasts, split, windowFocused]);
+
+  // Terminal tabs: busy while output streams; a finished dot when a busy
+  // tab goes quiet off screen. Polls only while terminal tabs exist.
+  const hasTerminalTabs = savedTabs.some((tab) => tab.kind === "terminal");
+  useEffect(() => {
+    if (!hasTerminalTabs) {
+      setTerminalBusy((prev) => (prev.length === 0 ? prev : []));
+      return;
+    }
+    const timer = window.setInterval(() => {
+      const { busy, settled } = terminalActivity.sweep();
+      setTerminalBusy((prev) =>
+        prev.length === busy.length && prev.every((id, i) => id === busy[i]) ? prev : busy,
+      );
+      if (settled.length > 0) {
+        setTabMarks((marks) =>
+          settled.reduce(
+            (acc, id) => markAfterTurn(acc, id, "finished", isWatchingTab(id)),
+            marks,
+          ),
+        );
+      }
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [hasTerminalTabs, isWatchingTab]);
+
+  const tabStatuses = useMemo(() => {
+    const out: Record<string, TabStatus> = {};
+    for (const tab of savedTabs) {
+      out[tab.id] = computeTabStatus({
+        runtime: runtimes[tab.id],
+        mark: tabMarks[tab.id],
+        planPending: planRequest?.tabId === tab.id,
+        terminalBusy: terminalBusy.includes(tab.id),
+      });
+    }
+    return out;
+  }, [planRequest, runtimes, savedTabs, tabMarks, terminalBusy]);
+
+  const uiSettings = useUiSettings();
+  // U2: one pad size for chat and terminal tabs; saved when a drag ends.
+  const [padHeight, setPadHeight] = useState<number | null>(null);
+  const savedPadHeight = uiSettings.ui.padHeight;
+  useEffect(() => {
+    setPadHeight(savedPadHeight > 0 ? savedPadHeight : null);
+  }, [savedPadHeight]);
+  const padOpen = !uiSettings.ui.padHidden;
+  const padHiddenNow = uiSettings.ui.padHidden;
+  const updateUi = uiSettings.update;
+  const padSizeProps = {
+    height: padHeight,
+    onHeightChange: setPadHeight,
+    onHeightCommit: (height: number) => uiSettings.update({ padHeight: height }),
+  };
+
+  const notificationSettingsRef = useRef(notificationSettings);
+  notificationSettingsRef.current = notificationSettings;
+  const updateNotificationSettings = useCallback((next: NotificationSettings) => {
+    const prev = notificationSettingsRef.current;
+    // Turning system notifications on is a click, so ask the OS now.
+    if (next.enabled && next.system && !(prev?.enabled && prev?.system)) {
+      void showSystemNotification("DCTerminal notifications", "System notifications are on.", {
+        askAgain: true,
+      });
+    }
+    setNotificationSettingsState(next);
+    void setNotificationSettings(next)
+      .then(setNotificationSettingsState)
       .catch(() => {});
   }, []);
 
@@ -699,6 +939,10 @@ export function StartupForm({
     () => savedTabs.find((t) => t.id === activeTabId) ?? null,
     [savedTabs, activeTabId],
   );
+  const focusedTranscript =
+    transcriptFocus && transcriptFocus.tabId === activeTabId
+      ? savedTranscript || transcriptFocus.text
+      : "";
 
   useEffect(() => {
     if (!activeTabId || !activeTabSummary || session) return;
@@ -1270,6 +1514,64 @@ export function StartupForm({
     [roleId, loadTabIntoForm, runtimes, values.cwd, scratch, stashActiveTab],
   );
 
+  /** F3: the user clicked Create in "New tab in worktree…". */
+  const createWorktreeTab = useCallback(
+    async (input: WorktreeCreateInput) => {
+      stashActiveTab();
+      const { tab } = await worktreeTabNew(input);
+      setWorktreeDialogOpen(false);
+      await refreshTabs();
+      loadTabIntoForm(tab);
+      showNotice(
+        "Worktree created",
+        `${tab.worktree?.branch ?? input.branch} · ${tab.cwd}`,
+      );
+    },
+    [loadTabIntoForm, refreshTabs, showNotice, stashActiveTab],
+  );
+
+  /**
+   * F3 removal: refuse a dirty tree, confirm, close the tab (stops its agent
+   * or shell), then `git worktree remove` without --force.
+   */
+  const removeWorktreeFor = useCallback(
+    async (tabId: string | null) => {
+      if (!tabId) return;
+      const summary = savedTabsRef.current.find((tab) => tab.id === tabId);
+      if (!summary?.worktreePath) return;
+      try {
+        const check = await worktreeTabCheck(tabId);
+        const branch = check.branch ?? check.worktree.branch;
+        if (check.dirty.length > 0) {
+          showNotice(
+            "Worktree not removed",
+            `${branch} has ${check.dirty.length} uncommitted or untracked change${
+              check.dirty.length === 1 ? "" : "s"
+            }. Commit, stash, or discard them first.`,
+            "failed",
+          );
+          return;
+        }
+        const ok = window.confirm(
+          `Remove the worktree for ${branch}?\n\n${check.worktree.path}\n\n` +
+            "This closes the tab, stops its agent or shell, and deletes that folder. " +
+            "The branch and its commits are kept.",
+        );
+        if (!ok) return;
+        await handleCloseTab(tabId);
+        await worktreeTabRemove(tabId, true);
+        showNotice("Worktree removed", `${branch} · ${check.worktree.path}`);
+      } catch (err: unknown) {
+        showNotice(
+          "Worktree not removed",
+          err instanceof Error ? err.message : String(err),
+          "failed",
+        );
+      }
+    },
+    [handleCloseTab, showNotice],
+  );
+
   const handleNewTab = useCallback(async () => {
     setBusy(true);
     try {
@@ -1360,6 +1662,7 @@ export function StartupForm({
       const pending = waiterRef.current.expect(tabId);
       setHistoryCursor(-1);
       scratch.remember(tabId, trimmed);
+      void promptRecordSend(trimmed, "chat").catch(() => {});
       patchRuntime(tabId, (rt) => ({
         ...rt,
         promptError: null,
@@ -1461,6 +1764,50 @@ export function StartupForm({
     }
   }, [activeTabId, followUp, runChain, scratch.content, sendFollowUp, sendText]);
 
+  // F8: show first-run setup on a fresh profile only.
+  useEffect(() => {
+    let cancelled = false;
+    firstRunStatus()
+      .then((status) => {
+        if (!cancelled && status?.needed) setFirstRunOpen(true);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // F8: once the form shows the chosen role and folder, press Start for the
+  // user. A role with required fields waits for them instead.
+  useEffect(() => {
+    if (!pendingStart || busy || !role) return;
+    if (role.id !== pendingStart.roleId || roleId !== pendingStart.roleId) return;
+    if (folderForTab(values.cwd) !== pendingStart.folder) return;
+    setPendingStart(null);
+    const missing = visibleFields(role, formValues).filter(
+      (field) => field.required && field.key !== "cwd" && !(formValues[field.key] ?? "").trim(),
+    );
+    if (missing.length > 0) {
+      showNotice(
+        "Almost ready",
+        `Fill in ${missing.map((field) => field.label).join(", ")}, then press Start.`,
+        "question",
+      );
+      window.setTimeout(() => {
+        const el = document.querySelector<HTMLElement>(`[data-field-key="${missing[0].key}"]`);
+        el?.focus();
+      }, 0);
+      return;
+    }
+    if (pendingStart.surface === "terminal") void startRoleTerminal();
+    else void startSession(false);
+  }, [busy, formValues, pendingStart, role, roleId, showNotice, startRoleTerminal, startSession, values.cwd]);
+
+  const roleNames = useMemo(
+    () => Object.fromEntries(roles.map((item) => [item.id, item.name])),
+    [roles],
+  );
+
   const roleColors = useMemo(() => {
     const map: Record<string, string> = {};
     for (const item of roles) map[item.id] = item.color;
@@ -1560,11 +1907,32 @@ export function StartupForm({
     [modelSettings, patchRuntime, refreshTabs],
   );
 
+  const changesButton = (tabId: string) => {
+    const count = changeCounts[tabId] ?? 0;
+    return (
+      <button
+        type="button"
+        className="secondary-button changes-button"
+        onClick={() => setChangesTabId(tabId)}
+        title="Files changed since the last turn started: review, accept, or revert"
+      >
+        {count > 0 ? `Changes (${count})` : "Changes"}
+      </button>
+    );
+  };
+
+  const refreshModelList = useCallback(() => {
+    setModelsRefreshing(true);
+    return listModels(true)
+      .then((list) => {
+        setModelList(list);
+        return list;
+      })
+      .finally(() => setModelsRefreshing(false));
+  }, []);
+
   const modelPickerFor = (tab: TabSummary | null | undefined, liveModel?: string | null) => {
-    if (!tab) return null;
-    if (tab.kind === "terminal" && tab.terminalLaunch !== "role" && tab.terminalLaunch !== "cursor-cli") {
-      return null;
-    }
+    if (!tab || !tabHasModel(tab)) return null;
     const inherited = inheritedModel(tab);
     const models = modelList?.models ?? [];
     return (
@@ -1612,9 +1980,36 @@ export function StartupForm({
     setFocusedPane("primary");
   }, [handleSelectTab]);
 
+  /** Mod+F: the terminal's search, the chat's find bar, or Search all chats. */
+  const handleFind = useCallback(() => {
+    const secondaryId = splitOpen(split) ? split.secondaryTabId : null;
+    const tabId =
+      focusedPaneRef.current === "secondary" && secondaryId ? secondaryId : activeTabIdRef.current;
+    const summary = savedTabs.find((tab) => tab.id === tabId);
+    if (!tabId || !summary) {
+      setChatSearchQuery("");
+      return;
+    }
+    if (summary.kind === "terminal") {
+      requestTerminalSearch(tabId);
+      return;
+    }
+    if (runtimes[tabId]?.session) {
+      setFindRequest({ tabId, req: { query: "", nonce: Date.now() } });
+      return;
+    }
+    setChatSearchQuery("");
+  }, [runtimes, savedTabs, split]);
+
   const onShortcut = useCallback(
     (match: ShortcutMatch) => {
       if (match.action === "closeDialog") {
+        setChangesTabId(null);
+        setChatSearchQuery(null);
+        setPromptLibraryOpen(null);
+        setWorkspacesOpen(null);
+        setChatHistoryOpen(false);
+        setWorktreeDialogOpen(false);
         setPaletteOpen(false);
         setSwitcherOpen(false);
         setShortcutsOpen(false);
@@ -1630,6 +2025,7 @@ export function StartupForm({
         return;
       }
       if (match.action === "commandPalette") {
+        setPalettePrefill((current) => ({ query: "", key: current.key + 1 }));
         setPaletteOpen(true);
         return;
       }
@@ -1677,6 +2073,11 @@ export function StartupForm({
           terminalPadRef.current?.focus();
           return;
         }
+        if (padHiddenNow) {
+          updateUi({ padHidden: false });
+          window.setTimeout(() => padRef.current?.focus(), 0);
+          return;
+        }
         padRef.current?.focus();
         return;
       }
@@ -1718,7 +2119,10 @@ export function StartupForm({
         return;
       }
       if (match.action === "splitRight" || match.action === "splitDown") {
-        if (splitCandidates(savedTabs, activeTabId).length === 0) return;
+        if (splitCandidates(savedTabs, activeTabId).length === 0) {
+          showNotice("Nothing to split with", "Open another tab first, then split.", "question");
+          return;
+        }
         setSplitPicker(match.action === "splitRight" ? "horizontal" : "vertical");
         return;
       }
@@ -1740,16 +2144,21 @@ export function StartupForm({
         setFilePanelOpen((open) => !open);
         return;
       }
+      if (match.action === "find") {
+        handleFind();
+        return;
+      }
+      if (match.action === "searchChats") {
+        setChatSearchQuery("");
+        return;
+      }
       if (match.action === "renameTab" && activeTabId) {
-        const current = savedTabs.find((tab) => tab.id === activeTabId)?.label ?? "";
-        const next = window.prompt("Tab name", current);
-        if (next && next.trim()) {
-          void setTabLabel(activeTabId, next.trim()).then(() => refreshTabs());
-        }
+        setRenamingTabId(activeTabId);
       }
     },
     [
       activeTabId,
+      handleFind,
       cycleTab,
       handleCloseTab,
       handleNewTab,
@@ -1764,6 +2173,8 @@ export function StartupForm({
       swapPanes,
       focusPane,
       transferPad,
+      padHiddenNow,
+      updateUi,
     ],
   );
 
@@ -1802,6 +2213,7 @@ export function StartupForm({
     if (!payload.trim()) return;
     for (let attempt = 0; attempt < 20; attempt += 1) {
       try {
+        terminalActivity.input(target);
         await ptyWrite(target, payload);
         setTerminalError(null);
         return;
@@ -1887,10 +2299,7 @@ export function StartupForm({
 
   const refreshApprovalMode = useCallback(() => {
     cursorApprovalMode()
-      .then((status) => {
-        setApprovalMode(status);
-        if (!status.roleRulesOff) setUnrestrictedDismissed(false);
-      })
+      .then(setApprovalMode)
       .catch(() => {});
   }, []);
 
@@ -2143,40 +2552,160 @@ export function StartupForm({
       .finally(() => setSavedPlanLoading(false));
   }, [handleSelectTab, savedTabs]);
 
+  const openPaletteWith = (query: string) => {
+    setPalettePrefill((current) => ({ query, key: current.key + 1 }));
+    setPaletteOpen(true);
+  };
+
+  const paletteModel: PaletteModelOptions | null =
+    activeTabSummary && tabHasModel(activeTabSummary) && (modelList?.models.length ?? 0) > 0
+      ? {
+          current: activeTabSummary.model ?? null,
+          inherited: inheritedModel(activeTabSummary),
+          models: (modelList?.models ?? []).map(({ id, label }) => ({ id, label })),
+        }
+      : null;
+
+  const runPaletteModel = (model: string | null) => {
+    const tab = activeTabSummary;
+    if (!tab || !tabHasModel(tab)) {
+      showNotice("No model here", "This tab is a plain shell. Pick a chat or Cursor CLI tab.", "question");
+      return;
+    }
+    if (busy || runtimes[tab.id]?.promptInFlight) {
+      showNotice("Model not changed", "Wait for the current turn to finish, then try again.", "question");
+      return;
+    }
+    void changeTabModel(tab, model);
+  };
+
+  /** Run one palette command. Every PaletteAction must have a case here. */
+  const runPaletteAction = (id: PaletteAction) => {
+    switch (id) {
+      case "sendPlanImplementer":
+        openHandoffDialog("role_implementer");
+        return;
+      case "sendPlanDeveloper":
+        openHandoffDialog("role_developer");
+        return;
+      case "handoffHelp":
+        showNotice(
+          "Nothing to hand off",
+          "Hand-off sends a plan to an Implementer or Developer. Open a Planner chat or Planner terminal that has a plan, then try again.",
+          "question",
+        );
+        return;
+      case "changeModel":
+        if (!paletteModel) {
+          runPaletteModel(null);
+          return;
+        }
+        openPaletteWith("use model ");
+        return;
+      case "refreshModels":
+        void refreshModelList()
+          .then((list) =>
+            showNotice("Model list refreshed", `${list.models.length} models available.`),
+          )
+          .catch((err: unknown) =>
+            showNotice(
+              "Could not refresh models",
+              err instanceof Error ? err.message : String(err),
+              "question",
+            ),
+          );
+        return;
+      case "chatHistory":
+        setChatHistoryOpen(true);
+        return;
+      case "toggleTerminal":
+        togglePane();
+        return;
+      case "transferToTerminal":
+        void transferToTerminalNow();
+        return;
+      case "settings":
+        setSettingsOpen(true);
+        return;
+      case "toggleCapture":
+        void diagnosticsSetCapture(!captureOn).then((status) => {
+          setDiagnostics(status);
+          setCaptureOn(status.capturePermissionPayloads);
+        });
+        return;
+      case "firstRunSetup":
+        setFirstRunOpen(true);
+        return;
+      case "toggleShortcutBar":
+        uiSettings.update({ shortcutBar: !uiSettings.ui.shortcutBar });
+        return;
+      case "switchTheme": {
+        const current = normalizeTheme(uiSettings.ui.theme);
+        const index = THEMES.findIndex((theme) => theme.id === current);
+        uiSettings.update({ theme: THEMES[(index + 1) % THEMES.length].id });
+        return;
+      }
+      case "workspaces":
+      case "saveWorkspace":
+        openWorkspaces(id === "saveWorkspace");
+        return;
+      case "promptLibrary":
+        openPromptLibrary(false);
+        return;
+      case "savePrompt":
+        openPromptLibrary(true);
+        return;
+      case "showChanges":
+        if (activeTabId) setChangesTabId(activeTabId);
+        return;
+      case "newWorktreeTab":
+        setWorktreeDialogOpen(true);
+        return;
+      case "removeWorktree":
+        void removeWorktreeFor(activeTabId);
+        return;
+      case "newTab":
+      case "closeTab":
+      case "reopenClosedTab":
+      case "nextTab":
+      case "prevTab":
+      case "renameTab":
+      case "tabSwitcher":
+      case "splitRight":
+      case "splitDown":
+      case "closeSplit":
+      case "swapPanes":
+      case "focusOtherPane":
+      case "toggleFilePanel":
+      case "find":
+      case "searchChats":
+      case "focusPad":
+      case "focusInput":
+      case "transferPad":
+      case "send":
+      case "shortcutsHelp":
+        onShortcut({ action: id });
+        return;
+      default: {
+        const unhandled: never = id;
+        throw new Error(`Unhandled palette action: ${String(unhandled)}`);
+      }
+    }
+  };
+
   const runPalette = (id: string) => {
     setPaletteOpen(false);
-    if (id === "sendPlanImplementer") {
-      openHandoffDialog("role_implementer");
+    const route = parsePaletteId(id);
+    if (!route) return;
+    if (route.kind === "goto") {
+      void handleSelectTab(route.tabId);
       return;
     }
-    if (id === "sendPlanDeveloper") {
-      openHandoffDialog("role_developer");
+    if (route.kind === "model") {
+      runPaletteModel(route.model);
       return;
     }
-    if (id === "toggleTerminal") {
-      togglePane();
-      return;
-    }
-    if (id === "transferToTerminal") {
-      void transferToTerminalNow();
-      return;
-    }
-    if (id === "settings") {
-      setSettingsOpen(true);
-      return;
-    }
-    if (id === "toggleCapture") {
-      void diagnosticsSetCapture(!captureOn).then((status) => {
-        setDiagnostics(status);
-        setCaptureOn(status.capturePermissionPayloads);
-      });
-      return;
-    }
-    if (id.startsWith("goto:")) {
-      void handleSelectTab(id.slice("goto:".length));
-      return;
-    }
-    onShortcut({ action: id as ShortcutMatch["action"] });
+    runPaletteAction(route.id);
   };
 
   const setFollowUpFor = (tabId: string | null, value: string) => {
@@ -2255,14 +2784,10 @@ export function StartupForm({
     }
   };
 
-  const showUnrestrictedBanner =
-    !!approvalMode?.roleRulesOff && !unrestrictedDismissed && !settingsOpen;
-  const unrestrictedBanner = (
-    <UnrestrictedBanner
-      visible={showUnrestrictedBanner}
-      onDismiss={() => setUnrestrictedDismissed(true)}
-    />
-  );
+  const modelForTab = (tab: TabSummary): string | null => {
+    if (!tabHasModel(tab)) return null;
+    return runtimes[tab.id]?.session?.model ?? tab.model ?? inheritedModel(tab);
+  };
 
   const tabBar = (
     <TabBar
@@ -2271,13 +2796,24 @@ export function StartupForm({
       roleColors={roleColors}
       disableSwitch={busy && !session}
       disableNew={busy}
-      attentionTabIds={needsAttention}
+      statuses={tabStatuses}
+      renamingTabId={renamingTabId}
+      onRenameStart={setRenamingTabId}
+      onRename={(tabId, label) => {
+        void setTabLabel(tabId, label)
+          .then(() => refreshTabs())
+          .catch(() => {});
+      }}
+      onRenameEnd={() => setRenamingTabId(null)}
       canReopen={closedTabs.length > 0}
       settingsOpen={settingsOpen}
       roleRulesOff={!!approvalMode?.roleRulesOff}
+      roleNames={roleNames}
+      modelFor={modelForTab}
       onSelect={handleSelectTab}
       onClose={handleCloseTab}
       onNew={handleNewTab}
+      onNewWorktree={() => setWorktreeDialogOpen(true)}
       onReopen={() => void reopenTab()}
       onSettings={() => setSettingsOpen((open) => toggleSettings(open))}
       onColor={(tabId, color) => {
@@ -2303,6 +2839,11 @@ export function StartupForm({
       }}
       terminalSettings={terminalSettings}
       onTerminalSettings={updateTerminalSettings}
+      notificationSettings={notificationSettings}
+      onNotificationSettings={updateNotificationSettings}
+      uiSettings={uiSettings.ui}
+      onUiSettings={uiSettings.update}
+      onTestNotification={agentNotifications.sendTest}
       modelList={modelList}
       modelSettings={modelSettings}
       onModelSettings={(next) => {
@@ -2313,25 +2854,340 @@ export function StartupForm({
       }}
       modelsRefreshing={modelsRefreshing}
       onRefreshModels={() => {
-        setModelsRefreshing(true);
-        void listModels(true)
-          .then(setModelList)
-          .catch(() => {})
-          .finally(() => setModelsRefreshing(false));
+        void refreshModelList().catch(() => {});
       }}
       approvalMode={approvalMode}
       onClose={() => setSettingsOpen(false)}
     />
   );
 
+  const changesTab = changesTabId ? savedTabs.find((tab) => tab.id === changesTabId) : undefined;
+
+  /** F8: setup finished: put the role and folder on the active draft tab, then Start. */
+  const finishFirstRun = (choice: FirstRunFinish) => {
+    setFirstRunOpen(false);
+    void firstRunComplete().catch(() => {});
+    chooseRole(choice.roleId);
+    setField("cwd", choice.folder);
+    setPendingStart(choice);
+    rememberSurface(choice.roleId, choice.surface);
+  };
+
+  const skipFirstRun = () => {
+    setFirstRunOpen(false);
+    void firstRunComplete().catch(() => {});
+  };
+
+  /** F7: open the workspaces dialog (and push the active form to state.json). */
+  function openWorkspaces(focusSave: boolean) {
+    stashActiveTab();
+    setWorkspacesOpen({ focusSave });
+    setWorkspaceError(null);
+    void workspacesList()
+      .then(setWorkspaceList)
+      .catch((err: unknown) =>
+        setWorkspaceError(err instanceof Error ? err.message : String(err)),
+      );
+  }
+
+  const saveWorkspaceAs = async (name: string, replace: boolean) => {
+    stashActiveTab();
+    setWorkspaceList(await workspaceSave(name, replace));
+  };
+
+  /** F7: open a saved workspace as new tabs; `replace` closes the open ones. */
+  const openWorkspace = async (id: string, replace: boolean) => {
+    const old = savedTabs;
+    if (replace) {
+      const live = old.filter(
+        (t) => t.phase === "running" || (t.kind === "terminal" && livePty(t.id)),
+      );
+      if (
+        live.length > 0 &&
+        !window.confirm(
+          `Replace the open tabs? ${live.length} running agent or terminal${
+            live.length === 1 ? "" : "s"
+          } will be stopped. Closed tabs stay in Reopen closed tab.`,
+        )
+      ) {
+        return;
+      }
+      for (const t of old) {
+        const rt = runtimes[t.id];
+        if (rt && rt.segments.length > 0) {
+          await transcriptSave(t.id, segmentsToPlainText(rt.segments), rt.session?.cwd ?? t.cwd).catch(
+            () => {},
+          );
+        }
+      }
+    }
+    scratch.flush();
+    stashActiveTab();
+    const result = await workspaceOpen(id, replace);
+    if (replace) {
+      for (const t of old) {
+        delete draftsRef.current[t.id];
+        delete knownFoldersRef.current[t.id];
+        delete scrollPositions.current[t.id];
+        dropLivePty(t.id);
+        destroyTerminal(t.id);
+      }
+      setRuntimes((prev) => {
+        const next = { ...prev };
+        for (const t of old) delete next[t.id];
+        return next;
+      });
+      setSplit((current) => closeSplit(current));
+    }
+    setSavedTabs(result.state.tabs);
+    setClosedTabs(result.state.closedTabs ?? []);
+    setWorkspacesOpen(null);
+    const activeId = result.state.activeTabId;
+    const summary = result.state.tabs.find((t) => t.id === activeId);
+    if (activeId && summary?.kind === "terminal") {
+      setActiveTabId(activeId);
+    } else if (activeId) {
+      const { tab } = await selectActiveTab(activeId);
+      if (tab.kind === "terminal") setActiveTabId(tab.id);
+      else loadTabIntoForm(tab);
+    }
+    if (result.skipped.length > 0) {
+      showNotice(
+        "Some workspace tabs were not opened",
+        `Their role no longer exists: ${result.skipped.join(", ")}`,
+        "failed",
+      );
+    }
+  };
+
+  /** The active tab's pad editor (chat pad or terminal pad), if mounted. */
+  const activePadField = (): HTMLTextAreaElement | null => {
+    const summary = savedTabs.find((tab) => tab.id === activeTabIdRef.current);
+    if (summary?.kind === "terminal") return terminalPadRef.current?.field() ?? null;
+    return padRef.current;
+  };
+
+  function notePadSelection() {
+    const field = activePadField();
+    const tabId = activeTabIdRef.current;
+    if (!field || !tabId) return;
+    padSelectionRef.current = { tabId, start: field.selectionStart, end: field.selectionEnd };
+  }
+
+  const reloadPromptLibrary = () =>
+    promptLibraryGet()
+      .then((lib) => {
+        setPromptLibrary(lib);
+        setPromptLibraryError(null);
+      })
+      .catch((err: unknown) =>
+        setPromptLibraryError(err instanceof Error ? err.message : String(err)),
+      );
+
+  /** F6: open the library; `save` starts "Save as prompt" with the pad (or its selection). */
+  function openPromptLibrary(save: boolean) {
+    const field = activePadField();
+    if (field && document.activeElement === field) notePadSelection();
+    let saveDraft: string | null = null;
+    if (save) {
+      const sel = padSelectionRef.current;
+      const content = scratch.content;
+      const picked =
+        sel && sel.tabId === activeTabIdRef.current && sel.end > sel.start
+          ? content.slice(sel.start, sel.end)
+          : "";
+      saveDraft = picked.trim() ? picked : content;
+    }
+    setPromptLibraryOpen({ saveDraft });
+    void reloadPromptLibrary();
+  }
+
+  const insertLibraryPrompt = (text: string, promptId: string | null) => {
+    const tabId = activeTabIdRef.current;
+    if (!tabId) return;
+    const sel = padSelectionRef.current?.tabId === tabId ? padSelectionRef.current : null;
+    const next = insertIntoPad(scratch.content, text, sel);
+    scratch.setContent(tabId, next.content);
+    padSelectionRef.current = { tabId, start: next.caret, end: next.caret };
+    setPromptLibraryOpen(null);
+    if (promptId) {
+      void promptMarkUsed(promptId)
+        .then(setPromptLibrary)
+        .catch(() => {});
+    }
+    const terminal = savedTabs.find((tab) => tab.id === tabId)?.kind === "terminal";
+    if (terminal) {
+      blurParkedTerminal(tabId);
+      terminalPadRef.current?.focus();
+    }
+    window.setTimeout(() => {
+      const field = activePadField();
+      if (!field) return;
+      field.focus();
+      field.setSelectionRange(next.caret, next.caret);
+    }, 0);
+  };
+
+  /** F5: open the hit's tab (reopening a closed one) and land on the match. */
+  const jumpToHit = async (hit: ChatSearchHit, query: string) => {
+    setChatSearchQuery(null);
+    const nonce = Date.now();
+    try {
+      if (hit.source === "live") {
+        await handleSelectTab(hit.tabId);
+        setFindRequest({
+          tabId: hit.tabId,
+          req: { query, segmentId: hit.segmentId, occurrence: hit.occurrence, nonce },
+        });
+        return;
+      }
+      const file = await transcriptLoad(hit.tabId).catch(() => null);
+      if (hit.source === "closed") {
+        stashActiveTab();
+        const { tab } = await reopenClosedTab(hit.tabId);
+        await refreshTabs();
+        loadTabIntoForm(tab);
+      } else {
+        await handleSelectTab(hit.tabId);
+      }
+      setTranscriptFocus({
+        tabId: hit.tabId,
+        query,
+        occurrence: hit.occurrence,
+        text: file?.text ?? "",
+        nonce,
+      });
+    } catch (err: unknown) {
+      showNotice("Could not open that chat", err instanceof Error ? err.message : String(err), "failed");
+    }
+  };
+
+  const liveChatSources = savedTabs
+    .filter((tab) => (runtimes[tab.id]?.segments.length ?? 0) > 0)
+    .map((tab) => ({ tabId: tab.id, label: tab.label, segments: runtimes[tab.id]!.segments }));
   const overlays = (
     <>
+      {firstRunOpen && (
+        <FirstRunSetup
+          cli={cli}
+          detect={onRedetectCli ?? detectCli}
+          loginStatus={cliLoginStatus}
+          roles={roles}
+          initialFolder={folderForTab(values.cwd)}
+          onFinish={finishFirstRun}
+          onSkip={skipFirstRun}
+        />
+      )}
+      {chatHistoryOpen && (
+        <ChatHistoryDialog
+          folder={folderForTab(activeTabSummary?.cwd || values.cwd)}
+          load={listCursorCliHistory}
+          busy={busy}
+          onResume={(entry) => {
+            setChatHistoryOpen(false);
+            void resumeHistoryEntry(entry);
+          }}
+          onOpenCli={(entry) => {
+            setChatHistoryOpen(false);
+            void openCursorCli(entry.id, entry.cwd);
+          }}
+          onClose={() => setChatHistoryOpen(false)}
+        />
+      )}
+      {workspacesOpen && (
+        <WorkspacesDialog
+          list={workspaceList}
+          loadError={workspaceError}
+          openTabCount={savedTabs.length}
+          focusSave={workspacesOpen.focusSave}
+          onSave={saveWorkspaceAs}
+          onOpen={openWorkspace}
+          onDelete={async (id) => setWorkspaceList(await workspaceDelete(id))}
+          onClose={() => setWorkspacesOpen(null)}
+        />
+      )}
+      {promptLibraryOpen && (
+        <PromptLibraryDialog
+          library={promptLibrary}
+          loadError={promptLibraryError}
+          canInsert={!!activeTabId}
+          saveDraft={promptLibraryOpen.saveDraft}
+          onInsert={insertLibraryPrompt}
+          onSave={async (id, name, body) => setPromptLibrary(await promptSave(id, name, body))}
+          onDelete={async (id) => setPromptLibrary(await promptDelete(id))}
+          onClearRecent={async () => setPromptLibrary(await promptClearRecent())}
+          onClose={() => setPromptLibraryOpen(null)}
+        />
+      )}
+      {chatSearchQuery !== null && (
+        <ChatSearchDialog
+          initialQuery={chatSearchQuery}
+          liveSources={liveChatSources}
+          search={historySearch}
+          loadTranscript={async (tabId) => (await transcriptLoad(tabId)).text}
+          onJump={(hit, query) => void jumpToHit(hit, query)}
+          onClose={() => setChatSearchQuery(null)}
+        />
+      )}
+      {changesTab && (
+        <ChangesPanel
+          key={changesTab.id}
+          tabId={changesTab.id}
+          tabLabel={changesTab.label}
+          busy={!!tabStatuses[changesTab.id]?.busy}
+          accepted={new Set(acceptedChanges[changesTab.id] ?? [])}
+          onAccept={(key) =>
+            setAcceptedChanges((prev) => ({
+              ...prev,
+              [changesTab.id]: [...(prev[changesTab.id] ?? []), key],
+            }))
+          }
+          onOpenInFilePanel={(path) => {
+            setChangesTabId(null);
+            if (changesTab.id !== activeTabId) void handleSelectTab(changesTab.id);
+            setFilePanelOpen(true);
+            setFileFocus({ path, nonce: Date.now() });
+          }}
+          onClose={() => {
+            setChangesTabId(null);
+            refreshChangeCount(changesTab.id);
+          }}
+        />
+      )}
+      {worktreeDialogOpen && (
+        <WorktreeDialog
+          initialRepo={activeTabSummary?.cwd || values.cwd || ""}
+          roles={roles}
+          defaultRoleId={
+            roles.some((item) => item.id === roleId) ? roleId : (roles[0]?.id ?? "")
+          }
+          loadRepo={gitRepoInfo}
+          onCreate={createWorktreeTab}
+          onClose={() => setWorktreeDialogOpen(false)}
+        />
+      )}
+      <AgentToasts
+        toasts={agentNotifications.toasts}
+        paused={!windowFocused}
+        onDismiss={agentNotifications.dismiss}
+        onOpen={(toast) => {
+          agentNotifications.dismiss(toast.id);
+          if (savedTabsRef.current.some((tab) => tab.id === toast.tabId)) {
+            setSettingsOpen(false);
+            void handleSelectTab(toast.tabId);
+          }
+        }}
+      />
       {paletteOpen && (
         <CommandPalette
-          tabs={savedTabs.map((tab) => ({ id: tab.id, label: tab.label }))}
+          tabs={savedTabs.map((tab) => ({ id: tab.id, label: tab.label, cwd: tab.cwd }))}
           canReopen={closedTabs.length > 0}
           splitOpen={splitOpen(split)}
           canSendPlan={(roleId === "role_planner" && !!session) || !!isPlannerTerminal}
+          canRemoveWorktree={!!activeTabSummary?.worktreePath}
+          model={paletteModel}
+          initialQuery={palettePrefill.query}
+          key={palettePrefill.key}
           onRun={runPalette}
           onClose={() => setPaletteOpen(false)}
         />
@@ -2339,6 +3195,8 @@ export function StartupForm({
       {switcherOpen && (
         <TabSwitcher
           tabs={savedTabs}
+          activeTabId={activeTabId}
+          statuses={tabStatuses}
           onSelect={(tabId) => {
             setSwitcherOpen(false);
             void handleSelectTab(tabId);
@@ -2445,6 +3303,9 @@ export function StartupForm({
         <SessionTerminal
           key={tab.id}
           title={tab.label}
+          findRequest={findRequest?.tabId === tab.id ? findRequest.req : null}
+          onSearchAllChats={(query) => setChatSearchQuery(query)}
+          branch={tab.worktreeBranch ?? null}
           cwd={rt.session.cwd}
           sessionId={rt.session.sessionId}
           segments={rt.segments}
@@ -2464,7 +3325,12 @@ export function StartupForm({
           agentExited={rt.agentExited}
           onRestart={() => void stopSecondarySession(tab.id)}
           inputRef={secondaryInputRef}
-          headerExtra={modelPickerFor(tab, rt.session.model)}
+          headerExtra={
+            <>
+              {modelPickerFor(tab, rt.session.model)}
+              {changesButton(tab.id)}
+            </>
+          }
         />
       );
     } else {
@@ -2536,6 +3402,7 @@ export function StartupForm({
             tabId={activeTabId}
             cwd={activeCwd}
             platform={platform}
+            focusFile={fileFocus}
             onInsertReference={(path) => {
               scratch.setContent(activeTabId, appendReference(scratch.content, path));
             }}
@@ -2570,10 +3437,73 @@ export function StartupForm({
       </div>
     ) : null;
 
+  const activeStatus = ((): { tone: StatusTone; text: string } => {
+    const tab = activeTabSummary;
+    const marks = activeTabId ? tabStatuses[activeTabId] : undefined;
+    if (!tab) return { tone: "idle", text: "No tab" };
+    if (marks?.needsYou) return { tone: "needs", text: tabStatusLabel(marks) };
+    if (tab.kind === "terminal") {
+      const kind =
+        tab.terminalLaunch === "cursor-cli"
+          ? "Cursor CLI"
+          : tab.terminalLaunch === "role"
+            ? "Role terminal"
+            : "Terminal";
+      return marks?.busy ? { tone: "busy", text: `${kind} · working` } : { tone: "ok", text: kind };
+    }
+    if (session) {
+      const activity = summarizeSessionActivity(streamSegments, {
+        promptInFlight: !!promptInFlight,
+        waitingPermission: !!permissionRequest,
+      });
+      if (activity) return { tone: permissionRequest ? "needs" : "busy", text: activity };
+      return { tone: "ok", text: activeRuntime.agentExited ? "Agent exited" : "Ready" };
+    }
+    return { tone: "idle", text: "Not started" };
+  })();
+  const statusMessages: StatusMessage[] = [
+    ...(session && activeRuntime.folderWarning
+      ? [{ id: "folder", text: activeRuntime.folderWarning, tone: "warn" as const }]
+      : []),
+    ...(modelNotice
+      ? [{ id: "model", text: modelNotice, tone: "info" as const, onDismiss: () => setModelNotice(null) }]
+      : []),
+  ];
+  const statusBar = (
+    <StatusBar
+      status={activeStatus}
+      model={activeTabSummary ? modelForTab(activeTabSummary) : null}
+      folder={session?.cwd || activeTabSummary?.cwd || folderForTab(values.cwd) || null}
+      branch={activeTabSummary?.worktreeBranch ?? null}
+      roleRulesOff={!!approvalMode?.roleRulesOff}
+      messages={statusMessages}
+      trailing={
+        uiSettings.ui.shortcutBar ? (
+          <ShortcutBar
+            platform={platform}
+            onRun={(action) => onShortcut({ action })}
+            onHide={() => uiSettings.update({ shortcutBar: false })}
+          />
+        ) : null
+      }
+    />
+  );
+  const firstUseTip = shouldShowTip({
+    loaded: uiSettings.loaded,
+    tipsSeen: uiSettings.ui.tipsSeen,
+    blocked: dialogOpen,
+  }) ? (
+    <FirstUseTip
+      platform={platform}
+      barOn={uiSettings.ui.shortcutBar}
+      onShowBar={() => uiSettings.update({ shortcutBar: true })}
+      onDismiss={() => uiSettings.markTipSeen(FIRST_USE_TIP_ID)}
+    />
+  ) : null;
+
   const shell = (content: ReactNode) => (
     <section className="workspace-shell">
       {tabBar}
-      {unrestrictedBanner}
       <div className="workspace-body">
         {filePanel}
         <div className="workspace-main">
@@ -2599,18 +3529,6 @@ export function StartupForm({
                 onFocusCapture={() => setFocusedPane("primary")}
                 onMouseDown={() => setFocusedPane("primary")}
               >
-                {modelNotice && (
-                  <p className="hint model-notice" role="status">
-                    {modelNotice}{" "}
-                    <button
-                      type="button"
-                      className="link-button"
-                      onClick={() => setModelNotice(null)}
-                    >
-                      Dismiss
-                    </button>
-                  </p>
-                )}
                 {content}
               </div>
             }
@@ -2618,6 +3536,8 @@ export function StartupForm({
           />
         </div>
       </div>
+      {firstUseTip}
+      {statusBar}
       {overlays}
     </section>
   );
@@ -2641,9 +3561,22 @@ export function StartupForm({
             />
           )}
           {terminalError && <p className="error">{terminalError}</p>}
-          {(isPlannerTerminal || terminalModelPicker) && (
+          {(isPlannerTerminal ||
+            terminalModelPicker ||
+            activeTabSummary.worktreeBranch ||
+            activeTabSummary.cwd) && (
             <div className="terminal-toolbar">
+              {activeTabSummary.worktreeBranch && (
+                <span
+                  className="session-branch"
+                  aria-label="Git branch"
+                  title={activeTabSummary.worktreePath ?? undefined}
+                >
+                  ⎇ {activeTabSummary.worktreeBranch}
+                </span>
+              )}
               {terminalModelPicker}
+              {activeTabSummary.cwd && changesButton(activeTabSummary.id)}
               {isPlannerTerminal && (
                 <HandoffActions
                   enabled
@@ -2694,12 +3627,20 @@ export function StartupForm({
             persistError={scratch.persistError}
             platform={platform}
             onChange={(value) => scratch.setContent(activeTabSummary.id, value)}
-            onBlur={() => scratch.flush()}
+            onBlur={() => {
+              notePadSelection();
+              scratch.flush();
+            }}
+            onSent={(text) => void promptRecordSend(text, "terminal").catch(() => {})}
+            onOpenLibrary={() => openPromptLibrary(false)}
             write={ptyWrite}
             bracketedPaste={terminalBracketedPaste(activeTabSummary.id)}
             onFocusTerminal={focusActiveTerminal}
             onFocusPad={() => blurParkedTerminal(activeTabSummary.id)}
             onOpenChange={() => refitTerminal(activeTabSummary.id)}
+            open={padOpen}
+            onOpenToggle={(open) => uiSettings.update({ padHidden: !open })}
+            {...padSizeProps}
           />
         </section>,
     );
@@ -2710,7 +3651,6 @@ export function StartupForm({
       return (
         <section className="workspace-shell">
           {tabBar}
-          {unrestrictedBanner}
           {settingsPage}
           {overlays}
         </section>
@@ -2740,13 +3680,17 @@ export function StartupForm({
   const composerFields = (
     <div className="composer-fields">
       {showFields && visibleFields(role, formValues).map((field) => (
-        <label key={field.key} className="field-label">
+        <label
+          key={field.key}
+          className={`field-label${field.type === "multiline" ? " field-label-wide" : ""}`}
+        >
           {field.label}
           {field.required ? " *" : ""}
           {field.type === "multiline" ? (
             <textarea
               className="text-input prompt-area"
-              rows={4}
+              rows={3}
+              data-field-key={field.key}
               value={values[field.key] ?? ""}
               onChange={(e) => setField(field.key, e.target.value)}
               disabled={!!session || busy}
@@ -2769,6 +3713,7 @@ export function StartupForm({
             <input
               className="text-input"
               type="text"
+              data-field-key={field.key}
               value={values[field.key] ?? ""}
               onChange={(e) => setField(field.key, e.target.value)}
               disabled={!!session || busy}
@@ -2841,39 +3786,58 @@ export function StartupForm({
           This tab has saved text, but it cannot be continued. Start a new session.
         </p>
       )}
-      {savedTranscript && (
-        <details className="startup-form-details">
+      {(savedTranscript || focusedTranscript) && (
+        <details
+          className="startup-form-details"
+          open={focusedTranscript ? true : undefined}
+          key={transcriptFocus?.tabId === activeTabId ? `focus-${transcriptFocus?.nonce}` : "plain"}
+        >
           <summary>Last session transcript (read-only)</summary>
-          <pre className="mono-snippet transcript-preview">{savedTranscript}</pre>
+          {transcriptFocus && focusedTranscript ? (
+            <TranscriptView
+              text={savedTranscript || focusedTranscript}
+              query={transcriptFocus.query}
+              occurrence={transcriptFocus.occurrence}
+              label="Saved transcript"
+            />
+          ) : (
+            <pre className="mono-snippet transcript-preview">{savedTranscript}</pre>
+          )}
         </details>
       )}
     </div>
   );
 
+  // U5: model, preview, and Start sit on the start row; extras go under it.
+  const startButtons = showFields && (
+    <>
+      {blankModelPicker}
+      <button
+        type="button"
+        className="secondary-button"
+        onClick={runPreview}
+        disabled={busy || previewBusy}
+        aria-label="Validate & preview"
+        title="Check the fields and show the merged startup prompt"
+      >
+        {previewBusy ? "…" : "Preview"}
+      </button>
+      <button
+        type="button"
+        className="primary-button"
+        onClick={() => {
+          if (rememberedSurface(roleId) === "terminal") void startRoleTerminal();
+          else void startSession(surface === "restore" && resendStartup);
+        }}
+        disabled={busy || !cliFound}
+      >
+        {rememberedSurface(roleId) === "terminal" ? "Start terminal" : "Start"}
+      </button>
+    </>
+  );
+
   const idleActions = showFields && (
     <>
-      <div className="button-row">
-        <button
-          type="button"
-          className="secondary-button"
-          onClick={runPreview}
-          disabled={busy || previewBusy}
-        >
-          {previewBusy ? "…" : "Validate & preview"}
-        </button>
-        <button
-          type="button"
-          className="primary-button"
-          onClick={() => {
-            if (rememberedSurface(roleId) === "terminal") void startRoleTerminal();
-            else void startSession(surface === "restore" && resendStartup);
-          }}
-          disabled={busy || !cliFound}
-        >
-          {rememberedSurface(roleId) === "terminal" ? "Start terminal" : "Start"}
-        </button>
-        {blankModelPicker}
-      </div>
       {surface === "restore" && (
         <label className="field-label continue-option">
           <input
@@ -2944,6 +3908,11 @@ export function StartupForm({
               primary={
             <SessionTerminal
               title={activeTabSummary?.label ?? "Session"}
+              findRequest={
+                activeTabId && findRequest?.tabId === activeTabId ? findRequest.req : null
+              }
+              onSearchAllChats={(query) => setChatSearchQuery(query)}
+              branch={activeTabSummary?.worktreeBranch ?? null}
               cwd={session.cwd}
               sessionId={session.sessionId}
               segments={streamSegments}
@@ -2967,7 +3936,17 @@ export function StartupForm({
               historyCursor={historyCursor}
               onHistoryCursor={setHistoryCursor}
               handoff={handoffOffer}
-              headerExtra={modelPickerFor(activeTabSummary, session.model)}
+              statusInBar
+              details={[
+                `Role: ${roleNames[roleId] ?? roleId}`,
+                `Model: ${session.model ?? (activeTabSummary ? modelForTab(activeTabSummary) : "") ?? ""}`,
+              ].join("\n")}
+              headerExtra={
+                <>
+                  {modelPickerFor(activeTabSummary, session.model)}
+                  {activeTabSummary && changesButton(activeTabSummary.id)}
+                </>
+              }
             />
               }
               secondary={
@@ -3017,7 +3996,14 @@ export function StartupForm({
           onTransfer={transferPad}
           onTransferTerminal={() => void transferToTerminalNow()}
           onSend={sendFromPad}
-          onBlur={() => scratch.flush()}
+          onBlur={() => {
+            notePadSelection();
+            scratch.flush();
+          }}
+          onOpenLibrary={() => openPromptLibrary(false)}
+          collapsed={!padOpen}
+          onToggle={() => uiSettings.update({ padHidden: padOpen })}
+          {...padSizeProps}
           onStopChain={() => {
             chainAbortRef.current = true;
             setChain((current) => (current ? chainStop(current) : current));
@@ -3059,7 +4045,7 @@ export function StartupForm({
             if (tabId) scrollPositions.current[tabId] = event.currentTarget.scrollTop;
           }}
         >
-          <div className="empty-state-card">
+          <div className="empty-state-card start-screen">
             {handoffBanner}
             {activeHandoff && !activeHandoff.planField && (
               <label className="field-label">
@@ -3079,7 +4065,7 @@ export function StartupForm({
                 </span>
               </label>
             )}
-            <div className="empty-state-header">
+            <div className="start-row" role="group" aria-label="Start a tab">
               <div className="role-choices" role="group" aria-label="Role">
                 {roles.map((item) => (
                   <button
@@ -3127,6 +4113,7 @@ export function StartupForm({
                     aria-pressed={rememberedSurface(pickedRoleId) === "chat"}
                     onClick={() => rememberSurface(pickedRoleId, "chat")}
                     disabled={busy}
+                    title="Open as chat"
                   >
                     Chat
                   </button>
@@ -3136,41 +4123,66 @@ export function StartupForm({
                     aria-pressed={rememberedSurface(pickedRoleId) === "terminal"}
                     onClick={() => rememberSurface(pickedRoleId, "terminal")}
                     disabled={busy}
+                    aria-label="Terminal"
+                    title="Open as terminal (agent CLI in a terminal)"
                   >
-                    Terminal
+                    <span aria-hidden>›_</span>
                   </button>
                 </div>
               )}
-              <div className="field-label">
-                Working folder
-                <FolderPicker
-                  value={displayedFolder}
-                  unavailable={folderNotice?.tone === "error"}
-                  disabled={busy}
-                  onChange={(path) => setField("cwd", path)}
-                />
-              </div>
-              {folderNotice?.tone === "error" && <p className="error">{folderNotice.text}</p>}
+              <FolderPicker
+                compact
+                value={displayedFolder}
+                unavailable={folderNotice?.tone === "error"}
+                disabled={busy}
+                onChange={(path) => setField("cwd", path)}
+              />
+              <span className="start-row-spacer" aria-hidden />
+              {launchChoice ? (
+                <>
+                  {launchChoice === "cursor-cli" && blankModelPicker}
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={() => void startBlankTerminal(launchChoice)}
+                    disabled={
+                      busy || !displayedFolder || (launchChoice === "cursor-cli" && !cliFound)
+                    }
+                  >
+                    {launchChoice === "cursor-cli" ? "Start Cursor CLI" : "Start terminal"}
+                  </button>
+                </>
+              ) : (
+                startButtons
+              )}
             </div>
-            {launchChoice ? (
-              <div className="button-row">
-                <button
-                  type="button"
-                  className="primary-button"
-                  onClick={() => void startBlankTerminal(launchChoice)}
-                  disabled={
-                    busy || !displayedFolder || (launchChoice === "cursor-cli" && !cliFound)
-                  }
-                >
-                  {launchChoice === "cursor-cli" ? "Start Cursor CLI" : "Start terminal"}
-                </button>
-                {launchChoice === "cursor-cli" && blankModelPicker}
+            {folderNotice?.tone === "error" && <p className="error">{folderNotice.text}</p>}
+            {activeTabSummary?.worktreeBranch && (
+              <p className="hint">
+                Worktree on branch <strong>{activeTabSummary.worktreeBranch}</strong>. Remove it
+                from the command palette when you are done.
+              </p>
+            )}
+            <div
+              className={`start-body${historyFolder && !launchChoice ? " start-body-with-history" : ""}`}
+            >
+              <div className="start-main">
+                {!launchChoice && (
+                  <>
+                    {restoreActions}
+                    {composerFields}
+                    {idleActions}
+                  </>
+                )}
+                {cliLaunchNote && <p className="hint">{cliLaunchNote}</p>}
+                {terminalError && <p className="error">{terminalError}</p>}
+                {transcriptSaveError && (
+                  <p className="error">Could not save the transcript: {transcriptSaveError}</p>
+                )}
+                {!cliFound && <p className="error">Cursor CLI was not found.</p>}
               </div>
-            ) : (
-              <>
-                {restoreActions}
-                {composerFields}
-                {historyFolder && (
+              {historyFolder && !launchChoice && (
+                <aside className="start-history">
                   <CursorHistoryList
                     entries={historyEntries}
                     error={historyError}
@@ -3178,16 +4190,9 @@ export function StartupForm({
                     onResume={(entry) => void resumeHistoryEntry(entry)}
                     onOpenCli={(entry) => void openCursorCli(entry.id, entry.cwd)}
                   />
-                )}
-                {idleActions}
-              </>
-            )}
-            {cliLaunchNote && <p className="hint">{cliLaunchNote}</p>}
-            {terminalError && <p className="error">{terminalError}</p>}
-            {transcriptSaveError && (
-              <p className="error">Could not save the transcript: {transcriptSaveError}</p>
-            )}
-            {!cliFound && <p className="error">Cursor CLI was not found.</p>}
+                </aside>
+              )}
+            </div>
           </div>
         </div>,
   );

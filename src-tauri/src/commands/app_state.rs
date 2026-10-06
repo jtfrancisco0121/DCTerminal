@@ -30,6 +30,11 @@ pub struct TabSummary {
     /// Per-tab model override. The UI resolves the effective model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Branch of a worktree tab, read from its HEAD file (F3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -179,7 +184,7 @@ fn attach_transcript(tab: &mut TabRecord, transcripts: &TranscriptStore) -> Resu
     Ok(())
 }
 
-fn snapshot_from_store(store: &StateStore) -> AppStateSnapshot {
+pub(crate) fn snapshot_from_store(store: &StateStore) -> AppStateSnapshot {
     let transcript_dir = store.path.parent().map(|parent| parent.join("transcripts"));
     AppStateSnapshot {
         active_tab_id: store.data.active_tab_id.clone(),
@@ -214,6 +219,11 @@ fn snapshot_from_store(store: &StateStore) -> AppStateSnapshot {
                     .map(|id| id.trim().to_string())
                     .filter(|id| !id.is_empty()),
                 model: t.model.clone(),
+                worktree_branch: t.worktree.as_ref().map(|wt| {
+                    crate::worktree::head_branch(std::path::Path::new(&wt.path))
+                        .unwrap_or_else(|| wt.branch.clone())
+                }),
+                worktree_path: t.worktree.as_ref().map(|wt| wt.path.clone()),
             })
             .collect(),
         closed_tabs: store
@@ -233,17 +243,27 @@ fn snapshot_from_store(store: &StateStore) -> AppStateSnapshot {
 
 #[tauri::command]
 pub fn reopen_closed_tab(
+    tab_id: Option<String>,
     store: State<Mutex<StateStore>>,
     transcripts: State<Mutex<crate::store::TranscriptStore>>,
 ) -> Result<TabDetail, String> {
     let transcript = {
         let state = store.lock().map_err(|e| e.to_string())?;
-        let id = state
-            .data
-            .closed_tabs
-            .first()
-            .map(|t| t.id.clone())
-            .ok_or_else(|| "no closed tab to reopen".to_string())?;
+        let id = match tab_id.as_deref() {
+            Some(id) => state
+                .data
+                .closed_tabs
+                .iter()
+                .find(|t| t.id == id)
+                .map(|t| t.id.clone())
+                .ok_or_else(|| "that closed tab is no longer in the list".to_string())?,
+            None => state
+                .data
+                .closed_tabs
+                .first()
+                .map(|t| t.id.clone())
+                .ok_or_else(|| "no closed tab to reopen".to_string())?,
+        };
         let transcripts = transcripts.lock().map_err(|e| e.to_string())?;
         transcripts.load(&id)?.and_then(|loaded| {
             if loaded.text.trim().is_empty() {
@@ -254,7 +274,7 @@ pub fn reopen_closed_tab(
         })
     };
     let mut store = store.lock().map_err(|e| e.to_string())?;
-    let tab = store.reopen_closed(transcript)?;
+    let tab = store.reopen_closed_id(tab_id.as_deref(), transcript)?;
     Ok(TabDetail { tab })
 }
 

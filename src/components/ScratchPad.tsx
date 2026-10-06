@@ -1,4 +1,4 @@
-import { forwardRef, type KeyboardEvent } from "react";
+import { forwardRef, useRef, type KeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
 import type { ChainCursor } from "../scratch/pad";
 
 type Props = {
@@ -21,7 +21,23 @@ type Props = {
   onFocus?: () => void;
   onEscape?: () => void;
   onToggle?: () => void;
+  /** F6: open the prompt library (saved prompts and recent sends). */
+  onOpenLibrary?: () => void;
+  /** U2: editor height in px; null keeps the 3-row default. */
+  height?: number | null;
+  /** U2: live height while the handle is dragged. */
+  onHeightChange?: (height: number) => void;
+  /** U2: final height after a drag or a keyboard step (save it). */
+  onHeightCommit?: (height: number) => void;
 };
+
+export const PAD_MIN_HEIGHT = 40;
+export const PAD_MAX_HEIGHT = 600;
+const PAD_KEY_STEP = 24;
+
+export function clampPadHeight(height: number): number {
+  return Math.round(Math.min(PAD_MAX_HEIGHT, Math.max(PAD_MIN_HEIGHT, height)));
+}
 
 export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function ScratchPad(
   {
@@ -43,9 +59,48 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
     onFocus,
     onEscape,
     onToggle,
+    onOpenLibrary,
+    height = null,
+    onHeightChange,
+    onHeightCommit,
   },
   ref,
 ) {
+  const editorRef = useRef<HTMLTextAreaElement | null>(null);
+  const setEditor = (node: HTMLTextAreaElement | null) => {
+    editorRef.current = node;
+    if (typeof ref === "function") ref(node);
+    else if (ref) ref.current = node;
+  };
+  const resizable = !!onHeightChange && !collapsed;
+  const currentHeight = () => height ?? (editorRef.current?.offsetHeight || 64);
+
+  const startResize = (event: ReactMouseEvent) => {
+    event.preventDefault();
+    const startY = event.clientY;
+    const startHeight = currentHeight();
+    let last = startHeight;
+    const onMove = (move: MouseEvent) => {
+      // Dragging up (smaller clientY) grows the pad.
+      last = clampPadHeight(startHeight + (startY - move.clientY));
+      onHeightChange?.(last);
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      onHeightCommit?.(last);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  const onHandleKey = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+    event.preventDefault();
+    const next = clampPadHeight(currentHeight() + (event.key === "ArrowUp" ? PAD_KEY_STEP : -PAD_KEY_STEP));
+    onHeightChange?.(next);
+    onHeightCommit?.(next);
+  };
   const terminal = mode === "terminal";
   const chained = !terminal && content.split(/\r?\n/).some((line) => /^\s*-{3,}\s*$/.test(line));
   const running = !terminal && (chain?.phase === "inFlight" || chain?.phase === "paused");
@@ -65,6 +120,21 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
 
   return (
     <section className="scratch-pad" aria-label="Scratch pad">
+      {resizable && (
+        <div
+          className="scratch-pad-handle"
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="Resize scratch pad"
+          aria-valuenow={height ?? undefined}
+          aria-valuemin={PAD_MIN_HEIGHT}
+          aria-valuemax={PAD_MAX_HEIGHT}
+          tabIndex={0}
+          title="Drag to resize the scratch pad"
+          onMouseDown={startResize}
+          onKeyDown={onHandleKey}
+        />
+      )}
       <div className="scratch-pad-bar">
         <span className="scratch-pad-title">Scratch pad</span>
         <span className="hint scratch-pad-hint">
@@ -75,7 +145,18 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
               }`}
         </span>
         <div className="scratch-pad-actions">
-          {terminal && onToggle && (
+          {onOpenLibrary && (
+            <button
+              type="button"
+              className="secondary-button"
+              onMouseDown={terminal ? (event) => event.preventDefault() : undefined}
+              onClick={onOpenLibrary}
+              title="Prompt library: insert a saved prompt or a recent send, or save this pad"
+            >
+              Prompts
+            </button>
+          )}
+          {onToggle && (
             <button
               type="button"
               className="secondary-button"
@@ -152,14 +233,15 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
         <p className="error scratch-pad-status">Could not save the scratch pad: {persistError}</p>
       )}
       <textarea
-        ref={ref}
+        ref={setEditor}
         className="scratch-pad-input"
         value={content}
         onChange={(event) => onChange(event.target.value)}
         onBlur={onBlur}
         onFocus={onFocus}
         onKeyDown={onKeyDown}
-        rows={6}
+        rows={3}
+        style={height ? { height } : undefined}
         spellCheck={false}
         placeholder={
           terminal
@@ -167,7 +249,7 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
             : "Draft a long prompt. Separate steps with a line that is only ---."
         }
         aria-label="Scratch pad editor"
-        hidden={terminal && collapsed}
+        hidden={collapsed}
       />
     </section>
   );

@@ -1,11 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
-import { buildPalette, filterCommands } from "../tabChrome";
+import { buildPalette, filterCommands, type PaletteModelOptions } from "../tabChrome";
 
 type Props = {
-  tabs: { id: string; label: string }[];
+  tabs: { id: string; label: string; cwd?: string }[];
   canReopen: boolean;
   splitOpen: boolean;
   canSendPlan?: boolean;
+  canRemoveWorktree?: boolean;
+  /** The active tab's model choices; absent when it has no model. */
+  model?: PaletteModelOptions | null;
+  /** Text to start with, e.g. "use model " from Change model…. */
+  initialQuery?: string;
   onRun: (id: string) => void;
   onClose: () => void;
 };
@@ -15,14 +20,21 @@ export function CommandPalette({
   canReopen,
   splitOpen,
   canSendPlan = false,
+  canRemoveWorktree = false,
+  model = null,
+  initialQuery = "",
   onRun,
   onClose,
 }: Props) {
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(initialQuery);
   const [index, setIndex] = useState(0);
   const commands = useMemo(
-    () => filterCommands(buildPalette({ tabs, canReopen, splitOpen, canSendPlan }), query),
-    [tabs, canReopen, splitOpen, canSendPlan, query],
+    () =>
+      filterCommands(
+        buildPalette({ tabs, canReopen, splitOpen, canSendPlan, canRemoveWorktree, model }),
+        query,
+      ),
+    [tabs, canReopen, splitOpen, canSendPlan, canRemoveWorktree, model, query],
   );
 
   useEffect(() => {
@@ -65,7 +77,10 @@ export function CommandPalette({
                 onClick={() => onRun(command.id)}
               >
                 <span>{command.title}</span>
-                <span className="hint">{command.group}</span>
+                <span className="hint">
+                  {command.hint ? `${command.hint} · ` : ""}
+                  {command.group}
+                </span>
               </button>
             </li>
           ))}

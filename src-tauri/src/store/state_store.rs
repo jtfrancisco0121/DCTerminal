@@ -73,7 +73,9 @@ impl StateStore {
             if tab.phase == "running" {
                 return Err("this tab is already running — stop it or open a new tab".to_string());
             }
-            tab.label = label;
+            if !tab.custom_label {
+                tab.label = label;
+            }
             tab.role_id = role.id.clone();
             tab.role_snapshot = snapshot;
             tab.cwd = cwd.to_string();
@@ -111,6 +113,8 @@ impl StateStore {
             kind: crate::store::state_types::default_tab_kind(),
             terminal_launch: String::new(),
             model: None,
+            custom_label: false,
+            worktree: None,
         };
         self.data.tabs.push(record);
         self.data.active_tab_id = Some(tab_id.clone());
@@ -135,7 +139,9 @@ impl StateStore {
         if tab.phase == "running" || tab.kind == "terminal" || tab.phase == "terminal" {
             return Ok(());
         }
-        tab.label = tab_label(&role.name, answers);
+        if !tab.custom_label {
+            tab.label = tab_label(&role.name, answers);
+        }
         tab.role_id = role.id.clone();
         tab.cwd = cwd.to_string();
         tab.answers = answers.clone();
@@ -237,6 +243,8 @@ impl StateStore {
                     .map(|session| session.acp_session_id.clone()),
                 mode_id: tab.session.as_ref().map(|session| session.mode_id.clone()),
                 model: tab.model.clone(),
+                custom_label: tab.custom_label,
+                worktree: tab.worktree.clone(),
             },
         );
         self.data.closed_tabs.truncate(15);
@@ -257,13 +265,30 @@ impl StateStore {
 
     /// Put the most recently closed tab back. The agent is not restarted.
     pub fn reopen_closed(&mut self, transcript: Option<String>) -> Result<TabRecord, String> {
-        let closed = self
-            .data
-            .closed_tabs
-            .first()
-            .cloned()
-            .ok_or_else(|| "no closed tab to reopen".to_string())?;
-        self.data.closed_tabs.remove(0);
+        self.reopen_closed_id(None, transcript)
+    }
+
+    /// Put a closed tab back: `tab_id`, or the most recent one when `None`.
+    pub fn reopen_closed_id(
+        &mut self,
+        tab_id: Option<&str>,
+        transcript: Option<String>,
+    ) -> Result<TabRecord, String> {
+        let index = match tab_id {
+            Some(id) => self
+                .data
+                .closed_tabs
+                .iter()
+                .position(|t| t.id == id)
+                .ok_or_else(|| "that closed tab is no longer in the list".to_string())?,
+            None => {
+                if self.data.closed_tabs.is_empty() {
+                    return Err("no closed tab to reopen".to_string());
+                }
+                0
+            }
+        };
+        let closed = self.data.closed_tabs.remove(index);
         if self.data.tabs.iter().any(|t| t.id == closed.id) {
             return Err("that tab is already open".to_string());
         }
@@ -311,6 +336,8 @@ impl StateStore {
             kind: closed.kind.clone(),
             terminal_launch: closed.terminal_launch.clone(),
             model: closed.model.clone(),
+            custom_label: closed.custom_label,
+            worktree: closed.worktree.clone(),
         };
         let id = record.id.clone();
         self.data.tabs.push(record);
@@ -362,7 +389,42 @@ impl StateStore {
             .find(|t| t.id == tab_id)
             .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
         tab.label = label;
+        tab.custom_label = true;
         self.save()
+    }
+
+    /// Draft tab whose folder is a worktree the user just created.
+    pub fn create_worktree_tab(
+        &mut self,
+        role: &Role,
+        worktree: crate::worktree::WorktreeRef,
+    ) -> Result<String, String> {
+        let tab_id = self.create_draft_tab(role, &worktree.path, true)?;
+        if let Some(tab) = self.data.tabs.iter_mut().find(|t| t.id == tab_id) {
+            tab.worktree = Some(worktree);
+        }
+        self.save()?;
+        Ok(tab_id)
+    }
+
+    /// Worktree of an open or recently closed tab.
+    pub fn worktree_for(&self, tab_id: &str) -> Option<crate::worktree::WorktreeRef> {
+        self.data
+            .tabs
+            .iter()
+            .find(|t| t.id == tab_id)
+            .and_then(|t| t.worktree.clone())
+            .or_else(|| {
+                self.data
+                    .closed_tabs
+                    .iter()
+                    .find(|t| t.id == tab_id)
+                    .and_then(|t| t.worktree.clone())
+            })
+    }
+
+    pub fn is_tab_open(&self, tab_id: &str) -> bool {
+        self.data.tabs.iter().any(|t| t.id == tab_id)
     }
 
     pub fn set_tab_color(&mut self, tab_id: &str, color: &str) -> Result<(), String> {
@@ -411,6 +473,8 @@ impl StateStore {
             kind: crate::store::state_types::default_tab_kind(),
             terminal_launch: String::new(),
             model: None,
+            custom_label: false,
+            worktree: None,
         };
         self.data.tabs.push(record);
         if make_active {
@@ -457,12 +521,85 @@ impl StateStore {
             kind: "terminal".to_string(),
             terminal_launch: String::new(),
             model: None,
+            custom_label: false,
+            worktree: None,
         };
         apply_terminal_draft(&mut record, &draft);
         self.data.tabs.push(record);
         self.data.active_tab_id = Some(tab_id.clone());
         self.save()?;
         Ok(tab_id)
+    }
+
+    /// F7: open a saved workspace as new tabs (titles, folders, roles,
+    /// terminal kinds). Chat tabs come back as drafts and nothing is started.
+    /// With `replace`, the tabs open now are closed afterwards (they go to the
+    /// reopen list like any closed tab); the command stops their sessions and
+    /// PTYs first. Returns the new tab ids in order.
+    pub fn open_workspace(
+        &mut self,
+        workspace: &crate::store::Workspace,
+        replace: bool,
+    ) -> Result<Vec<String>, String> {
+        if workspace.tabs.is_empty() {
+            return Err("That workspace has no tabs.".into());
+        }
+        let old: Vec<String> = if replace {
+            self.sorted_tabs().iter().map(|t| t.id.clone()).collect()
+        } else {
+            Vec::new()
+        };
+        let mut ids = Vec::with_capacity(workspace.tabs.len());
+        for item in &workspace.tabs {
+            let tab_id = new_tab_id();
+            let is_terminal = item.kind == "terminal";
+            let mut answers = item.answers.clone();
+            answers.insert("cwd".to_string(), item.cwd.clone());
+            answers.remove("resumeSessionId");
+            let record = TabRecord {
+                id: tab_id.clone(),
+                label: item.label.clone(),
+                role_id: item.role_id.clone(),
+                role_snapshot: item.role_snapshot.clone(),
+                cwd: item.cwd.clone(),
+                answers,
+                merged_prompt: String::new(),
+                merged_prompt_hash: String::new(),
+                phase: if is_terminal { "terminal" } else { "draft" }.to_string(),
+                order: next_tab_order(&self.data),
+                created_at: Utc::now().to_rfc3339(),
+                session: None,
+                transcript: None,
+                startup_prompt_sent: false,
+                color: item.color.clone(),
+                kind: if is_terminal {
+                    "terminal".to_string()
+                } else {
+                    crate::store::state_types::default_tab_kind()
+                },
+                terminal_launch: match (is_terminal, item.terminal_launch.as_str()) {
+                    (false, _) => String::new(),
+                    (true, "") => "shell".to_string(),
+                    (true, launch) => launch.to_string(),
+                },
+                model: item.model.clone(),
+                // Keep the saved title even when the form changes later.
+                custom_label: true,
+                worktree: None,
+            };
+            self.data.tabs.push(record);
+            ids.push(tab_id);
+        }
+        for id in &old {
+            self.close_tab(id)?;
+        }
+        let active = workspace
+            .active_index
+            .and_then(|i| ids.get(i).cloned())
+            .or_else(|| ids.first().cloned());
+        self.data.active_tab_id = active;
+        self.save()?;
+        Ok(ids)
     }
 
     pub fn sorted_tabs(&self) -> Vec<&TabRecord> {
@@ -525,7 +662,9 @@ pub struct TerminalTabDraft {
 }
 
 fn apply_terminal_draft(tab: &mut TabRecord, draft: &TerminalTabDraft) {
-    tab.label = draft.label.clone();
+    if !tab.custom_label {
+        tab.label = draft.label.clone();
+    }
     tab.role_id = draft.role_id.clone();
     tab.role_snapshot = draft.role_snapshot.clone();
     tab.cwd = draft.cwd.clone();
@@ -765,6 +904,120 @@ mod tests {
     }
 
     #[test]
+    fn worktree_tab_keeps_its_worktree_through_close_and_reopen() {
+        let dir = std::env::temp_dir().join(format!(
+            "dcterminal_wt_tab_{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let role = crate::roles::Role {
+            id: "role_dev".to_string(),
+            name: "Developer".to_string(),
+            template_text: String::new(),
+            template_version: 1,
+            template_hash: String::new(),
+            schema_template_hash: String::new(),
+            default_mode: "agent".to_string(),
+            injection: "send_on_start".to_string(),
+            color: "#3fb950".to_string(),
+            is_built_in: true,
+            fields: vec![],
+            updated_at: None,
+        };
+        let mut store = StateStore {
+            path: dir.join("state.json"),
+            data: AppStateFile::default(),
+        };
+        let wt = crate::worktree::WorktreeRef {
+            repo_root: "/r/app".to_string(),
+            path: "/r/app-worktrees/feat-x".to_string(),
+            branch: "feat/x".to_string(),
+        };
+        let plain = store.create_draft_tab(&role, "/r/app", false).unwrap();
+        let id = store.create_worktree_tab(&role, wt.clone()).unwrap();
+        let tab = store.tab_by_id(&id).unwrap();
+        assert_eq!(tab.cwd, "/r/app-worktrees/feat-x");
+        assert_eq!(
+            tab.answers.get("cwd").map(String::as_str),
+            Some("/r/app-worktrees/feat-x")
+        );
+        assert_eq!(store.data.active_tab_id.as_deref(), Some(id.as_str()));
+        assert_eq!(store.worktree_for(&id), Some(wt.clone()));
+        assert_eq!(store.worktree_for(&plain), None);
+        assert!(store.is_tab_open(&id));
+        store.close_tab(&id).unwrap();
+        assert!(!store.is_tab_open(&id));
+        assert_eq!(store.worktree_for(&id), Some(wt.clone()));
+        let reopened = store.reopen_closed(None).unwrap();
+        assert_eq!(reopened.worktree, Some(wt));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn renamed_tab_keeps_its_name_through_form_sync_start_reopen_and_reload() {
+        let dir = std::env::temp_dir().join(format!(
+            "dcterminal_rename_{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let role = crate::roles::Role {
+            id: "role_dev".to_string(),
+            name: "Developer".to_string(),
+            template_text: String::new(),
+            template_version: 1,
+            template_hash: String::new(),
+            schema_template_hash: String::new(),
+            default_mode: "agent".to_string(),
+            injection: "send_on_start".to_string(),
+            color: "#3fb950".to_string(),
+            is_built_in: true,
+            fields: vec![],
+            updated_at: None,
+        };
+        let path = dir.join("state.json");
+        let mut store = StateStore {
+            path: path.clone(),
+            data: AppStateFile::default(),
+        };
+        let id = store.create_draft_tab(&role, "/tmp/app", true).unwrap();
+        store.set_tab_label(&id, "  Auth bug  ").unwrap();
+        let answers = HashMap::from([
+            ("cwd".to_string(), "/tmp/app".to_string()),
+            ("title".to_string(), "Onboarding".to_string()),
+        ]);
+        store
+            .sync_tab_form(&id, &role, &answers, "/tmp/app")
+            .unwrap();
+        assert_eq!(store.tab_by_id(&id).unwrap().label, "Auth bug");
+        store
+            .promote_tab_to_running(
+                Some(&id),
+                &role,
+                &answers,
+                "/tmp/app",
+                "merged",
+                TabSessionRef {
+                    acp_session_id: "s1".to_string(),
+                    mode_id: "agent".to_string(),
+                    injection_pending: false,
+                    injected_at: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(store.tab_by_id(&id).unwrap().label, "Auth bug");
+        store.close_tab(&id).unwrap();
+        let reopened = store.reopen_closed(None).unwrap();
+        assert_eq!(reopened.label, "Auth bug");
+        assert!(reopened.custom_label);
+        let reloaded: AppStateFile =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(reloaded.tabs[0].label, "Auth bug");
+        assert!(reloaded.tabs[0].custom_label);
+        assert!(store.set_tab_label(&id, "   ").is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn promote_reuses_draft_tab_instead_of_creating_new() {
         use crate::roles::Role;
         let dir = std::env::temp_dir().join(format!(
@@ -858,6 +1111,45 @@ mod tests {
     }
 
     #[test]
+    fn a_specific_closed_tab_can_be_reopened() {
+        let dir = std::env::temp_dir().join(format!(
+            "dcterminal_reopen_id_{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let role = crate::roles::Role {
+            id: "role_dev".to_string(),
+            name: "Developer".to_string(),
+            template_text: String::new(),
+            template_version: 1,
+            template_hash: String::new(),
+            schema_template_hash: String::new(),
+            default_mode: "agent".to_string(),
+            injection: "send_on_start".to_string(),
+            color: "#3fb950".to_string(),
+            is_built_in: true,
+            fields: vec![],
+            updated_at: None,
+        };
+        let mut store = StateStore {
+            path: dir.join("state.json"),
+            data: AppStateFile::default(),
+        };
+        let older = store.create_draft_tab(&role, "/w/a", true).unwrap();
+        let newer = store.create_draft_tab(&role, "/w/b", true).unwrap();
+        store.close_tab(&older).unwrap();
+        store.close_tab(&newer).unwrap();
+        let restored = store
+            .reopen_closed_id(Some(&older), Some("old text".into()))
+            .unwrap();
+        assert_eq!(restored.id, older);
+        assert_eq!(store.data.closed_tabs.len(), 1);
+        assert_eq!(store.data.closed_tabs[0].id, newer);
+        assert!(store.reopen_closed_id(Some("tab_gone"), None).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn stop_and_relaunch_keep_the_acp_session_id() {
         let dir = std::env::temp_dir().join(format!(
             "dcterminal_keep_sid_{}",
@@ -924,6 +1216,106 @@ mod tests {
             restored.session.as_ref().unwrap().acp_session_id,
             "11111111-2222-3333-4444-555555555555"
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_workspace_restores_titles_folders_roles_and_can_replace_open_tabs() {
+        use crate::store::{Workspace, WorkspaceTab};
+        let dir = std::env::temp_dir().join(format!(
+            "dcterminal_ws_open_{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let role = crate::roles::Role {
+            id: "role_dev".to_string(),
+            name: "Developer".to_string(),
+            template_text: String::new(),
+            template_version: 1,
+            template_hash: String::new(),
+            schema_template_hash: String::new(),
+            default_mode: "agent".to_string(),
+            injection: "send_on_start".to_string(),
+            color: "#3fb950".to_string(),
+            is_built_in: true,
+            fields: vec![],
+            updated_at: None,
+        };
+        let mut store = StateStore {
+            path: dir.join("state.json"),
+            data: AppStateFile::default(),
+        };
+        let before = store.create_draft_tab(&role, "/w/old", true).unwrap();
+        let snapshot = store.tab_by_id(&before).unwrap().role_snapshot.clone();
+        let chat = WorkspaceTab {
+            label: "Developer · Login fix".into(),
+            custom_label: false,
+            role_id: "role_dev".into(),
+            role_snapshot: snapshot.clone(),
+            cwd: "/w/Koneksi".into(),
+            kind: "role".into(),
+            terminal_launch: String::new(),
+            color: Some("#f85149".into()),
+            model: Some("gpt-5".into()),
+            answers: HashMap::from([
+                ("title".to_string(), "Login fix".to_string()),
+                ("resumeSessionId".to_string(), "nope".to_string()),
+            ]),
+        };
+        let shell = WorkspaceTab {
+            label: "Shell · api".into(),
+            custom_label: true,
+            role_id: String::new(),
+            role_snapshot: snapshot,
+            cwd: "/w/api".into(),
+            kind: "terminal".into(),
+            terminal_launch: "shell".into(),
+            color: None,
+            model: None,
+            answers: HashMap::new(),
+        };
+        let ws = Workspace {
+            id: "ws_1".into(),
+            name: "Daily".into(),
+            saved_at: "2026-10-06T00:00:00Z".into(),
+            tabs: vec![chat, shell],
+            active_index: Some(1),
+        };
+
+        let added = store.open_workspace(&ws, false).unwrap();
+        assert_eq!(added.len(), 2);
+        assert_eq!(store.data.tabs.len(), 3);
+        assert_eq!(store.data.active_tab_id.as_deref(), Some(added[1].as_str()));
+        let restored = store.tab_by_id(&added[0]).unwrap();
+        assert_eq!(restored.label, "Developer · Login fix");
+        assert_eq!(restored.role_id, "role_dev");
+        assert_eq!(restored.cwd, "/w/Koneksi");
+        assert_eq!(restored.phase, "draft");
+        assert_eq!(restored.kind, "role");
+        assert!(restored.custom_label);
+        assert!(restored.session.is_none());
+        assert_eq!(restored.model.as_deref(), Some("gpt-5"));
+        assert_eq!(
+            restored.answers.get("cwd").map(String::as_str),
+            Some("/w/Koneksi")
+        );
+        assert!(!restored.answers.contains_key("resumeSessionId"));
+        let term = store.tab_by_id(&added[1]).unwrap();
+        assert_eq!(term.kind, "terminal");
+        assert_eq!(term.terminal_launch, "shell");
+        assert_eq!(term.phase, "terminal");
+
+        let replaced = store.open_workspace(&ws, true).unwrap();
+        let open: Vec<_> = store.sorted_tabs().iter().map(|t| t.id.clone()).collect();
+        assert_eq!(open, replaced);
+        assert!(store.data.closed_tabs.iter().any(|t| t.id == before));
+        assert_eq!(
+            store.data.active_tab_id.as_deref(),
+            Some(replaced[1].as_str())
+        );
+        let reloaded: AppStateFile = crate::store::read_json(&dir.join("state.json")).unwrap();
+        let labels: Vec<_> = reloaded.tabs.iter().map(|t| t.label.clone()).collect();
+        assert_eq!(labels, vec!["Developer · Login fix", "Shell · api"]);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

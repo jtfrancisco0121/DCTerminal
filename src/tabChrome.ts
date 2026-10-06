@@ -133,42 +133,212 @@ export function tabAtIndex<T>(tabs: T[], index: number): T | null {
   return tabs[index] ?? null;
 }
 
+/** Palette groups, in the order the palette lists them. */
+export const PALETTE_GROUPS = [
+  "Tabs",
+  "Worktree",
+  "Split",
+  "Files",
+  "Search",
+  "History",
+  "Hand-off",
+  "Model",
+  "Prompts",
+  "Workspaces",
+  "Composer",
+  "Terminal",
+  "Setup",
+  "Help",
+  "Diagnostics",
+  "Open tabs",
+] as const;
+
+export type PaletteGroup = (typeof PALETTE_GROUPS)[number];
+
+/** Every fixed palette action. StartupForm's runPalette must handle each one. */
+export const PALETTE_ACTIONS = [
+  "newTab",
+  "closeTab",
+  "reopenClosedTab",
+  "nextTab",
+  "prevTab",
+  "renameTab",
+  "tabSwitcher",
+  "newWorktreeTab",
+  "removeWorktree",
+  "splitRight",
+  "splitDown",
+  "closeSplit",
+  "swapPanes",
+  "focusOtherPane",
+  "toggleFilePanel",
+  "showChanges",
+  "find",
+  "searchChats",
+  "chatHistory",
+  "sendPlanImplementer",
+  "sendPlanDeveloper",
+  "handoffHelp",
+  "changeModel",
+  "refreshModels",
+  "promptLibrary",
+  "savePrompt",
+  "workspaces",
+  "saveWorkspace",
+  "focusPad",
+  "focusInput",
+  "transferPad",
+  "send",
+  "toggleTerminal",
+  "transferToTerminal",
+  "firstRunSetup",
+  "shortcutsHelp",
+  "toggleShortcutBar",
+  "switchTheme",
+  "settings",
+  "toggleCapture",
+] as const;
+
+export type PaletteAction = (typeof PALETTE_ACTIONS)[number];
+
 export type PaletteCommand = {
   id: string;
   title: string;
-  group: string;
+  group: PaletteGroup;
   keywords?: string;
+  /** Short note shown next to the title, e.g. "current". */
+  hint?: string;
+  /** Listed only once the user types (long lists such as models). */
+  searchOnly?: boolean;
 };
 
+export type PaletteRoute =
+  | { kind: "action"; id: PaletteAction }
+  | { kind: "goto"; tabId: string }
+  | { kind: "model"; model: string | null };
+
+/** Turn a palette command id into what to run, or null if it is unknown. */
+export function parsePaletteId(id: string): PaletteRoute | null {
+  if (id.startsWith("goto:")) {
+    const tabId = id.slice("goto:".length);
+    return tabId ? { kind: "goto", tabId } : null;
+  }
+  if (id.startsWith("model:")) {
+    const model = id.slice("model:".length);
+    return { kind: "model", model: model || null };
+  }
+  return (PALETTE_ACTIONS as readonly string[]).includes(id)
+    ? { kind: "action", id: id as PaletteAction }
+    : null;
+}
+
+/**
+ * Every word in the query must appear in the title, group, or keywords.
+ * Search-only commands are left out until the user types.
+ */
 export function filterCommands(commands: PaletteCommand[], query: string): PaletteCommand[] {
-  const q = query.trim().toLowerCase();
-  if (!q) return commands;
+  const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return commands.filter((cmd) => !cmd.searchOnly);
   return commands.filter((cmd) => {
     const hay = `${cmd.title} ${cmd.group} ${cmd.keywords ?? ""}`.toLowerCase();
-    return hay.includes(q);
+    return tokens.every((token) => hay.includes(token));
   });
 }
 
+export type PaletteModelOptions = {
+  /** The tab's own model; null means it follows the default. */
+  current: string | null;
+  /** The model the tab gets when it follows the default. */
+  inherited: string;
+  models: { id: string; label: string }[];
+};
+
 export function buildPalette(opts: {
-  tabs: { id: string; label: string }[];
+  tabs: { id: string; label: string; cwd?: string }[];
   canReopen: boolean;
   splitOpen: boolean;
   canSendPlan?: boolean;
+  /** The active tab was opened in a worktree. */
+  canRemoveWorktree?: boolean;
+  /** The active tab can change model (absent for plain shells). */
+  model?: PaletteModelOptions | null;
 }): PaletteCommand[] {
   const commands: PaletteCommand[] = [
     { id: "newTab", title: "New tab", group: "Tabs" },
     { id: "closeTab", title: "Close tab", group: "Tabs" },
-    { id: "reopenClosedTab", title: "Reopen closed tab", group: "Tabs" },
     { id: "nextTab", title: "Next tab", group: "Tabs" },
     { id: "prevTab", title: "Previous tab", group: "Tabs" },
     { id: "renameTab", title: "Rename tab", group: "Tabs" },
     { id: "tabSwitcher", title: "Go to tab…", group: "Tabs" },
-    { id: "splitRight", title: "Split right", group: "Panes" },
-    { id: "splitDown", title: "Split down", group: "Panes" },
-    { id: "closeSplit", title: "Close split", group: "Panes" },
-    { id: "swapPanes", title: "Swap panes", group: "Panes" },
-    { id: "focusOtherPane", title: "Focus other pane", group: "Panes" },
+    {
+      id: "newWorktreeTab",
+      title: "New tab in worktree…",
+      group: "Worktree",
+      keywords: "git branch worktree",
+    },
+    { id: "splitRight", title: "Split right", group: "Split", keywords: "pane side by side" },
+    { id: "splitDown", title: "Split down", group: "Split", keywords: "pane stacked" },
     { id: "toggleFilePanel", title: "Toggle file panel", group: "Files", keywords: "tree explorer" },
+    {
+      id: "showChanges",
+      title: "Show changes (diff)…",
+      group: "Files",
+      keywords: "diff revert accept review edits git agent",
+    },
+    {
+      id: "find",
+      title: "Find in tab",
+      group: "Search",
+      keywords: "search text chat terminal scrollback",
+    },
+    {
+      id: "searchChats",
+      title: "Search all chats…",
+      group: "Search",
+      keywords: "find history transcript closed saved messages",
+    },
+    {
+      id: "chatHistory",
+      title: "Chat history for this folder…",
+      group: "History",
+      keywords: "resume past chats previous sessions cursor cli agent conversations",
+    },
+    {
+      id: "changeModel",
+      title: "Change model…",
+      group: "Model",
+      keywords: "switch llm",
+    },
+    {
+      id: "refreshModels",
+      title: "Refresh model list",
+      group: "Model",
+      keywords: "reload models cli",
+    },
+    {
+      id: "promptLibrary",
+      title: "Prompt library…",
+      group: "Prompts",
+      keywords: "saved prompts snippets templates recent sends history insert scratch pad",
+    },
+    {
+      id: "savePrompt",
+      title: "Save scratch pad as prompt…",
+      group: "Prompts",
+      keywords: "prompt library snippet template name",
+    },
+    {
+      id: "workspaces",
+      title: "Open workspace…",
+      group: "Workspaces",
+      keywords: "workspaces restore load saved tabs folders session layout",
+    },
+    {
+      id: "saveWorkspace",
+      title: "Save tabs as workspace…",
+      group: "Workspaces",
+      keywords: "workspace save tabs folders roles layout",
+    },
     { id: "focusPad", title: "Focus scratch pad", group: "Composer" },
     { id: "focusInput", title: "Focus input", group: "Composer" },
     { id: "transferPad", title: "Transfer scratch pad", group: "Composer" },
@@ -179,51 +349,103 @@ export function buildPalette(opts: {
       title: "Transfer scratch pad to terminal",
       group: "Terminal",
     },
+    {
+      id: "firstRunSetup",
+      title: "Run first-run setup…",
+      group: "Setup",
+      keywords: "setup onboarding welcome cursor cli agent login sign in detect folder role",
+    },
     { id: "shortcutsHelp", title: "Keyboard shortcuts", group: "Help" },
+    {
+      id: "toggleShortcutBar",
+      title: "Toggle shortcut bar",
+      group: "Help",
+      keywords: "shortcut bar hints keys bottom status show hide",
+    },
+    {
+      id: "switchTheme",
+      title: "Switch theme (GitHub Dark / Light)",
+      group: "Help",
+      keywords: "theme appearance dark light colors github",
+    },
     { id: "settings", title: "Settings", group: "Help" },
-    ...(opts.canSendPlan
-      ? [
-          {
-            id: "sendPlanImplementer",
-            title: "Send plan to Implementer",
-            group: "Hand-off",
-            keywords: "planner plan implementer",
-          },
-          {
-            id: "sendPlanDeveloper",
-            title: "Send plan to Developer",
-            group: "Hand-off",
-            keywords: "planner plan developer",
-          },
-        ]
-      : []),
     {
       id: "toggleCapture",
       title: "Toggle permission payload capture",
       group: "Diagnostics",
     },
   ];
-  if (!opts.canReopen) {
-    commands.splice(
-      commands.findIndex((c) => c.id === "reopenClosedTab"),
-      1,
+  if (opts.canReopen) {
+    commands.push({ id: "reopenClosedTab", title: "Reopen closed tab", group: "Tabs" });
+  }
+  if (opts.canRemoveWorktree) {
+    commands.push({
+      id: "removeWorktree",
+      title: "Remove this tab's worktree…",
+      group: "Worktree",
+      keywords: "git branch worktree delete",
+    });
+  }
+  if (opts.splitOpen) {
+    commands.push(
+      { id: "closeSplit", title: "Close split", group: "Split", keywords: "pane" },
+      { id: "swapPanes", title: "Swap panes", group: "Split" },
+      { id: "focusOtherPane", title: "Focus other pane", group: "Split" },
     );
   }
-  if (!opts.splitOpen) {
-    for (const id of ["closeSplit", "swapPanes", "focusOtherPane"]) {
-      commands.splice(
-        commands.findIndex((c) => c.id === id),
-        1,
-      );
+  if (opts.canSendPlan) {
+    commands.push(
+      {
+        id: "sendPlanImplementer",
+        title: "Hand off plan to Implementer…",
+        group: "Hand-off",
+        keywords: "handoff send planner plan implementer",
+      },
+      {
+        id: "sendPlanDeveloper",
+        title: "Hand off plan to Developer…",
+        group: "Hand-off",
+        keywords: "handoff send planner plan developer",
+      },
+    );
+  } else {
+    commands.push({
+      id: "handoffHelp",
+      title: "Hand off plan…",
+      group: "Hand-off",
+      keywords: "handoff send planner plan implementer developer",
+    });
+  }
+  if (opts.model) {
+    const { current, inherited, models } = opts.model;
+    commands.push({
+      id: "model:",
+      title: `Use default model (${inherited})`,
+      group: "Model",
+      keywords: "switch llm inherit",
+      hint: current === null ? "current" : undefined,
+      searchOnly: true,
+    });
+    for (const model of models) {
+      commands.push({
+        id: `model:${model.id}`,
+        title: `Use model: ${model.label}`,
+        group: "Model",
+        keywords: `switch llm ${model.id}`,
+        hint: current === model.id ? "current" : undefined,
+        searchOnly: true,
+      });
     }
   }
   for (const tab of opts.tabs) {
     commands.push({
       id: `goto:${tab.id}`,
       title: `Switch to: ${tab.label}`,
-      group: "Tabs",
-      keywords: tab.label,
+      group: "Open tabs",
+      keywords: `${tab.label} ${tab.cwd ?? ""} go to tab`,
     });
   }
-  return commands;
+  const rank = (group: PaletteGroup) => PALETTE_GROUPS.indexOf(group);
+  // Array.prototype.sort is stable, so each group keeps the order above.
+  return commands.sort((a, b) => rank(a.group) - rank(b.group));
 }

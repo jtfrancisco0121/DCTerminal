@@ -83,4 +83,32 @@ describe("FilePanel", () => {
     );
     expect(await screen.findByText("Saved.")).toBeTruthy();
   });
+
+  it("reveals a file from the diff panel: expands its folders, opens it, and takes focus", async () => {
+    readMock.mockResolvedValueOnce({
+      path: "src/main.ts",
+      absPath: "/work/app/src/main.ts",
+      size: 20,
+      mtimeMs: 5,
+      kind: "text",
+      text: "export {};\n",
+      dataBase64: null,
+      mime: null,
+    });
+    render(
+      <FilePanel
+        tabId="t1"
+        cwd="/work/app"
+        platform="mac"
+        focusFile={{ path: "src/main.ts", nonce: 1 }}
+        onInsertReference={() => {}}
+        onClose={() => {}}
+      />,
+    );
+    await waitFor(() => expect(readMock).toHaveBeenCalledWith("t1", "src/main.ts"));
+    expect(listMock).toHaveBeenCalledWith("t1", "src");
+    const item = await screen.findByRole("button", { name: /main\.ts/ });
+    expect(item.className).toContain("file-tree-item-selected");
+    await waitFor(() => expect(document.activeElement).toBe(item));
+  });
 });

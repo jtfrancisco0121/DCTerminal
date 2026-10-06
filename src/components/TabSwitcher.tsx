@@ -1,4 +1,6 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { folderName, searchTabs } from "../tabSearch";
+import { tabStatusLabel, type TabStatus } from "../tabStatus";
 
 type TabItem = {
   id: string;
@@ -13,7 +15,11 @@ type Props = {
   onClose: () => void;
   title?: string;
   placeholder?: string;
+  activeTabId?: string | null;
+  statuses?: Record<string, TabStatus>;
 };
+
+const NO_STATUSES: Record<string, TabStatus> = {};
 
 export function TabSwitcher({
   tabs,
@@ -21,15 +27,25 @@ export function TabSwitcher({
   onClose,
   title = "Go to tab",
   placeholder = "Go to tab by name or folder",
+  activeTabId = null,
+  statuses = NO_STATUSES,
 }: Props) {
   const [query, setQuery] = useState("");
-  const matches = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return tabs;
-    return tabs.filter((tab) =>
-      `${tab.label} ${tab.cwd} ${tab.phase}`.toLowerCase().includes(q),
-    );
-  }, [tabs, query]);
+  const [index, setIndex] = useState(0);
+  const statusText = useCallback(
+    (tab: TabItem) => {
+      const status = statuses[tab.id];
+      return status ? tabStatusLabel(status) : "";
+    },
+    [statuses],
+  );
+  const matches = useMemo(() => searchTabs(tabs, query, statusText), [tabs, query, statusText]);
+
+  useEffect(() => {
+    setIndex(0);
+  }, [query]);
+
+  const selected = Math.min(index, Math.max(matches.length - 1, 0));
 
   return (
     <div className="overlay-backdrop" role="presentation" onClick={onClose}>
@@ -44,25 +60,51 @@ export function TabSwitcher({
           autoFocus
           placeholder={placeholder}
           value={query}
+          aria-label={title}
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === "Enter" && matches[0]) {
+            if (event.key === "ArrowDown") {
               event.preventDefault();
-              onSelect(matches[0].id);
+              setIndex(Math.min(selected + 1, Math.max(matches.length - 1, 0)));
+            } else if (event.key === "ArrowUp") {
+              event.preventDefault();
+              setIndex(Math.max(selected - 1, 0));
+            } else if (event.key === "Enter" && matches[selected]) {
+              event.preventDefault();
+              onSelect(matches[selected].id);
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              onClose();
             }
           }}
         />
-        <ul className="palette-list">
-          {matches.map((tab) => (
-            <li key={tab.id}>
-              <button type="button" className="palette-item" onClick={() => onSelect(tab.id)}>
-                <span>{tab.label}</span>
-                <span className="hint">
-                  {tab.phase} · {tab.cwd}
-                </span>
-              </button>
-            </li>
-          ))}
+        <ul className="palette-list" role="listbox" aria-label="Tabs">
+          {matches.map((tab, i) => {
+            const status = statusText(tab);
+            const folder = folderName(tab.cwd);
+            return (
+              <li key={tab.id}>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={i === selected}
+                  className={i === selected ? "palette-item palette-item-active" : "palette-item"}
+                  onMouseEnter={() => setIndex(i)}
+                  onClick={() => onSelect(tab.id)}
+                >
+                  <span>
+                    {tab.label}
+                    {tab.id === activeTabId && <span className="hint"> · current</span>}
+                    {status && <span className="tab-switcher-status"> · {status}</span>}
+                  </span>
+                  <span className="hint" title={tab.cwd}>
+                    {folder ? `${folder} · ${tab.cwd}` : tab.phase}
+                  </span>
+                </button>
+              </li>
+            );
+          })}
           {matches.length === 0 && <li className="hint">No tabs match</li>}
         </ul>
       </div>

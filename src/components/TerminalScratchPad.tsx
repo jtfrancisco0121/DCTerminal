@@ -7,6 +7,8 @@ export type TerminalPadHandle = {
   focus: () => void;
   /** true submits with one Enter after the paste. */
   send: (submit: boolean) => void;
+  /** The pad's editor, for inserting a library prompt at the cursor. */
+  field: () => HTMLTextAreaElement | null;
 };
 
 type Props = {
@@ -25,6 +27,17 @@ type Props = {
   onFocusPad?: () => void;
   /** Called after the pad is hidden or shown so the terminal can refit. */
   onOpenChange?: (open: boolean) => void;
+  /** F6: a prompt was sent with Enter (feeds Recent sends). */
+  onSent?: (text: string) => void;
+  /** F6: open the prompt library. */
+  onOpenLibrary?: () => void;
+  /** U2: Hide/Show shared with chat tabs. Uncontrolled when omitted. */
+  open?: boolean;
+  onOpenToggle?: (open: boolean) => void;
+  /** U2: shared pad height (px; null = 3 rows). */
+  height?: number | null;
+  onHeightChange?: (height: number) => void;
+  onHeightCommit?: (height: number) => void;
 };
 
 function padText(field: HTMLTextAreaElement | null, content: string): string {
@@ -50,11 +63,23 @@ export const TerminalScratchPad = forwardRef<TerminalPadHandle, Props>(
       onFocusTerminal,
       onFocusPad,
       onOpenChange,
+      onSent,
+      onOpenLibrary,
+      open: openProp,
+      onOpenToggle,
+      height = null,
+      onHeightChange,
+      onHeightCommit,
     },
     ref,
   ) {
     const fieldRef = useRef<HTMLTextAreaElement>(null);
-    const [open, setOpen] = useState(true);
+    const [openState, setOpenState] = useState(true);
+    const open = openProp ?? openState;
+    const setOpen = (next: boolean) => {
+      if (openProp === undefined) setOpenState(next);
+      onOpenToggle?.(next);
+    };
     const [focusTick, setFocusTick] = useState(0);
     const modLabel = platform === "mac" ? "⌘" : "Ctrl";
 
@@ -63,6 +88,7 @@ export const TerminalScratchPad = forwardRef<TerminalPadHandle, Props>(
       if (!text.trim()) return;
       const data = encodeTerminalPaste(text, { bracketedPaste, submit });
       void write(ptyId, data);
+      if (submit) onSent?.(text);
     };
 
     useImperativeHandle(ref, () => ({
@@ -71,6 +97,7 @@ export const TerminalScratchPad = forwardRef<TerminalPadHandle, Props>(
         setFocusTick((tick) => tick + 1);
       },
       send: (submit: boolean) => deliver(submit),
+      field: () => fieldRef.current,
     }));
 
     const onOpenChangeRef = useRef(onOpenChange);
@@ -109,7 +136,11 @@ export const TerminalScratchPad = forwardRef<TerminalPadHandle, Props>(
           onBlur={onBlur}
           onFocus={onFocusPad}
           onEscape={onFocusTerminal}
-          onToggle={() => setOpen((value) => !value)}
+          onToggle={() => setOpen(!open)}
+          onOpenLibrary={onOpenLibrary}
+          height={height}
+          onHeightChange={onHeightChange}
+          onHeightCommit={onHeightCommit}
         />
       </div>
     );

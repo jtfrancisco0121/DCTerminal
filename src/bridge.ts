@@ -4,6 +4,7 @@
  */
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { NotificationSettings } from "./notify/agentNotify";
 
 export type CliDetectResult = {
   found: boolean;
@@ -14,6 +15,31 @@ export type CliDetectResult = {
 
 export async function detectCli(): Promise<CliDetectResult> {
   return invoke<CliDetectResult>("detect_cli");
+}
+
+/** F8: sign-in state from `agent status` (the CLI's own check). */
+export type LoginStatus = {
+  /** "loggedIn" | "loggedOut" | "unknown" | "noCli" */
+  state: string;
+  account: string | null;
+  detail: string | null;
+  /** CURSOR_API_KEY is set in DCTerminal's environment. */
+  apiKeyEnv: boolean;
+};
+
+export async function cliLoginStatus(): Promise<LoginStatus> {
+  return invoke<LoginStatus>("cli_login_status");
+}
+
+export type FirstRunStatus = { needed: boolean; completed: boolean };
+
+/** F8: show first-run setup? Only on a fresh profile that has not finished it. */
+export async function firstRunStatus(): Promise<FirstRunStatus> {
+  return invoke<FirstRunStatus>("first_run_status");
+}
+
+export async function firstRunComplete(): Promise<void> {
+  return invoke("first_run_complete");
 }
 
 export type AcpProbeResult = {
@@ -176,6 +202,9 @@ export type TabSummary = {
   resumeSessionId?: string | null;
   /** Per-tab model override. Missing means the role or global default. */
   model?: string | null;
+  /** F3: branch checked out in this tab's worktree. Missing on plain tabs. */
+  worktreeBranch?: string | null;
+  worktreePath?: string | null;
 };
 
 export type ClosedTabSummary = {
@@ -219,6 +248,9 @@ export type TabRecord = {
   startupPromptSent?: boolean;
   kind?: string;
   terminalLaunch?: string;
+  /** The user renamed this tab; form edits and starts keep the name. */
+  customLabel?: boolean;
+  worktree?: WorktreeRef | null;
 };
 
 export async function getAppState(): Promise<AppStateSnapshot> {
@@ -522,8 +554,29 @@ export async function diagnosticsSetCapture(enabled: boolean): Promise<Diagnosti
   return invoke("diagnostics_set_capture", { enabled });
 }
 
-export async function reopenClosedTab(): Promise<{ tab: TabRecord }> {
-  return invoke("reopen_closed_tab");
+/** Reopen `tabId`, or the most recently closed tab when omitted. */
+export async function reopenClosedTab(tabId?: string): Promise<{ tab: TabRecord }> {
+  return invoke("reopen_closed_tab", tabId ? { tabId } : {});
+}
+
+/** F5: one match in saved chat text (open, closed, or archived tab). */
+export type HistoryHit = {
+  /** "open" | "closed" | "archived" */
+  source: string;
+  tabId: string;
+  label: string;
+  cwd: string;
+  updatedAt: string | null;
+  /** 0-based index of this match in the source text. */
+  occurrence: number;
+  totalInSource: number;
+  before: string;
+  matched: string;
+  after: string;
+};
+
+export async function historySearch(query: string): Promise<HistoryHit[]> {
+  return invoke<HistoryHit[]>("history_search", { query });
 }
 
 export async function setTabLabel(tabId: string, label: string): Promise<void> {
@@ -596,6 +649,114 @@ export async function handoffSave(input: HandoffSaveInput): Promise<HandoffRecor
 
 export async function handoffBindTab(id: string, tabId: string): Promise<HandoffRecord> {
   return invoke<HandoffRecord>("handoff_bind_tab", { id, tabId });
+}
+
+/** F7: one tab of a saved workspace (no live session). */
+export type WorkspaceTab = {
+  label: string;
+  customLabel: boolean;
+  roleId: string;
+  roleSnapshot: { name: string; templateVersion: number; mode: string; injection: string };
+  cwd: string;
+  /** "role" (chat) | "terminal" */
+  kind: string;
+  terminalLaunch: string;
+  color: string | null;
+  model: string | null;
+  answers: Record<string, string>;
+};
+
+export type Workspace = {
+  id: string;
+  name: string;
+  savedAt: string;
+  tabs: WorkspaceTab[];
+  activeIndex: number | null;
+};
+
+export type WorkspaceList = {
+  workspaces: Workspace[];
+  /** Absolute path of workspaces.json in DCTerminal's app data dir. */
+  path: string;
+};
+
+export type WorkspaceOpened = {
+  state: AppStateSnapshot;
+  tabIds: string[];
+  /** Labels of tabs left out because their role no longer exists. */
+  skipped: string[];
+};
+
+export async function workspacesList(): Promise<WorkspaceList> {
+  return invoke<WorkspaceList>("workspaces_list");
+}
+
+/** Save the open tabs under `name`; `replace` overwrites a workspace with that name. */
+export async function workspaceSave(name: string, replace: boolean): Promise<WorkspaceList> {
+  return invoke<WorkspaceList>("workspace_save", { name, replace });
+}
+
+export async function workspaceDelete(id: string): Promise<WorkspaceList> {
+  return invoke<WorkspaceList>("workspace_delete", { id });
+}
+
+/** Open a workspace as new tabs; `replace` closes the tabs open now. */
+export async function workspaceOpen(id: string, replace: boolean): Promise<WorkspaceOpened> {
+  return invoke<WorkspaceOpened>("workspace_open", { id, replace });
+}
+
+/** F6: a named prompt in the library (`prompts.json` in app data). */
+export type SavedPrompt = {
+  id: string;
+  name: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+  lastUsedAt: string | null;
+};
+
+/** F6: one sent prompt, newest first. */
+export type RecentSend = {
+  text: string;
+  sentAt: string;
+  /** "chat" | "terminal" */
+  source: string;
+};
+
+export type PromptLibrary = {
+  prompts: SavedPrompt[];
+  recent: RecentSend[];
+  /** Absolute path of prompts.json in DCTerminal's app data dir. */
+  path: string;
+};
+
+export async function promptLibraryGet(): Promise<PromptLibrary> {
+  return invoke<PromptLibrary>("prompt_library_get");
+}
+
+/** Create (id null) or edit a saved prompt. Names are unique. */
+export async function promptSave(
+  id: string | null,
+  name: string,
+  body: string,
+): Promise<PromptLibrary> {
+  return invoke<PromptLibrary>("prompt_save", { id, name, body });
+}
+
+export async function promptDelete(id: string): Promise<PromptLibrary> {
+  return invoke<PromptLibrary>("prompt_delete", { id });
+}
+
+export async function promptMarkUsed(id: string): Promise<PromptLibrary> {
+  return invoke<PromptLibrary>("prompt_mark_used", { id });
+}
+
+export async function promptRecordSend(text: string, source: "chat" | "terminal"): Promise<void> {
+  return invoke("prompt_record_send", { text, source });
+}
+
+export async function promptClearRecent(): Promise<PromptLibrary> {
+  return invoke<PromptLibrary>("prompt_clear_recent");
 }
 
 export async function handoffList(): Promise<HandoffRecord[]> {
@@ -791,6 +952,158 @@ export async function setTabModel(tabId: string, model: string | null): Promise<
 /** Change a running chat tab's model (in place, or restart + session/load). */
 export async function acpSetModel(tabId: string, model: string | null): Promise<SetModelResult> {
   return invoke<SetModelResult>("acp_set_model", { tabId, model });
+}
+
+export async function getNotificationSettings(): Promise<NotificationSettings> {
+  return invoke<NotificationSettings>("get_notification_settings");
+}
+
+export async function setNotificationSettings(
+  notifications: NotificationSettings,
+): Promise<NotificationSettings> {
+  return invoke<NotificationSettings>("set_notification_settings", { notifications });
+}
+
+/** U7/U8: colour theme, optional shortcut bar, dismissed one-time tips. */
+export type UiSettings = {
+  theme: string;
+  shortcutBar: boolean;
+  tipsSeen: string[];
+  /** U2: scratch pad height in px; 0 = the 3-row default. */
+  padHeight: number;
+  /** U2: scratch pad hidden in chat and terminal tabs. */
+  padHidden: boolean;
+};
+
+export const DEFAULT_UI_SETTINGS: UiSettings = {
+  theme: "github-dark",
+  shortcutBar: false,
+  tipsSeen: [],
+  padHeight: 0,
+  padHidden: false,
+};
+
+export async function getUiSettings(): Promise<UiSettings> {
+  return invoke<UiSettings>("get_ui_settings");
+}
+
+export async function setUiSettings(ui: UiSettings): Promise<UiSettings> {
+  return invoke<UiSettings>("set_ui_settings", { ui });
+}
+
+export type WorktreeRef = {
+  repoRoot: string;
+  path: string;
+  branch: string;
+};
+
+export type RepoInfo = {
+  mainRoot: string;
+  currentBranch: string | null;
+  branches: string[];
+  checkedOut: string[];
+  worktreesDir: string;
+};
+
+export type WorktreeCheck = {
+  worktree: WorktreeRef;
+  branch: string | null;
+  /** `git status --porcelain` lines. Removal is refused unless empty. */
+  dirty: string[];
+};
+
+/** Read-only: branches and the sibling folder new worktrees go into. */
+export async function gitRepoInfo(path: string): Promise<RepoInfo> {
+  return invoke<RepoInfo>("git_repo_info", { path });
+}
+
+/** Runs `git worktree add` (user clicked Create), then opens a draft tab there. */
+export async function worktreeTabNew(input: {
+  roleId: string;
+  repoPath: string;
+  branch: string;
+  createBranch: boolean;
+  base: string | null;
+}): Promise<{ tab: TabRecord }> {
+  return invoke<{ tab: TabRecord }>("worktree_tab_new", {
+    roleId: input.roleId,
+    repoPath: input.repoPath,
+    branch: input.branch,
+    createBranch: input.createBranch,
+    base: input.base,
+  });
+}
+
+export async function worktreeTabCheck(tabId: string): Promise<WorktreeCheck> {
+  return invoke<WorktreeCheck>("worktree_tab_check", { tabId });
+}
+
+/** `git worktree remove` (never forced) for a tab the user already closed. */
+export async function worktreeTabRemove(tabId: string, confirmed: boolean): Promise<void> {
+  return invoke("worktree_tab_remove", { tabId, confirmed });
+}
+
+// --- F4: changes since the turn (or tab) started ---
+
+export type ChangeScope = "turn" | "tab";
+
+export type ChangedFile = {
+  /** Relative to the repository root. */
+  path: string;
+  /** Relative to the tab's folder (for the file panel), when inside it. */
+  cwdPath: string | null;
+  status: "added" | "modified" | "deleted" | "typeChanged" | string;
+  oldBlob: string;
+  newBlob: string;
+  additions: number | null;
+  deletions: number | null;
+  binary: boolean;
+};
+
+export type ChangeSet = {
+  /** "ok" | "noRepo" | "noBaseline" */
+  state: string;
+  scope: ChangeScope;
+  repoRoot: string | null;
+  baseTree: string | null;
+  nowTree: string | null;
+  baselineAt: string | null;
+  files: ChangedFile[];
+};
+
+export type FileDiff = { path: string; binary: boolean; text: string; truncated: boolean };
+
+export type RevertOutcome = {
+  reverted: string[];
+  skipped: { path: string; reason: string }[];
+};
+
+export async function changesList(tabId: string, scope: ChangeScope): Promise<ChangeSet> {
+  return invoke<ChangeSet>("changes_list", { tabId, scope });
+}
+
+/** Start a new "this turn" baseline now (snapshot kept in app data). */
+export async function changesSnapshot(tabId: string): Promise<ChangeSet> {
+  return invoke<ChangeSet>("changes_snapshot", { tabId });
+}
+
+export async function changesFileDiff(
+  tabId: string,
+  base: string,
+  now: string,
+  path: string,
+): Promise<FileDiff> {
+  return invoke<FileDiff>("changes_file_diff", { tabId, base, now, path });
+}
+
+/** Restores files to the baseline. Only after the user confirmed. */
+export async function changesRevert(
+  tabId: string,
+  base: string,
+  files: { path: string; newBlob: string }[],
+  confirmed: boolean,
+): Promise<RevertOutcome> {
+  return invoke<RevertOutcome>("changes_revert", { tabId, base, files, confirmed });
 }
 
 export type LayoutState = {

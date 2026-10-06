@@ -5,6 +5,7 @@ mod commands;
 mod cursor_history;
 mod data_dir;
 mod files;
+mod history_search;
 mod models;
 mod orchestrator;
 mod paths;
@@ -16,9 +17,12 @@ mod session_id;
 pub mod store;
 pub mod supervisor;
 pub mod template;
+pub mod turn_changes;
+pub mod worktree;
 
 use acp::{probe_acp, probe_acp_handshake};
-use cli_detect::detect_cli;
+use cli_detect::{cli_login_status, detect_cli};
+use commands::history_search;
 use commands::{
     acp_set_model, check_working_folder, close_tab, cursor_approval_mode, dev_session_cancel,
     dev_session_send, dev_session_start, dev_session_stop, diagnostics_set_capture,
@@ -30,6 +34,14 @@ use commands::{
     set_tab_color, set_tab_label, sync_active_tab_form, transcript_load, transcript_save,
     validate_and_preview, SessionRegistry,
 };
+use commands::{changes_file_diff, changes_list, changes_revert, changes_snapshot, ChangesRoot};
+use commands::{first_run_complete, first_run_status};
+use commands::{git_repo_info, worktree_tab_check, worktree_tab_new, worktree_tab_remove};
+use commands::{
+    prompt_clear_recent, prompt_delete, prompt_library_get, prompt_mark_used, prompt_record_send,
+    prompt_save,
+};
+use commands::{workspace_delete, workspace_open, workspace_save, workspaces_list};
 use files::{files_list, files_read, files_reveal, files_write};
 use models::{get_model_settings, list_models, set_model_settings, set_tab_model};
 use pty::{
@@ -38,8 +50,9 @@ use pty::{
 };
 use std::sync::Mutex;
 use store::{
-    FormsStore, HandoffStore, ProjectsStore, RolesStore, ScratchStore, SettingsStore, StateStore,
-    TranscriptStore,
+    get_notification_settings, get_ui_settings, set_notification_settings, set_ui_settings,
+    FormsStore, HandoffStore, ProjectsStore, PromptStore, RolesStore, ScratchStore, SettingsStore,
+    StateStore, TranscriptStore, WorkspaceStore,
 };
 use tauri::Manager;
 
@@ -69,6 +82,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let store = RolesStore::load_or_seed(app.handle())?;
             let mut state_store = StateStore::load_or_default(app.handle())?;
@@ -84,6 +98,22 @@ pub fn run() {
             let settings_store = SettingsStore::open(&data_dir)?;
             let transcript_store = TranscriptStore::open(&data_dir)?;
             let handoff_store = HandoffStore::open(&data_dir)?;
+            let prompt_store = PromptStore::open(&data_dir)?;
+            let workspace_store = WorkspaceStore::open(&data_dir)?;
+            let known_tabs: Vec<String> = state_store
+                .data
+                .tabs
+                .iter()
+                .map(|tab| tab.id.clone())
+                .chain(
+                    state_store
+                        .data
+                        .closed_tabs
+                        .iter()
+                        .map(|tab| tab.id.clone()),
+                )
+                .collect();
+            app.manage(ChangesRoot::open(&data_dir, &known_tabs));
             app.manage(Mutex::new(store));
             app.manage(Mutex::new(state_store));
             app.manage(Mutex::new(forms_store));
@@ -92,12 +122,17 @@ pub fn run() {
             app.manage(Mutex::new(settings_store));
             app.manage(Mutex::new(transcript_store));
             app.manage(Mutex::new(handoff_store));
+            app.manage(Mutex::new(prompt_store));
+            app.manage(Mutex::new(workspace_store));
             app.manage(Mutex::new(SessionRegistry::new()));
             app.manage(Mutex::new(PtyRegistry::new()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             detect_cli,
+            cli_login_status,
+            first_run_status,
+            first_run_complete,
             probe_acp,
             probe_acp_handshake,
             list_roles,
@@ -119,6 +154,16 @@ pub fn run() {
             respond_plan_request,
             role_session_start,
             scratch_load,
+            prompt_library_get,
+            prompt_save,
+            prompt_delete,
+            prompt_mark_used,
+            prompt_record_send,
+            prompt_clear_recent,
+            workspaces_list,
+            workspace_save,
+            workspace_delete,
+            workspace_open,
             scratch_save,
             projects_list,
             projects_remember,
@@ -153,6 +198,19 @@ pub fn run() {
             set_model_settings,
             set_tab_model,
             acp_set_model,
+            get_notification_settings,
+            set_notification_settings,
+            get_ui_settings,
+            set_ui_settings,
+            git_repo_info,
+            worktree_tab_new,
+            worktree_tab_check,
+            worktree_tab_remove,
+            changes_list,
+            changes_snapshot,
+            changes_file_diff,
+            changes_revert,
+            history_search,
             get_layout,
             set_layout,
             files_list,

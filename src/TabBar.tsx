@@ -1,4 +1,6 @@
+import { useRef, useState } from "react";
 import type { TabSummary } from "./bridge";
+import { tabStatusLabel, type TabStatus } from "./tabStatus";
 
 type Props = {
   tabs: TabSummary[];
@@ -8,18 +10,95 @@ type Props = {
   disableSwitch?: boolean;
   /** Disables + New tab (e.g. while a command is in flight). */
   disableNew?: boolean;
-  attentionTabIds?: string[];
+  /** F2 chip status: busy pulse, unseen dot, needs-you flag. */
+  statuses?: Record<string, TabStatus>;
   canReopen?: boolean;
   onSelect: (tabId: string) => void;
   onClose: (tabId: string) => void;
   onNew: () => void;
+  /** F3: open the "New tab in worktree…" dialog. */
+  onNewWorktree?: () => void;
   onReopen?: () => void;
   onColor?: (tabId: string, color: string) => void;
   settingsOpen?: boolean;
   onSettings?: () => void;
   /** When Cursor CLI is unrestricted, role tabs show that rules are off. */
   roleRulesOff?: boolean;
+  /** Tab whose chip shows the rename field. */
+  renamingTabId?: string | null;
+  onRenameStart?: (tabId: string) => void;
+  onRename?: (tabId: string, label: string) => void;
+  onRenameEnd?: () => void;
+  /** U1: role names and each tab's model for the chip's hover details. */
+  roleNames?: Record<string, string>;
+  modelFor?: (tab: TabSummary) => string | null;
 };
+
+const PHASE_TEXT: Record<string, string> = {
+  draft: "Not started",
+  running: "Running",
+  stopped: "Stopped",
+};
+
+export const ROLE_RULES_OFF_TITLE =
+  "Role permission rules are off: Cursor CLI is set to Run Everything. Change it in Cursor CLI settings to turn them back on.";
+
+/** U1: everything the slim chip leaves out, one fact per line. */
+export function tabTooltip(
+  tab: TabSummary,
+  opts: { roleName?: string; model?: string | null; statusText?: string; canRename?: boolean },
+): string {
+  const lines = [tab.label];
+  if (opts.roleName) lines.push(`Role: ${opts.roleName}`);
+  if (tab.cwd) lines.push(`Folder: ${tab.cwd}`);
+  if (tab.worktreeBranch) lines.push(`Branch: ${tab.worktreeBranch}`);
+  if (opts.model) lines.push(`Model: ${opts.model}`);
+  lines.push(`Status: ${opts.statusText || PHASE_TEXT[tab.phase] || tab.phase}`);
+  if (opts.canRename) lines.push("Double-click to rename");
+  return lines.join("\n");
+}
+
+function RenameField({
+  label,
+  onCommit,
+  onEnd,
+}: {
+  label: string;
+  onCommit: (label: string) => void;
+  onEnd: () => void;
+}) {
+  const [value, setValue] = useState(label);
+  const doneRef = useRef(false);
+  const finish = (commit: boolean) => {
+    if (doneRef.current) return;
+    doneRef.current = true;
+    const next = value.trim();
+    if (commit && next && next !== label) onCommit(next);
+    onEnd();
+  };
+  return (
+    <input
+      className="tab-rename-input"
+      aria-label={`Rename ${label}`}
+      autoFocus
+      maxLength={80}
+      value={value}
+      onFocus={(event) => event.currentTarget.select()}
+      onChange={(event) => setValue(event.target.value)}
+      onBlur={() => finish(true)}
+      onKeyDown={(event) => {
+        event.stopPropagation();
+        if (event.key === "Enter") {
+          event.preventDefault();
+          finish(true);
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          finish(false);
+        }
+      }}
+    />
+  );
+}
 
 const CHIP_COLORS = ["#58a6ff", "#3fb950", "#d29922", "#f0883e", "#bc8cff", "#f85149", "#8b949e"];
 
@@ -29,29 +108,61 @@ export function TabBar({
   roleColors = {},
   disableSwitch = false,
   disableNew = false,
-  attentionTabIds = [],
+  statuses = {},
   canReopen = false,
   onSelect,
   onClose,
   onNew,
+  onNewWorktree,
   onReopen,
   onColor,
   settingsOpen = false,
   onSettings,
   roleRulesOff = false,
+  renamingTabId = null,
+  onRenameStart,
+  onRename,
+  onRenameEnd,
+  roleNames = {},
+  modelFor,
 }: Props) {
   return (
     <div className="tab-bar">
       <div className="tab-list" role="tablist">
         {tabs.map((t) => {
           const active = t.id === activeTabId;
-          const needsAttention = attentionTabIds.includes(t.id);
+          const status = statuses[t.id];
+          const needsYou = status?.needsYou ?? null;
+          const busy = !needsYou && !!status?.busy;
+          const unseen = !needsYou && !busy && !!status?.unseen;
+          const statusText = status ? tabStatusLabel(status) : "";
           const color = t.color || roleColors[t.roleId] || "#8b949e";
+          const chipClass = [
+            "tab-chip",
+            active ? "tab-chip-active" : "",
+            needsYou ? "tab-chip-needs tab-chip-attention" : "",
+            busy ? "tab-chip-busy" : "",
+            unseen ? "tab-chip-unseen" : "",
+          ]
+            .filter(Boolean)
+            .join(" ");
+          if (renamingTabId === t.id) {
+            return (
+              <div key={t.id} className={chipClass} style={{ boxShadow: `inset 0 3px 0 ${color}` }}>
+                <RenameField
+                  label={t.label}
+                  onCommit={(label) => onRename?.(t.id, label)}
+                  onEnd={() => onRenameEnd?.()}
+                />
+              </div>
+            );
+          }
           return (
             <div
               key={t.id}
-              className={`tab-chip${active ? " tab-chip-active" : ""}${needsAttention ? " tab-chip-attention" : ""}`}
+              className={chipClass}
               style={{ boxShadow: `inset 0 3px 0 ${color}` }}
+              data-status={needsYou ? "needs" : busy ? "busy" : unseen ? "unseen" : "idle"}
             >
               <button
                 type="button"
@@ -59,22 +170,46 @@ export function TabBar({
                 role="tab"
                 aria-selected={active}
                 onClick={() => onSelect(t.id)}
+                onDoubleClick={() => onRenameStart?.(t.id)}
                 disabled={disableSwitch}
-                title={`${t.label} · ${t.phase}`}
+                title={tabTooltip(t, {
+                  roleName: t.kind === "terminal" && t.terminalLaunch !== "role" ? undefined : roleNames[t.roleId],
+                  model: modelFor?.(t) ?? null,
+                  statusText,
+                  canRename: !!onRenameStart,
+                })}
               >
                 <span
                   className={`tab-phase tab-phase-${t.phase}`}
                   aria-hidden
                   style={{ background: color }}
                 />
-                {t.label}
-                {t.terminalLaunch === "role" && <span className="tab-badge">Terminal</span>}
+                <span className="tab-chip-text">{t.label}</span>
+                {needsYou && (
+                  <span className="tab-needs-flag" aria-hidden>
+                    !
+                  </span>
+                )}
+                {unseen && <span className="tab-unseen-dot" aria-hidden />}
+                {statusText && <span className="sr-only">, {statusText}</span>}
+                {t.worktreeBranch && (
+                  <span className="tab-badge tab-branch" title={t.worktreePath ?? undefined}>
+                    ⎇ {t.worktreeBranch}
+                  </span>
+                )}
+                {t.terminalLaunch === "role" && (
+                  <span className="tab-icon" role="img" aria-label="Role terminal" title="Role terminal">
+                    ›_
+                  </span>
+                )}
                 {roleRulesOff && t.kind !== "terminal" && t.roleId && (
                   <span
-                    className="tab-badge tab-badge-warn"
-                    title="Cursor CLI is set to Run Everything, so role permission rules are off"
+                    className="tab-icon tab-icon-warn"
+                    role="img"
+                    aria-label={ROLE_RULES_OFF_TITLE}
+                    title={ROLE_RULES_OFF_TITLE}
                   >
-                    role permission rules are off
+                    ⚠
                   </span>
                 )}
               </button>
@@ -118,23 +253,37 @@ export function TabBar({
       {canReopen && onReopen && (
         <button
           type="button"
-          className="secondary-button"
+          className="secondary-button tab-bar-icon"
           onClick={onReopen}
           disabled={disableNew}
+          aria-label="Reopen closed tab"
           title="Reopen the most recently closed tab (F6)"
         >
-          Reopen
+          ↺
         </button>
       )}
       <button
         type="button"
-        className="secondary-button tab-new"
+        className="secondary-button tab-new tab-bar-icon"
         onClick={onNew}
         disabled={disableNew}
-        title="Open another tab. Other sessions keep running."
+        aria-label="New tab"
+        title="New tab. Other sessions keep running."
       >
-        + New tab
+        +
       </button>
+      {onNewWorktree && (
+        <button
+          type="button"
+          className="secondary-button tab-new tab-bar-icon"
+          onClick={onNewWorktree}
+          disabled={disableNew}
+          aria-label="New tab in worktree…"
+          title="New tab in worktree: create a git worktree in a sibling folder and open a tab there"
+        >
+          ⎇
+        </button>
+      )}
       {onSettings && (
         <button
           type="button"

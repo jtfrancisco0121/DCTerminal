@@ -27,6 +27,8 @@ export type ShortcutAction =
   | "toggleFilePanel"
   | "renameTab"
   | "settings"
+  | "find"
+  | "searchChats"
   | "closeDialog";
 
 export type Platform = "mac" | "windows" | "linux";
@@ -116,8 +118,8 @@ export const SHORTCUTS: ShortcutDef[] = [
   },
   {
     action: "tabSwitcher",
-    label: "Tab switcher",
-    description: "Search open tabs by name or folder.",
+    label: "Go to tab",
+    description: "Search open tabs by name, folder, or status (needs you, working).",
     code: "KeyP",
   },
   {
@@ -179,9 +181,16 @@ export const SHORTCUTS: ShortcutDef[] = [
     code: "Comma",
   },
   {
+    action: "find",
+    label: "Find in tab",
+    description:
+      "Find text in this chat (jumps to the message) or this terminal's scrollback.",
+    code: "KeyF",
+  },
+  {
     action: "renameTab",
     label: "Rename tab",
-    description: "Rename the active tab.",
+    description: "Rename the active tab in place. Double-click a tab also works.",
     code: "F2",
     mod: false,
   },
@@ -515,12 +524,20 @@ export function routeKey(
   const terminalAction = terminalActionFor(chord);
   if (ctx.surface === "terminal") {
     const match = matchShortcut(event, ctx);
+    // Cmd+F never reaches a shell on macOS. Ctrl+F (forward-char) does.
+    if (match?.action === "find" && ctx.platform === "mac") {
+      return { kind: "terminal", action: "search" };
+    }
     if (match && terminalGlobal(match.action, ctx.platform)) return { kind: "app", match };
     if (terminalAction) return { kind: "terminal", action: terminalAction };
     return { kind: "shell" };
   }
   if (terminalAction === "togglePane" || terminalAction === "transferToTerminal") {
     return { kind: "terminal", action: terminalAction };
+  }
+  // Outside a focused terminal, Mod+Shift+F searches every chat.
+  if (terminalAction === "search" && !event.repeat) {
+    return { kind: "app", match: { action: "searchChats" } };
   }
   const match = matchShortcut(event, ctx);
   return match ? { kind: "app", match } : { kind: "none" };
@@ -606,10 +623,20 @@ export function shortcutRows(platform: Platform): ShortcutRow[] {
       keys: `${mod}+Shift+V`,
     },
     {
-      action: "focusInput",
-      label: "Search terminal",
-      description: "Search the terminal scrollback.",
+      action: "searchChats",
+      label: "Search all chats",
+      description:
+        "Search open chats, closed tabs, and saved transcripts. Jump to the message.",
       keys: `${mod}+Shift+F`,
+    },
+    {
+      action: "find",
+      label: "Search terminal",
+      description:
+        platform === "mac"
+          ? "Search the focused terminal's scrollback."
+          : "Search the focused terminal's scrollback. Ctrl+F stays with the shell.",
+      keys: platform === "mac" ? `${mod}+F` : `${mod}+Shift+F`,
     },
     {
       action: "toggleFilePanel",

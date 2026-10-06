@@ -17,6 +17,8 @@ type Props = {
   /** The tab's working folder. Empty when the tab has none yet. */
   cwd: string;
   platform: Platform;
+  /** Open this file (relative to `cwd`) and focus it; a new nonce repeats it. */
+  focusFile?: { path: string; nonce: number } | null;
   onInsertReference: (path: string) => void;
   onClose: () => void;
 };
@@ -34,7 +36,7 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export function FilePanel({ tabId, cwd, platform, onInsertReference, onClose }: Props) {
+export function FilePanel({ tabId, cwd, platform, focusFile, onInsertReference, onClose }: Props) {
   const [dirs, setDirs] = useState<Record<string, DirState>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set([""]));
   const [root, setRoot] = useState("");
@@ -47,6 +49,8 @@ export function FilePanel({ tabId, cwd, platform, onInsertReference, onClose }: 
   const [conflict, setConflict] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
+  const panelRef = useRef<HTMLElement>(null);
+  const [focusPath, setFocusPath] = useState<string | null>(null);
   const dirty = editing && file?.text != null && draft !== file.text;
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
@@ -109,6 +113,45 @@ export function FilePanel({ tabId, cwd, platform, onInsertReference, onClose }: 
       setFileError(errorText(err));
     }
   };
+
+  const openFileRef = useRef(openFile);
+  openFileRef.current = openFile;
+
+  // F4 "Open in file panel": expand the folders on the way, open the file.
+  const revealPath = focusFile?.path;
+  const revealNonce = focusFile?.nonce;
+  useEffect(() => {
+    if (!revealPath || !cwd) return;
+    let cancelled = false;
+    const parts = revealPath.split("/").filter(Boolean);
+    const folders = parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join("/"));
+    void (async () => {
+      for (const folder of folders) {
+        if (cancelled) return;
+        await loadDir(folder);
+      }
+      if (cancelled) return;
+      setExpanded((prev) => new Set([...prev, "", ...folders]));
+      await openFileRef.current(revealPath);
+      if (!cancelled) setFocusPath(revealPath);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [revealPath, revealNonce, cwd, loadDir]);
+
+  useEffect(() => {
+    if (!focusPath) return;
+    const items = panelRef.current?.querySelectorAll<HTMLElement>("[data-path]") ?? [];
+    const target = Array.from(items).find((item) => item.dataset.path === focusPath);
+    if (target) {
+      target.focus();
+      target.scrollIntoView?.({ block: "nearest" });
+      setFocusPath(null);
+    } else if (!panelRef.current?.contains(document.activeElement)) {
+      panelRef.current?.focus();
+    }
+  });
 
   const toggleDir = (path: string) => {
     setSelected({ path, isDir: true });
@@ -198,6 +241,7 @@ export function FilePanel({ tabId, cwd, platform, onInsertReference, onClose }: 
                 className={isSelected ? "file-tree-item file-tree-item-selected" : "file-tree-item"}
                 style={{ paddingLeft: 8 + depth * 12 }}
                 title={entry.path}
+                data-path={entry.path}
                 onClick={() => (entry.isDir ? toggleDir(entry.path) : void openFile(entry.path))}
               >
                 <span className="file-tree-icon" aria-hidden>
@@ -330,7 +374,7 @@ export function FilePanel({ tabId, cwd, platform, onInsertReference, onClose }: 
   );
 
   return (
-    <aside className="file-panel" aria-label="Files">
+    <aside className="file-panel" aria-label="Files" ref={panelRef} tabIndex={-1}>
       <div className="file-panel-bar">
         <strong>Files</strong>
         <span className="hint file-panel-root" title={root || cwd}>

@@ -7,6 +7,7 @@
 import type { Channel } from "@tauri-apps/api/core";
 import { createPtyChannel, type PtyPacket } from "../bridge";
 import { createPtyBuffer, decodeBase64, type PtyBuffer } from "./buffer";
+import { terminalActivity } from "./activity";
 
 export type LivePty = {
   id: string;
@@ -63,7 +64,10 @@ export function beginLivePty(id: string): LivePty {
       buffer.pushExit(packet.code);
       return;
     }
-    if (packet.data) buffer.pushData(decodeBase64(packet.data));
+    if (packet.data) {
+      terminalActivity.output(live.id);
+      buffer.pushData(decodeBase64(packet.data));
+    }
   });
   sessions.set(id, live);
   opening.delete(id);
@@ -84,6 +88,7 @@ export function rekeyLivePty(from: string, to: string): LivePty | undefined {
 }
 
 export function dropLivePty(tabId: string): void {
+  terminalActivity.forget(tabId);
   sessions.delete(tabId);
   sessions.delete(`${tabId}::pane`);
   opening.delete(tabId);

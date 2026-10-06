@@ -52,6 +52,27 @@ describe("FolderPicker", () => {
     expect(await screen.findByText(/Missing\\Repo/)).toBeTruthy();
   });
 
+  it("compact mode fits one row: folder name button, star, and Recent menu (U5)", async () => {
+    const onChange = vi.fn();
+    vi.mocked(open).mockResolvedValue("/Users/jt/Other");
+    vi.mocked(projectsList).mockResolvedValue({
+      favorites: [],
+      recent: [{ path: "/Users/jt/Koneksi", available: true, favorite: false }],
+    });
+    const { container } = render(
+      <FolderPicker compact value="/Users/jt/Koneksi" onChange={onChange} />,
+    );
+    const chosen = container.querySelector('.folder-picker-chosen[title="/Users/jt/Koneksi"]');
+    expect(chosen?.tagName).toBe("BUTTON");
+    expect(chosen?.textContent).toContain("Koneksi");
+    // The full path is in the tooltip only, not printed on a second line.
+    expect(screen.queryByText("/Users/jt/Koneksi")).toBeNull();
+    fireEvent.click(chosen as Element);
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith("/Users/jt/Other"));
+    fireEvent.click(screen.getByRole("button", { name: "Recent" }));
+    expect(await screen.findByRole("menu", { name: "Saved folders" })).toBeTruthy();
+  });
+
   it("stars the current folder", async () => {
     vi.mocked(projectsToggleFavorite).mockResolvedValue(true);
     render(<FolderPicker value={"C:\\Projects\\Encryptor"} onChange={() => {}} />);

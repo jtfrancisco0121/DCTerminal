@@ -70,6 +70,76 @@ impl Default for ModelSettings {
     }
 }
 
+fn default_true() -> bool {
+    true
+}
+
+/// F1 agent notifications. Everything defaults on; a settings file from
+/// before this section existed loads with the defaults.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationSettings {
+    /// Master switch.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// OS notification while the window is not focused.
+    #[serde(default = "default_true")]
+    pub system: bool,
+    /// In-app toast for background tabs while the window is focused.
+    #[serde(default = "default_true")]
+    pub toast_when_focused: bool,
+}
+
+impl Default for NotificationSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            system: true,
+            toast_when_focused: true,
+        }
+    }
+}
+
+/// U7/U8 look and feel: colour theme, the optional shortcut bar, and which
+/// one-time tips were dismissed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UiSettings {
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    #[serde(default)]
+    pub shortcut_bar: bool,
+    #[serde(default)]
+    pub tips_seen: Vec<String>,
+    /// U2: scratch pad editor height in px; 0 keeps the 3-row default.
+    #[serde(default)]
+    pub pad_height: u32,
+    /// U2: scratch pad hidden (shared by chat and terminal tabs).
+    #[serde(default)]
+    pub pad_hidden: bool,
+}
+
+pub const UI_THEMES: &[&str] = &["github-dark", "github-light"];
+const TIPS_SEEN_LIMIT: usize = 50;
+const PAD_MIN_HEIGHT: u32 = 40;
+const PAD_MAX_HEIGHT: u32 = 600;
+
+fn default_theme() -> String {
+    UI_THEMES[0].to_string()
+}
+
+impl Default for UiSettings {
+    fn default() -> Self {
+        Self {
+            theme: default_theme(),
+            shortcut_bar: false,
+            tips_seen: Vec::new(),
+            pad_height: 0,
+            pad_hidden: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsFile {
@@ -80,6 +150,22 @@ pub struct SettingsFile {
     pub terminal: TerminalSettings,
     #[serde(default)]
     pub models: ModelSettings,
+    #[serde(default)]
+    pub notifications: NotificationSettings,
+    #[serde(default)]
+    pub setup: SetupSettings,
+    #[serde(default)]
+    pub ui: UiSettings,
+}
+
+/// F8: first-run setup was finished or skipped.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SetupSettings {
+    #[serde(default)]
+    pub completed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
 }
 
 impl Default for SettingsFile {
@@ -89,6 +175,9 @@ impl Default for SettingsFile {
             diagnostics: DiagnosticsSettings::default(),
             terminal: TerminalSettings::default(),
             models: ModelSettings::default(),
+            notifications: NotificationSettings::default(),
+            setup: SetupSettings::default(),
+            ui: UiSettings::default(),
         }
     }
 }
@@ -182,6 +271,120 @@ impl SettingsStore {
     }
 }
 
+impl SettingsStore {
+    pub fn notifications(&self) -> &NotificationSettings {
+        &self.data.notifications
+    }
+
+    pub fn set_notifications(&mut self, next: NotificationSettings) -> Result<(), String> {
+        self.data.notifications = next;
+        self.save()
+    }
+}
+
+impl SettingsStore {
+    pub fn setup_completed(&self) -> bool {
+        self.data.setup.completed
+    }
+
+    pub fn mark_setup_complete(&mut self, now: &str) -> Result<(), String> {
+        self.data.setup = SetupSettings {
+            completed: true,
+            completed_at: Some(now.to_string()),
+        };
+        self.save()
+    }
+}
+
+impl SettingsStore {
+    pub fn ui(&self) -> &UiSettings {
+        &self.data.ui
+    }
+
+    /// Unknown themes fall back to GitHub Dark; tip ids are trimmed,
+    /// de-duplicated, and capped.
+    pub fn set_ui(&mut self, next: UiSettings) -> Result<(), String> {
+        let theme = if UI_THEMES.contains(&next.theme.as_str()) {
+            next.theme
+        } else {
+            default_theme()
+        };
+        let mut tips_seen: Vec<String> = Vec::new();
+        for tip in next.tips_seen {
+            let tip = tip.trim().to_string();
+            if !tip.is_empty() && tip.len() <= 64 && !tips_seen.contains(&tip) {
+                tips_seen.push(tip);
+            }
+        }
+        tips_seen.truncate(TIPS_SEEN_LIMIT);
+        let pad_height = match next.pad_height {
+            0 => 0,
+            h => h.clamp(PAD_MIN_HEIGHT, PAD_MAX_HEIGHT),
+        };
+        self.data.ui = UiSettings {
+            theme,
+            shortcut_bar: next.shortcut_bar,
+            tips_seen,
+            pad_height,
+            pad_hidden: next.pad_hidden,
+        };
+        self.save()
+    }
+}
+
+/// F8: show first-run setup only on a fresh profile. An existing profile
+/// (a tab with a folder, a running or terminal tab, or closed tabs) counts as
+/// set up even without the flag, so upgrades are not interrupted.
+pub fn first_run_needed(completed: bool, state: &crate::store::AppStateFile) -> bool {
+    if completed || !state.closed_tabs.is_empty() {
+        return false;
+    }
+    !state
+        .tabs
+        .iter()
+        .any(|tab| !tab.cwd.trim().is_empty() || tab.kind == "terminal" || tab.session.is_some())
+}
+
+/// Read the F1 notification toggles.
+#[tauri::command]
+pub fn get_notification_settings(
+    settings: tauri::State<std::sync::Mutex<SettingsStore>>,
+) -> Result<NotificationSettings, String> {
+    let settings = settings.lock().map_err(|err| err.to_string())?;
+    Ok(settings.notifications().clone())
+}
+
+/// Save the F1 notification toggles (app data `settings.json`).
+#[tauri::command]
+pub fn set_notification_settings(
+    notifications: NotificationSettings,
+    settings: tauri::State<std::sync::Mutex<SettingsStore>>,
+) -> Result<NotificationSettings, String> {
+    let mut settings = settings.lock().map_err(|err| err.to_string())?;
+    settings.set_notifications(notifications)?;
+    Ok(settings.notifications().clone())
+}
+
+/// Read the U7/U8 look-and-feel settings.
+#[tauri::command]
+pub fn get_ui_settings(
+    settings: tauri::State<std::sync::Mutex<SettingsStore>>,
+) -> Result<UiSettings, String> {
+    let settings = settings.lock().map_err(|err| err.to_string())?;
+    Ok(settings.ui().clone())
+}
+
+/// Save theme, shortcut bar, and dismissed tips (app data `settings.json`).
+#[tauri::command]
+pub fn set_ui_settings(
+    ui: UiSettings,
+    settings: tauri::State<std::sync::Mutex<SettingsStore>>,
+) -> Result<UiSettings, String> {
+    let mut settings = settings.lock().map_err(|err| err.to_string())?;
+    settings.set_ui(ui)?;
+    Ok(settings.ui().clone())
+}
+
 fn is_run_mode(value: &str) -> bool {
     matches!(value, "default" | "yolo" | "auto-review" | "plan" | "ask")
 }
@@ -190,6 +393,95 @@ fn is_run_mode(value: &str) -> bool {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn ui_settings_default_to_github_dark_and_clean_input() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("dcterminal_ui_{nanos}"));
+        let mut store = SettingsStore::open(&dir).unwrap();
+        assert_eq!(store.ui().theme, "github-dark");
+        assert!(!store.ui().shortcut_bar);
+        assert!(store.ui().tips_seen.is_empty());
+        store
+            .set_ui(UiSettings {
+                theme: "no-such-theme".into(),
+                shortcut_bar: true,
+                tips_seen: vec!["palette".into(), "palette".into(), " ".into(), "pad".into()],
+                pad_height: 5000,
+                pad_hidden: true,
+            })
+            .unwrap();
+        assert_eq!(store.ui().theme, "github-dark");
+        assert_eq!(store.ui().tips_seen, vec!["palette", "pad"]);
+        assert_eq!(store.ui().pad_height, 600);
+        assert!(store.ui().pad_hidden);
+        store
+            .set_ui(UiSettings {
+                theme: "github-light".into(),
+                ..store.ui().clone()
+            })
+            .unwrap();
+        let again = SettingsStore::open(&dir).unwrap();
+        assert_eq!(again.ui().theme, "github-light");
+        assert!(again.ui().shortcut_bar);
+        let old: SettingsFile =
+            serde_json::from_value(serde_json::json!({ "schemaVersion": 1 })).unwrap();
+        assert_eq!(old.ui, UiSettings::default());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn setup_flag_defaults_off_and_persists() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("dcterminal_setup_{nanos}"));
+        let mut store = SettingsStore::open(&dir).unwrap();
+        assert!(!store.setup_completed());
+        store.mark_setup_complete("2026-10-06T00:00:00Z").unwrap();
+        let again = SettingsStore::open(&dir).unwrap();
+        assert!(again.setup_completed());
+        assert_eq!(
+            again.data.setup.completed_at.as_deref(),
+            Some("2026-10-06T00:00:00Z")
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn first_run_is_only_for_a_fresh_profile() {
+        use crate::store::AppStateFile;
+        let fresh = AppStateFile::default();
+        assert!(first_run_needed(false, &fresh));
+        assert!(!first_run_needed(true, &fresh));
+
+        let mut seeded: AppStateFile = serde_json::from_value(serde_json::json!({
+            "schemaVersion": fresh.schema_version,
+            "tabs": [{
+                "id": "tab_1", "label": "New · Developer", "roleId": "role_developer",
+                "roleSnapshot": {"name": "Developer", "templateVersion": 1, "mode": "agent", "injection": "send_on_start"},
+                "cwd": "", "answers": {}, "mergedPrompt": "", "mergedPromptHash": "",
+                "phase": "draft", "order": 1, "createdAt": "2026-10-06T00:00:00Z"
+            }]
+        }))
+        .unwrap();
+        assert!(
+            first_run_needed(false, &seeded),
+            "the blank seed tab is still fresh"
+        );
+        seeded.tabs[0].cwd = "/Users/jt/Koneksi".into();
+        assert!(
+            !first_run_needed(false, &seeded),
+            "an existing profile with a folder"
+        );
+        seeded.tabs[0].cwd = String::new();
+        seeded.tabs[0].kind = "terminal".into();
+        assert!(!first_run_needed(false, &seeded));
+    }
 
     #[test]
     fn capture_defaults_off_and_persists() {
@@ -234,6 +526,43 @@ mod tests {
             "sonnet-4.5"
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn notifications_default_on_and_persist() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("dcterminal_notify_{nanos}"));
+        let mut store = SettingsStore::open(&dir).unwrap();
+        assert_eq!(store.notifications(), &NotificationSettings::default());
+        assert!(store.notifications().enabled);
+        store
+            .set_notifications(NotificationSettings {
+                enabled: false,
+                system: true,
+                toast_when_focused: false,
+            })
+            .unwrap();
+        let again = SettingsStore::open(&dir).unwrap();
+        assert!(!again.notifications().enabled);
+        assert!(again.notifications().system);
+        assert!(!again.notifications().toast_when_focused);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn settings_without_notifications_section_default_on() {
+        let raw = r#"{"schemaVersion":1,"notifications":{"system":false}}"#;
+        let parsed: SettingsFile = serde_json::from_str(raw).unwrap();
+        assert!(parsed.notifications.enabled);
+        assert!(!parsed.notifications.system);
+        assert!(parsed.notifications.toast_when_focused);
+        let bare: SettingsFile = serde_json::from_str(r#"{"schemaVersion":1}"#).unwrap();
+        assert_eq!(bare.notifications, NotificationSettings::default());
+        let json = serde_json::to_value(&bare.notifications).unwrap();
+        assert_eq!(json["toastWhenFocused"], serde_json::json!(true));
     }
 
     #[test]
