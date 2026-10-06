@@ -1,7 +1,6 @@
 use crate::commands::dev_session::DevSessionState;
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::sync::mpsc;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, State};
 
@@ -25,12 +24,13 @@ pub struct PermissionOption {
     pub label: String,
 }
 
-pub fn wait_for_permission_ui(
+/// Queue a permission prompt for the UI and defer the JSON-RPC reply (read loop keeps running).
+pub fn stage_permission_request(
     app: &AppHandle,
     session_id: &str,
     request: &Value,
     state: &Mutex<DevSessionState>,
-) -> Result<Value, String> {
+) -> Result<(), String> {
     let json_rpc_id = request
         .get("id")
         .and_then(|v| v.as_u64())
@@ -38,10 +38,9 @@ pub fn wait_for_permission_ui(
     let params = request.get("params").cloned().unwrap_or(Value::Null);
     let parsed = parse_permission_params(&params);
 
-    let (tx, rx) = mpsc::channel();
     {
         let mut guard = state.lock().map_err(|e| e.to_string())?;
-        guard.permission_responder = Some(tx);
+        guard.pending_permission_ids.push_back(json_rpc_id);
     }
 
     let payload = PermissionRequestEvent {
@@ -53,17 +52,7 @@ pub fn wait_for_permission_ui(
         raw_params: params.to_string(),
     };
     let _ = app.emit(PERMISSION_REQUEST_EVENT, payload);
-
-    let result = rx
-        .recv()
-        .map_err(|_| "permission request closed before a decision".to_string())?;
-
-    {
-        let mut guard = state.lock().map_err(|e| e.to_string())?;
-        guard.permission_responder = None;
-    }
-
-    Ok(result)
+    Ok(())
 }
 
 struct ParsedPermission {
@@ -76,12 +65,14 @@ fn parse_permission_params(params: &Value) -> ParsedPermission {
     let title = params
         .get("title")
         .or_else(|| params.get("permission"))
+        .or_else(|| params.get("toolName"))
         .and_then(|v| v.as_str())
         .unwrap_or("Permission required")
         .to_string();
     let message = params
         .get("message")
         .or_else(|| params.get("description"))
+        .or_else(|| params.get("command"))
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
@@ -135,9 +126,9 @@ pub fn respond_permission_request(
     state: State<Mutex<DevSessionState>>,
 ) -> Result<(), String> {
     let mut guard = state.lock().map_err(|e| e.to_string())?;
-    let tx = guard
-        .permission_responder
-        .take()
+    let rpc_id = guard
+        .pending_permission_ids
+        .pop_front()
         .ok_or_else(|| "no pending permission request".to_string())?;
 
     let result = if outcome == "selected" {
@@ -156,7 +147,10 @@ pub fn respond_permission_request(
         })
     };
 
-    tx.send(result)
-        .map_err(|_| "failed to deliver permission response".to_string())?;
+    guard
+        .agent_response_outbox
+        .lock()
+        .map_err(|e| e.to_string())?
+        .push((rpc_id, result));
     Ok(())
 }

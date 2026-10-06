@@ -8,7 +8,7 @@
 
 | Field | Value |
 |--------|--------|
-| **Last updated** | 2026-10-06 — product shell, session terminal, MVP finish plan |
+| **Last updated** | 2026-10-06 — session stream polish (tools, status bar) |
 | **Branch** | `master` |
 | **Current phase** | Finish MVP vertical slice (see [MVP-FINISH.md](./MVP-FINISH.md)) |
 | **Active task** | P1: transcript persist, scratch pad |
@@ -17,7 +17,7 @@
 
 - Role **startup form** → **Start role session** → **follow-up** in session pane (same agent until Stop)
 - **Multi-tab** drafts; **+ New tab** during live session (draft queued until Stop)
-- **Session UI** — full-height terminal-style pane, Markdown + tables
+- **Session UI** — full-height terminal-style pane, Markdown + tables; tool rows coalesce; activity + permission banners
 - **Release UI** — dev probes / duplicate dev session hidden (`import.meta.env.DEV` only)
 
 ## P0 landed (2026-10-06)

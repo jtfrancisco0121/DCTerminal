@@ -4,6 +4,7 @@ use crate::supervisor::AgentSupervisor;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const PROMPT_TIMEOUT: Duration = Duration::from_secs(600);
@@ -56,7 +57,8 @@ impl AcpClient {
         &mut self,
         text: &str,
         on_notification: Option<Box<dyn FnMut(&Value)>>,
-        on_agent_request: Option<Box<dyn FnMut(&Value) -> Result<Value, String>>>,
+        on_agent_request: Option<super::connection::AgentRequestHandler>,
+        agent_response_outbox: Option<Arc<Mutex<Vec<(u64, Value)>>>>,
     ) -> Result<PromptResult, String> {
         if text.trim().is_empty() {
             return Err("prompt text is empty".to_string());
@@ -79,6 +81,7 @@ impl AcpClient {
             }),
             PROMPT_TIMEOUT,
             &mut dispatch,
+            agent_response_outbox,
         )?;
         let stop_reason = result
             .get("stopReason")

@@ -1,17 +1,20 @@
-use super::request_handler::response_for_agent_request;
+use super::request_handler::{is_permission_method, response_for_agent_request};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex, mpsc::{self, Receiver}};
 use std::time::{Duration, Instant};
 
 const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(30);
+const STDERR_RING_MAX: usize = 200;
+
+pub type AgentRequestHandler = Box<dyn FnMut(&Value) -> Result<Option<Value>, String>>;
 
 pub struct LineDispatch {
     pub notifications: Vec<Value>,
     on_notification: Option<Box<dyn FnMut(&Value)>>,
-    pub on_agent_request: Option<Box<dyn FnMut(&Value) -> Result<Value, String>>>,
+    pub on_agent_request: Option<AgentRequestHandler>,
 }
 
 impl LineDispatch {
@@ -23,10 +26,7 @@ impl LineDispatch {
         }
     }
 
-    pub fn set_on_agent_request(
-        &mut self,
-        handler: Box<dyn FnMut(&Value) -> Result<Value, String>>,
-    ) {
+    pub fn set_on_agent_request(&mut self, handler: AgentRequestHandler) {
         self.on_agent_request = Some(handler);
     }
 
@@ -68,6 +68,7 @@ impl AcpConnection {
         let mut child = command.spawn()?;
         let stdin = child.stdin.take().expect("stdin piped");
         let stdout = child.stdout.take().expect("stdout piped");
+        let stderr = child.stderr.take();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
@@ -83,6 +84,26 @@ impl AcpConnection {
                 line.clear();
             }
         });
+        if let Some(stderr) = stderr {
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(stderr);
+                let mut line = String::new();
+                let ring: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+                while reader.read_line(&mut line).is_ok() {
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty() {
+                        if let Ok(mut buf) = ring.lock() {
+                            buf.push(trimmed.to_string());
+                            if buf.len() > STDERR_RING_MAX {
+                                let drop = buf.len() - STDERR_RING_MAX;
+                                buf.drain(0..drop);
+                            }
+                        }
+                    }
+                    line.clear();
+                }
+            });
+        }
         Ok(Self {
             child,
             stdin,
@@ -125,6 +146,21 @@ impl AcpConnection {
         }))
     }
 
+    fn flush_agent_response_outbox(
+        &mut self,
+        outbox: &Arc<Mutex<Vec<(u64, Value)>>>,
+    ) -> Result<(), String> {
+        let pending: Vec<(u64, Value)> = outbox
+            .lock()
+            .map_err(|e| e.to_string())?
+            .drain(..)
+            .collect();
+        for (id, result) in pending {
+            self.respond_result(id, result)?;
+        }
+        Ok(())
+    }
+
     fn handle_incoming_line(
         &mut self,
         value: &Value,
@@ -137,16 +173,25 @@ impl AcpConnection {
                     dispatch.record_notification(value);
                     return Ok(());
                 }
-                if method == "session/request_permission" {
-                    let result = if let Some(handler) = &mut dispatch.on_agent_request {
-                        handler(value)?
+                let is_permission = is_permission_method(method);
+                if is_permission {
+                    if let Some(handler) = &mut dispatch.on_agent_request {
+                        match handler(value)? {
+                            Some(result) => self.respond_result(req_id, result)?,
+                            None => {}
+                        }
                     } else {
-                        response_for_agent_request(value)
-                    };
-                    self.respond_result(req_id, result)?;
+                        let result = response_for_agent_request(value);
+                        self.respond_result(req_id, result)?;
+                    }
                 } else if method.starts_with("cursor/") {
                     let result = response_for_agent_request(value);
                     self.respond_result(req_id, result)?;
+                } else if let Some(handler) = &mut dispatch.on_agent_request {
+                    match handler(value)? {
+                        Some(result) => self.respond_result(req_id, result)?,
+                        None => {}
+                    }
                 } else {
                     self.respond_error(req_id, -32601, "Method not found")?;
                 }
@@ -166,7 +211,7 @@ impl AcpConnection {
         timeout: Duration,
     ) -> Result<Value, String> {
         let mut dispatch = LineDispatch::default();
-        self.call_with_dispatch(id, method, params, timeout, &mut dispatch)
+        self.call_with_dispatch(id, method, params, timeout, &mut dispatch, None)
     }
 
     pub fn call_with_dispatch(
@@ -176,12 +221,17 @@ impl AcpConnection {
         params: Value,
         timeout: Duration,
         dispatch: &mut LineDispatch,
+        agent_response_outbox: Option<Arc<Mutex<Vec<(u64, Value)>>>>,
     ) -> Result<Value, String> {
         self.request(id, method, params)?;
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
+            if let Some(outbox) = &agent_response_outbox {
+                self.flush_agent_response_outbox(outbox)?;
+            }
             let remaining = deadline.saturating_duration_since(Instant::now());
-            match self.lines.recv_timeout(remaining) {
+            let wait = remaining.min(Duration::from_millis(50));
+            match self.lines.recv_timeout(wait) {
                 Ok(line) => {
                     let trimmed = line.trim();
                     if trimmed.is_empty() {
@@ -203,7 +253,10 @@ impl AcpConnection {
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    return Err(format!("timeout waiting for response id={id}"));
+                    if remaining <= Duration::from_millis(50) {
+                        return Err(format!("timeout waiting for response id={id}"));
+                    }
+                    continue;
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     return Err("agent stdout closed".to_string());

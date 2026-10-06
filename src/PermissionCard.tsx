@@ -13,6 +13,9 @@ export function PermissionCard({ request, busy, onSelect, onCancel }: Props) {
       <p id="perm-title" className="permission-card-title">
         {request.title}
       </p>
+      <p className="permission-card-hint">
+        The agent is paused until you choose an action below.
+      </p>
       {request.message && (
         <p className="permission-card-message">{request.message}</p>
       )}

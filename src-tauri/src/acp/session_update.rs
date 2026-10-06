@@ -95,4 +95,28 @@ mod tests {
         assert_eq!(evt.kind, "tool_call_update");
         assert_eq!(evt.text_delta.as_deref(), Some("read_file (completed)"));
     }
+
+    #[test]
+    fn maps_tool_call_update_with_nested_title() {
+        let line = json!({
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "type": "tool_call_update",
+                    "toolCallId": "tc_1",
+                    "status": "in_progress",
+                    "toolCall": {
+                        "toolCallId": "tc_1",
+                        "title": "Read app/main.py",
+                        "status": "in_progress"
+                    }
+                }
+            }
+        });
+        let evt = map_session_update("sess_1", &line).expect("event");
+        assert_eq!(
+            evt.text_delta.as_deref(),
+            Some("Read app/main.py (in_progress)")
+        );
+    }
 }

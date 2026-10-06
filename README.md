@@ -75,7 +75,8 @@ Permanent fix: add `%USERPROFILE%\.cargo\bin` to your user **Path** environment 
 | Blank window / UI not loading | Use **two terminals** (`dev:ui` + `dev:app`), or run **`npm run dev:stable`** (bundled UI, no Vite). |
 | Port 1420 in use | Stop other `vite`/`tauri` processes, or keep one `npm run dev:ui` running and only restart `dev:app`. |
 | `Chrome_WidgetWin_0` on exit | Harmless WebView2 message when closing the window or pressing Ctrl+C. |
-| Agent stuck / no output | Check for a **permission** card at the top of the session; approve or reject. |
+| Agent stuck / no output | Yellow **status bar** = waiting for permission or tools still running. Scroll up for the **permission** card; use **Cancel turn** if a tool hangs. |
+| Long list of `pending` tools | Tool rows **update in place** when the agent reports completion; reasoning stays in collapsed **Reasoning**. |
 | “Not authenticated” | Run `agent login` in a terminal, then **Start role session** again. |
 
 `devUrl` is **`http://127.0.0.1:1420`** (must match Vite’s host).

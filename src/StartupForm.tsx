@@ -33,9 +33,11 @@ import { SessionTerminal } from "./SessionTerminal";
 import { TabBar } from "./TabBar";
 import {
   appendStreamSegment,
+  finalizeInFlightTools,
   reconcileAgentStream,
   streamSegmentFromEvent,
   streamSegmentFromSystemMessage,
+  streamSegmentFromUserMessage,
   segmentsToPlainText,
   type StreamSegment,
 } from "./transcript";
@@ -220,17 +222,22 @@ export function StartupForm({
     listenPromptFinished((evt) => {
       if (evt.sessionId !== session.sessionId) return;
       setPromptInFlight(false);
+      setPermissionRequest(null);
       if (evt.success && evt.result) {
         setLastPromptResult(evt.result);
         setPromptError(null);
         setStreamSegments((prev) =>
-          reconcileAgentStream(prev, evt.result?.agentText ?? ""),
+          finalizeInFlightTools(
+            reconcileAgentStream(prev, evt.result?.agentText ?? ""),
+            "completed",
+          ),
         );
         setStartResult((prev) =>
           prev ? { ...prev, startupInjected: true } : prev,
         );
       } else if (evt.error) {
         setPromptError(evt.error);
+        setStreamSegments((prev) => finalizeInFlightTools(prev, "cancelled"));
       }
     }).then((fn) => {
       unlisten = fn;
@@ -379,6 +386,26 @@ export function StartupForm({
       setSession(result.session);
       if (result.tabId) setActiveTabId(result.tabId);
       setPromptInFlight(!!result.injectionInFlight);
+      if (result.injectionInFlight && !continuing) {
+        setStreamSegments((prev) => {
+          const withoutConnecting = prev.filter(
+            (s) =>
+              s.kind !== "system" ||
+              !s.text.includes("Connecting to agent"),
+          );
+          const startupText = preview?.merged?.text?.trim();
+          if (startupText) {
+            return appendStreamSegment(
+              withoutConnecting,
+              streamSegmentFromUserMessage(startupText),
+            );
+          }
+          return [
+            ...withoutConnecting,
+            streamSegmentFromSystemMessage("Startup prompt sent to agent."),
+          ];
+        });
+      }
       setPreview(null);
       await refreshTabs();
     } catch (err: unknown) {
@@ -408,6 +435,7 @@ export function StartupForm({
     activeTabId,
     canContinueSession,
     resendStartup,
+    preview,
   ]);
 
   const stopSession = useCallback(async () => {
@@ -499,6 +527,9 @@ export function StartupForm({
     setBusy(true);
     try {
       await devSessionCancel();
+      setPromptInFlight(false);
+      setPermissionRequest(null);
+      setStreamSegments((prev) => finalizeInFlightTools(prev, "cancelled"));
     } catch (err: unknown) {
       setPromptError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -543,10 +574,15 @@ export function StartupForm({
   }, []);
 
   const sendFollowUp = useCallback(async () => {
+    const text = followUp.trim();
+    if (!text) return;
     setBusy(true);
     setPromptError(null);
+    setStreamSegments((prev) =>
+      appendStreamSegment(prev, streamSegmentFromUserMessage(text)),
+    );
     try {
-      await devSessionSend(followUp);
+      await devSessionSend(text);
       setPromptInFlight(true);
       setFollowUp("");
     } catch (err: unknown) {

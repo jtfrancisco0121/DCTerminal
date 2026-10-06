@@ -1,5 +1,10 @@
 use serde_json::{json, Value};
 
+pub fn is_permission_method(method: &str) -> bool {
+    let m = method.to_lowercase();
+    m == "session/request_permission" || m.contains("request_permission")
+}
+
 /// FR-007 / FR-011: never leave agent requests unanswered; deny by default in dev.
 pub fn response_for_agent_request(request: &Value) -> Value {
     let method = request

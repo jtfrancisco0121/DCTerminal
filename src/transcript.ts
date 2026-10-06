@@ -9,11 +9,57 @@ export type TranscriptLine = {
 
 export type StreamSegmentKind = "agent" | "user" | "tool" | "thought" | "system";
 
+export type ToolStatus =
+  | "pending"
+  | "in_progress"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "unknown";
+
 export type StreamSegment = {
   id: string;
   kind: StreamSegmentKind;
   text: string;
+  /** Upsert key for `tool` segments (ACP tool call id or stable fallback). */
+  toolKey?: string;
+  toolStatus?: ToolStatus;
 };
+
+const TOOL_STATUS_LINE =
+  /^(.*)\s+\((pending|in_progress|running|completed|failed|cancelled)\)\s*$/i;
+
+export function normalizeToolStatus(raw: string | undefined): ToolStatus {
+  if (!raw) return "unknown";
+  const s = raw.toLowerCase().replace(/-/g, "_");
+  if (s === "pending") return "pending";
+  if (s === "in_progress" || s === "running") return "in_progress";
+  if (s === "completed" || s === "complete" || s === "success") return "completed";
+  if (s === "failed" || s === "error") return "failed";
+  if (s === "cancelled" || s === "canceled") return "cancelled";
+  return "unknown";
+}
+
+export function isActiveToolStatus(status?: ToolStatus): boolean {
+  return (
+    status === "pending" ||
+    status === "in_progress" ||
+    status === "running"
+  );
+}
+
+export function parseToolStatusFromLabel(text: string): ToolStatus | undefined {
+  const m = text.match(TOOL_STATUS_LINE);
+  if (!m) return undefined;
+  return normalizeToolStatus(m[2]);
+}
+
+export function toolLabelWithoutStatus(text: string): string {
+  const m = text.match(TOOL_STATUS_LINE);
+  if (m) return m[1].trim();
+  return text.trim();
+}
 
 export const MAX_STREAM_CHARS = 500_000;
 
@@ -80,44 +126,257 @@ function parseRawEventText(evt: SessionUpdateEvent): string {
   }
 }
 
-function toolSummary(raw: Record<string, unknown>): string {
+function toolArgumentsHint(
+  source: Record<string, unknown> | undefined,
+): string | undefined {
+  if (!source) return undefined;
+  const args =
+    source.arguments ??
+    source.args ??
+    source.input ??
+    source.parameters;
+  if (!args || typeof args !== "object") return undefined;
+  const argsObj = args as Record<string, unknown>;
+  for (const key of [
+    "path",
+    "filePath",
+    "file_path",
+    "target",
+    "command",
+    "pattern",
+    "query",
+    "glob",
+  ]) {
+    const v = argsObj[key];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return undefined;
+}
+
+function toolNameFromUpdate(raw: Record<string, unknown>): string | undefined {
+  const toolCall = raw.toolCall as Record<string, unknown> | undefined;
+
+  for (const key of ["title", "displayTitle"] as const) {
+    const t = (raw[key] as string) || (toolCall?.[key] as string);
+    if (t?.trim()) return t.trim();
+  }
+
   const name =
     (raw.toolName as string) ||
     (raw.name as string) ||
+    (toolCall?.name as string) ||
+    (toolCall?.toolName as string) ||
+    (toolCall?.kind as string) ||
     ((raw.tool as Record<string, unknown>)?.name as string);
+
+  if (name?.trim()) {
+    const detail = toolArgumentsHint(toolCall ?? raw);
+    return detail ? `${name.trim()} — ${detail}` : name.trim();
+  }
+  return undefined;
+}
+
+function toolStatusFromUpdate(raw: Record<string, unknown>): ToolStatus {
   const status =
     (raw.status as string) ||
     ((raw.toolCall as Record<string, unknown>)?.status as string);
-  if (name && status) return `${name} (${status})`;
+  return normalizeToolStatus(status);
+}
+
+function toolKeyFromUpdate(raw: Record<string, unknown>, label: string): string {
+  const toolCall = raw.toolCall as Record<string, unknown> | undefined;
+  const candidates = [
+    raw.toolCallId,
+    raw.tool_call_id,
+    raw.callId,
+    toolCall?.toolCallId,
+    toolCall?.id,
+  ];
+  for (const c of candidates) {
+    if (typeof c === "string" && c.trim()) {
+      return `id:${c.trim()}`;
+    }
+    if (typeof c === "number") return `id:${c}`;
+  }
+  if (label && label !== "tool") return `label:${label}`;
+  return `label:${label || "tool"}`;
+}
+
+function toolSummary(raw: Record<string, unknown>): string {
+  const name = toolNameFromUpdate(raw);
+  const status = toolStatusFromUpdate(raw);
+  if (name && status !== "unknown") return `${name} (${status})`;
   if (name) return name;
   return "tool";
+}
+
+function parseUpdateObject(evt: SessionUpdateEvent): Record<string, unknown> | null {
+  try {
+    const raw = JSON.parse(evt.rawJson) as Record<string, unknown>;
+    return (raw.update as Record<string, unknown>) ?? raw;
+  } catch {
+    return null;
+  }
+}
+
+function preferToolLabel(existing: string, incoming: string): string {
+  if (isGenericToolLabel(incoming) && !isGenericToolLabel(existing)) {
+    return existing;
+  }
+  if (isGenericToolLabel(existing) && !isGenericToolLabel(incoming)) {
+    return incoming;
+  }
+  return incoming.length >= existing.length ? incoming : existing;
+}
+
+function isGenericToolLabel(text: string): boolean {
+  const t = text.trim().toLowerCase();
+  return t === "tool" || t.startsWith("tool (");
+}
+
+function resolveToolDisplayText(
+  evt: SessionUpdateEvent,
+  update: Record<string, unknown> | null,
+): string {
+  const fromRaw = update ? toolSummary(update) : parseRawEventText(evt);
+  const fromDelta = coerceDisplayText(evt.textDelta);
+  if (fromDelta && !isGenericToolLabel(fromDelta)) {
+    return fromDelta;
+  }
+  if (fromRaw && fromRaw !== "tool") return fromRaw;
+  return fromDelta || fromRaw || "tool";
+}
+
+function enrichToolSegment(
+  seg: StreamSegment,
+  update: Record<string, unknown> | null,
+): StreamSegment {
+  const status =
+    (update ? toolStatusFromUpdate(update) : undefined) ??
+    parseToolStatusFromLabel(seg.text) ??
+    "unknown";
+  const label = toolLabelWithoutStatus(seg.text);
+  const display =
+    label && label !== "tool" ? label : toolNameFromUpdate(update ?? {}) ?? label;
+  const toolKey = update
+    ? toolKeyFromUpdate(update, display || label)
+    : `label:${display || label || "tool"}`;
+  return {
+    ...seg,
+    text: display || label || seg.text,
+    toolKey,
+    toolStatus: status,
+  };
+}
+
+/** Drop tool-status lines agents often mirror into thought chunks. */
+function stripToolStatusLinesFromThought(text: string): string {
+  const lines = text.split("\n");
+  const kept = lines.filter((line) => !TOOL_STATUS_LINE.test(line.trim()));
+  const joined = kept.join("\n");
+  return joined.trim() ? joined : "";
 }
 
 export function streamSegmentFromEvent(
   evt: SessionUpdateEvent,
 ): StreamSegment | null {
   const kind = mapEventKind(evt.kind);
-  const text =
-    coerceDisplayText(evt.textDelta) || parseRawEventText(evt);
+  const update = parseUpdateObject(evt);
+  let text =
+    kind === "tool"
+      ? resolveToolDisplayText(evt, update)
+      : coerceDisplayText(evt.textDelta) || parseRawEventText(evt);
   if (!text) return null;
-  return { id: nextId(), kind, text };
+  if (kind === "thought") {
+    text = stripToolStatusLinesFromThought(text);
+    if (!text) return null;
+  }
+  const base: StreamSegment = { id: nextId(), kind, text };
+  if (kind === "tool") {
+    return enrichToolSegment(base, update);
+  }
+  return base;
 }
 
 export function appendStreamSegment(
   segments: StreamSegment[],
   seg: StreamSegment,
 ): StreamSegment[] {
+  if (seg.kind === "tool" && seg.toolKey) {
+    const idx = segments.findIndex(
+      (s) => s.kind === "tool" && s.toolKey === seg.toolKey,
+    );
+    const nextSeg = {
+      ...seg,
+      id: idx >= 0 ? segments[idx].id : seg.id,
+      // Keep the best label we have seen for this tool call.
+      text: trimStreamChars(
+        idx >= 0
+          ? preferToolLabel(segments[idx].text, seg.text)
+          : seg.text,
+      ),
+      toolStatus: seg.toolStatus ?? segments[idx]?.toolStatus,
+    };
+    if (idx >= 0) {
+      const copy = [...segments];
+      copy[idx] = nextSeg;
+      return copy;
+    }
+    return [...segments, nextSeg];
+  }
+
+  if (seg.kind === "thought") {
+    let thoughtIdx = -1;
+    for (let i = segments.length - 1; i >= 0; i -= 1) {
+      if (segments[i].kind === "thought") {
+        thoughtIdx = i;
+        break;
+      }
+    }
+    if (thoughtIdx >= 0) {
+      const prev = segments[thoughtIdx];
+      let mergedText = stripToolStatusLinesFromThought(prev.text + seg.text);
+      if (!mergedText.trim()) return segments;
+      const merged = {
+        ...prev,
+        text: trimStreamChars(mergedText),
+      };
+      const copy = [...segments];
+      copy[thoughtIdx] = merged;
+      return copy;
+    }
+  }
+
   const prev = segments[segments.length - 1];
+  if (
+    seg.kind === "user" &&
+    prev?.kind === "user" &&
+    prev.text.trim() === seg.text.trim()
+  ) {
+    return segments;
+  }
   const mergeable =
     seg.kind === "agent" || seg.kind === "user" || seg.kind === "thought";
   if (prev && prev.kind === seg.kind && mergeable) {
+    let mergedText = prev.text + seg.text;
+    if (seg.kind === "thought") {
+      mergedText = stripToolStatusLinesFromThought(mergedText);
+    }
+    if (!mergedText.trim()) {
+      return segments.slice(0, -1);
+    }
     const merged = {
       ...prev,
-      text: trimStreamChars(prev.text + seg.text),
+      text: trimStreamChars(mergedText),
     };
     return [...segments.slice(0, -1), merged];
   }
-  return [...segments, { ...seg, text: trimStreamChars(seg.text) }];
+  const trimmed =
+    seg.kind === "thought"
+      ? stripToolStatusLinesFromThought(seg.text)
+      : seg.text;
+  if (!trimmed.trim()) return segments;
+  return [...segments, { ...seg, text: trimStreamChars(trimmed) }];
 }
 
 function trimStreamChars(text: string): string {
@@ -150,6 +409,25 @@ export function reconcileAgentStream(
 
 export function streamSegmentFromSystemMessage(text: string): StreamSegment {
   return { id: nextId(), kind: "system", text };
+}
+
+/** Local echo of what the user sent via `session/prompt` (ACP may not stream it back). */
+export function streamSegmentFromUserMessage(text: string): StreamSegment {
+  const trimmed = text.trim();
+  return { id: nextId(), kind: "user", text: trimmed };
+}
+
+/** When a turn ends, stop showing tools as still running. */
+export function finalizeInFlightTools(
+  segments: StreamSegment[],
+  finalStatus: "completed" | "cancelled" = "completed",
+): StreamSegment[] {
+  return segments.map((seg) => {
+    if (seg.kind !== "tool" || !isActiveToolStatus(seg.toolStatus)) {
+      return seg;
+    }
+    return { ...seg, toolStatus: finalStatus };
+  });
 }
 
 // --- legacy line helpers (tests / migration) ---
@@ -236,12 +514,19 @@ export function segmentsToPlainText(segments: StreamSegment[]): string {
     if (!seg.text) continue;
     switch (seg.kind) {
       case "agent":
-      case "user":
         chunks.push(seg.text);
         break;
-      case "tool":
-        chunks.push(`\n▸ ${seg.text}\n`);
+      case "user":
+        chunks.push(`\nYou › ${seg.text}\n`);
         break;
+      case "tool": {
+        const status =
+          seg.toolStatus && seg.toolStatus !== "unknown"
+            ? ` (${seg.toolStatus})`
+            : "";
+        chunks.push(`\n▸ ${seg.text}${status}\n`);
+        break;
+      }
       case "thought":
         chunks.push(`\n… ${seg.text}\n`);
         break;

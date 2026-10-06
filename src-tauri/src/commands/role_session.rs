@@ -1,4 +1,4 @@
-use crate::commands::dev_session::{DevSessionInfo, DevSessionState};
+use crate::commands::dev_session::{wrap_client, DevSessionInfo, DevSessionState};
 use crate::commands::prompt_worker::spawn_prompt_turn;
 use crate::orchestrator::{injection_strategy_from_role, InjectionStrategy};
 use crate::store::{FormsStore, RolesStore, StateStore, TabSessionRef};
@@ -85,8 +85,10 @@ pub fn role_session_start(
     if guard.prompt_in_flight {
         return Err("a prompt is already running".to_string());
     }
-    if let Some(mut existing) = guard.client.take() {
-        existing.shutdown();
+    if let Some(existing) = guard.client.take() {
+        if let Ok(mut c) = existing.lock() {
+            c.shutdown();
+        }
     }
     guard.pending_startup_prompt = None;
     guard.startup_injected = false;
@@ -148,7 +150,7 @@ pub fn role_session_start(
         )?
     };
 
-    guard.client = Some(client);
+    guard.client = Some(wrap_client(client));
     guard.phase = guard
         .phase
         .after_session_started()

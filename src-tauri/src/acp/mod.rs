@@ -4,7 +4,7 @@ pub(crate) mod text_extract;
 mod session_update;
 mod handshake;
 mod probe;
-mod request_handler;
+pub(crate) mod request_handler;
 mod session_connect;
 
 pub use client::{AcpClient, PromptResult};
