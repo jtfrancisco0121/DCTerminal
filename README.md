@@ -16,10 +16,11 @@ Local desktop app: **role-aware, multi-tab UI** on top of the Cursor CLI via **A
 2. Run `npm run dev:ui` + `npm run dev:app` (or a release build when available).
 3. Pick a **tab** → fill the role form → **Start role session**.
 4. **Continue the same agent** with the `›` follow-up box (Ctrl+Enter) — do not press Stop.
-5. **Stop session** when done; **Start** again only if you want a **new** agent (startup prompt re-sent).
-6. **+ New tab** for another task.
+5. **Stop session** when done — transcript is saved on the tab.
+6. On an **awaitingInput** tab with history, use **Continue session** (no startup re-inject); check **Re-send startup prompt** only for a full restart.
+7. **+ New tab** for another task.
 
-Not supported yet: resume chat after quit (`session/load`), saved transcript after Stop.
+Not supported yet: true ACP thread resume after quit (`session/load`) — Continue reconnects a new agent with your saved scrollback.
 
 ## Prerequisites
 

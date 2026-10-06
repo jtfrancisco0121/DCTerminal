@@ -132,6 +132,8 @@ export type RoleSessionStartResult = {
   startupInjected: boolean;
   injectionInFlight: boolean;
   tabId: string | null;
+  resumedSession: boolean;
+  skippedStartupInjection: boolean;
 };
 
 export type PromptFinishedEvent = {
@@ -153,6 +155,8 @@ export type TabSummary = {
   cwd: string;
   phase: string;
   mergedPromptChars: number;
+  startupPromptSent: boolean;
+  hasTranscript: boolean;
 };
 
 export type AppStateSnapshot = {
@@ -184,6 +188,7 @@ export type TabRecord = {
     injectedAt?: string;
   };
   transcript?: string | null;
+  startupPromptSent?: boolean;
 };
 
 export async function getAppState(): Promise<AppStateSnapshot> {
@@ -230,11 +235,13 @@ export async function roleSessionStart(
   roleId: string,
   values: Record<string, string>,
   tabId?: string | null,
+  resendStartup?: boolean,
 ): Promise<RoleSessionStartResult> {
   return invoke<RoleSessionStartResult>("role_session_start", {
     roleId,
     values,
     tabId: tabId ?? null,
+    resendStartup: resendStartup ?? false,
   });
 }
 

@@ -92,7 +92,6 @@ export function StartupForm({
   const sessionActiveRef = useRef(false);
   const pendingUpdatesRef = useRef<SessionUpdateEvent[]>([]);
   const flushRafRef = useRef<number | null>(null);
-  const [restoredTabId, setRestoredTabId] = useState<string | null>(null);
   const tabsBootstrappedRef = useRef(false);
 
   const loadTabIntoForm = useCallback((tab: {
@@ -107,7 +106,6 @@ export function StartupForm({
     setValues({ ...tab.answers, cwd: tab.cwd });
     setActiveTabId(tab.id);
     setPreview(null);
-    setRestoredTabId(tab.id);
     if (tab.transcript?.trim()) {
       setStreamSegments([
         {
@@ -285,6 +283,19 @@ export function StartupForm({
     return { ...values, cwd: values.cwd ?? defaultCwd };
   }, [role, values, defaultCwd]);
 
+  const activeTabSummary = useMemo(
+    () => savedTabs.find((t) => t.id === activeTabId) ?? null,
+    [savedTabs, activeTabId],
+  );
+
+  const canContinueSession = useMemo(() => {
+    if (!activeTabSummary) return false;
+    return (
+      activeTabSummary.phase === "awaitingInput" &&
+      (activeTabSummary.startupPromptSent || activeTabSummary.hasTranscript)
+    );
+  }, [activeTabSummary]);
+
   useEffect(() => {
     if (session || !role) return;
     if (draftTimerRef.current) clearTimeout(draftTimerRef.current);
@@ -336,13 +347,28 @@ export function StartupForm({
     setStartResult(null);
     setLastPromptResult(null);
     setPromptError(null);
-    setStreamSegments([
-      streamSegmentFromSystemMessage(
-        "Connecting to agent and sending startup prompt…",
-      ),
-    ]);
+    const continuing = canContinueSession && !resendStartup;
+    if (continuing) {
+      setStreamSegments((prev) => [
+        ...prev,
+        streamSegmentFromSystemMessage(
+          "Reconnecting to agent (startup prompt skipped). Send a follow-up below to continue.",
+        ),
+      ]);
+    } else {
+      setStreamSegments([
+        streamSegmentFromSystemMessage(
+          "Connecting to agent and sending startup prompt…",
+        ),
+      ]);
+    }
     try {
-      const result = await roleSessionStart(roleId, formValues, activeTabId);
+      const result = await roleSessionStart(
+        roleId,
+        formValues,
+        activeTabId,
+        resendStartup,
+      );
       setStartResult(result);
       if (result.errors.length > 0) {
         setSession(null);
@@ -368,11 +394,20 @@ export function StartupForm({
         startupInjected: false,
         injectionInFlight: false,
         tabId: null,
+        resumedSession: false,
+        skippedStartupInjection: false,
       });
     } finally {
       setBusy(false);
     }
-  }, [roleId, formValues, refreshTabs, activeTabId]);
+  }, [
+    roleId,
+    formValues,
+    refreshTabs,
+    activeTabId,
+    canContinueSession,
+    resendStartup,
+  ]);
 
   const stopSession = useCallback(async () => {
     setBusy(true);
@@ -431,6 +466,7 @@ export function StartupForm({
   );
 
   const [draftQueuedHint, setDraftQueuedHint] = useState(false);
+  const [resendStartup, setResendStartup] = useState(false);
   const [permissionRequest, setPermissionRequest] =
     useState<PermissionRequestEvent | null>(null);
 
@@ -454,7 +490,6 @@ export function StartupForm({
       const recall = await getFormRecall(tab.roleId, cwd);
       setValues({ ...recall.values, cwd: recall.cwd });
       setActiveTabId(tab.id);
-      setRestoredTabId(tab.id);
     } finally {
       setBusy(false);
     }
@@ -532,11 +567,6 @@ export function StartupForm({
       : (preview?.errors?.length ?? 0) > 0
         ? preview!.errors
         : [];
-
-  const activeTabSummary = useMemo(
-    () => savedTabs.find((t) => t.id === activeTabId) ?? null,
-    [savedTabs, activeTabId],
-  );
 
   if (!role) {
     return (
@@ -643,9 +673,22 @@ export function StartupForm({
           onClick={startSession}
           disabled={busy || !cliFound}
         >
-          Start role session
+          {canContinueSession && !resendStartup
+            ? "Continue session"
+            : "Start role session"}
         </button>
       </div>
+      {canContinueSession && (
+        <label className="field-label continue-option">
+          <input
+            type="checkbox"
+            checked={resendStartup}
+            onChange={(e) => setResendStartup(e.target.checked)}
+            disabled={busy}
+          />
+          Re-send startup prompt (full restart with merged role template)
+        </label>
+      )}
       {preview?.merged && preview.merged.text && (
         <details className="preview-details">
           <summary>
@@ -725,10 +768,11 @@ export function StartupForm({
         onClose={handleCloseTab}
         onNew={handleNewTab}
       />
-      {restoredTabId && (
+      {canContinueSession && (
         <p className="hint">
-          Stopped sessions stay on this tab as{" "}
-          <code>awaitingInput</code> — edit and press Start again.
+          This tab has saved history. Use <strong>Continue session</strong> to
+          reconnect without re-sending the startup prompt — then send a
+          follow-up. Check the box above only if you want a full restart.
         </p>
       )}
       {composerFields}

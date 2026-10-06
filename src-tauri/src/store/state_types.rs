@@ -42,6 +42,9 @@ pub struct TabRecord {
     /// Read-only scrollback after Stop (MVP transcript persist).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transcript: Option<String>,
+    /// Startup prompt was already sent for this tab (do not re-inject on Continue).
+    #[serde(default)]
+    pub startup_prompt_sent: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -102,6 +102,7 @@ impl StateStore {
             created_at: Utc::now().to_rfc3339(),
             session: Some(session),
             transcript: None,
+            startup_prompt_sent: false,
         };
         self.data.tabs.push(record);
         self.data.active_tab_id = Some(tab_id.clone());
@@ -175,6 +176,7 @@ impl StateStore {
             let trimmed = text.trim();
             if !trimmed.is_empty() {
                 tab.transcript = Some(trimmed.chars().take(500_000).collect());
+                tab.startup_prompt_sent = true;
             }
         }
         self.save()
@@ -238,6 +240,7 @@ impl StateStore {
             created_at: Utc::now().to_rfc3339(),
             session: None,
             transcript: None,
+            startup_prompt_sent: false,
         };
         self.data.tabs.push(record);
         if make_active {
@@ -264,7 +267,33 @@ impl StateStore {
             session.injection_pending = false;
             session.injected_at = Some(Utc::now().to_rfc3339());
         }
+        tab.startup_prompt_sent = true;
         self.save()
+    }
+
+    /// Continue without re-sending the merged startup prompt (blueprint E23).
+    pub fn should_skip_startup_injection(
+        &self,
+        tab_id: Option<&str>,
+        resend_startup: bool,
+    ) -> bool {
+        if resend_startup {
+            return false;
+        }
+        let id = match tab_id.or(self.data.active_tab_id.as_deref()) {
+            Some(id) => id,
+            None => return false,
+        };
+        let tab = match self.tab_by_id(id) {
+            Some(t) => t,
+            None => return false,
+        };
+        tab.phase == "awaitingInput"
+            && (tab.startup_prompt_sent
+                || tab
+                    .transcript
+                    .as_ref()
+                    .is_some_and(|s| !s.trim().is_empty()))
     }
 }
 

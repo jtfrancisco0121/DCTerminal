@@ -14,6 +14,8 @@ pub struct TabSummary {
     pub cwd: String,
     pub phase: String,
     pub merged_prompt_chars: usize,
+    pub startup_prompt_sent: bool,
+    pub has_transcript: bool,
 }
 
 #[derive(Serialize)]
@@ -44,6 +46,11 @@ pub fn get_app_state(store: State<Mutex<StateStore>>) -> Result<AppStateSnapshot
                 cwd: t.cwd.clone(),
                 phase: t.phase.clone(),
                 merged_prompt_chars: t.merged_prompt.len(),
+                startup_prompt_sent: t.startup_prompt_sent,
+                has_transcript: t
+                    .transcript
+                    .as_ref()
+                    .is_some_and(|s| !s.trim().is_empty()),
             })
             .collect(),
     })
@@ -160,6 +167,11 @@ fn snapshot_from_store(store: &StateStore) -> AppStateSnapshot {
                 cwd: t.cwd.clone(),
                 phase: t.phase.clone(),
                 merged_prompt_chars: t.merged_prompt.len(),
+                startup_prompt_sent: t.startup_prompt_sent,
+                has_transcript: t
+                    .transcript
+                    .as_ref()
+                    .is_some_and(|s| !s.trim().is_empty()),
             })
             .collect(),
     }

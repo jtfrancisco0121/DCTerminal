@@ -21,6 +21,8 @@ pub struct RoleSessionStartResult {
     pub startup_injected: bool,
     pub injection_in_flight: bool,
     pub tab_id: Option<String>,
+    pub resumed_session: bool,
+    pub skipped_startup_injection: bool,
 }
 
 #[tauri::command]
@@ -29,6 +31,7 @@ pub fn role_session_start(
     role_id: String,
     values: HashMap<String, String>,
     tab_id: Option<String>,
+    resend_startup: Option<bool>,
     store: State<Mutex<RolesStore>>,
     state: State<Mutex<DevSessionState>>,
     state_store: State<Mutex<StateStore>>,
@@ -52,6 +55,8 @@ pub fn role_session_start(
             startup_injected: false,
             injection_in_flight: false,
             tab_id: None,
+            resumed_session: false,
+            skipped_startup_injection: false,
         });
     }
 
@@ -105,6 +110,8 @@ pub fn role_session_start(
                 startup_injected: false,
                 injection_in_flight: false,
                 tab_id: None,
+                resumed_session: false,
+                skipped_startup_injection: false,
             });
         }
         Err(e) => return Err(e),
@@ -121,6 +128,12 @@ pub fn role_session_start(
         mode_id: info.mode_id.clone(),
         injection_pending: strategy == InjectionStrategy::AttachToFirstMessage,
         injected_at: None,
+    };
+
+    let resend = resend_startup.unwrap_or(false);
+    let skip_startup = {
+        let store = state_store.lock().map_err(|e| e.to_string())?;
+        store.should_skip_startup_injection(tab_id.as_deref(), resend)
     };
 
     let tab_id = {
@@ -149,20 +162,24 @@ pub fn role_session_start(
 
     let mut injection_in_flight = false;
 
-    match strategy {
-        InjectionStrategy::SendOnStart => {
-            guard.prompt_in_flight = true;
-            injection_in_flight = true;
-            spawn_prompt_turn(
-                app,
-                merged_text,
-                Some(tab_id.clone()),
-                true,
-                true,
-            );
-        }
-        InjectionStrategy::AttachToFirstMessage => {
-            guard.pending_startup_prompt = Some(merged_text);
+    if skip_startup {
+        guard.startup_injected = true;
+    } else {
+        match strategy {
+            InjectionStrategy::SendOnStart => {
+                guard.prompt_in_flight = true;
+                injection_in_flight = true;
+                spawn_prompt_turn(
+                    app,
+                    merged_text,
+                    Some(tab_id.clone()),
+                    true,
+                    true,
+                );
+            }
+            InjectionStrategy::AttachToFirstMessage => {
+                guard.pending_startup_prompt = Some(merged_text);
+            }
         }
     }
 
@@ -171,8 +188,10 @@ pub fn role_session_start(
         session: Some(info),
         merged_chars: Some(merged.chars),
         injection_strategy: Some(strategy_label.to_string()),
-        startup_injected: false,
+        startup_injected: skip_startup,
         injection_in_flight,
         tab_id: Some(tab_id),
+        resumed_session: skip_startup,
+        skipped_startup_injection: skip_startup,
     })
 }
