@@ -2,9 +2,35 @@
 
 Local desktop app: **role-aware, multi-tab UI** on top of the Cursor CLI via **ACP** (`agent acp`). See the full spec in [docs/DCTerminal-Project-Blueprint.md](docs/DCTerminal-Project-Blueprint.md).
 
+## Quick start
+
+One command builds DCTerminal for this computer and installs it. There is no code signing and no GitHub Actions release.
+
+```bash
+./install.sh          # macOS or Linux
+npm run install-app   # same thing, including Windows
+```
+
+Windows PowerShell 5.1 or PowerShell 7:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+The script checks Node 20+, Rust (rustup), and the platform libraries, prints the exact install command, and asks before installing anything that is missing. `--yes` answers yes. `--skip-checks` skips `npm run check`. On a Mac the `.app` matches that Mac (Apple Silicon or Intel); `--universal` builds both. `--uninstall` removes the app and leaves your data.
+
+| OS | App | Your data (kept on uninstall) |
+|----|-----|-------------------------------|
+| macOS | `/Applications/DCTerminal.app`, or `~/Applications` if that folder is not writable | `~/Library/Application Support/com.jtfrancisco.dcterminal/` |
+| Linux (apt) | `/usr/bin/dcterminal` | `~/.local/share/com.jtfrancisco.dcterminal/` |
+| Linux (no apt) | `~/.local/bin/DCTerminal.AppImage` | `~/.local/share/com.jtfrancisco.dcterminal/` |
+| Windows | `%LOCALAPPDATA%\DCTerminal\dcterminal.exe` | `%APPDATA%\com.jtfrancisco.dcterminal\` |
+
+Launch it with `open -a DCTerminal`, `dcterminal`, the AppImage path, or the Start menu shortcut. Sessions also need the Cursor CLI (`agent login`). The installer warns if `agent` is not on PATH. Details: **[docs/RELEASE.md](docs/RELEASE.md)**.
+
 ## Status
 
-**Pre-MVP** — each tab can run its own `agent acp` session, with role permission policy, a scratch pad, and local transcripts. Installers are still unfinished. Track:
+**Pre-MVP** — each tab can run its own `agent acp` session, with role permission policy, a scratch pad, and local transcripts. A local install is `./install.sh` / `install.ps1`. Track:
 
 - **[docs/MVP-FINISH.md](docs/MVP-FINISH.md)** — what “done” means and finish order
 - **[docs/PROGRESS.md](docs/PROGRESS.md)** — snapshot before each push
@@ -70,7 +96,7 @@ Automatic GitHub Actions is **disabled** (no Actions subscription). Before mergi
 npm run check
 ```
 
-That runs Rust tests, Clippy (`-D warnings`), `npm test`, and `npm run build`. Installers are built locally, not in CI:
+That runs Rust tests, Clippy (`-D warnings`), `npm test`, and `npm run build`. `./install.sh` runs the same check, then builds and installs for this OS only. To produce installers without installing them:
 
 ```bash
 npm run release:win      # NSIS + MSI, on Windows

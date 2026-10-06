@@ -4,6 +4,55 @@ Installers are built on a local machine. **Automatic GitHub Actions is disabled*
 
 `.github/workflows/ci.yml` will not run on pull requests or pushes. Use `npm run check` before merging.
 
+## Install on this machine
+
+From a fresh clone, one command checks prerequisites, builds for the OS you are on, and installs DCTerminal. It does not cross-compile, sign, or notarize.
+
+```bash
+./install.sh                         # macOS or Linux
+npm run install-app                  # either OS, including Windows
+```
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+`install.ps1` runs in Windows PowerShell 5.1 and in PowerShell 7. It calls `npm.cmd` and `npx.cmd` by the full path from `Get-Command`, not the `npm.ps1` shim. StrictMode makes that shim fail on 5.1 because `$MyInvocation.Statement` does not exist there. Set `DCT_DEBUG=1` to print the script stack when the installer stops.
+
+| Flag | Effect |
+|------|--------|
+| `--yes` | Install missing prerequisites without prompting |
+| `--skip-checks` | Skip `npm run check` |
+| `--universal` | macOS only. Build one `.app` for Apple Silicon and Intel. The default is the Mac you are on |
+| `--uninstall` | Remove the app. User data stays, and the script prints where |
+
+Prerequisite checks print the exact command, then ask before running it. Node.js 20+, Rust via rustup (1.90+), Xcode Command Line Tools on macOS, the Tauri Linux packages for apt/dnf/pacman (webkit2gtk 4.1, the appindicator library, patchelf, and the rest of that list), and on Windows the MSVC Build Tools plus the WebView2 runtime. A missing Cursor CLI `agent` is a warning, with `curl https://cursor.com/install -fsS | bash` or the Windows `irm` installer. The app still installs. `--yes` does not install the Cursor CLI.
+
+What gets installed:
+
+| OS | Build | Where it lands | Launch |
+|----|--------|----------------|--------|
+| macOS | `.app` for this Mac, or a universal `.app` with `--universal` | `/Applications/DCTerminal.app`, or `~/Applications/DCTerminal.app` when `/Applications` is not writable | `open -a DCTerminal` |
+| Linux with apt | `.deb` | package `dc-terminal`, binary `/usr/bin/dcterminal` | `dcterminal` |
+| Other Linux | `.AppImage` | `~/.local/bin/DCTerminal.AppImage` plus a `.desktop` entry | that path, or the app menu |
+| Windows | NSIS, current user, silent (`/S`) | `%LOCALAPPDATA%\DCTerminal\dcterminal.exe` | Start menu, or that exe |
+
+Running it again replaces that copy. `dpkg -i`, the NSIS installer, and the `.app` / AppImage copy all upgrade in place.
+
+The macOS app is unsigned. The script clears `com.apple.quarantine` on the bundle it just copied and says why: Gatekeeper blocks an unsigned app when that attribute is set. This is not a signature and not notarization. The Windows installer is unsigned too; SmartScreen can still warn (see below).
+
+`--uninstall` removes the app only. It leaves:
+
+| OS | Data directory |
+|----|----------------|
+| macOS | `~/Library/Application Support/com.jtfrancisco.dcterminal/` |
+| Linux | `$XDG_DATA_HOME/com.jtfrancisco.dcterminal/` or `~/.local/share/com.jtfrancisco.dcterminal/` |
+| Windows | `%APPDATA%\com.jtfrancisco.dcterminal\` |
+
+That folder holds `settings.json`, `roles.json`, `forms.json`, `state.json`, `scratch.json`, `handoffs.json`, and `logs/`. The silent Windows uninstaller does not check "delete app data".
+
+`npm run release:win`, `release:mac`, and `release:linux` still only build artifacts. They do not install them.
+
 ## Version
 
 Keep these three on the same semver before you build:
