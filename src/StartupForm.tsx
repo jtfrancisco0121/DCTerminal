@@ -1380,7 +1380,7 @@ export function StartupForm({
       ) : (
         <div className="empty-state">
           <div className="empty-state-card">
-            <div className="role-choices" role="listbox" aria-label="Role">
+            <div className="role-choices" role="group" aria-label="Role">
               {roles.map((item) => (
                 <button
                   key={item.id}
