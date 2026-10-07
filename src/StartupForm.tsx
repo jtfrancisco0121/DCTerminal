@@ -82,7 +82,6 @@ import {
   validateAndPreview,
   type ClosedTabSummary,
   type FieldError,
-  type PlanRequestEvent,
   type CliDetectResult,
   type ApprovalModeStatus,
   type DiagnosticsStatus,
@@ -98,9 +97,11 @@ import {
 import {
   applyAutoPermission,
   applyPermission,
+  applyPlan,
   applyPromptFinished,
   applyQuestion,
   applySessionUpdate,
+  clearPlan,
   clearQuestion,
   clearLiveSession,
   emptyRuntime,
@@ -304,7 +305,6 @@ export function StartupForm({
   const [closedTabs, setClosedTabs] = useState<ClosedTabSummary[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [cardsByTab, setCardsByTab] = useState<Record<string, Cards>>({});
-  const [planRequest, setPlanRequest] = useState<PlanRequestEvent | null>(null);
   // F2: finished/question/error left on a tab the user was not watching.
   const [tabMarks, setTabMarks] = useState<Record<string, TabMark>>({});
   const [terminalBusy, setTerminalBusy] = useState<string[]>([]);
@@ -457,6 +457,7 @@ export function StartupForm({
   const followUp = activeRuntime.followUp;
   const streamSegments = activeRuntime.segments;
   const permissionRequest = activeRuntime.permission;
+  const planRequest = activeRuntime.plan;
   const questionRequest = activeRuntime.question;
   const scratch = useScratchPads(activeTabId);
   const padRef = useRef<HTMLTextAreaElement>(null);
@@ -698,8 +699,8 @@ export function StartupForm({
       }),
       listenPlanRequests((evt) => {
         if (!evt.tabId) return;
-        setPlanRequest(evt);
         setChain((current) => (current ? chainMarkBlocked(current) : current));
+        patchRuntime(evt.tabId, (rt) => applyPlan(rt, evt));
         notifyAgent(evt.tabId, { kind: "plan", detail: evt.title });
       }),
       listenQuestionRequests((evt) => {
@@ -805,13 +806,13 @@ export function StartupForm({
       out[tab.id] = computeTabStatus({
         runtime: runtimes[tab.id],
         mark: tabMarks[tab.id],
-        planPending: planRequest?.tabId === tab.id,
+        planPending: runtimes[tab.id]?.plan != null,
         questionPending: runtimes[tab.id]?.question != null,
         terminalBusy: terminalBusy.includes(tab.id),
       });
     }
     return out;
-  }, [planRequest, runtimes, savedTabs, tabMarks, terminalBusy]);
+  }, [runtimes, savedTabs, tabMarks, terminalBusy]);
 
   const uiSettings = useUiSettings();
   // U2: one pad size for chat and terminal tabs; saved when a drag ends.
@@ -1517,7 +1518,6 @@ export function StartupForm({
         }
         scratch.flush();
         if (tabId === activeTabIdRef.current) stashActiveTab();
-        setPlanRequest((plan) => (plan?.tabId === tabId ? null : plan));
         delete draftsRef.current[tabId];
         delete knownFoldersRef.current[tabId];
         delete scrollPositions.current[tabId];
@@ -1691,6 +1691,25 @@ export function StartupForm({
   const handlePermissionCancel = useCallback(
     () => respondPermissionFor(activeTabId, null),
     [activeTabId, respondPermissionFor],
+  );
+
+  const respondPlanFor = useCallback(
+    async (tabId: string | null, outcome: "accepted" | "cancelled") => {
+      if (!tabId) return;
+      const request = runtimesRef.current[tabId]?.plan;
+      if (!request) return;
+      setBusy(true);
+      try {
+        await respondPlanRequest(tabId, request.jsonRpcId, outcome);
+        patchRuntime(tabId, (rt) => clearPlan(rt));
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        patchRuntime(tabId, (rt) => ({ ...rt, promptError: message }));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [patchRuntime],
   );
 
   const respondQuestionFor = useCallback(
@@ -3554,7 +3573,7 @@ export function StartupForm({
         </div>
       );
     }
-    const planWaiting = planRequest?.tabId === tab.id;
+    const planWaiting = rt?.plan != null;
     return (
       <div
         className={
@@ -4089,22 +4108,10 @@ export function StartupForm({
         <SessionCards
           cards={cardsByTab[activeTabId ?? ""] ?? emptySessionCards()}
           segments={streamSegments}
-          planRequest={
-            planRequest && planRequest.tabId === activeTabId ? planRequest : null
-          }
+          planRequest={planRequest}
           busy={busy}
-          onAcceptPlan={() => {
-            if (!activeTabId || !planRequest) return;
-            void respondPlanRequest(activeTabId, planRequest.jsonRpcId, "accepted").then(
-              () => setPlanRequest(null),
-            );
-          }}
-          onRejectPlan={() => {
-            if (!activeTabId || !planRequest) return;
-            void respondPlanRequest(activeTabId, planRequest.jsonRpcId, "cancelled").then(
-              () => setPlanRequest(null),
-            );
-          }}
+          onAcceptPlan={() => void respondPlanFor(activeTabId, "accepted")}
+          onRejectPlan={() => void respondPlanFor(activeTabId, "cancelled")}
           handoff={handoffOffer}
         />
             <SplitPanes

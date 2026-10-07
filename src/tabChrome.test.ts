@@ -99,6 +99,23 @@ describe("tab chrome", () => {
     expect(tabAtIndex(tabs, 8)).toBeNull();
   });
 
+  it("omits export transcript when canExportTranscript is false", () => {
+    const off = buildPalette({
+      tabs: [],
+      canReopen: false,
+      splitOpen: false,
+      canExportTranscript: false,
+    });
+    expect(off.some((c) => c.id === "exportTranscript")).toBe(false);
+    const on = buildPalette({
+      tabs: [],
+      canReopen: false,
+      splitOpen: false,
+      canExportTranscript: true,
+    });
+    expect(on.some((c) => c.id === "exportTranscript")).toBe(true);
+  });
+
   it("filters the command palette", () => {
     const commands = buildPalette({
       tabs: [{ id: "tab_1", label: "Implementer · Login" }],

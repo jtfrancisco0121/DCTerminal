@@ -359,3 +359,53 @@ pub fn set_layout(
     store.set_layout(layout)?;
     Ok(store.layout().clone())
 }
+
+#[cfg(test)]
+mod pipeline_tests {
+    use super::PIPELINE_ROLE_IDS;
+    use crate::roles::RolesFile;
+    use crate::store::{read_json, seed_output_path, AppStateFile, StateStore};
+
+    #[test]
+    fn pipeline_workspace_leaves_planner_tab_active() {
+        let seed: RolesFile = read_json(&seed_output_path()).expect("roles seed");
+        let dir = std::env::temp_dir().join(format!(
+            "dct_pipeline_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        let mut store = StateStore {
+            path,
+            data: AppStateFile::default(),
+        };
+        let cwd = "/tmp/pipeline-project";
+        let mut planner_tab_id: Option<String> = None;
+        for role_id in PIPELINE_ROLE_IDS {
+            let role = seed
+                .roles
+                .iter()
+                .find(|r| r.id == role_id)
+                .unwrap_or_else(|| panic!("missing role {role_id}"));
+            let tab_id = store.create_draft_tab(role, cwd, false).unwrap();
+            if role_id == "role_planner" {
+                planner_tab_id = Some(tab_id);
+            }
+        }
+        let planner_tab_id = planner_tab_id.expect("planner tab");
+        store.data.active_tab_id = Some(planner_tab_id.clone());
+        store.save().unwrap();
+        let active = store
+            .tab_by_id(&planner_tab_id)
+            .expect("planner tab record");
+        assert_eq!(active.role_id, "role_planner");
+        assert_eq!(
+            store.data.active_tab_id.as_deref(),
+            Some(planner_tab_id.as_str())
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

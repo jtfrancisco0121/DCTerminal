@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type {
   PermissionAutoEvent,
   PermissionRequestEvent,
+  PlanRequestEvent,
   PromptFinishedEvent,
   QuestionRequestEvent,
   SessionUpdateEvent,
@@ -9,6 +10,7 @@ import type {
 import {
   applyAutoPermission,
   applyPermission,
+  applyPlan,
   applyPromptFinished,
   applyQuestion,
   applySessionUpdate,
@@ -29,6 +31,20 @@ function withSession(sessionId: string): TabRuntime {
 }
 
 describe("per-tab session events", () => {
+  it("keeps a plan on the tab that asked and ignores another tab's session", () => {
+    const rt = withSession("sess-a");
+    const mine: PlanRequestEvent = {
+      tabId: "tab-a",
+      sessionId: "sess-a",
+      jsonRpcId: 4,
+      title: "Plan",
+      entries: [{ content: "Step 1", status: "pending" }],
+    };
+    const other = { ...mine, sessionId: "sess-b", jsonRpcId: 5 };
+    expect(applyPlan(rt, mine).plan?.jsonRpcId).toBe(4);
+    expect(applyPlan(rt, other).plan).toBeNull();
+  });
+
   it("keeps a question on the tab that asked and ignores another tab's session", () => {
     const rt = withSession("sess-a");
     const mine: QuestionRequestEvent = {
