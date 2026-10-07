@@ -1,0 +1,13 @@
+{
+  "jsonrpc": "2.0",
+  "id": 42,
+  "method": "cursor/ask_question",
+  "params": {
+    "title": "Choose an approach",
+    "prompt": "How should we roll out the change?",
+    "choices": [
+      { "id": "flag", "label": "Feature flag" },
+      { "id": "direct", "label": "Direct deploy" }
+    ]
+  }
+}

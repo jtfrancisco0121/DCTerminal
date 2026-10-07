@@ -3,7 +3,8 @@
 //! Never written to a repo or `~/.cursor`.
 
 use crate::store::json_io::{read_json_or_recover, write_json_atomic};
-use crate::store::state_types::{RoleSnapshot, TabRecord};
+use crate::store::state_types::{LayoutState, RoleSnapshot, TabRecord};
+use crate::worktree::WorktreeRef;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -37,6 +38,8 @@ pub struct WorkspaceTab {
     /// Startup form answers of a chat tab (title, task, folder...).
     #[serde(default)]
     pub answers: HashMap<String, String>,
+    #[serde(default)]
+    pub worktree: Option<WorktreeRef>,
 }
 
 impl WorkspaceTab {
@@ -55,11 +58,12 @@ impl WorkspaceTab {
             color: tab.color.clone(),
             model: tab.model.clone(),
             answers,
+            worktree: tab.worktree.clone(),
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Workspace {
     pub id: String,
@@ -69,6 +73,9 @@ pub struct Workspace {
     /// Index into `tabs` of the tab that was active when saved.
     #[serde(default)]
     pub active_index: Option<usize>,
+    /// Split view and file panel when the workspace was saved.
+    #[serde(default)]
+    pub layout: Option<LayoutState>,
 }
 
 impl Workspace {
@@ -107,7 +114,7 @@ impl Workspace {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspacesFile {
     pub schema_version: u32,
@@ -156,6 +163,7 @@ impl WorkspaceStore {
         name: &str,
         mut tabs: Vec<WorkspaceTab>,
         active_index: Option<usize>,
+        layout: Option<LayoutState>,
         replace: bool,
         now: &str,
     ) -> Result<Workspace, String> {
@@ -184,6 +192,7 @@ impl WorkspaceStore {
             existing.name = name;
             existing.tabs = tabs;
             existing.active_index = active_index;
+            existing.layout = layout;
             existing.saved_at = now.to_string();
             return Ok(existing.clone());
         }
@@ -198,6 +207,7 @@ impl WorkspaceStore {
             saved_at: now.to_string(),
             tabs,
             active_index,
+            layout,
         };
         self.data.workspaces.push(workspace.clone());
         Ok(workspace)
@@ -273,6 +283,7 @@ mod tests {
             color: Some("#3fb950".into()),
             model: None,
             answers: HashMap::from([("cwd".to_string(), cwd.to_string())]),
+            worktree: None,
         }
     }
 
@@ -289,7 +300,7 @@ mod tests {
             tab("Shell · api", "", "/w/api", "terminal"),
         ];
         let saved = store
-            .save_workspace("  Koneksi day  ", tabs.clone(), Some(1), false, T0)
+            .save_workspace("  Koneksi day  ", tabs.clone(), Some(1), None, false, T0)
             .unwrap();
         assert_eq!(saved.name, "Koneksi day");
         store.save().unwrap();
@@ -311,18 +322,18 @@ mod tests {
         let one = vec![tab("A", "role_dev", "/a", "role")];
         let two = vec![tab("B", "role_dev", "/b", "role")];
         assert!(store
-            .save_workspace("  ", one.clone(), None, false, T0)
+            .save_workspace("  ", one.clone(), None, None, false, T0)
             .is_err());
         assert!(store
-            .save_workspace("Empty", vec![], None, false, T0)
+            .save_workspace("Empty", vec![], None, None, false, T0)
             .is_err());
-        let first = store.save_workspace("Daily", one, None, false, T0).unwrap();
+        let first = store.save_workspace("Daily", one, None, None, false, T0).unwrap();
         let err = store
-            .save_workspace("daily", two.clone(), None, false, T1)
+            .save_workspace("daily", two.clone(), None, None, false, T1)
             .unwrap_err();
         assert!(err.contains("already"), "{err}");
         let replaced = store
-            .save_workspace("DAILY", two, Some(0), true, T1)
+            .save_workspace("DAILY", two, Some(0), None, true, T1)
             .unwrap();
         assert_eq!(replaced.id, first.id);
         assert_eq!(replaced.name, "DAILY");
@@ -337,13 +348,13 @@ mod tests {
         let dir = dir();
         let mut store = WorkspaceStore::open(&dir).unwrap();
         store
-            .save_workspace("Old", vec![tab("A", "r", "/a", "role")], None, false, T0)
+            .save_workspace("Old", vec![tab("A", "r", "/a", "role")], None, None, false, T0)
             .unwrap();
         let many: Vec<_> = (0..MAX_WORKSPACE_TABS + 5)
             .map(|i| tab(&format!("T{i}"), "r", "/x", "role"))
             .collect();
         let new = store
-            .save_workspace("New", many, Some(999), false, T1)
+            .save_workspace("New", many, Some(999), None, false, T1)
             .unwrap();
         assert_eq!(new.tabs.len(), MAX_WORKSPACE_TABS);
         assert_eq!(new.active_index, None);
@@ -406,6 +417,7 @@ mod tests {
                 tab("Shell", "", "/c", "terminal"),
             ],
             active_index: Some(3),
+            layout: None,
         };
         let fresh = RoleSnapshot {
             name: "Developer".into(),

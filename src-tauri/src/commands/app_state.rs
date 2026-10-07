@@ -141,6 +141,44 @@ pub fn new_draft_tab(
     Ok(TabDetail { tab })
 }
 
+const PIPELINE_ROLE_IDS: [&str; 3] = [
+    "role_planner",
+    "role_implementer",
+    "role_pr_reviewer",
+];
+
+/// Phase 6: three draft tabs (Planner / Implementer / Reviewer) sharing cwd.
+#[tauri::command]
+pub fn create_pipeline_tabs(
+    roles: State<Mutex<RolesStore>>,
+    store: State<Mutex<StateStore>>,
+) -> Result<AppStateSnapshot, String> {
+    let cwd = {
+        let store = store.lock().map_err(|e| e.to_string())?;
+        store
+            .data
+            .active_tab_id
+            .as_deref()
+            .and_then(|id| store.tab_by_id(id))
+            .map(|tab| tab.cwd.clone())
+            .or_else(|| store.sorted_tabs().first().map(|tab| tab.cwd.clone()))
+            .unwrap_or_default()
+    };
+    if cwd.trim().is_empty() {
+        return Err("Pick a tab with a working folder first.".into());
+    }
+    let roles_guard = roles.lock().map_err(|e| e.to_string())?;
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    for role_id in PIPELINE_ROLE_IDS {
+        let role = roles_guard
+            .role_by_id(role_id)
+            .cloned()
+            .ok_or_else(|| format!("unknown role: {role_id}"))?;
+        store.create_draft_tab(&role, cwd.trim(), true)?;
+    }
+    Ok(snapshot_from_store(&store))
+}
+
 #[tauri::command]
 pub fn sync_active_tab_form(
     tab_id: String,

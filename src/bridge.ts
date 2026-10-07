@@ -538,6 +538,11 @@ export async function transcriptLoad(tabId: string): Promise<{
   return invoke("transcript_load", { tabId });
 }
 
+/** Write an exported file to an absolute path chosen in the save dialog. */
+export async function exportTextFile(path: string, text: string): Promise<void> {
+  return invoke("export_text_file", { path, text });
+}
+
 export type DiagnosticsStatus = {
   capturePermissionPayloads: boolean;
   appDataDir: string;
@@ -552,6 +557,43 @@ export async function diagnosticsStatus(): Promise<DiagnosticsStatus> {
 
 export async function diagnosticsSetCapture(enabled: boolean): Promise<DiagnosticsStatus> {
   return invoke("diagnostics_set_capture", { enabled });
+}
+
+export type DiagnosticsLogTail = {
+  text: string;
+  path: string;
+};
+
+export async function diagnosticsReadLog(maxBytes?: number): Promise<DiagnosticsLogTail> {
+  return invoke("diagnostics_read_log", { maxBytes });
+}
+
+export type SessionAgentLogs = {
+  stderr: string;
+};
+
+export async function sessionAgentLogs(tabId?: string): Promise<SessionAgentLogs> {
+  return invoke("session_agent_logs", tabId ? { tabId } : {});
+}
+
+export type SaveRoleInput = {
+  roleId: string;
+  templateText: string;
+  name?: string;
+  color?: string;
+  defaultMode?: string;
+};
+
+export async function saveRole(input: SaveRoleInput): Promise<Role> {
+  return invoke("save_role", { input });
+}
+
+export async function resetBuiltinRole(roleId: string): Promise<Role> {
+  return invoke("reset_builtin_role", { roleId });
+}
+
+export async function createPipelineTabs(): Promise<AppStateSnapshot> {
+  return invoke("create_pipeline_tabs");
 }
 
 /** Reopen `tabId`, or the most recently closed tab when omitted. */
@@ -609,6 +651,37 @@ export async function respondPlanRequest(
   outcome: "accepted" | "cancelled",
 ): Promise<void> {
   return invoke("respond_plan_request", { tabId, jsonRpcId, outcome });
+}
+
+export type QuestionRequestEvent = {
+  tabId: string;
+  sessionId: string;
+  jsonRpcId: number;
+  title: string;
+  prompt: string;
+  choices: { id: string; label: string }[];
+};
+
+export function listenQuestionRequests(
+  handler: (event: QuestionRequestEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<QuestionRequestEvent>("acp/question-request", (e) => {
+    handler(e.payload);
+  });
+}
+
+export async function respondQuestionRequest(
+  tabId: string,
+  jsonRpcId: number,
+  outcome: "answered" | "skipped" | "cancelled",
+  choiceId?: string,
+): Promise<void> {
+  return invoke("respond_question_request", {
+    tabId,
+    jsonRpcId,
+    outcome,
+    choiceId: choiceId ?? null,
+  });
 }
 
 export type HandoffRecord = {

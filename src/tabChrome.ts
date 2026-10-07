@@ -178,6 +178,11 @@ export const PALETTE_ACTIONS = [
   "chatHistory",
   "sendPlanImplementer",
   "sendPlanDeveloper",
+  "sendPlanReviewer",
+  "sendImplementerToReviewer",
+  "exportTranscript",
+  "showLogs",
+  "pipelineWorkspace",
   "handoffHelp",
   "changeModel",
   "refreshModels",
@@ -258,6 +263,8 @@ export function buildPalette(opts: {
   canReopen: boolean;
   splitOpen: boolean;
   canSendPlan?: boolean;
+  canExportTranscript?: boolean;
+  canSendImplementerToReviewer?: boolean;
   /** The active tab was opened in a worktree. */
   canRemoveWorktree?: boolean;
   /** The active tab can change model (absent for plain shells). */
@@ -326,6 +333,12 @@ export function buildPalette(opts: {
       title: "Save scratch pad as prompt…",
       group: "Prompts",
       keywords: "prompt library snippet template name",
+    },
+    {
+      id: "pipelineWorkspace",
+      title: "New pipeline workspace (Planner / Implementer / Reviewer)",
+      group: "Workspaces",
+      keywords: "planner implementer reviewer pipeline preset tabs",
     },
     {
       id: "workspaces",
@@ -407,15 +420,43 @@ export function buildPalette(opts: {
         group: "Hand-off",
         keywords: "handoff send planner plan developer",
       },
+      {
+        id: "sendPlanReviewer",
+        title: "Hand off plan to PR Reviewer…",
+        group: "Hand-off",
+        keywords: "handoff send planner plan reviewer pr review",
+      },
     );
   } else {
     commands.push({
       id: "handoffHelp",
       title: "Hand off plan…",
       group: "Hand-off",
-      keywords: "handoff send planner plan implementer developer",
+      keywords: "handoff send planner plan implementer developer reviewer",
     });
   }
+  if (opts.canSendImplementerToReviewer) {
+    commands.push({
+      id: "sendImplementerToReviewer",
+      title: "Hand off to PR Reviewer…",
+      group: "Hand-off",
+      keywords: "handoff send implementer reviewer pr review",
+    });
+  }
+  if (opts.canExportTranscript) {
+    commands.push({
+      id: "exportTranscript",
+      title: "Export transcript…",
+      group: "History",
+      keywords: "export markdown transcript save chat",
+    });
+  }
+  commands.push({
+    id: "showLogs",
+    title: "Show session logs…",
+    group: "Diagnostics",
+    keywords: "stderr debug agent log drawer",
+  });
   if (opts.model) {
     const { current, inherited, models } = opts.model;
     commands.push({

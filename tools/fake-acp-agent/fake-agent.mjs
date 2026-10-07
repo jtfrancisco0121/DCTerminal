@@ -94,6 +94,8 @@ function chunk(session, text) {
   });
 }
 
+let pendingPromptId = null;
+
 function runAcp() {
   const input = readline.createInterface({ input: process.stdin });
   input.on("line", (line) => {
@@ -107,8 +109,15 @@ function runAcp() {
     }
     const id = message.id;
     const method = message.method;
-    if (id === undefined || !method) return;
-    handle(id, method, message.params ?? {});
+    if (method) {
+      if (id === undefined) return;
+      handle(id, method, message.params ?? {});
+      return;
+    }
+    if (pendingPromptId !== null && message.result !== undefined) {
+      result(pendingPromptId, { stopReason: "end_turn" });
+      pendingPromptId = null;
+    }
   });
 }
 
@@ -173,6 +182,23 @@ function handle(id, method, params) {
   }
   if (method === "session/prompt") {
     const idText = typeof params.sessionId === "string" ? params.sessionId : sessionId();
+    if (process.env.DCT_FAKE_QUESTION === "ask") {
+      pendingPromptId = id;
+      send({
+        jsonrpc: "2.0",
+        method: "cursor/ask_question",
+        id: 9001,
+        params: {
+          title: "Choose an approach",
+          prompt: "Pick one (fake agent scenario).",
+          choices: [
+            { id: "flag", label: "Feature flag" },
+            { id: "direct", label: "Direct deploy" },
+          ],
+        },
+      });
+      return;
+    }
     chunk(idText, "DCTerminal fake agent ready");
     result(id, { stopReason: "end_turn" });
     return;

@@ -585,7 +585,7 @@ impl StateStore {
                 model: item.model.clone(),
                 // Keep the saved title even when the form changes later.
                 custom_label: true,
-                worktree: None,
+                worktree: item.worktree.clone(),
             };
             self.data.tabs.push(record);
             ids.push(tab_id);
@@ -598,6 +598,9 @@ impl StateStore {
             .and_then(|i| ids.get(i).cloned())
             .or_else(|| ids.first().cloned());
         self.data.active_tab_id = active;
+        if let Some(layout) = workspace.layout.clone() {
+            self.data.layout = layout.sanitized();
+        }
         self.save()?;
         Ok(ids)
     }
@@ -1261,6 +1264,7 @@ mod tests {
                 ("title".to_string(), "Login fix".to_string()),
                 ("resumeSessionId".to_string(), "nope".to_string()),
             ]),
+            worktree: None,
         };
         let shell = WorkspaceTab {
             label: "Shell · api".into(),
@@ -1273,6 +1277,7 @@ mod tests {
             color: None,
             model: None,
             answers: HashMap::new(),
+            worktree: None,
         };
         let ws = Workspace {
             id: "ws_1".into(),
@@ -1280,6 +1285,7 @@ mod tests {
             saved_at: "2026-10-06T00:00:00Z".into(),
             tabs: vec![chat, shell],
             active_index: Some(1),
+            layout: None,
         };
 
         let added = store.open_workspace(&ws, false).unwrap();

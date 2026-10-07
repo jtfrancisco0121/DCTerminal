@@ -31,6 +31,7 @@ pub struct LiveSession {
     pub outbox: Arc<Mutex<Vec<(u64, Value)>>>,
     pub pending_permissions: HashMap<u64, ()>,
     pub pending_plans: HashMap<u64, ()>,
+    pub pending_questions: HashMap<u64, ()>,
     pub tool_call_cache: ToolCallCache,
     pub pending_startup_prompt: Option<String>,
     pub startup_injected: bool,
@@ -55,6 +56,7 @@ impl LiveSession {
             outbox,
             pending_permissions: HashMap::new(),
             pending_plans: HashMap::new(),
+            pending_questions: HashMap::new(),
             tool_call_cache: ToolCallCache::new(),
             pending_startup_prompt: None,
             startup_injected: false,
@@ -66,11 +68,15 @@ impl LiveSession {
     pub fn shutdown(&mut self) {
         let pending: Vec<u64> = self.pending_permissions.drain().map(|(id, _)| id).collect();
         let plans: Vec<u64> = self.pending_plans.drain().map(|(id, _)| id).collect();
+        let questions: Vec<u64> = self.pending_questions.drain().map(|(id, _)| id).collect();
         if let Ok(mut outbox) = self.outbox.lock() {
             for id in pending {
                 outbox.push((id, cancelled_permission_result()));
             }
             for id in plans {
+                outbox.push((id, json!({ "outcome": "cancelled" })));
+            }
+            for id in questions {
                 outbox.push((id, json!({ "outcome": "cancelled" })));
             }
         }
@@ -281,6 +287,7 @@ pub fn dev_session_cancel(
         .map(|(id, _)| id)
         .collect();
     let plans: Vec<u64> = session.pending_plans.drain().map(|(id, _)| id).collect();
+    let questions: Vec<u64> = session.pending_questions.drain().map(|(id, _)| id).collect();
     let outbox = Arc::clone(&session.outbox);
     let cancel = Arc::clone(&session.cancel);
     drop(guard);
@@ -292,9 +299,36 @@ pub fn dev_session_cancel(
         for id in plans {
             queue.push((id, json!({ "outcome": "cancelled" })));
         }
+        for id in questions {
+            queue.push((id, json!({ "outcome": "cancelled" })));
+        }
     }
     cancel.store(true, Ordering::SeqCst);
     Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionLogs {
+    pub stderr: String,
+}
+
+#[tauri::command]
+pub fn session_agent_logs(
+    tab_id: Option<String>,
+    state: State<Mutex<SessionRegistry>>,
+) -> Result<SessionLogs, String> {
+    let tab_id = resolve_tab_id(tab_id);
+    let guard = state.lock().map_err(|e| e.to_string())?;
+    let session = guard
+        .get(&tab_id)
+        .ok_or_else(|| "no active session on this tab".to_string())?;
+    let stderr = session
+        .client
+        .lock()
+        .map_err(|e| e.to_string())?
+        .stderr_tail_text();
+    Ok(SessionLogs { stderr })
 }
 
 #[tauri::command]

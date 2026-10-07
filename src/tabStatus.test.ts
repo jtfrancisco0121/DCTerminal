@@ -58,6 +58,9 @@ describe("computeTabStatus", () => {
     const rt = { ...emptyRuntime(), promptInFlight: true, permission };
     expect(computeTabStatus({ runtime: rt, planPending: true }).needsYou).toBe("permission");
     expect(computeTabStatus({ planPending: true, mark: "question" }).needsYou).toBe("plan");
+    expect(
+      computeTabStatus({ planPending: false, questionPending: true, mark: "question" }).needsYou,
+    ).toBe("question");
     expect(computeTabStatus({ planPending: false, mark: "question" }).needsYou).toBe("question");
     expect(computeTabStatus({ planPending: false, mark: "error" }).needsYou).toBe("error");
     expect(

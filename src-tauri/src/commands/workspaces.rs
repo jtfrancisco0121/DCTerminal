@@ -47,18 +47,19 @@ pub fn workspace_save(
     state: State<Mutex<StateStore>>,
     store: State<Mutex<WorkspaceStore>>,
 ) -> Result<WorkspaceList, String> {
-    let (tabs, active_index) = {
+    let (tabs, active_index, layout) = {
         let state = state.lock().map_err(|e| e.to_string())?;
         let sorted = state.sorted_tabs();
         let active = state.data.active_tab_id.as_deref();
         let active_index = sorted.iter().position(|t| Some(t.id.as_str()) == active);
         let tabs: Vec<WorkspaceTab> = sorted.into_iter().map(WorkspaceTab::from_record).collect();
-        (tabs, active_index)
+        let layout = Some(state.data.layout.clone());
+        (tabs, active_index, layout)
     };
     let mut store = store.lock().map_err(|e| e.to_string())?;
     let before = store.data.clone();
     let now = chrono::Utc::now().to_rfc3339();
-    store.save_workspace(&name, tabs, active_index, replace, &now)?;
+    store.save_workspace(&name, tabs, active_index, layout, replace, &now)?;
     if let Err(err) = store.save() {
         store.data = before;
         return Err(format!("Could not save workspaces: {err}"));

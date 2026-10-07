@@ -12,8 +12,9 @@ import type { HandoffTargetId } from "./handoff/map";
 import { historyNavigate } from "./scratch/pad";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { PermissionRequestEvent } from "./bridge";
+import type { PermissionRequestEvent, QuestionRequestEvent } from "./bridge";
 import { PermissionCard } from "./PermissionCard";
+import { QuestionCard } from "./components/QuestionCard";
 import { summarizeSessionActivity } from "./sessionActivity";
 import type { StreamSegment, ToolStatus } from "./transcript";
 import { ChatFindBar } from "./components/ChatFindBar";
@@ -83,6 +84,10 @@ type Props = {
   permissionRequest: PermissionRequestEvent | null;
   onPermissionSelect: (optionId: string) => void;
   onPermissionCancel: () => void;
+  questionRequest?: QuestionRequestEvent | null;
+  onQuestionAnswer?: (choiceId: string) => void;
+  onQuestionSkip?: () => void;
+  onQuestionCancel?: () => void;
   onCancelTurn: () => void;
   onFollowUpChange: (value: string) => void;
   onSendFollowUp: () => void;
@@ -130,6 +135,10 @@ export function SessionTerminal({
   permissionRequest,
   onPermissionSelect,
   onPermissionCancel,
+  questionRequest = null,
+  onQuestionAnswer,
+  onQuestionSkip,
+  onQuestionCancel,
   onCancelTurn,
   onFollowUpChange,
   onSendFollowUp,
@@ -367,6 +376,18 @@ export function SessionTerminal({
             busy={busy}
             onSelect={onPermissionSelect}
             onCancel={onPermissionCancel}
+          />
+        </div>
+      )}
+
+      {questionRequest && onQuestionAnswer && onQuestionSkip && onQuestionCancel && (
+        <div className="session-permission-sticky">
+          <QuestionCard
+            request={questionRequest}
+            busy={busy}
+            onAnswer={onQuestionAnswer}
+            onSkip={onQuestionSkip}
+            onCancel={onQuestionCancel}
           />
         </div>
       )}
