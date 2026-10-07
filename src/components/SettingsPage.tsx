@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import {
   getRole,
+  resetBuiltinRole,
+  saveRole,
   type ApprovalModeStatus,
   type CliDetectResult,
   type DiagnosticsStatus,
@@ -43,6 +45,7 @@ type Props = {
   onUiSettings?: (patch: Partial<UiSettings>) => void;
   /** U6: category shown first (Roles when omitted). */
   initialCategory?: SettingsCategory;
+  onRefreshRoles?: () => Promise<void>;
   onClose: () => void;
 };
 
@@ -90,11 +93,15 @@ export function SettingsPage({
   uiSettings = null,
   onUiSettings,
   initialCategory = "Roles",
+  onRefreshRoles,
   onClose,
 }: Props) {
   const [category, setCategory] = useState<SettingsCategory>(initialCategory);
   const [selectedId, setSelectedId] = useState(roles[0]?.id ?? "");
   const [detail, setDetail] = useState<Role | null>(null);
+  const [editTemplate, setEditTemplate] = useState("");
+  const [roleBusy, setRoleBusy] = useState(false);
+  const [roleMessage, setRoleMessage] = useState<string | null>(null);
   const rows = shortcutRows(platform);
 
   useEffect(() => {
@@ -102,7 +109,11 @@ export function SettingsPage({
     let cancelled = false;
     getRole(selectedId)
       .then((role) => {
-        if (!cancelled) setDetail(role);
+        if (!cancelled) {
+          setDetail(role);
+          setEditTemplate(role.templateText);
+          setRoleMessage(null);
+        }
       })
       .catch(() => {
         if (!cancelled) setDetail(null);
@@ -111,6 +122,40 @@ export function SettingsPage({
       cancelled = true;
     };
   }, [selectedId]);
+
+  const saveRoleTemplate = async () => {
+    if (!detail) return;
+    setRoleBusy(true);
+    setRoleMessage(null);
+    try {
+      const updated = await saveRole({ roleId: detail.id, templateText: editTemplate });
+      setDetail(updated);
+      setEditTemplate(updated.templateText);
+      setRoleMessage("Saved.");
+      await onRefreshRoles?.();
+    } catch (err: unknown) {
+      setRoleMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRoleBusy(false);
+    }
+  };
+
+  const resetRoleTemplate = async () => {
+    if (!detail?.isBuiltIn) return;
+    setRoleBusy(true);
+    setRoleMessage(null);
+    try {
+      const updated = await resetBuiltinRole(detail.id);
+      setDetail(updated);
+      setEditTemplate(updated.templateText);
+      setRoleMessage("Reset to built-in template.");
+      await onRefreshRoles?.();
+    } catch (err: unknown) {
+      setRoleMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRoleBusy(false);
+    }
+  };
 
   return (
     <div className="settings-page">
@@ -165,10 +210,38 @@ export function SettingsPage({
                     fields
                   </p>
                   <p className="hint">{rolePermissionSummary(detail.id)}</p>
-                  <details>
-                    <summary>Prompt preview</summary>
-                    <pre className="mono-snippet settings-prompt">{detail.templateText}</pre>
-                  </details>
+                  <label className="field-label" htmlFor="settings-role-template">
+                    Role template
+                  </label>
+                  <textarea
+                    id="settings-role-template"
+                    className="settings-role-template"
+                    rows={14}
+                    value={editTemplate}
+                    disabled={roleBusy}
+                    onChange={(event) => setEditTemplate(event.target.value)}
+                  />
+                  <div className="button-row">
+                    <button
+                      type="button"
+                      className="primary-button"
+                      disabled={roleBusy}
+                      onClick={() => void saveRoleTemplate()}
+                    >
+                      {roleBusy ? "Saving…" : "Save template"}
+                    </button>
+                    {detail.isBuiltIn && (
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={roleBusy}
+                        onClick={() => void resetRoleTemplate()}
+                      >
+                        Reset built-in
+                      </button>
+                    )}
+                  </div>
+                  {roleMessage && <p className="hint">{roleMessage}</p>}
                 </div>
               )}
             </section>
@@ -420,8 +493,8 @@ export function SettingsPage({
                     <p className="hint">
                       The tab you are looking at stays quiet while the window is focused. When
                       DCTerminal is not the focused window, events from every tab raise a system
-                      notification and a toast that waits for you. Covers chat tabs; terminal tabs
-                      are not tracked yet.
+                      notification and a toast that waits for you. Covers chat and terminal tabs
+                      when they finish off screen.
                     </p>
                     <div className="button-row">
                       <button
@@ -486,6 +559,9 @@ export function SettingsPage({
                 <p>
                   DCTerminal {APP_VERSION}
                   {cli?.found && cli.version ? ` · Cursor CLI ${cli.version}` : ""}
+                </p>
+                <p className="hint">
+                  Release notes and update checks: see <code>docs/RELEASE.md</code> in the repo.
                 </p>
                 {cli && !cli.found && (
                   <p className="error">

@@ -61,12 +61,14 @@ export function computeTabStatus(input: {
   runtime?: TabRuntime;
   mark?: TabMark;
   planPending: boolean;
+  questionPending?: boolean;
   terminalBusy?: boolean;
 }): TabStatus {
   const rt = input.runtime;
   let needsYou: NeedsYou | null = null;
   if (rt?.permission) needsYou = "permission";
   else if (input.planPending) needsYou = "plan";
+  else if (input.questionPending) needsYou = "question";
   else if (input.mark === "question") needsYou = "question";
   else if (input.mark === "error" || rt?.agentExited) needsYou = "error";
   return {

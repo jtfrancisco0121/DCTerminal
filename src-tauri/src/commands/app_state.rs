@@ -141,6 +141,52 @@ pub fn new_draft_tab(
     Ok(TabDetail { tab })
 }
 
+const PIPELINE_ROLE_IDS: [&str; 3] = [
+    "role_planner",
+    "role_implementer",
+    "role_pr_reviewer",
+];
+
+/// Phase 6: three draft tabs (Planner / Implementer / Reviewer) sharing cwd.
+#[tauri::command]
+pub fn create_pipeline_tabs(
+    roles: State<Mutex<RolesStore>>,
+    store: State<Mutex<StateStore>>,
+) -> Result<AppStateSnapshot, String> {
+    let cwd = {
+        let store = store.lock().map_err(|e| e.to_string())?;
+        store
+            .data
+            .active_tab_id
+            .as_deref()
+            .and_then(|id| store.tab_by_id(id))
+            .map(|tab| tab.cwd.clone())
+            .or_else(|| store.sorted_tabs().first().map(|tab| tab.cwd.clone()))
+            .unwrap_or_default()
+    };
+    if cwd.trim().is_empty() {
+        return Err("Pick a tab with a working folder first.".into());
+    }
+    let roles_guard = roles.lock().map_err(|e| e.to_string())?;
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    let mut planner_tab_id: Option<String> = None;
+    for role_id in PIPELINE_ROLE_IDS {
+        let role = roles_guard
+            .role_by_id(role_id)
+            .cloned()
+            .ok_or_else(|| format!("unknown role: {role_id}"))?;
+        let tab_id = store.create_draft_tab(&role, cwd.trim(), false)?;
+        if role_id == "role_planner" {
+            planner_tab_id = Some(tab_id);
+        }
+    }
+    if let Some(tab_id) = planner_tab_id {
+        store.data.active_tab_id = Some(tab_id);
+        store.save()?;
+    }
+    Ok(snapshot_from_store(&store))
+}
+
 #[tauri::command]
 pub fn sync_active_tab_form(
     tab_id: String,
@@ -312,4 +358,54 @@ pub fn set_layout(
     let mut store = store.lock().map_err(|e| e.to_string())?;
     store.set_layout(layout)?;
     Ok(store.layout().clone())
+}
+
+#[cfg(test)]
+mod pipeline_tests {
+    use super::PIPELINE_ROLE_IDS;
+    use crate::roles::RolesFile;
+    use crate::store::{read_json, seed_output_path, AppStateFile, StateStore};
+
+    #[test]
+    fn pipeline_workspace_leaves_planner_tab_active() {
+        let seed: RolesFile = read_json(&seed_output_path()).expect("roles seed");
+        let dir = std::env::temp_dir().join(format!(
+            "dct_pipeline_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        let mut store = StateStore {
+            path,
+            data: AppStateFile::default(),
+        };
+        let cwd = "/tmp/pipeline-project";
+        let mut planner_tab_id: Option<String> = None;
+        for role_id in PIPELINE_ROLE_IDS {
+            let role = seed
+                .roles
+                .iter()
+                .find(|r| r.id == role_id)
+                .unwrap_or_else(|| panic!("missing role {role_id}"));
+            let tab_id = store.create_draft_tab(role, cwd, false).unwrap();
+            if role_id == "role_planner" {
+                planner_tab_id = Some(tab_id);
+            }
+        }
+        let planner_tab_id = planner_tab_id.expect("planner tab");
+        store.data.active_tab_id = Some(planner_tab_id.clone());
+        store.save().unwrap();
+        let active = store
+            .tab_by_id(&planner_tab_id)
+            .expect("planner tab record");
+        assert_eq!(active.role_id, "role_planner");
+        assert_eq!(
+            store.data.active_tab_id.as_deref(),
+            Some(planner_tab_id.as_str())
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

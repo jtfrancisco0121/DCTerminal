@@ -4,6 +4,8 @@ use crate::paths::validate_working_folder;
 use crate::permissions::{read_approval_mode, ApprovalModeStatus};
 use crate::store::{ProjectsStore, ScratchStore, SettingsStore, StateStore, TranscriptStore};
 use serde::Serialize;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::State;
 
@@ -189,6 +191,34 @@ pub async fn history_search(
     .map_err(|err| err.to_string())
 }
 
+const MAX_EXPORT_CHARS: usize = 8_000_000;
+
+#[tauri::command]
+pub fn export_text_file(path: String, text: String) -> Result<(), String> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Err("No file path.".into());
+    }
+    if text.len() > MAX_EXPORT_CHARS {
+        return Err(format!(
+            "Export is {} characters. The limit is {}.",
+            text.len(),
+            MAX_EXPORT_CHARS
+        ));
+    }
+    let path = std::path::PathBuf::from(path);
+    if !path.is_absolute() {
+        return Err("Choose a full path for the export.".into());
+    }
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+    }
+    std::fs::write(&path, text.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 pub fn transcript_load(
     tab_id: String,
@@ -255,6 +285,43 @@ fn diagnostic_paths(app: &tauri::AppHandle) -> (String, String, String) {
             .display()
             .to_string(),
     )
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticsLogTail {
+    pub text: String,
+    pub path: String,
+}
+
+/// Tail of the redacted permission-payload log (when capture is on).
+#[tauri::command]
+pub fn diagnostics_read_log(
+    app: tauri::AppHandle,
+    max_bytes: Option<u64>,
+) -> Result<DiagnosticsLogTail, String> {
+    let paths = diagnostic_paths(&app);
+    let path = PathBuf::from(&paths.2);
+    let cap = max_bytes.unwrap_or(64 * 1024).min(512 * 1024);
+    let text = tail_file(&path, cap)?;
+    Ok(DiagnosticsLogTail {
+        text,
+        path: paths.2,
+    })
+}
+
+fn tail_file(path: &PathBuf, max_bytes: u64) -> Result<String, String> {
+    if !path.exists() {
+        return Ok(String::new());
+    }
+    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let len = file.metadata().map_err(|e| e.to_string())?.len();
+    let start = len.saturating_sub(max_bytes);
+    file.seek(SeekFrom::Start(start))
+        .map_err(|e| e.to_string())?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+    Ok(String::from_utf8_lossy(&buf).to_string())
 }
 
 fn listed_dto(item: crate::store::ListedProject) -> ListedProjectDto {

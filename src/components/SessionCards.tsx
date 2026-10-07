@@ -14,6 +14,7 @@ type PlanRequest = {
 type HandoffOffer = {
   enabled: boolean;
   reason: string | null;
+  targets?: HandoffTargetId[];
   onSend: (target: HandoffTargetId) => void;
 };
 
@@ -43,6 +44,7 @@ export function SessionCards({
     <HandoffActions
       enabled={handoff.enabled}
       reason={handoff.reason}
+      targets={handoff.targets}
       busy={busy}
       onSend={handoff.onSend}
     />

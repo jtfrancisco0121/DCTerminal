@@ -87,8 +87,10 @@ Checklist aligned with [DCTerminal-Project-Blueprint.md](./DCTerminal-Project-Bl
 ## Phase 6+ — P2 backlog (after MVP)
 
 - [x] `session/load` resume (Continue). Live probe on CLI 2026.10.01: load works; `agent --resume` does not open ACP ids — [cursor-cli-history.md](./cursor-cli-history.md)
-- [ ] Plan hand-off (Planner → Implementer / PR Reviewer)
-- [ ] Custom roles, keymap UI, notifications, transcript export, input history
+- [x] Plan hand-off (Planner → Implementer / Developer / PR Reviewer)
+- [ ] Custom roles editor (import/export), keymap UI
+- [x] Transcript export (Markdown), per-tab composer input history, terminal finished notifications (PR #14)
+- [x] Blocking `cursor/ask_question` UI + Settings role template save/reset (PR #14)
 
 ---
 

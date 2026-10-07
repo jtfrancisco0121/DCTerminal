@@ -40,6 +40,9 @@ vi.mock("./bridge", () => {
     logPath: "",
     lastError: null,
   })),
+  diagnosticsReadLog: vi.fn(async () => ({ text: "", path: "" })),
+  sessionAgentLogs: vi.fn(async () => ({ stderr: "" })),
+  createPipelineTabs: vi.fn(async () => ({ tabs: [], closedTabs: [], activeTabId: null })),
   cursorApprovalMode: vi.fn(async () => ({
     kind: "allowlist",
     approvalMode: "allowlist",
@@ -53,8 +56,11 @@ vi.mock("./bridge", () => {
     return () => {};
   }),
   listenPlanRequests: listen,
+  listenQuestionRequests: listen,
   respondPermissionRequest: vi.fn(),
   respondPlanRequest: vi.fn(),
+  respondQuestionRequest: vi.fn(),
+  exportTextFile: vi.fn(),
   reopenClosedTab: vi.fn(),
   historySearch: vi.fn(async () => []),
   promptLibraryGet: vi.fn(async () => ({ prompts: [], recent: [], path: "" })),
@@ -275,6 +281,7 @@ describe("blank tab card", () => {
       },
     ]);
     vi.mocked(syncActiveTabForm).mockClear();
+    vi.mocked(setTerminalSettings).mockImplementation(async (value) => value as never);
   });
 
   it("shows the first-use tip once and can turn on the shortcut bar (U7)", async () => {
@@ -303,7 +310,62 @@ describe("blank tab card", () => {
     );
   });
 
-  it("keeps role, folder, and Start on one row with history as a side list (U5)", async () => {
+  it("keeps folder, model, and Start on one row without a top role navbar (U5)", async () => {
+    render(
+      <StartupForm
+        roles={[
+          { id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 },
+          { id: "role_planner", name: "Planner", defaultMode: "agent", color: "#58a6ff", fieldCount: 0 },
+        ]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+    await screen.findByLabelText("Title");
+    const row = screen.getByRole("group", { name: "Start a session" });
+    expect(within(row).queryByRole("group", { name: "Role" })).toBeNull();
+    expect(row.querySelector(".folder-picker-compact")).toBeTruthy();
+    expect(
+      row.querySelector(`.folder-picker-chosen[title="${tab.cwd.replace(/\\/g, "\\\\")}"]`),
+    ).toBeTruthy();
+    expect(within(row).getByRole("button", { name: "Start" })).toBeTruthy();
+    expect(within(row).queryByRole("button", { name: "Validate & preview" })).toBeNull();
+    const roles = screen.getByRole("group", { name: "Role" });
+    expect(row.contains(roles)).toBe(false);
+    expect(within(roles).getByRole("button", { name: "Developer" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Validate & preview" })).toBeTruthy();
+    const history = await screen.findByRole("region", { name: "Cursor CLI history" });
+    expect(history.closest(".start-history")).toBeTruthy();
+    expect(row.contains(history)).toBe(false);
+    expect(row.contains(screen.getByLabelText("Title"))).toBe(false);
+  });
+
+  it("updates the draft when a role tile is selected", async () => {
+    render(
+      <StartupForm
+        roles={[
+          { id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 },
+          { id: "role_planner", name: "Planner", defaultMode: "agent", color: "#58a6ff", fieldCount: 0 },
+        ]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+    await screen.findByLabelText("Title");
+    vi.mocked(syncActiveTabForm).mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Planner" }));
+    await waitFor(() => expect(syncActiveTabForm).toHaveBeenCalled());
+    const calls = vi.mocked(syncActiveTabForm).mock.calls;
+    const last = calls[calls.length - 1];
+    expect(last?.[1]).toBe("role_planner");
+  });
+
+  it("remembers Chat vs Terminal per role from the start card", async () => {
+    vi.mocked(setTerminalSettings).mockClear();
     render(
       <StartupForm
         roles={[
@@ -316,19 +378,104 @@ describe("blank tab card", () => {
       />,
     );
     await screen.findByLabelText("Title");
-    const row = screen.getByRole("group", { name: "Start a tab" });
-    expect(within(row).getByRole("group", { name: "Role" })).toBeTruthy();
-    expect(row.querySelector(".folder-picker-compact")).toBeTruthy();
-    expect(
-      row.querySelector(`.folder-picker-chosen[title="${tab.cwd.replace(/\\/g, "\\\\")}"]`),
-    ).toBeTruthy();
-    expect(within(row).getByRole("button", { name: "Start" })).toBeTruthy();
-    expect(within(row).getByRole("button", { name: "Validate & preview" })).toBeTruthy();
+    const openAs = screen.getByRole("group", { name: "Open as" });
+    fireEvent.click(within(openAs).getByRole("button", { name: "Terminal" }));
+    await waitFor(() =>
+      expect(setTerminalSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          roleSurface: expect.objectContaining({ role_developer: "terminal" }),
+        }),
+      ),
+    );
+    fireEvent.click(within(openAs).getByRole("button", { name: "Chat" }));
+    await waitFor(() =>
+      expect(setTerminalSettings).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          roleSurface: expect.objectContaining({ role_developer: "chat" }),
+        }),
+      ),
+    );
+  });
+
+  it("still starts a role session from the start row", async () => {
+    vi.mocked(roleSessionStart).mockReset();
+    vi.mocked(roleSessionStart).mockResolvedValue({
+      errors: [{ key: "_session", message: "test stop" }],
+      session: null,
+      tabId: "tab_dev",
+    } as never);
+    render(
+      <StartupForm
+        roles={[
+          { id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 },
+        ]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+    await screen.findByLabelText("Title");
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await waitFor(() =>
+      expect(roleSessionStart).toHaveBeenCalledWith(
+        "role_developer",
+        expect.objectContaining({ cwd: tab.cwd }),
+        "tab_dev",
+        false,
+        null,
+      ),
+    );
+  });
+
+  it("resumes history from the side list", async () => {
+    vi.mocked(listCursorCliHistory).mockResolvedValue([
+      {
+        id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        source: "acp",
+        cwd: tab.cwd,
+        title: "Senior Software Engineer",
+        updatedAt: "2026-10-06T05:29:04.681517200+00:00",
+      },
+    ]);
+    vi.mocked(newDraftTab).mockResolvedValue({
+      tab: {
+        ...tab,
+        id: "tab_resume",
+        cwd: tab.cwd,
+        answers: { cwd: tab.cwd },
+      },
+    });
+    vi.mocked(roleSessionStart).mockReset();
+    vi.mocked(roleSessionStart).mockResolvedValue({
+      errors: [{ key: "_session", message: "test stop" }],
+      session: null,
+      tabId: "tab_resume",
+    } as never);
+    render(
+      <StartupForm
+        roles={[
+          { id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 },
+        ]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
     const history = await screen.findByRole("region", { name: "Cursor CLI history" });
-    expect(history.closest(".start-history")).toBeTruthy();
-    expect(row.contains(history)).toBe(false);
-    // Fields sit under the row, not in it.
-    expect(row.contains(screen.getByLabelText("Title"))).toBe(false);
+    const resume = await within(history).findByRole("button", { name: "Resume" });
+    fireEvent.click(resume);
+    await waitFor(() => expect(newDraftTab).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(roleSessionStart).toHaveBeenCalledWith(
+        "role_developer",
+        expect.anything(),
+        "tab_resume",
+        false,
+        "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+      ),
+    );
   });
 
   it("shows Developer fields, a plain history line, and does not keep another role's task type", async () => {

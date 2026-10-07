@@ -183,9 +183,37 @@ describe("handoff mapping", () => {
     expect(charCount("é🙂")).toBe(2);
   });
 
+  it("maps an Implementer form onto PR Reviewer fields", () => {
+    const mapped = mapHandoff(
+      source({
+        sourceRoleId: "role_implementer",
+        answers: {
+          title: "Login fix",
+          description: "Tokens must refresh.",
+          approvedPlan: "## Steps\n1. Patch handler",
+          additionalContext: "QA noted flakes",
+        },
+      }),
+      "plan_and_todos",
+      { roleId: "role_pr_reviewer", fields: REVIEWER_FIELDS },
+    );
+    expect(mapped.answers.originalTask).toContain("Tokens must refresh");
+    expect(mapped.answers.approvedPlan).toContain("Patch handler");
+    expect(mapped.answers.additionalContext).toBe("QA noted flakes");
+  });
+
   it("refuses a hand-off while the turn is still streaming or the tab is not a Planner", () => {
     expect(handoffBlockReason(source({ turnInFlight: true }))).toMatch(/finishes this turn/);
     expect(handoffBlockReason(source({ sourceRoleId: "role_developer" }))).toMatch(/Planner/);
+    expect(
+      handoffBlockReason(
+        source({
+          sourceRoleId: "role_implementer",
+          answers: {},
+          turnInFlight: true,
+        }),
+      ),
+    ).toMatch(/finishes this turn/);
     expect(
       handoffBlockReason(
         source({ latestMessage: "", plan: [], todos: [], selection: "" }),

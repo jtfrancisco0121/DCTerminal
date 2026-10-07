@@ -12,6 +12,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 pub const PERMISSION_REQUEST_EVENT: &str = "acp/permission-request";
 pub const PERMISSION_AUTO_EVENT: &str = "acp/permission-auto";
 pub const PLAN_REQUEST_EVENT: &str = "acp/plan-request";
+pub const QUESTION_REQUEST_EVENT: &str = "acp/question-request";
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -283,6 +284,144 @@ pub fn respond_plan_request(
     Ok(())
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuestionChoiceDto {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuestionRequestEvent {
+    pub tab_id: String,
+    pub session_id: String,
+    pub json_rpc_id: u64,
+    pub title: String,
+    pub prompt: String,
+    pub choices: Vec<QuestionChoiceDto>,
+}
+
+pub fn stage_question_request(
+    app: &AppHandle,
+    tab_id: &str,
+    session_id: &str,
+    request: &Value,
+    state: &Mutex<SessionRegistry>,
+) -> Result<Option<Value>, String> {
+    let json_rpc_id = request
+        .get("id")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| "question request missing id".to_string())?;
+    let params = request.get("params").cloned().unwrap_or(Value::Null);
+    {
+        let mut guard = state.lock().map_err(|e| e.to_string())?;
+        let Some(session) = guard.get_mut(tab_id) else {
+            return Ok(Some(json!({ "outcome": "cancelled" })));
+        };
+        session.pending_questions.insert(json_rpc_id, ());
+    }
+    let title = params
+        .get("title")
+        .or_else(|| params.get("name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("Question")
+        .to_string();
+    let prompt = params
+        .get("prompt")
+        .or_else(|| params.get("message"))
+        .or_else(|| params.get("question"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let choices = question_choices(&params);
+    let _ = app.emit(
+        QUESTION_REQUEST_EVENT,
+        QuestionRequestEvent {
+            tab_id: tab_id.to_string(),
+            session_id: session_id.to_string(),
+            json_rpc_id,
+            title,
+            prompt,
+            choices,
+        },
+    );
+    Ok(None)
+}
+
+#[tauri::command]
+pub fn respond_question_request(
+    tab_id: String,
+    json_rpc_id: u64,
+    outcome: String,
+    choice_id: Option<String>,
+    state: State<Mutex<SessionRegistry>>,
+) -> Result<(), String> {
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+    let Some(session) = guard.get_mut(&tab_id) else {
+        return Ok(());
+    };
+    if session.pending_questions.remove(&json_rpc_id).is_none() {
+        return Err("no pending question request for this id".to_string());
+    }
+    let result = match outcome.as_str() {
+        "answered" => {
+            let id = choice_id.ok_or_else(|| "choiceId required for answered outcome".to_string())?;
+            json!({
+                "outcome": "answered",
+                "choiceId": id
+            })
+        }
+        "skipped" => json!({ "outcome": "skipped" }),
+        _ => json!({ "outcome": "cancelled" }),
+    };
+    session
+        .outbox
+        .lock()
+        .map_err(|e| e.to_string())?
+        .push((json_rpc_id, result));
+    Ok(())
+}
+
+fn question_choices(params: &Value) -> Vec<QuestionChoiceDto> {
+    let list = params
+        .get("choices")
+        .or_else(|| params.get("options"))
+        .and_then(|v| v.as_array());
+    let Some(list) = list else {
+        return Vec::new();
+    };
+    list.iter()
+        .filter_map(|item| {
+            let id = item
+                .get("id")
+                .or_else(|| item.get("optionId"))
+                .or_else(|| item.get("value"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let label = item
+                .get("label")
+                .or_else(|| item.get("name"))
+                .or_else(|| item.get("title"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if id.is_empty() && label.is_empty() {
+                return None;
+            }
+            let resolved_id = if id.is_empty() { label.clone() } else { id };
+            let resolved_label = if label.is_empty() { resolved_id.clone() } else { label };
+            Some(QuestionChoiceDto {
+                id: resolved_id,
+                label: resolved_label,
+            })
+        })
+        .collect()
+}
+
 fn plan_entries(params: &Value) -> Vec<PlanEntryDto> {
     let list = params
         .get("entries")
@@ -364,5 +503,26 @@ fn note_capture_error(app: &AppHandle, err: &str) {
         if let Ok(mut settings) = state.lock() {
             settings.last_capture_error = Some(err.to_string());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_question_choices_from_fixture_shape() {
+        let params = serde_json::json!({
+            "title": "Choose an approach",
+            "prompt": "How should we roll out the change?",
+            "choices": [
+                { "id": "flag", "label": "Feature flag" },
+                { "id": "direct", "label": "Direct deploy" }
+            ]
+        });
+        let choices = question_choices(&params);
+        assert_eq!(choices.len(), 2);
+        assert_eq!(choices[0].id, "flag");
+        assert_eq!(choices[1].label, "Direct deploy");
     }
 }

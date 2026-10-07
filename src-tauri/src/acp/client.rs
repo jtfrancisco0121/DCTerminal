@@ -217,6 +217,10 @@ impl AcpClient {
         self.conn.process_handle()
     }
 
+    pub fn stderr_tail_text(&self) -> String {
+        self.conn.stderr_tail_text()
+    }
+
     pub fn cancel_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.cancel)
     }

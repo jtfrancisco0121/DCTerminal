@@ -44,8 +44,23 @@ Beyond `sessionId`, the result includes:
 - `agent --resume <acpSessionId>` exited 1. `agent ls` does not list ACP ids. `session/new` did not bind to an `agent create-chat` id.
 - `session/list` is advertised and is not called. The history list reads `meta.json` only.
 
+## `cursor/ask_question` (fixture until live capture)
+
+Observed shape used by DCTerminal staging (from blueprint + unit fixture):
+
+| Field | Location | Notes |
+|-------|----------|-------|
+| `title` | `params.title` | Card heading |
+| `prompt` | `params.prompt` (fallback `message`, `question`) | Body text |
+| `choices` | `params.choices[]` | Each choice: `id` + `label` (aliases `optionId`, `name`) |
+
+Fixture: [ask-question-request.json](../fixtures/acp/ask-question-request.json).
+
+Replies: `{ "outcome": "answered", "choiceId": "…" }`, `{ "outcome": "skipped" }`, or `{ "outcome": "cancelled" }`.
+
 ## Not yet probed on a live CLI
 
+- Live `cursor/ask_question` on a logged-in CLI (fixture above is the contract until recorded)
 - Hang / malformed line edge cases beyond the unit tests
 - Models (Job 1): whether `session/new` returns `configOptions` with a `model` category (DCTerminal then sends `session/set_config_option {sessionId, configId, value}`) or a `models` field (`session/set_model {sessionId, modelId}`). Without either, DCTerminal restarts `agent --model <id> acp` and calls `session/load` with the same session id. `agent --list-models` is parsed as a header line, then `<id> - <label>` lines with zero-width spaces, double spaces, `(current)`, and `(default)` removed. The fake agent in `tools/fake-acp-agent` covers both paths (`DCT_FAKE_MODELS=none` turns the config option off).
 

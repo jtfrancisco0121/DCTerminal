@@ -1095,6 +1095,53 @@ body,
   padding: 1rem;
 }
 
+.log-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--backdrop);
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+  z-index: 25;
+}
+
+.log-drawer {
+  width: min(36rem, 96vw);
+  max-width: 100%;
+  height: 100%;
+  overflow: auto;
+  background: var(--bg-elev);
+  border-left: 1px solid var(--border);
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.log-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.log-drawer-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.log-drawer-section h3 {
+  margin: 0 0 0.35rem;
+  font-size: 0.9rem;
+  color: var(--fg-muted);
+}
+
+.log-drawer-pre {
+  max-height: 40vh;
+  overflow: auto;
+  margin: 0;
+}
+
 .shortcut-list,
 .palette-list {
   list-style: none;
@@ -3457,8 +3504,8 @@ mark.search-hit-current {
 }
 
 /* ---------------------------------------------------------------------
-   U5: compact start screen. Role, folder, model and Start share one row;
-   role fields sit below with Cursor CLI history as a side list.
+   U5 / new-tab landing: folder, model, and Start on one sticky row; role
+   tiles and fields in the left card; Cursor CLI history on the right.
    --------------------------------------------------------------------- */
 .empty-state {
   align-items: stretch;
@@ -3475,6 +3522,20 @@ mark.search-hit-current {
   box-sizing: border-box;
 }
 
+.start-session-card {
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev);
+}
+
+.start-session-title {
+  margin: 0 0 0.4rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--fg-muted);
+}
+
 .start-row {
   position: sticky;
   top: 0;
@@ -3483,65 +3544,13 @@ mark.search-hit-current {
   flex-wrap: nowrap;
   align-items: center;
   gap: 0.35rem;
-  padding: 0.35rem 0.5rem;
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  padding: 0.35rem 0;
+  margin-bottom: 0.35rem;
   background: var(--bg-elev);
 }
 
-.start-row .role-choices {
-  flex-wrap: nowrap;
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: none;
-  gap: 0;
-  margin: 0;
-}
-
-.start-row .role-choices::-webkit-scrollbar {
-  display: none;
-}
-
-.start-row .role-choice,
 .start-row > * {
   flex-shrink: 0;
-}
-
-.start-row > .role-choices:first-child {
-  flex-shrink: 1;
-}
-
-.start-row > .role-choices + .role-choices {
-  overflow: visible;
-}
-
-.start-row .role-choice {
-  padding: 0.2rem 0.45rem;
-  border-radius: 0;
-  margin-left: -1px;
-  font-size: 0.78rem;
-  white-space: nowrap;
-}
-
-.start-row .role-choice:first-child {
-  border-radius: 6px 0 0 6px;
-  margin-left: 0;
-}
-
-.start-row .role-choice:last-child {
-  border-radius: 0 6px 6px 0;
-}
-
-.start-row .role-choice[aria-pressed="true"] {
-  position: relative;
-  z-index: 1;
-}
-
-.start-row .role-dot {
-  width: 0.5rem;
-  height: 0.5rem;
-  margin-right: 0.3rem;
 }
 
 .start-row-spacer {
@@ -3551,6 +3560,64 @@ mark.search-hit-current {
 .start-row .primary-button,
 .start-row .secondary-button {
   white-space: nowrap;
+}
+
+.role-tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(7.25rem, 1fr));
+  gap: 0.35rem;
+  margin: 0 0 0.35rem;
+}
+
+.role-tile {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  padding: 0.3rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 0.78rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.role-tile[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+  background: var(--accent-subtle);
+}
+
+.role-tile:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.role-tile .role-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  flex-shrink: 0;
+  border-radius: 50%;
+}
+
+.start-surface-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0 0 0.5rem;
+}
+
+.start-surface-choices .role-choice {
+  margin-bottom: 0;
+  font-size: 0.78rem;
+  padding: 0.25rem 0.55rem;
+}
+
+.start-preview-button {
+  margin-top: 0.35rem;
 }
 
 .folder-picker-compact {
@@ -3624,7 +3691,7 @@ mark.search-hit-current {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 0.75rem;
-  margin-top: 0.5rem;
+  margin-top: 0.35rem;
 }
 
 .start-body-with-history {
@@ -3643,8 +3710,8 @@ mark.search-hit-current {
 
 .start-main .composer-fields {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
-  gap: 0.4rem 0.6rem;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.35rem;
 }
 
 .start-main .composer-fields .field-label {
@@ -3673,8 +3740,11 @@ mark.search-hit-current {
 
 .start-history {
   min-width: 0;
-  border-left: 1px solid var(--border);
-  padding-left: 0.75rem;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev);
+  box-sizing: border-box;
 }
 
 .start-history .history-list {

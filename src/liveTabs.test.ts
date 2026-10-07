@@ -2,13 +2,17 @@ import { describe, expect, it } from "vitest";
 import type {
   PermissionAutoEvent,
   PermissionRequestEvent,
+  PlanRequestEvent,
   PromptFinishedEvent,
+  QuestionRequestEvent,
   SessionUpdateEvent,
 } from "./bridge";
 import {
   applyAutoPermission,
   applyPermission,
+  applyPlan,
   applyPromptFinished,
+  applyQuestion,
   applySessionUpdate,
   attentionTabIds,
   clearLiveSession,
@@ -27,6 +31,60 @@ function withSession(sessionId: string): TabRuntime {
 }
 
 describe("per-tab session events", () => {
+  it("keeps a plan on the tab that asked and ignores another tab's session", () => {
+    const rt = withSession("sess-a");
+    const mine: PlanRequestEvent = {
+      tabId: "tab-a",
+      sessionId: "sess-a",
+      jsonRpcId: 4,
+      title: "Plan",
+      entries: [{ content: "Step 1", status: "pending" }],
+    };
+    const other = { ...mine, sessionId: "sess-b", jsonRpcId: 5 };
+    expect(applyPlan(rt, mine).plan?.jsonRpcId).toBe(4);
+    expect(applyPlan(rt, other).plan).toBeNull();
+  });
+
+  it("keeps a question on the tab that asked and ignores another tab's session", () => {
+    const rt = withSession("sess-a");
+    const mine: QuestionRequestEvent = {
+      tabId: "tab-a",
+      sessionId: "sess-a",
+      jsonRpcId: 9,
+      title: "Pick one",
+      prompt: "Which approach?",
+      choices: [{ id: "a", label: "A" }],
+    };
+    const other = { ...mine, sessionId: "sess-b", jsonRpcId: 10 };
+    expect(applyQuestion(rt, mine).question?.jsonRpcId).toBe(9);
+    expect(applyQuestion(rt, other).question).toBeNull();
+  });
+
+  it("clears a pending question when the turn finishes", () => {
+    const question: QuestionRequestEvent = {
+      tabId: "tab-a",
+      sessionId: "sess-a",
+      jsonRpcId: 2,
+      title: "Q",
+      prompt: "Pick",
+      choices: [],
+    };
+    const rt = { ...withSession("sess-a"), question };
+    const evt: PromptFinishedEvent = {
+      sessionId: "sess-a",
+      tabId: "tab-a",
+      success: true,
+      result: {
+        stopReason: "end_turn",
+        agentText: "Done",
+        updateCount: 1,
+      },
+      error: null,
+      agentExited: false,
+    };
+    expect(applyPromptFinished(rt, evt).question).toBeNull();
+  });
+
   it("keeps a permission on the tab that asked and ignores another tab's session", () => {
     const rt = withSession("sess-a");
     const mine: PermissionRequestEvent = {
@@ -109,6 +167,22 @@ describe("per-tab session events", () => {
     expect(
       applySessionUpdate(rt, { ...evt, sessionId: "other" }).segments,
     ).toHaveLength(0);
+  });
+
+  it("flags both tabs when each has a pending question", () => {
+    const question = (tabId: string, sessionId: string, id: number): QuestionRequestEvent => ({
+      tabId,
+      sessionId,
+      jsonRpcId: id,
+      title: "Q",
+      prompt: "Pick",
+      choices: [{ id: "x", label: "X" }],
+    });
+    const runtimes = {
+      a: { ...withSession("s1"), question: question("a", "s1", 1) },
+      b: { ...withSession("s2"), question: question("b", "s2", 2) },
+    };
+    expect(attentionTabIds(runtimes).sort()).toEqual(["a", "b"]);
   });
 
   it("flags tabs that need attention", () => {

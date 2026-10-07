@@ -16,6 +16,7 @@ import {
 const TARGETS: { id: HandoffTargetId; label: string }[] = [
   { id: "role_implementer", label: "Implementer" },
   { id: "role_developer", label: "Developer" },
+  { id: "role_pr_reviewer", label: "PR Reviewer" },
 ];
 
 type Props = {
@@ -162,37 +163,52 @@ export function HandoffDialog({
   );
 }
 
+const ACTION_BUTTONS: { id: HandoffTargetId; label: string; title: string }[] = [
+  {
+    id: "role_implementer",
+    label: "Send to Implementer",
+    title: "Open an Implementer tab with this plan",
+  },
+  {
+    id: "role_developer",
+    label: "Send to Developer",
+    title: "Open a Developer tab with this plan",
+  },
+  {
+    id: "role_pr_reviewer",
+    label: "Send to PR Reviewer",
+    title: "Open a PR Reviewer tab with this plan",
+  },
+];
+
 export function HandoffActions({
   enabled,
   reason,
   busy = false,
+  targets = TARGETS.map((item) => item.id),
   onSend,
 }: {
   enabled: boolean;
   reason: string | null;
   busy?: boolean;
+  targets?: HandoffTargetId[];
   onSend: (target: HandoffTargetId) => void;
 }) {
+  const buttons = ACTION_BUTTONS.filter((item) => targets.includes(item.id));
   return (
     <div className="button-row handoff-actions">
-      <button
-        type="button"
-        className="secondary-button"
-        disabled={!enabled || busy}
-        title={reason ?? "Open an Implementer tab with this plan"}
-        onClick={() => onSend("role_implementer")}
-      >
-        Send to Implementer
-      </button>
-      <button
-        type="button"
-        className="secondary-button"
-        disabled={!enabled || busy}
-        title={reason ?? "Open a Developer tab with this plan"}
-        onClick={() => onSend("role_developer")}
-      >
-        Send to Developer
-      </button>
+      {buttons.map((item) => (
+        <button
+          key={item.id}
+          type="button"
+          className="secondary-button"
+          disabled={!enabled || busy}
+          title={reason ?? item.title}
+          onClick={() => onSend(item.id)}
+        >
+          {item.label}
+        </button>
+      ))}
     </div>
   );
 }

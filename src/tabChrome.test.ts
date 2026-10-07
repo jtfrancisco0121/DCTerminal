@@ -99,6 +99,23 @@ describe("tab chrome", () => {
     expect(tabAtIndex(tabs, 8)).toBeNull();
   });
 
+  it("omits export transcript when canExportTranscript is false", () => {
+    const off = buildPalette({
+      tabs: [],
+      canReopen: false,
+      splitOpen: false,
+      canExportTranscript: false,
+    });
+    expect(off.some((c) => c.id === "exportTranscript")).toBe(false);
+    const on = buildPalette({
+      tabs: [],
+      canReopen: false,
+      splitOpen: false,
+      canExportTranscript: true,
+    });
+    expect(on.some((c) => c.id === "exportTranscript")).toBe(true);
+  });
+
   it("filters the command palette", () => {
     const commands = buildPalette({
       tabs: [{ id: "tab_1", label: "Implementer · Login" }],
@@ -258,6 +275,7 @@ describe("tab chrome", () => {
       const titles = Object.fromEntries(everything().map((c) => [c.id, c.title]));
       expect(titles.sendPlanImplementer).toBe("Hand off plan to Implementer…");
       expect(titles.sendPlanDeveloper).toBe("Hand off plan to Developer…");
+      expect(titles.sendPlanReviewer).toBe("Hand off plan to PR Reviewer…");
       expect(titles.changeModel).toBe("Change model…");
       expect(titles.chatHistory).toBe("Chat history for this folder…");
     });
@@ -268,7 +286,11 @@ describe("tab chrome", () => {
       expect(ids).toEqual(["handoffHelp"]);
       expect(filterCommands(plain, "handoff").map((c) => c.id)).toEqual(["handoffHelp"]);
       const planner = filterCommands(everything(), "hand off").map((c) => c.id);
-      expect(planner).toEqual(["sendPlanImplementer", "sendPlanDeveloper"]);
+      expect(planner).toEqual([
+        "sendPlanImplementer",
+        "sendPlanDeveloper",
+        "sendPlanReviewer",
+      ]);
     });
 
     it("offers each model only while searching, marking the current one", () => {

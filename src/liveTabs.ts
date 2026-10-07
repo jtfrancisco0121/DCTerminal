@@ -3,6 +3,8 @@ import type {
   DevSessionInfo,
   PermissionAutoEvent,
   PermissionRequestEvent,
+  PlanRequestEvent,
+  QuestionRequestEvent,
   PromptFinishedEvent,
   RoleSessionStartResult,
   SessionUpdateEvent,
@@ -21,6 +23,8 @@ export type TabRuntime = {
   segments: StreamSegment[];
   promptInFlight: boolean;
   permission: PermissionRequestEvent | null;
+  plan: PlanRequestEvent | null;
+  question: QuestionRequestEvent | null;
   promptError: string | null;
   lastResult: DevPromptResult | null;
   startResult: RoleSessionStartResult | null;
@@ -37,6 +41,8 @@ export function emptyRuntime(): TabRuntime {
     segments: [],
     promptInFlight: false,
     permission: null,
+    plan: null,
+    question: null,
     promptError: null,
     lastResult: null,
     startResult: null,
@@ -81,6 +87,8 @@ export function applyPromptFinished(
       ...rt,
       promptInFlight: false,
       permission: null,
+      plan: null,
+      question: null,
       promptError: null,
       agentExited: false,
       accepting: false,
@@ -98,6 +106,8 @@ export function applyPromptFinished(
     ...rt,
     promptInFlight: false,
     permission: null,
+    plan: null,
+    question: null,
     promptError: evt.error,
     agentExited: evt.agentExited,
     accepting: false,
@@ -111,6 +121,27 @@ export function applyPermission(
 ): TabRuntime {
   if (!sameSession(rt, evt.sessionId)) return rt;
   return { ...rt, permission: evt };
+}
+
+export function applyPlan(rt: TabRuntime, evt: PlanRequestEvent): TabRuntime {
+  if (!sameSession(rt, evt.sessionId)) return rt;
+  return { ...rt, plan: evt };
+}
+
+export function clearPlan(rt: TabRuntime): TabRuntime {
+  return { ...rt, plan: null };
+}
+
+export function applyQuestion(
+  rt: TabRuntime,
+  evt: QuestionRequestEvent,
+): TabRuntime {
+  if (!sameSession(rt, evt.sessionId)) return rt;
+  return { ...rt, question: evt };
+}
+
+export function clearQuestion(rt: TabRuntime): TabRuntime {
+  return { ...rt, question: null };
 }
 
 export function applyAutoPermission(
@@ -133,7 +164,13 @@ export function clearLiveSession(rt: TabRuntime): TabRuntime {
 
 export function attentionTabIds(runtimes: Record<string, TabRuntime>): string[] {
   return Object.entries(runtimes)
-    .filter(([, rt]) => rt.permission !== null || rt.agentExited)
+    .filter(
+      ([, rt]) =>
+        rt.permission !== null ||
+        rt.plan !== null ||
+        rt.question !== null ||
+        rt.agentExited,
+    )
     .map(([id]) => id);
 }
 

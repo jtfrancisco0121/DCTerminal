@@ -15,13 +15,18 @@ import {
   devSessionSend,
   devSessionStop,
   cursorApprovalMode,
+  createPipelineTabs,
+  diagnosticsReadLog,
   diagnosticsSetCapture,
   diagnosticsStatus,
+  sessionAgentLogs,
   listenPermissionAuto,
   listenPermissionRequests,
   listenPlanRequests,
+  listenQuestionRequests,
   respondPermissionRequest,
   respondPlanRequest,
+  respondQuestionRequest,
   reopenClosedTab,
   historySearch,
   transcriptLoad,
@@ -77,7 +82,6 @@ import {
   validateAndPreview,
   type ClosedTabSummary,
   type FieldError,
-  type PlanRequestEvent,
   type CliDetectResult,
   type ApprovalModeStatus,
   type DiagnosticsStatus,
@@ -93,8 +97,12 @@ import {
 import {
   applyAutoPermission,
   applyPermission,
+  applyPlan,
   applyPromptFinished,
+  applyQuestion,
   applySessionUpdate,
+  clearPlan,
+  clearQuestion,
   clearLiveSession,
   emptyRuntime,
   folderStatusMessage,
@@ -121,8 +129,11 @@ import {
   type HandoffSurface,
   type HandoffTargetId,
 } from "./handoff/map";
+import { runTranscriptExport } from "./export/runTranscriptExport";
 import { FolderPicker } from "./components/FolderPicker";
+import { LogDrawer } from "./components/LogDrawer";
 import { SettingsPage } from "./components/SettingsPage";
+import { pushComposerHistory } from "./composer/history";
 import { StatusBar, type StatusMessage, type StatusTone } from "./components/StatusBar";
 import { summarizeSessionActivity } from "./sessionActivity";
 import { folderForTab } from "./projectsView";
@@ -199,6 +210,7 @@ import { createTurnWaiter } from "./scratch/turnWait";
 import { SessionTerminal } from "./SessionTerminal";
 import { answersForRole, fieldsForForm } from "./startupFields";
 import { CursorHistoryList } from "./components/CursorHistoryList";
+import { RoleTiles } from "./components/RoleTiles";
 import { ShortcutBar } from "./components/ShortcutBar";
 import { FIRST_USE_TIP_ID, FirstUseTip, shouldShowTip } from "./components/FirstUseTip";
 import { normalizeTheme, THEMES } from "./theme";
@@ -267,6 +279,7 @@ type Props = {
   showDevTools: boolean;
   /** F8: re-run CLI detection (App keeps the result). */
   onRedetectCli?: () => Promise<CliDetectResult>;
+  onRefreshRoles?: () => Promise<void>;
 };
 
 export function StartupForm({
@@ -276,6 +289,7 @@ export function StartupForm({
   cliFound,
   showDevTools,
   onRedetectCli,
+  onRefreshRoles,
 }: Props) {
   const [roleId, setRoleId] = useState("role_implementer");
   const [role, setRole] = useState<Role | null>(null);
@@ -291,7 +305,6 @@ export function StartupForm({
   const [closedTabs, setClosedTabs] = useState<ClosedTabSummary[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [cardsByTab, setCardsByTab] = useState<Record<string, Cards>>({});
-  const [planRequest, setPlanRequest] = useState<PlanRequestEvent | null>(null);
   // F2: finished/question/error left on a tab the user was not watching.
   const [tabMarks, setTabMarks] = useState<Record<string, TabMark>>({});
   const [terminalBusy, setTerminalBusy] = useState<string[]>([]);
@@ -394,6 +407,14 @@ export function StartupForm({
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [cliLaunchNote, setCliLaunchNote] = useState<string | null>(null);
   const [historyCursor, setHistoryCursor] = useState(-1);
+  const [composerHistoryByTab, setComposerHistoryByTab] = useState<Record<string, string[]>>({});
+  const [logDrawerOpen, setLogDrawerOpen] = useState(false);
+  const [logDrawer, setLogDrawer] = useState({
+    stderr: "",
+    appLog: "",
+    logPath: null as string | null,
+  });
+  const [logBusy, setLogBusy] = useState(false);
   const [chain, setChain] = useState<ChainCursor | null>(null);
   const [resendStartup, setResendStartup] = useState(false);
   const skipRecallRef = useRef(false);
@@ -436,6 +457,8 @@ export function StartupForm({
   const followUp = activeRuntime.followUp;
   const streamSegments = activeRuntime.segments;
   const permissionRequest = activeRuntime.permission;
+  const planRequest = activeRuntime.plan;
+  const questionRequest = activeRuntime.question;
   const scratch = useScratchPads(activeTabId);
   const padRef = useRef<HTMLTextAreaElement>(null);
   const terminalPadRef = useRef<TerminalPadHandle>(null);
@@ -676,9 +699,18 @@ export function StartupForm({
       }),
       listenPlanRequests((evt) => {
         if (!evt.tabId) return;
-        setPlanRequest(evt);
         setChain((current) => (current ? chainMarkBlocked(current) : current));
+        patchRuntime(evt.tabId, (rt) => applyPlan(rt, evt));
         notifyAgent(evt.tabId, { kind: "plan", detail: evt.title });
+      }),
+      listenQuestionRequests((evt) => {
+        if (!evt.tabId) return;
+        setChain((current) => (current ? chainMarkBlocked(current) : current));
+        patchRuntime(evt.tabId, (rt) => applyQuestion(rt, evt));
+        notifyAgent(evt.tabId, {
+          kind: "question",
+          detail: evt.prompt || evt.title,
+        });
       }),
     ]).then((fns) => {
       if (cancelled) {
@@ -752,6 +784,11 @@ export function StartupForm({
         prev.length === busy.length && prev.every((id, i) => id === busy[i]) ? prev : busy,
       );
       if (settled.length > 0) {
+        for (const id of settled) {
+          if (!isWatchingTab(id)) {
+            notifyAgent(id, { kind: "finished", detail: "Terminal output settled." });
+          }
+        }
         setTabMarks((marks) =>
           settled.reduce(
             (acc, id) => markAfterTurn(acc, id, "finished", isWatchingTab(id)),
@@ -761,7 +798,7 @@ export function StartupForm({
       }
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [hasTerminalTabs, isWatchingTab]);
+  }, [hasTerminalTabs, isWatchingTab, notifyAgent]);
 
   const tabStatuses = useMemo(() => {
     const out: Record<string, TabStatus> = {};
@@ -769,12 +806,13 @@ export function StartupForm({
       out[tab.id] = computeTabStatus({
         runtime: runtimes[tab.id],
         mark: tabMarks[tab.id],
-        planPending: planRequest?.tabId === tab.id,
+        planPending: runtimes[tab.id]?.plan != null,
+        questionPending: runtimes[tab.id]?.question != null,
         terminalBusy: terminalBusy.includes(tab.id),
       });
     }
     return out;
-  }, [planRequest, runtimes, savedTabs, tabMarks, terminalBusy]);
+  }, [runtimes, savedTabs, tabMarks, terminalBusy]);
 
   const uiSettings = useUiSettings();
   // U2: one pad size for chat and terminal tabs; saved when a drag ends.
@@ -1655,6 +1693,63 @@ export function StartupForm({
     [activeTabId, respondPermissionFor],
   );
 
+  const respondPlanFor = useCallback(
+    async (tabId: string | null, outcome: "accepted" | "cancelled") => {
+      if (!tabId) return;
+      const request = runtimesRef.current[tabId]?.plan;
+      if (!request) return;
+      setBusy(true);
+      try {
+        await respondPlanRequest(tabId, request.jsonRpcId, outcome);
+        patchRuntime(tabId, (rt) => clearPlan(rt));
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        patchRuntime(tabId, (rt) => ({ ...rt, promptError: message }));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [patchRuntime],
+  );
+
+  const respondQuestionFor = useCallback(
+    async (
+      tabId: string | null,
+      outcome: "answered" | "skipped" | "cancelled",
+      choiceId?: string,
+    ) => {
+      if (!tabId) return;
+      const request = runtimesRef.current[tabId]?.question;
+      if (!request) return;
+      setBusy(true);
+      try {
+        await respondQuestionRequest(tabId, request.jsonRpcId, outcome, choiceId);
+        patchRuntime(tabId, (rt) => clearQuestion(rt));
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        patchRuntime(tabId, (rt) => ({ ...rt, promptError: message }));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [patchRuntime],
+  );
+
+  const handleQuestionAnswer = useCallback(
+    (choiceId: string) => respondQuestionFor(activeTabId, "answered", choiceId),
+    [activeTabId, respondQuestionFor],
+  );
+
+  const handleQuestionSkip = useCallback(
+    () => respondQuestionFor(activeTabId, "skipped"),
+    [activeTabId, respondQuestionFor],
+  );
+
+  const handleQuestionCancel = useCallback(
+    () => respondQuestionFor(activeTabId, "cancelled"),
+    [activeTabId, respondQuestionFor],
+  );
+
   const sendText = useCallback(
     async (tabId: string, text: string) => {
       const trimmed = text.trim();
@@ -1662,6 +1757,10 @@ export function StartupForm({
       const pending = waiterRef.current.expect(tabId);
       setHistoryCursor(-1);
       scratch.remember(tabId, trimmed);
+      setComposerHistoryByTab((prev) => ({
+        ...prev,
+        [tabId]: pushComposerHistory(prev[tabId] ?? [], trimmed),
+      }));
       void promptRecordSend(trimmed, "chat").catch(() => {});
       patchRuntime(tabId, (rt) => ({
         ...rt,
@@ -1722,7 +1821,7 @@ export function StartupForm({
   }, [activeTabId, followUp, scratch.content]);
 
   const runChain = useCallback(async () => {
-    if (!activeTabId || promptInFlight || permissionRequest) return;
+    if (!activeTabId || promptInFlight || permissionRequest || questionRequest) return;
     const started = chainStart(scratch.content);
     if (!started) return;
     chainAbortRef.current = false;
@@ -1747,7 +1846,7 @@ export function StartupForm({
       cursor = chainMarkSettled(cursor, outcome);
       setChain(cursor);
     }
-  }, [activeTabId, permissionRequest, promptInFlight, scratch.content, sendText]);
+  }, [activeTabId, permissionRequest, questionRequest, promptInFlight, scratch.content, sendText]);
 
   const sendFromPad = useCallback(() => {
     if (!activeTabId) return;
@@ -2437,14 +2536,27 @@ export function StartupForm({
     values,
   ]);
 
+  const handoffBlock = handoffBlockReason({ ...handoffSource, selection: "" });
   const handoffOffer =
     roleId === "role_planner" && session
       ? {
-          enabled: handoffBlockReason({ ...handoffSource, selection: "" }) === null,
-          reason: handoffBlockReason({ ...handoffSource, selection: "" }),
+          enabled: handoffBlock === null,
+          reason: handoffBlock,
+          targets: [
+            "role_implementer",
+            "role_developer",
+            "role_pr_reviewer",
+          ] as HandoffTargetId[],
           onSend: openHandoffDialog,
         }
-      : null;
+      : roleId === "role_implementer" && session
+        ? {
+            enabled: handoffBlock === null,
+            reason: handoffBlock,
+            targets: ["role_pr_reviewer"] as HandoffTargetId[],
+            onSend: openHandoffDialog,
+          }
+        : null;
 
   const confirmHandoff = useCallback(
     async (scope: HandoffScope, surface: HandoffSurface) => {
@@ -2588,10 +2700,84 @@ export function StartupForm({
       case "sendPlanDeveloper":
         openHandoffDialog("role_developer");
         return;
+      case "sendPlanReviewer":
+        openHandoffDialog("role_pr_reviewer");
+        return;
+      case "sendImplementerToReviewer":
+        openHandoffDialog("role_pr_reviewer");
+        return;
+      case "showLogs": {
+        setLogDrawerOpen(true);
+        void (async () => {
+          const tabId = activeTabIdRef.current;
+          if (!tabId) return;
+          setLogBusy(true);
+          try {
+            const [agent, app] = await Promise.all([
+              sessionAgentLogs(tabId).catch(() => ({ stderr: "" })),
+              diagnosticsReadLog().catch(() => ({ text: "", path: "" })),
+            ]);
+            setLogDrawer({
+              stderr: agent.stderr,
+              appLog: app.text,
+              logPath: app.path || null,
+            });
+          } finally {
+            setLogBusy(false);
+          }
+        })();
+        return;
+      }
+      case "pipelineWorkspace":
+        void createPipelineTabs()
+          .then(async (snap) => {
+            setSavedTabs(snap.tabs);
+            setClosedTabs(snap.closedTabs ?? []);
+            const plannerTab = snap.tabs.find((t) => t.roleId === "role_planner");
+            const activeId =
+              snap.activeTabId ?? plannerTab?.id ?? snap.tabs[snap.tabs.length - 1]?.id;
+            if (activeId) {
+              const summary = snap.tabs.find((t) => t.id === activeId);
+              if (summary?.kind === "terminal") setActiveTabId(activeId);
+              else {
+                const { tab } = await selectActiveTab(activeId);
+                loadTabIntoForm(tab);
+              }
+            }
+            showNotice(
+              "Pipeline workspace",
+              "Opened Planner, Implementer, and PR Reviewer tabs with the same folder.",
+            );
+          })
+          .catch((err: unknown) =>
+            showNotice(
+              "Could not open pipeline",
+              err instanceof Error ? err.message : String(err),
+              "question",
+            ),
+          );
+        return;
+      case "exportTranscript": {
+        const tabId = activeTabIdRef.current;
+        if (!tabId) return;
+        void runTranscriptExport({ tabId, liveSegments: streamSegments }).then((result) => {
+          if (result.ok) {
+            showNotice("Transcript exported", result.path);
+            return;
+          }
+          if (result.reason === "cancelled") return;
+          showNotice(
+            result.reason === "empty" ? "Nothing to export" : "Export failed",
+            result.message,
+            "question",
+          );
+        });
+        return;
+      }
       case "handoffHelp":
         showNotice(
           "Nothing to hand off",
-          "Hand-off sends a plan to an Implementer or Developer. Open a Planner chat or Planner terminal that has a plan, then try again.",
+          "Hand-off sends a plan to an Implementer, Developer, or PR Reviewer. Open a Planner chat or Planner terminal that has a plan, then try again.",
           "question",
         );
         return;
@@ -2846,6 +3032,7 @@ export function StartupForm({
       onTestNotification={agentNotifications.sendTest}
       modelList={modelList}
       modelSettings={modelSettings}
+      onRefreshRoles={onRefreshRoles}
       onModelSettings={(next) => {
         setModelSettingsState(next);
         void setModelSettings(next)
@@ -2958,6 +3145,13 @@ export function StartupForm({
         "failed",
       );
     }
+    void getLayout()
+      .then((layout) => {
+        setSplit(splitFromLayout(layout));
+        setFilePanelOpen(layout.filePanelOpen);
+        setFilePanelWidth(layout.filePanelWidth);
+      })
+      .catch(() => {});
   };
 
   /** The active tab's pad editor (chat pad or terminal pad), if mounted. */
@@ -3178,12 +3372,42 @@ export function StartupForm({
           }
         }}
       />
+      {logDrawerOpen && (
+        <LogDrawer
+          stderr={logDrawer.stderr}
+          appLog={logDrawer.appLog}
+          logPath={logDrawer.logPath}
+          busy={logBusy}
+          onRefresh={() => {
+            const tabId = activeTabIdRef.current;
+            if (!tabId) return;
+            setLogBusy(true);
+            void Promise.all([sessionAgentLogs(tabId), diagnosticsReadLog()])
+              .then(([agent, app]) => {
+                setLogDrawer({
+                  stderr: agent.stderr,
+                  appLog: app.text,
+                  logPath: app.path || null,
+                });
+              })
+              .catch(() => {})
+              .finally(() => setLogBusy(false));
+          }}
+          onClose={() => setLogDrawerOpen(false)}
+        />
+      )}
       {paletteOpen && (
         <CommandPalette
           tabs={savedTabs.map((tab) => ({ id: tab.id, label: tab.label, cwd: tab.cwd }))}
           canReopen={closedTabs.length > 0}
           splitOpen={splitOpen(split)}
           canSendPlan={(roleId === "role_planner" && !!session) || !!isPlannerTerminal}
+          canExportTranscript={
+            !!activeTabSummary &&
+            (activeTabSummary.hasTranscript ||
+              segmentsToPlainText(streamSegments).trim().length > 0)
+          }
+          canSendImplementerToReviewer={roleId === "role_implementer" && !!session}
           canRemoveWorktree={!!activeTabSummary?.worktreePath}
           model={paletteModel}
           initialQuery={palettePrefill.query}
@@ -3317,6 +3541,12 @@ export function StartupForm({
           permissionRequest={rt.permission}
           onPermissionSelect={(optionId) => void respondPermissionFor(tab.id, optionId)}
           onPermissionCancel={() => void respondPermissionFor(tab.id, null)}
+          questionRequest={rt.question}
+          onQuestionAnswer={(choiceId) =>
+            void respondQuestionFor(tab.id, "answered", choiceId)
+          }
+          onQuestionSkip={() => void respondQuestionFor(tab.id, "skipped")}
+          onQuestionCancel={() => void respondQuestionFor(tab.id, "cancelled")}
           onCancelTurn={() => void cancelTurnFor(tab.id)}
           onFollowUpChange={(value) => setFollowUpFor(tab.id, value)}
           onSendFollowUp={() => void sendFollowUpFor(tab.id)}
@@ -3343,7 +3573,7 @@ export function StartupForm({
         </div>
       );
     }
-    const planWaiting = planRequest?.tabId === tab.id;
+    const planWaiting = rt?.plan != null;
     return (
       <div
         className={
@@ -3808,32 +4038,31 @@ export function StartupForm({
     </div>
   );
 
-  // U5: model, preview, and Start sit on the start row; extras go under it.
-  const startButtons = showFields && (
-    <>
-      {blankModelPicker}
-      <button
-        type="button"
-        className="secondary-button"
-        onClick={runPreview}
-        disabled={busy || previewBusy}
-        aria-label="Validate & preview"
-        title="Check the fields and show the merged startup prompt"
-      >
-        {previewBusy ? "…" : "Preview"}
-      </button>
-      <button
-        type="button"
-        className="primary-button"
-        onClick={() => {
-          if (rememberedSurface(roleId) === "terminal") void startRoleTerminal();
-          else void startSession(surface === "restore" && resendStartup);
-        }}
-        disabled={busy || !cliFound}
-      >
-        {rememberedSurface(roleId) === "terminal" ? "Start terminal" : "Start"}
-      </button>
-    </>
+  const previewButton = showFields && (
+    <button
+      type="button"
+      className="secondary-button start-preview-button"
+      onClick={runPreview}
+      disabled={busy || previewBusy}
+      aria-label="Validate & preview"
+      title="Check the fields and show the merged startup prompt"
+    >
+      {previewBusy ? "…" : "Preview"}
+    </button>
+  );
+
+  const roleStartButton = showFields && (
+    <button
+      type="button"
+      className="primary-button"
+      onClick={() => {
+        if (rememberedSurface(roleId) === "terminal") void startRoleTerminal();
+        else void startSession(surface === "restore" && resendStartup);
+      }}
+      disabled={busy || !cliFound}
+    >
+      {rememberedSurface(roleId) === "terminal" ? "Start terminal" : "Start"}
+    </button>
   );
 
   const idleActions = showFields && (
@@ -3879,22 +4108,10 @@ export function StartupForm({
         <SessionCards
           cards={cardsByTab[activeTabId ?? ""] ?? emptySessionCards()}
           segments={streamSegments}
-          planRequest={
-            planRequest && planRequest.tabId === activeTabId ? planRequest : null
-          }
+          planRequest={planRequest}
           busy={busy}
-          onAcceptPlan={() => {
-            if (!activeTabId || !planRequest) return;
-            void respondPlanRequest(activeTabId, planRequest.jsonRpcId, "accepted").then(
-              () => setPlanRequest(null),
-            );
-          }}
-          onRejectPlan={() => {
-            if (!activeTabId || !planRequest) return;
-            void respondPlanRequest(activeTabId, planRequest.jsonRpcId, "cancelled").then(
-              () => setPlanRequest(null),
-            );
-          }}
+          onAcceptPlan={() => void respondPlanFor(activeTabId, "accepted")}
+          onRejectPlan={() => void respondPlanFor(activeTabId, "cancelled")}
           handoff={handoffOffer}
         />
             <SplitPanes
@@ -3924,6 +4141,10 @@ export function StartupForm({
               permissionRequest={permissionRequest}
               onPermissionSelect={handlePermissionSelect}
               onPermissionCancel={handlePermissionCancel}
+              questionRequest={questionRequest}
+              onQuestionAnswer={handleQuestionAnswer}
+              onQuestionSkip={handleQuestionSkip}
+              onQuestionCancel={handleQuestionCancel}
               onCancelTurn={cancelTurn}
               onFollowUpChange={setFollowUp}
               onSendFollowUp={sendFollowUp}
@@ -3932,7 +4153,7 @@ export function StartupForm({
               agentExited={activeRuntime.agentExited}
               onRestart={stopSession}
               inputRef={inputRef}
-              history={scratch.history}
+              history={activeTabId ? composerHistoryByTab[activeTabId] ?? [] : []}
               historyCursor={historyCursor}
               onHistoryCursor={setHistoryCursor}
               handoff={handoffOffer}
@@ -4065,112 +4286,93 @@ export function StartupForm({
                 </span>
               </label>
             )}
-            <div className="start-row" role="group" aria-label="Start a tab">
-              <div className="role-choices" role="group" aria-label="Role">
-                {roles.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    className="role-choice"
-                    aria-pressed={pickedRoleId === item.id}
-                    onClick={() => chooseRole(item.id)}
-                    disabled={busy}
-                  >
-                    <span className="role-dot" style={{ background: item.color }} aria-hidden />
-                    {item.name}
-                  </button>
-                ))}
-                <button
-                  type="button"
-                  className="role-choice"
-                  aria-pressed={launchChoice === "shell"}
-                  onClick={() => {
-                    setLaunchChoice("shell");
-                    setPickedRoleId(null);
-                  }}
-                  disabled={busy}
-                >
-                  Terminal
-                </button>
-                <button
-                  type="button"
-                  className="role-choice"
-                  aria-pressed={launchChoice === "cursor-cli"}
-                  onClick={() => {
-                    setLaunchChoice("cursor-cli");
-                    setPickedRoleId(null);
-                  }}
-                  disabled={busy}
-                >
-                  Cursor CLI
-                </button>
-              </div>
-              {pickedRoleId && !launchChoice && (
-                <div className="role-choices" role="group" aria-label="Open as">
-                  <button
-                    type="button"
-                    className="role-choice"
-                    aria-pressed={rememberedSurface(pickedRoleId) === "chat"}
-                    onClick={() => rememberSurface(pickedRoleId, "chat")}
-                    disabled={busy}
-                    title="Open as chat"
-                  >
-                    Chat
-                  </button>
-                  <button
-                    type="button"
-                    className="role-choice"
-                    aria-pressed={rememberedSurface(pickedRoleId) === "terminal"}
-                    onClick={() => rememberSurface(pickedRoleId, "terminal")}
-                    disabled={busy}
-                    aria-label="Terminal"
-                    title="Open as terminal (agent CLI in a terminal)"
-                  >
-                    <span aria-hidden>›_</span>
-                  </button>
-                </div>
-              )}
-              <FolderPicker
-                compact
-                value={displayedFolder}
-                unavailable={folderNotice?.tone === "error"}
-                disabled={busy}
-                onChange={(path) => setField("cwd", path)}
-              />
-              <span className="start-row-spacer" aria-hidden />
-              {launchChoice ? (
-                <>
-                  {launchChoice === "cursor-cli" && blankModelPicker}
-                  <button
-                    type="button"
-                    className="primary-button"
-                    onClick={() => void startBlankTerminal(launchChoice)}
-                    disabled={
-                      busy || !displayedFolder || (launchChoice === "cursor-cli" && !cliFound)
-                    }
-                  >
-                    {launchChoice === "cursor-cli" ? "Start Cursor CLI" : "Start terminal"}
-                  </button>
-                </>
-              ) : (
-                startButtons
-              )}
-            </div>
-            {folderNotice?.tone === "error" && <p className="error">{folderNotice.text}</p>}
-            {activeTabSummary?.worktreeBranch && (
-              <p className="hint">
-                Worktree on branch <strong>{activeTabSummary.worktreeBranch}</strong>. Remove it
-                from the command palette when you are done.
-              </p>
-            )}
             <div
               className={`start-body${historyFolder && !launchChoice ? " start-body-with-history" : ""}`}
             >
-              <div className="start-main">
+              <div className="start-main start-session-card">
+                <h2 className="start-session-title">Start a session</h2>
+                <div className="start-row" role="group" aria-label="Start a session">
+                  <FolderPicker
+                    compact
+                    value={displayedFolder}
+                    unavailable={folderNotice?.tone === "error"}
+                    disabled={busy}
+                    onChange={(path) => setField("cwd", path)}
+                  />
+                  <span className="start-row-spacer" aria-hidden />
+                  {launchChoice ? (
+                    <>
+                      {launchChoice === "cursor-cli" && blankModelPicker}
+                      <button
+                        type="button"
+                        className="primary-button"
+                        onClick={() => void startBlankTerminal(launchChoice)}
+                        disabled={
+                          busy || !displayedFolder || (launchChoice === "cursor-cli" && !cliFound)
+                        }
+                      >
+                        {launchChoice === "cursor-cli" ? "Start Cursor CLI" : "Start terminal"}
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      {blankModelPicker}
+                      {roleStartButton}
+                    </>
+                  )}
+                </div>
+                {folderNotice?.tone === "error" && <p className="error">{folderNotice.text}</p>}
+                {activeTabSummary?.worktreeBranch && (
+                  <p className="hint">
+                    Worktree on branch <strong>{activeTabSummary.worktreeBranch}</strong>. Remove it
+                    from the command palette when you are done.
+                  </p>
+                )}
+                <RoleTiles
+                  roles={roles}
+                  pickedRoleId={pickedRoleId}
+                  launchChoice={launchChoice}
+                  busy={busy}
+                  onChooseRole={chooseRole}
+                  onLaunchShell={() => {
+                    setLaunchChoice("shell");
+                    setPickedRoleId(null);
+                  }}
+                  onLaunchCursorCli={() => {
+                    setLaunchChoice("cursor-cli");
+                    setPickedRoleId(null);
+                  }}
+                />
+                {pickedRoleId && !launchChoice && (
+                  <div className="start-surface-choices" role="group" aria-label="Open as">
+                    <button
+                      type="button"
+                      className="role-choice"
+                      aria-pressed={rememberedSurface(pickedRoleId) === "chat"}
+                      onClick={() => rememberSurface(pickedRoleId, "chat")}
+                      disabled={busy}
+                      title="Open as chat"
+                    >
+                      Chat
+                    </button>
+                    <button
+                      type="button"
+                      className="role-choice"
+                      aria-pressed={rememberedSurface(pickedRoleId) === "terminal"}
+                      onClick={() => rememberSurface(pickedRoleId, "terminal")}
+                      disabled={busy}
+                      aria-label="Terminal"
+                      title="Open as terminal (agent CLI in a terminal)"
+                    >
+                      <span aria-hidden>›_</span>
+                    </button>
+                  </div>
+                )}
                 {!launchChoice && (
                   <>
                     {restoreActions}
                     {composerFields}
+                    {previewButton}
                     {idleActions}
                   </>
                 )}

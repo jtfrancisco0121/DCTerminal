@@ -39,6 +39,7 @@ function App() {
         cliFound={!!cli?.found}
         showDevTools={showDevTools}
         onRedetectCli={redetectCli}
+        onRefreshRoles={() => listRoles().then(setRoles)}
       />
     </main>
   );

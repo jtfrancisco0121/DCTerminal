@@ -6,6 +6,8 @@ type Props = {
   canReopen: boolean;
   splitOpen: boolean;
   canSendPlan?: boolean;
+  canExportTranscript?: boolean;
+  canSendImplementerToReviewer?: boolean;
   canRemoveWorktree?: boolean;
   /** The active tab's model choices; absent when it has no model. */
   model?: PaletteModelOptions | null;
@@ -20,6 +22,8 @@ export function CommandPalette({
   canReopen,
   splitOpen,
   canSendPlan = false,
+  canExportTranscript = false,
+  canSendImplementerToReviewer = false,
   canRemoveWorktree = false,
   model = null,
   initialQuery = "",
@@ -31,10 +35,29 @@ export function CommandPalette({
   const commands = useMemo(
     () =>
       filterCommands(
-        buildPalette({ tabs, canReopen, splitOpen, canSendPlan, canRemoveWorktree, model }),
+        buildPalette({
+          tabs,
+          canReopen,
+          splitOpen,
+          canSendPlan,
+          canExportTranscript,
+          canSendImplementerToReviewer,
+          canRemoveWorktree,
+          model,
+        }),
         query,
       ),
-    [tabs, canReopen, splitOpen, canSendPlan, canRemoveWorktree, model, query],
+    [
+      tabs,
+      canReopen,
+      splitOpen,
+      canSendPlan,
+      canExportTranscript,
+      canSendImplementerToReviewer,
+      canRemoveWorktree,
+      model,
+      query,
+    ],
   );
 
   useEffect(() => {

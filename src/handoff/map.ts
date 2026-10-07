@@ -16,7 +16,7 @@ export const INLINE_PLAN_CHARS = 100_000;
 export const JSON_PLAN_CHARS = 1_000_000;
 export const FILE_PLAN_CHARS = 8_000_000;
 
-export const HANDOFF_TARGETS = ["role_implementer", "role_developer"] as const;
+export const HANDOFF_TARGETS = ["role_implementer", "role_developer", "role_pr_reviewer"] as const;
 export type HandoffTargetId = (typeof HANDOFF_TARGETS)[number];
 
 export type HandoffScope =
@@ -142,7 +142,22 @@ export function handoffFromRole(sourceRoleId: string): string {
   return "role";
 }
 
+function implementerAnswersReady(answers: Record<string, string>): boolean {
+  const description = (answers.description ?? "").trim();
+  const plan = (answers.approvedPlan ?? "").trim();
+  return description.length > 0 || plan.length > 0;
+}
+
 export function handoffBlockReason(source: HandoffSource): string | null {
+  if (source.sourceRoleId === "role_implementer") {
+    if (source.turnInFlight) {
+      return "Wait until the Implementer finishes this turn.";
+    }
+    if (!implementerAnswersReady(source.answers)) {
+      return "Fill in the Implementer task and approved plan before sending to review.";
+    }
+    return null;
+  }
   if (source.sourceRoleId !== "role_planner") {
     return "Send a plan from a Planner tab.";
   }
@@ -354,12 +369,53 @@ function firstKey(fields: HandoffField[], keys: string[]): string | null {
   return null;
 }
 
+/** Implementer form → PR Reviewer fields (no plan-scope picker). */
+export function mapImplementerToReviewer(
+  source: HandoffSource,
+  target: { roleId: string; fields: HandoffField[] },
+  limits: HandoffLimits = DEFAULT_HANDOFF_LIMITS,
+): MappedHandoff {
+  const title = takeChars(
+    answer(source.answers, "title") || source.sourceLabel.replace(/^Implementer\s*·\s*/i, "").trim(),
+    120,
+  );
+  const description = answer(source.answers, "description");
+  const planText = answer(source.answers, "approvedPlan");
+  const originalTask = description
+    ? title && !description.startsWith(title)
+      ? `${title}\n\n${description}`
+      : description
+    : title || "Review the Implementer session.";
+  const limited = limitPlan(planText || originalTask, limits);
+  const answers: Record<string, string> = { cwd: source.cwd };
+  const planField = firstKey(target.fields, PLAN_FIELD_KEYS);
+  const descriptionKey = firstKey(target.fields, DESCRIPTION_FIELD_KEYS);
+  if (descriptionKey) answers[descriptionKey] = takeChars(originalTask, 4_000);
+  if (planField && planText) answers[planField] = limited.inlinePlan;
+  const contextKey = firstKey(target.fields, CONTEXT_FIELD_KEYS);
+  const context = answer(source.answers, "additionalContext");
+  if (contextKey && context) answers[contextKey] = context;
+  return {
+    title: title || "Implementer hand-off",
+    answers,
+    planText: planText ? limited.planText : originalTask,
+    inlinePlan: planText ? limited.inlinePlan : originalTask,
+    planField,
+    usesScratchPad: planField === null,
+    truncated: limited.truncated,
+    warning: limited.warning,
+  };
+}
+
 export function mapHandoff(
   source: HandoffSource,
   scope: HandoffScope,
   target: { roleId: string; fields: HandoffField[] },
   limits: HandoffLimits = DEFAULT_HANDOFF_LIMITS,
 ): MappedHandoff {
+  if (source.sourceRoleId === "role_implementer" && target.roleId === "role_pr_reviewer") {
+    return mapImplementerToReviewer(source, target, limits);
+  }
   const composed = composePlanText(source, scope);
   if (!composed.text) {
     return {

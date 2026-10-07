@@ -239,7 +239,8 @@ impl AcpConnection {
                 }
                 let is_permission = is_permission_method(method);
                 let is_plan = method == "cursor/create_plan";
-                if is_permission || is_plan {
+                let is_question = method == "cursor/ask_question";
+                if is_permission || is_plan || is_question {
                     if let Some(handler) = &mut dispatch.on_agent_request {
                         if let Some(result) = handler(value)? {
                             self.respond_result(req_id, result)?;
@@ -376,6 +377,13 @@ impl AcpConnection {
 
     pub fn kill(&mut self) {
         self.process.kill_tree();
+    }
+
+    pub fn stderr_tail_text(&self) -> String {
+        self.stderr_tail
+            .lock()
+            .map(|buf| buf.join("\n"))
+            .unwrap_or_default()
     }
 
     fn exit_error(&self, status: Option<String>) -> String {
