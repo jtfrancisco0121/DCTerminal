@@ -169,12 +169,20 @@ pub fn create_pipeline_tabs(
     }
     let roles_guard = roles.lock().map_err(|e| e.to_string())?;
     let mut store = store.lock().map_err(|e| e.to_string())?;
+    let mut planner_tab_id: Option<String> = None;
     for role_id in PIPELINE_ROLE_IDS {
         let role = roles_guard
             .role_by_id(role_id)
             .cloned()
             .ok_or_else(|| format!("unknown role: {role_id}"))?;
-        store.create_draft_tab(&role, cwd.trim(), true)?;
+        let tab_id = store.create_draft_tab(&role, cwd.trim(), false)?;
+        if role_id == "role_planner" {
+            planner_tab_id = Some(tab_id);
+        }
+    }
+    if let Some(tab_id) = planner_tab_id {
+        store.data.active_tab_id = Some(tab_id);
+        store.save()?;
     }
     Ok(snapshot_from_store(&store))
 }

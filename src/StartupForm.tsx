@@ -83,7 +83,6 @@ import {
   type ClosedTabSummary,
   type FieldError,
   type PlanRequestEvent,
-  type QuestionRequestEvent,
   type CliDetectResult,
   type ApprovalModeStatus,
   type DiagnosticsStatus,
@@ -100,7 +99,9 @@ import {
   applyAutoPermission,
   applyPermission,
   applyPromptFinished,
+  applyQuestion,
   applySessionUpdate,
+  clearQuestion,
   clearLiveSession,
   emptyRuntime,
   folderStatusMessage,
@@ -304,7 +305,6 @@ export function StartupForm({
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [cardsByTab, setCardsByTab] = useState<Record<string, Cards>>({});
   const [planRequest, setPlanRequest] = useState<PlanRequestEvent | null>(null);
-  const [questionRequest, setQuestionRequest] = useState<QuestionRequestEvent | null>(null);
   // F2: finished/question/error left on a tab the user was not watching.
   const [tabMarks, setTabMarks] = useState<Record<string, TabMark>>({});
   const [terminalBusy, setTerminalBusy] = useState<string[]>([]);
@@ -457,6 +457,7 @@ export function StartupForm({
   const followUp = activeRuntime.followUp;
   const streamSegments = activeRuntime.segments;
   const permissionRequest = activeRuntime.permission;
+  const questionRequest = activeRuntime.question;
   const scratch = useScratchPads(activeTabId);
   const padRef = useRef<HTMLTextAreaElement>(null);
   const terminalPadRef = useRef<TerminalPadHandle>(null);
@@ -703,8 +704,8 @@ export function StartupForm({
       }),
       listenQuestionRequests((evt) => {
         if (!evt.tabId) return;
-        setQuestionRequest(evt);
         setChain((current) => (current ? chainMarkBlocked(current) : current));
+        patchRuntime(evt.tabId, (rt) => applyQuestion(rt, evt));
         notifyAgent(evt.tabId, {
           kind: "question",
           detail: evt.prompt || evt.title,
@@ -805,12 +806,12 @@ export function StartupForm({
         runtime: runtimes[tab.id],
         mark: tabMarks[tab.id],
         planPending: planRequest?.tabId === tab.id,
-        questionPending: questionRequest?.tabId === tab.id,
+        questionPending: runtimes[tab.id]?.question != null,
         terminalBusy: terminalBusy.includes(tab.id),
       });
     }
     return out;
-  }, [planRequest, questionRequest, runtimes, savedTabs, tabMarks, terminalBusy]);
+  }, [planRequest, runtimes, savedTabs, tabMarks, terminalBusy]);
 
   const uiSettings = useUiSettings();
   // U2: one pad size for chat and terminal tabs; saved when a drag ends.
@@ -1516,6 +1517,7 @@ export function StartupForm({
         }
         scratch.flush();
         if (tabId === activeTabIdRef.current) stashActiveTab();
+        setPlanRequest((plan) => (plan?.tabId === tabId ? null : plan));
         delete draftsRef.current[tabId];
         delete knownFoldersRef.current[tabId];
         delete scrollPositions.current[tabId];
@@ -1692,17 +1694,26 @@ export function StartupForm({
   );
 
   const respondQuestionFor = useCallback(
-    (
+    async (
       tabId: string | null,
       outcome: "answered" | "skipped" | "cancelled",
       choiceId?: string,
     ) => {
-      if (!tabId || !questionRequest || questionRequest.tabId !== tabId) return;
-      void respondQuestionRequest(tabId, questionRequest.jsonRpcId, outcome, choiceId).then(() =>
-        setQuestionRequest(null),
-      );
+      if (!tabId) return;
+      const request = runtimesRef.current[tabId]?.question;
+      if (!request) return;
+      setBusy(true);
+      try {
+        await respondQuestionRequest(tabId, request.jsonRpcId, outcome, choiceId);
+        patchRuntime(tabId, (rt) => clearQuestion(rt));
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        patchRuntime(tabId, (rt) => ({ ...rt, promptError: message }));
+      } finally {
+        setBusy(false);
+      }
     },
-    [questionRequest],
+    [patchRuntime],
   );
 
   const handleQuestionAnswer = useCallback(
@@ -1791,7 +1802,7 @@ export function StartupForm({
   }, [activeTabId, followUp, scratch.content]);
 
   const runChain = useCallback(async () => {
-    if (!activeTabId || promptInFlight || permissionRequest) return;
+    if (!activeTabId || promptInFlight || permissionRequest || questionRequest) return;
     const started = chainStart(scratch.content);
     if (!started) return;
     chainAbortRef.current = false;
@@ -1816,7 +1827,7 @@ export function StartupForm({
       cursor = chainMarkSettled(cursor, outcome);
       setChain(cursor);
     }
-  }, [activeTabId, permissionRequest, promptInFlight, scratch.content, sendText]);
+  }, [activeTabId, permissionRequest, questionRequest, promptInFlight, scratch.content, sendText]);
 
   const sendFromPad = useCallback(() => {
     if (!activeTabId) return;
@@ -2703,7 +2714,9 @@ export function StartupForm({
           .then(async (snap) => {
             setSavedTabs(snap.tabs);
             setClosedTabs(snap.closedTabs ?? []);
-            const activeId = snap.activeTabId ?? snap.tabs[snap.tabs.length - 1]?.id;
+            const plannerTab = snap.tabs.find((t) => t.roleId === "role_planner");
+            const activeId =
+              snap.activeTabId ?? plannerTab?.id ?? snap.tabs[snap.tabs.length - 1]?.id;
             if (activeId) {
               const summary = snap.tabs.find((t) => t.id === activeId);
               if (summary?.kind === "terminal") setActiveTabId(activeId);
@@ -3509,6 +3522,12 @@ export function StartupForm({
           permissionRequest={rt.permission}
           onPermissionSelect={(optionId) => void respondPermissionFor(tab.id, optionId)}
           onPermissionCancel={() => void respondPermissionFor(tab.id, null)}
+          questionRequest={rt.question}
+          onQuestionAnswer={(choiceId) =>
+            void respondQuestionFor(tab.id, "answered", choiceId)
+          }
+          onQuestionSkip={() => void respondQuestionFor(tab.id, "skipped")}
+          onQuestionCancel={() => void respondQuestionFor(tab.id, "cancelled")}
           onCancelTurn={() => void cancelTurnFor(tab.id)}
           onFollowUpChange={(value) => setFollowUpFor(tab.id, value)}
           onSendFollowUp={() => void sendFollowUpFor(tab.id)}
@@ -4115,9 +4134,7 @@ export function StartupForm({
               permissionRequest={permissionRequest}
               onPermissionSelect={handlePermissionSelect}
               onPermissionCancel={handlePermissionCancel}
-              questionRequest={
-                questionRequest && questionRequest.tabId === activeTabId ? questionRequest : null
-              }
+              questionRequest={questionRequest}
               onQuestionAnswer={handleQuestionAnswer}
               onQuestionSkip={handleQuestionSkip}
               onQuestionCancel={handleQuestionCancel}

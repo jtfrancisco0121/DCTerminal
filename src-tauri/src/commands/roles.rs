@@ -1,6 +1,9 @@
 use crate::roles::{Role, RolesFile};
 use crate::store::{read_json, RolesStore, seed_output_path};
-use crate::template::{merge_role_prompt, template_hash, FieldError, MergedPreview};
+use crate::template::{
+    field_visible, merge_role_prompt, merge_template, template_hash, validate_values, FieldError,
+    MergedPreview,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -77,6 +80,44 @@ pub struct SaveRoleInput {
     pub default_mode: Option<String>,
 }
 
+/// Reject templates that would fail merge at session start (unresolved placeholders).
+fn validate_role_template(role: &Role, template_text: &str) -> Result<(), String> {
+    let probe = Role {
+        template_text: template_text.to_string(),
+        ..role.clone()
+    };
+    let mut values = HashMap::new();
+    values.insert(
+        "cwd".into(),
+        std::env::temp_dir().display().to_string(),
+    );
+    for field in &probe.fields {
+        if !field_visible(field, &values) {
+            continue;
+        }
+        if field.required {
+            values.insert(field.key.clone(), "preview".into());
+        }
+    }
+    let field_errors = validate_values(&probe, &values);
+    if !field_errors.is_empty() {
+        let msg = field_errors
+            .iter()
+            .map(|err| format!("{}: {}", err.key, err.message))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(msg);
+    }
+    let merged = merge_template(&probe.template_text, &probe.fields, &values);
+    if !merged.unresolved.is_empty() {
+        return Err(format!(
+            "Unresolved placeholders: {}",
+            merged.unresolved.join(", ")
+        ));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn save_role(
     input: SaveRoleInput,
@@ -87,6 +128,14 @@ pub fn save_role(
         return Err("Template text cannot be empty.".into());
     }
     let mut store = store.lock().map_err(|e| e.to_string())?;
+    let role_for_validation = store
+        .data
+        .roles
+        .iter()
+        .find(|role| role.id == input.role_id)
+        .cloned()
+        .ok_or_else(|| format!("unknown role: {}", input.role_id))?;
+    validate_role_template(&role_for_validation, text)?;
     let updated = {
         let role = store
             .data
@@ -153,4 +202,59 @@ pub fn reset_builtin_role(
     };
     store.save()?;
     Ok(updated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_role_template;
+    use crate::roles::{FieldType, Role, RoleField};
+
+    fn minimal_role(template: &str) -> Role {
+        Role {
+            id: "role_test".into(),
+            name: "Test".into(),
+            template_text: template.into(),
+            template_version: 1,
+            template_hash: String::new(),
+            schema_template_hash: String::new(),
+            default_mode: "agent".into(),
+            injection: "send_on_start".into(),
+            color: "#fff".into(),
+            is_built_in: false,
+            fields: vec![],
+            updated_at: None,
+        }
+    }
+
+    #[test]
+    fn save_validation_rejects_unresolved_placeholders() {
+        let role = minimal_role("Hello {{missing}}");
+        let err = validate_role_template(&role, "Hello {{missing}}").unwrap_err();
+        assert!(err.contains("Unresolved placeholders"));
+    }
+
+    #[test]
+    fn save_validation_accepts_a_clean_template() {
+        let role = minimal_role("Ship it.");
+        validate_role_template(&role, "Ship it.").expect("valid template");
+    }
+
+    #[test]
+    fn save_validation_requires_required_fields_to_merge() {
+        let role = Role {
+            fields: vec![RoleField {
+                key: "title".into(),
+                label: "Title".into(),
+                field_type: FieldType::Text,
+                required: true,
+                options: None,
+                placeholder_token: None,
+                show_when: None,
+                empty_behavior: None,
+                remember: None,
+            }],
+            ..minimal_role("Title: {{title}}")
+        };
+        validate_role_template(&role, "Title: {{title}}").expect("preview fills required fields");
+    }
 }

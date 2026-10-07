@@ -3,12 +3,14 @@ import type {
   PermissionAutoEvent,
   PermissionRequestEvent,
   PromptFinishedEvent,
+  QuestionRequestEvent,
   SessionUpdateEvent,
 } from "./bridge";
 import {
   applyAutoPermission,
   applyPermission,
   applyPromptFinished,
+  applyQuestion,
   applySessionUpdate,
   attentionTabIds,
   clearLiveSession,
@@ -27,6 +29,46 @@ function withSession(sessionId: string): TabRuntime {
 }
 
 describe("per-tab session events", () => {
+  it("keeps a question on the tab that asked and ignores another tab's session", () => {
+    const rt = withSession("sess-a");
+    const mine: QuestionRequestEvent = {
+      tabId: "tab-a",
+      sessionId: "sess-a",
+      jsonRpcId: 9,
+      title: "Pick one",
+      prompt: "Which approach?",
+      choices: [{ id: "a", label: "A" }],
+    };
+    const other = { ...mine, sessionId: "sess-b", jsonRpcId: 10 };
+    expect(applyQuestion(rt, mine).question?.jsonRpcId).toBe(9);
+    expect(applyQuestion(rt, other).question).toBeNull();
+  });
+
+  it("clears a pending question when the turn finishes", () => {
+    const question: QuestionRequestEvent = {
+      tabId: "tab-a",
+      sessionId: "sess-a",
+      jsonRpcId: 2,
+      title: "Q",
+      prompt: "Pick",
+      choices: [],
+    };
+    const rt = { ...withSession("sess-a"), question };
+    const evt: PromptFinishedEvent = {
+      sessionId: "sess-a",
+      tabId: "tab-a",
+      success: true,
+      result: {
+        stopReason: "end_turn",
+        agentText: "Done",
+        updateCount: 1,
+      },
+      error: null,
+      agentExited: false,
+    };
+    expect(applyPromptFinished(rt, evt).question).toBeNull();
+  });
+
   it("keeps a permission on the tab that asked and ignores another tab's session", () => {
     const rt = withSession("sess-a");
     const mine: PermissionRequestEvent = {
