@@ -153,6 +153,22 @@ describe("per-tab session events", () => {
     ).toHaveLength(0);
   });
 
+  it("flags both tabs when each has a pending question", () => {
+    const question = (tabId: string, sessionId: string, id: number): QuestionRequestEvent => ({
+      tabId,
+      sessionId,
+      jsonRpcId: id,
+      title: "Q",
+      prompt: "Pick",
+      choices: [{ id: "x", label: "X" }],
+    });
+    const runtimes = {
+      a: { ...withSession("s1"), question: question("a", "s1", 1) },
+      b: { ...withSession("s2"), question: question("b", "s2", 2) },
+    };
+    expect(attentionTabIds(runtimes).sort()).toEqual(["a", "b"]);
+  });
+
   it("flags tabs that need attention", () => {
     const runtimes = {
       a: { ...withSession("s1"), permission: {

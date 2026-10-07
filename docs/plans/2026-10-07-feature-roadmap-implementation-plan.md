@@ -209,13 +209,13 @@ flowchart TD
 
 ## Tracking checklist
 
-- [~] Phase 0 — fixtures & smoke (ask_question fixture + fake-agent path TBD)
+- [~] Phase 0 — fixtures & smoke (`DCT_FAKE_QUESTION=ask`; live CLI capture / macOS smoke still open)
 - [x] Phase 1A — PR Reviewer hand-off
 - [x] Phase 1B — Permission keyboard shortcuts
-- [x] Phase 1C — Transcript export
-- [x] Phase 2 — `ask_question` UI
+- [x] Phase 1C — Transcript export (palette gated when empty in `StartupForm`)
+- [x] Phase 2 — `ask_question` UI (per-tab runtime state; PR #14 review fix)
 - [x] Phase 3 — Implementer → Reviewer hand-off
-- [ ] Phase 4A–4D — medium-term (individual boxes)
-- [ ] Phase 5 — Role editor
-- [ ] Phase 6 — strategic items
+- [x] Phase 4A–4D — notifications, composer history, log drawer, workspace layout
+- [~] Phase 5 — Role editor (save/reset + `save_role` validation; no import/export)
+- [~] Phase 6 — pipeline workspace preset (active tab = Planner); `session/list` browser not in PR
 - [ ] MVP §21 acceptance

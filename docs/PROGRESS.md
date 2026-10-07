@@ -8,10 +8,10 @@
 
 | Field | Value |
 |--------|--------|
-| **Last updated** | 2026-10-07 — New-tab landing: role tiles in the start card (no top role navbar); folder, model, and Start on one sticky row; two-column layout with Cursor CLI history on the right. |
-| **Branch** | `feat/improvements-plan` (draft PR #12) |
+| **Last updated** | 2026-10-07 — PR #14 (`feat/feature-roadmap-implementation`): pipeline hand-offs, blocking `ask_question`, transcript export, composer history, log drawer, workspace layout on save/open, role template editor, pipeline workspace preset; review fixes for per-tab questions and `save_role` validation. |
+| **Branch** | `feat/feature-roadmap-implementation` (PR #14) |
 | **Current phase** | Finish MVP vertical slice (see [MVP-FINISH.md](./MVP-FINISH.md)) |
-| **Active task** | [IMPROVEMENTS-PLAN.md](./IMPROVEMENTS-PLAN.md): F1–F9 and U1–U8 done; README shortcuts updated. Waiting on the Mac check. Mac smoke of F1 notifications, F2 chips, F3 worktree create/remove, F4 diff/revert, F5 search (⌘F), F6 prompt library, F7 workspaces, F8 first-run setup (fresh profile), F9 palette (Change model, Chat history), and the dense UI (chips, header, status bar, scratch pad drag, start row, Settings menu, shortcut bar + tip, GitHub Light theme) pending. |
+| **Active task** | PR #14 manual smoke (hand-off, permission + question cards, pipeline workspace, Settings role save/reset). Mac live `ask_question` capture still open (fixture + fake agent). |
 
 ## Product-ready today
 
