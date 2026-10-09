@@ -229,6 +229,7 @@ fn canonical_role(role_id: &str) -> RoleKind {
         "role_pr_reviewer" | "role_reviewer" | "pr_reviewer" | "reviewer" => RoleKind::Reviewer,
         "role_planner" | "planner" | "role_general" | "general" | "role_recommendation"
         | "recommendation" => RoleKind::ReadOnlyMode,
+        "role_plan_reviewer" | "plan_reviewer" => RoleKind::Reviewer,
         "role_codebase_audit" | "codebase_audit" => RoleKind::Reviewer,
         _ => RoleKind::Unknown,
     }
@@ -695,7 +696,7 @@ mod tests {
 
     #[test]
     fn reviewer_allows_shell_and_mcp_and_rejects_writes() {
-        for role in ["role_pr_reviewer", "role_codebase_audit"] {
+        for role in ["role_pr_reviewer", "role_plan_reviewer", "role_codebase_audit"] {
             assert_eq!(
                 decide_for_role(role, ToolClass::Shell),
                 PolicyDecision::AllowOnce,

@@ -136,6 +136,7 @@ export function selectionInside(root: HTMLElement | null): string {
 
 export function handoffFromRole(sourceRoleId: string): string {
   if (sourceRoleId === "role_planner") return "Planner";
+  if (sourceRoleId === "role_plan_reviewer") return "Plan Reviewer";
   if (sourceRoleId === "role_implementer") return "Implementer";
   if (sourceRoleId === "role_developer") return "Developer";
   if (sourceRoleId === "role_pr_reviewer") return "PR Reviewer";

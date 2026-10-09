@@ -6,6 +6,7 @@ mod cursor_cli;
 mod dev_session;
 mod forms;
 mod handoff;
+mod pipeline;
 mod model_session;
 mod prompt_worker;
 mod prompts;
@@ -20,7 +21,8 @@ pub use agent_requests::{
     respond_permission_request, respond_plan_request, respond_question_request,
 };
 pub use app_state::{
-    close_tab, create_pipeline_tabs, get_app_state, get_layout, get_tab, new_draft_tab,
+    close_tab, create_execution_pipeline_tabs, create_pipeline_tabs, get_app_state, get_layout,
+    get_tab, new_draft_tab,
     reopen_closed_tab, select_active_tab, set_layout, set_tab_color, set_tab_label,
     sync_active_tab_form,
 };
@@ -32,6 +34,7 @@ pub use dev_session::{
 };
 pub use forms::{get_form_recall, save_form_draft};
 pub use handoff::{handoff_bind_tab, handoff_get, handoff_list, handoff_save};
+pub use pipeline::{get_pipeline_run, pipeline_promote_plan, pipeline_set_candidate_plan};
 pub use model_session::acp_set_model;
 pub use prompts::{
     prompt_clear_recent, prompt_delete, prompt_library_get, prompt_mark_used, prompt_record_send,

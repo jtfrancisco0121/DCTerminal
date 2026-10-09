@@ -205,6 +205,20 @@ export type TabSummary = {
   /** F3: branch checked out in this tab's worktree. Missing on plain tabs. */
   worktreeBranch?: string | null;
   worktreePath?: string | null;
+  pipelineRunId?: string | null;
+};
+
+export type PipelineRun = {
+  id: string;
+  kind: string;
+  cwd: string;
+  stage: string;
+  overviewTabId: string;
+  tabIds: Record<string, string>;
+  candidatePlan?: string | null;
+  approvedPlan?: string | null;
+  originalRequest?: string | null;
+  createdAt: string;
 };
 
 export type ClosedTabSummary = {
@@ -594,6 +608,28 @@ export async function resetBuiltinRole(roleId: string): Promise<Role> {
 
 export async function createPipelineTabs(): Promise<AppStateSnapshot> {
   return invoke("create_pipeline_tabs");
+}
+
+export async function createExecutionPipelineTabs(): Promise<AppStateSnapshot> {
+  return invoke("create_execution_pipeline_tabs");
+}
+
+export async function getPipelineRun(runId: string): Promise<{ run: PipelineRun }> {
+  return invoke("get_pipeline_run", { runId });
+}
+
+export async function pipelinePromotePlan(
+  runId: string,
+  approvedPlan: string,
+): Promise<void> {
+  return invoke("pipeline_promote_plan", { runId, approvedPlan });
+}
+
+export async function pipelineSetCandidatePlan(
+  runId: string,
+  candidatePlan: string,
+): Promise<void> {
+  return invoke("pipeline_set_candidate_plan", { runId, candidatePlan });
 }
 
 /** Reopen `tabId`, or the most recently closed tab when omitted. */

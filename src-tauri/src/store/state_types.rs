@@ -13,6 +13,31 @@ pub struct AppStateFile {
     pub closed_tabs: Vec<ClosedTabRecord>,
     #[serde(default)]
     pub layout: LayoutState,
+    #[serde(default)]
+    pub pipeline_runs: Vec<PipelineRun>,
+}
+
+/// Linked multi-tab pipeline (eagle-eye overview + stage worker tabs).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineRun {
+    pub id: String,
+    /// `full` (plan + review) or `execute` (approved plan only).
+    pub kind: String,
+    pub cwd: String,
+    /// Coarse stage id, e.g. `planner`, `plan_reviewer`, `implementer`, `pr_reviewer`.
+    pub stage: String,
+    /// Overview tab id for this run.
+    pub overview_tab_id: String,
+    /// `role_id` → worker tab id.
+    pub tab_ids: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_plan: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_plan: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_request: Option<String>,
+    pub created_at: String,
 }
 
 /// Split view and file panel. Restored on relaunch.
@@ -92,6 +117,7 @@ impl Default for AppStateFile {
             tabs: Vec::new(),
             closed_tabs: Vec::new(),
             layout: LayoutState::default(),
+            pipeline_runs: Vec::new(),
         }
     }
 }
@@ -173,6 +199,8 @@ pub struct TabRecord {
     /// Set when the tab was opened with "New tab in worktree…".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<crate::worktree::WorktreeRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pipeline_run_id: Option<String>,
 }
 
 pub fn default_tab_kind() -> String {

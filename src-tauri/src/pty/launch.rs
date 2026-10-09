@@ -200,6 +200,7 @@ fn role_family(role_id: &str) -> Family {
         "role_recommendation" | "recommendation" => Family::Planner,
         "role_general" | "general" => Family::General,
         "role_pr_reviewer" | "role_reviewer" | "pr_reviewer" | "reviewer" => Family::Reviewer,
+        "role_plan_reviewer" | "plan_reviewer" => Family::Reviewer,
         "role_codebase_audit" | "codebase_audit" => Family::Reviewer,
         _ => Family::Other,
     }

@@ -14,6 +14,7 @@ pub struct RoleSeedSpec {
 pub fn all_role_specs() -> Vec<RoleSeedSpec> {
     vec![
         planner_spec(),
+        plan_reviewer_spec(),
         implementer_spec(),
         pr_reviewer_spec(),
         developer_spec(),
@@ -110,6 +111,53 @@ fn planner_spec() -> RoleSeedSpec {
                 "additionalContext",
                 "Additional Context",
                 "[Any relevant business rules, screenshots, errors, logs, user feedback, etc.]",
+            ),
+        ],
+    }
+}
+
+fn plan_reviewer_spec() -> RoleSeedSpec {
+    RoleSeedSpec {
+        id: "role_plan_reviewer",
+        name: "Plan Reviewer",
+        source_file: "role-plan-reviewer.md",
+        default_mode: "agent",
+        color: "#BC8CFF",
+        substitutions: &[
+            (
+                "[PASTE THE ORIGINAL REQUEST AND REQUIREMENTS HERE]",
+                "{{originalRequest}}",
+            ),
+            (
+                "[PASTE THE PROPOSED IMPLEMENTATION PLAN HERE]",
+                "{{candidatePlan}}",
+            ),
+            ("[OPTIONAL CONTEXT]", "{{additionalContext}}"),
+        ],
+        fields: vec![
+            field_multiline(
+                "originalRequest",
+                "Original Request / Requirements",
+                "[PASTE THE ORIGINAL REQUEST AND REQUIREMENTS HERE]",
+                true,
+            ),
+            RoleField {
+                key: "candidatePlan".into(),
+                label: "Proposed Implementation Plan".into(),
+                field_type: FieldType::Multiline,
+                required: true,
+                options: None,
+                placeholder_token: Some(
+                    "[PASTE THE PROPOSED IMPLEMENTATION PLAN HERE]".into(),
+                ),
+                show_when: None,
+                empty_behavior: None,
+                remember: Some(true),
+            },
+            field_multiline_optional(
+                "additionalContext",
+                "Additional Context",
+                "[OPTIONAL CONTEXT]",
             ),
         ],
     }

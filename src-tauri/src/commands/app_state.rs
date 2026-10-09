@@ -35,6 +35,8 @@ pub struct TabSummary {
     pub worktree_branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pipeline_run_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -133,7 +135,7 @@ pub fn new_draft_tab(
             .ok_or_else(|| format!("unknown role: {role_id}"))
     }?;
     let mut store = store.lock().map_err(|e| e.to_string())?;
-    let tab_id = store.create_draft_tab(&role, cwd.trim(), true)?;
+    let tab_id = store.create_draft_tab(&role, cwd.trim(), true, None)?;
     let tab = store
         .tab_by_id(&tab_id)
         .cloned()
@@ -141,13 +143,31 @@ pub fn new_draft_tab(
     Ok(TabDetail { tab })
 }
 
-const PIPELINE_ROLE_IDS: [&str; 3] = [
+const FULL_PIPELINE_ROLE_IDS: [&str; 4] = [
     "role_planner",
+    "role_plan_reviewer",
     "role_implementer",
     "role_pr_reviewer",
 ];
 
-/// Phase 6: three draft tabs (Planner / Implementer / Reviewer) sharing cwd.
+const EXECUTION_PIPELINE_ROLE_IDS: [&str; 2] = ["role_implementer", "role_pr_reviewer"];
+
+fn pipeline_cwd(store: &StateStore) -> Result<String, String> {
+    let cwd = store
+        .data
+        .active_tab_id
+        .as_deref()
+        .and_then(|id| store.tab_by_id(id))
+        .map(|tab| tab.cwd.clone())
+        .or_else(|| store.sorted_tabs().first().map(|tab| tab.cwd.clone()))
+        .unwrap_or_default();
+    if cwd.trim().is_empty() {
+        return Err("Pick a tab with a working folder first.".into());
+    }
+    Ok(cwd)
+}
+
+/// Full pipeline: worker tabs + eagle-eye overview (Planner → Plan Reviewer → Implementer → PR).
 #[tauri::command]
 pub fn create_pipeline_tabs(
     roles: State<Mutex<RolesStore>>,
@@ -155,35 +175,39 @@ pub fn create_pipeline_tabs(
 ) -> Result<AppStateSnapshot, String> {
     let cwd = {
         let store = store.lock().map_err(|e| e.to_string())?;
-        store
-            .data
-            .active_tab_id
-            .as_deref()
-            .and_then(|id| store.tab_by_id(id))
-            .map(|tab| tab.cwd.clone())
-            .or_else(|| store.sorted_tabs().first().map(|tab| tab.cwd.clone()))
-            .unwrap_or_default()
+        pipeline_cwd(&store)?
     };
-    if cwd.trim().is_empty() {
-        return Err("Pick a tab with a working folder first.".into());
-    }
     let roles_guard = roles.lock().map_err(|e| e.to_string())?;
     let mut store = store.lock().map_err(|e| e.to_string())?;
-    let mut planner_tab_id: Option<String> = None;
-    for role_id in PIPELINE_ROLE_IDS {
-        let role = roles_guard
-            .role_by_id(role_id)
-            .cloned()
-            .ok_or_else(|| format!("unknown role: {role_id}"))?;
-        let tab_id = store.create_draft_tab(&role, cwd.trim(), false)?;
-        if role_id == "role_planner" {
-            planner_tab_id = Some(tab_id);
-        }
-    }
-    if let Some(tab_id) = planner_tab_id {
-        store.data.active_tab_id = Some(tab_id);
-        store.save()?;
-    }
+    store.create_pipeline_workspace(
+        &roles_guard,
+        cwd.trim(),
+        "full",
+        &FULL_PIPELINE_ROLE_IDS,
+        "planner",
+    )?;
+    Ok(snapshot_from_store(&store))
+}
+
+/// Execute pipeline: Implementer + PR Reviewer + eagle-eye overview.
+#[tauri::command]
+pub fn create_execution_pipeline_tabs(
+    roles: State<Mutex<RolesStore>>,
+    store: State<Mutex<StateStore>>,
+) -> Result<AppStateSnapshot, String> {
+    let cwd = {
+        let store = store.lock().map_err(|e| e.to_string())?;
+        pipeline_cwd(&store)?
+    };
+    let roles_guard = roles.lock().map_err(|e| e.to_string())?;
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    store.create_pipeline_workspace(
+        &roles_guard,
+        cwd.trim(),
+        "execute",
+        &EXECUTION_PIPELINE_ROLE_IDS,
+        "implementer",
+    )?;
     Ok(snapshot_from_store(&store))
 }
 
@@ -270,6 +294,7 @@ pub(crate) fn snapshot_from_store(store: &StateStore) -> AppStateSnapshot {
                         .unwrap_or_else(|| wt.branch.clone())
                 }),
                 worktree_path: t.worktree.as_ref().map(|wt| wt.path.clone()),
+                pipeline_run_id: t.pipeline_run_id.clone(),
             })
             .collect(),
         closed_tabs: store
@@ -362,13 +387,21 @@ pub fn set_layout(
 
 #[cfg(test)]
 mod pipeline_tests {
-    use super::PIPELINE_ROLE_IDS;
+    use super::{EXECUTION_PIPELINE_ROLE_IDS, FULL_PIPELINE_ROLE_IDS};
     use crate::roles::RolesFile;
-    use crate::store::{read_json, seed_output_path, AppStateFile, StateStore};
+    use crate::store::{read_json, seed_output_path, AppStateFile, RolesStore, StateStore};
+
+    fn temp_roles_store(seed: RolesFile) -> RolesStore {
+        RolesStore {
+            path: std::env::temp_dir().join("dct_roles_test.json"),
+            data: seed,
+        }
+    }
 
     #[test]
-    fn pipeline_workspace_leaves_planner_tab_active() {
+    fn pipeline_workspace_opens_overview_tab() {
         let seed: RolesFile = read_json(&seed_output_path()).expect("roles seed");
+        let roles = temp_roles_store(seed);
         let dir = std::env::temp_dir().join(format!(
             "dct_pipeline_test_{}",
             std::time::SystemTime::now()
@@ -383,29 +416,52 @@ mod pipeline_tests {
             data: AppStateFile::default(),
         };
         let cwd = "/tmp/pipeline-project";
-        let mut planner_tab_id: Option<String> = None;
-        for role_id in PIPELINE_ROLE_IDS {
-            let role = seed
-                .roles
-                .iter()
-                .find(|r| r.id == role_id)
-                .unwrap_or_else(|| panic!("missing role {role_id}"));
-            let tab_id = store.create_draft_tab(role, cwd, false).unwrap();
-            if role_id == "role_planner" {
-                planner_tab_id = Some(tab_id);
-            }
-        }
-        let planner_tab_id = planner_tab_id.expect("planner tab");
-        store.data.active_tab_id = Some(planner_tab_id.clone());
-        store.save().unwrap();
+        let overview_id = store
+            .create_pipeline_workspace(&roles, cwd, "full", &FULL_PIPELINE_ROLE_IDS, "planner")
+            .unwrap();
         let active = store
-            .tab_by_id(&planner_tab_id)
-            .expect("planner tab record");
-        assert_eq!(active.role_id, "role_planner");
-        assert_eq!(
-            store.data.active_tab_id.as_deref(),
-            Some(planner_tab_id.as_str())
-        );
+            .tab_by_id(&overview_id)
+            .expect("overview tab record");
+        assert_eq!(active.kind, "pipeline_overview");
+        assert_eq!(store.data.active_tab_id.as_deref(), Some(overview_id.as_str()));
+        assert_eq!(store.data.pipeline_runs.len(), 1);
+        assert_eq!(store.data.pipeline_runs[0].tab_ids.len(), 4);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn execution_pipeline_workspace_opens_overview_tab() {
+        let seed: RolesFile = read_json(&seed_output_path()).expect("roles seed");
+        let roles = temp_roles_store(seed);
+        let dir = std::env::temp_dir().join(format!(
+            "dct_exec_pipeline_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        let mut store = StateStore {
+            path,
+            data: AppStateFile::default(),
+        };
+        let cwd = "/tmp/execution-pipeline-project";
+        let overview_id = store
+            .create_pipeline_workspace(
+                &roles,
+                cwd,
+                "execute",
+                &EXECUTION_PIPELINE_ROLE_IDS,
+                "implementer",
+            )
+            .unwrap();
+        let active = store
+            .tab_by_id(&overview_id)
+            .expect("overview tab record");
+        assert_eq!(active.kind, "pipeline_overview");
+        assert_eq!(store.data.pipeline_runs[0].kind, "execute");
+        assert_eq!(store.data.pipeline_runs[0].tab_ids.len(), 2);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

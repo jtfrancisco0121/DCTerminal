@@ -139,6 +139,8 @@ const BUILT_IN_PERMISSION_SUMMARY: Record<string, string> = {
   role_developer: "Auto-allow write, shell, and MCP (allow-once).",
   role_pr_reviewer:
     "Allow shell and MCP. Deny file writes. Ask when a request is ambiguous.",
+  role_plan_reviewer:
+    "Allow shell and MCP. Deny file writes. Ask when a request is ambiguous.",
   role_codebase_audit:
     "Allow shell and MCP. Deny file writes. Ask when a request is ambiguous.",
   role_planner: "Deny write and shell. Allow MCP. Ask when a request is ambiguous.",

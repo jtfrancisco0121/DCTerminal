@@ -183,6 +183,7 @@ export const PALETTE_ACTIONS = [
   "exportTranscript",
   "showLogs",
   "pipelineWorkspace",
+  "executionPipelineWorkspace",
   "handoffHelp",
   "changeModel",
   "refreshModels",
@@ -336,9 +337,15 @@ export function buildPalette(opts: {
     },
     {
       id: "pipelineWorkspace",
-      title: "New pipeline workspace (Planner / Implementer / Reviewer)",
+      title: "New pipeline workspace (eagle-eye + 4 roles)",
       group: "Workspaces",
       keywords: "planner implementer reviewer pipeline preset tabs",
+    },
+    {
+      id: "executionPipelineWorkspace",
+      title: "New execution pipeline (eagle-eye + 2 roles)",
+      group: "Workspaces",
+      keywords: "implementer reviewer execute approved plan pipeline preset tabs",
     },
     {
       id: "workspaces",

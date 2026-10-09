@@ -1,0 +1,73 @@
+# Orchestrator design (v1)
+
+Chat-only multi-tab pipelines with an optional **overview tab** (eagle-eye). Terminal tabs stay manual.
+
+Two pipeline **kinds** share the same `PipelineRun` machinery but differ in stages and entry conditions.
+
+## Pipeline kinds
+
+| Kind | When to use | Stages | Plan state at start |
+|------|-------------|--------|---------------------|
+| `full` | Need a plan written and reviewed in-app | Planner → Plan Reviewer → Implementer → PR Reviewer | Empty → `candidatePlan` → promote → `approvedPlan` |
+| `execute` | Plan already final (doc, prior session, external) | Implementer → PR Reviewer | `approvedPlan` (+ optional task context) supplied by operator |
+
+### Full pipeline (`full`)
+
+1. **Planner** — produces `candidatePlan` (and task context).
+2. **Plan Reviewer** — reads request + `candidatePlan`; verdict drives next step.
+3. **Promote** — operator **Approve for implementation** copies/edits into `approvedPlan` (only after `APPROVED` / `APPROVED WITH CHANGES` + “update then proceed”, or equivalent UX).
+4. **Implementer** — **auto-starts** after approval (v1: only this stage auto-starts in `full`).
+5. **PR Reviewer** — hand-off after implementer turn completes (prefill + manual Start in v1 unless we add auto-open).
+
+Verdict mapping (Plan Reviewer output):
+
+- `APPROVED` / `APPROVED WITH CHANGES` → enable promote → Implementer.
+- `REQUIRES REVISION` → hand back to Planner with review attached.
+
+### Execute pipeline (`execute`)
+
+Skips Planner and Plan Reviewer.
+
+1. Operator provides **final** plan text (and optional original task / description) on the Implementer tab or via overview “Paste approved plan”.
+2. **Implementer** — operator **Start** (or optional “Start execution pipeline” CTA that starts the worker).
+3. **PR Reviewer** — same hand-off as today (`mapImplementerToReviewer`: task + `approvedPlan`).
+
+No `candidatePlan` / promote step. Treat input as already approved; do not block on Plan Reviewer.
+
+### What both kinds share
+
+- Same **cwd** across stage tabs.
+- `PipelineRun` record: `kind`, `stage`, tab IDs per role, `approvedPlan`, optional `originalRequest`, timestamps.
+- Overview tab: lanes per stage, activity, Jump / Continue CTAs, optional split + live transcript.
+- Out of scope v1: ADE task backlog, terminal automation, image prompts.
+
+## Workspace presets (today)
+
+Until `PipelineRun` exists, use palette presets:
+
+| Preset | Tabs | Active tab |
+|--------|------|------------|
+| Pipeline workspace | Planner, Implementer, PR Reviewer | Planner |
+| Execution pipeline workspace | Implementer, PR Reviewer | Implementer |
+
+Full v1 orchestrator should extend the first preset with Plan Reviewer (four tabs) or open overview + linked tabs.
+
+## Hand-off reuse
+
+- Planner → Plan Reviewer / Implementer: existing `mapHandoff` + new target in UI.
+- Plan Reviewer → Planner: review text as context + prior `candidatePlan`.
+- Implementer → PR Reviewer: **already implemented** in `src/handoff/map.ts` (`mapImplementerToReviewer`).
+
+## Execute pipeline edge cases
+
+- **Plan-only implementer form** — `approvedPlan` without `description` is allowed for hand-off (`implementerAnswersReady`).
+- **Large plans** — same char limits as hand-off store.
+- **Re-run** — new `PipelineRun` or reset stage to Implementer; do not silently overwrite PR tab mid-review.
+- **Switching kind** — do not convert a `full` run mid-flight; start a new run.
+
+## Acceptance (v1)
+
+- [ ] `full`: review → promote → auto Implementer → PR hand-off path works end-to-end on dogfood repo.
+- [ ] `execute`: paste plan → Implementer → PR Reviewer without Planner/Plan Reviewer tabs.
+- [ ] Overview shows correct lanes for 2-stage vs 4-stage runs.
+- [ ] Terminal tabs never auto-chained.

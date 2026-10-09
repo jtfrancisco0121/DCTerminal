@@ -15,6 +15,7 @@ import {
   devSessionSend,
   devSessionStop,
   cursorApprovalMode,
+  createExecutionPipelineTabs,
   createPipelineTabs,
   diagnosticsReadLog,
   diagnosticsSetCapture,
@@ -117,6 +118,7 @@ import {
   HandoffDialog,
   SavedPlanDialog,
 } from "./components/HandoffDialog";
+import { PipelineOverview } from "./components/PipelineOverview";
 import { destroyTerminal, TerminalView, readTerminalHandoff } from "./components/TerminalView";
 import {
   handoffBlockReason,
@@ -619,7 +621,11 @@ export function StartupForm({
         if (!activeId) return;
         const summary = snap.tabs.find((t) => t.id === activeId);
         if (!summary) return;
-        if (summary.kind === "terminal" || summary.phase === "running") {
+        if (
+          summary.kind === "terminal" ||
+          summary.kind === "pipeline_overview" ||
+          summary.phase === "running"
+        ) {
           setActiveTabId(activeId);
           return;
         }
@@ -1472,7 +1478,7 @@ export function StartupForm({
       if (tabId === activeTabIdRef.current) return;
       stashActiveTab();
       const summary = savedTabs.find((tab) => tab.id === tabId);
-      if (summary?.kind === "terminal") {
+      if (summary?.kind === "terminal" || summary?.kind === "pipeline_overview") {
         setActiveTabId(tabId);
         setBusy(true);
         try {
@@ -2733,25 +2739,58 @@ export function StartupForm({
           .then(async (snap) => {
             setSavedTabs(snap.tabs);
             setClosedTabs(snap.closedTabs ?? []);
-            const plannerTab = snap.tabs.find((t) => t.roleId === "role_planner");
+            const overviewTab = snap.tabs.find((t) => t.kind === "pipeline_overview");
             const activeId =
-              snap.activeTabId ?? plannerTab?.id ?? snap.tabs[snap.tabs.length - 1]?.id;
+              snap.activeTabId ?? overviewTab?.id ?? snap.tabs[snap.tabs.length - 1]?.id;
             if (activeId) {
               const summary = snap.tabs.find((t) => t.id === activeId);
-              if (summary?.kind === "terminal") setActiveTabId(activeId);
-              else {
+              if (summary?.kind === "terminal" || summary?.kind === "pipeline_overview") {
+                setActiveTabId(activeId);
+                await selectActiveTab(activeId);
+              } else {
                 const { tab } = await selectActiveTab(activeId);
                 loadTabIntoForm(tab);
               }
             }
             showNotice(
               "Pipeline workspace",
-              "Opened Planner, Implementer, and PR Reviewer tabs with the same folder.",
+              "Eagle-eye tab plus Planner, Plan Reviewer, Implementer, and PR Reviewer.",
             );
           })
           .catch((err: unknown) =>
             showNotice(
               "Could not open pipeline",
+              err instanceof Error ? err.message : String(err),
+              "question",
+            ),
+          );
+        return;
+      case "executionPipelineWorkspace":
+        void createExecutionPipelineTabs()
+          .then(async (snap) => {
+            setSavedTabs(snap.tabs);
+            setClosedTabs(snap.closedTabs ?? []);
+            const overviewTab = snap.tabs.find((t) => t.kind === "pipeline_overview");
+            const activeId =
+              snap.activeTabId ?? overviewTab?.id ?? snap.tabs[snap.tabs.length - 1]?.id;
+            if (activeId) {
+              const summary = snap.tabs.find((t) => t.id === activeId);
+              if (summary?.kind === "terminal" || summary?.kind === "pipeline_overview") {
+                setActiveTabId(activeId);
+                await selectActiveTab(activeId);
+              } else {
+                const { tab } = await selectActiveTab(activeId);
+                loadTabIntoForm(tab);
+              }
+            }
+            showNotice(
+              "Execution pipeline",
+              "Eagle-eye tab plus Implementer and PR Reviewer. Promote your plan, then Start.",
+            );
+          })
+          .catch((err: unknown) =>
+            showNotice(
+              "Could not open execution pipeline",
               err instanceof Error ? err.message : String(err),
               "question",
             ),
@@ -3672,6 +3711,9 @@ export function StartupForm({
     const marks = activeTabId ? tabStatuses[activeTabId] : undefined;
     if (!tab) return { tone: "idle", text: "No tab" };
     if (marks?.needsYou) return { tone: "needs", text: tabStatusLabel(marks) };
+    if (tab.kind === "pipeline_overview") {
+      return { tone: "ok", text: "Pipeline overview" };
+    }
     if (tab.kind === "terminal") {
       const kind =
         tab.terminalLaunch === "cursor-cli"
@@ -3771,6 +3813,33 @@ export function StartupForm({
       {overlays}
     </section>
   );
+  if (
+    activeTabSummary?.kind === "pipeline_overview" &&
+    !settingsOpen &&
+    activeTabSummary.pipelineRunId
+  ) {
+    return shell(
+      <section className="status-card status-card-session-full pipeline-overview-screen">
+        <PipelineOverview
+          runId={activeTabSummary.pipelineRunId}
+          cwd={activeTabSummary.cwd}
+          tabs={savedTabs}
+          runtimes={runtimes}
+          onJump={(tabId) => void handleSelectTab(tabId)}
+          onWatch={(tabId) => {
+            setSplit((current) => ({
+              mode: "horizontal",
+              secondaryTabId: tabId,
+              primarySize: clampSplitSize(current.primarySize || 55),
+            }));
+          }}
+          onRefreshTabs={refreshTabs}
+          onNotice={(title, body) => showNotice(title, body)}
+        />
+      </section>,
+    );
+  }
+
   if (activeTabSummary?.kind === "terminal" && !settingsOpen) {
     const linked = handoffs.find((item) => item.targetTabId === activeTabId) ?? null;
     const launch =
