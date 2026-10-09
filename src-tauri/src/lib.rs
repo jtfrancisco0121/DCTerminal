@@ -43,6 +43,7 @@ use commands::{
 };
 use commands::{changes_file_diff, changes_list, changes_revert, changes_snapshot, ChangesRoot};
 use commands::{first_run_complete, first_run_status};
+use commands::{get_provider_settings, set_provider_settings, set_tab_provider};
 use commands::{git_repo_info, worktree_tab_check, worktree_tab_new, worktree_tab_remove};
 use commands::{
     prompt_clear_recent, prompt_delete, prompt_library_get, prompt_mark_used, prompt_record_send,
@@ -141,6 +142,9 @@ pub fn run() {
             cli_login_status,
             first_run_status,
             first_run_complete,
+            get_provider_settings,
+            set_provider_settings,
+            set_tab_provider,
             probe_acp,
             probe_acp_handshake,
             list_roles,

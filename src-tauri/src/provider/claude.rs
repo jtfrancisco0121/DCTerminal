@@ -11,6 +11,7 @@ use super::{
 };
 use crate::acp::request_handler::is_permission_method;
 use crate::cli_detect::LoginStatus;
+use super::claude_config::{claude_env, resolve_claude_config_dir, ConfigDirInfo};
 use crate::store::settings_store::ClaudeProviderSettings;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -22,16 +23,30 @@ pub const CLAUDE_TERMINAL_PENDING: &str =
     "Claude terminal tabs are not available in this build yet. \
      Switch this tab to Cursor on the Start card for now.";
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ClaudeProvider {
     pub settings: ClaudeProviderSettings,
+    /// Resolved when the provider is built (env override → setting → `~/.claude`).
+    pub config: ConfigDirInfo,
+}
+
+impl Default for ClaudeProvider {
+    fn default() -> Self {
+        Self::from_settings(&ClaudeProviderSettings::default())
+    }
 }
 
 impl ClaudeProvider {
     pub fn from_settings(settings: &ClaudeProviderSettings) -> Self {
         Self {
             settings: settings.clone(),
+            config: resolve_claude_config_dir(settings.config_dir.as_deref()),
         }
+    }
+
+    /// Env for every Claude process (`CLAUDE_CONFIG_DIR`).
+    pub fn env(&self) -> Vec<(String, String)> {
+        claude_env(&self.config)
     }
 }
 
@@ -95,6 +110,10 @@ impl Provider for ClaudeProvider {
 
     fn plans_dir(&self) -> Option<PathBuf> {
         None
+    }
+
+    fn config_dir(&self) -> Option<ConfigDirInfo> {
+        Some(self.config.clone())
     }
 
     fn missing_message(&self) -> String {

@@ -125,6 +125,10 @@ impl Provider for CursorProvider {
         Some(crate::pty::plans::cursor_plans_dir())
     }
 
+    fn config_dir(&self) -> Option<super::claude_config::ConfigDirInfo> {
+        None
+    }
+
     fn missing_message(&self) -> String {
         agent_missing_message()
     }

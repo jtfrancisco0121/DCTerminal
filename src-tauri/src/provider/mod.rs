@@ -7,6 +7,7 @@
 //! migration (plan Task 6.3) moves them to Claude.
 
 pub mod claude;
+pub mod claude_config;
 pub mod cursor;
 
 use crate::cli_detect::LoginStatus;
@@ -195,6 +196,9 @@ pub trait Provider: Send + Sync {
     fn terminal_command(&self, req: &TerminalLaunch) -> Result<ProgramArgs, String>;
     /// Read-only folder where the CLI writes plan files.
     fn plans_dir(&self) -> Option<PathBuf>;
+    /// Claude: the resolved config folder passed as `CLAUDE_CONFIG_DIR`.
+    /// Cursor: none.
+    fn config_dir(&self) -> Option<claude_config::ConfigDirInfo>;
     /// Text shown when the CLI is not installed.
     fn missing_message(&self) -> String;
     /// Text shown when the CLI is not signed in.

@@ -288,11 +288,11 @@ src/provider/
 
 **Files:** `src-tauri/src/provider/claude_config.rs` (new), `src-tauri/src/store/settings_store.rs`, `src-tauri/src/provider/claude.rs`, `src-tauri/src/lib.rs`
 
-- [ ] Setting `providers.claude.configDir` (optional string). Resolver `resolve_claude_config_dir()` → `{ path, source: env | setting | default }`: `DCT_CLAUDE_CONFIG_DIR` → setting → `~/.claude`; expand `~`, canonicalize, report `exists`. Never create the folder.
-- [ ] One helper `claude_env(&ConfigDirInfo) -> Vec<(String, String)>` that sets `CLAUDE_CONFIG_DIR=<path>` (overwriting any inherited value); every Claude spawn (adapter, terminals, `claude auth status`) goes through it — no Claude `Command` is built without it.
+- [x] Setting `providers.claude.configDir` (optional string). Resolver `resolve_claude_config_dir()` → `{ path, source: env | setting | default }`: `DCT_CLAUDE_CONFIG_DIR` → setting → `~/.claude`; expand `~`, canonicalize, report `exists`. Never create the folder.
+- [x] One helper `claude_env(&ConfigDirInfo) -> Vec<(String, String)>` that sets `CLAUDE_CONFIG_DIR=<path>` (overwriting any inherited value); every Claude spawn (adapter, terminals, `claude auth status`) goes through it — no Claude `Command` is built without it.
 - [ ] JT's Mac: set `configDir` to `~/.claude-account2`; confirm read-only (`ls`) that `~/.claude-account2/projects` exists and matches the `~/.claude` layout (Research §B).
-- [ ] Tests: precedence env > setting > default; `~` expansion; missing dir reported, not created; old `settings.json` without the key loads (resolves to `~/.claude`); `claude_env` overrides an inherited `CLAUDE_CONFIG_DIR`.
-- [ ] Commit: `feat: Claude config dir setting (CLAUDE_CONFIG_DIR)`
+- [x] Tests: precedence env > setting > default; `~` expansion; missing dir reported, not created; old `settings.json` without the key loads (resolves to `~/.claude`); `claude_env` overrides an inherited `CLAUDE_CONFIG_DIR`.
+- [x] Commit: `feat: Claude config dir setting (CLAUDE_CONFIG_DIR)`
 
 ### Task 2.4: Claude detection and login status
 
