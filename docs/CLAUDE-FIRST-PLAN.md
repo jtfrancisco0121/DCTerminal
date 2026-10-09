@@ -4,7 +4,9 @@
 
 **Goal:** Make DCTerminal Claude-first. Claude Code becomes the default provider for chat tabs (over ACP, through the Claude Code ACP adapter) and terminal tabs (interactive `claude`), on JT's Claude subscription login. Cursor CLI stays as a second provider, picked per tab, with a default in Settings. Also fix the missing Planner → Plan Reviewer hand-off and turn the Eagle-Eye hand-off chains into a first-class, user-triggered flow for both providers.
 
-**Architecture:** Add a `provider` layer in Rust (`src-tauri/src/provider/`) and TS (`src/provider/`). Everything that is Cursor-specific today (executable lookup, ACP spawn args, `authenticate` method, `cursor/*` extension methods, terminal flags, model list, history store, plan files, CLI permission config) moves behind a `Provider` trait / descriptor. A second implementation, `ClaudeProvider`, spawns `claude-agent-acp` for chat and `claude` for terminals. The existing ACP client, permission cards, role policy, resume, plan cards, scratch pads, and hand-off code stay shared. The Eagle-Eye fix (new Plan Reviewer role + generic hand-off transitions) does not depend on the provider work and lands first.
+**Architecture:** Add a `provider` layer in Rust (`src-tauri/src/provider/`) and TS (`src/provider/`). Everything that is Cursor-specific today (executable lookup, ACP spawn args, `authenticate` method, `cursor/*` extension methods, terminal flags, model list, history store, plan files, CLI permission config) moves behind a `Provider` trait / descriptor. A second implementation, `ClaudeProvider`, spawns `claude-agent-acp` for chat and `claude` for terminals. The existing ACP client, resume, plan cards, scratch pads, and hand-off code stay shared. Per-role permission rules are retired: every role on both providers runs with full permissions and any permission request is auto-approved with `allow_once` (see Decisions). The Eagle-Eye fix (new Plan Reviewer role + generic hand-off transitions) does not depend on the provider work and lands first.
+
+**Size:** 11 phases, 31 tasks.
 
 **Tech Stack:** Tauri 2 + React/TS, Rust (`serde_json`, existing `acp/` JSON-RPC client, `portable-pty`), xterm.js, Vitest, `cargo test`. External: Claude Code CLI (`claude`, Homebrew cask on JT's Mac, 2.1.236), `@agentclientprotocol/claude-agent-acp` 0.88.0 (installed globally by JT, not a DCTerminal npm dependency), Cursor CLI `agent` (unchanged).
 
@@ -20,6 +22,7 @@
 - Hand-offs are always user-triggered. Nothing auto-starts the next step.
 - DCTerminal never runs `claude auth login`, `/login`, or any login flow for JT, and never reads or stores Claude credentials. It only reads `claude auth status --json` output to show "logged in / not logged in".
 - Personal-use only (see Risks: subscription login through the Agent SDK).
+- **Full permissions for every role** (Decision 4). Auto-answers only ever pick `allow_once`. The one request DCTerminal does not auto-answer is `ExitPlanMode` from a **Planner** tab (it becomes the plan card).
 
 ## Approved discovery (JT, 2026-10-09)
 
@@ -28,7 +31,7 @@
 3. Claude versions of:
    - (a) history/resume from Claude Code sessions in `~/.claude`, read-only;
    - (b) a model picker with Claude models (Opus, Sonnet, Haiku);
-   - (c) role permission rules on Claude's permission requests, plus a warning when Claude runs with permissions skipped (`bypassPermissions`, `--dangerously-skip-permissions`, or the settings equivalent);
+   - (c) ~~role permission rules on Claude's permission requests, plus a warning when Claude runs with permissions skipped~~ — **superseded by Decision 4 (2026-10-09):** no role rules; all roles allow everything; one full-permissions indicator instead of warnings;
    - (d) Planner → Implementer hand-off using Claude's plan mode;
    - (e) a usage/limits view for the Claude subscription, only if Claude Code exposes that data (it does, partially — see Research §C).
 4. **Eagle-Eye chains**, both providers, user-triggered:
@@ -37,6 +40,37 @@
    - Each hand-off carries the previous step's output into the next tab's form or scratch pad; the UI shows the chain position ("Eagle-Eye 1 · step 2 of 4").
    - Fix first: after the Planner finishes there is no hand-off to a Plan Reviewer (root cause below).
 5. Rules: no CI; never write to `~/.claude` / `~/.cursor`; `npm audit` 0; Node 22/24/26; `npm run check` before every push; Mac is main; no cloud agents; merge only with JT's approval.
+
+## Decisions (resolved 2026-10-09)
+
+JT resolved the four open decisions on 2026-10-09:
+
+1. **General role under Claude → `auto` mode** (not `plan`, not Manual/`default`). Permission requests that still reach DCTerminal in `auto` are auto-approved with `allow_once`.
+2. **Plan Reviewer can run everything** (full shell, edits, MCP, web — not read-only). Its role prompt still says "review, don't implement", but permissions are not restricted. On Cursor it uses the full-access flags (`--yolo`).
+3. **Existing / restored tabs migrate to Claude.** Tabs and saved workspaces without a saved provider become `claude` in a one-time migration (Task 6.3). A Cursor session id cannot resume under Claude, so a migrated tab starts a **fresh Claude session**; its old Cursor session id is kept per provider, so switching that tab back to Cursor resumes / shows the old Cursor history. Cursor stays a selectable provider per tab and in Settings.
+4. **No per-role permission rules.** All roles allow everything on both providers. Claude: `bypassPermissions` mode where the role has no natural mode, otherwise the role's mode with every `session/request_permission` auto-approved. Auto-answers pick the `allow_once` option, **never `allow_always`** (that writes a rule to the user's project `.claude/settings.local.json`) and never `reject_*`. The role rule engine and the "role rules are off" / bypass warnings are removed (Phase 7 rewritten); a single indicator shows that tabs run with full permissions. Cursor side is already consistent: JT's global Cursor `approvalMode` is `"unrestricted"`.
+
+### Per-role modes (both providers)
+
+| Role | Claude chat (`session/set_mode`) | Claude terminal | Permission requests (chat) | Cursor chat / terminal |
+|------|----------------------------------|-----------------|----------------------------|------------------------|
+| General | `auto` | `--permission-mode auto` | auto-approve `allow_once` | `agent` / `--yolo` |
+| Planner | `plan` (plan hand-off needs it) | `--permission-mode plan` | auto-approve `allow_once`, **except `ExitPlanMode` → plan card** (never auto-answered) | `plan` / `--plan` |
+| Plan Reviewer | `bypassPermissions` | `--permission-mode bypassPermissions` | auto-approve `allow_once` | `agent` / `--yolo` |
+| Implementer | `bypassPermissions` | `--permission-mode bypassPermissions` | auto-approve `allow_once` | `agent` / `--yolo` |
+| Developer | `bypassPermissions` | `--permission-mode bypassPermissions` | auto-approve `allow_once` | `agent` / `--yolo` |
+| PR Reviewer | `bypassPermissions` | `--permission-mode bypassPermissions` | auto-approve `allow_once` | `agent` / `--yolo` |
+| Codebase Audit | `bypassPermissions` | `--permission-mode bypassPermissions` | auto-approve `allow_once` | `agent` / `--yolo` |
+| Recommendation | `bypassPermissions` | `--permission-mode bypassPermissions` | auto-approve `allow_once` | `agent` / `--yolo` |
+| Custom roles | `bypassPermissions` | `--permission-mode bypassPermissions` | auto-approve `allow_once` | `agent` / `--yolo` |
+
+Rules that go with the table:
+
+- `ExitPlanMode` outside a Planner tab (Claude entered plan mode on its own via `EnterPlanMode`, which is auto-approved): auto-answer the `allow_once` option ("Yes, manually approve edits"), then re-send `session/set_mode <role mode>` so the tab returns to its mode from the table.
+- **Fallbacks.** If the adapter does not advertise `bypassPermissions` (process runs as root, or `permissions.disableBypassPermissionsMode: "disable"` in managed / user settings) or does not advertise `auto` for JT's account **(unverified — Task 4.2)**: chat uses `default` with every request auto-approved `allow_once` (same outcome); terminal uses `--permission-mode acceptEdits` and the indicator says "full permissions unavailable — Claude may prompt in the terminal".
+- Claude `auto` mode may still refuse an action on its own (its classifier). That is Claude's behavior, accepted for General.
+- Deny rules in JT's own `~/.claude/settings.json` still apply in every mode; DCTerminal never edits them.
+- The Settings Run-mode override (Run Everything / Plan / Ask / Auto-review) no longer changes Claude flags; it stays for Cursor terminals only (Phase 3/7).
 
 ## Eagle-Eye root cause (Planner → Plan Reviewer)
 
@@ -72,7 +106,7 @@ There is no Plan Reviewer anywhere in the app, so the Planner can only hand off 
 | Auth | Uses Claude Code's own login (claude.ai subscription or Console) through the spawned `claude`. **No `ANTHROPIC_API_KEY` needed.** `authMethods` are terminal-login methods (`claude-ai-login` → `claude auth login --claudeai`, `console-login`, or `claude-login` when remote) and are only advertised when the client declares terminal-auth support. It pushes `_auth/status_update` (`kind`, `label`) on its own. DCTerminal must **not** call `authenticate` with Cursor's `cursor_login` for this provider. | `dist/acp-agent.js:1290-1356`, `dist/auth-status.js` |
 | ACP methods | `initialize`, `authenticate`, `logout`, `session/new`, `session/load`, `session/resume`, `session/list`, `session/fork`, `session/close`, `session/delete`, `session/prompt`, `session/cancel`, `session/set_mode`, `session/set_config_option`, `providers/*`. `agentCapabilities.loadSession: true`. **No `session/set_model` handler** — the model is a config option (`set_config_option`), which DCTerminal already tries first (`acp/session_connect.rs:116-122`). | `dist/acp-agent.js:1358-1400`, `:8971+` |
 | Modes | `default` ("Manual"), `acceptEdits`, `plan`, `auto`, plus `bypassPermissions` only when allowed. Bypass is offered unless the process is root, `permissions.disableBypassPermissionsMode` is `"disable"`, or the client sends `_meta.claudeCode.options.allowDangerouslySkipPermissions: false` on `session/new`. Initial mode comes from settings `permissions.defaultMode` (accepts `manual` as alias of `default`). | `dist/session-mode.js:200-275`, `dist/permissions/modes.js`, `dist/acp-agent.js:7110-7120` |
-| Permission requests | Standard `session/request_permission` with option `kind`s `allow_once` / `allow_always` / `reject_once` / `reject_always`. Tool-specific option builders for Bash, Read, Edit, Write, WebFetch, MCP (`mcp__*`), Skill, Enter/ExitPlanMode. "Always" options for tools write a rule to `localSettings` (the project's `.claude/settings.local.json`). DCTerminal's policy already picks `kind == "allow_once"` (`permissions/policy.rs:193-212`) — keep it that way and never pick `allow_always` for tools. | `dist/permissions/options.js`, `dist/permissions/effects.js:40` |
+| Permission requests | Standard `session/request_permission` with option `kind`s `allow_once` / `allow_always` / `reject_once` / `reject_always`. Tool-specific option builders for Bash, Read, Edit, Write, WebFetch, MCP (`mcp__*`), Skill, Enter/ExitPlanMode. "Always" options for tools write a rule to `localSettings` (the project's `.claude/settings.local.json`). DCTerminal's policy already picks `kind == "allow_once"` (`permissions/policy.rs:193-212`) — keep that picker (it becomes the whole policy, Task 7.1) and never pick `allow_always` for tools. | `dist/permissions/options.js`, `dist/permissions/effects.js:40` |
 | Plan mode | Leaving plan mode is an `ExitPlanMode` permission request titled **"Ready to code?"**. Options: "Yes, manually approve edits" (`allow_once`), "Yes, auto-accept edits", "Yes, and use auto mode", "Yes, and bypass permissions" (if allowed), "Yes, clear context and …" variants (all `allow_always` → session mode change, not a file write), and reject = "No, keep planning" (turn ends cancelled). Plan steps also arrive as standard `session/update` `sessionUpdate: "plan"` entries. Where the plan markdown sits inside the request (`rawInput.plan`?) is **(unverified — capture step 4.2)**. | `dist/permissions/options/tools.js:40-110`, `dist/permissions/presentation.js:49`, `dist/exit-plan.js`, `dist/acp-agent.js:2240` |
 | Usage | `session/update` `usage_update` (context `used` / `size`) and, on each SDK `rate_limit_event`, a `usage_update` carrying `_meta["_claude/rateLimit"]` = `{status, resetsAt, rateLimitType (five_hour / seven_day / seven_day_opus / seven_day_sonnet / overage…), utilization, …}`. A `/usage` prompt is rendered from an SDK method literally named `usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET`. | `dist/acp-agent.js:5202-5214`, `:135-165`; `claude-agent-sdk/sdk.d.ts:5664-5700` |
 | Extras to ignore | `_auth/status_update`, `_session/steering`, AIR/JetBrains `_meta` extensions, `available_commands_update`. DCTerminal must ignore unknown notifications (it already cancels unknown `cursor/*` requests; generalize to "unknown extension → ignore / cancel"). | README |
@@ -106,15 +140,15 @@ Anthropic's docs say third-party developers may not offer claude.ai login or rou
 |---------|---------------------|---------|
 | Executable lookup, version, login status | `src-tauri/src/cli_detect.rs` (`resolve_agent_executable` :15, `agent_login_status` :324 via `agent status --format json`) | `Provider::detect()` / `login_status()`; Cursor impl keeps this code, Claude impl resolves `claude` + `claude-agent-acp`, runs `claude --version` and `claude auth status --json` (read-only) |
 | ACP spawn args | `acp/ndjson.rs:115` (`acp_launch_args` = `["acp"]`), `acp/client.rs:29` (`--model` spawn flag) | `Provider::acp_command(model) -> ProgramArgs + env` (Claude: `claude-agent-acp`, env `CLAUDE_CODE_EXECUTABLE`) |
-| Handshake | `acp/session_connect.rs:137-230` (always `authenticate {methodId:"cursor_login"}`, then `session/set_mode`) | `Provider::auth_step()` (Cursor: `cursor_login`; Claude: none — only report `_auth/status_update` / errors) and `Provider::session_new_meta()` (Claude: `_meta.claudeCode.options.allowDangerouslySkipPermissions=false` unless JT opts in) |
-| Mode ids | `mode_id` "agent"/"plan"/"ask" in role snapshots (`store/state_store.rs`, `commands/dev_session.rs:202`) | `Provider::mode_for_role(role, override)` (Claude: `default` / `acceptEdits` / `plan` / `bypassPermissions`) |
+| Handshake | `acp/session_connect.rs:137-230` (always `authenticate {methodId:"cursor_login"}`, then `session/set_mode`) | `Provider::auth_step()` (Cursor: `cursor_login`; Claude: none — only report `_auth/status_update` / errors) and `Provider::session_new_meta()` (Claude: `_meta.claudeCode.options.allowDangerouslySkipPermissions=true`, so `bypassPermissions` is offered — Decision 4) |
+| Mode ids | `mode_id` "agent"/"plan"/"ask" in role snapshots (`store/state_store.rs`, `commands/dev_session.rs:202`) | `Provider::mode_for_role(role, available_modes)` per the per-role mode table (Claude: `auto` / `plan` / `bypassPermissions`, fallback `default`; Cursor: `agent` / `plan`) |
 | Extension methods | `cursor/create_plan`, `cursor/ask_question`, `cursor/update_todos`, `cursor/task` (`acp/connection.rs:241-252`, `acp/request_handler.rs:13-25`, `acp/session_update.rs:24`, `commands/prompt_worker.rs:93-103`) | `Provider::classify_request(method)` → `Permission | Plan | Question | Unknown`; Claude: `session/request_permission` with `ExitPlanMode` = Plan |
 | Terminal command line | `pty/launch.rs` (`role_terminal_flags` :63, `with_model` :82, `plain_agent_args`, `deliver_prompt`), `pty/mod.rs:248,378,468,497` (`resolve_agent_executable`) | `Provider::terminal_command(role, mode, model, prompt, resume)` |
 | Resume args | `cli_launch.rs:12-25` (`agent --resume <id>`) | `Provider::resume_terminal_args(id)` (Claude: `--resume <id>`) |
 | Model list / default | `models.rs` (`DEFAULT_MODEL_ID = "composer-2.5"` :20, `agent --list-models` :285, `static_fallback` :172), `store/settings_store.rs` `ModelSettings` | per-provider `ModelSettings { default, per_role }`; Claude list from `session/new` config options, fallback static aliases |
 | History store | `cursor_history.rs` (`~/.cursor` chats + ACP meta), `src/cursorHistory.ts`, `src/components/CursorHistoryList.tsx` | `Provider::list_history(folder)`; new `claude_history.rs` |
 | Plan files (terminal Planner) | `pty/plans.rs:19` (`~/.cursor/plans`) | `Provider::plans_dir()` (Claude: none known; fall back to selection / tail) |
-| CLI permission config | `permissions/cli_config.rs` (`~/.cursor/cli-config.json` `approvalMode`, `role_rules_off`) | `Provider::permission_bypass_status(cwd)`; new `permissions/claude_settings.rs` |
+| CLI permission config | `permissions/cli_config.rs` (`~/.cursor/cli-config.json` `approvalMode`, `role_rules_off`), role rule engine `permissions/policy.rs` | Retired (Decision 4): `role_rules_off` and its warning go away; `policy.rs` shrinks to "pick `allow_once`" (Task 7.1). No Claude settings parser. |
 | Error text | `commands/role_session.rs:156` ("Run `agent login`"), `:389` | provider-specific messages |
 | Setup | `commands/setup.rs`, `src/components/FirstRunSetup.tsx` | step per provider (Claude first) |
 
@@ -136,17 +170,16 @@ pub trait Provider: Send + Sync {
     fn acp_command(&self, model: Option<&str>) -> Result<ProgramArgs, String>; // includes env
     fn auth_step(&self) -> Option<(String, Value)>;  // Some(("authenticate", {...})) for Cursor
     fn session_new_meta(&self, opts: &SessionOpts) -> Option<Value>;
-    fn mode_for_role(&self, role_id: &str, run: RunMode) -> String;
+    fn mode_for_role(&self, role_id: &str, available: &[String]) -> String; // per-role mode table + fallback
     fn classify_request(&self, method: &str, params: &Value) -> AgentRequestKind;
     fn terminal_command(&self, req: &TerminalLaunch) -> Result<ProgramArgs, String>;
     fn list_history(&self, folder: &str) -> Vec<HistoryEntry>;
-    fn permission_bypass_status(&self, cwd: &Path) -> BypassStatus; // read-only
     fn plans_dir(&self) -> Option<PathBuf>;
 }
 ```
 
-- `TabState` / role snapshot gain `provider: ProviderId` (serde default `cursor` for old tabs so nothing changes under JT's feet; new tabs take Settings default `claude`).
-- `settings.json` (app data) gains `providers: { default: "claude", claude: { adapterPath?, claudePath?, allowBypass: false }, cursor: {} }` and `models` becomes per-provider (migrate old `models` into `models.cursor`).
+- `TabState` / role snapshot gain `provider: Option<ProviderId>` (missing on old tabs; treated as `cursor` until the one-time migration in Task 6.3 flips them to `claude`, Decision 3) and per-provider session ids `sessions: { cursor?: String, claude?: String }` (the old single session id moves to `sessions.cursor`). New tabs take Settings default `claude`.
+- `settings.json` (app data) gains `providers: { default: "claude", claude: { adapterPath?, claudePath? }, cursor: {} }` (no bypass toggle: full permissions always, Decision 4) and `models` becomes per-provider (migrate old `models` into `models.cursor`).
 - `AcpClient::connect*` takes `&dyn Provider`. `LiveSession` remembers the provider.
 
 ### TypeScript
@@ -159,7 +192,7 @@ src/provider/
 ```
 
 - Start card: provider chip next to the model chip (Claude / Cursor), remembered per role like Chat/Terminal; the model picker list follows the provider.
-- Settings: new **Providers** section (default provider, detected paths/versions, login status, adapter install hint, "Allow bypass permissions in Claude chat" off by default). Models section split per provider.
+- Settings: new **Providers** section (default provider, detected paths/versions, login status, adapter install hint, read-only line "All tabs run with full permissions"). Models section split per provider.
 - `CursorHistoryList` → `HistoryList` with provider-specific loaders.
 - Tab chips / header tooltip show the provider.
 
@@ -171,11 +204,11 @@ src/provider/
 
 **Files:** `docs/roles/role-plan-reviewer.md` (new), `docs/roles/README.md`, `src-tauri/src/template/seed_defs.rs`, regenerated roles seed (`cargo run --bin build_roles_seed`), `src-tauri/src/permissions/policy.rs` (`canonical_role`), `src-tauri/src/pty/launch.rs` (`role_family`), `src/workspaceView.ts` (`BUILT_IN_PERMISSION_SUMMARY`), `src-tauri/src/template/merge_tests.rs`
 
-- [ ] Write `role-plan-reviewer.md`: review the proposed plan against the codebase (read-only), list blocking issues / risks / missing tests, and end with a **Reviewed plan** section (the approved or revised plan) plus **Review notes**. Placeholders: `[PASTE THE ORIGINAL FEATURE / BUG REQUEST HERE]`, `[PASTE THE PROPOSED IMPLEMENTATION PLAN HERE]`, `[OPTIONAL: …]`.
+- [ ] Write `role-plan-reviewer.md`: review the proposed plan against the codebase (it may run commands, tests, and tools — Decision 2 — but does not implement), list blocking issues / risks / missing tests, and end with a **Reviewed plan** section (the approved or revised plan) plus **Review notes**. Placeholders: `[PASTE THE ORIGINAL FEATURE / BUG REQUEST HERE]`, `[PASTE THE PROPOSED IMPLEMENTATION PLAN HERE]`, `[OPTIONAL: …]`.
 - [ ] `plan_reviewer_spec()`: id `role_plan_reviewer`, name "Plan Reviewer", color distinct from PR Reviewer, fields `originalTask` (required), `plan` (required, multiline — matches `PLAN_FIELD_KEYS`), `additionalContext` (optional). Add to `all_role_specs()` after Planner.
-- [ ] Policy: Plan Reviewer = Reviewer family (allow shell + MCP + read, deny writes, ask when ambiguous). Terminal flags: Cursor `--mode ask` (read-only); Claude later in Phase 3.
+- [ ] Policy: Plan Reviewer = full-access family (Decision 2: allow everything). Terminal flags: Cursor `--yolo` (same as Implementer); Claude `bypassPermissions` later in Phase 3. `BUILT_IN_PERMISSION_SUMMARY`: "Full access".
 - [ ] Existing user role files: template merge adds the new built-in without touching edited roles (check `template/merge.rs` behavior; add a merge test).
-- [ ] Tests: seed has 8 roles; `evaluate_permission("role_plan_reviewer", edit)` rejects; merge keeps a user-edited Planner.
+- [ ] Tests: seed has 8 roles; `evaluate_permission("role_plan_reviewer", edit)` allows (`allow_once`); Cursor terminal flags for Plan Reviewer = `--yolo --approve-mcps --trust`; merge keeps a user-edited Planner.
 - [ ] Commit: `feat: seed Plan Reviewer role`
 
 ### Task 1.2: One hand-off transition table
@@ -221,9 +254,9 @@ src/provider/
 
 **Files:** `src-tauri/src/provider/mod.rs` (new), `src-tauri/src/store/state_types.rs`, `src-tauri/src/store/settings_store.rs`, `src-tauri/src/store/workspace_store.rs`, `src-tauri/src/lib.rs`
 
-- [ ] `ProviderId` enum, serde lowercase, default `cursor` when the field is missing on old tabs / workspaces.
-- [ ] Settings: `providers.default` (new profiles: `claude`; existing profiles: also `claude` per JT, but existing tabs keep `cursor`), per-provider `models` (migrate old `models` → `models.cursor`).
-- [ ] Tests: old `state.json` / `settings.json` / `workspaces.json` fixtures load with `cursor`; new tab gets the default; round-trip.
+- [ ] `ProviderId` enum, serde lowercase. The tab / workspace field is optional; missing = legacy, resolved as `cursor` until Task 6.3 migrates it (so nothing breaks before Claude chat exists). Move the existing session id into `sessions.cursor` on load.
+- [ ] Settings: `providers.default` = `claude` for new and existing profiles (Decision 3), per-provider `models` (migrate old `models` → `models.cursor`).
+- [ ] Tests: old `state.json` / `settings.json` / `workspaces.json` fixtures load with provider missing (resolves to `cursor`) and the old id in `sessions.cursor`; new tab gets the default; round-trip.
 - [ ] Commit: `feat: provider id on tabs, workspaces, and settings`
 
 ### Task 2.2: Move Cursor code behind `Provider`
@@ -262,14 +295,15 @@ src/provider/
 
 **Files:** `src-tauri/src/provider/claude.rs`, `src-tauri/src/pty/launch.rs` (split shared prompt delivery from Cursor flags), `src-tauri/src/pty/mod.rs`
 
-- [ ] Role → flags (defaults; Settings run-mode override still applies):
-  - Implementer / Developer: `--permission-mode acceptEdits` (Run Everything override → `--permission-mode bypassPermissions`, which triggers the Phase 7 warning)
-  - Planner / Recommendation: `--permission-mode plan`
-  - General: `--permission-mode plan` (no Claude "ask" mode; **open question** — or `manual`)
-  - PR Reviewer / Plan Reviewer / Codebase Audit: `--permission-mode manual --disallowedTools "Edit Write NotebookEdit"` (Claude can deny writes while keeping shell, which Cursor could not)
+- [ ] Role → flags from the per-role mode table (Decisions). The Settings run-mode override does not apply to Claude:
+  - General: `--permission-mode auto`
+  - Planner: `--permission-mode plan`
+  - Every other role (Plan Reviewer, Implementer, Developer, PR Reviewer, Codebase Audit, Recommendation, custom): `--permission-mode bypassPermissions`
+  - No `--disallowedTools` / `--allowedTools` for any role.
+- [ ] Check on the Mac whether `--permission-mode bypassPermissions` alone is enough or also needs `--allow-dangerously-skip-permissions`, and whether the TUI shows a one-time bypass confirmation that JT accepts himself **(unverified)**. If bypass is disabled, fall back to `--permission-mode acceptEdits` (Decisions → Fallbacks).
 - [ ] `--model <id>` first when set (reuse `valid_model_id`); prompt as the positional argument via `deliver_prompt` (same 24,000-byte rule and prompt-file fallback).
-- [ ] Never pass `--dangerously-skip-permissions`, `--cloud`, `--bg`, `--settings`, `--continue`.
-- [ ] Tests: argv per role; long prompt uses the file; invalid model dropped.
+- [ ] Never pass `--dangerously-skip-permissions` (use `--permission-mode bypassPermissions`), `--cloud`, `--bg`, `--settings`, `--continue`.
+- [ ] Tests: argv per role matches the table; Run-mode override ignored for Claude; long prompt uses the file; invalid model dropped.
 - [ ] Commit: `feat: Claude Code role terminals`
 
 ### Task 3.2: Plain "Claude Code" terminal tile + scratch pad
@@ -295,7 +329,7 @@ src/provider/
 **Files:** `src-tauri/src/provider/claude.rs`, `src-tauri/src/acp/session_connect.rs`, `src-tauri/src/acp/client.rs`, `src-tauri/src/commands/role_session.rs`
 
 - [ ] Spawn `claude-agent-acp` with env `CLAUDE_CODE_EXECUTABLE=<detected claude>`; inherit the user env otherwise (do not set `ANTHROPIC_API_KEY`; if one is set in JT's env, show a notice that Claude Code may bill the API key instead of the subscription — **(unverified precedence)**).
-- [ ] Handshake: `initialize` (no terminal-auth client capability, so no login methods are offered) → no `authenticate` → `session/new { cwd, mcpServers: [], _meta: { claudeCode: { options: { allowDangerouslySkipPermissions: <settings.providers.claude.allowBypass> } } } }` → `session/set_mode` from `mode_for_role`.
+- [ ] Handshake: `initialize` (no terminal-auth client capability, so no login methods are offered) → no `authenticate` → `session/new { cwd, mcpServers: [], _meta: { claudeCode: { options: { allowDangerouslySkipPermissions: true } } } }` → `session/set_mode` from `mode_for_role` (per-role mode table; if the wanted mode is not in the advertised modes, use `default` + auto-approve and flag the indicator).
 - [ ] Map "not logged in" errors / `_auth/status_update { kind: "none" }` to "Claude Code is not signed in. Open a terminal, run `claude`, and use `/login`. Then Retry."
 - [ ] Commit: `feat: Claude chat tabs over claude-agent-acp`
 
@@ -303,9 +337,9 @@ src/provider/
 
 **Files:** `docs/claude-acp-observed.md` (new), `fixtures/acp/claude/*.json` (new), `docs/permission-payload-capture.md`, `src-tauri/src/commands/agent_requests.rs` (capture covers all ACP traffic types for this provider)
 
-- [ ] JT installs the adapter on the Mac (`npm install -g --omit=optional @agentclientprotocol/claude-agent-acp@0.88.0`); turn on **Record permission payloads**; run one Implementer, one Planner, one PR Reviewer session in a scratch repo.
-- [ ] Capture and redact: `initialize` response, `session/new` response (modes, configOptions incl. model list), `session/request_permission` for Bash, Edit, Write, WebFetch, an MCP tool, `ExitPlanMode`; `session/update` kinds seen (`plan`, `tool_call`, `tool_call_update`, `current_mode_update`, `usage_update` with `_claude/rateLimit`, `available_commands_update`); `session/load` replay; `_auth/status_update`.
-- [ ] Record answers to: where the plan markdown is in `ExitPlanMode`; whether `session/new` `sessionId` equals the `~/.claude/projects/**/<id>.jsonl` name; whether adapter 0.88.0 works with CLI 2.1.236 via `CLAUDE_CODE_EXECUTABLE` (else JT updates `claude`, his call); whether `session/load` replays the transcript.
+- [ ] JT installs the adapter on the Mac (`npm install -g --omit=optional @agentclientprotocol/claude-agent-acp@0.88.0`); turn on **Record permission payloads**; run one General (`auto`), one Planner (`plan`), one Plan Reviewer and one Implementer (`bypassPermissions`) session in a scratch repo.
+- [ ] Capture and redact: `initialize` response, `session/new` response (modes, configOptions incl. model list), `session/request_permission` for Bash, Edit, Write, WebFetch, an MCP tool, `ExitPlanMode` (force these in `default` mode, since `bypassPermissions` sends few or none); `session/update` kinds seen (`plan`, `tool_call`, `tool_call_update`, `current_mode_update`, `usage_update` with `_claude/rateLimit`, `available_commands_update`); `session/load` replay; `_auth/status_update`.
+- [ ] Record answers to: whether `session/new` advertises `auto` and `bypassPermissions` for JT's account; which requests still arrive in `auto` / `bypassPermissions` / `plan`; where the plan markdown is in `ExitPlanMode`; whether `session/new` `sessionId` equals the `~/.claude/projects/**/<id>.jsonl` name; whether adapter 0.88.0 works with CLI 2.1.236 via `CLAUDE_CODE_EXECUTABLE` (else JT updates `claude`, his call); whether `session/load` replays the transcript.
 - [ ] Commit: `docs: captured Claude ACP payloads`
 
 ### Task 4.3: Session updates, plan cards, questions
@@ -313,7 +347,7 @@ src/provider/
 **Files:** `src-tauri/src/acp/session_update.rs`, `src-tauri/src/acp/text_extract.rs`, `src/sessionCards.ts` (+ test), `src/SessionTerminal.tsx`, `src/components/PermissionCard.tsx`
 
 - [ ] Standard `plan` updates → plan card (already partly handled by `sessionCards.ts:121-123`); `current_mode_update` → header mode badge; `usage_update` → Phase 10 store; ignore AIR / steering / auth extensions.
-- [ ] `ExitPlanMode` request → plan-review card (Phase 8), not a generic permission card.
+- [ ] `ExitPlanMode` request in a Planner tab → plan card (Phase 8); everywhere else it is auto-answered per Task 7.1. No generic permission cards are shown (all other requests auto-approve).
 - [ ] Claude has no `cursor/ask_question`; questions come as plain assistant text → existing "turn ended on a question" detection.
 - [ ] Tests from Task 4.2 fixtures.
 - [ ] Commit: `feat: Claude session updates and plan cards`
@@ -366,26 +400,41 @@ src/provider/
 - [ ] History panel title follows the tab's provider; both lists available via a toggle.
 - [ ] Commit: `feat: resume Claude sessions in chat or terminal`
 
-## Phase 7: Permissions + skip-permissions warning
+### Task 6.3: Migrate existing / restored tabs to Claude
 
-### Task 7.1: Role policy on Claude permission requests
+**Files:** `src-tauri/src/store/state_store.rs`, `src-tauri/src/store/workspace_store.rs`, `src-tauri/src/store/state_types.rs`, `src/StartupForm.tsx`, `src/components/HistoryList.tsx`, tests
 
-**Files:** `src-tauri/src/permissions/policy.rs` (+ tests), `src-tauri/src/permissions/tool_cache.rs`, `fixtures/acp/claude/permissions/*`
+- [ ] One-time migration (state flag `migrations.claudeFirst`, run on load after Claude chat + history exist): every tab and saved-workspace tab with no saved provider gets `provider: claude` (Decision 3). Tabs explicitly set to Cursor after the migration stay Cursor.
+- [ ] Session ids: a migrated tab keeps its Cursor id in `sessions.cursor`; `sessions.claude` is empty, so restore / Start opens a **fresh Claude session** (chat: `session/new`; terminal: `claude` with the role flags, no `--resume`). Never pass a Cursor id to Claude.
+- [ ] Switching a migrated tab back to Cursor resumes `sessions.cursor` (chat `session/load`, terminal `agent --resume <id>`); the Cursor history list stays available via the History toggle. Cursor stays selectable everywhere.
+- [ ] One-line notice on a migrated tab's first restore: "Now using Claude. Your earlier Cursor session is kept — switch this tab to Cursor to reopen it."
+- [ ] Backup: copy `state.json` / `workspaces.json` to `*.pre-claude-first.json` in app data before migrating (never `~/.claude` / `~/.cursor`).
+- [ ] Tests: fixtures with chat + terminal Cursor tabs migrate to Claude with empty Claude session; migration runs once; switch-back resumes the Cursor id; workspaces migrate the same way.
+- [ ] Commit: `feat: migrate existing tabs to Claude with fresh sessions`
 
-- [ ] Classify Claude requests: use `toolCall.kind` first (same as Cursor), then tool name (`Bash`→Shell, `Edit`/`Write`/`NotebookEdit`→Write, `Read`/`Glob`/`Grep`/`WebFetch`/`WebSearch`→Read, `mcp__*`→Mcp, `ExitPlanMode`/`EnterPlanMode`→Plan, `Skill`/`Agent`/`Task`→Other).
-- [ ] Auto answers only ever pick `allow_once` or `reject_once`; never `allow_always` / `reject_always`. `ExitPlanMode` is never auto-answered.
-- [ ] Tests on captured fixtures for every role.
-- [ ] Commit: `feat: role permission rules for Claude requests`
+## Phase 7: Full permissions (allow everything) + indicator
 
-### Task 7.2: Bypass detection + warning
+Replaces the old "role permission rules + skip-permissions warning" phase (Decision 4). No role rule engine, no Claude settings-file parser, no rules-off / bypass warnings.
 
-**Files:** `src-tauri/src/permissions/claude_settings.rs` (new), `src-tauri/src/commands/*` (status command), `src/components/StatusBar.tsx`, `src/components/SettingsPage.tsx`, chat header
+### Task 7.1: Auto-approve every request (both providers); retire role rules
 
-- [ ] Read-only: `~/.claude/settings.json`, `<cwd>/.claude/settings.json`, `<cwd>/.claude/settings.local.json`, macOS managed settings `/Library/Application Support/ClaudeCode/managed-settings.json` **(unverified path)** → effective `permissions.defaultMode` (respecting that project files cannot set `auto` / `bypassPermissions`) and `disableBypassPermissionsMode`.
-- [ ] Live: `current_mode_update` to `bypassPermissions` / `dontAsk` / `auto`; terminal launched with `bypassPermissions`.
-- [ ] Warning: ⚠ "Claude is skipping permission prompts (bypassPermissions) — role rules are off" in status bar + tab chip, same pattern as Cursor's Run Everything. `auto` gets a softer "Claude's auto mode decides permissions — role rules may not fire". Never edits the settings.
-- [ ] Tests: parse matrix of settings files; mode updates.
-- [ ] Commit: `feat: warn when Claude skips permissions`
+**Files:** `src-tauri/src/permissions/policy.rs` (+ tests), `src-tauri/src/permissions/tool_cache.rs`, `src-tauri/src/permissions/cli_config.rs`, `src-tauri/src/pty/launch.rs` (`role_family` / `effective_mode`), `src/workspaceView.ts` (`BUILT_IN_PERMISSION_SUMMARY`), `src/components/PermissionCard.tsx`, `fixtures/acp/claude/permissions/*`
+
+- [ ] `policy.rs` becomes one rule for every role and provider: answer `session/request_permission` with the `allow_once` option. If a request has no `allow_once` option, show the card (no auto-pick of `allow_always` / `reject_*`). Remove per-role evaluation, role families for permissions, and per-role tool classification (keep classification only if the tool cache / UI labels still need it).
+- [ ] Exception: Claude `ExitPlanMode` in a **Planner** tab is never auto-answered (→ plan card, Phase 8). In any other tab, auto-answer its `allow_once` option and re-send `session/set_mode <role mode>` (Decisions). `EnterPlanMode` is auto-approved like everything else.
+- [ ] Cursor terminal flags follow the table: Planner `--plan`; every other role `--yolo` (General loses `--mode ask`; PR Reviewer / Codebase Audit / Recommendation / custom get `--yolo`). Cursor chat modes: Planner `plan`, others `agent`. The Run-mode override stays for Cursor terminals.
+- [ ] Remove `role_rules_off` and its notice from `cli_config.rs` (still read `approvalMode` read-only for the indicator text if useful). `BUILT_IN_PERMISSION_SUMMARY`: "Full access" for all roles.
+- [ ] Tests: for every role × provider, captured Claude fixtures (Bash, Edit, Write, WebFetch, MCP) and Cursor fixtures pick `allow_once`; `allow_always` never picked; Planner `ExitPlanMode` not auto-answered; non-Planner `ExitPlanMode` auto-answered + mode restored; Cursor flags per role.
+- [ ] Commit: `feat: all roles allow everything; retire role permission rules`
+
+### Task 7.2: Single full-permissions indicator
+
+**Files:** `src/components/StatusBar.tsx` (+ test), `src/TabBar.tsx` (+ test), `src/components/SettingsPage.tsx`, chat header
+
+- [ ] Replace the "⚠ Run Everything" / "Role permission rules are off" warnings (status bar, tab icon, Settings) with one neutral indicator: "Full permissions" in the status bar, tooltip "All tabs run with full permissions (Claude: bypass / auto / plan per role; Cursor: unrestricted). Answers are allow-once; nothing is written to your repo's settings."
+- [ ] Fallback state (Decisions → Fallbacks): indicator reads "Full permissions unavailable for Claude — <reason>" when the adapter did not offer the wanted mode or a terminal fell back to `acceptEdits`.
+- [ ] Tests: indicator shows for Claude and Cursor tabs; old warning strings gone; fallback text.
+- [ ] Commit: `feat: full-permissions indicator replaces rules-off warnings`
 
 ## Phase 8: Plan mode hand-off (Claude)
 
@@ -393,7 +442,7 @@ src/provider/
 
 **Files:** `src-tauri/src/provider/claude.rs`, `src/SessionTerminal.tsx`, `src/components/SessionCards.tsx`
 
-- [ ] Claude Planner / Plan Reviewer chat starts with `session/set_mode plan`.
+- [ ] Claude Planner chat starts with `session/set_mode plan` (Plan Reviewer runs `bypassPermissions` per Decision 2 and hands off its reviewed plan from its last message). Other requests in plan mode auto-approve `allow_once` (Task 7.1).
 - [ ] `ExitPlanMode` ("Ready to code?") → plan card with the plan markdown, **Hand off…** buttons (from the transition table), and **Keep planning** (answers the reject option). DCTerminal never picks "Yes, …" for a Planner: implementation happens in the Implementer tab.
 - [ ] Commit: `feat: Claude plan mode plan card`
 
@@ -467,22 +516,22 @@ src/provider/
 
 **Files:** `docs/PROGRESS.md`, `README.md`, `docs/cursor-cli-history.md` (link to Claude history), `docs/claude-acp-observed.md`, this plan
 
-- [ ] PROGRESS snapshot + update "Locked product decisions" (`~/.claude` read-only, Claude default provider).
+- [ ] PROGRESS snapshot + update "Locked product decisions" (`~/.claude` read-only, Claude default provider, existing tabs migrated to Claude, all roles full permissions / no role rules, per-role mode table).
 - [ ] README: Claude Code + adapter install steps.
 - [ ] Tick all boxes after push; `npm run check` and `npm audit` = 0 on the box and on the Mac; Node 22/24/26.
 - [ ] Message JT with PR link and the smoke list below.
 - [ ] Commit: `docs: Claude-first provider progress`
 
-## Risks and open questions
+## Risks and remaining questions
 
 - **Subscription login via the Agent SDK (policy).** Allowed for personal use of your own subscription; not for offering login to others. DCTerminal stays private, never handles credentials. If Anthropic tightens this, chat tabs could fall back to Claude terminal tabs only (which run the unmodified `claude`).
 - **Adapter churn.** Releases almost daily, protocol extensions under `_meta`. Pin `0.88.0`, record captures, upgrade deliberately.
 - **CLI/SDK version skew.** JT's CLI 2.1.236 vs. adapter's SDK 0.3.293. If `CLAUDE_CODE_EXECUTABLE` mode fails, options: JT updates Claude Code (`brew upgrade --cask claude-code`, his call) or the adapter uses its bundled binary (bigger install; credential sharing with the Homebrew binary via macOS Keychain is **(unverified)**).
 - **Fable / usage credits.** In SDK apps without the consent prompt, a Fable request bills credits without asking. Hide Fable unless JT turns it on in Settings.
 - **ExitPlanMode plan location** and **sessionId ↔ jsonl name** are unverified until Task 4.2.
-- **Project rules files.** Any "always allow" chosen by JT on a permission card writes to the project's `.claude/settings.local.json`. Should the card hide `allow_always` options for Claude entirely? (Recommendation: hide them, matching "never write into user project repos".)
-- **General role on Claude:** `plan` vs `manual` mode? **Plan Reviewer** shell access: Reviewer family (shell allowed) or Planner family (no shell)?
-- **Existing tabs:** keep `cursor` (recommended) or flip to the new default?
+- **Full permissions everywhere (accepted by JT, Decision 4).** Every role can edit files and run any command in the tab's folder without asking. Mitigation is git + JT's own `~/.claude` deny rules; DCTerminal never picks `allow_always`, so nothing is written to project `.claude/settings.local.json` (resolves the old "project rules files" question). Auto-answer pick logic is covered by tests on captured fixtures.
+- **`auto` / `bypassPermissions` availability** for JT's account / CLI 2.1.236 is unverified until Task 4.2; fallback is `default` + auto-approve (chat) / `acceptEdits` (terminal).
+- **Migration (Decision 3).** Migrated tabs lose in-app continuity of their Cursor conversation under Claude (fresh session); the Cursor session stays resumable by switching back. State is backed up before migrating.
 - **Usage view vs. "No token tracking":** confirm limits-only is OK.
 - **Windows paths** for `claude` / adapter are unverified; Mac is the target.
 - **Status line usage for terminal tabs** via `--settings` is unverified and out of scope.
@@ -493,21 +542,24 @@ src/provider/
 - Claude cloud / background agents, `ultrareview`, remote control
 - Bundling the adapter or `claude` inside the DCTerminal app
 - Token/cost accounting
+- Per-role permission rules, permission rule editing, or bypass warnings (retired by Decision 4)
 - Signed distribution
 
 ## Smoke checklist (JT)
 
 - [ ] Settings > Providers shows Claude Code 2.1.x found, signed in, adapter found; default provider = Claude
-- [ ] New tab → Implementer → Claude → Chat → Start: session runs, edits auto-allowed once, shell asks/auto per role, no `allow_always` picked
-- [ ] PR Reviewer (Claude chat): a write is rejected; shell allowed
+- [ ] New tab → Implementer → Claude → Chat → Start: mode badge `bypassPermissions`; edits and shell run without cards; no `allow_always` picked; no `.claude/settings.local.json` appears in the repo
+- [ ] General (Claude chat): mode badge `auto`; any permission request auto-approved
+- [ ] Plan Reviewer (Claude chat): can run shell and tests (and write if asked); PR Reviewer likewise
 - [ ] Planner (Claude chat): plan mode; "Ready to code?" shows as a plan card with **Send to Plan Reviewer** and **Keep planning**
 - [ ] Eagle-Eye 1: Planner → Plan Reviewer → Implementer → PR Reviewer, each tab labelled "step n of 4", each form pre-filled; nothing starts until Start
 - [ ] Eagle-Eye 2: Implementer → PR Reviewer carries summary + changed files (+ PR link if present)
 - [ ] Same chains with Cursor tabs still work; Cursor Planner → Plan Reviewer works (Phase 1)
-- [ ] Claude terminal tabs: role flags correct (`ps`), scratch-pad Send submits once; plain Claude Code tile works
+- [ ] Claude terminal tabs: role flags match the per-role mode table (`ps`), scratch-pad Send submits once; plain Claude Code tile works
 - [ ] Model picker: Claude list (default / opus / sonnet / haiku); switching mid-chat works; Cursor list unchanged
 - [ ] History: Claude sessions for the folder listed; Resume in app and Open in Claude Code both work; `~/.claude` mtimes unchanged by DCTerminal (only by Claude itself)
-- [ ] Start a terminal with Run Everything override → ⚠ bypass warning appears
+- [ ] Status bar shows the single "Full permissions" indicator; no "role rules are off" / Run Everything warnings anywhere
+- [ ] Restart with tabs from before the update: they reopen as Claude with fresh sessions and the migration notice; switching one back to Cursor reopens its old Cursor session
 - [ ] Status bar shows Claude 5h / 7d usage after the first Claude chat reply
 - [ ] Themes, split view, file panel, diff panel unaffected
 
@@ -517,8 +569,8 @@ src/provider/
 
 **Title:** Make DCTerminal Claude-first (Claude Code provider) and fix the Eagle-Eye hand-off chains
 
-**Description:** Add Claude Code as the default provider. Chat tabs talk ACP to `claude-agent-acp` (the Claude Code ACP adapter, `@agentclientprotocol/claude-agent-acp` 0.88.0), so sessions, permission cards, resume, and plan cards reuse the existing ACP code. Terminal tabs run `claude` the way they run `agent` today. Both use JT's Claude subscription login through Claude Code; DCTerminal never handles credentials. Cursor CLI stays as a second provider: per-tab choice plus a default in Settings (default Claude). Add Claude versions of history/resume (read-only from `~/.claude/projects`), the model picker (default/opus/sonnet/haiku), role permission rules plus a bypass-permissions warning, Planner hand-off from Claude plan mode, and a limits view (5-hour / 7-day utilization pushed by the adapter). First fix the bug that the Planner cannot hand off to a Plan Reviewer (no such role is seeded and hand-off targets are hard-coded), then build user-triggered Eagle-Eye chains (EE1: Planner → Plan Reviewer → Implementer → PR Reviewer; EE2: Implementer → PR Reviewer) that carry each step's output and show "Eagle-Eye 1 · step 2 of 4".
+**Description:** Add Claude Code as the default provider. Chat tabs talk ACP to `claude-agent-acp` (the Claude Code ACP adapter, `@agentclientprotocol/claude-agent-acp` 0.88.0), so sessions, resume, and plan cards reuse the existing ACP code. Terminal tabs run `claude` the way they run `agent` today. Both use JT's Claude subscription login through Claude Code; DCTerminal never handles credentials. Cursor CLI stays as a second provider: per-tab choice plus a default in Settings (default Claude). Add Claude versions of history/resume (read-only from `~/.claude/projects`), the model picker (default/opus/sonnet/haiku), Planner hand-off from Claude plan mode, and a limits view (5-hour / 7-day utilization pushed by the adapter). Per JT's decisions (2026-10-09): no per-role permission rules — every role on both providers allows everything (Claude modes: General `auto`, Planner `plan`, all other roles incl. Plan Reviewer `bypassPermissions`; any permission request auto-approved with `allow_once`, never `allow_always`; Planner `ExitPlanMode` becomes the plan card) with one "Full permissions" indicator replacing the rules-off warnings; existing/restored tabs migrate to Claude with fresh Claude sessions while their Cursor session stays resumable by switching back. First fix the bug that the Planner cannot hand off to a Plan Reviewer (no such role is seeded and hand-off targets are hard-coded), then build user-triggered Eagle-Eye chains (EE1: Planner → Plan Reviewer → Implementer → PR Reviewer; EE2: Implementer → PR Reviewer) that carry each step's output and show "Eagle-Eye 1 · step 2 of 4".
 
-**Approved Implementation Plan:** Follow `docs/CLAUDE-FIRST-PLAN.md` phases 1–11 in order (Phase 1, the Plan Reviewer fix, can ship as its own PR first). Tick checkboxes after each push. Do the Task 4.2 payload capture on JT's Mac before relying on anything marked (unverified). Draft PRs to master.
+**Approved Implementation Plan:** Follow `docs/CLAUDE-FIRST-PLAN.md` phases 1–11 (31 tasks) in order (Phase 1, the Plan Reviewer fix, can ship as its own PR first). Tick checkboxes after each push. Do the Task 4.2 payload capture on JT's Mac before relying on anything marked (unverified). Draft PRs to master.
 
-**Additional Context:** Base `master` at `79b11e7`. Root cause of the missing Plan Reviewer hand-off: `seed_defs.rs:14-24` has no Plan Reviewer; `src/handoff/map.ts:19` hard-codes targets to Implementer/Developer/PR Reviewer; same lists in `HandoffDialog.tsx:16-20,166-182`, `StartupForm.tsx:2540-2559` and the terminal menu at `StartupForm.tsx:3830-3848`; `handoffBlockReason` (`map.ts:151-163`) only accepts Planner/Implementer as sources. Claude Code 2.1.236 is installed on JT's Mac at `/opt/homebrew/bin/claude` (Homebrew cask); the adapter is not installed yet (JT: `npm install -g --omit=optional @agentclientprotocol/claude-agent-acp@0.88.0`, run with `CLAUDE_CODE_EXECUTABLE`). Never write to `~/.claude` or `~/.cursor`; never auto-pick `allow_always`; never send `/model`. No CI, `npm audit` 0, Node 22/24/26, `npm run check` before every push, Mac is main, no cloud agents, merge only with JT's approval.
+**Additional Context:** Base `master` at `79b11e7`. Root cause of the missing Plan Reviewer hand-off: `seed_defs.rs:14-24` has no Plan Reviewer; `src/handoff/map.ts:19` hard-codes targets to Implementer/Developer/PR Reviewer; same lists in `HandoffDialog.tsx:16-20,166-182`, `StartupForm.tsx:2540-2559` and the terminal menu at `StartupForm.tsx:3830-3848`; `handoffBlockReason` (`map.ts:151-163`) only accepts Planner/Implementer as sources. Claude Code 2.1.236 is installed on JT's Mac at `/opt/homebrew/bin/claude` (Homebrew cask); the adapter is not installed yet (JT: `npm install -g --omit=optional @agentclientprotocol/claude-agent-acp@0.88.0`, run with `CLAUDE_CODE_EXECUTABLE`). Decisions resolved 2026-10-09 (see the plan's Decisions section and per-role mode table): General = Claude `auto`; Plan Reviewer runs everything; existing tabs migrate to Claude (Task 6.3); all roles allow everything, Phase 7 = auto-approve + indicator (JT's global Cursor `approvalMode` is already `unrestricted`). Never write to `~/.claude` or `~/.cursor`; never auto-pick `allow_always`; never send `/model`. No CI, `npm audit` 0, Node 22/24/26, `npm run check` before every push, Mac is main, no cloud agents, merge only with JT's approval.
