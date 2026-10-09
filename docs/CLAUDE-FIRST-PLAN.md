@@ -270,10 +270,10 @@ src/provider/
 
 **Files:** `src-tauri/src/provider/mod.rs` (new), `src-tauri/src/store/state_types.rs`, `src-tauri/src/store/settings_store.rs`, `src-tauri/src/store/workspace_store.rs`, `src-tauri/src/lib.rs`
 
-- [ ] `ProviderId` enum, serde lowercase. The tab / workspace field is optional; missing = legacy, resolved as `cursor` until Task 6.3 migrates it (so nothing breaks before Claude chat exists). Move the existing session id into `sessions.cursor` on load.
-- [ ] Settings: `providers.default` = `claude` for new and existing profiles (Decision 3), per-provider `models` (migrate old `models` → `models.cursor`).
-- [ ] Tests: old `state.json` / `settings.json` / `workspaces.json` fixtures load with provider missing (resolves to `cursor`) and the old id in `sessions.cursor`; new tab gets the default; round-trip.
-- [ ] Commit: `feat: provider id on tabs, workspaces, and settings`
+- [x] `ProviderId` enum, serde lowercase. The tab / workspace field is optional; missing = legacy, resolved as `cursor` until Task 6.3 migrates it (so nothing breaks before Claude chat exists). Move the existing session id into `sessions.cursor` on load.
+- [x] Settings: `providers.default` = `claude` for new and existing profiles (Decision 3), per-provider `models` (migrate old `models` → `models.cursor`).
+- [x] Tests: old `state.json` / `settings.json` / `workspaces.json` fixtures load with provider missing (resolves to `cursor`) and the old id in `sessions.cursor`; new tab gets the default; round-trip.
+- [x] Commit: `feat: provider id on tabs, workspaces, and settings`
 
 ### Task 2.2: Move Cursor code behind `Provider`
 

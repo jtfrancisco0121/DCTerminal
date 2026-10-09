@@ -155,6 +155,13 @@ pub struct ClosedTabRecord {
     pub custom_label: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<crate::worktree::WorktreeRef>,
+    /// Provider of this tab. `None` = saved before providers existed
+    /// (resolves to Cursor until the Task 6.3 migration).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<crate::provider::ProviderId>,
+    /// Session id per provider (the legacy single id lands in `cursor`).
+    #[serde(default, skip_serializing_if = "crate::provider::ProviderSessions::is_empty")]
+    pub sessions: crate::provider::ProviderSessions,
 }
 
 /// Persisted tab snapshot (blueprint §17.2 `state.json`).
@@ -201,6 +208,13 @@ pub struct TabRecord {
     pub worktree: Option<crate::worktree::WorktreeRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pipeline_run_id: Option<String>,
+    /// Provider of this tab. `None` = saved before providers existed
+    /// (resolves to Cursor until the Task 6.3 migration).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<crate::provider::ProviderId>,
+    /// Session id per provider (the legacy single id lands in `cursor`).
+    #[serde(default, skip_serializing_if = "crate::provider::ProviderSessions::is_empty")]
+    pub sessions: crate::provider::ProviderSessions,
 }
 
 pub fn default_tab_kind() -> String {

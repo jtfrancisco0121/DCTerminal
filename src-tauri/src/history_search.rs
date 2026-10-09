@@ -291,6 +291,7 @@ mod tests {
         let mut state = StateStore {
             path: std::env::temp_dir().join("unused-state.json"),
             data: crate::store::AppStateFile::default(),
+            new_tab_provider: crate::provider::ProviderId::DEFAULT,
         };
         let tab = |id: &str, kind: &str, transcript: Option<&str>| {
             serde_json::from_value::<crate::store::TabRecord>(serde_json::json!({

@@ -11,6 +11,7 @@ mod orchestrator;
 mod paths;
 mod permissions;
 mod process_tree;
+pub mod provider;
 mod pty;
 pub mod roles;
 mod session_id;
@@ -106,6 +107,7 @@ pub fn run() {
             let handoff_store = HandoffStore::open(&data_dir)?;
             let prompt_store = PromptStore::open(&data_dir)?;
             let workspace_store = WorkspaceStore::open(&data_dir)?;
+            state_store.new_tab_provider = settings_store.default_provider();
             let known_tabs: Vec<String> = state_store
                 .data
                 .tabs

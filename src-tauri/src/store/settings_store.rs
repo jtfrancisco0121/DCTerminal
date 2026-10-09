@@ -1,6 +1,7 @@
 //! App settings that are not roles or tabs. The permission-capture toggle
 //! lives here and defaults to off.
 
+use crate::provider::ProviderId;
 use crate::store::json_io::{read_json_or_recover, write_json_atomic};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -68,6 +69,143 @@ impl Default for ModelSettings {
             role_models: HashMap::new(),
         }
     }
+}
+
+/// Claude's account default. Phase 5 adds the Claude model list.
+pub const CLAUDE_DEFAULT_MODEL_ID: &str = "default";
+
+impl ModelSettings {
+    pub fn claude_default() -> Self {
+        Self {
+            default_model: CLAUDE_DEFAULT_MODEL_ID.to_string(),
+            role_models: HashMap::new(),
+        }
+    }
+}
+
+/// Model choices per provider. A `settings.json` from before providers
+/// existed has one flat `models` object; it is read as `models.cursor`.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderModels {
+    pub cursor: ModelSettings,
+    pub claude: ModelSettings,
+}
+
+impl Default for ProviderModels {
+    fn default() -> Self {
+        Self {
+            cursor: ModelSettings::default(),
+            claude: ModelSettings::claude_default(),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ProviderModels {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let Some(obj) = value.as_object() else {
+            return Ok(Self::default());
+        };
+        let per_provider = obj.contains_key("cursor") || obj.contains_key("claude");
+        if !per_provider {
+            // Legacy flat shape: `{ defaultModel, roleModels }` → Cursor.
+            let cursor: ModelSettings = serde_json::from_value(value).map_err(D::Error::custom)?;
+            return Ok(Self {
+                cursor,
+                claude: ModelSettings::claude_default(),
+            });
+        }
+        let cursor = match obj.get("cursor") {
+            Some(v) => serde_json::from_value(v.clone()).map_err(D::Error::custom)?,
+            None => ModelSettings::default(),
+        };
+        let claude = match obj.get("claude") {
+            Some(v) => {
+                let mut parsed: ModelSettings =
+                    serde_json::from_value(v.clone()).map_err(D::Error::custom)?;
+                if v.get("defaultModel").is_none() {
+                    parsed.default_model = CLAUDE_DEFAULT_MODEL_ID.to_string();
+                }
+                parsed
+            }
+            None => ModelSettings::claude_default(),
+        };
+        Ok(Self { cursor, claude })
+    }
+}
+
+fn default_provider() -> ProviderId {
+    ProviderId::DEFAULT
+}
+
+/// Claude Code paths. `config_dir` is the Claude config folder passed to
+/// every Claude process as `CLAUDE_CONFIG_DIR` (unset → `~/.claude`;
+/// `DCT_CLAUDE_CONFIG_DIR` overrides it). Never created or written by
+/// DCTerminal.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeProviderSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapter_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_dir: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CursorProviderSettings {}
+
+/// `providers` in `settings.json`: default provider for new tabs (Claude for
+/// new and existing profiles), the Start card's per-role provider choice, and
+/// per-provider settings. No bypass toggle: every role runs with full
+/// permissions (Decision 4).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvidersSettings {
+    #[serde(default = "default_provider")]
+    pub default: ProviderId,
+    /// Role id → `claude` | `cursor`, remembered by the Start card chip.
+    #[serde(default)]
+    pub role_provider: HashMap<String, String>,
+    #[serde(default)]
+    pub claude: ClaudeProviderSettings,
+    #[serde(default)]
+    pub cursor: CursorProviderSettings,
+}
+
+impl Default for ProvidersSettings {
+    fn default() -> Self {
+        Self {
+            default: ProviderId::DEFAULT,
+            role_provider: HashMap::new(),
+            claude: ClaudeProviderSettings::default(),
+            cursor: CursorProviderSettings::default(),
+        }
+    }
+}
+
+const MAX_SETTING_PATH_CHARS: usize = 1024;
+
+/// Trimmed path, `None` when empty. Rejects newlines and NUL.
+fn clean_optional_path(value: Option<String>, what: &str) -> Result<Option<String>, String> {
+    let Some(raw) = value else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.contains(['\n', '\r', '\0']) {
+        return Err(format!("{what} cannot contain a newline"));
+    }
+    if trimmed.chars().count() > MAX_SETTING_PATH_CHARS {
+        return Err(format!("{what} is too long"));
+    }
+    Ok(Some(trimmed.to_string()))
 }
 
 fn default_true() -> bool {
@@ -149,7 +287,9 @@ pub struct SettingsFile {
     #[serde(default)]
     pub terminal: TerminalSettings,
     #[serde(default)]
-    pub models: ModelSettings,
+    pub models: ProviderModels,
+    #[serde(default)]
+    pub providers: ProvidersSettings,
     #[serde(default)]
     pub notifications: NotificationSettings,
     #[serde(default)]
@@ -174,7 +314,8 @@ impl Default for SettingsFile {
             schema_version: SETTINGS_SCHEMA_VERSION,
             diagnostics: DiagnosticsSettings::default(),
             terminal: TerminalSettings::default(),
-            models: ModelSettings::default(),
+            models: ProviderModels::default(),
+            providers: ProvidersSettings::default(),
             notifications: NotificationSettings::default(),
             setup: SetupSettings::default(),
             ui: UiSettings::default(),
@@ -246,13 +387,22 @@ impl SettingsStore {
 }
 
 impl SettingsStore {
+    /// Cursor model settings (the only ones used until Claude models land
+    /// in Phase 5).
     pub fn models(&self) -> &ModelSettings {
-        &self.data.models
+        &self.data.models.cursor
+    }
+
+    pub fn models_for(&self, provider: ProviderId) -> &ModelSettings {
+        match provider {
+            ProviderId::Cursor => &self.data.models.cursor,
+            ProviderId::Claude => &self.data.models.claude,
+        }
     }
 
     /// Tab override, then the role default, then the global default.
     pub fn effective_model(&self, role_id: &str, tab_model: Option<&str>) -> String {
-        crate::models::effective_model(&self.data.models, role_id, tab_model)
+        crate::models::effective_model(&self.data.models.cursor, role_id, tab_model)
     }
 
     pub fn set_models(&mut self, mut next: ModelSettings) -> Result<(), String> {
@@ -266,7 +416,48 @@ impl SettingsStore {
             .map(|(role, model)| (role, model.trim().to_string()))
             .filter(|(role, model)| !role.trim().is_empty() && crate::models::valid_model_id(model))
             .collect();
-        self.data.models = next;
+        self.data.models.cursor = next;
+        self.save()
+    }
+}
+
+impl SettingsStore {
+    pub fn providers(&self) -> &ProvidersSettings {
+        &self.data.providers
+    }
+
+    pub fn default_provider(&self) -> ProviderId {
+        self.data.providers.default
+    }
+
+    /// Start card choice for a role, else the default provider.
+    pub fn provider_for_role(&self, role_id: &str) -> ProviderId {
+        self.data
+            .providers
+            .role_provider
+            .get(role_id)
+            .and_then(|value| ProviderId::parse(value))
+            .unwrap_or(self.data.providers.default)
+    }
+
+    /// Paths are trimmed; an empty path clears the setting. Unknown per-role
+    /// values are dropped.
+    pub fn set_providers(&mut self, mut next: ProvidersSettings) -> Result<(), String> {
+        next.claude.config_dir =
+            clean_optional_path(next.claude.config_dir.take(), "Claude config folder")?;
+        next.claude.claude_path = clean_optional_path(next.claude.claude_path.take(), "claude path")?;
+        next.claude.adapter_path =
+            clean_optional_path(next.claude.adapter_path.take(), "claude-agent-acp path")?;
+        next.role_provider = next
+            .role_provider
+            .into_iter()
+            .filter_map(|(role, value)| {
+                let role = role.trim().to_string();
+                let id = ProviderId::parse(&value)?;
+                (!role.is_empty()).then(|| (role, id.as_str().to_string()))
+            })
+            .collect();
+        self.data.providers = next;
         self.save()
     }
 }
@@ -569,6 +760,6 @@ mod tests {
     fn settings_without_models_section_still_load() {
         let raw = r#"{"schemaVersion":1,"terminal":{"shell":"","fontSize":14}}"#;
         let parsed: SettingsFile = serde_json::from_str(raw).unwrap();
-        assert_eq!(parsed.models.default_model, "composer-2.5");
+        assert_eq!(parsed.models.cursor.default_model, "composer-2.5");
     }
 }

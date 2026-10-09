@@ -36,7 +36,9 @@ pub struct TabSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pipeline_run_id: Option<String>,
+    pub pipeline_run_id: Option<String>,    /// Provider this tab uses (`claude` | `cursor`). Legacy tabs report
+    /// `cursor` until the Task 6.3 migration.
+    pub provider: crate::provider::ProviderId,
 }
 
 #[derive(Serialize)]
@@ -295,6 +297,7 @@ pub(crate) fn snapshot_from_store(store: &StateStore) -> AppStateSnapshot {
                 }),
                 worktree_path: t.worktree.as_ref().map(|wt| wt.path.clone()),
                 pipeline_run_id: t.pipeline_run_id.clone(),
+                provider: crate::provider::ProviderId::resolve(t.provider),
             })
             .collect(),
         closed_tabs: store
@@ -414,6 +417,7 @@ mod pipeline_tests {
         let mut store = StateStore {
             path,
             data: AppStateFile::default(),
+            new_tab_provider: crate::provider::ProviderId::DEFAULT,
         };
         let cwd = "/tmp/pipeline-project";
         let overview_id = store
@@ -456,6 +460,7 @@ mod pipeline_tests {
         let mut store = StateStore {
             path,
             data: AppStateFile::default(),
+            new_tab_provider: crate::provider::ProviderId::DEFAULT,
         };
         let cwd = "/tmp/execution-pipeline-project";
         let overview_id = store

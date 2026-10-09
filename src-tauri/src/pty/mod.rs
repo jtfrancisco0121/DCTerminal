@@ -285,6 +285,7 @@ pub fn shell_terminal_start(
                 },
                 merged_prompt: String::new(),
                 startup_prompt_sent: false,
+                provider: (launch == "cursor-cli").then_some(crate::provider::ProviderId::Cursor),
             },
         )?
     };
@@ -398,6 +399,7 @@ pub fn role_terminal_start(
                 answers: input.values.clone(),
                 merged_prompt: prompt.clone(),
                 startup_prompt_sent: true,
+                provider: None,
             },
         )?
     };

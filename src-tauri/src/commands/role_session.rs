@@ -219,6 +219,7 @@ pub fn role_session_start(
             &info.cwd,
             &merged_text,
             session_ref,
+            crate::provider::ProviderId::Cursor,
         ) {
             Ok(id) => id,
             Err(err) => {

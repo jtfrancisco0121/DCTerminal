@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "activeTabId": "tab_chat",
+  "tabs": [
+    {
+      "id": "tab_chat",
+      "label": "Auth bug",
+      "roleId": "role_implementer",
+      "roleSnapshot": { "name": "Implementer", "templateVersion": 1, "mode": "agent", "injection": "send_on_start" },
+      "cwd": "/Users/jt/Projects/app",
+      "answers": { "cwd": "/Users/jt/Projects/app" },
+      "mergedPrompt": "merged",
+      "mergedPromptHash": "h",
+      "phase": "awaitingInput",
+      "order": 1,
+      "createdAt": "2026-10-06T00:00:00Z",
+      "session": {
+        "acpSessionId": "11111111-2222-3333-4444-555555555555",
+        "modeId": "agent",
+        "injectionPending": false
+      },
+      "startupPromptSent": true,
+      "kind": "role"
+    },
+    {
+      "id": "tab_term",
+      "label": "Cursor CLI · app",
+      "roleId": "",
+      "roleSnapshot": { "name": "Cursor CLI", "templateVersion": 1, "mode": "agent", "injection": "" },
+      "cwd": "/Users/jt/Projects/app",
+      "answers": {},
+      "mergedPrompt": "",
+      "mergedPromptHash": "",
+      "phase": "terminal",
+      "order": 2,
+      "createdAt": "2026-10-06T00:00:00Z",
+      "kind": "terminal",
+      "terminalLaunch": "cursor-cli"
+    }
+  ],
+  "closedTabs": [
+    {
+      "id": "tab_old",
+      "label": "Planner",
+      "roleId": "role_planner",
+      "roleSnapshot": { "name": "Planner", "templateVersion": 1, "mode": "plan", "injection": "send_on_start" },
+      "cwd": "/Users/jt/Projects/app",
+      "answers": {},
+      "mergedPrompt": "",
+      "mergedPromptHash": "",
+      "startupPromptSent": true,
+      "closedAt": "2026-10-06T01:00:00Z",
+      "acpSessionId": "66666666-7777-8888-9999-000000000000",
+      "modeId": "plan"
+    }
+  ]
+}
