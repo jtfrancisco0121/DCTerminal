@@ -94,6 +94,7 @@ import {
   type RoleSummary,
   type SessionUpdateEvent,
   type TabSummary,
+  type TerminalLaunch,
   type TerminalSettings,
   type ValidatePreviewResult,
 } from "./bridge";
@@ -265,14 +266,33 @@ import {
   segmentsToPlainText,
 } from "./transcript";
 
-/** Plain shells have no model; chats, role terminals, and Cursor CLI do. */
+/** Plain shells have no model; chats, role terminals, and the CLI tiles do. */
 function tabHasModel(tab: TabSummary): boolean {
   return !(
     tab.kind === "terminal" &&
     tab.terminalLaunch !== "role" &&
-    tab.terminalLaunch !== "cursor-cli"
+    tab.terminalLaunch !== "cursor-cli" &&
+    tab.terminalLaunch !== "claude-cli"
   );
 }
+
+/** PTY launch kind for a terminal tab. */
+function terminalLaunchOf(tab: TabSummary): TerminalLaunch {
+  switch (tab.terminalLaunch) {
+    case "cursor-cli":
+    case "claude-cli":
+    case "role":
+      return tab.terminalLaunch;
+    default:
+      return "shell";
+  }
+}
+
+type CliLaunch = "cursor-cli" | "claude-cli";
+const CLI_LABEL: Record<CliLaunch, string> = {
+  "cursor-cli": "Cursor CLI",
+  "claude-cli": "Claude Code",
+};
 
 function fieldVisible(
   role: Role,
@@ -407,7 +427,7 @@ export function StartupForm({
   const [savedPlan, setSavedPlan] = useState<HandoffRecord | null>(null);
   const [savedPlanLoading, setSavedPlanLoading] = useState(false);
   const [pickedRoleId, setPickedRoleId] = useState<string | null>(null);
-  const [launchChoice, setLaunchChoice] = useState<"shell" | "cursor-cli" | null>(null);
+  const [launchChoice, setLaunchChoice] = useState<"shell" | CliLaunch | null>(null);
   const [terminalSettings, setTerminalSettingsState] = useState<TerminalSettings | null>(null);
   const [notificationSettings, setNotificationSettingsState] =
     useState<NotificationSettings | null>(null);
@@ -770,7 +790,7 @@ export function StartupForm({
   }, [persistTranscripts]);
 
   useEffect(() => {
-    if (roleId === "terminal" || roleId === "cursor-cli") return;
+    if (roleId === "terminal" || roleId === "cursor-cli" || roleId === "claude-cli") return;
     if (!roles.some((r) => r.id === roleId) && roles.length > 0) {
       setRoleId(roles[0].id);
     }
@@ -1362,7 +1382,7 @@ export function StartupForm({
   );
 
   const startBlankTerminal = useCallback(
-    async (launch: "shell" | "cursor-cli") => {
+    async (launch: "shell" | CliLaunch) => {
       if (startLockRef.current) return;
       const cwd = folderForTab(values.cwd);
       if (!cwd) {
@@ -1982,10 +2002,11 @@ export function StartupForm({
   const splitRef = useRef(split);
   splitRef.current = split;
 
-  /** Settings role key for a tab: its role, or "cursor-cli" for CLI tabs. */
+  /** Settings role key for a tab: its role, or "cursor-cli" / "claude-cli" for CLI tabs. */
   const modelRoleKey = (tab: TabSummary | null | undefined): string | null => {
     if (!tab) return null;
     if (tab.kind === "terminal" && tab.terminalLaunch === "cursor-cli") return "cursor-cli";
+    if (tab.kind === "terminal" && tab.terminalLaunch === "claude-cli") return "claude-cli";
     return tab.roleId || null;
   };
 
@@ -3596,12 +3617,7 @@ export function StartupForm({
     const liveChat = tab.kind !== "terminal" && !!rt?.session;
     let body: ReactNode;
     if (tab.kind === "terminal") {
-      const tabLaunch =
-        tab.terminalLaunch === "cursor-cli"
-          ? "cursor-cli"
-          : tab.terminalLaunch === "role"
-            ? "role"
-            : "shell";
+      const tabLaunch = terminalLaunchOf(tab);
       body = (
         <TerminalView
           key={tab.id}
@@ -3771,8 +3787,8 @@ export function StartupForm({
     }
     if (tab.kind === "terminal") {
       const kind =
-        tab.terminalLaunch === "cursor-cli"
-          ? "Cursor CLI"
+        tab.terminalLaunch === "cursor-cli" || tab.terminalLaunch === "claude-cli"
+          ? CLI_LABEL[tab.terminalLaunch]
           : tab.terminalLaunch === "role"
             ? "Role terminal"
             : "Terminal";
@@ -3902,12 +3918,7 @@ export function StartupForm({
 
   if (activeTabSummary?.kind === "terminal" && !settingsOpen) {
     const linked = handoffs.find((item) => item.targetTabId === activeTabId) ?? null;
-    const launch =
-      activeTabSummary.terminalLaunch === "cursor-cli"
-        ? "cursor-cli"
-        : activeTabSummary.terminalLaunch === "role"
-          ? "role"
-          : "shell";
+    const launch = terminalLaunchOf(activeTabSummary);
     const terminalModelPicker = modelPickerFor(activeTabSummary);
     return shell(
         <section className="status-card status-card-session-full terminal-screen">
@@ -4090,8 +4101,17 @@ export function StartupForm({
   );
 
   const blankRoleKey =
-    launchChoice === "cursor-cli" ? "cursor-cli" : launchChoice === "shell" ? null : roleId || null;
-  const blankProvider: ProviderId = launchChoice === "cursor-cli" ? "cursor" : activeProvider;
+    launchChoice === "cursor-cli" || launchChoice === "claude-cli"
+      ? launchChoice
+      : launchChoice === "shell"
+        ? null
+        : roleId || null;
+  const blankProvider: ProviderId =
+    launchChoice === "cursor-cli"
+      ? "cursor"
+      : launchChoice === "claude-cli"
+        ? "claude"
+        : activeProvider;
   const blankModelPicker =
     activeTabSummary && blankRoleKey ? (
       <ModelPicker
@@ -4464,16 +4484,19 @@ export function StartupForm({
                   <span className="start-row-spacer" aria-hidden />
                   {launchChoice ? (
                     <>
-                      {launchChoice === "cursor-cli" && blankModelPicker}
+                      {launchChoice !== "shell" && blankModelPicker}
                       <button
                         type="button"
                         className="primary-button"
                         onClick={() => void startBlankTerminal(launchChoice)}
                         disabled={
-                          busy || !displayedFolder || (launchChoice === "cursor-cli" && !cliFound)
+                          busy ||
+                          !displayedFolder ||
+                          (launchChoice === "cursor-cli" && !cliFound) ||
+                          (launchChoice === "claude-cli" && providers.claude?.status.found === false)
                         }
                       >
-                        {launchChoice === "cursor-cli" ? "Start Cursor CLI" : "Start terminal"}
+                        {launchChoice === "shell" ? "Start terminal" : `Start ${CLI_LABEL[launchChoice]}`}
                       </button>
                     </>
                   ) : (
@@ -4503,6 +4526,10 @@ export function StartupForm({
                   }}
                   onLaunchCursorCli={() => {
                     setLaunchChoice("cursor-cli");
+                    setPickedRoleId(null);
+                  }}
+                  onLaunchClaudeCli={() => {
+                    setLaunchChoice("claude-cli");
                     setPickedRoleId(null);
                   }}
                 />

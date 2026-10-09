@@ -1,6 +1,6 @@
 import type { RoleSummary } from "../bridge";
 
-type LaunchChoice = "shell" | "cursor-cli" | null;
+type LaunchChoice = "shell" | "cursor-cli" | "claude-cli" | null;
 
 type Props = {
   roles: RoleSummary[];
@@ -10,6 +10,8 @@ type Props = {
   onChooseRole: (id: string) => void;
   onLaunchShell: () => void;
   onLaunchCursorCli: () => void;
+  /** Plain `claude` with the configured `CLAUDE_CONFIG_DIR` (your `claude2`). */
+  onLaunchClaudeCli?: () => void;
 };
 
 /** Role and launch targets for the blank-tab start card (grid tiles, not a top navbar). */
@@ -21,6 +23,7 @@ export function RoleTiles({
   onChooseRole,
   onLaunchShell,
   onLaunchCursorCli,
+  onLaunchClaudeCli,
 }: Props) {
   return (
     <div className="role-tile-grid" role="group" aria-label="Role">
@@ -46,6 +49,17 @@ export function RoleTiles({
       >
         Terminal
       </button>
+      {onLaunchClaudeCli && (
+        <button
+          type="button"
+          className="role-tile"
+          aria-pressed={launchChoice === "claude-cli"}
+          onClick={onLaunchClaudeCli}
+          disabled={busy}
+        >
+          Claude Code
+        </button>
+      )}
       <button
         type="button"
         className="role-tile"

@@ -74,6 +74,7 @@ describe("provider descriptor", () => {
     expect(tabHasProvider({ kind: "role" })).toBe(true);
     expect(tabHasProvider({ kind: "terminal", terminalLaunch: "role" })).toBe(true);
     expect(tabHasProvider({ kind: "terminal", terminalLaunch: "cursor-cli" })).toBe(true);
+    expect(tabHasProvider({ kind: "terminal", terminalLaunch: "claude-cli" })).toBe(true);
     expect(tabHasProvider({ kind: "terminal", terminalLaunch: "shell" })).toBe(false);
     expect(shortAccount("Example Org")).toBe("Example Org");
   });

@@ -134,6 +134,7 @@ vi.mock("./bridge", () => {
   changesFileDiff: vi.fn(),
   changesRevert: vi.fn(),
   shellTerminalStart: vi.fn(),
+  createPtyChannel: vi.fn(() => ({ onmessage: null })),
   terminalPlanFile: vi.fn(),
   validateAndPreview: vi.fn(),
   projectsList: vi.fn(async () => ({ favorites: [], recent: [] })),
@@ -242,6 +243,7 @@ import {
   listModels,
   setTabModel,
   setTabProvider,
+  shellTerminalStart,
   selectActiveTab,
   setTabLabel,
   syncActiveTabForm,
@@ -1675,6 +1677,32 @@ describe("command palette (F9)", () => {
     const list = await screen.findByRole("listbox", { name: "Model for this tab" });
     expect(within(list).getByText("Opus")).toBeTruthy();
     expect(within(list).queryByText("GPT-5")).toBeNull();
+  });
+
+  it("starts the Claude Code tile as its own launch with the Claude model list", async () => {
+    renderForm();
+    await screen.findByLabelText("Title");
+    vi.mocked(shellTerminalStart).mockReset();
+    vi.mocked(shellTerminalStart).mockResolvedValue({
+      errors: [{ key: "cwd", message: "stop here" }],
+      tabId: null,
+      pid: null,
+      usedPromptFile: false,
+    });
+    const tiles = screen.getByRole("group", { name: "Role" });
+    fireEvent.click(within(tiles).getByRole("button", { name: "Claude Code" }));
+    expect(
+      within(tiles).getByRole("button", { name: "Claude Code" }).getAttribute("aria-pressed"),
+    ).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Model for this tab" }));
+    const list = await screen.findByRole("listbox", { name: "Model for this tab" });
+    expect(within(list).getByText("Opus")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Start Claude Code" }));
+    await waitFor(() =>
+      expect(shellTerminalStart).toHaveBeenCalledWith(
+        expect.objectContaining({ launch: "claude-cli", cwd: folder, tabId: "tab_dev" }),
+      ),
+    );
   });
 
   it("changes the active tab's model from the palette", async () => {

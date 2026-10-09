@@ -338,10 +338,10 @@ src/provider/
 
 **Files:** `src-tauri/src/pty/mod.rs` (launch `"claude-cli"`), `src/StartupForm.tsx`, `src/components/RoleTiles.tsx`, `src/components/TerminalView.tsx`
 
-- [ ] New launch choice `claude-cli` (plain `claude`, no flags, env `CLAUDE_CONFIG_DIR=<configDir>` — the GUI equivalent of JT's `claude2`) next to `cursor-cli`. Test: plain tile env carries the config dir.
-- [ ] Scratch-pad Send: confirm `claude`'s TUI enables bracketed paste and accepts one Enter as submit **(unverified — check on the Mac)**; if not, fall back to typed text + Enter.
-- [ ] Closing the tab kills the process tree (existing).
-- [ ] Commit: `feat: Claude Code terminal tile`
+- [x] New launch choice `claude-cli` (plain `claude`, no flags, env `CLAUDE_CONFIG_DIR=<configDir>` — the GUI equivalent of JT's `claude2`) next to `cursor-cli`. Test: plain tile env carries the config dir.
+- [ ] Scratch-pad Send: confirm `claude`'s TUI enables bracketed paste and accepts one Enter as submit **(unverified — check on the Mac)**; if not, fall back to typed text + Enter. **Scratch-pad Send already follows the live xterm mode (`modes.bracketedPasteMode`), so it falls back to typed text + Enter by itself when `claude` does not enable bracketed paste. Whether one Enter submits in the `claude` TUI is still unverified (needs a live run on the Mac).**
+- [x] Closing the tab kills the process tree (existing).
+- [x] Commit: `feat: Claude Code terminal tile`
 
 ### Task 3.3: Terminal Planner hand-off source for Claude
 

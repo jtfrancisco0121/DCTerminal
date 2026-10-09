@@ -238,7 +238,7 @@ export type TabSummary = {
   color: string;
   /** "role" or "terminal". Missing on older snapshots means a role tab. */
   kind?: string;
-  /** "" | "shell" | "cursor-cli" | "role" */
+  /** "" | "shell" | "cursor-cli" | "claude-cli" | "role" */
   terminalLaunch?: string;
   acpSessionId: string | null;
   /** CLI chat id when this tab runs `agent --resume`. */
@@ -948,7 +948,7 @@ export type TerminalSettings = {
   roleRunMode: Record<string, string>;
 };
 
-export type TerminalLaunch = "shell" | "cursor-cli" | "role";
+export type TerminalLaunch = "shell" | "cursor-cli" | "claude-cli" | "role";
 
 export function createPtyChannel(
   onPacket: (packet: PtyPacket) => void,
@@ -961,7 +961,7 @@ export function createPtyChannel(
 export async function shellTerminalStart(input: {
   tabId?: string | null;
   cwd: string;
-  launch: "shell" | "cursor-cli";
+  launch: "shell" | "cursor-cli" | "claude-cli";
   resumeSessionId?: string | null;
   cols: number;
   rows: number;

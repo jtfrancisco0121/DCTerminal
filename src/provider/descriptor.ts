@@ -129,5 +129,9 @@ export function tabHasProvider(tab: {
   terminalLaunch?: string | null;
 }): boolean {
   if (tab.kind !== "terminal") return true;
-  return tab.terminalLaunch === "role" || tab.terminalLaunch === "cursor-cli";
+  return (
+    tab.terminalLaunch === "role" ||
+    tab.terminalLaunch === "cursor-cli" ||
+    tab.terminalLaunch === "claude-cli"
+  );
 }
