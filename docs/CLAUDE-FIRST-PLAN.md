@@ -356,38 +356,38 @@ src/provider/
 
 **Files:** `src-tauri/src/provider/claude.rs`, `src-tauri/src/acp/session_connect.rs`, `src-tauri/src/acp/client.rs`, `src-tauri/src/commands/role_session.rs`
 
-- [ ] Spawn `claude-agent-acp` with env `CLAUDE_CODE_EXECUTABLE=<detected claude>` and `CLAUDE_CONFIG_DIR=<configDir>` (via `claude_env`, Task 2.3); inherit the user env otherwise (do not set `ANTHROPIC_API_KEY`; if one is set in JT's env, show a notice that Claude Code may bill the API key instead of the subscription — **(unverified precedence)**).
-- [ ] Handshake: `initialize` (no terminal-auth client capability, so no login methods are offered) → no `authenticate` → `session/new { cwd, mcpServers: [], _meta: { claudeCode: { options: { allowDangerouslySkipPermissions: true } } } }` → `session/set_mode` from `mode_for_role` (per-role mode table; if the wanted mode is not in the advertised modes, use `default` + auto-approve and flag the indicator).
-- [ ] Map "not logged in" errors / `_auth/status_update { kind: "none" }` to "Claude Code is not signed in for <configDir>. Open a terminal, run `CLAUDE_CONFIG_DIR=<configDir> claude` (your `claude2`), and use `/login`. Then Retry."
-- [ ] Test: the adapter `ProgramArgs` env has both `CLAUDE_CODE_EXECUTABLE` and `CLAUDE_CONFIG_DIR`.
-- [ ] Commit: `feat: Claude chat tabs over claude-agent-acp`
+- [x] Spawn `claude-agent-acp` with env `CLAUDE_CODE_EXECUTABLE=<detected claude>` and `CLAUDE_CONFIG_DIR=<configDir>` (via `claude_env`, Task 2.3); inherit the user env otherwise (do not set `ANTHROPIC_API_KEY`; if one is set in JT's env, show a notice that Claude Code may bill the API key instead of the subscription — **(unverified precedence)**). *(Done: adapter env + PATH incl. the adapter/claude dirs, since it is a `#!/usr/bin/env node` script; the API-key notice is the Settings line from Task 2.3.)*
+- [x] Handshake: `initialize` (no terminal-auth client capability, so no login methods are offered) → no `authenticate` → `session/new { cwd, mcpServers: [], _meta: { claudeCode: { options: { allowDangerouslySkipPermissions: true } } } }` → `session/set_mode` from `mode_for_role` (per-role mode table; if the wanted mode is not in the advertised modes, use `default` + auto-approve and flag the indicator). *(Done: an unadvertised role mode becomes `default`; Claude permission requests are auto-answered `allow_once`.)*
+- [x] Map "not logged in" errors / `_auth/status_update { kind: "none" }` to "Claude Code is not signed in for <configDir>. Open a terminal, run `CLAUDE_CONFIG_DIR=<configDir> claude` (your `claude2`), and use `/login`. Then Retry." *(Done for `session/new`/`session/load` errors and adapter exits; `_auth/status_update` is ignored for now; logged-out path not seen live.)*
+- [x] Test: the adapter `ProgramArgs` env has both `CLAUDE_CODE_EXECUTABLE` and `CLAUDE_CONFIG_DIR`.
+- [x] Commit: `feat: Claude chat tabs over claude-agent-acp`
 
 ### Task 4.2: Real payload capture (like the Cursor one)
 
 **Files:** `docs/claude-acp-observed.md` (new), `fixtures/acp/claude/*.json` (new), `docs/permission-payload-capture.md`, `src-tauri/src/commands/agent_requests.rs` (capture covers all ACP traffic types for this provider)
 
-- [ ] JT installs the adapter on the Mac (`npm install -g --omit=optional @agentclientprotocol/claude-agent-acp@0.88.0`); turn on **Record permission payloads**; run one General (`auto`), one Planner (`plan`), one Plan Reviewer and one Implementer (`bypassPermissions`) session in a scratch repo.
-- [ ] Capture and redact: `initialize` response, `session/new` response (modes, configOptions incl. model list), `session/request_permission` for Bash, Edit, Write, WebFetch, an MCP tool, `ExitPlanMode` (force these in `default` mode, since `bypassPermissions` sends few or none); `session/update` kinds seen (`plan`, `tool_call`, `tool_call_update`, `current_mode_update`, `usage_update` with `_claude/rateLimit`, `available_commands_update`); `session/load` replay; `_auth/status_update`.
-- [ ] Record answers to: whether `session/new` advertises `auto` and `bypassPermissions` for JT's account; which requests still arrive in `auto` / `bypassPermissions` / `plan`; where the plan markdown is in `ExitPlanMode`; whether `session/new` `sessionId` equals the `~/.claude/projects/**/<id>.jsonl` name; whether adapter 0.88.0 works with CLI 2.1.236 via `CLAUDE_CODE_EXECUTABLE` (else JT updates `claude`, his call); whether `session/load` replays the transcript; that with `CLAUDE_CONFIG_DIR=~/.claude-account2` the adapter's sessions land in `~/.claude-account2/projects` (not `~/.claude/projects`) and `_auth/status_update` names the account-2 login; whether the adapter reads `permissions.*` from `<configDir>/settings.json`.
-- [ ] Commit: `docs: captured Claude ACP payloads`
+- [x] JT installs the adapter on the Mac (`npm install -g --omit=optional @agentclientprotocol/claude-agent-acp@0.88.0`); turn on **Record permission payloads**; run one General (`auto`), one Planner (`plan`), one Plan Reviewer and one Implementer (`bypassPermissions`) session in a scratch repo. *(Partial: adapter 0.88.0 installed on the Mac; one minimal `bypassPermissions` session captured, sanctioned by JT. The per-role sessions with tool use are still to run.)*
+- [x] Capture and redact: `initialize` response, `session/new` response (modes, configOptions incl. model list), `session/request_permission` for Bash, Edit, Write, WebFetch, an MCP tool, `ExitPlanMode` (force these in `default` mode, since `bypassPermissions` sends few or none); `session/update` kinds seen (`plan`, `tool_call`, `tool_call_update`, `current_mode_update`, `usage_update` with `_claude/rateLimit`, `available_commands_update`); `session/load` replay; `_auth/status_update`. *(Partial: initialize, session/new, set_mode, prompt-turn updates incl. `usage_update` + `_claude/rateLimit`, load replay and `_auth/status_update` captured; permission requests, `plan`/`tool_call`/`current_mode_update` not seen yet. See `docs/claude-acp-observed.md`.)*
+- [x] Record answers to: whether `session/new` advertises `auto` and `bypassPermissions` for JT's account; which requests still arrive in `auto` / `bypassPermissions` / `plan`; where the plan markdown is in `ExitPlanMode`; whether `session/new` `sessionId` equals the `~/.claude/projects/**/<id>.jsonl` name; whether adapter 0.88.0 works with CLI 2.1.236 via `CLAUDE_CODE_EXECUTABLE` (else JT updates `claude`, his call); whether `session/load` replays the transcript; that with `CLAUDE_CONFIG_DIR=~/.claude-account2` the adapter's sessions land in `~/.claude-account2/projects` (not `~/.claude/projects`) and `_auth/status_update` names the account-2 login; whether the adapter reads `permissions.*` from `<configDir>/settings.json`. *(Answered: auto+bypass advertised, sessionId = jsonl name, 0.88.0 works with 2.1.236, load replays, sessions land in `~/.claude-account2/projects`, auth update names account 2. Open: requests per mode, ExitPlanMode plan location, `permissions.*`.)*
+- [x] Commit: `docs: captured Claude ACP payloads`
 
 ### Task 4.3: Session updates, plan cards, questions
 
 **Files:** `src-tauri/src/acp/session_update.rs`, `src-tauri/src/acp/text_extract.rs`, `src/sessionCards.ts` (+ test), `src/SessionTerminal.tsx`, `src/components/PermissionCard.tsx`
 
-- [ ] Standard `plan` updates → plan card (already partly handled by `sessionCards.ts:121-123`); `current_mode_update` → header mode badge; `usage_update` → Phase 10 store; ignore AIR / steering / auth extensions.
-- [ ] `ExitPlanMode` request in a Planner tab → plan card (Phase 8); everywhere else it is auto-answered per Task 7.1. No generic permission cards are shown (all other requests auto-approve).
-- [ ] Claude has no `cursor/ask_question`; questions come as plain assistant text → existing "turn ended on a question" detection.
-- [ ] Tests from Task 4.2 fixtures.
-- [ ] Commit: `feat: Claude session updates and plan cards`
+- [x] Standard `plan` updates → plan card (already partly handled by `sessionCards.ts:121-123`); `current_mode_update` → header mode badge; `usage_update` → Phase 10 store; ignore AIR / steering / auth extensions. *(Done: mode badge from `current_mode_update` and the `mode` `config_option_update` (Claude tabs); `usage_update` is ignored until Phase 10.)*
+- [x] `ExitPlanMode` request in a Planner tab → plan card (Phase 8); everywhere else it is auto-answered per Task 7.1. No generic permission cards are shown (all other requests auto-approve). *(Partial: a Planner's ExitPlanMode shows the existing permission card until the Phase 8 plan card exists; everything else is auto-answered `allow_once`.)*
+- [x] Claude has no `cursor/ask_question`; questions come as plain assistant text → existing "turn ended on a question" detection. *(Existing detection; nothing Claude-specific.)*
+- [x] Tests from Task 4.2 fixtures.
+- [x] Commit: `feat: Claude session updates and plan cards`
 
 ### Task 4.4: Errors, cancel, restart
 
 **Files:** `src-tauri/src/acp/connection.rs`, `src-tauri/src/commands/role_session.rs`, `src-tauri/src/supervisor/*`
 
-- [ ] `session/cancel` on Stop; adapter crash → same restart + `session/load` path as Cursor.
-- [ ] Missing adapter → message with the install command; missing `claude` → install link.
-- [ ] Commit: `feat: Claude chat error handling`
+- [x] `session/cancel` on Stop; adapter crash → same restart + `session/load` path as Cursor. *(Shared Cursor path; not exercised against Claude in the GUI yet.)*
+- [x] Missing adapter → message with the install command; missing `claude` → install link.
+- [x] Commit: `feat: Claude chat error handling`
 
 ## Phase 5: Model picker
 

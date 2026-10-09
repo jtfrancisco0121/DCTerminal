@@ -3,8 +3,8 @@ use super::ndjson::{
     ParsedLine, MAX_ACP_LINE_BYTES,
 };
 use super::request_handler::response_for_agent_request;
-use crate::provider::{AgentRequestKind, CursorProvider, ProgramArgs, SharedProvider};
 use crate::process_tree::{prepare_command, SharedProcess};
+use crate::provider::{AgentRequestKind, CursorProvider, ProgramArgs, SharedProvider};
 use serde_json::{json, Value};
 use std::io::{BufReader, Write};
 use std::path::Path;
@@ -410,30 +410,78 @@ impl AcpConnection {
             .lock()
             .map(|buf| buf.join(" | "))
             .unwrap_or_default();
-        let base = match status {
-            Some(status) => format!("agent exited ({status})"),
-            None => "agent stdout closed — the Cursor agent process exited".to_string(),
-        };
-        let lower = tail.to_lowercase();
-        if lower.contains("auth")
-            || lower.contains("login")
+        let claude = self.provider.id() == crate::provider::ProviderId::Claude;
+        exit_error_text(claude, status, &tail)
+    }
+}
+
+/// Why the agent process stopped, worded for the provider that was running.
+fn exit_error_text(claude: bool, status: Option<String>, tail: &str) -> String {
+    let base = match status {
+        Some(status) => format!("agent exited ({status})"),
+        None if claude => "agent stdout closed — the Claude ACP adapter exited".to_string(),
+        None => "agent stdout closed — the Cursor agent process exited".to_string(),
+    };
+    let lower = tail.to_lowercase();
+    if claude {
+        if lower.contains("not logged in")
+            || lower.contains("/login")
             || lower.contains("unauthorized")
             || lower.contains("not authenticated")
+            || lower.contains("invalid api key")
         {
-            return format!(
-                "AUTH_ERROR: {base}. {tail}. Run `agent login` in a terminal, then start the tab again."
-            );
+            return format!("AUTH_ERROR: {base}. {tail}");
         }
-        if tail.is_empty() {
-            format!(
-                "{base}. Restart this tab. If it keeps happening, run `agent login` and confirm `agent` is on PATH."
-            )
+        return if tail.is_empty() {
+            format!("{base}. Restart this tab. If it keeps happening, run `claude-agent-acp` in a terminal to see why it stops.")
         } else {
             format!("{base}: {tail}")
-        }
+        };
+    }
+    if lower.contains("auth")
+        || lower.contains("login")
+        || lower.contains("unauthorized")
+        || lower.contains("not authenticated")
+    {
+        return format!(
+                "AUTH_ERROR: {base}. {tail}. Run `agent login` in a terminal, then start the tab again."
+            );
+    }
+    if tail.is_empty() {
+        format!(
+                "{base}. Restart this tab. If it keeps happening, run `agent login` and confirm `agent` is on PATH."
+            )
+    } else {
+        format!("{base}: {tail}")
     }
 }
 
 pub fn default_io_timeout() -> Duration {
     DEFAULT_IO_TIMEOUT
+}
+
+#[cfg(test)]
+mod exit_error_tests {
+    use super::exit_error_text;
+
+    #[test]
+    fn claude_exit_names_the_adapter_not_cursor() {
+        let msg = exit_error_text(true, None, "");
+        assert!(msg.contains("Claude ACP adapter"));
+        assert!(!msg.contains("agent login"));
+        // Adapter log lines mention "session" phases, never treat them as auth.
+        let msg = exit_error_text(true, Some("1".into()), "[session/create] phase=settings");
+        assert!(!msg.starts_with("AUTH_ERROR"));
+        let msg = exit_error_text(true, Some("1".into()), "Not logged in · Please run /login");
+        assert!(msg.starts_with("AUTH_ERROR:"));
+        assert!(!msg.contains("agent login"));
+    }
+
+    #[test]
+    fn cursor_exit_keeps_agent_login_hint() {
+        let msg = exit_error_text(false, None, "");
+        assert!(msg.contains("Cursor agent process"));
+        assert!(msg.contains("agent login"));
+        assert!(exit_error_text(false, None, "unauthorized").starts_with("AUTH_ERROR:"));
+    }
 }
