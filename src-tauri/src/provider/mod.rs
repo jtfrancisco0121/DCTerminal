@@ -153,7 +153,7 @@ pub enum TerminalKind {
     /// The CLI with no policy flags (Cursor CLI / Claude Code tile).
     Plain,
     /// A role terminal: role flags, then the startup prompt as the positional
-    /// argument (already passed through `deliver_prompt`).
+    /// argument (already passed through `deliver_prompt_limited`).
     Role {
         role_id: String,
         run_mode: RunMode,

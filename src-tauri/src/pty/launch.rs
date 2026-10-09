@@ -28,6 +28,15 @@ use std::path::Path;
 /// 32,767 bytes. 24,000 leaves room for the executable path and the flags.
 pub const MAX_PROMPT_ARG_BYTES: usize = 24_000;
 
+/// `cmd.exe /c` (how Windows runs a `.cmd`/`.bat` shim) rejects command lines
+/// past 8,191 characters. Batch-argument escaping can grow the line, and the
+/// shim path plus flags take room, so the prompt itself stays well under that.
+pub const CMD_PROMPT_ARG_BYTES: usize = 4_000;
+
+/// CreateProcess's limit, including the program path and the flags.
+const CREATE_PROCESS_LIMIT: usize = 32_767;
+const ARGV_HEADROOM: usize = 2_048;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunMode {
     Default,
@@ -100,10 +109,32 @@ pub struct PromptDelivery {
     pub stored_body: Option<String>,
 }
 
-/// Inline the prompt when it fits. Otherwise the argument tells `agent` to
-/// read the file, and `stored_body` is what the caller writes there.
-pub fn deliver_prompt(prompt: &str, file_path: &Path) -> PromptDelivery {
-    if prompt.len() <= MAX_PROMPT_ARG_BYTES {
+/// True when Windows will run this program through `cmd.exe` (`.cmd` / `.bat`).
+pub fn is_cmd_shim(program: &str) -> bool {
+    let path = Path::new(program.trim());
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some(ext) => ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"),
+        None => false,
+    }
+}
+
+/// How long a positional prompt may be for this program.
+///
+/// A batch shim uses the `cmd.exe` budget. A native executable uses the
+/// CreateProcess budget, reduced when the program path itself is very long.
+pub fn inline_prompt_limit(program: &str) -> usize {
+    if is_cmd_shim(program) {
+        return CMD_PROMPT_ARG_BYTES;
+    }
+    let room = CREATE_PROCESS_LIMIT.saturating_sub(program.len().saturating_add(ARGV_HEADROOM));
+    MAX_PROMPT_ARG_BYTES.min(room.max(1))
+}
+
+/// Inline the prompt when it fits in `limit` bytes. Otherwise the argument
+/// tells the CLI to read the file, and `stored_body` is what the caller writes
+/// there. [`inline_prompt_limit`] picks `limit` from the program being spawned.
+pub fn deliver_prompt_limited(prompt: &str, file_path: &Path, limit: usize) -> PromptDelivery {
+    if prompt.len() <= limit {
         return PromptDelivery {
             argument: prompt.to_string(),
             stored_body: None,
@@ -305,12 +336,44 @@ mod tests {
     fn long_prompt_is_stored_and_the_argument_points_at_the_file() {
         let prompt = "x".repeat(MAX_PROMPT_ARG_BYTES + 8);
         let path = PathBuf::from("/tmp/dcterminal/prompt.txt");
-        let delivery = deliver_prompt(&prompt, &path);
+        let delivery = deliver_prompt_limited(&prompt, &path, MAX_PROMPT_ARG_BYTES);
         let stored = delivery.stored_body.expect("overflow body");
         assert_eq!(stored, prompt);
         assert!(delivery.argument.contains("/tmp/dcterminal/prompt.txt"));
         assert!(!delivery.argument.contains(&prompt));
         assert!(delivery.argument.len() < MAX_PROMPT_ARG_BYTES);
+    }
+
+    #[test]
+    fn cmd_shim_uses_the_cmd_exe_budget_and_a_native_exe_does_not() {
+        assert!(is_cmd_shim(r"C:\Users\user\AppData\Roaming\npm\claude.cmd"));
+        assert!(is_cmd_shim(r"C:\npm\claude.BAT"));
+        assert!(!is_cmd_shim(
+            r"C:\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe"
+        ));
+        assert_eq!(
+            inline_prompt_limit(r"C:\npm\claude.cmd"),
+            CMD_PROMPT_ARG_BYTES
+        );
+        assert_eq!(
+            inline_prompt_limit(r"C:\npm\claude.exe"),
+            MAX_PROMPT_ARG_BYTES
+        );
+        let long_program = format!(r"C:\bin\{}.exe", "a".repeat(20_000));
+        let limited = inline_prompt_limit(&long_program);
+        assert!(limited < MAX_PROMPT_ARG_BYTES);
+        assert!(limited + long_program.len() + 2_048 <= 32_767);
+
+        // Developer-sized role prompts are past cmd.exe's 8191 and under 24k.
+        let prompt = "x".repeat(9_000);
+        let path = PathBuf::from("/tmp/dcterminal/prompt.txt");
+        let via_cmd = deliver_prompt_limited(&prompt, &path, inline_prompt_limit("claude.cmd"));
+        assert_eq!(via_cmd.stored_body.as_deref(), Some(prompt.as_str()));
+        assert!(via_cmd.argument.len() <= CMD_PROMPT_ARG_BYTES);
+        assert!(!via_cmd.argument.contains(&prompt));
+        let via_exe = deliver_prompt_limited(&prompt, &path, inline_prompt_limit("claude.exe"));
+        assert!(via_exe.stored_body.is_none());
+        assert_eq!(via_exe.argument, prompt);
     }
 
     #[test]

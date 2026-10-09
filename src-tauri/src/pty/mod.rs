@@ -5,13 +5,13 @@ pub(crate) mod plans;
 mod session;
 mod shell;
 
+use crate::paths::validate_working_folder;
 use crate::provider::{
     provider_for, CursorProvider, Provider, ProviderId, TerminalKind, TerminalLaunch,
 };
-use crate::paths::validate_working_folder;
 pub use crate::pty::launch::RunMode;
 use crate::pty::launch::{
-    deliver_prompt, handoff_terminal_prompt,
+    deliver_prompt_limited, handoff_terminal_prompt, inline_prompt_limit, PromptDelivery,
 };
 use crate::pty::plans::{cursor_plans_dir, newest_plan_since};
 use crate::pty::session::{PtyOutput, PtySession, SpawnSpec};
@@ -126,6 +126,20 @@ fn open_session(
     }
     registry.sessions.insert(id.to_string(), session);
     Ok(pid)
+}
+
+fn store_prompt(
+    app: &AppHandle,
+    id: &str,
+    program: &str,
+    prompt: &str,
+) -> Result<PromptDelivery, String> {
+    let file = prompt_file(app, id)?;
+    let delivery = deliver_prompt_limited(prompt, &file, inline_prompt_limit(program));
+    if let Some(body) = &delivery.stored_body {
+        std::fs::write(&file, body).map_err(|err| format!("prompt file: {err}"))?;
+    }
+    Ok(delivery)
 }
 
 fn prompt_file(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
@@ -479,7 +493,7 @@ pub fn role_terminal_start(
         model: Some(model.clone()),
     };
     // Fail before the tab is saved when the CLI is missing.
-    provider.terminal_command(&role_launch(None))?;
+    let program = provider.terminal_command(&role_launch(None))?.program;
     let tab_id = {
         let mut store = store.lock().map_err(|err| err.to_string())?;
         let title_answers = input.values.clone();
@@ -511,11 +525,7 @@ pub fn role_terminal_start(
             state.remember_claude_config(&tab_id, &dir.path)?;
         }
     }
-    let file = prompt_file(&app, &tab_id)?;
-    let delivery = deliver_prompt(&prompt, &file);
-    if let Some(body) = &delivery.stored_body {
-        std::fs::write(&file, body).map_err(|err| format!("prompt file: {err}"))?;
-    }
+    let delivery = store_prompt(&app, &tab_id, &program, &prompt)?;
     let command = provider.terminal_command(&role_launch(Some(delivery.argument.clone())))?;
     let mut registry = registry.lock().map_err(|err| err.to_string())?;
     let pid = open_session(
@@ -622,7 +632,10 @@ pub fn pty_open(
                 &store,
                 &input.id,
                 input.resume_session_id.as_deref(),
-                provider.config_dir().map(|info| info.path).unwrap_or_default(),
+                provider
+                    .config_dir()
+                    .map(|info| info.path)
+                    .unwrap_or_default(),
             )?;
             let model = crate::models::model_for_tab_provider(
                 &store,
@@ -635,10 +648,25 @@ pub fn pty_open(
                 Some(id) => TerminalKind::Resume { session_id: id },
                 None => TerminalKind::Plain,
             };
-            let command = provider.terminal_command(&TerminalLaunch {
+            let mut command = provider.terminal_command(&TerminalLaunch {
                 kind,
                 model: Some(model),
             })?;
+            let resuming = input
+                .resume_session_id
+                .as_deref()
+                .is_some_and(|id| !id.trim().is_empty());
+            if !resuming {
+                if let Some(text) = input
+                    .prompt
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                {
+                    let delivery = store_prompt(&app, &input.id, &command.program, text)?;
+                    command.args.push(delivery.argument);
+                }
+            }
             (command.program, command.args, command.env)
         }
         "role" => {
@@ -671,21 +699,14 @@ pub fn pty_open(
                 },
                 model: Some(model.clone()),
             };
-            provider.terminal_command(&role_launch(None))?;
+            let program = provider.terminal_command(&role_launch(None))?.program;
             let prompt = input
                 .prompt
                 .as_deref()
                 .map(str::trim)
                 .filter(|text| !text.is_empty());
             let argument = match prompt {
-                Some(text) => {
-                    let file = prompt_file(&app, &input.id)?;
-                    let delivery = deliver_prompt(text, &file);
-                    if let Some(body) = &delivery.stored_body {
-                        std::fs::write(&file, body).map_err(|err| format!("prompt file: {err}"))?;
-                    }
-                    Some(delivery.argument)
-                }
+                Some(text) => Some(store_prompt(&app, &input.id, &program, text)?.argument),
                 None => None,
             };
             let command = provider.terminal_command(&role_launch(argument))?;
@@ -700,7 +721,7 @@ pub fn pty_open(
         .resume_session_id
         .as_deref()
         .is_some_and(|id| !id.trim().is_empty());
-    if (input.launch == "cursor-cli" || input.launch == "claude-cli") && !resuming {
+    if input.launch == "cursor-cli" && !resuming {
         if let Some(text) = input
             .prompt
             .as_deref()

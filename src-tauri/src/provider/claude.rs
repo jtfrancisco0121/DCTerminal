@@ -9,7 +9,7 @@
 //! - Planner: `--permission-mode plan`
 //! - every other role: `--permission-mode bypassPermissions`
 //! - `--model <id>` first when a model other than `default` is set
-//! - the startup prompt as the positional argument (`deliver_prompt`)
+//! - the startup prompt as the positional argument (`deliver_prompt_limited`)
 //!
 //! Never passed: `--dangerously-skip-permissions`, `--allowedTools`,
 //! `--disallowedTools`, `--cloud`, `--bg`, `--settings`, `--continue`.
@@ -22,7 +22,8 @@
 
 use super::claude_config::{claude_env, resolve_claude_config_dir, ConfigDirInfo};
 use super::claude_detect::{
-    claude_login_status, read_claude_version, resolve_adapter, resolve_claude,
+    claude_login_status, native_executable, read_claude_version, resolve_adapter, resolve_claude,
+    unwrap_windows_shim,
 };
 use super::{
     is_extension_method, AgentRequestKind, ProgramArgs, Provider, ProviderId, ProviderStatus,
@@ -41,7 +42,8 @@ pub const CLAUDE_CODE_EXECUTABLE: &str = "CLAUDE_CODE_EXECUTABLE";
 pub fn adapter_missing_message() -> String {
     format!(
         "Claude chat needs the Claude Code ACP adapter (claude-agent-acp), which was not found. \
-         Install it in a terminal with `{}`, or set DCT_CLAUDE_ACP_PATH to it. Then Retry. \
+         Install it in a terminal with `{}`. On Windows that is `claude-agent-acp.cmd` in the \
+         npm global folder (`%APPDATA%\\npm`). Or set DCT_CLAUDE_ACP_PATH to it. Then Retry. \
          Claude terminal tabs work without it.",
         super::claude_detect::adapter_install_command()
     )
@@ -61,8 +63,7 @@ pub fn claude_role_mode(role_id: &str) -> &'static str {
 }
 
 /// Shown when a saved Claude session belongs to a different config folder.
-pub const CONFIG_CHANGED_NOTICE: &str =
-    "Claude config folder changed; starting a new session";
+pub const CONFIG_CHANGED_NOTICE: &str = "Claude config folder changed; starting a new session";
 
 /// Whether two config folders are the same place. Canonical when both exist.
 pub fn same_config_dir(left: &str, right: &str) -> bool {
@@ -244,8 +245,10 @@ impl Provider for ClaudeProvider {
             .ok_or_else(|| self.missing_message())?;
         let adapter = resolve_adapter(self.settings.adapter_path.as_deref())
             .ok_or_else(adapter_missing_message)?;
-        let mut command = ProgramArgs::new(adapter.display().to_string(), Vec::new());
-        command.env = self.adapter_env(&adapter, &claude);
+        let launch = unwrap_windows_shim(&adapter);
+        let mut command =
+            ProgramArgs::new(launch.program.display().to_string(), launch.prefix_args);
+        command.env = self.adapter_env(&launch.program, &native_executable(&claude));
         Ok(command)
     }
 
@@ -287,8 +290,10 @@ impl Provider for ClaudeProvider {
     fn terminal_command(&self, req: &TerminalLaunch) -> Result<ProgramArgs, String> {
         let program = resolve_claude(self.settings.claude_path.as_deref())
             .ok_or_else(|| self.missing_message())?;
-        let mut command =
-            ProgramArgs::new(program.display().to_string(), claude_terminal_args(req)?);
+        let launch = unwrap_windows_shim(&program);
+        let mut args = launch.prefix_args;
+        args.extend(claude_terminal_args(req)?);
+        let mut command = ProgramArgs::new(launch.program.display().to_string(), args);
         command.env = self.env();
         Ok(command)
     }
@@ -305,8 +310,10 @@ impl Provider for ClaudeProvider {
 
     fn missing_message(&self) -> String {
         "Claude Code (claude) was not found. Install it from \
-         https://code.claude.com/docs/en/setup (on a Mac: `brew install --cask claude-code`), \
-         or set DCT_CLAUDE_PATH to the executable."
+         https://code.claude.com/docs/en/setup. On Windows: \
+         `npm install -g @anthropic-ai/claude-code` (npm puts `claude.cmd` in `%APPDATA%\\npm`) \
+         or the native installer on that page. On a Mac: `brew install --cask claude-code`. \
+         Or set DCT_CLAUDE_PATH to `claude.exe` or the `.cmd` shim."
             .to_string()
     }
 
@@ -565,7 +572,11 @@ mod tests {
     fn long_prompt_goes_through_the_prompt_file() {
         let long = "x".repeat(crate::pty::launch::MAX_PROMPT_ARG_BYTES + 1);
         let file = std::path::Path::new("/tmp/dct-prompt.md");
-        let delivery = crate::pty::launch::deliver_prompt(&long, file);
+        let delivery = crate::pty::launch::deliver_prompt_limited(
+            &long,
+            file,
+            crate::pty::launch::MAX_PROMPT_ARG_BYTES,
+        );
         assert!(delivery.stored_body.is_some());
         let args = claude_terminal_args(&role(
             "role_developer",
@@ -652,6 +663,78 @@ mod tests {
         assert!(get("PATH")
             .unwrap()
             .starts_with(&root.join("bin").display().to_string()));
+    }
+
+    #[test]
+    fn missing_claude_message_names_the_windows_npm_install() {
+        let message = ClaudeProvider::default().missing_message();
+        assert!(message.contains("npm install -g @anthropic-ai/claude-code"));
+        assert!(message.contains("%APPDATA%\\npm"));
+        assert!(message.contains("claude.cmd"));
+        assert!(message.contains("brew install --cask claude-code"));
+        let adapter = adapter_missing_message();
+        assert!(adapter.contains("claude-agent-acp.cmd"));
+        assert!(adapter.contains("%APPDATA%\\npm"));
+    }
+
+    #[test]
+    fn windows_npm_shims_spawn_the_exe_and_set_claude_code_executable() {
+        use super::super::claude_config::resolve_with;
+        let root = temp("winspawn");
+        let npm = root.join("npm");
+        let exe = npm
+            .join("node_modules")
+            .join("@anthropic-ai")
+            .join("claude-code")
+            .join("bin")
+            .join("claude.exe");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::write(&exe, "").unwrap();
+        let claude_cmd = npm.join("claude.cmd");
+        std::fs::write(&claude_cmd, "@echo off\r\n").unwrap();
+        let script = npm
+            .join("node_modules")
+            .join("@agentclientprotocol")
+            .join("claude-agent-acp")
+            .join("dist")
+            .join("index.js");
+        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+        std::fs::write(&script, "").unwrap();
+        let node = npm.join("node.exe");
+        std::fs::write(&node, "").unwrap();
+        let adapter_cmd = npm.join("claude-agent-acp.cmd");
+        std::fs::write(
+            &adapter_cmd,
+            "@ECHO off\r\nIF EXIST \"%dp0%\\node.exe\" (\r\n  SET \"_prog=%dp0%\\node.exe\"\r\n)\r\n\"%_prog%\" \"%dp0%\\node_modules\\@agentclientprotocol\\claude-agent-acp\\dist\\index.js\" %*\r\n",
+        )
+        .unwrap();
+        let config = root.join("account");
+        std::fs::create_dir_all(&config).unwrap();
+        let provider = ClaudeProvider {
+            settings: ClaudeProviderSettings {
+                claude_path: Some(claude_cmd.display().to_string()),
+                adapter_path: Some(adapter_cmd.display().to_string()),
+                ..Default::default()
+            },
+            config: resolve_with(None, Some(&config.display().to_string()), None),
+        };
+        let terminal = provider
+            .terminal_command(&TerminalLaunch {
+                kind: TerminalKind::Plain,
+                model: None,
+            })
+            .unwrap();
+        assert_eq!(terminal.program, exe.display().to_string());
+        let acp = provider.acp_command(None).unwrap();
+        assert_eq!(acp.program, node.display().to_string());
+        assert_eq!(acp.args, vec![script.display().to_string()]);
+        let configured = acp
+            .env
+            .iter()
+            .find(|(key, _)| key == CLAUDE_CODE_EXECUTABLE)
+            .map(|(_, value)| value.as_str());
+        assert_eq!(configured, Some(exe.display().to_string().as_str()));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
