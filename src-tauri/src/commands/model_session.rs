@@ -67,12 +67,27 @@ pub fn acp_set_model(
     let model = model
         .map(|m| m.trim().to_string())
         .filter(|m| !m.is_empty());
+    let snapshot = live_snapshot(&registry, &tab_id)?;
+    let provider_id = match &snapshot {
+        Some(live) => live.provider.id(),
+        None => {
+            let store = store.lock().map_err(|e| e.to_string())?;
+            store
+                .tab_by_id(&tab_id)
+                .map(|tab| crate::provider::ProviderId::resolve(tab.provider))
+                .unwrap_or(crate::provider::ProviderId::LEGACY)
+        }
+    };
     if let Some(id) = &model {
-        if !crate::models::valid_model_id(id) {
+        let valid = if provider_id == crate::provider::ProviderId::Claude {
+            crate::models::is_claude_model_id(id)
+        } else {
+            crate::models::valid_model_id(id)
+        };
+        if !valid {
             return Err(format!("not a model id: {id}"));
         }
     }
-    let snapshot = live_snapshot(&registry, &tab_id)?;
     {
         let mut store = store.lock().map_err(|e| e.to_string())?;
         store.set_tab_model(&tab_id, model.clone())?;
@@ -81,7 +96,13 @@ pub fn acp_set_model(
         .as_ref()
         .map(|s| s.role_id.clone())
         .unwrap_or_default();
-    let effective = crate::models::model_for_tab(&store, &settings, Some(&tab_id), &role_id)?;
+    let effective = crate::models::model_for_tab_provider(
+        &store,
+        &settings,
+        Some(&tab_id),
+        &role_id,
+        provider_id,
+    )?;
     let Some(live) = snapshot else {
         return Ok(SetModelResult {
             model: effective,

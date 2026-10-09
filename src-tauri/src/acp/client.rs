@@ -175,7 +175,13 @@ impl AcpClient {
     /// (category `model`), then `session/set_model`. `Unsupported` means the
     /// caller has to restart the agent with `--model`.
     pub fn apply_model(&mut self, model: &str) -> Result<ModelVia, String> {
-        if !crate::models::valid_model_id(model) {
+        let valid = if self.provider.id() == crate::provider::ProviderId::Claude {
+            // Never send a Cursor id (or anything else) to the Claude adapter.
+            crate::models::is_claude_model_id(model)
+        } else {
+            crate::models::valid_model_id(model)
+        };
+        if !valid {
             return Err(format!("not a model id: {model}"));
         }
         if self.models.current.as_deref() == Some(model) {

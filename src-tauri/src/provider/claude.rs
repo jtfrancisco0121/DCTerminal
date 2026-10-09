@@ -53,7 +53,7 @@ pub fn claude_role_mode(role_id: &str) -> &'static str {
 pub fn claude_model_args(model: Option<&str>) -> Vec<String> {
     match model
         .map(str::trim)
-        .filter(|id| *id != CLAUDE_DEFAULT_MODEL && crate::models::valid_model_id(id))
+        .filter(|id| *id != CLAUDE_DEFAULT_MODEL && crate::models::is_claude_model_id(id))
     {
         Some(id) => vec!["--model".to_string(), id.to_string()],
         None => Vec::new(),
