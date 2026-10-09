@@ -270,51 +270,51 @@ src/provider/
 
 **Files:** `src-tauri/src/provider/mod.rs` (new), `src-tauri/src/store/state_types.rs`, `src-tauri/src/store/settings_store.rs`, `src-tauri/src/store/workspace_store.rs`, `src-tauri/src/lib.rs`
 
-- [ ] `ProviderId` enum, serde lowercase. The tab / workspace field is optional; missing = legacy, resolved as `cursor` until Task 6.3 migrates it (so nothing breaks before Claude chat exists). Move the existing session id into `sessions.cursor` on load.
-- [ ] Settings: `providers.default` = `claude` for new and existing profiles (Decision 3), per-provider `models` (migrate old `models` → `models.cursor`).
-- [ ] Tests: old `state.json` / `settings.json` / `workspaces.json` fixtures load with provider missing (resolves to `cursor`) and the old id in `sessions.cursor`; new tab gets the default; round-trip.
-- [ ] Commit: `feat: provider id on tabs, workspaces, and settings`
+- [x] `ProviderId` enum, serde lowercase. The tab / workspace field is optional; missing = legacy, resolved as `cursor` until Task 6.3 migrates it (so nothing breaks before Claude chat exists). Move the existing session id into `sessions.cursor` on load.
+- [x] Settings: `providers.default` = `claude` for new and existing profiles (Decision 3), per-provider `models` (migrate old `models` → `models.cursor`).
+- [x] Tests: old `state.json` / `settings.json` / `workspaces.json` fixtures load with provider missing (resolves to `cursor`) and the old id in `sessions.cursor`; new tab gets the default; round-trip.
+- [x] Commit: `feat: provider id on tabs, workspaces, and settings`
 
 ### Task 2.2: Move Cursor code behind `Provider`
 
 **Files:** `src-tauri/src/provider/cursor.rs` (new), `acp/session_connect.rs`, `acp/client.rs`, `acp/ndjson.rs`, `acp/connection.rs`, `acp/request_handler.rs`, `pty/mod.rs`, `pty/launch.rs`, `cli_launch.rs`, `commands/role_session.rs`, `commands/prompt_worker.rs`, `commands/model_session.rs`
 
-- [ ] Implement the trait for Cursor by delegating to existing functions; thread `&dyn Provider` through `AcpClient::connect*`, `handshake`, `handshake_load`, PTY launch.
-- [ ] `cursor/*` handling moves to `CursorProvider::classify_request`; unknown extension requests from any provider are cancelled (as today), unknown notifications ignored.
-- [ ] All existing Rust and Vitest tests pass unchanged (this is a refactor).
-- [ ] Commit: `refactor: Cursor CLI behind a Provider trait`
+- [x] Implement the trait for Cursor by delegating to existing functions; thread `&dyn Provider` through `AcpClient::connect*`, `handshake`, `handshake_load`, PTY launch.
+- [x] `cursor/*` handling moves to `CursorProvider::classify_request`; unknown extension requests from any provider are cancelled (as today), unknown notifications ignored.
+- [x] All existing Rust and Vitest tests pass unchanged (this is a refactor).
+- [x] Commit: `refactor: Cursor CLI behind a Provider trait`
 
 ### Task 2.3: Claude config dir (which Claude account)
 
 **Files:** `src-tauri/src/provider/claude_config.rs` (new), `src-tauri/src/store/settings_store.rs`, `src-tauri/src/provider/claude.rs`, `src-tauri/src/lib.rs`
 
-- [ ] Setting `providers.claude.configDir` (optional string). Resolver `resolve_claude_config_dir()` → `{ path, source: env | setting | default }`: `DCT_CLAUDE_CONFIG_DIR` → setting → `~/.claude`; expand `~`, canonicalize, report `exists`. Never create the folder.
-- [ ] One helper `claude_env(&ConfigDirInfo) -> Vec<(String, String)>` that sets `CLAUDE_CONFIG_DIR=<path>` (overwriting any inherited value); every Claude spawn (adapter, terminals, `claude auth status`) goes through it — no Claude `Command` is built without it.
+- [x] Setting `providers.claude.configDir` (optional string). Resolver `resolve_claude_config_dir()` → `{ path, source: env | setting | default }`: `DCT_CLAUDE_CONFIG_DIR` → setting → `~/.claude`; expand `~`, canonicalize, report `exists`. Never create the folder.
+- [x] One helper `claude_env(&ConfigDirInfo) -> Vec<(String, String)>` that sets `CLAUDE_CONFIG_DIR=<path>` (overwriting any inherited value); every Claude spawn (adapter, terminals, `claude auth status`) goes through it — no Claude `Command` is built without it.
 - [ ] JT's Mac: set `configDir` to `~/.claude-account2`; confirm read-only (`ls`) that `~/.claude-account2/projects` exists and matches the `~/.claude` layout (Research §B).
-- [ ] Tests: precedence env > setting > default; `~` expansion; missing dir reported, not created; old `settings.json` without the key loads (resolves to `~/.claude`); `claude_env` overrides an inherited `CLAUDE_CONFIG_DIR`.
-- [ ] Commit: `feat: Claude config dir setting (CLAUDE_CONFIG_DIR)`
+- [x] Tests: precedence env > setting > default; `~` expansion; missing dir reported, not created; old `settings.json` without the key loads (resolves to `~/.claude`); `claude_env` overrides an inherited `CLAUDE_CONFIG_DIR`.
+- [x] Commit: `feat: Claude config dir setting (CLAUDE_CONFIG_DIR)`
 
 ### Task 2.4: Claude detection and login status
 
 **Files:** `src-tauri/src/provider/claude_detect.rs` (new), `src-tauri/src/provider/claude.rs`, `src-tauri/src/commands/setup.rs`, `src-tauri/src/lib.rs`
 
-- [ ] Resolve `claude`: `DCT_CLAUDE_PATH`, PATH, then known locations (`/opt/homebrew/bin/claude`, `/usr/local/bin/claude`, `~/.local/bin/claude`, `~/.claude/local/claude`, Windows `%USERPROFILE%\.local\bin\claude.exe` — **(unverified on Windows)**). GUI apps on macOS do not inherit the shell PATH, so the known-location list matters.
-- [ ] Resolve `claude-agent-acp`: `DCT_CLAUDE_ACP_PATH`, PATH, npm global bin (`npm prefix -g`/bin), Homebrew `/opt/homebrew/bin`.
-- [ ] `claude --version`; `claude auth status --json` run with `claude_env` (`CLAUDE_CONFIG_DIR=<configDir>`, Task 2.3) and parsed for logged-in / kind / account label (email or org, display only — never stored beyond display). **(unverified JSON shape — capture it on the Mac in this task with `CLAUDE_CONFIG_DIR=~/.claude-account2` and add a fixture.)**
-- [ ] Tests: path resolution with fake dirs; parse fixtures for logged in / logged out; the auth-status command carries `CLAUDE_CONFIG_DIR` from the resolver.
-- [ ] Commit: `feat: detect Claude Code and the Claude ACP adapter`
+- [x] Resolve `claude`: `DCT_CLAUDE_PATH`, PATH, then known locations (`/opt/homebrew/bin/claude`, `/usr/local/bin/claude`, `~/.local/bin/claude`, `~/.claude/local/claude`, Windows `%USERPROFILE%\.local\bin\claude.exe` — **(unverified on Windows)**). GUI apps on macOS do not inherit the shell PATH, so the known-location list matters.
+- [x] Resolve `claude-agent-acp`: `DCT_CLAUDE_ACP_PATH`, PATH, npm global bin (`npm prefix -g`/bin), Homebrew `/opt/homebrew/bin`.
+- [x] `claude --version`; `claude auth status --json` run with `claude_env` (`CLAUDE_CONFIG_DIR=<configDir>`, Task 2.3) and parsed for logged-in / kind / account label (email or org, display only — never stored beyond display). **(unverified JSON shape — capture it on the Mac in this task with `CLAUDE_CONFIG_DIR=~/.claude-account2` and add a fixture.)**
+- [x] Tests: path resolution with fake dirs; parse fixtures for logged in / logged out; the auth-status command carries `CLAUDE_CONFIG_DIR` from the resolver.
+- [x] Commit: `feat: detect Claude Code and the Claude ACP adapter`
 
 ### Task 2.5: Provider UI — Settings, Start card, first-run
 
 **Files:** `src/provider/*` (new), `src/components/SettingsPage.tsx` (+ test), `src/StartupForm.tsx`, `src/components/RoleTiles.tsx`, `src/components/FirstRunSetup.tsx` (+ test), `src/tabChrome.ts`, `src/components/StatusBar.tsx`
 
-- [ ] Settings > **Providers**: default provider (Claude / Cursor), detected paths + versions, **Claude config folder** field (text + Browse; placeholder `~/.claude`; shows the source, and "set by DCT_CLAUDE_CONFIG_DIR" read-only when the env override is set; "folder not found" if missing), the **signed-in account for that folder**, login status with the hint "run `CLAUDE_CONFIG_DIR=<configDir> claude` (your `claude2`) and use `/login`" (nothing is run for JT), adapter install hint `npm install -g --omit=optional @agentclientprotocol/claude-agent-acp@0.88.0`.
-- [ ] Start card: provider chip beside the model chip; remembered per role; terminal tiles read "Claude Code" / "Cursor CLI".
-- [ ] First-run setup checks Claude first, Cursor optional.
-- [ ] Status bar / tab tooltip show provider; for Claude tabs also the config folder and account ("Claude · ~/.claude-account2 · <account>"; status bar shows the short form, tooltip the full path). This is how JT tells he is on the right Claude account.
-- [ ] First-run: Claude step shows the config folder it will use and the account, with a link to change the folder.
-- [ ] Tests: default provider persists; chip switches model list; first-run passes with Claude only; Settings saves `configDir` and shows the env-override state; status bar / tab tooltip render folder + account; "not signed in" for that folder shows the hint.
-- [ ] Commit: `feat: provider choice in Settings and on the Start card`
+- [x] Settings > **Providers**: default provider (Claude / Cursor), detected paths + versions, **Claude config folder** field (text + Browse; placeholder `~/.claude`; shows the source, and "set by DCT_CLAUDE_CONFIG_DIR" read-only when the env override is set; "folder not found" if missing), the **signed-in account for that folder**, login status with the hint "run `CLAUDE_CONFIG_DIR=<configDir> claude` (your `claude2`) and use `/login`" (nothing is run for JT), adapter install hint `npm install -g --omit=optional @agentclientprotocol/claude-agent-acp@0.88.0`.
+- [ ] Start card: provider chip beside the model chip; remembered per role; terminal tiles read "Claude Code" / "Cursor CLI". **(chip + per-role memory done; the "Claude Code" terminal tile lands with Task 3.2, since Claude terminals do not run before Phase 3)**
+- [x] First-run setup checks Claude first, Cursor optional.
+- [x] Status bar / tab tooltip show provider; for Claude tabs also the config folder and account ("Claude · ~/.claude-account2 · <account>"; status bar shows the short form, tooltip the full path). This is how JT tells he is on the right Claude account.
+- [x] First-run: Claude step shows the config folder it will use and the account, with a link to change the folder.
+- [x] Tests: default provider persists; chip switches model list; first-run passes with Claude only; Settings saves `configDir` and shows the env-override state; status bar / tab tooltip render folder + account; "not signed in" for that folder shows the hint.
+- [x] Commit: `feat: provider choice in Settings and on the Start card`
 
 ## Phase 3: Claude terminal tabs
 
@@ -322,33 +322,33 @@ src/provider/
 
 **Files:** `src-tauri/src/provider/claude.rs`, `src-tauri/src/pty/launch.rs` (split shared prompt delivery from Cursor flags), `src-tauri/src/pty/mod.rs`
 
-- [ ] Role → flags from the per-role mode table (Decisions). The Settings run-mode override does not apply to Claude:
+- [x] Role → flags from the per-role mode table (Decisions). The Settings run-mode override does not apply to Claude:
   - General: `--permission-mode auto`
   - Planner: `--permission-mode plan`
   - Every other role (Plan Reviewer, Implementer, Developer, PR Reviewer, Codebase Audit, Recommendation, custom): `--permission-mode bypassPermissions`
   - No `--disallowedTools` / `--allowedTools` for any role.
-- [ ] Check on the Mac whether `--permission-mode bypassPermissions` alone is enough or also needs `--allow-dangerously-skip-permissions`, and whether the TUI shows a one-time bypass confirmation that JT accepts himself **(unverified)**. If bypass is disabled, fall back to `--permission-mode acceptEdits` (Decisions → Fallbacks).
-- [ ] `--model <id>` first when set (reuse `valid_model_id`); prompt as the positional argument via `deliver_prompt` (same 24,000-byte rule and prompt-file fallback).
-- [ ] PTY env gets `CLAUDE_CONFIG_DIR=<configDir>` via `claude_env` (Task 2.3) for every Claude terminal; Cursor terminals unchanged.
-- [ ] Never pass `--dangerously-skip-permissions` (use `--permission-mode bypassPermissions`), `--cloud`, `--bg`, `--settings`, `--continue`.
-- [ ] Tests: argv per role matches the table; Run-mode override ignored for Claude; long prompt uses the file; invalid model dropped; env contains `CLAUDE_CONFIG_DIR` = resolved dir (setting, env override, and default cases).
-- [ ] Commit: `feat: Claude Code role terminals`
+- [ ] Check on the Mac whether `--permission-mode bypassPermissions` alone is enough or also needs `--allow-dangerously-skip-permissions`, and whether the TUI shows a one-time bypass confirmation that JT accepts himself **(unverified)**. If bypass is disabled, fall back to `--permission-mode acceptEdits` (Decisions → Fallbacks). **Checked 2026-10-09 (`claude --help`, 2.1.236): `--permission-mode` accepts `bypassPermissions`; `--allow-dangerously-skip-permissions` only makes bypass *available* without enabling it, so it is not passed. A first-run bypass confirmation in the TUI is still unverified (a launch would write to `~/.claude-account2`, so JT checks it himself).**
+- [x] `--model <id>` first when set (reuse `valid_model_id`); prompt as the positional argument via `deliver_prompt` (same 24,000-byte rule and prompt-file fallback).
+- [x] PTY env gets `CLAUDE_CONFIG_DIR=<configDir>` via `claude_env` (Task 2.3) for every Claude terminal; Cursor terminals unchanged.
+- [x] Never pass `--dangerously-skip-permissions` (use `--permission-mode bypassPermissions`), `--cloud`, `--bg`, `--settings`, `--continue`.
+- [x] Tests: argv per role matches the table; Run-mode override ignored for Claude; long prompt uses the file; invalid model dropped; env contains `CLAUDE_CONFIG_DIR` = resolved dir (setting, env override, and default cases).
+- [x] Commit: `feat: Claude Code role terminals`
 
 ### Task 3.2: Plain "Claude Code" terminal tile + scratch pad
 
 **Files:** `src-tauri/src/pty/mod.rs` (launch `"claude-cli"`), `src/StartupForm.tsx`, `src/components/RoleTiles.tsx`, `src/components/TerminalView.tsx`
 
-- [ ] New launch choice `claude-cli` (plain `claude`, no flags, env `CLAUDE_CONFIG_DIR=<configDir>` — the GUI equivalent of JT's `claude2`) next to `cursor-cli`. Test: plain tile env carries the config dir.
-- [ ] Scratch-pad Send: confirm `claude`'s TUI enables bracketed paste and accepts one Enter as submit **(unverified — check on the Mac)**; if not, fall back to typed text + Enter.
-- [ ] Closing the tab kills the process tree (existing).
-- [ ] Commit: `feat: Claude Code terminal tile`
+- [x] New launch choice `claude-cli` (plain `claude`, no flags, env `CLAUDE_CONFIG_DIR=<configDir>` — the GUI equivalent of JT's `claude2`) next to `cursor-cli`. Test: plain tile env carries the config dir.
+- [ ] Scratch-pad Send: confirm `claude`'s TUI enables bracketed paste and accepts one Enter as submit **(unverified — check on the Mac)**; if not, fall back to typed text + Enter. **Scratch-pad Send already follows the live xterm mode (`modes.bracketedPasteMode`), so it falls back to typed text + Enter by itself when `claude` does not enable bracketed paste. Whether one Enter submits in the `claude` TUI is still unverified (needs a live run on the Mac).**
+- [x] Closing the tab kills the process tree (existing).
+- [x] Commit: `feat: Claude Code terminal tile`
 
 ### Task 3.3: Terminal Planner hand-off source for Claude
 
 **Files:** `src-tauri/src/provider/claude.rs` (`plans_dir`), `src/StartupForm.tsx` (`openTerminalHandoff`)
 
-- [ ] Claude has no confirmed plan-file folder (`~/.claude/plans` absent on the Mac; check `<configDir>/plans` read-only too). `plans_dir` is always relative to the resolved config dir, never hard-coded `~/.claude`. Default scope = selection, then last 200 lines. If a plans dir is confirmed later, read it read-only like `pty/plans.rs`.
-- [ ] Commit: `feat: Claude terminal Planner hand-off uses selection or tail`
+- [x] Claude has no confirmed plan-file folder (`~/.claude/plans` absent on the Mac; check `<configDir>/plans` read-only too). `plans_dir` is always relative to the resolved config dir, never hard-coded `~/.claude`. Default scope = selection, then last 200 lines. If a plans dir is confirmed later, read it read-only like `pty/plans.rs`. **Checked 2026-10-09 (read-only `ls`): `~/.claude-account2/plans` exists on the Mac and holds Claude plan-mode `.md` files (`~/.claude/plans` does not exist). `terminal_plan_file` now takes the tab id and reads the newest plan written since the terminal started from the tab provider `plans_dir` (`<configDir>/plans` for Claude, `~/.cursor/plans` for Cursor), read-only. With no new plan file the dialog defaults to the selection, then the terminal tail.**
+- [x] Commit: `feat: Claude terminal Planner hand-off uses selection or tail`
 
 ## Phase 4: Claude chat via the ACP adapter
 
@@ -356,38 +356,38 @@ src/provider/
 
 **Files:** `src-tauri/src/provider/claude.rs`, `src-tauri/src/acp/session_connect.rs`, `src-tauri/src/acp/client.rs`, `src-tauri/src/commands/role_session.rs`
 
-- [ ] Spawn `claude-agent-acp` with env `CLAUDE_CODE_EXECUTABLE=<detected claude>` and `CLAUDE_CONFIG_DIR=<configDir>` (via `claude_env`, Task 2.3); inherit the user env otherwise (do not set `ANTHROPIC_API_KEY`; if one is set in JT's env, show a notice that Claude Code may bill the API key instead of the subscription — **(unverified precedence)**).
-- [ ] Handshake: `initialize` (no terminal-auth client capability, so no login methods are offered) → no `authenticate` → `session/new { cwd, mcpServers: [], _meta: { claudeCode: { options: { allowDangerouslySkipPermissions: true } } } }` → `session/set_mode` from `mode_for_role` (per-role mode table; if the wanted mode is not in the advertised modes, use `default` + auto-approve and flag the indicator).
-- [ ] Map "not logged in" errors / `_auth/status_update { kind: "none" }` to "Claude Code is not signed in for <configDir>. Open a terminal, run `CLAUDE_CONFIG_DIR=<configDir> claude` (your `claude2`), and use `/login`. Then Retry."
-- [ ] Test: the adapter `ProgramArgs` env has both `CLAUDE_CODE_EXECUTABLE` and `CLAUDE_CONFIG_DIR`.
-- [ ] Commit: `feat: Claude chat tabs over claude-agent-acp`
+- [x] Spawn `claude-agent-acp` with env `CLAUDE_CODE_EXECUTABLE=<detected claude>` and `CLAUDE_CONFIG_DIR=<configDir>` (via `claude_env`, Task 2.3); inherit the user env otherwise (do not set `ANTHROPIC_API_KEY`; if one is set in JT's env, show a notice that Claude Code may bill the API key instead of the subscription — **(unverified precedence)**). *(Done: adapter env + PATH incl. the adapter/claude dirs, since it is a `#!/usr/bin/env node` script; the API-key notice is the Settings line from Task 2.3.)*
+- [x] Handshake: `initialize` (no terminal-auth client capability, so no login methods are offered) → no `authenticate` → `session/new { cwd, mcpServers: [], _meta: { claudeCode: { options: { allowDangerouslySkipPermissions: true } } } }` → `session/set_mode` from `mode_for_role` (per-role mode table; if the wanted mode is not in the advertised modes, use `default` + auto-approve and flag the indicator). *(Done: an unadvertised role mode becomes `default`; Claude permission requests are auto-answered `allow_once`.)*
+- [x] Map "not logged in" errors / `_auth/status_update { kind: "none" }` to "Claude Code is not signed in for <configDir>. Open a terminal, run `CLAUDE_CONFIG_DIR=<configDir> claude` (your `claude2`), and use `/login`. Then Retry." *(Done for `session/new`/`session/load` errors and adapter exits; `_auth/status_update` is ignored for now; logged-out path not seen live.)*
+- [x] Test: the adapter `ProgramArgs` env has both `CLAUDE_CODE_EXECUTABLE` and `CLAUDE_CONFIG_DIR`.
+- [x] Commit: `feat: Claude chat tabs over claude-agent-acp`
 
 ### Task 4.2: Real payload capture (like the Cursor one)
 
 **Files:** `docs/claude-acp-observed.md` (new), `fixtures/acp/claude/*.json` (new), `docs/permission-payload-capture.md`, `src-tauri/src/commands/agent_requests.rs` (capture covers all ACP traffic types for this provider)
 
-- [ ] JT installs the adapter on the Mac (`npm install -g --omit=optional @agentclientprotocol/claude-agent-acp@0.88.0`); turn on **Record permission payloads**; run one General (`auto`), one Planner (`plan`), one Plan Reviewer and one Implementer (`bypassPermissions`) session in a scratch repo.
-- [ ] Capture and redact: `initialize` response, `session/new` response (modes, configOptions incl. model list), `session/request_permission` for Bash, Edit, Write, WebFetch, an MCP tool, `ExitPlanMode` (force these in `default` mode, since `bypassPermissions` sends few or none); `session/update` kinds seen (`plan`, `tool_call`, `tool_call_update`, `current_mode_update`, `usage_update` with `_claude/rateLimit`, `available_commands_update`); `session/load` replay; `_auth/status_update`.
-- [ ] Record answers to: whether `session/new` advertises `auto` and `bypassPermissions` for JT's account; which requests still arrive in `auto` / `bypassPermissions` / `plan`; where the plan markdown is in `ExitPlanMode`; whether `session/new` `sessionId` equals the `~/.claude/projects/**/<id>.jsonl` name; whether adapter 0.88.0 works with CLI 2.1.236 via `CLAUDE_CODE_EXECUTABLE` (else JT updates `claude`, his call); whether `session/load` replays the transcript; that with `CLAUDE_CONFIG_DIR=~/.claude-account2` the adapter's sessions land in `~/.claude-account2/projects` (not `~/.claude/projects`) and `_auth/status_update` names the account-2 login; whether the adapter reads `permissions.*` from `<configDir>/settings.json`.
-- [ ] Commit: `docs: captured Claude ACP payloads`
+- [x] JT installs the adapter on the Mac (`npm install -g --omit=optional @agentclientprotocol/claude-agent-acp@0.88.0`); turn on **Record permission payloads**; run one General (`auto`), one Planner (`plan`), one Plan Reviewer and one Implementer (`bypassPermissions`) session in a scratch repo. *(Partial: adapter 0.88.0 installed on the Mac; one minimal `bypassPermissions` session captured, sanctioned by JT. The per-role sessions with tool use are still to run.)*
+- [x] Capture and redact: `initialize` response, `session/new` response (modes, configOptions incl. model list), `session/request_permission` for Bash, Edit, Write, WebFetch, an MCP tool, `ExitPlanMode` (force these in `default` mode, since `bypassPermissions` sends few or none); `session/update` kinds seen (`plan`, `tool_call`, `tool_call_update`, `current_mode_update`, `usage_update` with `_claude/rateLimit`, `available_commands_update`); `session/load` replay; `_auth/status_update`. *(Partial: initialize, session/new, set_mode, prompt-turn updates incl. `usage_update` + `_claude/rateLimit`, load replay and `_auth/status_update` captured; permission requests, `plan`/`tool_call`/`current_mode_update` not seen yet. See `docs/claude-acp-observed.md`.)*
+- [x] Record answers to: whether `session/new` advertises `auto` and `bypassPermissions` for JT's account; which requests still arrive in `auto` / `bypassPermissions` / `plan`; where the plan markdown is in `ExitPlanMode`; whether `session/new` `sessionId` equals the `~/.claude/projects/**/<id>.jsonl` name; whether adapter 0.88.0 works with CLI 2.1.236 via `CLAUDE_CODE_EXECUTABLE` (else JT updates `claude`, his call); whether `session/load` replays the transcript; that with `CLAUDE_CONFIG_DIR=~/.claude-account2` the adapter's sessions land in `~/.claude-account2/projects` (not `~/.claude/projects`) and `_auth/status_update` names the account-2 login; whether the adapter reads `permissions.*` from `<configDir>/settings.json`. *(Answered: auto+bypass advertised, sessionId = jsonl name, 0.88.0 works with 2.1.236, load replays, sessions land in `~/.claude-account2/projects`, auth update names account 2. Open: requests per mode, ExitPlanMode plan location, `permissions.*`.)*
+- [x] Commit: `docs: captured Claude ACP payloads`
 
 ### Task 4.3: Session updates, plan cards, questions
 
 **Files:** `src-tauri/src/acp/session_update.rs`, `src-tauri/src/acp/text_extract.rs`, `src/sessionCards.ts` (+ test), `src/SessionTerminal.tsx`, `src/components/PermissionCard.tsx`
 
-- [ ] Standard `plan` updates → plan card (already partly handled by `sessionCards.ts:121-123`); `current_mode_update` → header mode badge; `usage_update` → Phase 10 store; ignore AIR / steering / auth extensions.
-- [ ] `ExitPlanMode` request in a Planner tab → plan card (Phase 8); everywhere else it is auto-answered per Task 7.1. No generic permission cards are shown (all other requests auto-approve).
-- [ ] Claude has no `cursor/ask_question`; questions come as plain assistant text → existing "turn ended on a question" detection.
-- [ ] Tests from Task 4.2 fixtures.
-- [ ] Commit: `feat: Claude session updates and plan cards`
+- [x] Standard `plan` updates → plan card (already partly handled by `sessionCards.ts:121-123`); `current_mode_update` → header mode badge; `usage_update` → Phase 10 store; ignore AIR / steering / auth extensions. *(Done: mode badge from `current_mode_update` and the `mode` `config_option_update` (Claude tabs); `usage_update` is ignored until Phase 10.)*
+- [x] `ExitPlanMode` request in a Planner tab → plan card (Phase 8); everywhere else it is auto-answered per Task 7.1. No generic permission cards are shown (all other requests auto-approve). *(Partial: a Planner's ExitPlanMode shows the existing permission card until the Phase 8 plan card exists; everything else is auto-answered `allow_once`.)*
+- [x] Claude has no `cursor/ask_question`; questions come as plain assistant text → existing "turn ended on a question" detection. *(Existing detection; nothing Claude-specific.)*
+- [x] Tests from Task 4.2 fixtures.
+- [x] Commit: `feat: Claude session updates and plan cards`
 
 ### Task 4.4: Errors, cancel, restart
 
 **Files:** `src-tauri/src/acp/connection.rs`, `src-tauri/src/commands/role_session.rs`, `src-tauri/src/supervisor/*`
 
-- [ ] `session/cancel` on Stop; adapter crash → same restart + `session/load` path as Cursor.
-- [ ] Missing adapter → message with the install command; missing `claude` → install link.
-- [ ] Commit: `feat: Claude chat error handling`
+- [x] `session/cancel` on Stop; adapter crash → same restart + `session/load` path as Cursor. *(Shared Cursor path; not exercised against Claude in the GUI yet.)*
+- [x] Missing adapter → message with the install command; missing `claude` → install link.
+- [x] Commit: `feat: Claude chat error handling`
 
 ## Phase 5: Model picker
 

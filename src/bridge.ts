@@ -5,6 +5,42 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { NotificationSettings } from "./notify/agentNotify";
+import type {
+  ProviderId,
+  ProviderReport,
+  ProviderSettingsView,
+  ProvidersSettings,
+} from "./provider/types";
+
+export type { ProviderId, ProviderReport, ProviderSettingsView, ProvidersSettings };
+
+/** Settings > Providers: saved settings plus the resolved Claude config folder. */
+export async function getProviderSettings(): Promise<ProviderSettingsView> {
+  return invoke<ProviderSettingsView>("get_provider_settings");
+}
+
+export async function setProviderSettings(
+  providers: ProvidersSettings,
+): Promise<ProviderSettingsView> {
+  return invoke<ProviderSettingsView>("set_provider_settings", { providers });
+}
+
+/** Detection + sign-in for one provider (read-only CLI calls). */
+export async function providerStatus(provider: ProviderId): Promise<ProviderReport> {
+  return invoke<ProviderReport>("provider_status", { provider });
+}
+
+/**
+ * Start card chip: this tab's provider. With `roleId`, the choice is also
+ * remembered for that role (`providers.roleProvider`).
+ */
+export async function setTabProvider(
+  tabId: string,
+  provider: ProviderId,
+  roleId?: string | null,
+): Promise<void> {
+  return invoke("set_tab_provider", { tabId, provider, roleId: roleId ?? null });
+}
 
 export type CliDetectResult = {
   found: boolean;
@@ -17,14 +53,21 @@ export async function detectCli(): Promise<CliDetectResult> {
   return invoke<CliDetectResult>("detect_cli");
 }
 
-/** F8: sign-in state from `agent status` (the CLI's own check). */
+/**
+ * F8: sign-in state from the CLI's own check (`agent status`, or
+ * `claude auth status --json` run with `CLAUDE_CONFIG_DIR`). Display only.
+ */
 export type LoginStatus = {
-  /** "loggedIn" | "loggedOut" | "unknown" | "noCli" */
+  /** "loggedIn" | "loggedOut" | "unknown" | "noCli" | "noConfigDir" (Claude) */
   state: string;
   account: string | null;
   detail: string | null;
-  /** CURSOR_API_KEY is set in DCTerminal's environment. */
+  /** CURSOR_API_KEY (Cursor) / ANTHROPIC_API_KEY (Claude) is set. */
   apiKeyEnv: boolean;
+  /** Claude: login method and plan, e.g. "claude.ai · team". */
+  method?: string | null;
+  /** Claude: organization name. */
+  organization?: string | null;
 };
 
 export async function cliLoginStatus(): Promise<LoginStatus> {
@@ -195,7 +238,7 @@ export type TabSummary = {
   color: string;
   /** "role" or "terminal". Missing on older snapshots means a role tab. */
   kind?: string;
-  /** "" | "shell" | "cursor-cli" | "role" */
+  /** "" | "shell" | "cursor-cli" | "claude-cli" | "role" */
   terminalLaunch?: string;
   acpSessionId: string | null;
   /** CLI chat id when this tab runs `agent --resume`. */
@@ -206,6 +249,8 @@ export type TabSummary = {
   worktreeBranch?: string | null;
   worktreePath?: string | null;
   pipelineRunId?: string | null;
+  /** "claude" | "cursor". Tabs saved before providers report "cursor". */
+  provider?: ProviderId;
 };
 
 export type PipelineRun = {
@@ -903,7 +948,7 @@ export type TerminalSettings = {
   roleRunMode: Record<string, string>;
 };
 
-export type TerminalLaunch = "shell" | "cursor-cli" | "role";
+export type TerminalLaunch = "shell" | "cursor-cli" | "claude-cli" | "role";
 
 export function createPtyChannel(
   onPacket: (packet: PtyPacket) => void,
@@ -916,7 +961,7 @@ export function createPtyChannel(
 export async function shellTerminalStart(input: {
   tabId?: string | null;
   cwd: string;
-  launch: "shell" | "cursor-cli";
+  launch: "shell" | "cursor-cli" | "claude-cli";
   resumeSessionId?: string | null;
   cols: number;
   rows: number;
@@ -1005,8 +1050,15 @@ export async function setTerminalSettings(
   return invoke<TerminalSettings>("set_terminal_settings", { terminal });
 }
 
-export async function terminalPlanFile(startedAtMs: number): Promise<PlanFileInfo | null> {
-  return invoke<PlanFileInfo | null>("terminal_plan_file", { startedAtMs });
+/**
+ * Newest plan file since the terminal started, read-only from the tab's
+ * provider (`~/.cursor/plans`, or `<configDir>/plans` for Claude).
+ */
+export async function terminalPlanFile(
+  startedAtMs: number,
+  tabId?: string | null,
+): Promise<PlanFileInfo | null> {
+  return invoke<PlanFileInfo | null>("terminal_plan_file", { startedAtMs, tabId: tabId ?? null });
 }
 
 export type ModelEntry = {

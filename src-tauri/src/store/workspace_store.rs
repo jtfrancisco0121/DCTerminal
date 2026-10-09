@@ -40,6 +40,10 @@ pub struct WorkspaceTab {
     pub answers: HashMap<String, String>,
     #[serde(default)]
     pub worktree: Option<WorktreeRef>,
+    /// Provider of the tab when saved. `None` on workspaces saved before
+    /// providers existed (resolves to Cursor until Task 6.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<crate::provider::ProviderId>,
 }
 
 impl WorkspaceTab {
@@ -59,6 +63,7 @@ impl WorkspaceTab {
             model: tab.model.clone(),
             answers,
             worktree: tab.worktree.clone(),
+            provider: tab.provider,
         }
     }
 }
@@ -284,6 +289,7 @@ mod tests {
             model: None,
             answers: HashMap::from([("cwd".to_string(), cwd.to_string())]),
             worktree: None,
+            provider: None,
         }
     }
 

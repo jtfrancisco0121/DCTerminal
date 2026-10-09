@@ -2,8 +2,9 @@ use super::ndjson::{
     acp_launch_args, consecutive_malformed_limit, parse_acp_line, read_capped_line, CappedRead,
     ParsedLine, MAX_ACP_LINE_BYTES,
 };
-use super::request_handler::{is_permission_method, response_for_agent_request};
+use super::request_handler::response_for_agent_request;
 use crate::process_tree::{prepare_command, SharedProcess};
+use crate::provider::{AgentRequestKind, CursorProvider, ProgramArgs, SharedProvider};
 use serde_json::{json, Value};
 use std::io::{BufReader, Write};
 use std::path::Path;
@@ -75,6 +76,8 @@ pub struct AcpConnection {
     stdin: std::process::ChildStdin,
     lines: Receiver<ReaderMsg>,
     stderr_tail: Arc<Mutex<Vec<String>>>,
+    /// Sorts agent requests (permission / plan / question / extension).
+    provider: SharedProvider,
 }
 
 impl AcpConnection {
@@ -82,18 +85,28 @@ impl AcpConnection {
         Self::spawn_with_args(agent_path, cwd, &[])
     }
 
-    /// `global_args` go before `acp`, for example `--model <id>`.
+    /// Cursor `agent`: `global_args` go before `acp`, for example `--model <id>`.
     pub fn spawn_with_args(
         agent_path: &Path,
         cwd: Option<&Path>,
         global_args: &[String],
     ) -> std::io::Result<Self> {
-        let mut command = Command::new(agent_path);
-        for arg in global_args {
-            command.arg(arg);
-        }
-        for arg in acp_launch_args() {
-            command.arg(*arg);
+        let mut args: Vec<String> = global_args.to_vec();
+        args.extend(acp_launch_args().iter().map(|arg| (*arg).to_string()));
+        let program = ProgramArgs::new(agent_path.display().to_string(), args);
+        Self::spawn_program(&program, cwd, Arc::new(CursorProvider))
+    }
+
+    /// Spawn the provider's ACP agent: argv and extra env from `program`.
+    pub fn spawn_program(
+        program: &ProgramArgs,
+        cwd: Option<&Path>,
+        provider: SharedProvider,
+    ) -> std::io::Result<Self> {
+        let mut command = Command::new(&program.program);
+        command.args(&program.args);
+        for (key, value) in &program.env {
+            command.env(key, value);
         }
         command
             .stdin(Stdio::piped())
@@ -169,6 +182,7 @@ impl AcpConnection {
             stdin,
             lines: rx,
             stderr_tail,
+            provider,
         })
     }
 
@@ -237,10 +251,14 @@ impl AcpConnection {
                     dispatch.record_notification(value);
                     return Ok(());
                 }
-                let is_permission = is_permission_method(method);
-                let is_plan = method == "cursor/create_plan";
-                let is_question = method == "cursor/ask_question";
-                if is_permission || is_plan || is_question {
+                let params = value.get("params").unwrap_or(&Value::Null);
+                let kind = self.provider.classify_request(method, params);
+                if matches!(
+                    kind,
+                    AgentRequestKind::Permission
+                        | AgentRequestKind::Plan
+                        | AgentRequestKind::Question
+                ) {
                     if let Some(handler) = &mut dispatch.on_agent_request {
                         if let Some(result) = handler(value)? {
                             self.respond_result(req_id, result)?;
@@ -249,7 +267,7 @@ impl AcpConnection {
                         let result = response_for_agent_request(value);
                         self.respond_result(req_id, result)?;
                     }
-                } else if method.starts_with("cursor/") {
+                } else if kind == AgentRequestKind::UnknownExtension {
                     let result = response_for_agent_request(value);
                     self.respond_result(req_id, result)?;
                 } else if let Some(handler) = &mut dispatch.on_agent_request {
@@ -392,30 +410,78 @@ impl AcpConnection {
             .lock()
             .map(|buf| buf.join(" | "))
             .unwrap_or_default();
-        let base = match status {
-            Some(status) => format!("agent exited ({status})"),
-            None => "agent stdout closed — the Cursor agent process exited".to_string(),
-        };
-        let lower = tail.to_lowercase();
-        if lower.contains("auth")
-            || lower.contains("login")
+        let claude = self.provider.id() == crate::provider::ProviderId::Claude;
+        exit_error_text(claude, status, &tail)
+    }
+}
+
+/// Why the agent process stopped, worded for the provider that was running.
+fn exit_error_text(claude: bool, status: Option<String>, tail: &str) -> String {
+    let base = match status {
+        Some(status) => format!("agent exited ({status})"),
+        None if claude => "agent stdout closed — the Claude ACP adapter exited".to_string(),
+        None => "agent stdout closed — the Cursor agent process exited".to_string(),
+    };
+    let lower = tail.to_lowercase();
+    if claude {
+        if lower.contains("not logged in")
+            || lower.contains("/login")
             || lower.contains("unauthorized")
             || lower.contains("not authenticated")
+            || lower.contains("invalid api key")
         {
-            return format!(
-                "AUTH_ERROR: {base}. {tail}. Run `agent login` in a terminal, then start the tab again."
-            );
+            return format!("AUTH_ERROR: {base}. {tail}");
         }
-        if tail.is_empty() {
-            format!(
-                "{base}. Restart this tab. If it keeps happening, run `agent login` and confirm `agent` is on PATH."
-            )
+        return if tail.is_empty() {
+            format!("{base}. Restart this tab. If it keeps happening, run `claude-agent-acp` in a terminal to see why it stops.")
         } else {
             format!("{base}: {tail}")
-        }
+        };
+    }
+    if lower.contains("auth")
+        || lower.contains("login")
+        || lower.contains("unauthorized")
+        || lower.contains("not authenticated")
+    {
+        return format!(
+                "AUTH_ERROR: {base}. {tail}. Run `agent login` in a terminal, then start the tab again."
+            );
+    }
+    if tail.is_empty() {
+        format!(
+                "{base}. Restart this tab. If it keeps happening, run `agent login` and confirm `agent` is on PATH."
+            )
+    } else {
+        format!("{base}: {tail}")
     }
 }
 
 pub fn default_io_timeout() -> Duration {
     DEFAULT_IO_TIMEOUT
+}
+
+#[cfg(test)]
+mod exit_error_tests {
+    use super::exit_error_text;
+
+    #[test]
+    fn claude_exit_names_the_adapter_not_cursor() {
+        let msg = exit_error_text(true, None, "");
+        assert!(msg.contains("Claude ACP adapter"));
+        assert!(!msg.contains("agent login"));
+        // Adapter log lines mention "session" phases, never treat them as auth.
+        let msg = exit_error_text(true, Some("1".into()), "[session/create] phase=settings");
+        assert!(!msg.starts_with("AUTH_ERROR"));
+        let msg = exit_error_text(true, Some("1".into()), "Not logged in · Please run /login");
+        assert!(msg.starts_with("AUTH_ERROR:"));
+        assert!(!msg.contains("agent login"));
+    }
+
+    #[test]
+    fn cursor_exit_keeps_agent_login_hint() {
+        let msg = exit_error_text(false, None, "");
+        assert!(msg.contains("Cursor agent process"));
+        assert!(msg.contains("agent login"));
+        assert!(exit_error_text(false, None, "unauthorized").starts_with("AUTH_ERROR:"));
+    }
 }

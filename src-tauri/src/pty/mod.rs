@@ -1,15 +1,17 @@
 //! Embedded terminals. One PTY per id, streamed to the webview on a channel.
 
-mod launch;
-mod plans;
+pub(crate) mod launch;
+pub(crate) mod plans;
 mod session;
 mod shell;
 
-use crate::cli_detect::{agent_missing_message, resolve_agent_executable};
+use crate::provider::{
+    provider_for, CursorProvider, Provider, ProviderId, TerminalKind, TerminalLaunch,
+};
 use crate::paths::validate_working_folder;
+pub use crate::pty::launch::RunMode;
 use crate::pty::launch::{
-    deliver_prompt, handoff_terminal_prompt, plain_agent_args, role_agent_command, with_model,
-    RunMode,
+    deliver_prompt, handoff_terminal_prompt,
 };
 use crate::pty::plans::{cursor_plans_dir, newest_plan_since};
 use crate::pty::session::{PtyOutput, PtySession, SpawnSpec};
@@ -154,7 +156,18 @@ fn folder_name(cwd: &str) -> &str {
 }
 
 fn shell_snapshot(launch: &str) -> (String, RoleSnapshot, String) {
-    if launch == "cursor-cli" {
+    if launch == "claude-cli" {
+        (
+            "claude-cli".to_string(),
+            RoleSnapshot {
+                name: "Claude Code".to_string(),
+                template_version: 0,
+                mode: "agent".to_string(),
+                injection: "none".to_string(),
+            },
+            "#d97757".to_string(),
+        )
+    } else if launch == "cursor-cli" {
         (
             "cursor-cli".to_string(),
             RoleSnapshot {
@@ -200,10 +213,10 @@ pub fn shell_terminal_start(
     store: State<Mutex<StateStore>>,
     registry: State<Mutex<PtyRegistry>>,
 ) -> Result<TerminalStartResult, String> {
-    let launch = if input.launch == "cursor-cli" {
-        "cursor-cli"
-    } else {
-        "shell"
+    let launch = match input.launch.as_str() {
+        "cursor-cli" => "cursor-cli",
+        "claude-cli" => "claude-cli",
+        _ => "shell",
     };
     let cwd = match validate_working_folder(&input.cwd) {
         Ok(path) => path,
@@ -220,10 +233,10 @@ pub fn shell_terminal_start(
         }
     };
     let (role_id, snapshot, color) = shell_snapshot(launch);
-    let label = if launch == "cursor-cli" {
-        format!("Cursor CLI · {}", folder_name(&input.cwd))
-    } else {
-        format!("Terminal · {}", folder_name(&input.cwd))
+    let label = match launch {
+        "cursor-cli" => format!("Cursor CLI · {}", folder_name(&input.cwd)),
+        "claude-cli" => format!("Claude Code · {}", folder_name(&input.cwd)),
+        _ => format!("Terminal · {}", folder_name(&input.cwd)),
     };
     let configured = {
         let settings = settings.lock().map_err(|err| err.to_string())?;
@@ -244,25 +257,38 @@ pub fn shell_terminal_start(
         })?;
         crate::cursor_history::cli_chat_required(&root, &cwd.display().to_string(), id)?;
     }
-    let command = if launch == "cursor-cli" {
-        let program = resolve_agent_executable().ok_or_else(agent_missing_message)?;
-        let args = if let Some(id) = &resume_id {
-            crate::cli_launch::resume_agent_args(id)?
-        } else {
-            plain_agent_args()
+    let command = if launch == "claude-cli" {
+        let provider = {
+            let settings = settings.lock().map_err(|err| err.to_string())?;
+            provider_for(ProviderId::Claude, settings.providers())
         };
+        let model = crate::models::model_for_tab_provider(
+            &store,
+            &settings,
+            input.tab_id.as_deref(),
+            "claude-cli",
+            ProviderId::Claude,
+        )?;
+        provider.terminal_command(&TerminalLaunch {
+            kind: TerminalKind::Plain,
+            model: Some(model),
+        })?
+    } else if launch == "cursor-cli" {
         let model =
             crate::models::model_for_tab(&store, &settings, input.tab_id.as_deref(), "cursor-cli")?;
-        launch::ProgramArgs {
-            program: program.display().to_string(),
-            args: with_model(Some(&model), args),
-        }
+        let kind = match &resume_id {
+            Some(id) => TerminalKind::Resume {
+                session_id: id.clone(),
+            },
+            None => TerminalKind::Plain,
+        };
+        CursorProvider.terminal_command(&TerminalLaunch {
+            kind,
+            model: Some(model),
+        })?
     } else {
         let resolved = resolve_shell_for_host(&configured);
-        launch::ProgramArgs {
-            program: resolved.program,
-            args: resolved.args,
-        }
+        launch::ProgramArgs::new(resolved.program, resolved.args)
     };
     let tab_id = {
         let mut store = store.lock().map_err(|err| err.to_string())?;
@@ -285,6 +311,11 @@ pub fn shell_terminal_start(
                 },
                 merged_prompt: String::new(),
                 startup_prompt_sent: false,
+                provider: match launch {
+                    "cursor-cli" => Some(ProviderId::Cursor),
+                    "claude-cli" => Some(ProviderId::Claude),
+                    _ => None,
+                },
             },
         )?
     };
@@ -295,6 +326,7 @@ pub fn shell_terminal_start(
         SpawnSpec {
             program: command.program,
             args: command.args,
+            env: command.env,
             cwd,
             cols: input.cols,
             rows: input.rows,
@@ -375,8 +407,31 @@ pub fn role_terminal_start(
         let settings = settings.lock().map_err(|err| err.to_string())?;
         RunMode::parse(&settings.run_mode_for(&role.id))
     };
-    let program = resolve_agent_executable().ok_or_else(agent_missing_message)?;
-    let model = crate::models::model_for_tab(&store, &settings, input.tab_id.as_deref(), &role.id)?;
+    let provider = {
+        let store = store.lock().map_err(|err| err.to_string())?;
+        let settings = settings.lock().map_err(|err| err.to_string())?;
+        provider_for(
+            store.provider_for_start(input.tab_id.as_deref()),
+            settings.providers(),
+        )
+    };
+    let model = crate::models::model_for_tab_provider(
+        &store,
+        &settings,
+        input.tab_id.as_deref(),
+        &role.id,
+        provider.id(),
+    )?;
+    let role_launch = |prompt: Option<String>| TerminalLaunch {
+        kind: TerminalKind::Role {
+            role_id: role.id.clone(),
+            run_mode: mode,
+            prompt,
+        },
+        model: Some(model.clone()),
+    };
+    // Fail before the tab is saved when the CLI is missing.
+    provider.terminal_command(&role_launch(None))?;
     let tab_id = {
         let mut store = store.lock().map_err(|err| err.to_string())?;
         let title_answers = input.values.clone();
@@ -398,6 +453,7 @@ pub fn role_terminal_start(
                 answers: input.values.clone(),
                 merged_prompt: prompt.clone(),
                 startup_prompt_sent: true,
+                provider: Some(provider.id()),
             },
         )?
     };
@@ -406,13 +462,7 @@ pub fn role_terminal_start(
     if let Some(body) = &delivery.stored_body {
         std::fs::write(&file, body).map_err(|err| format!("prompt file: {err}"))?;
     }
-    let command = role_agent_command(
-        &program.display().to_string(),
-        &role.id,
-        mode,
-        Some(&model),
-        Some(&delivery.argument),
-    );
+    let command = provider.terminal_command(&role_launch(Some(delivery.argument.clone())))?;
     let mut registry = registry.lock().map_err(|err| err.to_string())?;
     let pid = open_session(
         &mut registry,
@@ -420,6 +470,7 @@ pub fn role_terminal_start(
         SpawnSpec {
             program: command.program,
             args: command.args,
+            env: command.env,
             cwd,
             cols: input.cols,
             rows: input.rows,
@@ -463,10 +514,9 @@ pub fn pty_open(
         let settings = settings.lock().map_err(|err| err.to_string())?;
         settings.terminal().shell.clone()
     };
-    let (program, mut args) = match input.launch.as_str() {
+    let (program, mut args, env) = match input.launch.as_str() {
         "cursor-cli" => {
-            let program = resolve_agent_executable().ok_or_else(agent_missing_message)?;
-            let args = if let Some(id) = input
+            let kind = if let Some(id) = input
                 .resume_session_id
                 .as_deref()
                 .map(str::trim)
@@ -476,52 +526,105 @@ pub fn pty_open(
                     "Cursor's home folder was not found, so this chat cannot be opened.".to_string()
                 })?;
                 crate::cursor_history::cli_chat_required(&root, &cwd.display().to_string(), id)?;
-                crate::cli_launch::resume_agent_args(id)?
+                TerminalKind::Resume {
+                    session_id: id.to_string(),
+                }
             } else {
-                plain_agent_args()
+                TerminalKind::Plain
             };
             let model =
                 crate::models::model_for_tab(&store, &settings, Some(&input.id), "cursor-cli")?;
-            (
-                program.display().to_string(),
-                with_model(Some(&model), args),
-            )
+            let command = CursorProvider.terminal_command(&TerminalLaunch {
+                kind,
+                model: Some(model),
+            })?;
+            (command.program, command.args, command.env)
+        }
+        "claude-cli" => {
+            if input
+                .resume_session_id
+                .as_deref()
+                .is_some_and(|id| !id.trim().is_empty())
+            {
+                return Err("Claude Code chats are resumed from Claude history (Phase 6).".to_string());
+            }
+            let provider = {
+                let settings = settings.lock().map_err(|err| err.to_string())?;
+                provider_for(ProviderId::Claude, settings.providers())
+            };
+            let model = crate::models::model_for_tab_provider(
+                &store,
+                &settings,
+                Some(&input.id),
+                "claude-cli",
+                ProviderId::Claude,
+            )?;
+            let command = provider.terminal_command(&TerminalLaunch {
+                kind: TerminalKind::Plain,
+                model: Some(model),
+            })?;
+            (command.program, command.args, command.env)
         }
         "role" => {
             let role_id = input.role_id.unwrap_or_default();
-            let model = crate::models::model_for_tab(&store, &settings, Some(&input.id), &role_id)?;
             let mode = {
                 let settings = settings.lock().map_err(|err| err.to_string())?;
                 RunMode::parse(&settings.run_mode_for(&role_id))
             };
-            let program = resolve_agent_executable().ok_or_else(agent_missing_message)?;
+            let provider = {
+                let store = store.lock().map_err(|err| err.to_string())?;
+                let settings = settings.lock().map_err(|err| err.to_string())?;
+                let id = store
+                    .tab_by_id(&input.id)
+                    .map(|tab| ProviderId::resolve(tab.provider))
+                    .unwrap_or(ProviderId::LEGACY);
+                provider_for(id, settings.providers())
+            };
+            let model = crate::models::model_for_tab_provider(
+                &store,
+                &settings,
+                Some(&input.id),
+                &role_id,
+                provider.id(),
+            )?;
+            let role_launch = |prompt: Option<String>| TerminalLaunch {
+                kind: TerminalKind::Role {
+                    role_id: role_id.clone(),
+                    run_mode: mode,
+                    prompt,
+                },
+                model: Some(model.clone()),
+            };
+            provider.terminal_command(&role_launch(None))?;
             let prompt = input
                 .prompt
                 .as_deref()
                 .map(str::trim)
                 .filter(|text| !text.is_empty());
-            let mut command_args =
-                with_model(Some(&model), launch::role_terminal_flags(&role_id, mode));
-            if let Some(text) = prompt {
-                let file = prompt_file(&app, &input.id)?;
-                let delivery = deliver_prompt(text, &file);
-                if let Some(body) = &delivery.stored_body {
-                    std::fs::write(&file, body).map_err(|err| format!("prompt file: {err}"))?;
+            let argument = match prompt {
+                Some(text) => {
+                    let file = prompt_file(&app, &input.id)?;
+                    let delivery = deliver_prompt(text, &file);
+                    if let Some(body) = &delivery.stored_body {
+                        std::fs::write(&file, body).map_err(|err| format!("prompt file: {err}"))?;
+                    }
+                    Some(delivery.argument)
                 }
-                command_args.push(delivery.argument);
-            }
-            (program.display().to_string(), command_args)
+                None => None,
+            };
+            let command = provider.terminal_command(&role_launch(argument))?;
+            (command.program, command.args, command.env)
         }
         _ => {
             let resolved = resolve_shell_for_host(&configured);
-            (resolved.program, resolved.args)
+            (resolved.program, resolved.args, Vec::new())
         }
     };
     let resuming = input
         .resume_session_id
         .as_deref()
         .is_some_and(|id| !id.trim().is_empty());
-    if input.launch == "cursor-cli" && !resuming {
+    if (input.launch == "cursor-cli" || input.launch == "claude-cli") && !resuming {
         if let Some(text) = input
             .prompt
             .as_deref()
@@ -538,6 +641,7 @@ pub fn pty_open(
         SpawnSpec {
             program,
             args,
+            env,
             cwd,
             cols: input.cols,
             rows: input.rows,
@@ -602,10 +706,29 @@ pub fn set_terminal_settings(
     Ok(settings.terminal().clone())
 }
 
+/// Newest plan file written since the terminal started, read-only from the
+/// tab's provider: `~/.cursor/plans` (Cursor) or `<configDir>/plans` (Claude).
 #[tauri::command]
-pub fn terminal_plan_file(started_at_ms: u64) -> Result<Option<PlanFileInfo>, String> {
+pub fn terminal_plan_file(
+    started_at_ms: u64,
+    tab_id: Option<String>,
+    settings: State<Mutex<SettingsStore>>,
+    store: State<Mutex<StateStore>>,
+) -> Result<Option<PlanFileInfo>, String> {
     let started = UNIX_EPOCH + Duration::from_millis(started_at_ms);
-    let found = newest_plan_since(&cursor_plans_dir(), started)?;
+    let dir = {
+        let store = store.lock().map_err(|err| err.to_string())?;
+        let settings = settings.lock().map_err(|err| err.to_string())?;
+        let id = tab_id
+            .as_deref()
+            .and_then(|id| store.tab_by_id(id))
+            .map(|tab| ProviderId::resolve(tab.provider))
+            .unwrap_or(ProviderId::LEGACY);
+        provider_for(id, settings.providers())
+            .plans_dir()
+            .unwrap_or_else(cursor_plans_dir)
+    };
+    let found = newest_plan_since(&dir, started)?;
     Ok(found.map(|plan| PlanFileInfo {
         path: plan.path.display().to_string(),
         name: plan.name,
@@ -621,5 +744,21 @@ pub fn terminal_plan_file(started_at_ms: u64) -> Result<Option<PlanFileInfo>, St
 pub fn kill_tab_pty(registry: &Mutex<PtyRegistry>, tab_id: &str) {
     if let Ok(mut registry) = registry.lock() {
         registry.kill_tab(tab_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claude_code_tile_is_its_own_launch() {
+        let (role_id, snapshot, _) = shell_snapshot("claude-cli");
+        assert_eq!(role_id, "claude-cli");
+        assert_eq!(snapshot.name, "Claude Code");
+        let (role_id, snapshot, _) = shell_snapshot("cursor-cli");
+        assert_eq!(role_id, "cursor-cli");
+        assert_eq!(snapshot.name, "Cursor CLI");
+        assert_eq!(shell_snapshot("shell").0, "terminal");
     }
 }

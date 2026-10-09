@@ -4,6 +4,7 @@ use crate::store::json_io::{read_json, write_json_atomic};
 use crate::store::state_types::{
     AppStateFile, PipelineRun, RoleSnapshot, TabRecord, TabSessionRef, STATE_SCHEMA_VERSION,
 };
+use crate::provider::ProviderId;
 use crate::template::template_hash;
 use chrono::Utc;
 use std::collections::HashMap;
@@ -13,14 +14,21 @@ use tauri::AppHandle;
 pub struct StateStore {
     pub path: PathBuf,
     pub data: AppStateFile,
+    /// Settings `providers.default`, given to new agent tabs. Not saved in
+    /// `state.json`; `lib.rs` sets it from settings on startup.
+    pub new_tab_provider: ProviderId,
 }
 
 impl StateStore {
     pub fn load_or_default(app: &AppHandle) -> Result<Self, String> {
         let dir = crate::data_dir::app_data_dir(app).path;
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let path = dir.join("state.json");
-        let data = if path.exists() {
+        Self::open_path(dir.join("state.json"))
+    }
+
+    /// Load `state.json` at `path` (missing file = empty state).
+    pub fn open_path(path: PathBuf) -> Result<Self, String> {
+        let mut data = if path.exists() {
             let loaded: AppStateFile = read_json(&path)?;
             if loaded.schema_version != STATE_SCHEMA_VERSION {
                 return Err(format!(
@@ -32,7 +40,37 @@ impl StateStore {
         } else {
             AppStateFile::default()
         };
-        Ok(Self { path, data })
+        normalize_provider_sessions(&mut data);
+        Ok(Self {
+            path,
+            data,
+            new_tab_provider: ProviderId::DEFAULT,
+        })
+    }
+
+    /// Provider a session start for `tab_id` would use: the tab's saved
+    /// provider (legacy tabs resolve to Cursor), or the default for a tab
+    /// that does not exist yet.
+    pub fn provider_for_start(&self, tab_id: Option<&str>) -> ProviderId {
+        match tab_id.and_then(|id| self.tab_by_id(id)) {
+            Some(tab) => ProviderId::resolve(tab.provider),
+            None => self.new_tab_provider,
+        }
+    }
+
+    /// Start-card provider chip. A running tab keeps its provider.
+    pub fn set_tab_provider(&mut self, tab_id: &str, provider: ProviderId) -> Result<(), String> {
+        let tab = self
+            .data
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == tab_id)
+            .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
+        if tab.phase == "running" {
+            return Err("Stop this tab before switching its provider.".to_string());
+        }
+        tab.provider = Some(provider);
+        self.save()
     }
 
     pub fn save(&mut self) -> Result<(), String> {
@@ -44,6 +82,7 @@ impl StateStore {
     }
 
     /// Promote an existing draft/awaiting tab to `running`, or create a new tab if none applies.
+    #[allow(clippy::too_many_arguments)]
     pub fn promote_tab_to_running(
         &mut self,
         preferred_tab_id: Option<&str>,
@@ -52,6 +91,7 @@ impl StateStore {
         cwd: &str,
         merged_prompt: &str,
         session: TabSessionRef,
+        provider: ProviderId,
     ) -> Result<String, String> {
         let reuse_id = resolve_tab_for_session_start(self, preferred_tab_id)?;
         let snapshot = RoleSnapshot {
@@ -87,6 +127,9 @@ impl StateStore {
                 .map_err(|err| err.to_string())?
                 .as_store_str()
                 .to_string();
+            tab.provider = Some(provider);
+            tab.sessions
+                .set(provider, Some(session.acp_session_id.clone()));
             tab.session = Some(session);
             self.data.active_tab_id = Some(tab_id.clone());
             self.save()?;
@@ -94,6 +137,8 @@ impl StateStore {
         }
 
         let tab_id = new_tab_id();
+        let mut sessions = crate::provider::ProviderSessions::default();
+        sessions.set(provider, Some(session.acp_session_id.clone()));
         let record = TabRecord {
             id: tab_id.clone(),
             label,
@@ -116,6 +161,8 @@ impl StateStore {
             custom_label: false,
             worktree: None,
             pipeline_run_id: None,
+            provider: Some(provider),
+            sessions,
         };
         self.data.tabs.push(record);
         self.data.active_tab_id = Some(tab_id.clone());
@@ -246,6 +293,8 @@ impl StateStore {
                 model: tab.model.clone(),
                 custom_label: tab.custom_label,
                 worktree: tab.worktree.clone(),
+                provider: tab.provider,
+                sessions: tab.sessions.clone(),
             },
         );
         self.data.closed_tabs.truncate(15);
@@ -340,6 +389,8 @@ impl StateStore {
             custom_label: closed.custom_label,
             worktree: closed.worktree.clone(),
             pipeline_run_id: None,
+            provider: closed.provider,
+            sessions: closed.sessions,
         };
         let id = record.id.clone();
         self.data.tabs.push(record);
@@ -479,6 +530,8 @@ impl StateStore {
             custom_label: false,
             worktree: None,
             pipeline_run_id: pipeline_run_id.map(|id| id.to_string()),
+            provider: Some(self.new_tab_provider),
+            sessions: Default::default(),
         };
         self.data.tabs.push(record);
         if make_active {
@@ -533,6 +586,8 @@ impl StateStore {
             custom_label: false,
             worktree: None,
             pipeline_run_id: Some(run_id.to_string()),
+            provider: None,
+            sessions: Default::default(),
         };
         self.data.tabs.push(record);
         self.data.active_tab_id = Some(tab_id.clone());
@@ -687,6 +742,8 @@ impl StateStore {
             custom_label: false,
             worktree: None,
             pipeline_run_id: None,
+            provider: None,
+            sessions: Default::default(),
         };
         apply_terminal_draft(&mut record, &draft);
         self.data.tabs.push(record);
@@ -751,6 +808,8 @@ impl StateStore {
                 custom_label: true,
                 worktree: item.worktree.clone(),
                 pipeline_run_id: None,
+                provider: item.provider,
+                sessions: Default::default(),
             };
             self.data.tabs.push(record);
             ids.push(tab_id);
@@ -827,6 +886,8 @@ pub struct TerminalTabDraft {
     pub answers: HashMap<String, String>,
     pub merged_prompt: String,
     pub startup_prompt_sent: bool,
+    /// Provider of the CLI this terminal runs (`None` for a plain shell).
+    pub provider: Option<ProviderId>,
 }
 
 fn apply_terminal_draft(tab: &mut TabRecord, draft: &TerminalTabDraft) {
@@ -845,6 +906,28 @@ fn apply_terminal_draft(tab: &mut TabRecord, draft: &TerminalTabDraft) {
     tab.color = Some(draft.color.clone());
     tab.startup_prompt_sent = draft.startup_prompt_sent;
     tab.session = None;
+    if draft.provider.is_some() {
+        tab.provider = draft.provider;
+    }
+}
+
+/// Copy a legacy single session id into `sessions.cursor`. Only records
+/// written before providers existed have a session but no `sessions`; their
+/// ids are always Cursor ids, even if the tab is switched to Claude later
+/// (a Cursor id must never resume under Claude).
+pub(crate) fn normalize_provider_sessions(data: &mut AppStateFile) {
+    for tab in &mut data.tabs {
+        if tab.sessions.is_empty() {
+            if let Some(session) = &tab.session {
+                tab.sessions.cursor = Some(session.acp_session_id.clone());
+            }
+        }
+    }
+    for closed in &mut data.closed_tabs {
+        if closed.sessions.is_empty() {
+            closed.sessions.cursor = closed.acp_session_id.clone();
+        }
+    }
 }
 
 /// Millisecond ids, bumped so two tabs made in the same millisecond still get
@@ -1009,6 +1092,7 @@ mod tests {
         let mut store = StateStore {
             path: path.clone(),
             data: AppStateFile::default(),
+            new_tab_provider: crate::provider::ProviderId::DEFAULT,
         };
         let first = store.create_draft_tab(&role, "/tmp/a", true, None).unwrap();
         let second = store.create_draft_tab(&role, "/tmp/b", true, None).unwrap();
@@ -1095,6 +1179,7 @@ mod tests {
         let mut store = StateStore {
             path: dir.join("state.json"),
             data: AppStateFile::default(),
+            new_tab_provider: crate::provider::ProviderId::DEFAULT,
         };
         let wt = crate::worktree::WorktreeRef {
             repo_root: "/r/app".to_string(),
@@ -1146,6 +1231,7 @@ mod tests {
         let mut store = StateStore {
             path: path.clone(),
             data: AppStateFile::default(),
+            new_tab_provider: crate::provider::ProviderId::DEFAULT,
         };
         let id = store.create_draft_tab(&role, "/tmp/app", true, None).unwrap();
         store.set_tab_label(&id, "  Auth bug  ").unwrap();
@@ -1170,6 +1256,7 @@ mod tests {
                     injection_pending: false,
                     injected_at: None,
                 },
+                crate::provider::ProviderId::Cursor,
             )
             .unwrap();
         assert_eq!(store.tab_by_id(&id).unwrap().label, "Auth bug");
@@ -1211,6 +1298,7 @@ mod tests {
         let mut store = StateStore {
             path,
             data: AppStateFile::default(),
+            new_tab_provider: crate::provider::ProviderId::DEFAULT,
         };
         let draft_id = store.create_draft_tab(&role, "/tmp/proj", true, None).unwrap();
         let answers = HashMap::from([
@@ -1231,6 +1319,7 @@ mod tests {
                 "/tmp/proj",
                 "merged",
                 session,
+                crate::provider::ProviderId::Cursor,
             )
             .unwrap();
         assert_eq!(running_id, draft_id);
@@ -1264,6 +1353,7 @@ mod tests {
         let mut store = StateStore {
             path: dir.join("state.json"),
             data: AppStateFile::default(),
+            new_tab_provider: crate::provider::ProviderId::DEFAULT,
         };
         let id = store.create_draft_tab(&role, r"C:\Work\App", true, None).unwrap();
         store.close_tab(&id).unwrap();
@@ -1302,6 +1392,7 @@ mod tests {
         let mut store = StateStore {
             path: dir.join("state.json"),
             data: AppStateFile::default(),
+            new_tab_provider: crate::provider::ProviderId::DEFAULT,
         };
         let older = store.create_draft_tab(&role, "/w/a", true, None).unwrap();
         let newer = store.create_draft_tab(&role, "/w/b", true, None).unwrap();
@@ -1341,6 +1432,7 @@ mod tests {
         let mut store = StateStore {
             path: dir.join("state.json"),
             data: AppStateFile::default(),
+            new_tab_provider: crate::provider::ProviderId::DEFAULT,
         };
         let id = store.create_draft_tab(&role, r"C:\Work\App", true, None).unwrap();
         store
@@ -1356,6 +1448,7 @@ mod tests {
                     injection_pending: false,
                     injected_at: None,
                 },
+                crate::provider::ProviderId::Cursor,
             )
             .unwrap();
         store
@@ -1412,6 +1505,7 @@ mod tests {
         let mut store = StateStore {
             path: dir.join("state.json"),
             data: AppStateFile::default(),
+            new_tab_provider: crate::provider::ProviderId::DEFAULT,
         };
         let before = store.create_draft_tab(&role, "/w/old", true, None).unwrap();
         let snapshot = store.tab_by_id(&before).unwrap().role_snapshot.clone();
@@ -1430,6 +1524,7 @@ mod tests {
                 ("resumeSessionId".to_string(), "nope".to_string()),
             ]),
             worktree: None,
+            provider: None,
         };
         let shell = WorkspaceTab {
             label: "Shell · api".into(),
@@ -1443,6 +1538,7 @@ mod tests {
             model: None,
             answers: HashMap::new(),
             worktree: None,
+            provider: None,
         };
         let ws = Workspace {
             id: "ws_1".into(),

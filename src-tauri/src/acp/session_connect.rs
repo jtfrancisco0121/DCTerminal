@@ -1,4 +1,5 @@
 use super::connection::{default_io_timeout, AcpConnection, LineDispatch};
+use crate::provider::{Provider, SessionOpts};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::time::Duration;
@@ -126,9 +127,74 @@ pub fn model_requests(
     requests
 }
 
-/// FR-003–004, FR-009: initialize → authenticate → session/new → set_mode.
+/// The provider's auth step (Cursor: `authenticate cursor_login`; Claude:
+/// none). An auth failure becomes `AUTH_ERROR: …`.
+fn run_auth_step(conn: &mut AcpConnection, provider: &dyn Provider) -> Result<(), String> {
+    let Some((method, params)) = provider.auth_step() else {
+        return Ok(());
+    };
+    match conn.call(2, &method, params, default_io_timeout()) {
+        Ok(_) => Ok(()),
+        Err(e) if is_auth_failure(&e) => Err(format!("AUTH_ERROR: {e}")),
+        Err(e) => Err(e),
+    }
+}
+
+/// `session/new` params, with the provider's `_meta` when it has one.
+pub fn new_session_params(provider: &dyn Provider, cwd: &Path, opts: &SessionOpts) -> Value {
+    let mut params = json!({
+        "cwd": cwd.display().to_string(),
+        "mcpServers": []
+    });
+    if let Some(meta) = provider.session_new_meta(opts) {
+        params["_meta"] = meta;
+    }
+    params
+}
+
+/// Mode ids the session advertised (`modes.availableModes[].id`).
+pub fn advertised_modes(result: &Value) -> Vec<String> {
+    result
+        .get("modes")
+        .and_then(|m| m.get("availableModes"))
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(|m| m.get("id").and_then(Value::as_str).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Claude: a mode the session did not advertise (bypass disabled, `auto`
+/// unavailable for the account) falls back to `default`; requests are
+/// auto-approved either way. Cursor keeps the caller's mode.
+pub fn mode_to_set(provider: &dyn Provider, wanted: &str, result: &Value) -> String {
+    if provider.id() != crate::provider::ProviderId::Claude {
+        return wanted.to_string();
+    }
+    let available = advertised_modes(result);
+    if available.is_empty() || available.iter().any(|m| m == wanted) {
+        wanted.to_string()
+    } else {
+        "default".to_string()
+    }
+}
+
+/// Claude has no `authenticate` step, so a missing login surfaces as an
+/// error from `session/new` / `session/load`; mark it like Cursor's.
+fn mark_auth(provider: &dyn Provider, err: String) -> String {
+    if provider.id() == crate::provider::ProviderId::Claude && is_auth_failure(&err) {
+        format!("AUTH_ERROR: {err}")
+    } else {
+        err
+    }
+}
+
+/// FR-003–004, FR-009: initialize → (provider auth) → session/new → set_mode.
 pub fn handshake(
     conn: &mut AcpConnection,
+    provider: &dyn Provider,
     cwd: &Path,
     mode_id: &str,
 ) -> Result<(String, String, SessionModels), String> {
@@ -136,28 +202,16 @@ pub fn handshake(
 
     conn.call(1, "initialize", initialize_params(), timeout)?;
 
-    match conn.call(
-        2,
-        "authenticate",
-        json!({ "methodId": "cursor_login" }),
-        timeout,
-    ) {
-        Ok(_) => {}
-        Err(e) if is_auth_failure(&e) => {
-            return Err(format!("AUTH_ERROR: {e}"));
-        }
-        Err(e) => return Err(e),
-    }
+    run_auth_step(conn, provider)?;
 
-    let new_result = conn.call(
-        3,
-        "session/new",
-        json!({
-            "cwd": cwd.display().to_string(),
-            "mcpServers": []
-        }),
-        timeout,
-    )?;
+    let new_result = conn
+        .call(
+            3,
+            "session/new",
+            new_session_params(provider, cwd, &SessionOpts::default()),
+            timeout,
+        )
+        .map_err(|e| mark_auth(provider, e))?;
 
     let session_id = new_result
         .get("sessionId")
@@ -166,6 +220,7 @@ pub fn handshake(
         .to_string();
 
     let models = parse_session_models(&new_result);
+    let mode_id = mode_to_set(provider, mode_id, &new_result);
 
     conn.call(
         4,
@@ -177,13 +232,14 @@ pub fn handshake(
         timeout,
     )?;
 
-    Ok((session_id, mode_id.to_string(), models))
+    Ok((session_id, mode_id, models))
 }
 
 /// Resume one ACP session. Caller must already know `loadSession` may be false;
 /// this checks the live `initialize` result and refuses `session/load` when it is.
 pub fn handshake_load(
     conn: &mut AcpConnection,
+    provider: &dyn Provider,
     cwd: &Path,
     mode_id: &str,
     session_id: &str,
@@ -192,35 +248,27 @@ pub fn handshake_load(
     let init = conn.call(1, "initialize", initialize_params(), timeout)?;
     let caps = capabilities_from_initialize(&init);
     if !caps.load_session {
-        return Err(
-            "LOAD_UNSUPPORTED: this Cursor CLI did not advertise agentCapabilities.loadSession, so session/load was not sent"
-                .to_string(),
-        );
+        return Err(format!(
+            "LOAD_UNSUPPORTED: this {} agent did not advertise agentCapabilities.loadSession, so session/load was not sent",
+            provider.id().label()
+        ));
     }
     // `session/resume` is a different method. This path only sends `session/load`.
 
-    match conn.call(
-        2,
-        "authenticate",
-        json!({ "methodId": "cursor_login" }),
-        timeout,
-    ) {
-        Ok(_) => {}
-        Err(e) if is_auth_failure(&e) => {
-            return Err(format!("AUTH_ERROR: {e}"));
-        }
-        Err(e) => return Err(e),
-    }
+    run_auth_step(conn, provider)?;
 
     let mut dispatch = LineDispatch::default();
-    let load_result = conn.call_with_dispatch(
-        3,
-        "session/load",
-        load_session_params(session_id, &cwd.display().to_string()),
-        LOAD_TIMEOUT,
-        &mut dispatch,
-        None,
-    )?;
+    let load_result = conn
+        .call_with_dispatch(
+            3,
+            "session/load",
+            load_session_params(session_id, &cwd.display().to_string()),
+            LOAD_TIMEOUT,
+            &mut dispatch,
+            None,
+        )
+        .map_err(|e| mark_auth(provider, e))?;
+    let mode_id = mode_to_set(provider, mode_id, &load_result);
 
     conn.call(
         4,
@@ -234,7 +282,7 @@ pub fn handshake_load(
 
     Ok((
         session_id.to_string(),
-        mode_id.to_string(),
+        mode_id,
         dispatch.notifications,
         parse_session_models(&load_result),
     ))
@@ -335,6 +383,16 @@ mod tests {
         let models = parse_session_models(&json!({ "sessionId": "s" }));
         assert_eq!(models, SessionModels::default());
         assert!(model_requests(&models, "s", "gpt-5").is_empty());
+    }
+
+    #[test]
+    fn cursor_session_new_has_no_meta() {
+        let params = new_session_params(
+            &crate::provider::CursorProvider,
+            Path::new("/w/app"),
+            &SessionOpts::default(),
+        );
+        assert_eq!(params, json!({ "cwd": "/w/app", "mcpServers": [] }));
     }
 
     #[test]

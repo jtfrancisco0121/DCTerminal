@@ -3,6 +3,7 @@ use crate::commands::dev_session::{DevSessionInfo, LiveSession, SessionRegistry}
 use crate::commands::prompt_worker::spawn_prompt_turn;
 use crate::orchestrator::{injection_strategy_from_role, InjectionStrategy};
 use crate::paths::{same_folder_warning, validate_working_folder};
+use crate::provider::{provider_for, ProviderId, SharedProvider};
 use crate::session_id::{session_start_bind, SessionStartBind};
 use crate::store::{FormsStore, RolesStore, StateStore, TabSessionRef};
 use crate::template::{merge_role_prompt, FieldError};
@@ -120,6 +121,25 @@ pub fn role_session_start(
         }
     };
 
+    let provider = {
+        let store = state_store.lock().map_err(|e| e.to_string())?;
+        let settings = settings.lock().map_err(|e| e.to_string())?;
+        provider_for(
+            store.provider_for_start(tab_id.as_deref()),
+            settings.providers(),
+        )
+    };
+    if provider.id() == ProviderId::Claude {
+        // Missing `claude` or adapter: say which and how to install it
+        // before the tab is touched.
+        if let Err(message) = provider.acp_command(None) {
+            return Ok(empty_start(vec![FieldError {
+                key: "_cli".to_string(),
+                message,
+            }]));
+        }
+    }
+
     let strategy = injection_strategy_from_role(&role.injection);
     let strategy_label = match strategy {
         InjectionStrategy::SendOnStart => "send_on_start",
@@ -139,9 +159,26 @@ pub fn role_session_start(
         }
     }
 
-    let mode_id = load_mode_id(&state_store, tab_id.as_deref(), &bind, &role.default_mode)?;
-    let model = crate::models::model_for_tab(&state_store, &settings, tab_id.as_deref(), &role.id)?;
-    let (client, replay_notes, model_via) = match connect_client(&path, &mode_id, &bind, &model) {
+    // Claude: the per-role mode table (Decisions), never the Cursor mode.
+    let mode_id = if provider.id() == ProviderId::Claude {
+        provider.mode_for_role(&role.id, &role.default_mode, &[])
+    } else {
+        load_mode_id(&state_store, tab_id.as_deref(), &bind, &role.default_mode)?
+    };
+    let model = crate::models::model_for_tab_provider(
+        &state_store,
+        &settings,
+        tab_id.as_deref(),
+        &role.id,
+        provider.id(),
+    )?;
+    let (client, replay_notes, model_via) = match connect_client(
+        provider.clone(),
+        &path,
+        &mode_id,
+        &bind,
+        &model,
+    ) {
         Err(e) if e.starts_with("AUTH_ERROR:") || e.contains("AUTH_ERROR:") => {
             finish_starting(&state, &start_key);
             let msg = e
@@ -152,12 +189,10 @@ pub fn role_session_start(
                 .to_string();
             return Ok(empty_start(vec![FieldError {
                 key: "_auth".to_string(),
-                message: format!(
-                    "Cursor CLI is not authenticated. Run `agent login` in a terminal, then Retry. ({msg})"
-                ),
+                message: provider.auth_error_message(&msg),
             }]));
         }
-        Err(e) if is_cli_missing(&e) => {
+        Err(e) if is_cli_missing(&e) || e == provider.missing_message() => {
             finish_starting(&state, &start_key);
             return Ok(empty_start(vec![FieldError {
                 key: "_cli".to_string(),
@@ -219,6 +254,7 @@ pub fn role_session_start(
             &info.cwd,
             &merged_text,
             session_ref,
+            provider.id(),
         ) {
             Ok(id) => id,
             Err(err) => {
@@ -322,16 +358,19 @@ fn load_mode_id(
 }
 
 fn connect_client(
+    provider: SharedProvider,
     path: &std::path::Path,
     mode_id: &str,
     bind: &SessionStartBind,
     model: &str,
 ) -> Result<(AcpClient, Vec<Value>, ModelVia), String> {
     match bind {
-        SessionStartBind::CreateNew => AcpClient::connect_with_model(path, mode_id, Some(model))
-            .map(|(client, via)| (client, Vec::new(), via)),
+        SessionStartBind::CreateNew => {
+            AcpClient::connect_with_model(provider, path, mode_id, Some(model))
+                .map(|(client, via)| (client, Vec::new(), via))
+        }
         SessionStartBind::LoadExisting { session_id } => {
-            AcpClient::load_with_model(path, mode_id, session_id, Some(model), false)
+            AcpClient::load_with_model(provider, path, mode_id, session_id, Some(model), false)
         }
     }
 }

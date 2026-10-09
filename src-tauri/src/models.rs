@@ -60,6 +60,47 @@ pub fn valid_model_id(id: &str) -> bool {
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | ':' | '/'))
 }
 
+/// Claude model aliases `claude --model` and the adapter accept.
+const CLAUDE_ALIASES: &[&str] = &[
+    "default", "opus", "sonnet", "haiku", "fable", "opusplan", "best",
+];
+const CLAUDE_FAMILIES: &[&str] = &["opus", "sonnet", "haiku", "fable"];
+
+/// A Claude model id: an alias (`default`, `opus`, `sonnet`, `haiku`, …) or a
+/// full name `claude-<family>-<version…>`, each optionally with the `[1m]`
+/// context suffix the adapter reports (e.g. `opus[1m]`). Cursor ids such as
+/// `composer-2.5`, `gpt-5`, `auto` or `claude-4.5-sonnet` are not Claude ids.
+pub fn is_claude_model_id(id: &str) -> bool {
+    let id = id.trim();
+    let base = id.strip_suffix("[1m]").unwrap_or(id);
+    if base.is_empty() || base.len() > MAX_ID_CHARS {
+        return false;
+    }
+    if CLAUDE_ALIASES.contains(&base) {
+        return true;
+    }
+    let Some(rest) = base.strip_prefix("claude-") else {
+        return false;
+    };
+    let Some((family, version)) = rest.split_once('-') else {
+        return false;
+    };
+    CLAUDE_FAMILIES.contains(&family)
+        && version.chars().next().is_some_and(|ch| ch.is_ascii_digit())
+        && version
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '.' | '-'))
+}
+
+/// Model for a Claude process: the id when it is a Claude id, else `default`
+/// (the account's default model; no `--model` flag is passed for it).
+pub fn claude_model_or_default(raw: Option<&str>) -> String {
+    match raw.map(str::trim).filter(|id| is_claude_model_id(id)) {
+        Some(id) => id.to_string(),
+        None => "default".to_string(),
+    }
+}
+
 pub fn effective_model(settings: &ModelSettings, role_id: &str, tab_model: Option<&str>) -> String {
     if let Some(model) = tab_model.map(str::trim).filter(|m| valid_model_id(m)) {
         return model.to_string();
@@ -422,9 +463,78 @@ pub fn model_for_tab(
     Ok(settings.effective_model(&role, tab_model.as_deref()))
 }
 
+/// Like [`model_for_tab`], but from the provider's own model settings
+/// (Claude: `models.claude`, default `default`).
+pub fn model_for_tab_provider(
+    store: &Mutex<StateStore>,
+    settings: &Mutex<SettingsStore>,
+    tab_id: Option<&str>,
+    role_id: &str,
+    provider: crate::provider::ProviderId,
+) -> Result<String, String> {
+    if provider == crate::provider::ProviderId::Cursor {
+        return model_for_tab(store, settings, tab_id, role_id);
+    }
+    let (role, tab_model) = {
+        let store = store.lock().map_err(|err| err.to_string())?;
+        let tab = tab_id.and_then(|id| store.tab_by_id(id));
+        let role = tab
+            .map(|t| t.role_id.clone())
+            .filter(|r| !r.is_empty() && role_id.is_empty())
+            .unwrap_or_else(|| role_id.to_string());
+        (role, tab.and_then(|t| t.model.clone()))
+    };
+    let settings = settings.lock().map_err(|err| err.to_string())?;
+    // Never let a Cursor id (old tab override, role default) reach Claude.
+    let tab_model = tab_model.filter(|id| is_claude_model_id(id));
+    let picked = effective_model(settings.models_for(provider), &role, tab_model.as_deref());
+    Ok(claude_model_or_default(Some(&picked)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_ids_are_told_apart_from_cursor_ids() {
+        for id in [
+            "default",
+            "opus",
+            "sonnet",
+            "haiku",
+            "fable",
+            "opus[1m]",
+            "claude-fable-5[1m]",
+            "claude-opus-4-8",
+            "claude-sonnet-4-5-20250929",
+        ] {
+            assert!(is_claude_model_id(id), "{id}");
+        }
+        for id in [
+            "composer-2.5",
+            "composer-2.5-fast",
+            "gpt-5",
+            "auto",
+            "sonnet-4.5-thinking",
+            "claude-4.5-sonnet",
+            "claude-",
+            "claude-opus",
+            "--settings",
+            "opus [1m]",
+            "",
+        ] {
+            assert!(!is_claude_model_id(id), "{id}");
+        }
+    }
+
+    #[test]
+    fn non_claude_models_fall_back_to_default() {
+        assert_eq!(claude_model_or_default(Some("composer-2.5")), "default");
+        assert_eq!(claude_model_or_default(Some("gpt-5")), "default");
+        assert_eq!(claude_model_or_default(None), "default");
+        assert_eq!(claude_model_or_default(Some(" opus ")), "opus");
+        assert_eq!(claude_model_or_default(Some("opus[1m]")), "opus[1m]");
+    }
     use std::collections::HashMap;
 
     const SAMPLE: &str = "Available models\n\

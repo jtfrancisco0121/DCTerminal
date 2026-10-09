@@ -69,3 +69,12 @@ Captured on JT's Mac with `approvalMode: allowlist` and an empty shell allowlist
 ### MCP
 
 MCP permission payloads are still **unverified** on a live CLI. The classifier keeps `mcp_signal` (server fields, `kind: mcp`, titles like `mcp:…`) as a best-effort signal. Do not treat MCP auto-allow as proven until a capture lands in `fixtures/acp/permissions/`.
+
+## Claude Code (claude-agent-acp)
+
+Claude chat tabs auto-answer every `session/request_permission` with the `allow_once` option and never pick `allow_always`. The one exception is `ExitPlanMode` in a Planner tab, which shows the card.
+
+With **Record permission payloads** on, these auto-answered requests are recorded too.
+
+What the adapter sent in a first live capture is in `docs/claude-acp-observed.md` (fixtures in `fixtures/acp/claude/`). That capture had no tool use, so Claude permission payloads are still to be recorded.
+

@@ -50,6 +50,92 @@ pub struct PermissionAutoEvent {
     pub line: String,
 }
 
+/// Claude `ExitPlanMode` ("Ready to code?"): the plan to approve.
+pub fn is_exit_plan_mode(params: &Value) -> bool {
+    let call = params.get("toolCall").unwrap_or(&Value::Null);
+    let title = call.get("title").and_then(Value::as_str).unwrap_or("");
+    call.get("kind").and_then(Value::as_str) == Some("switch_mode")
+        || title.contains("Ready to code")
+        || title.contains("ExitPlanMode")
+        || call
+            .get("rawInput")
+            .and_then(|raw| raw.get("plan"))
+            .is_some()
+}
+
+/// `{outcome: selected, optionId}` for the request's `allow_once` option.
+/// Never `allow_always` (that writes a rule into the project's
+/// `.claude/settings.local.json`), never a reject.
+pub fn allow_once_result(params: &Value) -> Option<Value> {
+    let option = params
+        .get("options")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|opt| opt.get("kind").and_then(Value::as_str) == Some("allow_once"))?;
+    let id = option.get("optionId").and_then(Value::as_str)?;
+    Some(json!({ "outcome": { "outcome": "selected", "optionId": id } }))
+}
+
+fn is_planner(role_id: &str) -> bool {
+    matches!(
+        role_id.trim().to_ascii_lowercase().replace('-', "_").as_str(),
+        "role_planner" | "planner"
+    )
+}
+
+/// Claude tabs (Decisions 4): every permission request is answered
+/// `allow_once` without a card. A Planner's `ExitPlanMode` is the plan to
+/// approve, so it goes to the card. A request with no `allow_once` option
+/// also goes to the card rather than guessing.
+pub fn stage_claude_permission_request(
+    app: &AppHandle,
+    tab_id: &str,
+    session_id: &str,
+    request: &Value,
+    state: &Mutex<SessionRegistry>,
+) -> Result<Option<Value>, String> {
+    let params = request.get("params").cloned().unwrap_or(Value::Null);
+    let role_id = {
+        let guard = state.lock().map_err(|e| e.to_string())?;
+        match guard.get(tab_id) {
+            Some(session) => session.role_id.clone(),
+            None => return Ok(Some(cancelled_permission_result())),
+        }
+    };
+    let exit_plan = is_exit_plan_mode(&params);
+    let answer = if exit_plan && is_planner(&role_id) {
+        None
+    } else {
+        allow_once_result(&params)
+    };
+    let Some(result) = answer else {
+        return stage_permission_request(app, tab_id, session_id, request, state);
+    };
+    capture_permission_payload(app, tab_id, &role_id, request, None);
+    let json_rpc_id = request.get("id").and_then(Value::as_u64).unwrap_or(0);
+    let title = params
+        .get("toolCall")
+        .and_then(|call| call.get("title"))
+        .and_then(Value::as_str)
+        .unwrap_or("Claude request")
+        .to_string();
+    let _ = app.emit(
+        PERMISSION_AUTO_EVENT,
+        PermissionAutoEvent {
+            tab_id: tab_id.to_string(),
+            session_id: session_id.to_string(),
+            json_rpc_id,
+            title: title.clone(),
+            tool_class: "claude".to_string(),
+            display_kind: if exit_plan { "plan" } else { "tool" }.to_string(),
+            network: false,
+            decision: "allow-once".to_string(),
+            line: format!("Allowed once (full permissions): {title}"),
+        },
+    );
+    Ok(Some(result))
+}
+
 /// Apply the role policy. `Ok(Some(result))` is an immediate JSON-RPC reply.
 /// `Ok(None)` means the UI must answer; the id is queued on the tab.
 pub fn stage_permission_request(
@@ -509,6 +595,34 @@ fn note_capture_error(app: &AppHandle, err: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_auto_answer_picks_allow_once_never_always() {
+        let params = json!({
+            "toolCall": { "title": "`ls`", "kind": "execute" },
+            "options": [
+                { "optionId": "allow_always", "kind": "allow_always", "name": "Always allow" },
+                { "optionId": "allow", "kind": "allow_once", "name": "Allow" },
+                { "optionId": "reject", "kind": "reject_once", "name": "Reject" }
+            ]
+        });
+        assert_eq!(
+            allow_once_result(&params).unwrap(),
+            json!({ "outcome": { "outcome": "selected", "optionId": "allow" } })
+        );
+        let only_always = json!({ "options": [ { "optionId": "a", "kind": "allow_always" } ] });
+        assert!(allow_once_result(&only_always).is_none());
+    }
+
+    #[test]
+    fn detects_exit_plan_mode() {
+        assert!(is_exit_plan_mode(&json!({ "toolCall": { "title": "Ready to code?" } })));
+        assert!(is_exit_plan_mode(&json!({ "toolCall": { "kind": "switch_mode" } })));
+        assert!(is_exit_plan_mode(&json!({ "toolCall": { "rawInput": { "plan": "# P" } } })));
+        assert!(!is_exit_plan_mode(&json!({ "toolCall": { "title": "`ls`", "kind": "execute" } })));
+        assert!(is_planner("role_planner"));
+        assert!(!is_planner("role_plan_reviewer"));
+    }
 
     #[test]
     fn parses_question_choices_from_fixture_shape() {

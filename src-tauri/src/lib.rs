@@ -11,6 +11,7 @@ mod orchestrator;
 mod paths;
 mod permissions;
 mod process_tree;
+pub mod provider;
 mod pty;
 pub mod roles;
 mod session_id;
@@ -41,7 +42,8 @@ use commands::{
     validate_and_preview, SessionRegistry,
 };
 use commands::{changes_file_diff, changes_list, changes_revert, changes_snapshot, ChangesRoot};
-use commands::{first_run_complete, first_run_status};
+use commands::{first_run_complete, first_run_status, provider_status};
+use commands::{get_provider_settings, set_provider_settings, set_tab_provider};
 use commands::{git_repo_info, worktree_tab_check, worktree_tab_new, worktree_tab_remove};
 use commands::{
     prompt_clear_recent, prompt_delete, prompt_library_get, prompt_mark_used, prompt_record_send,
@@ -106,6 +108,7 @@ pub fn run() {
             let handoff_store = HandoffStore::open(&data_dir)?;
             let prompt_store = PromptStore::open(&data_dir)?;
             let workspace_store = WorkspaceStore::open(&data_dir)?;
+            state_store.new_tab_provider = settings_store.default_provider();
             let known_tabs: Vec<String> = state_store
                 .data
                 .tabs
@@ -139,6 +142,10 @@ pub fn run() {
             cli_login_status,
             first_run_status,
             first_run_complete,
+            get_provider_settings,
+            provider_status,
+            set_provider_settings,
+            set_tab_provider,
             probe_acp,
             probe_acp_handshake,
             list_roles,

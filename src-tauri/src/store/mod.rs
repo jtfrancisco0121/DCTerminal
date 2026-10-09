@@ -3,10 +3,12 @@ mod forms_types;
 mod handoff_store;
 mod json_io;
 mod projects_store;
+#[cfg(test)]
+mod provider_tests;
 mod prompt_store;
 mod roles_store;
 mod scratch_store;
-mod settings_store;
+pub(crate) mod settings_store;
 mod state_store;
 mod state_types;
 mod transcript_store;

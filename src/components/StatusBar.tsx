@@ -13,6 +13,8 @@ export type StatusMessage = {
 type Props = {
   status: { tone: StatusTone; text: string };
   model?: string | null;
+  /** Provider indicator, e.g. "Claude · ~/.claude-account2 · jt@…" + full tooltip. */
+  provider?: { text: string; title: string } | null;
   folder?: string | null;
   branch?: string | null;
   roleRulesOff?: boolean;
@@ -34,6 +36,7 @@ function folderName(path: string): string {
 export function StatusBar({
   status,
   model = null,
+  provider = null,
   folder = null,
   branch = null,
   roleRulesOff = false,
@@ -46,6 +49,15 @@ export function StatusBar({
         <span className="status-bar-dot" aria-hidden />
         {status.text}
       </span>
+      {provider && (
+        <span
+          className="status-bar-item status-provider"
+          title={provider.title}
+          data-testid="status-provider"
+        >
+          {provider.text}
+        </span>
+      )}
       {model && (
         <span className="status-bar-item" title="Model for this tab">
           <span className="status-bar-label" aria-hidden>

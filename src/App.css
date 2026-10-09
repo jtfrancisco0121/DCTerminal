@@ -4089,3 +4089,34 @@ mark.search-hit-current {
   width: 100%;
   margin: 0.5rem 0;
 }
+
+/* Settings > Providers */
+.settings-folder-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.settings-folder-row input {
+  flex: 1;
+  min-width: 0;
+}
+.provider-chip-group {
+  display: inline-flex;
+  gap: 2px;
+}
+.status-provider {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 320px;
+}
+.mode-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.4));
+  border-radius: 999px;
+  font-size: 0.75rem;
+  white-space: nowrap;
+  opacity: 0.85;
+}

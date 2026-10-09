@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   activeToolProgress,
   emptySessionCards,
+  modeLabel,
   reduceSessionCards,
 } from "./sessionCards";
+import claudeSetMode from "../fixtures/acp/claude/set-mode-bypass.json";
+import claudeTurn from "../fixtures/acp/claude/prompt-turn.json";
 
 describe("session view cards", () => {
   it("replaces the plan from an ACP plan update", () => {
@@ -72,5 +75,34 @@ describe("session view cards", () => {
       { text: "Read auth.ts", status: "completed" },
       { text: "npm test", status: "in_progress" },
     ]);
+  });
+
+  it("tracks the Claude permission mode from a captured config_option_update", () => {
+    const update = claudeSetMode.updates[0];
+    const cards = reduceSessionCards(emptySessionCards(), {
+      kind: update.params.update.sessionUpdate,
+      rawJson: JSON.stringify(update.params),
+    });
+    expect(cards.mode).toBe("bypassPermissions");
+    expect(modeLabel(cards.mode ?? "")).toBe("Full access");
+    const planned = reduceSessionCards(cards, {
+      kind: "current_mode_update",
+      rawJson: JSON.stringify({ update: { sessionUpdate: "current_mode_update", currentModeId: "plan" } }),
+    });
+    expect(planned.mode).toBe("plan");
+    expect(planned.plan).toEqual([]);
+  });
+
+  it("leaves cards alone for the other captured Claude updates", () => {
+    let cards = emptySessionCards();
+    for (const msg of claudeTurn.messages) {
+      if (!("method" in msg) || msg.method !== "session/update") continue;
+      const params = msg.params as { update: { sessionUpdate: string } };
+      cards = reduceSessionCards(cards, {
+        kind: params.update.sessionUpdate,
+        rawJson: JSON.stringify(params),
+      });
+    }
+    expect(cards).toEqual(emptySessionCards());
   });
 });

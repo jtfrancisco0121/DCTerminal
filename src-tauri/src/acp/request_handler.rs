@@ -22,7 +22,9 @@ pub fn response_for_agent_request(request: &Value) -> Value {
         "fs/read_text_file" | "fs/write_text_file" | "terminal/create" | "terminal/output" => {
             json!({})
         }
-        _ if method.starts_with("cursor/") => json!({ "outcome": "cancelled" }),
+        _ if method.starts_with("cursor/") || method.starts_with('_') => {
+            json!({ "outcome": "cancelled" })
+        }
         _ => json!({}),
     }
 }

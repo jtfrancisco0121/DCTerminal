@@ -10,6 +10,8 @@ import {
   ptyKill,
   setLayout,
   setTabModel,
+  setTabProvider,
+  providerStatus,
   type ModelList,
   type ModelSettings,
   devSessionSend,
@@ -92,6 +94,7 @@ import {
   type RoleSummary,
   type SessionUpdateEvent,
   type TabSummary,
+  type TerminalLaunch,
   type TerminalSettings,
   type ValidatePreviewResult,
 } from "./bridge";
@@ -201,7 +204,12 @@ import {
   requestTerminalSearch,
   terminalBracketedPaste,
 } from "./terminal/park";
-import { emptySessionCards, reduceSessionCards, type SessionCards as Cards } from "./sessionCards";
+import {
+  emptySessionCards,
+  modeLabel,
+  reduceSessionCards,
+  type SessionCards as Cards,
+} from "./sessionCards";
 import {
   chainMarkBlocked,
   chainMarkSent,
@@ -247,6 +255,15 @@ import {
 import { useAppShortcuts } from "./useAppShortcuts";
 import { useScratchPads } from "./useScratchPads";
 import { useUiSettings } from "./useUiSettings";
+import { useProviders } from "./provider/useProviders";
+import {
+  modelsForProvider,
+  PROVIDERS,
+  providerIndicator,
+  providerTooltipLine,
+  tabHasProvider,
+} from "./provider/descriptor";
+import { PROVIDER_IDS, providerForRole, type ProviderId } from "./provider/types";
 import {
   appendStreamSegment,
   streamSegmentFromSystemMessage,
@@ -254,14 +271,33 @@ import {
   segmentsToPlainText,
 } from "./transcript";
 
-/** Plain shells have no model; chats, role terminals, and Cursor CLI do. */
+/** Plain shells have no model; chats, role terminals, and the CLI tiles do. */
 function tabHasModel(tab: TabSummary): boolean {
   return !(
     tab.kind === "terminal" &&
     tab.terminalLaunch !== "role" &&
-    tab.terminalLaunch !== "cursor-cli"
+    tab.terminalLaunch !== "cursor-cli" &&
+    tab.terminalLaunch !== "claude-cli"
   );
 }
+
+/** PTY launch kind for a terminal tab. */
+function terminalLaunchOf(tab: TabSummary): TerminalLaunch {
+  switch (tab.terminalLaunch) {
+    case "cursor-cli":
+    case "claude-cli":
+    case "role":
+      return tab.terminalLaunch;
+    default:
+      return "shell";
+  }
+}
+
+type CliLaunch = "cursor-cli" | "claude-cli";
+const CLI_LABEL: Record<CliLaunch, string> = {
+  "cursor-cli": "Cursor CLI",
+  "claude-cli": "Claude Code",
+};
 
 function fieldVisible(
   role: Role,
@@ -374,6 +410,8 @@ export function StartupForm({
   const secondaryInputRef = useRef<HTMLTextAreaElement>(null);
   const [modelList, setModelList] = useState<ModelList | null>(null);
   const [modelSettings, setModelSettingsState] = useState<ModelSettings | null>(null);
+  /** Claude-first Phase 2: provider settings + detection (Settings, status bar). */
+  const providers = useProviders();
   const [modelNotice, setModelNotice] = useState<string | null>(null);
   const [modelsRefreshing, setModelsRefreshing] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -394,7 +432,7 @@ export function StartupForm({
   const [savedPlan, setSavedPlan] = useState<HandoffRecord | null>(null);
   const [savedPlanLoading, setSavedPlanLoading] = useState(false);
   const [pickedRoleId, setPickedRoleId] = useState<string | null>(null);
-  const [launchChoice, setLaunchChoice] = useState<"shell" | "cursor-cli" | null>(null);
+  const [launchChoice, setLaunchChoice] = useState<"shell" | CliLaunch | null>(null);
   const [terminalSettings, setTerminalSettingsState] = useState<TerminalSettings | null>(null);
   const [notificationSettings, setNotificationSettingsState] =
     useState<NotificationSettings | null>(null);
@@ -757,7 +795,7 @@ export function StartupForm({
   }, [persistTranscripts]);
 
   useEffect(() => {
-    if (roleId === "terminal" || roleId === "cursor-cli") return;
+    if (roleId === "terminal" || roleId === "cursor-cli" || roleId === "claude-cli") return;
     if (!roles.some((r) => r.id === roleId) && roles.length > 0) {
       setRoleId(roles[0].id);
     }
@@ -988,6 +1026,14 @@ export function StartupForm({
     () => savedTabs.find((t) => t.id === activeTabId) ?? null,
     [savedTabs, activeTabId],
   );
+  /** Tabs saved before providers carry no provider: they are Cursor tabs. */
+  const providerOf = (tab: TabSummary | null): ProviderId => tab?.provider ?? "cursor";
+  const claudeInfo = providers.claude
+    ? { configDir: providers.claude.configDir, login: providers.claude.login }
+    : providers.view
+      ? { configDir: providers.view.claudeConfigDir, login: null }
+      : null;
+  const activeProvider = providerOf(activeTabSummary);
   const focusedTranscript =
     transcriptFocus && transcriptFocus.tabId === activeTabId
       ? savedTranscript || transcriptFocus.text
@@ -1341,7 +1387,7 @@ export function StartupForm({
   );
 
   const startBlankTerminal = useCallback(
-    async (launch: "shell" | "cursor-cli") => {
+    async (launch: "shell" | CliLaunch) => {
       if (startLockRef.current) return;
       const cwd = folderForTab(values.cwd);
       if (!cwd) {
@@ -1961,15 +2007,24 @@ export function StartupForm({
   const splitRef = useRef(split);
   splitRef.current = split;
 
-  /** Settings role key for a tab: its role, or "cursor-cli" for CLI tabs. */
+  /** Settings role key for a tab: its role, or "cursor-cli" / "claude-cli" for CLI tabs. */
   const modelRoleKey = (tab: TabSummary | null | undefined): string | null => {
     if (!tab) return null;
     if (tab.kind === "terminal" && tab.terminalLaunch === "cursor-cli") return "cursor-cli";
+    if (tab.kind === "terminal" && tab.terminalLaunch === "claude-cli") return "claude-cli";
     return tab.roleId || null;
   };
 
   const inheritedModel = (tab: TabSummary | null | undefined): string =>
-    effectiveModel(modelSettings, modelRoleKey(tab), null);
+    tab && tabHasProvider(tab) && providerOf(tab) === "claude"
+      ? PROVIDERS.claude.defaultModel
+      : effectiveModel(modelSettings, modelRoleKey(tab), null);
+  /** Model choices follow the tab's provider (static Claude list until Phase 5). */
+  const modelsForTab = (tab: TabSummary | null | undefined) =>
+    modelsForProvider(
+      tab && tabHasProvider(tab) ? providerOf(tab) : "cursor",
+      modelList?.models ?? [],
+    );
 
   /**
    * Change one tab's model. A live chat switches in place (or restarts the
@@ -2041,10 +2096,22 @@ export function StartupForm({
       .finally(() => setModelsRefreshing(false));
   }, []);
 
+  /** Claude chat: badge with the permission mode the agent last reported. */
+  const modeBadgeFor = (tab: TabSummary | null | undefined, startMode?: string | null) => {
+    if (!tab || providerOf(tab) !== "claude") return null;
+    const mode = cardsByTab[tab.id]?.mode ?? startMode ?? null;
+    if (!mode) return null;
+    return (
+      <span className="mode-badge" title={`Claude permission mode: ${mode}`}>
+        {modeLabel(mode)}
+      </span>
+    );
+  };
+
   const modelPickerFor = (tab: TabSummary | null | undefined, liveModel?: string | null) => {
     if (!tab || !tabHasModel(tab)) return null;
     const inherited = inheritedModel(tab);
-    const models = modelList?.models ?? [];
+    const models = modelsForTab(tab);
     return (
       <ModelPicker
         compact
@@ -2459,7 +2526,9 @@ export function StartupForm({
       let planFileText = "";
       let planFileName = "";
       try {
-        const file = await terminalPlanFile(started);
+        // Read-only: ~/.cursor/plans, or <configDir>/plans for a Claude tab.
+        // No new plan file → the dialog defaults to the selection, then the tail.
+        const file = await terminalPlanFile(started, tabId);
         if (file?.text.trim()) {
           planFileText = file.text;
           planFileName = file.name;
@@ -2677,11 +2746,11 @@ export function StartupForm({
   };
 
   const paletteModel: PaletteModelOptions | null =
-    activeTabSummary && tabHasModel(activeTabSummary) && (modelList?.models.length ?? 0) > 0
+    activeTabSummary && tabHasModel(activeTabSummary) && modelsForTab(activeTabSummary).length > 0
       ? {
           current: activeTabSummary.model ?? null,
           inherited: inheritedModel(activeTabSummary),
-          models: (modelList?.models ?? []).map(({ id, label }) => ({ id, label })),
+          models: modelsForTab(activeTabSummary).map(({ id, label }) => ({ id, label })),
         }
       : null;
 
@@ -3007,6 +3076,16 @@ export function StartupForm({
         roleId: id,
         pickedRoleId: id,
       };
+      // Start card chip: the role's remembered provider (else the default).
+      const tab = savedTabs.find((t) => t.id === tabId);
+      if (tab && tab.phase === "draft" && providers.view) {
+        const want = providerForRole(providers.view.settings, id);
+        if (want !== providerOf(tab)) {
+          void setTabProvider(tabId, want)
+            .then(() => refreshTabs())
+            .catch(() => {});
+        }
+      }
     }
   };
 
@@ -3036,6 +3115,9 @@ export function StartupForm({
       roleRulesOff={!!approvalMode?.roleRulesOff}
       roleNames={roleNames}
       modelFor={modelForTab}
+      providerFor={(tab) =>
+        tabHasProvider(tab) ? providerTooltipLine(providerOf(tab), claudeInfo) : null
+      }
       onSelect={handleSelectTab}
       onClose={handleCloseTab}
       onNew={handleNewTab}
@@ -3072,6 +3154,7 @@ export function StartupForm({
       onTestNotification={agentNotifications.sendTest}
       modelList={modelList}
       modelSettings={modelSettings}
+      providers={providers}
       onRefreshRoles={onRefreshRoles}
       onModelSettings={(next) => {
         setModelSettingsState(next);
@@ -3306,6 +3389,15 @@ export function StartupForm({
           cli={cli}
           detect={onRedetectCli ?? detectCli}
           loginStatus={cliLoginStatus}
+          claudeStatus={() => providerStatus("claude")}
+          saveClaudeFolder={async (dir) => {
+            const view = providers.view;
+            if (!view) return;
+            await providers.save({
+              ...view.settings,
+              claude: { ...view.settings.claude, configDir: dir },
+            });
+          }}
           roles={roles}
           initialFolder={folderForTab(values.cwd)}
           onFinish={finishFirstRun}
@@ -3544,12 +3636,7 @@ export function StartupForm({
     const liveChat = tab.kind !== "terminal" && !!rt?.session;
     let body: ReactNode;
     if (tab.kind === "terminal") {
-      const tabLaunch =
-        tab.terminalLaunch === "cursor-cli"
-          ? "cursor-cli"
-          : tab.terminalLaunch === "role"
-            ? "role"
-            : "shell";
+      const tabLaunch = terminalLaunchOf(tab);
       body = (
         <TerminalView
           key={tab.id}
@@ -3599,6 +3686,7 @@ export function StartupForm({
           inputRef={secondaryInputRef}
           headerExtra={
             <>
+              {modeBadgeFor(tab, rt.session.modeId)}
               {modelPickerFor(tab, rt.session.model)}
               {changesButton(tab.id)}
             </>
@@ -3719,8 +3807,8 @@ export function StartupForm({
     }
     if (tab.kind === "terminal") {
       const kind =
-        tab.terminalLaunch === "cursor-cli"
-          ? "Cursor CLI"
+        tab.terminalLaunch === "cursor-cli" || tab.terminalLaunch === "claude-cli"
+          ? CLI_LABEL[tab.terminalLaunch]
           : tab.terminalLaunch === "role"
             ? "Role terminal"
             : "Terminal";
@@ -3748,6 +3836,11 @@ export function StartupForm({
     <StatusBar
       status={activeStatus}
       model={activeTabSummary ? modelForTab(activeTabSummary) : null}
+      provider={
+        activeTabSummary && tabHasProvider(activeTabSummary)
+          ? providerIndicator(activeProvider, claudeInfo)
+          : null
+      }
       folder={session?.cwd || activeTabSummary?.cwd || folderForTab(values.cwd) || null}
       branch={activeTabSummary?.worktreeBranch ?? null}
       roleRulesOff={!!approvalMode?.roleRulesOff}
@@ -3845,12 +3938,7 @@ export function StartupForm({
 
   if (activeTabSummary?.kind === "terminal" && !settingsOpen) {
     const linked = handoffs.find((item) => item.targetTabId === activeTabId) ?? null;
-    const launch =
-      activeTabSummary.terminalLaunch === "cursor-cli"
-        ? "cursor-cli"
-        : activeTabSummary.terminalLaunch === "role"
-          ? "role"
-          : "shell";
+    const launch = terminalLaunchOf(activeTabSummary);
     const terminalModelPicker = modelPickerFor(activeTabSummary);
     return shell(
         <section className="status-card status-card-session-full terminal-screen">
@@ -4033,14 +4121,30 @@ export function StartupForm({
   );
 
   const blankRoleKey =
-    launchChoice === "cursor-cli" ? "cursor-cli" : launchChoice === "shell" ? null : roleId || null;
+    launchChoice === "cursor-cli" || launchChoice === "claude-cli"
+      ? launchChoice
+      : launchChoice === "shell"
+        ? null
+        : roleId || null;
+  const blankProvider: ProviderId =
+    launchChoice === "cursor-cli"
+      ? "cursor"
+      : launchChoice === "claude-cli"
+        ? "claude"
+        : activeProvider;
   const blankModelPicker =
     activeTabSummary && blankRoleKey ? (
       <ModelPicker
         compact
-        models={modelList?.models ?? []}
+        models={modelsForProvider(blankProvider, modelList?.models ?? [])}
         value={activeTabSummary.model ?? null}
-        inherited={{ model: effectiveModel(modelSettings, blankRoleKey, null), label: "Default" }}
+        inherited={{
+          model:
+            blankProvider === "claude"
+              ? PROVIDERS.claude.defaultModel
+              : effectiveModel(modelSettings, blankRoleKey, null),
+          label: "Default",
+        }}
         ariaLabel="Model for this tab"
         disabled={busy}
         onChange={(model) => {
@@ -4118,6 +4222,37 @@ export function StartupForm({
     </button>
   );
 
+  const chooseProvider = (provider: ProviderId) => {
+    if (!activeTabSummary || provider === activeProvider) return;
+    const tabId = activeTabSummary.id;
+    // A model id from one provider means nothing to the other.
+    const resetModel = activeTabSummary.model ? setTabModel(tabId, null) : Promise.resolve("");
+    void resetModel
+      .then(() => setTabProvider(tabId, provider, pickedRoleId || roleId || null))
+      .then(() => refreshTabs())
+      .then(() => providers.refreshSettings())
+      .catch((err: unknown) => setModelNotice(err instanceof Error ? err.message : String(err)));
+  };
+  const providerChip =
+    activeTabSummary && activeTabSummary.phase === "draft" && showFields ? (
+      <div className="provider-chip-group" role="radiogroup" aria-label="Provider for this tab">
+        {PROVIDER_IDS.map((id) => (
+          <button
+            key={id}
+            type="button"
+            role="radio"
+            className="role-choice"
+            aria-checked={activeProvider === id}
+            aria-pressed={activeProvider === id}
+            disabled={busy}
+            onClick={() => chooseProvider(id)}
+          >
+            {PROVIDERS[id].label}
+          </button>
+        ))}
+      </div>
+    ) : null;
+
   const roleStartButton = showFields && (
     <button
       type="button"
@@ -4126,7 +4261,7 @@ export function StartupForm({
         if (rememberedSurface(roleId) === "terminal") void startRoleTerminal();
         else void startSession(surface === "restore" && resendStartup);
       }}
-      disabled={busy || !cliFound}
+      disabled={busy || (activeProvider === "cursor" && !cliFound)}
     >
       {rememberedSurface(roleId) === "terminal" ? "Start terminal" : "Start"}
     </button>
@@ -4231,6 +4366,7 @@ export function StartupForm({
               ].join("\n")}
               headerExtra={
                 <>
+                  {modeBadgeFor(activeTabSummary, session.modeId)}
                   {modelPickerFor(activeTabSummary, session.model)}
                   {activeTabSummary && changesButton(activeTabSummary.id)}
                 </>
@@ -4369,20 +4505,24 @@ export function StartupForm({
                   <span className="start-row-spacer" aria-hidden />
                   {launchChoice ? (
                     <>
-                      {launchChoice === "cursor-cli" && blankModelPicker}
+                      {launchChoice !== "shell" && blankModelPicker}
                       <button
                         type="button"
                         className="primary-button"
                         onClick={() => void startBlankTerminal(launchChoice)}
                         disabled={
-                          busy || !displayedFolder || (launchChoice === "cursor-cli" && !cliFound)
+                          busy ||
+                          !displayedFolder ||
+                          (launchChoice === "cursor-cli" && !cliFound) ||
+                          (launchChoice === "claude-cli" && providers.claude?.status.found === false)
                         }
                       >
-                        {launchChoice === "cursor-cli" ? "Start Cursor CLI" : "Start terminal"}
+                        {launchChoice === "shell" ? "Start terminal" : `Start ${CLI_LABEL[launchChoice]}`}
                       </button>
                     </>
                   ) : (
                     <>
+                      {providerChip}
                       {blankModelPicker}
                       {roleStartButton}
                     </>
@@ -4407,6 +4547,10 @@ export function StartupForm({
                   }}
                   onLaunchCursorCli={() => {
                     setLaunchChoice("cursor-cli");
+                    setPickedRoleId(null);
+                  }}
+                  onLaunchClaudeCli={() => {
+                    setLaunchChoice("claude-cli");
                     setPickedRoleId(null);
                   }}
                 />

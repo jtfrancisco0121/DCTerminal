@@ -49,4 +49,20 @@ describe("StatusBar (U3)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Dismiss: The new model applies next start." }));
     expect(onDismiss).toHaveBeenCalledOnce();
   });
+
+  it("shows the provider with the Claude config folder and account", () => {
+    render(
+      <StatusBar
+        status={{ tone: "idle", text: "Ready" }}
+        provider={{
+          text: "Claude · ~/.claude-account2 · jt@…",
+          title: "Provider: Claude Code\nConfig folder: /Users/jt/.claude-account2\nAccount: jt@example.com",
+        }}
+      />,
+    );
+    const item = screen.getByTestId("status-provider");
+    expect(item.textContent).toBe("Claude · ~/.claude-account2 · jt@…");
+    expect(item.getAttribute("title")).toContain("/Users/jt/.claude-account2");
+    expect(item.getAttribute("title")).toContain("jt@example.com");
+  });
 });

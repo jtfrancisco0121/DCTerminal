@@ -4,11 +4,14 @@ mod handshake;
 #[cfg(test)]
 mod history_probe;
 mod ndjson;
+pub(crate) use ndjson::acp_launch_args;
 mod probe;
 pub(crate) mod request_handler;
 pub(crate) mod session_connect;
 mod session_update;
 pub(crate) mod text_extract;
+#[cfg(test)]
+mod claude_fixture_tests;
 
 pub use client::{AcpClient, ModelVia, PromptResult};
 pub use probe::{probe_acp, probe_acp_handshake};

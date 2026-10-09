@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { TabBar } from "./TabBar";
+import { TabBar, tabTooltip } from "./TabBar";
 import type { TabSummary } from "./bridge";
 
 const tab = (partial: Partial<TabSummary>): TabSummary => ({
@@ -268,5 +268,35 @@ describe("TabBar worktree", () => {
     expect(screen.getByRole("tab", { name: /Planner · UI/ }).querySelector(".tab-branch")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "New tab in worktree…" }));
     expect(onNewWorktree).toHaveBeenCalledOnce();
+  });
+});
+
+describe("tabTooltip provider line", () => {
+  it("adds the provider line after the role", () => {
+    const text = tabTooltip(
+      {
+        id: "t1",
+        label: "Planner · API",
+        roleId: "role_planner",
+        cwd: "/Users/jt/api",
+        phase: "draft",
+        mergedPromptChars: 0,
+        startupPromptSent: false,
+        hasTranscript: false,
+        folderStatus: "ok",
+        color: "#a371f7",
+        acpSessionId: null,
+        provider: "claude",
+      },
+      {
+        roleName: "Planner",
+        provider: "Claude · /Users/jt/.claude-account2 · jt@example.com",
+      },
+    );
+    expect(text.split("\n").slice(0, 3)).toEqual([
+      "Planner · API",
+      "Role: Planner",
+      "Provider: Claude · /Users/jt/.claude-account2 · jt@example.com",
+    ]);
   });
 });

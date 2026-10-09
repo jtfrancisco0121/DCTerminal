@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "terminal": { "shell": "", "fontSize": 14, "roleSurface": { "role_planner": "terminal" }, "roleRunMode": {} },
+  "models": { "defaultModel": "gpt-5", "roleModels": { "role_planner": "sonnet-4.5" } },
+  "setup": { "completed": true }
+}

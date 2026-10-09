@@ -126,11 +126,12 @@ describe("SettingsPage categories (U6)", () => {
     onClose: () => {},
   };
 
-  it("lists the seven categories in a left menu and opens on Roles", async () => {
+  it("lists the eight categories in a left menu and opens on Roles", async () => {
     render(<SettingsPage {...props} />);
     const nav = screen.getByRole("navigation", { name: "Settings categories" });
     expect(within(nav).getAllByRole("button").map((button) => button.textContent)).toEqual([
       "Roles",
+      "Providers",
       "Models",
       "Terminal",
       "Permissions",
