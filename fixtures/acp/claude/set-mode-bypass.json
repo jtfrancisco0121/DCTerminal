@@ -1,0 +1,152 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "session/set_mode",
+    "params": {
+      "sessionId": "0c7f1846-3eb2-4a23-80f2-78d5138a78f5",
+      "modeId": "bypassPermissions"
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "result": {}
+  },
+  "updates": [
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "0c7f1846-3eb2-4a23-80f2-78d5138a78f5",
+        "update": {
+          "sessionUpdate": "config_option_update",
+          "configOptions": [
+            {
+              "id": "mode",
+              "name": "Mode",
+              "description": "Session permission mode",
+              "category": "mode",
+              "type": "select",
+              "currentValue": "bypassPermissions",
+              "options": [
+                {
+                  "value": "default",
+                  "name": "Manual",
+                  "description": "Always ask before making changes"
+                },
+                {
+                  "value": "acceptEdits",
+                  "name": "Accept edits",
+                  "description": "Automatically accept all file edits"
+                },
+                {
+                  "value": "plan",
+                  "name": "Plan",
+                  "description": "Create a plan before making changes"
+                },
+                {
+                  "value": "auto",
+                  "name": "Auto",
+                  "description": "Claude handles permission decisions"
+                },
+                {
+                  "value": "bypassPermissions",
+                  "name": "Bypass permissions",
+                  "description": "Accepts all permissions"
+                }
+              ]
+            },
+            {
+              "id": "model",
+              "name": "Model",
+              "description": "AI model to use",
+              "category": "model",
+              "type": "select",
+              "currentValue": "opus[1m]",
+              "options": [
+                {
+                  "value": "default",
+                  "name": "Default (recommended)",
+                  "description": "Opus (1M context)"
+                },
+                {
+                  "value": "opus[1m]",
+                  "name": "Opus 5",
+                  "description": "Opus 5 with 1M context \u00b7 Best for everyday, complex tasks"
+                },
+                {
+                  "value": "claude-fable-5[1m]",
+                  "name": "Fable 5",
+                  "description": "Fable 5 \u00b7 Most capable for your hardest and longest-running tasks"
+                },
+                {
+                  "value": "sonnet",
+                  "name": "Sonnet 5",
+                  "description": "Sonnet 5 \u00b7 Efficient for routine tasks"
+                },
+                {
+                  "value": "haiku",
+                  "name": "Haiku 4.5",
+                  "description": "Haiku 4.5 \u00b7 Fastest for quick answers"
+                }
+              ]
+            },
+            {
+              "id": "effort",
+              "name": "Effort",
+              "description": "Available effort levels for this model",
+              "category": "thought_level",
+              "type": "select",
+              "currentValue": "default",
+              "options": [
+                {
+                  "value": "default",
+                  "name": "Default"
+                },
+                {
+                  "value": "low",
+                  "name": "Low"
+                },
+                {
+                  "value": "medium",
+                  "name": "Medium"
+                },
+                {
+                  "value": "high",
+                  "name": "High"
+                },
+                {
+                  "value": "xhigh",
+                  "name": "Xhigh"
+                },
+                {
+                  "value": "max",
+                  "name": "Max"
+                }
+              ]
+            },
+            {
+              "id": "fast",
+              "name": "Fast mode",
+              "description": "Faster responses on supported models",
+              "category": "model_config",
+              "type": "select",
+              "currentValue": "off",
+              "options": [
+                {
+                  "value": "on",
+                  "name": "On"
+                },
+                {
+                  "value": "off",
+                  "name": "Off"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

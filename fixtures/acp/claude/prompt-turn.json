@@ -1,0 +1,176 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "method": "session/prompt",
+    "params": {
+      "sessionId": "0c7f1846-3eb2-4a23-80f2-78d5138a78f5",
+      "prompt": [
+        {
+          "type": "text",
+          "text": "Reply with exactly: OK. Do not use any tools."
+        }
+      ]
+    }
+  },
+  "messages": [
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "0c7f1846-3eb2-4a23-80f2-78d5138a78f5",
+        "update": {
+          "sessionUpdate": "available_commands_update",
+          "availableCommands": [
+            {
+              "name": "example-skill",
+              "description": "(redacted: 63 user commands/skills)",
+              "input": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "_auth/status_update",
+      "params": {
+        "authStatus": {
+          "kind": "account",
+          "label": "Claude Team",
+          "account": {
+            "plan": "team",
+            "email": "jt@example.com",
+            "organization": "Example Org"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "0c7f1846-3eb2-4a23-80f2-78d5138a78f5",
+        "update": {
+          "sessionUpdate": "usage_update",
+          "used": 26504,
+          "size": 1000000,
+          "_meta": {
+            "_claude/model": "claude-opus-5"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "0c7f1846-3eb2-4a23-80f2-78d5138a78f5",
+        "update": {
+          "sessionUpdate": "agent_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "OK"
+          },
+          "messageId": "msg_011CfrDqz42eoZSzhpwkG9kF"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "0c7f1846-3eb2-4a23-80f2-78d5138a78f5",
+        "update": {
+          "sessionUpdate": "usage_update",
+          "used": 26504,
+          "size": 1000000,
+          "_meta": {
+            "_claude/rateLimit": {
+              "status": "allowed",
+              "resetsAt": 1791538800,
+              "rateLimitType": "five_hour",
+              "overageStatus": "rejected",
+              "overageDisabledReason": "org_level_disabled",
+              "isUsingOverage": false
+            },
+            "_claude/model": "claude-opus-5"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "0c7f1846-3eb2-4a23-80f2-78d5138a78f5",
+        "update": {
+          "sessionUpdate": "usage_update",
+          "used": 26504,
+          "size": 1000000,
+          "cost": {
+            "amount": 0.1015665,
+            "currency": "USD"
+          },
+          "_meta": {
+            "_claude/origin": {
+              "kind": "human"
+            },
+            "_claude/model": "claude-opus-5"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 4,
+      "result": {
+        "stopReason": "end_turn",
+        "usage": {
+          "inputTokens": 2,
+          "outputTokens": 4,
+          "cachedReadTokens": 17213,
+          "cachedWriteTokens": 9285,
+          "totalTokens": 26504
+        },
+        "_meta": {
+          "quota": {
+            "token_count": {
+              "totalTokens": 26504,
+              "inputTokens": 2,
+              "cachedInputTokens": 17213,
+              "cachedWriteTokens": 9285,
+              "outputTokens": 4,
+              "reasoningOutputTokens": 0
+            },
+            "model_usage": [
+              {
+                "model": "claude-opus-5[1m]",
+                "token_count": {
+                  "totalTokens": 26504,
+                  "inputTokens": 2,
+                  "cachedInputTokens": 17213,
+                  "cachedWriteTokens": 9285,
+                  "outputTokens": 4,
+                  "reasoningOutputTokens": 0
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "0c7f1846-3eb2-4a23-80f2-78d5138a78f5",
+        "update": {
+          "sessionUpdate": "session_info_update",
+          "title": "OK",
+          "updatedAt": "2026-10-09T06:53:00.529Z"
+        }
+      }
+    }
+  ]
+}
