@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   HANDOFF_TRANSITIONS,
+  handoffMenuItems,
   handoffTargets,
   isHandoffSource,
   isPlanSource,
@@ -61,5 +62,18 @@ describe("hand-off transitions", () => {
     expect(roleDisplayName("role_plan_reviewer")).toBe("Plan Reviewer");
     expect(roleDisplayName("role_pr_reviewer", roles)).toBe("PR Reviewer");
     expect(roleDisplayName("role_unknown")).toBe("role");
+  });
+
+  it("terminal menu: Planner lists Send to Plan Reviewer; Plan Reviewer lists Send to Implementer", () => {
+    expect(handoffMenuItems("role_planner").map((item) => item.label)).toEqual([
+      "Send to Plan Reviewer",
+      "Send to Implementer",
+      "Send to Developer",
+    ]);
+    expect(handoffMenuItems("role_plan_reviewer")[0]).toEqual({
+      target: "role_implementer",
+      label: "Send to Implementer",
+    });
+    expect(handoffMenuItems("role_general")).toEqual([]);
   });
 });

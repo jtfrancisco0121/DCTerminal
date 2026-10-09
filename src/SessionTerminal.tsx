@@ -102,6 +102,7 @@ type Props = {
   handoff?: {
     enabled: boolean;
     reason: string | null;
+    targets?: HandoffTargetId[];
     onSend: (target: HandoffTargetId) => void;
   } | null;
   /** Extra header controls, for example the model picker or pane buttons. */
@@ -456,6 +457,7 @@ export function SessionTerminal({
                     <HandoffActions
                       enabled={handoff.enabled}
                       reason={handoff.reason}
+                      targets={handoff.targets ?? []}
                       busy={busy}
                       onSend={handoff.onSend}
                     />

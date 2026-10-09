@@ -57,3 +57,14 @@ export function roleDisplayName(roleId: string, roles?: readonly RoleName[] | nu
   if (loaded) return loaded;
   return BUILT_IN_ROLE_NAMES[roleId] ?? "role";
 }
+
+/** "Send to …" items for a source role (chat buttons, terminal right-click menu). */
+export function handoffMenuItems(
+  sourceRoleId: string,
+  roles?: readonly RoleName[] | null,
+): { target: HandoffTargetId; label: string }[] {
+  return handoffTargets(sourceRoleId).map((target) => ({
+    target,
+    label: `Send to ${roleDisplayName(target, roles)}`,
+  }));
+}

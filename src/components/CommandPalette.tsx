@@ -6,6 +6,7 @@ type Props = {
   canReopen: boolean;
   splitOpen: boolean;
   canSendPlan?: boolean;
+  sendPlanTargets?: readonly string[];
   canExportTranscript?: boolean;
   canSendImplementerToReviewer?: boolean;
   canRemoveWorktree?: boolean;
@@ -22,6 +23,7 @@ export function CommandPalette({
   canReopen,
   splitOpen,
   canSendPlan = false,
+  sendPlanTargets,
   canExportTranscript = false,
   canSendImplementerToReviewer = false,
   canRemoveWorktree = false,
@@ -40,6 +42,7 @@ export function CommandPalette({
           canReopen,
           splitOpen,
           canSendPlan,
+          sendPlanTargets,
           canExportTranscript,
           canSendImplementerToReviewer,
           canRemoveWorktree,
@@ -52,6 +55,7 @@ export function CommandPalette({
       canReopen,
       splitOpen,
       canSendPlan,
+      sendPlanTargets,
       canExportTranscript,
       canSendImplementerToReviewer,
       canRemoveWorktree,

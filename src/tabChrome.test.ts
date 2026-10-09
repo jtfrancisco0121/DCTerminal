@@ -211,8 +211,21 @@ describe("tab chrome", () => {
       canSendPlan: true,
     });
     expect(commands.map((command) => command.id)).toEqual(
-      expect.arrayContaining(["sendPlanImplementer", "sendPlanDeveloper"]),
+      expect.arrayContaining(["sendPlanPlanReviewer", "sendPlanImplementer", "sendPlanDeveloper"]),
     );
+    expect(commands.map((command) => command.id)).not.toContain("sendPlanReviewer");
+  });
+
+  it("a Plan Reviewer session only offers its own targets", () => {
+    const commands = buildPalette({
+      tabs: [],
+      canReopen: false,
+      splitOpen: false,
+      canSendPlan: true,
+      sendPlanTargets: ["role_implementer", "role_developer", "role_planner"],
+    });
+    const ids = filterCommands(commands, "hand off").map((c) => c.id);
+    expect(ids).toEqual(["sendPlanImplementer", "sendPlanDeveloper"]);
   });
 
   describe("fuller palette (F9)", () => {
@@ -275,7 +288,8 @@ describe("tab chrome", () => {
       const titles = Object.fromEntries(everything().map((c) => [c.id, c.title]));
       expect(titles.sendPlanImplementer).toBe("Hand off plan to Implementer…");
       expect(titles.sendPlanDeveloper).toBe("Hand off plan to Developer…");
-      expect(titles.sendPlanReviewer).toBe("Hand off plan to PR Reviewer…");
+      expect(titles.sendPlanPlanReviewer).toBe("Hand off plan to Plan Reviewer…");
+      expect(titles.sendPlanReviewer).toBeUndefined();
       expect(titles.changeModel).toBe("Change model…");
       expect(titles.chatHistory).toBe("Chat history for this folder…");
     });
@@ -287,9 +301,9 @@ describe("tab chrome", () => {
       expect(filterCommands(plain, "handoff").map((c) => c.id)).toEqual(["handoffHelp"]);
       const planner = filterCommands(everything(), "hand off").map((c) => c.id);
       expect(planner).toEqual([
+        "sendPlanPlanReviewer",
         "sendPlanImplementer",
         "sendPlanDeveloper",
-        "sendPlanReviewer",
       ]);
     });
 

@@ -20,6 +20,7 @@ import {
 
 export {
   HANDOFF_TRANSITIONS,
+  handoffMenuItems,
   handoffTargets,
   isHandoffSource,
   isPlanSource,

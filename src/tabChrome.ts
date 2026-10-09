@@ -176,9 +176,9 @@ export const PALETTE_ACTIONS = [
   "find",
   "searchChats",
   "chatHistory",
+  "sendPlanPlanReviewer",
   "sendPlanImplementer",
   "sendPlanDeveloper",
-  "sendPlanReviewer",
   "sendImplementerToReviewer",
   "exportTranscript",
   "showLogs",
@@ -264,6 +264,8 @@ export function buildPalette(opts: {
   canReopen: boolean;
   splitOpen: boolean;
   canSendPlan?: boolean;
+  /** Hand-off targets of the active plan source (Planner / Plan Reviewer). Default: the Planner's. */
+  sendPlanTargets?: readonly string[];
   canExportTranscript?: boolean;
   canSendImplementerToReviewer?: boolean;
   /** The active tab was opened in a worktree. */
@@ -414,32 +416,43 @@ export function buildPalette(opts: {
     );
   }
   if (opts.canSendPlan) {
-    commands.push(
+    const targets = opts.sendPlanTargets ?? [
+      "role_plan_reviewer",
+      "role_implementer",
+      "role_developer",
+    ];
+    const planCommands: (PaletteCommand & { target: string })[] = [
+      {
+        id: "sendPlanPlanReviewer",
+        target: "role_plan_reviewer",
+        title: "Hand off plan to Plan Reviewer…",
+        group: "Hand-off",
+        keywords: "handoff send planner plan reviewer review eagle",
+      },
       {
         id: "sendPlanImplementer",
+        target: "role_implementer",
         title: "Hand off plan to Implementer…",
         group: "Hand-off",
         keywords: "handoff send planner plan implementer",
       },
       {
         id: "sendPlanDeveloper",
+        target: "role_developer",
         title: "Hand off plan to Developer…",
         group: "Hand-off",
         keywords: "handoff send planner plan developer",
       },
-      {
-        id: "sendPlanReviewer",
-        title: "Hand off plan to PR Reviewer…",
-        group: "Hand-off",
-        keywords: "handoff send planner plan reviewer pr review",
-      },
-    );
+    ];
+    for (const { target, ...command } of planCommands) {
+      if (targets.includes(target)) commands.push(command);
+    }
   } else {
     commands.push({
       id: "handoffHelp",
       title: "Hand off plan…",
       group: "Hand-off",
-      keywords: "handoff send planner plan implementer developer reviewer",
+      keywords: "handoff send planner plan implementer developer reviewer plan reviewer",
     });
   }
   if (opts.canSendImplementerToReviewer) {

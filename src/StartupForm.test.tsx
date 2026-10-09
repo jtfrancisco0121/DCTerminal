@@ -1626,6 +1626,6 @@ describe("command palette (F9)", () => {
 
     palette = await openPalette();
     fireEvent.click(within(palette).getByRole("button", { name: /^Hand off plan…/ }));
-    expect(await screen.findByText(/Open a Planner chat or Planner terminal/)).toBeTruthy();
+    expect(await screen.findByText(/Open a Planner or Plan Reviewer chat or terminal/)).toBeTruthy();
   });
 });

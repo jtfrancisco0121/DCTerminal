@@ -232,12 +232,12 @@ src/provider/
 
 **Files:** `src/components/HandoffDialog.tsx` (+ test), `src/StartupForm.tsx` (`handoffOffer` ~2540, palette cases ~2697-2707, terminal `menuActions` ~3830), `src/tabChrome.ts` (+ test), `src/components/CommandPalette.tsx`, `src/SessionTerminal.tsx` (~456), `src/components/SessionCards.tsx`
 
-- [ ] `TARGETS` / `ACTION_BUTTONS` built from the transition table and role names ("Send to Plan Reviewer").
-- [ ] `handoffOffer` uses `HANDOFF_TRANSITIONS[roleId]` instead of the two hard-coded branches.
-- [ ] Terminal Planner menu: add **Send to Plan Reviewer**; terminal Plan Reviewer gets **Send to Implementer**.
-- [ ] Palette: `sendPlanPlanReviewer` "Hand off plan to Plan Reviewer…"; keep `sendImplementerToReviewer`; `canSendPlan` true for Planner and Plan Reviewer.
-- [ ] Tests: Planner chat shows Plan Reviewer button first; terminal menu lists it; palette titles.
-- [ ] Commit: `feat: Send to Plan Reviewer from Planner chat, terminal, and palette`
+- [x] `TARGETS` / `ACTION_BUTTONS` built from the transition table and role names ("Send to Plan Reviewer").
+- [x] `handoffOffer` uses `HANDOFF_TRANSITIONS[roleId]` instead of the two hard-coded branches.
+- [x] Terminal Planner menu: add **Send to Plan Reviewer**; terminal Plan Reviewer gets **Send to Implementer**.
+- [x] Palette: `sendPlanPlanReviewer` "Hand off plan to Plan Reviewer…"; keep `sendImplementerToReviewer`; `canSendPlan` true for Planner and Plan Reviewer.
+- [x] Tests: Planner chat shows Plan Reviewer button first; terminal menu lists it; palette titles.
+- [x] Commit: `feat: Send to Plan Reviewer from Planner chat, terminal, and palette`
 
 ### Task 1.4: Pipeline preset + docs
 
