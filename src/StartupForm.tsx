@@ -2509,7 +2509,9 @@ export function StartupForm({
       let planFileText = "";
       let planFileName = "";
       try {
-        const file = await terminalPlanFile(started);
+        // Read-only: ~/.cursor/plans, or <configDir>/plans for a Claude tab.
+        // No new plan file → the dialog defaults to the selection, then the tail.
+        const file = await terminalPlanFile(started, tabId);
         if (file?.text.trim()) {
           planFileText = file.text;
           planFileName = file.name;

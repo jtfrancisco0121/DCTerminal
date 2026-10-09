@@ -79,7 +79,7 @@ export function HandoffDialog({
         <h2>Send plan</h2>
         <p className="hint">
           {surface === "terminal"
-            ? "Starts Cursor CLI in a terminal tab with this role's flags and the hand-off text as the first prompt."
+            ? "Starts the role in a terminal tab (Claude Code or Cursor CLI, per the tab's provider) with the hand-off text as the first prompt."
             : "Opens a new tab in the same folder with the hand-off text filled in. Review it, then press Start. Nothing starts on its own."}
         </p>
         <fieldset className="handoff-fieldset">

@@ -407,6 +407,32 @@ mod tests {
     }
 
     #[test]
+    fn planner_handoff_reads_the_newest_plan_under_the_config_dir() {
+        let root = temp("handoff");
+        let config = root.join("account2");
+        std::fs::create_dir_all(config.join("plans")).unwrap();
+        let p = provider_with(
+            &root,
+            super::super::claude_config::resolve_with(
+                None,
+                Some(&config.display().to_string()),
+                None,
+            ),
+        );
+        let started = std::time::SystemTime::now() - std::time::Duration::from_secs(5);
+        let dir = p.plans_dir().unwrap();
+        assert!(crate::pty::plans::newest_plan_since(&dir, started)
+            .unwrap()
+            .is_none());
+        std::fs::write(dir.join("delightful-plan.md"), "# Plan\n\n- step").unwrap();
+        let found = crate::pty::plans::newest_plan_since(&dir, started)
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.name, "delightful-plan.md");
+        assert!(found.text.contains("- step"));
+    }
+
+    #[test]
     fn terminal_env_carries_the_resolved_config_dir() {
         use super::super::claude_config::{resolve_with, ConfigDirSource, CLAUDE_CONFIG_DIR};
         let root = temp("env");

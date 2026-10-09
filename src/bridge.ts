@@ -1050,8 +1050,15 @@ export async function setTerminalSettings(
   return invoke<TerminalSettings>("set_terminal_settings", { terminal });
 }
 
-export async function terminalPlanFile(startedAtMs: number): Promise<PlanFileInfo | null> {
-  return invoke<PlanFileInfo | null>("terminal_plan_file", { startedAtMs });
+/**
+ * Newest plan file since the terminal started, read-only from the tab's
+ * provider (`~/.cursor/plans`, or `<configDir>/plans` for Claude).
+ */
+export async function terminalPlanFile(
+  startedAtMs: number,
+  tabId?: string | null,
+): Promise<PlanFileInfo | null> {
+  return invoke<PlanFileInfo | null>("terminal_plan_file", { startedAtMs, tabId: tabId ?? null });
 }
 
 export type ModelEntry = {

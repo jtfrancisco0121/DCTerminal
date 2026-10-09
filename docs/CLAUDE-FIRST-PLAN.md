@@ -347,8 +347,8 @@ src/provider/
 
 **Files:** `src-tauri/src/provider/claude.rs` (`plans_dir`), `src/StartupForm.tsx` (`openTerminalHandoff`)
 
-- [ ] Claude has no confirmed plan-file folder (`~/.claude/plans` absent on the Mac; check `<configDir>/plans` read-only too). `plans_dir` is always relative to the resolved config dir, never hard-coded `~/.claude`. Default scope = selection, then last 200 lines. If a plans dir is confirmed later, read it read-only like `pty/plans.rs`.
-- [ ] Commit: `feat: Claude terminal Planner hand-off uses selection or tail`
+- [x] Claude has no confirmed plan-file folder (`~/.claude/plans` absent on the Mac; check `<configDir>/plans` read-only too). `plans_dir` is always relative to the resolved config dir, never hard-coded `~/.claude`. Default scope = selection, then last 200 lines. If a plans dir is confirmed later, read it read-only like `pty/plans.rs`. **Checked 2026-10-09 (read-only `ls`): `~/.claude-account2/plans` exists on the Mac and holds Claude plan-mode `.md` files (`~/.claude/plans` does not exist). `terminal_plan_file` now takes the tab id and reads the newest plan written since the terminal started from the tab provider `plans_dir` (`<configDir>/plans` for Claude, `~/.cursor/plans` for Cursor), read-only. With no new plan file the dialog defaults to the selection, then the terminal tail.**
+- [x] Commit: `feat: Claude terminal Planner hand-off uses selection or tail`
 
 ## Phase 4: Claude chat via the ACP adapter
 
