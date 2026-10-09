@@ -24,7 +24,9 @@ use acp::{probe_acp, probe_acp_handshake};
 use cli_detect::{cli_login_status, detect_cli};
 use commands::history_search;
 use commands::{
-    acp_set_model, check_working_folder, close_tab, create_pipeline_tabs, cursor_approval_mode,
+    acp_set_model, check_working_folder, close_tab, create_execution_pipeline_tabs,
+    create_pipeline_tabs, cursor_approval_mode, get_pipeline_run, pipeline_promote_plan,
+    pipeline_set_candidate_plan,
     dev_session_cancel, dev_session_send, dev_session_start, dev_session_stop,
     diagnostics_read_log, diagnostics_set_capture, diagnostics_status, get_app_state,
     get_form_recall, get_layout, get_role, get_tab,
@@ -150,6 +152,10 @@ pub fn run() {
             close_tab,
             new_draft_tab,
             create_pipeline_tabs,
+            create_execution_pipeline_tabs,
+            get_pipeline_run,
+            pipeline_promote_plan,
+            pipeline_set_candidate_plan,
             sync_active_tab_form,
             get_form_recall,
             save_form_draft,

@@ -15,6 +15,7 @@ import {
   devSessionSend,
   devSessionStop,
   cursorApprovalMode,
+  createExecutionPipelineTabs,
   createPipelineTabs,
   diagnosticsReadLog,
   diagnosticsSetCapture,
@@ -117,10 +118,16 @@ import {
   HandoffDialog,
   SavedPlanDialog,
 } from "./components/HandoffDialog";
+import { PipelineOverview } from "./components/PipelineOverview";
 import { destroyTerminal, TerminalView, readTerminalHandoff } from "./components/TerminalView";
 import {
   handoffBlockReason,
+  handoffMenuItems,
+  handoffTargets,
+  isHandoffSource,
+  isPlanSource,
   latestAgentMessage,
+  roleDisplayName,
   mapHandoff,
   selectionInside,
   type HandoffField,
@@ -619,7 +626,11 @@ export function StartupForm({
         if (!activeId) return;
         const summary = snap.tabs.find((t) => t.id === activeId);
         if (!summary) return;
-        if (summary.kind === "terminal" || summary.phase === "running") {
+        if (
+          summary.kind === "terminal" ||
+          summary.kind === "pipeline_overview" ||
+          summary.phase === "running"
+        ) {
           setActiveTabId(activeId);
           return;
         }
@@ -1472,7 +1483,7 @@ export function StartupForm({
       if (tabId === activeTabIdRef.current) return;
       stashActiveTab();
       const summary = savedTabs.find((tab) => tab.id === tabId);
-      if (summary?.kind === "terminal") {
+      if (summary?.kind === "terminal" || summary?.kind === "pipeline_overview") {
         setActiveTabId(tabId);
         setBusy(true);
         try {
@@ -2430,10 +2441,14 @@ export function StartupForm({
       });
   }, []);
 
-  const isPlannerTerminal =
+  /** Terminal role tab that can hand off a plan (Planner or Plan Reviewer). */
+  const isPlanTerminal =
     activeTabSummary?.kind === "terminal" &&
     activeTabSummary.terminalLaunch === "role" &&
-    activeTabSummary.roleId === "role_planner";
+    isPlanSource(activeTabSummary.roleId);
+  const planTerminalTargets: HandoffTargetId[] = isPlanTerminal
+    ? handoffTargets(activeTabSummary.roleId)
+    : [];
 
   const openTerminalHandoff = useCallback(
     async (target: HandoffTargetId) => {
@@ -2472,7 +2487,7 @@ export function StartupForm({
       const fromTerminal =
         summary?.kind === "terminal" &&
         summary.terminalLaunch === "role" &&
-        summary.roleId === "role_planner";
+        isPlanSource(summary.roleId);
       if (fromTerminal) {
         void openTerminalHandoff(target);
         return;
@@ -2490,11 +2505,12 @@ export function StartupForm({
   );
 
   const handoffSource = useMemo((): HandoffSource => {
-    if (terminalCapture && isPlannerTerminal) {
+    if (terminalCapture && isPlanTerminal) {
+      const terminalRoleId = activeTabSummary?.roleId ?? "role_planner";
       return {
-        sourceRoleId: "role_planner",
+        sourceRoleId: terminalRoleId,
         sourceTabId: activeTabId ?? "",
-        sourceLabel: activeTabSummary?.label ?? "Planner",
+        sourceLabel: activeTabSummary?.label ?? roleDisplayName(terminalRoleId, roles),
         cwd: activeTabSummary?.cwd || values.cwd || "",
         answers: values,
         latestMessage: "",
@@ -2512,7 +2528,8 @@ export function StartupForm({
     return {
       sourceRoleId: roleId,
       sourceTabId: activeTabId ?? "",
-      sourceLabel: savedTabs.find((tab) => tab.id === activeTabId)?.label ?? "Planner",
+      sourceLabel:
+        savedTabs.find((tab) => tab.id === activeTabId)?.label ?? roleDisplayName(roleId, roles),
       cwd: session?.cwd || values.cwd || "",
       answers: values,
       latestMessage: latestAgentMessage(streamSegments),
@@ -2526,9 +2543,10 @@ export function StartupForm({
     activeTabSummary,
     cardsByTab,
     handoffSelection,
-    isPlannerTerminal,
+    isPlanTerminal,
     promptInFlight,
     roleId,
+    roles,
     savedTabs,
     session?.cwd,
     streamSegments,
@@ -2538,25 +2556,14 @@ export function StartupForm({
 
   const handoffBlock = handoffBlockReason({ ...handoffSource, selection: "" });
   const handoffOffer =
-    roleId === "role_planner" && session
+    session && isHandoffSource(roleId)
       ? {
           enabled: handoffBlock === null,
           reason: handoffBlock,
-          targets: [
-            "role_implementer",
-            "role_developer",
-            "role_pr_reviewer",
-          ] as HandoffTargetId[],
+          targets: handoffTargets(roleId),
           onSend: openHandoffDialog,
         }
-      : roleId === "role_implementer" && session
-        ? {
-            enabled: handoffBlock === null,
-            reason: handoffBlock,
-            targets: ["role_pr_reviewer"] as HandoffTargetId[],
-            onSend: openHandoffDialog,
-          }
-        : null;
+      : null;
 
   const confirmHandoff = useCallback(
     async (scope: HandoffScope, surface: HandoffSurface) => {
@@ -2694,14 +2701,14 @@ export function StartupForm({
   /** Run one palette command. Every PaletteAction must have a case here. */
   const runPaletteAction = (id: PaletteAction) => {
     switch (id) {
+      case "sendPlanPlanReviewer":
+        openHandoffDialog("role_plan_reviewer");
+        return;
       case "sendPlanImplementer":
         openHandoffDialog("role_implementer");
         return;
       case "sendPlanDeveloper":
         openHandoffDialog("role_developer");
-        return;
-      case "sendPlanReviewer":
-        openHandoffDialog("role_pr_reviewer");
         return;
       case "sendImplementerToReviewer":
         openHandoffDialog("role_pr_reviewer");
@@ -2733,25 +2740,58 @@ export function StartupForm({
           .then(async (snap) => {
             setSavedTabs(snap.tabs);
             setClosedTabs(snap.closedTabs ?? []);
-            const plannerTab = snap.tabs.find((t) => t.roleId === "role_planner");
+            const overviewTab = snap.tabs.find((t) => t.kind === "pipeline_overview");
             const activeId =
-              snap.activeTabId ?? plannerTab?.id ?? snap.tabs[snap.tabs.length - 1]?.id;
+              snap.activeTabId ?? overviewTab?.id ?? snap.tabs[snap.tabs.length - 1]?.id;
             if (activeId) {
               const summary = snap.tabs.find((t) => t.id === activeId);
-              if (summary?.kind === "terminal") setActiveTabId(activeId);
-              else {
+              if (summary?.kind === "terminal" || summary?.kind === "pipeline_overview") {
+                setActiveTabId(activeId);
+                await selectActiveTab(activeId);
+              } else {
                 const { tab } = await selectActiveTab(activeId);
                 loadTabIntoForm(tab);
               }
             }
             showNotice(
               "Pipeline workspace",
-              "Opened Planner, Implementer, and PR Reviewer tabs with the same folder.",
+              "Eagle-eye tab plus Planner, Plan Reviewer, Implementer, and PR Reviewer.",
             );
           })
           .catch((err: unknown) =>
             showNotice(
               "Could not open pipeline",
+              err instanceof Error ? err.message : String(err),
+              "question",
+            ),
+          );
+        return;
+      case "executionPipelineWorkspace":
+        void createExecutionPipelineTabs()
+          .then(async (snap) => {
+            setSavedTabs(snap.tabs);
+            setClosedTabs(snap.closedTabs ?? []);
+            const overviewTab = snap.tabs.find((t) => t.kind === "pipeline_overview");
+            const activeId =
+              snap.activeTabId ?? overviewTab?.id ?? snap.tabs[snap.tabs.length - 1]?.id;
+            if (activeId) {
+              const summary = snap.tabs.find((t) => t.id === activeId);
+              if (summary?.kind === "terminal" || summary?.kind === "pipeline_overview") {
+                setActiveTabId(activeId);
+                await selectActiveTab(activeId);
+              } else {
+                const { tab } = await selectActiveTab(activeId);
+                loadTabIntoForm(tab);
+              }
+            }
+            showNotice(
+              "Execution pipeline",
+              "Eagle-eye tab plus Implementer and PR Reviewer. Promote your plan, then Start.",
+            );
+          })
+          .catch((err: unknown) =>
+            showNotice(
+              "Could not open execution pipeline",
               err instanceof Error ? err.message : String(err),
               "question",
             ),
@@ -2777,7 +2817,7 @@ export function StartupForm({
       case "handoffHelp":
         showNotice(
           "Nothing to hand off",
-          "Hand-off sends a plan to an Implementer, Developer, or PR Reviewer. Open a Planner chat or Planner terminal that has a plan, then try again.",
+          "Hand-off sends a plan from a Planner to a Plan Reviewer, Implementer, or Developer, and a reviewed plan from a Plan Reviewer to an Implementer. Open a Planner or Plan Reviewer chat or terminal that has a plan, then try again.",
           "question",
         );
         return;
@@ -3401,7 +3441,8 @@ export function StartupForm({
           tabs={savedTabs.map((tab) => ({ id: tab.id, label: tab.label, cwd: tab.cwd }))}
           canReopen={closedTabs.length > 0}
           splitOpen={splitOpen(split)}
-          canSendPlan={(roleId === "role_planner" && !!session) || !!isPlannerTerminal}
+          canSendPlan={(isPlanSource(roleId) && !!session) || !!isPlanTerminal}
+          sendPlanTargets={isPlanTerminal ? planTerminalTargets : handoffTargets(roleId)}
           canExportTranscript={
             !!activeTabSummary &&
             (activeTabSummary.hasTranscript ||
@@ -3460,6 +3501,7 @@ export function StartupForm({
           busy={busy}
           error={handoffError}
           preferredSurface={rememberedSurface(handoffTarget)}
+          roleNames={roles}
           onTarget={(target) => {
             setHandoffTarget(target);
             setHandoffError(null);
@@ -3672,6 +3714,9 @@ export function StartupForm({
     const marks = activeTabId ? tabStatuses[activeTabId] : undefined;
     if (!tab) return { tone: "idle", text: "No tab" };
     if (marks?.needsYou) return { tone: "needs", text: tabStatusLabel(marks) };
+    if (tab.kind === "pipeline_overview") {
+      return { tone: "ok", text: "Pipeline overview" };
+    }
     if (tab.kind === "terminal") {
       const kind =
         tab.terminalLaunch === "cursor-cli"
@@ -3771,6 +3816,33 @@ export function StartupForm({
       {overlays}
     </section>
   );
+  if (
+    activeTabSummary?.kind === "pipeline_overview" &&
+    !settingsOpen &&
+    activeTabSummary.pipelineRunId
+  ) {
+    return shell(
+      <section className="status-card status-card-session-full pipeline-overview-screen">
+        <PipelineOverview
+          runId={activeTabSummary.pipelineRunId}
+          cwd={activeTabSummary.cwd}
+          tabs={savedTabs}
+          runtimes={runtimes}
+          onJump={(tabId) => void handleSelectTab(tabId)}
+          onWatch={(tabId) => {
+            setSplit((current) => ({
+              mode: "horizontal",
+              secondaryTabId: tabId,
+              primarySize: clampSplitSize(current.primarySize || 55),
+            }));
+          }}
+          onRefreshTabs={refreshTabs}
+          onNotice={(title, body) => showNotice(title, body)}
+        />
+      </section>,
+    );
+  }
+
   if (activeTabSummary?.kind === "terminal" && !settingsOpen) {
     const linked = handoffs.find((item) => item.targetTabId === activeTabId) ?? null;
     const launch =
@@ -3787,11 +3859,12 @@ export function StartupForm({
               sourceRoleId={linked.sourceRoleId}
               title={linked.title}
               warning={linked.warning}
+              roleNames={roles}
               onOpen={() => openSavedHandoff(linked)}
             />
           )}
           {terminalError && <p className="error">{terminalError}</p>}
-          {(isPlannerTerminal ||
+          {(isPlanTerminal ||
             terminalModelPicker ||
             activeTabSummary.worktreeBranch ||
             activeTabSummary.cwd) && (
@@ -3807,11 +3880,13 @@ export function StartupForm({
               )}
               {terminalModelPicker}
               {activeTabSummary.cwd && changesButton(activeTabSummary.id)}
-              {isPlannerTerminal && (
+              {isPlanTerminal && (
                 <HandoffActions
                   enabled
                   reason={null}
                   busy={busy}
+                  targets={planTerminalTargets}
+                  roleNames={roles}
                   onSend={(target) => {
                     void openTerminalHandoff(target);
                   }}
@@ -3828,23 +3903,14 @@ export function StartupForm({
             resumeSessionId={activeTabSummary.resumeSessionId}
             autoOpen={!livePty(activeTabSummary.id)}
             menuActions={
-              isPlannerTerminal
-                ? [
-                    {
-                      id: "send-implementer",
-                      label: "Send to Implementer",
-                      onSelect: () => {
-                        void openTerminalHandoff("role_implementer");
-                      },
+              isPlanTerminal
+                ? handoffMenuItems(activeTabSummary.roleId, roles).map((item) => ({
+                    id: `send-${item.target}`,
+                    label: item.label,
+                    onSelect: () => {
+                      void openTerminalHandoff(item.target);
                     },
-                    {
-                      id: "send-developer",
-                      label: "Send to Developer",
-                      onSelect: () => {
-                        void openTerminalHandoff("role_developer");
-                      },
-                    },
-                  ]
+                  }))
                 : []
             }
           />
@@ -3895,6 +3961,7 @@ export function StartupForm({
       sourceRoleId={activeHandoff.sourceRoleId}
       title={activeHandoff.title}
       warning={activeHandoff.warning}
+      roleNames={roles}
       onOpen={() => openSavedHandoff(activeHandoff)}
     />
   ) : null;

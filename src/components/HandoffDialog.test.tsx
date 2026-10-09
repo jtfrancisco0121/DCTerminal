@@ -2,7 +2,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
-import { HandoffDialog } from "./HandoffDialog";
+import { HandoffActions, HandoffDialog } from "./HandoffDialog";
 import type { HandoffSource, HandoffTargetId } from "../handoff/map";
 
 const source: HandoffSource = {
@@ -64,5 +64,75 @@ describe("HandoffDialog", () => {
     );
     const send = screen.getByRole("button", { name: "Open Implementer tab" });
     expect(send.hasAttribute("disabled")).toBe(true);
+  });
+
+  it("lists the Planner's targets with Plan Reviewer first and no PR Reviewer", () => {
+    render(
+      <HandoffDialog
+        source={source}
+        targetRoleId="role_plan_reviewer"
+        targetFields={[{ key: "originalTask" }, { key: "plan" }]}
+        folderWarning={null}
+        busy={false}
+        error={null}
+        preferredSurface="chat"
+        onTarget={() => {}}
+        onConfirm={() => {}}
+        onClose={() => {}}
+      />,
+    );
+    const names = screen
+      .getAllByRole("radio")
+      .filter((el) => el.getAttribute("name") === "handoff-target")
+      .map((el) => el.parentElement?.textContent);
+    expect(names).toEqual(["Plan Reviewer", "Implementer", "Developer"]);
+    expect(screen.getByRole("button", { name: "Open Plan Reviewer tab" })).toBeTruthy();
+  });
+
+  it("lists a Plan Reviewer's targets using loaded role names", () => {
+    render(
+      <HandoffDialog
+        source={{ ...source, sourceRoleId: "role_plan_reviewer" }}
+        targetRoleId="role_implementer"
+        targetFields={[{ key: "approvedPlan" }]}
+        folderWarning={null}
+        busy={false}
+        error={null}
+        preferredSurface="chat"
+        roleNames={[{ id: "role_planner", name: "Architect" }]}
+        onTarget={() => {}}
+        onConfirm={() => {}}
+        onClose={() => {}}
+      />,
+    );
+    const names = screen
+      .getAllByRole("radio")
+      .filter((el) => el.getAttribute("name") === "handoff-target")
+      .map((el) => el.parentElement?.textContent);
+    expect(names).toEqual(["Implementer", "Developer", "Architect"]);
+  });
+});
+
+describe("HandoffActions", () => {
+  it("shows Send to Plan Reviewer first for a Planner", () => {
+    const onSend = vi.fn();
+    render(
+      <HandoffActions enabled reason={null} sourceRoleId="role_planner" onSend={onSend} />,
+    );
+    const labels = screen.getAllByRole("button").map((b) => b.textContent);
+    expect(labels).toEqual([
+      "Send to Plan Reviewer",
+      "Send to Implementer",
+      "Send to Developer",
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "Send to Plan Reviewer" }));
+    expect(onSend).toHaveBeenCalledWith("role_plan_reviewer");
+  });
+
+  it("shows only Send to PR Reviewer for an Implementer", () => {
+    render(<HandoffActions enabled reason={null} sourceRoleId="role_implementer" onSend={() => {}} />);
+    expect(screen.getAllByRole("button").map((b) => b.textContent)).toEqual([
+      "Send to PR Reviewer",
+    ]);
   });
 });

@@ -20,6 +20,21 @@ const IMPLEMENTER_FIELDS = [
   { key: "additionalContext" },
 ];
 
+const PLAN_REVIEWER_FIELDS = [
+  { key: "originalTask" },
+  { key: "plan" },
+  { key: "additionalContext" },
+];
+
+const PLANNER_FIELDS = [
+  { key: "taskType", options: ["Feature", "Bug", "Refactor", "Chore"] },
+  { key: "title" },
+  { key: "request" },
+  { key: "expectedBehavior" },
+  { key: "currentBehavior" },
+  { key: "additionalContext" },
+];
+
 const REVIEWER_FIELDS = [
   { key: "originalTask" },
   { key: "approvedPlan" },
@@ -204,7 +219,7 @@ describe("handoff mapping", () => {
 
   it("refuses a hand-off while the turn is still streaming or the tab is not a Planner", () => {
     expect(handoffBlockReason(source({ turnInFlight: true }))).toMatch(/finishes this turn/);
-    expect(handoffBlockReason(source({ sourceRoleId: "role_developer" }))).toMatch(/Planner/);
+    expect(handoffBlockReason(source({ sourceRoleId: "role_general" }))).toMatch(/no hand-off/);
     expect(
       handoffBlockReason(
         source({
@@ -276,5 +291,144 @@ describe("handoff mapping", () => {
     expect(composePlanText(source({ latestMessage: "   " }), "message").emptyReason).toMatch(
       /no content/,
     );
+  });
+
+  it("maps Planner → Plan Reviewer: plan in `plan`, request in `originalTask`", () => {
+    const mapped = mapHandoff(source(), "plan_and_todos", {
+      roleId: "role_plan_reviewer",
+      fields: PLAN_REVIEWER_FIELDS,
+    });
+    expect(mapped.planField).toBe("plan");
+    expect(mapped.answers.plan).toContain("Check the token expiry path.");
+    expect(mapped.answers.originalTask).toContain("Expired tokens return 500.");
+    expect(mapped.answers.additionalContext).toContain("See the auth middleware.");
+    expect(mapped.usesScratchPad).toBe(false);
+  });
+
+  const reviewerMessage = [
+    "### Verdict",
+    "**APPROVED WITH CHANGES**",
+    "",
+    "## Reviewed plan",
+    "1. Patch the handler",
+    "2. Add a regression test",
+    "",
+    "## Review notes",
+    "- Missing test for refresh tokens",
+  ].join("\n");
+
+  function planReviewerSource(overrides: Partial<HandoffSource> = {}) {
+    return source({
+      sourceRoleId: "role_plan_reviewer",
+      sourceLabel: "Plan Reviewer · Login",
+      answers: {
+        originalTask: "Expired tokens return 500.",
+        plan: "1. Patch the handler",
+        additionalContext: "Auth lives in middleware.",
+      },
+      latestMessage: reviewerMessage,
+      plan: [],
+      todos: [],
+      ...overrides,
+    });
+  }
+
+  it("maps Plan Reviewer → Implementer: reviewed plan in approvedPlan, notes in context", () => {
+    const mapped = mapHandoff(planReviewerSource(), "plan_and_todos", {
+      roleId: "role_implementer",
+      fields: IMPLEMENTER_FIELDS,
+    });
+    expect(mapped.answers.approvedPlan).toBe("1. Patch the handler\n2. Add a regression test");
+    expect(mapped.answers.approvedPlan).not.toContain("Verdict");
+    expect(mapped.answers.additionalContext).toContain("Missing test for refresh tokens");
+    expect(mapped.answers.additionalContext).toContain("Auth lives in middleware.");
+    expect(mapped.answers.description).toBe("Expired tokens return 500.");
+    expect(mapped.planText).toContain("Patch the handler");
+  });
+
+  it("falls back to the whole last message when there is no Reviewed plan section", () => {
+    const mapped = mapHandoff(
+      planReviewerSource({ latestMessage: "Looks good. Ship step 1 then step 2." }),
+      "message",
+      { roleId: "role_implementer", fields: IMPLEMENTER_FIELDS },
+    );
+    expect(mapped.answers.approvedPlan).toBe("Looks good. Ship step 1 then step 2.");
+  });
+
+  it("Plan Reviewer can send back to the Planner with the review in the scratch pad", () => {
+    const mapped = mapHandoff(planReviewerSource(), "message", {
+      roleId: "role_planner",
+      fields: PLANNER_FIELDS,
+    });
+    expect(mapped.answers.request).toBe("Expired tokens return 500.");
+    expect(mapped.usesScratchPad).toBe(true);
+    expect(mapped.inlinePlan).toContain("Review notes");
+  });
+
+  it("Plan Reviewer is a valid hand-off source once its turn is done", () => {
+    expect(handoffBlockReason(planReviewerSource())).toBeNull();
+    expect(handoffBlockReason(planReviewerSource({ turnInFlight: true }))).toMatch(
+      /Plan Reviewer finishes this turn/,
+    );
+    expect(handoffBlockReason(planReviewerSource({ latestMessage: "" }))).toMatch(/no plan/);
+  });
+
+  it("Developer needs a finished turn with output before sending to review", () => {
+    const dev = source({ sourceRoleId: "role_developer", answers: {} });
+    expect(handoffBlockReason(dev)).toBeNull();
+    expect(handoffBlockReason({ ...dev, turnInFlight: true })).toMatch(/finishes this turn/);
+    expect(
+      handoffBlockReason({ ...dev, latestMessage: "", plan: [], todos: [] }),
+    ).toMatch(/nothing to send/);
+  });
+
+  it("a terminal Plan Reviewer can send its selection or tail", () => {
+    const term = planReviewerSource({
+      fromTerminal: true,
+      latestMessage: "",
+      selection: "",
+      terminalTail: reviewerMessage,
+    });
+    expect(handoffBlockReason(term)).toBeNull();
+    const mapped = mapHandoff(term, "terminal_tail", {
+      roleId: "role_implementer",
+      fields: IMPLEMENTER_FIELDS,
+    });
+    expect(mapped.answers.approvedPlan).toContain("Patch the handler");
+    expect(mapped.answers.approvedPlan).not.toContain("Review notes");
+  });
+
+  it("every transition maps onto the target's real field keys", async () => {
+    const { HANDOFF_TRANSITIONS } = await import("./transitions");
+    const fieldsByRole: Record<string, { key: string; options?: string[] }[]> = {
+      role_planner: PLANNER_FIELDS,
+      role_plan_reviewer: PLAN_REVIEWER_FIELDS,
+      role_implementer: IMPLEMENTER_FIELDS,
+      role_pr_reviewer: REVIEWER_FIELDS,
+      role_developer: [],
+    };
+    for (const [from, targets] of Object.entries(HANDOFF_TRANSITIONS)) {
+      for (const to of targets) {
+        const fields = fieldsByRole[to];
+        expect(fields, `${from} -> ${to}`).toBeDefined();
+        const src = source({
+          sourceRoleId: from,
+          answers: {
+            title: "T",
+            description: "D",
+            approvedPlan: "P",
+            originalTask: "O",
+            plan: "P",
+            request: "R",
+          },
+        });
+        const mapped = mapHandoff(src, "plan_and_todos", { roleId: to, fields });
+        const allowed = new Set(["cwd", ...fields.map((f) => f.key)]);
+        for (const key of Object.keys(mapped.answers)) {
+          expect(allowed.has(key), `${from} -> ${to}: ${key}`).toBe(true);
+        }
+        expect(mapped.planText.length, `${from} -> ${to}`).toBeGreaterThan(0);
+      }
+    }
   });
 });

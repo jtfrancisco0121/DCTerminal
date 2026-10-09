@@ -220,49 +220,49 @@ src/provider/
 
 **Files:** `docs/roles/role-plan-reviewer.md` (new), `docs/roles/README.md`, `src-tauri/src/template/seed_defs.rs`, regenerated roles seed (`cargo run --bin build_roles_seed`), `src-tauri/src/permissions/policy.rs` (`canonical_role`), `src-tauri/src/pty/launch.rs` (`role_family`), `src/workspaceView.ts` (`BUILT_IN_PERMISSION_SUMMARY`), `src-tauri/src/template/merge_tests.rs`
 
-- [ ] Write `role-plan-reviewer.md`: review the proposed plan against the codebase (it may run commands, tests, and tools — Decision 2 — but does not implement), list blocking issues / risks / missing tests, and end with a **Reviewed plan** section (the approved or revised plan) plus **Review notes**. Placeholders: `[PASTE THE ORIGINAL FEATURE / BUG REQUEST HERE]`, `[PASTE THE PROPOSED IMPLEMENTATION PLAN HERE]`, `[OPTIONAL: …]`.
-- [ ] `plan_reviewer_spec()`: id `role_plan_reviewer`, name "Plan Reviewer", color distinct from PR Reviewer, fields `originalTask` (required), `plan` (required, multiline — matches `PLAN_FIELD_KEYS`), `additionalContext` (optional). Add to `all_role_specs()` after Planner.
-- [ ] Policy: Plan Reviewer = full-access family (Decision 2: allow everything). Terminal flags: Cursor `--yolo` (same as Implementer); Claude `bypassPermissions` later in Phase 3. `BUILT_IN_PERMISSION_SUMMARY`: "Full access".
-- [ ] Existing user role files: template merge adds the new built-in without touching edited roles (check `template/merge.rs` behavior; add a merge test).
-- [ ] Tests: seed has 8 roles; `evaluate_permission("role_plan_reviewer", edit)` allows (`allow_once`); Cursor terminal flags for Plan Reviewer = `--yolo --approve-mcps --trust`; merge keeps a user-edited Planner.
-- [ ] Commit: `feat: seed Plan Reviewer role`
+- [x] Write `role-plan-reviewer.md`: review the proposed plan against the codebase (it may run commands, tests, and tools — Decision 2 — but does not implement), list blocking issues / risks / missing tests, and end with a **Reviewed plan** section (the approved or revised plan) plus **Review notes**. Placeholders: `[PASTE THE ORIGINAL FEATURE / BUG REQUEST HERE]`, `[PASTE THE PROPOSED IMPLEMENTATION PLAN HERE]`, `[OPTIONAL: …]`.
+- [x] `plan_reviewer_spec()`: id `role_plan_reviewer`, name "Plan Reviewer", color distinct from PR Reviewer, fields `originalTask` (required), `plan` (required, multiline — matches `PLAN_FIELD_KEYS`), `additionalContext` (optional). Add to `all_role_specs()` after Planner.
+- [x] Policy: Plan Reviewer = full-access family (Decision 2: allow everything). Terminal flags: Cursor `--yolo` (same as Implementer); Claude `bypassPermissions` later in Phase 3. `BUILT_IN_PERMISSION_SUMMARY`: "Full access".
+- [x] Existing user role files: template merge adds the new built-in without touching edited roles (check `template/merge.rs` behavior; add a merge test).
+- [x] Tests: seed has 8 roles; `evaluate_permission("role_plan_reviewer", edit)` allows (`allow_once`); Cursor terminal flags for Plan Reviewer = `--yolo --approve-mcps --trust`; merge keeps a user-edited Planner.
+- [x] Commit: `feat: seed Plan Reviewer role`
 
 ### Task 1.2: One hand-off transition table
 
 **Files:** `src/handoff/map.ts`, `src/handoff/transitions.ts` (new) + test, `src/handoff/map.test.ts`
 
-- [ ] Replace `HANDOFF_TARGETS` with `HANDOFF_TRANSITIONS: Record<sourceRoleId, targetRoleId[]>`:
+- [x] Replace `HANDOFF_TARGETS` with `HANDOFF_TRANSITIONS: Record<sourceRoleId, targetRoleId[]>`:
   - `role_planner` → `role_plan_reviewer`, `role_implementer`, `role_developer`
   - `role_plan_reviewer` → `role_implementer`, `role_developer`, `role_planner` (send back for revision)
   - `role_implementer` → `role_pr_reviewer`
   - `role_developer` → `role_pr_reviewer`
   - `role_pr_reviewer` → `role_implementer` (fix-ups; optional, behind the same dialog)
-- [ ] `HandoffTargetId` becomes `string` validated against the table; `handoffFromRole` reads role names from the loaded roles, not a switch.
-- [ ] `handoffBlockReason` generalizes: source must have transitions; Planner / Plan Reviewer need content; Implementer / Developer need a finished turn.
-- [ ] Mapping: Planner → Plan Reviewer puts the plan in `plan`, the Planner's request in `originalTask`. Plan Reviewer → Implementer puts the **Reviewed plan** section (fallback: whole last message) in `approvedPlan` and the review notes in `additionalContext`.
-- [ ] Keep "Planner → PR Reviewer" out of the default list (it was the mislabelled path); the palette id `sendPlanReviewer` is renamed (Task 1.3).
-- [ ] Tests: every transition maps to the target's real field keys; Plan Reviewer is a valid source; Implementer → PR Reviewer unchanged.
-- [ ] Commit: `fix: hand-off transitions include Planner → Plan Reviewer`
+- [x] `HandoffTargetId` becomes `string` validated against the table; `handoffFromRole` reads role names from the loaded roles, not a switch.
+- [x] `handoffBlockReason` generalizes: source must have transitions; Planner / Plan Reviewer need content; Implementer / Developer need a finished turn.
+- [x] Mapping: Planner → Plan Reviewer puts the plan in `plan`, the Planner's request in `originalTask`. Plan Reviewer → Implementer puts the **Reviewed plan** section (fallback: whole last message) in `approvedPlan` and the review notes in `additionalContext`.
+- [x] Keep "Planner → PR Reviewer" out of the default list (it was the mislabelled path); the palette id `sendPlanReviewer` is renamed (Task 1.3).
+- [x] Tests: every transition maps to the target's real field keys; Plan Reviewer is a valid source; Implementer → PR Reviewer unchanged.
+- [x] Commit: `fix: hand-off transitions include Planner → Plan Reviewer`
 
 ### Task 1.3: Buttons, dialog, palette, terminal menu
 
 **Files:** `src/components/HandoffDialog.tsx` (+ test), `src/StartupForm.tsx` (`handoffOffer` ~2540, palette cases ~2697-2707, terminal `menuActions` ~3830), `src/tabChrome.ts` (+ test), `src/components/CommandPalette.tsx`, `src/SessionTerminal.tsx` (~456), `src/components/SessionCards.tsx`
 
-- [ ] `TARGETS` / `ACTION_BUTTONS` built from the transition table and role names ("Send to Plan Reviewer").
-- [ ] `handoffOffer` uses `HANDOFF_TRANSITIONS[roleId]` instead of the two hard-coded branches.
-- [ ] Terminal Planner menu: add **Send to Plan Reviewer**; terminal Plan Reviewer gets **Send to Implementer**.
-- [ ] Palette: `sendPlanPlanReviewer` "Hand off plan to Plan Reviewer…"; keep `sendImplementerToReviewer`; `canSendPlan` true for Planner and Plan Reviewer.
-- [ ] Tests: Planner chat shows Plan Reviewer button first; terminal menu lists it; palette titles.
-- [ ] Commit: `feat: Send to Plan Reviewer from Planner chat, terminal, and palette`
+- [x] `TARGETS` / `ACTION_BUTTONS` built from the transition table and role names ("Send to Plan Reviewer").
+- [x] `handoffOffer` uses `HANDOFF_TRANSITIONS[roleId]` instead of the two hard-coded branches.
+- [x] Terminal Planner menu: add **Send to Plan Reviewer**; terminal Plan Reviewer gets **Send to Implementer**.
+- [x] Palette: `sendPlanPlanReviewer` "Hand off plan to Plan Reviewer…"; keep `sendImplementerToReviewer`; `canSendPlan` true for Planner and Plan Reviewer.
+- [x] Tests: Planner chat shows Plan Reviewer button first; terminal menu lists it; palette titles.
+- [x] Commit: `feat: Send to Plan Reviewer from Planner chat, terminal, and palette`
 
 ### Task 1.4: Pipeline preset + docs
 
 **Files:** `src-tauri/src/commands/app_state.rs` (`PIPELINE_ROLE_IDS`), `src/StartupForm.tsx` (~2749 notice), `docs/PROGRESS.md`
 
-- [ ] Pipeline workspace opens Planner, Plan Reviewer, Implementer, PR Reviewer.
-- [ ] PROGRESS: note the fix.
-- [ ] `npm run check`; Mac smoke of Planner → Plan Reviewer → Implementer.
-- [ ] Commit: `feat: pipeline preset adds Plan Reviewer`
+- [x] Pipeline workspace opens Planner, Plan Reviewer, Implementer, PR Reviewer.
+- [x] PROGRESS: note the fix.
+- [ ] `npm run check` (done on box and Mac); Mac smoke of Planner → Plan Reviewer → Implementer (JT, manual).
+- [x] Commit: `feat: pipeline preset adds Plan Reviewer`
 
 ## Phase 2: Provider abstraction + Settings
 

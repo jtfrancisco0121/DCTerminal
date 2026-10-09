@@ -4,20 +4,17 @@ import {
   defaultScope,
   handoffBlockReason,
   handoffFromRole,
+  handoffTargets,
   mapHandoff,
+  roleDisplayName,
   scopeChoices,
   type HandoffField,
   type HandoffScope,
   type HandoffSource,
   type HandoffSurface,
   type HandoffTargetId,
+  type RoleName,
 } from "../handoff/map";
-
-const TARGETS: { id: HandoffTargetId; label: string }[] = [
-  { id: "role_implementer", label: "Implementer" },
-  { id: "role_developer", label: "Developer" },
-  { id: "role_pr_reviewer", label: "PR Reviewer" },
-];
 
 type Props = {
   source: HandoffSource;
@@ -27,6 +24,8 @@ type Props = {
   busy: boolean;
   error: string | null;
   preferredSurface: HandoffSurface;
+  /** Loaded roles, for display names. Built-in names are used when absent. */
+  roleNames?: readonly RoleName[] | null;
   onTarget: (id: HandoffTargetId) => void;
   onConfirm: (scope: HandoffScope, surface: HandoffSurface) => void;
   onClose: () => void;
@@ -40,10 +39,15 @@ export function HandoffDialog({
   busy,
   error,
   preferredSurface,
+  roleNames = null,
   onTarget,
   onConfirm,
   onClose,
 }: Props) {
+  const targets = handoffTargets(source.sourceRoleId).map((id) => ({
+    id,
+    label: roleDisplayName(id, roleNames),
+  }));
   const [scope, setScope] = useState<HandoffScope>(() => defaultScope(source));
   const [surface, setSurface] = useState<HandoffSurface>(preferredSurface);
   useEffect(() => {
@@ -61,7 +65,7 @@ export function HandoffDialog({
   );
   const preview = composePlanText(source, scope).text;
   const previewText = Array.from(preview).slice(0, 500).join("");
-  const targetLabel = TARGETS.find((item) => item.id === targetRoleId)?.label ?? "role";
+  const targetLabel = roleDisplayName(targetRoleId, roleNames);
   const canConfirm = !busy && !block && mapped.planText.length > 0 && targetFields !== null;
 
   return (
@@ -75,12 +79,12 @@ export function HandoffDialog({
         <h2>Send plan</h2>
         <p className="hint">
           {surface === "terminal"
-            ? "Starts Cursor CLI in a terminal tab with this role's flags and the plan as the first prompt."
-            : "Opens a new tab in the same folder with the plan filled in. Review it, then press Start. Nothing starts on its own."}
+            ? "Starts Cursor CLI in a terminal tab with this role's flags and the hand-off text as the first prompt."
+            : "Opens a new tab in the same folder with the hand-off text filled in. Review it, then press Start. Nothing starts on its own."}
         </p>
         <fieldset className="handoff-fieldset">
           <legend>Send to</legend>
-          {TARGETS.map((target) => (
+          {targets.map((target) => (
             <label key={target.id} className="handoff-choice">
               <input
                 type="radio"
@@ -163,52 +167,43 @@ export function HandoffDialog({
   );
 }
 
-const ACTION_BUTTONS: { id: HandoffTargetId; label: string; title: string }[] = [
-  {
-    id: "role_implementer",
-    label: "Send to Implementer",
-    title: "Open an Implementer tab with this plan",
-  },
-  {
-    id: "role_developer",
-    label: "Send to Developer",
-    title: "Open a Developer tab with this plan",
-  },
-  {
-    id: "role_pr_reviewer",
-    label: "Send to PR Reviewer",
-    title: "Open a PR Reviewer tab with this plan",
-  },
-];
-
 export function HandoffActions({
   enabled,
   reason,
   busy = false,
-  targets = TARGETS.map((item) => item.id),
+  sourceRoleId,
+  targets,
+  roleNames = null,
   onSend,
 }: {
   enabled: boolean;
   reason: string | null;
   busy?: boolean;
+  /** Buttons follow this role's row in the transition table. */
+  sourceRoleId?: string;
+  /** Explicit targets; overrides `sourceRoleId`. */
   targets?: HandoffTargetId[];
+  roleNames?: readonly RoleName[] | null;
   onSend: (target: HandoffTargetId) => void;
 }) {
-  const buttons = ACTION_BUTTONS.filter((item) => targets.includes(item.id));
+  const ids = targets ?? (sourceRoleId ? handoffTargets(sourceRoleId) : []);
   return (
     <div className="button-row handoff-actions">
-      {buttons.map((item) => (
-        <button
-          key={item.id}
-          type="button"
-          className="secondary-button"
-          disabled={!enabled || busy}
-          title={reason ?? item.title}
-          onClick={() => onSend(item.id)}
-        >
-          {item.label}
-        </button>
-      ))}
+      {ids.map((id) => {
+        const name = roleDisplayName(id, roleNames);
+        return (
+          <button
+            key={id}
+            type="button"
+            className="secondary-button"
+            disabled={!enabled || busy}
+            title={reason ?? `Open a ${name} tab with this hand-off`}
+            onClick={() => onSend(id)}
+          >
+            {`Send to ${name}`}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -217,16 +212,18 @@ export function HandoffBanner({
   sourceRoleId,
   title,
   warning,
+  roleNames = null,
   onOpen,
 }: {
   sourceRoleId: string;
+  roleNames?: readonly RoleName[] | null;
   title: string;
   warning: string | null;
   onOpen: () => void;
 }) {
   return (
     <p className="handoff-banner">
-      From {handoffFromRole(sourceRoleId)}:{" "}
+      From {handoffFromRole(sourceRoleId, roleNames)}:{" "}
       <button type="button" className="link-button" onClick={onOpen}>
         {title}
       </button>

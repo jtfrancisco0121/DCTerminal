@@ -140,7 +140,7 @@ pub fn handoff_terminal_prompt(merged: &str, plan: &str) -> String {
             merged.to_string()
         };
     }
-    format!("{merged}\n\nApproved plan from the Planner hand-off:\n\n{plan}")
+    format!("{merged}\n\nPlan from the hand-off:\n\n{plan}")
 }
 
 pub fn role_agent_command(
@@ -195,7 +195,8 @@ enum Family {
 fn role_family(role_id: &str) -> Family {
     let normalized = role_id.trim().to_ascii_lowercase().replace('-', "_");
     match normalized.as_str() {
-        "role_implementer" | "implementer" | "role_developer" | "developer" => Family::FullAccess,
+        "role_implementer" | "implementer" | "role_developer" | "developer"
+        | "role_plan_reviewer" | "plan_reviewer" => Family::FullAccess,
         "role_planner" | "planner" => Family::Planner,
         "role_recommendation" | "recommendation" => Family::Planner,
         "role_general" | "general" => Family::General,
@@ -220,6 +221,14 @@ mod tests {
         assert_eq!(
             role_terminal_flags("role_developer", RunMode::Default),
             expected
+        );
+    }
+
+    #[test]
+    fn plan_reviewer_runs_everything_like_implementer() {
+        assert_eq!(
+            role_terminal_flags("role_plan_reviewer", RunMode::Default),
+            vec!["--yolo", "--approve-mcps", "--trust"]
         );
     }
 
@@ -354,6 +363,6 @@ mod tests {
         let prompt = handoff_terminal_prompt(merged, plan);
         assert!(prompt.starts_with(merged));
         assert!(prompt.contains(plan));
-        assert!(prompt.contains("Approved plan from the Planner hand-off"));
+        assert!(prompt.contains("Plan from the hand-off"));
     }
 }

@@ -7,6 +7,7 @@ Markdown files here are the **authoritative** persona prompts. DCTerminal conver
 | File | Role id |
 |------|---------|
 | `role-planner.md` | `role_planner` |
+| `role-plan-reviewer.md` | `role_plan_reviewer` |
 | `role-implementer.md` | `role_implementer` |
 | `role-pr-reviewer.md` | `role_pr_reviewer` |
 | `role-developer.md` | `role_developer` |

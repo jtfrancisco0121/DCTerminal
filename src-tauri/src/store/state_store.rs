@@ -2,7 +2,7 @@ use crate::orchestrator::TabPhase;
 use crate::roles::Role;
 use crate::store::json_io::{read_json, write_json_atomic};
 use crate::store::state_types::{
-    AppStateFile, RoleSnapshot, TabRecord, TabSessionRef, STATE_SCHEMA_VERSION,
+    AppStateFile, PipelineRun, RoleSnapshot, TabRecord, TabSessionRef, STATE_SCHEMA_VERSION,
 };
 use crate::template::template_hash;
 use chrono::Utc;
@@ -115,6 +115,7 @@ impl StateStore {
             model: None,
             custom_label: false,
             worktree: None,
+            pipeline_run_id: None,
         };
         self.data.tabs.push(record);
         self.data.active_tab_id = Some(tab_id.clone());
@@ -338,6 +339,7 @@ impl StateStore {
             model: closed.model.clone(),
             custom_label: closed.custom_label,
             worktree: closed.worktree.clone(),
+            pipeline_run_id: None,
         };
         let id = record.id.clone();
         self.data.tabs.push(record);
@@ -399,7 +401,7 @@ impl StateStore {
         role: &Role,
         worktree: crate::worktree::WorktreeRef,
     ) -> Result<String, String> {
-        let tab_id = self.create_draft_tab(role, &worktree.path, true)?;
+        let tab_id = self.create_draft_tab(role, &worktree.path, true, None)?;
         if let Some(tab) = self.data.tabs.iter_mut().find(|t| t.id == tab_id) {
             tab.worktree = Some(worktree);
         }
@@ -446,6 +448,7 @@ impl StateStore {
         role: &Role,
         cwd: &str,
         make_active: bool,
+        pipeline_run_id: Option<&str>,
     ) -> Result<String, String> {
         let tab_id = new_tab_id();
         let label = format!("New · {}", role.name);
@@ -475,6 +478,7 @@ impl StateStore {
             model: None,
             custom_label: false,
             worktree: None,
+            pipeline_run_id: pipeline_run_id.map(|id| id.to_string()),
         };
         self.data.tabs.push(record);
         if make_active {
@@ -482,6 +486,165 @@ impl StateStore {
         }
         self.save()?;
         Ok(tab_id)
+    }
+
+    pub fn pipeline_run_by_id(&self, run_id: &str) -> Option<&PipelineRun> {
+        self.data.pipeline_runs.iter().find(|run| run.id == run_id)
+    }
+
+    pub fn pipeline_run_by_id_mut(&mut self, run_id: &str) -> Option<&mut PipelineRun> {
+        self.data
+            .pipeline_runs
+            .iter_mut()
+            .find(|run| run.id == run_id)
+    }
+
+    pub fn create_pipeline_overview_tab(
+        &mut self,
+        cwd: &str,
+        run_id: &str,
+        title: &str,
+    ) -> Result<String, String> {
+        let tab_id = new_tab_id();
+        let record = TabRecord {
+            id: tab_id.clone(),
+            label: title.to_string(),
+            role_id: "pipeline_overview".to_string(),
+            role_snapshot: RoleSnapshot {
+                name: "Pipeline".to_string(),
+                template_version: 1,
+                mode: "agent".to_string(),
+                injection: String::new(),
+            },
+            cwd: cwd.to_string(),
+            answers: HashMap::from([("cwd".to_string(), cwd.to_string())]),
+            merged_prompt: String::new(),
+            merged_prompt_hash: String::new(),
+            phase: "draft".to_string(),
+            order: next_tab_order(&self.data),
+            created_at: Utc::now().to_rfc3339(),
+            session: None,
+            transcript: None,
+            startup_prompt_sent: false,
+            color: Some("#F0B429".to_string()),
+            kind: "pipeline_overview".to_string(),
+            terminal_launch: String::new(),
+            model: None,
+            custom_label: false,
+            worktree: None,
+            pipeline_run_id: Some(run_id.to_string()),
+        };
+        self.data.tabs.push(record);
+        self.data.active_tab_id = Some(tab_id.clone());
+        self.save()?;
+        Ok(tab_id)
+    }
+
+    pub fn create_pipeline_workspace(
+        &mut self,
+        roles: &crate::store::RolesStore,
+        cwd: &str,
+        kind: &str,
+        role_ids: &[&str],
+        initial_stage: &str,
+    ) -> Result<String, String> {
+        if kind != "full" && kind != "execute" {
+            return Err("pipeline kind must be full or execute".into());
+        }
+        let run_id = new_tab_id();
+        let overview_title = if kind == "execute" {
+            "Pipeline · Execute".to_string()
+        } else {
+            "Pipeline · Plan".to_string()
+        };
+        let mut tab_ids = HashMap::new();
+        for role_id in role_ids {
+            let role = roles
+                .role_by_id(role_id)
+                .ok_or_else(|| format!("unknown role: {role_id}"))?;
+            let tab_id = self.create_draft_tab(role, cwd, false, Some(&run_id))?;
+            tab_ids.insert(role_id.to_string(), tab_id);
+        }
+        let overview_tab_id = self.create_pipeline_overview_tab(cwd, &run_id, &overview_title)?;
+        let run = PipelineRun {
+            id: run_id,
+            kind: kind.to_string(),
+            cwd: cwd.to_string(),
+            stage: initial_stage.to_string(),
+            overview_tab_id: overview_tab_id.clone(),
+            tab_ids,
+            candidate_plan: None,
+            approved_plan: None,
+            original_request: None,
+            created_at: Utc::now().to_rfc3339(),
+        };
+        self.data.pipeline_runs.push(run);
+        self.save()?;
+        Ok(overview_tab_id)
+    }
+
+    pub fn pipeline_promote_plan(
+        &mut self,
+        run_id: &str,
+        approved_plan: &str,
+    ) -> Result<(), String> {
+        let plan = approved_plan.trim();
+        if plan.is_empty() {
+            return Err("approved plan is empty".into());
+        }
+        let (implementer_tab_id, original_request) = {
+            let run = self
+                .pipeline_run_by_id(run_id)
+                .ok_or_else(|| format!("unknown pipeline run: {run_id}"))?;
+            let implementer_tab_id = run
+                .tab_ids
+                .get("role_implementer")
+                .cloned()
+                .ok_or_else(|| "pipeline has no implementer tab".to_string())?;
+            (implementer_tab_id, run.original_request.clone())
+        };
+        {
+            let run = self
+                .pipeline_run_by_id_mut(run_id)
+                .ok_or_else(|| format!("unknown pipeline run: {run_id}"))?;
+            run.approved_plan = Some(plan.to_string());
+            run.stage = "implementer".to_string();
+        }
+        let tab = self
+            .data
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == implementer_tab_id)
+            .ok_or_else(|| "implementer tab missing".to_string())?;
+        tab.answers.insert("approvedPlan".to_string(), plan.to_string());
+        if let Some(request) = original_request {
+            if !request.trim().is_empty() {
+                tab.answers
+                    .insert("description".to_string(), request.trim().to_string());
+            }
+        }
+        self.save()?;
+        Ok(())
+    }
+
+    pub fn pipeline_set_candidate_plan(
+        &mut self,
+        run_id: &str,
+        candidate_plan: &str,
+    ) -> Result<(), String> {
+        let text = candidate_plan.trim();
+        if text.is_empty() {
+            return Err("candidate plan is empty".into());
+        }
+        let run = self
+            .pipeline_run_by_id_mut(run_id)
+            .ok_or_else(|| format!("unknown pipeline run: {run_id}"))?;
+        run.candidate_plan = Some(text.to_string());
+        if run.kind == "full" && run.stage == "planner" {
+            run.stage = "plan_reviewer".to_string();
+        }
+        self.save()?;
+        Ok(())
     }
 
     /// Convert a draft tab, or create one, for a shell / CLI / role terminal.
@@ -523,6 +686,7 @@ impl StateStore {
             model: None,
             custom_label: false,
             worktree: None,
+            pipeline_run_id: None,
         };
         apply_terminal_draft(&mut record, &draft);
         self.data.tabs.push(record);
@@ -586,6 +750,7 @@ impl StateStore {
                 // Keep the saved title even when the form changes later.
                 custom_label: true,
                 worktree: item.worktree.clone(),
+                pipeline_run_id: None,
             };
             self.data.tabs.push(record);
             ids.push(tab_id);
@@ -845,8 +1010,8 @@ mod tests {
             path: path.clone(),
             data: AppStateFile::default(),
         };
-        let first = store.create_draft_tab(&role, "/tmp/a", true).unwrap();
-        let second = store.create_draft_tab(&role, "/tmp/b", true).unwrap();
+        let first = store.create_draft_tab(&role, "/tmp/a", true, None).unwrap();
+        let second = store.create_draft_tab(&role, "/tmp/b", true, None).unwrap();
         store
             .set_tab_model(&first, Some("gpt-5".to_string()))
             .unwrap();
@@ -936,7 +1101,7 @@ mod tests {
             path: "/r/app-worktrees/feat-x".to_string(),
             branch: "feat/x".to_string(),
         };
-        let plain = store.create_draft_tab(&role, "/r/app", false).unwrap();
+        let plain = store.create_draft_tab(&role, "/r/app", false, None).unwrap();
         let id = store.create_worktree_tab(&role, wt.clone()).unwrap();
         let tab = store.tab_by_id(&id).unwrap();
         assert_eq!(tab.cwd, "/r/app-worktrees/feat-x");
@@ -982,7 +1147,7 @@ mod tests {
             path: path.clone(),
             data: AppStateFile::default(),
         };
-        let id = store.create_draft_tab(&role, "/tmp/app", true).unwrap();
+        let id = store.create_draft_tab(&role, "/tmp/app", true, None).unwrap();
         store.set_tab_label(&id, "  Auth bug  ").unwrap();
         let answers = HashMap::from([
             ("cwd".to_string(), "/tmp/app".to_string()),
@@ -1047,7 +1212,7 @@ mod tests {
             path,
             data: AppStateFile::default(),
         };
-        let draft_id = store.create_draft_tab(&role, "/tmp/proj", true).unwrap();
+        let draft_id = store.create_draft_tab(&role, "/tmp/proj", true, None).unwrap();
         let answers = HashMap::from([
             ("cwd".to_string(), "/tmp/proj".to_string()),
             ("title".to_string(), "Onboarding".to_string()),
@@ -1100,7 +1265,7 @@ mod tests {
             path: dir.join("state.json"),
             data: AppStateFile::default(),
         };
-        let id = store.create_draft_tab(&role, r"C:\Work\App", true).unwrap();
+        let id = store.create_draft_tab(&role, r"C:\Work\App", true, None).unwrap();
         store.close_tab(&id).unwrap();
         assert!(store.data.tabs.is_empty());
         let restored = store
@@ -1138,8 +1303,8 @@ mod tests {
             path: dir.join("state.json"),
             data: AppStateFile::default(),
         };
-        let older = store.create_draft_tab(&role, "/w/a", true).unwrap();
-        let newer = store.create_draft_tab(&role, "/w/b", true).unwrap();
+        let older = store.create_draft_tab(&role, "/w/a", true, None).unwrap();
+        let newer = store.create_draft_tab(&role, "/w/b", true, None).unwrap();
         store.close_tab(&older).unwrap();
         store.close_tab(&newer).unwrap();
         let restored = store
@@ -1177,7 +1342,7 @@ mod tests {
             path: dir.join("state.json"),
             data: AppStateFile::default(),
         };
-        let id = store.create_draft_tab(&role, r"C:\Work\App", true).unwrap();
+        let id = store.create_draft_tab(&role, r"C:\Work\App", true, None).unwrap();
         store
             .promote_tab_to_running(
                 Some(&id),
@@ -1248,7 +1413,7 @@ mod tests {
             path: dir.join("state.json"),
             data: AppStateFile::default(),
         };
-        let before = store.create_draft_tab(&role, "/w/old", true).unwrap();
+        let before = store.create_draft_tab(&role, "/w/old", true, None).unwrap();
         let snapshot = store.tab_by_id(&before).unwrap().role_snapshot.clone();
         let chat = WorkspaceTab {
             label: "Developer · Login fix".into(),

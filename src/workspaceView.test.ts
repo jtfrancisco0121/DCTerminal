@@ -180,6 +180,7 @@ describe("role permission summaries", () => {
   it("describes the locked policy for each built-in role", () => {
     expect(rolePermissionSummary("role_implementer")).toContain("Auto-allow");
     expect(rolePermissionSummary("role_developer")).toContain("Auto-allow");
+    expect(rolePermissionSummary("role_plan_reviewer")).toContain("Full access");
     expect(rolePermissionSummary("role_pr_reviewer")).toContain("Deny file writes");
     expect(rolePermissionSummary("role_planner")).toContain("Deny write and shell");
     expect(rolePermissionSummary("role_general")).toContain("Deny write and shell");

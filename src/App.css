@@ -3992,3 +3992,100 @@ mark.search-hit-current {
   gap: 0.35rem;
   flex-shrink: 0;
 }
+
+.pipeline-overview-screen {
+  overflow: auto;
+  padding: 1rem 1.25rem 1.5rem;
+}
+
+.pipeline-overview-header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.pipeline-overview-title {
+  margin: 0 0 0.25rem;
+  font-size: 1.15rem;
+}
+
+.pipeline-overview-meta {
+  margin: 0;
+}
+
+.pipeline-overview-cwd {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.85em;
+}
+
+.pipeline-lanes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+}
+
+.pipeline-lane {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.65rem 0.75rem;
+  background: var(--bg-elev);
+}
+
+.pipeline-lane-current {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.pipeline-lane-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.pipeline-lane-head h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.pipeline-lane-status {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.pipeline-lane-status-live {
+  color: var(--accent);
+}
+
+.pipeline-lane-status-done {
+  color: var(--fg-subtle);
+}
+
+.pipeline-lane-tab {
+  margin: 0.35rem 0 0.5rem;
+  font-size: 0.8rem;
+}
+
+.pipeline-lane-actions {
+  margin: 0;
+}
+
+.pipeline-plan-panel {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.pipeline-plan-panel h3 {
+  margin: 0 0 0.35rem;
+  font-size: 1rem;
+}
+
+.pipeline-plan-area {
+  width: 100%;
+  margin: 0.5rem 0;
+}
