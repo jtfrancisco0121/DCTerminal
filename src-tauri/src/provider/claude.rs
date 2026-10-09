@@ -5,13 +5,16 @@
 //! terminal tabs land in Phase 3 and Claude chat in Phase 4; until then the
 //! launch methods return a clear "not available yet" error.
 
+use super::claude_config::{claude_env, resolve_claude_config_dir, ConfigDirInfo};
+use super::claude_detect::{
+    claude_login_status, read_claude_version, resolve_adapter, resolve_claude,
+};
 use super::{
     is_extension_method, AgentRequestKind, ProgramArgs, Provider, ProviderId, ProviderStatus,
     SessionOpts, TerminalLaunch,
 };
 use crate::acp::request_handler::is_permission_method;
 use crate::cli_detect::LoginStatus;
-use super::claude_config::{claude_env, resolve_claude_config_dir, ConfigDirInfo};
 use crate::store::settings_store::ClaudeProviderSettings;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -56,24 +59,25 @@ impl Provider for ClaudeProvider {
     }
 
     fn detect(&self) -> ProviderStatus {
+        let claude = resolve_claude(self.settings.claude_path.as_deref());
+        let adapter = resolve_adapter(self.settings.adapter_path.as_deref());
+        let version = claude
+            .as_deref()
+            .and_then(|path| read_claude_version(path, &self.config));
         ProviderStatus {
             id: ProviderId::Claude,
-            found: false,
-            path: None,
-            version: None,
-            adapter_found: false,
-            adapter_path: None,
-            error: Some(self.missing_message()),
+            found: claude.is_some(),
+            path: claude.as_ref().map(|p| p.display().to_string()),
+            version,
+            adapter_found: adapter.is_some(),
+            adapter_path: adapter.as_ref().map(|p| p.display().to_string()),
+            error: claude.is_none().then(|| self.missing_message()),
         }
     }
 
     fn login_status(&self) -> LoginStatus {
-        LoginStatus {
-            state: "unknown".into(),
-            account: None,
-            detail: None,
-            api_key_env: false,
-        }
+        let claude = resolve_claude(self.settings.claude_path.as_deref());
+        claude_login_status(claude.as_deref(), &self.config)
     }
 
     fn acp_command(&self, _model: Option<&str>) -> Result<ProgramArgs, String> {
@@ -117,13 +121,18 @@ impl Provider for ClaudeProvider {
     }
 
     fn missing_message(&self) -> String {
-        "Claude Code (claude) was not found. Install it from https://code.claude.com/docs, \
+        "Claude Code (claude) was not found. Install it from \
+         https://code.claude.com/docs/en/setup (on a Mac: `brew install --cask claude-code`), \
          or set DCT_CLAUDE_PATH to the executable."
             .to_string()
     }
 
     fn auth_error_message(&self, detail: &str) -> String {
-        format!("Claude Code is not signed in. ({detail})")
+        let dir = &self.config.display;
+        format!(
+            "Claude Code is not signed in for {dir}. Open a terminal, run \
+             `CLAUDE_CONFIG_DIR={dir} claude` (your `claude2`), and use `/login`. Then Retry. ({detail})"
+        )
     }
 }
 

@@ -44,7 +44,7 @@ pub use prompts::{
 pub use providers::{get_provider_settings, set_provider_settings, set_tab_provider};
 pub use role_session::role_session_start;
 pub use roles::{get_role, list_roles, reset_builtin_role, save_role, validate_and_preview};
-pub use setup::{first_run_complete, first_run_status};
+pub use setup::{first_run_complete, first_run_status, provider_status};
 pub use workspace::{
     check_working_folder, cursor_approval_mode, diagnostics_read_log, diagnostics_set_capture,
     diagnostics_status, history_search, projects_list, projects_remember, projects_remove,

@@ -84,7 +84,7 @@ fn read_agent_version(agent: &Path) -> Option<String> {
     }
 }
 
-fn find_on_path(binary: &str) -> Option<PathBuf> {
+pub(crate) fn find_on_path(binary: &str) -> Option<PathBuf> {
     let path_var = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path_var) {
         for candidate in candidate_names(binary) {
@@ -143,17 +143,26 @@ pub fn known_install_candidates() -> Vec<PathBuf> {
     candidates
 }
 
-/// F8: whether the Cursor CLI is signed in, from `agent status`.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+/// F8: whether a provider CLI is signed in (`agent status` /
+/// `claude auth status --json`). Display only; nothing is stored.
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct LoginStatus {
-    /// `loggedIn`, `loggedOut`, `unknown`, or `noCli`.
+    /// `loggedIn`, `loggedOut`, `unknown`, `noCli`, or (Claude)
+    /// `noConfigDir` when the Claude config folder does not exist.
     pub state: String,
     pub account: Option<String>,
     /// Short text to show when the state is not clear.
     pub detail: Option<String>,
-    /// `CURSOR_API_KEY` is set (its value is never read back).
+    /// `CURSOR_API_KEY` (Cursor) or `ANTHROPIC_API_KEY` (Claude) is set (its
+    /// value is never read back).
     pub api_key_env: bool,
+    /// Claude: login method and plan, e.g. `claude.ai · team`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    /// Claude: organization name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organization: Option<String>,
 }
 
 /// Read `agent status` output (JSON or text). Never touches credential files.
@@ -203,6 +212,7 @@ fn with_state(state: &str, account: Option<String>) -> LoginStatus {
         account,
         detail: None,
         api_key_env: false,
+        ..Default::default()
     }
 }
 
@@ -244,7 +254,7 @@ fn login_from_json(value: &serde_json::Value) -> Option<LoginStatus> {
     })
 }
 
-fn strip_ansi(text: &str) -> String {
+pub(crate) fn strip_ansi(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
@@ -268,9 +278,22 @@ const STATUS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// Run `agent <args>` without a window, with a timeout. Returns stdout, stderr, success.
 fn run_agent(agent: &Path, args: &[&str]) -> Result<(String, String, bool), String> {
+    run_cli(agent, args, &[])
+}
+
+/// Run `<program> <args>` with extra env, no window, stdin closed, and a
+/// timeout. Returns stdout, stderr, success.
+pub(crate) fn run_cli(
+    program: &Path,
+    args: &[&str],
+    env: &[(String, String)],
+) -> Result<(String, String, bool), String> {
     use std::io::Read;
     use std::process::Stdio;
-    let mut command = Command::new(agent);
+    let mut command = Command::new(program);
+    for (key, value) in env {
+        command.env(key, value);
+    }
     command
         .args(args)
         .env("NO_COLOR", "1")
@@ -286,7 +309,13 @@ fn run_agent(agent: &Path, args: &[&str]) -> Result<(String, String, bool), Stri
     }
     let mut child = command
         .spawn()
-        .map_err(|err| format!("could not run agent {}: {err}", args.join(" ")))?;
+        .map_err(|err| {
+            format!(
+                "could not run {} {}: {err}",
+                program.display(),
+                args.join(" ")
+            )
+        })?;
     let mut stdout = child.stdout.take().ok_or("no stdout")?;
     let mut stderr = child.stderr.take().ok_or("no stderr")?;
     let out_thread = std::thread::spawn(move || {
@@ -306,7 +335,7 @@ fn run_agent(agent: &Path, args: &[&str]) -> Result<(String, String, bool), Stri
             Ok(None) if std::time::Instant::now() >= deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!("agent {} timed out", args.join(" ")));
+                return Err(format!("{} {} timed out", program.display(), args.join(" ")));
             }
             Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
             Err(err) => return Err(err.to_string()),
@@ -329,6 +358,7 @@ pub fn agent_login_status() -> LoginStatus {
             account: None,
             detail: Some(agent_missing_message()),
             api_key_env,
+            ..Default::default()
         };
     };
     let mut status = match run_agent(&agent, &["status", "--format", "json"]) {
@@ -359,6 +389,7 @@ fn unknown_status(detail: Option<String>) -> LoginStatus {
         account: None,
         detail,
         api_key_env: false,
+        ..Default::default()
     }
 }
 

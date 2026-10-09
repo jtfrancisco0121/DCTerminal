@@ -42,7 +42,7 @@ use commands::{
     validate_and_preview, SessionRegistry,
 };
 use commands::{changes_file_diff, changes_list, changes_revert, changes_snapshot, ChangesRoot};
-use commands::{first_run_complete, first_run_status};
+use commands::{first_run_complete, first_run_status, provider_status};
 use commands::{get_provider_settings, set_provider_settings, set_tab_provider};
 use commands::{git_repo_info, worktree_tab_check, worktree_tab_new, worktree_tab_remove};
 use commands::{
@@ -143,6 +143,7 @@ pub fn run() {
             first_run_status,
             first_run_complete,
             get_provider_settings,
+            provider_status,
             set_provider_settings,
             set_tab_provider,
             probe_acp,

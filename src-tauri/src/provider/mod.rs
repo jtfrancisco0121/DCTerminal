@@ -8,6 +8,7 @@
 
 pub mod claude;
 pub mod claude_config;
+pub mod claude_detect;
 pub mod cursor;
 
 use crate::cli_detect::LoginStatus;

@@ -298,11 +298,11 @@ src/provider/
 
 **Files:** `src-tauri/src/provider/claude_detect.rs` (new), `src-tauri/src/provider/claude.rs`, `src-tauri/src/commands/setup.rs`, `src-tauri/src/lib.rs`
 
-- [ ] Resolve `claude`: `DCT_CLAUDE_PATH`, PATH, then known locations (`/opt/homebrew/bin/claude`, `/usr/local/bin/claude`, `~/.local/bin/claude`, `~/.claude/local/claude`, Windows `%USERPROFILE%\.local\bin\claude.exe` — **(unverified on Windows)**). GUI apps on macOS do not inherit the shell PATH, so the known-location list matters.
-- [ ] Resolve `claude-agent-acp`: `DCT_CLAUDE_ACP_PATH`, PATH, npm global bin (`npm prefix -g`/bin), Homebrew `/opt/homebrew/bin`.
-- [ ] `claude --version`; `claude auth status --json` run with `claude_env` (`CLAUDE_CONFIG_DIR=<configDir>`, Task 2.3) and parsed for logged-in / kind / account label (email or org, display only — never stored beyond display). **(unverified JSON shape — capture it on the Mac in this task with `CLAUDE_CONFIG_DIR=~/.claude-account2` and add a fixture.)**
-- [ ] Tests: path resolution with fake dirs; parse fixtures for logged in / logged out; the auth-status command carries `CLAUDE_CONFIG_DIR` from the resolver.
-- [ ] Commit: `feat: detect Claude Code and the Claude ACP adapter`
+- [x] Resolve `claude`: `DCT_CLAUDE_PATH`, PATH, then known locations (`/opt/homebrew/bin/claude`, `/usr/local/bin/claude`, `~/.local/bin/claude`, `~/.claude/local/claude`, Windows `%USERPROFILE%\.local\bin\claude.exe` — **(unverified on Windows)**). GUI apps on macOS do not inherit the shell PATH, so the known-location list matters.
+- [x] Resolve `claude-agent-acp`: `DCT_CLAUDE_ACP_PATH`, PATH, npm global bin (`npm prefix -g`/bin), Homebrew `/opt/homebrew/bin`.
+- [x] `claude --version`; `claude auth status --json` run with `claude_env` (`CLAUDE_CONFIG_DIR=<configDir>`, Task 2.3) and parsed for logged-in / kind / account label (email or org, display only — never stored beyond display). **(unverified JSON shape — capture it on the Mac in this task with `CLAUDE_CONFIG_DIR=~/.claude-account2` and add a fixture.)**
+- [x] Tests: path resolution with fake dirs; parse fixtures for logged in / logged out; the auth-status command carries `CLAUDE_CONFIG_DIR` from the resolver.
+- [x] Commit: `feat: detect Claude Code and the Claude ACP adapter`
 
 ### Task 2.5: Provider UI — Settings, Start card, first-run
 
