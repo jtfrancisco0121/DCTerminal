@@ -204,12 +204,12 @@ src/provider/
 
 **Files:** `docs/roles/role-plan-reviewer.md` (new), `docs/roles/README.md`, `src-tauri/src/template/seed_defs.rs`, regenerated roles seed (`cargo run --bin build_roles_seed`), `src-tauri/src/permissions/policy.rs` (`canonical_role`), `src-tauri/src/pty/launch.rs` (`role_family`), `src/workspaceView.ts` (`BUILT_IN_PERMISSION_SUMMARY`), `src-tauri/src/template/merge_tests.rs`
 
-- [ ] Write `role-plan-reviewer.md`: review the proposed plan against the codebase (it may run commands, tests, and tools — Decision 2 — but does not implement), list blocking issues / risks / missing tests, and end with a **Reviewed plan** section (the approved or revised plan) plus **Review notes**. Placeholders: `[PASTE THE ORIGINAL FEATURE / BUG REQUEST HERE]`, `[PASTE THE PROPOSED IMPLEMENTATION PLAN HERE]`, `[OPTIONAL: …]`.
-- [ ] `plan_reviewer_spec()`: id `role_plan_reviewer`, name "Plan Reviewer", color distinct from PR Reviewer, fields `originalTask` (required), `plan` (required, multiline — matches `PLAN_FIELD_KEYS`), `additionalContext` (optional). Add to `all_role_specs()` after Planner.
-- [ ] Policy: Plan Reviewer = full-access family (Decision 2: allow everything). Terminal flags: Cursor `--yolo` (same as Implementer); Claude `bypassPermissions` later in Phase 3. `BUILT_IN_PERMISSION_SUMMARY`: "Full access".
-- [ ] Existing user role files: template merge adds the new built-in without touching edited roles (check `template/merge.rs` behavior; add a merge test).
-- [ ] Tests: seed has 8 roles; `evaluate_permission("role_plan_reviewer", edit)` allows (`allow_once`); Cursor terminal flags for Plan Reviewer = `--yolo --approve-mcps --trust`; merge keeps a user-edited Planner.
-- [ ] Commit: `feat: seed Plan Reviewer role`
+- [x] Write `role-plan-reviewer.md`: review the proposed plan against the codebase (it may run commands, tests, and tools — Decision 2 — but does not implement), list blocking issues / risks / missing tests, and end with a **Reviewed plan** section (the approved or revised plan) plus **Review notes**. Placeholders: `[PASTE THE ORIGINAL FEATURE / BUG REQUEST HERE]`, `[PASTE THE PROPOSED IMPLEMENTATION PLAN HERE]`, `[OPTIONAL: …]`.
+- [x] `plan_reviewer_spec()`: id `role_plan_reviewer`, name "Plan Reviewer", color distinct from PR Reviewer, fields `originalTask` (required), `plan` (required, multiline — matches `PLAN_FIELD_KEYS`), `additionalContext` (optional). Add to `all_role_specs()` after Planner.
+- [x] Policy: Plan Reviewer = full-access family (Decision 2: allow everything). Terminal flags: Cursor `--yolo` (same as Implementer); Claude `bypassPermissions` later in Phase 3. `BUILT_IN_PERMISSION_SUMMARY`: "Full access".
+- [x] Existing user role files: template merge adds the new built-in without touching edited roles (check `template/merge.rs` behavior; add a merge test).
+- [x] Tests: seed has 8 roles; `evaluate_permission("role_plan_reviewer", edit)` allows (`allow_once`); Cursor terminal flags for Plan Reviewer = `--yolo --approve-mcps --trust`; merge keeps a user-edited Planner.
+- [x] Commit: `feat: seed Plan Reviewer role`
 
 ### Task 1.2: One hand-off transition table
 

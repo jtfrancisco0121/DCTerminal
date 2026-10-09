@@ -225,11 +225,11 @@ enum RoleKind {
 fn canonical_role(role_id: &str) -> RoleKind {
     let normalized = role_id.trim().to_ascii_lowercase().replace('-', "_");
     match normalized.as_str() {
-        "role_implementer" | "implementer" | "role_developer" | "developer" => RoleKind::FullAccess,
+        "role_implementer" | "implementer" | "role_developer" | "developer"
+        | "role_plan_reviewer" | "plan_reviewer" => RoleKind::FullAccess,
         "role_pr_reviewer" | "role_reviewer" | "pr_reviewer" | "reviewer" => RoleKind::Reviewer,
         "role_planner" | "planner" | "role_general" | "general" | "role_recommendation"
         | "recommendation" => RoleKind::ReadOnlyMode,
-        "role_plan_reviewer" | "plan_reviewer" => RoleKind::Reviewer,
         "role_codebase_audit" | "codebase_audit" => RoleKind::Reviewer,
         _ => RoleKind::Unknown,
     }
@@ -696,7 +696,7 @@ mod tests {
 
     #[test]
     fn reviewer_allows_shell_and_mcp_and_rejects_writes() {
-        for role in ["role_pr_reviewer", "role_plan_reviewer", "role_codebase_audit"] {
+        for role in ["role_pr_reviewer", "role_codebase_audit"] {
             assert_eq!(
                 decide_for_role(role, ToolClass::Shell),
                 PolicyDecision::AllowOnce,
@@ -753,6 +753,21 @@ mod tests {
             decide_for_role("role_custom", ToolClass::Read),
             PolicyDecision::Ask
         );
+    }
+
+    #[test]
+    fn plan_reviewer_has_full_access() {
+        let outcome = evaluate_permission("role_plan_reviewer", &params_kind("edit"));
+        assert_eq!(outcome.decision, PolicyDecision::AllowOnce);
+        let result = outcome.auto_result.expect("auto");
+        assert_eq!(result["outcome"]["optionId"], "allow-once");
+        for class in [ToolClass::Write, ToolClass::Shell, ToolClass::Mcp, ToolClass::Unknown] {
+            assert_eq!(
+                decide_for_role("role_plan_reviewer", class),
+                PolicyDecision::AllowOnce,
+                "{class:?}"
+            );
+        }
     }
 
     #[test]

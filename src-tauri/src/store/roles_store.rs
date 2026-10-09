@@ -23,7 +23,15 @@ impl RolesStore {
             })?;
             write_json_atomic(&path, &seed)?;
         }
-        let data = read_json(&path)?;
+        let mut data: RolesFile = read_json(&path)?;
+        // Built-in roles added in a later release (for example Plan Reviewer)
+        // are appended to an existing roles.json. Roles already there, edited
+        // or not, are left alone.
+        if let Ok(seed) = read_json::<RolesFile>(&seed_output_path()) {
+            if !add_missing_builtin_roles(&mut data, &seed).is_empty() {
+                write_json_atomic(&path, &data)?;
+            }
+        }
         Ok(Self { path, data })
     }
 
@@ -34,6 +42,27 @@ impl RolesStore {
     pub fn save(&mut self) -> Result<(), String> {
         write_json_atomic(&self.path, &self.data)
     }
+}
+
+/// Adds every built-in seed role whose id is missing from `file`, placed
+/// right after the seed role that precedes it. Never changes existing roles.
+/// Returns the ids that were added.
+pub fn add_missing_builtin_roles(file: &mut RolesFile, seed: &RolesFile) -> Vec<String> {
+    let mut added = Vec::new();
+    for (index, role) in seed.roles.iter().enumerate() {
+        if !role.is_built_in || file.roles.iter().any(|r| r.id == role.id) {
+            continue;
+        }
+        let insert_at = seed.roles[..index]
+            .iter()
+            .rev()
+            .find_map(|prev| file.roles.iter().position(|r| r.id == prev.id))
+            .map(|pos| pos + 1)
+            .unwrap_or(file.roles.len());
+        file.roles.insert(insert_at, role.clone());
+        added.push(role.id.clone());
+    }
+    added
 }
 
 pub fn docs_roles_dir() -> PathBuf {

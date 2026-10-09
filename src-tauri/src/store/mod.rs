@@ -18,7 +18,7 @@ pub use handoff_store::{HandoffRecord, HandoffStore, NewHandoff};
 pub use json_io::{read_json, write_json_atomic};
 pub use projects_store::{ListedProject, ProjectsStore};
 pub use prompt_store::{PromptStore, RecentSend, SavedPrompt};
-pub use roles_store::{docs_roles_dir, seed_output_path, write_seed_file, RolesStore};
+pub use roles_store::{add_missing_builtin_roles, docs_roles_dir, seed_output_path, write_seed_file, RolesStore};
 pub use scratch_store::ScratchStore;
 pub use settings_store::{
     first_run_needed, get_notification_settings, get_ui_settings, set_notification_settings,

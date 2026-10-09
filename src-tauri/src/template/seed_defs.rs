@@ -124,32 +124,27 @@ fn plan_reviewer_spec() -> RoleSeedSpec {
         default_mode: "agent",
         color: "#BC8CFF",
         substitutions: &[
+            ("[PASTE THE ORIGINAL FEATURE / BUG REQUEST HERE]", "{{originalTask}}"),
+            ("[PASTE THE PROPOSED IMPLEMENTATION PLAN HERE]", "{{plan}}"),
             (
-                "[PASTE THE ORIGINAL REQUEST AND REQUIREMENTS HERE]",
-                "{{originalRequest}}",
+                "[OPTIONAL: business rules, known constraints, previous discussion, issue description, etc.]",
+                "{{additionalContext}}",
             ),
-            (
-                "[PASTE THE PROPOSED IMPLEMENTATION PLAN HERE]",
-                "{{candidatePlan}}",
-            ),
-            ("[OPTIONAL CONTEXT]", "{{additionalContext}}"),
         ],
         fields: vec![
             field_multiline(
-                "originalRequest",
-                "Original Request / Requirements",
-                "[PASTE THE ORIGINAL REQUEST AND REQUIREMENTS HERE]",
+                "originalTask",
+                "Original Task",
+                "[PASTE THE ORIGINAL FEATURE / BUG REQUEST HERE]",
                 true,
             ),
             RoleField {
-                key: "candidatePlan".into(),
+                key: "plan".into(),
                 label: "Proposed Implementation Plan".into(),
                 field_type: FieldType::Multiline,
                 required: true,
                 options: None,
-                placeholder_token: Some(
-                    "[PASTE THE PROPOSED IMPLEMENTATION PLAN HERE]".into(),
-                ),
+                placeholder_token: Some("[PASTE THE PROPOSED IMPLEMENTATION PLAN HERE]".into()),
                 show_when: None,
                 empty_behavior: None,
                 remember: Some(true),
@@ -157,7 +152,7 @@ fn plan_reviewer_spec() -> RoleSeedSpec {
             field_multiline_optional(
                 "additionalContext",
                 "Additional Context",
-                "[OPTIONAL CONTEXT]",
+                "[OPTIONAL: business rules, known constraints, previous discussion, issue description, etc.]",
             ),
         ],
     }
