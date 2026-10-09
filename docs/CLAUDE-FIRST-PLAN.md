@@ -322,17 +322,17 @@ src/provider/
 
 **Files:** `src-tauri/src/provider/claude.rs`, `src-tauri/src/pty/launch.rs` (split shared prompt delivery from Cursor flags), `src-tauri/src/pty/mod.rs`
 
-- [ ] Role → flags from the per-role mode table (Decisions). The Settings run-mode override does not apply to Claude:
+- [x] Role → flags from the per-role mode table (Decisions). The Settings run-mode override does not apply to Claude:
   - General: `--permission-mode auto`
   - Planner: `--permission-mode plan`
   - Every other role (Plan Reviewer, Implementer, Developer, PR Reviewer, Codebase Audit, Recommendation, custom): `--permission-mode bypassPermissions`
   - No `--disallowedTools` / `--allowedTools` for any role.
-- [ ] Check on the Mac whether `--permission-mode bypassPermissions` alone is enough or also needs `--allow-dangerously-skip-permissions`, and whether the TUI shows a one-time bypass confirmation that JT accepts himself **(unverified)**. If bypass is disabled, fall back to `--permission-mode acceptEdits` (Decisions → Fallbacks).
-- [ ] `--model <id>` first when set (reuse `valid_model_id`); prompt as the positional argument via `deliver_prompt` (same 24,000-byte rule and prompt-file fallback).
-- [ ] PTY env gets `CLAUDE_CONFIG_DIR=<configDir>` via `claude_env` (Task 2.3) for every Claude terminal; Cursor terminals unchanged.
-- [ ] Never pass `--dangerously-skip-permissions` (use `--permission-mode bypassPermissions`), `--cloud`, `--bg`, `--settings`, `--continue`.
-- [ ] Tests: argv per role matches the table; Run-mode override ignored for Claude; long prompt uses the file; invalid model dropped; env contains `CLAUDE_CONFIG_DIR` = resolved dir (setting, env override, and default cases).
-- [ ] Commit: `feat: Claude Code role terminals`
+- [ ] Check on the Mac whether `--permission-mode bypassPermissions` alone is enough or also needs `--allow-dangerously-skip-permissions`, and whether the TUI shows a one-time bypass confirmation that JT accepts himself **(unverified)**. If bypass is disabled, fall back to `--permission-mode acceptEdits` (Decisions → Fallbacks). **Checked 2026-10-09 (`claude --help`, 2.1.236): `--permission-mode` accepts `bypassPermissions`; `--allow-dangerously-skip-permissions` only makes bypass *available* without enabling it, so it is not passed. A first-run bypass confirmation in the TUI is still unverified (a launch would write to `~/.claude-account2`, so JT checks it himself).**
+- [x] `--model <id>` first when set (reuse `valid_model_id`); prompt as the positional argument via `deliver_prompt` (same 24,000-byte rule and prompt-file fallback).
+- [x] PTY env gets `CLAUDE_CONFIG_DIR=<configDir>` via `claude_env` (Task 2.3) for every Claude terminal; Cursor terminals unchanged.
+- [x] Never pass `--dangerously-skip-permissions` (use `--permission-mode bypassPermissions`), `--cloud`, `--bg`, `--settings`, `--continue`.
+- [x] Tests: argv per role matches the table; Run-mode override ignored for Claude; long prompt uses the file; invalid model dropped; env contains `CLAUDE_CONFIG_DIR` = resolved dir (setting, env override, and default cases).
+- [x] Commit: `feat: Claude Code role terminals`
 
 ### Task 3.2: Plain "Claude Code" terminal tile + scratch pad
 

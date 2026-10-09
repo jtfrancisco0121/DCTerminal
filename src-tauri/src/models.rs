@@ -422,6 +422,35 @@ pub fn model_for_tab(
     Ok(settings.effective_model(&role, tab_model.as_deref()))
 }
 
+/// Like [`model_for_tab`], but from the provider's own model settings
+/// (Claude: `models.claude`, default `default`).
+pub fn model_for_tab_provider(
+    store: &Mutex<StateStore>,
+    settings: &Mutex<SettingsStore>,
+    tab_id: Option<&str>,
+    role_id: &str,
+    provider: crate::provider::ProviderId,
+) -> Result<String, String> {
+    if provider == crate::provider::ProviderId::Cursor {
+        return model_for_tab(store, settings, tab_id, role_id);
+    }
+    let (role, tab_model) = {
+        let store = store.lock().map_err(|err| err.to_string())?;
+        let tab = tab_id.and_then(|id| store.tab_by_id(id));
+        let role = tab
+            .map(|t| t.role_id.clone())
+            .filter(|r| !r.is_empty() && role_id.is_empty())
+            .unwrap_or_else(|| role_id.to_string());
+        (role, tab.and_then(|t| t.model.clone()))
+    };
+    let settings = settings.lock().map_err(|err| err.to_string())?;
+    Ok(effective_model(
+        settings.models_for(provider),
+        &role,
+        tab_model.as_deref(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
