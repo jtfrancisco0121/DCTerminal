@@ -215,18 +215,18 @@ src/provider/
 
 **Files:** `src/handoff/map.ts`, `src/handoff/transitions.ts` (new) + test, `src/handoff/map.test.ts`
 
-- [ ] Replace `HANDOFF_TARGETS` with `HANDOFF_TRANSITIONS: Record<sourceRoleId, targetRoleId[]>`:
+- [x] Replace `HANDOFF_TARGETS` with `HANDOFF_TRANSITIONS: Record<sourceRoleId, targetRoleId[]>`:
   - `role_planner` → `role_plan_reviewer`, `role_implementer`, `role_developer`
   - `role_plan_reviewer` → `role_implementer`, `role_developer`, `role_planner` (send back for revision)
   - `role_implementer` → `role_pr_reviewer`
   - `role_developer` → `role_pr_reviewer`
   - `role_pr_reviewer` → `role_implementer` (fix-ups; optional, behind the same dialog)
-- [ ] `HandoffTargetId` becomes `string` validated against the table; `handoffFromRole` reads role names from the loaded roles, not a switch.
-- [ ] `handoffBlockReason` generalizes: source must have transitions; Planner / Plan Reviewer need content; Implementer / Developer need a finished turn.
-- [ ] Mapping: Planner → Plan Reviewer puts the plan in `plan`, the Planner's request in `originalTask`. Plan Reviewer → Implementer puts the **Reviewed plan** section (fallback: whole last message) in `approvedPlan` and the review notes in `additionalContext`.
-- [ ] Keep "Planner → PR Reviewer" out of the default list (it was the mislabelled path); the palette id `sendPlanReviewer` is renamed (Task 1.3).
-- [ ] Tests: every transition maps to the target's real field keys; Plan Reviewer is a valid source; Implementer → PR Reviewer unchanged.
-- [ ] Commit: `fix: hand-off transitions include Planner → Plan Reviewer`
+- [x] `HandoffTargetId` becomes `string` validated against the table; `handoffFromRole` reads role names from the loaded roles, not a switch.
+- [x] `handoffBlockReason` generalizes: source must have transitions; Planner / Plan Reviewer need content; Implementer / Developer need a finished turn.
+- [x] Mapping: Planner → Plan Reviewer puts the plan in `plan`, the Planner's request in `originalTask`. Plan Reviewer → Implementer puts the **Reviewed plan** section (fallback: whole last message) in `approvedPlan` and the review notes in `additionalContext`.
+- [x] Keep "Planner → PR Reviewer" out of the default list (it was the mislabelled path); the palette id `sendPlanReviewer` is renamed (Task 1.3).
+- [x] Tests: every transition maps to the target's real field keys; Plan Reviewer is a valid source; Implementer → PR Reviewer unchanged.
+- [x] Commit: `fix: hand-off transitions include Planner → Plan Reviewer`
 
 ### Task 1.3: Buttons, dialog, palette, terminal menu
 

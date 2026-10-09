@@ -1,5 +1,5 @@
 /**
- * Planner → other-role hand-off.
+ * Role → role hand-off (see `transitions.ts` for which roles may hand off to which).
  *
  * The plan text is mapped onto the target role's own form fields
  * (Implementer `approvedPlan`, PR Reviewer `originalTask`, and so on).
@@ -11,13 +11,26 @@
  */
 
 import { TERMINAL_TAIL_LINES } from "../terminal/text";
+import {
+  isHandoffSource,
+  isPlanSource,
+  roleDisplayName,
+  type RoleName,
+} from "./transitions";
+
+export {
+  HANDOFF_TRANSITIONS,
+  handoffTargets,
+  isHandoffSource,
+  isPlanSource,
+  isValidTransition,
+  roleDisplayName,
+} from "./transitions";
+export type { HandoffTargetId, RoleName } from "./transitions";
 
 export const INLINE_PLAN_CHARS = 100_000;
 export const JSON_PLAN_CHARS = 1_000_000;
 export const FILE_PLAN_CHARS = 8_000_000;
-
-export const HANDOFF_TARGETS = ["role_implementer", "role_developer", "role_pr_reviewer"] as const;
-export type HandoffTargetId = (typeof HANDOFF_TARGETS)[number];
 
 export type HandoffScope =
   | "plan_and_todos"
@@ -56,7 +69,7 @@ export type HandoffSource = {
   todos: HandoffTodo[];
   selection: string;
   turnInFlight: boolean;
-  /** Set when the source is a terminal-mode Planner tab. */
+  /** Set when the source is a terminal-mode role tab (Planner or Plan Reviewer). */
   fromTerminal?: boolean;
   /** Body of the newest plan file written after the terminal started. */
   planFileText?: string;
@@ -94,6 +107,8 @@ export type MappedHandoff = {
 
 const PLAN_FIELD_KEYS = ["approvedPlan", "plan", "implementationPlan"];
 const DESCRIPTION_FIELD_KEYS = ["description", "request", "originalTask", "task"];
+const REVIEWED_PLAN_HEADING = /^#{1,6}[ \t]+(?:\*\*)?Reviewed plan(?:\*\*)?[ \t]*:?[ \t]*$/im;
+const REVIEW_NOTES_HEADING = /^#{1,6}[ \t]+(?:\*\*)?Review notes(?:\*\*)?[ \t]*:?[ \t]*$/im;
 const CONTEXT_FIELD_KEYS = ["additionalContext", "context", "notes"];
 
 const TASK_TYPE_TO_IMPLEMENTER: Record<string, string> = {
@@ -134,13 +149,8 @@ export function selectionInside(root: HTMLElement | null): string {
   return selection.toString().trim();
 }
 
-export function handoffFromRole(sourceRoleId: string): string {
-  if (sourceRoleId === "role_planner") return "Planner";
-  if (sourceRoleId === "role_plan_reviewer") return "Plan Reviewer";
-  if (sourceRoleId === "role_implementer") return "Implementer";
-  if (sourceRoleId === "role_developer") return "Developer";
-  if (sourceRoleId === "role_pr_reviewer") return "PR Reviewer";
-  return "role";
+export function handoffFromRole(sourceRoleId: string, roles?: readonly RoleName[] | null): string {
+  return roleDisplayName(sourceRoleId, roles);
 }
 
 function implementerAnswersReady(answers: Record<string, string>): boolean {
@@ -149,19 +159,21 @@ function implementerAnswersReady(answers: Record<string, string>): boolean {
   return description.length > 0 || plan.length > 0;
 }
 
+function hasChatContent(source: HandoffSource): boolean {
+  return (
+    source.latestMessage.trim().length > 0 ||
+    source.plan.length > 0 ||
+    source.todos.length > 0 ||
+    source.selection.trim().length > 0
+  );
+}
+
 export function handoffBlockReason(source: HandoffSource): string | null {
-  if (source.sourceRoleId === "role_implementer") {
-    if (source.turnInFlight) {
-      return "Wait until the Implementer finishes this turn.";
-    }
-    if (!implementerAnswersReady(source.answers)) {
-      return "Fill in the Implementer task and approved plan before sending to review.";
-    }
-    return null;
+  const roleId = source.sourceRoleId;
+  if (!isHandoffSource(roleId)) {
+    return "This role has no hand-off. Send from a Planner, Plan Reviewer, Implementer, Developer, or PR Reviewer tab.";
   }
-  if (source.sourceRoleId !== "role_planner") {
-    return "Send a plan from a Planner tab.";
-  }
+  const name = roleDisplayName(roleId);
   if (source.fromTerminal) {
     const hasTerminal =
       (source.planFileText ?? "").trim().length > 0 ||
@@ -171,15 +183,36 @@ export function handoffBlockReason(source: HandoffSource): string | null {
     return null;
   }
   if (source.turnInFlight) {
-    return "Wait until the Planner finishes this turn.";
+    return `Wait until the ${name} finishes this turn.`;
   }
-  const hasContent =
-    source.latestMessage.trim().length > 0 ||
-    source.plan.length > 0 ||
-    source.todos.length > 0 ||
-    source.selection.trim().length > 0;
-  if (!hasContent) return "There is no plan to send yet.";
-  return null;
+  if (roleId === "role_implementer") {
+    if (!implementerAnswersReady(source.answers)) {
+      return "Fill in the Implementer task and approved plan before sending to review.";
+    }
+    return null;
+  }
+  if (isPlanSource(roleId)) {
+    return hasChatContent(source) ? null : "There is no plan to send yet.";
+  }
+  return hasChatContent(source) ? null : "There is nothing to send yet.";
+}
+
+/** Text under a markdown heading, up to the next heading of the same or higher level. */
+function sectionUnder(text: string, heading: RegExp): string | null {
+  const match = heading.exec(text);
+  if (!match) return null;
+  const level = match[0].match(/^#+/)?.[0].length ?? 2;
+  const rest = text.slice(match.index + match[0].length);
+  const next = new RegExp(`^#{1,${level}}[ \\t]+\\S`, "m").exec(rest);
+  const body = (next ? rest.slice(0, next.index) : rest).trim();
+  return body || null;
+}
+
+/** Plan Reviewer output → the **Reviewed plan** and **Review notes** sections. */
+export function splitPlanReview(text: string): { plan: string; notes: string } {
+  const plan = sectionUnder(text, REVIEWED_PLAN_HEADING);
+  const notes = sectionUnder(text, REVIEW_NOTES_HEADING) ?? "";
+  return { plan: plan ?? text.trim(), notes };
 }
 
 export function formatPlanCard(plan: HandoffPlanEntry[], todos: HandoffTodo[]): string {
@@ -301,19 +334,22 @@ export function extractTitle(source: HandoffSource, planText: string): string {
     .map((line) => line.trim())
     .find((line) => line && !line.startsWith("#") && !line.startsWith("-"));
   if (firstLine) return takeChars(firstLine, 120);
-  const label = source.sourceLabel.replace(/^Planner\s*·\s*/i, "").trim();
-  return takeChars(label || "Planner hand-off", 120);
+  const label = source.sourceLabel.replace(/^[^·]*·\s*/, "").trim();
+  return takeChars(label || `${roleDisplayName(source.sourceRoleId)} hand-off`, 120);
 }
 
 function extractDescription(source: HandoffSource, planText: string): string {
-  const request = answer(source.answers, "request") || answer(source.answers, "description");
+  const request =
+    answer(source.answers, "request") ||
+    answer(source.answers, "description") ||
+    answer(source.answers, "originalTask");
   if (request) return request;
   const paragraph = planText
     .split(/\n\s*\n/)
     .map((part) => part.trim())
     .find((part) => part && !part.startsWith("#") && !part.startsWith("- ["));
   if (paragraph) return takeChars(paragraph, 4_000);
-  return "Implement the plan from the Planner hand-off.";
+  return `Implement the plan from the ${roleDisplayName(source.sourceRoleId)} hand-off.`;
 }
 
 function extractContext(source: HandoffSource): string {
@@ -418,6 +454,16 @@ export function mapHandoff(
     return mapImplementerToReviewer(source, target, limits);
   }
   const composed = composePlanText(source, scope);
+  let reviewNotes = "";
+  if (
+    source.sourceRoleId === "role_plan_reviewer" &&
+    target.roleId !== "role_planner" &&
+    composed.text
+  ) {
+    const split = splitPlanReview(composed.text);
+    composed.text = split.plan;
+    reviewNotes = split.notes;
+  }
   if (!composed.text) {
     return {
       title: extractTitle(source, ""),
@@ -448,7 +494,10 @@ export function mapHandoff(
     answers[descriptionKey] = extractDescription(source, composed.text);
   }
   const contextKey = firstKey(target.fields, CONTEXT_FIELD_KEYS);
-  const context = extractContext(source);
+  const baseContext = extractContext(source);
+  const context = reviewNotes
+    ? [`Review notes:\n${reviewNotes}`, baseContext].filter(Boolean).join("\n\n")
+    : baseContext;
   if (contextKey && context) answers[contextKey] = context;
   if (planField) answers[planField] = limited.inlinePlan;
   return {
