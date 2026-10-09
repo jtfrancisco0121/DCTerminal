@@ -204,7 +204,12 @@ import {
   requestTerminalSearch,
   terminalBracketedPaste,
 } from "./terminal/park";
-import { emptySessionCards, reduceSessionCards, type SessionCards as Cards } from "./sessionCards";
+import {
+  emptySessionCards,
+  modeLabel,
+  reduceSessionCards,
+  type SessionCards as Cards,
+} from "./sessionCards";
 import {
   chainMarkBlocked,
   chainMarkSent,
@@ -2091,6 +2096,18 @@ export function StartupForm({
       .finally(() => setModelsRefreshing(false));
   }, []);
 
+  /** Claude chat: badge with the permission mode the agent last reported. */
+  const modeBadgeFor = (tab: TabSummary | null | undefined, startMode?: string | null) => {
+    if (!tab || providerOf(tab) !== "claude") return null;
+    const mode = cardsByTab[tab.id]?.mode ?? startMode ?? null;
+    if (!mode) return null;
+    return (
+      <span className="mode-badge" title={`Claude permission mode: ${mode}`}>
+        {modeLabel(mode)}
+      </span>
+    );
+  };
+
   const modelPickerFor = (tab: TabSummary | null | undefined, liveModel?: string | null) => {
     if (!tab || !tabHasModel(tab)) return null;
     const inherited = inheritedModel(tab);
@@ -3669,6 +3686,7 @@ export function StartupForm({
           inputRef={secondaryInputRef}
           headerExtra={
             <>
+              {modeBadgeFor(tab, rt.session.modeId)}
               {modelPickerFor(tab, rt.session.model)}
               {changesButton(tab.id)}
             </>
@@ -4348,6 +4366,7 @@ export function StartupForm({
               ].join("\n")}
               headerExtra={
                 <>
+                  {modeBadgeFor(activeTabSummary, session.modeId)}
                   {modelPickerFor(activeTabSummary, session.model)}
                   {activeTabSummary && changesButton(activeTabSummary.id)}
                 </>

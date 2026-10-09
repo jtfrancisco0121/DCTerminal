@@ -24,6 +24,9 @@ export type SessionCards = {
   plan: PlanEntry[];
   todos: TodoItem[];
   tasks: TaskUpdate[];
+  /** Permission mode the agent last reported (`current_mode_update` or the
+   * `mode` entry of a `config_option_update`). */
+  mode?: string;
 };
 
 export function emptySessionCards(): SessionCards {
@@ -97,6 +100,42 @@ function entriesFrom(raw: Raw): unknown[] | null {
   return null;
 }
 
+function modeFrom(update: Raw): string | null {
+  const kind = textOf(update.sessionUpdate);
+  if (kind === "current_mode_update") {
+    const id = textOf(update.currentModeId ?? update.modeId);
+    return id || null;
+  }
+  if (kind === "config_option_update" && Array.isArray(update.configOptions)) {
+    for (const option of update.configOptions) {
+      const rec = asRecord(option);
+      if (rec && (rec.id === "mode" || rec.category === "mode")) {
+        const value = textOf(rec.currentValue);
+        if (value) return value;
+      }
+    }
+  }
+  return null;
+}
+
+/** Short label for an agent permission mode id. */
+export function modeLabel(mode: string): string {
+  switch (mode) {
+    case "default":
+      return "Manual";
+    case "acceptEdits":
+      return "Accept edits";
+    case "plan":
+      return "Plan";
+    case "auto":
+      return "Auto";
+    case "bypassPermissions":
+      return "Full access";
+    default:
+      return mode;
+  }
+}
+
 function todosFrom(raw: Raw): unknown[] | null {
   const update = asRecord(raw.update) ?? raw;
   const params = asRecord(raw.params);
@@ -119,6 +158,9 @@ export function reduceSessionCards(
   }
   const update = asRecord(raw.update) ?? asRecord(raw.params) ?? raw;
   const kind = `${evt.kind} ${textOf(update.sessionUpdate)} ${textOf(update.type)}`.toLowerCase();
+
+  const mode = modeFrom(update);
+  if (mode) return { ...cards, mode };
 
   if (kind.includes("plan")) {
     const entries = entriesFrom(raw);
