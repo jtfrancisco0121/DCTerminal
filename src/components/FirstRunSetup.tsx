@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { CliDetectResult, LoginStatus, RoleSummary } from "../bridge";
+import type { CliDetectResult, LoginStatus, ProviderReport, RoleSummary } from "../bridge";
+import { accountLabel, claudeLoginHint } from "../provider/descriptor";
 import { FolderPicker } from "./FolderPicker";
 
 export type FirstRunFinish = {
@@ -13,23 +14,28 @@ type Props = {
   cli: CliDetectResult | null;
   detect: () => Promise<CliDetectResult>;
   loginStatus: () => Promise<LoginStatus>;
+  /** Claude Code detection + sign-in for the configured config folder. */
+  claudeStatus: () => Promise<ProviderReport>;
+  /** Saves `providers.claude.configDir` (null = default `~/.claude`). */
+  saveClaudeFolder?: (dir: string | null) => Promise<void>;
   roles: RoleSummary[];
   initialFolder: string;
   onFinish: (choice: FirstRunFinish) => void;
   onSkip: () => void;
 };
 
-type Step = "detect" | "login" | "folder" | "role";
+type Step = "claude" | "cursor" | "folder" | "role";
 
-const STEPS: Step[] = ["detect", "login", "folder", "role"];
+const STEPS: Step[] = ["claude", "cursor", "folder", "role"];
 const INSTALL_URL = "https://cursor.com/docs/cli/installation";
+const CLAUDE_INSTALL_URL = "https://docs.anthropic.com/en/docs/claude-code/setup";
 
 function stepLabel(step: Step): string {
   switch (step) {
-    case "detect":
+    case "claude":
+      return "Claude Code";
+    case "cursor":
       return "Cursor CLI";
-    case "login":
-      return "Sign in";
     case "folder":
       return "Folder";
     case "role":
@@ -37,19 +43,31 @@ function stepLabel(step: Step): string {
   }
 }
 
-/** F8: first-run walk: detect → login hint → folder → role → Start. */
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * F8: first-run walk: Claude Code (config folder + account) → Cursor CLI
+ * (optional) → folder → role → Start.
+ */
 export function FirstRunSetup({
   cli,
   detect,
   loginStatus,
+  claudeStatus,
+  saveClaudeFolder,
   roles,
   initialFolder,
   onFinish,
   onSkip,
 }: Props) {
-  const [step, setStep] = useState<Step>("detect");
+  const [step, setStep] = useState<Step>("claude");
   const [cliState, setCliState] = useState(cli);
   const [login, setLogin] = useState<LoginStatus | null>(null);
+  const [claude, setClaude] = useState<ProviderReport | null>(null);
+  const [editingDir, setEditingDir] = useState(false);
+  const [dirDraft, setDirDraft] = useState("");
   const [folder, setFolder] = useState(initialFolder);
   const [roleId, setRoleId] = useState<string | null>(null);
   const [surface, setSurface] = useState<"chat" | "terminal">("chat");
@@ -60,11 +78,35 @@ export function FirstRunSetup({
     setCliState(cli);
   }, [cli]);
 
-  // A new function each parent render must not re-run the check.
+  // A new function each parent render must not re-run the checks.
   const loginStatusRef = useRef(loginStatus);
   loginStatusRef.current = loginStatus;
+  const claudeStatusRef = useRef(claudeStatus);
+  claudeStatusRef.current = claudeStatus;
+
   useEffect(() => {
-    if (step !== "login") return;
+    if (step !== "claude" || claude) return;
+    let cancelled = false;
+    setBusy(true);
+    setError(null);
+    claudeStatusRef
+      .current()
+      .then((report) => {
+        if (!cancelled) setClaude(report);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(errorText(err));
+      })
+      .finally(() => {
+        if (!cancelled) setBusy(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [step, claude]);
+
+  useEffect(() => {
+    if (step !== "cursor" || !cliState?.found || login) return;
     let cancelled = false;
     setBusy(true);
     setError(null);
@@ -74,7 +116,7 @@ export function FirstRunSetup({
         if (!cancelled) setLogin(status);
       })
       .catch((err: unknown) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        if (!cancelled) setError(errorText(err));
       })
       .finally(() => {
         if (!cancelled) setBusy(false);
@@ -82,41 +124,48 @@ export function FirstRunSetup({
     return () => {
       cancelled = true;
     };
-  }, [step]);
+  }, [step, cliState?.found, login]);
 
   const at = STEPS.indexOf(step);
+  const claudeFound = !!claude?.status.found;
   const canNext =
-    step === "detect"
-      ? !!cliState?.found
-      : step === "login"
+    step === "claude"
+      ? claudeFound || !!cliState?.found
+      : step === "cursor"
         ? true
         : step === "folder"
           ? folder.trim().length > 0
           : !!roleId;
 
-  const recheckDetect = async () => {
+  const run = async (work: () => Promise<void>) => {
     setBusy(true);
     setError(null);
     try {
-      setCliState(await detect());
+      await work();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errorText(err));
     } finally {
       setBusy(false);
     }
   };
 
-  const recheckLogin = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      setLogin(await loginStatus());
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
+  const recheckClaude = () => run(async () => setClaude(await claudeStatus()));
+  const recheckCursor = () =>
+    run(async () => {
+      const next = await detect();
+      setCliState(next);
+      setLogin(next.found ? await loginStatus() : null);
+    });
+  const saveDir = () =>
+    run(async () => {
+      if (!saveClaudeFolder) return;
+      await saveClaudeFolder(dirDraft.trim() || null);
+      setEditingDir(false);
+      setClaude(await claudeStatus());
+    });
+
+  const dir = claude?.configDir ?? null;
+  const claudeAccount = accountLabel(claude?.login);
 
   return (
     <div className="overlay-backdrop" role="presentation">
@@ -136,79 +185,144 @@ export function FirstRunSetup({
           ))}
         </ol>
 
-        {step === "detect" && (
-          <section className="first-run-panel" aria-label="Detect Cursor CLI">
-            {cliState?.found ? (
+        {step === "claude" && (
+          <section className="first-run-panel" aria-label="Claude Code">
+            {!claude ? (
+              <p className="hint">Looking for Claude Code…</p>
+            ) : claudeFound ? (
               <>
-                <p className="ok">Cursor CLI found.</p>
-                {cliState.version && <p className="hint">Version {cliState.version}</p>}
-                {cliState.path && <code className="first-run-path">{cliState.path}</code>}
+                <p className="ok">Claude Code found.</p>
+                {claude.status.version && <p className="hint">Version {claude.status.version}</p>}
+                {claude.status.path && <code className="first-run-path">{claude.status.path}</code>}
               </>
             ) : (
               <>
-                <p className="error">
-                  {cliState?.error ?? "Looking for the Cursor CLI (agent)…"}
-                </p>
+                <p className="error">{claude.status.error ?? "Claude Code (claude) was not found."}</p>
                 <p>
                   <a
-                    href={INSTALL_URL}
+                    href={CLAUDE_INSTALL_URL}
                     onClick={(event) => {
                       event.preventDefault();
-                      void openUrl(INSTALL_URL).catch(() => {});
+                      void openUrl(CLAUDE_INSTALL_URL).catch(() => {});
                     }}
                   >
-                    Install the Cursor CLI
+                    Install Claude Code
                   </a>
-                  , then run <code>agent login</code> in a terminal, and check again.
+                  , then check again. You can also continue with the Cursor CLI only.
                 </p>
               </>
+            )}
+            {dir && (
+              <div className="first-run-claude-dir">
+                <p>
+                  Config folder: <code title={dir.path}>{dir.display}</code>
+                  {dir.source === "env" ? " (set by DCT_CLAUDE_CONFIG_DIR)" : ""}
+                  {!dir.exists ? " — folder not found" : ""}
+                  {saveClaudeFolder && dir.source !== "env" && !editingDir && (
+                    <>
+                      {" "}
+                      <button
+                        type="button"
+                        className="link-button"
+                        disabled={busy}
+                        onClick={() => {
+                          setDirDraft(dir.source === "setting" ? dir.display : "");
+                          setEditingDir(true);
+                        }}
+                      >
+                        Change folder
+                      </button>
+                    </>
+                  )}
+                </p>
+                {editingDir && (
+                  <div className="settings-folder-row">
+                    <input
+                      type="text"
+                      aria-label="Claude config folder"
+                      placeholder="~/.claude"
+                      value={dirDraft}
+                      onChange={(event) => setDirDraft(event.target.value)}
+                    />
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={busy}
+                      onClick={() => void saveDir()}
+                    >
+                      Use folder
+                    </button>
+                  </div>
+                )}
+                {claudeAccount ? (
+                  <p className="ok">
+                    Signed in as {claudeAccount}
+                    {claude?.login.method ? ` (${claude.login.method})` : ""}.
+                  </p>
+                ) : claudeFound && dir.exists ? (
+                  <p className="hint">
+                    Not signed in for this folder. {claudeLoginHint(dir)} Then check again.
+                  </p>
+                ) : null}
+              </div>
             )}
             <button
               type="button"
               className="secondary-button"
               disabled={busy}
-              onClick={() => void recheckDetect()}
+              onClick={() => void recheckClaude()}
             >
               Check again
             </button>
           </section>
         )}
 
-        {step === "login" && (
-          <section className="first-run-panel" aria-label="Sign in">
-            {busy && !login ? (
-              <p className="hint">Checking sign-in…</p>
-            ) : login?.state === "loggedIn" ? (
-              <p className="ok">
-                Signed in{login.account ? ` as ${login.account}` : ""}.
-              </p>
-            ) : login?.state === "loggedOut" ? (
+        {step === "cursor" && (
+          <section className="first-run-panel" aria-label="Cursor CLI">
+            <p className="hint">Optional: tabs can also run on the Cursor CLI.</p>
+            {cliState?.found ? (
               <>
-                <p className="error">Not signed in.</p>
-                <p>
-                  In a terminal, run <code>agent login</code>, finish the browser flow, then check
-                  again. You can continue without signing in; Start will fail until you do.
-                </p>
+                <p className="ok">Cursor CLI found.</p>
+                {cliState.version && <p className="hint">Version {cliState.version}</p>}
+                {cliState.path && <code className="first-run-path">{cliState.path}</code>}
+                {busy && !login ? (
+                  <p className="hint">Checking sign-in…</p>
+                ) : login?.state === "loggedIn" ? (
+                  <p className="ok">Signed in{login.account ? ` as ${login.account}` : ""}.</p>
+                ) : login?.state === "loggedOut" ? (
+                  <p className="hint">
+                    Not signed in. Run <code>agent login</code> in a terminal to use Cursor tabs.
+                  </p>
+                ) : login ? (
+                  <p className="hint">
+                    Could not tell whether the CLI is signed in
+                    {login.detail ? `: ${login.detail}` : "."}
+                  </p>
+                ) : null}
+                {login?.apiKeyEnv && (
+                  <p className="hint">CURSOR_API_KEY is set in this environment.</p>
+                )}
               </>
             ) : (
-              <>
-                <p className="hint">
-                  Could not tell whether the CLI is signed in
-                  {login?.detail ? `: ${login.detail}` : "."}
-                </p>
-                <p>
-                  If Start fails later, run <code>agent login</code> in a terminal and try again.
-                </p>
-              </>
-            )}
-            {login?.apiKeyEnv && (
-              <p className="hint">CURSOR_API_KEY is set in this environment.</p>
+              <p className="hint">
+                Not found. To use it,{" "}
+                <a
+                  href={INSTALL_URL}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    void openUrl(INSTALL_URL).catch(() => {});
+                  }}
+                >
+                  install the Cursor CLI
+                </a>{" "}
+                and run <code>agent login</code>.
+              </p>
             )}
             <button
               type="button"
               className="secondary-button"
               disabled={busy}
-              onClick={() => void recheckLogin()}
+              onClick={() => void recheckCursor()}
             >
               Check again
             </button>

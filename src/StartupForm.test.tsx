@@ -158,6 +158,45 @@ vi.mock("./bridge", () => {
     error: null,
   })),
   setTabModel: vi.fn(async () => "composer-2.5"),
+  getProviderSettings: vi.fn(async () => ({
+    settings: { default: "claude", roleProvider: {}, claude: {}, cursor: {} },
+    claudeConfigDir: {
+      path: "/Users/jt/.claude-account2",
+      display: "~/.claude-account2",
+      source: "setting",
+      exists: true,
+    },
+    claudeConfigDirEnv: null,
+  })),
+  setProviderSettings: vi.fn(),
+  providerStatus: vi.fn(async (id: string) => ({
+    status: {
+      id,
+      found: true,
+      path: id === "claude" ? "/opt/homebrew/bin/claude" : "agent",
+      version: "test",
+      adapterFound: false,
+      adapterPath: null,
+      error: null,
+    },
+    login: {
+      state: "loggedIn",
+      account: id === "claude" ? "jt@example.com" : null,
+      detail: null,
+      apiKeyEnv: false,
+    },
+    configDir:
+      id === "claude"
+        ? {
+            path: "/Users/jt/.claude-account2",
+            display: "~/.claude-account2",
+            source: "setting",
+            exists: true,
+          }
+        : null,
+    adapterInstall: null,
+  })),
+  setTabProvider: vi.fn(async () => {}),
   ptyKill: vi.fn(async () => {}),
   filesList: vi.fn(),
   filesRead: vi.fn(),
@@ -202,6 +241,7 @@ import {
   listCursorCliHistory,
   listModels,
   setTabModel,
+  setTabProvider,
   selectActiveTab,
   setTabLabel,
   syncActiveTabForm,
@@ -1407,12 +1447,16 @@ describe("first-run setup (F8)", () => {
       />,
     );
 
-  it("walks a fresh profile from detect to Start and starts the chosen role in the folder", async () => {
+  it("walks a fresh profile from Claude and Cursor checks to Start and starts the chosen role in the folder", async () => {
     vi.mocked(firstRunStatus).mockResolvedValue({ needed: true, completed: false });
     renderFresh();
     const dialog = await screen.findByRole("dialog", { name: "Set up DCTerminal" });
-    expect(dialog.textContent).toContain("/usr/local/bin/agent");
+    // Claude first: the config folder and the account for it.
+    expect(await within(dialog).findByText(/Signed in as jt@example\.com/)).toBeTruthy();
+    expect(dialog.textContent).toContain("~/.claude-account2");
     fireEvent.click(within(dialog).getByRole("button", { name: "Next" }));
+    // Cursor CLI (optional).
+    expect(dialog.textContent).toContain("/usr/local/bin/agent");
     expect(await within(dialog).findByText(/Not signed in/)).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("button", { name: "Next" }));
     vi.mocked(checkWorkingFolder).mockResolvedValue("/Users/jt/Koneksi");
@@ -1583,6 +1627,54 @@ describe("command palette (F9)", () => {
       const button = within(palette).getByRole("button", { name: new RegExp(`^${title}`) });
       expect(button.textContent).toContain(group);
     }
+  });
+
+  it("switches the tab's provider from the Start card chip and the model list follows", async () => {
+    renderForm();
+    await screen.findByLabelText("Title");
+    const chips = await screen.findByRole("radiogroup", { name: "Provider for this tab" });
+    expect(
+      within(chips).getByRole("radio", { name: "Cursor" }).getAttribute("aria-checked"),
+    ).toBe("true");
+    // The status bar shows the provider of the active tab.
+    expect(screen.getByTestId("status-provider").textContent).toBe("Cursor");
+    vi.mocked(setTabProvider).mockClear();
+    vi.mocked(getAppState).mockResolvedValue({
+      activeTabId: "tab_dev",
+      tabs: [
+        { ...summary("tab_dev", "Developer · Feature"), provider: "claude" },
+        summary("tab_b", "Developer · Other"),
+      ],
+      closedTabs: [],
+    });
+    fireEvent.click(within(chips).getByRole("radio", { name: "Claude" }));
+    await waitFor(() =>
+      expect(setTabProvider).toHaveBeenCalledWith("tab_dev", "claude", "role_developer"),
+    );
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole("radiogroup", { name: "Provider for this tab" }))
+          .getByRole("radio", { name: "Claude" })
+          .getAttribute("aria-checked"),
+      ).toBe("true"),
+    );
+    expect(setTabModel).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(screen.getByTestId("status-provider").textContent).toBe(
+        "Claude · ~/.claude-account2 · jt@…",
+      ),
+    );
+    expect(screen.getByTestId("status-provider").getAttribute("title")).toContain(
+      "Config folder: /Users/jt/.claude-account2",
+    );
+    const tabChip = screen.getByRole("tab", { name: /Developer · Feature/ });
+    expect(tabChip.getAttribute("title")).toContain(
+      "Provider: Claude · /Users/jt/.claude-account2 · jt@example.com",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Model for this tab" }));
+    const list = await screen.findByRole("listbox", { name: "Model for this tab" });
+    expect(within(list).getByText("Opus")).toBeTruthy();
+    expect(within(list).queryByText("GPT-5")).toBeNull();
   });
 
   it("changes the active tab's model from the palette", async () => {

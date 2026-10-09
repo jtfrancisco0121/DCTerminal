@@ -10,6 +10,8 @@ import {
   ptyKill,
   setLayout,
   setTabModel,
+  setTabProvider,
+  providerStatus,
   type ModelList,
   type ModelSettings,
   devSessionSend,
@@ -247,6 +249,15 @@ import {
 import { useAppShortcuts } from "./useAppShortcuts";
 import { useScratchPads } from "./useScratchPads";
 import { useUiSettings } from "./useUiSettings";
+import { useProviders } from "./provider/useProviders";
+import {
+  modelsForProvider,
+  PROVIDERS,
+  providerIndicator,
+  providerTooltipLine,
+  tabHasProvider,
+} from "./provider/descriptor";
+import { PROVIDER_IDS, providerForRole, type ProviderId } from "./provider/types";
 import {
   appendStreamSegment,
   streamSegmentFromSystemMessage,
@@ -374,6 +385,8 @@ export function StartupForm({
   const secondaryInputRef = useRef<HTMLTextAreaElement>(null);
   const [modelList, setModelList] = useState<ModelList | null>(null);
   const [modelSettings, setModelSettingsState] = useState<ModelSettings | null>(null);
+  /** Claude-first Phase 2: provider settings + detection (Settings, status bar). */
+  const providers = useProviders();
   const [modelNotice, setModelNotice] = useState<string | null>(null);
   const [modelsRefreshing, setModelsRefreshing] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -988,6 +1001,14 @@ export function StartupForm({
     () => savedTabs.find((t) => t.id === activeTabId) ?? null,
     [savedTabs, activeTabId],
   );
+  /** Tabs saved before providers carry no provider: they are Cursor tabs. */
+  const providerOf = (tab: TabSummary | null): ProviderId => tab?.provider ?? "cursor";
+  const claudeInfo = providers.claude
+    ? { configDir: providers.claude.configDir, login: providers.claude.login }
+    : providers.view
+      ? { configDir: providers.view.claudeConfigDir, login: null }
+      : null;
+  const activeProvider = providerOf(activeTabSummary);
   const focusedTranscript =
     transcriptFocus && transcriptFocus.tabId === activeTabId
       ? savedTranscript || transcriptFocus.text
@@ -1969,7 +1990,15 @@ export function StartupForm({
   };
 
   const inheritedModel = (tab: TabSummary | null | undefined): string =>
-    effectiveModel(modelSettings, modelRoleKey(tab), null);
+    tab && tabHasProvider(tab) && providerOf(tab) === "claude"
+      ? PROVIDERS.claude.defaultModel
+      : effectiveModel(modelSettings, modelRoleKey(tab), null);
+  /** Model choices follow the tab's provider (static Claude list until Phase 5). */
+  const modelsForTab = (tab: TabSummary | null | undefined) =>
+    modelsForProvider(
+      tab && tabHasProvider(tab) ? providerOf(tab) : "cursor",
+      modelList?.models ?? [],
+    );
 
   /**
    * Change one tab's model. A live chat switches in place (or restarts the
@@ -2044,7 +2073,7 @@ export function StartupForm({
   const modelPickerFor = (tab: TabSummary | null | undefined, liveModel?: string | null) => {
     if (!tab || !tabHasModel(tab)) return null;
     const inherited = inheritedModel(tab);
-    const models = modelList?.models ?? [];
+    const models = modelsForTab(tab);
     return (
       <ModelPicker
         compact
@@ -2677,11 +2706,11 @@ export function StartupForm({
   };
 
   const paletteModel: PaletteModelOptions | null =
-    activeTabSummary && tabHasModel(activeTabSummary) && (modelList?.models.length ?? 0) > 0
+    activeTabSummary && tabHasModel(activeTabSummary) && modelsForTab(activeTabSummary).length > 0
       ? {
           current: activeTabSummary.model ?? null,
           inherited: inheritedModel(activeTabSummary),
-          models: (modelList?.models ?? []).map(({ id, label }) => ({ id, label })),
+          models: modelsForTab(activeTabSummary).map(({ id, label }) => ({ id, label })),
         }
       : null;
 
@@ -3007,6 +3036,16 @@ export function StartupForm({
         roleId: id,
         pickedRoleId: id,
       };
+      // Start card chip: the role's remembered provider (else the default).
+      const tab = savedTabs.find((t) => t.id === tabId);
+      if (tab && tab.phase === "draft" && providers.view) {
+        const want = providerForRole(providers.view.settings, id);
+        if (want !== providerOf(tab)) {
+          void setTabProvider(tabId, want)
+            .then(() => refreshTabs())
+            .catch(() => {});
+        }
+      }
     }
   };
 
@@ -3036,6 +3075,9 @@ export function StartupForm({
       roleRulesOff={!!approvalMode?.roleRulesOff}
       roleNames={roleNames}
       modelFor={modelForTab}
+      providerFor={(tab) =>
+        tabHasProvider(tab) ? providerTooltipLine(providerOf(tab), claudeInfo) : null
+      }
       onSelect={handleSelectTab}
       onClose={handleCloseTab}
       onNew={handleNewTab}
@@ -3072,6 +3114,7 @@ export function StartupForm({
       onTestNotification={agentNotifications.sendTest}
       modelList={modelList}
       modelSettings={modelSettings}
+      providers={providers}
       onRefreshRoles={onRefreshRoles}
       onModelSettings={(next) => {
         setModelSettingsState(next);
@@ -3306,6 +3349,15 @@ export function StartupForm({
           cli={cli}
           detect={onRedetectCli ?? detectCli}
           loginStatus={cliLoginStatus}
+          claudeStatus={() => providerStatus("claude")}
+          saveClaudeFolder={async (dir) => {
+            const view = providers.view;
+            if (!view) return;
+            await providers.save({
+              ...view.settings,
+              claude: { ...view.settings.claude, configDir: dir },
+            });
+          }}
           roles={roles}
           initialFolder={folderForTab(values.cwd)}
           onFinish={finishFirstRun}
@@ -3748,6 +3800,11 @@ export function StartupForm({
     <StatusBar
       status={activeStatus}
       model={activeTabSummary ? modelForTab(activeTabSummary) : null}
+      provider={
+        activeTabSummary && tabHasProvider(activeTabSummary)
+          ? providerIndicator(activeProvider, claudeInfo)
+          : null
+      }
       folder={session?.cwd || activeTabSummary?.cwd || folderForTab(values.cwd) || null}
       branch={activeTabSummary?.worktreeBranch ?? null}
       roleRulesOff={!!approvalMode?.roleRulesOff}
@@ -4034,13 +4091,20 @@ export function StartupForm({
 
   const blankRoleKey =
     launchChoice === "cursor-cli" ? "cursor-cli" : launchChoice === "shell" ? null : roleId || null;
+  const blankProvider: ProviderId = launchChoice === "cursor-cli" ? "cursor" : activeProvider;
   const blankModelPicker =
     activeTabSummary && blankRoleKey ? (
       <ModelPicker
         compact
-        models={modelList?.models ?? []}
+        models={modelsForProvider(blankProvider, modelList?.models ?? [])}
         value={activeTabSummary.model ?? null}
-        inherited={{ model: effectiveModel(modelSettings, blankRoleKey, null), label: "Default" }}
+        inherited={{
+          model:
+            blankProvider === "claude"
+              ? PROVIDERS.claude.defaultModel
+              : effectiveModel(modelSettings, blankRoleKey, null),
+          label: "Default",
+        }}
         ariaLabel="Model for this tab"
         disabled={busy}
         onChange={(model) => {
@@ -4118,6 +4182,37 @@ export function StartupForm({
     </button>
   );
 
+  const chooseProvider = (provider: ProviderId) => {
+    if (!activeTabSummary || provider === activeProvider) return;
+    const tabId = activeTabSummary.id;
+    // A model id from one provider means nothing to the other.
+    const resetModel = activeTabSummary.model ? setTabModel(tabId, null) : Promise.resolve("");
+    void resetModel
+      .then(() => setTabProvider(tabId, provider, pickedRoleId || roleId || null))
+      .then(() => refreshTabs())
+      .then(() => providers.refreshSettings())
+      .catch((err: unknown) => setModelNotice(err instanceof Error ? err.message : String(err)));
+  };
+  const providerChip =
+    activeTabSummary && activeTabSummary.phase === "draft" && showFields ? (
+      <div className="provider-chip-group" role="radiogroup" aria-label="Provider for this tab">
+        {PROVIDER_IDS.map((id) => (
+          <button
+            key={id}
+            type="button"
+            role="radio"
+            className="role-choice"
+            aria-checked={activeProvider === id}
+            aria-pressed={activeProvider === id}
+            disabled={busy}
+            onClick={() => chooseProvider(id)}
+          >
+            {PROVIDERS[id].label}
+          </button>
+        ))}
+      </div>
+    ) : null;
+
   const roleStartButton = showFields && (
     <button
       type="button"
@@ -4126,7 +4221,7 @@ export function StartupForm({
         if (rememberedSurface(roleId) === "terminal") void startRoleTerminal();
         else void startSession(surface === "restore" && resendStartup);
       }}
-      disabled={busy || !cliFound}
+      disabled={busy || (activeProvider === "cursor" && !cliFound)}
     >
       {rememberedSurface(roleId) === "terminal" ? "Start terminal" : "Start"}
     </button>
@@ -4383,6 +4478,7 @@ export function StartupForm({
                     </>
                   ) : (
                     <>
+                      {providerChip}
                       {blankModelPicker}
                       {roleStartButton}
                     </>

@@ -32,6 +32,8 @@ type Props = {
   /** U1: role names and each tab's model for the chip's hover details. */
   roleNames?: Record<string, string>;
   modelFor?: (tab: TabSummary) => string | null;
+  /** Provider line for the chip's hover details (agent tabs only). */
+  providerFor?: (tab: TabSummary) => string | null;
 };
 
 const PHASE_TEXT: Record<string, string> = {
@@ -46,10 +48,18 @@ export const ROLE_RULES_OFF_TITLE =
 /** U1: everything the slim chip leaves out, one fact per line. */
 export function tabTooltip(
   tab: TabSummary,
-  opts: { roleName?: string; model?: string | null; statusText?: string; canRename?: boolean },
+  opts: {
+    roleName?: string;
+    model?: string | null;
+    /** Provider line, e.g. Claude with the full config folder and account. */
+    provider?: string | null;
+    statusText?: string;
+    canRename?: boolean;
+  },
 ): string {
   const lines = [tab.label];
   if (opts.roleName) lines.push(`Role: ${opts.roleName}`);
+  if (opts.provider) lines.push(`Provider: ${opts.provider}`);
   if (tab.cwd) lines.push(`Folder: ${tab.cwd}`);
   if (tab.worktreeBranch) lines.push(`Branch: ${tab.worktreeBranch}`);
   if (opts.model) lines.push(`Model: ${opts.model}`);
@@ -125,6 +135,7 @@ export function TabBar({
   onRenameEnd,
   roleNames = {},
   modelFor,
+  providerFor,
 }: Props) {
   return (
     <div className="tab-bar">
@@ -175,6 +186,7 @@ export function TabBar({
                 title={tabTooltip(t, {
                   roleName: t.kind === "terminal" && t.terminalLaunch !== "role" ? undefined : roleNames[t.roleId],
                   model: modelFor?.(t) ?? null,
+                  provider: providerFor?.(t) ?? null,
                   statusText,
                   canRename: !!onRenameStart,
                 })}

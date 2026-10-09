@@ -53,28 +53,28 @@ pub fn set_provider_settings(
     Ok(view(&settings))
 }
 
-/// Start card provider chip: set this tab's provider and remember it for
-/// the tab's role.
+/// Start card provider chip: set this tab's provider. When `role_id` is
+/// given (the chip was clicked for that role), remember the choice for it.
 #[tauri::command]
 pub fn set_tab_provider(
     tab_id: String,
     provider: ProviderId,
+    role_id: Option<String>,
     settings: State<Mutex<SettingsStore>>,
     state: State<Mutex<StateStore>>,
 ) -> Result<(), String> {
-    let role_id = {
+    {
         let mut state = state.lock().map_err(|e| e.to_string())?;
         state.set_tab_provider(&tab_id, provider)?;
-        state
-            .tab_by_id(&tab_id)
-            .map(|tab| tab.role_id.clone())
-            .unwrap_or_default()
-    };
-    if role_id.trim().is_empty() {
-        return Ok(());
     }
+    let Some(role_id) = role_id.filter(|id| !id.trim().is_empty()) else {
+        return Ok(());
+    };
     let mut settings = settings.lock().map_err(|e| e.to_string())?;
     let mut next = settings.providers().clone();
+    if next.role_provider.get(&role_id).map(String::as_str) == Some(provider.as_str()) {
+        return Ok(());
+    }
     next.role_provider
         .insert(role_id, provider.as_str().to_string());
     settings.set_providers(next)

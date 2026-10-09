@@ -308,13 +308,13 @@ src/provider/
 
 **Files:** `src/provider/*` (new), `src/components/SettingsPage.tsx` (+ test), `src/StartupForm.tsx`, `src/components/RoleTiles.tsx`, `src/components/FirstRunSetup.tsx` (+ test), `src/tabChrome.ts`, `src/components/StatusBar.tsx`
 
-- [ ] Settings > **Providers**: default provider (Claude / Cursor), detected paths + versions, **Claude config folder** field (text + Browse; placeholder `~/.claude`; shows the source, and "set by DCT_CLAUDE_CONFIG_DIR" read-only when the env override is set; "folder not found" if missing), the **signed-in account for that folder**, login status with the hint "run `CLAUDE_CONFIG_DIR=<configDir> claude` (your `claude2`) and use `/login`" (nothing is run for JT), adapter install hint `npm install -g --omit=optional @agentclientprotocol/claude-agent-acp@0.88.0`.
-- [ ] Start card: provider chip beside the model chip; remembered per role; terminal tiles read "Claude Code" / "Cursor CLI".
-- [ ] First-run setup checks Claude first, Cursor optional.
-- [ ] Status bar / tab tooltip show provider; for Claude tabs also the config folder and account ("Claude · ~/.claude-account2 · <account>"; status bar shows the short form, tooltip the full path). This is how JT tells he is on the right Claude account.
-- [ ] First-run: Claude step shows the config folder it will use and the account, with a link to change the folder.
-- [ ] Tests: default provider persists; chip switches model list; first-run passes with Claude only; Settings saves `configDir` and shows the env-override state; status bar / tab tooltip render folder + account; "not signed in" for that folder shows the hint.
-- [ ] Commit: `feat: provider choice in Settings and on the Start card`
+- [x] Settings > **Providers**: default provider (Claude / Cursor), detected paths + versions, **Claude config folder** field (text + Browse; placeholder `~/.claude`; shows the source, and "set by DCT_CLAUDE_CONFIG_DIR" read-only when the env override is set; "folder not found" if missing), the **signed-in account for that folder**, login status with the hint "run `CLAUDE_CONFIG_DIR=<configDir> claude` (your `claude2`) and use `/login`" (nothing is run for JT), adapter install hint `npm install -g --omit=optional @agentclientprotocol/claude-agent-acp@0.88.0`.
+- [ ] Start card: provider chip beside the model chip; remembered per role; terminal tiles read "Claude Code" / "Cursor CLI". **(chip + per-role memory done; the "Claude Code" terminal tile lands with Task 3.2, since Claude terminals do not run before Phase 3)**
+- [x] First-run setup checks Claude first, Cursor optional.
+- [x] Status bar / tab tooltip show provider; for Claude tabs also the config folder and account ("Claude · ~/.claude-account2 · <account>"; status bar shows the short form, tooltip the full path). This is how JT tells he is on the right Claude account.
+- [x] First-run: Claude step shows the config folder it will use and the account, with a link to change the folder.
+- [x] Tests: default provider persists; chip switches model list; first-run passes with Claude only; Settings saves `configDir` and shows the env-override state; status bar / tab tooltip render folder + account; "not signed in" for that folder shows the hint.
+- [x] Commit: `feat: provider choice in Settings and on the Start card`
 
 ## Phase 3: Claude terminal tabs
 

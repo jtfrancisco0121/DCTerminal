@@ -18,6 +18,8 @@ import { DevToolsPanel } from "../DevToolsPanel";
 import { shortcutRows, type Platform } from "../keymap";
 import { DEFAULT_MODEL_ID } from "../models";
 import { ModelPicker } from "./ModelPicker";
+import { ProvidersSettingsSection } from "./ProvidersSettings";
+import type { ProvidersState } from "../provider/useProviders";
 import type { NotificationSettings } from "../notify/agentNotify";
 import { APP_VERSION, rolePermissionSummary } from "../workspaceView";
 
@@ -45,6 +47,8 @@ type Props = {
   onUiSettings?: (patch: Partial<UiSettings>) => void;
   /** U6: category shown first (Roles when omitted). */
   initialCategory?: SettingsCategory;
+  /** Settings > Providers data (shared with the status bar). */
+  providers?: ProvidersState | null;
   onRefreshRoles?: () => Promise<void>;
   onClose: () => void;
 };
@@ -52,6 +56,7 @@ type Props = {
 /** U6: left-hand menu, in display order. */
 export const SETTINGS_CATEGORIES = [
   "Roles",
+  "Providers",
   "Models",
   "Terminal",
   "Permissions",
@@ -93,6 +98,7 @@ export function SettingsPage({
   uiSettings = null,
   onUiSettings,
   initialCategory = "Roles",
+  providers = null,
   onRefreshRoles,
   onClose,
 }: Props) {
@@ -246,6 +252,15 @@ export function SettingsPage({
               )}
             </section>
           )}
+          {category === "Providers" &&
+            (providers ? (
+              <ProvidersSettingsSection providers={providers} />
+            ) : (
+              <section className="settings-section" aria-label="Providers">
+                <h3>Providers</h3>
+                <p className="hint">Unavailable until the app shell is running.</p>
+              </section>
+            ))}
           {category === "Models" && (
             <section className="settings-section" aria-label="Models">
               <h3>Models</h3>
