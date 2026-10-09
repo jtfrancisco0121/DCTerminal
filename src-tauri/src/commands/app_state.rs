@@ -426,6 +426,17 @@ mod pipeline_tests {
         assert_eq!(store.data.active_tab_id.as_deref(), Some(overview_id.as_str()));
         assert_eq!(store.data.pipeline_runs.len(), 1);
         assert_eq!(store.data.pipeline_runs[0].tab_ids.len(), 4);
+        for role_id in [
+            "role_planner",
+            "role_plan_reviewer",
+            "role_implementer",
+            "role_pr_reviewer",
+        ] {
+            assert!(
+                store.data.pipeline_runs[0].tab_ids.contains_key(role_id),
+                "pipeline missing {role_id}"
+            );
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 

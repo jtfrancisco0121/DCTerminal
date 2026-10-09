@@ -243,10 +243,10 @@ src/provider/
 
 **Files:** `src-tauri/src/commands/app_state.rs` (`PIPELINE_ROLE_IDS`), `src/StartupForm.tsx` (~2749 notice), `docs/PROGRESS.md`
 
-- [ ] Pipeline workspace opens Planner, Plan Reviewer, Implementer, PR Reviewer.
-- [ ] PROGRESS: note the fix.
-- [ ] `npm run check`; Mac smoke of Planner → Plan Reviewer → Implementer.
-- [ ] Commit: `feat: pipeline preset adds Plan Reviewer`
+- [x] Pipeline workspace opens Planner, Plan Reviewer, Implementer, PR Reviewer.
+- [x] PROGRESS: note the fix.
+- [ ] `npm run check` (done on box and Mac); Mac smoke of Planner → Plan Reviewer → Implementer (JT, manual).
+- [x] Commit: `feat: pipeline preset adds Plan Reviewer`
 
 ## Phase 2: Provider abstraction + Settings
 

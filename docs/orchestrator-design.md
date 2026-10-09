@@ -47,10 +47,10 @@ Until `PipelineRun` exists, use palette presets:
 
 | Preset | Tabs | Active tab |
 |--------|------|------------|
-| Pipeline workspace | Planner, Implementer, PR Reviewer | Planner |
-| Execution pipeline workspace | Implementer, PR Reviewer | Implementer |
+| Pipeline workspace | Overview + Planner, Plan Reviewer, Implementer, PR Reviewer | Overview |
+| Execution pipeline workspace | Overview + Implementer, PR Reviewer | Overview |
 
-Full v1 orchestrator should extend the first preset with Plan Reviewer (four tabs) or open overview + linked tabs.
+Hand-off targets for each role come from `src/handoff/transitions.ts` (Phase 1 of `CLAUDE-FIRST-PLAN.md`).
 
 ## Hand-off reuse
 
