@@ -106,7 +106,8 @@ The capture was allowed to let Claude write its own files there. DCTerminal and 
 
 This run was deliberately minimal: one trivial prompt and no tool use. Still open:
 
-- `session/request_permission` payloads for Bash, Edit, Write, WebFetch, an MCP tool and `ExitPlanMode`. That includes where the plan markdown sits in `ExitPlanMode`. DCTerminal currently looks for `toolCall.kind: "switch_mode"`, a title containing "Ready to code"/"ExitPlanMode", or `rawInput.plan`.
+- `session/request_permission` payloads for Bash, Edit, Write, WebFetch, an MCP tool and `ExitPlanMode`. That includes where the plan markdown sits in `ExitPlanMode`. DCTerminal currently looks for `toolCall.kind: "switch_mode"`, a title containing "Ready to code"/"ExitPlanMode", or `rawInput.plan`. **Unverified on a live Mac run** (this VM cannot log in). The plan card reads `rawInput.plan` (string or JSON), then the tool content, then the title, and answers the reject option.
+- `usage_update._meta["_claude/rateLimit"]` utilization. The captured `prompt-turn.json` has `five_hour` status and `resetsAt` but no utilization, so the status bar omits the percent until the adapter sends one.
 - Which requests still arrive in `auto`, `plan` and `bypassPermissions`. In `bypassPermissions` the adapter says `canUseTool` is never called, so expect none.
 - `plan`, `tool_call`, `tool_call_update` and `current_mode_update` updates during a real turn.
 - Whether the adapter reads `permissions.*` from `<configDir>/settings.json`.

@@ -26,7 +26,20 @@ The script checks Node 20+, Rust (rustup), and the platform libraries, prints th
 | Linux (no apt) | `~/.local/bin/DCTerminal.AppImage` | `~/.local/share/com.jtfrancisco.dcterminal/` |
 | Windows | `%LOCALAPPDATA%\DCTerminal\dcterminal.exe` | `%APPDATA%\com.jtfrancisco.dcterminal\` |
 
-Launch it with `open -a DCTerminal`, `dcterminal`, the AppImage path, or the Start menu shortcut. Sessions also need the Cursor CLI (`agent login`). The installer warns if `agent` is not on PATH. Details: **[docs/RELEASE.md](docs/RELEASE.md)**.
+Launch it with `open -a DCTerminal`, `dcterminal`, the AppImage path, or the Start menu shortcut. Claude chat needs Claude Code and the ACP adapter (below). Cursor stays available (`agent login`). The installer warns if `agent` is not on PATH. Details: **[docs/RELEASE.md](docs/RELEASE.md)**.
+
+### Claude Code
+
+DCTerminal's default provider is Claude. Chat tabs talk to `@agentclientprotocol/claude-agent-acp` 0.88.0. Terminal tabs run `claude`.
+
+```bash
+# Claude Code: https://code.claude.com (Homebrew cask on a Mac: brew install --cask claude-code)
+npm install -g --omit=optional @agentclientprotocol/claude-agent-acp@0.88.0
+```
+
+Sign in with your own Claude subscription. DCTerminal never handles credentials. In a terminal: `claude`, then `/login`.
+
+A second account (the `claude2` alias) is a different config folder. Point DCTerminal at it in **Settings > Providers > Claude config folder** (for example `~/.claude-account2`), or set `DCT_CLAUDE_CONFIG_DIR` before launch. That value becomes `CLAUDE_CONFIG_DIR` on every Claude process. Unset, DCTerminal uses `~/.claude`. The folder is only read. History comes from `<configDir>/projects`.
 
 ## Status
 
@@ -38,7 +51,7 @@ Launch it with `open -a DCTerminal`, `dcterminal`, the AppImage path, or the Sta
 
 ## Using the app (daily)
 
-1. Install Cursor CLI and run `agent login`.
+1. Install Claude Code and the adapter (above). Cursor CLI (`agent login`) is optional.
 2. Run `npm run dev:ui` + `npm run dev:app` (or a release build when available).
 3. The window opens on a tab bar and one blank tab. **Start a session** is a two-column card: on the left, one sticky row has the **folder** (click the name to choose another; ▾ for recent and favorites), the model, and **Start**; below that are **role tiles** (colored dots), **Chat** or **Terminal**, Title, **What to work on**, and **Preview**. **Cursor CLI history** for that folder is a dense list on the right (Resume / Open in Cursor CLI). A fresh profile first gets **Set up DCTerminal** (palette: **Run first-run setup…**).
 4. **Continue the same agent** with the `›` follow-up box (Ctrl+Enter) — do not press Stop.
@@ -46,12 +59,12 @@ Launch it with `open -a DCTerminal`, `dcterminal`, the AppImage path, or the Sta
 6. **Choose folder…** opens the system folder dialog. The form shows the folder name and path, and does not start the session. Recent and favorites are in the menu on that control. A new tab asks you to choose a folder. A restored tab keeps the folder it already had.
 7. **Stop session** when done — the transcript is saved on the tab and in the app data folder. After a restart it comes back as read-only history. **Start new session** begins a fresh agent. A missing folder does not hide that history, but Start stays blocked until the folder exists.
 8. On a restored tab, **Continue session** loads the same ACP session and does not re-inject the startup prompt. **Start new session** opens the startup fields and starts a new session. **Cursor CLI history** lists sessions for the folder. **Resume** continues one in the app. **Open in Cursor CLI** is only for a saved chat, and it opens a terminal tab running `agent --resume`.
-9. **+ New tab** for another task. The tab you left keeps its agent running. Close (×) stops only that tab. Ctrl+K opens the command palette; Ctrl+/ lists shortcuts. Ctrl+\\ (or Ctrl+Alt+\\ for below) picks a tab to show live in a second pane: a terminal there is the same process, and a chat there has its own composer. Ctrl+Alt+S swaps panes, Ctrl+Alt+O moves focus, Ctrl+Alt+W closes the split. Ctrl+B opens the file panel (tree, preview, Edit + Ctrl+S, Insert @file). Cmd replaces Ctrl on macOS. On a finished **Planner** turn, **Send to Implementer**, **Send to Developer**, or **Send to PR Reviewer** (plan card or palette) opens a new tab in the same folder with the plan mapped onto that role’s fields; nothing starts until you press Start.
-10. The gear in the tab bar, **Settings** in the command palette, and Ctrl+, open **Settings**. A menu on the left picks one category: **Roles** (details and prompt preview), **Models** (global, per role, Cursor CLI; each tab can override from its header; default `composer-2.5`), **Terminal** (theme, shell, font size, run mode per role), **Permissions** (Cursor CLI approval mode and the diagnostics toggle), **Notifications**, **Shortcuts** (the list, the shortcut bar switch, **Show tips again**), and **Data** (app data paths and version). **Record permission payloads** lives there (off by default) and writes redacted `session/request_permission` lines for classifier checks. See [docs/permission-payload-capture.md](docs/permission-payload-capture.md).
+9. **+ New tab** for another task. The tab you left keeps its agent running. Close (×) stops only that tab. Ctrl+K opens the command palette; Ctrl+/ lists shortcuts. Ctrl+\\ (or Ctrl+Alt+\\ for below) picks a tab to show live in a second pane: a terminal there is the same process, and a chat there has its own composer. Ctrl+Alt+S swaps panes, Ctrl+Alt+O moves focus, Ctrl+Alt+W closes the split. Ctrl+B opens the file panel (tree, preview, Edit + Ctrl+S, Insert @file). Cmd replaces Ctrl on macOS. On a finished **Planner** turn, **Send to Plan Reviewer** (then Implementer, then PR Reviewer) opens a new tab in the same folder with the plan mapped onto that role’s fields; nothing starts until you press Start. **Start Eagle-Eye 1…** / **Start Eagle-Eye 2…** in the palette tag that chain. A Claude Planner's "Ready to code?" card is **Hand off…** and **Keep planning**.
+10. The gear in the tab bar, **Settings** in the command palette, and Ctrl+, open **Settings**. A menu on the left picks one category: **Roles**, **Providers** (Claude config folder and account), **Models** (Claude default `default`; Cursor default `composer-2.5`), **Terminal**, **Permissions** (full access, allow-once), **Usage** (Claude 5-hour and 7-day limits), **Notifications**, **Shortcuts**, and **Data**. **Record permission payloads** lives under Permissions (off by default). See [docs/permission-payload-capture.md](docs/permission-payload-capture.md).
 
 **Continue session** resumes the same thread when the CLI allows it, using the session id stored on the tab. See [docs/cursor-cli-history.md](docs/cursor-cli-history.md). Ctrl+Shift+` toggles the terminal pane. Ctrl+Shift+. sends the scratch pad to the terminal.
 
-The status bar at the bottom shows the active tab’s status, model, folder, and **⚠ Run Everything** when Cursor CLI skips permission prompts. Hover a tab chip for its role, folder, branch, model, and status. The look is **GitHub Dark** by default; **GitHub Light** is in Settings > Terminal or **Switch theme** in the palette.
+The status bar shows the active tab’s status, provider, model, folder, **Full permissions**, and Claude 5-hour usage once a Claude chat has reported it. Hover a tab chip for its role, folder, branch, model, Eagle-Eye step, and status. The look is **GitHub Dark** by default; **GitHub Light** is in Settings > Terminal or **Switch theme** in the palette.
 
 ### Keyboard shortcuts
 
@@ -84,7 +97,8 @@ Cmd replaces Ctrl on macOS (⌘). Settings > Shortcuts and Ctrl+/ show the same 
 
 - [Node.js](https://nodejs.org/) 20+
 - [Rust](https://www.rust-lang.org/tools/install) 1.90+ (the locked Tauri 2.12 crates require it) + [Tauri prerequisites](https://tauri.app/start/prerequisites/) (for `tauri dev` / `tauri build`)
-- [Cursor CLI](https://cursor.com/docs/cli) with `agent login` (for real agent sessions later)
+- [Claude Code](https://code.claude.com) and `@agentclientprotocol/claude-agent-acp@0.88.0` (default provider)
+- [Cursor CLI](https://cursor.com/docs/cli) with `agent login` (optional second provider)
 - Windows: WebView2 (usually preinstalled on Windows 10/11)
 
 ## Development

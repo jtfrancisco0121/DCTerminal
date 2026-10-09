@@ -8,12 +8,14 @@
 
 | Field | Value |
 |--------|--------|
-| **Last updated** | 2026-10-07 — PR #14 (`feat/feature-roadmap-implementation`): pipeline hand-offs, blocking `ask_question`, transcript export, composer history, log drawer, workspace layout on save/open, role template editor, pipeline workspace preset; review fixes for per-tab questions and `save_role` validation. |
-| **Branch** | `feat/feature-roadmap-implementation` (PR #14) |
-| **Current phase** | Finish MVP vertical slice (see [MVP-FINISH.md](./MVP-FINISH.md)) |
-| **Active task** | PR #14 manual smoke (hand-off, permission + question cards, pipeline workspace, Settings role save/reset). Mac live `ask_question` capture still open (fixture + fake agent). |
+| **Last updated** | 2026-10-09 — Claude-first phases 5–11 on `cursor/claude-phases-5-11-b558` (stacked on `feat/claude-provider` / PR #16). Model picker, Claude history and resume, migration to Claude, full-permissions indicator, plan-mode hand-off, Eagle-Eye chains, usage limits. |
+| **Branch** | `cursor/claude-phases-5-11-b558` (base `feat/claude-provider`) |
+| **Current phase** | Claude-first phases 5–11 implemented. Mac smoke still open (live GUI, login, ExitPlanMode payload). |
+| **Active task** | JT's Mac smoke list in [CLAUDE-FIRST-PLAN.md](./CLAUDE-FIRST-PLAN.md). |
 
 ## Product-ready today
+
+- **Claude-first phases 5–11 (2026-10-09)** — Claude model list (cached 24 h, fallback `default` / `opus` / `sonnet` / `haiku`; live switch is `session/set_config_option`, never `/model`). History reads `<configDir>/projects` only. Existing tabs with no provider migrate to Claude once (`migrations.claudeFirst`); the Cursor id stays in `sessions.cursor`. Every role is full access and answers `allow_once`. Status bar: **Full permissions** and Claude 5h/7d limits (no token counts, no dollars). Claude Planner ExitPlanMode is a plan card (Hand off / Keep planning). Eagle-Eye 1 and 2 are labelled and user-triggered. **Unverified on a Mac:** live GUI, a real Claude login, and the ExitPlanMode payload shape.
 
 - **Eagle-Eye hand-off fix (2026-10-09, PR #15 `feat/eagle-eye-handoff`, Phase 1 of [CLAUDE-FIRST-PLAN.md](./CLAUDE-FIRST-PLAN.md))** — new built-in **Plan Reviewer** role (`role_plan_reviewer`, full access, fields Original Task / Proposed Plan / Additional Context; its reply ends with **Reviewed plan** and **Review notes**). Existing `roles.json` files get it added on launch without touching edited roles. Hand-offs follow one table (`src/handoff/transitions.ts`): Planner → Plan Reviewer / Implementer / Developer; Plan Reviewer → Implementer / Developer / back to Planner; Implementer and Developer → PR Reviewer; PR Reviewer → Implementer. Plan Reviewer → Implementer puts the Reviewed plan in **Approved Implementation Plan** and the Review notes in **Additional Context**. Chat buttons, the dialog, terminal Planner / Plan Reviewer toolbars and right-click menus, and the palette (**Hand off plan to Plan Reviewer…**, replacing the mislabelled PR Reviewer entry) all read the table. The pipeline workspace preset opens Planner, Plan Reviewer, Implementer, and PR Reviewer (plus JT's pipeline overview tab). Chains: EE1 Planner → Plan Reviewer → Implementer → PR Reviewer; EE2 Implementer → PR Reviewer. Hand-offs stay user-triggered.
 
@@ -48,7 +50,7 @@
 
 ## Locked product decisions (2026-10-06)
 
-See blueprint §31. ACP chat stays primary. No token tracking. No writes to `~/.cursor`. The app writes into the user's folder only when JT edits a file in the file panel and saves it (Job 1 request): existing files inside the tab's folder, never outside it. The app only reads `%USERPROFILE%\.cursor\plans` (or `$HOME/.cursor/plans`) when a terminal Planner sends a hand-off. Plain Ctrl stays with chat. Ctrl+Shift is the terminal (E6 has landed). Global `approvalMode` is left at `allowlist`.
+See blueprint §31. ACP chat stays primary. No token tracking (the usage view is 5-hour / 7-day limits and reset times only). No writes to `~/.cursor`, `~/.claude`, or the Claude config dir (`providers.claude.configDir` / `DCT_CLAUDE_CONFIG_DIR` → `CLAUDE_CONFIG_DIR` on every Claude spawn; history is a read of `<configDir>/projects`). Claude is the default provider. Tabs saved with no provider migrate to Claude; their Cursor session stays resumable by switching the tab back. Every role has full permissions and answers allow-once, never `allow_always`. Modes: General `auto`, Planner `plan`, every other role `bypassPermissions` (Cursor terminals: Planner `--plan`, everyone else `--yolo`). The app writes into the user's folder only when JT edits a file in the file panel and saves it: existing files inside the tab's folder, never outside it. Plan files are read-only from the tab provider's `plans_dir`. Plain Ctrl stays with chat. Ctrl+Shift is the terminal.
 
 ## Not MVP-done yet
 
