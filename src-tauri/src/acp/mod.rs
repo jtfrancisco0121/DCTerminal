@@ -4,6 +4,7 @@ mod handshake;
 #[cfg(test)]
 mod history_probe;
 mod ndjson;
+pub(crate) use ndjson::acp_launch_args;
 mod probe;
 pub(crate) mod request_handler;
 pub(crate) mod session_connect;

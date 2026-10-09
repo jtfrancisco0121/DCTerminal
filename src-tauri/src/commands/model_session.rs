@@ -1,8 +1,8 @@
 //! Change the model of a running chat tab.
 //!
 //! In place first (`session/set_config_option`, then `session/set_model`).
-//! When the agent offers neither, the tab's `agent acp` is restarted with
-//! `--model <id>` and the same session is reopened with `session/load`.
+//! When the agent offers neither, the tab's ACP agent is restarted with a
+//! spawn-time model (`agent --model <id> acp` for Cursor) and the same session is reopened with `session/load`.
 
 use crate::acp::{AcpClient, ModelVia};
 use crate::commands::dev_session::{LiveSession, SessionRegistry};
@@ -29,6 +29,7 @@ struct LiveSnapshot {
     mode_id: String,
     cwd: PathBuf,
     session_id: String,
+    provider: crate::provider::SharedProvider,
 }
 
 fn live_snapshot(
@@ -51,6 +52,7 @@ fn live_snapshot(
         mode_id: session.mode_id.clone(),
         cwd: PathBuf::from(&session.cwd),
         session_id: session.session_id.clone(),
+        provider: session.provider.clone(),
     }))
 }
 
@@ -115,6 +117,7 @@ pub fn acp_set_model(
         flags
     };
     let (client, _replay, via) = AcpClient::load_with_model(
+        live.provider.clone(),
         &live.cwd,
         &live.mode_id,
         &live.session_id,

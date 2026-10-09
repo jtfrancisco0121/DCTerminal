@@ -1,4 +1,5 @@
 use super::connection::{default_io_timeout, AcpConnection, LineDispatch};
+use crate::provider::{Provider, SessionOpts};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::time::Duration;
@@ -126,9 +127,35 @@ pub fn model_requests(
     requests
 }
 
-/// FR-003–004, FR-009: initialize → authenticate → session/new → set_mode.
+/// The provider's auth step (Cursor: `authenticate cursor_login`; Claude:
+/// none). An auth failure becomes `AUTH_ERROR: …`.
+fn run_auth_step(conn: &mut AcpConnection, provider: &dyn Provider) -> Result<(), String> {
+    let Some((method, params)) = provider.auth_step() else {
+        return Ok(());
+    };
+    match conn.call(2, &method, params, default_io_timeout()) {
+        Ok(_) => Ok(()),
+        Err(e) if is_auth_failure(&e) => Err(format!("AUTH_ERROR: {e}")),
+        Err(e) => Err(e),
+    }
+}
+
+/// `session/new` params, with the provider's `_meta` when it has one.
+pub fn new_session_params(provider: &dyn Provider, cwd: &Path, opts: &SessionOpts) -> Value {
+    let mut params = json!({
+        "cwd": cwd.display().to_string(),
+        "mcpServers": []
+    });
+    if let Some(meta) = provider.session_new_meta(opts) {
+        params["_meta"] = meta;
+    }
+    params
+}
+
+/// FR-003–004, FR-009: initialize → (provider auth) → session/new → set_mode.
 pub fn handshake(
     conn: &mut AcpConnection,
+    provider: &dyn Provider,
     cwd: &Path,
     mode_id: &str,
 ) -> Result<(String, String, SessionModels), String> {
@@ -136,26 +163,12 @@ pub fn handshake(
 
     conn.call(1, "initialize", initialize_params(), timeout)?;
 
-    match conn.call(
-        2,
-        "authenticate",
-        json!({ "methodId": "cursor_login" }),
-        timeout,
-    ) {
-        Ok(_) => {}
-        Err(e) if is_auth_failure(&e) => {
-            return Err(format!("AUTH_ERROR: {e}"));
-        }
-        Err(e) => return Err(e),
-    }
+    run_auth_step(conn, provider)?;
 
     let new_result = conn.call(
         3,
         "session/new",
-        json!({
-            "cwd": cwd.display().to_string(),
-            "mcpServers": []
-        }),
+        new_session_params(provider, cwd, &SessionOpts::default()),
         timeout,
     )?;
 
@@ -184,6 +197,7 @@ pub fn handshake(
 /// this checks the live `initialize` result and refuses `session/load` when it is.
 pub fn handshake_load(
     conn: &mut AcpConnection,
+    provider: &dyn Provider,
     cwd: &Path,
     mode_id: &str,
     session_id: &str,
@@ -192,25 +206,14 @@ pub fn handshake_load(
     let init = conn.call(1, "initialize", initialize_params(), timeout)?;
     let caps = capabilities_from_initialize(&init);
     if !caps.load_session {
-        return Err(
-            "LOAD_UNSUPPORTED: this Cursor CLI did not advertise agentCapabilities.loadSession, so session/load was not sent"
-                .to_string(),
-        );
+        return Err(format!(
+            "LOAD_UNSUPPORTED: this {} agent did not advertise agentCapabilities.loadSession, so session/load was not sent",
+            provider.id().label()
+        ));
     }
     // `session/resume` is a different method. This path only sends `session/load`.
 
-    match conn.call(
-        2,
-        "authenticate",
-        json!({ "methodId": "cursor_login" }),
-        timeout,
-    ) {
-        Ok(_) => {}
-        Err(e) if is_auth_failure(&e) => {
-            return Err(format!("AUTH_ERROR: {e}"));
-        }
-        Err(e) => return Err(e),
-    }
+    run_auth_step(conn, provider)?;
 
     let mut dispatch = LineDispatch::default();
     let load_result = conn.call_with_dispatch(
@@ -335,6 +338,16 @@ mod tests {
         let models = parse_session_models(&json!({ "sessionId": "s" }));
         assert_eq!(models, SessionModels::default());
         assert!(model_requests(&models, "s", "gpt-5").is_empty());
+    }
+
+    #[test]
+    fn cursor_session_new_has_no_meta() {
+        let params = new_session_params(
+            &crate::provider::CursorProvider,
+            Path::new("/w/app"),
+            &SessionOpts::default(),
+        );
+        assert_eq!(params, json!({ "cwd": "/w/app", "mcpServers": [] }));
     }
 
     #[test]

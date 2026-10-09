@@ -279,10 +279,10 @@ src/provider/
 
 **Files:** `src-tauri/src/provider/cursor.rs` (new), `acp/session_connect.rs`, `acp/client.rs`, `acp/ndjson.rs`, `acp/connection.rs`, `acp/request_handler.rs`, `pty/mod.rs`, `pty/launch.rs`, `cli_launch.rs`, `commands/role_session.rs`, `commands/prompt_worker.rs`, `commands/model_session.rs`
 
-- [ ] Implement the trait for Cursor by delegating to existing functions; thread `&dyn Provider` through `AcpClient::connect*`, `handshake`, `handshake_load`, PTY launch.
-- [ ] `cursor/*` handling moves to `CursorProvider::classify_request`; unknown extension requests from any provider are cancelled (as today), unknown notifications ignored.
-- [ ] All existing Rust and Vitest tests pass unchanged (this is a refactor).
-- [ ] Commit: `refactor: Cursor CLI behind a Provider trait`
+- [x] Implement the trait for Cursor by delegating to existing functions; thread `&dyn Provider` through `AcpClient::connect*`, `handshake`, `handshake_load`, PTY launch.
+- [x] `cursor/*` handling moves to `CursorProvider::classify_request`; unknown extension requests from any provider are cancelled (as today), unknown notifications ignored.
+- [x] All existing Rust and Vitest tests pass unchanged (this is a refactor).
+- [x] Commit: `refactor: Cursor CLI behind a Provider trait`
 
 ### Task 2.3: Claude config dir (which Claude account)
 

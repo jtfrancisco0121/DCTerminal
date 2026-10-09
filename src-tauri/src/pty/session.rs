@@ -21,6 +21,8 @@ const DSR_REPLY: &[u8] = b"\x1b[1;1R";
 pub struct SpawnSpec {
     pub program: String,
     pub args: Vec<String>,
+    /// Set on top of the inherited environment (e.g. `CLAUDE_CONFIG_DIR`).
+    pub env: Vec<(String, String)>,
     pub cwd: std::path::PathBuf,
     pub cols: u16,
     pub rows: u16,
@@ -77,6 +79,9 @@ impl PtySession {
         }
         command.cwd(spec.cwd);
         command.env("TERM", "xterm-256color");
+        for (key, value) in &spec.env {
+            command.env(key, value);
+        }
         let child = pair
             .slave
             .spawn_command(command)
@@ -483,6 +488,7 @@ mod tests {
         let session = PtySession::spawn(SpawnSpec {
             program: "node".into(),
             args: vec![script.display().to_string()],
+            env: Vec::new(),
             cwd: dir.clone(),
             cols: 80,
             rows: 24,
@@ -510,6 +516,7 @@ mod tests {
         let session = PtySession::spawn(SpawnSpec {
             program,
             args,
+            env: Vec::new(),
             cwd,
             cols: 80,
             rows: 24,

@@ -2,7 +2,8 @@ use super::ndjson::{
     acp_launch_args, consecutive_malformed_limit, parse_acp_line, read_capped_line, CappedRead,
     ParsedLine, MAX_ACP_LINE_BYTES,
 };
-use super::request_handler::{is_permission_method, response_for_agent_request};
+use super::request_handler::response_for_agent_request;
+use crate::provider::{AgentRequestKind, CursorProvider, ProgramArgs, SharedProvider};
 use crate::process_tree::{prepare_command, SharedProcess};
 use serde_json::{json, Value};
 use std::io::{BufReader, Write};
@@ -75,6 +76,8 @@ pub struct AcpConnection {
     stdin: std::process::ChildStdin,
     lines: Receiver<ReaderMsg>,
     stderr_tail: Arc<Mutex<Vec<String>>>,
+    /// Sorts agent requests (permission / plan / question / extension).
+    provider: SharedProvider,
 }
 
 impl AcpConnection {
@@ -82,18 +85,28 @@ impl AcpConnection {
         Self::spawn_with_args(agent_path, cwd, &[])
     }
 
-    /// `global_args` go before `acp`, for example `--model <id>`.
+    /// Cursor `agent`: `global_args` go before `acp`, for example `--model <id>`.
     pub fn spawn_with_args(
         agent_path: &Path,
         cwd: Option<&Path>,
         global_args: &[String],
     ) -> std::io::Result<Self> {
-        let mut command = Command::new(agent_path);
-        for arg in global_args {
-            command.arg(arg);
-        }
-        for arg in acp_launch_args() {
-            command.arg(*arg);
+        let mut args: Vec<String> = global_args.to_vec();
+        args.extend(acp_launch_args().iter().map(|arg| (*arg).to_string()));
+        let program = ProgramArgs::new(agent_path.display().to_string(), args);
+        Self::spawn_program(&program, cwd, Arc::new(CursorProvider))
+    }
+
+    /// Spawn the provider's ACP agent: argv and extra env from `program`.
+    pub fn spawn_program(
+        program: &ProgramArgs,
+        cwd: Option<&Path>,
+        provider: SharedProvider,
+    ) -> std::io::Result<Self> {
+        let mut command = Command::new(&program.program);
+        command.args(&program.args);
+        for (key, value) in &program.env {
+            command.env(key, value);
         }
         command
             .stdin(Stdio::piped())
@@ -169,6 +182,7 @@ impl AcpConnection {
             stdin,
             lines: rx,
             stderr_tail,
+            provider,
         })
     }
 
@@ -237,10 +251,14 @@ impl AcpConnection {
                     dispatch.record_notification(value);
                     return Ok(());
                 }
-                let is_permission = is_permission_method(method);
-                let is_plan = method == "cursor/create_plan";
-                let is_question = method == "cursor/ask_question";
-                if is_permission || is_plan || is_question {
+                let params = value.get("params").unwrap_or(&Value::Null);
+                let kind = self.provider.classify_request(method, params);
+                if matches!(
+                    kind,
+                    AgentRequestKind::Permission
+                        | AgentRequestKind::Plan
+                        | AgentRequestKind::Question
+                ) {
                     if let Some(handler) = &mut dispatch.on_agent_request {
                         if let Some(result) = handler(value)? {
                             self.respond_result(req_id, result)?;
@@ -249,7 +267,7 @@ impl AcpConnection {
                         let result = response_for_agent_request(value);
                         self.respond_result(req_id, result)?;
                     }
-                } else if method.starts_with("cursor/") {
+                } else if kind == AgentRequestKind::UnknownExtension {
                     let result = response_for_agent_request(value);
                     self.respond_result(req_id, result)?;
                 } else if let Some(handler) = &mut dispatch.on_agent_request {

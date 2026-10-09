@@ -2,6 +2,7 @@ use crate::acp::PromptResult;
 use crate::commands::acp_events::emit_session_update;
 use crate::commands::agent_requests::stage_permission_request;
 use crate::commands::dev_session::SessionRegistry;
+use crate::provider::AgentRequestKind;
 use crate::store::StateStore;
 use serde::Serialize;
 use std::sync::Mutex;
@@ -59,9 +60,9 @@ fn run_prompt_turn(
                 .client
                 .clone()
         };
-        let session_id = {
+        let (session_id, provider) = {
             let client = client_arc.lock().map_err(|e| e.to_string())?;
-            client.session_id().to_string()
+            (client.session_id().to_string(), client.provider())
         };
         let session_id_for_emit = session_id.clone();
         let session_id_for_perm = session_id.clone();
@@ -80,7 +81,9 @@ fn run_prompt_turn(
         let on_agent_request = Box::new(
             move |value: &serde_json::Value| -> Result<Option<serde_json::Value>, String> {
                 let method = value.get("method").and_then(|m| m.as_str()).unwrap_or("");
-                if crate::acp::request_handler::is_permission_method(method) {
+                let params = value.get("params").unwrap_or(&serde_json::Value::Null);
+                let kind = provider.classify_request(method, params);
+                if kind == AgentRequestKind::Permission {
                     let session_mtx = app_perm.state::<Mutex<SessionRegistry>>();
                     return stage_permission_request(
                         &app_perm,
@@ -90,7 +93,7 @@ fn run_prompt_turn(
                         &session_mtx,
                     );
                 }
-                if method == "cursor/create_plan" {
+                if kind == AgentRequestKind::Plan {
                     let session_mtx = app_perm.state::<Mutex<SessionRegistry>>();
                     return crate::commands::agent_requests::stage_plan_request(
                         &app_perm,
@@ -100,7 +103,7 @@ fn run_prompt_turn(
                         &session_mtx,
                     );
                 }
-                if method == "cursor/ask_question" {
+                if kind == AgentRequestKind::Question {
                     let session_mtx = app_perm.state::<Mutex<SessionRegistry>>();
                     return crate::commands::agent_requests::stage_question_request(
                         &app_perm,

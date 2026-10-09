@@ -26,6 +26,8 @@ pub struct LiveSession {
     pub cwd: String,
     pub session_id: String,
     pub client: SharedAcpClient,
+    /// Provider the session runs on (kept for restarts).
+    pub provider: crate::provider::SharedProvider,
     pub process: SharedProcess,
     pub cancel: Arc<AtomicBool>,
     pub outbox: Arc<Mutex<Vec<(u64, Value)>>>,
@@ -44,7 +46,9 @@ impl LiveSession {
         let process = client.process_handle();
         let cancel = client.cancel_flag();
         let outbox = client.outbox();
+        let provider = client.provider();
         Self {
+            provider,
             tab_id: tab_id.to_string(),
             role_id: role_id.to_string(),
             mode_id: client.mode_id().to_string(),

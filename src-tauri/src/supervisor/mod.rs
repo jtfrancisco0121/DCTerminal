@@ -2,6 +2,7 @@
 
 use crate::acp::connection::AcpConnection;
 use crate::cli_detect::{agent_missing_message, resolve_agent_executable};
+use crate::provider::SharedProvider;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
@@ -30,6 +31,27 @@ impl AgentSupervisor {
                      Confirm that path is the agent executable (on Windows, agent.cmd is OK) \
                      and that you are logged in (`agent login`).",
                     agent_path.display()
+                )
+            }
+        })
+    }
+
+    /// Spawn the provider's ACP agent in `cwd`. `model` is a spawn-time
+    /// model for agents that cannot switch in place.
+    pub fn spawn_provider(
+        provider: &SharedProvider,
+        cwd: &Path,
+        model: Option<&str>,
+    ) -> Result<AcpConnection, String> {
+        let program = provider.acp_command(model)?;
+        AcpConnection::spawn_program(&program, Some(cwd), provider.clone()).map_err(|e| {
+            if e.kind() == ErrorKind::NotFound {
+                provider.missing_message()
+            } else {
+                format!(
+                    "Could not start the {} agent at {}: {e}",
+                    provider.id().label(),
+                    program.program
                 )
             }
         })

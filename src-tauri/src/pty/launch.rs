@@ -52,11 +52,7 @@ impl RunMode {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProgramArgs {
-    pub program: String,
-    pub args: Vec<String>,
-}
+pub use crate::provider::ProgramArgs;
 
 /// Mode flags for one role, then `--approve-mcps --trust`.
 /// An override replaces only the mode portion.
@@ -143,6 +139,7 @@ pub fn handoff_terminal_prompt(merged: &str, plan: &str) -> String {
     format!("{merged}\n\nPlan from the hand-off:\n\n{plan}")
 }
 
+#[cfg(test)]
 pub fn role_agent_command(
     program: &str,
     role_id: &str,
@@ -154,10 +151,7 @@ pub fn role_agent_command(
     if let Some(prompt) = prompt.map(str::trim).filter(|text| !text.is_empty()) {
         args.push(prompt.to_string());
     }
-    ProgramArgs {
-        program: program.to_string(),
-        args,
-    }
+    ProgramArgs::new(program, args)
 }
 
 #[derive(Clone, Copy)]
