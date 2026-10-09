@@ -640,6 +640,15 @@ mod tests {
                 "commit.gpgsign=false",
                 "-c",
                 "init.defaultBranch=main",
+                // A developer gitconfig may enable fsmonitor or the untracked
+                // cache. `git status` would then rewrite `.git/index`, which
+                // this file's tests treat as proof the snapshot wrote the repo.
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.untrackedCache=false",
+                "-c",
+                "core.splitIndex=false",
             ])
             .args(args)
             .output()

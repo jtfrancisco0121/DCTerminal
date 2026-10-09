@@ -60,6 +60,45 @@ pub fn claude_role_mode(role_id: &str) -> &'static str {
     }
 }
 
+/// Shown when a saved Claude session belongs to a different config folder.
+pub const CONFIG_CHANGED_NOTICE: &str =
+    "Claude config folder changed; starting a new session";
+
+/// Whether two config folders are the same place. Canonical when both exist.
+pub fn same_config_dir(left: &str, right: &str) -> bool {
+    let left_path = std::path::Path::new(left.trim());
+    let right_path = std::path::Path::new(right.trim());
+    match (left_path.canonicalize(), right_path.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => left_path == right_path,
+    }
+}
+
+/// Resume id to pass to Claude, or a fresh session.
+///
+/// A Cursor id is never returned. Continuing `sessions.claude` after the
+/// config folder changed starts fresh and explains why.
+pub fn decide_claude_resume(
+    requested: Option<&str>,
+    sessions: &super::ProviderSessions,
+    current_config: &str,
+) -> (Option<String>, Option<String>) {
+    let Some(id) = requested.map(str::trim).filter(|id| !id.is_empty()) else {
+        return (None, None);
+    };
+    if sessions.cursor.as_deref() == Some(id) && sessions.claude.as_deref() != Some(id) {
+        return (None, None);
+    }
+    if sessions.claude.as_deref() == Some(id) {
+        if let Some(saved) = sessions.claude_config_dir.as_deref() {
+            if !same_config_dir(saved, current_config) {
+                return (None, Some(CONFIG_CHANGED_NOTICE.to_string()));
+            }
+        }
+    }
+    (Some(id.to_string()), None)
+}
+
 /// `--model <id>` for Claude, or nothing for `default` / an invalid id.
 pub fn claude_model_args(model: Option<&str>) -> Vec<String> {
     match model
@@ -287,6 +326,37 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn a_cursor_id_is_not_resumed_and_a_moved_config_dir_starts_fresh() {
+        let mut sessions = super::super::ProviderSessions {
+            cursor: Some("11111111-2222-3333-4444-555555555555".into()),
+            ..Default::default()
+        };
+        let (id, notice) = decide_claude_resume(
+            Some("11111111-2222-3333-4444-555555555555"),
+            &sessions,
+            "/tmp/claude",
+        );
+        assert!(id.is_none());
+        assert!(notice.is_none());
+        sessions.claude = Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into());
+        sessions.claude_config_dir = Some("/tmp/account-a".into());
+        let (id, notice) = decide_claude_resume(
+            Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+            &sessions,
+            "/tmp/account-b",
+        );
+        assert!(id.is_none());
+        assert_eq!(notice.as_deref(), Some(CONFIG_CHANGED_NOTICE));
+        let (id, notice) = decide_claude_resume(
+            Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+            &sessions,
+            "/tmp/account-a",
+        );
+        assert_eq!(id.as_deref(), Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"));
+        assert!(notice.is_none());
+    }
+
+    #[test]
     fn claude_never_authenticates_with_cursor_login() {
         assert!(ClaudeProvider::default().auth_step().is_none());
     }
@@ -464,6 +534,7 @@ mod tests {
                 "--bg",
                 "--settings",
                 "--continue",
+                "/model",
             ] {
                 assert!(!args.iter().any(|a| a == bad), "{bad} in {args:?}");
             }

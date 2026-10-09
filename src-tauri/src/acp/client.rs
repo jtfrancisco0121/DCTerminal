@@ -1,5 +1,5 @@
 use super::connection::default_io_timeout;
-use super::connection::{AcpConnection, LineDispatch, TurnControl};
+use super::connection::{AcpConnection, ClientFollowups, LineDispatch, TurnControl};
 use super::ndjson::session_prompt_params;
 use super::session_connect::{
     handshake, handshake_load, model_requests, parse_session_models, SessionModels,
@@ -24,6 +24,7 @@ pub struct AcpClient {
     next_id: u64,
     cancel: Arc<AtomicBool>,
     outbox: Arc<Mutex<Vec<(u64, Value)>>>,
+    followups: ClientFollowups,
     models: SessionModels,
     provider: SharedProvider,
 }
@@ -226,6 +227,11 @@ impl AcpClient {
         self.models.current.as_deref()
     }
 
+    /// Claude model options reported by `session/new` / `session/load`.
+    pub fn model_entries(&self) -> &[crate::models::ModelEntry] {
+        &self.models.entries
+    }
+
     fn from_parts(
         conn: AcpConnection,
         session_id: String,
@@ -242,6 +248,7 @@ impl AcpClient {
             next_id: 5,
             cancel: Arc::new(AtomicBool::new(false)),
             outbox: Arc::new(Mutex::new(Vec::new())),
+            followups: Arc::new(Mutex::new(Vec::new())),
             models: SessionModels::default(),
         }
     }
@@ -265,6 +272,10 @@ impl AcpClient {
 
     pub fn outbox(&self) -> Arc<Mutex<Vec<(u64, Value)>>> {
         Arc::clone(&self.outbox)
+    }
+
+    pub fn followups(&self) -> ClientFollowups {
+        Arc::clone(&self.followups)
     }
 
     pub fn session_id(&self) -> &str {
@@ -300,12 +311,14 @@ impl AcpClient {
             dispatch.set_on_agent_request(handler);
         }
         let outbox = Arc::clone(&self.outbox);
+        let followups = Arc::clone(&self.followups);
         let session_for_prompt = self.session_id.clone();
         let mut turn = TurnControl {
             cancel: self.cancel.as_ref(),
             session_id: &session_for_prompt,
             next_id: &mut self.next_id,
             outbox: Some(outbox),
+            followups: Some(followups),
         };
         let result = self.conn.call_with_dispatch(
             id,

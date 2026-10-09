@@ -4,14 +4,14 @@ import { describe, expect, it, vi } from "vitest";
 import { StatusBar } from "./StatusBar";
 
 describe("StatusBar (U3)", () => {
-  it("carries status, model, folder, and the Run Everything warning in one strip", () => {
+  it("carries status, model, folder, and full permissions in one strip", () => {
     render(
       <StatusBar
         status={{ tone: "busy", text: "Agent working — 2 active tools" }}
         model="composer-2.5"
         folder="/Users/jt/Koneksi"
         branch="feat/login"
-        roleRulesOff
+        permissions={{ fallback: null }}
       />,
     );
     const bar = screen.getByRole("contentinfo", { name: "Status bar" });
@@ -22,9 +22,26 @@ describe("StatusBar (U3)", () => {
       "/Users/jt/Koneksi\nBranch: feat/login",
     );
     expect(within(bar).getByText("⎇ feat/login")).toBeTruthy();
-    const warn = within(bar).getByLabelText(/Role permission rules are off/);
-    expect(warn.textContent).toBe("⚠ Run Everything");
+    const perms = within(bar).getByTestId("status-permissions");
+    expect(perms.textContent).toBe("Full permissions");
+    expect(perms.getAttribute("title")).toMatch(/allow-once/);
+    expect(screen.queryByText(/Run Everything/)).toBeNull();
     expect(bar.querySelectorAll(".status-bar-item").length).toBe(4);
+  });
+
+  it("shows the Claude fallback when the wanted mode was not offered", () => {
+    render(
+      <StatusBar
+        status={{ tone: "ok", text: "Ready" }}
+        permissions={{ fallback: "the adapter did not offer bypassPermissions (using default)" }}
+        usage={{ text: "Claude 5h 82% · resets 3:10 PM", tone: "warn", title: "limits" }}
+      />,
+    );
+    expect(screen.getByTestId("status-permissions").textContent).toBe(
+      "Full permissions unavailable for Claude — the adapter did not offer bypassPermissions (using default)",
+    );
+    expect(screen.getByTestId("status-usage").textContent).toContain("Claude 5h 82%");
+    expect(screen.queryByText(/role permission rules are off/i)).toBeNull();
   });
 
   it("leaves out what the tab does not have", () => {
@@ -32,6 +49,7 @@ describe("StatusBar (U3)", () => {
     const bar = screen.getByRole("contentinfo", { name: "Status bar" });
     expect(bar.querySelectorAll(".status-bar-item").length).toBe(1);
     expect(screen.queryByText(/Run Everything/)).toBeNull();
+    expect(screen.queryByText(/Full permissions/)).toBeNull();
   });
 
   it("shows notices inline, each dismissable", () => {

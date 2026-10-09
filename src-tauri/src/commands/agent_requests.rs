@@ -1,4 +1,4 @@
-use crate::commands::dev_session::SessionRegistry;
+use crate::commands::dev_session::{PendingPlan, SessionRegistry};
 use crate::permissions::{
     append_permission_log, cancelled_permission_result, evaluate_permission,
     permission_log_record_with_meta, DecisionOutcome, PolicyDecision, ToolCallCache,
@@ -103,11 +103,10 @@ pub fn stage_claude_permission_request(
         }
     };
     let exit_plan = is_exit_plan_mode(&params);
-    let answer = if exit_plan && is_planner(&role_id) {
-        None
-    } else {
-        allow_once_result(&params)
-    };
+    if exit_plan && is_planner(&role_id) {
+        return stage_exit_plan_request(app, tab_id, session_id, request, state);
+    }
+    let answer = allow_once_result(&params);
     let Some(result) = answer else {
         return stage_permission_request(app, tab_id, session_id, request, state);
     };
@@ -133,7 +132,133 @@ pub fn stage_claude_permission_request(
             line: format!("Allowed once (full permissions): {title}"),
         },
     );
+    if exit_plan {
+        queue_role_mode(state, tab_id)?;
+    }
     Ok(Some(result))
+}
+
+/// After a non-Planner ExitPlanMode, put the session back on the role mode.
+fn queue_role_mode(state: &Mutex<SessionRegistry>, tab_id: &str) -> Result<(), String> {
+    let guard = state.lock().map_err(|e| e.to_string())?;
+    let Some(session) = guard.get(tab_id) else {
+        return Ok(());
+    };
+    let mode = crate::provider::claude::claude_role_mode(&session.role_id).to_string();
+    let params = json!({
+        "sessionId": session.session_id,
+        "modeId": mode,
+    });
+    session
+        .followups
+        .lock()
+        .map_err(|e| e.to_string())?
+        .push(("session/set_mode".to_string(), params));
+    Ok(())
+}
+
+fn reject_option_id(params: &Value) -> Option<String> {
+    params
+        .get("options")
+        .and_then(Value::as_array)?
+        .iter()
+        .find_map(|opt| {
+            let kind = opt
+                .get("kind")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            let name = opt
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            let id = opt.get("optionId").and_then(Value::as_str)?;
+            let id_l = id.to_ascii_lowercase();
+            if kind.contains("reject")
+                || id_l.contains("reject")
+                || name.contains("keep")
+                || name.starts_with("no")
+            {
+                Some(id.to_string())
+            } else {
+                None
+            }
+        })
+}
+
+/// Plan markdown from ExitPlanMode. The adapter's field is unverified on a
+/// Mac; this reads `toolCall.rawInput.plan` (string or JSON), then content.
+pub fn exit_plan_markdown(params: &Value) -> String {
+    let call = params.get("toolCall").unwrap_or(&Value::Null);
+    let raw = call.get("rawInput").unwrap_or(&Value::Null);
+    if let Some(plan) = raw.get("plan").or_else(|| params.get("plan")) {
+        if let Some(text) = plan.as_str() {
+            if !text.trim().is_empty() {
+                return text.to_string();
+            }
+        } else if !plan.is_null() {
+            if let Ok(text) = serde_json::to_string_pretty(plan) {
+                if text != "null" {
+                    return text;
+                }
+            }
+        }
+    }
+    if let Some(text) = call.get("content").and_then(Value::as_str) {
+        if !text.trim().is_empty() {
+            return text.to_string();
+        }
+    }
+    call.get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("Plan")
+        .to_string()
+}
+
+fn stage_exit_plan_request(
+    app: &AppHandle,
+    tab_id: &str,
+    session_id: &str,
+    request: &Value,
+    state: &Mutex<SessionRegistry>,
+) -> Result<Option<Value>, String> {
+    let json_rpc_id = request
+        .get("id")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "plan request missing id".to_string())?;
+    let params = request.get("params").cloned().unwrap_or(Value::Null);
+    let markdown = exit_plan_markdown(&params);
+    let reject = reject_option_id(&params);
+    {
+        let mut guard = state.lock().map_err(|e| e.to_string())?;
+        let Some(session) = guard.get_mut(tab_id) else {
+            return Ok(Some(cancelled_permission_result()));
+        };
+        session.pending_plans.insert(
+            json_rpc_id,
+            PendingPlan::ClaudeExit {
+                reject_option_id: reject.clone(),
+            },
+        );
+    }
+    let _ = app.emit(
+        PLAN_REQUEST_EVENT,
+        PlanRequestEvent {
+            tab_id: tab_id.to_string(),
+            session_id: session_id.to_string(),
+            json_rpc_id,
+            title: "Ready to code?".to_string(),
+            entries: vec![PlanEntryDto {
+                content: markdown.clone(),
+                status: "pending".to_string(),
+                priority: None,
+            }],
+            markdown: Some(markdown),
+            keep_option_id: reject,
+        },
+    );
+    Ok(None)
 }
 
 /// Apply the role policy. `Ok(Some(result))` is an immediate JSON-RPC reply.
@@ -302,6 +427,12 @@ pub struct PlanRequestEvent {
     pub json_rpc_id: u64,
     pub title: String,
     pub entries: Vec<PlanEntryDto>,
+    /// Claude ExitPlanMode body. Empty for a Cursor plan card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub markdown: Option<String>,
+    /// Reject / keep-planning option. Selecting it never approves the plan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_option_id: Option<String>,
 }
 
 pub fn stage_plan_request(
@@ -321,7 +452,9 @@ pub fn stage_plan_request(
         let Some(session) = guard.get_mut(tab_id) else {
             return Ok(Some(json!({ "outcome": "cancelled" })));
         };
-        session.pending_plans.insert(json_rpc_id, ());
+        session
+            .pending_plans
+            .insert(json_rpc_id, PendingPlan::Cursor);
     }
     let entries = plan_entries(&params);
     let title = params
@@ -338,6 +471,8 @@ pub fn stage_plan_request(
             json_rpc_id,
             title,
             entries,
+            markdown: None,
+            keep_option_id: None,
         },
     );
     Ok(None)
@@ -354,13 +489,26 @@ pub fn respond_plan_request(
     let Some(session) = guard.get_mut(&tab_id) else {
         return Ok(());
     };
-    if session.pending_plans.remove(&json_rpc_id).is_none() {
+    let pending = session.pending_plans.remove(&json_rpc_id);
+    let Some(pending) = pending else {
         return Err("no pending plan request for this id".to_string());
-    }
-    let result = if outcome == "accepted" {
-        json!({ "outcome": "accepted" })
-    } else {
-        json!({ "outcome": "cancelled" })
+    };
+    let result = match pending {
+        PendingPlan::ClaudeExit { reject_option_id } => {
+            // Hand off and Keep planning both refuse to implement in this tab.
+            if let Some(id) = reject_option_id {
+                json!({ "outcome": { "outcome": "selected", "optionId": id } })
+            } else {
+                cancelled_permission_result()
+            }
+        }
+        PendingPlan::Cursor => {
+            if outcome == "accepted" {
+                json!({ "outcome": "accepted" })
+            } else {
+                json!({ "outcome": "cancelled" })
+            }
+        }
     };
     session
         .outbox

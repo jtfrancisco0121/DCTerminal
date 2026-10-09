@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import type { TabSummary } from "./bridge";
+import { chainLabel } from "./handoff/chains";
 import { tabStatusLabel, type TabStatus } from "./tabStatus";
 
 type Props = {
@@ -22,8 +23,6 @@ type Props = {
   onColor?: (tabId: string, color: string) => void;
   settingsOpen?: boolean;
   onSettings?: () => void;
-  /** When Cursor CLI is unrestricted, role tabs show that rules are off. */
-  roleRulesOff?: boolean;
   /** Tab whose chip shows the rename field. */
   renamingTabId?: string | null;
   onRenameStart?: (tabId: string) => void;
@@ -42,9 +41,6 @@ const PHASE_TEXT: Record<string, string> = {
   stopped: "Stopped",
 };
 
-export const ROLE_RULES_OFF_TITLE =
-  "Role permission rules are off: Cursor CLI is set to Run Everything. Change it in Cursor CLI settings to turn them back on.";
-
 /** U1: everything the slim chip leaves out, one fact per line. */
 export function tabTooltip(
   tab: TabSummary,
@@ -55,9 +51,11 @@ export function tabTooltip(
     provider?: string | null;
     statusText?: string;
     canRename?: boolean;
+    chain?: string | null;
   },
 ): string {
   const lines = [tab.label];
+  if (opts.chain) lines.push(opts.chain);
   if (opts.roleName) lines.push(`Role: ${opts.roleName}`);
   if (opts.provider) lines.push(`Provider: ${opts.provider}`);
   if (tab.cwd) lines.push(`Folder: ${tab.cwd}`);
@@ -128,7 +126,6 @@ export function TabBar({
   onColor,
   settingsOpen = false,
   onSettings,
-  roleRulesOff = false,
   renamingTabId = null,
   onRenameStart,
   onRename,
@@ -189,6 +186,7 @@ export function TabBar({
                   provider: providerFor?.(t) ?? null,
                   statusText,
                   canRename: !!onRenameStart,
+                  chain: t.chain ? chainLabel(t.chain) : null,
                 })}
               >
                 <span
@@ -212,16 +210,6 @@ export function TabBar({
                 {t.terminalLaunch === "role" && (
                   <span className="tab-icon" role="img" aria-label="Role terminal" title="Role terminal">
                     ›_
-                  </span>
-                )}
-                {roleRulesOff && t.kind !== "terminal" && t.roleId && (
-                  <span
-                    className="tab-icon tab-icon-warn"
-                    role="img"
-                    aria-label={ROLE_RULES_OFF_TITLE}
-                    title={ROLE_RULES_OFF_TITLE}
-                  >
-                    ⚠
                   </span>
                 )}
               </button>

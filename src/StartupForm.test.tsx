@@ -96,6 +96,16 @@ vi.mock("./bridge", () => {
   }),
   listenSessionUpdates: listen,
   listCursorCliHistory: vi.fn(),
+  listClaudeHistory: vi.fn(async () => ({
+    entries: [],
+    configDir: "/tmp/claude",
+    configDisplay: "~/.claude",
+    exists: true,
+  })),
+  getClaudeUsage: vi.fn(async () => ({ configDir: "/tmp/claude", windows: [], contextByTab: {} })),
+  ackProviderNotice: vi.fn(async () => {}),
+  setTabChain: vi.fn(async () => {}),
+  startEagleEye: vi.fn(async () => ({ tab: { id: "ee" } })),
   newDraftTab: vi.fn(),
   roleSessionStart: vi.fn(),
   saveFormDraft: vi.fn(async () => {}),
@@ -152,12 +162,26 @@ vi.mock("./bridge", () => {
   setLayout: vi.fn(async (layout: unknown) => layout),
   getModelSettings: vi.fn(async () => ({ defaultModel: "composer-2.5", roleModels: {} })),
   setModelSettings: vi.fn(async (models: unknown) => models),
-  listModels: vi.fn(async () => ({
-    models: [{ id: "composer-2.5", label: "Composer 2.5", fast: false }],
-    source: "fallback",
-    fetchedAtMs: null,
-    error: null,
-  })),
+  listModels: vi.fn(async (provider?: string) =>
+    provider === "claude"
+      ? {
+          models: [
+            { id: "default", label: "Default (account default)", fast: false },
+            { id: "opus", label: "Opus", fast: false },
+            { id: "sonnet", label: "Sonnet", fast: false },
+            { id: "haiku", label: "Haiku", fast: true },
+          ],
+          source: "fallback",
+          fetchedAtMs: null,
+          error: null,
+        }
+      : {
+          models: [{ id: "composer-2.5", label: "Composer 2.5", fast: false }],
+          source: "fallback",
+          fetchedAtMs: null,
+          error: null,
+        },
+  ),
   setTabModel: vi.fn(async () => "composer-2.5"),
   getProviderSettings: vi.fn(async () => ({
     settings: { default: "claude", roleProvider: {}, claude: {}, cursor: {} },
@@ -1580,15 +1604,29 @@ describe("command palette (F9)", () => {
     vi.mocked(selectActiveTab).mockResolvedValue({
       tab: { ...tab, cwd: folder, answers: { cwd: folder } },
     });
-    vi.mocked(listModels).mockResolvedValue({
-      models: [
-        { id: "composer-2.5", label: "Composer 2.5", fast: false },
-        { id: "gpt-5", label: "GPT-5", fast: false },
-      ],
-      source: "fallback",
-      fetchedAtMs: null,
-      error: null,
-    });
+    vi.mocked(listModels).mockImplementation(async (provider?: string) =>
+      provider === "claude"
+        ? {
+            models: [
+              { id: "default", label: "Default (account default)", fast: false },
+              { id: "opus", label: "Opus", fast: false },
+              { id: "sonnet", label: "Sonnet", fast: false },
+              { id: "haiku", label: "Haiku", fast: true },
+            ],
+            source: "fallback",
+            fetchedAtMs: null,
+            error: null,
+          }
+        : {
+            models: [
+              { id: "composer-2.5", label: "Composer 2.5", fast: false },
+              { id: "gpt-5", label: "GPT-5", fast: false },
+            ],
+            source: "fallback",
+            fetchedAtMs: null,
+            error: null,
+          },
+    );
     vi.mocked(setTabModel).mockClear();
     vi.mocked(newDraftTab).mockReset();
   });

@@ -3,7 +3,8 @@
 //! See `docs/claude-acp-observed.md`.
 
 use super::session_connect::{
-    advertised_modes, capabilities_from_initialize, mode_to_set, parse_session_models,
+    advertised_modes, capabilities_from_initialize, mode_to_set, model_requests,
+    parse_session_models,
 };
 use super::session_update::map_session_update;
 use crate::provider::{claude::ClaudeProvider, CursorProvider, Provider};
@@ -68,6 +69,22 @@ fn session_new_advertises_auto_and_bypass_and_claude_models() {
     for id in &models.available {
         assert!(crate::models::is_claude_model_id(id), "adapter model {id}");
     }
+    assert!(models.entries.iter().any(|m| m.id == "opus[1m]"));
+    assert!(models.entries.iter().any(|m| m.id == "haiku"));
+    let fable = models
+        .entries
+        .iter()
+        .find(|m| m.id.contains("fable"))
+        .expect("fable is in the adapter list");
+    assert_eq!(fable.badge.as_deref(), Some("may use usage credits"));
+    // `opusplan` is not in this capture, so it is not offered.
+    assert!(models.entries.iter().all(|m| m.id != "opusplan"));
+    // The adapter has no session/set_model. Switching uses the model config option.
+    let requests = model_requests(&models, "sess", "sonnet");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].0, "session/set_config_option");
+    assert_eq!(requests[0].1["configId"], "model");
+    assert_eq!(requests[0].1["value"], "sonnet");
 }
 
 #[test]

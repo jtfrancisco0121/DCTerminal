@@ -90,22 +90,27 @@ describe("TabBar density (U1/U4)", () => {
     ]);
   });
 
-  it("shows a warn icon with a tooltip instead of the long rules-off badge", () => {
+  it("puts the Eagle-Eye step in the tab tooltip and drops the rules-off icon", () => {
     render(
       <TabBar
-        tabs={[tab({ id: "tab_1", label: "Login fix" }), tab({ id: "t", label: "zsh", kind: "terminal" })]}
+        tabs={[
+          tab({
+            id: "tab_1",
+            label: "Login fix",
+            chain: { chainId: "ee_1", kind: "eagle1", step: 2, total: 4 },
+          }),
+          tab({ id: "t", label: "zsh", kind: "terminal" }),
+        ]}
         activeTabId="tab_1"
-        roleRulesOff
         onSelect={() => {}}
         onClose={() => {}}
         onNew={() => {}}
       />,
     );
     expect(screen.queryByText(/role permission rules are off/)).toBeNull();
-    const icons = screen.getAllByLabelText(/Role permission rules are off/);
-    expect(icons).toHaveLength(1);
-    expect(icons[0].textContent).toBe("⚠");
-    expect(icons[0].getAttribute("title")).toMatch(/Run Everything/);
+    expect(screen.queryByText("⚠")).toBeNull();
+    const title = screen.getByRole("tab", { name: /Login fix/ }).getAttribute("title") ?? "";
+    expect(title).toContain("Eagle-Eye 1 · step 2 of 4");
   });
 
   it("uses compact icon buttons for new, worktree, and reopen", () => {

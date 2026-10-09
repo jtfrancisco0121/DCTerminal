@@ -16,6 +16,11 @@ vi.mock("../bridge", () => ({
     isBuiltIn: true,
     fields: [],
   })),
+  getClaudeUsage: vi.fn(async () => ({
+    configDir: "/tmp/claude",
+    windows: [],
+    contextByTab: {},
+  })),
 }));
 
 import { SettingsPage } from "./SettingsPage";
@@ -50,9 +55,9 @@ describe("SettingsPage", () => {
         onClose={onClose}
       />,
     );
-    expect(await screen.findByText(/Deny write and shell/)).toBeTruthy();
+    expect(await screen.findByText(/Full access/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /^Developer/ }));
-    expect(await screen.findByText(/Auto-allow write, shell, and MCP/)).toBeTruthy();
+    expect(screen.getAllByText("Full access").length).toBeGreaterThan(0);
     openCategory("Terminal");
     expect(screen.getByLabelText("Shell program")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
@@ -126,7 +131,7 @@ describe("SettingsPage categories (U6)", () => {
     onClose: () => {},
   };
 
-  it("lists the eight categories in a left menu and opens on Roles", async () => {
+  it("lists the settings categories in a left menu and opens on Roles", async () => {
     render(<SettingsPage {...props} />);
     const nav = screen.getByRole("navigation", { name: "Settings categories" });
     expect(within(nav).getAllByRole("button").map((button) => button.textContent)).toEqual([
@@ -135,6 +140,7 @@ describe("SettingsPage categories (U6)", () => {
       "Models",
       "Terminal",
       "Permissions",
+      "Usage",
       "Notifications",
       "Shortcuts",
       "Data",
@@ -142,7 +148,7 @@ describe("SettingsPage categories (U6)", () => {
     expect(within(nav).getByRole("button", { name: "Roles" }).getAttribute("aria-current")).toBe(
       "page",
     );
-    expect(await screen.findByText(/Deny write and shell/)).toBeTruthy();
+    expect(await screen.findByText(/Full access/)).toBeTruthy();
     expect(screen.queryByLabelText("Shell program")).toBeNull();
   });
 

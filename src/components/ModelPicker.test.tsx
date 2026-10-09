@@ -38,6 +38,20 @@ describe("ModelPicker", () => {
     expect(onChange).toHaveBeenCalledWith("gpt-5");
   });
 
+  it("shows a badge on models that carry one", () => {
+    render(
+      <ModelPicker
+        models={[{ id: "claude-fable-5[1m]", label: "Fable 5", fast: false, badge: "may use usage credits" }]}
+        value="claude-fable-5[1m]"
+        ariaLabel="Model"
+        onChange={() => {}}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Model" }).textContent).toContain(
+      "may use usage credits",
+    );
+  });
+
   it("flags fast models and can go back to the default", () => {
     const onChange = vi.fn();
     render(

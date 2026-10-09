@@ -21,6 +21,9 @@ const CANCEL_GRACE: Duration = Duration::from_secs(20);
 pub type AgentRequestHandler = Box<dyn FnMut(&Value) -> Result<Option<Value>, String>>;
 pub type NotificationHandler = Box<dyn FnMut(&Value)>;
 pub type AgentOutbox = Arc<Mutex<Vec<(u64, Value)>>>;
+/// Client requests to send during a turn (method, params). Responses are
+/// ignored unless their id is the turn's own request.
+pub type ClientFollowups = Arc<Mutex<Vec<(String, Value)>>>;
 
 enum ReaderMsg {
     Line(String),
@@ -32,6 +35,7 @@ pub struct TurnControl<'a> {
     pub session_id: &'a str,
     pub next_id: &'a mut u64,
     pub outbox: Option<AgentOutbox>,
+    pub followups: Option<ClientFollowups>,
 }
 
 pub struct LineDispatch {
@@ -313,6 +317,18 @@ impl AcpConnection {
             if let Some(ctrl) = turn.as_deref_mut() {
                 if let Some(outbox) = ctrl.outbox.clone() {
                     self.flush_agent_response_outbox(&outbox)?;
+                }
+                if let Some(followups) = ctrl.followups.clone() {
+                    let pending: Vec<(String, Value)> = followups
+                        .lock()
+                        .map_err(|e| e.to_string())?
+                        .drain(..)
+                        .collect();
+                    for (method, params) in pending {
+                        let cid = *ctrl.next_id;
+                        *ctrl.next_id += 1;
+                        self.request(cid, &method, params)?;
+                    }
                 }
             }
             let cancel_now = if let Some(ctrl) = turn.as_deref_mut() {

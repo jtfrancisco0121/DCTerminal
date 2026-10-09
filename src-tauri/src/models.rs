@@ -30,6 +30,9 @@ pub struct ModelEntry {
     pub label: String,
     /// A speed-tuned variant (`-fast` id, or `Fast` in the label).
     pub fast: bool,
+    /// Extra note, e.g. Fable's "may use usage credits".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub badge: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,9 +58,9 @@ pub fn valid_model_id(id: &str) -> bool {
     !id.is_empty()
         && id.chars().count() <= MAX_ID_CHARS
         && !id.starts_with('-')
-        && id
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | ':' | '/'))
+        && id.chars().all(|ch| {
+            ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | ':' | '/' | '[' | ']')
+        })
 }
 
 /// Claude model aliases `claude --model` and the adapter accept.
@@ -201,7 +204,12 @@ pub fn parse_list_models(stdout: &str) -> Vec<ModelEntry> {
             continue;
         }
         let fast = is_fast(&id, &label);
-        models.push(ModelEntry { id, label, fast });
+        models.push(ModelEntry {
+            id,
+            label,
+            fast,
+            badge: None,
+        });
         if models.len() >= MAX_MODELS {
             break;
         }
@@ -228,27 +236,174 @@ pub fn static_fallback() -> Vec<ModelEntry> {
         id: id.to_string(),
         label: label.to_string(),
         fast: is_fast(id, label),
+        badge: None,
     })
     .collect()
+}
+
+/// Used when no Claude chat has reported a model list in the last 24 h.
+/// Extras (`fable`, `opusplan`, `sonnet[1m]`, `opus[1m]`) stay off this list;
+/// they appear only when the adapter's `session/new` options include them.
+pub fn claude_static_fallback() -> Vec<ModelEntry> {
+    [
+        ("default", "Default (account default)", false),
+        ("opus", "Opus", false),
+        ("sonnet", "Sonnet", false),
+        ("haiku", "Haiku", true),
+    ]
+    .into_iter()
+    .map(|(id, label, fast)| ModelEntry {
+        id: id.to_string(),
+        label: label.to_string(),
+        fast,
+        badge: None,
+    })
+    .collect()
+}
+
+/// One adapter model option, when the id is a Claude model id.
+pub fn claude_model_entry(id: &str, label: &str) -> Option<ModelEntry> {
+    let id = id.trim();
+    if !is_claude_model_id(id) {
+        return None;
+    }
+    let label = label.trim();
+    let label = if label.is_empty() { id } else { label };
+    let badge = if id.to_ascii_lowercase().contains("fable") {
+        Some("may use usage credits".to_string())
+    } else {
+        None
+    };
+    Some(ModelEntry {
+        id: id.to_string(),
+        label: label.to_string(),
+        fast: id.contains("haiku") || is_fast(id, label),
+        badge,
+    })
+}
+
+/// Adapter model options, in the order the adapter sent them. Ids that are
+/// not Claude models are dropped. Duplicate ids keep the first.
+pub fn claude_models_from_options(options: &[(String, String)]) -> Vec<ModelEntry> {
+    let mut models: Vec<ModelEntry> = Vec::new();
+    for (id, label) in options {
+        let Some(entry) = claude_model_entry(id, label) else {
+            continue;
+        };
+        if models.iter().any(|model| model.id == entry.id) {
+            continue;
+        }
+        models.push(entry);
+        if models.len() >= MAX_MODELS {
+            break;
+        }
+    }
+    models
 }
 
 fn cache_path(dir: &Path) -> PathBuf {
     dir.join("models-cache.json")
 }
 
-pub fn read_cache(dir: &Path) -> Option<ModelCache> {
+/// `models-cache.json` holds one list per provider. A file written before
+/// that (a single `{ fetchedAtMs, models }` object) is the Cursor list.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderModelCaches {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cursor: Option<ModelCache>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    claude: Option<ModelCache>,
+    /// Legacy flat cache. Read as Cursor; not written back.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    models: Vec<ModelEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fetched_at_ms: Option<i64>,
+}
+
+fn load_caches(dir: &Path) -> ProviderModelCaches {
     let path = cache_path(dir);
     if !path.is_file() {
-        return None;
+        return ProviderModelCaches::default();
     }
-    read_json::<ModelCache>(&path)
-        .ok()
-        .filter(|cache| !cache.models.is_empty())
+    let Ok(mut file) = read_json::<ProviderModelCaches>(&path) else {
+        return ProviderModelCaches::default();
+    };
+    if file.cursor.as_ref().is_none_or(|cache| cache.models.is_empty()) && !file.models.is_empty()
+    {
+        file.cursor = Some(ModelCache {
+            fetched_at_ms: file.fetched_at_ms.unwrap_or(0),
+            models: std::mem::take(&mut file.models),
+        });
+    }
+    file
+}
+
+pub fn read_provider_cache(dir: &Path, provider: &str) -> Option<ModelCache> {
+    let file = load_caches(dir);
+    let cache = if provider == "claude" {
+        file.claude
+    } else {
+        file.cursor
+    };
+    cache.filter(|cache| !cache.models.is_empty())
+}
+
+pub fn write_provider_cache(dir: &Path, provider: &str, cache: &ModelCache) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|err| format!("model cache dir: {err}"))?;
+    let mut file = load_caches(dir);
+    file.models.clear();
+    file.fetched_at_ms = None;
+    if provider == "claude" {
+        file.claude = Some(cache.clone());
+    } else {
+        file.cursor = Some(cache.clone());
+    }
+    write_json_atomic(&cache_path(dir), &file)
+}
+
+/// Cursor list. A legacy flat cache is read as Cursor.
+pub fn read_cache(dir: &Path) -> Option<ModelCache> {
+    read_provider_cache(dir, "cursor")
 }
 
 pub fn write_cache(dir: &Path, cache: &ModelCache) -> Result<(), String> {
-    std::fs::create_dir_all(dir).map_err(|err| format!("model cache dir: {err}"))?;
-    write_json_atomic(&cache_path(dir), cache)
+    write_provider_cache(dir, "cursor", cache)
+}
+
+/// Remember the model options from a Claude `session/new` / `session/load`.
+/// Nothing is written when the list is empty.
+pub fn remember_claude_models(dir: &Path, models: &[ModelEntry]) -> Result<(), String> {
+    if models.is_empty() {
+        return Ok(());
+    }
+    let cache = ModelCache {
+        fetched_at_ms: chrono::Utc::now().timestamp_millis(),
+        models: models.to_vec(),
+    };
+    write_provider_cache(dir, "claude", &cache)
+}
+
+/// Claude picker list: a fresh cache from the last `session/new`, else the
+/// static aliases. There is no CLI refresh — spawning a session just to list
+/// models would talk to Claude's account.
+pub fn claude_model_list(dir: &Path, now_ms: i64) -> ModelList {
+    if let Some(cache) = read_provider_cache(dir, "claude") {
+        if now_ms - cache.fetched_at_ms < CACHE_TTL_MS {
+            return ModelList {
+                models: cache.models,
+                source: "cache".to_string(),
+                fetched_at_ms: Some(cache.fetched_at_ms),
+                error: None,
+            };
+        }
+    }
+    ModelList {
+        models: claude_static_fallback(),
+        source: "fallback".to_string(),
+        fetched_at_ms: None,
+        error: None,
+    }
 }
 
 /// Pick what to show. A fresh cache wins unless `refresh` is set. A failed
@@ -378,11 +533,19 @@ fn run_list_models() -> Result<Vec<ModelEntry>, String> {
 }
 
 #[tauri::command]
-pub async fn list_models(app: AppHandle, refresh: Option<bool>) -> Result<ModelList, String> {
+pub async fn list_models(
+    app: AppHandle,
+    provider: Option<String>,
+    refresh: Option<bool>,
+) -> Result<ModelList, String> {
     let dir = crate::data_dir::app_data_dir(&app).path;
     let refresh = refresh.unwrap_or(false);
+    let provider = provider.unwrap_or_else(|| "cursor".to_string());
     tauri::async_runtime::spawn_blocking(move || {
         let now = chrono::Utc::now().timestamp_millis();
+        if provider == "claude" {
+            return claude_model_list(&dir, now);
+        }
         let (list, fresh) = choose_list(refresh, now, read_cache(&dir), run_list_models);
         if let Some(cache) = fresh {
             if let Err(err) = write_cache(&dir, &cache) {
@@ -399,19 +562,26 @@ pub async fn list_models(app: AppHandle, refresh: Option<bool>) -> Result<ModelL
 }
 
 #[tauri::command]
-pub fn get_model_settings(settings: State<Mutex<SettingsStore>>) -> Result<ModelSettings, String> {
+pub fn get_model_settings(
+    settings: State<Mutex<SettingsStore>>,
+) -> Result<crate::store::ProviderModels, String> {
     let settings = settings.lock().map_err(|err| err.to_string())?;
-    Ok(settings.models().clone())
+    Ok(settings.data.models.clone())
 }
 
 #[tauri::command]
 pub fn set_model_settings(
     models: ModelSettings,
+    provider: Option<String>,
     settings: State<Mutex<SettingsStore>>,
 ) -> Result<ModelSettings, String> {
+    let id = provider
+        .as_deref()
+        .and_then(crate::provider::ProviderId::parse)
+        .unwrap_or(crate::provider::ProviderId::Cursor);
     let mut settings = settings.lock().map_err(|err| err.to_string())?;
-    settings.set_models(models)?;
-    Ok(settings.models().clone())
+    settings.set_models_for(id, models)?;
+    Ok(settings.models_for(id).clone())
 }
 
 /// Per-tab override. `None` (or blank) clears it so the role default applies.
@@ -592,6 +762,8 @@ Tip: use --model <id> to pick one\n";
     fn model_ids_cannot_be_flags_or_carry_spaces() {
         assert!(valid_model_id("composer-2.5"));
         assert!(valid_model_id("vendor/model:latest"));
+        assert!(valid_model_id("opus[1m]"));
+        assert!(valid_model_id("sonnet[1m]"));
         assert!(!valid_model_id("--yolo"));
         assert!(!valid_model_id("a b"));
         assert!(!valid_model_id("x;rm"));
@@ -647,6 +819,7 @@ Tip: use --model <id> to pick one\n";
                 id: "x".to_string(),
                 label: "X".to_string(),
                 fast: false,
+                badge: None,
             }],
         };
         let (list, _) = choose_list(true, CACHE_TTL_MS * 2, Some(cache), || {
@@ -683,6 +856,62 @@ Tip: use --model <id> to pick one\n";
         let back = read_cache(&dir).unwrap();
         assert_eq!(back.fetched_at_ms, 42);
         assert_eq!(back.models, cache.models);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn claude_fallback_is_the_four_aliases_and_cache_is_per_provider() {
+        let fallback = claude_static_fallback();
+        assert_eq!(
+            fallback.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            vec!["default", "opus", "sonnet", "haiku"]
+        );
+        assert!(fallback.iter().all(|m| m.badge.is_none()));
+        let listed = claude_models_from_options(&[
+            ("default".into(), "Default".into()),
+            ("opus[1m]".into(), "Opus".into()),
+            ("claude-fable-5[1m]".into(), "Fable".into()),
+            ("composer-2.5".into(), "Composer".into()),
+        ]);
+        assert_eq!(listed[1].id, "opus[1m]");
+        assert_eq!(
+            listed[2].badge.as_deref(),
+            Some("may use usage credits")
+        );
+        assert!(listed.iter().all(|m| m.id != "composer-2.5"));
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("dcterminal_claude_models_{nanos}"));
+        let stale = claude_model_list(&dir, 1_000);
+        assert_eq!(stale.source, "fallback");
+        remember_claude_models(&dir, &listed).unwrap();
+        let fresh = claude_model_list(&dir, chrono::Utc::now().timestamp_millis());
+        assert_eq!(fresh.source, "cache");
+        assert_eq!(fresh.models[2].id, "claude-fable-5[1m]");
+        // Cursor cache is a different slot.
+        assert!(read_cache(&dir).is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn legacy_flat_cache_is_the_cursor_list() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("dcterminal_legacy_models_{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let body = serde_json::json!({
+            "fetchedAtMs": 10,
+            "models": [{ "id": "composer-2.5", "label": "Composer 2.5", "fast": false }]
+        });
+        std::fs::write(dir.join("models-cache.json"), body.to_string()).unwrap();
+        let cursor = read_provider_cache(&dir, "cursor").unwrap();
+        assert_eq!(cursor.models[0].id, "composer-2.5");
+        assert!(read_provider_cache(&dir, "claude").is_none());
         let _ = std::fs::remove_dir_all(dir);
     }
 }

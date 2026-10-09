@@ -44,9 +44,18 @@ export const CLAUDE_FALLBACK_MODELS: ModelEntry[] = [
   { id: "haiku", label: "Haiku", fast: true },
 ];
 
-/** Model list for the Start card picker, following the provider chip. */
-export function modelsForProvider(provider: ProviderId, cursorModels: ModelEntry[]): ModelEntry[] {
-  return provider === "claude" ? CLAUDE_FALLBACK_MODELS : cursorModels;
+/**
+ * Model list for the picker. Claude uses the cached adapter list when a chat
+ * has reported one; otherwise the four aliases. Extras such as Fable are only
+ * in that cached list.
+ */
+export function modelsForProvider(
+  provider: ProviderId,
+  cursorModels: ModelEntry[],
+  claudeModels?: ModelEntry[] | null,
+): ModelEntry[] {
+  if (provider !== "claude") return cursorModels;
+  return claudeModels && claudeModels.length > 0 ? claudeModels : CLAUDE_FALLBACK_MODELS;
 }
 
 /** Signed-in account to show, or null. */

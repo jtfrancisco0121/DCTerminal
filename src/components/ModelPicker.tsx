@@ -86,6 +86,7 @@ export function ModelPicker({
       id: string | null;
       label: string;
       fast: boolean;
+      badge?: string | null;
       idHint?: string;
       isDefault?: boolean;
     }[] = [];
@@ -102,6 +103,7 @@ export function ModelPicker({
         id: model.id,
         label: model.label,
         fast: model.fast,
+        badge: model.badge,
         idHint: model.id,
       });
     }
@@ -225,6 +227,7 @@ export function ModelPicker({
                 </span>
                 <span className="model-option-meta">
                   {option.fast && <span className="model-badge">Fast</span>}
+                  {option.badge && <span className="model-badge">{option.badge}</span>}
                   {option.isDefault && <span className="model-default-badge">default</span>}
                 </span>
               </button>
@@ -258,6 +261,7 @@ export function ModelPicker({
           {shownEntry?.label ?? (shown || "Choose a model")}
         </span>
         {shownEntry?.fast && <span className="model-badge">Fast</span>}
+        {shownEntry?.badge && <span className="model-badge">{shownEntry.badge}</span>}
         {value === null && inherited && <span className="model-default-badge">default</span>}
       </button>
       {popover}

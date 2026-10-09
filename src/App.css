@@ -3366,6 +3366,71 @@ mark.search-hit-current {
   cursor: help;
 }
 
+.status-usage-warn {
+  color: var(--warning-bright);
+}
+
+.status-usage-hot {
+  color: var(--danger);
+}
+
+.status-usage-muted {
+  opacity: 0.75;
+}
+
+.chain-label {
+  margin-left: 0.4rem;
+  color: var(--accent-bright);
+}
+
+.plan-markdown {
+  margin: 0.2rem 0 0.4rem;
+  max-height: 14rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 0.82rem;
+}
+
+.usage-window {
+  margin: 0.35rem 0 0.6rem;
+}
+
+.usage-window-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.usage-meter {
+  height: 6px;
+  margin-top: 0.2rem;
+  background: color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.usage-meter-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.usage-meter-warn {
+  background: var(--warning-bright);
+}
+
+.usage-meter-hot {
+  background: var(--danger);
+}
+
+.eagle-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.82rem;
+}
+
 .status-bar-message {
   display: inline-flex;
   align-items: center;

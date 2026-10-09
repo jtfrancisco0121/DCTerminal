@@ -41,11 +41,18 @@ impl StateStore {
             AppStateFile::default()
         };
         normalize_provider_sessions(&mut data);
-        Ok(Self {
-            path,
+        let migrated = crate::store::claude_migration::migrate_state(&mut data);
+        let mut store = Self {
+            path: path.clone(),
             data,
             new_tab_provider: ProviderId::DEFAULT,
-        })
+        };
+        if migrated {
+            // The file on disk is still the pre-migration copy.
+            crate::store::claude_migration::backup_pre_claude_first(&path)?;
+            store.save()?;
+        }
+        Ok(store)
     }
 
     /// Provider a session start for `tab_id` would use: the tab's saved
@@ -70,6 +77,70 @@ impl StateStore {
             return Err("Stop this tab before switching its provider.".to_string());
         }
         tab.provider = Some(provider);
+        self.save()
+    }
+
+    pub fn remember_provider_session(
+        &mut self,
+        tab_id: &str,
+        provider: ProviderId,
+        session_id: Option<String>,
+    ) -> Result<(), String> {
+        let tab = self
+            .data
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == tab_id)
+            .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
+        tab.sessions.set(provider, session_id);
+        self.save()
+    }
+
+    pub fn remember_claude_config(&mut self, tab_id: &str, config_dir: &str) -> Result<(), String> {
+        let tab = self
+            .data
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == tab_id)
+            .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
+        tab.sessions.claude_config_dir = Some(config_dir.to_string());
+        self.save()
+    }
+
+    pub fn set_provider_notice(&mut self, tab_id: &str, notice: Option<String>) -> Result<(), String> {
+        let tab = self
+            .data
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == tab_id)
+            .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
+        tab.provider_notice = notice.filter(|text| !text.trim().is_empty());
+        self.save()
+    }
+
+    pub fn set_permission_note(&mut self, tab_id: &str, note: Option<String>) -> Result<(), String> {
+        let tab = self
+            .data
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == tab_id)
+            .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
+        tab.permission_note = note.filter(|text| !text.trim().is_empty());
+        self.save()
+    }
+
+    pub fn set_tab_chain(
+        &mut self,
+        tab_id: &str,
+        chain: Option<crate::store::ChainRef>,
+    ) -> Result<(), String> {
+        let tab = self
+            .data
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == tab_id)
+            .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
+        tab.chain = chain;
         self.save()
     }
 
@@ -163,6 +234,9 @@ impl StateStore {
             pipeline_run_id: None,
             provider: Some(provider),
             sessions,
+            provider_notice: None,
+            chain: None,
+            permission_note: None,
         };
         self.data.tabs.push(record);
         self.data.active_tab_id = Some(tab_id.clone());
@@ -295,6 +369,9 @@ impl StateStore {
                 worktree: tab.worktree.clone(),
                 provider: tab.provider,
                 sessions: tab.sessions.clone(),
+                provider_notice: tab.provider_notice.clone(),
+                chain: tab.chain.clone(),
+                permission_note: tab.permission_note.clone(),
             },
         );
         self.data.closed_tabs.truncate(15);
@@ -391,6 +468,9 @@ impl StateStore {
             pipeline_run_id: None,
             provider: closed.provider,
             sessions: closed.sessions,
+            provider_notice: closed.provider_notice,
+            chain: closed.chain,
+            permission_note: closed.permission_note,
         };
         let id = record.id.clone();
         self.data.tabs.push(record);
@@ -532,6 +612,9 @@ impl StateStore {
             pipeline_run_id: pipeline_run_id.map(|id| id.to_string()),
             provider: Some(self.new_tab_provider),
             sessions: Default::default(),
+            provider_notice: None,
+            chain: None,
+            permission_note: None,
         };
         self.data.tabs.push(record);
         if make_active {
@@ -588,6 +671,9 @@ impl StateStore {
             pipeline_run_id: Some(run_id.to_string()),
             provider: None,
             sessions: Default::default(),
+            provider_notice: None,
+            chain: None,
+            permission_note: None,
         };
         self.data.tabs.push(record);
         self.data.active_tab_id = Some(tab_id.clone());
@@ -744,6 +830,9 @@ impl StateStore {
             pipeline_run_id: None,
             provider: None,
             sessions: Default::default(),
+            provider_notice: None,
+            chain: None,
+            permission_note: None,
         };
         apply_terminal_draft(&mut record, &draft);
         self.data.tabs.push(record);
@@ -810,6 +899,9 @@ impl StateStore {
                 pipeline_run_id: None,
                 provider: item.provider,
                 sessions: Default::default(),
+                provider_notice: None,
+                chain: None,
+                permission_note: None,
             };
             self.data.tabs.push(record);
             ids.push(tab_id);
@@ -909,6 +1001,42 @@ fn apply_terminal_draft(tab: &mut TabRecord, draft: &TerminalTabDraft) {
     if draft.provider.is_some() {
         tab.provider = draft.provider;
     }
+}
+
+/// Session id the UI may resume for this tab's current provider.
+/// A Claude tab never reports a Cursor id.
+pub(crate) fn displayed_acp_session(tab: &TabRecord) -> Option<String> {
+    let provider = ProviderId::resolve(tab.provider);
+    if let Some(id) = tab.sessions.get(provider) {
+        return Some(id.to_string());
+    }
+    if provider == ProviderId::Cursor {
+        return tab
+            .session
+            .as_ref()
+            .map(|session| session.acp_session_id.clone());
+    }
+    None
+}
+
+/// Terminal `--resume` id for the current provider. A leftover Cursor id is
+/// not returned on a Claude tab.
+pub(crate) fn displayed_resume_session(tab: &TabRecord) -> Option<String> {
+    let provider = ProviderId::resolve(tab.provider);
+    if tab.kind == "terminal" {
+        if let Some(id) = tab.sessions.get(provider) {
+            return Some(id.to_string());
+        }
+    }
+    let from_answers = tab
+        .answers
+        .get("resumeSessionId")
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty());
+    if provider == ProviderId::Claude && tab.sessions.cursor.as_deref() == from_answers.as_deref() {
+        return None;
+    }
+    from_answers
 }
 
 /// Copy a legacy single session id into `sessions.cursor`. Only records

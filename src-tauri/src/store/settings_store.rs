@@ -405,18 +405,43 @@ impl SettingsStore {
         crate::models::effective_model(&self.data.models.cursor, role_id, tab_model)
     }
 
-    pub fn set_models(&mut self, mut next: ModelSettings) -> Result<(), String> {
+    pub fn set_models(&mut self, next: ModelSettings) -> Result<(), String> {
+        self.set_models_for(ProviderId::Cursor, next)
+    }
+
+    /// Save one provider's model choices. Claude ids are checked with
+    /// `is_claude_model_id` so a Cursor id cannot become the Claude default.
+    pub fn set_models_for(
+        &mut self,
+        provider: ProviderId,
+        mut next: ModelSettings,
+    ) -> Result<(), String> {
+        let claude = provider == ProviderId::Claude;
+        let valid = |id: &str| {
+            if claude {
+                crate::models::is_claude_model_id(id)
+            } else {
+                crate::models::valid_model_id(id)
+            }
+        };
         next.default_model = next.default_model.trim().to_string();
-        if !crate::models::valid_model_id(&next.default_model) {
-            next.default_model = default_model_id();
+        if !valid(&next.default_model) {
+            next.default_model = if claude {
+                CLAUDE_DEFAULT_MODEL_ID.to_string()
+            } else {
+                default_model_id()
+            };
         }
         next.role_models = next
             .role_models
             .into_iter()
             .map(|(role, model)| (role, model.trim().to_string()))
-            .filter(|(role, model)| !role.trim().is_empty() && crate::models::valid_model_id(model))
+            .filter(|(role, model)| !role.trim().is_empty() && valid(model))
             .collect();
-        self.data.models.cursor = next;
+        match provider {
+            ProviderId::Cursor => self.data.models.cursor = next,
+            ProviderId::Claude => self.data.models.claude = next,
+        }
         self.save()
     }
 }

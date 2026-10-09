@@ -125,6 +125,9 @@ pub struct WorkspacesFile {
     pub schema_version: u32,
     #[serde(default)]
     pub workspaces: Vec<Workspace>,
+    /// Missing on old files, so the migration runs. A new file sets it true.
+    #[serde(default)]
+    pub migrations: crate::store::state_types::Migrations,
 }
 
 impl Default for WorkspacesFile {
@@ -132,6 +135,9 @@ impl Default for WorkspacesFile {
         Self {
             schema_version: WORKSPACES_SCHEMA_VERSION,
             workspaces: Vec::new(),
+            migrations: crate::store::state_types::Migrations {
+                claude_first: true,
+            },
         }
     }
 }
@@ -154,7 +160,20 @@ impl WorkspaceStore {
             data = WorkspacesFile::default();
         }
         data.schema_version = WORKSPACES_SCHEMA_VERSION;
-        Ok(Self { path, data })
+        let mut store = Self { path: path.clone(), data };
+        if !store.data.migrations.claude_first {
+            crate::store::claude_migration::backup_pre_claude_first(&path)?;
+            for workspace in &mut store.data.workspaces {
+                for tab in &mut workspace.tabs {
+                    if tab.provider.is_none() {
+                        tab.provider = Some(crate::provider::ProviderId::Claude);
+                    }
+                }
+            }
+            store.data.migrations.claude_first = true;
+            store.save()?;
+        }
+        Ok(store)
     }
 
     pub fn save(&self) -> Result<(), String> {

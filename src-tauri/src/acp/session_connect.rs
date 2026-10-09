@@ -47,6 +47,26 @@ pub struct SessionModels {
     pub config_id: Option<String>,
     /// `models` was present, so `session/set_model` is worth trying.
     pub set_model_api: bool,
+    /// Claude model options (id + label) from the `model` config option.
+    /// Empty for Cursor, which uses `agent --list-models` instead.
+    pub entries: Vec<crate::models::ModelEntry>,
+}
+
+fn collect_labeled_options(options: &Value, out: &mut Vec<(String, String)>) {
+    let Some(items) = options.as_array() else {
+        return;
+    };
+    for item in items {
+        if let Some(value) = item.get("value").and_then(Value::as_str) {
+            let label = item
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or(value);
+            out.push((value.to_string(), label.to_string()));
+        } else if let Some(nested) = item.get("options") {
+            collect_labeled_options(nested, out);
+        }
+    }
 }
 
 fn option_values(options: &Value, out: &mut Vec<String>) {
@@ -81,6 +101,9 @@ pub fn parse_session_models(result: &Value) -> SessionModels {
                 .map(String::from);
             if let Some(values) = opt.get("options") {
                 option_values(values, &mut info.available);
+                let mut labeled = Vec::new();
+                collect_labeled_options(values, &mut labeled);
+                info.entries = crate::models::claude_models_from_options(&labeled);
             }
         }
     }

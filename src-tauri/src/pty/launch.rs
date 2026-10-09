@@ -19,9 +19,8 @@
 //! - `--continue` — the interactive CLI owns it. `--resume` is used only for
 //!   a Cursor CLI chat picked from history.
 //! - `--force` — same switch as `--yolo`; the confirmed set uses `--yolo`
-//! - There is no flag that denies file writes while still allowing shell.
-//!   PR Reviewer's default therefore omits `--yolo` and `--mode`, so the CLI
-//!   keeps its allowlist prompts. Shell still runs; writes are not free.
+//! - Planner passes `--plan`. Every other role passes `--yolo`. A Settings
+//!   run-mode override still replaces that mode flag.
 
 use std::path::Path;
 
@@ -66,7 +65,6 @@ pub fn role_terminal_flags(role_id: &str, mode: RunMode) -> Vec<String> {
             args.push("--mode".to_string());
             args.push("ask".to_string());
         }
-        Effective::Prompts => {}
     }
     args.push("--approve-mcps".to_string());
     args.push("--trust".to_string());
@@ -160,7 +158,6 @@ enum Effective {
     AutoReview,
     Plan,
     Ask,
-    Prompts,
 }
 
 fn effective_mode(role_id: &str, mode: RunMode) -> Effective {
@@ -169,35 +166,27 @@ fn effective_mode(role_id: &str, mode: RunMode) -> Effective {
         RunMode::AutoReview => Effective::AutoReview,
         RunMode::Plan => Effective::Plan,
         RunMode::Ask => Effective::Ask,
-        RunMode::Default => match role_family(role_id) {
-            Family::FullAccess => Effective::Yolo,
-            Family::Planner => Effective::Plan,
-            Family::General => Effective::Ask,
-            Family::Reviewer | Family::Other => Effective::Prompts,
-        },
+        // Planner stays in plan mode. Every other role runs unrestricted.
+        // A Settings override above still replaces this.
+        RunMode::Default => {
+            if is_planner_role(role_id) {
+                Effective::Plan
+            } else {
+                Effective::Yolo
+            }
+        }
     }
 }
 
-enum Family {
-    FullAccess,
-    Planner,
-    General,
-    Reviewer,
-    Other,
-}
-
-fn role_family(role_id: &str) -> Family {
-    let normalized = role_id.trim().to_ascii_lowercase().replace('-', "_");
-    match normalized.as_str() {
-        "role_implementer" | "implementer" | "role_developer" | "developer"
-        | "role_plan_reviewer" | "plan_reviewer" => Family::FullAccess,
-        "role_planner" | "planner" => Family::Planner,
-        "role_recommendation" | "recommendation" => Family::Planner,
-        "role_general" | "general" => Family::General,
-        "role_pr_reviewer" | "role_reviewer" | "pr_reviewer" | "reviewer" => Family::Reviewer,
-        "role_codebase_audit" | "codebase_audit" => Family::Reviewer,
-        _ => Family::Other,
-    }
+fn is_planner_role(role_id: &str) -> bool {
+    matches!(
+        role_id
+            .trim()
+            .to_ascii_lowercase()
+            .replace('-', "_")
+            .as_str(),
+        "role_planner" | "planner"
+    )
 }
 
 #[cfg(test)]
@@ -227,40 +216,21 @@ mod tests {
     }
 
     #[test]
-    fn planner_uses_plan_and_general_uses_ask() {
+    fn planner_uses_plan_and_everyone_else_uses_yolo() {
+        let yolo = vec!["--yolo", "--approve-mcps", "--trust"];
         assert_eq!(
             role_terminal_flags("role_planner", RunMode::Default),
             vec!["--plan", "--approve-mcps", "--trust"]
         );
-        assert_eq!(
-            role_terminal_flags("role_general", RunMode::Default),
-            vec!["--mode", "ask", "--approve-mcps", "--trust"]
-        );
-    }
-
-    #[test]
-    fn reviewer_keeps_approval_prompts() {
-        let flags = role_terminal_flags("role_pr_reviewer", RunMode::Default);
-        assert_eq!(flags, vec!["--approve-mcps", "--trust"]);
-        assert!(!flags.iter().any(|flag| flag == "--yolo"
-            || flag == "--force"
-            || flag == "--mode"
-            || flag == "--plan"));
-    }
-
-    #[test]
-    fn recommendation_uses_plan_like_planner() {
-        assert_eq!(
-            role_terminal_flags("role_recommendation", RunMode::Default),
-            vec!["--plan", "--approve-mcps", "--trust"]
-        );
-    }
-
-    #[test]
-    fn codebase_audit_uses_reviewer_flags() {
-        let flags = role_terminal_flags("role_codebase_audit", RunMode::Default);
-        assert_eq!(flags, vec!["--approve-mcps", "--trust"]);
-        assert!(!flags.iter().any(|flag| flag == "--plan" || flag == "--yolo"));
+        for role in [
+            "role_general",
+            "role_pr_reviewer",
+            "role_recommendation",
+            "role_codebase_audit",
+            "role_custom",
+        ] {
+            assert_eq!(role_terminal_flags(role, RunMode::Default), yolo, "{role}");
+        }
     }
 
     #[test]

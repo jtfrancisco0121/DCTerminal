@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { ROLE_RULES_OFF_TITLE } from "../TabBar";
+import type { LimitLine } from "../usage/limits";
 
 export type StatusTone = "idle" | "ok" | "busy" | "needs" | "error";
 
@@ -17,7 +17,10 @@ type Props = {
   provider?: { text: string; title: string } | null;
   folder?: string | null;
   branch?: string | null;
-  roleRulesOff?: boolean;
+  /** Set on agent tabs. `fallback` is why Claude could not take the role mode. */
+  permissions?: { fallback?: string | null } | null;
+  /** Claude 5h/7d line. Null hides it. */
+  usage?: LimitLine | null;
   messages?: StatusMessage[];
   /** U7: the optional shortcut hints sit at the right end of the same strip. */
   trailing?: ReactNode;
@@ -30,19 +33,26 @@ function folderName(path: string): string {
 
 /**
  * U3: one status strip under the workspace instead of stacked banners. It
- * carries the active tab's status, model, folder, and the Run Everything
- * warning, plus short notices that used to be banners.
+ * carries the active tab's status, model, folder, and the full-permissions
+ * indicator, plus short notices that used to be banners.
  */
+export const FULL_PERMISSIONS_TITLE =
+  "All tabs run with full permissions (Claude: bypass / auto / plan per role; Cursor: unrestricted). Answers are allow-once; nothing is written to your repo's settings.";
+
 export function StatusBar({
   status,
   model = null,
   provider = null,
   folder = null,
   branch = null,
-  roleRulesOff = false,
+  permissions = null,
+  usage = null,
   messages = [],
   trailing = null,
 }: Props) {
+  const permissionText = permissions?.fallback
+    ? `Full permissions unavailable for Claude — ${permissions.fallback}`
+    : "Full permissions";
   return (
     <footer className="status-bar" aria-label="Status bar">
       <span className={`status-bar-item status-bar-status status-tone-${status.tone}`}>
@@ -75,14 +85,22 @@ export function StatusBar({
           {branch && <span className="status-bar-branch">⎇ {branch}</span>}
         </span>
       )}
-      {roleRulesOff && (
+      {permissions && (
         <span
-          className="status-bar-item status-bar-warn"
-          role="img"
-          aria-label={ROLE_RULES_OFF_TITLE}
-          title={ROLE_RULES_OFF_TITLE}
+          className={`status-bar-item${permissions.fallback ? " status-bar-warn" : ""}`}
+          title={permissions.fallback ? permissionText : FULL_PERMISSIONS_TITLE}
+          data-testid="status-permissions"
         >
-          ⚠ Run Everything
+          {permissionText}
+        </span>
+      )}
+      {usage && (
+        <span
+          className={`status-bar-item status-usage status-usage-${usage.tone}`}
+          title={usage.title}
+          data-testid="status-usage"
+        >
+          {usage.text}
         </span>
       )}
       {messages.map((message) => (

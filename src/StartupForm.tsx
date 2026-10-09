@@ -13,7 +13,7 @@ import {
   setTabProvider,
   providerStatus,
   type ModelList,
-  type ModelSettings,
+  type ProviderModelSettings,
   devSessionSend,
   devSessionStop,
   cursorApprovalMode,
@@ -58,8 +58,13 @@ import {
   getRole,
   listenPromptFinished,
   listenSessionUpdates,
+  ackProviderNotice,
+  getClaudeUsage,
+  listClaudeHistory,
   listCursorCliHistory,
   newDraftTab,
+  setTabChain,
+  startEagleEye,
   roleSessionStart,
   saveFormDraft,
   selectActiveTab,
@@ -174,6 +179,8 @@ import { PromptLibraryDialog } from "./components/PromptLibraryDialog";
 import { WorkspacesDialog } from "./components/WorkspacesDialog";
 import { FirstRunSetup, type FirstRunFinish } from "./components/FirstRunSetup";
 import { insertIntoPad, type PadSelection } from "./prompts/library";
+import { advanceChain, chainLabel, newChain, nextChainRole } from "./handoff/chains";
+import { contextPercent, statusLimit } from "./usage/limits";
 import type { ChatFindRequest } from "./SessionTerminal";
 import { classifyPromptFinished, type NotificationSettings } from "./notify/agentNotify";
 import { showSystemNotification } from "./notify/systemNotify";
@@ -189,7 +196,7 @@ import {
   type TabStatus,
 } from "./tabStatus";
 import { appendReference } from "./files/paths";
-import { effectiveModel, modelChangeNote } from "./models";
+import { effectiveModelFor, modelChangeNote } from "./models";
 import { TabSwitcher } from "./components/TabSwitcher";
 import { detectPlatform, type ShortcutMatch, type TerminalAction } from "./keymap";
 import { beginLivePty, dropLivePty, livePty, rekeyLivePty } from "./terminal/live";
@@ -409,7 +416,8 @@ export function StartupForm({
   const previousActiveRef = useRef<string | null>(null);
   const secondaryInputRef = useRef<HTMLTextAreaElement>(null);
   const [modelList, setModelList] = useState<ModelList | null>(null);
-  const [modelSettings, setModelSettingsState] = useState<ModelSettings | null>(null);
+  const [claudeModelList, setClaudeModelList] = useState<ModelList | null>(null);
+  const [modelSettings, setModelSettingsState] = useState<ProviderModelSettings | null>(null);
   /** Claude-first Phase 2: provider settings + detection (Settings, status bar). */
   const providers = useProviders();
   const [modelNotice, setModelNotice] = useState<string | null>(null);
@@ -423,6 +431,9 @@ export function StartupForm({
   const [captureOn, setCaptureOn] = useState(false);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsStatus | null>(null);
   const [approvalMode, setApprovalMode] = useState<ApprovalModeStatus | null>(null);
+  const [usageSnap, setUsageSnap] = useState<Awaited<ReturnType<typeof getClaudeUsage>> | null>(null);
+  const eagleOnRef = useRef(false);
+  const [eagleOn, setEagleOn] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [handoffs, setHandoffs] = useState<HandoffRecord[]>([]);
   const [handoffTarget, setHandoffTarget] = useState<HandoffTargetId | null>(null);
@@ -449,6 +460,8 @@ export function StartupForm({
   const [newSessionOpen, setNewSessionOpenState] = useState(false);
   const [transcriptSaveError, setTranscriptSaveError] = useState<string | null>(null);
   const [historyEntries, setHistoryEntries] = useState<CursorHistoryEntry[]>([]);
+  const [historyOverride, setHistoryOverride] = useState<ProviderId | null>(null);
+  const [historyReadFrom, setHistoryReadFrom] = useState<string | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [cliLaunchNote, setCliLaunchNote] = useState<string | null>(null);
   const [historyCursor, setHistoryCursor] = useState(-1);
@@ -913,9 +926,14 @@ export function StartupForm({
         if (!cancelled) setModelSettingsState(value);
       })
       .catch(() => {});
-    listModels(false)
+    listModels("cursor", false)
       .then((list) => {
         if (!cancelled) setModelList(list);
+      })
+      .catch(() => {});
+    listModels("claude", false)
+      .then((list) => {
+        if (!cancelled) setClaudeModelList(list);
       })
       .catch(() => {});
     return () => {
@@ -1034,6 +1052,7 @@ export function StartupForm({
       ? { configDir: providers.view.claudeConfigDir, login: null }
       : null;
   const activeProvider = providerOf(activeTabSummary);
+  const historyProvider = historyOverride ?? activeProvider;
   const focusedTranscript =
     transcriptFocus && transcriptFocus.tabId === activeTabId
       ? savedTranscript || transcriptFocus.text
@@ -1062,7 +1081,17 @@ export function StartupForm({
       return;
     }
     let cancelled = false;
-    listCursorCliHistory(historyFolder)
+    const load =
+      historyProvider === "claude"
+        ? listClaudeHistory(historyFolder).then((view) => {
+            if (!cancelled) setHistoryReadFrom(view.configDisplay);
+            return view.entries;
+          })
+        : listCursorCliHistory(historyFolder).then((rows) => {
+            if (!cancelled) setHistoryReadFrom(null);
+            return rows;
+          });
+    load
       .then((rows) => {
         if (!cancelled) {
           setHistoryEntries(rows);
@@ -1077,7 +1106,7 @@ export function StartupForm({
     return () => {
       cancelled = true;
     };
-  }, [historyFolder, session]);
+  }, [historyFolder, historyProvider, session]);
 
   useEffect(() => {
     // Wait until the loaded schema matches the tab. Saving earlier would
@@ -1275,6 +1304,15 @@ export function StartupForm({
         };
       });
       setPreview(null);
+      if (
+        !resumeId &&
+        eagleOnRef.current &&
+        targetId &&
+        (roleId === "role_planner" || roleId === "role_implementer")
+      ) {
+        const kind = roleId === "role_planner" ? "eagle1" : "eagle2";
+        await setTabChain(targetId, newChain(kind));
+      }
       await refreshTabs();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1371,6 +1409,14 @@ export function StartupForm({
         if (result.tabId !== pendingId) rekeyLivePty(pendingId, result.tabId);
         setActiveTabId(result.tabId);
         setPreview(null);
+        if (
+          !options &&
+          eagleOnRef.current &&
+          (roleToStart === "role_planner" || roleToStart === "role_implementer")
+        ) {
+          const kind = roleToStart === "role_planner" ? "eagle1" : "eagle2";
+          await setTabChain(result.tabId, newChain(kind));
+        }
         await refreshTabs();
         return result.tabId;
       } catch (err: unknown) {
@@ -1435,7 +1481,7 @@ export function StartupForm({
     [activeTabId, refreshTabs, values.cwd],
   );
 
-  const openCursorCli = useCallback(async (sessionId: string, cwd: string) => {
+  const openCursorCli = useCallback(async (sessionId: string, cwd: string, source = "cli") => {
     if (startLockRef.current) return;
     setCliLaunchNote(null);
     setTerminalError(null);
@@ -1447,7 +1493,7 @@ export function StartupForm({
       const result = await shellTerminalStart({
         tabId: null,
         cwd,
-        launch: "cursor-cli",
+        launch: source === "claude" ? "claude-cli" : "cursor-cli",
         resumeSessionId: sessionId,
         cols: 80,
         rows: 24,
@@ -2016,14 +2062,18 @@ export function StartupForm({
   };
 
   const inheritedModel = (tab: TabSummary | null | undefined): string =>
-    tab && tabHasProvider(tab) && providerOf(tab) === "claude"
-      ? PROVIDERS.claude.defaultModel
-      : effectiveModel(modelSettings, modelRoleKey(tab), null);
-  /** Model choices follow the tab's provider (static Claude list until Phase 5). */
+    effectiveModelFor(
+      tab && tabHasProvider(tab) ? providerOf(tab) : "cursor",
+      modelSettings,
+      modelRoleKey(tab),
+      null,
+    );
+  /** Model choices follow the tab's provider. Claude uses the cached adapter list. */
   const modelsForTab = (tab: TabSummary | null | undefined) =>
     modelsForProvider(
       tab && tabHasProvider(tab) ? providerOf(tab) : "cursor",
       modelList?.models ?? [],
+      claudeModelList?.models,
     );
 
   /**
@@ -2037,7 +2087,14 @@ export function StartupForm({
       const rt = runtimesRef.current[tab.id];
       try {
         if (tab.kind !== "terminal" && rt?.session && !rt.agentExited) {
-          const target = model ?? effectiveModel(modelSettings, modelRoleKey(tab), null);
+          const target =
+            model ??
+            effectiveModelFor(
+              tabHasProvider(tab) ? providerOf(tab) : "cursor",
+              modelSettings,
+              modelRoleKey(tab),
+              null,
+            );
           const result = await acpSetModel(tab.id, target);
           if (model === null) await setTabModel(tab.id, null);
           patchRuntime(tab.id, (current) => ({
@@ -2088,10 +2145,11 @@ export function StartupForm({
 
   const refreshModelList = useCallback(() => {
     setModelsRefreshing(true);
-    return listModels(true)
-      .then((list) => {
-        setModelList(list);
-        return list;
+    return Promise.all([listModels("cursor", true), listModels("claude", false)])
+      .then(([cursor, claude]) => {
+        setModelList(cursor);
+        setClaudeModelList(claude);
+        return cursor;
       })
       .finally(() => setModelsRefreshing(false));
   }, []);
@@ -2474,6 +2532,23 @@ export function StartupForm({
       .catch(() => {});
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      getClaudeUsage()
+        .then((snap) => {
+          if (!cancelled) setUsageSnap(snap);
+        })
+        .catch(() => {});
+    };
+    load();
+    const timer = window.setInterval(load, 20_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
   const refreshApprovalMode = useCallback(() => {
     cursorApprovalMode()
       .then(setApprovalMode)
@@ -2606,6 +2681,9 @@ export function StartupForm({
       todos: cards.todos,
       selection: handoffSelection,
       turnInFlight: !!promptInFlight,
+      planMarkdown: (runtimes[activeTabId ?? ""]?.plan?.markdown ?? "").trim(),
+      branch: activeTabSummary?.worktreeBranch ?? null,
+      transcriptText: streamSegments.map((segment) => segment.text).join("\n"),
     };
   }, [
     activeTabId,
@@ -2616,6 +2694,7 @@ export function StartupForm({
     promptInFlight,
     roleId,
     roles,
+    runtimes,
     savedTabs,
     session?.cwd,
     streamSegments,
@@ -2630,6 +2709,9 @@ export function StartupForm({
           enabled: handoffBlock === null,
           reason: handoffBlock,
           targets: handoffTargets(roleId),
+          primaryTarget: activeTabSummary?.chain
+            ? nextChainRole(activeTabSummary.chain, roleId)
+            : null,
           onSend: openHandoffDialog,
         }
       : null;
@@ -2637,7 +2719,26 @@ export function StartupForm({
   const confirmHandoff = useCallback(
     async (scope: HandoffScope, surface: HandoffSurface) => {
       if (!handoffTarget || !handoffSource.sourceTabId) return;
-      const mapped = mapHandoff(handoffSource, scope, {
+      let source = handoffSource;
+      if (source.sourceRoleId === "role_implementer") {
+        const [changes, repo] = await Promise.all([
+          changesList(source.sourceTabId, "tab").catch(() => null),
+          gitRepoInfo(source.cwd).catch(() => null),
+        ]);
+        source = {
+          ...source,
+          changes:
+            changes?.state === "ok"
+              ? changes.files.map((file) => ({
+                  path: file.path,
+                  additions: file.additions,
+                  deletions: file.deletions,
+                }))
+              : source.changes,
+          branch: repo?.currentBranch ?? source.branch ?? null,
+        };
+      }
+      const mapped = mapHandoff(source, scope, {
         roleId: handoffTarget,
         fields: handoffFields ?? [],
       });
@@ -2648,6 +2749,10 @@ export function StartupForm({
       setBusy(true);
       setHandoffError(null);
       try {
+        const sourceTab = savedTabs.find((tab) => tab.id === handoffSource.sourceTabId);
+        const nextChain = sourceTab?.chain
+          ? advanceChain(sourceTab.chain, handoffSource.sourceRoleId, handoffTarget)
+          : null;
         const saved = await handoffSave({
           sourceTabId: handoffSource.sourceTabId,
           sourceRoleId: handoffSource.sourceRoleId,
@@ -2660,8 +2765,15 @@ export function StartupForm({
           truncated: mapped.truncated,
           warning: mapped.warning,
           planField: mapped.planField,
+          chain: nextChain,
         });
+        const pendingPlan = runtimesRef.current[handoffSource.sourceTabId]?.plan;
+        if (pendingPlan?.markdown || pendingPlan?.keepOptionId) {
+          await respondPlanRequest(handoffSource.sourceTabId, pendingPlan.jsonRpcId, "cancelled");
+          patchRuntime(handoffSource.sourceTabId, (rt) => ({ ...rt, plan: null }));
+        }
         const nextValues = { ...mapped.answers, cwd: handoffSource.cwd };
+        const sourceProvider = providerOf(sourceTab ?? null);
         if (surface === "terminal") {
           stashActiveTab();
           const tabId = await startRoleTerminal({
@@ -2674,6 +2786,8 @@ export function StartupForm({
             setHandoffError("Terminal did not start.");
             return;
           }
+          await setTabProvider(tabId, sourceProvider);
+          if (nextChain) await setTabChain(tabId, nextChain);
           const bound = await handoffBindTab(saved.id, tabId);
           if (mapped.usesScratchPad) {
             scratch.setContent(tabId, mapped.inlinePlan);
@@ -2686,6 +2800,8 @@ export function StartupForm({
         }
         stashActiveTab();
         const { tab } = await newDraftTab(handoffTarget, handoffSource.cwd);
+        await setTabProvider(tab.id, sourceProvider);
+        if (nextChain) await setTabChain(tab.id, nextChain);
         await syncActiveTabForm(tab.id, handoffTarget, handoffSource.cwd, nextValues);
         const bound = await handoffBindTab(saved.id, tab.id);
         if (mapped.usesScratchPad) {
@@ -2716,7 +2832,9 @@ export function StartupForm({
       handoffFields,
       handoffSource,
       handoffTarget,
+      patchRuntime,
       refreshTabs,
+      savedTabs,
       scratch,
       startRoleTerminal,
       stashActiveTab,
@@ -2782,6 +2900,30 @@ export function StartupForm({
       case "sendImplementerToReviewer":
         openHandoffDialog("role_pr_reviewer");
         return;
+      case "startEagleEye1":
+      case "startEagleEye2": {
+        const kind = id === "startEagleEye1" ? "eagle1" : "eagle2";
+        const cwd = activeTabSummary?.cwd || values.cwd || "";
+        if (!cwd.trim()) {
+          showNotice("Pick a folder first", "Eagle-Eye starts in the current tab's folder.", "question");
+          return;
+        }
+        setBusy(true);
+        startEagleEye(kind, cwd)
+          .then(async ({ tab }) => {
+            setActiveTabId(tab.id);
+            await refreshTabs();
+          })
+          .catch((err: unknown) => {
+            showNotice(
+              "Eagle-Eye",
+              err instanceof Error ? err.message : String(err),
+              "question",
+            );
+          })
+          .finally(() => setBusy(false));
+        return;
+      }
       case "showLogs": {
         setLogDrawerOpen(true);
         void (async () => {
@@ -3112,7 +3254,6 @@ export function StartupForm({
       onRenameEnd={() => setRenamingTabId(null)}
       canReopen={closedTabs.length > 0}
       settingsOpen={settingsOpen}
-      roleRulesOff={!!approvalMode?.roleRulesOff}
       roleNames={roleNames}
       modelFor={modelForTab}
       providerFor={(tab) =>
@@ -3153,13 +3294,22 @@ export function StartupForm({
       onUiSettings={uiSettings.update}
       onTestNotification={agentNotifications.sendTest}
       modelList={modelList}
+      claudeModelList={claudeModelList}
       modelSettings={modelSettings}
       providers={providers}
       onRefreshRoles={onRefreshRoles}
-      onModelSettings={(next) => {
-        setModelSettingsState(next);
-        void setModelSettings(next)
-          .then(setModelSettingsState)
+      onModelSettings={(provider, next) => {
+        setModelSettingsState((current) =>
+          current
+            ? { ...current, [provider]: next }
+            : { cursor: next, claude: next, [provider]: next },
+        );
+        void setModelSettings(next, provider)
+          .then((saved) =>
+            setModelSettingsState((current) =>
+              current ? { ...current, [provider]: saved } : { cursor: saved, claude: saved },
+            ),
+          )
           .catch(() => {});
       }}
       modelsRefreshing={modelsRefreshing}
@@ -3407,7 +3557,11 @@ export function StartupForm({
       {chatHistoryOpen && (
         <ChatHistoryDialog
           folder={folderForTab(activeTabSummary?.cwd || values.cwd)}
-          load={listCursorCliHistory}
+          load={(folder) =>
+            historyProvider === "claude"
+              ? listClaudeHistory(folder).then((view) => view.entries)
+              : listCursorCliHistory(folder)
+          }
           busy={busy}
           onResume={(entry) => {
             setChatHistoryOpen(false);
@@ -3415,7 +3569,7 @@ export function StartupForm({
           }}
           onOpenCli={(entry) => {
             setChatHistoryOpen(false);
-            void openCursorCli(entry.id, entry.cwd);
+            void openCursorCli(entry.id, entry.cwd, entry.source);
           }}
           onClose={() => setChatHistoryOpen(false)}
         />
@@ -3659,6 +3813,10 @@ export function StartupForm({
           findRequest={findRequest?.tabId === tab.id ? findRequest.req : null}
           onSearchAllChats={(query) => setChatSearchQuery(query)}
           branch={tab.worktreeBranch ?? null}
+          chainLabel={tab.chain ? chainLabel(tab.chain) : null}
+          contextFill={
+            providerOf(tab) === "claude" ? contextPercent(usageSnap?.contextByTab[tab.id]) : null
+          }
           cwd={rt.session.cwd}
           sessionId={rt.session.sessionId}
           segments={rt.segments}
@@ -3824,7 +3982,24 @@ export function StartupForm({
     }
     return { tone: "idle", text: "Not started" };
   })();
+  const providerNotice = activeTabSummary?.providerNotice?.trim() ?? "";
+  const noticeAlreadyShown =
+    !!providerNotice &&
+    !!session &&
+    (activeRuntime.folderWarning ?? "").includes(providerNotice);
   const statusMessages: StatusMessage[] = [
+    ...(providerNotice && !noticeAlreadyShown
+      ? [{
+          id: "provider-notice",
+          text: providerNotice,
+          tone: "info" as const,
+          onDismiss: () => {
+            const tabId = activeTabSummary?.id;
+            if (!tabId) return;
+            void ackProviderNotice(tabId).then(() => refreshTabs());
+          },
+        }]
+      : []),
     ...(session && activeRuntime.folderWarning
       ? [{ id: "folder", text: activeRuntime.folderWarning, tone: "warn" as const }]
       : []),
@@ -3843,7 +4018,12 @@ export function StartupForm({
       }
       folder={session?.cwd || activeTabSummary?.cwd || folderForTab(values.cwd) || null}
       branch={activeTabSummary?.worktreeBranch ?? null}
-      roleRulesOff={!!approvalMode?.roleRulesOff}
+      permissions={
+        activeTabSummary && tabHasProvider(activeTabSummary)
+          ? { fallback: activeTabSummary.permissionNote ?? null }
+          : null
+      }
+      usage={activeTabSummary && providerOf(activeTabSummary) === "claude" ? statusLimit(usageSnap?.windows ?? []) : null}
       messages={statusMessages}
       trailing={
         uiSettings.ui.shortcutBar ? (
@@ -3955,8 +4135,12 @@ export function StartupForm({
           {(isPlanTerminal ||
             terminalModelPicker ||
             activeTabSummary.worktreeBranch ||
+            activeTabSummary.chain ||
             activeTabSummary.cwd) && (
             <div className="terminal-toolbar">
+              {activeTabSummary.chain && (
+                <span className="chain-label">{chainLabel(activeTabSummary.chain)}</span>
+              )}
               {activeTabSummary.worktreeBranch && (
                 <span
                   className="session-branch"
@@ -3974,6 +4158,11 @@ export function StartupForm({
                   reason={null}
                   busy={busy}
                   targets={planTerminalTargets}
+                  primaryTarget={
+                    activeTabSummary.chain
+                      ? nextChainRole(activeTabSummary.chain, activeTabSummary.roleId)
+                      : null
+                  }
                   roleNames={roles}
                   onSend={(target) => {
                     void openTerminalHandoff(target);
@@ -4136,13 +4325,10 @@ export function StartupForm({
     activeTabSummary && blankRoleKey ? (
       <ModelPicker
         compact
-        models={modelsForProvider(blankProvider, modelList?.models ?? [])}
+        models={modelsForProvider(blankProvider, modelList?.models ?? [], claudeModelList?.models)}
         value={activeTabSummary.model ?? null}
         inherited={{
-          model:
-            blankProvider === "claude"
-              ? PROVIDERS.claude.defaultModel
-              : effectiveModel(modelSettings, blankRoleKey, null),
+          model: effectiveModelFor(blankProvider, modelSettings, blankRoleKey, null),
           label: "Default",
         }}
         ariaLabel="Model for this tab"
@@ -4253,6 +4439,23 @@ export function StartupForm({
       </div>
     ) : null;
 
+  const eagleToggle =
+    showFields &&
+    activeTabSummary?.phase === "draft" &&
+    (roleId === "role_planner" || roleId === "role_implementer") ? (
+      <label className="eagle-toggle">
+        <input
+          type="checkbox"
+          checked={eagleOn}
+          onChange={(event) => {
+            eagleOnRef.current = event.target.checked;
+            setEagleOn(event.target.checked);
+          }}
+        />
+        {roleId === "role_planner" ? "Eagle-Eye 1" : "Eagle-Eye 2"}
+      </label>
+    ) : null;
+
   const roleStartButton = showFields && (
     <button
       type="button"
@@ -4332,6 +4535,12 @@ export function StartupForm({
               }
               onSearchAllChats={(query) => setChatSearchQuery(query)}
               branch={activeTabSummary?.worktreeBranch ?? null}
+              chainLabel={activeTabSummary?.chain ? chainLabel(activeTabSummary.chain) : null}
+              contextFill={
+                activeProvider === "claude" && activeTabId
+                  ? contextPercent(usageSnap?.contextByTab[activeTabId])
+                  : null
+              }
               cwd={session.cwd}
               sessionId={session.sessionId}
               segments={streamSegments}
@@ -4524,6 +4733,7 @@ export function StartupForm({
                     <>
                       {providerChip}
                       {blankModelPicker}
+                      {eagleToggle}
                       {roleStartButton}
                     </>
                   )}
@@ -4596,12 +4806,32 @@ export function StartupForm({
               </div>
               {historyFolder && !launchChoice && (
                 <aside className="start-history">
+                  <div className="history-provider-toggle" role="group" aria-label="History provider">
+                    <button
+                      type="button"
+                      className="role-choice"
+                      aria-pressed={historyProvider === "claude"}
+                      onClick={() => setHistoryOverride("claude")}
+                    >
+                      Claude
+                    </button>
+                    <button
+                      type="button"
+                      className="role-choice"
+                      aria-pressed={historyProvider === "cursor"}
+                      onClick={() => setHistoryOverride("cursor")}
+                    >
+                      Cursor
+                    </button>
+                  </div>
                   <CursorHistoryList
                     entries={historyEntries}
                     error={historyError}
                     busy={busy}
+                    title={PROVIDERS[historyProvider].historyTitle}
+                    readFrom={historyProvider === "claude" ? historyReadFrom : null}
                     onResume={(entry) => void resumeHistoryEntry(entry)}
-                    onOpenCli={(entry) => void openCursorCli(entry.id, entry.cwd)}
+                    onOpenCli={(entry) => void openCursorCli(entry.id, entry.cwd, entry.source)}
                   />
                 </aside>
               )}

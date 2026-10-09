@@ -37,6 +37,9 @@ pub enum PolicyDecision {
     /// Auto-answer `allow-once`. Never `allow-always` (that can persist globally).
     AllowOnce,
     /// Auto-answer `reject-once` (or cancel if the agent offered no reject option).
+    /// Kept so a future auto-reject stays one match arm. Full permissions never
+    /// construct it: a missing `allow_once` shows the card instead.
+    #[allow(dead_code)]
     Reject,
     /// Show the permission card. Dismissing cancels; nothing is auto-allowed.
     Ask,
@@ -68,12 +71,21 @@ pub struct DecisionOutcome {
 
 pub fn evaluate_permission(role_id: &str, params: &Value) -> DecisionOutcome {
     let class = classify_permission_params(params);
-    let decision = decide_for_role(role_id, class);
+    let offered = permission_options(params);
+    // Synthesized Allow/Reject buttons (no options on the request) are for
+    // the card only. Auto-answer only an allow_once the agent actually sent.
+    let agent_offered = params.get("options").and_then(Value::as_array).is_some();
+    let role_allows = decide_for_role(role_id, class) == PolicyDecision::AllowOnce;
+    let decision = if role_allows && agent_offered && offered.iter().any(is_allow_once_choice) {
+        PolicyDecision::AllowOnce
+    } else {
+        PolicyDecision::Ask
+    };
+    let options = offered;
     let title = permission_title(params);
     let message = permission_message(params);
     let display_kind = display_kind_label(params, class);
     let network = is_network_fetch(params, class);
-    let options = permission_options(params);
     let transcript_line = match decision {
         PolicyDecision::Ask => None,
         other => Some(auto_decision_line(other, class, &title, network)),
@@ -96,23 +108,17 @@ pub fn evaluate_permission(role_id: &str, params: &Value) -> DecisionOutcome {
     }
 }
 
+/// Every role allows once. The option list decides whether that can be
+/// sent automatically (`evaluate_permission`).
 pub fn decide_for_role(role_id: &str, class: ToolClass) -> PolicyDecision {
-    match canonical_role(role_id) {
-        RoleKind::FullAccess => PolicyDecision::AllowOnce,
-        RoleKind::Reviewer => match class {
-            ToolClass::Write => PolicyDecision::Reject,
-            ToolClass::Shell | ToolClass::Mcp | ToolClass::Read | ToolClass::Other => {
-                PolicyDecision::AllowOnce
-            }
-            ToolClass::Unknown => PolicyDecision::Ask,
-        },
-        RoleKind::ReadOnlyMode => match class {
-            ToolClass::Write | ToolClass::Shell => PolicyDecision::Reject,
-            ToolClass::Mcp | ToolClass::Read | ToolClass::Other => PolicyDecision::AllowOnce,
-            ToolClass::Unknown => PolicyDecision::Ask,
-        },
-        RoleKind::Unknown => PolicyDecision::Ask,
-    }
+    let _ = (role_id, class);
+    PolicyDecision::AllowOnce
+}
+
+fn is_allow_once_choice(opt: &PermissionChoice) -> bool {
+    let kind = opt.kind.to_ascii_lowercase();
+    let id = opt.id.to_ascii_lowercase();
+    kind == "allow_once" || id == "allow-once"
 }
 
 pub fn classify_permission_params(params: &Value) -> ToolClass {
@@ -199,40 +205,9 @@ fn choice_id(options: &[PermissionChoice], allow: bool) -> String {
         }) {
             return opt.id.clone();
         }
-        if let Some(opt) = options.iter().find(|opt| {
-            let kind = opt.kind.to_ascii_lowercase();
-            let id = opt.id.to_ascii_lowercase();
-            kind != "allow_always"
-                && id != "allow-always"
-                && !id.contains("reject")
-                && kind != "reject_once"
-        }) {
-            return opt.id.clone();
-        }
         return "allow-once".to_string();
     }
     "reject-once".to_string()
-}
-
-#[derive(Clone, Copy)]
-enum RoleKind {
-    FullAccess,
-    Reviewer,
-    ReadOnlyMode,
-    Unknown,
-}
-
-fn canonical_role(role_id: &str) -> RoleKind {
-    let normalized = role_id.trim().to_ascii_lowercase().replace('-', "_");
-    match normalized.as_str() {
-        "role_implementer" | "implementer" | "role_developer" | "developer"
-        | "role_plan_reviewer" | "plan_reviewer" => RoleKind::FullAccess,
-        "role_pr_reviewer" | "role_reviewer" | "pr_reviewer" | "reviewer" => RoleKind::Reviewer,
-        "role_planner" | "planner" | "role_general" | "general" | "role_recommendation"
-        | "recommendation" => RoleKind::ReadOnlyMode,
-        "role_codebase_audit" | "codebase_audit" => RoleKind::Reviewer,
-        _ => RoleKind::Unknown,
-    }
 }
 
 fn tool_object(params: &Value) -> &Value {
@@ -695,64 +670,29 @@ mod tests {
     }
 
     #[test]
-    fn reviewer_allows_shell_and_mcp_and_rejects_writes() {
-        for role in ["role_pr_reviewer", "role_codebase_audit"] {
-            assert_eq!(
-                decide_for_role(role, ToolClass::Shell),
-                PolicyDecision::AllowOnce,
-                "{role}"
-            );
-            assert_eq!(
-                decide_for_role(role, ToolClass::Mcp),
-                PolicyDecision::AllowOnce,
-                "{role}"
-            );
-            assert_eq!(
-                decide_for_role(role, ToolClass::Read),
-                PolicyDecision::AllowOnce,
-                "{role}"
-            );
-            assert_eq!(
-                decide_for_role(role, ToolClass::Write),
-                PolicyDecision::Reject,
-                "{role}"
-            );
-            assert_eq!(
-                decide_for_role(role, ToolClass::Unknown),
-                PolicyDecision::Ask,
-                "{role}"
-            );
+    fn every_role_decides_allow_once() {
+        for role in [
+            "role_pr_reviewer",
+            "role_codebase_audit",
+            "role_planner",
+            "role_general",
+            "role_recommendation",
+            "role_custom",
+        ] {
+            for class in [
+                ToolClass::Write,
+                ToolClass::Shell,
+                ToolClass::Mcp,
+                ToolClass::Unknown,
+                ToolClass::Read,
+            ] {
+                assert_eq!(
+                    decide_for_role(role, class),
+                    PolicyDecision::AllowOnce,
+                    "{role} {class:?}"
+                );
+            }
         }
-    }
-
-    #[test]
-    fn planner_and_general_block_write_and_shell_but_allow_mcp() {
-        for role in ["role_planner", "role_general", "role_recommendation"] {
-            assert_eq!(
-                decide_for_role(role, ToolClass::Write),
-                PolicyDecision::Reject
-            );
-            assert_eq!(
-                decide_for_role(role, ToolClass::Shell),
-                PolicyDecision::Reject
-            );
-            assert_eq!(
-                decide_for_role(role, ToolClass::Mcp),
-                PolicyDecision::AllowOnce
-            );
-            assert_eq!(
-                decide_for_role(role, ToolClass::Unknown),
-                PolicyDecision::Ask
-            );
-        }
-    }
-
-    #[test]
-    fn unknown_role_asks_instead_of_auto_allowing() {
-        assert_eq!(
-            decide_for_role("role_custom", ToolClass::Read),
-            PolicyDecision::Ask
-        );
     }
 
     #[test]
@@ -782,11 +722,24 @@ mod tests {
     }
 
     #[test]
-    fn reviewer_write_selects_reject_once() {
+    fn reviewer_write_selects_allow_once() {
         let outcome = evaluate_permission("role_pr_reviewer", &params_kind("edit"));
         let result = outcome.auto_result.expect("auto");
-        assert_eq!(result["outcome"]["optionId"], "reject-once");
-        assert_eq!(outcome.decision, PolicyDecision::Reject);
+        assert_eq!(result["outcome"]["optionId"], "allow-once");
+        assert_eq!(outcome.decision, PolicyDecision::AllowOnce);
+    }
+
+    #[test]
+    fn allow_always_alone_is_not_auto_picked() {
+        let params = json!({
+            "toolCall": { "kind": "edit", "title": "Edit file" },
+            "options": [
+                { "optionId": "allow-always", "name": "Always", "kind": "allow_always" }
+            ]
+        });
+        let outcome = evaluate_permission("role_implementer", &params);
+        assert_eq!(outcome.decision, PolicyDecision::Ask);
+        assert!(outcome.auto_result.is_none());
     }
 
     #[test]
@@ -807,10 +760,8 @@ mod tests {
             ]
         });
         let outcome = evaluate_permission("role_planner", &params);
-        assert_eq!(
-            outcome.auto_result.unwrap()["outcome"]["outcome"],
-            "cancelled"
-        );
+        assert_eq!(outcome.decision, PolicyDecision::AllowOnce);
+        assert_eq!(outcome.auto_result.unwrap()["outcome"]["optionId"], "allow-once");
     }
 
     fn fixture_params(name: &str) -> (Value, Option<Value>) {
@@ -854,7 +805,7 @@ mod tests {
         let outcome = evaluate_permission("role_pr_reviewer", &enriched);
         assert_eq!(outcome.class, ToolClass::Write);
         assert_eq!(outcome.display_kind, "delete");
-        assert_eq!(outcome.decision, PolicyDecision::Reject);
+        assert_eq!(outcome.decision, PolicyDecision::AllowOnce);
         assert!(outcome.message.contains("hello.txt"));
     }
 
@@ -880,7 +831,7 @@ mod tests {
         let implementer = evaluate_permission("role_implementer", &enriched);
         assert_eq!(implementer.decision, PolicyDecision::AllowOnce);
         let unknown = evaluate_permission("role_custom", &enriched);
-        assert_eq!(unknown.decision, PolicyDecision::Ask);
+        assert_eq!(unknown.decision, PolicyDecision::AllowOnce);
     }
 
     #[test]
@@ -898,21 +849,19 @@ mod tests {
             evaluate_permission("role_pr_reviewer", &enriched).decision,
             PolicyDecision::AllowOnce
         );
-        for role in ["role_planner", "role_general", "role_recommendation"] {
+        for role in [
+            "role_planner",
+            "role_general",
+            "role_recommendation",
+            "role_codebase_audit",
+            "role_custom",
+        ] {
             assert_eq!(
                 evaluate_permission(role, &enriched).decision,
-                PolicyDecision::Reject,
+                PolicyDecision::AllowOnce,
                 "{role}"
             );
         }
-        assert_eq!(
-            evaluate_permission("role_codebase_audit", &enriched).decision,
-            PolicyDecision::AllowOnce
-        );
-        assert_eq!(
-            evaluate_permission("role_custom", &enriched).decision,
-            PolicyDecision::Ask
-        );
     }
 
     #[test]

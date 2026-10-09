@@ -103,8 +103,13 @@ type Props = {
     enabled: boolean;
     reason: string | null;
     targets?: HandoffTargetId[];
+    primaryTarget?: string | null;
     onSend: (target: HandoffTargetId) => void;
   } | null;
+  /** "Eagle-Eye 1 · step 2 of 4" */
+  chainLabel?: string | null;
+  /** Claude chat context fill, e.g. "Context 3%". */
+  contextFill?: string | null;
   /** Extra header controls, for example the model picker or pane buttons. */
   headerExtra?: ReactNode;
   /** F3: branch of a worktree tab. */
@@ -152,6 +157,8 @@ export function SessionTerminal({
   historyCursor = -1,
   onHistoryCursor,
   handoff,
+  chainLabel = null,
+  contextFill = null,
   headerExtra,
   branch = null,
   findRequest = null,
@@ -317,6 +324,8 @@ export function SessionTerminal({
               </span>
             )}
             {folderName(cwd)}
+            {chainLabel && <span className="chain-label">{chainLabel}</span>}
+            {contextFill && <span className="chain-label">{contextFill}</span>}
           </span>
         </div>
         <div className="session-terminal-chrome-actions">
@@ -458,6 +467,7 @@ export function SessionTerminal({
                       enabled={handoff.enabled}
                       reason={handoff.reason}
                       targets={handoff.targets ?? []}
+                      primaryTarget={handoff.primaryTarget}
                       busy={busy}
                       onSend={handoff.onSend}
                     />

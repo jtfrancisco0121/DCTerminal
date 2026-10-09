@@ -184,6 +184,8 @@ export const PALETTE_ACTIONS = [
   "showLogs",
   "pipelineWorkspace",
   "executionPipelineWorkspace",
+  "startEagleEye1",
+  "startEagleEye2",
   "handoffHelp",
   "changeModel",
   "refreshModels",
@@ -336,6 +338,18 @@ export function buildPalette(opts: {
       title: "Save scratch pad as prompt…",
       group: "Prompts",
       keywords: "prompt library snippet template name",
+    },
+    {
+      id: "startEagleEye1",
+      title: "Start Eagle-Eye 1…",
+      group: "Hand-off",
+      keywords: "eagle eye planner plan reviewer implementer chain",
+    },
+    {
+      id: "startEagleEye2",
+      title: "Start Eagle-Eye 2…",
+      group: "Hand-off",
+      keywords: "eagle eye implementer reviewer chain",
     },
     {
       id: "pipelineWorkspace",

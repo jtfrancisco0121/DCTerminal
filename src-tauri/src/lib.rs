@@ -1,4 +1,5 @@
 mod acp;
+mod claude_history;
 mod cli_detect;
 mod cli_launch;
 mod commands;
@@ -19,20 +20,23 @@ pub mod store;
 pub mod supervisor;
 pub mod template;
 pub mod turn_changes;
+mod usage;
 pub mod worktree;
 
 use acp::{probe_acp, probe_acp_handshake};
 use cli_detect::{cli_login_status, detect_cli};
 use commands::history_search;
 use commands::{
-    acp_set_model, check_working_folder, close_tab, create_execution_pipeline_tabs,
+    acp_set_model, get_claude_usage, check_working_folder, close_tab, create_execution_pipeline_tabs,
     create_pipeline_tabs, cursor_approval_mode, get_pipeline_run, pipeline_promote_plan,
     pipeline_set_candidate_plan,
     dev_session_cancel, dev_session_send, dev_session_start, dev_session_stop,
     diagnostics_read_log, diagnostics_set_capture, diagnostics_status, get_app_state,
     get_form_recall, get_layout, get_role, get_tab,
-    handoff_bind_tab, handoff_get, handoff_list, handoff_save, list_cursor_cli_history, list_roles,
-    new_draft_tab, open_in_cursor_cli, projects_list, projects_remember, projects_remove,
+    handoff_bind_tab, handoff_get, handoff_list, handoff_save, list_claude_history,
+    list_cursor_cli_history, list_roles,
+    new_draft_tab, ack_provider_notice, set_tab_chain, start_eagle_eye,
+    open_in_cursor_cli, projects_list, projects_remember, projects_remove,
     projects_toggle_favorite, reopen_closed_tab, reset_builtin_role, respond_permission_request,
     respond_plan_request, respond_question_request, role_session_start, save_form_draft,
     save_role, scratch_load, scratch_save, session_agent_logs,
@@ -133,6 +137,7 @@ pub fn run() {
             app.manage(Mutex::new(handoff_store));
             app.manage(Mutex::new(prompt_store));
             app.manage(Mutex::new(workspace_store));
+            app.manage(Mutex::new(crate::usage::UsageStore::default()));
             app.manage(Mutex::new(SessionRegistry::new()));
             app.manage(Mutex::new(PtyRegistry::new()));
             Ok(())
@@ -158,6 +163,9 @@ pub fn run() {
             select_active_tab,
             close_tab,
             new_draft_tab,
+            ack_provider_notice,
+            set_tab_chain,
+            start_eagle_eye,
             create_pipeline_tabs,
             create_execution_pipeline_tabs,
             get_pipeline_run,
@@ -192,6 +200,7 @@ pub fn run() {
             projects_remove,
             check_working_folder,
             cursor_approval_mode,
+            list_claude_history,
             list_cursor_cli_history,
             open_in_cursor_cli,
             transcript_save,
@@ -222,6 +231,7 @@ pub fn run() {
             set_model_settings,
             set_tab_model,
             acp_set_model,
+            get_claude_usage,
             get_notification_settings,
             set_notification_settings,
             get_ui_settings,

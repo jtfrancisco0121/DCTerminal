@@ -5,6 +5,7 @@ import {
   formatHistoryTime,
   HISTORY_HINT,
   HISTORY_TOOLTIP,
+  historyOpenLabel,
   historySourceLabel,
   OPEN_IN_CURSOR_CLI_TITLE,
   presentHistoryTitle,
@@ -15,15 +16,29 @@ type Props = {
   entries: CursorHistoryEntry[];
   error: string | null;
   busy: boolean;
+  title?: string;
+  /** Folder the list was read from, shown under the title. */
+  readFrom?: string | null;
   onResume: (entry: CursorHistoryEntry) => void;
   onOpenCli: (entry: CursorHistoryEntry) => void;
 };
 
-export function CursorHistoryList({ entries, error, busy, onResume, onOpenCli }: Props) {
+export function CursorHistoryList({
+  entries,
+  error,
+  busy,
+  title = "Cursor CLI history",
+  readFrom = null,
+  onResume,
+  onOpenCli,
+}: Props) {
   return (
-    <section className="history-list" aria-label="Cursor CLI history">
-      <h3 title={HISTORY_TOOLTIP}>Cursor CLI history</h3>
-      <p className="hint">{HISTORY_HINT}</p>
+    <section className="history-list" aria-label={title}>
+      <h3 title={HISTORY_TOOLTIP}>{title}</h3>
+      <p className="hint">
+        {HISTORY_HINT}
+        {readFrom ? ` Read from ${readFrom}.` : ""}
+      </p>
       {error && <p className="error">{error}</p>}
       {entries.length === 0 && !error && (
         <p className="hint">No saved sessions for this folder.</p>
@@ -65,7 +80,7 @@ export function CursorHistoryList({ entries, error, busy, onResume, onOpenCli }:
                     onClick={() => onOpenCli(entry)}
                     title={OPEN_IN_CURSOR_CLI_TITLE}
                   >
-                    Open in Cursor CLI
+                    {historyOpenLabel(entry.source)}
                   </button>
                 )}
               </div>

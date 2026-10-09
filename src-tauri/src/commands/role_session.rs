@@ -85,7 +85,7 @@ pub fn role_session_start(
             .ok_or_else(|| format!("unknown role: {role_id}"))
     }?;
 
-    let bind = match session_start_bind(resume_session_id.as_deref()) {
+    let mut bind = match session_start_bind(resume_session_id.as_deref()) {
         Ok(bind) => bind,
         Err(err) => {
             return Ok(empty_start(vec![FieldError {
@@ -94,6 +94,41 @@ pub fn role_session_start(
             }]));
         }
     };
+    let provider = {
+        let store = state_store.lock().map_err(|e| e.to_string())?;
+        let settings = settings.lock().map_err(|e| e.to_string())?;
+        provider_for(
+            store.provider_for_start(tab_id.as_deref()),
+            settings.providers(),
+        )
+    };
+    let mut start_notice: Option<String> = None;
+    if provider.id() == ProviderId::Claude {
+        if let SessionStartBind::LoadExisting { session_id } = &bind {
+            let (sessions, current) = {
+                let store = state_store.lock().map_err(|e| e.to_string())?;
+                let sessions = tab_id
+                    .as_deref()
+                    .and_then(|id| store.tab_by_id(id))
+                    .map(|tab| tab.sessions.clone())
+                    .unwrap_or_default();
+                let current = provider
+                    .config_dir()
+                    .map(|info| info.path)
+                    .unwrap_or_default();
+                (sessions, current)
+            };
+            let (resume, notice) = crate::provider::claude::decide_claude_resume(
+                Some(session_id),
+                &sessions,
+                &current,
+            );
+            start_notice = notice;
+            if resume.is_none() {
+                bind = SessionStartBind::CreateNew;
+            }
+        }
+    }
     let loading = matches!(bind, SessionStartBind::LoadExisting { .. });
 
     let preview = merge_role_prompt(&role, &values);
@@ -121,14 +156,6 @@ pub fn role_session_start(
         }
     };
 
-    let provider = {
-        let store = state_store.lock().map_err(|e| e.to_string())?;
-        let settings = settings.lock().map_err(|e| e.to_string())?;
-        provider_for(
-            store.provider_for_start(tab_id.as_deref()),
-            settings.providers(),
-        )
-    };
     if provider.id() == ProviderId::Claude {
         // Missing `claude` or adapter: say which and how to install it
         // before the tab is touched.
@@ -210,7 +237,14 @@ pub fn role_session_start(
             finish_starting(&state, &start_key);
             return Err(e);
         }
-        Ok(pair) => pair,
+        Ok((client, notes, via)) => {
+            // Cache the adapter's model list (Phase 5). App data only.
+            if provider.id() == ProviderId::Claude && !client.model_entries().is_empty() {
+                let dir = crate::data_dir::app_data_dir(&app).path;
+                let _ = crate::models::remember_claude_models(&dir, client.model_entries());
+            }
+            (client, notes, via)
+        }
     };
 
     let info = DevSessionInfo {
@@ -267,6 +301,21 @@ pub fn role_session_start(
         }
     };
 
+    if provider.id() == ProviderId::Claude {
+        let mut store = state_store.lock().map_err(|e| e.to_string())?;
+        if let Some(dir) = provider.config_dir() {
+            store.remember_claude_config(&persisted_tab_id, &dir.path)?;
+        }
+        let wanted = crate::provider::claude::claude_role_mode(&role.id);
+        let note = (info.mode_id != wanted).then(|| {
+            format!("the adapter did not offer {wanted} (using {})", info.mode_id)
+        });
+        store.set_permission_note(&persisted_tab_id, note)?;
+        if start_notice.is_some() {
+            store.set_provider_notice(&persisted_tab_id, start_notice.clone())?;
+        }
+    }
+
     let mut live = LiveSession::from_client(&persisted_tab_id, &role.id, client);
     let mut injection_in_flight = false;
     if skip_startup {
@@ -321,7 +370,11 @@ pub fn role_session_start(
         tab_id: Some(persisted_tab_id),
         resumed_session: skip_startup,
         skipped_startup_injection: skip_startup,
-        folder_warning,
+        folder_warning: match (folder_warning, start_notice.clone()) {
+            (Some(existing), Some(notice)) => Some(format!("{notice} {existing}")),
+            (None, Some(notice)) => Some(notice),
+            (existing, None) => existing,
+        },
         loaded_via_session_load: loading,
         replay_message_count,
         replay_truncated,

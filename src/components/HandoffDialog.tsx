@@ -173,6 +173,7 @@ export function HandoffActions({
   busy = false,
   sourceRoleId,
   targets,
+  primaryTarget = null,
   roleNames = null,
   onSend,
 }: {
@@ -183,6 +184,8 @@ export function HandoffActions({
   sourceRoleId?: string;
   /** Explicit targets; overrides `sourceRoleId`. */
   targets?: HandoffTargetId[];
+  /** Chain's next role. That button is the primary "Next:" action. */
+  primaryTarget?: string | null;
   roleNames?: readonly RoleName[] | null;
   onSend: (target: HandoffTargetId) => void;
 }) {
@@ -191,16 +194,17 @@ export function HandoffActions({
     <div className="button-row handoff-actions">
       {ids.map((id) => {
         const name = roleDisplayName(id, roleNames);
+        const primary = id === primaryTarget;
         return (
           <button
             key={id}
             type="button"
-            className="secondary-button"
+            className={primary ? "primary-button" : "secondary-button"}
             disabled={!enabled || busy}
             title={reason ?? `Open a ${name} tab with this hand-off`}
             onClick={() => onSend(id)}
           >
-            {`Send to ${name}`}
+            {primary ? `Next: Send to ${name}` : `Send to ${name}`}
           </button>
         );
       })}

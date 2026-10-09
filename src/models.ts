@@ -1,20 +1,50 @@
-import type { ModelEntry, ModelSettings, ModelVia } from "./bridge";
+import type { ModelEntry, ModelSettings, ModelVia, ProviderModelSettings } from "./bridge";
+import type { ProviderId } from "./provider/types";
 
 /** The app default. Not `composer-2.5-fast`. */
 export const DEFAULT_MODEL_ID = "composer-2.5";
+
+export const CLAUDE_DEFAULT_MODEL_ID = "default";
 
 export function defaultModelSettings(): ModelSettings {
   return { defaultModel: DEFAULT_MODEL_ID, roleModels: {} };
 }
 
-/** Same rule as Rust `valid_model_id`: never a flag, no spaces. */
+export function defaultProviderModelSettings(): ProviderModelSettings {
+  return {
+    cursor: defaultModelSettings(),
+    claude: { defaultModel: CLAUDE_DEFAULT_MODEL_ID, roleModels: {} },
+  };
+}
+
+/** Same rule as Rust `valid_model_id`: never a flag, no spaces. `[1m]` is allowed. */
 export function validModelId(id: string): boolean {
   return (
     id.length > 0 &&
     id.length <= 100 &&
     !id.startsWith("-") &&
-    /^[A-Za-z0-9._:/-]+$/.test(id)
+    /^[A-Za-z0-9._:/[\]-]+$/.test(id)
   );
+}
+
+const CLAUDE_ALIASES = new Set([
+  "default",
+  "opus",
+  "sonnet",
+  "haiku",
+  "fable",
+  "opusplan",
+  "best",
+]);
+
+/** Same rule as Rust `is_claude_model_id`. */
+export function isClaudeModelId(id: string): boolean {
+  const trimmed = id.trim();
+  const base = trimmed.endsWith("[1m]") ? trimmed.slice(0, -4) : trimmed;
+  if (!base || base.length > 100) return false;
+  if (CLAUDE_ALIASES.has(base)) return true;
+  const match = /^claude-(opus|sonnet|haiku|fable)-([a-z0-9.-]+)$/.exec(base);
+  return !!match && /^[0-9]/.test(match[2]);
 }
 
 /** Tab override, then the role default, then the global default. */
@@ -30,6 +60,24 @@ export function effectiveModel(
   const global = settings?.defaultModel?.trim();
   if (global && validModelId(global)) return global;
   return DEFAULT_MODEL_ID;
+}
+
+/** Model for a tab, from that provider's settings. A Cursor id never wins on Claude. */
+export function effectiveModelFor(
+  provider: ProviderId,
+  settings: ProviderModelSettings | null,
+  roleId: string | null,
+  tabModel?: string | null,
+): string {
+  if (provider === "claude") {
+    const slice = settings?.claude ?? { defaultModel: CLAUDE_DEFAULT_MODEL_ID, roleModels: {} };
+    // A Cursor id stored on the tab must not replace the Claude role default.
+    const tab = tabModel?.trim();
+    const claudeTab = tab && isClaudeModelId(tab) ? tab : null;
+    const picked = effectiveModel(slice, roleId, claudeTab);
+    return isClaudeModelId(picked) ? picked : CLAUDE_DEFAULT_MODEL_ID;
+  }
+  return effectiveModel(settings?.cursor ?? null, roleId, tabModel);
 }
 
 /** Match id or label, every word of the query, case-insensitive. */

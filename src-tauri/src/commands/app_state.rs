@@ -36,9 +36,14 @@ pub struct TabSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pipeline_run_id: Option<String>,    /// Provider this tab uses (`claude` | `cursor`). Legacy tabs report
-    /// `cursor` until the Task 6.3 migration.
+    pub pipeline_run_id: Option<String>,    /// Provider this tab uses (`claude` | `cursor`).
     pub provider: crate::provider::ProviderId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_notice: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain: Option<crate::store::ChainRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_note: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -138,6 +143,74 @@ pub fn new_draft_tab(
     }?;
     let mut store = store.lock().map_err(|e| e.to_string())?;
     let tab_id = store.create_draft_tab(&role, cwd.trim(), true, None)?;
+    let tab = store
+        .tab_by_id(&tab_id)
+        .cloned()
+        .ok_or_else(|| "draft tab missing after create".to_string())?;
+    Ok(TabDetail { tab })
+}
+
+/// Clear the one-line provider notice after the user has seen it.
+#[tauri::command]
+pub fn ack_provider_notice(
+    tab_id: String,
+    store: State<Mutex<StateStore>>,
+) -> Result<(), String> {
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    store.set_provider_notice(&tab_id, None)
+}
+
+/// Tag or clear an Eagle-Eye chain on a tab that is not running.
+#[tauri::command]
+pub fn set_tab_chain(
+    tab_id: String,
+    chain: Option<crate::store::ChainRef>,
+    store: State<Mutex<StateStore>>,
+) -> Result<(), String> {
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    if store.tab_by_id(&tab_id).is_none() {
+        return Err(format!("unknown tab: {tab_id}"));
+    }
+    // A chain is a label. Hand-off tags the next tab after it has started.
+    store.set_tab_chain(&tab_id, chain)
+}
+
+/// Open a Planner (Eagle-Eye 1) or Implementer (Eagle-Eye 2) draft at step 1.
+#[tauri::command]
+pub fn start_eagle_eye(
+    kind: String,
+    cwd: String,
+    roles: State<Mutex<RolesStore>>,
+    store: State<Mutex<StateStore>>,
+) -> Result<TabDetail, String> {
+    let kind = kind.trim().to_ascii_lowercase();
+    let (role_id, total) = match kind.as_str() {
+        "eagle1" => ("role_planner", 4u32),
+        "eagle2" => ("role_implementer", 2u32),
+        _ => return Err("Eagle-Eye kind must be eagle1 or eagle2.".to_string()),
+    };
+    let role = {
+        let roles = roles.lock().map_err(|e| e.to_string())?;
+        roles
+            .role_by_id(role_id)
+            .cloned()
+            .ok_or_else(|| format!("unknown role: {role_id}"))
+    }?;
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    let tab_id = store.create_draft_tab(&role, cwd.trim(), true, None)?;
+    let chain_id = format!(
+        "ee_{}",
+        chrono::Utc::now().timestamp_millis()
+    );
+    store.set_tab_chain(
+        &tab_id,
+        Some(crate::store::ChainRef {
+            chain_id,
+            kind,
+            step: 1,
+            total,
+        }),
+    )?;
     let tab = store
         .tab_by_id(&tab_id)
         .cloned()
@@ -281,15 +354,8 @@ pub(crate) fn snapshot_from_store(store: &StateStore) -> AppStateSnapshot {
                 color: t.color.clone().unwrap_or_default(),
                 kind: t.kind.clone(),
                 terminal_launch: t.terminal_launch.clone(),
-                acp_session_id: t
-                    .session
-                    .as_ref()
-                    .map(|session| session.acp_session_id.clone()),
-                resume_session_id: t
-                    .answers
-                    .get("resumeSessionId")
-                    .map(|id| id.trim().to_string())
-                    .filter(|id| !id.is_empty()),
+                acp_session_id: crate::store::displayed_acp_session(t),
+                resume_session_id: crate::store::displayed_resume_session(t),
                 model: t.model.clone(),
                 worktree_branch: t.worktree.as_ref().map(|wt| {
                     crate::worktree::head_branch(std::path::Path::new(&wt.path))
@@ -298,6 +364,9 @@ pub(crate) fn snapshot_from_store(store: &StateStore) -> AppStateSnapshot {
                 worktree_path: t.worktree.as_ref().map(|wt| wt.path.clone()),
                 pipeline_run_id: t.pipeline_run_id.clone(),
                 provider: crate::provider::ProviderId::resolve(t.provider),
+                provider_notice: t.provider_notice.clone(),
+                chain: t.chain.clone(),
+                permission_note: t.permission_note.clone(),
             })
             .collect(),
         closed_tabs: store

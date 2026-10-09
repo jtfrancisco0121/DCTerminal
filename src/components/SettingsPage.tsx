@@ -1,13 +1,16 @@
 import { useEffect, useState } from "react";
 import {
+  getClaudeUsage,
   getRole,
   resetBuiltinRole,
   saveRole,
+  type UsageSnapshot,
   type ApprovalModeStatus,
   type CliDetectResult,
   type DiagnosticsStatus,
   type ModelList,
   type ModelSettings,
+  type ProviderModelSettings,
   type Role,
   type RoleSummary,
   type TerminalSettings,
@@ -16,11 +19,13 @@ import {
 import { normalizeTheme, THEMES } from "../theme";
 import { DevToolsPanel } from "../DevToolsPanel";
 import { shortcutRows, type Platform } from "../keymap";
-import { DEFAULT_MODEL_ID } from "../models";
+import { CLAUDE_DEFAULT_MODEL_ID, DEFAULT_MODEL_ID } from "../models";
+import type { ProviderId } from "../provider/types";
 import { ModelPicker } from "./ModelPicker";
 import { ProvidersSettingsSection } from "./ProvidersSettings";
 import type { ProvidersState } from "../provider/useProviders";
 import type { NotificationSettings } from "../notify/agentNotify";
+import { formatReset, formatSeen, limitTone } from "../usage/limits";
 import { APP_VERSION, rolePermissionSummary } from "../workspaceView";
 
 type Props = {
@@ -35,8 +40,9 @@ type Props = {
   terminalSettings: TerminalSettings | null;
   onTerminalSettings: (next: TerminalSettings) => void;
   modelList?: ModelList | null;
-  modelSettings?: ModelSettings | null;
-  onModelSettings?: (next: ModelSettings) => void;
+  claudeModelList?: ModelList | null;
+  modelSettings?: ProviderModelSettings | null;
+  onModelSettings?: (provider: ProviderId, next: ModelSettings) => void;
   onRefreshModels?: () => void;
   modelsRefreshing?: boolean;
   approvalMode: ApprovalModeStatus | null;
@@ -60,6 +66,7 @@ export const SETTINGS_CATEGORIES = [
   "Models",
   "Terminal",
   "Permissions",
+  "Usage",
   "Notifications",
   "Shortcuts",
   "Data",
@@ -87,6 +94,7 @@ export function SettingsPage({
   terminalSettings,
   onTerminalSettings,
   modelList = null,
+  claudeModelList = null,
   modelSettings = null,
   onModelSettings,
   onRefreshModels,
@@ -108,7 +116,24 @@ export function SettingsPage({
   const [editTemplate, setEditTemplate] = useState("");
   const [roleBusy, setRoleBusy] = useState(false);
   const [roleMessage, setRoleMessage] = useState<string | null>(null);
+  const [usage, setUsage] = useState<UsageSnapshot | null>(null);
+  const [usageError, setUsageError] = useState<string | null>(null);
   const rows = shortcutRows(platform);
+
+  useEffect(() => {
+    if (category !== "Usage") return;
+    let cancelled = false;
+    getClaudeUsage()
+      .then((snap) => {
+        if (!cancelled) setUsage(snap);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setUsageError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [category]);
 
   useEffect(() => {
     if (!selectedId) return;
@@ -264,73 +289,50 @@ export function SettingsPage({
           {category === "Models" && (
             <section className="settings-section" aria-label="Models">
               <h3>Models</h3>
-              {(() => {
-                const models = modelList?.models ?? [];
-                const current = modelSettings ?? { defaultModel: DEFAULT_MODEL_ID, roleModels: {} };
-                const roleRows = [
+              <p className="hint">
+                New tabs use the role&apos;s model, or the default when the role has none. Each tab
+                can override this from its header. Claude and Cursor keep separate defaults.
+              </p>
+              <ModelSettingsBlock
+                title="Claude"
+                models={claudeModelList?.models ?? []}
+                sourceNote={claudeModelSource(claudeModelList)}
+                error={claudeModelList?.error}
+                current={
+                  modelSettings?.claude ?? {
+                    defaultModel: CLAUDE_DEFAULT_MODEL_ID,
+                    roleModels: {},
+                  }
+                }
+                fallbackId={CLAUDE_DEFAULT_MODEL_ID}
+                roleRows={[
+                  ...roles.map((role) => ({ id: role.id, name: role.name })),
+                  { id: "claude-cli", name: "Claude Code tabs" },
+                ]}
+                disabled={!onModelSettings}
+                onChange={(next) => onModelSettings?.("claude", next)}
+              />
+              <ModelSettingsBlock
+                title="Cursor"
+                models={modelList?.models ?? []}
+                sourceNote={cursorModelSource(modelList)}
+                error={modelList?.error}
+                current={
+                  modelSettings?.cursor ?? { defaultModel: DEFAULT_MODEL_ID, roleModels: {} }
+                }
+                fallbackId={DEFAULT_MODEL_ID}
+                roleRows={[
                   ...roles.map((role) => ({ id: role.id, name: role.name })),
                   { id: "cursor-cli", name: "Cursor CLI tabs" },
-                ];
-                return (
-                  <>
-                    <p className="hint">
-                      New tabs use the role&apos;s model, or the default model when the role has none.
-                      Each tab can override this from its header.
-                    </p>
-                    <div className="settings-model-row">
-                      <span className="settings-model-name">Default model</span>
-                      <ModelPicker
-                        models={models}
-                        value={current.defaultModel}
-                        ariaLabel="Default model"
-                        disabled={!onModelSettings}
-                        onChange={(model) =>
-                          onModelSettings?.({ ...current, defaultModel: model ?? DEFAULT_MODEL_ID })
-                        }
-                      />
-                    </div>
-                    {roleRows.map((row) => (
-                      <div className="settings-model-row" key={row.id}>
-                        <span className="settings-model-name">{row.name}</span>
-                        <ModelPicker
-                          models={models}
-                          value={current.roleModels[row.id] ?? null}
-                          inherited={{ model: current.defaultModel, label: "Default model" }}
-                          ariaLabel={`Model for ${row.name}`}
-                          disabled={!onModelSettings}
-                          onChange={(model) => {
-                            const roleModels = { ...current.roleModels };
-                            if (model === null) delete roleModels[row.id];
-                            else roleModels[row.id] = model;
-                            onModelSettings?.({ ...current, roleModels });
-                          }}
-                        />
-                      </div>
-                    ))}
-                    <div className="button-row">
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        onClick={onRefreshModels}
-                        disabled={!onRefreshModels || modelsRefreshing}
-                      >
-                        {modelsRefreshing ? "Refreshing…" : "Refresh model list"}
-                      </button>
-                      <span className="hint">
-                        {models.length} models
-                        {modelList?.source === "cli"
-                          ? " from agent --list-models"
-                          : modelList?.source === "cache"
-                            ? " (cached list)"
-                            : modelList?.source === "fallback"
-                              ? " (built-in list; agent --list-models was not available)"
-                              : ""}
-                      </span>
-                    </div>
-                    {modelList?.error && <p className="hint">{modelList.error}</p>}
-                  </>
-                );
-              })()}
+                ]}
+                disabled={!onModelSettings}
+                onChange={(next) => onModelSettings?.("cursor", next)}
+                refresh={
+                  onRefreshModels
+                    ? { busy: !!modelsRefreshing, onClick: onRefreshModels }
+                    : null
+                }
+              />
             </section>
           )}
           {category === "Terminal" && (
@@ -408,7 +410,8 @@ export function SettingsPage({
                 Run mode replaces only the role&apos;s mode flag. --approve-mcps and --trust stay on
                 every role terminal. Default keeps the role&apos;s own flags. A plain Terminal tab
                 that runs agent takes no extra flags. There is no CLI flag that denies writes while
-                still allowing the shell, so PR Reviewer keeps the CLI&apos;s own approval prompts.
+                still allowing the shell. On Cursor terminals, Default is --plan for the Planner and
+                --yolo for every other role. Claude terminals ignore this override.
               </p>
             </section>
           )}
@@ -416,21 +419,16 @@ export function SettingsPage({
             <section className="settings-section" aria-label="Permissions">
               <h3>Permissions</h3>
               <p className="hint">
-                DCTerminal follows your global Cursor CLI approval setting. It never
-                writes <code>~/.cursor/cli-config.json</code> and does not override{" "}
-                <code>approvalMode</code>.
+                Every role runs with full permissions. Answers are allow-once, so
+                nothing is written to a repo&apos;s settings. Claude: bypass, auto, or
+                plan per role. Cursor chat is unrestricted; Cursor terminals use
+                --plan for the Planner and --yolo otherwise.
               </p>
-              {approvalMode?.kind === "unrestricted" && (
-                <p className="error">
-                  Cursor CLI is set to Run Everything, so role permission rules are
-                  off. Change it in Cursor CLI settings to enable them.
-                </p>
-              )}
               {approvalMode?.kind === "allowlist" && (
                 <p className="hint">
-                  Under allowlist, file creates and edits are not routed through
-                  DCTerminal. Only shell, delete, fetch, and MCP prompts reach role
-                  policy.
+                  Cursor CLI allowlist still applies inside Cursor terminals.
+                  Claude tabs do not use that file. File creates and edits are not
+                  routed through DCTerminal.
                 </p>
               )}
               {approvalMode?.approvalMode && (
@@ -464,6 +462,41 @@ export function SettingsPage({
                 <p className="hint">Off by default. File contents and secrets are redacted.</p>
                 {diagnostics?.lastError && <p className="error">{diagnostics.lastError}</p>}
               </div>
+            </section>
+          )}
+          {category === "Usage" && (
+            <section className="settings-section" aria-label="Usage">
+              <h3>Usage</h3>
+              <p className="hint">
+                Updated by Claude chat tabs; terminal tabs don&apos;t report usage.
+              </p>
+              {usageError && <p className="error">{usageError}</p>}
+              {usage && usage.windows.length === 0 && (
+                <p className="hint">Claude usage not reported yet.</p>
+              )}
+              {usage?.windows.map((window) => {
+                const pct = window.utilization;
+                const width = pct == null ? 0 : Math.max(0, Math.min(100, pct));
+                const tone = limitTone(window);
+                const reset = formatReset(window.resetsAt);
+                return (
+                  <div key={window.rateLimitType} className="usage-window">
+                    <div className="usage-window-head">
+                      <span>
+                        {window.label}
+                        {pct == null ? "" : ` ${Math.round(pct)}%`}
+                      </span>
+                      <span className="hint">
+                        {reset ? `resets ${reset}` : "reset time not reported"}
+                        {window.seenAtMs ? ` · ${formatSeen(window.seenAtMs)}` : ""}
+                      </span>
+                    </div>
+                    <div className="usage-meter" aria-hidden>
+                      <span className={`usage-meter-fill usage-meter-${tone}`} style={{ width: `${width}%` }} />
+                    </div>
+                  </div>
+                );
+              })}
             </section>
           )}
           {category === "Notifications" && (
@@ -595,6 +628,95 @@ export function SettingsPage({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function cursorModelSource(list: ModelList | null): string {
+  if (!list) return "";
+  if (list.source === "cli") return " from agent --list-models";
+  if (list.source === "cache") return " (cached list)";
+  if (list.source === "fallback") return " (built-in list; agent --list-models was not available)";
+  return "";
+}
+
+function claudeModelSource(list: ModelList | null): string {
+  if (!list) return "";
+  if (list.source === "cache") return " from the last Claude chat";
+  if (list.source === "fallback") return " (built-in aliases; a Claude chat updates this list)";
+  return "";
+}
+
+function ModelSettingsBlock({
+  title,
+  models,
+  sourceNote,
+  error,
+  current,
+  fallbackId,
+  roleRows,
+  disabled,
+  onChange,
+  refresh = null,
+}: {
+  title: string;
+  models: ModelList["models"];
+  sourceNote: string;
+  error?: string | null;
+  current: ModelSettings;
+  fallbackId: string;
+  roleRows: { id: string; name: string }[];
+  disabled: boolean;
+  onChange: (next: ModelSettings) => void;
+  refresh?: { busy: boolean; onClick: () => void } | null;
+}) {
+  return (
+    <div className="settings-subsection">
+      <h4>{title}</h4>
+      <div className="settings-model-row">
+        <span className="settings-model-name">Default model</span>
+        <ModelPicker
+          models={models}
+          value={current.defaultModel}
+          ariaLabel={`${title} default model`}
+          disabled={disabled}
+          onChange={(model) => onChange({ ...current, defaultModel: model ?? fallbackId })}
+        />
+      </div>
+      {roleRows.map((row) => (
+        <div className="settings-model-row" key={`${title}-${row.id}`}>
+          <span className="settings-model-name">{row.name}</span>
+          <ModelPicker
+            models={models}
+            value={current.roleModels[row.id] ?? null}
+            inherited={{ model: current.defaultModel, label: "Default model" }}
+            ariaLabel={`${title} model for ${row.name}`}
+            disabled={disabled}
+            onChange={(model) => {
+              const roleModels = { ...current.roleModels };
+              if (model === null) delete roleModels[row.id];
+              else roleModels[row.id] = model;
+              onChange({ ...current, roleModels });
+            }}
+          />
+        </div>
+      ))}
+      <div className="button-row">
+        {refresh && (
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={refresh.onClick}
+            disabled={refresh.busy}
+          >
+            {refresh.busy ? "Refreshing…" : "Refresh Cursor model list"}
+          </button>
+        )}
+        <span className="hint">
+          {models.length} models{sourceNote}
+        </span>
+      </div>
+      {error && <p className="hint">{error}</p>}
     </div>
   );
 }

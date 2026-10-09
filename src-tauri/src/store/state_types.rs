@@ -15,6 +15,30 @@ pub struct AppStateFile {
     pub layout: LayoutState,
     #[serde(default)]
     pub pipeline_runs: Vec<PipelineRun>,
+    /// One-time migrations. Missing on old files, so `claude_first` starts false.
+    #[serde(default)]
+    pub migrations: Migrations,
+}
+
+/// Eagle-Eye position on a tab or a hand-off (Phase 9).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChainRef {
+    pub chain_id: String,
+    /// `eagle1` or `eagle2`.
+    pub kind: String,
+    pub step: u32,
+    pub total: u32,
+}
+
+/// Flags for one-time data migrations. `Default` is all false so an old
+/// file that omits the object still migrates. A brand-new file sets
+/// `claude_first` itself.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Migrations {
+    #[serde(default)]
+    pub claude_first: bool,
 }
 
 /// Linked multi-tab pipeline (eagle-eye overview + stage worker tabs).
@@ -118,6 +142,8 @@ impl Default for AppStateFile {
             closed_tabs: Vec::new(),
             layout: LayoutState::default(),
             pipeline_runs: Vec::new(),
+            // Nothing to migrate in a file we are creating now.
+            migrations: Migrations { claude_first: true },
         }
     }
 }
@@ -162,6 +188,14 @@ pub struct ClosedTabRecord {
     /// Session id per provider (the legacy single id lands in `cursor`).
     #[serde(default, skip_serializing_if = "crate::provider::ProviderSessions::is_empty")]
     pub sessions: crate::provider::ProviderSessions,
+    /// Shown once, then cleared. Migration and config-dir mismatch use this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_notice: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain: Option<ChainRef>,
+    /// Set when Claude could not use the role's permission mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_note: Option<String>,
 }
 
 /// Persisted tab snapshot (blueprint §17.2 `state.json`).
@@ -215,6 +249,12 @@ pub struct TabRecord {
     /// Session id per provider (the legacy single id lands in `cursor`).
     #[serde(default, skip_serializing_if = "crate::provider::ProviderSessions::is_empty")]
     pub sessions: crate::provider::ProviderSessions,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_notice: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain: Option<ChainRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_note: Option<String>,
 }
 
 pub fn default_tab_kind() -> String {

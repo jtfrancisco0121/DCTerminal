@@ -251,6 +251,11 @@ export type TabSummary = {
   pipelineRunId?: string | null;
   /** "claude" | "cursor". Tabs saved before providers report "cursor". */
   provider?: ProviderId;
+  /** One-line notice (migration, or the Claude config folder changed). */
+  providerNotice?: string | null;
+  chain?: import("./handoff/chains").ChainRef | null;
+  /** Set when Claude could not take the role's permission mode. */
+  permissionNote?: string | null;
 };
 
 export type PipelineRun = {
@@ -337,6 +342,25 @@ export async function newDraftTab(
   return invoke<{ tab: TabRecord }>("new_draft_tab", { roleId, cwd });
 }
 
+export async function ackProviderNotice(tabId: string): Promise<void> {
+  return invoke("ack_provider_notice", { tabId });
+}
+
+export async function setTabChain(
+  tabId: string,
+  chain: import("./handoff/chains").ChainRef | null,
+): Promise<void> {
+  return invoke("set_tab_chain", { tabId, chain });
+}
+
+/** Opens a Planner (eagle1) or Implementer (eagle2) draft at step 1. */
+export async function startEagleEye(
+  kind: "eagle1" | "eagle2",
+  cwd: string,
+): Promise<{ tab: TabRecord }> {
+  return invoke("start_eagle_eye", { kind, cwd });
+}
+
 export async function getFormRecall(
   roleId: string,
 ): Promise<{ cwd: string; values: Record<string, string> }> {
@@ -365,6 +389,17 @@ export async function roleSessionStart(
     resendStartup: resendStartup ?? false,
     resumeSessionId: resumeSessionId ?? null,
   });
+}
+
+export type ClaudeHistoryView = {
+  entries: import("./cursorHistory").CursorHistoryEntry[];
+  configDir: string;
+  configDisplay: string;
+  exists: boolean;
+};
+
+export async function listClaudeHistory(cwd: string): Promise<ClaudeHistoryView> {
+  return invoke("list_claude_history", { cwd });
 }
 
 export async function listCursorCliHistory(
@@ -716,6 +751,10 @@ export type PlanRequestEvent = {
   jsonRpcId: number;
   title: string;
   entries: { content: string; status: string; priority?: string }[];
+  /** Claude ExitPlanMode body. Absent on a Cursor plan card. */
+  markdown?: string | null;
+  /** Reject option. Present means Keep planning, never Accept. */
+  keepOptionId?: string | null;
 };
 
 export function listenPlanRequests(
@@ -795,6 +834,7 @@ export type HandoffSaveInput = {
   truncated: boolean;
   warning: string | null;
   planField: string | null;
+  chain?: import("./handoff/chains").ChainRef | null;
 };
 
 export async function handoffSave(input: HandoffSaveInput): Promise<HandoffRecord> {
@@ -1065,6 +1105,8 @@ export type ModelEntry = {
   id: string;
   label: string;
   fast: boolean;
+  /** Extra note, e.g. Fable's "may use usage credits". */
+  badge?: string | null;
 };
 
 export type ModelList = {
@@ -1080,6 +1122,11 @@ export type ModelSettings = {
   roleModels: Record<string, string>;
 };
 
+export type ProviderModelSettings = {
+  cursor: ModelSettings;
+  claude: ModelSettings;
+};
+
 export type ModelVia =
   | "unchanged"
   | "configOption"
@@ -1093,16 +1140,22 @@ export type SetModelResult = {
   restarted: boolean;
 };
 
-export async function listModels(refresh = false): Promise<ModelList> {
-  return invoke<ModelList>("list_models", { refresh });
+export async function listModels(
+  provider: "cursor" | "claude" = "cursor",
+  refresh = false,
+): Promise<ModelList> {
+  return invoke<ModelList>("list_models", { provider, refresh });
 }
 
-export async function getModelSettings(): Promise<ModelSettings> {
-  return invoke<ModelSettings>("get_model_settings");
+export async function getModelSettings(): Promise<ProviderModelSettings> {
+  return invoke<ProviderModelSettings>("get_model_settings");
 }
 
-export async function setModelSettings(models: ModelSettings): Promise<ModelSettings> {
-  return invoke<ModelSettings>("set_model_settings", { models });
+export async function setModelSettings(
+  models: ModelSettings,
+  provider: "cursor" | "claude" = "cursor",
+): Promise<ModelSettings> {
+  return invoke<ModelSettings>("set_model_settings", { models, provider });
 }
 
 /** Per-tab override. `null` clears it. Returns the effective model. */
@@ -1238,6 +1291,16 @@ export type RevertOutcome = {
   reverted: string[];
   skipped: { path: string; reason: string }[];
 };
+
+export type UsageSnapshot = {
+  configDir: string;
+  windows: import("./usage/limits").RateWindow[];
+  contextByTab: Record<string, { used: number; size: number }>;
+};
+
+export async function getClaudeUsage(): Promise<UsageSnapshot> {
+  return invoke<UsageSnapshot>("get_claude_usage");
+}
 
 export async function changesList(tabId: string, scope: ChangeScope): Promise<ChangeSet> {
   return invoke<ChangeSet>("changes_list", { tabId, scope });

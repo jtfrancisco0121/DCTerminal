@@ -106,14 +106,16 @@ pub fn read_approval_mode_at(path: &Path) -> ApprovalModeStatus {
 pub fn status_from_value(value: &Value, config_path: Option<String>) -> ApprovalModeStatus {
     let raw = extract_approval_mode(value);
     let kind = classify_approval_mode(raw.as_deref());
-    let role_rules_off = kind == ApprovalModeKind::Unrestricted;
+    // Role rules are retired. approvalMode is still read so Settings can
+    // show it; it no longer turns a warning on.
+    let role_rules_off = false;
     let note = match kind {
         ApprovalModeKind::Unrestricted => Some(
-            "Cursor CLI is set to Run Everything, so DCTerminal's role permission rules are off. Change it in Cursor CLI settings to enable them."
+            "Cursor CLI approvalMode is unrestricted. DCTerminal still answers allow-once and does not write project settings."
                 .to_string(),
         ),
         ApprovalModeKind::Allowlist => Some(
-            "Under allowlist, file creates and edits are not routed through DCTerminal. Only shell, delete, fetch, and MCP prompts reach role policy."
+            "Cursor CLI approvalMode is allowlist. DCTerminal still answers any permission request it receives with allow-once."
                 .to_string(),
         ),
         ApprovalModeKind::Other => Some(format!(
@@ -192,12 +194,12 @@ mod tests {
             Some("fixture".into()),
         );
         assert_eq!(unrestricted.kind, ApprovalModeKind::Unrestricted);
-        assert!(unrestricted.role_rules_off);
+        assert!(!unrestricted.role_rules_off);
         assert!(unrestricted
             .note
             .as_deref()
             .unwrap()
-            .contains("Run Everything"));
+            .contains("allow-once"));
 
         let allowlist = status_from_value(
             &serde_json::from_str(
@@ -212,7 +214,7 @@ mod tests {
             .note
             .as_deref()
             .unwrap()
-            .contains("creates and edits"));
+            .contains("allow-once"));
     }
 
     #[test]
