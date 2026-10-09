@@ -130,11 +130,11 @@ pub fn role_session_start(
         )
     };
     if provider.id() == ProviderId::Claude {
-        // Claude chat lands in Phase 4; until then say so instead of
-        // silently running another provider.
+        // Missing `claude` or adapter: say which and how to install it
+        // before the tab is touched.
         if let Err(message) = provider.acp_command(None) {
             return Ok(empty_start(vec![FieldError {
-                key: "_provider".to_string(),
+                key: "_cli".to_string(),
                 message,
             }]));
         }
@@ -159,8 +159,19 @@ pub fn role_session_start(
         }
     }
 
-    let mode_id = load_mode_id(&state_store, tab_id.as_deref(), &bind, &role.default_mode)?;
-    let model = crate::models::model_for_tab(&state_store, &settings, tab_id.as_deref(), &role.id)?;
+    // Claude: the per-role mode table (Decisions), never the Cursor mode.
+    let mode_id = if provider.id() == ProviderId::Claude {
+        provider.mode_for_role(&role.id, &role.default_mode, &[])
+    } else {
+        load_mode_id(&state_store, tab_id.as_deref(), &bind, &role.default_mode)?
+    };
+    let model = crate::models::model_for_tab_provider(
+        &state_store,
+        &settings,
+        tab_id.as_deref(),
+        &role.id,
+        provider.id(),
+    )?;
     let (client, replay_notes, model_via) = match connect_client(
         provider.clone(),
         &path,

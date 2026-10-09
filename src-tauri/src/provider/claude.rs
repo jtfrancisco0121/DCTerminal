@@ -15,8 +15,10 @@
 //! `--disallowedTools`, `--cloud`, `--bg`, `--settings`, `--continue`.
 //! The Settings run-mode override is a Cursor setting and is ignored here.
 //!
-//! Claude chat lands in Phase 4; until then `acp_command` returns a clear
-//! "not available yet" error.
+//! Chat (Phase 4) spawns `claude-agent-acp` with `CLAUDE_CODE_EXECUTABLE` set
+//! to the detected `claude` and the same `CLAUDE_CONFIG_DIR`. No
+//! `authenticate` call: the adapter uses Claude Code's own login and
+//! advertises no auth methods (captured 2026-10-09, adapter 0.88.0).
 
 use super::claude_config::{claude_env, resolve_claude_config_dir, ConfigDirInfo};
 use super::claude_detect::{
@@ -30,11 +32,20 @@ use crate::acp::request_handler::is_permission_method;
 use crate::cli_detect::LoginStatus;
 use crate::store::settings_store::ClaudeProviderSettings;
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-/// Shown when a Claude chat tab is started before Phase 4 lands.
-pub const CLAUDE_CHAT_PENDING: &str = "Claude chat tabs are not available in this build yet. \
-     Open this role as a Terminal, or switch this tab to Cursor on the Start card.";
+/// The adapter runs `claude` through this env var instead of its bundled binary.
+pub const CLAUDE_CODE_EXECUTABLE: &str = "CLAUDE_CODE_EXECUTABLE";
+
+/// Shown when `claude-agent-acp` is not installed.
+pub fn adapter_missing_message() -> String {
+    format!(
+        "Claude chat needs the Claude Code ACP adapter (claude-agent-acp), which was not found. \
+         Install it in a terminal with `{}`, or set DCT_CLAUDE_ACP_PATH to it. Then Retry. \
+         Claude terminal tabs work without it.",
+        super::claude_detect::adapter_install_command()
+    )
+}
 
 /// The model alias that means "the account's default": no `--model` flag.
 pub const CLAUDE_DEFAULT_MODEL: &str = "default";
@@ -116,6 +127,48 @@ impl ClaudeProvider {
     pub fn env(&self) -> Vec<(String, String)> {
         claude_env(&self.config)
     }
+
+    /// Env for the ACP adapter: `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_EXECUTABLE`,
+    /// and a PATH that can find `node` (the adapter is a `#!/usr/bin/env node`
+    /// script and a GUI app on macOS does not inherit the shell PATH).
+    pub fn adapter_env(&self, adapter: &Path, claude: &Path) -> Vec<(String, String)> {
+        let mut env = self.env();
+        env.push((
+            CLAUDE_CODE_EXECUTABLE.to_string(),
+            claude.display().to_string(),
+        ));
+        let inherited = std::env::var("PATH").unwrap_or_default();
+        env.push((
+            "PATH".to_string(),
+            adapter_path_var(adapter, claude, &inherited),
+        ));
+        env
+    }
+}
+
+/// PATH for the adapter: the adapter's and `claude`'s folders and the usual
+/// Homebrew / local bins first, then the inherited PATH. Duplicates dropped.
+pub fn adapter_path_var(adapter: &Path, claude: &Path, inherited: &str) -> String {
+    let sep = if cfg!(windows) { ';' } else { ':' };
+    let mut parts: Vec<String> = Vec::new();
+    let mut push = |dir: String| {
+        if !dir.is_empty() && !parts.contains(&dir) {
+            parts.push(dir);
+        }
+    };
+    for path in [adapter, claude] {
+        if let Some(dir) = path.parent() {
+            push(dir.display().to_string());
+        }
+    }
+    if !cfg!(windows) {
+        push("/opt/homebrew/bin".to_string());
+        push("/usr/local/bin".to_string());
+    }
+    for dir in inherited.split(sep) {
+        push(dir.to_string());
+    }
+    parts.join(&sep.to_string())
 }
 
 impl Provider for ClaudeProvider {
@@ -145,8 +198,16 @@ impl Provider for ClaudeProvider {
         claude_login_status(claude.as_deref(), &self.config)
     }
 
+    /// `claude-agent-acp` takes no model flag; the model is set on the
+    /// session with `session/set_config_option` (category `model`).
     fn acp_command(&self, _model: Option<&str>) -> Result<ProgramArgs, String> {
-        Err(CLAUDE_CHAT_PENDING.to_string())
+        let claude = resolve_claude(self.settings.claude_path.as_deref())
+            .ok_or_else(|| self.missing_message())?;
+        let adapter = resolve_adapter(self.settings.adapter_path.as_deref())
+            .ok_or_else(adapter_missing_message)?;
+        let mut command = ProgramArgs::new(adapter.display().to_string(), Vec::new());
+        command.env = self.adapter_env(&adapter, &claude);
+        Ok(command)
     }
 
     /// The adapter uses Claude Code's own login; DCTerminal never calls
@@ -155,12 +216,23 @@ impl Provider for ClaudeProvider {
         None
     }
 
+    /// Keep `bypassPermissions` on offer (Decisions: roles run with full
+    /// permissions). DCTerminal never passes `false` here.
     fn session_new_meta(&self, _opts: &SessionOpts) -> Option<Value> {
-        None
+        Some(serde_json::json!({
+            "claudeCode": { "options": { "allowDangerouslySkipPermissions": true } }
+        }))
     }
 
-    fn mode_for_role(&self, role_id: &str, _role_mode: &str, _available: &[String]) -> String {
-        claude_role_mode(role_id).to_string()
+    /// Mode from the role table; `default` when the session did not
+    /// advertise it (e.g. bypass disabled), with every request auto-approved.
+    fn mode_for_role(&self, role_id: &str, _role_mode: &str, available: &[String]) -> String {
+        let wanted = claude_role_mode(role_id);
+        if available.is_empty() || available.iter().any(|m| m == wanted) {
+            wanted.to_string()
+        } else {
+            "default".to_string()
+        }
     }
 
     fn classify_request(&self, method: &str, _params: &Value) -> AgentRequestKind {
@@ -220,9 +292,80 @@ mod tests {
     }
 
     #[test]
-    fn claude_chat_says_it_is_not_available_yet() {
+    fn session_new_keeps_bypass_on_offer() {
+        let meta = ClaudeProvider::default()
+            .session_new_meta(&SessionOpts::default())
+            .unwrap();
+        assert_eq!(
+            meta["claudeCode"]["options"]["allowDangerouslySkipPermissions"],
+            serde_json::json!(true)
+        );
+    }
+
+    #[test]
+    fn mode_falls_back_to_default_when_not_advertised() {
         let p = ClaudeProvider::default();
-        assert_eq!(p.acp_command(None).unwrap_err(), CLAUDE_CHAT_PENDING);
+        let all: Vec<String> = [
+            "default",
+            "acceptEdits",
+            "plan",
+            "auto",
+            "bypassPermissions",
+        ]
+        .iter()
+        .map(|m| m.to_string())
+        .collect();
+        assert_eq!(p.mode_for_role("role_general", "agent", &all), "auto");
+        assert_eq!(p.mode_for_role("role_planner", "plan", &all), "plan");
+        assert_eq!(
+            p.mode_for_role("role_implementer", "agent", &all),
+            "bypassPermissions"
+        );
+        let no_bypass: Vec<String> = all
+            .iter()
+            .filter(|m| *m != "bypassPermissions")
+            .cloned()
+            .collect();
+        assert_eq!(
+            p.mode_for_role("role_implementer", "agent", &no_bypass),
+            "default"
+        );
+        assert_eq!(
+            p.mode_for_role("role_implementer", "agent", &[]),
+            "bypassPermissions"
+        );
+    }
+
+    #[test]
+    fn non_claude_model_ids_never_reach_claude_model() {
+        for model in ["composer-2.5", "gpt-5", "auto", "claude-4.5-sonnet"] {
+            assert_eq!(
+                claude_terminal_args(&role("role_general", RunMode::Default, Some(model), None))
+                    .unwrap(),
+                vec!["--permission-mode", "auto"],
+                "{model}"
+            );
+        }
+        assert_eq!(
+            claude_terminal_args(&TerminalLaunch {
+                kind: TerminalKind::Plain,
+                model: Some("opus[1m]".into())
+            })
+            .unwrap(),
+            vec!["--model", "opus[1m]"]
+        );
+    }
+
+    #[test]
+    fn adapter_path_finds_node_next_to_homebrew() {
+        let path = adapter_path_var(
+            Path::new("/opt/homebrew/bin/claude-agent-acp"),
+            Path::new("/opt/homebrew/bin/claude"),
+            "/usr/bin:/bin:/opt/homebrew/bin",
+        );
+        if !cfg!(windows) {
+            assert_eq!(path, "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin");
+        }
     }
 
     fn role(
@@ -404,6 +547,60 @@ mod tests {
         assert_eq!(plans, missing.join("plans"));
         assert!(!plans.exists(), "plans dir must not be created");
         assert!(!missing.exists(), "config dir must not be created");
+    }
+
+    #[test]
+    fn adapter_env_has_claude_executable_and_config_dir() {
+        use super::super::claude_config::{resolve_with, CLAUDE_CONFIG_DIR};
+        let root = temp("adapter");
+        let config = root.join("account2");
+        std::fs::create_dir_all(&config).unwrap();
+        let mut p = provider_with(
+            &root,
+            resolve_with(None, Some(&config.display().to_string()), None),
+        );
+        let adapter = root.join("bin").join("claude-agent-acp");
+        std::fs::write(&adapter, "#!/usr/bin/env node\n").unwrap();
+        p.settings.adapter_path = Some(adapter.display().to_string());
+        let command = p.acp_command(Some("composer-2.5")).unwrap();
+        assert_eq!(command.program, adapter.display().to_string());
+        assert!(command.args.is_empty(), "no model flag for the adapter");
+        let get = |key: &str| {
+            command
+                .env
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.clone())
+        };
+        assert_eq!(get(CLAUDE_CONFIG_DIR), Some(p.config.path.clone()));
+        assert_eq!(
+            get(CLAUDE_CODE_EXECUTABLE),
+            Some(root.join("bin").join("claude").display().to_string())
+        );
+        assert!(get("ANTHROPIC_API_KEY").is_none());
+        assert!(get("PATH")
+            .unwrap()
+            .starts_with(&root.join("bin").display().to_string()));
+    }
+
+    #[test]
+    fn missing_adapter_says_how_to_install_it() {
+        let root = temp("noadapter");
+        let mut p = provider_with(
+            &root,
+            super::super::claude_config::resolve_with(None, None, Some(&root)),
+        );
+        p.settings.adapter_path = Some(root.join("nope").display().to_string());
+        if resolve_adapter(None).is_some() {
+            return; // a real adapter on this machine would be found first
+        }
+        let err = p.acp_command(None).unwrap_err();
+        assert!(
+            err.contains(
+                "npm install -g --omit=optional @agentclientprotocol/claude-agent-acp@0.88.0"
+            ),
+            "{err}"
+        );
     }
 
     #[test]

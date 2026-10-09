@@ -152,6 +152,45 @@ pub fn new_session_params(provider: &dyn Provider, cwd: &Path, opts: &SessionOpt
     params
 }
 
+/// Mode ids the session advertised (`modes.availableModes[].id`).
+pub fn advertised_modes(result: &Value) -> Vec<String> {
+    result
+        .get("modes")
+        .and_then(|m| m.get("availableModes"))
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(|m| m.get("id").and_then(Value::as_str).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Claude: a mode the session did not advertise (bypass disabled, `auto`
+/// unavailable for the account) falls back to `default`; requests are
+/// auto-approved either way. Cursor keeps the caller's mode.
+pub fn mode_to_set(provider: &dyn Provider, wanted: &str, result: &Value) -> String {
+    if provider.id() != crate::provider::ProviderId::Claude {
+        return wanted.to_string();
+    }
+    let available = advertised_modes(result);
+    if available.is_empty() || available.iter().any(|m| m == wanted) {
+        wanted.to_string()
+    } else {
+        "default".to_string()
+    }
+}
+
+/// Claude has no `authenticate` step, so a missing login surfaces as an
+/// error from `session/new` / `session/load`; mark it like Cursor's.
+fn mark_auth(provider: &dyn Provider, err: String) -> String {
+    if provider.id() == crate::provider::ProviderId::Claude && is_auth_failure(&err) {
+        format!("AUTH_ERROR: {err}")
+    } else {
+        err
+    }
+}
+
 /// FR-003–004, FR-009: initialize → (provider auth) → session/new → set_mode.
 pub fn handshake(
     conn: &mut AcpConnection,
@@ -165,12 +204,14 @@ pub fn handshake(
 
     run_auth_step(conn, provider)?;
 
-    let new_result = conn.call(
-        3,
-        "session/new",
-        new_session_params(provider, cwd, &SessionOpts::default()),
-        timeout,
-    )?;
+    let new_result = conn
+        .call(
+            3,
+            "session/new",
+            new_session_params(provider, cwd, &SessionOpts::default()),
+            timeout,
+        )
+        .map_err(|e| mark_auth(provider, e))?;
 
     let session_id = new_result
         .get("sessionId")
@@ -179,6 +220,7 @@ pub fn handshake(
         .to_string();
 
     let models = parse_session_models(&new_result);
+    let mode_id = mode_to_set(provider, mode_id, &new_result);
 
     conn.call(
         4,
@@ -190,7 +232,7 @@ pub fn handshake(
         timeout,
     )?;
 
-    Ok((session_id, mode_id.to_string(), models))
+    Ok((session_id, mode_id, models))
 }
 
 /// Resume one ACP session. Caller must already know `loadSession` may be false;
@@ -216,14 +258,17 @@ pub fn handshake_load(
     run_auth_step(conn, provider)?;
 
     let mut dispatch = LineDispatch::default();
-    let load_result = conn.call_with_dispatch(
-        3,
-        "session/load",
-        load_session_params(session_id, &cwd.display().to_string()),
-        LOAD_TIMEOUT,
-        &mut dispatch,
-        None,
-    )?;
+    let load_result = conn
+        .call_with_dispatch(
+            3,
+            "session/load",
+            load_session_params(session_id, &cwd.display().to_string()),
+            LOAD_TIMEOUT,
+            &mut dispatch,
+            None,
+        )
+        .map_err(|e| mark_auth(provider, e))?;
+    let mode_id = mode_to_set(provider, mode_id, &load_result);
 
     conn.call(
         4,
@@ -237,7 +282,7 @@ pub fn handshake_load(
 
     Ok((
         session_id.to_string(),
-        mode_id.to_string(),
+        mode_id,
         dispatch.notifications,
         parse_session_models(&load_result),
     ))

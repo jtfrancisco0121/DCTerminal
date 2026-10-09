@@ -83,6 +83,18 @@ fn run_prompt_turn(
                 let method = value.get("method").and_then(|m| m.as_str()).unwrap_or("");
                 let params = value.get("params").unwrap_or(&serde_json::Value::Null);
                 let kind = provider.classify_request(method, params);
+                if kind == AgentRequestKind::Permission
+                    && provider.id() == crate::provider::ProviderId::Claude
+                {
+                    let session_mtx = app_perm.state::<Mutex<SessionRegistry>>();
+                    return crate::commands::agent_requests::stage_claude_permission_request(
+                        &app_perm,
+                        &tab_for_perm,
+                        &session_id_for_perm,
+                        value,
+                        &session_mtx,
+                    );
+                }
                 if kind == AgentRequestKind::Permission {
                     let session_mtx = app_perm.state::<Mutex<SessionRegistry>>();
                     return stage_permission_request(
