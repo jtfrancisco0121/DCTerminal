@@ -14,6 +14,8 @@ Two suites live here.
 npx playwright install webkit chromium   # once
 npm run e2e:ui                            # type-check e2e/ui, then run every spec
 npx playwright test handoff --project=webkit --headed
+E2E_SLOWMO=350 npx playwright test --project=webkit --headed --workers=1   # watch it, slowed down
+npx playwright test --ui                  # step through each test; press ▶ to run
 npx playwright test -g "slash menu" --debug
 ```
 
