@@ -102,12 +102,6 @@ test("Escape closes the menu until the text changes, and Enter then sends nothin
 });
 
 test("Escape that closes the menu during a turn does not cancel the turn", async ({ app, page }) => {
-  test.fail(
-    true,
-    "known bug: the app's capture-phase keydown listener cancels the in-flight turn on Escape before the " +
-      "slash menu's own Escape handler runs (src/useAppShortcuts.ts:98-106, 109; " +
-      "src/composer/SlashCommandMenu.tsx:89)",
-  );
   const { composer, editor, padSend, status } = chat;
   // A pad send leaves the composer editable while the turn runs.
   await editor.fill("long job");

@@ -587,7 +587,8 @@ export function StartupForm({
   const padTextRef = useRef<Record<string, string>>({});
   if (activeTabId) padTextRef.current[activeTabId] = scratch.content;
   /** Up-arrow history, oldest first. The pad keeps the same sends, newest first, on disk. */
-  const composerHistory = useMemo(() => [...scratch.history].reverse(), [scratch.history]);
+  // scratch.history is newest first, the order historyNavigate walks.
+  const composerHistory = scratch.history;
   const padRef = useRef<HTMLTextAreaElement>(null);
   const terminalPadRef = useRef<TerminalPadHandle>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -2054,6 +2055,7 @@ export function StartupForm({
       // Pasted images go with this message only, so a --- chain's later steps send none.
       const images = chatImages.actions.take(tabId);
       if (!trimmed && images.length === 0) return "error" as const;
+      waiterRef.current.forget(tabId);
       const pending = waiterRef.current.expect(tabId);
       setHistoryCursor(-1);
       if (trimmed) {
@@ -2134,6 +2136,12 @@ export function StartupForm({
     if (!activeTabId || promptInFlight || permissionRequest || questionRequest) return;
     const started = chainStart(scratch.content);
     if (!started) return;
+    // Refuse the whole chain up front, so no step goes out before a blocked one.
+    const blocked = started.steps.map(blockedSlashCommand).find(Boolean);
+    if (blocked) {
+      patchRuntime(activeTabId, (rt) => ({ ...rt, promptError: blocked }));
+      return;
+    }
     const tabId = activeTabId;
     const padAtStart = scratch.content;
     chainAbortRef.current = false;
@@ -2163,11 +2171,13 @@ export function StartupForm({
     if (cursor.phase === "done" && padTextRef.current[tabId] === padAtStart) {
       scratch.setContent(tabId, "");
     }
-  }, [activeTabId, permissionRequest, questionRequest, promptInFlight, scratch, sendText]);
+  }, [activeTabId, patchRuntime, permissionRequest, questionRequest, promptInFlight, scratch, sendText]);
 
   const sendFromPad = useCallback(() => {
-    if (!activeTabId) return;
-    if (splitChainSteps(scratch.content).length > 1 && !followUp.trim()) {
+    // One turn at a time: a second send would be refused and must not end the running one.
+    if (!activeTabId || runtimesRef.current[activeTabId]?.promptInFlight) return;
+    const steps = splitChainSteps(scratch.content);
+    if (steps.length > 1 && !followUp.trim()) {
       void runChain();
       return;
     }
@@ -2175,14 +2185,16 @@ export function StartupForm({
       void sendFollowUp();
       return;
     }
-    const text = scratch.content;
+    const pad = scratch.content;
+    // A pad with one real step and stray --- lines sends just that step.
+    const text = steps.length === 1 ? steps[0] : pad;
     if (text.trim() || chatImages.actions.has(activeTabId)) {
       const tabId = activeTabId;
       // Sent text leaves the pad (Recent sends keeps it). If it never
       // reached the agent and the pad is still empty, put it back.
       scratch.setContent(tabId, "");
       void sendText(tabId, text, () => {
-        if (!padTextRef.current[tabId]) scratch.setContent(tabId, text);
+        if (!padTextRef.current[tabId]) scratch.setContent(tabId, pad);
       });
     }
   }, [activeTabId, chatImages.actions, followUp, runChain, scratch, sendFollowUp, sendText]);

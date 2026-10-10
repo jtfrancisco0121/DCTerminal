@@ -139,12 +139,6 @@ test("a duplicate name is refused with the backend's message", async ({ app, pag
 });
 
 test("Escape in the prompt form closes the form, not the whole library", async ({ app, page }) => {
-  test.fail(
-    true,
-    "known bug: the app's capture-phase shortcut listener turns Escape into closeDialog and closes the " +
-      "library before the form's own Escape handler runs, dropping the unsaved prompt " +
-      "(src/useAppShortcuts.ts:71-75, src/StartupForm.tsx:2518-2522, src/components/PromptLibraryDialog.tsx:142)",
-  );
   await quietChat(app, page, { handlers: promptLibraryHandlers });
   const dialog = await openLibrary(page);
   await dialog.getByRole("button", { name: "New prompt" }).click();

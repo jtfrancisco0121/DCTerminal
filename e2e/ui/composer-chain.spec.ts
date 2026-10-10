@@ -156,11 +156,6 @@ test("a chain with a /model step: the alert shows and Send steps is disabled", a
 });
 
 test("a chain with a /model step: the Mod+Enter shortcut sends nothing either", async ({ app, page }) => {
-  test.fail(
-    true,
-    "known bug: the app-level send shortcut calls sendFromPad -> runChain, which never checks " +
-      "blockedSlashCommandIn, so step 1 goes out before /model is refused (src/StartupForm.tsx:2157-2160, 2571)",
-  );
   const { editor, pad } = await quietChat(app, page);
   await editor.fill("tidy up\n---\n/model opus");
   await expect(pad.getByRole("button", { name: "Send steps" })).toBeDisabled();
@@ -171,11 +166,6 @@ test("a chain with a /model step: the Mod+Enter shortcut sends nothing either", 
 });
 
 test("trailing separators: a pad with one real step sends just that step", async ({ app, page }) => {
-  test.fail(
-    true,
-    "known bug: sendFromPad only chains when there are 2+ steps; with one step it sends the raw pad, " +
-      "so the --- lines reach the agent although the button says Send steps (src/StartupForm.tsx:2159, 2167)",
-  );
   const { turn, editor, pad } = await quietChat(app, page);
   await editor.fill("only step\n-----\n   \n---");
   await expect(pad.getByRole("button", { name: "Send steps" })).toBeVisible();
@@ -187,12 +177,6 @@ test("trailing separators: a pad with one real step sends just that step", async
 });
 
 test("after an earlier turn, step 2 still waits for step 1 to finish", async ({ app, page }) => {
-  test.fail(
-    true,
-    "known bug: createTurnWaiter keeps the outcome of a turn nobody awaited (the startup turn, or any " +
-      "earlier send's finish) in `early`, and the next chain step's expect() resolves from it at once, so " +
-      "step 2 is dispatched while step 1 is still running (src/scratch/turnWait.ts:42, src/StartupForm.tsx:2046)",
-  );
   // The usual path: the startup turn runs and finishes before the chain.
   const { editor, pad } = await readyChat(app, page);
   await editor.fill("first\n---\nsecond");

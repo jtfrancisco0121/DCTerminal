@@ -102,6 +102,8 @@ export function useSlashAutocomplete({ value, commands, onChange, textareaRef }:
     "aria-autocomplete": "list" as const,
     "aria-controls": open ? listId : undefined,
     "aria-activedescendant": open ? optionId(index) : undefined,
+    // While open, Escape closes the menu, not the turn or the dialog.
+    "data-own-escape": open ? "" : undefined,
   };
 
   const menu = open ? (

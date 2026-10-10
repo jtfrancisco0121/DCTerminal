@@ -46,11 +46,6 @@ test("Send is disabled for an empty or blank message, and Mod+Enter does nothing
 });
 
 test("Up recalls the most recent send first", async ({ app, page }) => {
-  test.fail(
-    true,
-    "known bug: composerHistory reverses scratch.history (already newest first) into oldest first, " +
-      "but historyNavigate expects newest first, so Up recalls the oldest send (src/StartupForm.tsx:582)",
-  );
   const { composer, turn } = await quietChat(app, page);
   for (const text of ["first prompt", "second prompt", "third prompt"]) {
     await composer.fill(text);
@@ -218,24 +213,15 @@ test("a chain is not started while a turn is in flight", async ({ app, page }) =
 });
 
 test("pad Send while a pad-sent turn is in flight does not end the running turn", async ({ app, page }) => {
-  test.fail(
-    true,
-    "known bug: after a pad send the pad Send stays enabled and sendFromPad does not check promptInFlight; " +
-      "Rust rejects the second prompt and the catch in sendText sets promptInFlight false, so the running " +
-      "turn looks finished (status Ready, Cancel disabled) (src/StartupForm.tsx:2157-2176, 2063-2072)",
-  );
   const { editor, padSend, status } = await quietChat(app, page);
   await editor.fill("long job");
   await padSend.click();
   await expect(status).toHaveText("Agent working…");
-  // What dev_session_send does in Rust while session.prompt_in_flight is set.
-  await app.handle("dev_session_send", () => {
-    throw new Error("a prompt is already running — wait or cancel the turn");
-  });
   await editor.fill("one more thing");
   await padSend.click();
-  await expect(page.getByText("a prompt is already running — wait or cancel the turn")).toBeVisible();
-  // The rejected text goes back into the pad.
+  await app.nextFrame();
+  // Nothing is sent while the turn runs; the text stays in the pad.
+  expect(await sentPrompts(app)).toEqual(["long job"]);
   await expect(editor).toHaveValue("one more thing");
   await expect(status).toHaveText("Agent working…", { timeout: 1000 });
   await expect(page.getByRole("button", { name: "Cancel turn" })).toBeEnabled({ timeout: 1000 });
