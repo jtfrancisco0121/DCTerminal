@@ -71,6 +71,13 @@ function paintFindHighlights(root: HTMLElement, query: string, current: HTMLElem
 }
 
 const markdownComponents: Components = {
+  // target=_blank lets the opener plugin open links in the system browser
+  // instead of navigating the app's own webview.
+  a: ({ href, children }) => (
+    <a href={href} target="_blank" rel="noreferrer noopener">
+      {children}
+    </a>
+  ),
   table: ({ children }) => (
     <div className="session-markdown-table-wrap">
       <table>{children}</table>

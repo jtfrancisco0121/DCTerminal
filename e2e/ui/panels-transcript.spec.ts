@@ -224,10 +224,6 @@ test.describe("transcript rendering", () => {
   // the chat render as plain <a href> (no `a` renderer in SessionTerminal markdownComponents),
   // so a click navigates the app's own webview away from DCTerminal.
   test("a link in the chat opens in the system browser", async ({ app, page }) => {
-    test.fail(
-      true,
-      "known bug: chat markdown links have no target=_blank/opener handler, so a click navigates the webview (src/SessionTerminal.tsx:73 markdownComponents)",
-    );
     // Same click hook the opener plugin injects into the real webview (init-iife.js, v2.7.0).
     await page.addInitScript(() => {
       window.addEventListener("click", (e) => {
