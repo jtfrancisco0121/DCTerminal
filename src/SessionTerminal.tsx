@@ -16,6 +16,7 @@ import type { PermissionRequestEvent, QuestionRequestEvent } from "./bridge";
 import { PermissionCard } from "./PermissionCard";
 import { QuestionCard } from "./components/QuestionCard";
 import { summarizeSessionActivity } from "./sessionActivity";
+import { lastAgentSegmentId } from "./sessionCards";
 import type { StreamSegment, ToolStatus } from "./transcript";
 import { ChatFindBar } from "./components/ChatFindBar";
 import { findAll, searchSegments } from "./search/textSearch";
@@ -305,12 +306,7 @@ export function SessionTerminal({
     promptInFlight,
     waitingPermission: !!permissionRequest,
   });
-  const lastAgentId = useMemo(() => {
-    for (let i = segments.length - 1; i >= 0; i -= 1) {
-      if (segments[i].kind === "agent" && segments[i].text.trim()) return segments[i].id;
-    }
-    return null;
-  }, [segments]);
+  const lastAgentId = useMemo(() => lastAgentSegmentId(segments), [segments]);
 
   const toolStatusLabel = (status?: ToolStatus): string => {
     switch (status) {
