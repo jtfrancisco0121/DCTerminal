@@ -109,3 +109,7 @@ The probe is ignored by a normal `cargo test`. It prints help text, `create-chat
 ```
 
 `agent` itself writes session files while the probe runs. That is the CLI, not DCTerminal.
+
+## Claude history
+
+Claude sessions are a separate list. DCTerminal reads `<configDir>/projects/*/*.jsonl` for the resolved Claude config folder (`providers.claude.configDir`, or `DCT_CLAUDE_CONFIG_DIR`, otherwise `~/.claude`). The scan is read-only. The history panel title follows the tab's provider, and a toggle shows the other list. Resume in the app uses `session/load`. Open in Claude Code runs `claude --resume <id>` with `CLAUDE_CONFIG_DIR` set. A Cursor session id is never passed to Claude.

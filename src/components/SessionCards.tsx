@@ -9,12 +9,15 @@ type PlanRequest = {
   jsonRpcId: number;
   title: string;
   entries: PlanEntry[];
+  markdown?: string | null;
+  keepOptionId?: string | null;
 };
 
 type HandoffOffer = {
   enabled: boolean;
   reason: string | null;
   targets?: HandoffTargetId[];
+  primaryTarget?: string | null;
   onSend: (target: HandoffTargetId) => void;
 };
 
@@ -38,6 +41,9 @@ export function SessionCards({
   handoff,
 }: Props) {
   const plan = cards.plan.length > 0 ? cards.plan : (planRequest?.entries ?? []);
+  const markdown = planRequest?.markdown?.trim() ?? "";
+  // Claude ExitPlanMode. Never offer Accept / "Yes" — implementation is a hand-off.
+  const claudeExit = markdown.length > 0 || !!planRequest?.keepOptionId;
   const tools = activeToolProgress(segments);
   const hasTools = tools.length > 0;
   const handoffActions = handoff ? (
@@ -45,12 +51,14 @@ export function SessionCards({
       enabled={handoff.enabled}
       reason={handoff.reason}
       targets={handoff.targets}
+      primaryTarget={handoff.primaryTarget}
       busy={busy}
       onSend={handoff.onSend}
     />
   ) : null;
   if (
     plan.length === 0 &&
+    !markdown &&
     cards.todos.length === 0 &&
     cards.tasks.length === 0 &&
     !hasTools &&
@@ -60,14 +68,27 @@ export function SessionCards({
   }
   return (
     <div className="session-cards">
-      {plan.length > 0 && (
+      {(plan.length > 0 || markdown) && (
         <Card title={planRequest?.title || "Plan"}>
-          <StatusList items={plan.map((entry) => ({
-            key: entry.content,
-            label: entry.content,
-            status: entry.status,
-          }))} />
-          {planRequest && onAcceptPlan && onRejectPlan && (
+          {markdown && <pre className="plan-markdown">{markdown}</pre>}
+          {plan.length > 0 && (
+            <StatusList items={plan.map((entry) => ({
+              key: entry.content,
+              label: entry.content,
+              status: entry.status,
+            }))} />
+          )}
+          {planRequest && claudeExit && (
+            <div className="button-row">
+              {handoffActions}
+              {onRejectPlan && (
+                <button type="button" className="secondary-button" disabled={busy} onClick={onRejectPlan}>
+                  Keep planning
+                </button>
+              )}
+            </div>
+          )}
+          {planRequest && !claudeExit && onAcceptPlan && onRejectPlan && (
             <div className="button-row">
               <button type="button" className="primary-button" disabled={busy} onClick={onAcceptPlan}>
                 Accept plan
@@ -77,7 +98,7 @@ export function SessionCards({
               </button>
             </div>
           )}
-          {handoffActions}
+          {!claudeExit && handoffActions}
         </Card>
       )}
       {cards.todos.length > 0 && (
@@ -89,10 +110,10 @@ export function SessionCards({
               status: todo.status,
             }))}
           />
-          {plan.length === 0 ? handoffActions : null}
+          {plan.length === 0 && !markdown ? handoffActions : null}
         </Card>
       )}
-      {plan.length === 0 && cards.todos.length === 0 && handoffActions && (
+      {plan.length === 0 && !markdown && cards.todos.length === 0 && handoffActions && (
         <Card title="Hand-off">{handoffActions}</Card>
       )}
       {cards.tasks.length > 0 && (

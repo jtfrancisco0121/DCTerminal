@@ -36,9 +36,14 @@ pub struct TabSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pipeline_run_id: Option<String>,    /// Provider this tab uses (`claude` | `cursor`). Legacy tabs report
-    /// `cursor` until the Task 6.3 migration.
+    pub pipeline_run_id: Option<String>,    /// Provider this tab uses (`claude` | `cursor`).
     pub provider: crate::provider::ProviderId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_notice: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain: Option<crate::store::ChainRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_note: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -66,8 +71,12 @@ pub struct TabDetail {
 }
 
 #[tauri::command]
-pub fn get_app_state(store: State<Mutex<StateStore>>) -> Result<AppStateSnapshot, String> {
-    let store = store.lock().map_err(|e| e.to_string())?;
+pub fn get_app_state(
+    window_id: Option<String>,
+    store: State<Mutex<StateStore>>,
+) -> Result<AppStateSnapshot, String> {
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    store.bind_window(window_id.as_deref());
     Ok(snapshot_from_store(&store))
 }
 
@@ -108,6 +117,7 @@ pub fn select_active_tab(
 #[tauri::command]
 pub fn close_tab(
     tab_id: String,
+    window_id: Option<String>,
     store: State<Mutex<StateStore>>,
     session: State<Mutex<SessionRegistry>>,
     terminals: State<Mutex<crate::pty::PtyRegistry>>,
@@ -118,6 +128,7 @@ pub fn close_tab(
     }
     crate::pty::kill_tab_pty(&terminals, &tab_id);
     let mut store = store.lock().map_err(|e| e.to_string())?;
+    store.bind_window(window_id.as_deref());
     store.close_tab(&tab_id)?;
     Ok(snapshot_from_store(&store))
 }
@@ -126,6 +137,7 @@ pub fn close_tab(
 pub fn new_draft_tab(
     role_id: String,
     cwd: String,
+    window_id: Option<String>,
     roles: State<Mutex<RolesStore>>,
     store: State<Mutex<StateStore>>,
 ) -> Result<TabDetail, String> {
@@ -137,7 +149,78 @@ pub fn new_draft_tab(
             .ok_or_else(|| format!("unknown role: {role_id}"))
     }?;
     let mut store = store.lock().map_err(|e| e.to_string())?;
+    store.bind_window(window_id.as_deref());
     let tab_id = store.create_draft_tab(&role, cwd.trim(), true, None)?;
+    let tab = store
+        .tab_by_id(&tab_id)
+        .cloned()
+        .ok_or_else(|| "draft tab missing after create".to_string())?;
+    Ok(TabDetail { tab })
+}
+
+/// Clear the one-line provider notice after the user has seen it.
+#[tauri::command]
+pub fn ack_provider_notice(
+    tab_id: String,
+    store: State<Mutex<StateStore>>,
+) -> Result<(), String> {
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    store.set_provider_notice(&tab_id, None)
+}
+
+/// Tag or clear an Eagle-Eye chain on a tab that is not running.
+#[tauri::command]
+pub fn set_tab_chain(
+    tab_id: String,
+    chain: Option<crate::store::ChainRef>,
+    store: State<Mutex<StateStore>>,
+) -> Result<(), String> {
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    if store.tab_by_id(&tab_id).is_none() {
+        return Err(format!("unknown tab: {tab_id}"));
+    }
+    // A chain is a label. Hand-off tags the next tab after it has started.
+    store.set_tab_chain(&tab_id, chain)
+}
+
+/// Open a Planner (Eagle-Eye 1) or Implementer (Eagle-Eye 2) draft at step 1.
+#[tauri::command]
+pub fn start_eagle_eye(
+    kind: String,
+    cwd: String,
+    window_id: Option<String>,
+    roles: State<Mutex<RolesStore>>,
+    store: State<Mutex<StateStore>>,
+) -> Result<TabDetail, String> {
+    let kind = kind.trim().to_ascii_lowercase();
+    let (role_id, total) = match kind.as_str() {
+        "eagle1" => ("role_planner", 4u32),
+        "eagle2" => ("role_implementer", 2u32),
+        _ => return Err("Eagle-Eye kind must be eagle1 or eagle2.".to_string()),
+    };
+    let role = {
+        let roles = roles.lock().map_err(|e| e.to_string())?;
+        roles
+            .role_by_id(role_id)
+            .cloned()
+            .ok_or_else(|| format!("unknown role: {role_id}"))
+    }?;
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    store.bind_window(window_id.as_deref());
+    let tab_id = store.create_draft_tab(&role, cwd.trim(), true, None)?;
+    let chain_id = format!(
+        "ee_{}",
+        chrono::Utc::now().timestamp_millis()
+    );
+    store.set_tab_chain(
+        &tab_id,
+        Some(crate::store::ChainRef {
+            chain_id,
+            kind,
+            step: 1,
+            total,
+        }),
+    )?;
     let tab = store
         .tab_by_id(&tab_id)
         .cloned()
@@ -156,12 +239,16 @@ const EXECUTION_PIPELINE_ROLE_IDS: [&str; 2] = ["role_implementer", "role_pr_rev
 
 fn pipeline_cwd(store: &StateStore) -> Result<String, String> {
     let cwd = store
-        .data
-        .active_tab_id
+        .active_for_window(store.focus_window())
         .as_deref()
         .and_then(|id| store.tab_by_id(id))
         .map(|tab| tab.cwd.clone())
-        .or_else(|| store.sorted_tabs().first().map(|tab| tab.cwd.clone()))
+        .or_else(|| {
+            store
+                .tabs_in_window(store.focus_window())
+                .first()
+                .map(|tab| tab.cwd.clone())
+        })
         .unwrap_or_default();
     if cwd.trim().is_empty() {
         return Err("Pick a tab with a working folder first.".into());
@@ -172,15 +259,18 @@ fn pipeline_cwd(store: &StateStore) -> Result<String, String> {
 /// Full pipeline: worker tabs + eagle-eye overview (Planner → Plan Reviewer → Implementer → PR).
 #[tauri::command]
 pub fn create_pipeline_tabs(
+    window_id: Option<String>,
     roles: State<Mutex<RolesStore>>,
     store: State<Mutex<StateStore>>,
 ) -> Result<AppStateSnapshot, String> {
     let cwd = {
-        let store = store.lock().map_err(|e| e.to_string())?;
+        let mut store = store.lock().map_err(|e| e.to_string())?;
+        store.bind_window(window_id.as_deref());
         pipeline_cwd(&store)?
     };
     let roles_guard = roles.lock().map_err(|e| e.to_string())?;
     let mut store = store.lock().map_err(|e| e.to_string())?;
+    store.bind_window(window_id.as_deref());
     store.create_pipeline_workspace(
         &roles_guard,
         cwd.trim(),
@@ -194,15 +284,18 @@ pub fn create_pipeline_tabs(
 /// Execute pipeline: Implementer + PR Reviewer + eagle-eye overview.
 #[tauri::command]
 pub fn create_execution_pipeline_tabs(
+    window_id: Option<String>,
     roles: State<Mutex<RolesStore>>,
     store: State<Mutex<StateStore>>,
 ) -> Result<AppStateSnapshot, String> {
     let cwd = {
-        let store = store.lock().map_err(|e| e.to_string())?;
+        let mut store = store.lock().map_err(|e| e.to_string())?;
+        store.bind_window(window_id.as_deref());
         pipeline_cwd(&store)?
     };
     let roles_guard = roles.lock().map_err(|e| e.to_string())?;
     let mut store = store.lock().map_err(|e| e.to_string())?;
+    store.bind_window(window_id.as_deref());
     store.create_pipeline_workspace(
         &roles_guard,
         cwd.trim(),
@@ -258,10 +351,11 @@ fn attach_transcript(tab: &mut TabRecord, transcripts: &TranscriptStore) -> Resu
 
 pub(crate) fn snapshot_from_store(store: &StateStore) -> AppStateSnapshot {
     let transcript_dir = store.path.parent().map(|parent| parent.join("transcripts"));
+    let window_id = store.focus_window();
     AppStateSnapshot {
-        active_tab_id: store.data.active_tab_id.clone(),
+        active_tab_id: store.active_for_window(window_id),
         tabs: store
-            .sorted_tabs()
+            .tabs_in_window(window_id)
             .iter()
             .map(|t| TabSummary {
                 id: t.id.clone(),
@@ -281,15 +375,8 @@ pub(crate) fn snapshot_from_store(store: &StateStore) -> AppStateSnapshot {
                 color: t.color.clone().unwrap_or_default(),
                 kind: t.kind.clone(),
                 terminal_launch: t.terminal_launch.clone(),
-                acp_session_id: t
-                    .session
-                    .as_ref()
-                    .map(|session| session.acp_session_id.clone()),
-                resume_session_id: t
-                    .answers
-                    .get("resumeSessionId")
-                    .map(|id| id.trim().to_string())
-                    .filter(|id| !id.is_empty()),
+                acp_session_id: crate::store::displayed_acp_session(t),
+                resume_session_id: crate::store::displayed_resume_session(t),
                 model: t.model.clone(),
                 worktree_branch: t.worktree.as_ref().map(|wt| {
                     crate::worktree::head_branch(std::path::Path::new(&wt.path))
@@ -298,12 +385,16 @@ pub(crate) fn snapshot_from_store(store: &StateStore) -> AppStateSnapshot {
                 worktree_path: t.worktree.as_ref().map(|wt| wt.path.clone()),
                 pipeline_run_id: t.pipeline_run_id.clone(),
                 provider: crate::provider::ProviderId::resolve(t.provider),
+                provider_notice: t.provider_notice.clone(),
+                chain: t.chain.clone(),
+                permission_note: t.permission_note.clone(),
             })
             .collect(),
         closed_tabs: store
             .data
             .closed_tabs
             .iter()
+            .filter(|tab| crate::store::window_matches(&tab.window_id, window_id))
             .map(|t| ClosedTabSummary {
                 id: t.id.clone(),
                 label: t.label.clone(),
@@ -318,11 +409,14 @@ pub(crate) fn snapshot_from_store(store: &StateStore) -> AppStateSnapshot {
 #[tauri::command]
 pub fn reopen_closed_tab(
     tab_id: Option<String>,
+    window_id: Option<String>,
     store: State<Mutex<StateStore>>,
     transcripts: State<Mutex<crate::store::TranscriptStore>>,
 ) -> Result<TabDetail, String> {
     let transcript = {
-        let state = store.lock().map_err(|e| e.to_string())?;
+        let mut state = store.lock().map_err(|e| e.to_string())?;
+        state.bind_window(window_id.as_deref());
+        let focus = state.focus_window().to_string();
         let id = match tab_id.as_deref() {
             Some(id) => state
                 .data
@@ -334,7 +428,8 @@ pub fn reopen_closed_tab(
             None => state
                 .data
                 .closed_tabs
-                .first()
+                .iter()
+                .find(|tab| crate::store::window_matches(&tab.window_id, &focus))
                 .map(|t| t.id.clone())
                 .ok_or_else(|| "no closed tab to reopen".to_string())?,
         };
@@ -348,6 +443,7 @@ pub fn reopen_closed_tab(
         })
     };
     let mut store = store.lock().map_err(|e| e.to_string())?;
+    store.bind_window(window_id.as_deref());
     let tab = store.reopen_closed_id(tab_id.as_deref(), transcript)?;
     Ok(TabDetail { tab })
 }
@@ -373,17 +469,23 @@ pub fn set_tab_color(
 }
 
 #[tauri::command]
-pub fn get_layout(store: State<Mutex<StateStore>>) -> Result<crate::store::LayoutState, String> {
-    let store = store.lock().map_err(|e| e.to_string())?;
+pub fn get_layout(
+    window_id: Option<String>,
+    store: State<Mutex<StateStore>>,
+) -> Result<crate::store::LayoutState, String> {
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    store.bind_window(window_id.as_deref());
     Ok(store.layout().clone())
 }
 
 #[tauri::command]
 pub fn set_layout(
     layout: crate::store::LayoutState,
+    window_id: Option<String>,
     store: State<Mutex<StateStore>>,
 ) -> Result<crate::store::LayoutState, String> {
     let mut store = store.lock().map_err(|e| e.to_string())?;
+    store.bind_window(window_id.as_deref());
     store.set_layout(layout)?;
     Ok(store.layout().clone())
 }
@@ -418,6 +520,7 @@ mod pipeline_tests {
             path,
             data: AppStateFile::default(),
             new_tab_provider: crate::provider::ProviderId::DEFAULT,
+            draft_window: crate::store::MAIN_WINDOW_ID.to_string(),
         };
         let cwd = "/tmp/pipeline-project";
         let overview_id = store
@@ -461,6 +564,7 @@ mod pipeline_tests {
             path,
             data: AppStateFile::default(),
             new_tab_provider: crate::provider::ProviderId::DEFAULT,
+            draft_window: crate::store::MAIN_WINDOW_ID.to_string(),
         };
         let cwd = "/tmp/execution-pipeline-project";
         let overview_id = store

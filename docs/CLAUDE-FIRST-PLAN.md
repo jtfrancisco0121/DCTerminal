@@ -46,8 +46,8 @@
 
 JT runs Claude Code as `claude2`, a zsh alias for `CLAUDE_CONFIG_DIR=$HOME/.claude-account2 claude` (his second Claude account). DCTerminal is a GUI app and does not see shell aliases, so spawning plain `claude` / `claude-agent-acp` would use the default `~/.claude` login (wrong account) and history would be read from `~/.claude/projects` (wrong folder). Rules:
 
-- **Setting:** `providers.claude.configDir` (string path, `~` expanded). JT's value: `~/.claude-account2`. When unset, fall back to `~/.claude`.
-- **Env override:** `DCT_CLAUDE_CONFIG_DIR` wins over the setting (Settings shows "set by DCT_CLAUDE_CONFIG_DIR" and greys out the field). An inherited `CLAUDE_CONFIG_DIR` in DCTerminal's own env is ignored and overwritten, so the resolved value is the only one used. Precedence: `DCT_CLAUDE_CONFIG_DIR` → `providers.claude.configDir` → `~/.claude`.
+- **Setting:** `providers.claude.configDir` (string path, `~` expanded on macOS and Windows, including `~\`). JT's value: `~/.claude-account2`. When unset, fall back to `~/.claude`. Named accounts (Phase 12) keep this field as a mirror of the first account.
+- **Env override:** `DCT_CLAUDE_CONFIG_DIR` wins over the setting for the **first account only** (Settings shows "set by DCT_CLAUDE_CONFIG_DIR" and greys out that field). Other accounts always use their own folder. An inherited `CLAUDE_CONFIG_DIR` in DCTerminal's own env is ignored and overwritten, so the resolved value is the only one used. Precedence for account 0: `DCT_CLAUDE_CONFIG_DIR` → `providers.claude.configDir` → `~/.claude`.
 - **Spawns:** pass `CLAUDE_CONFIG_DIR=<configDir>` in the env of the adapter spawn (the adapter's SDK passes it to the `claude` it runs) and of every terminal `claude` spawn (role terminals, plain Claude Code tile, `claude --resume`).
 - **History / plans:** read sessions, plans, and history from `<configDir>/projects` (and `<configDir>/plans` if it ever exists). Read-only; never write there.
 - **Auth status:** `claude auth status --json` runs with the same env, so "signed in as …" is the account DCTerminal will actually use.
@@ -395,19 +395,19 @@ src/provider/
 
 **Files:** `src-tauri/src/models.rs`, `src-tauri/src/provider/claude.rs`, `src/models.ts` (+ test), `src/components/ModelPicker.tsx` (+ test)
 
-- [ ] List source order: config options from the latest Claude `session/new` (cached 24 h in app data `models-cache.json` under `claude`), else static fallback: `default` (account default), `opus`, `sonnet`, `haiku`; optional extras `fable` (badge "may use usage credits"), `opusplan`, `sonnet[1m]`, `opus[1m]` — show only if the adapter's list includes them.
-- [ ] Default Claude model: `default` (JT can pick `opus`). Cursor default stays `composer-2.5`.
-- [ ] `valid_model_id` accepts `[1m]` suffix.
-- [ ] Tests: fallback list; cache per provider; id validation.
-- [ ] Commit: `feat: Claude models in the picker`
+- [x] List source order: config options from the latest Claude `session/new` (cached 24 h in app data `models-cache.json` under `claude`), else static fallback: `default` (account default), `opus`, `sonnet`, `haiku`; optional extras `fable` (badge "may use usage credits"), `opusplan`, `sonnet[1m]`, `opus[1m]` — show only if the adapter's list includes them.
+- [x] Default Claude model: `default` (JT can pick `opus`). Cursor default stays `composer-2.5`.
+- [x] `valid_model_id` accepts `[1m]` suffix.
+- [x] Tests: fallback list; cache per provider; id validation.
+- [x] Commit: `feat: Claude models in the picker`
 
 ### Task 5.2: Switching
 
 **Files:** `src-tauri/src/commands/model_session.rs`, `src-tauri/src/acp/client.rs`, `src-tauri/src/pty/launch.rs`
 
-- [ ] Live chat: `session/set_config_option` (model) — adapter has no `session/set_model`; restart + `session/load` fallback stays.
-- [ ] Terminal: `--model`. Never send `/model` (it writes `<configDir>/settings.json`).
-- [ ] Commit: `feat: switch Claude model per tab`
+- [x] Live chat: `session/set_config_option` (model) — adapter has no `session/set_model`; restart + `session/load` fallback stays.
+- [x] Terminal: `--model`. Never send `/model` (it writes `<configDir>/settings.json`).
+- [x] Commit: `feat: switch Claude model per tab`
 
 ## Phase 6: History and resume
 
@@ -415,32 +415,32 @@ src/provider/
 
 **Files:** `src-tauri/src/claude_history.rs` (new), `src-tauri/src/commands/cursor_cli.rs` → `history.rs`, `src/cursorHistory.ts` → `src/history.ts`, `src/components/CursorHistoryList.tsx` → `HistoryList.tsx`
 
-- [ ] Scan `<configDir>/projects/*/*.jsonl` using the resolved config dir (Task 2.3; JT: `~/.claude-account2/projects`), never a hard-coded `~/.claude`; keep files whose records' `cwd` equals the folder (canonicalized). Stream lines; stop after the first `user` record + title records; cap file size read per entry.
-- [ ] Entry: id (file stem / `sessionId`), title (`customTitle` > `aiTitle` > first user text, trimmed), last modified, `gitBranch`, `entrypoint` (to label sessions created by DCTerminal's adapter vs CLI — **(unverified values)**). Skip `isSidechain` sessions.
-- [ ] Open read-only (no lock, no write). Test with fixture jsonl (copied structure, fake content); test that a non-default config dir is scanned and `~/.claude/projects` is not; history panel header shows the folder it read.
-- [ ] Commit: `feat: Claude Code history for a folder (read-only)`
+- [x] Scan `<configDir>/projects/*/*.jsonl` using the resolved config dir (Task 2.3; JT: `~/.claude-account2/projects`), never a hard-coded `~/.claude`; keep files whose records' `cwd` equals the folder (canonicalized). Stream lines; stop after the first `user` record + title records; cap file size read per entry.
+- [x] Entry: id (file stem / `sessionId`), title (`customTitle` > `aiTitle` > first user text, trimmed), last modified, `gitBranch`, `entrypoint` (to label sessions created by DCTerminal's adapter vs CLI — **(unverified values)**). Skip `isSidechain` sessions.
+- [x] Open read-only (no lock, no write). Test with fixture jsonl (copied structure, fake content); test that a non-default config dir is scanned and `~/.claude/projects` is not; history panel header shows the folder it read.
+- [x] Commit: `feat: Claude Code history for a folder (read-only)`
 
 ### Task 6.2: Resume
 
 **Files:** `src-tauri/src/provider/claude.rs`, `src-tauri/src/acp/client.rs`, `src/StartupForm.tsx`, `src/components/HistoryList.tsx`
 
-- [ ] **Resume in app** (chat): `session/load { sessionId }` (or `session/resume` if load replay is too heavy — decide from Task 4.2).
-- [ ] **Open in Claude Code** (terminal): `claude --resume <id>` in that folder, env `CLAUDE_CONFIG_DIR=<configDir>`.
-- [ ] Tab saves the config dir with `sessions.claude`; if the current resolved dir differs, do not resume — start fresh with a one-line notice ("Claude config folder changed; starting a new session"). Test both cases.
-- [ ] History panel title follows the tab's provider; both lists available via a toggle.
-- [ ] Commit: `feat: resume Claude sessions in chat or terminal`
+- [x] **Resume in app** (chat): `session/load { sessionId }` (or `session/resume` if load replay is too heavy — decide from Task 4.2).
+- [x] **Open in Claude Code** (terminal): `claude --resume <id>` in that folder, env `CLAUDE_CONFIG_DIR=<configDir>`.
+- [x] Tab saves the config dir with `sessions.claude`; if the current resolved dir differs, do not resume — start fresh with a one-line notice ("Claude config folder changed; starting a new session"). Test both cases.
+- [x] History panel title follows the tab's provider; both lists available via a toggle.
+- [x] Commit: `feat: resume Claude sessions in chat or terminal`
 
 ### Task 6.3: Migrate existing / restored tabs to Claude
 
 **Files:** `src-tauri/src/store/state_store.rs`, `src-tauri/src/store/workspace_store.rs`, `src-tauri/src/store/state_types.rs`, `src/StartupForm.tsx`, `src/components/HistoryList.tsx`, tests
 
-- [ ] One-time migration (state flag `migrations.claudeFirst`, run on load after Claude chat + history exist): every tab and saved-workspace tab with no saved provider gets `provider: claude` (Decision 3). Tabs explicitly set to Cursor after the migration stay Cursor.
-- [ ] Session ids: a migrated tab keeps its Cursor id in `sessions.cursor`; `sessions.claude` is empty, so restore / Start opens a **fresh Claude session** (chat: `session/new`; terminal: `claude` with the role flags, no `--resume`). Never pass a Cursor id to Claude.
-- [ ] Switching a migrated tab back to Cursor resumes `sessions.cursor` (chat `session/load`, terminal `agent --resume <id>`); the Cursor history list stays available via the History toggle. Cursor stays selectable everywhere.
-- [ ] One-line notice on a migrated tab's first restore: "Now using Claude. Your earlier Cursor session is kept — switch this tab to Cursor to reopen it."
-- [ ] Backup: copy `state.json` / `workspaces.json` to `*.pre-claude-first.json` in app data before migrating (never `~/.claude` / `~/.cursor`).
-- [ ] Tests: fixtures with chat + terminal Cursor tabs migrate to Claude with empty Claude session; migration runs once; switch-back resumes the Cursor id; workspaces migrate the same way.
-- [ ] Commit: `feat: migrate existing tabs to Claude with fresh sessions`
+- [x] One-time migration (state flag `migrations.claudeFirst`, run on load after Claude chat + history exist): every tab and saved-workspace tab with no saved provider gets `provider: claude` (Decision 3). Tabs explicitly set to Cursor after the migration stay Cursor.
+- [x] Session ids: a migrated tab keeps its Cursor id in `sessions.cursor`; `sessions.claude` is empty, so restore / Start opens a **fresh Claude session** (chat: `session/new`; terminal: `claude` with the role flags, no `--resume`). Never pass a Cursor id to Claude.
+- [x] Switching a migrated tab back to Cursor resumes `sessions.cursor` (chat `session/load`, terminal `agent --resume <id>`); the Cursor history list stays available via the History toggle. Cursor stays selectable everywhere.
+- [x] One-line notice on a migrated tab's first restore: "Now using Claude. Your earlier Cursor session is kept — switch this tab to Cursor to reopen it."
+- [x] Backup: copy `state.json` / `workspaces.json` to `*.pre-claude-first.json` in app data before migrating (never `~/.claude` / `~/.cursor`).
+- [x] Tests: fixtures with chat + terminal Cursor tabs migrate to Claude with empty Claude session; migration runs once; switch-back resumes the Cursor id; workspaces migrate the same way.
+- [x] Commit: `feat: migrate existing tabs to Claude with fresh sessions`
 
 ## Phase 7: Full permissions (allow everything) + indicator
 
@@ -450,21 +450,21 @@ Replaces the old "role permission rules + skip-permissions warning" phase (Decis
 
 **Files:** `src-tauri/src/permissions/policy.rs` (+ tests), `src-tauri/src/permissions/tool_cache.rs`, `src-tauri/src/permissions/cli_config.rs`, `src-tauri/src/pty/launch.rs` (`role_family` / `effective_mode`), `src/workspaceView.ts` (`BUILT_IN_PERMISSION_SUMMARY`), `src/components/PermissionCard.tsx`, `fixtures/acp/claude/permissions/*`
 
-- [ ] `policy.rs` becomes one rule for every role and provider: answer `session/request_permission` with the `allow_once` option. If a request has no `allow_once` option, show the card (no auto-pick of `allow_always` / `reject_*`). Remove per-role evaluation, role families for permissions, and per-role tool classification (keep classification only if the tool cache / UI labels still need it).
-- [ ] Exception: Claude `ExitPlanMode` in a **Planner** tab is never auto-answered (→ plan card, Phase 8). In any other tab, auto-answer its `allow_once` option and re-send `session/set_mode <role mode>` (Decisions). `EnterPlanMode` is auto-approved like everything else.
-- [ ] Cursor terminal flags follow the table: Planner `--plan`; every other role `--yolo` (General loses `--mode ask`; PR Reviewer / Codebase Audit / Recommendation / custom get `--yolo`). Cursor chat modes: Planner `plan`, others `agent`. The Run-mode override stays for Cursor terminals.
-- [ ] Remove `role_rules_off` and its notice from `cli_config.rs` (still read `approvalMode` read-only for the indicator text if useful). `BUILT_IN_PERMISSION_SUMMARY`: "Full access" for all roles.
-- [ ] Tests: for every role × provider, captured Claude fixtures (Bash, Edit, Write, WebFetch, MCP) and Cursor fixtures pick `allow_once`; `allow_always` never picked; Planner `ExitPlanMode` not auto-answered; non-Planner `ExitPlanMode` auto-answered + mode restored; Cursor flags per role.
-- [ ] Commit: `feat: all roles allow everything; retire role permission rules`
+- [x] `policy.rs` becomes one rule for every role and provider: answer `session/request_permission` with the `allow_once` option. If a request has no `allow_once` option, show the card (no auto-pick of `allow_always` / `reject_*`). Remove per-role evaluation, role families for permissions, and per-role tool classification (keep classification only if the tool cache / UI labels still need it).
+- [x] Exception: Claude `ExitPlanMode` in a **Planner** tab is never auto-answered (→ plan card, Phase 8). In any other tab, auto-answer its `allow_once` option and re-send `session/set_mode <role mode>` (Decisions). `EnterPlanMode` is auto-approved like everything else.
+- [x] Cursor terminal flags follow the table: Planner `--plan`; every other role `--yolo` (General loses `--mode ask`; PR Reviewer / Codebase Audit / Recommendation / custom get `--yolo`). Cursor chat modes: Planner `plan`, others `agent`. The Run-mode override stays for Cursor terminals.
+- [x] Remove `role_rules_off` and its notice from `cli_config.rs` (still read `approvalMode` read-only for the indicator text if useful). `BUILT_IN_PERMISSION_SUMMARY`: "Full access" for all roles.
+- [x] Tests: for every role × provider, captured Claude fixtures (Bash, Edit, Write, WebFetch, MCP) and Cursor fixtures pick `allow_once`; `allow_always` never picked; Planner `ExitPlanMode` not auto-answered; non-Planner `ExitPlanMode` auto-answered + mode restored; Cursor flags per role.
+- [x] Commit: `feat: all roles allow everything; retire role permission rules`
 
 ### Task 7.2: Single full-permissions indicator
 
 **Files:** `src/components/StatusBar.tsx` (+ test), `src/TabBar.tsx` (+ test), `src/components/SettingsPage.tsx`, chat header
 
-- [ ] Replace the "⚠ Run Everything" / "Role permission rules are off" warnings (status bar, tab icon, Settings) with one neutral indicator: "Full permissions" in the status bar, tooltip "All tabs run with full permissions (Claude: bypass / auto / plan per role; Cursor: unrestricted). Answers are allow-once; nothing is written to your repo's settings."
-- [ ] Fallback state (Decisions → Fallbacks): indicator reads "Full permissions unavailable for Claude — <reason>" when the adapter did not offer the wanted mode or a terminal fell back to `acceptEdits`.
-- [ ] Tests: indicator shows for Claude and Cursor tabs; old warning strings gone; fallback text.
-- [ ] Commit: `feat: full-permissions indicator replaces rules-off warnings`
+- [x] Replace the "⚠ Run Everything" / "Role permission rules are off" warnings (status bar, tab icon, Settings) with one neutral indicator: "Full permissions" in the status bar, tooltip "All tabs run with full permissions (Claude: bypass / auto / plan per role; Cursor: unrestricted). Answers are allow-once; nothing is written to your repo's settings."
+- [x] Fallback state (Decisions → Fallbacks): indicator reads "Full permissions unavailable for Claude — <reason>" when the adapter did not offer the wanted mode or a terminal fell back to `acceptEdits`.
+- [x] Tests: indicator shows for Claude and Cursor tabs; old warning strings gone; fallback text.
+- [x] Commit: `feat: full-permissions indicator replaces rules-off warnings`
 
 ## Phase 8: Plan mode hand-off (Claude)
 
@@ -472,17 +472,17 @@ Replaces the old "role permission rules + skip-permissions warning" phase (Decis
 
 **Files:** `src-tauri/src/provider/claude.rs`, `src/SessionTerminal.tsx`, `src/components/SessionCards.tsx`
 
-- [ ] Claude Planner chat starts with `session/set_mode plan` (Plan Reviewer runs `bypassPermissions` per Decision 2 and hands off its reviewed plan from its last message). Other requests in plan mode auto-approve `allow_once` (Task 7.1).
-- [ ] `ExitPlanMode` ("Ready to code?") → plan card with the plan markdown, **Hand off…** buttons (from the transition table), and **Keep planning** (answers the reject option). DCTerminal never picks "Yes, …" for a Planner: implementation happens in the Implementer tab.
-- [ ] Commit: `feat: Claude plan mode plan card`
+- [x] Claude Planner chat starts with `session/set_mode plan` (Plan Reviewer runs `bypassPermissions` per Decision 2 and hands off its reviewed plan from its last message). Other requests in plan mode auto-approve `allow_once` (Task 7.1).
+- [x] `ExitPlanMode` ("Ready to code?") → plan card with the plan markdown, **Hand off…** buttons (from the transition table), and **Keep planning** (answers the reject option). DCTerminal never picks "Yes, …" for a Planner: implementation happens in the Implementer tab.
+- [x] Commit: `feat: Claude plan mode plan card`
 
 ### Task 8.2: Hand-off content from the plan
 
 **Files:** `src/handoff/map.ts` (`HandoffSource.planMarkdown`), `src/StartupForm.tsx`
 
-- [ ] New scope `plan_mode` = the `ExitPlanMode` plan text (default when present), then latest message / plan card / selection.
-- [ ] Tests: plan text lands in Plan Reviewer `plan` and Implementer `approvedPlan`.
-- [ ] Commit: `feat: hand off Claude plan-mode plans`
+- [x] New scope `plan_mode` = the `ExitPlanMode` plan text (default when present), then latest message / plan card / selection.
+- [x] Tests: plan text lands in Plan Reviewer `plan` and Implementer `approvedPlan`.
+- [x] Commit: `feat: hand off Claude plan-mode plans`
 
 ## Phase 9: Eagle-Eye chains (both providers)
 
@@ -490,36 +490,36 @@ Replaces the old "role permission rules + skip-permissions warning" phase (Decis
 
 **Files:** `src-tauri/src/store/handoff_store.rs`, `src-tauri/src/commands/handoff.rs`, `src-tauri/src/store/state_types.rs`, `src/handoff/chains.ts` (new) + test
 
-- [ ] `ChainRef { chainId, kind: "eagle1" | "eagle2", step, total }` on `HandoffRecord` and on the tab. Steps: eagle1 = Planner(1) → Plan Reviewer(2) → Implementer(3) → PR Reviewer(4); eagle2 = Implementer(1) → PR Reviewer(2).
-- [ ] A hand-off along the chain's next edge carries `step + 1`; any other hand-off ends the chain link (no chain label).
-- [ ] Tests: step math; old `handoffs.json` without chain loads.
-- [ ] Commit: `feat: Eagle-Eye chain records`
+- [x] `ChainRef { chainId, kind: "eagle1" | "eagle2", step, total }` on `HandoffRecord` and on the tab. Steps: eagle1 = Planner(1) → Plan Reviewer(2) → Implementer(3) → PR Reviewer(4); eagle2 = Implementer(1) → PR Reviewer(2).
+- [x] A hand-off along the chain's next edge carries `step + 1`; any other hand-off ends the chain link (no chain label).
+- [x] Tests: step math; old `handoffs.json` without chain loads.
+- [x] Commit: `feat: Eagle-Eye chain records`
 
 ### Task 9.2: Chain UI
 
 **Files:** `src/StartupForm.tsx`, `src/components/HandoffDialog.tsx`, `src/components/RoleTiles.tsx`, `src/tabChrome.ts`, `src/components/StatusBar.tsx`, `src/App.css`
 
-- [ ] Start a chain: palette **Start Eagle-Eye 1…** / **Start Eagle-Eye 2…** (opens a Planner or Implementer draft tagged step 1), and a chain toggle on Start card for Planner / Implementer.
-- [ ] Label "Eagle-Eye 1 · step 2 of 4" in the chat header, terminal toolbar, and tab tooltip; **Next: Send to Plan Reviewer** button highlighted as the primary hand-off action. User-triggered only.
-- [ ] Commit: `feat: Eagle-Eye chain position and next-step button`
+- [x] Start a chain: palette **Start Eagle-Eye 1…** / **Start Eagle-Eye 2…** (opens a Planner or Implementer draft tagged step 1), and a chain toggle on Start card for Planner / Implementer.
+- [x] Label "Eagle-Eye 1 · step 2 of 4" in the chat header, terminal toolbar, and tab tooltip; **Next: Send to Plan Reviewer** button highlighted as the primary hand-off action. User-triggered only.
+- [x] Commit: `feat: Eagle-Eye chain position and next-step button`
 
 ### Task 9.3: Carry each step's output
 
 **Files:** `src/handoff/map.ts`, `src/changes/diffModel.ts`, `src-tauri/src/turn_changes.rs` (read-only summary), `src/StartupForm.tsx`
 
-- [ ] Planner → Plan Reviewer: plan → `plan`; request → `originalTask`.
-- [ ] Plan Reviewer → Implementer: reviewed plan → `approvedPlan`; review notes → `additionalContext`.
-- [ ] Implementer → PR Reviewer: `approvedPlan` + `originalTask` as today, plus `additionalContext` gets: implementation summary (last assistant message), changed files with +/− counts from the Whole-tab snapshot, current branch, and the first GitHub PR URL found in the transcript (if any). Large diffs are not pasted; the reviewer runs `git diff` itself.
-- [ ] Terminal sources: selection / tail, as today.
-- [ ] Tests for each edge, both providers' source shapes.
-- [ ] Commit: `feat: Eagle-Eye hand-offs carry plan, review notes, and implementation summary`
+- [x] Planner → Plan Reviewer: plan → `plan`; request → `originalTask`.
+- [x] Plan Reviewer → Implementer: reviewed plan → `approvedPlan`; review notes → `additionalContext`.
+- [x] Implementer → PR Reviewer: `approvedPlan` + `originalTask` as today, plus `additionalContext` gets: implementation summary (last assistant message), changed files with +/− counts from the Whole-tab snapshot, current branch, and the first GitHub PR URL found in the transcript (if any). Large diffs are not pasted; the reviewer runs `git diff` itself.
+- [x] Terminal sources: selection / tail, as today.
+- [x] Tests for each edge, both providers' source shapes.
+- [x] Commit: `feat: Eagle-Eye hand-offs carry plan, review notes, and implementation summary`
 
 ### Task 9.4: Both providers
 
 **Files:** tests only (`src/handoff/*.test.ts`, `src-tauri/src/store/handoff_store.rs` tests)
 
-- [ ] A chain can mix providers (e.g. Claude Planner → Cursor Implementer); the next tab defaults to the source tab's provider.
-- [ ] Commit: `test: Eagle-Eye chains across providers`
+- [x] A chain can mix providers (e.g. Claude Planner → Cursor Implementer); the next tab defaults to the source tab's provider.
+- [x] Commit: `test: Eagle-Eye chains across providers`
 
 ## Phase 10: Claude usage / limits view
 
@@ -527,18 +527,18 @@ Replaces the old "role permission rules + skip-permissions warning" phase (Decis
 
 **Files:** `src-tauri/src/acp/session_update.rs`, `src-tauri/src/commands/usage.rs` (new), `src/usage/usageStore.ts` (new) + test
 
-- [ ] From `usage_update._meta["_claude/rateLimit"]`: keep per `rateLimitType` the latest `utilization`, `resetsAt`, `status`, and when it was seen. From `usage_update.used/size`: per-tab context fill. In memory only (or app data, never `~/.claude` / the config dir). Key the values by config dir so another account's limits are never shown.
-- [ ] Shape is from the adapter source; confirm with Task 4.2 fixtures.
-- [ ] Commit: `feat: collect Claude limit updates`
+- [x] From `usage_update._meta["_claude/rateLimit"]`: keep per `rateLimitType` the latest `utilization`, `resetsAt`, `status`, and when it was seen. From `usage_update.used/size`: per-tab context fill. In memory only (or app data, never `~/.claude` / the config dir). Key the values by config dir so another account's limits are never shown.
+- [x] Shape is from the adapter source; confirm with Task 4.2 fixtures.
+- [x] Commit: `feat: collect Claude limit updates`
 
 ### Task 10.2: Show it
 
 **Files:** `src/components/StatusBar.tsx`, `src/components/SettingsPage.tsx` (Usage section), tests
 
-- [ ] Status bar: "Claude 5h 42% · resets 3:10 PM" (local time), yellow at ≥80% / `allowed_warning`, red on `rejected`; "not reported yet" before the first update. Tab header shows context fill for Claude chats.
-- [ ] Settings > Usage: each window with bar, reset time, last-updated time, and the text "Updated by Claude chat tabs; terminal tabs don't report usage."
-- [ ] No token accounting, no jsonl scan (PROGRESS "No token tracking"), unless JT approves it separately.
-- [ ] Commit: `feat: Claude usage and limits in the status bar`
+- [x] Status bar: "Claude 5h 42% · resets 3:10 PM" (local time), yellow at ≥80% / `allowed_warning`, red on `rejected`; "not reported yet" before the first update. Tab header shows context fill for Claude chats.
+- [x] Settings > Usage: each window with bar, reset time, last-updated time, and the text "Updated by Claude chat tabs; terminal tabs don't report usage."
+- [x] No token accounting, no jsonl scan (PROGRESS "No token tracking"), unless JT approves it separately.
+- [x] Commit: `feat: Claude usage and limits in the status bar`
 
 ## Phase 11: Docs + verify
 
@@ -546,11 +546,47 @@ Replaces the old "role permission rules + skip-permissions warning" phase (Decis
 
 **Files:** `docs/PROGRESS.md`, `README.md`, `docs/cursor-cli-history.md` (link to Claude history), `docs/claude-acp-observed.md`, this plan
 
-- [ ] PROGRESS snapshot + update "Locked product decisions" (Claude config dir `providers.claude.configDir` / `DCT_CLAUDE_CONFIG_DIR` → `CLAUDE_CONFIG_DIR` on every Claude spawn; config dir and `~/.claude` read-only, Claude default provider, existing tabs migrated to Claude, all roles full permissions / no role rules, per-role mode table).
-- [ ] README: Claude Code + adapter install steps; how to point DCTerminal at a non-default Claude account (Settings > Providers > Claude config folder, or `DCT_CLAUDE_CONFIG_DIR`).
-- [ ] Tick all boxes after push; `npm run check` and `npm audit` = 0 on the box and on the Mac; Node 22/24/26.
-- [ ] Message JT with PR link and the smoke list below.
-- [ ] Commit: `docs: Claude-first provider progress`
+- [x] PROGRESS snapshot + update "Locked product decisions" (Claude config dir `providers.claude.configDir` / `DCT_CLAUDE_CONFIG_DIR` → `CLAUDE_CONFIG_DIR` on every Claude spawn; config dir and `~/.claude` read-only, Claude default provider, existing tabs migrated to Claude, all roles full permissions / no role rules, per-role mode table).
+- [x] README: Claude Code + adapter install steps; how to point DCTerminal at a non-default Claude account (Settings > Providers > Claude config folder, or `DCT_CLAUDE_CONFIG_DIR`).
+- [x] Tick the phase 5–11 boxes. `npm run check` and `npm audit` = 0 on this VM (Node 22). The Mac run and Node 24/26 are unverified (see below).
+- [x] Message JT with PR link and the smoke list below.
+- [x] Commit: `docs: Claude-first provider progress`
+
+## Phase 12: One Claude account per window (macOS and Windows)
+
+JT uses two Claude subscriptions (personal `~/.claude-account2`, company `~/.claude`) and wants them side by side. Each window is bound to one account. Mac is the main device; the same behaviour has to work on Windows.
+
+**Last window:** Closing the last window on macOS leaves the process running, like a normal Mac app. That window's tabs and account stay in `state.json`. A Dock click with no windows visible restores it. On Windows (and Linux) the last window quits the process; the record is still kept, so the next launch restores it. Closing a window while another is still open removes that window from the restore list. Quit (macOS Quit, or any programmatic exit) does not drop windows that were still open, so relaunch restores every window that was open at quit.
+
+- [x] Settings > Providers > Claude lists named accounts `{ id, name, configDir }`. The old single `configDir` becomes account `default` (name "Personal" when a custom folder was set, otherwise "Claude"). `configDir` stays equal to the first account. `DCT_CLAUDE_CONFIG_DIR` overrides only that first account. Each row shows `claude auth status --json` for that folder. Missing folders are not created.
+- [x] New Window: title-bar button, command palette, `Cmd+Shift+N` on Mac, `Ctrl+Shift+N` on Windows, and macOS **File > New Window**. More than one account asks which one. Every Claude tab in that window (chat, terminal, Claude Code tile, resume, auth status, history, usage) uses that account's `CLAUDE_CONFIG_DIR`. Cursor tabs are unchanged. Two windows may share an account.
+- [x] Window title is `DCTerminal — {account}` on both platforms. Status bar shows `Claude · {name} · email` for this window's account.
+- [x] Tabs and the account are restored per window. First load copies `state.json` to `state.pre-windows.json` once, then puts the existing tabs on window `main`.
+- [x] Closing a window stops only that window's processes.
+- [x] `~` expands under the home folder on macOS (`HOME`) and Windows (`USERPROFILE`).
+- [x] Tests cover the shortcut (Mac vs Windows), the menu accelerator `CmdOrCtrl+Shift+N`, titles, Dock reopen only when nothing is visible, last-window quit (macOS stays, Windows quits), and `~` / `~\` expansion.
+
+### Smoke — Mac (JT's machine)
+
+- [ ] Settings > Providers lists Personal (`~/.claude-account2`) and Company (`~/.claude`). Each row shows that folder's signed-in email. `DCT_CLAUDE_CONFIG_DIR` greys out only the first account.
+- [ ] **File > New Window** and **⌘⇧N** open a window. With two accounts, the picker appears once (not twice). Title is `DCTerminal — Personal` or `DCTerminal — Company`. Status bar matches that name and email.
+- [ ] A Claude chat and a Claude terminal in the Company window have `CLAUDE_CONFIG_DIR` pointing at `~/.claude` (expanded). The Personal window still points at `~/.claude-account2`. History and the 5h/7d usage bar follow the window, not the other account. A Cursor tab in either window is unchanged.
+- [ ] Close the last window: the app stays running (no Dock bounce-to-quit). Click the Dock icon: that window comes back with its tabs and account. **Quit** (⌘Q) really quits. Relaunch restores every window that was still open at quit, and does not restore a window you closed while another was open.
+- [ ] Quit and relaunch: each window's tabs and account are back. `state.pre-windows.json` exists after the first launch that migrates, and is not overwritten.
+
+### Smoke — Windows
+
+- [ ] **Ctrl+Shift+N** and the title-bar New window button open a window. The title is `DCTerminal — {account}`. There is no macOS File menu; the button, shortcut, and command palette are the entry points.
+- [ ] `~/.claude-account2` and `~\.claude` expand under the user profile (`USERPROFILE`), not the process working directory. A missing folder is reported and not created.
+- [ ] Two windows on two accounts do not mix history or usage. Closing one window stops only its own Claude and terminal processes.
+- [ ] Close the last window: the process quits. Launch again: that last window's tabs and account are restored. Closing a window while another stays open does not bring the closed one back.
+
+### Unverified on this VM (needs a Mac)
+
+- Live GUI run of the new picker, history panel, plan card, Eagle-Eye labels, and usage bars.
+- A real Claude login (`claude auth status` against `~/.claude-account2`).
+- The ExitPlanMode payload shape. The plan card reads `rawInput.plan`, then tool content, then the title, and always selects the reject option. Confirm against a live Planner turn.
+- Node 24 and Node 26 were not installed here. `npm test` / `npm run check` ran on Node 22. `npm audit` reported 0.
 
 ## Risks and remaining questions
 

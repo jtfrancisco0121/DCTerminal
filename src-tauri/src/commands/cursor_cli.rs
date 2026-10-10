@@ -1,3 +1,4 @@
+use crate::claude_history::{list_claude_history as scan_claude_history, ClaudeHistoryEntry};
 use crate::cursor_history::{
     annotate_history, cli_chat_required, cursor_data_dir, first_heading, list_cursor_history,
     user_text_from_answers, CursorHistoryEntry, RoleHeading,
@@ -66,6 +67,48 @@ fn local_session_labels(store: &StateStore) -> HashMap<String, (String, Option<S
         );
     }
     labels
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeHistoryView {
+    pub entries: Vec<ClaudeHistoryEntry>,
+    /// Resolved config dir that was scanned (`<dir>/projects`).
+    pub config_dir: String,
+    pub config_display: String,
+    pub exists: bool,
+}
+
+/// Read-only Claude sessions for `cwd` from the resolved config dir.
+/// Never `~/.claude` unless that is the resolved dir.
+#[tauri::command]
+pub fn list_claude_history(
+    cwd: String,
+    window_id: Option<String>,
+    settings: State<Mutex<crate::store::SettingsStore>>,
+    state: State<Mutex<crate::store::StateStore>>,
+) -> Result<ClaudeHistoryView, String> {
+    let config = {
+        let mut state = state.lock().map_err(|err| err.to_string())?;
+        state.bind_window(window_id.as_deref());
+        let account = state.account_for_window(state.focus_window());
+        let settings = settings.lock().map_err(|err| err.to_string())?;
+        crate::store::settings_store::resolved_account_config(
+            &settings.providers().claude,
+            &account,
+        )
+    };
+    let entries = if config.exists {
+        scan_claude_history(std::path::Path::new(&config.path), cwd.trim())
+    } else {
+        Vec::new()
+    };
+    Ok(ClaudeHistoryView {
+        entries,
+        config_dir: config.path,
+        config_display: config.display,
+        exists: config.exists,
+    })
 }
 
 #[tauri::command]

@@ -1,3 +1,4 @@
+mod claude_migration;
 mod forms_store;
 mod forms_types;
 mod handoff_store;
@@ -11,6 +12,7 @@ mod scratch_store;
 pub(crate) mod settings_store;
 mod state_store;
 mod state_types;
+mod window_migration;
 mod transcript_store;
 mod workspace_store;
 
@@ -24,13 +26,18 @@ pub use roles_store::{add_missing_builtin_roles, docs_roles_dir, seed_output_pat
 pub use scratch_store::ScratchStore;
 pub use settings_store::{
     first_run_needed, get_notification_settings, get_ui_settings, set_notification_settings,
-    set_ui_settings, ModelSettings, NotificationSettings, SettingsStore, TerminalSettings,
+    set_ui_settings, ModelSettings, NotificationSettings, ProviderModels, SettingsStore,
+    TerminalSettings,
     UiSettings,
 };
 pub use state_store::StateStore;
-pub(crate) use state_store::{tab_label, TerminalTabDraft};
+pub(crate) use state_store::{
+    displayed_acp_session, displayed_resume_session, tab_label, TerminalTabDraft,
+};
+pub use claude_migration::{backup_pre_claude_first, migrate_state, CLAUDE_MIGRATION_NOTICE};
 pub use state_types::{
-    AppStateFile, LayoutState, PipelineRun, RoleSnapshot, TabRecord, TabSessionRef,
+    window_matches, AppStateFile, ChainRef, LayoutState, Migrations, PipelineRun, RoleSnapshot,
+    TabRecord, TabSessionRef, WindowRecord, MAIN_WINDOW_ID,
 };
 pub use transcript_store::{TranscriptFile, TranscriptStore};
 pub use workspace_store::{Workspace, WorkspaceStore, WorkspaceTab};

@@ -12,6 +12,7 @@
 use super::claude_config::{claude_env, ConfigDirInfo};
 use crate::cli_detect::{find_on_path, run_cli, strip_ansi, LoginStatus};
 use serde_json::Value;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Env override for the `claude` executable.
@@ -40,6 +41,326 @@ fn exe(name: &str) -> String {
     }
 }
 
+/// A CLI after a Windows npm shim has been resolved.
+///
+/// `prefix_args` is set when the shim launches `node.exe` with a script
+/// (typical for `claude-agent-acp.cmd`). A native `claude.exe` has none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedCli {
+    pub program: PathBuf,
+    pub prefix_args: Vec<String>,
+}
+
+impl ResolvedCli {
+    fn direct(program: PathBuf) -> Self {
+        Self {
+            program,
+            prefix_args: Vec::new(),
+        }
+    }
+}
+
+/// `claude.exe`, then `claude.cmd` / `claude.bat`, then the extensionless npm shim.
+pub fn windows_cli_names(binary: &str) -> Vec<String> {
+    vec![
+        format!("{binary}.exe"),
+        format!("{binary}.cmd"),
+        format!("{binary}.bat"),
+        binary.to_string(),
+    ]
+}
+
+fn host_cli_names(binary: &str) -> Vec<String> {
+    if cfg!(windows) {
+        return windows_cli_names(binary);
+    }
+    let mut names = vec![binary.to_string()];
+    for name in windows_cli_names(binary) {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
+/// Default npm global folders on Windows (`npm prefix -g` is usually `%APPDATA%\npm`).
+pub fn windows_npm_bin_dirs(appdata: Option<&Path>, local_appdata: Option<&Path>) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Some(dir) = appdata {
+        out.push(dir.join("npm"));
+    }
+    if let Some(dir) = local_appdata {
+        out.push(dir.join("npm"));
+    }
+    out
+}
+
+fn windows_npm_dirs_from_env() -> Vec<PathBuf> {
+    let appdata = std::env::var_os("APPDATA").map(PathBuf::from);
+    let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    windows_npm_bin_dirs(appdata.as_deref(), local.as_deref())
+}
+
+pub fn is_windows_batch(path: &Path) -> bool {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some(ext) => ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"),
+        None => false,
+    }
+}
+
+fn is_direct_exe(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+}
+
+fn should_try_unwrap(path: &Path) -> bool {
+    if is_windows_batch(path) {
+        return true;
+    }
+    // npm also writes an extensionless `claude` shell stub next to `claude.cmd`.
+    cfg!(windows) && path.extension().is_none()
+}
+
+/// When `path` is an npm `.cmd`/`.bat` (or, on Windows, the extensionless stub),
+/// return the native executable it launches. A `node` + script shim keeps the
+/// script in [`ResolvedCli::prefix_args`]. Anything else is returned unchanged.
+pub fn unwrap_windows_shim(path: &Path) -> ResolvedCli {
+    if is_direct_exe(path) {
+        return ResolvedCli::direct(path.to_path_buf());
+    }
+    if should_try_unwrap(path) {
+        if let Some(resolved) = unwrap_shim_file(path) {
+            return resolved;
+        }
+    }
+    ResolvedCli::direct(path.to_path_buf())
+}
+
+/// Path to put in `CLAUDE_CODE_EXECUTABLE`: the native binary when the shim
+/// points at one. A `node` + script pair cannot be expressed as one path, so
+/// the original shim is kept in that case.
+pub fn native_executable(path: &Path) -> PathBuf {
+    let resolved = unwrap_windows_shim(path);
+    if resolved.prefix_args.is_empty() && !is_windows_batch(&resolved.program) {
+        resolved.program
+    } else {
+        path.to_path_buf()
+    }
+}
+
+fn unwrap_shim_file(path: &Path) -> Option<ResolvedCli> {
+    let dir = path.parent()?;
+    let stem = path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    for candidate in known_package_exes(dir, &stem) {
+        if candidate.is_file() {
+            return Some(ResolvedCli::direct(candidate));
+        }
+    }
+    let text = read_shim_text(path)?;
+    pick_parsed_target(dir, &stem, &text)
+}
+
+fn known_package_exes(dir: &Path, stem: &str) -> Vec<PathBuf> {
+    let spec: Option<(&str, &str)> = match stem {
+        "claude" => Some(("@anthropic-ai", "claude-code")),
+        "claude-agent-acp" => Some(("@agentclientprotocol", "claude-agent-acp")),
+        _ => None,
+    };
+    let Some((scope, pkg)) = spec else {
+        return Vec::new();
+    };
+    vec![dir
+        .join("node_modules")
+        .join(scope)
+        .join(pkg)
+        .join("bin")
+        .join(format!("{stem}.exe"))]
+}
+
+fn packaged_executable(binary: &str, dir: &Path) -> Option<PathBuf> {
+    known_package_exes(dir, binary)
+        .into_iter()
+        .find(|path| path.is_file())
+}
+
+fn read_shim_text(path: &Path) -> Option<String> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut buf = [0u8; 64 * 1024];
+    let n = file.read(&mut buf).ok()?;
+    Some(String::from_utf8_lossy(&buf[..n]).into_owned())
+}
+
+fn expand_shim_vars(dir: &Path, text: &str) -> String {
+    let mut prefix = dir.display().to_string();
+    if !prefix.ends_with('\\') && !prefix.ends_with('/') {
+        prefix.push(std::path::MAIN_SEPARATOR);
+    }
+    text.replace("%~dp0%", &prefix)
+        .replace("%dp0%", &prefix)
+        .replace("%~dp0", &prefix)
+}
+
+fn path_from_token(token: &str) -> PathBuf {
+    let token = token.trim().trim_matches(|c| c == '"' || c == '\'');
+    if token.is_empty() {
+        return PathBuf::new();
+    }
+    let starts_abs = token.starts_with('/') || token.starts_with('\\');
+    let mut parts = token.split(['\\', '/']).filter(|part| !part.is_empty());
+    let Some(first) = parts.next() else {
+        return PathBuf::new();
+    };
+    let mut path = if starts_abs {
+        PathBuf::from(format!("/{first}"))
+    } else {
+        PathBuf::from(first)
+    };
+    for part in parts {
+        path.push(part);
+    }
+    path
+}
+
+fn token_interesting(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    let ext_ok = lower.ends_with(".exe")
+        || lower.ends_with(".js")
+        || lower.ends_with(".mjs")
+        || lower.ends_with(".cjs");
+    ext_ok
+        && token.len() > 4
+        && (token.contains('\\') || token.contains('/') || token.contains(':'))
+}
+
+fn scrape_paths(text: &str) -> Vec<String> {
+    let lower = text.to_ascii_lowercase();
+    let exts = [".exe", ".js", ".mjs", ".cjs"];
+    let mut found = Vec::new();
+    let bytes = lower.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !text.is_char_boundary(i) {
+            i += 1;
+            continue;
+        }
+        let mut matched = None;
+        for ext in exts {
+            if lower[i..].starts_with(ext) {
+                let after = i + ext.len();
+                let boundary = after >= bytes.len()
+                    || matches!(
+                        bytes[after],
+                        b' ' | b'"' | b'\'' | b'\r' | b'\n' | b'\t' | b'%' | b'&' | b'|' | b')'
+                    );
+                if boundary {
+                    matched = Some(after);
+                    break;
+                }
+            }
+        }
+        if let Some(end) = matched {
+            let begin = text[..i]
+                .char_indices()
+                .rev()
+                .find(|(_, c)| c.is_whitespace() || matches!(*c, '"' | '\'' | '=' | '&' | '|'))
+                .map(|(pos, c)| pos + c.len_utf8())
+                .unwrap_or(0);
+            let token = text[begin..end].trim().trim_matches('"').trim();
+            if token_interesting(token) {
+                found.push(token.to_string());
+            }
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    found
+}
+
+fn file_name_lower(path: &Path) -> Option<String> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.to_ascii_lowercase())
+}
+
+fn is_node_binary(path: &Path) -> bool {
+    matches!(
+        file_name_lower(path).as_deref(),
+        Some("node.exe") | Some("node")
+    )
+}
+
+fn node_beside(dir: &Path) -> Option<PathBuf> {
+    for name in ["node.exe", "node"] {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn pick_parsed_target(dir: &Path, stem: &str, text: &str) -> Option<ResolvedCli> {
+    let stem = stem.to_ascii_lowercase();
+    let expanded = expand_shim_vars(dir, text);
+    let mut node = None;
+    let mut script = None;
+    let mut exe = None;
+    for token in scrape_paths(&expanded) {
+        let candidate = path_from_token(&token);
+        if !candidate.is_file() {
+            continue;
+        }
+        if is_node_binary(&candidate) {
+            node = Some(candidate);
+            continue;
+        }
+        let name = file_name_lower(&candidate).unwrap_or_default();
+        if name.ends_with(".exe") {
+            let preferred = stem.is_empty() || name.contains(&stem);
+            if preferred || exe.is_none() {
+                exe = Some(candidate);
+            }
+            continue;
+        }
+        if name.ends_with(".js") || name.ends_with(".mjs") || name.ends_with(".cjs") {
+            script = Some(candidate);
+        }
+    }
+    if let Some(exe) = exe {
+        return Some(ResolvedCli::direct(exe));
+    }
+    let script = script?;
+    let node = node
+        .or_else(|| node_beside(dir))
+        .or_else(|| find_on_path("node"))?;
+    Some(ResolvedCli {
+        program: node,
+        prefix_args: vec![script.display().to_string()],
+    })
+}
+
+fn first_cli(binary: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
+    let names = host_cli_names(binary);
+    for dir in dirs {
+        for name in &names {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+        if let Some(path) = packaged_executable(binary, dir) {
+            return Some(path);
+        }
+    }
+    None
+}
+
 /// Places a GUI app should look when `PATH` (which macOS GUI apps do not
 /// inherit from the shell) has no `claude`.
 pub fn known_claude_locations(home: Option<&Path>) -> Vec<PathBuf> {
@@ -55,18 +376,6 @@ pub fn known_claude_locations(home: Option<&Path>) -> Vec<PathBuf> {
         out.push(home.join(".claude").join("local").join(exe("claude")));
     }
     out
-}
-
-fn adapter_names() -> Vec<String> {
-    if cfg!(windows) {
-        vec![
-            "claude-agent-acp.cmd".to_string(),
-            "claude-agent-acp.exe".to_string(),
-            "claude-agent-acp".to_string(),
-        ]
-    } else {
-        vec!["claude-agent-acp".to_string()]
-    }
 }
 
 fn first_file(candidates: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
@@ -92,27 +401,29 @@ pub struct Lookup {
 }
 
 /// `DCT_CLAUDE_PATH`, settings `claudePath`, `PATH`, then known locations.
+/// On Windows a `.cmd`/`.bat` npm shim is resolved to `claude.exe` when that
+/// file sits next to the shim.
 pub fn resolve_claude_with(lookup: &Lookup) -> Option<PathBuf> {
     from_override(lookup.env_override.as_deref())
         .or_else(|| from_override(lookup.setting.as_deref()))
-        .or_else(|| first_file(lookup.path_dirs.iter().map(|dir| dir.join(exe("claude")))))
+        .or_else(|| first_cli("claude", &lookup.path_dirs))
         .or_else(|| first_file(lookup.known.iter().cloned()))
+        .map(|path| native_executable(&path))
 }
 
 /// `DCT_CLAUDE_ACP_PATH`, settings `adapterPath`, `PATH`, npm global bin,
-/// Homebrew.
+/// Homebrew. A Windows `.cmd` shim is resolved to a native exe when one exists.
 pub fn resolve_adapter_with(lookup: &Lookup) -> Option<PathBuf> {
+    let dirs: Vec<PathBuf> = lookup
+        .path_dirs
+        .iter()
+        .chain(lookup.known.iter())
+        .cloned()
+        .collect();
     from_override(lookup.env_override.as_deref())
         .or_else(|| from_override(lookup.setting.as_deref()))
-        .or_else(|| {
-            first_file(
-                lookup
-                    .path_dirs
-                    .iter()
-                    .chain(lookup.known.iter())
-                    .flat_map(|dir| adapter_names().into_iter().map(move |n| dir.join(n))),
-            )
-        })
+        .or_else(|| first_cli("claude-agent-acp", &dirs))
+        .map(|path| native_executable(&path))
 }
 
 fn path_dirs() -> Vec<PathBuf> {
@@ -122,12 +433,24 @@ fn path_dirs() -> Vec<PathBuf> {
 }
 
 pub fn resolve_claude(setting: Option<&str>) -> Option<PathBuf> {
-    resolve_claude_with(&Lookup {
+    let mut lookup = Lookup {
         env_override: std::env::var(CLAUDE_PATH_ENV).ok(),
         setting: setting.map(str::to_string),
         path_dirs: path_dirs(),
         known: known_claude_locations(home_dir().as_deref()),
-    })
+    };
+    lookup.path_dirs.extend(windows_npm_dirs_from_env());
+    if let Some(found) = resolve_claude_with(&lookup) {
+        return Some(found);
+    }
+    // Custom `npm prefix -g` (not the default `%APPDATA%\npm`).
+    lookup.env_override = None;
+    lookup.setting = None;
+    lookup.path_dirs.clear();
+    lookup.known.clear();
+    let bin = npm_global_bin()?;
+    lookup.path_dirs.push(bin);
+    resolve_claude_with(&lookup)
 }
 
 /// `npm prefix -g` → its bin folder. `npm` itself may only be in Homebrew
@@ -156,6 +479,7 @@ pub fn resolve_adapter(setting: Option<&str>) -> Option<PathBuf> {
         path_dirs: path_dirs(),
         known: Vec::new(),
     };
+    lookup.path_dirs.extend(windows_npm_dirs_from_env());
     if let Some(found) = resolve_adapter_with(&lookup) {
         return Some(found);
     }
@@ -338,7 +662,7 @@ mod tests {
     fn adapter_lookup_searches_path_then_known_folders() {
         let root = temp("adapter");
         let npm_bin = root.join("npm-global").join("bin");
-        touch(&npm_bin.join(&adapter_names()[0]));
+        touch(&npm_bin.join("claude-agent-acp"));
         let lookup = Lookup {
             env_override: None,
             setting: None,
@@ -347,10 +671,145 @@ mod tests {
         };
         assert_eq!(
             resolve_adapter_with(&lookup),
-            Some(npm_bin.join(&adapter_names()[0]))
+            Some(npm_bin.join("claude-agent-acp"))
         );
         let none = Lookup::default();
         assert_eq!(resolve_adapter_with(&none), None);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn npm_claude_exe(npm_bin: &Path) -> PathBuf {
+        npm_bin
+            .join("node_modules")
+            .join("@anthropic-ai")
+            .join("claude-code")
+            .join("bin")
+            .join("claude.exe")
+    }
+
+    #[test]
+    fn windows_cmd_on_path_resolves_to_the_npm_package_exe() {
+        let root = temp("winpath");
+        let npm_bin = root.join("Roaming").join("npm");
+        let exe = npm_claude_exe(&npm_bin);
+        touch(&exe);
+        let cmd = npm_bin.join("claude.cmd");
+        std::fs::write(
+            &cmd,
+            "@ECHO off\r\n\"%dp0%\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe\" %*\r\n",
+        )
+        .unwrap();
+        let lookup = Lookup {
+            path_dirs: vec![root.join("empty"), npm_bin],
+            ..Lookup::default()
+        };
+        assert_eq!(resolve_claude_with(&lookup), Some(exe));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn windows_env_override_cmd_resolves_to_the_package_exe() {
+        let root = temp("winenv");
+        let npm_bin = root.join("npm");
+        let exe = npm_claude_exe(&npm_bin);
+        touch(&exe);
+        let cmd = npm_bin.join("claude.CMD");
+        std::fs::write(&cmd, "shim\r\n").unwrap();
+        let lookup = Lookup {
+            env_override: Some(cmd.display().to_string()),
+            ..Lookup::default()
+        };
+        assert_eq!(resolve_claude_with(&lookup), Some(exe));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn windows_shim_text_resolves_when_the_exe_is_not_in_the_default_layout() {
+        let root = temp("winparse");
+        let npm_bin = root.join("npm");
+        std::fs::create_dir_all(&npm_bin).unwrap();
+        let exe = root.join("tools").join("claude.exe");
+        touch(&exe);
+        let cmd = npm_bin.join("claude.cmd");
+        std::fs::write(
+            &cmd,
+            format!(
+                "@ECHO off\r\n\"{}\" %*\r\n",
+                exe.display().to_string().replace('/', "\\")
+            ),
+        )
+        .unwrap();
+        let resolved = unwrap_windows_shim(&cmd);
+        assert_eq!(resolved.program, exe);
+        assert!(resolved.prefix_args.is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn windows_adapter_cmd_resolves_to_node_and_the_script() {
+        let root = temp("winacp");
+        let npm_bin = root.join("npm");
+        let script = npm_bin
+            .join("node_modules")
+            .join("@agentclientprotocol")
+            .join("claude-agent-acp")
+            .join("dist")
+            .join("index.js");
+        touch(&script);
+        let node = npm_bin.join("node.exe");
+        touch(&node);
+        let cmd = npm_bin.join("claude-agent-acp.cmd");
+        std::fs::write(
+            &cmd,
+            "@ECHO off\r\nIF EXIST \"%dp0%\\node.exe\" (\r\n  SET \"_prog=%dp0%\\node.exe\"\r\n)\r\n\"%_prog%\" \"%dp0%\\node_modules\\@agentclientprotocol\\claude-agent-acp\\dist\\index.js\" %*\r\n",
+        )
+        .unwrap();
+        let resolved = unwrap_windows_shim(&cmd);
+        assert_eq!(resolved.program, node);
+        assert_eq!(resolved.prefix_args, vec![script.display().to_string()]);
+        let lookup = Lookup {
+            path_dirs: vec![npm_bin.clone()],
+            ..Lookup::default()
+        };
+        assert_eq!(
+            resolve_adapter_with(&lookup),
+            Some(cmd),
+            "node + script stays a shim path until spawn"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn windows_npm_bin_dirs_follow_appdata() {
+        let dirs = windows_npm_bin_dirs(
+            Some(Path::new(r"C:\Users\user\AppData\Roaming")),
+            Some(Path::new(r"C:\Users\user\AppData\Local")),
+        );
+        assert_eq!(
+            dirs[0],
+            PathBuf::from(r"C:\Users\user\AppData\Roaming").join("npm")
+        );
+        assert_eq!(
+            dirs[1],
+            PathBuf::from(r"C:\Users\user\AppData\Local").join("npm")
+        );
+        assert_eq!(
+            windows_cli_names("claude"),
+            vec!["claude.exe", "claude.cmd", "claude.bat", "claude"]
+        );
+    }
+
+    #[test]
+    fn extensionless_npm_stub_resolves_to_the_package_exe() {
+        let root = temp("winstub");
+        let npm_bin = root.join("npm");
+        let exe = npm_claude_exe(&npm_bin);
+        touch(&exe);
+        let stub = npm_bin.join("claude");
+        std::fs::write(&stub, "#!/bin/sh\nexec \"$basedir/node_modules/@anthropic-ai/claude-code/bin/claude.exe\" \"$@\"\n").unwrap();
+        let resolved = unwrap_shim_file(&stub).expect("stub");
+        assert_eq!(resolved.program, exe);
+        assert!(resolved.prefix_args.is_empty());
         let _ = std::fs::remove_dir_all(root);
     }
 

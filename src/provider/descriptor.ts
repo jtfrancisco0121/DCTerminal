@@ -44,9 +44,18 @@ export const CLAUDE_FALLBACK_MODELS: ModelEntry[] = [
   { id: "haiku", label: "Haiku", fast: true },
 ];
 
-/** Model list for the Start card picker, following the provider chip. */
-export function modelsForProvider(provider: ProviderId, cursorModels: ModelEntry[]): ModelEntry[] {
-  return provider === "claude" ? CLAUDE_FALLBACK_MODELS : cursorModels;
+/**
+ * Model list for the picker. Claude uses the cached adapter list when a chat
+ * has reported one; otherwise the four aliases. Extras such as Fable are only
+ * in that cached list.
+ */
+export function modelsForProvider(
+  provider: ProviderId,
+  cursorModels: ModelEntry[],
+  claudeModels?: ModelEntry[] | null,
+): ModelEntry[] {
+  if (provider !== "claude") return cursorModels;
+  return claudeModels && claudeModels.length > 0 ? claudeModels : CLAUDE_FALLBACK_MODELS;
 }
 
 /** Signed-in account to show, or null. */
@@ -61,7 +70,12 @@ export function accountLabel(login: LoginStatus | null | undefined): string | nu
  */
 export function providerIndicator(
   provider: ProviderId,
-  claude?: { configDir: ConfigDirInfo | null; login: LoginStatus | null } | null,
+  claude?: {
+    configDir: ConfigDirInfo | null;
+    login: LoginStatus | null;
+    /** Window account name. When set, the status bar shows it instead of the path. */
+    accountName?: string | null;
+  } | null,
 ): { text: string; title: string } {
   if (provider !== "claude") {
     return { text: "Cursor", title: "Provider: Cursor CLI" };
@@ -70,14 +84,23 @@ export function providerIndicator(
   const login = claude?.login ?? null;
   const account = accountLabel(login);
   const signedOut = login && login.state !== "loggedIn" && login.state !== "unknown";
+  const named = claude?.accountName?.trim() || "";
   const parts = ["Claude"];
-  if (dir) parts.push(dir.display);
+  if (named) parts.push(named);
+  else if (dir) parts.push(dir.display);
   if (account) parts.push(shortAccount(account));
   else if (signedOut) parts.push("not signed in");
   const title = [
     "Provider: Claude Code",
+    named ? `Account: ${named}` : null,
     dir ? `Config folder: ${dir.path}${dir.exists ? "" : " (not found)"}` : null,
-    account ? `Account: ${account}` : signedOut ? "Not signed in for this folder" : null,
+    account
+      ? named
+        ? `Signed in: ${account}`
+        : `Account: ${account}`
+      : signedOut
+        ? "Not signed in for this folder"
+        : null,
     login?.method ? `Login: ${login.method}` : null,
   ]
     .filter(Boolean)

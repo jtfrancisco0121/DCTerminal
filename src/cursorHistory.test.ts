@@ -88,6 +88,7 @@ describe("cursor history resume", () => {
     expect(canOpenInCursorCli("cli")).toBe(true);
     expect(canOpenInCursorCli("acp")).toBe(false);
     expect(canResumeInApp("acp")).toBe(true);
+    expect(canResumeInApp("claude")).toBe(true);
     expect(canResumeInApp("cli")).toBe(false);
   });
 

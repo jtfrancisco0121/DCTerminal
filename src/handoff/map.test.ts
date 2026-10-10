@@ -7,6 +7,7 @@ import {
   handoffBlockReason,
   latestAgentMessage,
   mapHandoff,
+  firstGithubPrUrl,
   scopeChoices,
   takeChars,
   type HandoffSource,
@@ -214,7 +215,8 @@ describe("handoff mapping", () => {
     );
     expect(mapped.answers.originalTask).toContain("Tokens must refresh");
     expect(mapped.answers.approvedPlan).toContain("Patch handler");
-    expect(mapped.answers.additionalContext).toBe("QA noted flakes");
+    expect(mapped.answers.additionalContext).toContain("QA noted flakes");
+    expect(mapped.answers.additionalContext).toContain("Implementation summary:");
   });
 
   it("refuses a hand-off while the turn is still streaming or the tab is not a Planner", () => {
@@ -430,5 +432,48 @@ describe("handoff mapping", () => {
         expect(mapped.planText.length, `${from} -> ${to}`).toBeGreaterThan(0);
       }
     }
+  });
+
+  it("prefers Claude plan-mode text for Plan Reviewer and Implementer", () => {
+    const plan = "1. Add the picker\n2. Cache the list";
+    const src = source({
+      sourceRoleId: "role_planner",
+      planMarkdown: plan,
+      latestMessage: "older card text",
+      answers: { request: "Model picker" },
+    });
+    expect(defaultScope(src)).toBe("plan_mode");
+    const review = mapHandoff(src, "plan_mode", {
+      roleId: "role_plan_reviewer",
+      fields: PLAN_REVIEWER_FIELDS,
+    });
+    expect(review.answers.plan).toBe(plan);
+    expect(review.answers.originalTask).toContain("Model picker");
+    const implement = mapHandoff(src, "plan_mode", {
+      roleId: "role_implementer",
+      fields: IMPLEMENTER_FIELDS,
+    });
+    expect(implement.answers.approvedPlan).toBe(plan);
+  });
+
+  it("carries the implementation summary without pasting a diff", () => {
+    const src = source({
+      sourceRoleId: "role_implementer",
+      latestMessage: "Shipped the picker.\nhttps://github.com/acme/app/pull/12",
+      transcriptText: "see https://github.com/acme/app/pull/12 for review",
+      branch: "feat/models",
+      changes: [{ path: "src/models.ts", additions: 10, deletions: 2 }],
+      answers: { title: "Models", description: "Add the picker", approvedPlan: "List models" },
+    });
+    const mapped = mapHandoff(src, "plan_and_todos", {
+      roleId: "role_pr_reviewer",
+      fields: REVIEWER_FIELDS,
+    });
+    expect(mapped.answers.additionalContext).toContain("Implementation summary:");
+    expect(mapped.answers.additionalContext).toContain("src/models.ts +10 -2");
+    expect(mapped.answers.additionalContext).toContain("Branch: feat/models");
+    expect(mapped.answers.additionalContext).toContain("https://github.com/acme/app/pull/12");
+    expect(mapped.answers.additionalContext).not.toContain("diff --git");
+    expect(firstGithubPrUrl("no link")).toBeNull();
   });
 });

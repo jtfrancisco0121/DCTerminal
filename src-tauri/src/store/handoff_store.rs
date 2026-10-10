@@ -37,6 +37,9 @@ pub struct HandoffRecord {
     pub plan_file: Option<String>,
     #[serde(default)]
     pub plan_field: Option<String>,
+    /// Eagle-Eye position carried by this hand-off, if it stays on the chain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain: Option<crate::store::ChainRef>,
 }
 
 #[derive(Debug, Clone)]
@@ -52,6 +55,7 @@ pub struct NewHandoff {
     pub truncated: bool,
     pub warning: Option<String>,
     pub plan_field: Option<String>,
+    pub chain: Option<crate::store::ChainRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -154,6 +158,7 @@ impl HandoffStore {
             warning,
             plan_file,
             plan_field: draft.plan_field,
+            chain: draft.chain,
         };
         self.data.handoffs.push(record.clone());
         self.drop_oldest();
@@ -270,6 +275,7 @@ mod tests {
             truncated: false,
             warning: None,
             plan_field: Some("approvedPlan".into()),
+            chain: None,
         }
     }
 

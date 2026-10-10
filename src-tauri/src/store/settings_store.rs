@@ -140,9 +140,24 @@ fn default_provider() -> ProviderId {
     ProviderId::DEFAULT
 }
 
-/// Claude Code paths. `config_dir` is the Claude config folder passed to
-/// every Claude process as `CLAUDE_CONFIG_DIR` (unset → `~/.claude`;
-/// `DCT_CLAUDE_CONFIG_DIR` overrides it). Never created or written by
+pub const DEFAULT_CLAUDE_ACCOUNT_ID: &str = "default";
+const MAX_CLAUDE_ACCOUNTS: usize = 8;
+const MAX_ACCOUNT_NAME_CHARS: usize = 40;
+
+/// One named Claude login. `config_dir` is that account's folder
+/// (`~/.claude-account2`, `~/.claude`, …). DCTerminal never creates it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeAccount {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_dir: Option<String>,
+}
+
+/// Claude Code paths. `config_dir` mirrors the first account's folder so
+/// older readers keep working. `DCT_CLAUDE_CONFIG_DIR` overrides that first
+/// account only, and is not written here. Never created or written by
 /// DCTerminal.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -153,6 +168,108 @@ pub struct ClaudeProviderSettings {
     pub claude_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_dir: Option<String>,
+    /// Named accounts. Empty on old files; filled from `config_dir` on load.
+    #[serde(default)]
+    pub accounts: Vec<ClaudeAccount>,
+}
+
+/// Fill `accounts` from a legacy single `configDir`, and keep `config_dir`
+/// equal to the first account. A `config_dir` that differs from account 0
+/// is a legacy edit and wins.
+pub fn normalize_claude_accounts(claude: &mut ClaudeProviderSettings) -> Result<(), String> {
+    claude.config_dir = clean_optional_path(claude.config_dir.take(), "Claude config folder")?;
+    if claude.accounts.len() > MAX_CLAUDE_ACCOUNTS {
+        return Err(format!("at most {MAX_CLAUDE_ACCOUNTS} Claude accounts"));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for account in &mut claude.accounts {
+        account.id = account.id.trim().to_string();
+        if account.id.is_empty()
+            || !account
+                .id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err("account id is invalid".into());
+        }
+        if !seen.insert(account.id.clone()) {
+            return Err(format!("duplicate account id {}", account.id));
+        }
+        let name = account.name.trim();
+        if name.is_empty() {
+            return Err("account name is empty".into());
+        }
+        account.name = name.chars().take(MAX_ACCOUNT_NAME_CHARS).collect();
+        account.config_dir =
+            clean_optional_path(account.config_dir.take(), "Claude config folder")?;
+    }
+    if claude.accounts.is_empty() {
+        let name = if claude.config_dir.is_some() {
+            "Personal"
+        } else {
+            "Claude"
+        };
+        claude.accounts.push(ClaudeAccount {
+            id: DEFAULT_CLAUDE_ACCOUNT_ID.to_string(),
+            name: name.to_string(),
+            config_dir: claude.config_dir.clone(),
+        });
+    } else if claude.accounts[0].config_dir != claude.config_dir {
+        claude.accounts[0].config_dir = claude.config_dir.clone();
+    }
+    claude.config_dir = claude.accounts[0].config_dir.clone();
+    Ok(())
+}
+
+/// Which folder an account uses. `env_override` applies only to account 0
+/// (the original `providers.claude.configDir`).
+pub fn account_config(
+    claude: &ClaudeProviderSettings,
+    account_id: &str,
+    env_override: Option<&str>,
+    home: Option<&std::path::Path>,
+) -> crate::provider::claude_config::ConfigDirInfo {
+    let index = claude
+        .accounts
+        .iter()
+        .position(|account| account.id == account_id)
+        .unwrap_or(0);
+    let setting = claude
+        .accounts
+        .get(index)
+        .and_then(|account| account.config_dir.as_deref())
+        .or(if index == 0 {
+            claude.config_dir.as_deref()
+        } else {
+            None
+        });
+    let env = if index == 0 { env_override } else { None };
+    crate::provider::claude_config::resolve_with(env, setting, home)
+}
+
+/// Account folder for this process (`DCT_CLAUDE_CONFIG_DIR` on account 0 only).
+pub fn resolved_account_config(
+    claude: &ClaudeProviderSettings,
+    account_id: &str,
+) -> crate::provider::claude_config::ConfigDirInfo {
+    let env = std::env::var(crate::provider::claude_config::CONFIG_DIR_ENV).ok();
+    account_config(
+        claude,
+        account_id,
+        env.as_deref(),
+        crate::provider::claude_config::home_dir().as_deref(),
+    )
+}
+
+pub fn account_display_name(settings: &ProvidersSettings, account_id: &str) -> String {
+    settings
+        .claude
+        .accounts
+        .iter()
+        .find(|account| account.id == account_id)
+        .map(|account| account.name.clone())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "Claude".to_string())
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -338,6 +455,7 @@ impl SettingsStore {
             data = SettingsFile::default();
         }
         data.schema_version = SETTINGS_SCHEMA_VERSION;
+        normalize_claude_accounts(&mut data.providers.claude)?;
         Ok(Self {
             path,
             data,
@@ -405,18 +523,43 @@ impl SettingsStore {
         crate::models::effective_model(&self.data.models.cursor, role_id, tab_model)
     }
 
-    pub fn set_models(&mut self, mut next: ModelSettings) -> Result<(), String> {
+    pub fn set_models(&mut self, next: ModelSettings) -> Result<(), String> {
+        self.set_models_for(ProviderId::Cursor, next)
+    }
+
+    /// Save one provider's model choices. Claude ids are checked with
+    /// `is_claude_model_id` so a Cursor id cannot become the Claude default.
+    pub fn set_models_for(
+        &mut self,
+        provider: ProviderId,
+        mut next: ModelSettings,
+    ) -> Result<(), String> {
+        let claude = provider == ProviderId::Claude;
+        let valid = |id: &str| {
+            if claude {
+                crate::models::is_claude_model_id(id)
+            } else {
+                crate::models::valid_model_id(id)
+            }
+        };
         next.default_model = next.default_model.trim().to_string();
-        if !crate::models::valid_model_id(&next.default_model) {
-            next.default_model = default_model_id();
+        if !valid(&next.default_model) {
+            next.default_model = if claude {
+                CLAUDE_DEFAULT_MODEL_ID.to_string()
+            } else {
+                default_model_id()
+            };
         }
         next.role_models = next
             .role_models
             .into_iter()
             .map(|(role, model)| (role, model.trim().to_string()))
-            .filter(|(role, model)| !role.trim().is_empty() && crate::models::valid_model_id(model))
+            .filter(|(role, model)| !role.trim().is_empty() && valid(model))
             .collect();
-        self.data.models.cursor = next;
+        match provider {
+            ProviderId::Cursor => self.data.models.cursor = next,
+            ProviderId::Claude => self.data.models.claude = next,
+        }
         self.save()
     }
 }
@@ -443,11 +586,10 @@ impl SettingsStore {
     /// Paths are trimmed; an empty path clears the setting. Unknown per-role
     /// values are dropped.
     pub fn set_providers(&mut self, mut next: ProvidersSettings) -> Result<(), String> {
-        next.claude.config_dir =
-            clean_optional_path(next.claude.config_dir.take(), "Claude config folder")?;
         next.claude.claude_path = clean_optional_path(next.claude.claude_path.take(), "claude path")?;
         next.claude.adapter_path =
             clean_optional_path(next.claude.adapter_path.take(), "claude-agent-acp path")?;
+        normalize_claude_accounts(&mut next.claude)?;
         next.role_provider = next
             .role_provider
             .into_iter()

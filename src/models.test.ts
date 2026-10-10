@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  CLAUDE_DEFAULT_MODEL_ID,
   DEFAULT_MODEL_ID,
   defaultModelSettings,
   effectiveModel,
+  effectiveModelFor,
   filterModels,
+  isClaudeModelId,
   modelChangeNote,
   validModelId,
 } from "./models";
@@ -40,8 +43,24 @@ describe("models", () => {
 
   it("rejects ids that could be flags", () => {
     expect(validModelId("composer-2.5")).toBe(true);
+    expect(validModelId("opus[1m]")).toBe(true);
+    expect(validModelId("sonnet[1m]")).toBe(true);
     expect(validModelId("-x")).toBe(false);
     expect(validModelId("a b")).toBe(false);
+  });
+
+  it("keeps Claude and Cursor model defaults apart", () => {
+    expect(isClaudeModelId("opus[1m]")).toBe(true);
+    expect(isClaudeModelId("composer-2.5")).toBe(false);
+    expect(CLAUDE_DEFAULT_MODEL_ID).toBe("default");
+    const settings = {
+      cursor: { defaultModel: "gpt-5", roleModels: {} },
+      claude: { defaultModel: "opus", roleModels: { role_planner: "sonnet" } },
+    };
+    expect(effectiveModelFor("cursor", settings, "role_planner")).toBe("gpt-5");
+    expect(effectiveModelFor("claude", settings, "role_planner")).toBe("sonnet");
+    expect(effectiveModelFor("claude", settings, "role_planner", "composer-2.5")).toBe("sonnet");
+    expect(effectiveModelFor("claude", null, "role_general")).toBe("default");
   });
 
   it("describes how a model change landed", () => {

@@ -86,9 +86,11 @@ pub fn workspace_delete(
 /// started). With `replace`, the open tabs' agents and terminals are stopped
 /// and the tabs are closed (they stay in the reopen list).
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn workspace_open(
     id: String,
     replace: bool,
+    window_id: Option<String>,
     store: State<Mutex<WorkspaceStore>>,
     roles: State<Mutex<RolesStore>>,
     state: State<Mutex<StateStore>>,
@@ -118,8 +120,13 @@ pub fn workspace_open(
     }
     if replace {
         let open: Vec<String> = {
-            let state = state.lock().map_err(|e| e.to_string())?;
-            state.sorted_tabs().iter().map(|t| t.id.clone()).collect()
+            let mut state = state.lock().map_err(|e| e.to_string())?;
+            state.bind_window(window_id.as_deref());
+            state
+                .tabs_in_window(state.focus_window())
+                .iter()
+                .map(|tab| tab.id.clone())
+                .collect()
         };
         for tab_id in &open {
             {
@@ -130,6 +137,7 @@ pub fn workspace_open(
         }
     }
     let mut state = state.lock().map_err(|e| e.to_string())?;
+    state.bind_window(window_id.as_deref());
     let tab_ids = state.open_workspace(&usable, replace)?;
     Ok(WorkspaceOpened {
         state: snapshot_from_store(&state),

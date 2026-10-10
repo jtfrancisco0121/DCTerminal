@@ -96,14 +96,18 @@ export function historySourceLabel(source: string): string {
   return source;
 }
 
-/** `agent --resume` opens chats under `chats/`. It does not open ACP sessions. */
+/** A terminal reopen: Cursor chats, or any Claude session (`claude --resume`). */
 export function canOpenInCursorCli(source: string): boolean {
-  return source === "cli";
+  return source === "cli" || source === "claude";
 }
 
-/** ACP sessions resume in DCTerminal with `session/load`. */
+/** ACP and Claude sessions resume in DCTerminal with `session/load`. */
 export function canResumeInApp(source: string): boolean {
-  return source === "acp";
+  return source === "acp" || source === "claude";
+}
+
+export function historyOpenLabel(source: string): string {
+  return source === "claude" ? "Open in Claude Code" : "Open in Cursor CLI";
 }
 
 export const OPEN_IN_CURSOR_CLI_TITLE =

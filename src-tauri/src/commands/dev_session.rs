@@ -1,3 +1,4 @@
+use crate::acp::connection::ClientFollowups;
 use crate::acp::AcpClient;
 use crate::commands::prompt_worker::spawn_prompt_turn;
 use crate::paths::validate_working_folder;
@@ -15,6 +16,15 @@ pub const DEV_TAB_ID: &str = "__dev__";
 
 pub type SharedAcpClient = Arc<Mutex<AcpClient>>;
 
+/// How a pending plan request should be answered.
+#[derive(Clone, Debug)]
+pub enum PendingPlan {
+    /// Cursor `cursor/create_plan`: accepted / cancelled.
+    Cursor,
+    /// Claude Planner `ExitPlanMode`. Never selects a Yes / allow option.
+    ClaudeExit { reject_option_id: Option<String> },
+}
+
 pub fn wrap_client(client: AcpClient) -> SharedAcpClient {
     Arc::new(Mutex::new(client))
 }
@@ -31,8 +41,9 @@ pub struct LiveSession {
     pub process: SharedProcess,
     pub cancel: Arc<AtomicBool>,
     pub outbox: Arc<Mutex<Vec<(u64, Value)>>>,
+    pub followups: ClientFollowups,
     pub pending_permissions: HashMap<u64, ()>,
-    pub pending_plans: HashMap<u64, ()>,
+    pub pending_plans: HashMap<u64, PendingPlan>,
     pub pending_questions: HashMap<u64, ()>,
     pub tool_call_cache: ToolCallCache,
     pub pending_startup_prompt: Option<String>,
@@ -46,6 +57,7 @@ impl LiveSession {
         let process = client.process_handle();
         let cancel = client.cancel_flag();
         let outbox = client.outbox();
+        let followups = client.followups();
         let provider = client.provider();
         Self {
             provider,
@@ -58,6 +70,7 @@ impl LiveSession {
             process,
             cancel,
             outbox,
+            followups,
             pending_permissions: HashMap::new(),
             pending_plans: HashMap::new(),
             pending_questions: HashMap::new(),

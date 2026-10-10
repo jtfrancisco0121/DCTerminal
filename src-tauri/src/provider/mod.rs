@@ -153,7 +153,7 @@ pub enum TerminalKind {
     /// The CLI with no policy flags (Cursor CLI / Claude Code tile).
     Plain,
     /// A role terminal: role flags, then the startup prompt as the positional
-    /// argument (already passed through `deliver_prompt`).
+    /// argument (already passed through `deliver_prompt_limited`).
     Role {
         role_id: String,
         run_mode: RunMode,
@@ -213,9 +213,26 @@ pub fn provider_for(
     id: ProviderId,
     settings: &crate::store::settings_store::ProvidersSettings,
 ) -> SharedProvider {
+    provider_for_account(id, settings, None)
+}
+
+/// Claude uses `account_id`'s folder. `None` is the first account, which is
+/// the only one `DCT_CLAUDE_CONFIG_DIR` overrides. Cursor ignores the account.
+pub fn provider_for_account(
+    id: ProviderId,
+    settings: &crate::store::settings_store::ProvidersSettings,
+    account_id: Option<&str>,
+) -> SharedProvider {
     match id {
         ProviderId::Cursor => Arc::new(CursorProvider),
-        ProviderId::Claude => Arc::new(ClaudeProvider::from_settings(&settings.claude)),
+        ProviderId::Claude => {
+            let account_id = account_id.unwrap_or(crate::store::settings_store::DEFAULT_CLAUDE_ACCOUNT_ID);
+            let config = crate::store::settings_store::resolved_account_config(
+                &settings.claude,
+                account_id,
+            );
+            Arc::new(ClaudeProvider::with_config(&settings.claude, config))
+        }
     }
 }
 

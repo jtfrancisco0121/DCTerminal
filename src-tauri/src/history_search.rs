@@ -292,6 +292,7 @@ mod tests {
             path: std::env::temp_dir().join("unused-state.json"),
             data: crate::store::AppStateFile::default(),
             new_tab_provider: crate::provider::ProviderId::DEFAULT,
+            draft_window: crate::store::MAIN_WINDOW_ID.to_string(),
         };
         let tab = |id: &str, kind: &str, transcript: Option<&str>| {
             serde_json::from_value::<crate::store::TabRecord>(serde_json::json!({

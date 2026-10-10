@@ -177,20 +177,19 @@ describe("per-tab form state", () => {
 });
 
 describe("role permission summaries", () => {
-  it("describes the locked policy for each built-in role", () => {
-    expect(rolePermissionSummary("role_implementer")).toContain("Auto-allow");
-    expect(rolePermissionSummary("role_developer")).toContain("Auto-allow");
-    expect(rolePermissionSummary("role_plan_reviewer")).toContain("Full access");
-    expect(rolePermissionSummary("role_pr_reviewer")).toContain("Deny file writes");
-    expect(rolePermissionSummary("role_planner")).toContain("Deny write and shell");
-    expect(rolePermissionSummary("role_general")).toContain("Deny write and shell");
-    expect(rolePermissionSummary("role_recommendation")).toContain("Deny write and shell");
-    expect(rolePermissionSummary("role_codebase_audit")).toContain("Deny file writes");
-  });
-
-  it("does not infer policy from substrings in custom role ids", () => {
-    expect(rolePermissionSummary("role_my_audit_helper")).toBe(
-      "Ask for every permission.",
-    );
+  it("describes full access for every role", () => {
+    for (const id of [
+      "role_implementer",
+      "role_developer",
+      "role_plan_reviewer",
+      "role_pr_reviewer",
+      "role_planner",
+      "role_general",
+      "role_recommendation",
+      "role_codebase_audit",
+      "role_my_audit_helper",
+    ]) {
+      expect(rolePermissionSummary(id)).toBe("Full access");
+    }
   });
 });

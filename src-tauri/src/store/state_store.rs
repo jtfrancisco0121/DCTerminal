@@ -17,6 +17,9 @@ pub struct StateStore {
     /// Settings `providers.default`, given to new agent tabs. Not saved in
     /// `state.json`; `lib.rs` sets it from settings on startup.
     pub new_tab_provider: ProviderId,
+    /// Window the command in progress is acting for. Not saved. Set at the
+    /// start of each command so two windows do not share a sticky focus.
+    pub draft_window: String,
 }
 
 impl StateStore {
@@ -41,11 +44,162 @@ impl StateStore {
             AppStateFile::default()
         };
         normalize_provider_sessions(&mut data);
-        Ok(Self {
-            path,
+        let claude_migrated = crate::store::claude_migration::migrate_state(&mut data);
+        let windows_migrated = crate::store::window_migration::migrate_windows(&mut data);
+        let mut store = Self {
+            path: path.clone(),
             data,
             new_tab_provider: ProviderId::DEFAULT,
-        })
+            draft_window: crate::store::state_types::MAIN_WINDOW_ID.to_string(),
+        };
+        if claude_migrated {
+            // The file on disk is still the pre-migration copy.
+            crate::store::claude_migration::backup_pre_claude_first(&path)?;
+            store.save()?;
+        }
+        if windows_migrated {
+            crate::store::window_migration::backup_pre_windows(&path)?;
+            store.save()?;
+        }
+        Ok(store)
+    }
+
+    /// The window a command should read and write. Unknown ids stay on main.
+    pub fn bind_window(&mut self, window_id: Option<&str>) {
+        let id = window_id.unwrap_or("").trim();
+        if id.is_empty() {
+            self.draft_window = crate::store::state_types::MAIN_WINDOW_ID.to_string();
+            return;
+        }
+        let safe = id.chars().take(64).collect::<String>();
+        if safe
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            self.draft_window = safe;
+        }
+    }
+
+    pub fn focus_window(&self) -> &str {
+        &self.draft_window
+    }
+
+    pub fn account_for_window(&self, window_id: &str) -> String {
+        self.data
+            .windows
+            .iter()
+            .find(|window| window.id == window_id)
+            .map(|window| window.account_id.clone())
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| "default".to_string())
+    }
+
+    /// Account for a tab's window, or the command's window when the tab is new.
+    pub fn account_for_tab(&self, tab_id: Option<&str>) -> String {
+        let window = tab_id
+            .and_then(|id| self.tab_by_id(id))
+            .map(|tab| tab.window_id.as_str())
+            .filter(|id| !id.is_empty())
+            .unwrap_or(self.draft_window.as_str());
+        self.account_for_window(window)
+    }
+
+    pub fn active_for_window(&self, window_id: &str) -> Option<String> {
+        if let Some(window) = self.data.windows.iter().find(|window| window.id == window_id) {
+            if window.active_tab_id.is_some() {
+                return window.active_tab_id.clone();
+            }
+        }
+        if crate::store::state_types::window_matches(
+            crate::store::state_types::MAIN_WINDOW_ID,
+            window_id,
+        ) {
+            return self.data.active_tab_id.clone();
+        }
+        None
+    }
+
+    fn remember_active(&mut self, window_id: &str, tab_id: Option<String>) {
+        if let Some(window) = self
+            .data
+            .windows
+            .iter_mut()
+            .find(|window| window.id == window_id)
+        {
+            window.active_tab_id = tab_id.clone();
+        }
+        if crate::store::state_types::window_matches(
+            crate::store::state_types::MAIN_WINDOW_ID,
+            window_id,
+        ) {
+            self.data.active_tab_id = tab_id;
+        }
+    }
+
+    pub fn ensure_window(&mut self, window_id: &str, account_id: &str) -> Result<(), String> {
+        if let Some(window) = self
+            .data
+            .windows
+            .iter_mut()
+            .find(|window| window.id == window_id)
+        {
+            window.account_id = account_id.to_string();
+            return self.save();
+        }
+        self.data.windows.push(crate::store::WindowRecord {
+            id: window_id.to_string(),
+            account_id: account_id.to_string(),
+            active_tab_id: None,
+            layout: crate::store::LayoutState::default(),
+        });
+        self.save()
+    }
+
+    /// Mark this window's running chats stopped. The processes are already gone.
+    pub fn stop_window_tabs(&mut self, window_id: &str) -> Result<(), String> {
+        let mut changed = false;
+        for tab in &mut self.data.tabs {
+            if !crate::store::state_types::window_matches(&tab.window_id, window_id) {
+                continue;
+            }
+            if tab.kind == "terminal" || tab.phase == "terminal" {
+                continue;
+            }
+            if tab.phase == "running" {
+                tab.phase = TabPhase::Running
+                    .after_session_stopped()
+                    .as_store_str()
+                    .to_string();
+                changed = true;
+            }
+        }
+        if changed {
+            self.save()?;
+        }
+        Ok(())
+    }
+
+    /// Drop a window that was closed while another stayed open.
+    pub fn archive_window(&mut self, window_id: &str) -> Result<(), String> {
+        let ids: Vec<String> = self
+            .data
+            .tabs
+            .iter()
+            .filter(|tab| crate::store::state_types::window_matches(&tab.window_id, window_id))
+            .map(|tab| tab.id.clone())
+            .collect();
+        for id in ids {
+            self.close_tab(&id)?;
+        }
+        self.data.windows.retain(|window| window.id != window_id);
+        self.save()
+    }
+
+    pub fn tabs_in_window(&self, window_id: &str) -> Vec<&TabRecord> {
+        self.sorted_tabs()
+            .into_iter()
+            .filter(|tab| crate::store::state_types::window_matches(&tab.window_id, window_id))
+            .collect()
     }
 
     /// Provider a session start for `tab_id` would use: the tab's saved
@@ -70,6 +224,70 @@ impl StateStore {
             return Err("Stop this tab before switching its provider.".to_string());
         }
         tab.provider = Some(provider);
+        self.save()
+    }
+
+    pub fn remember_provider_session(
+        &mut self,
+        tab_id: &str,
+        provider: ProviderId,
+        session_id: Option<String>,
+    ) -> Result<(), String> {
+        let tab = self
+            .data
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == tab_id)
+            .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
+        tab.sessions.set(provider, session_id);
+        self.save()
+    }
+
+    pub fn remember_claude_config(&mut self, tab_id: &str, config_dir: &str) -> Result<(), String> {
+        let tab = self
+            .data
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == tab_id)
+            .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
+        tab.sessions.claude_config_dir = Some(config_dir.to_string());
+        self.save()
+    }
+
+    pub fn set_provider_notice(&mut self, tab_id: &str, notice: Option<String>) -> Result<(), String> {
+        let tab = self
+            .data
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == tab_id)
+            .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
+        tab.provider_notice = notice.filter(|text| !text.trim().is_empty());
+        self.save()
+    }
+
+    pub fn set_permission_note(&mut self, tab_id: &str, note: Option<String>) -> Result<(), String> {
+        let tab = self
+            .data
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == tab_id)
+            .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
+        tab.permission_note = note.filter(|text| !text.trim().is_empty());
+        self.save()
+    }
+
+    pub fn set_tab_chain(
+        &mut self,
+        tab_id: &str,
+        chain: Option<crate::store::ChainRef>,
+    ) -> Result<(), String> {
+        let tab = self
+            .data
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == tab_id)
+            .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
+        tab.chain = chain;
         self.save()
     }
 
@@ -131,7 +349,8 @@ impl StateStore {
             tab.sessions
                 .set(provider, Some(session.acp_session_id.clone()));
             tab.session = Some(session);
-            self.data.active_tab_id = Some(tab_id.clone());
+            let window_id = tab.window_id.clone();
+            self.remember_active(&window_id, Some(tab_id.clone()));
             self.save()?;
             return Ok(tab_id);
         }
@@ -163,9 +382,14 @@ impl StateStore {
             pipeline_run_id: None,
             provider: Some(provider),
             sessions,
+            provider_notice: None,
+            chain: None,
+            permission_note: None,
+            window_id: self.draft_window.clone(),
         };
         self.data.tabs.push(record);
-        self.data.active_tab_id = Some(tab_id.clone());
+        let window_id = self.draft_window.clone();
+        self.remember_active(&window_id, Some(tab_id.clone()));
         self.save()?;
         Ok(tab_id)
     }
@@ -253,10 +477,14 @@ impl StateStore {
     }
 
     pub fn set_active_tab(&mut self, tab_id: &str) -> Result<(), String> {
-        if !self.data.tabs.iter().any(|t| t.id == tab_id) {
-            return Err(format!("unknown tab: {tab_id}"));
-        }
-        self.data.active_tab_id = Some(tab_id.to_string());
+        let window_id = self
+            .data
+            .tabs
+            .iter()
+            .find(|tab| tab.id == tab_id)
+            .map(|tab| tab.window_id.clone())
+            .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
+        self.remember_active(&window_id, Some(tab_id.to_string()));
         self.save()
     }
 
@@ -295,20 +523,41 @@ impl StateStore {
                 worktree: tab.worktree.clone(),
                 provider: tab.provider,
                 sessions: tab.sessions.clone(),
+                provider_notice: tab.provider_notice.clone(),
+                chain: tab.chain.clone(),
+                permission_note: tab.permission_note.clone(),
+                window_id: tab.window_id.clone(),
             },
         );
         self.data.closed_tabs.truncate(15);
-        if self.data.layout.secondary_tab_id.as_deref() == Some(tab_id) {
+        let window_id = tab.window_id.clone();
+        let closed_id = tab.id.clone();
+        if self.data.layout.secondary_tab_id.as_deref() == Some(closed_id.as_str()) {
             self.data.layout.secondary_tab_id = None;
             self.data.layout = self.data.layout.clone().sanitized();
         }
-        if self.data.active_tab_id.as_deref() == Some(tab_id) {
-            self.data.active_tab_id = self
+        if let Some(window) = self
+            .data
+            .windows
+            .iter_mut()
+            .find(|window| window.id == window_id)
+        {
+            if window.layout.secondary_tab_id.as_deref() == Some(closed_id.as_str()) {
+                window.layout.secondary_tab_id = None;
+                window.layout = window.layout.clone().sanitized();
+            }
+        }
+        if self.active_for_window(&window_id).as_deref() == Some(closed_id.as_str()) {
+            let next = self
                 .data
                 .tabs
                 .iter()
-                .max_by_key(|t| t.order)
-                .map(|t| t.id.clone());
+                .filter(|candidate| {
+                    crate::store::state_types::window_matches(&candidate.window_id, &window_id)
+                })
+                .max_by_key(|candidate| candidate.order)
+                .map(|candidate| candidate.id.clone());
+            self.remember_active(&window_id, next);
         }
         self.save()
     }
@@ -324,19 +573,31 @@ impl StateStore {
         tab_id: Option<&str>,
         transcript: Option<String>,
     ) -> Result<TabRecord, String> {
+        let focus = self.draft_window.clone();
         let index = match tab_id {
-            Some(id) => self
+            Some(id) => {
+                let index = self
+                    .data
+                    .closed_tabs
+                    .iter()
+                    .position(|t| t.id == id)
+                    .ok_or_else(|| "that closed tab is no longer in the list".to_string())?;
+                if !crate::store::state_types::window_matches(
+                    &self.data.closed_tabs[index].window_id,
+                    &focus,
+                ) {
+                    return Err("that closed tab is in another window".to_string());
+                }
+                index
+            }
+            None => self
                 .data
                 .closed_tabs
                 .iter()
-                .position(|t| t.id == id)
-                .ok_or_else(|| "that closed tab is no longer in the list".to_string())?,
-            None => {
-                if self.data.closed_tabs.is_empty() {
-                    return Err("no closed tab to reopen".to_string());
-                }
-                0
-            }
+                .position(|tab| {
+                    crate::store::state_types::window_matches(&tab.window_id, &focus)
+                })
+                .ok_or_else(|| "no closed tab to reopen".to_string())?,
         };
         let closed = self.data.closed_tabs.remove(index);
         if self.data.tabs.iter().any(|t| t.id == closed.id) {
@@ -391,10 +652,19 @@ impl StateStore {
             pipeline_run_id: None,
             provider: closed.provider,
             sessions: closed.sessions,
+            provider_notice: closed.provider_notice,
+            chain: closed.chain,
+            permission_note: closed.permission_note,
+            window_id: if closed.window_id.trim().is_empty() {
+                self.draft_window.clone()
+            } else {
+                closed.window_id.clone()
+            },
         };
         let id = record.id.clone();
+        let window_id = record.window_id.clone();
         self.data.tabs.push(record);
-        self.data.active_tab_id = Some(id.clone());
+        self.remember_active(&window_id, Some(id.clone()));
         self.save()?;
         self.tab_by_id(&id)
             .cloned()
@@ -413,6 +683,19 @@ impl StateStore {
     }
 
     pub fn layout(&self) -> &crate::store::LayoutState {
+        if !crate::store::state_types::window_matches(
+            crate::store::state_types::MAIN_WINDOW_ID,
+            &self.draft_window,
+        ) {
+            if let Some(window) = self
+                .data
+                .windows
+                .iter()
+                .find(|window| window.id == self.draft_window)
+            {
+                return &window.layout;
+            }
+        }
         &self.data.layout
     }
 
@@ -425,7 +708,21 @@ impl StateStore {
                 next = next.sanitized();
             }
         }
-        self.data.layout = next;
+        let window_id = self.draft_window.clone();
+        if crate::store::state_types::window_matches(
+            crate::store::state_types::MAIN_WINDOW_ID,
+            &window_id,
+        ) {
+            self.data.layout = next.clone();
+        }
+        if let Some(window) = self
+            .data
+            .windows
+            .iter_mut()
+            .find(|window| window.id == window_id)
+        {
+            window.layout = next;
+        }
         self.save()
     }
 
@@ -532,10 +829,15 @@ impl StateStore {
             pipeline_run_id: pipeline_run_id.map(|id| id.to_string()),
             provider: Some(self.new_tab_provider),
             sessions: Default::default(),
+            provider_notice: None,
+            chain: None,
+            permission_note: None,
+            window_id: self.draft_window.clone(),
         };
         self.data.tabs.push(record);
         if make_active {
-            self.data.active_tab_id = Some(tab_id.clone());
+            let window_id = self.draft_window.clone();
+            self.remember_active(&window_id, Some(tab_id.clone()));
         }
         self.save()?;
         Ok(tab_id)
@@ -588,9 +890,14 @@ impl StateStore {
             pipeline_run_id: Some(run_id.to_string()),
             provider: None,
             sessions: Default::default(),
+            provider_notice: None,
+            chain: None,
+            permission_note: None,
+            window_id: self.draft_window.clone(),
         };
         self.data.tabs.push(record);
-        self.data.active_tab_id = Some(tab_id.clone());
+        let window_id = self.draft_window.clone();
+        self.remember_active(&window_id, Some(tab_id.clone()));
         self.save()?;
         Ok(tab_id)
     }
@@ -713,7 +1020,8 @@ impl StateStore {
             if let Some(tab) = self.data.tabs.iter_mut().find(|tab| tab.id == id) {
                 if tab.phase != "running" {
                     apply_terminal_draft(tab, &draft);
-                    self.data.active_tab_id = Some(id.to_string());
+                    let window_id = tab.window_id.clone();
+                    self.remember_active(&window_id, Some(id.to_string()));
                     self.save()?;
                     return Ok(id.to_string());
                 }
@@ -744,10 +1052,15 @@ impl StateStore {
             pipeline_run_id: None,
             provider: None,
             sessions: Default::default(),
+            provider_notice: None,
+            chain: None,
+            permission_note: None,
+            window_id: self.draft_window.clone(),
         };
         apply_terminal_draft(&mut record, &draft);
         self.data.tabs.push(record);
-        self.data.active_tab_id = Some(tab_id.clone());
+        let window_id = self.draft_window.clone();
+        self.remember_active(&window_id, Some(tab_id.clone()));
         self.save()?;
         Ok(tab_id)
     }
@@ -765,8 +1078,13 @@ impl StateStore {
         if workspace.tabs.is_empty() {
             return Err("That workspace has no tabs.".into());
         }
+        let focus = self.draft_window.clone();
         let old: Vec<String> = if replace {
-            self.sorted_tabs().iter().map(|t| t.id.clone()).collect()
+            self.sorted_tabs()
+                .iter()
+                .filter(|tab| crate::store::state_types::window_matches(&tab.window_id, &focus))
+                .map(|tab| tab.id.clone())
+                .collect()
         } else {
             Vec::new()
         };
@@ -810,6 +1128,10 @@ impl StateStore {
                 pipeline_run_id: None,
                 provider: item.provider,
                 sessions: Default::default(),
+                provider_notice: None,
+                chain: None,
+                permission_note: None,
+                window_id: self.draft_window.clone(),
             };
             self.data.tabs.push(record);
             ids.push(tab_id);
@@ -821,9 +1143,24 @@ impl StateStore {
             .active_index
             .and_then(|i| ids.get(i).cloned())
             .or_else(|| ids.first().cloned());
-        self.data.active_tab_id = active;
+        let window_id = self.draft_window.clone();
+        self.remember_active(&window_id, active);
         if let Some(layout) = workspace.layout.clone() {
-            self.data.layout = layout.sanitized();
+            let layout = layout.sanitized();
+            if crate::store::state_types::window_matches(
+                crate::store::state_types::MAIN_WINDOW_ID,
+                &window_id,
+            ) {
+                self.data.layout = layout.clone();
+            }
+            if let Some(window) = self
+                .data
+                .windows
+                .iter_mut()
+                .find(|window| window.id == window_id)
+            {
+                window.layout = layout;
+            }
         }
         self.save()?;
         Ok(ids)
@@ -909,6 +1246,42 @@ fn apply_terminal_draft(tab: &mut TabRecord, draft: &TerminalTabDraft) {
     if draft.provider.is_some() {
         tab.provider = draft.provider;
     }
+}
+
+/// Session id the UI may resume for this tab's current provider.
+/// A Claude tab never reports a Cursor id.
+pub(crate) fn displayed_acp_session(tab: &TabRecord) -> Option<String> {
+    let provider = ProviderId::resolve(tab.provider);
+    if let Some(id) = tab.sessions.get(provider) {
+        return Some(id.to_string());
+    }
+    if provider == ProviderId::Cursor {
+        return tab
+            .session
+            .as_ref()
+            .map(|session| session.acp_session_id.clone());
+    }
+    None
+}
+
+/// Terminal `--resume` id for the current provider. A leftover Cursor id is
+/// not returned on a Claude tab.
+pub(crate) fn displayed_resume_session(tab: &TabRecord) -> Option<String> {
+    let provider = ProviderId::resolve(tab.provider);
+    if tab.kind == "terminal" {
+        if let Some(id) = tab.sessions.get(provider) {
+            return Some(id.to_string());
+        }
+    }
+    let from_answers = tab
+        .answers
+        .get("resumeSessionId")
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty());
+    if provider == ProviderId::Claude && tab.sessions.cursor.as_deref() == from_answers.as_deref() {
+        return None;
+    }
+    from_answers
 }
 
 /// Copy a legacy single session id into `sessions.cursor`. Only records
@@ -1093,6 +1466,7 @@ mod tests {
             path: path.clone(),
             data: AppStateFile::default(),
             new_tab_provider: crate::provider::ProviderId::DEFAULT,
+            draft_window: crate::store::state_types::MAIN_WINDOW_ID.to_string(),
         };
         let first = store.create_draft_tab(&role, "/tmp/a", true, None).unwrap();
         let second = store.create_draft_tab(&role, "/tmp/b", true, None).unwrap();
@@ -1180,6 +1554,7 @@ mod tests {
             path: dir.join("state.json"),
             data: AppStateFile::default(),
             new_tab_provider: crate::provider::ProviderId::DEFAULT,
+            draft_window: crate::store::state_types::MAIN_WINDOW_ID.to_string(),
         };
         let wt = crate::worktree::WorktreeRef {
             repo_root: "/r/app".to_string(),
@@ -1232,6 +1607,7 @@ mod tests {
             path: path.clone(),
             data: AppStateFile::default(),
             new_tab_provider: crate::provider::ProviderId::DEFAULT,
+            draft_window: crate::store::state_types::MAIN_WINDOW_ID.to_string(),
         };
         let id = store.create_draft_tab(&role, "/tmp/app", true, None).unwrap();
         store.set_tab_label(&id, "  Auth bug  ").unwrap();
@@ -1299,6 +1675,7 @@ mod tests {
             path,
             data: AppStateFile::default(),
             new_tab_provider: crate::provider::ProviderId::DEFAULT,
+            draft_window: crate::store::state_types::MAIN_WINDOW_ID.to_string(),
         };
         let draft_id = store.create_draft_tab(&role, "/tmp/proj", true, None).unwrap();
         let answers = HashMap::from([
@@ -1354,6 +1731,7 @@ mod tests {
             path: dir.join("state.json"),
             data: AppStateFile::default(),
             new_tab_provider: crate::provider::ProviderId::DEFAULT,
+            draft_window: crate::store::state_types::MAIN_WINDOW_ID.to_string(),
         };
         let id = store.create_draft_tab(&role, r"C:\Work\App", true, None).unwrap();
         store.close_tab(&id).unwrap();
@@ -1393,6 +1771,7 @@ mod tests {
             path: dir.join("state.json"),
             data: AppStateFile::default(),
             new_tab_provider: crate::provider::ProviderId::DEFAULT,
+            draft_window: crate::store::state_types::MAIN_WINDOW_ID.to_string(),
         };
         let older = store.create_draft_tab(&role, "/w/a", true, None).unwrap();
         let newer = store.create_draft_tab(&role, "/w/b", true, None).unwrap();
@@ -1433,6 +1812,7 @@ mod tests {
             path: dir.join("state.json"),
             data: AppStateFile::default(),
             new_tab_provider: crate::provider::ProviderId::DEFAULT,
+            draft_window: crate::store::state_types::MAIN_WINDOW_ID.to_string(),
         };
         let id = store.create_draft_tab(&role, r"C:\Work\App", true, None).unwrap();
         store
@@ -1506,6 +1886,7 @@ mod tests {
             path: dir.join("state.json"),
             data: AppStateFile::default(),
             new_tab_provider: crate::provider::ProviderId::DEFAULT,
+            draft_window: crate::store::state_types::MAIN_WINDOW_ID.to_string(),
         };
         let before = store.create_draft_tab(&role, "/w/old", true, None).unwrap();
         let snapshot = store.tab_by_id(&before).unwrap().role_snapshot.clone();

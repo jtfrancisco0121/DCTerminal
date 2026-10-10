@@ -34,6 +34,7 @@ export const JSON_PLAN_CHARS = 1_000_000;
 export const FILE_PLAN_CHARS = 8_000_000;
 
 export type HandoffScope =
+  | "plan_mode"
   | "plan_and_todos"
   | "message"
   | "card"
@@ -77,6 +78,13 @@ export type HandoffSource = {
   planFileName?: string;
   /** Last lines of the terminal buffer, already stripped of ANSI codes. */
   terminalTail?: string;
+  /** Claude ExitPlanMode body ("Ready to code?"). Preferred over the card. */
+  planMarkdown?: string;
+  /** Whole-tab snapshot: path and +/− only. Diffs are not pasted. */
+  changes?: { path: string; additions: number | null; deletions: number | null }[];
+  branch?: string | null;
+  /** Transcript text scanned for the first GitHub pull-request URL. */
+  transcriptText?: string;
 };
 
 export type HandoffLimits = {
@@ -111,6 +119,33 @@ const DESCRIPTION_FIELD_KEYS = ["description", "request", "originalTask", "task"
 const REVIEWED_PLAN_HEADING = /^#{1,6}[ \t]+(?:\*\*)?Reviewed plan(?:\*\*)?[ \t]*:?[ \t]*$/im;
 const REVIEW_NOTES_HEADING = /^#{1,6}[ \t]+(?:\*\*)?Review notes(?:\*\*)?[ \t]*:?[ \t]*$/im;
 const CONTEXT_FIELD_KEYS = ["additionalContext", "context", "notes"];
+const GITHUB_PR_URL = /https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+/;
+
+/** First GitHub pull-request URL in a transcript. Large diffs are not used. */
+export function firstGithubPrUrl(text: string): string | null {
+  return text.match(GITHUB_PR_URL)?.[0] ?? null;
+}
+
+/** Implementer → PR Reviewer extra context. Paths and counts, never a diff. */
+export function implementationContext(source: HandoffSource): string {
+  const parts: string[] = [];
+  const summary = source.latestMessage.trim();
+  if (summary) parts.push(`Implementation summary:\n${takeChars(summary, 4_000)}`);
+  const files = source.changes ?? [];
+  if (files.length > 0) {
+    const lines = files.slice(0, 40).map((file) => {
+      const add = file.additions == null ? "?" : `+${file.additions}`;
+      const del = file.deletions == null ? "?" : `-${file.deletions}`;
+      return `- ${file.path} ${add} ${del}`;
+    });
+    if (files.length > 40) lines.push(`- … ${files.length - 40} more`);
+    parts.push(`Changed files:\n${lines.join("\n")}`);
+  }
+  if (source.branch?.trim()) parts.push(`Branch: ${source.branch.trim()}`);
+  const pr = firstGithubPrUrl(`${source.transcriptText ?? ""}\n${source.latestMessage}`);
+  if (pr) parts.push(`Pull request: ${pr}`);
+  return parts.join("\n\n");
+}
 
 const TASK_TYPE_TO_IMPLEMENTER: Record<string, string> = {
   Feature: "Feature",
@@ -162,6 +197,7 @@ function implementerAnswersReady(answers: Record<string, string>): boolean {
 
 function hasChatContent(source: HandoffSource): boolean {
   return (
+    (source.planMarkdown ?? "").trim().length > 0 ||
     source.latestMessage.trim().length > 0 ||
     source.plan.length > 0 ||
     source.todos.length > 0 ||
@@ -240,7 +276,8 @@ export function composePlanText(
   scope: HandoffScope,
 ): { text: string; emptyReason: string | null } {
   let text = "";
-  if (scope === "message") text = source.latestMessage.trim();
+  if (scope === "plan_mode") text = (source.planMarkdown ?? "").trim();
+  else if (scope === "message") text = source.latestMessage.trim();
   else if (scope === "card") text = formatPlanCard(source.plan, source.todos);
   else if (scope === "selection") text = source.selection.trim();
   else if (scope === "plan_file") text = (source.planFileText ?? "").trim();
@@ -283,7 +320,15 @@ export function scopeChoices(source: HandoffSource): ScopeChoice[] {
       },
     ];
   }
-  return [
+  const choices: ScopeChoice[] = [];
+  if ((source.planMarkdown ?? "").trim()) {
+    choices.push({
+      id: "plan_mode",
+      label: "Plan mode (Ready to code?)",
+      enabled: composePlanText(source, "plan_mode").text.length > 0,
+    });
+  }
+  choices.push(
     {
       id: "plan_and_todos",
       label: "Latest plan and to-dos",
@@ -304,7 +349,8 @@ export function scopeChoices(source: HandoffSource): ScopeChoice[] {
       label: "Selection",
       enabled: composePlanText(source, "selection").text.length > 0,
     },
-  ];
+  );
+  return choices;
 }
 
 export function defaultScope(source: HandoffSource): HandoffScope {
@@ -314,7 +360,13 @@ export function defaultScope(source: HandoffSource): HandoffScope {
     if (composePlanText(source, "terminal_tail").text) return "terminal_tail";
     return "plan_file";
   }
-  const preferred: HandoffScope[] = ["plan_and_todos", "message", "card", "selection"];
+  const preferred: HandoffScope[] = [
+    "plan_mode",
+    "plan_and_todos",
+    "message",
+    "card",
+    "selection",
+  ];
   for (const scope of preferred) {
     if (composePlanText(source, scope).text) return scope;
   }
@@ -431,8 +483,10 @@ export function mapImplementerToReviewer(
   if (descriptionKey) answers[descriptionKey] = takeChars(originalTask, 4_000);
   if (planField && planText) answers[planField] = limited.inlinePlan;
   const contextKey = firstKey(target.fields, CONTEXT_FIELD_KEYS);
-  const context = answer(source.answers, "additionalContext");
-  if (contextKey && context) answers[contextKey] = context;
+  const context = [answer(source.answers, "additionalContext"), implementationContext(source)]
+    .filter((part) => part.trim().length > 0)
+    .join("\n\n");
+  if (contextKey && context) answers[contextKey] = takeChars(context, 8_000);
   return {
     title: title || "Implementer hand-off",
     answers,

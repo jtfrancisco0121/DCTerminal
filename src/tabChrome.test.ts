@@ -225,7 +225,11 @@ describe("tab chrome", () => {
       sendPlanTargets: ["role_implementer", "role_developer", "role_planner"],
     });
     const ids = filterCommands(commands, "hand off").map((c) => c.id);
-    expect(ids).toEqual(["sendPlanImplementer", "sendPlanDeveloper"]);
+    expect(ids.filter((id) => id.startsWith("send"))).toEqual([
+      "sendPlanImplementer",
+      "sendPlanDeveloper",
+    ]);
+    expect(ids).toEqual(expect.arrayContaining(["startEagleEye1", "startEagleEye2"]));
   });
 
   describe("fuller palette (F9)", () => {
@@ -297,9 +301,11 @@ describe("tab chrome", () => {
     it("always lists a hand-off entry, explaining it when no plan can be sent", () => {
       const plain = buildPalette({ tabs: [], canReopen: false, splitOpen: false });
       const ids = filterCommands(plain, "hand off").map((c) => c.id);
-      expect(ids).toEqual(["handoffHelp"]);
+      expect(ids).toEqual(["startEagleEye1", "startEagleEye2", "handoffHelp"]);
       expect(filterCommands(plain, "handoff").map((c) => c.id)).toEqual(["handoffHelp"]);
-      const planner = filterCommands(everything(), "hand off").map((c) => c.id);
+      const planner = filterCommands(everything(), "hand off")
+        .map((c) => c.id)
+        .filter((id) => id.startsWith("send"));
       expect(planner).toEqual([
         "sendPlanPlanReviewer",
         "sendPlanImplementer",

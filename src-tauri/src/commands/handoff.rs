@@ -19,6 +19,8 @@ pub struct HandoffSaveInput {
     pub truncated: bool,
     pub warning: Option<String>,
     pub plan_field: Option<String>,
+    #[serde(default)]
+    pub chain: Option<crate::store::ChainRef>,
 }
 
 #[tauri::command]
@@ -42,6 +44,7 @@ pub fn handoff_save(
         truncated: input.truncated,
         warning: input.warning,
         plan_field: input.plan_field,
+        chain: input.chain,
     })
 }
 

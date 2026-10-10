@@ -43,31 +43,39 @@ fn role() -> Role {
 }
 
 #[test]
-fn legacy_state_loads_as_cursor_with_ids_in_sessions_cursor() {
+fn legacy_state_migrates_to_claude_and_keeps_the_cursor_id() {
     let dir = temp_dir("state");
     let path = dir.join("state.json");
     std::fs::write(&path, LEGACY_STATE).unwrap();
     let store = StateStore::open_path(path.clone()).unwrap();
     let chat = store.tab_by_id("tab_chat").unwrap();
-    assert_eq!(chat.provider, None);
-    assert_eq!(ProviderId::resolve(chat.provider), ProviderId::Cursor);
+    assert_eq!(chat.provider, Some(ProviderId::Claude));
     assert_eq!(
         chat.sessions.cursor.as_deref(),
         Some("11111111-2222-3333-4444-555555555555")
     );
     assert_eq!(chat.sessions.claude, None);
-    // The live session ref is untouched.
-    assert_eq!(
-        chat.session.as_ref().unwrap().acp_session_id,
-        "11111111-2222-3333-4444-555555555555"
-    );
+    assert!(chat.session.is_none(), "a Cursor id must not resume under Claude");
+    assert!(chat.provider_notice.as_deref().unwrap().contains("Now using Claude"));
     let term = store.tab_by_id("tab_term").unwrap();
-    assert!(term.sessions.is_empty());
+    assert_eq!(term.provider, Some(ProviderId::Claude));
+    assert!(term.sessions.claude.is_none());
+    assert!(term.provider_notice.is_none());
     let closed = &store.data.closed_tabs[0];
-    assert_eq!(closed.provider, None);
+    assert_eq!(closed.provider, Some(ProviderId::Claude));
+    assert!(closed.acp_session_id.is_none());
     assert_eq!(
         closed.sessions.cursor.as_deref(),
         Some("66666666-7777-8888-9999-000000000000")
+    );
+    assert!(path.with_file_name("state.pre-claude-first.json").exists());
+    assert!(store.data.migrations.claude_first);
+    // A second open does not migrate again or rewrite the backup.
+    let again = StateStore::open_path(path).unwrap();
+    assert!(again.data.migrations.claude_first);
+    assert_eq!(
+        again.tab_by_id("tab_chat").unwrap().sessions.cursor.as_deref(),
+        Some("11111111-2222-3333-4444-555555555555")
     );
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -82,10 +90,8 @@ fn state_round_trips_provider_and_sessions() {
     let raw: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     let tab = &raw["tabs"][0];
-    assert!(
-        tab.get("provider").is_none(),
-        "legacy stays legacy until 6.3"
-    );
+    assert_eq!(tab["provider"], "claude");
+    assert_eq!(raw["migrations"]["claudeFirst"], true);
     assert_eq!(
         tab["sessions"]["cursor"],
         "11111111-2222-3333-4444-555555555555"
@@ -102,6 +108,24 @@ fn state_round_trips_provider_and_sessions() {
         Some("11111111-2222-3333-4444-555555555555")
     );
     assert_eq!(chat.sessions.claude, None);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn switching_a_migrated_tab_back_to_cursor_resumes_the_cursor_id() {
+    let dir = temp_dir("switch");
+    let path = dir.join("state.json");
+    std::fs::write(&path, LEGACY_STATE).unwrap();
+    let mut store = StateStore::open_path(path).unwrap();
+    store
+        .set_tab_provider("tab_chat", ProviderId::Cursor)
+        .unwrap();
+    let chat = store.tab_by_id("tab_chat").unwrap();
+    assert_eq!(chat.provider, Some(ProviderId::Cursor));
+    assert_eq!(
+        super::state_store::displayed_acp_session(chat).as_deref(),
+        Some("11111111-2222-3333-4444-555555555555")
+    );
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -245,22 +269,69 @@ fn provider_settings_are_cleaned_on_save() {
 }
 
 #[test]
-fn legacy_workspaces_load_without_a_provider() {
+fn claude_accounts_migrate_from_config_dir_and_env_is_only_the_first() {
+    use crate::provider::claude_config::ConfigDirSource;
+    use crate::store::settings_store::{account_config, ClaudeAccount};
+    let dir = temp_dir("accounts");
+    let mut store = SettingsStore::open(&dir).unwrap();
+    let mut next = ProvidersSettings::default();
+    next.claude.config_dir = Some("~/.claude-account2".into());
+    store.set_providers(next).unwrap();
+    let accounts = &store.providers().claude.accounts;
+    assert_eq!(accounts.len(), 1);
+    assert_eq!(accounts[0].id, "default");
+    assert_eq!(accounts[0].name, "Personal");
+    assert_eq!(accounts[0].config_dir.as_deref(), Some("~/.claude-account2"));
+
+    let mut named = store.providers().clone();
+    named.claude.accounts.push(ClaudeAccount {
+        id: "company".into(),
+        name: "Company".into(),
+        config_dir: Some("~/.claude".into()),
+    });
+    named.claude.config_dir = named.claude.accounts[0].config_dir.clone();
+    store.set_providers(named).unwrap();
+    let home = std::env::temp_dir();
+    let first = account_config(
+        &store.providers().claude,
+        "default",
+        Some("/env/claude"),
+        Some(&home),
+    );
+    let second = account_config(
+        &store.providers().claude,
+        "company",
+        Some("/env/claude"),
+        Some(&home),
+    );
+    assert_eq!(first.source, ConfigDirSource::Env);
+    assert!(first.path.contains("env"));
+    assert_eq!(second.source, ConfigDirSource::Setting);
+    assert!(second.display.ends_with(".claude") || second.path.ends_with(".claude"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn legacy_workspaces_migrate_to_claude() {
     let dir = temp_dir("ws");
     std::fs::write(dir.join("workspaces.json"), LEGACY_WORKSPACES).unwrap();
     let store = WorkspaceStore::open(&dir).unwrap();
     let tab = &store.data.workspaces[0].tabs[0];
-    assert_eq!(tab.provider, None);
-    assert_eq!(ProviderId::resolve(tab.provider), ProviderId::Cursor);
+    assert_eq!(tab.provider, Some(ProviderId::Claude));
+    assert!(dir.join("workspaces.pre-claude-first.json").exists());
+    assert!(store.data.migrations.claude_first);
 
     let state_dir = temp_dir("ws_state");
     let mut state = StateStore::open_path(state_dir.join("state.json")).unwrap();
     let ids = state
         .open_workspace(&store.data.workspaces[0], false)
         .unwrap();
-    assert_eq!(state.tab_by_id(&ids[0]).unwrap().provider, None);
+    assert_eq!(
+        state.tab_by_id(&ids[0]).unwrap().provider,
+        Some(ProviderId::Claude)
+    );
     let saved = crate::store::WorkspaceTab::from_record(state.tab_by_id(&ids[0]).unwrap());
-    assert_eq!(saved.provider, None);
+    assert_eq!(saved.provider, Some(ProviderId::Claude));
     let _ = std::fs::remove_dir_all(dir);
     let _ = std::fs::remove_dir_all(state_dir);
 }

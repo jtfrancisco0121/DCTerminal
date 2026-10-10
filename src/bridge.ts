@@ -4,6 +4,7 @@
  */
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { ensureWindow } from "./windowScope";
 import type { NotificationSettings } from "./notify/agentNotify";
 import type {
   ProviderId,
@@ -28,6 +29,28 @@ export async function setProviderSettings(
 /** Detection + sign-in for one provider (read-only CLI calls). */
 export async function providerStatus(provider: ProviderId): Promise<ProviderReport> {
   return invoke<ProviderReport>("provider_status", { provider });
+}
+
+export type ClaudeAccountLogin = {
+  id: string;
+  name: string;
+  config: import("./provider/types").ConfigDirInfo;
+  login: LoginStatus;
+};
+
+/** Sign-in for every Claude account. Missing folders are not created. */
+export async function claudeAccountLogins(): Promise<ClaudeAccountLogin[]> {
+  return invoke<ClaudeAccountLogin[]>("claude_account_logins");
+}
+
+/** Open a window bound to one Claude account. */
+export async function openAccountWindow(accountId: string): Promise<string> {
+  return invoke<string>("open_account_window", { accountId });
+}
+
+/** macOS File > New Window (and its shortcut) asks this webview to open one. */
+export function listenNewWindow(handler: () => void): Promise<UnlistenFn> {
+  return listen("new-window", () => handler());
 }
 
 /**
@@ -251,6 +274,11 @@ export type TabSummary = {
   pipelineRunId?: string | null;
   /** "claude" | "cursor". Tabs saved before providers report "cursor". */
   provider?: ProviderId;
+  /** One-line notice (migration, or the Claude config folder changed). */
+  providerNotice?: string | null;
+  chain?: import("./handoff/chains").ChainRef | null;
+  /** Set when Claude could not take the role's permission mode. */
+  permissionNote?: string | null;
 };
 
 export type PipelineRun = {
@@ -312,8 +340,12 @@ export type TabRecord = {
   worktree?: WorktreeRef | null;
 };
 
+async function windowId(): Promise<string> {
+  return (await ensureWindow()).id;
+}
+
 export async function getAppState(): Promise<AppStateSnapshot> {
-  return invoke<AppStateSnapshot>("get_app_state");
+  return invoke<AppStateSnapshot>("get_app_state", { windowId: await windowId() });
 }
 
 export async function getTab(tabId: string): Promise<{ tab: TabRecord }> {
@@ -327,14 +359,33 @@ export async function selectActiveTab(
 }
 
 export async function closeTab(tabId: string): Promise<AppStateSnapshot> {
-  return invoke<AppStateSnapshot>("close_tab", { tabId });
+  return invoke<AppStateSnapshot>("close_tab", { tabId, windowId: await windowId() });
 }
 
 export async function newDraftTab(
   roleId: string,
   cwd: string,
 ): Promise<{ tab: TabRecord }> {
-  return invoke<{ tab: TabRecord }>("new_draft_tab", { roleId, cwd });
+  return invoke<{ tab: TabRecord }>("new_draft_tab", { roleId, cwd, windowId: await windowId() });
+}
+
+export async function ackProviderNotice(tabId: string): Promise<void> {
+  return invoke("ack_provider_notice", { tabId });
+}
+
+export async function setTabChain(
+  tabId: string,
+  chain: import("./handoff/chains").ChainRef | null,
+): Promise<void> {
+  return invoke("set_tab_chain", { tabId, chain });
+}
+
+/** Opens a Planner (eagle1) or Implementer (eagle2) draft at step 1. */
+export async function startEagleEye(
+  kind: "eagle1" | "eagle2",
+  cwd: string,
+): Promise<{ tab: TabRecord }> {
+  return invoke("start_eagle_eye", { kind, cwd, windowId: await windowId() });
 }
 
 export async function getFormRecall(
@@ -364,7 +415,19 @@ export async function roleSessionStart(
     tabId: tabId ?? null,
     resendStartup: resendStartup ?? false,
     resumeSessionId: resumeSessionId ?? null,
+    windowId: await windowId(),
   });
+}
+
+export type ClaudeHistoryView = {
+  entries: import("./cursorHistory").CursorHistoryEntry[];
+  configDir: string;
+  configDisplay: string;
+  exists: boolean;
+};
+
+export async function listClaudeHistory(cwd: string): Promise<ClaudeHistoryView> {
+  return invoke("list_claude_history", { cwd, windowId: await windowId() });
 }
 
 export async function listCursorCliHistory(
@@ -652,11 +715,11 @@ export async function resetBuiltinRole(roleId: string): Promise<Role> {
 }
 
 export async function createPipelineTabs(): Promise<AppStateSnapshot> {
-  return invoke("create_pipeline_tabs");
+  return invoke("create_pipeline_tabs", { windowId: await windowId() });
 }
 
 export async function createExecutionPipelineTabs(): Promise<AppStateSnapshot> {
-  return invoke("create_execution_pipeline_tabs");
+  return invoke("create_execution_pipeline_tabs", { windowId: await windowId() });
 }
 
 export async function getPipelineRun(runId: string): Promise<{ run: PipelineRun }> {
@@ -679,7 +742,10 @@ export async function pipelineSetCandidatePlan(
 
 /** Reopen `tabId`, or the most recently closed tab when omitted. */
 export async function reopenClosedTab(tabId?: string): Promise<{ tab: TabRecord }> {
-  return invoke("reopen_closed_tab", tabId ? { tabId } : {});
+  return invoke("reopen_closed_tab", {
+    ...(tabId ? { tabId } : {}),
+    windowId: await windowId(),
+  });
 }
 
 /** F5: one match in saved chat text (open, closed, or archived tab). */
@@ -716,6 +782,10 @@ export type PlanRequestEvent = {
   jsonRpcId: number;
   title: string;
   entries: { content: string; status: string; priority?: string }[];
+  /** Claude ExitPlanMode body. Absent on a Cursor plan card. */
+  markdown?: string | null;
+  /** Reject option. Present means Keep planning, never Accept. */
+  keepOptionId?: string | null;
 };
 
 export function listenPlanRequests(
@@ -795,6 +865,7 @@ export type HandoffSaveInput = {
   truncated: boolean;
   warning: string | null;
   planField: string | null;
+  chain?: import("./handoff/chains").ChainRef | null;
 };
 
 export async function handoffSave(input: HandoffSaveInput): Promise<HandoffRecord> {
@@ -856,7 +927,7 @@ export async function workspaceDelete(id: string): Promise<WorkspaceList> {
 
 /** Open a workspace as new tabs; `replace` closes the tabs open now. */
 export async function workspaceOpen(id: string, replace: boolean): Promise<WorkspaceOpened> {
-  return invoke<WorkspaceOpened>("workspace_open", { id, replace });
+  return invoke<WorkspaceOpened>("workspace_open", { id, replace, windowId: await windowId() });
 }
 
 /** F6: a named prompt in the library (`prompts.json` in app data). */
@@ -975,6 +1046,7 @@ export async function shellTerminalStart(input: {
       resumeSessionId: input.resumeSessionId ?? null,
       cols: input.cols,
       rows: input.rows,
+      windowId: await windowId(),
     },
     onOutput: input.onOutput,
   });
@@ -997,6 +1069,7 @@ export async function roleTerminalStart(input: {
       handoffPlan: input.handoffPlan ?? null,
       cols: input.cols,
       rows: input.rows,
+      windowId: await windowId(),
     },
     onOutput: input.onOutput,
   });
@@ -1023,6 +1096,7 @@ export async function ptyOpen(input: {
       resumeSessionId: input.resumeSessionId ?? null,
       cols: input.cols,
       rows: input.rows,
+      windowId: await windowId(),
     },
     onOutput: input.onOutput,
   });
@@ -1065,6 +1139,8 @@ export type ModelEntry = {
   id: string;
   label: string;
   fast: boolean;
+  /** Extra note, e.g. Fable's "may use usage credits". */
+  badge?: string | null;
 };
 
 export type ModelList = {
@@ -1080,6 +1156,11 @@ export type ModelSettings = {
   roleModels: Record<string, string>;
 };
 
+export type ProviderModelSettings = {
+  cursor: ModelSettings;
+  claude: ModelSettings;
+};
+
 export type ModelVia =
   | "unchanged"
   | "configOption"
@@ -1093,16 +1174,22 @@ export type SetModelResult = {
   restarted: boolean;
 };
 
-export async function listModels(refresh = false): Promise<ModelList> {
-  return invoke<ModelList>("list_models", { refresh });
+export async function listModels(
+  provider: "cursor" | "claude" = "cursor",
+  refresh = false,
+): Promise<ModelList> {
+  return invoke<ModelList>("list_models", { provider, refresh });
 }
 
-export async function getModelSettings(): Promise<ModelSettings> {
-  return invoke<ModelSettings>("get_model_settings");
+export async function getModelSettings(): Promise<ProviderModelSettings> {
+  return invoke<ProviderModelSettings>("get_model_settings");
 }
 
-export async function setModelSettings(models: ModelSettings): Promise<ModelSettings> {
-  return invoke<ModelSettings>("set_model_settings", { models });
+export async function setModelSettings(
+  models: ModelSettings,
+  provider: "cursor" | "claude" = "cursor",
+): Promise<ModelSettings> {
+  return invoke<ModelSettings>("set_model_settings", { models, provider });
 }
 
 /** Per-tab override. `null` clears it. Returns the effective model. */
@@ -1192,6 +1279,7 @@ export async function worktreeTabNew(input: {
     branch: input.branch,
     createBranch: input.createBranch,
     base: input.base,
+    windowId: await windowId(),
   });
 }
 
@@ -1239,6 +1327,16 @@ export type RevertOutcome = {
   skipped: { path: string; reason: string }[];
 };
 
+export type UsageSnapshot = {
+  configDir: string;
+  windows: import("./usage/limits").RateWindow[];
+  contextByTab: Record<string, { used: number; size: number }>;
+};
+
+export async function getClaudeUsage(): Promise<UsageSnapshot> {
+  return invoke<UsageSnapshot>("get_claude_usage", { windowId: await windowId() });
+}
+
 export async function changesList(tabId: string, scope: ChangeScope): Promise<ChangeSet> {
   return invoke<ChangeSet>("changes_list", { tabId, scope });
 }
@@ -1278,11 +1376,11 @@ export type LayoutState = {
 };
 
 export async function getLayout(): Promise<LayoutState> {
-  return invoke<LayoutState>("get_layout");
+  return invoke<LayoutState>("get_layout", { windowId: await windowId() });
 }
 
 export async function setLayout(layout: LayoutState): Promise<LayoutState> {
-  return invoke<LayoutState>("set_layout", { layout });
+  return invoke<LayoutState>("set_layout", { layout, windowId: await windowId() });
 }
 
 export type FileEntry = {

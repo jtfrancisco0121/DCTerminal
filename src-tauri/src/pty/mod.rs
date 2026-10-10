@@ -5,13 +5,13 @@ pub(crate) mod plans;
 mod session;
 mod shell;
 
-use crate::provider::{
-    provider_for, CursorProvider, Provider, ProviderId, TerminalKind, TerminalLaunch,
-};
 use crate::paths::validate_working_folder;
+use crate::provider::{
+    provider_for_account, CursorProvider, Provider, ProviderId, TerminalKind, TerminalLaunch,
+};
 pub use crate::pty::launch::RunMode;
 use crate::pty::launch::{
-    deliver_prompt, handoff_terminal_prompt,
+    deliver_prompt_limited, handoff_terminal_prompt, inline_prompt_limit, PromptDelivery,
 };
 use crate::pty::plans::{cursor_plans_dir, newest_plan_since};
 use crate::pty::session::{PtyOutput, PtySession, SpawnSpec};
@@ -128,6 +128,20 @@ fn open_session(
     Ok(pid)
 }
 
+fn store_prompt(
+    app: &AppHandle,
+    id: &str,
+    program: &str,
+    prompt: &str,
+) -> Result<PromptDelivery, String> {
+    let file = prompt_file(app, id)?;
+    let delivery = deliver_prompt_limited(prompt, &file, inline_prompt_limit(program));
+    if let Some(body) = &delivery.stored_body {
+        std::fs::write(&file, body).map_err(|err| format!("prompt file: {err}"))?;
+    }
+    Ok(delivery)
+}
+
 fn prompt_file(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
     let dir = crate::data_dir::app_data_dir(app)
         .path
@@ -203,6 +217,19 @@ pub struct ShellTerminalInput {
     /// CLI chat id. When set, the tab runs `agent --resume <id>`.
     #[serde(default)]
     pub resume_session_id: Option<String>,
+    /// Window this terminal belongs to. Omitted means the original window.
+    #[serde(default)]
+    pub window_id: Option<String>,
+}
+
+fn provider_for_window(
+    state: &StateStore,
+    settings: &crate::store::settings_store::ProvidersSettings,
+    id: ProviderId,
+    tab_id: Option<&str>,
+) -> crate::provider::SharedProvider {
+    let account = state.account_for_tab(tab_id);
+    provider_for_account(id, settings, Some(&account))
 }
 
 #[tauri::command]
@@ -242,25 +269,66 @@ pub fn shell_terminal_start(
         let settings = settings.lock().map_err(|err| err.to_string())?;
         settings.terminal().shell.clone()
     };
-    let resume_id = input
+    let mut resume_id = input
         .resume_session_id
         .as_deref()
         .map(str::trim)
         .filter(|id| !id.is_empty())
         .map(|id| id.to_string());
-    if resume_id.is_some() && launch != "cursor-cli" {
-        return Err("agent --resume is only used for a Cursor CLI terminal.".to_string());
+    let mut claude_notice: Option<String> = None;
+    if resume_id.is_some() && launch != "cursor-cli" && launch != "claude-cli" {
+        return Err("Resume is only used for a Cursor CLI or Claude Code terminal.".to_string());
     }
-    if let Some(id) = &resume_id {
-        let root = crate::cursor_history::cursor_data_dir().ok_or_else(|| {
-            "Cursor's home folder was not found, so this chat cannot be opened.".to_string()
-        })?;
-        crate::cursor_history::cli_chat_required(&root, &cwd.display().to_string(), id)?;
+    if launch == "cursor-cli" {
+        if let Some(id) = &resume_id {
+            let root = crate::cursor_history::cursor_data_dir().ok_or_else(|| {
+                "Cursor's home folder was not found, so this chat cannot be opened.".to_string()
+            })?;
+            crate::cursor_history::cli_chat_required(&root, &cwd.display().to_string(), id)?;
+        }
+    }
+    if launch == "claude-cli" {
+        let (sessions, current) = {
+            let mut state = store.lock().map_err(|err| err.to_string())?;
+            state.bind_window(input.window_id.as_deref());
+            let settings = settings.lock().map_err(|err| err.to_string())?;
+            let sessions = input
+                .tab_id
+                .as_deref()
+                .and_then(|id| state.tab_by_id(id))
+                .map(|tab| tab.sessions.clone())
+                .unwrap_or_default();
+            let provider = provider_for_window(
+                &state,
+                settings.providers(),
+                ProviderId::Claude,
+                input.tab_id.as_deref(),
+            );
+            let current = provider
+                .config_dir()
+                .map(|info| info.path)
+                .unwrap_or_default();
+            (sessions, current)
+        };
+        let (id, notice) = crate::provider::claude::decide_claude_resume(
+            resume_id.as_deref(),
+            &sessions,
+            &current,
+        );
+        resume_id = id;
+        claude_notice = notice;
     }
     let command = if launch == "claude-cli" {
         let provider = {
+            let mut state = store.lock().map_err(|err| err.to_string())?;
+            state.bind_window(input.window_id.as_deref());
             let settings = settings.lock().map_err(|err| err.to_string())?;
-            provider_for(ProviderId::Claude, settings.providers())
+            provider_for_window(
+                &state,
+                settings.providers(),
+                ProviderId::Claude,
+                input.tab_id.as_deref(),
+            )
         };
         let model = crate::models::model_for_tab_provider(
             &store,
@@ -269,8 +337,14 @@ pub fn shell_terminal_start(
             "claude-cli",
             ProviderId::Claude,
         )?;
+        let kind = match &resume_id {
+            Some(id) => TerminalKind::Resume {
+                session_id: id.clone(),
+            },
+            None => TerminalKind::Plain,
+        };
         provider.terminal_command(&TerminalLaunch {
-            kind: TerminalKind::Plain,
+            kind,
             model: Some(model),
         })?
     } else if launch == "cursor-cli" {
@@ -292,6 +366,7 @@ pub fn shell_terminal_start(
     };
     let tab_id = {
         let mut store = store.lock().map_err(|err| err.to_string())?;
+        store.bind_window(input.window_id.as_deref());
         store.save_terminal_tab(
             input.tab_id.as_deref(),
             TerminalTabDraft {
@@ -319,6 +394,25 @@ pub fn shell_terminal_start(
             },
         )?
     };
+    if launch == "claude-cli" {
+        let mut state = store.lock().map_err(|err| err.to_string())?;
+        let settings = settings.lock().map_err(|err| err.to_string())?;
+        let provider = provider_for_window(
+            &state,
+            settings.providers(),
+            ProviderId::Claude,
+            Some(&tab_id),
+        );
+        if let Some(dir) = provider.config_dir() {
+            state.remember_claude_config(&tab_id, &dir.path)?;
+        }
+        if let Some(id) = &resume_id {
+            state.remember_provider_session(&tab_id, ProviderId::Claude, Some(id.clone()))?;
+        }
+        if claude_notice.is_some() {
+            state.set_provider_notice(&tab_id, claude_notice)?;
+        }
+    }
     let mut registry = registry.lock().map_err(|err| err.to_string())?;
     let pid = open_session(
         &mut registry,
@@ -350,6 +444,9 @@ pub struct RoleTerminalInput {
     pub handoff_plan: Option<String>,
     pub cols: u16,
     pub rows: u16,
+    /// Window this terminal belongs to. Omitted means the original window.
+    #[serde(default)]
+    pub window_id: Option<String>,
 }
 
 #[tauri::command]
@@ -408,11 +505,14 @@ pub fn role_terminal_start(
         RunMode::parse(&settings.run_mode_for(&role.id))
     };
     let provider = {
-        let store = store.lock().map_err(|err| err.to_string())?;
+        let mut store = store.lock().map_err(|err| err.to_string())?;
+        store.bind_window(input.window_id.as_deref());
         let settings = settings.lock().map_err(|err| err.to_string())?;
-        provider_for(
-            store.provider_for_start(input.tab_id.as_deref()),
+        provider_for_window(
+            &store,
             settings.providers(),
+            store.provider_for_start(input.tab_id.as_deref()),
+            input.tab_id.as_deref(),
         )
     };
     let model = crate::models::model_for_tab_provider(
@@ -431,9 +531,10 @@ pub fn role_terminal_start(
         model: Some(model.clone()),
     };
     // Fail before the tab is saved when the CLI is missing.
-    provider.terminal_command(&role_launch(None))?;
+    let program = provider.terminal_command(&role_launch(None))?.program;
     let tab_id = {
         let mut store = store.lock().map_err(|err| err.to_string())?;
+        store.bind_window(input.window_id.as_deref());
         let title_answers = input.values.clone();
         let label = tab_label(&role.name, &title_answers);
         store.save_terminal_tab(
@@ -457,11 +558,13 @@ pub fn role_terminal_start(
             },
         )?
     };
-    let file = prompt_file(&app, &tab_id)?;
-    let delivery = deliver_prompt(&prompt, &file);
-    if let Some(body) = &delivery.stored_body {
-        std::fs::write(&file, body).map_err(|err| format!("prompt file: {err}"))?;
+    if provider.id() == ProviderId::Claude {
+        let mut state = store.lock().map_err(|err| err.to_string())?;
+        if let Some(dir) = provider.config_dir() {
+            state.remember_claude_config(&tab_id, &dir.path)?;
+        }
     }
+    let delivery = store_prompt(&app, &tab_id, &program, &prompt)?;
     let command = provider.terminal_command(&role_launch(Some(delivery.argument.clone())))?;
     let mut registry = registry.lock().map_err(|err| err.to_string())?;
     let pid = open_session(
@@ -498,6 +601,28 @@ pub struct PtyOpenInput {
     /// CLI chat id. When set, argv is `agent --resume <id>`.
     #[serde(default)]
     pub resume_session_id: Option<String>,
+    /// Window this terminal belongs to. Omitted means the original window.
+    #[serde(default)]
+    pub window_id: Option<String>,
+}
+
+fn claude_terminal_resume(
+    store: &Mutex<StateStore>,
+    tab_id: &str,
+    requested: Option<&str>,
+    current_config: String,
+) -> Result<Option<String>, String> {
+    let mut state = store.lock().map_err(|err| err.to_string())?;
+    let sessions = state
+        .tab_by_id(tab_id)
+        .map(|tab| tab.sessions.clone())
+        .unwrap_or_default();
+    let (id, notice) =
+        crate::provider::claude::decide_claude_resume(requested, &sessions, &current_config);
+    if notice.is_some() && state.tab_by_id(tab_id).is_some() {
+        state.set_provider_notice(tab_id, notice)?;
+    }
+    Ok(id)
 }
 
 #[tauri::command]
@@ -541,17 +666,21 @@ pub fn pty_open(
             (command.program, command.args, command.env)
         }
         "claude-cli" => {
-            if input
-                .resume_session_id
-                .as_deref()
-                .is_some_and(|id| !id.trim().is_empty())
-            {
-                return Err("Claude Code chats are resumed from Claude history (Phase 6).".to_string());
-            }
             let provider = {
+                let mut state = store.lock().map_err(|err| err.to_string())?;
+                state.bind_window(input.window_id.as_deref());
                 let settings = settings.lock().map_err(|err| err.to_string())?;
-                provider_for(ProviderId::Claude, settings.providers())
+                provider_for_window(&state, settings.providers(), ProviderId::Claude, Some(&input.id))
             };
+            let resume = claude_terminal_resume(
+                &store,
+                &input.id,
+                input.resume_session_id.as_deref(),
+                provider
+                    .config_dir()
+                    .map(|info| info.path)
+                    .unwrap_or_default(),
+            )?;
             let model = crate::models::model_for_tab_provider(
                 &store,
                 &settings,
@@ -559,10 +688,29 @@ pub fn pty_open(
                 "claude-cli",
                 ProviderId::Claude,
             )?;
-            let command = provider.terminal_command(&TerminalLaunch {
-                kind: TerminalKind::Plain,
+            let kind = match resume {
+                Some(id) => TerminalKind::Resume { session_id: id },
+                None => TerminalKind::Plain,
+            };
+            let mut command = provider.terminal_command(&TerminalLaunch {
+                kind,
                 model: Some(model),
             })?;
+            let resuming = input
+                .resume_session_id
+                .as_deref()
+                .is_some_and(|id| !id.trim().is_empty());
+            if !resuming {
+                if let Some(text) = input
+                    .prompt
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                {
+                    let delivery = store_prompt(&app, &input.id, &command.program, text)?;
+                    command.args.push(delivery.argument);
+                }
+            }
             (command.program, command.args, command.env)
         }
         "role" => {
@@ -572,13 +720,14 @@ pub fn pty_open(
                 RunMode::parse(&settings.run_mode_for(&role_id))
             };
             let provider = {
-                let store = store.lock().map_err(|err| err.to_string())?;
+                let mut store = store.lock().map_err(|err| err.to_string())?;
+                store.bind_window(input.window_id.as_deref());
                 let settings = settings.lock().map_err(|err| err.to_string())?;
                 let id = store
                     .tab_by_id(&input.id)
                     .map(|tab| ProviderId::resolve(tab.provider))
                     .unwrap_or(ProviderId::LEGACY);
-                provider_for(id, settings.providers())
+                provider_for_window(&store, settings.providers(), id, Some(&input.id))
             };
             let model = crate::models::model_for_tab_provider(
                 &store,
@@ -595,21 +744,14 @@ pub fn pty_open(
                 },
                 model: Some(model.clone()),
             };
-            provider.terminal_command(&role_launch(None))?;
+            let program = provider.terminal_command(&role_launch(None))?.program;
             let prompt = input
                 .prompt
                 .as_deref()
                 .map(str::trim)
                 .filter(|text| !text.is_empty());
             let argument = match prompt {
-                Some(text) => {
-                    let file = prompt_file(&app, &input.id)?;
-                    let delivery = deliver_prompt(text, &file);
-                    if let Some(body) = &delivery.stored_body {
-                        std::fs::write(&file, body).map_err(|err| format!("prompt file: {err}"))?;
-                    }
-                    Some(delivery.argument)
-                }
+                Some(text) => Some(store_prompt(&app, &input.id, &program, text)?.argument),
                 None => None,
             };
             let command = provider.terminal_command(&role_launch(argument))?;
@@ -624,7 +766,7 @@ pub fn pty_open(
         .resume_session_id
         .as_deref()
         .is_some_and(|id| !id.trim().is_empty());
-    if (input.launch == "cursor-cli" || input.launch == "claude-cli") && !resuming {
+    if input.launch == "cursor-cli" && !resuming {
         if let Some(text) = input
             .prompt
             .as_deref()
@@ -724,7 +866,7 @@ pub fn terminal_plan_file(
             .and_then(|id| store.tab_by_id(id))
             .map(|tab| ProviderId::resolve(tab.provider))
             .unwrap_or(ProviderId::LEGACY);
-        provider_for(id, settings.providers())
+        provider_for_window(&store, settings.providers(), id, tab_id.as_deref())
             .plans_dir()
             .unwrap_or_else(cursor_plans_dir)
     };

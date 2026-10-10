@@ -158,6 +158,7 @@ export type PaletteGroup = (typeof PALETTE_GROUPS)[number];
 /** Every fixed palette action. StartupForm's runPalette must handle each one. */
 export const PALETTE_ACTIONS = [
   "newTab",
+  "newWindow",
   "closeTab",
   "reopenClosedTab",
   "nextTab",
@@ -184,6 +185,8 @@ export const PALETTE_ACTIONS = [
   "showLogs",
   "pipelineWorkspace",
   "executionPipelineWorkspace",
+  "startEagleEye1",
+  "startEagleEye2",
   "handoffHelp",
   "changeModel",
   "refreshModels",
@@ -275,6 +278,7 @@ export function buildPalette(opts: {
 }): PaletteCommand[] {
   const commands: PaletteCommand[] = [
     { id: "newTab", title: "New tab", group: "Tabs" },
+    { id: "newWindow", title: "New window", group: "Tabs", keywords: "account claude" },
     { id: "closeTab", title: "Close tab", group: "Tabs" },
     { id: "nextTab", title: "Next tab", group: "Tabs" },
     { id: "prevTab", title: "Previous tab", group: "Tabs" },
@@ -336,6 +340,18 @@ export function buildPalette(opts: {
       title: "Save scratch pad as prompt…",
       group: "Prompts",
       keywords: "prompt library snippet template name",
+    },
+    {
+      id: "startEagleEye1",
+      title: "Start Eagle-Eye 1…",
+      group: "Hand-off",
+      keywords: "eagle eye planner plan reviewer implementer chain",
+    },
+    {
+      id: "startEagleEye2",
+      title: "Start Eagle-Eye 2…",
+      group: "Hand-off",
+      keywords: "eagle eye implementer reviewer chain",
     },
     {
       id: "pipelineWorkspace",
