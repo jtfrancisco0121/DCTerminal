@@ -9,7 +9,7 @@
  *
  * Character limits match `handoff_store.rs`.
  */
-
+import { contractFindings, contractImplementation, contractPlan, contractReview } from "./contract";
 import { TERMINAL_TAIL_LINES } from "../terminal/text";
 import {
   isHandoffSource,
@@ -175,8 +175,16 @@ export function firstGithubPrUrl(text: string): string | null {
 /** Implementer → PR Reviewer extra context. Paths and counts, never a diff. */
 export function implementationContext(source: HandoffSource): string {
   const parts: string[] = [];
-  const summary = source.latestMessage.trim();
-  if (summary) parts.push(`Implementation summary:\n${takeChars(summary, 4_000)}`);
+  const declared = contractImplementation(source.latestMessage);
+  if (declared) {
+    if (declared.summary) parts.push(`Implementation summary:\n${takeChars(declared.summary, 4_000)}`);
+    if (declared.files) parts.push(`Files changed (Implementer's notes):\n${takeChars(declared.files, 4_000)}`);
+    if (declared.tests) parts.push(`Tests run:\n${takeChars(declared.tests, 2_000)}`);
+    if (declared.deviations) parts.push(`Deviations from the plan:\n${takeChars(declared.deviations, 2_000)}`);
+  } else {
+    const summary = source.latestMessage.trim();
+    if (summary) parts.push(`Implementation summary:\n${takeChars(summary, 4_000)}`);
+  }
   const files = source.changes ?? [];
   if (files.length > 0) {
     const lines = files.slice(0, 40).map((file) => {
@@ -188,7 +196,9 @@ export function implementationContext(source: HandoffSource): string {
     parts.push(`Changed files:\n${lines.join("\n")}`);
   }
   if (source.branch?.trim()) parts.push(`Branch: ${source.branch.trim()}`);
-  const pr = firstGithubPrUrl(`${source.transcriptText ?? ""}\n${source.latestMessage}`);
+  const pr =
+    firstGithubPrUrl(declared?.pullRequest ?? "") ??
+    firstGithubPrUrl(`${source.transcriptText ?? ""}\n${source.latestMessage}`);
   if (pr) parts.push(`Pull request: ${pr}`);
   return parts.join("\n\n");
 }
@@ -454,6 +464,8 @@ function nextHeadingAt(text: string, from: number, level: number): number | null
  * wins, so a reply that first quotes the instructions still splits.
  */
 export function splitPlanReview(text: string): { plan: string; notes: string } {
+  const declared = contractReview(text);
+  if (declared) return declared;
   const planHit = lastOf(headingHits(text, REVIEWED_PLAN_HEADING));
   const notesHits = headingHits(text, REVIEW_NOTES_HEADING);
   let plan: string | null = null;
@@ -512,6 +524,9 @@ export function composePlanText(
     text = message && card ? `${message}\n\n${card}` : message || card;
   }
   if (!text) return { text: "", emptyReason: "That choice has no content." };
+  // A reply that follows the hand-off contract hands on exactly its sections.
+  if (source.sourceRoleId === "role_planner") text = contractPlan(text) ?? text;
+  if (source.sourceRoleId === "role_pr_reviewer") text = contractFindings(text) || text;
   return { text, emptyReason: null };
 }
 

@@ -138,7 +138,7 @@ Check:
 
 ## Output
 
-Keep the sections below in this order. The last two sections, **Reviewed plan** and **Review notes**, are read by the hand-off to the Implementer.
+Keep the sections below in this order. The final **Hand-off** sections are read by DCTerminal to route the work and fill the Implementer's form.
 
 ### Verdict
 
@@ -210,19 +210,25 @@ State one:
 - **Update the plan, then proceed**
 - **Return to planning because significant changes are required**
 
-### Reviewed plan
+### Hand-off
 
-End your reply with this section. It is what the Implementer receives.
+End your reply with these three sections, using the headings exactly and in this order. Put nothing after them.
 
-- If the plan is approved as-is, repeat the plan here unchanged.
-- If you recommend changes, write the full revised plan here with your changes applied, so the Implementer does not have to merge them.
+## HANDOFF: Verdict
+
+Exactly one line: `APPROVED`, `APPROVED WITH CHANGES`, or `REQUIRES REVISION`. It must match your verdict above.
+
+## HANDOFF: Reviewed plan
+
+What the Implementer receives as the approved plan.
+
+- If the plan is approved as-is, repeat it here unchanged.
+- If you recommend changes, write the full revised plan with your changes applied, so the Implementer does not have to merge them.
 - If the plan must go back to planning, write the best plan you can and mark the open questions clearly.
 
-Use the heading `## Reviewed plan` exactly.
+## HANDOFF: Review notes
 
-### Review notes
-
-After the reviewed plan, add `## Review notes`: a short list of the blocking issues, risks, and missing tests you found, and anything the Implementer must watch for. The Implementer receives this as additional context.
+A short list of the blocking issues, risks, and missing tests you found, and anything the Implementer must watch for. The Implementer receives this as additional context. Write `None.` if there are none.
 
 ---
 
