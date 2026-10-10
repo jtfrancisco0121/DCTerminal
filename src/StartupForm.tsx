@@ -146,6 +146,7 @@ import {
   isHandoffSource,
   isPlanSource,
   latestAgentMessage,
+  latestReplyText,
   composePlanText,
   roleDisplayName,
   mapHandoff,
@@ -328,6 +329,16 @@ import {
   streamSegmentFromUserMessage,
   segmentsToPlainText,
 } from "./transcript";
+
+function handoffFieldsOf(role: Role): HandoffField[] {
+  return role.fields.map((field) => ({
+    key: field.key,
+    label: field.label,
+    type: field.type,
+    options: field.options,
+    required: field.required,
+  }));
+}
 
 /** Plain shells have no model; chats, role terminals, and the CLI tiles do. */
 function tabHasModel(tab: TabSummary): boolean {
@@ -563,6 +574,8 @@ export function StartupForm({
   const tabsBootstrappedRef = useRef(false);
   const hydratedRef = useRef(false);
   const startLockRef = useRef(false);
+  /** One hand-off confirm at a time: a double click must not open two tabs. */
+  const handoffLockRef = useRef(false);
   const activeTabIdRef = useRef(activeTabId);
   activeTabIdRef.current = activeTabId;
   // A grid cell clicked in its composer: the active cell renders a new one, so focus it.
@@ -2110,6 +2123,8 @@ export function StartupForm({
       tabId: string,
       text: string,
       onNotSent?: () => void,
+      /** A send-back from another tab: the user's own draft and images stay put. */
+      fromHandoff = false,
     ): Promise<{ turn: Promise<TurnOutcome> } | "error"> => {
       const trimmed = text.trim();
       const blocked = trimmed ? blockedSlashCommand(trimmed) : null;
@@ -2120,12 +2135,12 @@ export function StartupForm({
         return "error" as const;
       }
       // Pasted images go with this message only, so a --- chain's later steps send none.
-      const images = chatImages.actions.take(tabId);
+      const images = fromHandoff ? [] : chatImages.actions.take(tabId);
       if (!trimmed && images.length === 0) return "error" as const;
       waiterRef.current.forget(tabId);
       const pending = waiterRef.current.expect(tabId);
       setHistoryCursor(-1);
-      if (trimmed) {
+      if (trimmed && !fromHandoff) {
         // Saved with the tab's pad (scratch.json), so Up-arrow history survives a restart.
         scratch.remember(tabId, trimmed);
         void promptRecordSend(trimmed, "chat").catch(() => {});
@@ -2133,8 +2148,9 @@ export function StartupForm({
       patchRuntime(tabId, (rt) => ({
         ...rt,
         promptError: null,
-        followUp: "",
+        followUp: fromHandoff ? rt.followUp : "",
         promptInFlight: true,
+        planStale: true,
         segments: appendStreamSegment(
           rt.segments,
           streamSegmentFromUserMessage(withImageMarkers(trimmed, images)),
@@ -2628,6 +2644,11 @@ export function StartupForm({
         setShortcutsOpen(false);
         setSettingsOpen(false);
         setSplitPicker(null);
+        // The hand-off dialog closes like its Cancel button: not mid-confirm.
+        if (!handoffLockRef.current) {
+          setHandoffTarget(null);
+          setTerminalCapture(null);
+        }
         return;
       }
       if (match.action === "settings") {
@@ -2967,16 +2988,7 @@ export function StartupForm({
   const loadHandoffFields = useCallback((target: HandoffTargetId) => {
     setHandoffFields(null);
     getRole(target)
-      .then((loaded) => {
-        setHandoffFields(
-          loaded.fields.map((field) => ({
-            key: field.key,
-            label: field.label,
-            type: field.type,
-            options: field.options,
-          })),
-        );
-      })
+      .then((loaded) => setHandoffFields(handoffFieldsOf(loaded)))
       .catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err);
         setHandoffError(message);
@@ -3051,11 +3063,11 @@ export function StartupForm({
       const rt = tabId ? runtimesRef.current[tabId] : undefined;
       if (tabId && summary && isPlanSource(summary.roleId) && !rt?.plan && !rt?.lastPlanMarkdown) {
         // After a restart the plan lives only in the file Claude wrote. Use it
-        // only when this tab's own tool calls name that file.
-        const written = (rt?.segments ?? [])
-          .map((segment) => segment.text)
+        // only when this tab's own tool calls name that file. A continued
+        // session may replay only messages, so the saved transcript counts too.
+        const written = [transcriptRef.current, ...(rt?.segments ?? []).map((s) => s.text)]
           .join("\n")
-          .match(/[^\s`'"]*\/plans\/[^\s`'"]+\.md/g);
+          .match(/[^\s`'"()]*\/plans\/[^\s`'"()]+\.md/g);
         const path = written?.[written.length - 1];
         if (path) {
           void terminalPlanFile(0, tabId)
@@ -3106,7 +3118,12 @@ export function StartupForm({
         savedTabs.find((tab) => tab.id === activeTabId)?.label ?? roleDisplayName(roleId, roles),
       cwd: session?.cwd || values.cwd || "",
       answers: values,
-      latestMessage: latestAgentMessage(streamSegments),
+      // An Implementer's summary is its last message; other roles' replies
+      // may be split by tool calls, so their whole reply in this turn is read.
+      latestMessage:
+        roleId === "role_implementer"
+          ? latestAgentMessage(streamSegments)
+          : latestReplyText(streamSegments),
       plan: cards.plan,
       todos: cards.todos,
       selection: handoffSelection,
@@ -3118,6 +3135,8 @@ export function StartupForm({
         runtimes[activeTabId ?? ""]?.lastPlanMarkdown ||
         ""
       ).trim(),
+      planMarkdownStale:
+        !runtimes[activeTabId ?? ""]?.plan && !!runtimes[activeTabId ?? ""]?.planStale,
       planFileText: chatPlanFile?.tabId === activeTabId ? chatPlanFile.text : undefined,
       planFileName: chatPlanFile?.tabId === activeTabId ? chatPlanFile.name : undefined,
       branch: activeTabSummary?.worktreeBranch ?? null,
@@ -3188,26 +3207,43 @@ export function StartupForm({
     };
     const tab = chainTabFor(savedTabs, chain, next.step, liveChat);
     const live = !!tab && liveChat(tab);
+    const rt = tab ? runtimes[tab.id] : undefined;
+    // A turn held by a card never ends on its own: say what it waits for.
+    const waitingOn = rt?.plan
+      ? "a plan card"
+      : rt?.permission
+        ? "a permission request"
+        : rt?.question
+          ? "a question"
+          : null;
     const target: LoopBackTarget = {
       round: chainRound(chain),
       tabLabel: tab?.label ?? null,
       live,
       blocked:
-        live && runtimes[tab.id]?.promptInFlight
-          ? `The ${tab.label} tab is still working. Wait for its turn to end.`
+        live && rt?.promptInFlight
+          ? waitingOn
+            ? `The ${tab.label} tab is waiting on ${waitingOn}. Answer it in that tab, then send.`
+            : `The ${tab.label} tab is still working. Wait for its turn to end.`
           : null,
     };
     return { chain, next, tab: live ? tab : null, target };
   }, [handoffSource.sourceRoleId, handoffSource.sourceTabId, handoffTarget, runtimes, savedTabs]);
 
-  const confirmHandoff = useCallback(
+  const confirmHandoffNow = useCallback(
     async (scope: HandoffScope, surface: HandoffSurface) => {
       if (!handoffTarget || !handoffSource.sourceTabId) return;
       const loop = handoffLoopBack;
       const cancelPendingPlan = async () => {
         const pendingPlan = runtimesRef.current[handoffSource.sourceTabId]?.plan;
         if (pendingPlan?.markdown || pendingPlan?.keepOptionId) {
-          await respondPlanRequest(handoffSource.sourceTabId, pendingPlan.jsonRpcId, "cancelled");
+          // "Keep planning", never accept. The request may already be gone
+          // (the turn ended or was cancelled); the hand-off still goes ahead.
+          await respondPlanRequest(
+            handoffSource.sourceTabId,
+            pendingPlan.jsonRpcId,
+            "cancelled",
+          ).catch(() => {});
           patchRuntime(handoffSource.sourceTabId, (rt) => ({ ...rt, plan: null }));
         }
       };
@@ -3223,23 +3259,33 @@ export function StartupForm({
         setBusy(true);
         setHandoffError(null);
         try {
-          const sent = await dispatchText(targetTab.id, text);
+          const sent = await dispatchText(targetTab.id, text, undefined, true);
           if (sent === "error") {
             setHandoffError(
               runtimesRef.current[targetTab.id]?.promptError ?? "The follow-up was not sent.",
             );
             return;
           }
-          await chainLoopBack({
-            chainId: loop.chain.chainId,
-            reviewerRoleId: handoffSource.sourceRoleId,
-            tabId: targetTab.id,
-            verdict: sourceVerdict,
-            handoffText: text,
-          });
-          await cancelPendingPlan();
+          // The follow-up is out: close the dialog first, so a failure below
+          // cannot invite a second send of the same findings.
           setTerminalCapture(null);
           setHandoffTarget(null);
+          try {
+            await chainLoopBack({
+              chainId: loop.chain.chainId,
+              reviewerRoleId: handoffSource.sourceRoleId,
+              tabId: targetTab.id,
+              verdict: sourceVerdict,
+              handoffText: text,
+            });
+          } catch (err: unknown) {
+            showNotice(
+              "Round not recorded",
+              `The follow-up was sent, but the chain round was not saved: ${err instanceof Error ? err.message : String(err)}`,
+              "question",
+            );
+          }
+          await cancelPendingPlan();
           await refreshTabs();
           await handleSelectTab(targetTab.id);
         } catch (err: unknown) {
@@ -3268,7 +3314,11 @@ export function StartupForm({
           branch: repo?.currentBranch ?? source.branch ?? null,
         };
       }
-      const target = { roleId: handoffTarget, fields: handoffFields ?? [] };
+      // Settings can stay open over the dialog: map onto the role as saved now.
+      const fields = await getRole(handoffTarget)
+        .then(handoffFieldsOf)
+        .catch(() => handoffFields ?? []);
+      const target = { roleId: handoffTarget, fields };
       let mapped = mapHandoff(source, scope, target);
       if (!mapped.planText) {
         setHandoffError(mapped.warning ?? "That choice has no content.");
@@ -3385,10 +3435,24 @@ export function StartupForm({
       roles,
       savedTabs,
       scratch,
+      showNotice,
       sourceVerdict,
       startRoleTerminal,
       stashActiveTab,
     ],
+  );
+
+  const confirmHandoff = useCallback(
+    async (scope: HandoffScope, surface: HandoffSurface) => {
+      if (handoffLockRef.current) return;
+      handoffLockRef.current = true;
+      try {
+        await confirmHandoffNow(scope, surface);
+      } finally {
+        handoffLockRef.current = false;
+      }
+    },
+    [confirmHandoffNow],
   );
 
   const openSavedHandoff = useCallback((record: HandoffRecord) => {
@@ -4384,6 +4448,9 @@ export function StartupForm({
           busy={busy}
           error={handoffError}
           loopBack={handoffLoopBack?.target ?? null}
+          chainFillsTaskType={
+            !!savedTabs.find((tab) => tab.id === handoffSource.sourceTabId)?.chain
+          }
           preferredSurface={rememberedSurface(handoffTarget)}
           roleNames={roles}
           onTarget={(target) => {
@@ -5302,6 +5369,7 @@ export function StartupForm({
               primary={
             <SessionTerminal
               title={activeTabSummary?.label ?? "Session"}
+              scrollKey={activeTabId}
               findRequest={
                 activeTabId && findRequest?.tabId === activeTabId ? findRequest.req : null
               }

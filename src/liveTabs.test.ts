@@ -63,6 +63,21 @@ describe("per-tab session events", () => {
     expect(applyPlan(closed, { ...card, markdown: null }).lastPlanMarkdown).toBe("# Plan\n1. Patch");
   });
 
+  it("a new plan is fresh again after the user wrote past the last one", () => {
+    const card: PlanRequestEvent = {
+      tabId: "tab-1",
+      sessionId: "sess-a",
+      jsonRpcId: 7,
+      title: "Ready to code?",
+      entries: [],
+      markdown: "# Plan v2",
+    };
+    const stale = { ...withSession("sess-a"), lastPlanMarkdown: "# Plan v1", planStale: true };
+    expect(applyPlan(stale, card)).toMatchObject({ lastPlanMarkdown: "# Plan v2", planStale: false });
+    // A card without a body does not make the old plan fresh.
+    expect(applyPlan(stale, { ...card, markdown: null }).planStale).toBe(true);
+  });
+
   it("keeps a question on the tab that asked and ignores another tab's session", () => {
     const rt = withSession("sess-a");
     const mine: QuestionRequestEvent = {
