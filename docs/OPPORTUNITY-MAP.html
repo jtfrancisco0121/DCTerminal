@@ -1,0 +1,497 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Saved copy of the "DCTerminal Opportunity Map" artifact. Markdown version: OPPORTUNITY-MAP.md -->
+</head>
+<body>
+<title>DCTerminal Opportunity Map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column (~74rem) of stacked sections; boards and tables break into grids, everything stacks under 720px. Palette borrows DCTerminal's own GitHub Dark / Light theme so the report looks like the app it describes. Status (shipped / not built) is the main signal, carried by chips and the progress bar. */
+:root{
+  --bg:#f6f8fa; --surface:#ffffff; --sunken:#eef1f4; --line:#d0d7de;
+  --ink:#1f2328; --muted:#59636e;
+  --accent:#0969da; --accent-soft:#ddf4ff;
+  --good:#1a7f37; --good-soft:#dafbe1;
+  --warn:#9a6700; --warn-soft:#fff8c5;
+  --bad:#cf222e; --bad-soft:#ffebe9;
+  --violet:#8250df; --violet-soft:#fbefff;
+  --f-display:"Bricolage Grotesque", "IBM Plex Sans", system-ui, sans-serif;
+  --f-body:"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono:"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --r:8px;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --bg:#0d1117; --surface:#151b23; --sunken:#0b0f14; --line:#30363d;
+    --ink:#e6edf3; --muted:#9198a1;
+    --accent:#4493f8; --accent-soft:#11284a;
+    --good:#3fb950; --good-soft:#0f2a19;
+    --warn:#d29922; --warn-soft:#2e2410;
+    --bad:#f85149; --bad-soft:#3a1517;
+    --violet:#ab7df8; --violet-soft:#2a1d45;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#0d1117; --surface:#151b23; --sunken:#0b0f14; --line:#30363d;
+  --ink:#e6edf3; --muted:#9198a1;
+  --accent:#4493f8; --accent-soft:#11284a;
+  --good:#3fb950; --good-soft:#0f2a19;
+  --warn:#d29922; --warn-soft:#2e2410;
+  --bad:#f85149; --bad-soft:#3a1517;
+  --violet:#ab7df8; --violet-soft:#2a1d45;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font:15px/1.6 var(--f-body);padding-inline:20px;padding-block:0 64px}
+.wrap{max-width:74rem;margin:0 auto}
+h1,h2,h3{font-family:var(--f-display);text-wrap:balance;margin:0;line-height:1.15}
+h1{font-size:clamp(2rem,4.5vw,3rem);letter-spacing:-.02em}
+h2{font-size:1.55rem;letter-spacing:-.01em}
+h3{font-size:1.05rem}
+p{margin:0}
+code,.mono{font-family:var(--f-mono);font-size:.82em}
+code{background:var(--sunken);border:1px solid var(--line);border-radius:4px;padding:0 .3em}
+.eyebrow{font:500 .72rem/1 var(--f-mono);text-transform:uppercase;letter-spacing:.09em;color:var(--muted)}
+.lede{color:var(--muted);max-width:65ch}
+section{display:grid;gap:18px;padding-block:44px;border-top:1px solid var(--line)}
+section > header{display:grid;gap:8px}
+
+/* masthead */
+.mast{display:grid;gap:16px;padding-block:44px 36px}
+.prompt{font:500 .85rem var(--f-mono);color:var(--muted)}
+.prompt b{color:var(--good);font-weight:500}
+.facts{display:flex;flex-wrap:wrap;gap:8px}
+.fact{font:500 .78rem var(--f-mono);border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:4px 10px;color:var(--muted)}
+.fact strong{color:var(--ink);font-weight:500}
+.legend{display:flex;flex-wrap:wrap;gap:14px;font-size:.82rem;color:var(--muted)}
+.tag{font:500 .68rem/1 var(--f-mono);border-radius:4px;padding:3px 6px;letter-spacing:.03em;display:inline-block;white-space:nowrap}
+.t-v{background:var(--good-soft);color:var(--good)}
+.t-i{background:var(--accent-soft);color:var(--accent)}
+.t-h{background:var(--violet-soft);color:var(--violet)}
+
+/* status chips */
+.chip{font:600 .66rem/1 var(--f-mono);text-transform:uppercase;letter-spacing:.05em;padding:4px 7px;border-radius:999px;white-space:nowrap;display:inline-flex;align-items:center;gap:5px;width:max-content}
+.chip::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.c-done{background:var(--good-soft);color:var(--good)}
+.c-open{background:var(--warn-soft);color:var(--warn)}
+.c-part{background:var(--accent-soft);color:var(--accent)}
+
+/* status summary */
+.status{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:20px 22px;display:grid;gap:14px}
+.status .big{font:700 2.4rem/1 var(--f-display);font-variant-numeric:tabular-nums}
+.status .big span{font-size:1rem;color:var(--muted);font-weight:600}
+.bar{display:flex;height:12px;border-radius:999px;overflow:hidden;background:var(--sunken);border:1px solid var(--line)}
+.bar i{display:block;height:100%}
+.bar .b-done{background:var(--good)}
+.bar .b-part{background:var(--accent)}
+.bar .b-open{background:var(--warn)}
+.status .keys{display:flex;flex-wrap:wrap;gap:16px;font-size:.86rem;color:var(--muted)}
+.status .keys b{color:var(--ink);font-variant-numeric:tabular-nums}
+.prs{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px}
+.pr{border:1px solid var(--line);border-radius:6px;padding:8px 10px;display:grid;gap:2px;background:var(--bg);min-width:0}
+.pr .n{font:500 .75rem var(--f-mono);color:var(--accent)}
+.pr .w{font-size:.84rem}
+
+/* chain diagram */
+.chain{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:28px 22px;overflow-x:auto}
+.node{border:1.5px solid var(--line);background:var(--bg);border-radius:6px;padding:10px 12px;display:grid;gap:3px;position:relative}
+.node .r{font-weight:600}
+.node .s{font:.72rem var(--f-mono);color:var(--muted)}
+.node.src{border-color:var(--good)}
+.node.ee{border-color:var(--accent)}
+.dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:6px;vertical-align:1px}
+.arrow{height:2px;background:var(--accent);position:relative;margin-inline:-6px}
+.arrow::after{content:"";position:absolute;right:-1px;top:-4px;border:5px solid transparent;border-left:7px solid var(--accent)}
+.arrow.new{background:var(--good)}
+.arrow.new::after{border-left-color:var(--good)}
+.chain-cells{display:grid;grid-template-columns:1fr 40px 1fr 40px 1fr 40px 1fr 40px 1fr;align-items:center;min-width:820px}
+.back{display:grid;grid-template-columns:1fr 40px 1fr 40px 1fr 40px 1fr 40px 1fr;min-width:820px;margin-top:14px;font:.74rem var(--f-mono);color:var(--muted)}
+.loop{border:1.5px solid var(--good);border-top:none;height:16px;border-radius:0 0 8px 8px;margin-bottom:4px}
+.gapnote{margin-top:22px;display:flex;gap:10px;align-items:flex-start;background:var(--good-soft);border-radius:6px;padding:10px 12px;font-size:.88rem;min-width:0}
+.gapnote b{color:var(--good)}
+
+/* capability matrix */
+.caps{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px}
+.cap{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:12px;display:grid;gap:6px;align-content:start;min-width:0}
+.cap .k{font:500 .8rem var(--f-mono);overflow-wrap:anywhere}
+.cap .d{font-size:.84rem;color:var(--muted)}
+.state{font:600 .68rem/1 var(--f-mono);text-transform:uppercase;letter-spacing:.06em;display:flex;align-items:center;gap:6px}
+.state::before{content:"";width:8px;height:8px;border-radius:2px;background:currentColor}
+.used{color:var(--good)} .unused{color:var(--warn)} .partial{color:var(--accent)}
+.cap.u{border-color:color-mix(in srgb,var(--warn) 45%,var(--line))}
+.capsum{display:flex;gap:18px;flex-wrap:wrap;font-size:.9rem}
+.capsum span{display:flex;align-items:center;gap:6px}
+.sq{width:10px;height:10px;border-radius:2px;display:inline-block}
+.was{font:.7rem var(--f-mono);color:var(--muted)}
+
+/* board */
+.board{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+.lane{display:grid;gap:10px;align-content:start;min-width:0}
+.lane-h{display:grid;gap:4px;padding-bottom:8px;border-bottom:2px solid var(--line)}
+.lane-h .n{font:600 .95rem var(--f-display)}
+.lane-h .x{font-size:.78rem;color:var(--muted)}
+.lane.q .lane-h{border-color:var(--good)} .lane.m .lane-h{border-color:var(--accent)}
+.lane.s .lane-h{border-color:var(--violet)} .lane.e .lane-h{border-color:var(--warn)}
+.opp{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:11px 12px;display:grid;gap:7px;min-width:0}
+.opp.done{background:color-mix(in srgb,var(--good-soft) 35%,var(--surface))}
+.opp .t{font-weight:600;font-size:.92rem;line-height:1.3}
+.opp .p{font-size:.82rem;color:var(--muted)}
+.opp .ev{font:.7rem var(--f-mono);color:var(--muted);overflow-wrap:anywhere}
+
+/* deep-dive cards */
+.cards{display:grid;gap:10px}
+details{background:var(--surface);border:1px solid var(--line);border-radius:var(--r)}
+summary{cursor:pointer;list-style:none;padding:14px 16px;display:grid;grid-template-columns:1fr auto auto;gap:12px;align-items:center}
+summary::-webkit-details-marker{display:none}
+summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:var(--r)}
+summary .st{display:grid;gap:3px;min-width:0}
+summary .one{font-size:.86rem;color:var(--muted)}
+summary .chev{font:1rem var(--f-mono);color:var(--muted);transition:transform .15s}
+details[open] summary .chev{transform:rotate(90deg)}
+.body{padding:0 16px 18px;display:grid;gap:14px}
+.kv{display:grid;grid-template-columns:150px 1fr;gap:8px 16px;font-size:.9rem}
+.kv dt{font:500 .72rem var(--f-mono);text-transform:uppercase;letter-spacing:.06em;color:var(--muted);padding-top:3px}
+.kv dd{margin:0;min-width:0}
+.kv dt.ship{color:var(--good)}
+
+/* mermaid */
+.diagram{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:18px;overflow-x:auto}
+pre.mermaid{margin:0;display:flex;justify-content:center;background:transparent}
+
+/* retention */
+.ret{width:100%;border-collapse:collapse;font-size:.88rem;min-width:620px}
+.ret th{font:500 .7rem var(--f-mono);text-transform:uppercase;letter-spacing:.07em;color:var(--muted);text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+.ret td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+.ret td:first-child{font-family:var(--f-mono);font-size:.8rem;white-space:nowrap}
+.ret s{color:var(--muted)}
+.pill{font:600 .66rem/1 var(--f-mono);text-transform:uppercase;letter-spacing:.05em;padding:4px 7px;border-radius:999px;white-space:nowrap}
+.p-ok{background:var(--good-soft);color:var(--good)}
+.tablewrap{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);overflow-x:auto}
+
+/* what's left */
+.steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px}
+.step{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:14px;display:grid;gap:10px;align-content:start;min-width:0}
+.step .why{font-size:.84rem;color:var(--muted)}
+.step ol{margin:0;padding-left:1.2em;display:grid;gap:5px;font-size:.86rem}
+.step ol li::marker{font-family:var(--f-mono);color:var(--muted)}
+.constraints{display:flex;flex-wrap:wrap;gap:8px}
+.constraints span{font-size:.8rem;border:1px dashed var(--line);border-radius:4px;padding:4px 8px;color:var(--muted)}
+footer{padding-top:28px;border-top:1px solid var(--line);font-size:.82rem;color:var(--muted);display:grid;gap:6px}
+
+@media (max-width:980px){.board{grid-template-columns:repeat(2,1fr)}}
+@media (max-width:620px){
+  .board{grid-template-columns:1fr}
+  .kv{grid-template-columns:1fr;gap:2px}
+  .kv dd{margin-bottom:8px}
+  body{padding-inline:16px}
+  summary{grid-template-columns:1fr auto}
+  summary .chip{grid-column:1}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<div class="wrap">
+
+<header class="mast">
+  <div class="prompt"><b>~/Projects/DCTerminal</b> on master · feature discovery, updated with delivery status</div>
+  <h1>DCTerminal Opportunity Map</h1>
+  <p class="lede">What the app could do next, grounded in its code. The first review found three areas: Claude capabilities the app ignored, the open ends of the Eagle-Eye hand-off chain, and no visibility into what agents do under full permissions. All three are now covered. What remains is a short list of experimental and strategic items.</p>
+  <div class="facts">
+    <span class="fact">first review <strong>2026-10-10</strong></span>
+    <span class="fact">status as of <strong>2026-10-10</strong>, master <strong>608997c</strong></span>
+    <span class="fact">delivered in <strong>PRs #17–#28</strong></span>
+    <span class="fact"><strong>659</strong> UI e2e tests · <strong>492</strong> Rust tests</span>
+  </div>
+  <div class="legend">
+    <span><span class="chip c-done">Shipped</span> merged to master</span>
+    <span><span class="chip c-part">Partly</span> some of it is in</span>
+    <span><span class="chip c-open">Not built</span> still open</span>
+  </div>
+</header>
+
+<!-- 0. STATUS -->
+<section>
+  <header>
+    <span class="eyebrow">Delivery status</span>
+    <h2>11 of 18 opportunities shipped</h2>
+    <p class="lede">Every item from the Quick and Medium-term lanes is merged, plus the main Strategic item and the storage cleanup the activity log depended on. The open items are mostly experimental, or waiting on a decision from you.</p>
+  </header>
+  <div class="status">
+    <div class="big">11<span> / 18 shipped</span></div>
+    <div class="bar" role="img" aria-label="11 shipped, 1 partly, 6 not built, out of 18">
+      <i class="b-done" style="width:61.1%"></i><i class="b-part" style="width:5.6%"></i><i class="b-open" style="width:33.3%"></i>
+    </div>
+    <div class="keys">
+      <span><b>11</b> shipped</span>
+      <span><b>1</b> partly (mode switching)</span>
+      <span><b>6</b> not built</span>
+    </div>
+    <div class="prs">
+      <div class="pr"><span class="n">#17–#21</span><span class="w">Claude-first work, effort controls, Recommendation/Audit → Planner, grid view, persistence fixes</span></div>
+      <div class="pr"><span class="n">#22</span><span class="w">Slash commands and skills in the composer</span></div>
+      <div class="pr"><span class="n">#23</span><span class="w">Image paste in chat and pad</span></div>
+      <div class="pr"><span class="n">#24</span><span class="w">Eagle-Eye chain overview</span></div>
+      <div class="pr"><span class="n">#25</span><span class="w">Storage cleanup, terminal This-turn snapshots, polish</span></div>
+      <div class="pr"><span class="n">#26</span><span class="w">Role editor, hand-off targets as role data</span></div>
+      <div class="pr"><span class="n">#27</span><span class="w">Agent activity log</span></div>
+      <div class="pr"><span class="n">#28</span><span class="w">35 bug fixes, verdict routing and rounds, live overview, full e2e and fake-agent test suites</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- 1. CHAIN -->
+<section>
+  <header>
+    <span class="eyebrow">Workflow · where the chain starts and stops</span>
+    <h2>The chain's front door is open, and work can go back</h2>
+    <p class="lede">Recommendation and Codebase Audit now hand a selected card or finding to a pre-filled Planner tab. Reviewers' verdicts pick the next step, and sending work back reuses the chain's own tab and counts a new round. Every hand-off is still user-triggered.</p>
+  </header>
+  <div class="chain">
+    <div class="chain-cells">
+      <div class="node src"><span class="r"><span class="dot" style="background:var(--good)"></span>Recommendation<br>/ Codebase Audit</span><span class="s">feature cards, findings</span></div>
+      <div class="arrow new" title="Shipped in #17–#21"></div>
+      <div class="node ee"><span class="r"><span class="dot" style="background:var(--accent)"></span>Planner</span><span class="s">mode: plan · Task Type</span></div>
+      <div class="arrow"></div>
+      <div class="node ee"><span class="r"><span class="dot" style="background:var(--accent)"></span>Plan Reviewer</span><span class="s">verdict picks the next step</span></div>
+      <div class="arrow"></div>
+      <div class="node ee"><span class="r"><span class="dot" style="background:var(--accent)"></span>Implementer</span><span class="s">Task Type carried over</span></div>
+      <div class="arrow"></div>
+      <div class="node ee"><span class="r"><span class="dot" style="background:var(--accent)"></span>PR Reviewer</span><span class="s">approved → chain complete</span></div>
+    </div>
+    <div class="back">
+      <div></div><div></div>
+      <div style="grid-column:3 / span 3"><div class="loop"></div>Send back to Planner · round N+1</div>
+      <div></div>
+      <div style="grid-column:7 / span 3"><div class="loop"></div>Send back to Implementer · round N+1</div>
+    </div>
+    <div class="gapnote"><b>Closed</b><span>The missing link is a table entry in <code>src/handoff/transitions.ts</code> plus <code>mapReportToPlanner</code>. Loop-backs and rounds are <code>src/handoff/routing.ts</code> and <code>chain_loop_back</code>. <span class="chip c-done">Shipped #17–#21, #28</span></span></div>
+  </div>
+</section>
+
+<!-- 2. CAPABILITIES -->
+<section>
+  <header>
+    <span class="eyebrow">Unused potential · from the captured <code>initialize</code> and <code>session/new</code> payloads</span>
+    <h2>The Claude adapter: what the app uses now</h2>
+    <p class="lede">At the first review the app acted on four of twelve capabilities. It now uses eight. Fast mode, forking, steering and extra folders are still announced and ignored.</p>
+  </header>
+  <div class="capsum">
+    <span><i class="sq" style="background:var(--good)"></i>Used (8, was 4)</span>
+    <span><i class="sq" style="background:var(--accent)"></i>Partly used (1)</span>
+    <span><i class="sq" style="background:var(--warn)"></i>Announced, ignored (4, was 7)</span>
+  </div>
+  <div class="caps">
+    <div class="cap"><span class="state used">Used</span><span class="k">configOptions.model</span><span class="d">Model picker, live switch via set_config_option.</span></div>
+    <div class="cap"><span class="state used">Used</span><span class="k">loadSession</span><span class="d">Continue session after restart; reattach after a webview reload (#28).</span></div>
+    <div class="cap"><span class="state used">Used</span><span class="k">usage_update · _claude/rateLimit</span><span class="d">5h / 7d limits and context %. Now saved to usage.json, with a limit toast.</span></div>
+    <div class="cap"><span class="state used">Used</span><span class="k">ExitPlanMode</span><span class="d">Planner plan card with Send to … / Keep planning.</span></div>
+    <div class="cap"><span class="state used">Used</span><span class="k">configOptions.effort</span><span class="d">Per-role default in Settings, live switch in the tab header.</span><span class="was">was ignored · #17–#21</span></div>
+    <div class="cap"><span class="state used">Used</span><span class="k">promptCapabilities.image</span><span class="d">Paste or drop screenshots into chat and pad.</span><span class="was">was ignored · #23</span></div>
+    <div class="cap"><span class="state used">Used</span><span class="k">available_commands_update</span><span class="d">Slash-command autocomplete; /model, /login, /logout blocked.</span><span class="was">was ignored · #22</span></div>
+    <div class="cap"><span class="state partial">Partly used</span><span class="k">configOptions.mode</span><span class="d">Set per role at start. Read-only badge; can't change mid-session.</span></div>
+    <div class="cap u"><span class="state unused">Ignored</span><span class="k">configOptions.fast</span><span class="d">model_config: on · off. Cost on a subscription still unverified.</span></div>
+    <div class="cap u"><span class="state unused">Ignored</span><span class="k">promptQueueing · steering</span><span class="d">You can draft during a turn now, but nothing is queued or steered.</span></div>
+    <div class="cap u"><span class="state unused">Ignored</span><span class="k">sessionCapabilities.fork</span><span class="d">Branch a conversation into a new session.</span></div>
+    <div class="cap u"><span class="state unused">Ignored</span><span class="k">additionalDirectories</span><span class="d">Give one session more than one folder.</span></div>
+  </div>
+</section>
+
+<!-- 3. BOARD -->
+<section>
+  <header>
+    <span class="eyebrow">Opportunities · grouped by horizon, not ranked</span>
+    <h2>Opportunity board</h2>
+    <p class="lede">The original board, with each card's delivery status. Shipped cards are tinted.</p>
+  </header>
+  <div class="board">
+    <div class="lane q">
+      <div class="lane-h"><span class="n">Quick</span><span class="x">Reuses existing plumbing</span></div>
+      <div class="opp done"><span class="chip c-done">Shipped #17–#21</span><span class="t">Effort controls</span><span class="p">Per-role default effort, live switch in the header.</span><span class="ev">acp/client.rs apply_effort · SettingsPage</span></div>
+      <div class="opp"><span class="chip c-open">Not built</span><span class="t">Fast-mode toggle</span><span class="p">Paired with effort in the first review; held back because its subscription cost is unverified.</span><span class="ev">configOptions.fast</span></div>
+      <div class="opp done"><span class="chip c-done">Shipped #17–#21</span><span class="t">Recommendation / Audit → Planner</span><span class="p">Select one card, send it to a pre-filled Planner tab.</span><span class="ev">handoff/transitions.ts · map.ts mapReportToPlanner</span></div>
+      <div class="opp done"><span class="chip c-done">Shipped #17–#21</span><span class="t">Up-arrow history survives restart</span><span class="p">Read from scratch.json; newest-first order fixed in #28.</span><span class="ev">useScratchPads.ts · StartupForm composerHistory</span></div>
+      <div class="opp done"><span class="chip c-done">Shipped #17–#21</span><span class="t">Last usage reading + threshold toast</span><span class="p">Saved to usage.json; one alert per window near the limit. Still % only.</span><span class="ev">usage.rs · usage/limits.ts</span></div>
+      <div class="opp done"><span class="chip c-done">Shipped #17–#21</span><span class="t">Small persistence fixes</span><span class="p">Terminal folders appear in Recent; Accepted marks in Changes survive a reload.</span><span class="ev">pty/mod.rs remember_folder · changes/acceptedStore.ts</span></div>
+    </div>
+    <div class="lane m">
+      <div class="lane-h"><span class="n">Medium-term</span><span class="x">New store, panel or protocol work</span></div>
+      <div class="opp done"><span class="chip c-done">Shipped #27</span><span class="t">Agent activity log</span><span class="p">Commands, reads, writes, fetches and decisions per tab, with redaction.</span><span class="ev">activity_store.rs · ActivityPanel</span></div>
+      <div class="opp done"><span class="chip c-done">Shipped #23</span><span class="t">Image paste in chat and pad</span><span class="p">Screenshots straight into a prompt, stored in app data.</span><span class="ev">attachments.rs · useChatImages</span></div>
+      <div class="opp done"><span class="chip c-done">Shipped #22</span><span class="t">Slash commands in the composer</span><span class="p">Autocomplete your Claude commands and skills.</span><span class="ev">composer/slashCommands.ts</span></div>
+      <div class="opp done"><span class="chip c-done">Shipped #25</span><span class="t">Auto-snapshot terminal tabs on pad Send</span><span class="p">Terminal tabs get a This-turn diff without Snapshot now.</span><span class="ev">turnSnapshot.ts</span></div>
+      <div class="opp done"><span class="chip c-done">Shipped #26</span><span class="t">Finish the role editor</span><span class="p">Create, duplicate, import and export roles; hand-off targets as role data.</span><span class="ev">roles/editor.rs · RoleEditor.tsx</span></div>
+    </div>
+    <div class="lane s">
+      <div class="lane-h"><span class="n">Strategic</span><span class="x">Could reshape the main workflow</span></div>
+      <div class="opp done"><span class="chip c-done">Shipped #24, #28</span><span class="t">One overview for chains and pipelines</span><span class="p">Every stage with its tab, status, handed-in text and verdict; rounds and verdict history; live updates.</span><span class="ev">chain_runs.rs · PipelineOverview · chain-run-updated</span></div>
+      <div class="opp"><span class="chip c-open">Not built</span><span class="t">Fork a chat into a worktree</span><span class="p">Try two approaches from the same context, compare in the diff panel.</span><span class="ev">sessionCapabilities.fork · worktree.rs</span></div>
+    </div>
+    <div class="lane e">
+      <div class="lane-h"><span class="n">Experimental</span><span class="x">Value or feasibility unproven</span></div>
+      <div class="opp"><span class="chip c-open">Not built</span><span class="t">Steer or queue while busy</span><span class="p">Drafting during a turn works now; sending still waits for the turn to end.</span><span class="ev">_meta.steering.supported</span></div>
+      <div class="opp"><span class="chip c-open">Not built</span><span class="t">GitHub context for PR Reviewer</span><span class="p">Out of scope by your docs unless you approve it.</span><span class="ev">map.ts firstGithubPrUrl</span></div>
+      <div class="opp"><span class="chip c-open">Not built</span><span class="t">Terminal scrollback persistence</span><span class="p">Value unclear: <code>/resume</code> already keeps Claude's own history.</span><span class="ev">terminal/park.ts</span></div>
+      <div class="opp"><span class="chip c-open">Not built</span><span class="t">Extra folders per session</span><span class="p">One session working across more than one folder.</span><span class="ev">additionalDirectories</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- 4. DEEP DIVES -->
+<section>
+  <header>
+    <span class="eyebrow">Feature cards · open one for the detail</span>
+    <h2>The strongest candidates, and what shipped</h2>
+  </header>
+  <div class="cards">
+
+    <details open>
+      <summary><span class="st"><h3>Effort and fast-mode controls</h3><span class="one">Effort shipped. Fast mode is still open.</span></span><span class="chip c-part">Partly</span><span class="chev">›</span></summary>
+      <div class="body">
+        <dl class="kv">
+          <dt class="ship">Shipped</dt><dd>Per-role effort in Settings › Models, live effort switch in each Claude tab header, applied at session start (<code>role_effort</code>, <code>acp_set_effort</code>).</dd>
+          <dt>Still open</dt><dd>Fast mode. Its usage cost on a subscription is unverified, so it stays hidden until that is confirmed.</dd>
+          <dt>Next step</dt><dd>Confirm the cost, then reuse the effort plumbing: it is the same <code>session/set_config_option</code> call with another option id.</dd>
+        </dl>
+      </div>
+    </details>
+
+    <details>
+      <summary><span class="st"><h3>Recommendation / Audit → Planner hand-off</h3><span class="one">One selected feature card or finding becomes a pre-filled Planner tab.</span></span><span class="chip c-done">Shipped</span><span class="chev">›</span></summary>
+      <div class="body">
+        <dl class="kv">
+          <dt class="ship">Shipped</dt><dd>Both roles can send to Planner and Developer. The dialog offers "Selected card or finding" and fills Title, Task Type, Request and context. A palette command sends to the Planner.</dd>
+          <dt>Open choices settled</dt><dd>Developer is a target too. Targets became role data with the role editor (#26).</dd>
+        </dl>
+      </div>
+    </details>
+
+    <details>
+      <summary><span class="st"><h3>Agent activity log</h3><span class="one">The diff panel shows which files changed; the activity log shows what ran.</span></span><span class="chip c-done">Shipped</span><span class="chev">›</span></summary>
+      <div class="body">
+        <dl class="kv">
+          <dt class="ship">Shipped</dt><dd>Per-tab log of shell, read, write, fetch and MCP calls with status and decision, filters, and Clear. Secrets in commands, URLs and <code>*_SECRET_*</code> values are masked (#27, hardened in #28).</dd>
+          <dt>Dependency met</dt><dd>Storage cleanup shipped first (#25), so the log is size-capped and rotated.</dd>
+        </dl>
+      </div>
+    </details>
+
+    <details>
+      <summary><span class="st"><h3>Image paste</h3><span class="one">Screenshots go straight into a Claude prompt.</span></span><span class="chip c-done">Shipped</span><span class="chev">›</span></summary>
+      <div class="body">
+        <dl class="kv">
+          <dt class="ship">Shipped</dt><dd>Paste or drop images in the chat composer and pad. Up to 5 images, 5 MB each, stored in app data. In a <code>---</code> chain, images go with the first step only. Cursor chats refuse images.</dd>
+          <dt>Verified</dt><dd>Live on claude1: Claude answered "Red" for a red test image.</dd>
+        </dl>
+      </div>
+    </details>
+
+    <details>
+      <summary><span class="st"><h3>One overview for chains and pipelines</h3><span class="one">Each Eagle-Eye chain has one overview with every stage and verdict.</span></span><span class="chip c-done">Shipped</span><span class="chev">›</span></summary>
+      <div class="body">
+        <dl class="kv">
+          <dt class="ship">Shipped</dt><dd>Chain overview with the original request, each stage's tab, status, handed-in text and verdict, plus Jump to tab (#24). The PR Reviewer stage is included.</dd>
+          <dt class="ship">Added in #28</dt><dd>Verdict picks the primary action; Send back reuses the chain's tab and starts a new round; round number and verdict history in the label and overview; Task Type carried to the Implementer; updates on a <code>chain-run-updated</code> event instead of a 4 s poll.</dd>
+          <dt>Kept as a view</dt><dd>It never starts or sends anything on its own, as your docs require.</dd>
+        </dl>
+      </div>
+    </details>
+
+  </div>
+</section>
+
+<!-- 5. DEPENDENCIES -->
+<section>
+  <header>
+    <span class="eyebrow">Roadmap relationships</span>
+    <h2>What unlocked what</h2>
+    <p class="lede">The three foundations are in place: generic config options, fake-agent replay tests, and storage cleanup. Green nodes shipped; amber nodes are still open.</p>
+  </header>
+  <div class="diagram">
+<pre class="mermaid">
+flowchart LR
+  G[Generic ACP config options] --> E[Effort controls]
+  G --> F[Fast-mode toggle]
+  CAP[Payload captures] --> FAKE[Fake-ACP replay tests]
+  FAKE --> IMG[Image paste]
+  FAKE --> ST[Steer or queue]
+  CAP --> FK[Fork into worktree]
+  WT[Existing worktrees] --> FK
+  RET[Storage cleanup] --> ACT[Agent activity log]
+  RE[Role editor: targets as data] -.-> RECH[Recommendation to Planner]
+  RECH --> UNI[Unified chain overview]
+  US[Persist usage reading] --> UN[Usage threshold toast]
+  classDef done fill:#dafbe1,stroke:#1a7f37,color:#1f2328
+  classDef open fill:#fff8c5,stroke:#9a6700,color:#1f2328
+  class G,E,CAP,FAKE,IMG,RET,ACT,RE,RECH,UNI,US,UN,WT done
+  class F,ST,FK open
+</pre>
+  </div>
+</section>
+
+<!-- 6. RETENTION -->
+<section>
+  <header>
+    <span class="eyebrow">Technical foundation · app data folder</span>
+    <h2>What used to grow without limit</h2>
+    <p class="lede">Every store the first review flagged is now bounded. "Clean up now" in Settings › Data runs the same sweep on demand.</p>
+  </header>
+  <div class="tablewrap">
+    <table class="ret">
+      <thead><tr><th>File</th><th>Holds</th><th>Limit now</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td>transcripts/&lt;tab&gt;.json</td><td>Saved chat transcripts</td><td>30 files, 500k chars each</td><td><span class="pill p-ok">Bounded</span></td></tr>
+        <tr><td>handoffs.json</td><td>Hand-off plans and sidecars</td><td>100 records, sidecars pruned</td><td><span class="pill p-ok">Bounded</span></td></tr>
+        <tr><td>prompts.json</td><td>Saved prompts, recent sends</td><td>500 prompts, 50 recent</td><td><span class="pill p-ok">Bounded</span></td></tr>
+        <tr><td>changes/&lt;tab&gt;/</td><td>Git snapshots per tab</td><td>Pruned at startup for closed tabs</td><td><span class="pill p-ok">Bounded</span></td></tr>
+        <tr><td>scratch.json</td><td>Pads for every tab</td><td><s>prune_orphans ran only in a test</s> pruned for closed tabs at startup (#25)</td><td><span class="pill p-ok">Bounded</span></td></tr>
+        <tr><td>state.json · pipeline_runs</td><td>Pipeline and chain run records</td><td><s>never pruned</s> <code>prune_pipeline_runs</code> (#25)</td><td><span class="pill p-ok">Bounded</span></td></tr>
+        <tr><td>logs/permission-payloads.jsonl</td><td>Opt-in request capture</td><td><s>no rotation</s> rotated at a size cap (#25)</td><td><span class="pill p-ok">Bounded</span></td></tr>
+        <tr><td>*.corrupt-* · *.bak</td><td>Recovered or backup files</td><td><s>never removed</s> swept after an age limit; symlinks never followed (#25, #28)</td><td><span class="pill p-ok">Bounded</span></td></tr>
+        <tr><td>activity/&lt;tab&gt;.jsonl</td><td>Agent activity log (new)</td><td>Capped and rotated per tab (#27)</td><td><span class="pill p-ok">Bounded</span></td></tr>
+        <tr><td>usage.json</td><td>Last 5h / 7d reading</td><td><s>memory only</s> saved on change (#17–#21)</td><td><span class="pill p-ok">Saved</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- 7. WHAT'S LEFT -->
+<section>
+  <header>
+    <span class="eyebrow">Next</span>
+    <h2>What's left, and what to check first</h2>
+    <p class="lede">Seven items remain. None blocks daily use. Each starts with a check or a decision before planning.</p>
+  </header>
+  <div class="steps">
+    <div class="step"><h3>Fast-mode toggle</h3><p class="why">Smallest item; the effort plumbing already does the work.</p><ol><li>Confirm fast mode's usage cost on your subscription</li><li>Decide whether it is hidden by default</li><li>Plan</li></ol></div>
+    <div class="step"><h3>Switch mode mid-session</h3><p class="why">Mode is fixed per role at start today.</p><ol><li>Capture a live <code>set_config_option</code> for mode on adapter 0.88</li><li>Decide which roles may switch, and to what</li><li>Plan</li></ol></div>
+    <div class="step"><h3>Fork into a worktree</h3><p class="why">Strategic: two approaches from one context.</p><ol><li>Capture <code>session/fork</code> on the Mac</li><li>Add the capture to the fake-agent fixtures</li><li>Then plan the worktree flow</li></ol></div>
+    <div class="step"><h3>Steer or queue while busy</h3><p class="why">Drafting during a turn already works.</p><ol><li>Capture the steering <code>_meta</code> shape</li><li>Decide queue vs steer from the user's side</li><li>Then plan</li></ol></div>
+    <div class="step"><h3>Extra folders, GitHub context, scrollback</h3><p class="why">Each needs a yes from you first.</p><ol><li>Extra folders: which roles need more than one repo?</li><li>GitHub context: approve reading PRs, or keep it out</li><li>Scrollback: worth it given <code>/resume</code>?</li></ol></div>
+  </div>
+  <div class="constraints">
+    <span>Respected: no token or dollar tracking</span>
+    <span>No writes to ~/.claude, ~/.cursor or repos</span>
+    <span>Hand-offs stay user-triggered</span>
+    <span>No orchestrator or fleet</span>
+    <span>GitHub auto-fill only if you approve it</span>
+  </div>
+</section>
+
+<footer>
+  <span>Also found in the first review, not a feature: the start screen said "Cursor CLI was not found." on a Claude-first setup. Fixed: the message now shows only while Cursor is selected.</span>
+  <span>First review 2026-10-10 (read-only). Status updated 2026-10-10 after PR #28 merged to master (608997c). Source: docs/OPPORTUNITY-MAP.md.</span>
+</footer>
+</div>
+
+<script type="module">
+import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+mermaid.initialize({ startOnLoad: true, theme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "default" });
+</script>
+</body>
+</html>
