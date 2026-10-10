@@ -83,10 +83,6 @@ test("Back returns to the Claude step without re-checking", async ({ app, page }
 });
 
 test("Cursor step: once the sign-in check finishes, Back, Next and Skip work again", async ({ app, page }) => {
-  test.fail(
-    true,
-    "known bug: the sign-in effect lists `login` as a dependency, so setLogin re-runs it and the cleanup marks the request cancelled before .finally clears busy; every wizard button stays disabled (src/components/FirstRunSetup.tsx:108-127)",
-  );
   await app.open({ responses: FIRST_RUN });
   const dialog = wizard(page);
   await expect(dialog.getByText("Claude Code found.")).toBeVisible();

@@ -91,14 +91,17 @@ export function FirstRunSetup({
     setError(null);
     claudeStatusRef
       .current()
+      // Busy clears with the result: setClaude re-runs this effect, whose
+      // cleanup would otherwise cancel a later .finally and leave the wizard locked.
       .then((report) => {
-        if (!cancelled) setClaude(report);
+        if (cancelled) return;
+        setClaude(report);
+        setBusy(false);
       })
       .catch((err: unknown) => {
-        if (!cancelled) setError(errorText(err));
-      })
-      .finally(() => {
-        if (!cancelled) setBusy(false);
+        if (cancelled) return;
+        setError(errorText(err));
+        setBusy(false);
       });
     return () => {
       cancelled = true;
@@ -113,13 +116,14 @@ export function FirstRunSetup({
     loginStatusRef
       .current()
       .then((status) => {
-        if (!cancelled) setLogin(status);
+        if (cancelled) return;
+        setLogin(status);
+        setBusy(false);
       })
       .catch((err: unknown) => {
-        if (!cancelled) setError(errorText(err));
-      })
-      .finally(() => {
-        if (!cancelled) setBusy(false);
+        if (cancelled) return;
+        setError(errorText(err));
+        setBusy(false);
       });
     return () => {
       cancelled = true;

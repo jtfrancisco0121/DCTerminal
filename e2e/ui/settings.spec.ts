@@ -437,7 +437,6 @@ test.describe("Shortcuts", () => {
   });
 
   test("the Settings shortcut is shown as ⌘+, (the key it is bound to)", async ({ app, page }) => {
-    test.fail(true, "known bug: codeLabel has no case for Comma, so the row reads \"⌘+Comma\" (src/keymap.ts:435)");
     await app.open();
     const section = await openSettings(page, "Shortcuts");
     const row = section.locator(".settings-shortcuts li").filter({ has: page.locator("span", { hasText: /^Settings$/ }) });
@@ -445,10 +444,6 @@ test.describe("Shortcuts", () => {
   });
 
   test("the shortcut list renders without React key collisions", async ({ app, page }) => {
-    test.fail(
-      true,
-      "known bug: on macOS \"Find in tab\" and \"Search terminal\" are both find/⌘+F, and the list keys rows by action+keys (src/components/SettingsPage.tsx:469, rows from src/keymap.ts:192 and :642)",
-    );
     const errors: string[] = [];
     page.on("console", (msg) => {
       if (msg.type() === "error") errors.push(msg.text());
