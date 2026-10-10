@@ -82,7 +82,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("dcterminal_plans_{nanos}"));
+        let dir = crate::test_support::test_root().join(format!("dcterminal_plans_{nanos}"));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let started = UNIX_EPOCH + Duration::from_secs(1_700_000_000);

@@ -402,7 +402,8 @@ mod tests {
 
     fn temp_root(label: &str) -> PathBuf {
         let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!("dcterminal_files_{label}_{nanos}"));
+        let dir =
+            crate::test_support::test_root().join(format!("dcterminal_files_{label}_{nanos}"));
         std::fs::create_dir_all(&dir).unwrap();
         dir.canonicalize().unwrap()
     }

@@ -390,7 +390,7 @@ mod tests {
 
     #[test]
     fn lists_acp_and_cli_sessions_for_the_folder_without_touching_store_db() {
-        let root = std::env::temp_dir().join(format!(
+        let root = crate::test_support::test_root().join(format!(
             "dcterminal_history_{}",
             Utc::now().timestamp_nanos_opt().unwrap_or(0)
         ));
@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn missing_cursor_dir_is_an_empty_list() {
-        let missing = std::env::temp_dir().join("dcterminal_history_missing_dir");
+        let missing = crate::test_support::test_root().join("dcterminal_history_missing_dir");
         let _ = fs::remove_dir_all(&missing);
         assert!(list_cursor_history(&missing, r"C:\Work").is_empty());
     }

@@ -847,7 +847,7 @@ Tip: use --model <id> to pick one\n";
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("dcterminal_model_cache_{nanos}"));
+        let dir = crate::test_support::test_root().join(format!("dcterminal_model_cache_{nanos}"));
         assert!(read_cache(&dir).is_none());
         let cache = ModelCache {
             fetched_at_ms: 42,
@@ -885,7 +885,8 @@ Tip: use --model <id> to pick one\n";
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("dcterminal_claude_models_{nanos}"));
+        let dir =
+            crate::test_support::test_root().join(format!("dcterminal_claude_models_{nanos}"));
         let stale = claude_model_list(&dir, 1_000);
         assert_eq!(stale.source, "fallback");
         remember_claude_models(&dir, &listed).unwrap();
@@ -903,7 +904,8 @@ Tip: use --model <id> to pick one\n";
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("dcterminal_legacy_models_{nanos}"));
+        let dir =
+            crate::test_support::test_root().join(format!("dcterminal_legacy_models_{nanos}"));
         std::fs::create_dir_all(&dir).unwrap();
         let body = serde_json::json!({
             "fetchedAtMs": 10,

@@ -1468,7 +1468,7 @@ mod tests {
     fn tab_model_and_layout_survive_close_reopen_and_reload() {
         use crate::roles::Role;
         use crate::store::LayoutState;
-        let dir = std::env::temp_dir().join(format!(
+        let dir = crate::test_support::test_root().join(format!(
             "dcterminal_layout_test_{}",
             Utc::now().timestamp_nanos_opt().unwrap_or(0)
         ));
@@ -1544,7 +1544,7 @@ mod tests {
 
     #[test]
     fn grid_layout_keeps_open_tabs_and_closes_below_two() {
-        let dir = std::env::temp_dir().join(format!(
+        let dir = crate::test_support::test_root().join(format!(
             "dcterminal_grid_{}",
             Utc::now().timestamp_nanos_opt().unwrap_or(0)
         ));
@@ -1630,7 +1630,7 @@ mod tests {
 
     #[test]
     fn worktree_tab_keeps_its_worktree_through_close_and_reopen() {
-        let dir = std::env::temp_dir().join(format!(
+        let dir = crate::test_support::test_root().join(format!(
             "dcterminal_wt_tab_{}",
             Utc::now().timestamp_nanos_opt().unwrap_or(0)
         ));
@@ -1683,7 +1683,7 @@ mod tests {
 
     #[test]
     fn renamed_tab_keeps_its_name_through_form_sync_start_reopen_and_reload() {
-        let dir = std::env::temp_dir().join(format!(
+        let dir = crate::test_support::test_root().join(format!(
             "dcterminal_rename_{}",
             Utc::now().timestamp_nanos_opt().unwrap_or(0)
         ));
@@ -1752,7 +1752,7 @@ mod tests {
     #[test]
     fn promote_reuses_draft_tab_instead_of_creating_new() {
         use crate::roles::Role;
-        let dir = std::env::temp_dir().join(format!(
+        let dir = crate::test_support::test_root().join(format!(
             "dcterminal_state_test_{}",
             Utc::now().timestamp_nanos_opt().unwrap_or(0)
         ));
@@ -1810,7 +1810,7 @@ mod tests {
 
     #[test]
     fn close_then_reopen_restores_the_tab_without_a_session() {
-        let dir = std::env::temp_dir().join(format!(
+        let dir = crate::test_support::test_root().join(format!(
             "dcterminal_reopen_{}",
             Utc::now().timestamp_nanos_opt().unwrap_or(0)
         ));
@@ -1851,7 +1851,7 @@ mod tests {
 
     #[test]
     fn a_specific_closed_tab_can_be_reopened() {
-        let dir = std::env::temp_dir().join(format!(
+        let dir = crate::test_support::test_root().join(format!(
             "dcterminal_reopen_id_{}",
             Utc::now().timestamp_nanos_opt().unwrap_or(0)
         ));
@@ -1893,7 +1893,7 @@ mod tests {
 
     #[test]
     fn stop_and_relaunch_keep_the_acp_session_id() {
-        let dir = std::env::temp_dir().join(format!(
+        let dir = crate::test_support::test_root().join(format!(
             "dcterminal_keep_sid_{}",
             Utc::now().timestamp_nanos_opt().unwrap_or(0)
         ));
@@ -1968,7 +1968,7 @@ mod tests {
     #[test]
     fn a_workspace_restores_titles_folders_roles_and_can_replace_open_tabs() {
         use crate::store::{Workspace, WorkspaceTab};
-        let dir = std::env::temp_dir().join(format!(
+        let dir = crate::test_support::test_root().join(format!(
             "dcterminal_ws_open_{}",
             Utc::now().timestamp_nanos_opt().unwrap_or(0)
         ));

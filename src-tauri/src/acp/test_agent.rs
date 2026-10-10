@@ -47,7 +47,7 @@ impl FakeAgent {
             eprintln!("skipping {name}: python3 not found");
             return None;
         };
-        let dir = std::env::temp_dir().join(format!(
+        let dir = crate::test_support::test_root().join(format!(
             "dct-fake-agent-{}-{}-{name}",
             std::process::id(),
             COUNTER.fetch_add(1, Ordering::SeqCst)
@@ -133,6 +133,14 @@ impl FakeAgent {
 
 impl Drop for FakeAgent {
     fn drop(&mut self) {
+        // A test that panics before killing its client would leave the agent
+        // running; every agent's command line names this unique folder.
+        let pattern = format!("{}/", self.dir.display()).replace('.', "\\.");
+        let _ = std::process::Command::new("pkill")
+            .args(["-KILL", "-f", &pattern])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -196,4 +204,39 @@ pub fn claude_fixture_result(name: &str, pointer: &str) -> Value {
         .join(name);
     let value: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     value.pointer(pointer).cloned().unwrap()
+}
+
+mod tests {
+    use super::FakeAgent;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    /// A test that never kills its client must not leave the agent running.
+    #[test]
+    fn dropping_the_fake_kills_its_agent_and_removes_its_folder() {
+        let Some(agent) = FakeAgent::new("drop", &serde_json::json!({})) else {
+            return;
+        };
+        let program = agent.program();
+        let dir = agent.dir.clone();
+        // stdin stays open, so the agent would otherwise wait forever.
+        let mut child = Command::new(&program.program)
+            .args(&program.args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        drop(agent);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut exited = false;
+        while !exited && Instant::now() < deadline {
+            exited = matches!(child.try_wait(), Ok(Some(_)));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(exited, "fake agent still running after drop");
+        assert!(!dir.exists());
+    }
 }

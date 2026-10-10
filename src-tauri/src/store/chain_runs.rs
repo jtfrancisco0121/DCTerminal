@@ -249,7 +249,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn temp_path(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
+        let dir = crate::test_support::test_root().join(format!(
             "dct_chain_runs_{name}_{}",
             Utc::now().timestamp_nanos_opt().unwrap_or(0)
         ));

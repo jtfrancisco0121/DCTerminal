@@ -298,7 +298,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("dct_claude_hist_{nanos}"));
+        let root = crate::test_support::test_root().join(format!("dct_claude_hist_{nanos}"));
         let folder = root.join("app");
         std::fs::create_dir_all(&folder).unwrap();
         let folder_text = folder.display().to_string();
@@ -382,7 +382,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("dct_claude_hist_title_{nanos}"));
+        let root = crate::test_support::test_root().join(format!("dct_claude_hist_title_{nanos}"));
         let folder = root.join("app");
         std::fs::create_dir_all(&folder).unwrap();
         let folder_text = folder.display().to_string();

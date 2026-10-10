@@ -526,7 +526,7 @@ mod pipeline_tests {
 
     fn temp_roles_store(seed: RolesFile) -> RolesStore {
         RolesStore {
-            path: std::env::temp_dir().join("dct_roles_test.json"),
+            path: crate::test_support::test_root().join("dct_roles_test.json"),
             data: seed,
         }
     }
@@ -535,7 +535,7 @@ mod pipeline_tests {
     fn pipeline_workspace_opens_overview_tab() {
         let seed: RolesFile = read_json(&seed_output_path()).expect("roles seed");
         let roles = temp_roles_store(seed);
-        let dir = std::env::temp_dir().join(format!(
+        let dir = crate::test_support::test_root().join(format!(
             "dct_pipeline_test_{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -579,7 +579,7 @@ mod pipeline_tests {
     fn execution_pipeline_workspace_opens_overview_tab() {
         let seed: RolesFile = read_json(&seed_output_path()).expect("roles seed");
         let roles = temp_roles_store(seed);
-        let dir = std::env::temp_dir().join(format!(
+        let dir = crate::test_support::test_root().join(format!(
             "dct_exec_pipeline_test_{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

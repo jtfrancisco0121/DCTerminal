@@ -296,7 +296,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("dcterminal_permlog_{nanos}"));
+        let dir = crate::test_support::test_root().join(format!("dcterminal_permlog_{nanos}"));
         std::fs::create_dir_all(&dir).unwrap();
         let blocker = dir.join("not-a-dir");
         std::fs::write(&blocker, b"x").unwrap();

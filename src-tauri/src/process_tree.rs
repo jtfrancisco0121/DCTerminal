@@ -471,7 +471,8 @@ mod tests {
 
     #[test]
     fn kill_tree_stops_a_grandchild() {
-        let dir = std::env::temp_dir().join(format!("dcterminal_kill_{}", std::process::id()));
+        let dir = crate::test_support::test_root()
+            .join(format!("dcterminal_kill_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let pid_file = dir.join("sleep.pid");
@@ -484,12 +485,20 @@ mod tests {
         shared.resume().expect("unix resume is a no-op");
         let sleep_pid = wait_for_pid(&pid_file);
         shared.kill_tree();
-        thread::sleep(Duration::from_millis(100));
-        assert!(
-            !process_alive(sleep_pid),
-            "grandchild sleep {sleep_pid} still alive"
-        );
+        let gone = wait_until_gone(sleep_pid);
         let _ = fs::remove_dir_all(&dir);
+        assert!(gone, "grandchild sleep {sleep_pid} still alive");
+    }
+
+    /// The killed grandchild is reparented and reaped by init; poll for it.
+    fn wait_until_gone(pid: u32) -> bool {
+        for _ in 0..100 {
+            if !process_alive(pid) {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        false
     }
 
     fn wait_for_pid(path: &std::path::Path) -> u32 {
@@ -504,7 +513,8 @@ mod tests {
         panic!("grandchild pid file was not written");
     }
 
+    /// `kill(pid, 0)`: works on macOS too (there is no `/proc` there).
     fn process_alive(pid: u32) -> bool {
-        std::path::Path::new(&format!("/proc/{pid}")).exists()
+        crate::test_support::pid_alive(pid) != Some(false)
     }
 }

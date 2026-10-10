@@ -233,7 +233,7 @@ mod tests {
 
     #[test]
     fn last_reading_survives_a_restart_without_context_fill() {
-        let dir = std::env::temp_dir().join(format!(
+        let dir = crate::test_support::test_root().join(format!(
             "dcterminal_usage_{}",
             chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
         ));
