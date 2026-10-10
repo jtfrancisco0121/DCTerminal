@@ -195,11 +195,7 @@ async function planReviewerStep(app: TauriApp, page: Page, chainId: string, verd
   await expect(chainButton(page)).toHaveText("Eagle-Eye 1 · step 2 of 4");
 }
 
-/**
- * Plan Reviewer → Implementer (tab-3), then Start. The Implementer's
- * "Eagle-Eye 2" toggle is unticked first; see the known-bug test for what
- * happens when it is left on.
- */
+/** Plan Reviewer → Implementer (tab-3), then Start. */
 async function implementerStep(app: TauriApp, page: Page, chainId: string): Promise<Turn> {
   await expect(page.getByRole("button", { name: "Send to Planner", exact: true })).toBeVisible();
   await handOff(page, "Next: Send to Implementer", "Implementer");
@@ -238,7 +234,7 @@ async function implementerStep(app: TauriApp, page: Page, chainId: string): Prom
     handoffText: REVIEWED_PLAN,
   });
 
-  await page.getByRole("checkbox", { name: "Eagle-Eye 2" }).uncheck();
+  await expect(page.getByRole("checkbox", { name: "Eagle-Eye 2" })).toHaveCount(0);
   const turn = await app.start("tab-3");
   const started = await app.waitForCall("role_session_start", (a) => a.tabId === "tab-3");
   expect(started.args.values).toMatchObject({
@@ -345,17 +341,11 @@ test.describe("Eagle-Eye 1 chain", () => {
     await expect(page.getByRole("tab")).toHaveCount(4);
   });
 
-  test("known bug: starting the chain's Implementer re-tags it as a new Eagle-Eye 2 chain", async ({
+  test("starting the chain's Implementer keeps it in the chain", async ({
     app,
     page,
   }) => {
-    // StartupForm.tsx:479-480: `eagleOn` is one flag for the whole form and is
-    // never reset, so ticking "Eagle-Eye 1" on the Planner leaves "Eagle-Eye 2"
-    // ticked on the hand-off Implementer draft. startSession
-    // (StartupForm.tsx:1468-1476) then calls setTabChain(newChain("eagle2"))
-    // without checking that the tab already has a chain: step 3 of 4 becomes
-    // "Eagle-Eye 2 · step 1 of 2" and the PR Reviewer hand-off joins that new chain.
-    test.fail(true, "known bug: StartupForm.tsx:1468 re-tags a chained Implementer draft");
+    // Eagle-Eye 1 ticked on the Planner must not start a new Eagle-Eye 2 chain here.
     const chainId = await plannerStep(app, page);
     await planReviewerStep(app, page, chainId, "APPROVED");
     await handOff(page, "Next: Send to Implementer", "Implementer");
@@ -363,7 +353,7 @@ test.describe("Eagle-Eye 1 chain", () => {
       "title",
       /Eagle-Eye 1 · step 3 of 4/,
     );
-    await expect(page.getByRole("checkbox", { name: "Eagle-Eye 2" })).toBeChecked();
+    await expect(page.getByRole("checkbox", { name: "Eagle-Eye 2" })).toHaveCount(0);
     await page.getByRole("combobox", { name: /Task Type/ }).selectOption("Feature");
     await app.start("tab-3");
     // Start ends with a tab refresh; once it has run, the label shows the stored chain.

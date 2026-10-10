@@ -478,6 +478,14 @@ export function StartupForm({
   const limitAlertedRef = useRef<Set<string>>(new Set());
   const eagleOnRef = useRef(false);
   const [eagleOn, setEagleOn] = useState(false);
+  // The Eagle-Eye tick belongs to the tab it was set on.
+  useEffect(() => {
+    eagleOnRef.current = false;
+    setEagleOn(false);
+  }, [activeTabId]);
+  /** A tab already in a chain keeps it; starting it never begins a new one. */
+  const inChain = (tabId: string | null | undefined) =>
+    !!tabId && !!savedTabsRef.current.find((tab) => tab.id === tabId)?.chain;
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [handoffs, setHandoffs] = useState<HandoffRecord[]>([]);
   const [handoffTarget, setHandoffTarget] = useState<HandoffTargetId | null>(null);
@@ -1469,6 +1477,7 @@ export function StartupForm({
         !resumeId &&
         eagleOnRef.current &&
         targetId &&
+        !inChain(targetId) &&
         (roleId === "role_planner" || roleId === "role_implementer")
       ) {
         const kind = roleId === "role_planner" ? "eagle1" : "eagle2";
@@ -1573,6 +1582,8 @@ export function StartupForm({
         if (
           !options &&
           eagleOnRef.current &&
+          !inChain(pendingId) &&
+          !inChain(result.tabId) &&
           (roleToStart === "role_planner" || roleToStart === "role_implementer")
         ) {
           const kind = roleToStart === "role_planner" ? "eagle1" : "eagle2";
@@ -4967,6 +4978,7 @@ export function StartupForm({
   const eagleToggle =
     showFields &&
     activeTabSummary?.phase === "draft" &&
+    !activeTabSummary.chain &&
     (roleId === "role_planner" || roleId === "role_implementer") ? (
       <label className="eagle-toggle">
         <input
