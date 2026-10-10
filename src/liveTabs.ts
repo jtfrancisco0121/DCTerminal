@@ -25,6 +25,8 @@ export type TabRuntime = {
   promptInFlight: boolean;
   permission: PermissionRequestEvent | null;
   plan: PlanRequestEvent | null;
+  /** The last plan Claude submitted ("Ready to code?"), kept after the card closes. */
+  lastPlanMarkdown: string;
   question: QuestionRequestEvent | null;
   promptError: string | null;
   lastResult: DevPromptResult | null;
@@ -45,6 +47,7 @@ export function emptyRuntime(): TabRuntime {
     promptInFlight: false,
     permission: null,
     plan: null,
+    lastPlanMarkdown: "",
     question: null,
     promptError: null,
     lastResult: null,
@@ -131,7 +134,8 @@ export function applyPermission(
 
 export function applyPlan(rt: TabRuntime, evt: PlanRequestEvent): TabRuntime {
   if (!sameSession(rt, evt.sessionId)) return rt;
-  return { ...rt, plan: evt };
+  const markdown = (evt.markdown ?? "").trim();
+  return { ...rt, plan: evt, lastPlanMarkdown: markdown || rt.lastPlanMarkdown };
 }
 
 export function clearPlan(rt: TabRuntime): TabRuntime {

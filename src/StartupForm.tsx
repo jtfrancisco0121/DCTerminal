@@ -521,6 +521,12 @@ export function StartupForm({
   const [notificationSettings, setNotificationSettingsState] =
     useState<NotificationSettings | null>(null);
   const [terminalError, setTerminalError] = useState<string | null>(null);
+  /** A chat Planner's plan file, read when its "Ready to code?" plan is no longer in memory. */
+  const [chatPlanFile, setChatPlanFile] = useState<{
+    tabId: string;
+    text: string;
+    name: string;
+  } | null>(null);
   const [terminalCapture, setTerminalCapture] = useState<{
     selection: string;
     tail: string;
@@ -2963,7 +2969,12 @@ export function StartupForm({
     getRole(target)
       .then((loaded) => {
         setHandoffFields(
-          loaded.fields.map((field) => ({ key: field.key, options: field.options })),
+          loaded.fields.map((field) => ({
+            key: field.key,
+            label: field.label,
+            type: field.type,
+            options: field.options,
+          })),
         );
       })
       .catch((err: unknown) => {
@@ -3035,6 +3046,27 @@ export function StartupForm({
         return;
       }
       setTerminalCapture(null);
+      setChatPlanFile(null);
+      const tabId = activeTabIdRef.current;
+      const rt = tabId ? runtimesRef.current[tabId] : undefined;
+      if (tabId && summary && isPlanSource(summary.roleId) && !rt?.plan && !rt?.lastPlanMarkdown) {
+        // After a restart the plan lives only in the file Claude wrote. Use it
+        // only when this tab's own tool calls name that file.
+        const written = (rt?.segments ?? [])
+          .map((segment) => segment.text)
+          .join("\n")
+          .match(/[^\s`'"]*\/plans\/[^\s`'"]+\.md/g);
+        const path = written?.[written.length - 1];
+        if (path) {
+          void terminalPlanFile(0, tabId)
+            .then((file) => {
+              if (file?.text.trim() && file.path === path) {
+                setChatPlanFile({ tabId, text: file.text, name: file.name });
+              }
+            })
+            .catch(() => {});
+        }
+      }
       const screen =
         document.querySelector("[data-pane='primary'] [data-session-screen]") ??
         document.querySelector("[data-session-screen]");
@@ -3080,7 +3112,14 @@ export function StartupForm({
       selection: handoffSelection,
       turnInFlight: !!promptInFlight,
       awaitingPlanApproval: !!runtimes[activeTabId ?? ""]?.plan,
-      planMarkdown: (runtimes[activeTabId ?? ""]?.plan?.markdown ?? "").trim(),
+      // The open card's plan, else the last one Claude submitted in this tab.
+      planMarkdown: (
+        runtimes[activeTabId ?? ""]?.plan?.markdown ||
+        runtimes[activeTabId ?? ""]?.lastPlanMarkdown ||
+        ""
+      ).trim(),
+      planFileText: chatPlanFile?.tabId === activeTabId ? chatPlanFile.text : undefined,
+      planFileName: chatPlanFile?.tabId === activeTabId ? chatPlanFile.name : undefined,
       branch: activeTabSummary?.worktreeBranch ?? null,
       transcriptText: streamSegments.map((segment) => segment.text).join("\n"),
     };
@@ -3088,6 +3127,7 @@ export function StartupForm({
     activeTabId,
     activeTabSummary,
     cardsByTab,
+    chatPlanFile,
     handoffSelection,
     isPlanTerminal,
     promptInFlight,

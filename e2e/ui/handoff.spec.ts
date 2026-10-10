@@ -34,7 +34,7 @@ test("plan approval: Send to Plan Reviewer works while the turn waits on the pla
   await send.click();
   const dialog = page.getByRole("dialog", { name: "Send plan" });
   await expect(dialog.getByRole("radio", { name: "Plan Reviewer" })).toBeChecked();
-  await expect(dialog.getByRole("radio", { name: "Plan mode (Ready to code?)" })).toBeChecked();
+  await expect(dialog.getByRole("radio", { name: "Claude's plan (Ready to code?)" })).toBeChecked();
   await dialog.getByRole("button", { name: "Open Plan Reviewer tab" }).click();
   await expect(dialog).toBeHidden();
 
@@ -42,15 +42,15 @@ test("plan approval: Send to Plan Reviewer works while the turn waits on the pla
     "aria-selected",
     "true",
   );
+  // The reviewer's original request carries every Planner answer.
   await expect(page.getByRole("textbox", { name: /Original Task/ })).toHaveValue(
-    "Let users pick reasoning effort",
+    "Title: Effort controls\n\nTask type: Feature\n\nRequest:\nLet users pick reasoning effort\n\nExpected behavior:\nAn effort picker in the chat header",
   );
   await expect(page.getByRole("textbox", { name: /Proposed Implementation Plan/ })).toHaveValue(
     PLAN.trim(),
   );
-  await expect(page.getByRole("textbox", { name: "Additional Context" })).toHaveValue(
-    /An effort picker in the chat header/,
-  );
+  // Expected behavior travels with the request, so it is not repeated as context.
+  await expect(page.getByRole("textbox", { name: "Additional Context" })).toHaveValue("");
 
   const saved = await app.waitForCall("handoff_save");
   expect(saved.args.input).toMatchObject({
@@ -142,4 +142,76 @@ test("Recommendation → Planner from one selected feature card", async ({ app, 
   expect(String((synced.args.values as Record<string, string>).additionalContext)).toContain(
     "The ACP session reports effort options.",
   );
+});
+
+test("a Plan Reviewer saved with older field names still gets the request, plan and context", async ({
+  app,
+  page,
+}) => {
+  // Roles saved before the built-in Plan Reviewer fields were renamed keep their own keys.
+  await app.open({
+    tabs: [roleTab("tab-1", "role_planner", "Planner")],
+    roles: (roles) =>
+      roles.map((role) =>
+        role.id !== "role_plan_reviewer"
+          ? role
+          : {
+              ...role,
+              templateText:
+                "Request:\n{{originalRequest}}\n\nPlan:\n{{candidatePlan}}\n\nContext:\n{{additionalContext}}",
+              fields: [
+                { key: "originalRequest", label: "Original Request", type: "multiline", required: true },
+                { key: "candidatePlan", label: "Candidate Plan", type: "multiline", required: true },
+                { key: "additionalContext", label: "Additional Context", type: "multiline", required: false },
+              ],
+            },
+      ),
+    answers: {
+      "tab-1": {
+        taskType: "Feature",
+        title: "Manual invoices",
+        request: "Print BIR invoices for sales outside Zoho",
+        expectedBehavior: "A manual invoice page",
+        currentBehavior: "",
+        additionalContext: "Reuse the SI print layout.",
+      },
+    },
+  });
+  const turn = await app.start("tab-1");
+  await turn.plan(PLAN);
+
+  await page.locator(".session-cards").getByRole("button", { name: "Send to Plan Reviewer" }).click();
+  const dialog = page.getByRole("dialog", { name: "Send plan" });
+  await dialog.getByRole("button", { name: "Open Plan Reviewer tab" }).click();
+  await expect(dialog).toBeHidden();
+
+  await expect(page.getByRole("textbox", { name: /Original Request/ })).toHaveValue(
+    "Title: Manual invoices\n\nTask type: Feature\n\nRequest:\nPrint BIR invoices for sales outside Zoho\n\nExpected behavior:\nA manual invoice page",
+  );
+  await expect(page.getByRole("textbox", { name: /Candidate Plan/ })).toHaveValue(PLAN.trim());
+  await expect(page.getByRole("textbox", { name: "Additional Context" })).toHaveValue(
+    "Reuse the SI print layout.",
+  );
+  const saved = await app.waitForCall("handoff_save");
+  expect(saved.args.input).toMatchObject({ planField: "candidatePlan", scope: "plan_mode" });
+});
+
+test("after the plan card closes, the hand-off still sends Claude's plan, not the last chat line", async ({
+  app,
+  page,
+}) => {
+  await app.open({
+    tabs: [roleTab("tab-1", "role_planner", "Planner")],
+    answers: { "tab-1": { taskType: "Feature", title: "Effort controls", request: "Let users pick reasoning effort" } },
+  });
+  const turn = await app.start("tab-1");
+  await turn.plan(PLAN);
+  await page.locator(".session-cards").getByRole("button", { name: "Keep planning" }).click();
+  await turn.reply("I'll proceed with my recommended answers.");
+
+  await page.getByRole("button", { name: "Send to Plan Reviewer" }).first().click();
+  const dialog = page.getByRole("dialog", { name: "Send plan" });
+  await expect(dialog.getByRole("radio", { name: "Claude's plan (Ready to code?)" })).toBeChecked();
+  await dialog.getByRole("button", { name: "Open Plan Reviewer tab" }).click();
+  await expect(page.getByRole("textbox", { name: /Proposed Implementation Plan/ })).toHaveValue(PLAN.trim());
 });

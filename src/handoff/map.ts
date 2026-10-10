@@ -60,6 +60,8 @@ export type HandoffTodo = {
 
 export type HandoffField = {
   key: string;
+  label?: string;
+  type?: string;
   options?: string[];
 };
 
@@ -119,11 +121,35 @@ export type MappedHandoff = {
   warning: string | null;
 };
 
-const PLAN_FIELD_KEYS = ["approvedPlan", "plan", "implementationPlan"];
-const DESCRIPTION_FIELD_KEYS = ["description", "request", "originalTask", "task"];
+/**
+ * Fields are found by meaning: known keys first (built-in roles, older saved roles
+ * such as Plan Reviewer's `originalRequest` / `candidatePlan`), then the label.
+ */
+const PLAN_FIELD_KEYS = [
+  "approvedPlan",
+  "plan",
+  "implementationPlan",
+  "candidatePlan",
+  "proposedPlan",
+  "reviewedPlan",
+];
+const DESCRIPTION_FIELD_KEYS = [
+  "description",
+  "request",
+  "originalTask",
+  "originalRequest",
+  "task",
+  "requirements",
+];
 const REVIEWED_PLAN_HEADING = /^#{1,6}[ \t]+(?:\*\*)?Reviewed plan(?:\*\*)?[ \t]*:?[ \t]*$/im;
 const REVIEW_NOTES_HEADING = /^#{1,6}[ \t]+(?:\*\*)?Review notes(?:\*\*)?[ \t]*:?[ \t]*$/im;
 const CONTEXT_FIELD_KEYS = ["additionalContext", "context", "notes"];
+const PLAN_FIELD_LABEL = /\bplan\b/i;
+const DESCRIPTION_FIELD_LABEL = /\b(original|request|requirements?|task|description)\b/i;
+const CONTEXT_FIELD_LABEL = /\b(context|notes)\b/i;
+/** A field that holds the whole original request, so it gets every Planner answer. */
+const ORIGINAL_FIELD = /original|requirement/i;
+const NOT_FREE_TEXT = new Set(["taskType", "title", "cwd"]);
 const GITHUB_PR_URL = /https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+/;
 
 /** First GitHub pull-request URL in a transcript. Large diffs are not used. */
@@ -381,8 +407,15 @@ export function scopeChoices(source: HandoffSource): ScopeChoice[] {
   if ((source.planMarkdown ?? "").trim()) {
     choices.push({
       id: "plan_mode",
-      label: "Plan mode (Ready to code?)",
+      label: "Claude's plan (Ready to code?)",
       enabled: composePlanText(source, "plan_mode").text.length > 0,
+    });
+  }
+  if ((source.planFileText ?? "").trim()) {
+    choices.push({
+      id: "plan_file",
+      label: source.planFileName ? `Plan file (${source.planFileName})` : "Plan file",
+      enabled: true,
     });
   }
   choices.push(
@@ -423,6 +456,7 @@ export function defaultScope(source: HandoffSource): HandoffScope {
   }
   const preferred: HandoffScope[] = [
     "plan_mode",
+    "plan_file",
     "plan_and_todos",
     "message",
     "card",
@@ -439,7 +473,7 @@ function answer(values: Record<string, string>, key: string): string {
 }
 
 export function extractTitle(source: HandoffSource, planText: string): string {
-  const fromAnswers = answer(source.answers, "title");
+  const fromAnswers = answer(source.answers, "title") || labelledLine(source.answers, "Title");
   if (fromAnswers) return takeChars(fromAnswers, 120);
   const heading = planText.match(/^#{1,3}[ \t]+(.+)$/m);
   if (heading?.[1]?.trim()) return takeChars(heading[1].trim(), 120);
@@ -453,10 +487,7 @@ export function extractTitle(source: HandoffSource, planText: string): string {
 }
 
 function extractDescription(source: HandoffSource, planText: string): string {
-  const request =
-    answer(source.answers, "request") ||
-    answer(source.answers, "description") ||
-    answer(source.answers, "originalTask");
+  const request = sourceRequest(source.answers);
   if (request) return request;
   const paragraph = planText
     .split(/\n\s*\n/)
@@ -520,6 +551,79 @@ function firstKey(fields: HandoffField[], keys: string[]): string | null {
   return null;
 }
 
+type FieldRole = "plan" | "description" | "context";
+
+const ROLE_KEYS: Record<FieldRole, string[]> = {
+  plan: PLAN_FIELD_KEYS,
+  description: DESCRIPTION_FIELD_KEYS,
+  context: CONTEXT_FIELD_KEYS,
+};
+const ROLE_LABELS: Record<FieldRole, RegExp> = {
+  plan: PLAN_FIELD_LABEL,
+  description: DESCRIPTION_FIELD_LABEL,
+  context: CONTEXT_FIELD_LABEL,
+};
+
+/** The target field for `role`: a known key, else a free-text field whose label says so. */
+function fieldFor(fields: HandoffField[], role: FieldRole): string | null {
+  const byKey = firstKey(fields, ROLE_KEYS[role]);
+  if (byKey) return byKey;
+  const known = new Set(Object.values(ROLE_KEYS).flat());
+  const match = fields.find((field) => {
+    if (NOT_FREE_TEXT.has(field.key) || known.has(field.key) || field.type === "select") return false;
+    const label = field.label ?? field.key;
+    if (!ROLE_LABELS[role].test(label)) return false;
+    // "Original plan" is a plan, and "Request notes" is context, not the request.
+    if (role === "description") return !PLAN_FIELD_LABEL.test(label) && !CONTEXT_FIELD_LABEL.test(label);
+    return true;
+  });
+  return match?.key ?? null;
+}
+
+function isOriginalField(fields: HandoffField[], key: string | null): boolean {
+  if (!key) return false;
+  const field = fields.find((f) => f.key === key);
+  return ORIGINAL_FIELD.test(key) || ORIGINAL_FIELD.test(field?.label ?? "");
+}
+
+/** The request as the source tab saw it, under whichever key its role uses. */
+function sourceRequest(values: Record<string, string>): string {
+  for (const key of DESCRIPTION_FIELD_KEYS) {
+    const value = answer(values, key);
+    if (value) return value;
+  }
+  return "";
+}
+
+/**
+ * Every Planner answer as one block, for a reviewer's "original request" field.
+ * The labelled lines let later steps recover the title and task type.
+ */
+export function composeOriginalTask(values: Record<string, string>): string {
+  const parts: string[] = [];
+  const title = answer(values, "title");
+  const taskType = answer(values, "taskType");
+  if (title) parts.push(`Title: ${title}`);
+  if (taskType) parts.push(`Task type: ${taskType}`);
+  const request = sourceRequest(values);
+  if (request) parts.push(parts.length > 0 ? `Request:\n${request}` : request);
+  const expected = answer(values, "expectedBehavior");
+  const current = answer(values, "currentBehavior");
+  if (expected) parts.push(`Expected behavior:\n${expected}`);
+  if (current) parts.push(`Current behavior:\n${current}`);
+  return parts.join("\n\n");
+}
+
+/** `Title: …` / `Task type: …` lines written by composeOriginalTask. */
+function labelledLine(values: Record<string, string>, label: string): string {
+  const pattern = new RegExp(`^${label}:[ \t]*(.+)$`, "im");
+  for (const key of DESCRIPTION_FIELD_KEYS) {
+    const hit = answer(values, key).match(pattern);
+    if (hit?.[1]?.trim()) return hit[1].trim();
+  }
+  return "";
+}
+
 /** Implementer form → PR Reviewer fields (no plan-scope picker). */
 export function mapImplementerToReviewer(
   source: HandoffSource,
@@ -530,20 +634,26 @@ export function mapImplementerToReviewer(
     answer(source.answers, "title") || source.sourceLabel.replace(/^Implementer\s*·\s*/i, "").trim(),
     120,
   );
-  const description = answer(source.answers, "description");
-  const planText = answer(source.answers, "approvedPlan");
-  const originalTask = description
-    ? title && !description.startsWith(title)
-      ? `${title}\n\n${description}`
-      : description
-    : title || "Review the Implementer session.";
+  const description = sourceRequest(source.answers);
+  const planText = PLAN_FIELD_KEYS.map((key) => answer(source.answers, key)).find(Boolean) ?? "";
+  const taskType = answer(source.answers, "taskType");
+  // A description handed on from the Plan Reviewer already carries its Title / Task type lines.
+  const originalTask = /^Title:/im.test(description)
+    ? description
+    : [
+        title ? `Title: ${title}` : "",
+        taskType ? `Task type: ${taskType}` : "",
+        description ? (title || taskType ? `Request:\n${description}` : description) : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n") || "Review the Implementer session.";
   const limited = limitPlan(planText || originalTask, limits);
   const answers: Record<string, string> = { cwd: source.cwd };
-  const planField = firstKey(target.fields, PLAN_FIELD_KEYS);
-  const descriptionKey = firstKey(target.fields, DESCRIPTION_FIELD_KEYS);
+  const planField = fieldFor(target.fields, "plan");
+  const descriptionKey = fieldFor(target.fields, "description");
   if (descriptionKey) answers[descriptionKey] = takeChars(originalTask, 4_000);
   if (planField && planText) answers[planField] = limited.inlinePlan;
-  const contextKey = firstKey(target.fields, CONTEXT_FIELD_KEYS);
+  const contextKey = fieldFor(target.fields, "context");
   const context = [answer(source.answers, "additionalContext"), implementationContext(source)]
     .filter((part) => part.trim().length > 0)
     .join("\n\n");
@@ -699,7 +809,7 @@ export function mapReportToPlanner(
     const allowed = !taskField.options || taskField.options.includes(taskType);
     if (taskType && allowed) answers.taskType = taskType;
   }
-  const descriptionKey = firstKey(target.fields, DESCRIPTION_FIELD_KEYS);
+  const descriptionKey = fieldFor(target.fields, "description");
   if (descriptionKey) answers[descriptionKey] = limited.inlinePlan;
   if (single) {
     const current = reportSection(text, ["Problem"]);
@@ -709,7 +819,7 @@ export function mapReportToPlanner(
       answers.expectedBehavior = takeChars(expected, 4_000);
     }
   }
-  const contextKey = firstKey(target.fields, CONTEXT_FIELD_KEYS);
+  const contextKey = fieldFor(target.fields, "context");
   if (contextKey) {
     const parts = [`From the ${sourceName} report (${source.sourceLabel}).`];
     if (single) {
@@ -775,22 +885,32 @@ export function mapHandoff(
   const limited = limitPlan(composed.text, limits);
   const title = extractTitle(source, composed.text);
   const answers: Record<string, string> = { cwd: source.cwd };
-  const planField = firstKey(target.fields, PLAN_FIELD_KEYS);
+  const planField = fieldFor(target.fields, "plan");
   if (target.fields.some((field) => field.key === "title")) {
     answers.title = title;
   }
   const taskField = target.fields.find((field) => field.key === "taskType");
   if (taskField) {
-    const mapped = TASK_TYPE_TO_IMPLEMENTER[answer(source.answers, "taskType")] ?? "";
-    const allowed = !taskField.options || taskField.options.includes(mapped);
-    if (mapped && allowed) answers.taskType = mapped;
+    const raw = answer(source.answers, "taskType") || labelledLine(source.answers, "Task type");
+    const allowed = (value: string) =>
+      !!value && (!taskField.options || taskField.options.includes(value));
+    const mapped = [raw, TASK_TYPE_TO_IMPLEMENTER[raw] ?? ""].find(allowed);
+    if (mapped) answers.taskType = mapped;
   }
-  const descriptionKey = firstKey(target.fields, DESCRIPTION_FIELD_KEYS);
+  const descriptionKey = fieldFor(target.fields, "description");
+  // A reviewer's "original request" gets every Planner answer, so expected and
+  // current behavior travel with the request instead of landing in context.
+  const wholeRequest =
+    isOriginalField(target.fields, descriptionKey) && !!answer(source.answers, "request");
   if (descriptionKey) {
-    answers[descriptionKey] = extractDescription(source, composed.text);
+    answers[descriptionKey] = wholeRequest
+      ? composeOriginalTask(source.answers)
+      : extractDescription(source, composed.text);
   }
-  const contextKey = firstKey(target.fields, CONTEXT_FIELD_KEYS);
-  const baseContext = extractContext(source);
+  const contextKey = fieldFor(target.fields, "context");
+  const baseContext = wholeRequest
+    ? answer(source.answers, "additionalContext")
+    : extractContext(source);
   const context = reviewNotes
     ? [`Review notes:\n${reviewNotes}`, baseContext].filter(Boolean).join("\n\n")
     : baseContext;

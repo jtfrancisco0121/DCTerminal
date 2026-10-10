@@ -17,6 +17,8 @@ const TITLE = "Effort controls";
 const REQUEST = "Let users pick reasoning effort";
 const EXPECTED = "An effort picker in the chat header";
 const CURRENT = "Effort is fixed per model";
+/** What every reviewer and the Implementer receive as the original request. */
+const ORIGINAL = `Title: ${TITLE}\n\nTask type: Feature\n\nRequest:\n${REQUEST}\n\nExpected behavior:\n${EXPECTED}\n\nCurrent behavior:\n${CURRENT}`;
 
 const PLAN = [
   "### Effort picker",
@@ -171,7 +173,7 @@ async function planReviewerStep(app: TauriApp, page: Page, chainId: string, verd
     "title",
     /Eagle-Eye 1 · step 2 of 4/,
   );
-  await expect(page.getByRole("textbox", { name: /Original Task/ })).toHaveValue(REQUEST);
+  await expect(page.getByRole("textbox", { name: /Original Task/ })).toHaveValue(ORIGINAL);
   await expect(page.getByRole("textbox", { name: /Proposed Implementation Plan/ })).toHaveValue(
     PLAN,
   );
@@ -212,19 +214,15 @@ async function implementerStep(app: TauriApp, page: Page, chainId: string): Prom
     /Eagle-Eye 1 · step 3 of 4/,
   );
   // Task and approved plan come from the earlier steps; the review notes ride along.
-  await expect(page.getByRole("textbox", { name: /^Title/ })).toHaveValue("Effort picker");
-  await expect(page.getByRole("textbox", { name: /^Description/ })).toHaveValue(REQUEST);
+  await expect(page.getByRole("textbox", { name: /^Title/ })).toHaveValue(TITLE);
+  await expect(page.getByRole("textbox", { name: /^Description/ })).toHaveValue(ORIGINAL);
   await expect(page.getByRole("textbox", { name: /Approved Implementation Plan/ })).toHaveValue(
     REVIEWED_PLAN,
   );
   const context = page.getByRole("textbox", { name: "Additional Context" });
   await expect(context).toHaveValue(new RegExp(`^Review notes:\\n${escape(REVIEW_NOTES)}`));
-  await expect(context).toHaveValue(new RegExp(`Expected behavior:\\n${escape(EXPECTED)}`));
-  // The Plan Reviewer form has no task type; the Planner's "Feature" comes from the chain run.
+  // The Plan Reviewer form has no task type; the Planner's "Feature" rides in the request block.
   await expect(page.getByRole("combobox", { name: /Task Type/ })).toHaveValue("Feature");
-  expect((await app.waitForCall("get_pipeline_run", (a) => a.runId === chainId)).args).toEqual({
-    runId: chainId,
-  });
 
   const saved = await app.waitForCall(
     "handoff_save",
@@ -247,7 +245,7 @@ async function implementerStep(app: TauriApp, page: Page, chainId: string): Prom
   const started = await app.waitForCall("role_session_start", (a) => a.tabId === "tab-3");
   expect(started.args.values).toMatchObject({
     taskType: "Feature",
-    description: REQUEST,
+    description: ORIGINAL,
     approvedPlan: REVIEWED_PLAN,
   });
   await expect(chainButton(page)).toHaveText("Eagle-Eye 1 · step 3 of 4");
@@ -270,9 +268,7 @@ async function prReviewerHandoff(app: TauriApp, page: Page, chainId: string) {
     "title",
     /Eagle-Eye 1 · step 4 of 4/,
   );
-  await expect(page.getByRole("textbox", { name: /Original Task/ })).toHaveValue(
-    `Effort picker\n\n${REQUEST}`,
-  );
+  await expect(page.getByRole("textbox", { name: /Original Task/ })).toHaveValue(ORIGINAL);
   await expect(page.getByRole("textbox", { name: /Approved Implementation Plan/ })).toHaveValue(
     REVIEWED_PLAN,
   );

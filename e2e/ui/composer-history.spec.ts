@@ -120,8 +120,10 @@ test("a recalled entry can be edited and sent; history keeps one copy of each te
   await composer.fill("run the tests");
   await composer.press("ControlOrMeta+Enter");
   await turn.reply("ok");
-  const saved = await app.waitForCall("scratch_save", (a) => (a.history as string[]).length === 2);
-  expect(saved.args.history).toEqual(["run the tests", "run the tests again"]);
+  // Saves are debounced, so an earlier save (other order) can land first; check the latest one.
+  await expect
+    .poll(async () => (await app.calls("scratch_save")).at(-1)?.args.history)
+    .toEqual(["run the tests", "run the tests again"]);
 });
 
 test("history is saved with the pad and comes back after a reload", async ({ app, page }) => {

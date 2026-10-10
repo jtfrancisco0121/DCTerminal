@@ -132,7 +132,10 @@ describe("handoff mapping", () => {
       roleId: "role_pr_reviewer",
       fields: REVIEWER_FIELDS,
     });
-    expect(mapped.answers.originalTask).toBe("Expired tokens return 500.");
+    // A reviewer's original request carries every Planner answer.
+    expect(mapped.answers.originalTask).toBe(
+      "Title: Login 500\n\nTask type: Bug\n\nRequest:\nExpired tokens return 500.\n\nExpected behavior:\nReturn 401.\n\nCurrent behavior:\nThe handler panics.",
+    );
     expect(mapped.answers.approvedPlan).toContain("Fix the login handler");
     expect(mapped.answers.title).toBeUndefined();
     expect(mapped.answers.taskType).toBeUndefined();
@@ -717,5 +720,126 @@ describe("hand-offs into and out of custom roles", () => {
     expect(handoffBlockReason({ ...custom, turnInFlight: true }, roles)).toBe(
       "Wait until the Docs finishes this turn.",
     );
+  });
+});
+
+describe("hand-off fields are found by meaning", () => {
+  // Plan Reviewer roles saved before the built-in fields were renamed.
+  const LEGACY_PLAN_REVIEWER = [
+    { key: "originalRequest", label: "Original Request", type: "multiline" },
+    { key: "candidatePlan", label: "Candidate Plan", type: "multiline" },
+    { key: "additionalContext", label: "Additional Context", type: "multiline" },
+  ];
+
+  it("Planner → a Plan Reviewer saved with older field names fills every field", () => {
+    const mapped = mapHandoff(source(), "message", {
+      roleId: "role_plan_reviewer",
+      fields: LEGACY_PLAN_REVIEWER,
+    });
+    expect(mapped.planField).toBe("candidatePlan");
+    expect(mapped.usesScratchPad).toBe(false);
+    expect(mapped.answers.candidatePlan).toContain("Fix the login handler");
+    expect(mapped.answers.originalRequest).toContain("Title: Login 500");
+    expect(mapped.answers.originalRequest).toContain("Expected behavior:\nReturn 401.");
+    expect(mapped.answers.originalRequest).toContain("Current behavior:\nThe handler panics.");
+    // Expected / current travel with the request, not twice.
+    expect(mapped.answers.additionalContext).toBe("See the auth middleware.");
+  });
+
+  it("Planner → the built-in Plan Reviewer gets the whole request and its own context", () => {
+    const mapped = mapHandoff(source(), "message", {
+      roleId: "role_plan_reviewer",
+      fields: PLAN_REVIEWER_FIELDS,
+    });
+    expect(mapped.planField).toBe("plan");
+    expect(mapped.answers.originalTask).toContain("Request:\nExpired tokens return 500.");
+    expect(mapped.answers.additionalContext).toBe("See the auth middleware.");
+  });
+
+  it("a custom role's fields are matched by their labels", () => {
+    const mapped = mapHandoff(source(), "message", {
+      roleId: "role_custom_review",
+      fields: [
+        { key: "spec", label: "Original requirements", type: "multiline" },
+        { key: "draft", label: "Draft plan", type: "multiline" },
+        { key: "misc", label: "Notes", type: "multiline" },
+        { key: "kind", label: "Task kind", type: "select", options: ["A"] },
+      ],
+    });
+    expect(mapped.planField).toBe("draft");
+    expect(mapped.answers.spec).toContain("Title: Login 500");
+    expect(mapped.answers.misc).toBe("See the auth middleware.");
+    expect(mapped.answers.kind).toBeUndefined();
+  });
+
+  it("Plan Reviewer → Implementer recovers the title and task type from the original request", () => {
+    const review = mapHandoff(source(), "message", {
+      roleId: "role_plan_reviewer",
+      fields: LEGACY_PLAN_REVIEWER,
+    });
+    const mapped = mapHandoff(
+      source({
+        sourceRoleId: "role_plan_reviewer",
+        sourceLabel: "Plan Reviewer · Demo",
+        answers: review.answers,
+        latestMessage:
+          "## Verdict\nAPPROVED\n\n## Reviewed plan\n1. Patch the handler\n\n## Review notes\n- Add a 401 test",
+        plan: [],
+        todos: [],
+      }),
+      "message",
+      { roleId: "role_implementer", fields: IMPLEMENTER_FIELDS },
+    );
+    expect(mapped.answers.title).toBe("Login 500");
+    expect(mapped.answers.taskType).toBe("Bug Fix");
+    expect(mapped.answers.approvedPlan).toBe("1. Patch the handler");
+    expect(mapped.answers.description).toContain("Expired tokens return 500.");
+    expect(mapped.answers.additionalContext).toContain("Review notes:\n- Add a 401 test");
+  });
+
+  it("Implementer → PR Reviewer does not repeat a title the request already carries", () => {
+    const block = "Title: Login 500\n\nTask type: Bug\n\nRequest:\nExpired tokens return 500.";
+    const mapped = mapHandoff(
+      source({
+        sourceRoleId: "role_implementer",
+        sourceLabel: "Implementer · Login 500",
+        answers: { title: "Login 500", taskType: "Bug Fix", description: block, approvedPlan: "1. Patch" },
+      }),
+      "message",
+      { roleId: "role_pr_reviewer", fields: REVIEWER_FIELDS },
+    );
+    expect(mapped.answers.originalTask).toBe(block);
+    expect(mapped.answers.approvedPlan).toBe("1. Patch");
+  });
+
+  it("Implementer → PR Reviewer labels the title and task type when the request has none", () => {
+    const mapped = mapHandoff(
+      source({
+        sourceRoleId: "role_implementer",
+        sourceLabel: "Implementer · Login 500",
+        answers: {
+          title: "Login 500",
+          taskType: "Bug Fix",
+          description: "Expired tokens return 500.",
+          approvedPlan: "1. Patch",
+        },
+      }),
+      "message",
+      { roleId: "role_pr_reviewer", fields: REVIEWER_FIELDS },
+    );
+    expect(mapped.answers.originalTask).toBe(
+      "Title: Login 500\n\nTask type: Bug Fix\n\nRequest:\nExpired tokens return 500.",
+    );
+  });
+
+  it("a chat Planner's plan file is offered and preferred when its plan card is gone", () => {
+    const withFile = source({
+      latestMessage: "I'll proceed with my recommended answers.",
+      planFileText: "# Plan\n1. Patch the handler",
+      planFileName: "cozy-stallman.md",
+    });
+    expect(scopeChoices(withFile).map((c) => c.id)).toContain("plan_file");
+    expect(defaultScope(withFile)).toBe("plan_file");
+    expect(defaultScope({ ...withFile, planMarkdown: "# Card plan" })).toBe("plan_mode");
   });
 });

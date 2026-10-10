@@ -11,6 +11,7 @@ import {
   applyAutoPermission,
   applyPermission,
   applyPlan,
+  clearPlan,
   applyPromptFinished,
   applyQuestion,
   applySessionUpdate,
@@ -43,6 +44,23 @@ describe("per-tab session events", () => {
     const other = { ...mine, sessionId: "sess-b", jsonRpcId: 5 };
     expect(applyPlan(rt, mine).plan?.jsonRpcId).toBe(4);
     expect(applyPlan(rt, other).plan).toBeNull();
+  });
+
+  it("keeps the last submitted plan after the plan card closes", () => {
+    const card: PlanRequestEvent = {
+      tabId: "tab-1",
+      sessionId: "sess-a",
+      jsonRpcId: 7,
+      title: "Ready to code?",
+      entries: [],
+      markdown: "# Plan\n1. Patch",
+    };
+    const shown = applyPlan(withSession("sess-a"), card);
+    const closed = clearPlan(shown);
+    expect(closed.plan).toBeNull();
+    expect(closed.lastPlanMarkdown).toBe("# Plan\n1. Patch");
+    // A later card without a body keeps the last real plan.
+    expect(applyPlan(closed, { ...card, markdown: null }).lastPlanMarkdown).toBe("# Plan\n1. Patch");
   });
 
   it("keeps a question on the tab that asked and ignores another tab's session", () => {
