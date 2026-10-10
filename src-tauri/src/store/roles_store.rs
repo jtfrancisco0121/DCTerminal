@@ -76,6 +76,8 @@ pub const SHIPPED_TEMPLATE_HASHES: &[(&str, &str)] = &[
     ("role_implementer", "sha256:eaf7d3c2b930bd3184afeacfaa3808f1b32d07f2cc35928cd57e2049d00fb3a9"),
     ("role_implementer", "sha256:f01e766ebdddf01ee63488e00497db838fc833697f4d2af00f9eee611e4f4c8f"),
     ("role_pr_reviewer", "sha256:60648e754e82f5ad7f3c7b91e2dcdac32c67e6e12c13a06de98b25c5e5cc4a88"),
+    ("role_implementer", "sha256:d453d2dda3d380af4c8bbad623d9142a05a5ac0c43ecbb86f3b7bc89a1fe20d2"),
+    ("role_pr_reviewer", "sha256:60755c519579969032251ea02eb32c9ea2cc9f65c7e405826e03e00e6f97d27d"),
 ];
 
 /// Moves unedited built-in roles to the current seed template and fields.

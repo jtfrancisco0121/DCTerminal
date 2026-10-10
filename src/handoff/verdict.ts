@@ -57,6 +57,24 @@ function lastMatch(text: string): ReviewVerdict | null {
   return found ? normalize(found) : null;
 }
 
+/**
+ * Prose lines only: list items, checklists, table rows and code describe the
+ * plan ("qty-0 rows rejected"), they do not conclude the review.
+ */
+function proseOnly(text: string): string {
+  let fenced = false;
+  return text
+    .split(/\r?\n/)
+    .filter((line) => {
+      if (/^\s*(?:```|~~~)/.test(line)) {
+        fenced = !fenced;
+        return false;
+      }
+      return !fenced && !/^\s*(?:[-*+][ \t]|\d+[.)][ \t]|\|)/.test(line);
+    })
+    .join("\n");
+}
+
 function lastRecommendation(text: string): ReviewVerdict | null {
   let found: string | null = null;
   for (const match of text.matchAll(RECOMMENDATION_RE)) found = match[1].toLowerCase();
@@ -112,7 +130,7 @@ export function parseReviewVerdict(text: string): ReviewVerdict | null {
   return (
     underLabel(lines, VERDICT_LABEL, lastMatch) ??
     underLabel(lines, RECOMMENDATION_LABEL, (line) => lastMatch(line) ?? lastRecommendation(line)) ??
-    lastMatch(text)
+    lastMatch(proseOnly(text))
   );
 }
 

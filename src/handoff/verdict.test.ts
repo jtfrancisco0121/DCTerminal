@@ -119,3 +119,26 @@ describe("parseReviewVerdict", () => {
     expect(needsRevision(null)).toBe(false);
   });
 });
+
+describe("verdict words inside a plan", () => {
+  it("a revised plan with no verdict line is not read as a rejection", () => {
+    const revisedPlan = [
+      "Acceptance criteria.",
+      "- [ ] Blank rows skipped; partial, negative and qty-0 rows rejected; 1 to 17 rows.",
+      "- [ ] A manual EWT larger than G with Less is rejected.",
+      "| Case | Result |",
+      "| --- | --- |",
+      "| zero price | rejected |",
+      "```",
+      "assert status == 'rejected'",
+      "```",
+      "Open questions. Defaults below are used if no answer is given.",
+    ].join("\n");
+    expect(parseReviewVerdict(revisedPlan)).toBeNull();
+    expect(parseTerminalVerdict(revisedPlan)).toBeNull();
+  });
+
+  it("a verdict stated in prose still counts", () => {
+    expect(parseReviewVerdict("- step one\n\nOverall the plan is rejected.")).toBe("REJECTED");
+  });
+});

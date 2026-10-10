@@ -492,6 +492,22 @@ Check:
 
 The final diff should represent the intended task and nothing unnecessary.
 
+## Open a draft pull request
+
+When the work is verified (tests pass, the diff is clean, Final Status is not `BLOCKED`), publish it so the PR Reviewer can review it on GitHub:
+
+1. If you are on the repository's default branch, create a branch first: `git switch -c <type>/<short-name>`, for example `feat/manual-invoices`.
+2. Stage only the files this task changed (`git add <paths>`, never a blind `git add -A`) and commit with a clear message.
+3. Push the branch: `git push -u origin HEAD`.
+4. Open a draft pull request with GitHub CLI: `gh pr create --draft --title "<title>" --body "<what changed, how it was tested, deviations from the plan>"`.
+5. Put the pull request URL in `## HANDOFF: Pull request`.
+
+If the current branch already has an open pull request, push to it and give its URL instead of opening another.
+
+If the repository has no GitHub remote, `gh` is not installed or not signed in, or the push is refused, do not work around it. Leave the work committed on the branch, say exactly what failed, and write `None.` with the reason under `## HANDOFF: Pull request`.
+
+Never force-push, merge, or close a pull request.
+
 ---
 
 # 18. IF YOU DISCOVER A PROBLEM DURING IMPLEMENTATION
@@ -705,6 +721,7 @@ The pull request URL, or `None.`
 21. Do not claim something works without verification.
 22. Do not stop merely because implementation is difficult; investigate and solve problems where the requirements are clear.
 23. Prefer the smallest safe implementation that fully satisfies the requirements.
+24. Publish verified work as a draft pull request (section 17). Never force-push, merge, or close a pull request.
 
 ---
 
