@@ -692,6 +692,19 @@ export function installTauriMock(config: MockConfig): void {
   };
   // ---- end Terminal tabs ------------------------------------------------
 
+  // ---- Pipeline terminal (e2e/ui/pipeline-terminal.spec.ts) -------------
+  // state_store.rs apply_terminal_draft keeps a reused tab's chain tag.
+  const roleTerminalStartDefault = defaults.role_terminal_start;
+  defaults.role_terminal_start = (a, s) => {
+    const before = a.input.tabId ? findTab(a.input.tabId) : null;
+    const chain = before && before.phase !== "running" ? clone(before.chain ?? null) : null;
+    const out = roleTerminalStartDefault(a, s);
+    const tab = findTab(out.tabId);
+    if (tab && chain) tab.chain = chain;
+    return out;
+  };
+  // ---- end Pipeline terminal --------------------------------------------
+
   // ---- Eagle-Eye data ---------------------------------------------------
   // Mirrors commands/chain_events.rs: `chain-run-updated` after the same
   // commands, and get_pipeline_run's step-1 `taskType`.

@@ -1,7 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { Platform } from "../keymap";
 import { encodeTerminalPaste } from "../terminal/paste";
-import { padAfterSend, padSelection } from "../scratch/pad";
+import { firstChainStep, padAfterSend, padSelection } from "../scratch/pad";
 import { ScratchPad } from "./ScratchPad";
 
 export type TerminalPadHandle = {
@@ -90,8 +90,10 @@ export const TerminalScratchPad = forwardRef<TerminalPadHandle, Props>(
     const modLabel = platform === "mac" ? "⌘" : "Ctrl";
 
     const deliver = (submit: boolean) => {
-      const sent = padSelection(fieldRef.current);
-      const text = padText(fieldRef.current, content);
+      const selected = padSelection(fieldRef.current);
+      const step = selected ? null : firstChainStep(content);
+      const sent = step?.range ?? selected;
+      const text = step?.text ?? padText(fieldRef.current, content);
       if (!text.trim()) return;
       const before = content;
       const data = encodeTerminalPaste(text, { bracketedPaste: bracketedPaste(), submit });

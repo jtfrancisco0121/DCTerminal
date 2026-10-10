@@ -1,5 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { isReviewerRole, needsRevision, parseReviewVerdict, verdictTone } from "./verdict";
+import {
+  isReviewerRole,
+  needsRevision,
+  parseReviewVerdict,
+  parseTerminalVerdict,
+  verdictTone,
+} from "./verdict";
+
+describe("parseTerminalVerdict", () => {
+  it("reads the newest round in a terminal's scrollback", () => {
+    const tail = "Verdict: REQUIRES REVISION\nfixed it\n## Verdict\nAPPROVED\nanything else";
+    expect(parseTerminalVerdict(tail)).toBe("APPROVED");
+    expect(parseReviewVerdict(tail)).toBe("REQUIRES REVISION");
+    expect(parseTerminalVerdict("rounds later: rejected")).toBe("REJECTED");
+    expect(parseTerminalVerdict("no decision yet")).toBeNull();
+  });
+});
 
 describe("parseReviewVerdict", () => {
   it("reads each verdict, case-insensitive", () => {
