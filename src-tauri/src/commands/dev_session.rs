@@ -26,6 +26,15 @@ pub enum PendingPlan {
     ClaudeExit { reject_option_id: Option<String> },
 }
 
+/// A permission card waiting for JT: which activity row it answers and the
+/// offered options (`(id, kind)`), so the decision can be logged as allow or
+/// reject.
+#[derive(Clone, Debug, Default)]
+pub struct PendingPermission {
+    pub tool_call_id: String,
+    pub options: Vec<(String, String)>,
+}
+
 pub fn wrap_client(client: AcpClient) -> SharedAcpClient {
     Arc::new(Mutex::new(client))
 }
@@ -43,7 +52,7 @@ pub struct LiveSession {
     pub cancel: Arc<AtomicBool>,
     pub outbox: Arc<Mutex<Vec<(u64, Value)>>>,
     pub followups: ClientFollowups,
-    pub pending_permissions: HashMap<u64, ()>,
+    pub pending_permissions: HashMap<u64, PendingPermission>,
     pub pending_plans: HashMap<u64, PendingPlan>,
     pub pending_questions: HashMap<u64, ()>,
     pub tool_call_cache: ToolCallCache,
@@ -319,6 +328,7 @@ pub fn dev_session_send(
 
 #[tauri::command]
 pub fn dev_session_cancel(
+    app: AppHandle,
     tab_id: Option<String>,
     state: State<Mutex<SessionRegistry>>,
 ) -> Result<(), String> {
@@ -327,19 +337,23 @@ pub fn dev_session_cancel(
     let session = guard
         .get_mut(&tab_id)
         .ok_or_else(|| "no active session".to_string())?;
-    let pending: Vec<u64> = session
-        .pending_permissions
-        .drain()
-        .map(|(id, _)| id)
-        .collect();
+    let pending: Vec<(u64, PendingPermission)> = session.pending_permissions.drain().collect();
     let plans: Vec<u64> = session.pending_plans.drain().map(|(id, _)| id).collect();
     let questions: Vec<u64> = session.pending_questions.drain().map(|(id, _)| id).collect();
     let outbox = Arc::clone(&session.outbox);
     let cancel = Arc::clone(&session.cancel);
     drop(guard);
+    for (_, waiting) in &pending {
+        crate::commands::activity::record_decision(
+            &app,
+            &tab_id,
+            &waiting.tool_call_id,
+            "cancelled",
+        );
+    }
     {
         let mut queue = outbox.lock().map_err(|e| e.to_string())?;
-        for id in pending {
+        for (id, _) in pending {
             queue.push((id, cancelled_permission_result()));
         }
         for id in plans {

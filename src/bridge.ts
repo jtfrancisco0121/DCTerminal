@@ -1433,6 +1433,45 @@ export async function changesRevert(
   return invoke<RevertOutcome>("changes_revert", { tabId, base, files, confirmed });
 }
 
+// --- Agent activity log (app data `activity/<tabId>.jsonl`) ---
+
+export type ActivityKind =
+  | "shell"
+  | "write"
+  | "edit"
+  | "delete"
+  | "fetch"
+  | "mcp"
+  | "read"
+  | "other";
+
+export type ActivityEntry = {
+  /** ACP toolCallId: later updates complete the same row. */
+  id: string;
+  tabId: string;
+  /** RFC 3339, first seen. */
+  time: string;
+  updatedAt: string;
+  kind: ActivityKind | string;
+  title: string;
+  /** Redacted command, path, or URL. */
+  summary: string;
+  /** auto_allow | user_allow | user_reject | cancelled | none */
+  decision: string;
+  network: boolean;
+  /** pending | in_progress | completed | failed */
+  status: string | null;
+};
+
+/** Tool calls the tab's agent made, oldest first. */
+export async function activityList(tabId: string, limit?: number): Promise<ActivityEntry[]> {
+  return invoke<ActivityEntry[]>("activity_list", { tabId, limit: limit ?? null });
+}
+
+export async function activityClear(tabId: string): Promise<void> {
+  return invoke("activity_clear", { tabId });
+}
+
 export type LayoutState = {
   /** "single" | "horizontal" | "vertical" */
   splitMode: string;

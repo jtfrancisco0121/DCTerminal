@@ -47,6 +47,7 @@ use commands::{
     transcript_save,
     validate_and_preview, SessionRegistry,
 };
+use commands::{activity_clear, activity_list};
 use commands::{changes_file_diff, changes_list, changes_revert, changes_snapshot, ChangesRoot};
 use commands::{first_run_complete, first_run_status, provider_status};
 use commands::{storage_cleanup, storage_status};
@@ -69,8 +70,8 @@ use pty::{
 use std::sync::Mutex;
 use store::{
     get_notification_settings, get_ui_settings, set_notification_settings, set_ui_settings,
-    FormsStore, HandoffStore, ProjectsStore, PromptStore, RolesStore, ScratchStore, SettingsStore,
-    StateStore, TranscriptStore, WorkspaceStore,
+    ActivityStore, FormsStore, HandoffStore, ProjectsStore, PromptStore, RolesStore, ScratchStore,
+    SettingsStore, StateStore, TranscriptStore, WorkspaceStore,
 };
 use tauri::Manager;
 
@@ -123,6 +124,7 @@ pub fn run() {
             commands::storage::run_sweep(&data_dir, &mut scratch_store, &known_tabs);
             app.manage(ChangesRoot::open(&data_dir, &known_tabs));
             app.manage(attachments::AttachmentStore::open(&data_dir, &known_tabs));
+            app.manage(Mutex::new(ActivityStore::open(&data_dir, &known_tabs)));
             app.manage(Mutex::new(store));
             app.manage(Mutex::new(state_store));
             app.manage(Mutex::new(forms_store));
@@ -249,6 +251,8 @@ pub fn run() {
             changes_snapshot,
             changes_file_diff,
             changes_revert,
+            activity_list,
+            activity_clear,
             history_search,
             get_layout,
             set_layout,

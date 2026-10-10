@@ -186,6 +186,8 @@ import { ModelPicker } from "./components/ModelPicker";
 import { AgentToasts } from "./components/AgentToasts";
 import { WorktreeDialog, type WorktreeCreateInput } from "./components/WorktreeDialog";
 import { ChangesPanel } from "./components/ChangesPanel";
+import { ActivityPanel } from "./components/ActivityPanel";
+import { ActivityButton } from "./components/ActivityButton";
 import { ChatSearchDialog, type ChatSearchHit } from "./components/ChatSearchDialog";
 import { TranscriptView } from "./components/TranscriptView";
 import { PromptLibraryDialog } from "./components/PromptLibraryDialog";
@@ -393,6 +395,8 @@ export function StartupForm({
   const [worktreeDialogOpen, setWorktreeDialogOpen] = useState(false);
   /** F4: the tab whose changes (diff) panel is open. */
   const [changesTabId, setChangesTabId] = useState<string | null>(null);
+  /** The tab whose agent activity log is open. */
+  const [activityTabId, setActivityTabId] = useState<string | null>(null);
   /** Files changed in each tab's last turn (shown on the Changes button). */
   const [changeCounts, setChangeCounts] = useState<Record<string, number>>({});
   /** acceptKey()s per tab: files the user kept after review. */
@@ -581,6 +585,7 @@ export function StartupForm({
     savedPlan !== null ||
     worktreeDialogOpen ||
     changesTabId !== null ||
+    activityTabId !== null ||
     chatSearchQuery !== null ||
     promptLibraryOpen !== null ||
     workspacesOpen !== null ||
@@ -2331,6 +2336,15 @@ export function StartupForm({
     );
   };
 
+  const activityButton = (tabId: string) => (
+    <ActivityButton
+      tabId={tabId}
+      busy={!!tabStatuses[tabId]?.busy}
+      refreshKey={activityTabId}
+      onOpen={() => setActivityTabId(tabId)}
+    />
+  );
+
   const refreshModelList = useCallback(() => {
     setModelsRefreshing(true);
     return Promise.all([listModels("cursor", true), listModels("claude", false)])
@@ -2486,6 +2500,7 @@ export function StartupForm({
     (match: ShortcutMatch) => {
       if (match.action === "closeDialog") {
         setChangesTabId(null);
+        setActivityTabId(null);
         setChatSearchQuery(null);
         setPromptLibraryOpen(null);
         setWorkspacesOpen(null);
@@ -3376,6 +3391,9 @@ export function StartupForm({
       case "showChanges":
         if (activeTabId) setChangesTabId(activeTabId);
         return;
+      case "showActivity":
+        if (activeTabId) setActivityTabId(activeTabId);
+        return;
       case "newWorktreeTab":
         setWorktreeDialogOpen(true);
         return;
@@ -3613,6 +3631,7 @@ export function StartupForm({
   );
 
   const changesTab = changesTabId ? savedTabs.find((tab) => tab.id === changesTabId) : undefined;
+  const activityTab = activityTabId ? savedTabs.find((tab) => tab.id === activityTabId) : undefined;
 
   /** F8: setup finished: put the role and folder on the active draft tab, then Start. */
   const finishFirstRun = (choice: FirstRunFinish) => {
@@ -3920,6 +3939,16 @@ export function StartupForm({
           }}
         />
       )}
+      {activityTab && (
+        <ActivityPanel
+          key={activityTab.id}
+          tabId={activityTab.id}
+          tabLabel={activityTab.label}
+          busy={!!tabStatuses[activityTab.id]?.busy}
+          terminal={activityTab.kind === "terminal"}
+          onClose={() => setActivityTabId(null)}
+        />
+      )}
       {accountPickerOpen && (
         <div
           className="overlay-backdrop"
@@ -4200,6 +4229,7 @@ export function StartupForm({
               {modelPickerFor(tab, rt.session.model)}
               {effortPickerFor(tab, rt.session)}
               {changesButton(tab.id)}
+              {activityButton(tab.id)}
             </>
           }
         />
@@ -4610,6 +4640,7 @@ export function StartupForm({
               )}
               {terminalModelPicker}
               {activeTabSummary.cwd && changesButton(activeTabSummary.id)}
+              {activeTabSummary.cwd && activityButton(activeTabSummary.id)}
               {isPlanTerminal && (
                 <HandoffActions
                   enabled
@@ -5045,6 +5076,7 @@ export function StartupForm({
                   {modelPickerFor(activeTabSummary, session.model)}
                   {effortPickerFor(activeTabSummary, session)}
                   {activeTabSummary && changesButton(activeTabSummary.id)}
+                  {activeTabSummary && activityButton(activeTabSummary.id)}
                 </>
               }
             />
