@@ -2968,6 +2968,7 @@ export function StartupForm({
       todos: cards.todos,
       selection: handoffSelection,
       turnInFlight: !!promptInFlight,
+      awaitingPlanApproval: !!runtimes[activeTabId ?? ""]?.plan,
       planMarkdown: (runtimes[activeTabId ?? ""]?.plan?.markdown ?? "").trim(),
       branch: activeTabSummary?.worktreeBranch ?? null,
       transcriptText: streamSegments.map((segment) => segment.text).join("\n"),

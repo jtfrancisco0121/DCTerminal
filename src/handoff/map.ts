@@ -74,6 +74,8 @@ export type HandoffSource = {
   todos: HandoffTodo[];
   selection: string;
   turnInFlight: boolean;
+  /** The turn is only waiting for the user to approve its plan, so the plan is final. */
+  awaitingPlanApproval?: boolean;
   /** Set when the source is a terminal-mode role tab (Planner or Plan Reviewer). */
   fromTerminal?: boolean;
   /** Body of the newest plan file written after the terminal started. */
@@ -225,7 +227,7 @@ export function handoffBlockReason(
     if (!hasTerminal) return "There is no plan to send yet.";
     return null;
   }
-  if (source.turnInFlight) {
+  if (source.turnInFlight && !source.awaitingPlanApproval) {
     return `Wait until the ${name} finishes this turn.`;
   }
   if (roleId === "role_implementer") {

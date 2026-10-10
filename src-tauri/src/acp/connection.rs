@@ -6,6 +6,7 @@ use super::request_handler::response_for_agent_request;
 use crate::process_tree::{prepare_command, SharedProcess};
 use crate::provider::{AgentRequestKind, CursorProvider, ProgramArgs, SharedProvider};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::io::{BufReader, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -82,6 +83,8 @@ pub struct AcpConnection {
     stderr_tail: Arc<Mutex<Vec<String>>>,
     /// Sorts agent requests (permission / plan / question / extension).
     provider: SharedProvider,
+    /// Agent requests handed to the user and not answered yet.
+    awaiting_user: HashSet<u64>,
 }
 
 impl AcpConnection {
@@ -187,6 +190,7 @@ impl AcpConnection {
             lines: rx,
             stderr_tail,
             provider,
+            awaiting_user: HashSet::new(),
         })
     }
 
@@ -238,6 +242,7 @@ impl AcpConnection {
             .drain(..)
             .collect();
         for (id, result) in pending {
+            self.awaiting_user.remove(&id);
             self.respond_result(id, result)?;
         }
         Ok(())
@@ -264,8 +269,11 @@ impl AcpConnection {
                         | AgentRequestKind::Question
                 ) {
                     if let Some(handler) = &mut dispatch.on_agent_request {
-                        if let Some(result) = handler(value)? {
-                            self.respond_result(req_id, result)?;
+                        match handler(value)? {
+                            Some(result) => self.respond_result(req_id, result)?,
+                            None => {
+                                self.awaiting_user.insert(req_id);
+                            }
                         }
                     } else {
                         let result = response_for_agent_request(value);
@@ -310,10 +318,15 @@ impl AcpConnection {
         mut turn: Option<&mut TurnControl<'_>>,
     ) -> Result<Value, String> {
         self.request(id, method, params)?;
-        let deadline = Instant::now() + timeout;
+        // A turn's limit counts silence, not length, and pauses while the user owes an answer.
+        let idle_limit = turn.is_some();
+        let mut deadline = Instant::now() + timeout;
         let mut consecutive_bad = 0u32;
         let mut cancel_deadline: Option<Instant> = None;
         while Instant::now() < deadline {
+            if idle_limit && !self.awaiting_user.is_empty() {
+                deadline = Instant::now() + timeout;
+            }
             if let Some(ctrl) = turn.as_deref_mut() {
                 if let Some(outbox) = ctrl.outbox.clone() {
                     self.flush_agent_response_outbox(&outbox)?;
@@ -367,31 +380,36 @@ impl AcpConnection {
                     }
                     continue;
                 }
-                Ok(ReaderMsg::Line(line)) => match parse_acp_line(&line) {
-                    ParsedLine::Empty => continue,
-                    ParsedLine::Malformed(msg) => {
-                        consecutive_bad += 1;
-                        if consecutive_bad >= consecutive_malformed_limit() {
-                            return Err(format!(
-                                "agent stdout sent too many oversized or malformed lines ({msg})"
-                            ));
-                        }
-                        continue;
+                Ok(ReaderMsg::Line(line)) => {
+                    if idle_limit {
+                        deadline = Instant::now() + timeout;
                     }
-                    ParsedLine::Value(value) => {
-                        consecutive_bad = 0;
-                        if value.get("method").is_some() {
-                            self.handle_incoming_line(&value, dispatch)?;
+                    match parse_acp_line(&line) {
+                        ParsedLine::Empty => continue,
+                        ParsedLine::Malformed(msg) => {
+                            consecutive_bad += 1;
+                            if consecutive_bad >= consecutive_malformed_limit() {
+                                return Err(format!(
+                                    "agent stdout sent too many oversized or malformed lines ({msg})"
+                                ));
+                            }
                             continue;
                         }
-                        if value.get("id").and_then(|v| v.as_u64()) == Some(id) {
-                            if let Some(err) = value.get("error") {
-                                return Err(err.to_string());
+                        ParsedLine::Value(value) => {
+                            consecutive_bad = 0;
+                            if value.get("method").is_some() {
+                                self.handle_incoming_line(&value, dispatch)?;
+                                continue;
                             }
-                            return Ok(value.get("result").cloned().unwrap_or(Value::Null));
+                            if value.get("id").and_then(|v| v.as_u64()) == Some(id) {
+                                if let Some(err) = value.get("error") {
+                                    return Err(err.to_string());
+                                }
+                                return Ok(value.get("result").cloned().unwrap_or(Value::Null));
+                            }
                         }
                     }
-                },
+                }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if remaining <= Duration::from_millis(50) && cancel_deadline.is_none() {
                         return Err(format!("timeout waiting for response id={id}"));
@@ -499,5 +517,74 @@ mod exit_error_tests {
         assert!(msg.contains("Cursor agent process"));
         assert!(msg.contains("agent login"));
         assert!(exit_error_text(false, None, "unauthorized").starts_with("AUTH_ERROR:"));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod turn_timeout_tests {
+    use super::{AcpConnection, LineDispatch, TurnControl};
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+    use std::sync::atomic::AtomicBool;
+    use std::time::Duration;
+
+    fn fake_agent(name: &str, body: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("dct-turn-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("agent");
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    fn run_turn(agent: &PathBuf, timeout: Duration, dispatch: &mut LineDispatch) -> Result<serde_json::Value, String> {
+        let mut conn = AcpConnection::spawn(agent, None).unwrap();
+        let cancel = AtomicBool::new(false);
+        let mut next_id = 100;
+        let mut turn = TurnControl {
+            cancel: &cancel,
+            session_id: "s1",
+            next_id: &mut next_id,
+            outbox: None,
+            followups: None,
+        };
+        let result = conn.call_with_dispatch(
+            7,
+            "session/prompt",
+            serde_json::json!({}),
+            timeout,
+            dispatch,
+            Some(&mut turn),
+        );
+        conn.kill();
+        result
+    }
+
+    const UPDATE: &str = r#"echo '{"jsonrpc":"2.0","method":"session/update","params":{}}'"#;
+    const DONE: &str = r#"echo '{"jsonrpc":"2.0","id":7,"result":{"stopReason":"end_turn"}}'"#;
+
+    #[test]
+    fn a_busy_turn_outlives_the_limit() {
+        let body = format!("for i in 1 2 3 4 5 6; do {UPDATE}; sleep 0.4; done\n{DONE}\nsleep 5");
+        let agent = fake_agent("busy", &body);
+        let result = run_turn(&agent, Duration::from_millis(1500), &mut LineDispatch::new());
+        assert_eq!(result.unwrap()["stopReason"], "end_turn");
+    }
+
+    #[test]
+    fn a_turn_waiting_on_the_user_does_not_time_out() {
+        let ask = r#"echo '{"jsonrpc":"2.0","id":50,"method":"session/request_permission","params":{"sessionId":"s1","toolCall":{},"options":[]}}'"#;
+        let agent = fake_agent("ask", &format!("{ask}\nsleep 2.5\n{DONE}\nsleep 5"));
+        let mut dispatch = LineDispatch::new();
+        dispatch.set_on_agent_request(Box::new(|_| Ok(None)));
+        let result = run_turn(&agent, Duration::from_millis(1000), &mut dispatch);
+        assert_eq!(result.unwrap()["stopReason"], "end_turn");
+    }
+
+    #[test]
+    fn a_silent_turn_still_times_out() {
+        let agent = fake_agent("silent", &format!("sleep 2\n{DONE}\nsleep 5"));
+        let result = run_turn(&agent, Duration::from_millis(400), &mut LineDispatch::new());
+        assert!(result.unwrap_err().contains("timeout waiting for response id=7"));
     }
 }

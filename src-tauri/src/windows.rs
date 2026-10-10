@@ -74,7 +74,22 @@ pub fn install_macos_menu(app: &tauri::App) -> tauri::Result<()> {
         let file = Submenu::with_items(app, "File", true, &[&new_window])?;
         let quit = PredefinedMenuItem::quit(app, None)?;
         let app_menu = Submenu::with_items(app, "DCTerminal", true, &[&quit])?;
-        let menu = Menu::with_items(app, &[&app_menu, &file])?;
+        // Without these, Cmd+C/V/X/A/Z never reach text fields on macOS.
+        let edit = Submenu::with_items(
+            app,
+            "Edit",
+            true,
+            &[
+                &PredefinedMenuItem::undo(app, None)?,
+                &PredefinedMenuItem::redo(app, None)?,
+                &PredefinedMenuItem::separator(app)?,
+                &PredefinedMenuItem::cut(app, None)?,
+                &PredefinedMenuItem::copy(app, None)?,
+                &PredefinedMenuItem::paste(app, None)?,
+                &PredefinedMenuItem::select_all(app, None)?,
+            ],
+        )?;
+        let menu = Menu::with_items(app, &[&app_menu, &file, &edit])?;
         app.set_menu(menu)?;
         app.on_menu_event(|app, event| {
             if event.id().as_ref() == "new-window" {

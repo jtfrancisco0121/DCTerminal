@@ -224,6 +224,9 @@ describe("handoff mapping", () => {
 
   it("refuses a hand-off while the turn is still streaming or the tab is not a Planner", () => {
     expect(handoffBlockReason(source({ turnInFlight: true }))).toMatch(/finishes this turn/);
+    expect(
+      handoffBlockReason(source({ turnInFlight: true, awaitingPlanApproval: true })),
+    ).toBeNull();
     expect(handoffBlockReason(source({ sourceRoleId: "role_general" }))).toMatch(/no hand-off/);
     expect(
       handoffBlockReason(
