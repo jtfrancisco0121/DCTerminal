@@ -939,3 +939,116 @@ fn activity_log_records_tool_calls_and_permission_decisions() {
     assert_eq!(rm.status.as_deref(), Some("failed"));
     assert_eq!(rm.decision, "auto_allow");
 }
+
+// ---------- resume, odd plans, unknown extensions ----------
+
+#[test]
+fn session_load_resumes_the_same_id_returns_the_replay_and_then_prompts() {
+    let mut scenario = cursor_scenario(json!([[{ "say": "after resume" }]]));
+    scenario["session_id"] = json!("resumed-42");
+    scenario["load_replay"] = json!([
+        { "sessionUpdate": "user_message_chunk", "content": { "type": "text", "text": "earlier question" } },
+        { "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": "earlier answer" } }
+    ]);
+    let agent = fake!("load-resume", scenario);
+    let (client, replay, via) = AcpClient::load_with_model(
+        agent.provider(ProviderId::Cursor),
+        &agent.work_dir(),
+        "agent",
+        "resumed-42",
+        None,
+        false,
+    )
+    .expect("session/load");
+    assert_eq!(client.session_id(), "resumed-42");
+    assert_eq!(via, ModelVia::Unchanged);
+    assert_eq!(replay.len(), 2, "{replay:?}");
+    assert!(replay.iter().any(|n| is_text(n, "earlier answer")));
+    assert!(
+        agent.sent("session/new").is_empty(),
+        "a resume never opens a new session"
+    );
+    let load = agent.sent("session/load");
+    assert_eq!(load.len(), 1);
+    assert_eq!(load[0]["sessionId"], "resumed-42");
+
+    let (client, result, _, _) = start(client, "role_developer", "next", vec![]).finish();
+    kill(&client);
+    assert_eq!(result.unwrap().agent_text, "after resume");
+    assert_eq!(agent.sent("session/prompt")[0]["sessionId"], "resumed-42");
+}
+
+#[test]
+fn session_load_is_refused_before_sending_when_the_agent_cannot_load() {
+    let mut scenario = cursor_scenario(json!([]));
+    scenario["initialize"] =
+        json!({ "protocolVersion": 1, "agentCapabilities": { "loadSession": false } });
+    let agent = fake!("load-unsupported", scenario);
+    let err = AcpClient::load_with_model(
+        agent.provider(ProviderId::Cursor),
+        &agent.work_dir(),
+        "agent",
+        "old-session",
+        None,
+        false,
+    )
+    .err()
+    .expect("refused");
+    assert!(err.starts_with("LOAD_UNSUPPORTED"), "{err}");
+    assert!(agent.sent("session/load").is_empty());
+}
+
+#[test]
+fn cursor_plans_with_unusual_shapes_still_reach_the_card() {
+    let plans = json!([[
+        { "id": 140, "request": { "method": "cursor/create_plan", "params": {} } },
+        { "id": 141, "request": { "method": "cursor/create_plan",
+            "params": { "plan": "# Just markdown", "entries": "not a list", "title": 7 } } },
+        { "id": 142, "request": { "method": "cursor/create_plan", "params": null } }
+    ]]);
+    let agent = fake!("cursor-odd-plans", cursor_scenario(plans));
+    let client = connect(&agent, ProviderId::Cursor, "plan");
+    let run = start(client, "role_planner", "plan", vec![]);
+    for id in [140u64, 141, 142] {
+        let (request, routed) = run.next_ask();
+        assert_eq!((request["id"].as_u64(), routed), (Some(id), None));
+        run.answer(id, plan_response(&PendingPlan::Cursor, "accepted"));
+    }
+    let (client, result, _, _) = run.finish();
+    kill(&client);
+    let text = result.unwrap().agent_text;
+    for id in [140, 141, 142] {
+        assert_eq!(reply(&text, id), json!({ "outcome": "accepted" }));
+    }
+}
+
+#[test]
+fn unknown_extension_methods_and_updates_do_not_stall_a_turn() {
+    let steps = json!([
+        { "id": 130, "request": { "method": "_vendor/telemetry", "params": { "x": 1 } } },
+        { "id": 131, "request": { "method": "weird/thing" } },
+        { "raw": { "jsonrpc": "2.0", "method": "_vendor/notice", "params": { "hello": true } } },
+        { "update": { "sessionUpdate": "some_future_update", "payload": [1, 2, 3] } },
+        { "say": "still here" }
+    ]);
+    let agent = fake!("unknown-ext", claude_scenario(json!([steps])));
+    let client = connect(&agent, ProviderId::Claude, "default");
+    let (client, result, _, asks) = start(client, "role_implementer", "go", vec![]).finish();
+    kill(&client);
+    let result = result.unwrap();
+    assert_eq!(result.stop_reason.as_deref(), Some("end_turn"));
+    assert!(
+        result.agent_text.ends_with("still here"),
+        "{}",
+        result.agent_text
+    );
+    // `_`-prefixed extensions are answered by the connection itself; other
+    // unknown methods go through the router, which answers at once.
+    let routed: Vec<_> = asks.iter().map(|(r, a)| (r["method"].clone(), a.clone())).collect();
+    assert_eq!(routed, vec![(json!("weird/thing"), Some(json!({})))]);
+    assert_eq!(
+        reply(&result.agent_text, 130),
+        json!({ "outcome": "cancelled" })
+    );
+    assert_eq!(reply(&result.agent_text, 131), json!({}));
+}

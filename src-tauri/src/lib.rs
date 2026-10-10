@@ -24,6 +24,10 @@ pub mod turn_changes;
 mod usage;
 mod windows;
 pub mod worktree;
+#[cfg(test)]
+mod coverage_tests;
+#[cfg(test)]
+pub(crate) mod test_support;
 
 use acp::{probe_acp, probe_acp_handshake};
 use cli_detect::{cli_login_status, detect_cli};

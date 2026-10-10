@@ -9,6 +9,8 @@ handled, so a test can assert exactly what the client sent.
 Scenario keys (all optional):
   initialize        result for `initialize`
   session_new       result for `session/new` / `session/load` (sessionId is set)
+  load_replay       session/update bodies sent before the `session/load` result
+                    (the history an agent replays when a session is resumed)
   session_id        session id (default "fake-session-1")
   set_model         true: `session/set_model` succeeds (default: method not found)
   prompts           list of turns; each turn is a list of steps, used in order
@@ -198,6 +200,9 @@ def main():
         elif method == "authenticate":
             send({"jsonrpc": "2.0", "id": mid, "result": {}})
         elif method in ("session/new", "session/load"):
+            if method == "session/load":
+                for body in scenario.get("load_replay", []):
+                    update(body)
             send({"jsonrpc": "2.0", "id": mid, "result": session_result})
         elif method == "session/set_mode":
             send({"jsonrpc": "2.0", "id": mid, "result": {}})
