@@ -152,7 +152,6 @@ import { runTranscriptExport } from "./export/runTranscriptExport";
 import { FolderPicker } from "./components/FolderPicker";
 import { LogDrawer } from "./components/LogDrawer";
 import { SettingsPage } from "./components/SettingsPage";
-import { pushComposerHistory } from "./composer/history";
 import { StatusBar, type StatusMessage, type StatusTone } from "./components/StatusBar";
 import { summarizeSessionActivity } from "./sessionActivity";
 import { folderForTab } from "./projectsView";
@@ -173,6 +172,12 @@ import { ShortcutsOverlay } from "./components/ShortcutsOverlay";
 import { SplitPanes } from "./components/SplitPanes";
 import { WorkspaceSplit } from "./components/WorkspaceSplit";
 import { GridSplit } from "./components/GridSplit";
+import {
+  addAccepted,
+  loadAccepted,
+  saveAccepted,
+  type AcceptedChanges,
+} from "./changes/acceptedStore";
 import { FilePanel } from "./components/FilePanel";
 import { ModelPicker } from "./components/ModelPicker";
 import { AgentToasts } from "./components/AgentToasts";
@@ -185,7 +190,7 @@ import { WorkspacesDialog } from "./components/WorkspacesDialog";
 import { FirstRunSetup, type FirstRunFinish } from "./components/FirstRunSetup";
 import { insertIntoPad, type PadSelection } from "./prompts/library";
 import { advanceChain, chainLabel, newChain, nextChainRole } from "./handoff/chains";
-import { contextPercent, statusLimit } from "./usage/limits";
+import { contextPercent, limitAlerts, statusLimit } from "./usage/limits";
 import type { ChatFindRequest } from "./SessionTerminal";
 import { classifyPromptFinished, type NotificationSettings } from "./notify/agentNotify";
 import { showSystemNotification } from "./notify/systemNotify";
@@ -230,6 +235,8 @@ import {
   chainStepToSend,
   chainStop,
   splitChainSteps,
+  padAfterSend,
+  padSelection,
   transferToInput,
   type ChainCursor,
 } from "./scratch/pad";
@@ -383,7 +390,7 @@ export function StartupForm({
   /** Files changed in each tab's last turn (shown on the Changes button). */
   const [changeCounts, setChangeCounts] = useState<Record<string, number>>({});
   /** acceptKey()s per tab: files the user kept after review. */
-  const [acceptedChanges, setAcceptedChanges] = useState<Record<string, string[]>>({});
+  const [acceptedChanges, setAcceptedChanges] = useState<AcceptedChanges>(loadAccepted);
   const [fileFocus, setFileFocus] = useState<{ path: string; nonce: number } | null>(null);
   /** F8: first-run setup is showing. */
   const [firstRunOpen, setFirstRunOpen] = useState(false);
@@ -457,6 +464,8 @@ export function StartupForm({
   const [diagnostics, setDiagnostics] = useState<DiagnosticsStatus | null>(null);
   const [approvalMode, setApprovalMode] = useState<ApprovalModeStatus | null>(null);
   const [usageSnap, setUsageSnap] = useState<Awaited<ReturnType<typeof getClaudeUsage>> | null>(null);
+  /** Limit alerts already shown in this app run (keys from limitAlerts). */
+  const limitAlertedRef = useRef<Set<string>>(new Set());
   const eagleOnRef = useRef(false);
   const [eagleOn, setEagleOn] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -490,7 +499,6 @@ export function StartupForm({
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [cliLaunchNote, setCliLaunchNote] = useState<string | null>(null);
   const [historyCursor, setHistoryCursor] = useState(-1);
-  const [composerHistoryByTab, setComposerHistoryByTab] = useState<Record<string, string[]>>({});
   const [logDrawerOpen, setLogDrawerOpen] = useState(false);
   const [logDrawer, setLogDrawer] = useState({
     stderr: "",
@@ -543,6 +551,11 @@ export function StartupForm({
   const planRequest = activeRuntime.plan;
   const questionRequest = activeRuntime.question;
   const scratch = useScratchPads(activeTabId);
+  /** Latest pad text per tab, for callbacks that finish after a send. */
+  const padTextRef = useRef<Record<string, string>>({});
+  if (activeTabId) padTextRef.current[activeTabId] = scratch.content;
+  /** Up-arrow history, oldest first. The pad keeps the same sends, newest first, on disk. */
+  const composerHistory = useMemo(() => [...scratch.history].reverse(), [scratch.history]);
   const padRef = useRef<HTMLTextAreaElement>(null);
   const terminalPadRef = useRef<TerminalPadHandle>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -1048,6 +1061,11 @@ export function StartupForm({
     }, 300);
     return () => window.clearTimeout(timer);
   }, [split, filePanelOpen, filePanelWidth]);
+
+  // Changes panel "Accepted" marks survive a reload (merged across windows).
+  useEffect(() => {
+    saveAccepted(acceptedChanges);
+  }, [acceptedChanges]);
 
   // One tab is never in both panes. Selecting the second pane's tab swaps.
   useEffect(() => {
@@ -1965,16 +1983,13 @@ export function StartupForm({
   );
 
   const sendText = useCallback(
-    async (tabId: string, text: string) => {
+    async (tabId: string, text: string, onNotSent?: () => void) => {
       const trimmed = text.trim();
       if (!trimmed) return "error" as const;
       const pending = waiterRef.current.expect(tabId);
       setHistoryCursor(-1);
+      // Saved with the tab's pad (scratch.json), so Up-arrow history survives a restart.
       scratch.remember(tabId, trimmed);
-      setComposerHistoryByTab((prev) => ({
-        ...prev,
-        [tabId]: pushComposerHistory(prev[tabId] ?? [], trimmed),
-      }));
       void promptRecordSend(trimmed, "chat").catch(() => {});
       patchRuntime(tabId, (rt) => ({
         ...rt,
@@ -1993,6 +2008,7 @@ export function StartupForm({
           promptError: message,
           promptInFlight: false,
         }));
+        onNotSent?.();
         return "error" as const;
       }
       return pending;
@@ -2030,14 +2046,19 @@ export function StartupForm({
         )
       : "";
     const next = transferToInput(followUp, scratch.content, selected);
+    if (next === followUp) return;
     setFollowUp(next);
+    // The text moved to the input, so it leaves the pad.
+    scratch.setContent(activeTabId, padAfterSend(scratch.content, padSelection(padRef.current)));
     inputRef.current?.focus();
-  }, [activeTabId, followUp, scratch.content]);
+  }, [activeTabId, followUp, scratch]);
 
   const runChain = useCallback(async () => {
     if (!activeTabId || promptInFlight || permissionRequest || questionRequest) return;
     const started = chainStart(scratch.content);
     if (!started) return;
+    const tabId = activeTabId;
+    const padAtStart = scratch.content;
     chainAbortRef.current = false;
     let cursor = started;
     setChain(cursor);
@@ -2060,7 +2081,12 @@ export function StartupForm({
       cursor = chainMarkSettled(cursor, outcome);
       setChain(cursor);
     }
-  }, [activeTabId, permissionRequest, questionRequest, promptInFlight, scratch.content, sendText]);
+    // Every step was sent: empty the pad, unless it was edited meanwhile.
+    // A stopped chain keeps its steps.
+    if (cursor.phase === "done" && padTextRef.current[tabId] === padAtStart) {
+      scratch.setContent(tabId, "");
+    }
+  }, [activeTabId, permissionRequest, questionRequest, promptInFlight, scratch, sendText]);
 
   const sendFromPad = useCallback(() => {
     if (!activeTabId) return;
@@ -2072,10 +2098,17 @@ export function StartupForm({
       void sendFollowUp();
       return;
     }
-    if (scratch.content.trim()) {
-      void sendText(activeTabId, scratch.content);
+    const text = scratch.content;
+    if (text.trim()) {
+      const tabId = activeTabId;
+      // Sent text leaves the pad (Recent sends keeps it). If it never
+      // reached the agent and the pad is still empty, put it back.
+      scratch.setContent(tabId, "");
+      void sendText(tabId, text, () => {
+        if (!padTextRef.current[tabId]) scratch.setContent(tabId, text);
+      });
     }
-  }, [activeTabId, followUp, runChain, scratch.content, sendFollowUp, sendText]);
+  }, [activeTabId, followUp, runChain, scratch, sendFollowUp, sendText]);
 
   // F8: show first-run setup on a fresh profile only.
   useEffect(() => {
@@ -2614,10 +2647,10 @@ export function StartupForm({
       }));
     }
     const field = padRef.current;
-    let text = scratch.content;
-    if (field && field.selectionStart !== field.selectionEnd) {
-      text = field.value.slice(field.selectionStart, field.selectionEnd);
-    }
+    const sent = padSelection(field);
+    const padBefore = scratch.content;
+    let text = padBefore;
+    if (field && sent) text = field.value.slice(sent.start, sent.end);
     const payload = text.endsWith("\n") ? text : `${text}\n`;
     if (!payload.trim()) return;
     for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -2625,13 +2658,18 @@ export function StartupForm({
         terminalActivity.input(target);
         await ptyWrite(target, payload);
         setTerminalError(null);
+        // Sent to the shell: it leaves the pad and joins Recent sends.
+        void promptRecordSend(text.trim(), "terminal").catch(() => {});
+        if (padTextRef.current[tabId] === padBefore) {
+          scratch.setContent(tabId, padAfterSend(padBefore, sent));
+        }
         return;
       } catch {
         await new Promise((resolve) => window.setTimeout(resolve, 50));
       }
     }
     setTerminalError("The terminal is not ready for input yet.");
-  }, [savedTabs, scratch.content]);
+  }, [savedTabs, scratch]);
 
   const onTerminalAction = useCallback(
     (action: TerminalAction) => {
@@ -2711,7 +2749,14 @@ export function StartupForm({
     const load = () => {
       getClaudeUsage()
         .then((snap) => {
-          if (!cancelled) setUsageSnap(snap);
+          if (cancelled) return;
+          setUsageSnap(snap);
+          // One heads-up per window: near the limit, then again if it is reached.
+          for (const alert of limitAlerts(snap.windows)) {
+            if (limitAlertedRef.current.has(alert.key)) continue;
+            limitAlertedRef.current.add(alert.key);
+            showNotice(alert.title, alert.body, alert.reached ? "failed" : "question");
+          }
         })
         .catch(() => {});
     };
@@ -3815,12 +3860,7 @@ export function StartupForm({
           tabLabel={changesTab.label}
           busy={!!tabStatuses[changesTab.id]?.busy}
           accepted={new Set(acceptedChanges[changesTab.id] ?? [])}
-          onAccept={(key) =>
-            setAcceptedChanges((prev) => ({
-              ...prev,
-              [changesTab.id]: [...(prev[changesTab.id] ?? []), key],
-            }))
-          }
+          onAccept={(key) => setAcceptedChanges((prev) => addAccepted(prev, changesTab.id, key))}
           onOpenInFilePanel={(path) => {
             setChangesTabId(null);
             if (changesTab.id !== activeTabId) void handleSelectTab(changesTab.id);
@@ -4928,7 +4968,7 @@ export function StartupForm({
               agentExited={activeRuntime.agentExited}
               onRestart={stopSession}
               inputRef={inputRef}
-              history={activeTabId ? composerHistoryByTab[activeTabId] ?? [] : []}
+              history={composerHistory}
               historyCursor={historyCursor}
               onHistoryCursor={setHistoryCursor}
               handoff={handoffOffer}
@@ -5167,7 +5207,9 @@ export function StartupForm({
                 {transcriptSaveError && (
                   <p className="error">Could not save the transcript: {transcriptSaveError}</p>
                 )}
-                {!cliFound && <p className="error">Cursor CLI was not found.</p>}
+                {activeProvider === "cursor" && !cliFound && (
+                  <p className="error">Cursor CLI was not found.</p>
+                )}
               </div>
               {historyFolder && !launchChoice && (
                 <aside className="start-history">

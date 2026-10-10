@@ -244,6 +244,7 @@ import {
   historySearch,
   promptLibraryGet,
   promptMarkUsed,
+  devSessionSend,
   promptRecordSend,
   promptSave,
   reopenClosedTab,
@@ -493,6 +494,63 @@ describe("blank tab card", () => {
         false,
         null,
       ),
+    );
+  });
+
+  it("empties the chat scratch pad after a send or a transfer, and restores it when a send fails", async () => {
+    vi.mocked(roleSessionStart).mockReset();
+    vi.mocked(roleSessionStart).mockResolvedValue({
+      errors: [],
+      session: { sessionId: "sess_pad", modeId: "agent", cwd: tab.cwd },
+      mergedChars: 10,
+      injectionStrategy: "send_on_start",
+      startupInjected: true,
+      injectionInFlight: false,
+      tabId: "tab_dev",
+      resumedSession: false,
+      skippedStartupInjection: false,
+      folderWarning: null,
+      loadedViaSessionLoad: false,
+      replayMessageCount: 0,
+      replayTruncated: false,
+      replay: [],
+    } as never);
+    vi.mocked(devSessionSend).mockReset();
+    vi.mocked(devSessionSend).mockResolvedValue({ dispatched: true } as never);
+    vi.mocked(promptRecordSend).mockClear();
+    render(
+      <StartupForm
+        roles={[
+          { id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 },
+        ]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+    await screen.findByLabelText("Title");
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    const pad = (await screen.findByLabelText("Scratch pad editor")) as HTMLTextAreaElement;
+    const padBox = pad.closest(".scratch-pad") as HTMLElement;
+
+    fireEvent.change(pad, { target: { value: "Explain the auth flow" } });
+    fireEvent.click(within(padBox).getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(devSessionSend).toHaveBeenCalledWith("Explain the auth flow", "tab_dev"));
+    expect(promptRecordSend).toHaveBeenCalledWith("Explain the auth flow", "chat");
+    await waitFor(() => expect(pad.value).toBe(""));
+
+    // A send that never reaches the agent puts the text back.
+    vi.mocked(devSessionSend).mockRejectedValueOnce(new Error("agent exited"));
+    fireEvent.change(pad, { target: { value: "Try again" } });
+    fireEvent.click(within(padBox).getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(pad.value).toBe("Try again"));
+
+    // Transfer moves the text into the input.
+    fireEvent.click(within(padBox).getByRole("button", { name: "Transfer" }));
+    await waitFor(() => expect(pad.value).toBe(""));
+    expect((screen.getByRole("textbox", { name: "Follow-up message" }) as HTMLTextAreaElement).value).toBe(
+      "Try again",
     );
   });
 
@@ -1265,7 +1323,11 @@ describe("prompt library (F6)", () => {
     expect(promptMarkUsed).toHaveBeenCalledWith("p_review");
 
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
-    expect(promptRecordSend).toHaveBeenCalledWith("draft notes\n\nReview the diff.", "terminal");
+    await waitFor(() =>
+      expect(promptRecordSend).toHaveBeenCalledWith("draft notes\n\nReview the diff.", "terminal"),
+    );
+    // Sent text leaves the pad; Recent sends keeps it.
+    await waitFor(() => expect(editor.value).toBe(""));
   });
 
   it("saves the scratch pad as a named prompt from the palette", async () => {

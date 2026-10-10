@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  padAfterSend,
   chainMarkBlocked,
   chainMarkSent,
   chainMarkSettled,
@@ -192,5 +193,30 @@ describe("scratch pad persistence", () => {
     );
     expect(next.pads.tab_1.history).toEqual(["hello"]);
     expect(next.pads.tab_1.content).toBe("draft");
+  });
+});
+
+describe("pad after a send", () => {
+  const range = (pad: string, part: string) => {
+    const start = pad.indexOf(part);
+    return { start, end: start + part.length };
+  };
+
+  it("empties the pad when the whole pad was sent", () => {
+    expect(padAfterSend("Fix the login bug\nthen add tests", null)).toBe("");
+  });
+
+  it("cuts out only the sent selection", () => {
+    const pad = "first\nsecond\nthird";
+    expect(padAfterSend(pad, range(pad, "second"))).toBe("first\nthird");
+    const spaced = "first\n\nsecond\n\nthird";
+    expect(padAfterSend(spaced, range(spaced, "second"))).toBe("first\n\nthird");
+    expect(padAfterSend(spaced, range(spaced, "first"))).toBe("second\n\nthird");
+    expect(padAfterSend(spaced, range(spaced, "third"))).toBe("first\n\nsecond");
+  });
+
+  it("keeps the rest of a line when part of it was sent", () => {
+    const pad = "run the tests now";
+    expect(padAfterSend(pad, range(pad, "the tests "))).toBe("run now");
   });
 });

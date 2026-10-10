@@ -58,6 +58,36 @@ export function transferToInput(
   return `${input.replace(/\s+$/, "")}\n\n${chunk}`;
 }
 
+/** The part of the pad that was sent: the selection when there is one. */
+export type PadRange = { start: number; end: number } | null;
+
+/** The selection of a pad editor, or null when nothing is selected. */
+export function padSelection(field: HTMLTextAreaElement | null): PadRange {
+  if (!field || field.selectionStart === field.selectionEnd) return null;
+  return { start: field.selectionStart, end: field.selectionEnd };
+}
+
+/**
+ * The pad after a send. Sending a selection cuts just that text out
+ * (and the blank line it leaves); sending the whole pad empties it.
+ */
+export function padAfterSend(pad: string, sent: PadRange): string {
+  if (!sent || sent.start >= sent.end) return "";
+  const rawLeft = pad.slice(0, sent.start);
+  const rawRight = pad.slice(sent.end);
+  const wholeLines =
+    rawLeft === "" || rawRight === "" || /\n[ \t]*$/.test(rawLeft) || /^[ \t]*\n/.test(rawRight);
+  // Cut inside a line: just remove the text.
+  if (!wholeLines) return rawLeft + rawRight;
+  const left = rawLeft.replace(/\s+$/, "");
+  const right = rawRight.replace(/^\s+/, "");
+  if (!left) return right;
+  if (!right) return left;
+  // Keep one blank line where there was one, otherwise a plain line break.
+  const blank = /\n[ \t]*\n\s*$/.test(rawLeft) || /^\s*\n[ \t]*\n/.test(rawRight);
+  return `${left}${blank ? "\n\n" : "\n"}${right}`;
+}
+
 /** Split on lines that are only `---` (three or more dashes). */
 export function splitChainSteps(pad: string): string[] {
   const steps: string[] = [];

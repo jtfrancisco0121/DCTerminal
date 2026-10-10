@@ -274,15 +274,45 @@ describe("terminal scratch pad", () => {
 });
 
 describe("terminal scratch pad and the prompt library (F6)", () => {
-  it("reports a submitted send for recent sends, but not a plain paste", async () => {
+  it("records Send and Paste for recent sends and empties the pad after each", async () => {
     const onSent = vi.fn();
+    const onChange = vi.fn();
     const ref = createRef<TerminalPadHandle>();
-    renderPad({ content: "  run the tests  ", onSent }, ref);
+    renderPad({ content: "  run the tests  ", onSent, onChange }, ref);
     fireEvent.click(screen.getByRole("button", { name: "Paste to terminal" }));
-    expect(onSent).not.toHaveBeenCalled();
+    await waitFor(() => expect(onSent).toHaveBeenCalledWith("  run the tests  "));
+    expect(onChange).toHaveBeenLastCalledWith("");
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
-    expect(onSent).toHaveBeenCalledWith("  run the tests  ");
+    await waitFor(() => expect(onSent).toHaveBeenCalledTimes(2));
     expect(ref.current?.field()).toBe(editor());
+  });
+
+  it("sends only the selection and keeps the rest of the pad", async () => {
+    const onChange = vi.fn();
+    const write = vi.fn(async (_ptyId: string, _data: string) => {});
+    renderPad({ content: "keep me\nrun this\nkeep too", onChange, write });
+    const field = editor();
+    field.setSelectionRange(8, 16);
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith("keep me\nkeep too"));
+    expect(write.mock.calls[0][1]).toContain("run this");
+  });
+
+  it("keeps the pad when the write fails", async () => {
+    const onChange = vi.fn();
+    const onSent = vi.fn();
+    renderPad({
+      content: "npm test",
+      onChange,
+      onSent,
+      write: vi.fn(async () => {
+        throw new Error("pty closed");
+      }),
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(onChange).not.toHaveBeenCalled();
+    expect(onSent).not.toHaveBeenCalled();
   });
 
   it("opens the prompt library from the pad", () => {

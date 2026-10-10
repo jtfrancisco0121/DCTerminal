@@ -25,7 +25,7 @@ import { ModelPicker } from "./ModelPicker";
 import { ProvidersSettingsSection } from "./ProvidersSettings";
 import type { ProvidersState } from "../provider/useProviders";
 import type { NotificationSettings } from "../notify/agentNotify";
-import { formatReset, formatSeen, limitTone } from "../usage/limits";
+import { formatReset, formatSeen, isStale, limitTone } from "../usage/limits";
 import { APP_VERSION, rolePermissionSummary } from "../workspaceView";
 
 type Props = {
@@ -476,7 +476,9 @@ export function SettingsPage({
                 <p className="hint">Claude usage not reported yet.</p>
               )}
               {usage?.windows.map((window) => {
-                const pct = window.utilization;
+                // A reading from before the window reset (e.g. saved before a restart) no longer applies.
+                const stale = isStale(window);
+                const pct = stale ? null : window.utilization;
                 const width = pct == null ? 0 : Math.max(0, Math.min(100, pct));
                 const tone = limitTone(window);
                 const reset = formatReset(window.resetsAt);
@@ -488,7 +490,11 @@ export function SettingsPage({
                         {pct == null ? "" : ` ${Math.round(pct)}%`}
                       </span>
                       <span className="hint">
-                        {reset ? `resets ${reset}` : "reset time not reported"}
+                        {stale
+                          ? "reset since this reading"
+                          : reset
+                            ? `resets ${reset}`
+                            : "reset time not reported"}
                         {window.seenAtMs ? ` · ${formatSeen(window.seenAtMs)}` : ""}
                       </span>
                     </div>
