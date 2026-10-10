@@ -73,7 +73,6 @@ import {
   setTabChain,
   startEagleEye,
   roleSessionStart,
-  saveFormDraft,
   selectActiveTab,
   syncActiveTabForm,
   getTerminalSettings,
@@ -173,10 +172,13 @@ import { summarizeSessionActivity } from "./sessionActivity";
 import { folderForTab } from "./projectsView";
 import {
   canContinueStoredSession,
+  clearFormText,
   folderToWrite,
+  formTextOf,
   mergeTabDraft,
   showStartupFields,
   tabFormFromRecord,
+  tabWasStarted,
   tabSurface,
   toggleSettings,
   type TabDraft,
@@ -606,6 +608,13 @@ export function StartupForm({
   const [logBusy, setLogBusy] = useState(false);
   const [chain, setChain] = useState<ChainCursor | null>(null);
   const [resendStartup, setResendStartup] = useState(false);
+  /** Text fields emptied by "Clear form", kept so Undo can put them back. */
+  const [clearedForm, setClearedForm] = useState<{
+    tabId: string;
+    values: Record<string, string>;
+  } | null>(null);
+  /** Answers a started tab last ran with, offered by "Use the previous values". */
+  const previousAnswersRef = useRef<Record<string, Record<string, string>>>({});
   const skipRecallRef = useRef(false);
   const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionActiveRef = useRef(false);
@@ -868,9 +877,11 @@ export function StartupForm({
     // A role switch can still be loading its schema. Skip the write then so
     // another role's keys are not saved under this tab.
     if (!role || role.id !== snap.roleId) return;
+    // A started tab keeps the answers it ran with. Its "Start new session"
+    // draft stays in memory only.
+    if (tabWasStarted(savedTabsRef.current, leaving)) return;
     const payload = answersForRole({ ...snap.values, cwd }, fieldsForForm(role));
     void syncActiveTabForm(leaving, snap.roleId, cwd, payload).catch(() => {});
-    if (cwd) void saveFormDraft(snap.roleId, cwd, payload).catch(() => {});
   }, [captureDraft, role]);
 
   const loadTabIntoForm = useCallback((tab: {
@@ -945,6 +956,18 @@ export function StartupForm({
 
   useEffect(() => {
     sessionActiveRef.current = !!session;
+  }, [session]);
+
+  // Once a tab runs, its "Start new session" form closes. Opening it again
+  // starts empty instead of showing the answers that just ran.
+  useEffect(() => {
+    if (!session) return;
+    setNewSessionOpenState(false);
+    const tabId = activeTabIdRef.current;
+    const current = tabId ? draftsRef.current[tabId] : undefined;
+    if (tabId && current?.newSessionOpen) {
+      draftsRef.current[tabId] = { ...current, newSessionOpen: false };
+    }
   }, [session]);
 
   useEffect(() => {
@@ -1283,13 +1306,16 @@ export function StartupForm({
     const draft = tabId ? draftsRef.current[tabId] : null;
     if (draft && (folderForTab(draft.values.cwd) || draft.transcript.trim())) return;
     const token = ++recallTokenRef.current;
+    // Only the role's last folder is recalled. Text and choice fields start
+    // empty; old prompts must not pre-fill a new tab or a role pick.
     getFormRecall(roleId)
       .then((recall) => {
         if (token !== recallTokenRef.current) return;
         if (activeTabIdRef.current !== tabId) return;
         setValues((prev) => {
           const cwd = folderForTab(prev.cwd) || folderForTab(recall.cwd);
-          const next = { ...recall.values, cwd };
+          if (cwd === (prev.cwd ?? "")) return prev;
+          const next = { ...prev, cwd };
           if (tabId) {
             const current = draftsRef.current[tabId];
             if (current) draftsRef.current[tabId] = { ...current, values: next };
@@ -1415,6 +1441,9 @@ export function StartupForm({
       setValues((prev) => (folderForTab(prev.cwd) ? prev : { ...prev, cwd }));
     }
     if (draftTimerRef.current) clearTimeout(draftTimerRef.current);
+    // Only an unsent tab saves its form. A started tab keeps the answers it
+    // ran with, so its "Start new session" text is never written back.
+    if (tabWasStarted(savedTabsRef.current, tabId)) return;
     draftTimerRef.current = setTimeout(() => {
       if (activeTabIdRef.current !== tabId) return;
       const writeCwd = folderToWrite(
@@ -1425,11 +1454,7 @@ export function StartupForm({
         { ...(draftsRef.current[tabId]?.values ?? formValues), cwd: writeCwd },
         fieldsForForm(role),
       );
-      // A failed draft save must not skip the tab update, and a non-promise
-      // result must not throw out of this timer.
-      if (writeCwd) {
-        void Promise.resolve(saveFormDraft(roleId, writeCwd, payload)).catch(() => {});
-      }
+      // A non-promise result must not throw out of this timer.
       void Promise.resolve(syncActiveTabForm(tabId, roleId, writeCwd, payload))
         .then(() => {
           if (activeTabIdRef.current === tabId) void refreshTabs();
@@ -1946,8 +1971,9 @@ export function StartupForm({
           if (tab.kind === "terminal") setActiveTabId(tab.id);
           else loadTabIntoForm(tab);
         } else if (!snap.activeTabId) {
+          // Folder only: the closed tab's text must not carry over.
           const recall = await getFormRecall(roleId);
-          setValues({ ...recall.values, cwd: folderForTab(recall.cwd) });
+          setValues({ cwd: folderForTab(recall.cwd) });
           setSavedTranscript("");
           setPickedRoleId(null);
           setActiveTabId(null);
@@ -3934,6 +3960,7 @@ export function StartupForm({
   const setFollowUp = (value: string) => setFollowUpFor(activeTabId, value);
 
   const setField = (key: string, value: string) => {
+    setClearedForm(null);
     setValues((prev) => {
       const next = { ...prev, [key]: value };
       const tabId = activeTabIdRef.current;
@@ -3949,13 +3976,61 @@ export function StartupForm({
     if (tabId) previewsRef.current[tabId] = null;
   };
 
+  /** Replace the whole form (this tab's draft too) and drop a stale preview. */
+  const replaceFormValues = (next: Record<string, string>) => {
+    setValues(next);
+    const tabId = activeTabIdRef.current;
+    if (tabId) {
+      const current = draftsRef.current[tabId] ?? captureDraft();
+      draftsRef.current[tabId] = { ...current, values: next };
+      previewsRef.current[tabId] = null;
+    }
+    setPreview(null);
+  };
+
   const openNewSessionForm = () => {
+    const tabId = activeTabIdRef.current;
+    if (newSessionOpenRef.current) return;
     setNewSessionOpenState(true);
     setResendStartup(true);
+    if (!tabId) return;
+    // The new session starts with empty fields. The answers the tab last ran
+    // with stay one click away ("Use the previous values").
+    const current = draftsRef.current[tabId] ?? captureDraft();
+    const previous = formTextOf(current.values);
+    if (Object.keys(previous).length > 0) previousAnswersRef.current[tabId] = previous;
+    const cleared = clearFormText(current.values);
+    draftsRef.current[tabId] = {
+      ...current,
+      values: cleared,
+      newSessionOpen: true,
+      resendStartup: true,
+    };
+    setValues(cleared);
+    setClearedForm(null);
+  };
+
+  const fillPreviousValues = () => {
+    const tabId = activeTabIdRef.current;
+    const previous = tabId ? previousAnswersRef.current[tabId] : undefined;
+    if (!previous) return;
+    replaceFormValues({ ...previous, cwd: valuesRef.current.cwd ?? "" });
+    setClearedForm(null);
+  };
+
+  const clearForm = () => {
     const tabId = activeTabIdRef.current;
     if (!tabId) return;
-    const current = draftsRef.current[tabId] ?? captureDraft();
-    draftsRef.current[tabId] = { ...current, newSessionOpen: true, resendStartup: true };
+    const text = formTextOf(valuesRef.current);
+    if (Object.keys(text).length === 0) return;
+    setClearedForm({ tabId, values: text });
+    replaceFormValues(clearFormText(valuesRef.current));
+  };
+
+  const undoClearForm = () => {
+    if (!clearedForm || clearedForm.tabId !== activeTabIdRef.current) return;
+    replaceFormValues({ ...clearedForm.values, cwd: valuesRef.current.cwd ?? "" });
+    setClearedForm(null);
   };
 
   useEffect(() => {
@@ -5489,8 +5564,46 @@ export function StartupForm({
     </button>
   );
 
+  const previousAnswers = activeTabId ? previousAnswersRef.current[activeTabId] : undefined;
+  const formHasText = Object.keys(formTextOf(values)).length > 0;
+  const undoClear = clearedForm && clearedForm.tabId === activeTabId ? clearedForm : null;
+  const formTools = showFields && (
+    <div className="button-row form-tools" role="group" aria-label="Form tools">
+      {surface === "restore" && newSessionOpen && previousAnswers && (
+        <button
+          type="button"
+          className="link-button"
+          onClick={fillPreviousValues}
+          disabled={busy}
+          title="Fill the fields with what this tab last started with"
+        >
+          Use the previous values
+        </button>
+      )}
+      {undoClear ? (
+        <span className="hint" role="status">
+          Form cleared.{" "}
+          <button type="button" className="link-button" onClick={undoClearForm} disabled={busy}>
+            Undo
+          </button>
+        </span>
+      ) : (
+        <button
+          type="button"
+          className="link-button"
+          onClick={clearForm}
+          disabled={busy || !formHasText}
+          title="Empty the text fields. The folder stays."
+        >
+          Clear form
+        </button>
+      )}
+    </div>
+  );
+
   const idleActions = showFields && (
     <>
+      {formTools}
       {surface === "restore" && (
         <label className="field-label continue-option">
           <input

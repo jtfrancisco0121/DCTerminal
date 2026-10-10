@@ -258,6 +258,8 @@ import {
   filesRead,
   closeTab,
   getAppState,
+  getFormRecall,
+  getTab,
   gitRepoInfo,
   historySearch,
   promptLibraryGet,
@@ -1961,5 +1963,212 @@ describe("command palette (F9)", () => {
     palette = await openPalette();
     fireEvent.click(within(palette).getByRole("button", { name: /^Hand off plan…/ }));
     expect(await screen.findByText(/Open a Planner or Plan Reviewer chat or terminal/)).toBeTruthy();
+  });
+});
+
+describe("start form recall", () => {
+  const folder = "/work/app";
+  const summary = (id: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    label: "Developer",
+    roleId: "role_developer",
+    cwd: folder,
+    phase: "draft",
+    mergedPromptChars: 0,
+    startupPromptSent: false,
+    hasTranscript: false,
+    folderStatus: "ok",
+    color: "#3fb950",
+    kind: "role",
+    terminalLaunch: "",
+    acpSessionId: null,
+    ...extra,
+  });
+  const record = (id: string, extra: Record<string, unknown> = {}) => ({
+    ...tab,
+    id,
+    cwd: folder,
+    answers: { cwd: folder } as Record<string, string>,
+    ...extra,
+  });
+  // A started tab: it ran with these answers and can be continued.
+  const startedSummary = summary("tab_ran", {
+    phase: "awaitingInput",
+    acpSessionId: "s1",
+    startupPromptSent: true,
+  });
+  const startedRecord = record("tab_ran", {
+    phase: "awaitingInput",
+    startupPromptSent: true,
+    answers: { cwd: folder, title: "Old title", request: "Old request" },
+  });
+  // What an older forms.json recall returned: prompt text as well.
+  const oldRecall = {
+    cwd: folder,
+    values: { cwd: folder, title: "Old title", request: "Old request", taskType: "Feature" },
+  };
+  const planner = {
+    ...developer,
+    id: "role_planner",
+    name: "Planner",
+    fields: [
+      { key: "taskType", label: "Task Type", type: "select", required: false, options: ["Feature", "Bug"] },
+      { key: "title", label: "Title", type: "text", required: false },
+      { key: "request", label: "What to work on", type: "multiline", required: false },
+    ],
+  };
+  const roles = [
+    { id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 },
+    { id: "role_planner", name: "Planner", defaultMode: "agent", color: "#58a6ff", fieldCount: 3 },
+  ];
+  const renderRecall = () =>
+    render(
+      <StartupForm
+        roles={roles}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+  const fieldValue = (label: string) =>
+    (screen.getByLabelText(label) as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement).value;
+  const appState = (tabs: unknown[], activeTabId: string) =>
+    ({ activeTabId, tabs, closedTabs: [] }) as never;
+
+  beforeEach(() => {
+    vi.mocked(getRole).mockImplementation(async (id: string) =>
+      id === "role_planner" ? (planner as never) : developer,
+    );
+    vi.mocked(getFormRecall).mockResolvedValue(oldRecall);
+    vi.mocked(syncActiveTabForm).mockClear();
+    vi.mocked(selectActiveTab).mockReset();
+    vi.mocked(listCursorCliHistory).mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    vi.mocked(getFormRecall).mockResolvedValue({ cwd: "", values: {} });
+    vi.mocked(newDraftTab).mockReset();
+    vi.mocked(getTab).mockReset();
+  });
+
+  it("opens a new tab after a started one with empty fields, and a role pick recalls only the folder", async () => {
+    vi.mocked(getAppState).mockResolvedValue(appState([startedSummary], "tab_ran"));
+    vi.mocked(selectActiveTab).mockResolvedValue({ tab: startedRecord } as never);
+    renderRecall();
+    await screen.findByRole("button", { name: "Start new session" });
+
+    const blank = record("tab_new", { cwd: "", answers: { cwd: "" } });
+    vi.mocked(newDraftTab).mockResolvedValue({ tab: blank } as never);
+    vi.mocked(getTab).mockResolvedValue({ tab: blank } as never);
+    vi.mocked(getAppState).mockResolvedValue(
+      appState([startedSummary, summary("tab_new", { cwd: "" })], "tab_new"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "New tab" }));
+    await waitFor(() => expect(getTab).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Start new session" })).toBeNull());
+    expect(screen.queryByLabelText("Title")).toBeNull();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Planner" }));
+    await screen.findByLabelText("Title");
+    await waitFor(() => expect(getFormRecall).toHaveBeenCalledWith("role_planner"));
+    expect(fieldValue("Title")).toBe("");
+    expect(fieldValue("What to work on")).toBe("");
+    expect(fieldValue("Task Type")).toBe("");
+    expect(document.querySelector(`.folder-picker-chosen[title="${folder}"]`)).toBeTruthy();
+  });
+
+  it("picks a role on a blank tab without recalling old text or choices", async () => {
+    const blank = record("tab_blank", { cwd: "", answers: { cwd: "" } });
+    vi.mocked(getAppState).mockResolvedValue(appState([summary("tab_blank", { cwd: "" })], "tab_blank"));
+    vi.mocked(selectActiveTab).mockResolvedValue({ tab: blank } as never);
+    renderRecall();
+    fireEvent.click(await screen.findByRole("button", { name: "Planner" }));
+    await screen.findByLabelText("Task Type");
+    await waitFor(() => expect(getFormRecall).toHaveBeenCalledWith("role_planner"));
+    expect(fieldValue("Task Type")).toBe("");
+    expect(fieldValue("Title")).toBe("");
+    expect(fieldValue("What to work on")).toBe("");
+  });
+
+  it("keeps an unsent draft when switching tabs and back", async () => {
+    const records: Record<string, ReturnType<typeof record>> = {
+      tab_a: record("tab_a"),
+      tab_b: record("tab_b"),
+    };
+    vi.mocked(getAppState).mockResolvedValue(
+      appState([summary("tab_a", { label: "Tab A" }), summary("tab_b", { label: "Tab B" })], "tab_a"),
+    );
+    vi.mocked(selectActiveTab).mockImplementation(async (id: string) => ({ tab: records[id] }) as never);
+    renderRecall();
+    const title = await screen.findByLabelText("Title");
+    fireEvent.change(title, { target: { value: "Draft A" } });
+
+    fireEvent.click(screen.getByRole("tab", { name: /Tab B/ }));
+    await waitFor(() => expect(selectActiveTab).toHaveBeenCalledWith("tab_b"));
+    await waitFor(() => expect(fieldValue("Title")).toBe(""));
+    // The left tab's own draft is saved to its record, so it survives a restart.
+    expect(
+      vi.mocked(syncActiveTabForm).mock.calls.some(
+        ([id, , , values]) => id === "tab_a" && values.title === "Draft A",
+      ),
+    ).toBe(true);
+
+    fireEvent.click(screen.getByRole("tab", { name: /Tab A/ }));
+    await waitFor(() => expect(fieldValue("Title")).toBe("Draft A"));
+  });
+
+  it("shows a started tab's new session form empty, with an opt-in to the previous values", async () => {
+    vi.mocked(getAppState).mockResolvedValue(appState([startedSummary], "tab_ran"));
+    vi.mocked(selectActiveTab).mockResolvedValue({ tab: startedRecord } as never);
+    renderRecall();
+    fireEvent.click(await screen.findByRole("button", { name: "Start new session" }));
+    await screen.findByLabelText("Title");
+    expect(fieldValue("Title")).toBe("");
+    expect(fieldValue("What to work on")).toBe("");
+
+    fireEvent.click(screen.getByRole("button", { name: "Use the previous values" }));
+    expect(fieldValue("Title")).toBe("Old title");
+    expect(fieldValue("What to work on")).toBe("Old request");
+
+    // The started tab's record keeps the answers it ran with.
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Next run" } });
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    expect(vi.mocked(syncActiveTabForm).mock.calls.some(([id]) => id === "tab_ran")).toBe(false);
+  });
+
+  it("clears the text fields but not the folder, with an undo", async () => {
+    vi.mocked(getAppState).mockResolvedValue(appState([summary("tab_a")], "tab_a"));
+    vi.mocked(selectActiveTab).mockResolvedValue({ tab: record("tab_a") } as never);
+    renderRecall();
+    const title = await screen.findByLabelText("Title");
+    const clear = screen.getByRole("button", { name: "Clear form" }) as HTMLButtonElement;
+    expect(clear.disabled).toBe(true);
+    fireEvent.change(title, { target: { value: "Something" } });
+    fireEvent.click(screen.getByRole("button", { name: "Clear form" }));
+    expect(fieldValue("Title")).toBe("");
+    expect(document.querySelector(`.folder-picker-chosen[title="${folder}"]`)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(fieldValue("Title")).toBe("Something");
+    expect(screen.getByRole("button", { name: "Clear form" })).toBeTruthy();
+  });
+
+  it("still fills a hand-off target tab from its saved answers", async () => {
+    // A hand-off writes the target tab's answers (syncActiveTabForm). Loading
+    // that tab must show them; the folder-only recall must not wipe them.
+    const target = record("tab_target", {
+      roleId: "role_planner",
+      answers: { cwd: folder, taskType: "Bug", title: "From the planner", request: "Plan text" },
+    });
+    vi.mocked(getAppState).mockResolvedValue(
+      appState([summary("tab_target", { roleId: "role_planner" })], "tab_target"),
+    );
+    vi.mocked(selectActiveTab).mockResolvedValue({ tab: target } as never);
+    renderRecall();
+    await screen.findByLabelText("Task Type");
+    await waitFor(() => expect(fieldValue("Title")).toBe("From the planner"));
+    expect(fieldValue("Task Type")).toBe("Bug");
+    expect(fieldValue("What to work on")).toBe("Plan text");
   });
 });
