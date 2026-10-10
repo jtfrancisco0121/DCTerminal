@@ -1,4 +1,5 @@
-use crate::commands::dev_session::{PendingPlan, SessionRegistry};
+use crate::commands::activity::{record_decision, record_permission};
+use crate::commands::dev_session::{PendingPermission, PendingPlan, SessionRegistry};
 use crate::permissions::{
     append_permission_log, cancelled_permission_result, evaluate_permission,
     permission_log_record_with_meta, DecisionOutcome, PolicyDecision, ToolCallCache,
@@ -112,6 +113,8 @@ pub fn stage_claude_permission_request(
     };
     capture_permission_payload(app, tab_id, &role_id, request, None);
     let json_rpc_id = request.get("id").and_then(Value::as_u64).unwrap_or(0);
+    let enriched = enrich_from_cache(state, tab_id, &params)?;
+    record_permission(app, tab_id, json_rpc_id, &enriched, Some("auto_allow"));
     let title = params
         .get("toolCall")
         .and_then(|call| call.get("title"))
@@ -284,14 +287,7 @@ pub fn stage_permission_request(
         }
     };
 
-    let cache_snapshot = {
-        let guard = state.lock().map_err(|e| e.to_string())?;
-        match guard.get(tab_id) {
-            Some(session) => session.tool_call_cache.clone(),
-            None => ToolCallCache::new(),
-        }
-    };
-    let enriched = cache_snapshot.enrich_params(&params);
+    let enriched = enrich_from_cache(state, tab_id, &params)?;
     let outcome = evaluate_permission(&role_id, &enriched);
     capture_permission_payload(
         app,
@@ -304,6 +300,12 @@ pub fn stage_permission_request(
             outcome.class.as_str(),
         )),
     );
+    let logged_decision = match outcome.decision {
+        PolicyDecision::AllowOnce => Some("auto_allow"),
+        PolicyDecision::Reject => Some("auto_reject"),
+        PolicyDecision::Ask => None,
+    };
+    record_permission(app, tab_id, json_rpc_id, &enriched, logged_decision);
     if outcome.decision != PolicyDecision::Ask {
         if let Some(line) = outcome.transcript_line.clone() {
             let _ = app.emit(
@@ -319,7 +321,20 @@ pub fn stage_permission_request(
         let Some(session) = guard.get_mut(tab_id) else {
             return Ok(Some(cancelled_permission_result()));
         };
-        session.pending_permissions.insert(json_rpc_id, ());
+        session.pending_permissions.insert(
+            json_rpc_id,
+            PendingPermission {
+                tool_call_id: crate::permissions::activity::permission_tool_call_id(
+                    &enriched,
+                    json_rpc_id,
+                ),
+                options: outcome
+                    .options
+                    .iter()
+                    .map(|opt| (opt.id.clone(), opt.kind.clone()))
+                    .collect(),
+            },
+        );
     }
 
     let raw = params.to_string();
@@ -351,6 +366,20 @@ pub fn stage_permission_request(
     Ok(None)
 }
 
+/// Fill a request's missing command / path / URL from the tab's tool-call
+/// cache (enriched under the lock; the cache is not cloned).
+fn enrich_from_cache(
+    state: &Mutex<SessionRegistry>,
+    tab_id: &str,
+    params: &Value,
+) -> Result<Value, String> {
+    let guard = state.lock().map_err(|e| e.to_string())?;
+    Ok(match guard.get(tab_id) {
+        Some(session) => session.tool_call_cache.enrich_params(params),
+        None => ToolCallCache::new().enrich_params(params),
+    })
+}
+
 fn auto_event(
     tab_id: &str,
     session_id: &str,
@@ -378,6 +407,7 @@ fn auto_event(
 
 #[tauri::command]
 pub fn respond_permission_request(
+    app: AppHandle,
     tab_id: String,
     json_rpc_id: u64,
     outcome: String,
@@ -388,25 +418,32 @@ pub fn respond_permission_request(
     let Some(session) = guard.get_mut(&tab_id) else {
         return Ok(());
     };
-    if session.pending_permissions.remove(&json_rpc_id).is_none() {
-        return Err("no pending permission request for this id".to_string());
+    if outcome == "selected" && option_id.is_none() {
+        return Err("optionId required for selected outcome".to_string());
     }
-    let result = if outcome == "selected" {
-        let id = option_id.ok_or_else(|| "optionId required for selected outcome".to_string())?;
-        json!({
-            "outcome": {
-                "outcome": "selected",
-                "optionId": id
-            }
-        })
-    } else {
-        cancelled_permission_result()
+    let Some(pending) = session.pending_permissions.remove(&json_rpc_id) else {
+        return Err("no pending permission request for this id".to_string());
+    };
+    let (result, decision) = match option_id.filter(|_| outcome == "selected") {
+        Some(id) => {
+            let decision = crate::permissions::activity::user_decision(&id, &pending.options);
+            let result = json!({
+                "outcome": {
+                    "outcome": "selected",
+                    "optionId": id
+                }
+            });
+            (result, decision)
+        }
+        None => (cancelled_permission_result(), "cancelled"),
     };
     session
         .outbox
         .lock()
         .map_err(|e| e.to_string())?
         .push((json_rpc_id, result));
+    drop(guard);
+    record_decision(&app, &tab_id, &pending.tool_call_id, decision);
     Ok(())
 }
 

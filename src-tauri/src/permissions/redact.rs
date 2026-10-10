@@ -91,6 +91,68 @@ fn looks_like_secret(text: &str) -> bool {
         || trimmed.contains("BEGIN OPENSSH PRIVATE KEY")
 }
 
+/// One line for the activity log: a command, path, or URL with inline
+/// secrets masked (`Bearer x`, `sk-…`, `TOKEN=x`, `--password x`) and capped
+/// at `max_chars`. Whitespace runs collapse so multi-line scripts fit a row.
+pub fn redact_summary(text: &str, max_chars: usize) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut mask_next = false;
+    for word in text.split_whitespace() {
+        let bare = word.trim_matches(|c| c == '"' || c == '\'');
+        let lower = bare.to_ascii_lowercase();
+        // `Authorization: Bearer x` masks only the credential.
+        if lower == "bearer" || lower == "basic" || lower.ends_with("authorization:") {
+            out.push(word.to_string());
+            mask_next = true;
+            continue;
+        }
+        if mask_next {
+            out.push(REDACTED.to_string());
+            mask_next = false;
+            continue;
+        }
+        if let Some(flag) = lower.strip_prefix("--") {
+            if sensitive_key(flag) && !flag.contains('=') {
+                out.push(word.to_string());
+                mask_next = true;
+                continue;
+            }
+        }
+        if let Some((base, query)) = bare.split_once("://").and_then(|_| bare.split_once('?')) {
+            let pairs: Vec<String> = query
+                .split('&')
+                .map(|pair| match pair.split_once('=') {
+                    Some((key, _)) if sensitive_key(key) || key.eq_ignore_ascii_case("key") => {
+                        format!("{key}={REDACTED}")
+                    }
+                    _ => pair.to_string(),
+                })
+                .collect();
+            out.push(format!("{base}?{}", pairs.join("&")));
+            continue;
+        }
+        if let Some((key, _)) = bare.split_once('=') {
+            let key = key.trim_start_matches('-');
+            if !key.is_empty() && sensitive_key(key) {
+                out.push(format!("{key}={REDACTED}"));
+                continue;
+            }
+        }
+        if looks_like_secret(bare) {
+            out.push(REDACTED.to_string());
+            continue;
+        }
+        out.push(word.to_string());
+    }
+    let joined = out.join(" ");
+    if joined.chars().count() > max_chars {
+        let head: String = joined.chars().take(max_chars.saturating_sub(1)).collect();
+        format!("{head}…")
+    } else {
+        joined
+    }
+}
+
 pub fn append_permission_log(path: &std::path::Path, line: &Value) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("permission log dir: {e}"))?;
@@ -186,6 +248,26 @@ mod tests {
         let out = redact_permission_payload(&value);
         assert_eq!(out["note"], REDACTED);
         assert!(out["blob"].as_str().unwrap().contains("[truncated]"));
+    }
+
+    #[test]
+    fn summary_masks_inline_secrets_and_caps_length() {
+        let cmd = "curl -H 'Authorization: Bearer abc.def' https://api.example.com --token xyz";
+        let out = redact_summary(cmd, 500);
+        assert!(!out.contains("abc.def"), "{out}");
+        assert!(!out.contains("xyz"), "{out}");
+        assert!(out.contains("https://api.example.com"));
+        let env = redact_summary("GITHUB_TOKEN=ghp_123 API_KEY=k1 npm   publish", 500);
+        assert_eq!(env, "GITHUB_TOKEN=[redacted] API_KEY=[redacted] npm publish");
+        assert_eq!(redact_summary("echo sk-live-123", 500), "echo [redacted]");
+        assert_eq!(
+            redact_summary("https://x.dev/a?q=1&access_token=abc", 500),
+            "https://x.dev/a?q=1&access_token=[redacted]"
+        );
+        assert_eq!(redact_summary("ls -la\n  src", 500), "ls -la src");
+        let long = redact_summary(&"a ".repeat(400), 500);
+        assert_eq!(long.chars().count(), 500);
+        assert!(long.ends_with('…'));
     }
 
     #[test]

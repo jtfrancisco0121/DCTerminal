@@ -209,6 +209,15 @@ describe("tab chrome", () => {
     }
   });
 
+  it("finds the activity log by activity, commands, or network and routes it", () => {
+    const commands = buildPalette({ tabs: [], canReopen: false, splitOpen: false });
+    for (const query of ["activity", "show activity", "commands", "network", "audit"]) {
+      expect(filterCommands(commands, query).map((c) => c.id)).toContain("showActivity");
+    }
+    expect(commands.find((c) => c.id === "showActivity")?.title).toBe("Show activity…");
+    expect(parsePaletteId("showActivity")).toEqual({ kind: "action", id: "showActivity" });
+  });
+
   it("offers plan hand-off commands on a Planner session", () => {
     const commands = buildPalette({
       tabs: [],

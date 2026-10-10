@@ -86,11 +86,19 @@ fn run_prompt_turn(
         let tab_for_emit = tab_id.to_string();
         let tab_for_perm = tab_id.to_string();
         let on_notification = Box::new(move |value: &serde_json::Value| {
+            let mut activity = None;
             if let Ok(mut guard) = app_emit.state::<Mutex<SessionRegistry>>().lock() {
                 if let Some(session) = guard.get_mut(&tab_for_emit) {
                     session.tool_call_cache.observe_notification(value);
+                    // Every tool call, asked or not (bypassPermissions rarely asks).
+                    activity = crate::commands::activity::update_line(
+                        &tab_for_emit,
+                        value,
+                        &session.tool_call_cache,
+                    );
                 }
             }
+            crate::commands::activity::write_line(&app_emit, activity);
             emit_session_update(&app_emit, &tab_for_emit, &session_id_for_emit, value);
         });
         let on_agent_request = Box::new(

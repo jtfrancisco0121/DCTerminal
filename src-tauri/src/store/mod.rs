@@ -1,3 +1,4 @@
+mod activity_store;
 mod chain_runs;
 mod claude_migration;
 mod forms_store;
@@ -18,6 +19,7 @@ mod window_migration;
 mod transcript_store;
 mod workspace_store;
 
+pub use activity_store::{merge_patches, ActivityEntry, ActivityPatch, ActivityStore};
 pub use forms_store::FormsStore;
 pub use forms_types::FormSnapshot;
 pub use handoff_store::{HandoffRecord, HandoffStore, NewHandoff};

@@ -269,6 +269,7 @@ export const PALETTE_ACTIONS = [
   "addToGrid",
   "toggleFilePanel",
   "showChanges",
+  "showActivity",
   "find",
   "searchChats",
   "chatHistory",
@@ -407,6 +408,12 @@ export function buildPalette(opts: {
       title: "Show changes (diff)…",
       group: "Files",
       keywords: "diff revert accept review edits git agent",
+    },
+    {
+      id: "showActivity",
+      title: "Show activity…",
+      group: "Files",
+      keywords: "activity log audit tool calls commands shell writes fetch network mcp permissions",
     },
     {
       id: "find",

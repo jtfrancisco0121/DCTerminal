@@ -2745,6 +2745,147 @@ kbd {
   max-width: 100%;
 }
 
+/* Agent activity log: every tool call, asked or not. */
+.activity-panel {
+  width: min(84rem, 96vw);
+  height: 86vh;
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  overflow: hidden;
+}
+
+.activity-counts {
+  font-family: ui-monospace, monospace;
+  font-size: 0.78rem;
+  color: var(--fg-muted);
+}
+
+.activity-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.activity-chip {
+  padding: 0.1rem 0.55rem;
+  font-size: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-muted);
+  color: var(--fg-soft);
+  cursor: pointer;
+}
+
+.activity-chip:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.activity-chip[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--accent-emphasis) 20%, transparent);
+  border-color: var(--accent-emphasis);
+  color: var(--accent-bright);
+}
+
+.activity-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-inset);
+}
+
+.activity-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.activity-table th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+  font-weight: 600;
+  text-align: left;
+  padding: 0.3rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.activity-table td {
+  padding: 0.25rem 0.5rem;
+  border-bottom: 1px solid var(--bg-muted);
+  vertical-align: top;
+}
+
+.activity-row:hover {
+  background: var(--bg-hover);
+}
+
+.activity-row-rejected .activity-summary code {
+  text-decoration: line-through;
+  color: var(--fg-muted);
+}
+
+.activity-time,
+.activity-status,
+.activity-decision {
+  white-space: nowrap;
+  color: var(--fg-muted);
+}
+
+.activity-time {
+  font-family: ui-monospace, monospace;
+}
+
+.activity-kind {
+  display: inline-block;
+  min-width: 3.4rem;
+  padding: 0 0.4rem;
+  border-radius: 4px;
+  font-family: ui-monospace, monospace;
+  font-size: 0.72rem;
+  text-align: center;
+  border: 1px solid var(--border);
+  color: var(--fg-soft);
+}
+
+.activity-kind-shell { color: var(--orange); border-color: color-mix(in srgb, var(--orange) 45%, transparent); }
+.activity-kind-write,
+.activity-kind-edit { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 45%, transparent); }
+.activity-kind-delete { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
+.activity-kind-fetch { color: var(--accent-fg); border-color: color-mix(in srgb, var(--accent-fg) 45%, transparent); }
+.activity-kind-mcp { color: var(--done); border-color: color-mix(in srgb, var(--done) 45%, transparent); }
+.activity-kind-read { color: var(--success); border-color: color-mix(in srgb, var(--success) 45%, transparent); }
+
+.activity-decision-user_allow { color: var(--success); }
+.activity-decision-user_reject,
+.activity-decision-auto_reject,
+.activity-decision-cancelled { color: var(--danger); }
+
+.activity-summary {
+  width: 100%;
+  word-break: break-all;
+}
+
+.activity-summary code {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.78rem;
+  color: var(--fg);
+}
+
+.activity-network {
+  margin-right: 0.35rem;
+  color: var(--warning-bright);
+}
+
+.activity-status-completed { color: var(--success); }
+.activity-status-failed { color: var(--danger); }
+.activity-status-in_progress { color: var(--accent-fg); }
+
 .diff-scroll {
   flex: 1;
   min-height: 0;

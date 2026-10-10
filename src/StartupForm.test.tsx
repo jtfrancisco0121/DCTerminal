@@ -145,6 +145,8 @@ vi.mock("./bridge", () => {
   worktreeTabCheck: vi.fn(),
   worktreeTabRemove: vi.fn(async () => {}),
   changesList: vi.fn(async () => ({ state: "noRepo", files: [] })),
+  activityList: vi.fn(async () => []),
+  activityClear: vi.fn(async () => {}),
   changesSnapshot: vi.fn(),
   changesFileDiff: vi.fn(),
   changesRevert: vi.fn(),
@@ -1209,6 +1211,25 @@ describe("changes (diff) panel", () => {
       expect(panel.contains(document.activeElement)).toBe(true),
     );
     expect(changesRevert).not.toHaveBeenCalled();
+  });
+
+  it("opens the activity log next to Changes", async () => {
+    render(
+      <StartupForm
+        roles={[{ id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 }]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /^Activity/ }));
+    const dialog = await screen.findByRole("dialog", { name: "Activity in Main" });
+    expect(dialog.textContent).toContain("Terminal tabs run the CLI directly");
+    fireEvent.click(screen.getByRole("button", { name: "Close activity" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Activity in Main" })).toBeNull(),
+    );
   });
 });
 

@@ -1,3 +1,4 @@
+pub mod activity;
 mod cli_config;
 mod policy;
 mod redact;

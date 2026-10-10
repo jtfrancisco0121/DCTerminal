@@ -1,4 +1,5 @@
 pub(crate) mod acp_events;
+pub(crate) mod activity;
 mod agent_requests;
 mod app_state;
 mod attachments;
@@ -21,6 +22,7 @@ mod workspace;
 mod workspaces;
 mod worktree_tabs;
 
+pub use activity::{activity_clear, activity_list};
 pub use agent_requests::{
     respond_permission_request, respond_plan_request, respond_question_request,
 };
