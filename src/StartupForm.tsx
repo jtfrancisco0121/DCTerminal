@@ -235,6 +235,8 @@ import {
   chainStepToSend,
   chainStop,
   splitChainSteps,
+  padAfterSend,
+  padSelection,
   transferToInput,
   type ChainCursor,
 } from "./scratch/pad";
@@ -549,6 +551,9 @@ export function StartupForm({
   const planRequest = activeRuntime.plan;
   const questionRequest = activeRuntime.question;
   const scratch = useScratchPads(activeTabId);
+  /** Latest pad text per tab, for callbacks that finish after a send. */
+  const padTextRef = useRef<Record<string, string>>({});
+  if (activeTabId) padTextRef.current[activeTabId] = scratch.content;
   /** Up-arrow history, oldest first. The pad keeps the same sends, newest first, on disk. */
   const composerHistory = useMemo(() => [...scratch.history].reverse(), [scratch.history]);
   const padRef = useRef<HTMLTextAreaElement>(null);
@@ -1978,7 +1983,7 @@ export function StartupForm({
   );
 
   const sendText = useCallback(
-    async (tabId: string, text: string) => {
+    async (tabId: string, text: string, onNotSent?: () => void) => {
       const trimmed = text.trim();
       if (!trimmed) return "error" as const;
       const pending = waiterRef.current.expect(tabId);
@@ -2003,6 +2008,7 @@ export function StartupForm({
           promptError: message,
           promptInFlight: false,
         }));
+        onNotSent?.();
         return "error" as const;
       }
       return pending;
@@ -2040,14 +2046,19 @@ export function StartupForm({
         )
       : "";
     const next = transferToInput(followUp, scratch.content, selected);
+    if (next === followUp) return;
     setFollowUp(next);
+    // The text moved to the input, so it leaves the pad.
+    scratch.setContent(activeTabId, padAfterSend(scratch.content, padSelection(padRef.current)));
     inputRef.current?.focus();
-  }, [activeTabId, followUp, scratch.content]);
+  }, [activeTabId, followUp, scratch]);
 
   const runChain = useCallback(async () => {
     if (!activeTabId || promptInFlight || permissionRequest || questionRequest) return;
     const started = chainStart(scratch.content);
     if (!started) return;
+    const tabId = activeTabId;
+    const padAtStart = scratch.content;
     chainAbortRef.current = false;
     let cursor = started;
     setChain(cursor);
@@ -2070,7 +2081,12 @@ export function StartupForm({
       cursor = chainMarkSettled(cursor, outcome);
       setChain(cursor);
     }
-  }, [activeTabId, permissionRequest, questionRequest, promptInFlight, scratch.content, sendText]);
+    // Every step was sent: empty the pad, unless it was edited meanwhile.
+    // A stopped chain keeps its steps.
+    if (cursor.phase === "done" && padTextRef.current[tabId] === padAtStart) {
+      scratch.setContent(tabId, "");
+    }
+  }, [activeTabId, permissionRequest, questionRequest, promptInFlight, scratch, sendText]);
 
   const sendFromPad = useCallback(() => {
     if (!activeTabId) return;
@@ -2082,10 +2098,17 @@ export function StartupForm({
       void sendFollowUp();
       return;
     }
-    if (scratch.content.trim()) {
-      void sendText(activeTabId, scratch.content);
+    const text = scratch.content;
+    if (text.trim()) {
+      const tabId = activeTabId;
+      // Sent text leaves the pad (Recent sends keeps it). If it never
+      // reached the agent and the pad is still empty, put it back.
+      scratch.setContent(tabId, "");
+      void sendText(tabId, text, () => {
+        if (!padTextRef.current[tabId]) scratch.setContent(tabId, text);
+      });
     }
-  }, [activeTabId, followUp, runChain, scratch.content, sendFollowUp, sendText]);
+  }, [activeTabId, followUp, runChain, scratch, sendFollowUp, sendText]);
 
   // F8: show first-run setup on a fresh profile only.
   useEffect(() => {
@@ -2624,10 +2647,10 @@ export function StartupForm({
       }));
     }
     const field = padRef.current;
-    let text = scratch.content;
-    if (field && field.selectionStart !== field.selectionEnd) {
-      text = field.value.slice(field.selectionStart, field.selectionEnd);
-    }
+    const sent = padSelection(field);
+    const padBefore = scratch.content;
+    let text = padBefore;
+    if (field && sent) text = field.value.slice(sent.start, sent.end);
     const payload = text.endsWith("\n") ? text : `${text}\n`;
     if (!payload.trim()) return;
     for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -2635,13 +2658,18 @@ export function StartupForm({
         terminalActivity.input(target);
         await ptyWrite(target, payload);
         setTerminalError(null);
+        // Sent to the shell: it leaves the pad and joins Recent sends.
+        void promptRecordSend(text.trim(), "terminal").catch(() => {});
+        if (padTextRef.current[tabId] === padBefore) {
+          scratch.setContent(tabId, padAfterSend(padBefore, sent));
+        }
         return;
       } catch {
         await new Promise((resolve) => window.setTimeout(resolve, 50));
       }
     }
     setTerminalError("The terminal is not ready for input yet.");
-  }, [savedTabs, scratch.content]);
+  }, [savedTabs, scratch]);
 
   const onTerminalAction = useCallback(
     (action: TerminalAction) => {

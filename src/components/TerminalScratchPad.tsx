@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { Platform } from "../keymap";
 import { encodeTerminalPaste } from "../terminal/paste";
+import { padAfterSend, padSelection } from "../scratch/pad";
 import { ScratchPad } from "./ScratchPad";
 
 export type TerminalPadHandle = {
@@ -27,7 +28,7 @@ type Props = {
   onFocusPad?: () => void;
   /** Called after the pad is hidden or shown so the terminal can refit. */
   onOpenChange?: (open: boolean) => void;
-  /** F6: a prompt was sent with Enter (feeds Recent sends). */
+  /** F6: text left the pad for the terminal, by Send or Paste (feeds Recent sends). */
   onSent?: (text: string) => void;
   /** F6: open the prompt library. */
   onOpenLibrary?: () => void;
@@ -84,11 +85,25 @@ export const TerminalScratchPad = forwardRef<TerminalPadHandle, Props>(
     const modLabel = platform === "mac" ? "⌘" : "Ctrl";
 
     const deliver = (submit: boolean) => {
+      const sent = padSelection(fieldRef.current);
       const text = padText(fieldRef.current, content);
       if (!text.trim()) return;
+      const before = content;
       const data = encodeTerminalPaste(text, { bracketedPaste, submit });
-      void write(ptyId, data);
-      if (submit) onSent?.(text);
+      let written: Promise<void>;
+      try {
+        written = Promise.resolve(write(ptyId, data));
+      } catch {
+        return;
+      }
+      void written
+        .then(() => {
+          // The text is in the terminal now: it leaves the pad (only the
+          // selection, when one was sent) unless the pad changed meanwhile.
+          if ((fieldRef.current?.value ?? before) === before) onChange(padAfterSend(before, sent));
+          onSent?.(text);
+        })
+        .catch(() => {});
     };
 
     useImperativeHandle(ref, () => ({
