@@ -45,6 +45,8 @@ export function installTauriMock(config: MockConfig): void {
       filePanelWidth: 280,
     },
     handoffs: [] as Json[],
+    /** One PipelineRun per Eagle-Eye chain (run id = chain id), like store/chain_runs.rs. */
+    pipelineRuns: [] as Json[],
     recent: [] as Json[],
     pads: [] as Json[],
     attachments: 0,
@@ -112,6 +114,71 @@ export function installTauriMock(config: MockConfig): void {
   };
   const sessionIdFor = (tabId: string) => `sess-${tabId}`;
   const fullRole = (role: Json) => clone(role);
+
+  // Eagle-Eye chain runs: a port of src-tauri/src/store/chain_runs.rs.
+  const PIPELINE_STAGES: Record<string, [string, string][]> = {
+    full: [
+      ["planner", "role_planner"],
+      ["plan_reviewer", "role_plan_reviewer"],
+      ["implementer", "role_implementer"],
+      ["pr_reviewer", "role_pr_reviewer"],
+    ],
+    execute: [
+      ["implementer", "role_implementer"],
+      ["pr_reviewer", "role_pr_reviewer"],
+    ],
+  };
+  const runKindForChain = (kind: string) =>
+    kind === "eagle1" ? "full" : kind === "eagle2" ? "execute" : null;
+  const findRun = (chainId: string) =>
+    state.pipelineRuns.find((r: Json) => r.id === chainId || r.chainId === chainId);
+  const chainOriginalRequest = (run: Json): string | null => {
+    if (run.originalRequest) return run.originalRequest;
+    const first = PIPELINE_STAGES[run.kind]?.[0]?.[1];
+    const tabId = first ? run.tabIds[first] : null;
+    if (!tabId) return null;
+    const answers = state.answers[tabId] ?? {};
+    const pick = (key: string) => String(answers[key] ?? "").trim() || null;
+    const title = pick("title");
+    const body = pick("request") ?? pick("description");
+    if (title && body) return `${title}\n\n${body}`;
+    return body ?? title;
+  };
+  const recordChainStep = (tabId: string, chain: Json, handoffText: string | null) => {
+    const kind = runKindForChain(chain.kind);
+    if (!kind) return;
+    const stages = PIPELINE_STAGES[kind];
+    const index = chain.step - 1;
+    const stage = stages[index];
+    if (!stage) return;
+    const [stageId, roleId] = stage;
+    let run = findRun(chain.chainId);
+    if (!run) {
+      run = {
+        id: chain.chainId,
+        kind,
+        cwd: findTab(tabId)?.cwd ?? "",
+        stage: stageId,
+        overviewTabId: "",
+        tabIds: {},
+        candidatePlan: null,
+        approvedPlan: null,
+        originalRequest: null,
+        createdAt: now(),
+        chainId: chain.chainId,
+        handoffs: {},
+        updatedAt: null,
+      };
+      state.pipelineRuns.push(run);
+    }
+    run.tabIds[roleId] = tabId;
+    const current = stages.findIndex(([id]) => id === run.stage);
+    if (current < 0 || index >= current) run.stage = stageId;
+    const text = (handoffText ?? "").trim();
+    if (text) run.handoffs[roleId] = { text, at: now() };
+    run.updatedAt = now();
+    if (!run.originalRequest) run.originalRequest = chainOriginalRequest(run);
+  };
 
   const configDir = {
     path: "/Users/e2e/.claude",
@@ -382,6 +449,58 @@ export function installTauriMock(config: MockConfig): void {
       return clone(rec);
     },
     handoff_get: (a) => clone(state.handoffs.find((h: Json) => h.id === a.id)),
+
+    set_tab_chain: (a) => {
+      const tab = findTab(a.tabId);
+      if (!tab) throw new Error(`unknown tab: ${a.tabId}`);
+      tab.chain = clone(a.chain);
+      if (a.chain) recordChainStep(a.tabId, a.chain, a.handoffText);
+      return null;
+    },
+    open_chain_overview: (a) => {
+      const chainId = String(a.chainId).trim();
+      if (!findRun(chainId)) {
+        const tagged = state.tabs
+          .filter((t: Json) => t.chain?.chainId === chainId)
+          .sort((x: Json, y: Json) => x.chain.step - y.chain.step);
+        for (const t of tagged) recordChainStep(t.id, t.chain, null);
+      }
+      const run = findRun(chainId);
+      if (!run) throw new Error("No open tab is on this Eagle-Eye chain.");
+      if (findTab(run.overviewTabId)) {
+        state.activeTabId = run.overviewTabId;
+        return { tabId: run.overviewTabId, state: snapshot() };
+      }
+      state.tabCounter += 1;
+      const tab = {
+        id: `tab-${state.tabCounter}`,
+        label: run.kind === "execute" ? "Eagle-Eye 2 · overview" : "Eagle-Eye 1 · overview",
+        roleId: "pipeline_overview",
+        cwd: run.cwd,
+        phase: "draft",
+        mergedPromptChars: 0,
+        startupPromptSent: false,
+        hasTranscript: false,
+        folderStatus: run.cwd ? "ok" : "empty",
+        color: "#F0B429",
+        kind: "pipeline_overview",
+        terminalLaunch: "",
+        acpSessionId: null,
+        model: null,
+        provider: "claude",
+        chain: null,
+        pipelineRunId: run.id,
+      };
+      state.tabs.push(tab);
+      state.activeTabId = tab.id;
+      run.overviewTabId = tab.id;
+      return { tabId: tab.id, state: snapshot() };
+    },
+    get_pipeline_run: (a) => {
+      const run = findRun(String(a.runId).trim());
+      if (!run) throw new Error(`unknown pipeline run: ${a.runId}`);
+      return { run: { ...clone(run), originalRequest: chainOriginalRequest(run) } };
+    },
 
     projects_list: () => ({
       favorites: [],
