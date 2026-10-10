@@ -84,6 +84,28 @@ fn is_planner(role_id: &str) -> bool {
     )
 }
 
+/// Where a Claude permission request goes (see `stage_claude_permission_request`).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum ClaudeRoute {
+    /// A Planner's `ExitPlanMode`: the plan card.
+    PlanCard,
+    /// No `allow_once` option: the permission card.
+    Card,
+    /// Answered at once with the request's `allow_once` option.
+    AutoAllow { result: Value, exit_plan: bool },
+}
+
+pub(crate) fn claude_permission_route(role_id: &str, params: &Value) -> ClaudeRoute {
+    let exit_plan = is_exit_plan_mode(params);
+    if exit_plan && is_planner(role_id) {
+        return ClaudeRoute::PlanCard;
+    }
+    match allow_once_result(params) {
+        Some(result) => ClaudeRoute::AutoAllow { result, exit_plan },
+        None => ClaudeRoute::Card,
+    }
+}
+
 /// Claude tabs (Decisions 4): every permission request is answered
 /// `allow_once` without a card. A Planner's `ExitPlanMode` is the plan to
 /// approve, so it goes to the card. A request with no `allow_once` option
@@ -103,13 +125,14 @@ pub fn stage_claude_permission_request(
             None => return Ok(Some(cancelled_permission_result())),
         }
     };
-    let exit_plan = is_exit_plan_mode(&params);
-    if exit_plan && is_planner(&role_id) {
-        return stage_exit_plan_request(app, tab_id, session_id, request, state);
-    }
-    let answer = allow_once_result(&params);
-    let Some(result) = answer else {
-        return stage_permission_request(app, tab_id, session_id, request, state);
+    let (result, exit_plan) = match claude_permission_route(&role_id, &params) {
+        ClaudeRoute::PlanCard => {
+            return stage_exit_plan_request(app, tab_id, session_id, request, state);
+        }
+        ClaudeRoute::Card => {
+            return stage_permission_request(app, tab_id, session_id, request, state);
+        }
+        ClaudeRoute::AutoAllow { result, exit_plan } => (result, exit_plan),
     };
     capture_permission_payload(app, tab_id, &role_id, request, None);
     let json_rpc_id = request.get("id").and_then(Value::as_u64).unwrap_or(0);
@@ -160,7 +183,7 @@ fn queue_role_mode(state: &Mutex<SessionRegistry>, tab_id: &str) -> Result<(), S
     Ok(())
 }
 
-fn reject_option_id(params: &Value) -> Option<String> {
+pub(crate) fn reject_option_id(params: &Value) -> Option<String> {
     params
         .get("options")
         .and_then(Value::as_array)?
@@ -405,6 +428,28 @@ fn auto_event(
     }
 }
 
+/// JSON-RPC result for JT's answer on a permission card, and the decision
+/// logged for it.
+pub(crate) fn permission_response(
+    outcome: &str,
+    option_id: Option<String>,
+    options: &[(String, String)],
+) -> (Value, &'static str) {
+    match option_id.filter(|_| outcome == "selected") {
+        Some(id) => {
+            let decision = crate::permissions::activity::user_decision(&id, options);
+            let result = json!({
+                "outcome": {
+                    "outcome": "selected",
+                    "optionId": id
+                }
+            });
+            (result, decision)
+        }
+        None => (cancelled_permission_result(), "cancelled"),
+    }
+}
+
 #[tauri::command]
 pub fn respond_permission_request(
     app: AppHandle,
@@ -424,19 +469,7 @@ pub fn respond_permission_request(
     let Some(pending) = session.pending_permissions.remove(&json_rpc_id) else {
         return Err("no pending permission request for this id".to_string());
     };
-    let (result, decision) = match option_id.filter(|_| outcome == "selected") {
-        Some(id) => {
-            let decision = crate::permissions::activity::user_decision(&id, &pending.options);
-            let result = json!({
-                "outcome": {
-                    "outcome": "selected",
-                    "optionId": id
-                }
-            });
-            (result, decision)
-        }
-        None => (cancelled_permission_result(), "cancelled"),
-    };
+    let (result, decision) = permission_response(&outcome, option_id, &pending.options);
     session
         .outbox
         .lock()
@@ -515,22 +548,9 @@ pub fn stage_plan_request(
     Ok(None)
 }
 
-#[tauri::command]
-pub fn respond_plan_request(
-    tab_id: String,
-    json_rpc_id: u64,
-    outcome: String,
-    state: State<Mutex<SessionRegistry>>,
-) -> Result<(), String> {
-    let mut guard = state.lock().map_err(|e| e.to_string())?;
-    let Some(session) = guard.get_mut(&tab_id) else {
-        return Ok(());
-    };
-    let pending = session.pending_plans.remove(&json_rpc_id);
-    let Some(pending) = pending else {
-        return Err("no pending plan request for this id".to_string());
-    };
-    let result = match pending {
+/// JSON-RPC result for JT's answer on a plan card.
+pub(crate) fn plan_response(pending: &PendingPlan, outcome: &str) -> Value {
+    match pending {
         PendingPlan::ClaudeExit { reject_option_id } => {
             // Hand off and Keep planning both refuse to implement in this tab.
             if let Some(id) = reject_option_id {
@@ -546,7 +566,25 @@ pub fn respond_plan_request(
                 json!({ "outcome": "cancelled" })
             }
         }
+    }
+}
+
+#[tauri::command]
+pub fn respond_plan_request(
+    tab_id: String,
+    json_rpc_id: u64,
+    outcome: String,
+    state: State<Mutex<SessionRegistry>>,
+) -> Result<(), String> {
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+    let Some(session) = guard.get_mut(&tab_id) else {
+        return Ok(());
     };
+    let pending = session.pending_plans.remove(&json_rpc_id);
+    let Some(pending) = pending else {
+        return Err("no pending plan request for this id".to_string());
+    };
+    let result = plan_response(&pending, &outcome);
     session
         .outbox
         .lock()

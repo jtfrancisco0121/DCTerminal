@@ -16,6 +16,8 @@ mod providers;
 mod role_session;
 mod usage;
 mod roles;
+#[cfg(all(test, unix))]
+mod session_flow_tests;
 mod setup;
 pub(crate) mod storage;
 mod workspace;
