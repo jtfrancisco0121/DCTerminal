@@ -22,6 +22,9 @@ type Props = {
   newWindowTitle?: string;
   /** F3: open the "New tab in worktree…" dialog. */
   onNewWorktree?: () => void;
+  /** Grid view: show several tabs at once. */
+  onToggleGrid?: () => void;
+  gridOpen?: boolean;
   onReopen?: () => void;
   onColor?: (tabId: string, color: string) => void;
   settingsOpen?: boolean;
@@ -127,6 +130,8 @@ export function TabBar({
   onNewWindow,
   newWindowTitle,
   onNewWorktree,
+  onToggleGrid,
+  gridOpen = false,
   onReopen,
   onColor,
   settingsOpen = false,
@@ -287,6 +292,27 @@ export function TabBar({
           title={newWindowTitle ?? "New window for another Claude account"}
         >
           ⧉
+        </button>
+      )}
+      {onToggleGrid && (
+        <button
+          type="button"
+          className={`secondary-button tab-new tab-bar-icon${gridOpen ? " tab-bar-icon-active" : ""}`}
+          onClick={onToggleGrid}
+          aria-label={gridOpen ? "Close grid view" : "Grid view"}
+          aria-pressed={!!gridOpen}
+          title={
+            gridOpen
+              ? "Close grid view. Every tab keeps running."
+              : "Grid view: show up to six tabs at once, each live in its own cell"
+          }
+        >
+          <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+            <path
+              fill="currentColor"
+              d="M1.5 1.5h5.5v5.5h-5.5zM9 1.5h5.5v5.5H9zM1.5 9h5.5v5.5h-5.5zM9 9h5.5v5.5H9z"
+            />
+          </svg>
         </button>
       )}
       {onNewWorktree && (

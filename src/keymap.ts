@@ -24,6 +24,7 @@ export type ShortcutAction =
   | "closeSplit"
   | "swapPanes"
   | "focusOtherPane"
+  | "toggleGrid"
   | "toggleFilePanel"
   | "renameTab"
   | "settings"
@@ -164,8 +165,15 @@ export const SHORTCUTS: ShortcutDef[] = [
   {
     action: "closeSplit",
     label: "Close split",
-    description: "Close the second pane. Its tab keeps running.",
+    description: "Close the second pane or the grid. Its tabs keep running.",
     code: "KeyW",
+    alt: true,
+  },
+  {
+    action: "toggleGrid",
+    label: "Grid view",
+    description: "Show up to six tabs at once, each live in its own cell. Press again to close.",
+    code: "KeyG",
     alt: true,
   },
   {
@@ -476,6 +484,7 @@ const TERMINAL_GLOBALS = new Set<ShortcutAction>([
   "swapPanes",
   "focusOtherPane",
   "closeSplit",
+  "toggleGrid",
 ]);
 
 /**

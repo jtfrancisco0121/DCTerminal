@@ -536,6 +536,10 @@ impl StateStore {
             self.data.layout.secondary_tab_id = None;
             self.data.layout = self.data.layout.clone().sanitized();
         }
+        if self.data.layout.grid_tab_ids.contains(&closed_id) {
+            self.data.layout.grid_tab_ids.retain(|id| id != &closed_id);
+            self.data.layout = self.data.layout.clone().sanitized();
+        }
         if let Some(window) = self
             .data
             .windows
@@ -544,6 +548,10 @@ impl StateStore {
         {
             if window.layout.secondary_tab_id.as_deref() == Some(closed_id.as_str()) {
                 window.layout.secondary_tab_id = None;
+                window.layout = window.layout.clone().sanitized();
+            }
+            if window.layout.grid_tab_ids.contains(&closed_id) {
+                window.layout.grid_tab_ids.retain(|id| id != &closed_id);
                 window.layout = window.layout.clone().sanitized();
             }
         }
@@ -699,7 +707,7 @@ impl StateStore {
         &self.data.layout
     }
 
-    /// A secondary pane that names a closed tab is dropped.
+    /// A secondary pane or grid cell that names a closed tab is dropped.
     pub fn set_layout(&mut self, next: crate::store::LayoutState) -> Result<(), String> {
         let mut next = next.sanitized();
         if let Some(id) = next.secondary_tab_id.clone() {
@@ -707,6 +715,11 @@ impl StateStore {
                 next.secondary_tab_id = None;
                 next = next.sanitized();
             }
+        }
+        if !next.grid_tab_ids.is_empty() {
+            let tabs = &self.data.tabs;
+            next.grid_tab_ids.retain(|id| tabs.iter().any(|t| &t.id == id));
+            next = next.sanitized();
         }
         let window_id = self.draft_window.clone();
         if crate::store::state_types::window_matches(
@@ -1477,6 +1490,7 @@ mod tests {
             .set_layout(LayoutState {
                 split_mode: "horizontal".to_string(),
                 secondary_tab_id: Some(second.clone()),
+                grid_tab_ids: Vec::new(),
                 primary_size: 99.0,
                 file_panel_open: true,
                 file_panel_width: 300.0,
@@ -1512,6 +1526,76 @@ mod tests {
             .unwrap();
         assert_eq!(store.layout().split_mode, "single");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn grid_layout_keeps_open_tabs_and_closes_below_two() {
+        let dir = std::env::temp_dir().join(format!(
+            "dcterminal_grid_{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let role = crate::roles::Role {
+            id: "role_dev".to_string(),
+            name: "Developer".to_string(),
+            template_text: String::new(),
+            template_version: 1,
+            template_hash: String::new(),
+            schema_template_hash: String::new(),
+            default_mode: "agent".to_string(),
+            injection: "send_on_start".to_string(),
+            color: "#0969da".to_string(),
+            is_built_in: true,
+            fields: vec![],
+            updated_at: None,
+        };
+        let mut store = StateStore {
+            path: dir.join("state.json"),
+            data: AppStateFile::default(),
+            new_tab_provider: crate::provider::ProviderId::DEFAULT,
+            draft_window: crate::store::state_types::MAIN_WINDOW_ID.to_string(),
+        };
+        let a = store.create_draft_tab(&role, "/tmp/a", true, None).unwrap();
+        let b = store.create_draft_tab(&role, "/tmp/b", true, None).unwrap();
+        let c = store.create_draft_tab(&role, "/tmp/c", true, None).unwrap();
+        store
+            .set_layout(crate::store::LayoutState {
+                split_mode: "grid".to_string(),
+                secondary_tab_id: Some(b.clone()),
+                grid_tab_ids: vec![a.clone(), b.clone(), "gone".to_string(), b.clone(), c.clone()],
+                ..crate::store::LayoutState::default()
+            })
+            .unwrap();
+        assert_eq!(store.layout().split_mode, "grid");
+        assert_eq!(store.layout().grid_tab_ids, vec![a.clone(), b.clone(), c.clone()]);
+        assert!(store.layout().secondary_tab_id.is_none());
+        store.close_tab(&c).unwrap();
+        assert_eq!(store.layout().grid_tab_ids, vec![a.clone(), b.clone()]);
+        store.close_tab(&b).unwrap();
+        assert_eq!(store.layout().split_mode, "single");
+        assert!(store.layout().grid_tab_ids.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn grid_layout_caps_at_six_tabs_and_other_modes_drop_the_list() {
+        let ids: Vec<String> = (0..9).map(|i| format!("t{i}")).collect();
+        let grid = crate::store::LayoutState {
+            split_mode: "grid".to_string(),
+            grid_tab_ids: ids.clone(),
+            ..crate::store::LayoutState::default()
+        }
+        .sanitized();
+        assert_eq!(grid.grid_tab_ids.len(), 6);
+        let split = crate::store::LayoutState {
+            split_mode: "horizontal".to_string(),
+            secondary_tab_id: Some("t1".to_string()),
+            grid_tab_ids: ids,
+            ..crate::store::LayoutState::default()
+        }
+        .sanitized();
+        assert!(split.grid_tab_ids.is_empty());
+        assert_eq!(split.split_mode, "horizontal");
     }
 
     #[test]

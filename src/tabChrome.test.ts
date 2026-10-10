@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  addToGrid,
+  GRID_MAX_TABS,
+  gridOpen,
+  gridRows,
+  openGrid,
+  removeFromGrid,
   buildPalette,
   clampSplitSize,
   closeSplit,
@@ -374,5 +380,81 @@ describe("tab chrome", () => {
       expect(parsePaletteId("splitRight")).toEqual({ kind: "action", id: "splitRight" });
       expect(parsePaletteId("nope")).toBeNull();
     });
+  });
+});
+
+describe("grid view", () => {
+  const ids = ["a", "b", "c", "d"];
+
+  it("lays out cells by window shape", () => {
+    expect(gridRows(2, false)).toEqual([2]);
+    expect(gridRows(3, false)).toEqual([3]);
+    expect(gridRows(4, false)).toEqual([2, 2]);
+    expect(gridRows(6, false)).toEqual([3, 3]);
+    expect(gridRows(5, false)).toEqual([3, 2]);
+    expect(gridRows(2, true)).toEqual([1, 1]);
+    expect(gridRows(3, true)).toEqual([1, 1, 1]);
+    expect(gridRows(6, true)).toEqual([2, 2, 2]);
+    expect(gridRows(0, true)).toEqual([]);
+  });
+
+  it("opens with the active tab, dedupes, and caps at six", () => {
+    const grid = openGrid(emptySplit(), ["a", "b", "a", "c", "d", "e", "f", "g"], "z");
+    expect(grid.mode).toBe("grid");
+    expect(grid.gridTabIds).toHaveLength(GRID_MAX_TABS);
+    expect(grid.gridTabIds).toContain("z");
+    expect(new Set(grid.gridTabIds).size).toBe(GRID_MAX_TABS);
+    expect(splitOpen(grid)).toBe(true);
+    expect(gridOpen(openGrid(emptySplit(), ["a"], "a"))).toBe(false);
+  });
+
+  it("keeps every cell in place when a cell's tab is selected", () => {
+    const grid = openGrid(emptySplit(), ids, "a");
+    expect(reconcileSplit(grid, ids, "a", "c")).toBe(grid);
+  });
+
+  it("puts a tab from outside the grid into the cell of the tab it replaced", () => {
+    const grid = openGrid(emptySplit(), ["a", "b", "c"], "b");
+    const next = reconcileSplit(grid, ["a", "b", "c", "x"], "b", "x");
+    expect(next.gridTabIds).toEqual(["a", "x", "c"]);
+  });
+
+  it("drops closed tabs and closes below two cells", () => {
+    const grid = openGrid(emptySplit(), ["a", "b", "c"], "a");
+    expect(reconcileSplit(grid, ["a", "b"], "a", "a").gridTabIds).toEqual(["a", "b"]);
+    expect(reconcileSplit(grid, ["a"], "a", "a").mode).toBe("single");
+  });
+
+  it("adds and removes cells", () => {
+    const start = addToGrid(emptySplit(), "b", "a");
+    expect(start.gridTabIds).toEqual(["a", "b"]);
+    const more = addToGrid(start, "c", "a");
+    expect(more.gridTabIds).toEqual(["a", "b", "c"]);
+    expect(addToGrid(more, "c", "a")).toBe(more);
+    expect(removeFromGrid(more, "b").gridTabIds).toEqual(["a", "c"]);
+    expect(removeFromGrid(removeFromGrid(more, "b"), "c").mode).toBe("single");
+  });
+
+  it("restores a saved grid and ignores a grid of one", () => {
+    const restored = splitFromLayout({
+      splitMode: "grid",
+      secondaryTabId: null,
+      primarySize: 50,
+      gridTabIds: ["a", "b"],
+    });
+    expect(restored.gridTabIds).toEqual(["a", "b"]);
+    expect(
+      splitFromLayout({ splitMode: "grid", secondaryTabId: null, primarySize: 50, gridTabIds: ["a"] })
+        .mode,
+    ).toBe("single");
+  });
+
+  it("lists grid commands in the palette and hides pane-only ones", () => {
+    const off = buildPalette({ tabs: [], canReopen: false, splitOpen: false, canAddToGrid: true });
+    expect(off.find((c) => c.id === "toggleGrid")?.title).toBe("Show tabs in a grid");
+    expect(off.some((c) => c.id === "addToGrid")).toBe(true);
+    const on = buildPalette({ tabs: [], canReopen: false, splitOpen: true, gridOpen: true });
+    expect(on.find((c) => c.id === "toggleGrid")?.title).toBe("Close grid view");
+    expect(on.some((c) => c.id === "swapPanes")).toBe(false);
   });
 });

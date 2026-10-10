@@ -5,6 +5,8 @@ type Props = {
   tabs: { id: string; label: string; cwd?: string }[];
   canReopen: boolean;
   splitOpen: boolean;
+  gridOpen?: boolean;
+  canAddToGrid?: boolean;
   canSendPlan?: boolean;
   sendPlanTargets?: readonly string[];
   canExportTranscript?: boolean;
@@ -22,6 +24,8 @@ export function CommandPalette({
   tabs,
   canReopen,
   splitOpen,
+  gridOpen = false,
+  canAddToGrid = false,
   canSendPlan = false,
   sendPlanTargets,
   canExportTranscript = false,
@@ -41,6 +45,8 @@ export function CommandPalette({
           tabs,
           canReopen,
           splitOpen,
+          gridOpen,
+          canAddToGrid,
           canSendPlan,
           sendPlanTargets,
           canExportTranscript,
@@ -54,6 +60,8 @@ export function CommandPalette({
       tabs,
       canReopen,
       splitOpen,
+      gridOpen,
+      canAddToGrid,
       canSendPlan,
       sendPlanTargets,
       canExportTranscript,

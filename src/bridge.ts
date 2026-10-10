@@ -1371,6 +1371,8 @@ export type LayoutState = {
   secondaryTabId: string | null;
   /** Main pane size in percent. */
   primarySize: number;
+  /** Grid mode: the tabs on screen, in cell order. */
+  gridTabIds?: string[];
   filePanelOpen: boolean;
   filePanelWidth: number;
 };

@@ -171,6 +171,7 @@ import { SessionCards } from "./components/SessionCards";
 import { ShortcutsOverlay } from "./components/ShortcutsOverlay";
 import { SplitPanes } from "./components/SplitPanes";
 import { WorkspaceSplit } from "./components/WorkspaceSplit";
+import { GridSplit } from "./components/GridSplit";
 import { FilePanel } from "./components/FilePanel";
 import { ModelPicker } from "./components/ModelPicker";
 import { AgentToasts } from "./components/AgentToasts";
@@ -248,10 +249,15 @@ import {
 } from "./cursorHistory";
 import { TabBar } from "./TabBar";
 import {
+  addToGrid,
   clampSplitSize,
   closeSplit,
   emptySplit,
+  GRID_MAX_TABS,
+  gridOpen,
+  openGrid,
   reconcileSplit,
+  removeFromGrid,
   splitCandidates,
   splitFromLayout,
   splitOpen,
@@ -417,7 +423,7 @@ export function StartupForm({
       .catch(() => {});
   }, []);
   const [split, setSplit] = useState<SplitState>(emptySplit());
-  const [splitPicker, setSplitPicker] = useState<"horizontal" | "vertical" | null>(null);
+  const [splitPicker, setSplitPicker] = useState<"horizontal" | "vertical" | "grid" | null>(null);
   const [focusedPane, setFocusedPane] = useState<"primary" | "secondary">("primary");
   const focusedPaneRef = useRef(focusedPane);
   focusedPaneRef.current = focusedPane;
@@ -910,9 +916,9 @@ export function StartupForm({
   useEffect(() => {
     if (!windowFocused) return;
     const secondary = splitOpen(split) ? split.secondaryTabId : null;
-    if (activeTabId) dismissTabToasts(activeTabId);
-    if (secondary) dismissTabToasts(secondary);
-    setTabMarks((marks) => clearMarks(marks, [activeTabId, secondary]));
+    const onScreen = [activeTabId, secondary, ...(gridOpen(split) ? (split.gridTabIds ?? []) : [])];
+    for (const id of onScreen) if (id) dismissTabToasts(id);
+    setTabMarks((marks) => clearMarks(marks, onScreen));
   }, [activeTabId, dismissTabToasts, split, windowFocused]);
 
   // Terminal tabs: busy while output streams; a finished dot when a busy
@@ -1029,9 +1035,11 @@ export function StartupForm({
     if (!layoutLoadedRef.current) return;
     const timer = window.setTimeout(() => {
       const open = splitOpen(split);
+      const grid = gridOpen(split);
       void setLayout({
         splitMode: open ? split.mode : "single",
-        secondaryTabId: open ? split.secondaryTabId : null,
+        secondaryTabId: open && !grid ? split.secondaryTabId : null,
+        gridTabIds: grid ? (split.gridTabIds ?? []) : [],
         primarySize: clampSplitSize(split.primarySize),
         filePanelOpen,
         filePanelWidth,
@@ -1052,7 +1060,7 @@ export function StartupForm({
   }, [activeTabId, savedTabs]);
 
   useEffect(() => {
-    if (!splitOpen(split)) setFocusedPane("primary");
+    if (!splitOpen(split) || split.mode === "grid") setFocusedPane("primary");
   }, [split]);
 
   useEffect(() => {
@@ -2317,6 +2325,23 @@ export function StartupForm({
     setFocusedPane("primary");
   }, [handleSelectTab]);
 
+  /** Grid view on or off. It opens with the active tab, then tabs in bar order. */
+  const toggleGrid = useCallback(() => {
+    const current = splitRef.current;
+    if (gridOpen(current)) {
+      setSplit(closeSplit(current));
+      return;
+    }
+    const active = activeTabIdRef.current;
+    const ids = savedTabs.map((tab) => tab.id);
+    if (ids.length < 2) {
+      showNotice("Nothing to show in a grid", "Open another tab first, then use Grid view.", "question");
+      return;
+    }
+    const seed = active ? [active, ...ids.filter((id) => id !== active)] : ids;
+    setSplit(openGrid(current, seed.slice(0, GRID_MAX_TABS), active));
+  }, [savedTabs, showNotice]);
+
   /** Mod+F: the terminal's search, the chat's find bar, or Search all chats. */
   const handleFind = useCallback(() => {
     const secondaryId = splitOpen(split) ? split.secondaryTabId : null;
@@ -2477,6 +2502,10 @@ export function StartupForm({
         focusPane("primary");
         return;
       }
+      if (match.action === "toggleGrid") {
+        toggleGrid();
+        return;
+      }
       if (match.action === "toggleFilePanel") {
         setFilePanelOpen((open) => !open);
         return;
@@ -2508,6 +2537,7 @@ export function StartupForm({
       sendFromPad,
       split,
       swapPanes,
+      toggleGrid,
       focusPane,
       transferPad,
       padHiddenNow,
@@ -2684,6 +2714,11 @@ export function StartupForm({
         setHandoffError(message);
       });
   }, []);
+
+  /** Tabs that can join the grid (or start one with the active tab). */
+  const gridCandidates = savedTabs.filter((tab) =>
+    gridOpen(split) ? !(split.gridTabIds ?? []).includes(tab.id) : tab.id !== activeTabId,
+  );
 
   /** Terminal role tab that can hand off a plan or a report (selection or tail). */
   const isPlanTerminal =
@@ -3006,6 +3041,9 @@ export function StartupForm({
       case "sendToPlanner":
         openHandoffDialog("role_planner");
         return;
+      case "addToGrid":
+        setSplitPicker("grid");
+        return;
       case "sendImplementerToReviewer":
         openHandoffDialog("role_pr_reviewer");
         return;
@@ -3225,6 +3263,7 @@ export function StartupForm({
       case "closeSplit":
       case "swapPanes":
       case "focusOtherPane":
+      case "toggleGrid":
       case "toggleFilePanel":
       case "find":
       case "searchChats":
@@ -3379,6 +3418,8 @@ export function StartupForm({
         platform === "mac" ? "mac" : platform === "windows" ? "windows" : "other",
       )})`}
       onNewWorktree={() => setWorktreeDialogOpen(true)}
+      onToggleGrid={toggleGrid}
+      gridOpen={gridOpen(split)}
       onReopen={() => void reopenTab()}
       onSettings={() => setSettingsOpen((open) => toggleSettings(open))}
       onColor={(tabId, color) => {
@@ -3840,6 +3881,8 @@ export function StartupForm({
           tabs={savedTabs.map((tab) => ({ id: tab.id, label: tab.label, cwd: tab.cwd }))}
           canReopen={closedTabs.length > 0}
           splitOpen={splitOpen(split)}
+          gridOpen={gridOpen(split)}
+          canAddToGrid={gridCandidates.length > 0 && (!gridOpen(split) || (split.gridTabIds?.length ?? 0) < GRID_MAX_TABS)}
           canSendPlan={(isCaptureSource(roleId) && !!session) || !!isPlanTerminal}
           sendPlanTargets={isPlanTerminal ? planTerminalTargets : handoffTargets(roleId)}
           canExportTranscript={
@@ -3868,7 +3911,19 @@ export function StartupForm({
           onClose={() => setSwitcherOpen(false)}
         />
       )}
-      {splitPicker && (
+      {splitPicker === "grid" && (
+        <TabSwitcher
+          title="Add tab to grid"
+          placeholder="Show which tab in the grid?"
+          tabs={gridCandidates}
+          onSelect={(tabId) => {
+            setSplitPicker(null);
+            setSplit((current) => addToGrid(current, tabId, activeTabIdRef.current));
+          }}
+          onClose={() => setSplitPicker(null)}
+        />
+      )}
+      {splitPicker && splitPicker !== "grid" && (
         <TabSwitcher
           title={splitPicker === "horizontal" ? "Split right with tab" : "Split down with tab"}
           placeholder="Show which tab in the second pane?"
@@ -3933,14 +3988,25 @@ export function StartupForm({
 
   const fontSize = terminalSettings?.fontSize ?? 14;
 
+  // The active tab always has a cell, so its full controls are never hidden.
+  const showGrid =
+    !settingsOpen && gridOpen(split) && !!activeTabId && (split.gridTabIds ?? []).includes(activeTabId);
+
   const secondaryTab =
     !settingsOpen && splitOpen(split) && split.secondaryTabId !== activeTabId
       ? savedTabs.find((tab) => tab.id === split.secondaryTabId)
       : undefined;
 
-  const renderSecondary = (tab: TabSummary) => {
+  /**
+   * A live view of a tab that is not the active one: the same terminal
+   * process, or the running chat with its own composer.
+   */
+  const paneBody = (
+    tab: TabSummary,
+    idle: ReactNode,
+    inputRef?: typeof secondaryInputRef,
+  ): ReactNode => {
     const rt = runtimes[tab.id];
-    const liveChat = tab.kind !== "terminal" && !!rt?.session;
     let body: ReactNode;
     if (tab.kind === "terminal") {
       const tabLaunch = terminalLaunchOf(tab);
@@ -3994,7 +4060,7 @@ export function StartupForm({
           folderWarning={rt.folderWarning}
           agentExited={rt.agentExited}
           onRestart={() => void stopSecondarySession(tab.id)}
-          inputRef={secondaryInputRef}
+          inputRef={inputRef}
           headerExtra={
             <>
               {modeBadgeFor(tab, rt.session.modeId)}
@@ -4005,15 +4071,24 @@ export function StartupForm({
         />
       );
     } else {
-      body = (
-        <div className="split-pane-empty">
-          <p className="hint">This tab has no running session.</p>
-          <button type="button" className="secondary-button" onClick={swapPanes}>
-            Open in main pane
-          </button>
-        </div>
-      );
+      body = idle;
     }
+    return body;
+  };
+
+  const renderSecondary = (tab: TabSummary) => {
+    const rt = runtimes[tab.id];
+    const liveChat = tab.kind !== "terminal" && !!rt?.session;
+    const body = paneBody(
+      tab,
+      <div className="split-pane-empty">
+        <p className="hint">This tab has no running session.</p>
+        <button type="button" className="secondary-button" onClick={swapPanes}>
+          Open in main pane
+        </button>
+      </div>,
+      secondaryInputRef,
+    );
     const planWaiting = rt?.plan != null;
     return (
       <div
@@ -4059,6 +4134,78 @@ export function StartupForm({
           </p>
         )}
         <div className="split-pane-body">{body}</div>
+      </div>
+    );
+  };
+
+  /**
+   * A grid cell for a tab that is not the active one: a live view plus a
+   * header with its status. Any click (or focus) in it makes it the active
+   * tab, which gives that cell the full controls without moving any cell.
+   */
+  const gridTone = (tab: TabSummary) => {
+    const status = tabStatuses[tab.id];
+    return status?.needsYou ? "needs" : status?.busy ? "busy" : status?.unseen ? "unseen" : "idle";
+  };
+
+  /** Take a tab out of the grid. Removing the active cell focuses its neighbor. */
+  const removeGridCell = (tabId: string) => {
+    const cells = splitRef.current.gridTabIds ?? [];
+    const index = cells.indexOf(tabId);
+    const neighbor = cells[index + 1] ?? cells[index - 1] ?? null;
+    setSplit((current) => removeFromGrid(current, tabId));
+    if (tabId === activeTabIdRef.current && neighbor) void handleSelectTab(neighbor);
+  };
+
+  const gridCellBar = (tab: TabSummary) => {
+    const status = tabStatuses[tab.id];
+    const tone = gridTone(tab);
+    return (
+      <div className="split-pane-bar">
+        <span className={`grid-cell-dot grid-cell-dot-${tone}`} aria-hidden />
+        <span className="split-pane-title" title={tab.cwd}>
+          {tab.label}
+        </span>
+        {status && tone !== "idle" && (
+          <span className="grid-cell-status">{tabStatusLabel(status)}</span>
+        )}
+        <span className="split-pane-spacer" />
+        <button
+          type="button"
+          className="secondary-button grid-cell-remove"
+          onClick={() => removeGridCell(tab.id)}
+          title="Remove from grid. The tab keeps running."
+          aria-label={`Remove ${tab.label} from grid`}
+        >
+          ×
+        </button>
+      </div>
+    );
+  };
+
+  const renderGridCell = (tab: TabSummary) => {
+    const tone = gridTone(tab);
+    const activate = (event: { target: EventTarget }) => {
+      if (event.target instanceof Element && event.target.closest(".grid-cell-remove")) return;
+      if (tab.id !== activeTabIdRef.current) void handleSelectTab(tab.id);
+    };
+    return (
+      <div
+        className={`split-pane grid-cell grid-cell-${tone}`}
+        data-pane="grid"
+        aria-label={`Grid cell: ${tab.label}`}
+        onMouseDownCapture={activate}
+        onFocusCapture={activate}
+      >
+        {gridCellBar(tab)}
+        <div className="split-pane-body">
+          {paneBody(
+            tab,
+            <div className="split-pane-empty">
+              <p className="hint">Not started. Click to open it here.</p>
+            </div>,
+          )}
+        </div>
       </div>
     );
   };
@@ -4208,6 +4355,26 @@ export function StartupForm({
       <div className="workspace-body">
         {filePanel}
         <div className="workspace-main">
+          {showGrid ? (
+            <GridSplit
+              ids={split.gridTabIds ?? []}
+              renderCell={(tabId) => {
+                if (tabId === activeTabId && activeTabSummary) {
+                  return (
+                    <div
+                      className={`split-pane split-pane-primary split-pane-focused grid-cell grid-cell-active grid-cell-${gridTone(activeTabSummary)}`}
+                      data-pane="primary"
+                    >
+                      {gridCellBar(activeTabSummary)}
+                      <div className="grid-cell-main">{content}</div>
+                    </div>
+                  );
+                }
+                const tab = savedTabs.find((item) => item.id === tabId);
+                return tab ? renderGridCell(tab) : null;
+              }}
+            />
+          ) : (
           <WorkspaceSplit
             mode={secondaryTab ? split.mode : "single"}
             primarySize={clampSplitSize(split.primarySize)}
@@ -4235,6 +4402,7 @@ export function StartupForm({
             }
             secondary={secondaryTab ? renderSecondary(secondaryTab) : null}
           />
+          )}
         </div>
       </div>
       {firstUseTip}
