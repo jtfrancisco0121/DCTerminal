@@ -51,6 +51,7 @@ use commands::{activity_clear, activity_list};
 use commands::{changes_file_diff, changes_list, changes_revert, changes_snapshot, ChangesRoot};
 use commands::{first_run_complete, first_run_status, provider_status};
 use commands::{storage_cleanup, storage_status};
+use commands::{create_role, delete_role, duplicate_role, export_role, import_role, preview_role_template};
 use commands::{
     claude_account_logins, get_provider_settings, set_provider_settings, set_tab_provider,
 };
@@ -159,6 +160,12 @@ pub fn run() {
             validate_and_preview,
             save_role,
             reset_builtin_role,
+            preview_role_template,
+            create_role,
+            duplicate_role,
+            delete_role,
+            import_role,
+            export_role,
             get_app_state,
             get_tab,
             select_active_tab,

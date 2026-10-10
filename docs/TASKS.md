@@ -54,7 +54,7 @@ Checklist aligned with [DCTerminal-Project-Blueprint.md](./DCTerminal-Project-Bl
 | ID | Task | FR / ref | Status |
 |----|------|----------|--------|
 | T3.1 | Role picker (digits 1–5, folder-only compact) | FR-030, FR-101 | [ ] |
-| T3.2 | Role editor + schema confirmation UI | FR-021, FR-091 | [ ] |
+| T3.2 | Role editor + schema confirmation UI | FR-021, FR-091 | [x] |
 | T3.3 | Mode setting + header switcher | FR-009 | [ ] |
 | T3.4 | Tab manager (badges, restore `AwaitingInput`, restart) | FR-031–038, FR-100 | [~] |
 | T3.5 | Cursor extension UIs (plan, question, todos, task) | FR-010 | [ ] |
@@ -88,7 +88,8 @@ Checklist aligned with [DCTerminal-Project-Blueprint.md](./DCTerminal-Project-Bl
 
 - [x] `session/load` resume (Continue). Live probe on CLI 2026.10.01: load works; `agent --resume` does not open ACP ids — [cursor-cli-history.md](./cursor-cli-history.md)
 - [x] Plan hand-off (Planner → Implementer / Developer / PR Reviewer)
-- [ ] Custom roles editor (import/export), keymap UI
+- [x] Custom roles editor (import/export): Settings > Roles edits name, color, mode, template, and hand-off targets; New role, Duplicate, Delete (custom only), Import, Export
+- [ ] Keymap UI
 - [x] Transcript export (Markdown), per-tab composer input history, terminal finished notifications (PR #14)
 - [x] Blocking `cursor/ask_question` UI + Settings role template save/reset (PR #14)
 

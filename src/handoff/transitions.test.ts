@@ -89,3 +89,38 @@ describe("hand-off transitions", () => {
     expect(handoffMenuItems("role_general")).toEqual([]);
   });
 });
+
+describe("hand-off targets as role data", () => {
+  it("a loaded role's own targets replace the built-in row", () => {
+    const roles = [
+      { id: "role_planner", name: "Planner", handoffTargets: ["role_developer", "role_custom_x"] },
+      { id: "role_custom_x", name: "Docs writer" },
+    ];
+    expect(handoffTargets("role_planner", roles)).toEqual(["role_developer", "role_custom_x"]);
+    expect(isValidTransition("role_planner", "role_implementer", roles)).toBe(false);
+    expect(handoffMenuItems("role_planner", roles).map((item) => item.label)).toEqual([
+      "Send to Developer",
+      "Send to Docs writer",
+    ]);
+  });
+
+  it("roles without the field (older roles.json) keep the built-in table", () => {
+    const roles = [{ id: "role_implementer", name: "Implementer" }];
+    expect(handoffTargets("role_implementer", roles)).toEqual(["role_pr_reviewer"]);
+    expect(handoffTargets("role_implementer", null)).toEqual(["role_pr_reviewer"]);
+  });
+
+  it("a custom role hands off only where its data says, never to itself", () => {
+    const roles = [
+      { id: "role_custom_x", name: "Docs", handoffTargets: ["role_custom_x", "role_planner"] },
+    ];
+    expect(handoffTargets("role_custom_x", roles)).toEqual(["role_planner"]);
+    expect(isHandoffSource("role_custom_x", roles)).toBe(true);
+    expect(isHandoffSource("role_custom_x")).toBe(false);
+  });
+
+  it("an empty list turns a built-in's hand-offs off", () => {
+    const roles = [{ id: "role_pr_reviewer", name: "PR Reviewer", handoffTargets: [] }];
+    expect(isHandoffSource("role_pr_reviewer", roles)).toBe(false);
+  });
+});

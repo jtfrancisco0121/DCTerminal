@@ -1486,6 +1486,7 @@ mod tests {
             is_built_in: true,
             fields: vec![],
             updated_at: None,
+            handoff_targets: None,
         };
         let mut store = StateStore {
             path: path.clone(),
@@ -1560,6 +1561,7 @@ mod tests {
             is_built_in: true,
             fields: vec![],
             updated_at: None,
+            handoff_targets: None,
         };
         let mut store = StateStore {
             path: dir.join("state.json"),
@@ -1645,6 +1647,7 @@ mod tests {
             is_built_in: true,
             fields: vec![],
             updated_at: None,
+            handoff_targets: None,
         };
         let mut store = StateStore {
             path: dir.join("state.json"),
@@ -1697,6 +1700,7 @@ mod tests {
             is_built_in: true,
             fields: vec![],
             updated_at: None,
+            handoff_targets: None,
         };
         let path = dir.join("state.json");
         let mut store = StateStore {
@@ -1766,6 +1770,7 @@ mod tests {
             is_built_in: true,
             fields: vec![],
             updated_at: None,
+            handoff_targets: None,
         };
         let mut store = StateStore {
             path,
@@ -1822,6 +1827,7 @@ mod tests {
             is_built_in: true,
             fields: vec![],
             updated_at: None,
+            handoff_targets: None,
         };
         let mut store = StateStore {
             path: dir.join("state.json"),
@@ -1862,6 +1868,7 @@ mod tests {
             is_built_in: true,
             fields: vec![],
             updated_at: None,
+            handoff_targets: None,
         };
         let mut store = StateStore {
             path: dir.join("state.json"),
@@ -1903,6 +1910,7 @@ mod tests {
             is_built_in: true,
             fields: vec![],
             updated_at: None,
+            handoff_targets: None,
         };
         let mut store = StateStore {
             path: dir.join("state.json"),
@@ -1977,6 +1985,7 @@ mod tests {
             is_built_in: true,
             fields: vec![],
             updated_at: None,
+            handoff_targets: None,
         };
         let mut store = StateStore {
             path: dir.join("state.json"),

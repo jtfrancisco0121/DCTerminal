@@ -26,7 +26,7 @@ type Props = {
   busy: boolean;
   error: string | null;
   preferredSurface: HandoffSurface;
-  /** Loaded roles, for display names. Built-in names are used when absent. */
+  /** Loaded roles, for display names and hand-off targets. Built-ins are used when absent. */
   roleNames?: readonly RoleName[] | null;
   onTarget: (id: HandoffTargetId) => void;
   onConfirm: (scope: HandoffScope, surface: HandoffSurface) => void;
@@ -46,7 +46,7 @@ export function HandoffDialog({
   onConfirm,
   onClose,
 }: Props) {
-  const targets = handoffTargets(source.sourceRoleId).map((id) => ({
+  const targets = handoffTargets(source.sourceRoleId, roleNames).map((id) => ({
     id,
     label: roleDisplayName(id, roleNames),
   }));
@@ -56,7 +56,7 @@ export function HandoffDialog({
     setSurface(preferredSurface);
   }, [preferredSurface, targetRoleId]);
   const choices = scopeChoices(source);
-  const block = handoffBlockReason(source);
+  const block = handoffBlockReason(source, roleNames);
   const mapped = useMemo(
     () =>
       mapHandoff(source, scope, {
@@ -195,7 +195,7 @@ export function HandoffActions({
   roleNames?: readonly RoleName[] | null;
   onSend: (target: HandoffTargetId) => void;
 }) {
-  const ids = targets ?? (sourceRoleId ? handoffTargets(sourceRoleId) : []);
+  const ids = targets ?? (sourceRoleId ? handoffTargets(sourceRoleId, roleNames) : []);
   return (
     <div className="button-row handoff-actions">
       {ids.map((id) => {

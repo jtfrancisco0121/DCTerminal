@@ -146,6 +146,9 @@ export type RoleSummary = {
   defaultMode: string;
   color: string;
   fieldCount: number;
+  isBuiltIn?: boolean;
+  /** Missing: the built-in transition table applies (`handoff/transitions.ts`). */
+  handoffTargets?: string[];
 };
 
 export async function listRoles(): Promise<RoleSummary[]> {
@@ -184,6 +187,8 @@ export type Role = {
   isBuiltIn: boolean;
   fields: RoleField[];
   updatedAt?: string;
+  /** Missing: the built-in transition table applies (`handoff/transitions.ts`). */
+  handoffTargets?: string[];
 };
 
 export async function getRole(roleId: string): Promise<Role> {
@@ -765,10 +770,50 @@ export type SaveRoleInput = {
   name?: string;
   color?: string;
   defaultMode?: string;
+  /** Replaces the role's hand-off targets. Omitted leaves them unchanged. */
+  handoffTargets?: string[];
 };
 
 export async function saveRole(input: SaveRoleInput): Promise<Role> {
   return invoke("save_role", { input });
+}
+
+export type TemplatePreview = {
+  /** Form fields the template would have after Save. */
+  fields: RoleField[];
+  /** Why Save would be refused, if it would. */
+  error: string | null;
+};
+
+/** Settings > Roles live preview. Nothing is saved. */
+export async function previewRoleTemplate(
+  roleId: string,
+  templateText: string,
+): Promise<TemplatePreview> {
+  return invoke("preview_role_template", { roleId, templateText });
+}
+
+export async function createRole(name: string): Promise<Role> {
+  return invoke("create_role", { name });
+}
+
+/** `handoffTargets`: the source's list as the editor shows it. */
+export async function duplicateRole(roleId: string, handoffTargets?: string[]): Promise<Role> {
+  return invoke("duplicate_role", { roleId, handoffTargets: handoffTargets ?? null });
+}
+
+/** Custom roles only. Refused while an open tab uses the role. */
+export async function deleteRole(roleId: string): Promise<void> {
+  return invoke("delete_role", { roleId });
+}
+
+/** Reads a role file the user picked and adds it as a new custom role. */
+export async function importRole(path: string): Promise<Role> {
+  return invoke("import_role", { path });
+}
+
+export async function exportRole(roleId: string, path: string): Promise<void> {
+  return invoke("export_role", { roleId, path });
 }
 
 export async function resetBuiltinRole(roleId: string): Promise<Role> {
