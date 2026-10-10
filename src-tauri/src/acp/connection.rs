@@ -524,7 +524,7 @@ mod exit_error_tests {
 mod turn_timeout_tests {
     use super::{AcpConnection, LineDispatch, TurnControl};
     use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::AtomicBool;
     use std::time::Duration;
 
@@ -537,7 +537,11 @@ mod turn_timeout_tests {
         path
     }
 
-    fn run_turn(agent: &PathBuf, timeout: Duration, dispatch: &mut LineDispatch) -> Result<serde_json::Value, String> {
+    fn run_turn(
+        agent: &Path,
+        timeout: Duration,
+        dispatch: &mut LineDispatch,
+    ) -> Result<serde_json::Value, String> {
         let mut conn = AcpConnection::spawn(agent, None).unwrap();
         let cancel = AtomicBool::new(false);
         let mut next_id = 100;
