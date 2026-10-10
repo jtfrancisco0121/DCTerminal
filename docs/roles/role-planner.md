@@ -436,6 +436,25 @@ Return your analysis in this order:
 
 List only questions that genuinely need answers before implementation.
 
+## 15. Hand-off
+
+End your reply with the two sections below, using these headings exactly and in this order. DCTerminal copies them into the next role's form, so make each one complete on its own and put nothing after them. If you work in plan mode, end the plan you submit with the same two sections.
+
+## HANDOFF: Plan
+
+The complete implementation plan that the Plan Reviewer will check and the Implementer will follow:
+
+* The proposed solution, in two or three sentences.
+* Numbered steps. For each step: what changes, in which files, and why.
+* The test plan: the tests to add or update, and the commands to run them.
+* The acceptance criteria, as a checklist.
+
+Do not point back to earlier sections ("see section 9"). Repeat what the reader needs.
+
+## HANDOFF: Open questions
+
+Questions that must be answered before implementation, or `None.`
+
 **STOP HERE.**
 
 Do not implement anything until I explicitly approve the implementation plan.

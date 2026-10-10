@@ -4,6 +4,8 @@
  * nothing sends on a verdict by itself.
  */
 
+import { contractVerdictText } from "./contract";
+
 export type ReviewVerdict =
   | "APPROVED"
   | "APPROVED WITH CHANGES"
@@ -102,6 +104,10 @@ function underLabel(
  */
 export function parseReviewVerdict(text: string): ReviewVerdict | null {
   if (!text.trim()) return null;
+  // The hand-off contract's `HANDOFF: Verdict` line is exact; use it first.
+  const declared = contractVerdictText(text);
+  const fromContract = declared ? lastMatch(declared) : null;
+  if (fromContract) return fromContract;
   const lines = text.split(/\r?\n/);
   return (
     underLabel(lines, VERDICT_LABEL, lastMatch) ??
@@ -115,6 +121,10 @@ export function parseReviewVerdict(text: string): ReviewVerdict | null {
  * wins. Falls back to the last verdict phrase.
  */
 export function parseTerminalVerdict(text: string): ReviewVerdict | null {
+  // The newest `HANDOFF: Verdict` wins (handoffSections keeps the last one).
+  const declared = contractVerdictText(text);
+  const fromContract = declared ? lastMatch(declared) : null;
+  if (fromContract) return fromContract;
   const lines = text.split(/\r?\n/);
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     if (!/\bverdict\b/i.test(lines[i])) continue;

@@ -363,6 +363,18 @@ Mention implementation decisions that are technically sound or align well with t
 
 Only ask questions where the answer could materially affect whether the implementation is correct.
 
+## 8. Hand-off
+
+End your review with these two sections, using the headings exactly and in this order. DCTerminal reads them to route the work back to the Implementer or close the chain, so put nothing after them.
+
+## HANDOFF: Verdict
+
+Exactly one line: `APPROVED` (ready to merge) or `REQUEST CHANGES` (something must change before merge).
+
+## HANDOFF: Findings for the Implementer
+
+Only what must change before merge, numbered. For each: the file and line, what is wrong, and the fix you expect. Write `None.` when the verdict is `APPROVED`.
+
 ---
 
 # STRICT REVIEW RULES

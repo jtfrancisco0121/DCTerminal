@@ -654,6 +654,30 @@ IMPLEMENTED WITH DEVIATIONS
 BLOCKED
 \`\`\`
 
+## Hand-off
+
+End your reply with these sections, using the headings exactly and in this order. DCTerminal copies them into the PR Reviewer's form, so put nothing after them.
+
+## HANDOFF: Implementation summary
+
+What you built, in a few sentences, followed by the Final Status line (`IMPLEMENTED`, `IMPLEMENTED WITH DEVIATIONS`, or `BLOCKED`).
+
+## HANDOFF: Files changed
+
+One line per file: `path — what changed and why`.
+
+## HANDOFF: Tests run
+
+One line per command: `command — result`.
+
+## HANDOFF: Deviations from the plan
+
+What differs from the approved plan and why, or `None.`
+
+## HANDOFF: Pull request
+
+The pull request URL, or `None.`
+
 ---
 
 # 22. STRICT RULES
