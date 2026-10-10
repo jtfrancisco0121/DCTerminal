@@ -49,16 +49,31 @@ export function handoffRoute(options: {
 }
 
 /** The follow-up a loop-back sends into the chain's existing tab. */
+const PLANNER_ASK =
+  "Revise the plan to address these findings, then reply with the full revised plan, ending with the `## HANDOFF: Plan` and `## HANDOFF: Open questions` sections.";
+const IMPLEMENTER_ASK =
+  "Address these findings, then push to the same branch so the existing pull request updates (do not open a new one). End your reply with the HANDOFF sections: Implementation summary, Files changed, Tests run, Deviations from the plan, and Pull request (the same URL).";
+
 export function loopBackMessage(
   sourceRoleId: string,
   findings: string,
   round: number,
   roles?: readonly RoleName[] | null,
 ): string {
-  const ask =
-    sourceRoleId === "role_plan_reviewer"
-      ? "Revise the plan to address these findings, then reply with the full revised plan."
-      : "Address these findings, then summarize what changed.";
+  const ask = sourceRoleId === "role_plan_reviewer" ? PLANNER_ASK : IMPLEMENTER_ASK;
   const from = roleDisplayName(sourceRoleId, roles);
   return `Review findings from the ${from} (round ${round}):\n\n${findings.trim()}\n\n${ask}`;
+}
+
+/** The findings and round inside a loopBackMessage, or null for any other text. */
+export function loopBackFindings(text: string): { from: string; round: number; findings: string } | null {
+  const head = /^Review findings from the (.+?) \(round (\d+)\):\n\n/.exec(text.trimStart());
+  if (!head) return null;
+  let findings = text.trimStart().slice(head[0].length);
+  for (const ask of [PLANNER_ASK, IMPLEMENTER_ASK]) {
+    if (findings.trimEnd().endsWith(ask)) findings = findings.trimEnd().slice(0, -ask.length);
+  }
+  // Messages from before the HANDOFF asks end with a short plain ask.
+  findings = findings.replace(/\n\n(?:Address these findings, then summarize what changed\.|Revise the plan to address these findings, then reply with the full revised plan\.)\s*$/, "");
+  return { from: head[1], round: Number(head[2]), findings: findings.trim() };
 }

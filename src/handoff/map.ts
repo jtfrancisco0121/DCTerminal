@@ -106,6 +106,8 @@ export type HandoffSource = {
   branch?: string | null;
   /** Transcript text scanned for the first GitHub pull-request URL. */
   transcriptText?: string;
+  /** The PR Reviewer's findings from the round this Implementer just fixed. */
+  previousReview?: { round: number; findings: string } | null;
   /** The source role's form fields, so hidden answers (Planner Current Behavior unless Bug) stay behind. */
   sourceFields?: HandoffField[];
 };
@@ -198,6 +200,12 @@ export function implementationContext(source: HandoffSource): string {
     parts.push(`Changed files:\n${lines.join("\n")}`);
   }
   if (source.branch?.trim()) parts.push(`Branch: ${source.branch.trim()}`);
+  const previous = source.previousReview;
+  if (previous?.findings.trim()) {
+    parts.push(
+      `Findings from the previous review (round ${previous.round}). Check each one is resolved and say which in your review:\n${takeChars(previous.findings.trim(), 4_000)}`,
+    );
+  }
   const pr =
     firstGithubPrUrl(declared?.pullRequest ?? "") ??
     firstGithubPrUrl(`${source.transcriptText ?? ""}\n${source.latestMessage}`);

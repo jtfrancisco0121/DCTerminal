@@ -883,8 +883,8 @@ describe("Report → Planner", () => {
 
 describe("send-backs (loop-back follow-ups)", () => {
   const cases = [
-    ["role_plan_reviewer", "Plan Reviewer", "Revise the plan to address these findings, then reply with the full revised plan."],
-    ["role_pr_reviewer", "PR Reviewer", "Address these findings, then summarize what changed."],
+    ["role_plan_reviewer", "Plan Reviewer", "Revise the plan to address these findings, then reply with the full revised plan, ending with the `## HANDOFF: Plan` and `## HANDOFF: Open questions` sections."],
+    ["role_pr_reviewer", "PR Reviewer", "Address these findings, then push to the same branch so the existing pull request updates (do not open a new one). End your reply with the HANDOFF sections: Implementation summary, Files changed, Tests run, Deviations from the plan, and Pull request (the same URL)."],
   ] as const;
 
   it.each(cases)("%s: findings, round and the ask", (roleId, name, ask) => {

@@ -220,7 +220,7 @@ import {
   loopBackChain,
   newChain,
 } from "./handoff/chains";
-import { handoffRoute, loopBackMessage } from "./handoff/routing";
+import { handoffRoute, loopBackFindings, loopBackMessage } from "./handoff/routing";
 import {
   isReviewerRole,
   parseReviewVerdict,
@@ -3595,10 +3595,14 @@ export function StartupForm({
         }
       }
       if (source.sourceRoleId === "role_implementer") {
-        const [changes, repo] = await Promise.all([
+        const chainId = savedTabs.find((tab) => tab.id === source.sourceTabId)?.chain?.chainId;
+        const [changes, repo, run] = await Promise.all([
           changesList(source.sourceTabId, "tab").catch(() => null),
           gitRepoInfo(source.cwd).catch(() => null),
+          chainId ? getPipelineRun(chainId).catch(() => null) : Promise.resolve(null),
         ]);
+        // A send-back from the PR Reviewer: the next review checks those findings.
+        const sentBack = loopBackFindings(run?.run.handoffs?.role_implementer?.text ?? "");
         source = {
           ...source,
           changes:
@@ -3610,6 +3614,7 @@ export function StartupForm({
                 }))
               : source.changes,
           branch: repo?.currentBranch ?? source.branch ?? null,
+          previousReview: sentBack ? { round: sentBack.round, findings: sentBack.findings } : null,
         };
       }
       // Settings can stay open over the dialog: map onto the role as saved now.

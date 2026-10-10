@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ChainRef } from "./chains";
-import { handoffRoute, loopBackMessage } from "./routing";
+import { handoffRoute, loopBackFindings, loopBackMessage } from "./routing";
 import { handoffTargets } from "./transitions";
 import type { ReviewVerdict } from "./verdict";
 
@@ -95,10 +95,18 @@ describe("handoffRoute", () => {
 describe("loopBackMessage", () => {
   it("frames the findings for the earlier stage", () => {
     expect(loopBackMessage("role_pr_reviewer", "  - bug\n", 1)).toBe(
-      "Review findings from the PR Reviewer (round 1):\n\n- bug\n\nAddress these findings, then summarize what changed.",
+      "Review findings from the PR Reviewer (round 1):\n\n- bug\n\nAddress these findings, then push to the same branch so the existing pull request updates (do not open a new one). End your reply with the HANDOFF sections: Implementation summary, Files changed, Tests run, Deviations from the plan, and Pull request (the same URL).",
     );
     expect(loopBackMessage("role_plan_reviewer", "x", 2)).toMatch(
-      /^Review findings from the Plan Reviewer \(round 2\)[\s\S]*revised plan\.$/,
+      /^Review findings from the Plan Reviewer \(round 2\)[\s\S]*revised plan, ending with the `## HANDOFF: Plan`/,
     );
+  });
+
+  it("reads the findings back out of a send-back, old or new wording", () => {
+    const sent = loopBackMessage("role_pr_reviewer", "1. src/a.ts:3 — add a guard", 1);
+    expect(loopBackFindings(sent)).toEqual({ from: "PR Reviewer", round: 1, findings: "1. src/a.ts:3 — add a guard" });
+    const old = "Review findings from the PR Reviewer (round 2):\n\n- bug\n\nAddress these findings, then summarize what changed.";
+    expect(loopBackFindings(old)?.findings).toBe("- bug");
+    expect(loopBackFindings("## Reviewed plan\n1. x")).toBeNull();
   });
 });

@@ -107,8 +107,8 @@ const REPO: RepoInfo = {
 const CHAIN_ID = /^ee_\d+$/;
 
 // Loop-backs (handoff/routing.ts loopBackMessage): the follow-up a reviewer sends back.
-const PLANNER_ASK = "Revise the plan to address these findings, then reply with the full revised plan.";
-const IMPLEMENTER_ASK = "Address these findings, then summarize what changed.";
+const PLANNER_ASK = "Revise the plan to address these findings, then reply with the full revised plan, ending with the `## HANDOFF: Plan` and `## HANDOFF: Open questions` sections.";
+const IMPLEMENTER_ASK = "Address these findings, then push to the same branch so the existing pull request updates (do not open a new one). End your reply with the HANDOFF sections: Implementation summary, Files changed, Tests run, Deviations from the plan, and Pull request (the same URL).";
 const followUp = (from: string, round: number, findings: string, ask: string) =>
   `Review findings from the ${from} (round ${round}):\n\n${findings.trim()}\n\n${ask}`;
 

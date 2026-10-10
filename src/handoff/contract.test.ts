@@ -152,4 +152,17 @@ describe("hand-off contract", () => {
     expect(contractPlan("## Plan\n1. x")).toBeNull();
     expect(splitPlanReview("## Reviewed plan\n1. x\n## Review notes\n- y")).toEqual({ plan: "1. x", notes: "- y" });
   });
+
+  it("a round-2 PR Reviewer is told which earlier findings to check", () => {
+    const context = implementationContext(
+      source({
+        sourceRoleId: "role_implementer",
+        latestMessage: "## HANDOFF: Implementation summary\nFixed both. IMPLEMENTED",
+        previousReview: { round: 1, findings: "1. src/a.ts:10 — add a guard" },
+      }),
+    );
+    expect(context).toContain(
+      "Findings from the previous review (round 1). Check each one is resolved and say which in your review:\n1. src/a.ts:10 — add a guard",
+    );
+  });
 });

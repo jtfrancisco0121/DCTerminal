@@ -8,6 +8,8 @@ Do **NOT** modify, rewrite, commit, or generate patches for the code. The one th
 
 When Additional Context gives a pull request URL ("Pull request: …"), review that pull request: use `gh pr view <url>` and `gh pr diff <url>` alongside the local code. Otherwise review the current branch against its target branch.
 
+When Additional Context lists findings from a previous review round, check each of them first, and say in your review which are resolved and which are not. A finding that is still open stays a finding.
+
 The goal is to determine whether the implementation correctly solves the intended task while preserving existing functionality.
 
 ---
@@ -374,9 +376,10 @@ When there is a pull request URL, post your review there so it stays with the co
    * `REQUEST CHANGES`: `gh pr review <url> --request-changes --body-file /tmp/pr-review.md`
    * `APPROVED`: `gh pr review <url> --approve --body-file /tmp/pr-review.md`
 3. GitHub does not let an account approve or request changes on its own pull request. If `gh` refuses for that reason, post the same file with `gh pr review <url> --comment --body-file /tmp/pr-review.md`.
-4. Delete the temporary file. The working tree must stay untouched.
+4. When the verdict is `APPROVED`, mark the draft pull request ready for review: `gh pr ready <url>`.
+5. Delete the temporary file. The working tree must stay untouched.
 
-Do not push, merge, close, or edit the pull request or its branch. If there is no pull request URL, or `gh` is not available or not signed in, skip posting and say so in the summary.
+Apart from marking it ready when you approve, do not push, merge, close, or edit the pull request or its branch. If there is no pull request URL, or `gh` is not available or not signed in, skip posting and say so in the summary.
 
 ## 9. Hand-off
 
@@ -395,7 +398,7 @@ Only what must change before merge, numbered. For each: the file and line, what 
 # STRICT REVIEW RULES
 
 1. **DO NOT MODIFY ANY FILES.**
-2. **DO NOT COMMIT ANYTHING.** Posting your review on the pull request (section 8) is the only thing you publish.
+2. **DO NOT COMMIT ANYTHING.** Posting your review on the pull request, and marking it ready when you approve (section 8), are the only things you publish.
 3. **DO NOT IMPLEMENT FIXES.**
 4. **DO NOT generate patches unless explicitly requested.**
 5. Review the entire relevant code path, not just the diff.
