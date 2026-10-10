@@ -232,6 +232,16 @@ fn provider_for_window(
     provider_for_account(id, settings, Some(&account))
 }
 
+/// Terminal tabs add their folder to Recent, like chat tabs do.
+fn remember_folder(projects: &State<Mutex<crate::store::ProjectsStore>>, folder: &str) {
+    if let Ok(mut projects) = projects.lock() {
+        projects.remember(folder, &chrono::Utc::now().to_rfc3339());
+        if let Err(err) = projects.save() {
+            eprintln!("DCTerminal: could not save recent folder ({err})");
+        }
+    }
+}
+
 #[tauri::command]
 pub fn shell_terminal_start(
     input: ShellTerminalInput,
@@ -239,6 +249,7 @@ pub fn shell_terminal_start(
     settings: State<Mutex<SettingsStore>>,
     store: State<Mutex<StateStore>>,
     registry: State<Mutex<PtyRegistry>>,
+    projects: State<Mutex<crate::store::ProjectsStore>>,
 ) -> Result<TerminalStartResult, String> {
     let launch = match input.launch.as_str() {
         "cursor-cli" => "cursor-cli",
@@ -259,6 +270,7 @@ pub fn shell_terminal_start(
             });
         }
     };
+    let recent_folder = cwd.display().to_string();
     let (role_id, snapshot, color) = shell_snapshot(launch);
     let label = match launch {
         "cursor-cli" => format!("Cursor CLI · {}", folder_name(&input.cwd)),
@@ -427,6 +439,7 @@ pub fn shell_terminal_start(
         },
         on_output,
     )?;
+    remember_folder(&projects, &recent_folder);
     Ok(TerminalStartResult {
         errors: Vec::new(),
         tab_id: Some(tab_id),
@@ -459,6 +472,7 @@ pub fn role_terminal_start(
     settings: State<Mutex<SettingsStore>>,
     store: State<Mutex<StateStore>>,
     registry: State<Mutex<PtyRegistry>>,
+    projects: State<Mutex<crate::store::ProjectsStore>>,
 ) -> Result<TerminalStartResult, String> {
     let role = {
         let roles = roles.lock().map_err(|err| err.to_string())?;
@@ -499,6 +513,7 @@ pub fn role_terminal_start(
             });
         }
     };
+    let recent_folder = cwd.display().to_string();
     let prompt = handoff_terminal_prompt(&merged.text, input.handoff_plan.as_deref().unwrap_or(""));
     let mode = {
         let settings = settings.lock().map_err(|err| err.to_string())?;
@@ -580,6 +595,7 @@ pub fn role_terminal_start(
         },
         on_output,
     )?;
+    remember_folder(&projects, &recent_folder);
     Ok(TerminalStartResult {
         errors: Vec::new(),
         tab_id: Some(tab_id),

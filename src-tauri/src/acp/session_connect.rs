@@ -50,6 +50,11 @@ pub struct SessionModels {
     /// Claude model options (id + label) from the `model` config option.
     /// Empty for Cursor, which uses `agent --list-models` instead.
     pub entries: Vec<crate::models::ModelEntry>,
+    /// Claude reasoning effort: the `configOptions` entry of category
+    /// `thought_level` (id `effort`). Empty when the agent does not offer it.
+    pub effort_config_id: Option<String>,
+    pub effort_current: Option<String>,
+    pub effort_available: Vec<String>,
 }
 
 fn collect_labeled_options(options: &Value, out: &mut Vec<(String, String)>) {
@@ -104,6 +109,26 @@ pub fn parse_session_models(result: &Value) -> SessionModels {
                 let mut labeled = Vec::new();
                 collect_labeled_options(values, &mut labeled);
                 info.entries = crate::models::claude_models_from_options(&labeled);
+            }
+        }
+    }
+    if let Some(options) = result.get("configOptions").and_then(Value::as_array) {
+        let effort = options
+            .iter()
+            .find(|opt| opt.get("category").and_then(Value::as_str) == Some("thought_level"))
+            .or_else(|| {
+                options
+                    .iter()
+                    .find(|opt| opt.get("id").and_then(Value::as_str) == Some("effort"))
+            });
+        if let Some(opt) = effort {
+            info.effort_config_id = opt.get("id").and_then(Value::as_str).map(String::from);
+            info.effort_current = opt
+                .get("currentValue")
+                .and_then(Value::as_str)
+                .map(String::from);
+            if let Some(values) = opt.get("options") {
+                option_values(values, &mut info.effort_available);
             }
         }
     }

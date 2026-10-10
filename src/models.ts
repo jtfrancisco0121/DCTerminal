@@ -103,3 +103,9 @@ export function modelChangeNote(model: string, via: ModelVia | null, restarted: 
   if (via === "unchanged") return `Model is already ${model}.`;
   return `Model set to ${model}.`;
 }
+
+/**
+ * Claude reasoning effort levels, as the adapter names them (captured from
+ * `session/new`, adapter 0.88.0). A live session shows the levels it offers.
+ */
+export const CLAUDE_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;

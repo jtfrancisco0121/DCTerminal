@@ -56,6 +56,15 @@ pub struct ModelSettings {
     pub default_model: String,
     #[serde(default)]
     pub role_models: HashMap<String, String>,
+    /// Claude only: reasoning effort per role (`low` … `max`). A role with
+    /// no entry keeps the account default.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub role_effort: HashMap<String, String>,
+}
+
+/// An effort value as the Claude adapter names them (`low`, `xhigh`, …).
+pub fn valid_effort(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 16 && value.chars().all(|c| c.is_ascii_lowercase())
 }
 
 fn default_model_id() -> String {
@@ -67,6 +76,7 @@ impl Default for ModelSettings {
         Self {
             default_model: default_model_id(),
             role_models: HashMap::new(),
+            role_effort: HashMap::new(),
         }
     }
 }
@@ -79,6 +89,7 @@ impl ModelSettings {
         Self {
             default_model: CLAUDE_DEFAULT_MODEL_ID.to_string(),
             role_models: HashMap::new(),
+            role_effort: HashMap::new(),
         }
     }
 }
@@ -556,6 +567,18 @@ impl SettingsStore {
             .map(|(role, model)| (role, model.trim().to_string()))
             .filter(|(role, model)| !role.trim().is_empty() && valid(model))
             .collect();
+        // Effort is a Claude option; "default" means no override.
+        next.role_effort = if claude {
+            next.role_effort
+                .into_iter()
+                .map(|(role, effort)| (role, effort.trim().to_string()))
+                .filter(|(role, effort)| {
+                    !role.trim().is_empty() && effort != "default" && valid_effort(effort)
+                })
+                .collect()
+        } else {
+            HashMap::new()
+        };
         match provider {
             ProviderId::Cursor => self.data.models.cursor = next,
             ProviderId::Claude => self.data.models.claude = next,
@@ -832,6 +855,35 @@ mod tests {
     }
 
     #[test]
+    fn role_effort_is_claude_only_and_drops_default_and_bad_values() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("dcterminal_effort_{nanos}"));
+        let mut store = SettingsStore::open(&dir).unwrap();
+        let mut next = ModelSettings::claude_default();
+        next.role_effort = HashMap::from([
+            ("role_planner".to_string(), "high".to_string()),
+            ("role_general".to_string(), "default".to_string()),
+            ("role_developer".to_string(), "--max".to_string()),
+        ]);
+        store.set_models_for(ProviderId::Claude, next.clone()).unwrap();
+        let saved = &store.models_for(ProviderId::Claude).role_effort;
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved.get("role_planner").map(String::as_str), Some("high"));
+        let again = SettingsStore::open(&dir).unwrap();
+        assert_eq!(again.models_for(ProviderId::Claude).role_effort, *saved);
+        let cursor = ModelSettings {
+            role_effort: next.role_effort,
+            ..ModelSettings::default()
+        };
+        store.set_models_for(ProviderId::Cursor, cursor).unwrap();
+        assert!(store.models_for(ProviderId::Cursor).role_effort.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn model_defaults_to_composer_and_drops_bad_ids() {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -848,6 +900,7 @@ mod tests {
                     ("role_planner".to_string(), "gpt-5".to_string()),
                     ("role_general".to_string(), "bad id".to_string()),
                 ]),
+                role_effort: HashMap::new(),
             })
             .unwrap();
         let again = SettingsStore::open(&dir).unwrap();

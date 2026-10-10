@@ -167,6 +167,36 @@ describe("SettingsPage categories (U6)", () => {
     expect(screen.getByLabelText("Record permission payloads")).toBeTruthy();
   });
 
+  it("sets a Claude reasoning effort per role, and default clears it", () => {
+    const onModelSettings = vi.fn();
+    render(
+      <SettingsPage
+        {...props}
+        initialCategory="Models"
+        modelSettings={{
+          cursor: { defaultModel: "composer-2.5", roleModels: {} },
+          claude: { defaultModel: "default", roleModels: {}, roleEffort: { role_developer: "low" } },
+        }}
+        onModelSettings={onModelSettings}
+      />,
+    );
+    const planner = screen.getByLabelText("Claude effort for Planner") as HTMLSelectElement;
+    expect(planner.value).toBe("");
+    expect((screen.getByLabelText("Claude effort for Developer") as HTMLSelectElement).value).toBe("low");
+    fireEvent.change(planner, { target: { value: "high" } });
+    expect(onModelSettings).toHaveBeenLastCalledWith(
+      "claude",
+      expect.objectContaining({ roleEffort: { role_developer: "low", role_planner: "high" } }),
+    );
+    fireEvent.change(screen.getByLabelText("Claude effort for Developer"), { target: { value: "" } });
+    expect(onModelSettings).toHaveBeenLastCalledWith(
+      "claude",
+      expect.objectContaining({ roleEffort: {} }),
+    );
+    // Cursor has no effort setting.
+    expect(screen.queryByLabelText("Cursor effort for Planner")).toBeNull();
+  });
+
   it("can open straight on a category", () => {
     render(<SettingsPage {...props} initialCategory="Notifications" />);
     expect(screen.getByRole("region", { name: "Notifications" })).toBeTruthy();

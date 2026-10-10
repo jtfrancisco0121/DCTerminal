@@ -458,6 +458,9 @@ export type DevSessionInfo = {
   cwd: string;
   /** Model the agent reported (or was started with). */
   model?: string | null;
+  /** Claude reasoning effort, and the levels the session offers. */
+  effort?: string | null;
+  effortOptions?: string[];
 };
 
 export type DevPromptResult = {
@@ -1154,6 +1157,8 @@ export type ModelList = {
 export type ModelSettings = {
   defaultModel: string;
   roleModels: Record<string, string>;
+  /** Claude only: reasoning effort per role ("low" … "max"). No entry = account default. */
+  roleEffort?: Record<string, string>;
 };
 
 export type ProviderModelSettings = {
@@ -1200,6 +1205,11 @@ export async function setTabModel(tabId: string, model: string | null): Promise<
 /** Change a running chat tab's model (in place, or restart + session/load). */
 export async function acpSetModel(tabId: string, model: string | null): Promise<SetModelResult> {
   return invoke<SetModelResult>("acp_set_model", { tabId, model });
+}
+
+/** Change a running Claude chat's reasoning effort. Returns the level now in use. */
+export async function acpSetEffort(tabId: string, effort: string): Promise<string> {
+  return invoke<string>("acp_set_effort", { tabId, effort });
 }
 
 export async function getNotificationSettings(): Promise<NotificationSettings> {

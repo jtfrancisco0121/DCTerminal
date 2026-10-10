@@ -28,7 +28,7 @@ use acp::{probe_acp, probe_acp_handshake};
 use cli_detect::{cli_login_status, detect_cli};
 use commands::history_search;
 use commands::{
-    acp_set_model, get_claude_usage, check_working_folder, close_tab, create_execution_pipeline_tabs,
+    acp_set_effort, acp_set_model, get_claude_usage, check_working_folder, close_tab, create_execution_pipeline_tabs,
     create_pipeline_tabs, cursor_approval_mode, get_pipeline_run, pipeline_promote_plan,
     pipeline_set_candidate_plan,
     dev_session_cancel, dev_session_send, dev_session_start, dev_session_stop,
@@ -237,6 +237,7 @@ pub fn run() {
             set_model_settings,
             set_tab_model,
             acp_set_model,
+            acp_set_effort,
             get_claude_usage,
             get_notification_settings,
             set_notification_settings,

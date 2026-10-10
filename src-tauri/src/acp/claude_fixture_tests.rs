@@ -88,6 +88,25 @@ fn session_new_advertises_auto_and_bypass_and_claude_models() {
 }
 
 #[test]
+fn session_new_offers_effort_levels() {
+    let new = fixture("session-new.json");
+    let models = parse_session_models(&new["response"]["result"]);
+    assert_eq!(models.effort_config_id.as_deref(), Some("effort"));
+    assert_eq!(models.effort_current.as_deref(), Some("default"));
+    assert_eq!(
+        models.effort_available,
+        vec!["default", "low", "medium", "high", "xhigh", "max"]
+    );
+    for level in &models.effort_available {
+        assert!(crate::store::settings_store::valid_effort(level), "{level}");
+    }
+    // Without the option, nothing is offered.
+    let none = parse_session_models(&json!({ "configOptions": [] }));
+    assert!(none.effort_config_id.is_none());
+    assert!(none.effort_available.is_empty());
+}
+
+#[test]
 fn prompt_turn_updates_map_and_extensions_are_ignored() {
     let turn = fixture("prompt-turn.json");
     let messages = turn["messages"].as_array().unwrap();

@@ -28,6 +28,11 @@ describe("SessionTerminal header", () => {
     expect(screen.getByLabelText("Git branch").textContent).toContain("feat/login");
   });
 
+  it("names the follow-up box for screen readers", () => {
+    render(<SessionTerminal {...base} />);
+    expect(screen.getByRole("textbox", { name: "Follow-up message" })).toBeTruthy();
+  });
+
   it("shows no branch for a plain tab", () => {
     render(<SessionTerminal {...base} />);
     expect(screen.queryByLabelText("Git branch")).toBeNull();

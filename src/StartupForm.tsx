@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  acpSetEffort,
   acpSetModel,
   closeTab,
   devSessionCancel,
@@ -2293,6 +2294,47 @@ export function StartupForm({
     );
   };
 
+  /** Claude chats: reasoning effort for this session (the role default applies at start). */
+  const effortPickerFor = (
+    tab: TabSummary | null | undefined,
+    session?: { effort?: string | null; effortOptions?: string[] } | null,
+  ) => {
+    const options = session?.effortOptions ?? [];
+    if (!tab || !session || options.length === 0) return null;
+    const current = session.effort ?? "default";
+    return (
+      <select
+        className="effort-select"
+        aria-label={`Effort for ${tab.label}`}
+        title="Reasoning effort for this session. Set a default per role in Settings > Models."
+        value={current}
+        disabled={busy || !!runtimes[tab.id]?.promptInFlight}
+        onChange={(event) => {
+          const next = event.target.value;
+          void acpSetEffort(tab.id, next)
+            .then((effort) =>
+              patchRuntime(tab.id, (rt) =>
+                rt.session ? { ...rt, session: { ...rt.session, effort } } : rt,
+              ),
+            )
+            .catch((err: unknown) =>
+              showNotice(
+                "Effort not changed",
+                err instanceof Error ? err.message : String(err),
+                "failed",
+              ),
+            );
+        }}
+      >
+        {options.map((level) => (
+          <option key={level} value={level}>
+            {level === "default" ? "Effort: default" : `Effort: ${level}`}
+          </option>
+        ))}
+      </select>
+    );
+  };
+
   /** Move keyboard focus into the main pane or the second pane. */
   const focusPane = useCallback(
     (pane: "primary" | "secondary") => {
@@ -4065,6 +4107,7 @@ export function StartupForm({
             <>
               {modeBadgeFor(tab, rt.session.modeId)}
               {modelPickerFor(tab, rt.session.model)}
+              {effortPickerFor(tab, rt.session)}
               {changesButton(tab.id)}
             </>
           }
@@ -4898,6 +4941,7 @@ export function StartupForm({
                 <>
                   {modeBadgeFor(activeTabSummary, session.modeId)}
                   {modelPickerFor(activeTabSummary, session.model)}
+                  {effortPickerFor(activeTabSummary, session)}
                   {activeTabSummary && changesButton(activeTabSummary.id)}
                 </>
               }
