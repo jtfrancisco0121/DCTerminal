@@ -193,6 +193,32 @@ pub fn set_tab_chain(
     )
 }
 
+/// A reviewer sends its round back to an earlier stage's tab (reused or
+/// just opened). Bumps the chain's round and records the verdict. Starts
+/// nothing; the caller sends the follow-up.
+#[tauri::command]
+pub fn chain_loop_back(
+    chain_id: String,
+    reviewer_role_id: String,
+    tab_id: String,
+    verdict: Option<String>,
+    handoff_text: Option<String>,
+    app: tauri::AppHandle,
+    store: State<Mutex<StateStore>>,
+) -> Result<crate::store::ChainRef, String> {
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    let chain = store.chain_loop_back(
+        chain_id.trim(),
+        &reviewer_role_id,
+        &tab_id,
+        verdict.as_deref(),
+        handoff_text.as_deref(),
+    )?;
+    // The overview shows the new round and verdict history at once.
+    crate::commands::chain_events::notify_chain(&app, Some(&chain));
+    Ok(chain)
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChainOverviewOpened {
@@ -256,6 +282,7 @@ pub fn start_eagle_eye(
             kind,
             step: 1,
             total,
+            round: 1,
         }),
         None,
     )?;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isReviewerRole, parseReviewVerdict, verdictTone } from "./verdict";
+import { isReviewerRole, needsRevision, parseReviewVerdict, verdictTone } from "./verdict";
 
 describe("parseReviewVerdict", () => {
   it("reads each verdict, case-insensitive", () => {
@@ -8,6 +8,8 @@ describe("parseReviewVerdict", () => {
     expect(parseReviewVerdict("This plan Requires Revision.")).toBe("REQUIRES REVISION");
     expect(parseReviewVerdict("Decision: request changes")).toBe("REQUEST CHANGES");
     expect(parseReviewVerdict("I have requested changes")).toBe("REQUEST CHANGES");
+    expect(parseReviewVerdict("Verdict: changes requested")).toBe("REQUEST CHANGES");
+    expect(parseReviewVerdict("## Verdict\nREJECTED")).toBe("REJECTED");
   });
 
   it("never reads approved with changes as approved", () => {
@@ -50,5 +52,9 @@ describe("parseReviewVerdict", () => {
     expect(verdictTone("REQUEST CHANGES")).toBe("bad");
     expect(isReviewerRole("role_pr_reviewer")).toBe(true);
     expect(isReviewerRole("role_implementer")).toBe(false);
+    expect(verdictTone("REJECTED")).toBe("bad");
+    expect(needsRevision("REJECTED")).toBe(true);
+    expect(needsRevision("APPROVED WITH CHANGES")).toBe(false);
+    expect(needsRevision(null)).toBe(false);
   });
 });

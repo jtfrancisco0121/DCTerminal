@@ -118,6 +118,8 @@ type Props = {
     reason: string | null;
     targets?: HandoffTargetId[];
     primaryTarget?: string | null;
+    primaryLabel?: string | null;
+    completeNote?: string | null;
     onSend: (target: HandoffTargetId) => void;
   } | null;
   /** "Eagle-Eye 1 · step 2 of 4" */
@@ -502,6 +504,8 @@ export function SessionTerminal({
                       reason={handoff.reason}
                       targets={handoff.targets ?? []}
                       primaryTarget={handoff.primaryTarget}
+                      primaryLabel={handoff.primaryLabel}
+                      completeNote={handoff.completeNote}
                       busy={busy}
                       onSend={handoff.onSend}
                     />
