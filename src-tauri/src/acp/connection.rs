@@ -528,26 +528,19 @@ mod exit_error_tests {
 #[cfg(all(test, unix))]
 mod turn_timeout_tests {
     use super::{AcpConnection, LineDispatch, TurnControl};
-    use std::os::unix::fs::PermissionsExt;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::sync::atomic::AtomicBool;
     use std::time::Duration;
 
-    fn fake_agent(name: &str, body: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("dct-turn-{}-{name}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("agent");
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        path
-    }
-
+    /// Runs `script` with the system shell, so no freshly written file has to pass
+    /// macOS's first-launch checks inside the timing window.
     fn run_turn(
-        agent: &Path,
+        script: &str,
         timeout: Duration,
         dispatch: &mut LineDispatch,
     ) -> Result<serde_json::Value, String> {
-        let mut conn = AcpConnection::spawn(agent, None).unwrap();
+        let args = ["-c".to_string(), script.to_string()];
+        let mut conn = AcpConnection::spawn_with_args(Path::new("/bin/sh"), None, &args).unwrap();
         let cancel = AtomicBool::new(false);
         let mut next_id = 100;
         let mut turn = TurnControl {
@@ -574,26 +567,25 @@ mod turn_timeout_tests {
 
     #[test]
     fn a_busy_turn_outlives_the_limit() {
-        let body = format!("for i in 1 2 3 4 5 6; do {UPDATE}; sleep 0.4; done\n{DONE}\nsleep 5");
-        let agent = fake_agent("busy", &body);
-        let result = run_turn(&agent, Duration::from_millis(1500), &mut LineDispatch::new());
+        let script = format!("for i in 1 2 3 4 5 6; do {UPDATE}; sleep 0.4; done\n{DONE}\nsleep 5");
+        let result = run_turn(&script, Duration::from_millis(1500), &mut LineDispatch::new());
         assert_eq!(result.unwrap()["stopReason"], "end_turn");
     }
 
     #[test]
     fn a_turn_waiting_on_the_user_does_not_time_out() {
         let ask = r#"echo '{"jsonrpc":"2.0","id":50,"method":"session/request_permission","params":{"sessionId":"s1","toolCall":{},"options":[]}}'"#;
-        let agent = fake_agent("ask", &format!("{ask}\nsleep 2.5\n{DONE}\nsleep 5"));
+        let script = format!("{ask}\nsleep 2.5\n{DONE}\nsleep 5");
         let mut dispatch = LineDispatch::new();
         dispatch.set_on_agent_request(Box::new(|_| Ok(None)));
-        let result = run_turn(&agent, Duration::from_millis(1000), &mut dispatch);
+        let result = run_turn(&script, Duration::from_millis(1000), &mut dispatch);
         assert_eq!(result.unwrap()["stopReason"], "end_turn");
     }
 
     #[test]
     fn a_silent_turn_still_times_out() {
-        let agent = fake_agent("silent", &format!("sleep 2\n{DONE}\nsleep 5"));
-        let result = run_turn(&agent, Duration::from_millis(400), &mut LineDispatch::new());
+        let script = format!("sleep 2\n{DONE}\nsleep 5");
+        let result = run_turn(&script, Duration::from_millis(400), &mut LineDispatch::new());
         assert!(result.unwrap_err().contains("timeout waiting for response id=7"));
     }
 }

@@ -36,13 +36,9 @@ test("General chat: streamed reply renders and the turn ends Ready", async ({ ap
   await expect(log.getByText("Done.", { exact: true })).toHaveCount(1);
 });
 
-// Known bug: prompt-finished is applied at once, but chunks wait for the next
-// animation frame (StartupForm.tsx listenSessionUpdates → requestAnimationFrame).
-// When the last chunks and the finish land in the same frame, reconcileAgentStream
-// sees too little streamed text, adds agentText, and the queued chunks are then
-// appended again: a short reply such as "OK" renders as "OKOK".
+// Chunks wait for the next animation frame; a finish in the same frame must not
+// show a short reply such as "OK" twice ("OKOK").
 test("a reply that finishes in the same frame as its chunks is shown once", async ({ app, page }) => {
-  test.fail(true, "known bug: queued chunks are appended after the reconciled reply");
   await app.open();
   const turn = await app.start("tab-1");
   await turn.burst(async (t) => {

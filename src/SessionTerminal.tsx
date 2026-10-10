@@ -558,7 +558,9 @@ export function SessionTerminal({
           }}
           onSelect={slash.onCaret}
           onKeyDown={handleKeyDown}
-          disabled={busy}
+          // readOnly, not disabled: a disabled field drops focus during a tab switch.
+          readOnly={busy}
+          aria-busy={busy}
           {...slash.inputProps}
           {...imageInputHandlers(images)}
         />

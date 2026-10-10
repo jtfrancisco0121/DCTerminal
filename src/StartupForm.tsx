@@ -530,6 +530,16 @@ export function StartupForm({
   const startLockRef = useRef(false);
   const activeTabIdRef = useRef(activeTabId);
   activeTabIdRef.current = activeTabId;
+  // A grid cell clicked in its composer: the active cell renders a new one, so focus it.
+  const gridFocusRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!activeTabId || gridFocusRef.current !== activeTabId) return;
+    gridFocusRef.current = null;
+    const input = document.querySelector<HTMLTextAreaElement>(
+      "[data-pane='primary'] textarea.session-terminal-input",
+    );
+    input?.focus();
+  }, [activeTabId]);
   const roleIdRef = useRef(roleId);
   roleIdRef.current = roleId;
   const valuesRef = useRef(values);
@@ -864,6 +874,13 @@ export function StartupForm({
       }),
       listenPromptFinished((evt) => {
         if (!evt.tabId) return;
+        // Chunks still waiting for the next frame belong to this turn; apply them first
+        // so the final reply isn't added on top of them.
+        if (flushRafRef.current !== null) {
+          cancelAnimationFrame(flushRafRef.current);
+          flushRafRef.current = null;
+        }
+        flushUpdates();
         waiterRef.current.notify({
           tabId: evt.tabId,
           success: evt.success,
@@ -4359,14 +4376,24 @@ export function StartupForm({
     const tone = gridTone(tab);
     const activate = (event: { target: EventTarget }) => {
       if (event.target instanceof Element && event.target.closest(".grid-cell-remove")) return;
-      if (tab.id !== activeTabIdRef.current) void handleSelectTab(tab.id);
+      if (tab.id === activeTabIdRef.current) return;
+      gridFocusRef.current =
+        event.target instanceof Element && event.target.closest(".session-terminal-input")
+          ? tab.id
+          : null;
+      void handleSelectTab(tab.id);
     };
     return (
       <div
         className={`split-pane grid-cell grid-cell-${tone}`}
         data-pane="grid"
         aria-label={`Grid cell: ${tab.label}`}
-        onMouseDownCapture={activate}
+        onMouseDownCapture={(event) => {
+          // Fields switch tabs on focus instead: switching on mousedown re-renders the
+          // cell before the browser focuses the clicked field, so focus would be lost.
+          if (event.target instanceof Element && event.target.closest("textarea, input, select")) return;
+          activate(event);
+        }}
         onFocusCapture={activate}
       >
         {gridCellBar(tab)}

@@ -63,11 +63,8 @@ test("grid view: every tab gets a cell whose input sends to that tab", async ({ 
   await expect(alpha).toHaveCount(0);
 });
 
-// Known bug: the inactive cell's composer is replaced by the active pane's
-// composer when the click activates the tab (renderGridCell → handleSelectTab in
-// StartupForm.tsx), so focus falls back to <body> and the first keystrokes are lost.
+// The active cell renders a new composer, so the click must leave focus in it.
 test("clicking an inactive cell's composer leaves focus in it", async ({ app, page }) => {
-  test.fail(true, "known bug: focus is lost when a grid cell becomes the active tab");
   await twoReadyTabsInGrid(app, page);
   const alphaInput = cellFor(page, "Alpha").getByRole("textbox", { name: "Follow-up message" });
   await alphaInput.click();
