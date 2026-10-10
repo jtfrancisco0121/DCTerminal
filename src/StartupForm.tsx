@@ -122,6 +122,7 @@ import {
   runtimeFor,
   type TabRuntime,
 } from "./liveTabs";
+import { blockedSlashCommand } from "./composer/slashCommands";
 import { CommandPalette } from "./components/CommandPalette";
 import {
   HandoffActions,
@@ -1986,6 +1987,12 @@ export function StartupForm({
     async (tabId: string, text: string, onNotSent?: () => void) => {
       const trimmed = text.trim();
       if (!trimmed) return "error" as const;
+      const blocked = blockedSlashCommand(trimmed);
+      if (blocked) {
+        patchRuntime(tabId, (rt) => ({ ...rt, promptError: blocked }));
+        onNotSent?.();
+        return "error" as const;
+      }
       const pending = waiterRef.current.expect(tabId);
       setHistoryCursor(-1);
       // Saved with the tab's pad (scratch.json), so Up-arrow history survives a restart.
@@ -4143,6 +4150,7 @@ export function StartupForm({
           agentExited={rt.agentExited}
           onRestart={() => void stopSecondarySession(tab.id)}
           inputRef={inputRef}
+          slashCommands={rt.slashCommands}
           headerExtra={
             <>
               {modeBadgeFor(tab, rt.session.modeId)}
@@ -4968,6 +4976,7 @@ export function StartupForm({
               agentExited={activeRuntime.agentExited}
               onRestart={stopSession}
               inputRef={inputRef}
+              slashCommands={activeRuntime.slashCommands}
               history={composerHistory}
               historyCursor={historyCursor}
               onHistoryCursor={setHistoryCursor}
@@ -5032,6 +5041,7 @@ export function StartupForm({
             if (activeTabId) scratch.setContent(activeTabId, value);
           }}
           onTransfer={transferPad}
+          slashCommands={activeRuntime.slashCommands}
           onTransferTerminal={() => void transferToTerminalNow()}
           onSend={sendFromPad}
           onBlur={() => {
