@@ -14,6 +14,7 @@ import { TERMINAL_TAIL_LINES } from "../terminal/text";
 import {
   isHandoffSource,
   isPlanSource,
+  isReportSource,
   roleDisplayName,
   type RoleName,
 } from "./transitions";
@@ -22,8 +23,10 @@ export {
   HANDOFF_TRANSITIONS,
   handoffMenuItems,
   handoffTargets,
+  isCaptureSource,
   isHandoffSource,
   isPlanSource,
+  isReportSource,
   isValidTransition,
   roleDisplayName,
 } from "./transitions";
@@ -208,7 +211,7 @@ function hasChatContent(source: HandoffSource): boolean {
 export function handoffBlockReason(source: HandoffSource): string | null {
   const roleId = source.sourceRoleId;
   if (!isHandoffSource(roleId)) {
-    return "This role has no hand-off. Send from a Planner, Plan Reviewer, Implementer, Developer, or PR Reviewer tab.";
+    return "This role has no hand-off. Send from a Planner, Plan Reviewer, Implementer, Developer, PR Reviewer, Recommendation, or Codebase Audit tab.";
   }
   const name = roleDisplayName(roleId);
   if (source.fromTerminal) {
@@ -230,6 +233,9 @@ export function handoffBlockReason(source: HandoffSource): string | null {
   }
   if (isPlanSource(roleId)) {
     return hasChatContent(source) ? null : "There is no plan to send yet.";
+  }
+  if (isReportSource(roleId)) {
+    return hasChatContent(source) ? null : "There is no report to send yet.";
   }
   return hasChatContent(source) ? null : "There is nothing to send yet.";
 }
@@ -298,6 +304,23 @@ export type ScopeChoice = {
 };
 
 export function scopeChoices(source: HandoffSource): ScopeChoice[] {
+  if (isReportSource(source.sourceRoleId)) {
+    const latest: HandoffScope = source.fromTerminal ? "terminal_tail" : "message";
+    return [
+      {
+        id: "selection",
+        label: "Selected card or finding",
+        enabled: composePlanText(source, "selection").text.length > 0,
+      },
+      {
+        id: latest,
+        label: source.fromTerminal
+          ? `Last ${TERMINAL_TAIL_LINES} lines`
+          : "Whole latest report",
+        enabled: composePlanText(source, latest).text.length > 0,
+      },
+    ];
+  }
   if (source.fromTerminal) {
     const fileLabel = source.planFileName
       ? `Newest plan file (${source.planFileName})`
@@ -354,6 +377,10 @@ export function scopeChoices(source: HandoffSource): ScopeChoice[] {
 }
 
 export function defaultScope(source: HandoffSource): HandoffScope {
+  if (isReportSource(source.sourceRoleId)) {
+    if (composePlanText(source, "selection").text) return "selection";
+    return source.fromTerminal ? "terminal_tail" : "message";
+  }
   if (source.fromTerminal) {
     if (composePlanText(source, "plan_file").text) return "plan_file";
     if (composePlanText(source, "selection").text) return "selection";
@@ -499,6 +526,183 @@ export function mapImplementerToReviewer(
   };
 }
 
+/** Labels used by the Recommendation feature card and the Codebase Audit finding. */
+const REPORT_LABELS = [
+  "Problem",
+  "Proposed Solution",
+  "User Workflow",
+  "Value",
+  "Existing Capability",
+  "Codebase Fit",
+  "Technical Requirements",
+  "Complexity",
+  "Risk",
+  "Dependencies",
+  "Example",
+  "Category",
+  "Location",
+  "Evidence",
+  "Impact",
+  "Trigger / Scenario",
+  "Root Cause",
+  "Recommended Direction",
+  "Related Components",
+  "Confidence",
+  "GitHub Issue",
+];
+
+/** "## Feature: X" or "## [HIGH] X". The marks are optional: a selection of rendered markdown has none. */
+const CARD_HEADING = /^(?:#{1,3}[ \t]+)?(?:Feature:|\[(?:CRITICAL|HIGH|MEDIUM|LOW|INFO)\])[ \t]*(.+)$/gim;
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function labelLine(label: string): RegExp {
+  return new RegExp(
+    `^(?:#{1,6}[ \\t]+)?(?:\\*\\*)?${escapeRegExp(label)}(?:\\*\\*)?[ \\t]*(?::(?:\\*\\*)?[ \\t]*(.*))?$`,
+    "i",
+  );
+}
+
+/**
+ * Body of a labelled section in a card ("### Problem" or "Problem:"), up to
+ * the next heading or the next known label. Inline text after "Label:" counts.
+ */
+export function reportSection(text: string, labels: string[]): string {
+  const lines = text.split("\n");
+  const matchers = labels.map(labelLine);
+  const stops = REPORT_LABELS.map(labelLine);
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i].trim();
+    const hit = matchers.map((re) => re.exec(line)).find((m) => m);
+    if (!hit) continue;
+    const body: string[] = hit[1]?.trim() ? [hit[1].trim()] : [];
+    for (let j = i + 1; j < lines.length; j += 1) {
+      const next = lines[j].trim();
+      if (/^#{1,6}[ \t]+\S/.test(next) || /^```/.test(next)) break;
+      if (stops.some((re) => re.test(next))) break;
+      body.push(lines[j]);
+    }
+    const out = body.join("\n").trim();
+    if (out) return out;
+  }
+  return "";
+}
+
+/** Number of feature-card / finding headings in a report. */
+export function reportCardCount(text: string): number {
+  return Array.from(text.matchAll(CARD_HEADING)).length;
+}
+
+/** Hint when a whole report (several cards) is about to be sent. */
+export function reportScopeHint(source: HandoffSource, scope: HandoffScope): string | null {
+  if (!isReportSource(source.sourceRoleId) || scope === "selection") return null;
+  const text = composePlanText(source, scope).text;
+  if (reportCardCount(text) <= 1) return null;
+  return "This sends the whole report. Select one feature card or finding in the transcript to fill in the Planner fields for just that item.";
+}
+
+function reportTitle(text: string): string {
+  CARD_HEADING.lastIndex = 0;
+  const card = CARD_HEADING.exec(text);
+  CARD_HEADING.lastIndex = 0;
+  if (card?.[1]?.trim()) return card[1].trim();
+  return "";
+}
+
+function auditTaskType(category: string): string {
+  const value = category.toLowerCase();
+  if (/bug|security|data|reliab|error|auth/.test(value)) return "Bug";
+  if (/architect|maintain|perform|debt|refactor/.test(value)) return "Refactor";
+  if (/ci\/cd|test|depend|config|ci\b/.test(value)) return "Chore";
+  return "";
+}
+
+/**
+ * Recommendation / Codebase Audit → Planner. One feature card or finding
+ * fills the Planner's request, current and expected behavior, and context.
+ * The full text always goes into the request field.
+ */
+export function mapReportToPlanner(
+  source: HandoffSource,
+  scope: HandoffScope,
+  target: { roleId: string; fields: HandoffField[] },
+  limits: HandoffLimits = DEFAULT_HANDOFF_LIMITS,
+): MappedHandoff {
+  const composed = composePlanText(source, scope);
+  const sourceName = roleDisplayName(source.sourceRoleId);
+  if (!composed.text) {
+    return {
+      title: `${sourceName} hand-off`,
+      answers: { cwd: source.cwd },
+      planText: "",
+      inlinePlan: "",
+      planField: null,
+      usesScratchPad: false,
+      truncated: false,
+      warning: composed.emptyReason,
+    };
+  }
+  const text = composed.text;
+  const limited = limitPlan(text, limits);
+  const single = reportCardCount(text) <= 1;
+  const keys = new Set(target.fields.map((field) => field.key));
+  const answers: Record<string, string> = { cwd: source.cwd };
+  const title = takeChars(
+    (single && reportTitle(text)) || extractTitle({ ...source, answers: {} }, text),
+    120,
+  );
+  if (keys.has("title")) answers.title = title;
+  const taskField = target.fields.find((field) => field.key === "taskType");
+  if (taskField) {
+    const isAudit = source.sourceRoleId === "role_codebase_audit";
+    const taskType = isAudit
+      ? single
+        ? auditTaskType(reportSection(text, ["Category"]))
+        : ""
+      : "Feature";
+    const allowed = !taskField.options || taskField.options.includes(taskType);
+    if (taskType && allowed) answers.taskType = taskType;
+  }
+  const descriptionKey = firstKey(target.fields, DESCRIPTION_FIELD_KEYS);
+  if (descriptionKey) answers[descriptionKey] = limited.inlinePlan;
+  if (single) {
+    const current = reportSection(text, ["Problem"]);
+    const expected = reportSection(text, ["Proposed Solution", "Recommended Direction"]);
+    if (current && keys.has("currentBehavior")) answers.currentBehavior = takeChars(current, 4_000);
+    if (expected && keys.has("expectedBehavior")) {
+      answers.expectedBehavior = takeChars(expected, 4_000);
+    }
+  }
+  const contextKey = firstKey(target.fields, CONTEXT_FIELD_KEYS);
+  if (contextKey) {
+    const parts = [`From the ${sourceName} report (${source.sourceLabel}).`];
+    if (single) {
+      const extras =
+        source.sourceRoleId === "role_codebase_audit"
+          ? (["Location", "Evidence", "Impact"] as const)
+          : (["Existing Capability", "Codebase Fit", "Dependencies"] as const);
+      for (const label of extras) {
+        const body = reportSection(text, [label]);
+        if (body) parts.push(`${label}:\n${body}`);
+      }
+    }
+    answers[contextKey] = takeChars(parts.join("\n\n"), 8_000);
+  }
+  return {
+    title: title || `${sourceName} hand-off`,
+    answers,
+    planText: limited.planText,
+    inlinePlan: limited.inlinePlan,
+    // The report text lives in the request field, not the scratch pad.
+    planField: descriptionKey,
+    usesScratchPad: descriptionKey === null,
+    truncated: limited.truncated,
+    warning: limited.warning,
+  };
+}
+
 export function mapHandoff(
   source: HandoffSource,
   scope: HandoffScope,
@@ -507,6 +711,9 @@ export function mapHandoff(
 ): MappedHandoff {
   if (source.sourceRoleId === "role_implementer" && target.roleId === "role_pr_reviewer") {
     return mapImplementerToReviewer(source, target, limits);
+  }
+  if (isReportSource(source.sourceRoleId) && target.roleId === "role_planner") {
+    return mapReportToPlanner(source, scope, target, limits);
   }
   const composed = composePlanText(source, scope);
   let reviewNotes = "";

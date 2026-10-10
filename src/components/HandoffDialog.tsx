@@ -5,7 +5,9 @@ import {
   handoffBlockReason,
   handoffFromRole,
   handoffTargets,
+  isReportSource,
   mapHandoff,
+  reportScopeHint,
   roleDisplayName,
   scopeChoices,
   type HandoffField,
@@ -66,6 +68,9 @@ export function HandoffDialog({
   const preview = composePlanText(source, scope).text;
   const previewText = Array.from(preview).slice(0, 500).join("");
   const targetLabel = roleDisplayName(targetRoleId, roleNames);
+  const heading = isReportSource(source.sourceRoleId) ? "Send for planning" : "Send plan";
+  const scopeHint =
+    targetRoleId === "role_planner" ? reportScopeHint(source, scope) : null;
   const canConfirm = !busy && !block && mapped.planText.length > 0 && targetFields !== null;
 
   return (
@@ -73,10 +78,10 @@ export function HandoffDialog({
       <div
         className="overlay-panel"
         role="dialog"
-        aria-label="Send plan"
+        aria-label={heading}
         onClick={(event) => event.stopPropagation()}
       >
-        <h2>Send plan</h2>
+        <h2>{heading}</h2>
         <p className="hint">
           {surface === "terminal"
             ? "Starts the role in a terminal tab (Claude Code or Cursor CLI, per the tab's provider) with the hand-off text as the first prompt."
@@ -137,6 +142,7 @@ export function HandoffDialog({
         </fieldset>
         {folderWarning && <p className="error">{folderWarning} You can still open the tab and pick another folder before Start.</p>}
         {block && <p className="hint">{block}</p>}
+        {scopeHint && <p className="hint">{scopeHint}</p>}
         {mapped.warning && <p className="hint">{mapped.warning}</p>}
         {error && <p className="error">{error}</p>}
         {previewText && (

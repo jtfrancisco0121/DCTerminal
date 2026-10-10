@@ -134,6 +134,7 @@ import {
   handoffBlockReason,
   handoffMenuItems,
   handoffTargets,
+  isCaptureSource,
   isHandoffSource,
   isPlanSource,
   latestAgentMessage,
@@ -2684,11 +2685,11 @@ export function StartupForm({
       });
   }, []);
 
-  /** Terminal role tab that can hand off a plan (Planner or Plan Reviewer). */
+  /** Terminal role tab that can hand off a plan or a report (selection or tail). */
   const isPlanTerminal =
     activeTabSummary?.kind === "terminal" &&
     activeTabSummary.terminalLaunch === "role" &&
-    isPlanSource(activeTabSummary.roleId);
+    isCaptureSource(activeTabSummary.roleId);
   const planTerminalTargets: HandoffTargetId[] = isPlanTerminal
     ? handoffTargets(activeTabSummary.roleId)
     : [];
@@ -2701,17 +2702,21 @@ export function StartupForm({
       const started = livePty(tabId)?.startedAt ?? Date.now();
       let planFileText = "";
       let planFileName = "";
-      try {
-        // Read-only: ~/.cursor/plans, or <configDir>/plans for a Claude tab.
-        // No new plan file → the dialog defaults to the selection, then the tail.
-        const file = await terminalPlanFile(started, tabId);
-        if (file?.text.trim()) {
-          planFileText = file.text;
-          planFileName = file.name;
+      const sourceRoleId = savedTabs.find((tab) => tab.id === tabId)?.roleId ?? "";
+      // Reports never use a plan file: the plans folder is shared by every tab.
+      if (isPlanSource(sourceRoleId)) {
+        try {
+          // Read-only: ~/.cursor/plans, or <configDir>/plans for a Claude tab.
+          // No new plan file → the dialog defaults to the selection, then the tail.
+          const file = await terminalPlanFile(started, tabId);
+          if (file?.text.trim()) {
+            planFileText = file.text;
+            planFileName = file.name;
+          }
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          setHandoffError(message);
         }
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        setHandoffError(message);
       }
       setTerminalCapture({
         selection: captured.selection,
@@ -2723,7 +2728,7 @@ export function StartupForm({
       setHandoffTarget(target);
       loadHandoffFields(target);
     },
-    [loadHandoffFields],
+    [loadHandoffFields, savedTabs],
   );
 
   const openHandoffDialog = useCallback(
@@ -2732,7 +2737,7 @@ export function StartupForm({
       const fromTerminal =
         summary?.kind === "terminal" &&
         summary.terminalLaunch === "role" &&
-        isPlanSource(summary.roleId);
+        isCaptureSource(summary.roleId);
       if (fromTerminal) {
         void openTerminalHandoff(target);
         return;
@@ -2997,6 +3002,9 @@ export function StartupForm({
         return;
       case "sendPlanDeveloper":
         openHandoffDialog("role_developer");
+        return;
+      case "sendToPlanner":
+        openHandoffDialog("role_planner");
         return;
       case "sendImplementerToReviewer":
         openHandoffDialog("role_pr_reviewer");
@@ -3832,7 +3840,7 @@ export function StartupForm({
           tabs={savedTabs.map((tab) => ({ id: tab.id, label: tab.label, cwd: tab.cwd }))}
           canReopen={closedTabs.length > 0}
           splitOpen={splitOpen(split)}
-          canSendPlan={(isPlanSource(roleId) && !!session) || !!isPlanTerminal}
+          canSendPlan={(isCaptureSource(roleId) && !!session) || !!isPlanTerminal}
           sendPlanTargets={isPlanTerminal ? planTerminalTargets : handoffTargets(roleId)}
           canExportTranscript={
             !!activeTabSummary &&
@@ -4827,7 +4835,7 @@ export function StartupForm({
             {handoffBanner}
             {activeHandoff && !activeHandoff.planField && (
               <label className="field-label">
-                Plan from Planner
+                From {roleDisplayName(activeHandoff.sourceRoleId, roles)}
                 <textarea
                   className="text-input prompt-area"
                   rows={8}

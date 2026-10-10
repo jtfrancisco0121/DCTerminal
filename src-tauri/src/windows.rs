@@ -125,10 +125,8 @@ pub fn handle_run_event(app: &AppHandle, event: tauri::RunEvent) {
         #[cfg(target_os = "macos")]
         tauri::RunEvent::Reopen {
             has_visible_windows, ..
-        } => {
-            if dock_reopen_creates_window(has_visible_windows) {
-                let _ = restore_a_window(app);
-            }
+        } if dock_reopen_creates_window(has_visible_windows) => {
+            let _ = restore_a_window(app);
         }
         _ => {}
     }

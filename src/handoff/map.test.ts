@@ -8,6 +8,9 @@ import {
   latestAgentMessage,
   mapHandoff,
   firstGithubPrUrl,
+  reportCardCount,
+  reportScopeHint,
+  reportSection,
   scopeChoices,
   takeChars,
   type HandoffSource,
@@ -475,5 +478,169 @@ describe("handoff mapping", () => {
     expect(mapped.answers.additionalContext).toContain("https://github.com/acme/app/pull/12");
     expect(mapped.answers.additionalContext).not.toContain("diff --git");
     expect(firstGithubPrUrl("no link")).toBeNull();
+  });
+
+  describe("Recommendation / Codebase Audit → Planner", () => {
+    const FEATURE_CARD = [
+      "## Feature: Effort controls for Claude tabs",
+      "",
+      "### Problem",
+      "",
+      "The adapter offers effort levels but the app only sends the model.",
+      "",
+      "### Proposed Solution",
+      "",
+      "Add an effort picker and per-role defaults.",
+      "",
+      "### Existing Capability",
+      "",
+      "session/set_config_option already switches models.",
+      "",
+      "### Codebase Fit",
+      "",
+      "models.rs, ModelPicker.tsx",
+    ].join("\n");
+
+    const FINDING = [
+      "## [HIGH] Scratch pads are never pruned",
+      "",
+      "Category:",
+      "Data",
+      "",
+      "Location:",
+      "src-tauri/src/store/scratch_store.rs:89",
+      "",
+      "Problem:",
+      "prune_orphans only runs in a test.",
+      "",
+      "Evidence:",
+      "No production caller.",
+      "",
+      "Impact:",
+      "scratch.json grows forever.",
+      "",
+      "Recommended Direction:",
+      "Call prune_orphans at startup.",
+      "",
+      "Confidence:",
+      "Confirmed",
+    ].join("\n");
+
+    function report(overrides: Partial<HandoffSource> = {}): HandoffSource {
+      return source({
+        sourceRoleId: "role_recommendation",
+        sourceLabel: "Recommendation · DCTerminal",
+        answers: {},
+        latestMessage: `# Executive Summary\n\nIntro.\n\n${FEATURE_CARD}\n\n## Feature: Second idea\n\n### Problem\n\nOther.`,
+        plan: [],
+        todos: [],
+        ...overrides,
+      });
+    }
+
+    it("defaults to the selected card, else the whole report", () => {
+      expect(defaultScope(report())).toBe("message");
+      expect(defaultScope(report({ selection: FEATURE_CARD }))).toBe("selection");
+      expect(scopeChoices(report()).map((c) => c.id)).toEqual(["selection", "message"]);
+      expect(
+        scopeChoices(report({ fromTerminal: true, terminalTail: "tail" })).map((c) => c.id),
+      ).toEqual(["selection", "terminal_tail"]);
+    });
+
+    it("fills the Planner fields from one feature card", () => {
+      const mapped = mapHandoff(report({ selection: FEATURE_CARD }), "selection", {
+        roleId: "role_planner",
+        fields: PLANNER_FIELDS,
+      });
+      expect(mapped.title).toBe("Effort controls for Claude tabs");
+      expect(mapped.answers.title).toBe("Effort controls for Claude tabs");
+      expect(mapped.answers.taskType).toBe("Feature");
+      expect(mapped.answers.request).toBe(FEATURE_CARD);
+      expect(mapped.answers.currentBehavior).toBe(
+        "The adapter offers effort levels but the app only sends the model.",
+      );
+      expect(mapped.answers.expectedBehavior).toBe("Add an effort picker and per-role defaults.");
+      expect(mapped.answers.additionalContext).toContain("From the Recommendation report");
+      expect(mapped.answers.additionalContext).toContain("Codebase Fit:\nmodels.rs");
+      expect(mapped.planField).toBe("request");
+      expect(mapped.usesScratchPad).toBe(false);
+      expect(mapped.planText).toBe(FEATURE_CARD);
+    });
+
+    it("fills the Planner fields from one audit finding", () => {
+      const mapped = mapHandoff(
+        report({ sourceRoleId: "role_codebase_audit", selection: FINDING }),
+        "selection",
+        { roleId: "role_planner", fields: PLANNER_FIELDS },
+      );
+      expect(mapped.answers.title).toBe("Scratch pads are never pruned");
+      expect(mapped.answers.taskType).toBe("Bug");
+      expect(mapped.answers.currentBehavior).toBe("prune_orphans only runs in a test.");
+      expect(mapped.answers.expectedBehavior).toBe("Call prune_orphans at startup.");
+      expect(mapped.answers.additionalContext).toContain("Location:\nsrc-tauri/src/store/scratch_store.rs:89");
+      expect(mapped.answers.additionalContext).toContain("Impact:\nscratch.json grows forever.");
+    });
+
+    it("sends a whole report into the request only, with a hint to select one card", () => {
+      const src = report();
+      const mapped = mapHandoff(src, "message", { roleId: "role_planner", fields: PLANNER_FIELDS });
+      expect(mapped.answers.request).toContain("Executive Summary");
+      expect(mapped.answers.currentBehavior).toBeUndefined();
+      expect(mapped.answers.expectedBehavior).toBeUndefined();
+      expect(reportScopeHint(src, "message")).toMatch(/whole report/);
+      expect(reportScopeHint(report({ selection: FEATURE_CARD }), "selection")).toBeNull();
+    });
+
+    it("reads inline, bold, and heading labels without matching longer words", () => {
+      expect(reportSection("**Problem:** It breaks.\nMore.\n\nImpact: x", ["Problem"])).toBe(
+        "It breaks.\nMore.",
+      );
+      expect(reportSection("Problems in general\nProblem\nReal one", ["Problem"])).toBe("Real one");
+      expect(reportCardCount(`${FEATURE_CARD}\n\n${FINDING}`)).toBe(2);
+    });
+
+    it("reads a card selected from the rendered chat (no markdown marks)", () => {
+      const rendered = [
+        "Feature: Effort controls for Claude tabs",
+        "Problem",
+        "The adapter offers effort levels but the app only sends the model.",
+        "",
+        "Proposed Solution",
+        "Add an effort picker and per-role defaults.",
+      ].join("\n");
+      const mapped = mapHandoff(report({ selection: rendered }), "selection", {
+        roleId: "role_planner",
+        fields: PLANNER_FIELDS,
+      });
+      expect(mapped.answers.title).toBe("Effort controls for Claude tabs");
+      expect(mapped.answers.currentBehavior).toBe(
+        "The adapter offers effort levels but the app only sends the model.",
+      );
+      expect(mapped.answers.expectedBehavior).toBe("Add an effort picker and per-role defaults.");
+      const finding = "[HIGH] Scratch pads are never pruned\nCategory:\nData\nProblem:\nNo caller.";
+      const audit = mapHandoff(
+        report({ sourceRoleId: "role_codebase_audit", selection: finding }),
+        "selection",
+        { roleId: "role_planner", fields: PLANNER_FIELDS },
+      );
+      expect(audit.answers.title).toBe("Scratch pads are never pruned");
+      expect(audit.answers.taskType).toBe("Bug");
+    });
+
+    it("is blocked until the report has content", () => {
+      expect(handoffBlockReason(report({ latestMessage: "" }))).toBe(
+        "There is no report to send yet.",
+      );
+      expect(handoffBlockReason(report())).toBeNull();
+    });
+
+    it("a Developer hand-off keeps the report in the scratch pad", () => {
+      const mapped = mapHandoff(report({ selection: FEATURE_CARD }), "selection", {
+        roleId: "role_developer",
+        fields: [],
+      });
+      expect(mapped.usesScratchPad).toBe(true);
+      expect(mapped.inlinePlan).toBe(FEATURE_CARD);
+    });
   });
 });

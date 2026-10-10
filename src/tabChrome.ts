@@ -180,6 +180,7 @@ export const PALETTE_ACTIONS = [
   "sendPlanPlanReviewer",
   "sendPlanImplementer",
   "sendPlanDeveloper",
+  "sendToPlanner",
   "sendImplementerToReviewer",
   "exportTranscript",
   "showLogs",
@@ -458,6 +459,13 @@ export function buildPalette(opts: {
         title: "Hand off plan to Developer…",
         group: "Hand-off",
         keywords: "handoff send planner plan developer",
+      },
+      {
+        id: "sendToPlanner",
+        target: "role_planner",
+        title: "Send to Planner…",
+        group: "Hand-off",
+        keywords: "handoff send planner plan recommendation audit finding feature revise",
       },
     ];
     for (const { target, ...command } of planCommands) {

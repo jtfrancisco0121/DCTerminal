@@ -3,8 +3,10 @@ import {
   HANDOFF_TRANSITIONS,
   handoffMenuItems,
   handoffTargets,
+  isCaptureSource,
   isHandoffSource,
   isPlanSource,
+  isReportSource,
   isValidTransition,
   roleDisplayName,
 } from "./transitions";
@@ -35,6 +37,16 @@ describe("hand-off transitions", () => {
     expect(handoffTargets("role_implementer")).toEqual(["role_pr_reviewer"]);
     expect(handoffTargets("role_developer")).toEqual(["role_pr_reviewer"]);
     expect(handoffTargets("role_pr_reviewer")).toEqual(["role_implementer"]);
+  });
+
+  it("Recommendation and Codebase Audit hand off to Planner first, then Developer", () => {
+    expect(handoffTargets("role_recommendation")).toEqual(["role_planner", "role_developer"]);
+    expect(handoffTargets("role_codebase_audit")).toEqual(["role_planner", "role_developer"]);
+    expect(isReportSource("role_recommendation")).toBe(true);
+    expect(isReportSource("role_planner")).toBe(false);
+    expect(isCaptureSource("role_codebase_audit")).toBe(true);
+    expect(isCaptureSource("role_plan_reviewer")).toBe(true);
+    expect(isCaptureSource("role_implementer")).toBe(false);
   });
 
   it("roles outside the table have no targets", () => {

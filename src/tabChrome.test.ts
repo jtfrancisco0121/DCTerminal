@@ -228,8 +228,22 @@ describe("tab chrome", () => {
     expect(ids.filter((id) => id.startsWith("send"))).toEqual([
       "sendPlanImplementer",
       "sendPlanDeveloper",
+      "sendToPlanner",
     ]);
     expect(ids).toEqual(expect.arrayContaining(["startEagleEye1", "startEagleEye2"]));
+  });
+
+  it("a Recommendation or Audit session offers Send to Planner and Developer", () => {
+    const commands = buildPalette({
+      tabs: [],
+      canReopen: false,
+      splitOpen: false,
+      canSendPlan: true,
+      sendPlanTargets: ["role_planner", "role_developer"],
+    });
+    const ids = commands.map((c) => c.id).filter((id) => /^send(Plan|To)/.test(id));
+    expect(ids).toEqual(["sendPlanDeveloper", "sendToPlanner"]);
+    expect(commands.find((c) => c.id === "sendToPlanner")?.title).toBe("Send to Planner…");
   });
 
   describe("fuller palette (F9)", () => {
