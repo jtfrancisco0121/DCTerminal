@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  carryChainTaskType,
   charCount,
   composePlanText,
   defaultScope,
@@ -7,6 +8,7 @@ import {
   handoffBlockReason,
   latestAgentMessage,
   mapHandoff,
+  needsChainTaskType,
   firstGithubPrUrl,
   reportCardCount,
   reportScopeHint,
@@ -352,6 +354,38 @@ describe("handoff mapping", () => {
     expect(mapped.answers.additionalContext).toContain("Auth lives in middleware.");
     expect(mapped.answers.description).toBe("Expired tokens return 500.");
     expect(mapped.planText).toContain("Patch the handler");
+  });
+
+  it("carries the chain's Planner task type through the Plan Reviewer", () => {
+    const target = { roleId: "role_implementer", fields: IMPLEMENTER_FIELDS };
+    const mapped = mapHandoff(planReviewerSource(), "plan_and_todos", target);
+    expect(mapped.answers.taskType).toBeUndefined();
+    expect(needsChainTaskType(mapped, target)).toBe(true);
+    expect(carryChainTaskType(mapped, target, "Feature").answers.taskType).toBe("Feature");
+    // Planner values become Implementer options.
+    expect(carryChainTaskType(mapped, target, "Bug").answers.taskType).toBe("Bug Fix");
+    expect(carryChainTaskType(mapped, target, "Chore").answers.taskType).toBe("Other");
+    // Nothing on file, or a value the form cannot take: left empty.
+    expect(carryChainTaskType(mapped, target, null)).toBe(mapped);
+    expect(carryChainTaskType(mapped, target, "Spike").answers.taskType).toBeUndefined();
+  });
+
+  it("keeps a task type the source already gave, and fills only forms that have one", () => {
+    const implementer = { roleId: "role_implementer", fields: IMPLEMENTER_FIELDS };
+    const fromPlanner = mapHandoff(source(), "plan_and_todos", implementer);
+    expect(fromPlanner.answers.taskType).toBe("Bug Fix");
+    expect(needsChainTaskType(fromPlanner, implementer)).toBe(false);
+    expect(carryChainTaskType(fromPlanner, implementer, "Feature").answers.taskType).toBe(
+      "Bug Fix",
+    );
+    const reviewer = { roleId: "role_pr_reviewer", fields: REVIEWER_FIELDS };
+    const toReviewer = mapHandoff(planReviewerSource(), "plan_and_todos", reviewer);
+    expect(needsChainTaskType(toReviewer, reviewer)).toBe(false);
+    expect(carryChainTaskType(toReviewer, reviewer, "Feature").answers.taskType).toBeUndefined();
+    // A revision Planner takes the Planner's own value.
+    const planner = { roleId: "role_planner", fields: PLANNER_FIELDS };
+    const toPlanner = mapHandoff(planReviewerSource(), "plan_and_todos", planner);
+    expect(carryChainTaskType(toPlanner, planner, "Bug").answers.taskType).toBe("Bug");
   });
 
   it("falls back to the whole last message when there is no Reviewed plan section", () => {

@@ -654,6 +654,51 @@ export function installTauriMock(config: MockConfig): void {
   };
   // ---- end Terminal tabs ------------------------------------------------
 
+  // ---- Eagle-Eye data ---------------------------------------------------
+  // Mirrors commands/chain_events.rs: `chain-run-updated` after the same
+  // commands, and get_pipeline_run's step-1 `taskType`.
+  const chainRunUpdated = (chainId: string | null | undefined) => {
+    if (chainId) queueMicrotask(() => deliver("chain-run-updated", { chainId }));
+  };
+  const overviewRunForTab = (tabId: string): string | null =>
+    findTab(tabId)?.chain?.chainId ??
+    state.pipelineRuns.find((r: Json) => Object.values(r.tabIds).includes(tabId))?.id ??
+    null;
+  const afterCall = (cmd: string, notify: (args: Json, out: Json) => void) => {
+    const base = defaults[cmd];
+    defaults[cmd] = (a, s) => {
+      const out = base(a, s);
+      notify(a, out);
+      return out;
+    };
+  };
+  const setTabChainDefault = defaults.set_tab_chain;
+  defaults.set_tab_chain = (a, s) => {
+    const before = findTab(a.tabId) ? overviewRunForTab(a.tabId) : null;
+    const out = setTabChainDefault(a, s);
+    const after = overviewRunForTab(a.tabId);
+    if (before && before !== after) chainRunUpdated(before);
+    chainRunUpdated(after);
+    return out;
+  };
+  afterCall("handoff_save", (_a, rec) => chainRunUpdated(rec?.chain?.chainId));
+  afterCall("handoff_bind_tab", (_a, rec) => chainRunUpdated(rec?.chain?.chainId));
+  afterCall("sync_active_tab_form", (a) => {
+    if (findTab(a.tabId)?.chain?.step === 1) chainRunUpdated(overviewRunForTab(a.tabId));
+  });
+  afterCall("role_session_start", (_a, out) => chainRunUpdated(overviewRunForTab(out.tabId)));
+  afterCall("role_terminal_start", (_a, out) => chainRunUpdated(overviewRunForTab(out.tabId)));
+  afterCall("dev_session_stop", (a) => {
+    if (a.tabId) chainRunUpdated(overviewRunForTab(a.tabId));
+  });
+  afterCall("get_pipeline_run", (_a, out) => {
+    const first = PIPELINE_STAGES[out.run.kind]?.[0]?.[1];
+    const tabId = first ? out.run.tabIds[first] : null;
+    const taskType = String((tabId && state.answers[tabId]?.taskType) ?? "").trim();
+    if (taskType) out.taskType = taskType;
+  });
+  // ---- end Eagle-Eye data -----------------------------------------------
+
   const overrides: Record<string, Handler> = {};
   const compile = (source: string): Handler =>
     new Function(`return (${source});`)() as Handler;

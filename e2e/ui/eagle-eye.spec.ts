@@ -213,10 +213,11 @@ async function implementerStep(app: TauriApp, page: Page, chainId: string): Prom
   const context = page.getByRole("textbox", { name: "Additional Context" });
   await expect(context).toHaveValue(new RegExp(`^Review notes:\\n${escape(REVIEW_NOTES)}`));
   await expect(context).toHaveValue(new RegExp(`Expected behavior:\\n${escape(EXPECTED)}`));
-  // The Plan Reviewer form has no task type, so the Planner's "Feature" is lost on the way.
-  const taskType = page.getByRole("combobox", { name: /Task Type/ });
-  await expect(taskType).toHaveValue("");
-  await taskType.selectOption("Feature");
+  // The Plan Reviewer form has no task type; the Planner's "Feature" comes from the chain run.
+  await expect(page.getByRole("combobox", { name: /Task Type/ })).toHaveValue("Feature");
+  expect((await app.waitForCall("get_pipeline_run", (a) => a.runId === chainId)).args).toEqual({
+    runId: chainId,
+  });
 
   const saved = await app.waitForCall(
     "handoff_save",
@@ -354,7 +355,7 @@ test.describe("Eagle-Eye 1 chain", () => {
       /Eagle-Eye 1 · step 3 of 4/,
     );
     await expect(page.getByRole("checkbox", { name: "Eagle-Eye 2" })).toHaveCount(0);
-    await page.getByRole("combobox", { name: /Task Type/ }).selectOption("Feature");
+    await expect(page.getByRole("combobox", { name: /Task Type/ })).toHaveValue("Feature");
     await app.start("tab-3");
     // Start ends with a tab refresh; once it has run, the label shows the stored chain.
     await expect
@@ -615,5 +616,53 @@ test.describe("chain overview in portrait", () => {
       expect(box.x, "lane left edge").toBeGreaterThanOrEqual(0);
       expect(box.x + box.width, "lane right edge").toBeLessThanOrEqual(900 + 1);
     }
+  });
+});
+
+test.describe("chain overview live data", () => {
+  test("a hand-off made elsewhere shows in the open overview without a poll", async ({
+    app,
+    page,
+  }) => {
+    await page.clock.install();
+    const chain = (step: number): ChainRef => ({ chainId: "ee_7", kind: "eagle1", step, total: 4 });
+    await app.open({
+      tabs: [
+        roleTab("tab-1", "role_planner", "Planner", { chain: chain(1) }),
+        roleTab("tab-2", "role_plan_reviewer", "Plan Reviewer", { chain: chain(2) }),
+        roleTab("tab-3", "role_implementer", "Implementer"),
+      ],
+      answers: { "tab-1": { taskType: "Feature", title: TITLE, request: REQUEST } },
+    });
+    await app.start("tab-1");
+    await chainButton(page).click();
+    const overview = page.getByRole("region", { name: "Pipeline overview" });
+    const implementer = overview.getByRole("article", { name: "Implementer", exact: true });
+    await expect(overview.getByText("Stage: plan_reviewer")).toBeVisible();
+    await expect(implementer.locator(".pipeline-lane-status")).toHaveText("Not started");
+    await expect
+      .poll(() => page.evaluate(() => window.__E2E.listenerCount("chain-run-updated")))
+      .toBeGreaterThan(0);
+
+    // Timers stop here, so only the event can bring the new hand-off in.
+    await page.clock.pauseAt(Date.now() + 1000);
+    const fetches = (await app.calls("get_pipeline_run")).length;
+    await page.evaluate(
+      ([plan, next]) =>
+        (
+          window as unknown as {
+            __TAURI_INTERNALS__: { invoke: (cmd: string, args: unknown) => Promise<unknown> };
+          }
+        ).__TAURI_INTERNALS__.invoke("set_tab_chain", {
+          tabId: "tab-3",
+          chain: next,
+          handoffText: plan,
+        }),
+      [REVIEWED_PLAN, chain(3)] as const,
+    );
+    await expect(overview.getByText("Stage: implementer")).toBeVisible({ timeout: 1500 });
+    await implementer.getByText(/^Handed in/).click({ timeout: 1500 });
+    await expect(implementer.locator(".pipeline-handed-in pre")).toHaveText(REVIEWED_PLAN);
+    expect((await app.calls("get_pipeline_run")).length).toBe(fetches + 1);
   });
 });

@@ -573,6 +573,9 @@ pub fn role_terminal_start(
             },
         )?
     };
+    if let Ok(state) = store.lock() {
+        crate::commands::chain_events::notify_tab(&app, &state, &tab_id);
+    }
     if provider.id() == ProviderId::Claude {
         let mut state = store.lock().map_err(|err| err.to_string())?;
         if let Some(dir) = provider.config_dir() {
