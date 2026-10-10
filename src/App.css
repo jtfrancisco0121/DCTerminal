@@ -664,6 +664,27 @@ body,
   margin: 0.75em 0 0.35em;
   font-size: 1em;
   font-weight: 600;
+  line-height: 1.3;
+}
+
+/* Reports (Recommendation, Audit, plans) need visible structure. */
+.session-stream-agent h1,
+.session-stream-user h1 {
+  font-size: 1.3em;
+}
+
+.session-stream-agent h2,
+.session-stream-user h2 {
+  margin-top: 1.1em;
+  padding-top: 0.5em;
+  border-top: 1px solid var(--border);
+  font-size: 1.12em;
+}
+
+.session-stream-agent h3,
+.session-stream-user h3 {
+  color: var(--fg-muted);
+  font-size: 0.95em;
 }
 
 .session-stream-agent ul,
@@ -1184,6 +1205,7 @@ kbd {
 .session-cards {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  align-items: start;
   gap: 0.5rem;
   margin-bottom: 0.5rem;
 }
@@ -1251,6 +1273,9 @@ kbd {
   list-style: none;
   margin: 0;
   padding: 0;
+  /* A long tool run scrolls inside its card instead of pushing the chat down. */
+  max-height: 7.5rem;
+  overflow-y: auto;
 }
 
 .session-card-list li {
@@ -3133,6 +3158,13 @@ mark.search-hit-current {
 .tab-chip {
   height: 1.5rem;
   border-radius: 5px;
+  /* Shrink with an ellipsis before the strip has to scroll. */
+  flex: 0 1 auto;
+  min-width: 5.5rem;
+}
+
+.tab-chip-label {
+  min-width: 0;
 }
 
 .tab-chip-label {
@@ -3306,8 +3338,11 @@ mark.search-hit-current {
   align-items: center;
   gap: 0.3rem;
   min-width: 0;
+  flex-shrink: 1;
   padding: 0 0.45rem;
   border-right: 1px solid var(--border);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .status-bar-item:last-of-type {
@@ -3315,6 +3350,7 @@ mark.search-hit-current {
 }
 
 .status-bar-status {
+  flex-shrink: 0;
   color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3606,7 +3642,7 @@ mark.search-hit-current {
   top: 0;
   z-index: 2;
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.35rem;
   padding: 0.35rem 0;
@@ -3629,7 +3665,7 @@ mark.search-hit-current {
 
 .role-tile-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(7.25rem, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
   gap: 0.35rem;
   margin: 0 0 0.35rem;
 }
@@ -3647,6 +3683,9 @@ mark.search-hit-current {
   font: inherit;
   font-size: 0.78rem;
   text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   cursor: pointer;
 }
 
@@ -3763,9 +3802,16 @@ mark.search-hit-current {
   grid-template-columns: minmax(0, 1fr) minmax(14rem, 19rem);
 }
 
-@media (max-width: 760px) {
+@media (max-width: 760px), (orientation: portrait) and (max-width: 1400px) {
   .start-body-with-history {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Portrait: give the long fields the height a tall screen has. */
+@media (orientation: portrait) {
+  .start-main .composer-fields textarea {
+    min-height: 6.5rem;
   }
 }
 
@@ -3834,7 +3880,7 @@ mark.search-hit-current {
 }
 
 .start-history .history-row {
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   gap: 0.35rem;
   padding: 0.25rem 0.35rem;
   border-radius: 6px;
@@ -3846,6 +3892,12 @@ mark.search-hit-current {
 
 .start-history .history-title {
   font-size: 0.8rem;
+}
+
+/* Title gets the row; the buttons drop under it when the column is narrow. */
+.start-history .history-row-text {
+  flex: 1 1 12rem;
+  min-width: 0;
 }
 
 .start-history .history-row-text .hint {
@@ -3980,7 +4032,15 @@ mark.search-hit-current {
   align-items: center;
   gap: 0.15rem;
   min-width: 0;
+  flex-shrink: 20;
   overflow: hidden;
+}
+
+/* Narrow or portrait windows: keep the keys, drop the words. */
+@media (max-width: 1280px) {
+  .shortcut-bar-item span {
+    display: none;
+  }
 }
 
 .shortcut-bar-item {
