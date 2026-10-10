@@ -12,6 +12,8 @@ mod session_update;
 pub(crate) mod text_extract;
 #[cfg(test)]
 mod claude_fixture_tests;
+#[cfg(all(test, unix))]
+pub(crate) mod test_agent;
 
 pub use client::{AcpClient, ModelVia, PromptResult};
 pub use probe::{probe_acp, probe_acp_handshake};

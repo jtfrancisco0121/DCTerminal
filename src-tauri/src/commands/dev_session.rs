@@ -26,6 +26,18 @@ pub enum PendingPlan {
     ClaudeExit { reject_option_id: Option<String> },
 }
 
+impl PendingPlan {
+    /// The answer when the turn is cancelled or the tab stops. Claude's
+    /// `ExitPlanMode` is a `session/request_permission`, so it needs the
+    /// permission shape (`{outcome: {outcome: "cancelled"}}`), not Cursor's.
+    pub fn cancelled_result(&self) -> Value {
+        match self {
+            PendingPlan::Cursor => json!({ "outcome": "cancelled" }),
+            PendingPlan::ClaudeExit { .. } => cancelled_permission_result(),
+        }
+    }
+}
+
 /// A permission card waiting for JT: which activity row it answers and the
 /// offered options (`(id, kind)`), so the decision can be logged as allow or
 /// reject.
@@ -98,14 +110,14 @@ impl LiveSession {
 
     pub fn shutdown(&mut self) {
         let pending: Vec<u64> = self.pending_permissions.drain().map(|(id, _)| id).collect();
-        let plans: Vec<u64> = self.pending_plans.drain().map(|(id, _)| id).collect();
+        let plans: Vec<(u64, PendingPlan)> = self.pending_plans.drain().collect();
         let questions: Vec<u64> = self.pending_questions.drain().map(|(id, _)| id).collect();
         if let Ok(mut outbox) = self.outbox.lock() {
             for id in pending {
                 outbox.push((id, cancelled_permission_result()));
             }
-            for id in plans {
-                outbox.push((id, json!({ "outcome": "cancelled" })));
+            for (id, plan) in plans {
+                outbox.push((id, plan.cancelled_result()));
             }
             for id in questions {
                 outbox.push((id, json!({ "outcome": "cancelled" })));
@@ -338,7 +350,7 @@ pub fn dev_session_cancel(
         .get_mut(&tab_id)
         .ok_or_else(|| "no active session".to_string())?;
     let pending: Vec<(u64, PendingPermission)> = session.pending_permissions.drain().collect();
-    let plans: Vec<u64> = session.pending_plans.drain().map(|(id, _)| id).collect();
+    let plans: Vec<(u64, PendingPlan)> = session.pending_plans.drain().collect();
     let questions: Vec<u64> = session.pending_questions.drain().map(|(id, _)| id).collect();
     let outbox = Arc::clone(&session.outbox);
     let cancel = Arc::clone(&session.cancel);
@@ -356,8 +368,8 @@ pub fn dev_session_cancel(
         for (id, _) in pending {
             queue.push((id, cancelled_permission_result()));
         }
-        for id in plans {
-            queue.push((id, json!({ "outcome": "cancelled" })));
+        for (id, plan) in plans {
+            queue.push((id, plan.cancelled_result()));
         }
         for id in questions {
             queue.push((id, json!({ "outcome": "cancelled" })));

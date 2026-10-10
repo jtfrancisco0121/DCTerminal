@@ -317,6 +317,11 @@ impl AcpConnection {
         dispatch: &mut LineDispatch,
         mut turn: Option<&mut TurnControl<'_>>,
     ) -> Result<Value, String> {
+        if turn.is_some() {
+            // Cards of an earlier turn were dropped when it ended and can never
+            // be answered; they must not pause this turn's idle limit.
+            self.awaiting_user.clear();
+        }
         self.request(id, method, params)?;
         // A turn's limit counts silence, not length, and pauses while the user owes an answer.
         let idle_limit = turn.is_some();
