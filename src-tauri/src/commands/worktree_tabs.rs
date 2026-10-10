@@ -33,6 +33,7 @@ pub async fn worktree_tab_new(
     branch: String,
     create_branch: bool,
     base: Option<String>,
+    window_id: Option<String>,
 ) -> Result<TabDetail, String> {
     let role = {
         let roles = app.state::<Mutex<RolesStore>>();
@@ -53,6 +54,7 @@ pub async fn worktree_tab_new(
     .await?;
     let state = app.state::<Mutex<StateStore>>();
     let mut store = state.lock().map_err(|e| e.to_string())?;
+    store.bind_window(window_id.as_deref());
     let tab_id = store.create_worktree_tab(&role, created)?;
     let tab = store
         .tab_by_id(&tab_id)

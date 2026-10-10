@@ -57,7 +57,7 @@ impl ConfigDirInfo {
     }
 }
 
-fn home_dir() -> Option<PathBuf> {
+pub(crate) fn home_dir() -> Option<PathBuf> {
     let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
     std::env::var_os(var)
         .filter(|value| !value.is_empty())
@@ -222,6 +222,26 @@ mod tests {
             expand_home("/opt/claude", Some(&home)),
             PathBuf::from("/opt/claude")
         );
+    }
+
+    #[test]
+    fn tilde_expands_on_mac_and_windows_homes() {
+        let mac = PathBuf::from("/Users/jt");
+        assert_eq!(
+            expand_home("~/.claude-account2", Some(&mac)),
+            mac.join(".claude-account2")
+        );
+        assert_eq!(expand_home("~/.claude", Some(&mac)), mac.join(".claude"));
+        let windows = PathBuf::from(r"C:\Users\jt");
+        assert_eq!(
+            expand_home("~/.claude-account2", Some(&windows)),
+            windows.join(".claude-account2")
+        );
+        assert_eq!(
+            expand_home(r"~\.claude", Some(&windows)),
+            windows.join(".claude")
+        );
+        assert_eq!(expand_home("~", Some(&windows)), windows);
     }
 
     #[test]

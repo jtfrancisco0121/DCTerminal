@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  claudeAccountLogins,
   getProviderSettings,
   providerStatus,
   setProviderSettings,
+  type ClaudeAccountLogin,
   type ProviderReport,
   type ProviderSettingsView,
   type ProvidersSettings,
@@ -12,6 +14,8 @@ export type ProvidersState = {
   view: ProviderSettingsView | null;
   claude: ProviderReport | null;
   cursor: ProviderReport | null;
+  /** Sign-in for each Claude account. Empty until the check finishes. */
+  accountLogins: ClaudeAccountLogin[];
   checking: boolean;
   error: string | null;
   /** Re-run detection and sign-in checks. */
@@ -29,6 +33,7 @@ export function useProviders(enabled = true): ProvidersState {
   const [view, setView] = useState<ProviderSettingsView | null>(null);
   const [claude, setClaude] = useState<ProviderReport | null>(null);
   const [cursor, setCursor] = useState<ProviderReport | null>(null);
+  const [accountLogins, setAccountLogins] = useState<ClaudeAccountLogin[]>([]);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -44,6 +49,11 @@ export function useProviders(enabled = true): ProvidersState {
       setView(nextView);
       setClaude(nextClaude);
       setCursor(nextCursor);
+      try {
+        setAccountLogins(await claudeAccountLogins());
+      } catch {
+        setAccountLogins([]);
+      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -67,6 +77,11 @@ export function useProviders(enabled = true): ProvidersState {
         setView(saved);
         // The folder decides which account `claude auth status` reports.
         setClaude(await providerStatus("claude"));
+        try {
+          setAccountLogins(await claudeAccountLogins());
+        } catch {
+          setAccountLogins([]);
+        }
       } catch (err: unknown) {
         setError(err instanceof Error ? err.message : String(err));
       }
@@ -79,5 +94,5 @@ export function useProviders(enabled = true): ProvidersState {
     void refresh();
   }, [enabled, refresh]);
 
-  return { view, claude, cursor, checking, error, refresh, refreshSettings, save };
+  return { view, claude, cursor, accountLogins, checking, error, refresh, refreshSettings, save };
 }

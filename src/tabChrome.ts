@@ -158,6 +158,7 @@ export type PaletteGroup = (typeof PALETTE_GROUPS)[number];
 /** Every fixed palette action. StartupForm's runPalette must handle each one. */
 export const PALETTE_ACTIONS = [
   "newTab",
+  "newWindow",
   "closeTab",
   "reopenClosedTab",
   "nextTab",
@@ -277,6 +278,7 @@ export function buildPalette(opts: {
 }): PaletteCommand[] {
   const commands: PaletteCommand[] = [
     { id: "newTab", title: "New tab", group: "Tabs" },
+    { id: "newWindow", title: "New window", group: "Tabs", keywords: "account claude" },
     { id: "closeTab", title: "Close tab", group: "Tabs" },
     { id: "nextTab", title: "Next tab", group: "Tabs" },
     { id: "prevTab", title: "Previous tab", group: "Tabs" },

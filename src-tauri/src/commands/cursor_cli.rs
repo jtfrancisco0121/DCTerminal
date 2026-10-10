@@ -84,12 +84,18 @@ pub struct ClaudeHistoryView {
 #[tauri::command]
 pub fn list_claude_history(
     cwd: String,
+    window_id: Option<String>,
     settings: State<Mutex<crate::store::SettingsStore>>,
+    state: State<Mutex<crate::store::StateStore>>,
 ) -> Result<ClaudeHistoryView, String> {
     let config = {
+        let mut state = state.lock().map_err(|err| err.to_string())?;
+        state.bind_window(window_id.as_deref());
+        let account = state.account_for_window(state.focus_window());
         let settings = settings.lock().map_err(|err| err.to_string())?;
-        crate::provider::claude_config::resolve_claude_config_dir(
-            settings.providers().claude.config_dir.as_deref(),
+        crate::store::settings_store::resolved_account_config(
+            &settings.providers().claude,
+            &account,
         )
     };
     let entries = if config.exists {

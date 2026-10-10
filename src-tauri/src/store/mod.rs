@@ -12,6 +12,7 @@ mod scratch_store;
 pub(crate) mod settings_store;
 mod state_store;
 mod state_types;
+mod window_migration;
 mod transcript_store;
 mod workspace_store;
 
@@ -35,8 +36,8 @@ pub(crate) use state_store::{
 };
 pub use claude_migration::{backup_pre_claude_first, migrate_state, CLAUDE_MIGRATION_NOTICE};
 pub use state_types::{
-    AppStateFile, ChainRef, LayoutState, Migrations, PipelineRun, RoleSnapshot, TabRecord,
-    TabSessionRef,
+    window_matches, AppStateFile, ChainRef, LayoutState, Migrations, PipelineRun, RoleSnapshot,
+    TabRecord, TabSessionRef, WindowRecord, MAIN_WINDOW_ID,
 };
 pub use transcript_store::{TranscriptFile, TranscriptStore};
 pub use workspace_store::{Workspace, WorkspaceStore, WorkspaceTab};

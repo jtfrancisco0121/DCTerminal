@@ -45,6 +45,18 @@ describe("provider descriptor", () => {
     );
   });
 
+  it("shows the window account name instead of the folder", () => {
+    const shown = providerIndicator("claude", {
+      configDir: dir,
+      login: signedIn,
+      accountName: "Personal",
+    });
+    expect(shown.text).toBe("Claude · Personal · jt@…");
+    expect(shown.title).toContain("Account: Personal");
+    expect(shown.title).toContain("Config folder: /Users/jt/.claude-account2");
+    expect(shown.title).toContain("Signed in: jt@koneksi.co.kr");
+  });
+
   it("keeps Cursor short", () => {
     expect(providerIndicator("cursor").text).toBe("Cursor");
     expect(providerTooltipLine("cursor", { configDir: dir, login: signedIn })).toBe("Cursor");

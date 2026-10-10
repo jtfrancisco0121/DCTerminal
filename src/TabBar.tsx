@@ -17,6 +17,9 @@ type Props = {
   onSelect: (tabId: string) => void;
   onClose: (tabId: string) => void;
   onNew: () => void;
+  /** Opens another window on a Claude account. */
+  onNewWindow?: () => void;
+  newWindowTitle?: string;
   /** F3: open the "New tab in worktree…" dialog. */
   onNewWorktree?: () => void;
   onReopen?: () => void;
@@ -121,6 +124,8 @@ export function TabBar({
   onSelect,
   onClose,
   onNew,
+  onNewWindow,
+  newWindowTitle,
   onNewWorktree,
   onReopen,
   onColor,
@@ -272,6 +277,18 @@ export function TabBar({
       >
         +
       </button>
+      {onNewWindow && (
+        <button
+          type="button"
+          className="secondary-button tab-new tab-bar-icon"
+          onClick={onNewWindow}
+          disabled={disableNew}
+          aria-label="New window"
+          title={newWindowTitle ?? "New window for another Claude account"}
+        >
+          ⧉
+        </button>
+      )}
       {onNewWorktree && (
         <button
           type="button"

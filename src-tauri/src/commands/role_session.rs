@@ -3,7 +3,7 @@ use crate::commands::dev_session::{DevSessionInfo, LiveSession, SessionRegistry}
 use crate::commands::prompt_worker::spawn_prompt_turn;
 use crate::orchestrator::{injection_strategy_from_role, InjectionStrategy};
 use crate::paths::{same_folder_warning, validate_working_folder};
-use crate::provider::{provider_for, ProviderId, SharedProvider};
+use crate::provider::{provider_for_account, ProviderId, SharedProvider};
 use crate::session_id::{session_start_bind, SessionStartBind};
 use crate::store::{FormsStore, RolesStore, StateStore, TabSessionRef};
 use crate::template::{merge_role_prompt, FieldError};
@@ -70,6 +70,7 @@ pub fn role_session_start(
     tab_id: Option<String>,
     resend_startup: Option<bool>,
     resume_session_id: Option<String>,
+    window_id: Option<String>,
     store: State<Mutex<RolesStore>>,
     state: State<Mutex<SessionRegistry>>,
     state_store: State<Mutex<StateStore>>,
@@ -95,12 +96,12 @@ pub fn role_session_start(
         }
     };
     let provider = {
-        let store = state_store.lock().map_err(|e| e.to_string())?;
+        let mut store = state_store.lock().map_err(|e| e.to_string())?;
+        store.bind_window(window_id.as_deref());
         let settings = settings.lock().map_err(|e| e.to_string())?;
-        provider_for(
-            store.provider_for_start(tab_id.as_deref()),
-            settings.providers(),
-        )
+        let id = store.provider_for_start(tab_id.as_deref());
+        let account = store.account_for_tab(tab_id.as_deref());
+        provider_for_account(id, settings.providers(), Some(&account))
     };
     let mut start_notice: Option<String> = None;
     if provider.id() == ProviderId::Claude {
@@ -281,6 +282,7 @@ pub fn role_session_start(
 
     let persisted_tab_id = {
         let mut store = state_store.lock().map_err(|e| e.to_string())?;
+        store.bind_window(window_id.as_deref());
         match store.promote_tab_to_running(
             tab_id.as_deref(),
             &role,

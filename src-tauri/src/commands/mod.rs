@@ -42,7 +42,9 @@ pub use prompts::{
     prompt_clear_recent, prompt_delete, prompt_library_get, prompt_mark_used, prompt_record_send,
     prompt_save,
 };
-pub use providers::{get_provider_settings, set_provider_settings, set_tab_provider};
+pub use providers::{
+    claude_account_logins, get_provider_settings, set_provider_settings, set_tab_provider,
+};
 pub use role_session::role_session_start;
 pub use roles::{get_role, list_roles, reset_builtin_role, save_role, validate_and_preview};
 pub use setup::{first_run_complete, first_run_status, provider_status};

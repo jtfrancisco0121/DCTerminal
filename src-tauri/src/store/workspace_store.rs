@@ -137,6 +137,7 @@ impl Default for WorkspacesFile {
             workspaces: Vec::new(),
             migrations: crate::store::state_types::Migrations {
                 claude_first: true,
+                windows: true,
             },
         }
     }

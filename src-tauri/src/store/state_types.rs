@@ -2,6 +2,26 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 pub const STATE_SCHEMA_VERSION: u32 = 1;
+pub const MAIN_WINDOW_ID: &str = "main";
+
+pub fn default_window_id() -> String {
+    MAIN_WINDOW_ID.to_string()
+}
+
+/// A tab belongs to `window_id`. Blank ids are the original window.
+pub fn window_matches(tab_window: &str, window_id: &str) -> bool {
+    let tab_window = if tab_window.trim().is_empty() {
+        MAIN_WINDOW_ID
+    } else {
+        tab_window
+    };
+    let window_id = if window_id.trim().is_empty() {
+        MAIN_WINDOW_ID
+    } else {
+        window_id
+    };
+    tab_window == window_id
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -18,6 +38,22 @@ pub struct AppStateFile {
     /// One-time migrations. Missing on old files, so `claude_first` starts false.
     #[serde(default)]
     pub migrations: Migrations,
+    /// Windows and the Claude account each one uses. Missing on old files.
+    #[serde(default)]
+    pub windows: Vec<WindowRecord>,
+}
+
+/// One top-level window bound to a Claude account.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowRecord {
+    pub id: String,
+    /// `providers.claude.accounts[].id`.
+    pub account_id: String,
+    #[serde(default)]
+    pub active_tab_id: Option<String>,
+    #[serde(default)]
+    pub layout: LayoutState,
 }
 
 /// Eagle-Eye position on a tab or a hand-off (Phase 9).
@@ -39,6 +75,9 @@ pub struct ChainRef {
 pub struct Migrations {
     #[serde(default)]
     pub claude_first: bool,
+    /// Tabs and layout moved onto per-window records.
+    #[serde(default)]
+    pub windows: bool,
 }
 
 /// Linked multi-tab pipeline (eagle-eye overview + stage worker tabs).
@@ -143,7 +182,16 @@ impl Default for AppStateFile {
             layout: LayoutState::default(),
             pipeline_runs: Vec::new(),
             // Nothing to migrate in a file we are creating now.
-            migrations: Migrations { claude_first: true },
+            migrations: Migrations {
+                claude_first: true,
+                windows: true,
+            },
+            windows: vec![WindowRecord {
+                id: MAIN_WINDOW_ID.to_string(),
+                account_id: "default".to_string(),
+                active_tab_id: None,
+                layout: LayoutState::default(),
+            }],
         }
     }
 }
@@ -196,6 +244,9 @@ pub struct ClosedTabRecord {
     /// Set when Claude could not use the role's permission mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_note: Option<String>,
+    /// Window this tab belongs to. Old files are the original window.
+    #[serde(default = "default_window_id")]
+    pub window_id: String,
 }
 
 /// Persisted tab snapshot (blueprint §17.2 `state.json`).
@@ -255,6 +306,9 @@ pub struct TabRecord {
     pub chain: Option<ChainRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_note: Option<String>,
+    /// Window this tab belongs to. Old files are the original window.
+    #[serde(default = "default_window_id")]
+    pub window_id: String,
 }
 
 pub fn default_tab_kind() -> String {

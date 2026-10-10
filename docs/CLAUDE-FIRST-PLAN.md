@@ -46,8 +46,8 @@
 
 JT runs Claude Code as `claude2`, a zsh alias for `CLAUDE_CONFIG_DIR=$HOME/.claude-account2 claude` (his second Claude account). DCTerminal is a GUI app and does not see shell aliases, so spawning plain `claude` / `claude-agent-acp` would use the default `~/.claude` login (wrong account) and history would be read from `~/.claude/projects` (wrong folder). Rules:
 
-- **Setting:** `providers.claude.configDir` (string path, `~` expanded). JT's value: `~/.claude-account2`. When unset, fall back to `~/.claude`.
-- **Env override:** `DCT_CLAUDE_CONFIG_DIR` wins over the setting (Settings shows "set by DCT_CLAUDE_CONFIG_DIR" and greys out the field). An inherited `CLAUDE_CONFIG_DIR` in DCTerminal's own env is ignored and overwritten, so the resolved value is the only one used. Precedence: `DCT_CLAUDE_CONFIG_DIR` → `providers.claude.configDir` → `~/.claude`.
+- **Setting:** `providers.claude.configDir` (string path, `~` expanded on macOS and Windows, including `~\`). JT's value: `~/.claude-account2`. When unset, fall back to `~/.claude`. Named accounts (Phase 12) keep this field as a mirror of the first account.
+- **Env override:** `DCT_CLAUDE_CONFIG_DIR` wins over the setting for the **first account only** (Settings shows "set by DCT_CLAUDE_CONFIG_DIR" and greys out that field). Other accounts always use their own folder. An inherited `CLAUDE_CONFIG_DIR` in DCTerminal's own env is ignored and overwritten, so the resolved value is the only one used. Precedence for account 0: `DCT_CLAUDE_CONFIG_DIR` → `providers.claude.configDir` → `~/.claude`.
 - **Spawns:** pass `CLAUDE_CONFIG_DIR=<configDir>` in the env of the adapter spawn (the adapter's SDK passes it to the `claude` it runs) and of every terminal `claude` spawn (role terminals, plain Claude Code tile, `claude --resume`).
 - **History / plans:** read sessions, plans, and history from `<configDir>/projects` (and `<configDir>/plans` if it ever exists). Read-only; never write there.
 - **Auth status:** `claude auth status --json` runs with the same env, so "signed in as …" is the account DCTerminal will actually use.
@@ -552,6 +552,34 @@ Replaces the old "role permission rules + skip-permissions warning" phase (Decis
 - [x] Message JT with PR link and the smoke list below.
 - [x] Commit: `docs: Claude-first provider progress`
 
+## Phase 12: One Claude account per window (macOS and Windows)
+
+JT uses two Claude subscriptions (personal `~/.claude-account2`, company `~/.claude`) and wants them side by side. Each window is bound to one account. Mac is the main device; the same behaviour has to work on Windows.
+
+**Last window:** Closing the last window on macOS leaves the process running, like a normal Mac app. That window's tabs and account stay in `state.json`. A Dock click with no windows visible restores it. On Windows (and Linux) the last window quits the process; the record is still kept, so the next launch restores it. Closing a window while another is still open removes that window from the restore list. Quit (macOS Quit, or any programmatic exit) does not drop windows that were still open, so relaunch restores every window that was open at quit.
+
+- [x] Settings > Providers > Claude lists named accounts `{ id, name, configDir }`. The old single `configDir` becomes account `default` (name "Personal" when a custom folder was set, otherwise "Claude"). `configDir` stays equal to the first account. `DCT_CLAUDE_CONFIG_DIR` overrides only that first account. Each row shows `claude auth status --json` for that folder. Missing folders are not created.
+- [x] New Window: title-bar button, command palette, `Cmd+Shift+N` on Mac, `Ctrl+Shift+N` on Windows, and macOS **File > New Window**. More than one account asks which one. Every Claude tab in that window (chat, terminal, Claude Code tile, resume, auth status, history, usage) uses that account's `CLAUDE_CONFIG_DIR`. Cursor tabs are unchanged. Two windows may share an account.
+- [x] Window title is `DCTerminal — {account}` on both platforms. Status bar shows `Claude · {name} · email` for this window's account.
+- [x] Tabs and the account are restored per window. First load copies `state.json` to `state.pre-windows.json` once, then puts the existing tabs on window `main`.
+- [x] Closing a window stops only that window's processes.
+- [x] `~` expands under the home folder on macOS (`HOME`) and Windows (`USERPROFILE`).
+- [x] Tests cover the shortcut (Mac vs Windows), the menu accelerator `CmdOrCtrl+Shift+N`, titles, Dock reopen only when nothing is visible, last-window quit (macOS stays, Windows quits), and `~` / `~\` expansion.
+
+### Smoke — Mac (JT's machine)
+
+- [ ] Settings > Providers lists Personal (`~/.claude-account2`) and Company (`~/.claude`). Each row shows that folder's signed-in email. `DCT_CLAUDE_CONFIG_DIR` greys out only the first account.
+- [ ] **File > New Window** and **⌘⇧N** open a window. With two accounts, the picker appears once (not twice). Title is `DCTerminal — Personal` or `DCTerminal — Company`. Status bar matches that name and email.
+- [ ] A Claude chat and a Claude terminal in the Company window have `CLAUDE_CONFIG_DIR` pointing at `~/.claude` (expanded). The Personal window still points at `~/.claude-account2`. History and the 5h/7d usage bar follow the window, not the other account. A Cursor tab in either window is unchanged.
+- [ ] Close the last window: the app stays running (no Dock bounce-to-quit). Click the Dock icon: that window comes back with its tabs and account. **Quit** (⌘Q) really quits. Relaunch restores every window that was still open at quit, and does not restore a window you closed while another was open.
+- [ ] Quit and relaunch: each window's tabs and account are back. `state.pre-windows.json` exists after the first launch that migrates, and is not overwritten.
+
+### Smoke — Windows
+
+- [ ] **Ctrl+Shift+N** and the title-bar New window button open a window. The title is `DCTerminal — {account}`. There is no macOS File menu; the button, shortcut, and command palette are the entry points.
+- [ ] `~/.claude-account2` and `~\.claude` expand under the user profile (`USERPROFILE`), not the process working directory. A missing folder is reported and not created.
+- [ ] Two windows on two accounts do not mix history or usage. Closing one window stops only its own Claude and terminal processes.
+- [ ] Close the last window: the process quits. Launch again: that last window's tabs and account are restored. Closing a window while another stays open does not bring the closed one back.
 
 ### Unverified on this VM (needs a Mac)
 

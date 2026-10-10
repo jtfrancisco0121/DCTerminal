@@ -60,9 +60,11 @@ import {
   listenSessionUpdates,
   ackProviderNotice,
   getClaudeUsage,
+  listenNewWindow,
   listClaudeHistory,
   listCursorCliHistory,
   newDraftTab,
+  openAccountWindow,
   setTabChain,
   startEagleEye,
   roleSessionStart,
@@ -270,7 +272,15 @@ import {
   providerTooltipLine,
   tabHasProvider,
 } from "./provider/descriptor";
-import { PROVIDER_IDS, providerForRole, type ProviderId } from "./provider/types";
+import { PROVIDER_IDS, claudeAccounts, providerForRole, type ProviderId } from "./provider/types";
+import {
+  acceptNewWindowRequest,
+  ensureWindow,
+  isNewWindowShortcut,
+  newWindowShortcutLabel,
+  shortcutPlatform,
+  type WindowContext,
+} from "./windowScope";
 import {
   appendStreamSegment,
   streamSegmentFromSystemMessage,
@@ -423,6 +433,13 @@ export function StartupForm({
   const [modelNotice, setModelNotice] = useState<string | null>(null);
   const [modelsRefreshing, setModelsRefreshing] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [accountPickerOpen, setAccountPickerOpen] = useState(false);
+  const [windowAccount, setWindowAccount] = useState<{
+    id: string;
+    name: string;
+    config: WindowContext["config"];
+  } | null>(null);
+  const newWindowAt = useRef(0);
   /** Text the palette opens with, and a key so reopening resets it. */
   const [palettePrefill, setPalettePrefill] = useState({ query: "", key: 0 });
   const [chatHistoryOpen, setChatHistoryOpen] = useState(false);
@@ -537,7 +554,8 @@ export function StartupForm({
     promptLibraryOpen !== null ||
     workspacesOpen !== null ||
     chatHistoryOpen ||
-    firstRunOpen;
+    firstRunOpen ||
+    accountPickerOpen;
   const platform = useMemo(
     () => detectPlatform(typeof navigator === "undefined" ? "" : navigator.platform),
     [],
@@ -575,6 +593,70 @@ export function StartupForm({
   }, []);
   const dismissTabToasts = agentNotifications.dismissTab;
   const showNotice = agentNotifications.notice;
+
+  const launchAccountWindow = useCallback(
+    (accountId: string) => {
+      setAccountPickerOpen(false);
+      void openAccountWindow(accountId).catch((err: unknown) => {
+        showNotice(
+          "New window",
+          err instanceof Error ? err.message : String(err),
+          "question",
+        );
+      });
+    },
+    [showNotice],
+  );
+
+  const requestNewWindow = useCallback(() => {
+    if (!acceptNewWindowRequest(newWindowAt.current, Date.now(), accountPickerOpen)) return;
+    newWindowAt.current = Date.now();
+    const accounts = providers.view
+      ? claudeAccounts(providers.view.settings.claude)
+      : [{ id: "default", name: "Claude", configDir: null }];
+    if (accounts.length <= 1) {
+      launchAccountWindow(accounts[0]?.id ?? "default");
+      return;
+    }
+    setAccountPickerOpen(true);
+  }, [accountPickerOpen, launchAccountWindow, providers.view]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void ensureWindow().then((ctx) => {
+      if (cancelled || !ctx.config?.path) return;
+      setWindowAccount({ id: ctx.accountId, name: ctx.accountName, config: ctx.config });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const host = shortcutPlatform();
+    const onKey = (event: KeyboardEvent) => {
+      if (!isNewWindowShortcut(event, host)) return;
+      event.preventDefault();
+      requestNewWindow();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [requestNewWindow]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void listenNewWindow(() => {
+      if (!cancelled) requestNewWindow();
+    }).then((stop) => {
+      if (cancelled) stop();
+      else unlisten = stop;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [requestNewWindow]);
 
   const persistTranscripts = useCallback(async (snapshot: Record<string, TabRuntime>) => {
     const jobs = Object.entries(snapshot)
@@ -1046,11 +1128,30 @@ export function StartupForm({
   );
   /** Tabs saved before providers carry no provider: they are Cursor tabs. */
   const providerOf = (tab: TabSummary | null): ProviderId => tab?.provider ?? "cursor";
-  const claudeInfo = providers.claude
-    ? { configDir: providers.claude.configDir, login: providers.claude.login }
-    : providers.view
-      ? { configDir: providers.view.claudeConfigDir, login: null }
-      : null;
+  const claudeInfo = (() => {
+    const fallback = providers.claude
+      ? { configDir: providers.claude.configDir, login: providers.claude.login }
+      : providers.view
+        ? { configDir: providers.view.claudeConfigDir, login: null }
+        : null;
+    if (!windowAccount?.config.path) return fallback;
+    const row = providers.accountLogins.find((item) => item.id === windowAccount.id);
+    const source =
+      windowAccount.config.source === "env" || windowAccount.config.source === "setting"
+        ? windowAccount.config.source
+        : ("default" as const);
+    const configDir = row?.config ?? {
+      path: windowAccount.config.path,
+      display: windowAccount.config.display,
+      source,
+      exists: windowAccount.config.exists,
+    };
+    const firstId = providers.view
+      ? (claudeAccounts(providers.view.settings.claude)[0]?.id ?? "default")
+      : "default";
+    const login = row?.login ?? (windowAccount.id === firstId ? (providers.claude?.login ?? null) : null);
+    return { configDir, login, accountName: windowAccount.name || null };
+  })();
   const activeProvider = providerOf(activeTabSummary);
   const historyProvider = historyOverride ?? activeProvider;
   const focusedTranscript =
@@ -3101,6 +3202,9 @@ export function StartupForm({
       case "removeWorktree":
         void removeWorktreeFor(activeTabId);
         return;
+      case "newWindow":
+        requestNewWindow();
+        return;
       case "newTab":
       case "closeTab":
       case "reopenClosedTab":
@@ -3262,6 +3366,10 @@ export function StartupForm({
       onSelect={handleSelectTab}
       onClose={handleCloseTab}
       onNew={handleNewTab}
+      onNewWindow={requestNewWindow}
+      newWindowTitle={`New window (${newWindowShortcutLabel(
+        platform === "mac" ? "mac" : platform === "windows" ? "windows" : "other",
+      )})`}
       onNewWorktree={() => setWorktreeDialogOpen(true)}
       onReopen={() => void reopenTab()}
       onSettings={() => setSettingsOpen((open) => toggleSettings(open))}
@@ -3633,6 +3741,43 @@ export function StartupForm({
             refreshChangeCount(changesTab.id);
           }}
         />
+      )}
+      {accountPickerOpen && (
+        <div
+          className="overlay-backdrop"
+          role="presentation"
+          onClick={() => setAccountPickerOpen(false)}
+        >
+          <div
+            className="overlay-panel"
+            role="dialog"
+            aria-label="New window"
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.stopPropagation();
+                setAccountPickerOpen(false);
+              }
+            }}
+          >
+            <h3>New window</h3>
+            <p className="hint">
+              Claude tabs in the new window use the account you pick. Cursor tabs are unchanged.
+            </p>
+            <div className="button-row">
+              {(providers.view ? claudeAccounts(providers.view.settings.claude) : []).map((account) => (
+                <button
+                  key={account.id}
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => launchAccountWindow(account.id)}
+                >
+                  {account.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
       )}
       {worktreeDialogOpen && (
         <WorktreeDialog

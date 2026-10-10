@@ -129,7 +129,9 @@ describe("Settings > Providers", () => {
     fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() =>
       expect(setProviderSettings).toHaveBeenCalledWith(
-        expect.objectContaining({ claude: { configDir: "~/.claude-account2" } }),
+        expect.objectContaining({
+          claude: expect.objectContaining({ configDir: "~/.claude-account2" }),
+        }),
       ),
     );
     await waitFor(() =>
@@ -148,7 +150,9 @@ describe("Settings > Providers", () => {
     fireEvent.click(screen.getByRole("button", { name: "Browse…" }));
     await waitFor(() =>
       expect(setProviderSettings).toHaveBeenCalledWith(
-        expect.objectContaining({ claude: { configDir: "/Users/jt/.claude-account2" } }),
+        expect.objectContaining({
+          claude: expect.objectContaining({ configDir: "/Users/jt/.claude-account2" }),
+        }),
       ),
     );
   });

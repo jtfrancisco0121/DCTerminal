@@ -16,15 +16,25 @@ fn note_usage(app: &AppHandle, tab_id: &str, raw_json: &str) {
     let Some(usage) = app.try_state::<std::sync::Mutex<crate::usage::UsageStore>>() else {
         return;
     };
-    let Some(settings) = app.try_state::<std::sync::Mutex<crate::store::SettingsStore>>() else {
+    let Some(settings_state) = app.try_state::<std::sync::Mutex<crate::store::SettingsStore>>()
+    else {
         return;
     };
-    let Ok(settings) = settings.lock() else {
+    let Some(app_state) = app.try_state::<std::sync::Mutex<crate::store::StateStore>>() else {
         return;
     };
-    let dir = crate::provider::claude_config::resolve_claude_config_dir(
-        settings.providers().claude.config_dir.as_deref(),
+    let Ok(app_state) = app_state.lock() else {
+        return;
+    };
+    let Ok(settings) = settings_state.lock() else {
+        return;
+    };
+    let account = app_state.account_for_tab(Some(tab_id));
+    let dir = crate::store::settings_store::resolved_account_config(
+        &settings.providers().claude,
+        &account,
     );
+    drop(app_state);
     drop(settings);
     let Ok(mut usage) = usage.lock() else {
         return;

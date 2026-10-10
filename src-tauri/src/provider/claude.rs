@@ -157,9 +157,17 @@ impl Default for ClaudeProvider {
 
 impl ClaudeProvider {
     pub fn from_settings(settings: &ClaudeProviderSettings) -> Self {
+        Self::with_config(
+            settings,
+            resolve_claude_config_dir(settings.config_dir.as_deref()),
+        )
+    }
+
+    /// A window account's folder, already resolved (env only for account 0).
+    pub fn with_config(settings: &ClaudeProviderSettings, config: ConfigDirInfo) -> Self {
         Self {
             settings: settings.clone(),
-            config: resolve_claude_config_dir(settings.config_dir.as_deref()),
+            config,
         }
     }
 

@@ -21,6 +21,7 @@ pub mod supervisor;
 pub mod template;
 pub mod turn_changes;
 mod usage;
+mod windows;
 pub mod worktree;
 
 use acp::{probe_acp, probe_acp_handshake};
@@ -47,7 +48,9 @@ use commands::{
 };
 use commands::{changes_file_diff, changes_list, changes_revert, changes_snapshot, ChangesRoot};
 use commands::{first_run_complete, first_run_status, provider_status};
-use commands::{get_provider_settings, set_provider_settings, set_tab_provider};
+use commands::{
+    claude_account_logins, get_provider_settings, set_provider_settings, set_tab_provider,
+};
 use commands::{git_repo_info, worktree_tab_check, worktree_tab_new, worktree_tab_remove};
 use commands::{
     prompt_clear_recent, prompt_delete, prompt_library_get, prompt_mark_used, prompt_record_send,
@@ -140,6 +143,8 @@ pub fn run() {
             app.manage(Mutex::new(crate::usage::UsageStore::default()));
             app.manage(Mutex::new(SessionRegistry::new()));
             app.manage(Mutex::new(PtyRegistry::new()));
+            windows::install_macos_menu(app)?;
+            windows::restore_saved_windows(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -148,6 +153,7 @@ pub fn run() {
             first_run_status,
             first_run_complete,
             get_provider_settings,
+            claude_account_logins,
             provider_status,
             set_provider_settings,
             set_tab_provider,
@@ -251,21 +257,12 @@ pub fn run() {
             files_read,
             files_write,
             files_reveal,
+            windows::window_context,
+            windows::open_account_window,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         .run(|app_handle, event| {
-            if matches!(event, tauri::RunEvent::Exit) {
-                if let Some(state) = app_handle.try_state::<Mutex<SessionRegistry>>() {
-                    if let Ok(mut guard) = state.lock() {
-                        guard.shutdown_all();
-                    }
-                }
-                if let Some(state) = app_handle.try_state::<Mutex<PtyRegistry>>() {
-                    if let Ok(mut guard) = state.lock() {
-                        guard.shutdown_all();
-                    }
-                }
-            }
+            windows::handle_run_event(app_handle, event);
         });
 }

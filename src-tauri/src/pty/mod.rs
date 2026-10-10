@@ -7,7 +7,7 @@ mod shell;
 
 use crate::paths::validate_working_folder;
 use crate::provider::{
-    provider_for, CursorProvider, Provider, ProviderId, TerminalKind, TerminalLaunch,
+    provider_for_account, CursorProvider, Provider, ProviderId, TerminalKind, TerminalLaunch,
 };
 pub use crate::pty::launch::RunMode;
 use crate::pty::launch::{
@@ -217,6 +217,19 @@ pub struct ShellTerminalInput {
     /// CLI chat id. When set, the tab runs `agent --resume <id>`.
     #[serde(default)]
     pub resume_session_id: Option<String>,
+    /// Window this terminal belongs to. Omitted means the original window.
+    #[serde(default)]
+    pub window_id: Option<String>,
+}
+
+fn provider_for_window(
+    state: &StateStore,
+    settings: &crate::store::settings_store::ProvidersSettings,
+    id: ProviderId,
+    tab_id: Option<&str>,
+) -> crate::provider::SharedProvider {
+    let account = state.account_for_tab(tab_id);
+    provider_for_account(id, settings, Some(&account))
 }
 
 #[tauri::command]
@@ -276,7 +289,8 @@ pub fn shell_terminal_start(
     }
     if launch == "claude-cli" {
         let (sessions, current) = {
-            let state = store.lock().map_err(|err| err.to_string())?;
+            let mut state = store.lock().map_err(|err| err.to_string())?;
+            state.bind_window(input.window_id.as_deref());
             let settings = settings.lock().map_err(|err| err.to_string())?;
             let sessions = input
                 .tab_id
@@ -284,7 +298,12 @@ pub fn shell_terminal_start(
                 .and_then(|id| state.tab_by_id(id))
                 .map(|tab| tab.sessions.clone())
                 .unwrap_or_default();
-            let provider = provider_for(ProviderId::Claude, settings.providers());
+            let provider = provider_for_window(
+                &state,
+                settings.providers(),
+                ProviderId::Claude,
+                input.tab_id.as_deref(),
+            );
             let current = provider
                 .config_dir()
                 .map(|info| info.path)
@@ -301,8 +320,15 @@ pub fn shell_terminal_start(
     }
     let command = if launch == "claude-cli" {
         let provider = {
+            let mut state = store.lock().map_err(|err| err.to_string())?;
+            state.bind_window(input.window_id.as_deref());
             let settings = settings.lock().map_err(|err| err.to_string())?;
-            provider_for(ProviderId::Claude, settings.providers())
+            provider_for_window(
+                &state,
+                settings.providers(),
+                ProviderId::Claude,
+                input.tab_id.as_deref(),
+            )
         };
         let model = crate::models::model_for_tab_provider(
             &store,
@@ -340,6 +366,7 @@ pub fn shell_terminal_start(
     };
     let tab_id = {
         let mut store = store.lock().map_err(|err| err.to_string())?;
+        store.bind_window(input.window_id.as_deref());
         store.save_terminal_tab(
             input.tab_id.as_deref(),
             TerminalTabDraft {
@@ -370,7 +397,12 @@ pub fn shell_terminal_start(
     if launch == "claude-cli" {
         let mut state = store.lock().map_err(|err| err.to_string())?;
         let settings = settings.lock().map_err(|err| err.to_string())?;
-        let provider = provider_for(ProviderId::Claude, settings.providers());
+        let provider = provider_for_window(
+            &state,
+            settings.providers(),
+            ProviderId::Claude,
+            Some(&tab_id),
+        );
         if let Some(dir) = provider.config_dir() {
             state.remember_claude_config(&tab_id, &dir.path)?;
         }
@@ -412,6 +444,9 @@ pub struct RoleTerminalInput {
     pub handoff_plan: Option<String>,
     pub cols: u16,
     pub rows: u16,
+    /// Window this terminal belongs to. Omitted means the original window.
+    #[serde(default)]
+    pub window_id: Option<String>,
 }
 
 #[tauri::command]
@@ -470,11 +505,14 @@ pub fn role_terminal_start(
         RunMode::parse(&settings.run_mode_for(&role.id))
     };
     let provider = {
-        let store = store.lock().map_err(|err| err.to_string())?;
+        let mut store = store.lock().map_err(|err| err.to_string())?;
+        store.bind_window(input.window_id.as_deref());
         let settings = settings.lock().map_err(|err| err.to_string())?;
-        provider_for(
-            store.provider_for_start(input.tab_id.as_deref()),
+        provider_for_window(
+            &store,
             settings.providers(),
+            store.provider_for_start(input.tab_id.as_deref()),
+            input.tab_id.as_deref(),
         )
     };
     let model = crate::models::model_for_tab_provider(
@@ -496,6 +534,7 @@ pub fn role_terminal_start(
     let program = provider.terminal_command(&role_launch(None))?.program;
     let tab_id = {
         let mut store = store.lock().map_err(|err| err.to_string())?;
+        store.bind_window(input.window_id.as_deref());
         let title_answers = input.values.clone();
         let label = tab_label(&role.name, &title_answers);
         store.save_terminal_tab(
@@ -562,6 +601,9 @@ pub struct PtyOpenInput {
     /// CLI chat id. When set, argv is `agent --resume <id>`.
     #[serde(default)]
     pub resume_session_id: Option<String>,
+    /// Window this terminal belongs to. Omitted means the original window.
+    #[serde(default)]
+    pub window_id: Option<String>,
 }
 
 fn claude_terminal_resume(
@@ -625,8 +667,10 @@ pub fn pty_open(
         }
         "claude-cli" => {
             let provider = {
+                let mut state = store.lock().map_err(|err| err.to_string())?;
+                state.bind_window(input.window_id.as_deref());
                 let settings = settings.lock().map_err(|err| err.to_string())?;
-                provider_for(ProviderId::Claude, settings.providers())
+                provider_for_window(&state, settings.providers(), ProviderId::Claude, Some(&input.id))
             };
             let resume = claude_terminal_resume(
                 &store,
@@ -676,13 +720,14 @@ pub fn pty_open(
                 RunMode::parse(&settings.run_mode_for(&role_id))
             };
             let provider = {
-                let store = store.lock().map_err(|err| err.to_string())?;
+                let mut store = store.lock().map_err(|err| err.to_string())?;
+                store.bind_window(input.window_id.as_deref());
                 let settings = settings.lock().map_err(|err| err.to_string())?;
                 let id = store
                     .tab_by_id(&input.id)
                     .map(|tab| ProviderId::resolve(tab.provider))
                     .unwrap_or(ProviderId::LEGACY);
-                provider_for(id, settings.providers())
+                provider_for_window(&store, settings.providers(), id, Some(&input.id))
             };
             let model = crate::models::model_for_tab_provider(
                 &store,
@@ -821,7 +866,7 @@ pub fn terminal_plan_file(
             .and_then(|id| store.tab_by_id(id))
             .map(|tab| ProviderId::resolve(tab.provider))
             .unwrap_or(ProviderId::LEGACY);
-        provider_for(id, settings.providers())
+        provider_for_window(&store, settings.providers(), id, tab_id.as_deref())
             .plans_dir()
             .unwrap_or_else(cursor_plans_dir)
     };

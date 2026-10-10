@@ -269,6 +269,49 @@ fn provider_settings_are_cleaned_on_save() {
 }
 
 #[test]
+fn claude_accounts_migrate_from_config_dir_and_env_is_only_the_first() {
+    use crate::provider::claude_config::ConfigDirSource;
+    use crate::store::settings_store::{account_config, ClaudeAccount};
+    let dir = temp_dir("accounts");
+    let mut store = SettingsStore::open(&dir).unwrap();
+    let mut next = ProvidersSettings::default();
+    next.claude.config_dir = Some("~/.claude-account2".into());
+    store.set_providers(next).unwrap();
+    let accounts = &store.providers().claude.accounts;
+    assert_eq!(accounts.len(), 1);
+    assert_eq!(accounts[0].id, "default");
+    assert_eq!(accounts[0].name, "Personal");
+    assert_eq!(accounts[0].config_dir.as_deref(), Some("~/.claude-account2"));
+
+    let mut named = store.providers().clone();
+    named.claude.accounts.push(ClaudeAccount {
+        id: "company".into(),
+        name: "Company".into(),
+        config_dir: Some("~/.claude".into()),
+    });
+    named.claude.config_dir = named.claude.accounts[0].config_dir.clone();
+    store.set_providers(named).unwrap();
+    let home = std::env::temp_dir();
+    let first = account_config(
+        &store.providers().claude,
+        "default",
+        Some("/env/claude"),
+        Some(&home),
+    );
+    let second = account_config(
+        &store.providers().claude,
+        "company",
+        Some("/env/claude"),
+        Some(&home),
+    );
+    assert_eq!(first.source, ConfigDirSource::Env);
+    assert!(first.path.contains("env"));
+    assert_eq!(second.source, ConfigDirSource::Setting);
+    assert!(second.display.ends_with(".claude") || second.path.ends_with(".claude"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn legacy_workspaces_migrate_to_claude() {
     let dir = temp_dir("ws");
     std::fs::write(dir.join("workspaces.json"), LEGACY_WORKSPACES).unwrap();
