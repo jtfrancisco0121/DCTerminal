@@ -13,6 +13,9 @@ use tauri::State;
 #[serde(rename_all = "camelCase")]
 pub struct ScratchSnapshot {
     pub pads: Vec<ScratchPadEntry>,
+    /// Open and closed tabs in every window. The WebView drops mirrored
+    /// pads for any other tab so a deleted tab's draft is not resurrected.
+    pub known_tab_ids: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -59,7 +62,14 @@ pub struct DiagnosticsStatus {
 }
 
 #[tauri::command]
-pub fn scratch_load(store: State<Mutex<ScratchStore>>) -> Result<ScratchSnapshot, String> {
+pub fn scratch_load(
+    store: State<Mutex<ScratchStore>>,
+    state: State<Mutex<StateStore>>,
+) -> Result<ScratchSnapshot, String> {
+    let known_tab_ids = {
+        let state = state.lock().map_err(|e| e.to_string())?;
+        super::storage::known_tab_ids(&state)
+    };
     let store = store.lock().map_err(|e| e.to_string())?;
     let mut pads: Vec<ScratchPadEntry> = store
         .data
@@ -73,7 +83,10 @@ pub fn scratch_load(store: State<Mutex<ScratchStore>>) -> Result<ScratchSnapshot
         })
         .collect();
     pads.sort_by(|a, b| a.tab_id.cmp(&b.tab_id));
-    Ok(ScratchSnapshot { pads })
+    Ok(ScratchSnapshot {
+        pads,
+        known_tab_ids,
+    })
 }
 
 #[tauri::command]

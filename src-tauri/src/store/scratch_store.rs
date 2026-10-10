@@ -86,7 +86,9 @@ impl ScratchStore {
     }
 
     /// Drop pads for tabs that are gone and have not been edited in 30 days.
-    pub fn prune_orphans(&mut self, keep: &HashSet<String>, now: DateTime<Utc>) {
+    /// Returns how many pads were dropped.
+    pub fn prune_orphans(&mut self, keep: &HashSet<String>, now: DateTime<Utc>) -> usize {
+        let before = self.data.pads.len();
         self.data.pads.retain(|id, pad| {
             if keep.contains(id) {
                 return true;
@@ -96,6 +98,7 @@ impl ScratchStore {
             };
             now.signed_duration_since(updated).num_days() < ORPHAN_DAYS
         });
+        before - self.data.pads.len()
     }
 }
 
@@ -171,7 +174,7 @@ mod tests {
             .with_timezone(&Utc);
         let mut keep = HashSet::new();
         keep.insert("live".to_string());
-        store.prune_orphans(&keep, now);
+        assert_eq!(store.prune_orphans(&keep, now), 1);
         assert!(store.data.pads.contains_key("live"));
         assert!(!store.data.pads.contains_key("old"));
         let _ = std::fs::remove_dir_all(dir);

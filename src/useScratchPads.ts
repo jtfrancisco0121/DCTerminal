@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { scratchLoad, scratchSave } from "./bridge";
 import {
+  dropUnknownLocalPads,
   loadLocalDrafts,
   LOCAL_DRAFT_KEY,
   mergeDraftFiles,
@@ -89,7 +90,10 @@ export function useScratchPads(activeTabId: string | null) {
     scratchLoad()
       .then((snap) => {
         if (cancelled) return;
-        const merged = mergeDraftFiles(local, diskFile(snap.pads));
+        const merged = mergeDraftFiles(
+          dropUnknownLocalPads(local, snap.knownTabIds),
+          diskFile(snap.pads),
+        );
         setFile(merged);
       })
       .catch(() => {

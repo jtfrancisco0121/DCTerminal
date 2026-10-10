@@ -261,6 +261,22 @@ export function mergeDraftFiles(local: DraftFile | null, disk: DraftFile | null)
   return { pads };
 }
 
+/** Drop mirrored pads whose tab is neither open nor closed, so the WebView
+ * copy cannot resurrect a deleted tab's draft into scratch.json. `null`
+ * known ids (backend did not say) keeps everything. */
+export function dropUnknownLocalPads(
+  local: DraftFile | null,
+  knownTabIds: readonly string[] | null | undefined,
+): DraftFile | null {
+  if (!local || !knownTabIds) return local;
+  const known = new Set(knownTabIds);
+  const pads: Record<string, PadRecord> = {};
+  for (const [id, pad] of Object.entries(local.pads)) {
+    if (known.has(id)) pads[id] = pad;
+  }
+  return { pads };
+}
+
 export type DraftStorage = {
   read(key: string): string | null;
   write(key: string, value: string): void;

@@ -23,6 +23,7 @@ import { CLAUDE_DEFAULT_MODEL_ID, CLAUDE_EFFORT_LEVELS, DEFAULT_MODEL_ID } from 
 import type { ProviderId } from "../provider/types";
 import { ModelPicker } from "./ModelPicker";
 import { ProvidersSettingsSection } from "./ProvidersSettings";
+import { StorageRow } from "./StorageRow";
 import type { ProvidersState } from "../provider/useProviders";
 import type { NotificationSettings } from "../notify/agentNotify";
 import { formatReset, formatSeen, isStale, limitTone } from "../usage/limits";
@@ -609,6 +610,7 @@ export function SettingsPage({
                 <dt>Permission log</dt>
                 <dd>{diagnostics?.logPath || "logs/permission-payloads.jsonl"}</dd>
               </dl>
+              <StorageRow />
               <div className="settings-subsection">
                 <h4>About</h4>
                 <p>

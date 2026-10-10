@@ -49,6 +49,7 @@ use commands::{
 };
 use commands::{changes_file_diff, changes_list, changes_revert, changes_snapshot, ChangesRoot};
 use commands::{first_run_complete, first_run_status, provider_status};
+use commands::{storage_cleanup, storage_status};
 use commands::{
     claude_account_logins, get_provider_settings, set_provider_settings, set_tab_provider,
 };
@@ -110,7 +111,7 @@ pub fn run() {
                 eprintln!("DCTerminal: {warning}");
             }
             let data_dir = resolved.path;
-            let scratch_store = ScratchStore::open(&data_dir)?;
+            let mut scratch_store = ScratchStore::open(&data_dir)?;
             let projects_store = ProjectsStore::open(&data_dir)?;
             let settings_store = SettingsStore::open(&data_dir)?;
             let transcript_store = TranscriptStore::open(&data_dir)?;
@@ -118,19 +119,8 @@ pub fn run() {
             let prompt_store = PromptStore::open(&data_dir)?;
             let workspace_store = WorkspaceStore::open(&data_dir)?;
             state_store.new_tab_provider = settings_store.default_provider();
-            let known_tabs: Vec<String> = state_store
-                .data
-                .tabs
-                .iter()
-                .map(|tab| tab.id.clone())
-                .chain(
-                    state_store
-                        .data
-                        .closed_tabs
-                        .iter()
-                        .map(|tab| tab.id.clone()),
-                )
-                .collect();
+            let known_tabs = commands::storage::known_tab_ids(&state_store);
+            commands::storage::run_sweep(&data_dir, &mut scratch_store, &known_tabs);
             app.manage(ChangesRoot::open(&data_dir, &known_tabs));
             app.manage(attachments::AttachmentStore::open(&data_dir, &known_tabs));
             app.manage(Mutex::new(store));
@@ -224,6 +214,8 @@ pub fn run() {
             diagnostics_status,
             diagnostics_set_capture,
             diagnostics_read_log,
+            storage_status,
+            storage_cleanup,
             session_agent_logs,
             reopen_closed_tab,
             set_tab_label,
