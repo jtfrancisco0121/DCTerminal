@@ -1,4 +1,5 @@
 mod acp;
+mod attachments;
 mod claude_history;
 mod cli_detect;
 mod cli_launch;
@@ -51,6 +52,7 @@ use commands::{first_run_complete, first_run_status, provider_status};
 use commands::{
     claude_account_logins, get_provider_settings, set_provider_settings, set_tab_provider,
 };
+use commands::{attachment_add, attachment_remove};
 use commands::{git_repo_info, worktree_tab_check, worktree_tab_new, worktree_tab_remove};
 use commands::{
     prompt_clear_recent, prompt_delete, prompt_library_get, prompt_mark_used, prompt_record_send,
@@ -130,6 +132,7 @@ pub fn run() {
                 )
                 .collect();
             app.manage(ChangesRoot::open(&data_dir, &known_tabs));
+            app.manage(attachments::AttachmentStore::open(&data_dir, &known_tabs));
             app.manage(Mutex::new(store));
             app.manage(Mutex::new(state_store));
             app.manage(Mutex::new(forms_store));
@@ -182,6 +185,8 @@ pub fn run() {
             save_form_draft,
             dev_session_start,
             dev_session_send,
+            attachment_add,
+            attachment_remove,
             dev_session_cancel,
             dev_session_stop,
             respond_permission_request,

@@ -13,6 +13,9 @@ pub struct AgentCapabilities {
     pub session_list: bool,
     pub session_resume: bool,
     pub session_close: bool,
+    /// `promptCapabilities.image`: the agent takes image content blocks in
+    /// `session/prompt`. Without it, prompts are text only.
+    pub prompt_image: bool,
 }
 
 pub fn capabilities_from_initialize(result: &Value) -> AgentCapabilities {
@@ -26,6 +29,11 @@ pub fn capabilities_from_initialize(result: &Value) -> AgentCapabilities {
         session_list: session.and_then(|value| value.get("list")).is_some(),
         session_resume: session.and_then(|value| value.get("resume")).is_some(),
         session_close: session.and_then(|value| value.get("close")).is_some(),
+        prompt_image: caps
+            .and_then(|value| value.get("promptCapabilities"))
+            .and_then(|value| value.get("image"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     }
 }
 
@@ -245,10 +253,11 @@ pub fn handshake(
     provider: &dyn Provider,
     cwd: &Path,
     mode_id: &str,
-) -> Result<(String, String, SessionModels), String> {
+) -> Result<(String, String, SessionModels, AgentCapabilities), String> {
     let timeout = default_io_timeout();
 
-    conn.call(1, "initialize", initialize_params(), timeout)?;
+    let init = conn.call(1, "initialize", initialize_params(), timeout)?;
+    let caps = capabilities_from_initialize(&init);
 
     run_auth_step(conn, provider)?;
 
@@ -280,7 +289,7 @@ pub fn handshake(
         timeout,
     )?;
 
-    Ok((session_id, mode_id, models))
+    Ok((session_id, mode_id, models, caps))
 }
 
 /// Resume one ACP session. Caller must already know `loadSession` may be false;
@@ -291,7 +300,7 @@ pub fn handshake_load(
     cwd: &Path,
     mode_id: &str,
     session_id: &str,
-) -> Result<(String, String, Vec<Value>, SessionModels), String> {
+) -> Result<(String, String, Vec<Value>, SessionModels, AgentCapabilities), String> {
     let timeout = default_io_timeout();
     let init = conn.call(1, "initialize", initialize_params(), timeout)?;
     let caps = capabilities_from_initialize(&init);
@@ -333,6 +342,7 @@ pub fn handshake_load(
         mode_id,
         dispatch.notifications,
         parse_session_models(&load_result),
+        caps,
     ))
 }
 
@@ -373,6 +383,8 @@ mod tests {
         assert!(caps.session_list);
         assert!(!caps.session_resume);
         assert!(!caps.session_close);
+        // Cursor advertises images too; attachments are still Claude-only.
+        assert!(caps.prompt_image);
     }
 
     #[test]
@@ -448,5 +460,14 @@ mod tests {
         let caps = capabilities_from_initialize(&json!({ "agentCapabilities": {} }));
         assert!(!caps.load_session);
         assert!(!caps.session_list);
+        assert!(!caps.prompt_image);
+    }
+
+    #[test]
+    fn prompt_image_false_is_not_supported() {
+        let caps = capabilities_from_initialize(&json!({
+            "agentCapabilities": { "promptCapabilities": { "image": false } }
+        }));
+        assert!(!caps.prompt_image);
     }
 }

@@ -1,4 +1,5 @@
 use crate::acp::PromptResult;
+use crate::attachments::{AttachmentStore, PromptImage};
 use crate::commands::acp_events::emit_session_update;
 use crate::commands::agent_requests::stage_permission_request;
 use crate::commands::dev_session::SessionRegistry;
@@ -21,11 +22,19 @@ pub struct PromptFinishedEvent {
     pub agent_exited: bool,
 }
 
+/// Images going with one turn, and the staged ids to delete once it succeeds.
+#[derive(Default)]
+pub struct TurnImages {
+    pub images: Vec<PromptImage>,
+    pub staged_ids: Vec<String>,
+}
+
 /// Run `session/prompt` off the IPC thread so the UI stays responsive.
 pub fn spawn_prompt_turn(
     app: AppHandle,
     tab_id: String,
     prompt_text: String,
+    images: TurnImages,
     mark_startup_injected: bool,
     mark_tab_injection_complete: bool,
 ) {
@@ -34,9 +43,14 @@ pub fn spawn_prompt_turn(
             &app,
             &tab_id,
             &prompt_text,
+            &images.images,
             mark_startup_injected,
             mark_tab_injection_complete,
         );
+        if finished.success && !images.staged_ids.is_empty() {
+            app.state::<AttachmentStore>()
+                .remove_many(&tab_id, &images.staged_ids);
+        }
         let _ = app.emit(PROMPT_FINISHED_EVENT, finished);
     });
 }
@@ -45,6 +59,7 @@ fn run_prompt_turn(
     app: &AppHandle,
     tab_id: &str,
     prompt_text: &str,
+    images: &[PromptImage],
     mark_startup_injected: bool,
     mark_tab_injection_complete: bool,
 ) -> PromptFinishedEvent {
@@ -132,7 +147,12 @@ fn run_prompt_turn(
         );
         let result = {
             let mut client = client_arc.lock().map_err(|e| e.to_string())?;
-            client.send_prompt(prompt_text, Some(on_notification), Some(on_agent_request))?
+            client.send_prompt(
+                prompt_text,
+                images,
+                Some(on_notification),
+                Some(on_agent_request),
+            )?
         };
         {
             let mut guard = state.lock().map_err(|e| e.to_string())?;

@@ -27,6 +27,8 @@ pub struct AcpClient {
     followups: ClientFollowups,
     models: SessionModels,
     provider: SharedProvider,
+    /// The agent advertised `promptCapabilities.image`.
+    prompt_image: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -91,7 +93,7 @@ impl AcpClient {
     ) -> Result<Self, String> {
         let mut conn = AgentSupervisor::spawn_provider(provider, folder, spawn_model)?;
         match handshake(&mut conn, provider.as_ref(), folder, mode_id) {
-            Ok((session_id, mode, models)) => {
+            Ok((session_id, mode, models, caps)) => {
                 let mut client = Self::from_parts(
                     conn,
                     session_id,
@@ -100,6 +102,7 @@ impl AcpClient {
                     provider.clone(),
                 );
                 client.models = models;
+                client.prompt_image = caps.prompt_image;
                 Ok(client)
             }
             Err(err) => {
@@ -154,7 +157,7 @@ impl AcpClient {
     ) -> Result<(Self, Vec<Value>), String> {
         let mut conn = AgentSupervisor::spawn_provider(provider, folder, spawn_model)?;
         match handshake_load(&mut conn, provider.as_ref(), folder, mode_id, session_id) {
-            Ok((loaded_id, mode, replay, models)) => {
+            Ok((loaded_id, mode, replay, models, caps)) => {
                 let mut client = Self::from_parts(
                     conn,
                     loaded_id,
@@ -163,6 +166,7 @@ impl AcpClient {
                     provider.clone(),
                 );
                 client.models = models;
+                client.prompt_image = caps.prompt_image;
                 Ok((client, replay))
             }
             Err(err) => {
@@ -294,7 +298,14 @@ impl AcpClient {
             outbox: Arc::new(Mutex::new(Vec::new())),
             followups: Arc::new(Mutex::new(Vec::new())),
             models: SessionModels::default(),
+            prompt_image: false,
         }
+    }
+
+    /// Pasted images are offered only on Claude sessions whose agent
+    /// advertised `promptCapabilities.image` (Cursor tabs stay text only).
+    pub fn supports_images(&self) -> bool {
+        self.prompt_image && self.provider.id() == crate::provider::ProviderId::Claude
     }
 
     /// The provider this session runs on.
@@ -337,12 +348,19 @@ impl AcpClient {
     pub fn send_prompt(
         &mut self,
         text: &str,
+        images: &[crate::attachments::PromptImage],
         on_notification: Option<super::connection::NotificationHandler>,
         on_agent_request: Option<super::connection::AgentRequestHandler>,
     ) -> Result<PromptResult, String> {
-        if text.trim().is_empty() {
+        if text.trim().is_empty() && images.is_empty() {
             return Err("prompt text is empty".to_string());
         }
+        if !images.is_empty() && !self.supports_images() {
+            return Err(
+                "This chat's agent does not accept images — send text only.".to_string(),
+            );
+        }
+        crate::attachments::validate_count(images.len())?;
         // A cancel that arrived before this turn is stale.
         self.cancel.store(false, Ordering::SeqCst);
         let id = self.next_id;
@@ -367,7 +385,7 @@ impl AcpClient {
         let result = self.conn.call_with_dispatch(
             id,
             "session/prompt",
-            session_prompt_params(&session_for_prompt, text),
+            session_prompt_params(&session_for_prompt, text, images),
             PROMPT_TIMEOUT,
             &mut dispatch,
             Some(&mut turn),

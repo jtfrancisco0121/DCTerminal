@@ -279,6 +279,8 @@ import {
 } from "./tabChrome";
 import { useAppShortcuts } from "./useAppShortcuts";
 import { useScratchPads } from "./useScratchPads";
+import { useChatImages } from "./attachments/useChatImages";
+import { withImageMarkers } from "./attachments/chatImages";
 import { useUiSettings } from "./useUiSettings";
 import { useProviders } from "./provider/useProviders";
 import {
@@ -552,6 +554,10 @@ export function StartupForm({
   const planRequest = activeRuntime.plan;
   const questionRequest = activeRuntime.question;
   const scratch = useScratchPads(activeTabId);
+  const chatImages = useChatImages();
+  // Pasted images: Claude chats whose agent takes them (Rust sets the flag).
+  const imagesFor = (tabId: string | null, info: { supportsImages?: boolean } | null | undefined) =>
+    tabId && info?.supportsImages ? chatImages.propsFor(tabId) : null;
   /** Latest pad text per tab, for callbacks that finish after a send. */
   const padTextRef = useRef<Record<string, string>>({});
   if (activeTabId) padTextRef.current[activeTabId] = scratch.content;
@@ -1986,29 +1992,39 @@ export function StartupForm({
   const sendText = useCallback(
     async (tabId: string, text: string, onNotSent?: () => void) => {
       const trimmed = text.trim();
-      if (!trimmed) return "error" as const;
-      const blocked = blockedSlashCommand(trimmed);
+      const blocked = trimmed ? blockedSlashCommand(trimmed) : null;
       if (blocked) {
+        // Staged images stay on the tab for the corrected message.
         patchRuntime(tabId, (rt) => ({ ...rt, promptError: blocked }));
         onNotSent?.();
         return "error" as const;
       }
+      // Pasted images go with this message only, so a --- chain's later steps send none.
+      const images = chatImages.actions.take(tabId);
+      if (!trimmed && images.length === 0) return "error" as const;
       const pending = waiterRef.current.expect(tabId);
       setHistoryCursor(-1);
-      // Saved with the tab's pad (scratch.json), so Up-arrow history survives a restart.
-      scratch.remember(tabId, trimmed);
-      void promptRecordSend(trimmed, "chat").catch(() => {});
+      if (trimmed) {
+        // Saved with the tab's pad (scratch.json), so Up-arrow history survives a restart.
+        scratch.remember(tabId, trimmed);
+        void promptRecordSend(trimmed, "chat").catch(() => {});
+      }
       patchRuntime(tabId, (rt) => ({
         ...rt,
         promptError: null,
         followUp: "",
         promptInFlight: true,
-        segments: appendStreamSegment(rt.segments, streamSegmentFromUserMessage(trimmed)),
+        segments: appendStreamSegment(
+          rt.segments,
+          streamSegmentFromUserMessage(withImageMarkers(trimmed, images)),
+        ),
       }));
       try {
-        await devSessionSend(trimmed, tabId);
+        const ids = images.map((image) => image.id);
+        await (ids.length ? devSessionSend(trimmed, tabId, ids) : devSessionSend(trimmed, tabId));
       } catch (err: unknown) {
         waiterRef.current.cancel(tabId);
+        chatImages.actions.restore(tabId, images);
         const message = err instanceof Error ? err.message : String(err);
         patchRuntime(tabId, (rt) => ({
           ...rt,
@@ -2020,7 +2036,7 @@ export function StartupForm({
       }
       return pending;
     },
-    [patchRuntime, scratch],
+    [chatImages.actions, patchRuntime, scratch],
   );
 
   const sendFollowUpFor = useCallback(
@@ -2028,7 +2044,9 @@ export function StartupForm({
       if (!tabId) return;
       const rt = runtimesRef.current[tabId];
       const text = rt?.followUp.trim() ?? "";
-      if (!text || !rt || rt.agentExited || rt.promptInFlight) return;
+      if ((!text && !chatImages.actions.has(tabId)) || !rt || rt.agentExited || rt.promptInFlight) {
+        return;
+      }
       setBusy(true);
       try {
         await sendText(tabId, text);
@@ -2036,7 +2054,7 @@ export function StartupForm({
         setBusy(false);
       }
     },
-    [sendText],
+    [chatImages.actions, sendText],
   );
 
   const sendFollowUp = useCallback(
@@ -2106,7 +2124,7 @@ export function StartupForm({
       return;
     }
     const text = scratch.content;
-    if (text.trim()) {
+    if (text.trim() || chatImages.actions.has(activeTabId)) {
       const tabId = activeTabId;
       // Sent text leaves the pad (Recent sends keeps it). If it never
       // reached the agent and the pad is still empty, put it back.
@@ -2115,7 +2133,7 @@ export function StartupForm({
         if (!padTextRef.current[tabId]) scratch.setContent(tabId, text);
       });
     }
-  }, [activeTabId, followUp, runChain, scratch, sendFollowUp, sendText]);
+  }, [activeTabId, chatImages.actions, followUp, runChain, scratch, sendFollowUp, sendText]);
 
   // F8: show first-run setup on a fresh profile only.
   useEffect(() => {
@@ -4151,6 +4169,7 @@ export function StartupForm({
           onRestart={() => void stopSecondarySession(tab.id)}
           inputRef={inputRef}
           slashCommands={rt.slashCommands}
+          images={imagesFor(tab.id, rt.session)}
           headerExtra={
             <>
               {modeBadgeFor(tab, rt.session.modeId)}
@@ -4981,6 +5000,7 @@ export function StartupForm({
               historyCursor={historyCursor}
               onHistoryCursor={setHistoryCursor}
               handoff={handoffOffer}
+              images={imagesFor(activeTabId, session)}
               statusInBar
               details={[
                 `Role: ${roleNames[roleId] ?? roleId}`,
@@ -5049,6 +5069,7 @@ export function StartupForm({
             scratch.flush();
           }}
           onOpenLibrary={() => openPromptLibrary(false)}
+          images={imagesFor(activeTabId, session)}
           collapsed={!padOpen}
           onToggle={() => uiSettings.update({ padHidden: padOpen })}
           {...padSizeProps}

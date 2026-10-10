@@ -2,6 +2,8 @@ import { forwardRef, useRef, type KeyboardEvent, type MouseEvent as ReactMouseEv
 import { splitChainSteps, type ChainCursor } from "../scratch/pad";
 import { useSlashAutocomplete } from "../composer/SlashCommandMenu";
 import { blockedSlashCommandIn, type SlashCommand } from "../composer/slashCommands";
+import type { ChatImagesProps } from "../attachments/useChatImages";
+import { AttachmentChips, imageInputHandlers } from "./AttachmentChips";
 
 type Props = {
   content: string;
@@ -33,6 +35,11 @@ type Props = {
   onHeightCommit?: (height: number) => void;
   /** Chat tabs: Claude commands and skills offered by `/` autocomplete. */
   slashCommands?: SlashCommand[];
+  /**
+   * Pasted images for the next send (Claude chats that take images only).
+   * A `---` chain sends them with its first step only.
+   */
+  images?: ChatImagesProps | null;
 };
 
 export const PAD_MIN_HEIGHT = 40;
@@ -68,6 +75,7 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
     onHeightChange,
     onHeightCommit,
     slashCommands = [],
+    images = null,
   },
   ref,
 ) {
@@ -249,6 +257,7 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
         <p className="error scratch-pad-status" role="alert">{blockedWarning}</p>
       )}
       {!collapsed && slash.menu}
+      {!terminal && images && !collapsed && <AttachmentChips images={images} />}
       <textarea
         ref={setEditor}
         className="scratch-pad-input"
@@ -272,6 +281,7 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
         aria-label="Scratch pad editor"
         hidden={collapsed}
         {...slash.inputProps}
+        {...imageInputHandlers(terminal ? null : images)}
       />
     </section>
   );

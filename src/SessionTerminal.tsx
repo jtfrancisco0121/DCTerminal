@@ -21,6 +21,9 @@ import { ChatFindBar } from "./components/ChatFindBar";
 import { findAll, searchSegments } from "./search/textSearch";
 import { useSlashAutocomplete } from "./composer/SlashCommandMenu";
 import { blockedSlashCommand, type SlashCommand } from "./composer/slashCommands";
+import { renderImageMarkers } from "./attachments/chatImages";
+import type { ChatImagesProps } from "./attachments/useChatImages";
+import { AttachmentChips, imageInputHandlers } from "./components/AttachmentChips";
 
 /** F5: open the find bar, optionally landing on one message's n-th hit. */
 export type ChatFindRequest = {
@@ -125,6 +128,8 @@ type Props = {
   statusInBar?: boolean;
   /** Claude commands and skills offered by `/` autocomplete. */
   slashCommands?: SlashCommand[];
+  /** Pasted images for the next message. Only Claude sessions that take images pass this. */
+  images?: ChatImagesProps | null;
 };
 
 function folderName(path: string): string {
@@ -170,7 +175,9 @@ export function SessionTerminal({
   details,
   statusInBar = false,
   slashCommands = [],
+  images = null,
 }: Props) {
+  const hasImages = (images?.items.length ?? 0) > 0;
   const screenRef = useRef<HTMLDivElement>(null);
   const permissionRef = useRef<HTMLDivElement>(null);
   const [findOpen, setFindOpen] = useState(false);
@@ -288,7 +295,7 @@ export function SessionTerminal({
     }
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
       e.preventDefault();
-      if (!busy && followUp.trim() && !blockedWarning) onSendFollowUp();
+      if (!busy && (followUp.trim() || hasImages) && !blockedWarning) onSendFollowUp();
     }
   };
 
@@ -467,7 +474,7 @@ export function SessionTerminal({
                       remarkPlugins={remarkPlugins}
                       components={markdownComponents}
                     >
-                      {seg.text}
+                      {renderImageMarkers(seg.text)}
                     </ReactMarkdown>
                   </div>
                 </div>
@@ -529,6 +536,7 @@ export function SessionTerminal({
       {blockedWarning && (
         <p className="error session-terminal-error" role="alert">{blockedWarning}</p>
       )}
+      {images && <AttachmentChips images={images} />}
 
       <div className="session-terminal-composer">
         <span className="session-terminal-prompt" aria-hidden>›</span>
@@ -552,12 +560,13 @@ export function SessionTerminal({
           onKeyDown={handleKeyDown}
           disabled={busy}
           {...slash.inputProps}
+          {...imageInputHandlers(images)}
         />
         <button
           type="button"
           className="primary-button session-terminal-send"
           onClick={onSendFollowUp}
-          disabled={busy || agentExited || !followUp.trim() || !!blockedWarning}
+          disabled={busy || agentExited || (!followUp.trim() && !hasImages) || !!blockedWarning}
         >
           Send
         </button>

@@ -1,6 +1,7 @@
 pub(crate) mod acp_events;
 mod agent_requests;
 mod app_state;
+mod attachments;
 pub(crate) mod changes;
 mod cursor_cli;
 mod dev_session;
@@ -22,6 +23,7 @@ mod worktree_tabs;
 pub use agent_requests::{
     respond_permission_request, respond_plan_request, respond_question_request,
 };
+pub use attachments::{attachment_add, attachment_remove};
 pub use app_state::{
     ack_provider_notice, close_tab, create_execution_pipeline_tabs, create_pipeline_tabs,
     get_app_state, get_layout, get_tab, new_draft_tab, reopen_closed_tab, select_active_tab,
