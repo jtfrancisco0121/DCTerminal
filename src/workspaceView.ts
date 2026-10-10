@@ -14,6 +14,34 @@ export type TabDraft = {
   resendStartup: boolean;
 };
 
+/** The form's non-empty fields other than the folder. */
+export function formTextOf(values: Record<string, string>): Record<string, string> {
+  const text: Record<string, string> = {};
+  for (const [key, value] of Object.entries(values)) {
+    if (key === "cwd" || !value || !value.trim()) continue;
+    text[key] = value;
+  }
+  return text;
+}
+
+/** Empty every field but the folder. */
+export function clearFormText(values: Record<string, string>): Record<string, string> {
+  return { cwd: values.cwd ?? "" };
+}
+
+/**
+ * True once a tab has run (chat session or terminal launched). Its answers
+ * are then its record of that run, not an editable draft.
+ */
+export function tabWasStarted(
+  tabs: { id: string; phase: string; kind?: string }[],
+  tabId: string,
+): boolean {
+  const tab = tabs.find((item) => item.id === tabId);
+  if (!tab) return false;
+  return tab.phase !== "draft" || tab.kind === "terminal";
+}
+
 export function tabFormFromRecord(tab: {
   roleId: string;
   cwd: string;

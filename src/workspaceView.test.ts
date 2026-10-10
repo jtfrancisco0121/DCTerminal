@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   appRoute,
   canContinueStoredSession,
+  clearFormText,
   folderToWrite,
+  formTextOf,
   mergeTabDraft,
   rememberScroll,
   rolePermissionSummary,
@@ -11,8 +13,30 @@ import {
   switchTabForm,
   tabFormFromRecord,
   tabSurface,
+  tabWasStarted,
   toggleSettings,
 } from "./workspaceView";
+
+describe("start form text", () => {
+  it("separates the text from the folder", () => {
+    const values = { cwd: "/w", title: "T", request: "  ", taskType: "Bug" };
+    expect(formTextOf(values)).toEqual({ title: "T", taskType: "Bug" });
+    expect(clearFormText(values)).toEqual({ cwd: "/w" });
+    expect(clearFormText({ title: "T" })).toEqual({ cwd: "" });
+  });
+
+  it("treats a tab as started once it ran or launched a terminal", () => {
+    const tabs = [
+      { id: "a", phase: "draft" },
+      { id: "b", phase: "awaitingInput" },
+      { id: "c", phase: "draft", kind: "terminal" },
+    ];
+    expect(tabWasStarted(tabs, "a")).toBe(false);
+    expect(tabWasStarted(tabs, "b")).toBe(true);
+    expect(tabWasStarted(tabs, "c")).toBe(true);
+    expect(tabWasStarted(tabs, "missing")).toBe(false);
+  });
+});
 
 describe("workspace routing", () => {
   it("opens on the workspace and toggles settings", () => {

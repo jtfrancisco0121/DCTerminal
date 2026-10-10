@@ -361,7 +361,7 @@ pub fn role_session_start(
 
     {
         let mut forms = forms_store.lock().map_err(|e| e.to_string())?;
-        forms.save_after_session_start(&role, &info.cwd, &values)?;
+        forms.save_after_session_start(&role.id, &info.cwd)?;
     }
 
     if let Ok(mut projects) = projects.lock() {
