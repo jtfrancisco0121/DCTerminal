@@ -11,6 +11,17 @@ export function stripAnsi(input: string): string {
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001A\u001C-\u001F\u007F]/g, "");
 }
 
+/** `*.md` file names a terminal printed, each once, the latest mention last. */
+export function planFileMentions(text: string): string[] {
+  const names: string[] = [];
+  for (const match of stripAnsi(text).matchAll(/([A-Za-z0-9_][A-Za-z0-9_.-]*\.md)(?![A-Za-z0-9_-])/g)) {
+    const at = names.indexOf(match[1]);
+    if (at >= 0) names.splice(at, 1);
+    names.push(match[1]);
+  }
+  return names;
+}
+
 export function lastLines(text: string, count = TERMINAL_TAIL_LINES): string {
   const clean = stripAnsi(text).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   const lines = clean.split("\n");

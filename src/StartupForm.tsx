@@ -103,6 +103,7 @@ import {
   type Role,
   type RoleSessionStartResult,
   type HandoffRecord,
+  type PlanFileInfo,
   type RoleSummary,
   type SessionUpdateEvent,
   type TabSummary,
@@ -209,10 +210,14 @@ import {
   chainTabFor,
   loopBackChain,
   newChain,
-  nextChainRole,
 } from "./handoff/chains";
 import { handoffRoute, loopBackMessage } from "./handoff/routing";
-import { isReviewerRole, parseReviewVerdict } from "./handoff/verdict";
+import {
+  isReviewerRole,
+  parseReviewVerdict,
+  parseTerminalVerdict,
+  type ReviewVerdict,
+} from "./handoff/verdict";
 import { contextPercent, limitAlerts, statusLimit } from "./usage/limits";
 import type { ChatFindRequest } from "./SessionTerminal";
 import { classifyPromptFinished, type NotificationSettings } from "./notify/agentNotify";
@@ -243,7 +248,12 @@ import {
   refitTerminal,
   requestTerminalSearch,
   terminalBracketedPaste,
+  terminalScrollbackText,
+  terminalSelection,
+  terminalTailText,
 } from "./terminal/park";
+import { encodeTerminalPaste } from "./terminal/paste";
+import { planFileMentions } from "./terminal/text";
 import {
   emptySessionCards,
   modeLabel,
@@ -258,6 +268,7 @@ import {
   chainStepToSend,
   chainStop,
   splitChainSteps,
+  firstChainStep,
   padAfterSend,
   padSelection,
   transferToInput,
@@ -348,6 +359,23 @@ function tabHasModel(tab: TabSummary): boolean {
     tab.terminalLaunch !== "cursor-cli" &&
     tab.terminalLaunch !== "claude-cli"
   );
+}
+
+/**
+ * Plan file names a terminal printed (they win), and the names other
+ * terminals printed (another Planner's plan, never this tab's).
+ */
+function terminalPlanNames(
+  tabs: readonly TabSummary[],
+  tabId: string,
+  scrollback: string,
+): { mentioned: string[]; claimed: string[] } {
+  const mentioned = planFileMentions(scrollback);
+  const claimed = tabs
+    .filter((tab) => tab.kind === "terminal" && tab.id !== tabId)
+    .flatMap((tab) => planFileMentions(terminalScrollbackText(tab.id)))
+    .filter((name) => !mentioned.includes(name));
+  return { mentioned, claimed };
 }
 
 /** PTY launch kind for a terminal tab. */
@@ -539,10 +567,18 @@ export function StartupForm({
     name: string;
   } | null>(null);
   const [terminalCapture, setTerminalCapture] = useState<{
+    tabId: string;
     selection: string;
     tail: string;
-    planFileText: string;
-    planFileName: string;
+    scrollback: string;
+    planFile: PlanFileInfo | null;
+    /** The terminal tab's own saved form, not the form on screen. */
+    answers: Record<string, string>;
+  } | null>(null);
+  /** A reviewer terminal's verdict, read when its hand-off buttons or menu are used. */
+  const [terminalVerdict, setTerminalVerdict] = useState<{
+    tabId: string;
+    verdict: ReviewVerdict | null;
   } | null>(null);
   const [paneByTab, setPaneByTab] = useState<Record<string, { open: boolean; beside: boolean }>>(
     {},
@@ -2844,10 +2880,13 @@ export function StartupForm({
       }));
     }
     const field = padRef.current;
-    const sent = padSelection(field);
     const padBefore = scratch.content;
-    let text = padBefore;
-    if (field && sent) text = field.value.slice(sent.start, sent.end);
+    const selected = padSelection(field);
+    // `---` steps reach a shell one per send, never as a `---` command.
+    const step = selected ? null : firstChainStep(padBefore);
+    const sent = step?.range ?? selected;
+    let text = step?.text ?? padBefore;
+    if (field && selected) text = field.value.slice(selected.start, selected.end);
     const payload = text.endsWith("\n") ? text : `${text}\n`;
     if (!payload.trim()) return;
     for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -3000,60 +3039,86 @@ export function StartupForm({
     gridOpen(split) ? !(split.gridTabIds ?? []).includes(tab.id) : tab.id !== activeTabId,
   );
 
-  /** Terminal role tab that can hand off a plan or a report (selection or tail). */
-  const isPlanTerminal =
-    activeTabSummary?.kind === "terminal" &&
-    activeTabSummary.terminalLaunch === "role" &&
-    isCaptureSource(activeTabSummary.roleId);
-  const planTerminalTargets: HandoffTargetId[] = isPlanTerminal
-    ? handoffTargets(activeTabSummary.roleId, roles)
-    : [];
+  /** Role terminal that can hand off: a plan, a report, a review, or finished work (selection or tail). */
+  const isTerminalSource = (tab: TabSummary | null | undefined): boolean =>
+    tab?.kind === "terminal" && tab.terminalLaunch === "role" && isHandoffSource(tab.roleId, roles);
+  const isPlanTerminal = isTerminalSource(activeTabSummary);
+  const planTerminalTargets: HandoffTargetId[] =
+    isPlanTerminal && activeTabSummary ? handoffTargets(activeTabSummary.roleId, roles) : [];
+
+  /** Reads a reviewer terminal's verdict from its selection, else its tail. */
+  const readTerminalVerdict = useCallback((tabId: string | null | undefined) => {
+    const tab = tabId ? savedTabsRef.current.find((item) => item.id === tabId) : undefined;
+    if (!tab || tab.kind !== "terminal" || !isReviewerRole(tab.roleId)) return;
+    const verdict = parseTerminalVerdict(terminalSelection(tab.id) || terminalTailText(tab.id));
+    setTerminalVerdict((prev) =>
+      prev?.tabId === tab.id && prev.verdict === verdict ? prev : { tabId: tab.id, verdict },
+    );
+  }, []);
+  const activeTerminalBusy = !!activeTabId && terminalBusy.includes(activeTabId);
+  useEffect(() => {
+    if (isPlanTerminal && !activeTerminalBusy) readTerminalVerdict(activeTabId);
+  }, [activeTabId, activeTerminalBusy, isPlanTerminal, readTerminalVerdict]);
+  const terminalRoute =
+    isPlanTerminal && activeTabSummary
+      ? handoffRoute({
+          sourceRoleId: activeTabSummary.roleId,
+          targets: planTerminalTargets,
+          verdict: terminalVerdict?.tabId === activeTabSummary.id ? terminalVerdict.verdict : null,
+          chain: activeTabSummary.chain ?? null,
+          roles,
+        })
+      : null;
 
   const openTerminalHandoff = useCallback(
-    async (target: HandoffTargetId) => {
-      const tabId = activeTabIdRef.current;
+    async (target: HandoffTargetId, sourceTabId?: string) => {
+      const tabId = sourceTabId ?? activeTabIdRef.current;
       if (!tabId) return;
       const captured = readTerminalHandoff(tabId);
       const started = livePty(tabId)?.startedAt ?? Date.now();
-      let planFileText = "";
-      let planFileName = "";
-      const sourceRoleId = savedTabs.find((tab) => tab.id === tabId)?.roleId ?? "";
+      const tab = savedTabsRef.current.find((item) => item.id === tabId);
+      const sourceRoleId = tab?.roleId ?? "";
+      setHandoffError(null);
+      readTerminalVerdict(tabId);
+      const answers = await getTab(tabId)
+        .then(({ tab: record }) => ({ ...record.answers }))
+        .catch(() => ({ cwd: tab?.cwd ?? "" }));
+      let planFile: PlanFileInfo | null = null;
       // Reports never use a plan file: the plans folder is shared by every tab.
       if (isPlanSource(sourceRoleId)) {
         try {
           // Read-only: ~/.cursor/plans, or <configDir>/plans for a Claude tab.
-          // No new plan file → the dialog defaults to the selection, then the tail.
-          const file = await terminalPlanFile(started, tabId);
-          if (file?.text.trim()) {
-            planFileText = file.text;
-            planFileName = file.name;
-          }
+          // No plan file → the dialog defaults to the selection, then the tail.
+          const file = await terminalPlanFile(
+            started,
+            tabId,
+            terminalPlanNames(savedTabsRef.current, tabId, captured.scrollback),
+          );
+          if (file?.text.trim()) planFile = file;
         } catch (err: unknown) {
           const message = err instanceof Error ? err.message : String(err);
           setHandoffError(message);
         }
       }
       setTerminalCapture({
+        tabId,
         selection: captured.selection,
         tail: captured.tail,
-        planFileText,
-        planFileName,
+        scrollback: captured.scrollback,
+        planFile,
+        answers,
       });
       setHandoffSelection(captured.selection);
       setHandoffTarget(target);
       loadHandoffFields(target);
     },
-    [loadHandoffFields, savedTabs],
+    [loadHandoffFields, readTerminalVerdict],
   );
 
   const openHandoffDialog = useCallback(
     (target: HandoffTargetId) => {
       const summary = savedTabs.find((tab) => tab.id === activeTabIdRef.current);
-      const fromTerminal =
-        summary?.kind === "terminal" &&
-        summary.terminalLaunch === "role" &&
-        isCaptureSource(summary.roleId);
-      if (fromTerminal) {
+      if (isTerminalSource(summary)) {
         void openTerminalHandoff(target);
         return;
       }
@@ -3087,27 +3152,32 @@ export function StartupForm({
       setHandoffTarget(target);
       loadHandoffFields(target);
     },
-    [loadHandoffFields, openTerminalHandoff, savedTabs],
+    [loadHandoffFields, openTerminalHandoff, savedTabs, roles],
   );
 
   const handoffSource = useMemo((): HandoffSource => {
-    if (terminalCapture && isPlanTerminal) {
-      const terminalRoleId = activeTabSummary?.roleId ?? "role_planner";
+    const captureTab = terminalCapture
+      ? savedTabs.find((tab) => tab.id === terminalCapture.tabId)
+      : undefined;
+    if (terminalCapture && captureTab) {
+      const file = terminalCapture.planFile;
       return {
-        sourceRoleId: terminalRoleId,
-        sourceTabId: activeTabId ?? "",
-        sourceLabel: activeTabSummary?.label ?? roleDisplayName(terminalRoleId, roles),
-        cwd: activeTabSummary?.cwd || values.cwd || "",
-        answers: values,
+        sourceRoleId: captureTab.roleId,
+        sourceTabId: captureTab.id,
+        sourceLabel: captureTab.label || roleDisplayName(captureTab.roleId, roles),
+        cwd: captureTab.cwd || values.cwd || "",
+        answers: terminalCapture.answers,
         latestMessage: "",
         plan: [],
         todos: [],
         selection: terminalCapture.selection,
         turnInFlight: false,
         fromTerminal: true,
-        planFileText: terminalCapture.planFileText,
-        planFileName: terminalCapture.planFileName,
+        planFileText: file?.text ?? "",
+        planFileName: file ? (file.truncated ? `${file.name}, first 8 MB` : file.name) : "",
         terminalTail: terminalCapture.tail,
+        branch: captureTab.worktreeBranch ?? null,
+        transcriptText: terminalCapture.scrollback,
       };
     }
     const cards = cardsByTab[activeTabId ?? ""] ?? emptySessionCards();
@@ -3148,7 +3218,6 @@ export function StartupForm({
     cardsByTab,
     chatPlanFile,
     handoffSelection,
-    isPlanTerminal,
     promptInFlight,
     roleId,
     roles,
@@ -3164,11 +3233,9 @@ export function StartupForm({
   // A reviewer's verdict picks the primary button; the user still sends.
   const sourceVerdict =
     isReviewerRole(handoffSource.sourceRoleId) && !handoffSource.turnInFlight
-      ? parseReviewVerdict(
-          handoffSource.fromTerminal
-            ? (handoffSource.terminalTail ?? "")
-            : handoffSource.latestMessage,
-        )
+      ? handoffSource.fromTerminal
+        ? parseTerminalVerdict(handoffSource.selection || (handoffSource.terminalTail ?? ""))
+        : parseReviewVerdict(handoffSource.latestMessage)
       : null;
   const offerTargets = handoffTargets(roleId, roles);
   const offerRoute = handoffRoute({
@@ -3205,9 +3272,17 @@ export function StartupForm({
       const rt = runtimes[tab.id];
       return tab.kind !== "terminal" && !!rt?.session && !rt.agentExited;
     };
-    const tab = chainTabFor(savedTabs, chain, next.step, liveChat);
-    const live = !!tab && liveChat(tab);
-    const rt = tab ? runtimes[tab.id] : undefined;
+    // A running PTY takes the follow-up as a paste; an exited one does not.
+    const liveTerminal = (tab: TabSummary) => {
+      const pty = livePty(tab.id);
+      return tab.kind === "terminal" && !!pty && pty.exitCode == null;
+    };
+    const liveTarget = (tab: TabSummary) => liveChat(tab) || liveTerminal(tab);
+    const tab = chainTabFor(savedTabs, chain, next.step, liveTarget);
+    const live = !!tab && liveTarget(tab);
+    const terminal = live && tab.kind === "terminal";
+    const rt = tab && !terminal ? runtimes[tab.id] : undefined;
+    const working = live && (terminal ? terminalBusy.includes(tab.id) : !!rt?.promptInFlight);
     // A turn held by a card never ends on its own: say what it waits for.
     const waitingOn = rt?.plan
       ? "a plan card"
@@ -3220,15 +3295,22 @@ export function StartupForm({
       round: chainRound(chain),
       tabLabel: tab?.label ?? null,
       live,
-      blocked:
-        live && rt?.promptInFlight
-          ? waitingOn
-            ? `The ${tab.label} tab is waiting on ${waitingOn}. Answer it in that tab, then send.`
-            : `The ${tab.label} tab is still working. Wait for its turn to end.`
-          : null,
+      terminal,
+      blocked: working
+        ? waitingOn
+          ? `The ${tab.label} tab is waiting on ${waitingOn}. Answer it in that tab, then send.`
+          : `The ${tab.label} tab is still working. Wait for its turn to end.`
+        : null,
     };
-    return { chain, next, tab: live ? tab : null, target };
-  }, [handoffSource.sourceRoleId, handoffSource.sourceTabId, handoffTarget, runtimes, savedTabs]);
+    return { chain, next, tab: live ? tab : null, terminal, target };
+  }, [
+    handoffSource.sourceRoleId,
+    handoffSource.sourceTabId,
+    handoffTarget,
+    runtimes,
+    savedTabs,
+    terminalBusy,
+  ]);
 
   const confirmHandoffNow = useCallback(
     async (scope: HandoffScope, surface: HandoffSurface) => {
@@ -3259,12 +3341,25 @@ export function StartupForm({
         setBusy(true);
         setHandoffError(null);
         try {
-          const sent = await dispatchText(targetTab.id, text, undefined, true);
-          if (sent === "error") {
-            setHandoffError(
-              runtimesRef.current[targetTab.id]?.promptError ?? "The follow-up was not sent.",
+          if (loop.terminal) {
+            // One paste and one Enter, like the terminal scratch pad's Send.
+            terminalActivity.input(targetTab.id);
+            await ptyWrite(
+              targetTab.id,
+              encodeTerminalPaste(text, {
+                bracketedPaste: terminalBracketedPaste(targetTab.id),
+                submit: true,
+              }),
             );
-            return;
+          } else {
+            // fromHandoff: keeps the target's draft and images, and stays out of history.
+            const sent = await dispatchText(targetTab.id, text, undefined, true);
+            if (sent === "error") {
+              setHandoffError(
+                runtimesRef.current[targetTab.id]?.promptError ?? "The follow-up was not sent.",
+              );
+              return;
+            }
           }
           // The follow-up is out: close the dialog first, so a failure below
           // cannot invite a second send of the same findings.
@@ -3296,6 +3391,17 @@ export function StartupForm({
         return;
       }
       let source = handoffSource;
+      const planFile = terminalCapture?.planFile;
+      if (source.fromTerminal && scope === "plan_file" && planFile) {
+        // The plan may have been edited since the dialog opened.
+        const fresh = await terminalPlanFile(0, source.sourceTabId, {
+          mentioned: [planFile.name],
+          claimed: [],
+        }).catch(() => null);
+        if (fresh?.path === planFile.path && fresh.text.trim()) {
+          source = { ...source, planFileText: fresh.text };
+        }
+      }
       if (source.sourceRoleId === "role_implementer") {
         const [changes, repo] = await Promise.all([
           changesList(source.sourceTabId, "tab").catch(() => null),
@@ -3338,6 +3444,22 @@ export function StartupForm({
           // Plan Reviewer has no task type; the chain's Planner form does.
           const view = await getPipelineRun(nextChain.chainId).catch(() => null);
           mapped = carryChainTaskType(mapped, target, view?.taskType);
+        }
+        if (surface === "terminal") {
+          // A terminal starts the CLI at once, so its prompt must be complete.
+          const check = await validateAndPreview(handoffTarget, {
+            ...mapped.answers,
+            cwd: handoffSource.cwd,
+          }).catch(() => null);
+          const missing = (check?.errors ?? []).filter((err) => err.key !== "cwd");
+          if (missing.length > 0) {
+            setHandoffError(
+              `The ${roleDisplayName(handoffTarget, roles)} terminal cannot start: ${missing
+                .map((err) => err.message)
+                .join("; ")}. Open it as Chat to fill these in.`,
+            );
+            return;
+          }
         }
         const tagChain = async (tabId: string) => {
           if (loop) {
@@ -3439,6 +3561,7 @@ export function StartupForm({
       sourceVerdict,
       startRoleTerminal,
       stashActiveTab,
+      terminalCapture,
     ],
   );
 
@@ -4382,7 +4505,10 @@ export function StartupForm({
             (activeTabSummary.hasTranscript ||
               segmentsToPlainText(streamSegments).trim().length > 0)
           }
-          canSendImplementerToReviewer={roleId === "role_implementer" && !!session}
+          canSendImplementerToReviewer={
+            (roleId === "role_implementer" && !!session) ||
+            (isPlanTerminal && activeTabSummary?.roleId === "role_implementer")
+          }
           canRemoveWorktree={!!activeTabSummary?.worktreePath}
           canOpenChainOverview={!!activeTabSummary?.chain}
           model={paletteModel}
@@ -4463,8 +4589,10 @@ export function StartupForm({
           }}
           onClose={() => {
             if (!busy) {
+              const fromTerminal = !!terminalCapture;
               setHandoffTarget(null);
               setTerminalCapture(null);
+              if (fromTerminal) window.requestAnimationFrame(focusActiveTerminal);
             }
           }}
         />
@@ -4518,6 +4646,17 @@ export function StartupForm({
           resumeSessionId={tab.resumeSessionId}
           autoOpen={!livePty(tab.id)}
           autoFocus={false}
+          menuActions={
+            isTerminalSource(tab)
+              ? handoffMenuItems(tab.roleId, roles).map((item) => ({
+                  id: `send-${item.target}`,
+                  label: item.label,
+                  onSelect: () => {
+                    void openTerminalHandoff(item.target, tab.id);
+                  },
+                }))
+              : []
+          }
         />
       );
     } else if (rt?.session) {
@@ -4990,21 +5129,32 @@ export function StartupForm({
               {activeTabSummary.cwd && changesButton(activeTabSummary.id)}
               {activeTabSummary.cwd && activityButton(activeTabSummary.id)}
               {isPlanTerminal && (
-                <HandoffActions
-                  enabled
-                  reason={null}
-                  busy={busy}
-                  targets={planTerminalTargets}
-                  primaryTarget={
-                    activeTabSummary.chain
-                      ? nextChainRole(activeTabSummary.chain, activeTabSummary.roleId)
-                      : null
-                  }
-                  roleNames={roles}
-                  onSend={(target) => {
-                    void openTerminalHandoff(target);
-                  }}
-                />
+                <span
+                  className="terminal-handoff"
+                  style={{ display: "contents" }}
+                  onPointerOver={() => readTerminalVerdict(activeTabSummary.id)}
+                  onFocus={() => readTerminalVerdict(activeTabSummary.id)}
+                >
+                  <HandoffActions
+                    enabled
+                    reason={null}
+                    busy={busy}
+                    targets={planTerminalTargets}
+                    primaryTarget={terminalRoute?.primaryTarget ?? null}
+                    primaryLabel={terminalRoute?.primaryLabel ?? null}
+                    completeNote={
+                      terminalRoute?.complete
+                        ? activeTabSummary.chain
+                          ? "Chain complete: the PR Reviewer approved."
+                          : "Review approved: nothing left to hand off."
+                        : null
+                    }
+                    roleNames={roles}
+                    onSend={(target) => {
+                      void openTerminalHandoff(target);
+                    }}
+                  />
+                </span>
               )}
             </div>
           )}
@@ -5016,11 +5166,15 @@ export function StartupForm({
             fontSize={fontSize}
             resumeSessionId={activeTabSummary.resumeSessionId}
             autoOpen={!livePty(activeTabSummary.id)}
+            onMenuOpen={() => readTerminalVerdict(activeTabSummary.id)}
             menuActions={
               isPlanTerminal
                 ? handoffMenuItems(activeTabSummary.roleId, roles).map((item) => ({
                     id: `send-${item.target}`,
-                    label: item.label,
+                    label:
+                      item.target === terminalRoute?.primaryTarget && terminalRoute.primaryLabel
+                        ? terminalRoute.primaryLabel
+                        : item.label,
                     onSelect: () => {
                       void openTerminalHandoff(item.target);
                     },

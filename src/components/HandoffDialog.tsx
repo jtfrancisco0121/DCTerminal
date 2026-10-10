@@ -27,6 +27,8 @@ export type LoopBackTarget = {
   tabLabel: string | null;
   /** That tab's session is live: the findings go in there as a follow-up. */
   live: boolean;
+  /** The live tab is a running terminal: the follow-up is pasted, then Enter. */
+  terminal?: boolean;
   /** Why the follow-up cannot go yet (the tab is mid-turn). */
   blocked: string | null;
 };
@@ -129,8 +131,10 @@ export function HandoffDialog({
         {followUp ? (
           <>
             <p className="hint">
-              Sends the review findings below as a follow-up message in the chain's existing{" "}
-              {targetLabel} tab. Round {followUp.round + 1} starts. Nothing else is sent.
+              {followUp.terminal
+                ? `Pastes the review findings below into the chain's running ${targetLabel} terminal and presses Enter.`
+                : `Sends the review findings below as a follow-up message in the chain's existing ${targetLabel} tab.`}{" "}
+              Round {followUp.round + 1} starts. Nothing else is sent.
             </p>
             <p className="handoff-target" aria-label="Target tab">
               To tab: <strong>{followUp.tabLabel}</strong>

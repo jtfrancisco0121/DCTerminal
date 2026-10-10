@@ -79,7 +79,7 @@ export type HandoffSource = {
   turnInFlight: boolean;
   /** The turn is only waiting for the user to approve its plan, so the plan is final. */
   awaitingPlanApproval?: boolean;
-  /** Set when the source is a terminal-mode role tab (Planner or Plan Reviewer). */
+  /** Set when the source is a terminal-mode role tab. */
   fromTerminal?: boolean;
   /** Body of the newest plan file written after the terminal started. */
   planFileText?: string;
@@ -313,6 +313,8 @@ export function handoffBlockReason(
   }
   const name = roleDisplayName(roleId, roles);
   if (source.fromTerminal) {
+    // The Implementer's own form carries the task; the terminal adds a summary.
+    if (roleId === "role_implementer" && implementerAnswersReady(source.answers)) return null;
     const hasTerminal =
       (source.planFileText ?? "").trim().length > 0 ||
       source.selection.trim().length > 0 ||
@@ -479,7 +481,7 @@ export function scopeChoices(source: HandoffSource): ScopeChoice[] {
     const fileLabel = source.planFileName
       ? `Newest plan file (${source.planFileName})`
       : "Newest plan file";
-    return [
+    const terminalChoices: ScopeChoice[] = [
       {
         id: "plan_file",
         label: fileLabel,
@@ -496,6 +498,10 @@ export function scopeChoices(source: HandoffSource): ScopeChoice[] {
         enabled: composePlanText(source, "terminal_tail").text.length > 0,
       },
     ];
+    // Only Planner and Plan Reviewer terminals write plan files.
+    return isPlanSource(source.sourceRoleId)
+      ? terminalChoices
+      : terminalChoices.filter((choice) => choice.id !== "plan_file");
   }
   const choices: ScopeChoice[] = [];
   if ((source.planMarkdown ?? "").trim()) {
@@ -545,10 +551,12 @@ export function defaultScope(source: HandoffSource): HandoffScope {
     return source.fromTerminal ? "terminal_tail" : "message";
   }
   if (source.fromTerminal) {
-    if (composePlanText(source, "plan_file").text) return "plan_file";
+    if (isPlanSource(source.sourceRoleId) && composePlanText(source, "plan_file").text) {
+      return "plan_file";
+    }
     if (composePlanText(source, "selection").text) return "selection";
     if (composePlanText(source, "terminal_tail").text) return "terminal_tail";
-    return "plan_file";
+    return isPlanSource(source.sourceRoleId) ? "plan_file" : "terminal_tail";
   }
   const preferred: HandoffScope[] = [
     "plan_mode",
@@ -722,6 +730,23 @@ function labelledLine(values: Record<string, string>, label: string): string {
     if (hit?.[1]?.trim()) return hit[1].trim();
   }
   return "";
+}
+
+/**
+ * A terminal Implementer has no chat reply: the chosen selection or tail is
+ * the summary, and the whole scrollback is searched for the PR URL.
+ */
+export function terminalImplementerSource(
+  source: HandoffSource,
+  scope: HandoffScope,
+): HandoffSource {
+  if (!source.fromTerminal) return source;
+  const summary = composePlanText(source, scope).text;
+  return {
+    ...source,
+    latestMessage: summary,
+    transcriptText: [source.transcriptText ?? "", source.terminalTail ?? "", summary].join("\n"),
+  };
 }
 
 /** Implementer form → PR Reviewer fields (no plan-scope picker). */
@@ -954,7 +979,7 @@ export function mapHandoff(
   limits: HandoffLimits = DEFAULT_HANDOFF_LIMITS,
 ): MappedHandoff {
   if (source.sourceRoleId === "role_implementer" && target.roleId === "role_pr_reviewer") {
-    return mapImplementerToReviewer(source, target, limits);
+    return mapImplementerToReviewer(terminalImplementerSource(source, scope), target, limits);
   }
   if (isReportSource(source.sourceRoleId) && target.roleId === "role_planner") {
     return mapReportToPlanner(source, scope, target, limits);

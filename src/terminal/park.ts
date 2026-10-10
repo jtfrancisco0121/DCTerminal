@@ -164,6 +164,21 @@ export function terminalTailText(id: string): string {
   return lastLines(lines.join("\n"));
 }
 
+/** The whole scrollback as plain text. Soft-wrapped rows are joined, so a long path stays whole. */
+export function terminalScrollbackText(id: string): string {
+  const term = parked.get(id)?.term;
+  if (!term) return "";
+  const buffer = term.buffer.active;
+  const lines: string[] = [];
+  for (let index = 0; index < buffer.length; index += 1) {
+    const line = buffer.getLine(index);
+    const text = line?.translateToString(true) ?? "";
+    if (line?.isWrapped && lines.length > 0) lines[lines.length - 1] += text;
+    else lines.push(text);
+  }
+  return lines.join("\n");
+}
+
 export async function copyTerminalSelection(id: string): Promise<void> {
   const text = parked.get(id)?.term.getSelection() ?? "";
   if (!text) return;

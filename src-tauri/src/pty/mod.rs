@@ -13,7 +13,7 @@ pub use crate::pty::launch::RunMode;
 use crate::pty::launch::{
     deliver_prompt_limited, handoff_terminal_prompt, inline_prompt_limit, PromptDelivery,
 };
-use crate::pty::plans::{cursor_plans_dir, newest_plan_since};
+use crate::pty::plans::{cursor_plans_dir, terminal_plan};
 use crate::pty::session::{PtyOutput, PtySession, SpawnSpec};
 use crate::pty::shell::resolve_shell_for_host;
 use crate::store::{
@@ -55,6 +55,7 @@ pub struct PlanFileInfo {
     pub name: String,
     pub modified_ms: u64,
     pub text: String,
+    pub truncated: bool,
 }
 
 pub struct PtyRegistry {
@@ -748,6 +749,15 @@ pub fn pty_open(
                     .unwrap_or(ProviderId::LEGACY);
                 provider_for_window(&store, settings.providers(), id, Some(&input.id))
             };
+            if provider.id() == ProviderId::Claude {
+                // A restart may run under another account: plan files follow it.
+                if let Some(dir) = provider.config_dir() {
+                    let mut state = store.lock().map_err(|err| err.to_string())?;
+                    if state.tab_by_id(&input.id).is_some() {
+                        state.remember_claude_config(&input.id, &dir.path)?;
+                    }
+                }
+            }
             let model = crate::models::model_for_tab_provider(
                 &store,
                 &settings,
@@ -867,12 +877,16 @@ pub fn set_terminal_settings(
     Ok(settings.terminal().clone())
 }
 
-/// Newest plan file written since the terminal started, read-only from the
-/// tab's provider: `~/.cursor/plans` (Cursor) or `<configDir>/plans` (Claude).
+/// The terminal's plan file, read-only from the tab's provider:
+/// `~/.cursor/plans` (Cursor) or `<configDir>/plans` (Claude, the folder the
+/// tab was started with). `mentioned`: plan names in this terminal's output.
+/// `claimed`: names other open terminals print.
 #[tauri::command]
 pub fn terminal_plan_file(
     started_at_ms: u64,
     tab_id: Option<String>,
+    mentioned: Option<Vec<String>>,
+    claimed: Option<Vec<String>>,
     settings: State<Mutex<SettingsStore>>,
     store: State<Mutex<StateStore>>,
 ) -> Result<Option<PlanFileInfo>, String> {
@@ -880,16 +894,27 @@ pub fn terminal_plan_file(
     let dir = {
         let store = store.lock().map_err(|err| err.to_string())?;
         let settings = settings.lock().map_err(|err| err.to_string())?;
-        let id = tab_id
-            .as_deref()
-            .and_then(|id| store.tab_by_id(id))
+        let tab = tab_id.as_deref().and_then(|id| store.tab_by_id(id));
+        let id = tab
             .map(|tab| ProviderId::resolve(tab.provider))
             .unwrap_or(ProviderId::LEGACY);
-        provider_for_window(&store, settings.providers(), id, tab_id.as_deref())
-            .plans_dir()
-            .unwrap_or_else(cursor_plans_dir)
+        let started_with = tab
+            .and_then(|tab| tab.sessions.claude_config_dir.as_deref())
+            .map(str::trim)
+            .filter(|dir| !dir.is_empty());
+        match (id, started_with) {
+            (ProviderId::Claude, Some(dir)) => PathBuf::from(dir).join("plans"),
+            _ => provider_for_window(&store, settings.providers(), id, tab_id.as_deref())
+                .plans_dir()
+                .unwrap_or_else(cursor_plans_dir),
+        }
     };
-    let found = newest_plan_since(&dir, started)?;
+    let found = terminal_plan(
+        &dir,
+        started,
+        &mentioned.unwrap_or_default(),
+        &claimed.unwrap_or_default(),
+    )?;
     Ok(found.map(|plan| PlanFileInfo {
         path: plan.path.display().to_string(),
         name: plan.name,
@@ -899,6 +924,7 @@ pub fn terminal_plan_file(
             .map(|duration| duration.as_millis() as u64)
             .unwrap_or(0),
         text: plan.text,
+        truncated: plan.truncated,
     }))
 }
 

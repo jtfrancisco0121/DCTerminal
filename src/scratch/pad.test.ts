@@ -9,6 +9,7 @@ import {
   chainStop,
   clampPad,
   dropUnknownLocalPads,
+  firstChainStep,
   classifyTurn,
   HISTORY_LIMIT,
   historyNavigate,
@@ -56,6 +57,17 @@ describe("scratch pad chaining", () => {
       "second",
       "third",
     ]);
+  });
+
+  it("gives a terminal one --- step per send", () => {
+    const pad = "---\none\n  ---  \r\ntwo\n---\nthree";
+    const first = firstChainStep(pad)!;
+    expect(first.text).toBe("one");
+    const rest = padAfterSend(pad, first.range);
+    expect(rest).toBe("two\n---\nthree");
+    expect(firstChainStep(rest)!.text).toBe("two");
+    expect(firstChainStep("only\n---\n")).toBeNull();
+    expect(firstChainStep("no steps")).toBeNull();
   });
 
   it("sends the next step only after the previous turn completes", () => {

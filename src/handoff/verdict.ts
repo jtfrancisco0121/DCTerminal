@@ -110,6 +110,20 @@ export function parseReviewVerdict(text: string): ReviewVerdict | null {
   );
 }
 
+/**
+ * A terminal's scrollback holds every round, so its newest "Verdict" label
+ * wins. Falls back to the last verdict phrase.
+ */
+export function parseTerminalVerdict(text: string): ReviewVerdict | null {
+  const lines = text.split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (!/\bverdict\b/i.test(lines[i])) continue;
+    const found = parseReviewVerdict(lines.slice(i).join("\n"));
+    if (found) return found;
+  }
+  return parseReviewVerdict(text);
+}
+
 export function verdictTone(verdict: ReviewVerdict): VerdictTone {
   if (verdict === "APPROVED") return "ok";
   if (verdict === "APPROVED WITH CHANGES") return "warn";
