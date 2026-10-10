@@ -3,7 +3,7 @@ import type { PlanEntry, SessionCards as Cards, TaskUpdate, TodoItem } from "../
 import { activeToolProgress, lastAgentSegmentId } from "../sessionCards";
 import type { StreamSegment } from "../transcript";
 import { HandoffActions } from "./HandoffDialog";
-import type { HandoffTargetId } from "../handoff/map";
+import type { HandoffTargetId, RoleName } from "../handoff/map";
 
 type PlanRequest = {
   jsonRpcId: number;
@@ -20,6 +20,8 @@ type HandoffOffer = {
   primaryTarget?: string | null;
   primaryLabel?: string | null;
   completeNote?: string | null;
+  /** Loaded roles, so a custom target is named ("Send to Odd Form", not "Send to role"). */
+  roleNames?: readonly RoleName[] | null;
   onSend: (target: HandoffTargetId) => void;
 };
 
@@ -56,6 +58,7 @@ export function SessionCards({
       primaryTarget={handoff.primaryTarget}
       primaryLabel={handoff.primaryLabel}
       completeNote={handoff.completeNote}
+      roleNames={handoff.roleNames}
       busy={busy}
       onSend={handoff.onSend}
     />

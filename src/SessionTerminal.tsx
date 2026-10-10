@@ -8,7 +8,7 @@ import {
   type RefObject,
 } from "react";
 import { HandoffActions } from "./components/HandoffDialog";
-import type { HandoffTargetId } from "./handoff/map";
+import type { HandoffTargetId, RoleName } from "./handoff/map";
 import { historyNavigate } from "./scratch/pad";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -120,6 +120,7 @@ type Props = {
     primaryTarget?: string | null;
     primaryLabel?: string | null;
     completeNote?: string | null;
+    roleNames?: readonly RoleName[] | null;
     onSend: (target: HandoffTargetId) => void;
   } | null;
   /** "Eagle-Eye 1 · step 2 of 4" */
@@ -506,6 +507,7 @@ export function SessionTerminal({
                       primaryTarget={handoff.primaryTarget}
                       primaryLabel={handoff.primaryLabel}
                       completeNote={handoff.completeNote}
+                      roleNames={handoff.roleNames}
                       busy={busy}
                       onSend={handoff.onSend}
                     />

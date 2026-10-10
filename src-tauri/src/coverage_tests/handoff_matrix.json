@@ -1,0 +1,2347 @@
+{
+ "roles": {
+  "role_plan_reviewer:legacy-keys": {
+   "id": "role_plan_reviewer",
+   "name": "Plan Reviewer",
+   "templateText": "Request:\n{{originalRequest}}\n\nPlan:\n{{candidatePlan}}\n\nContext:\n{{additionalContext}}",
+   "templateVersion": 1,
+   "templateHash": "h",
+   "schemaTemplateHash": "h",
+   "defaultMode": "agent",
+   "injection": "send_on_start",
+   "color": "#BC8CFF",
+   "isBuiltIn": false,
+   "fields": [
+    {
+     "key": "originalRequest",
+     "label": "Original Request",
+     "type": "multiline",
+     "required": true
+    },
+    {
+     "key": "candidatePlan",
+     "label": "Candidate Plan",
+     "type": "multiline",
+     "required": true
+    },
+    {
+     "key": "additionalContext",
+     "label": "Additional Context",
+     "type": "multiline",
+     "required": false,
+     "emptyBehavior": "literal:None provided"
+    }
+   ]
+  },
+  "role_implementer:renamed-labels": {
+   "id": "role_implementer",
+   "name": "Implementer",
+   "templateText": "",
+   "templateVersion": 1,
+   "templateHash": "h",
+   "schemaTemplateHash": "h",
+   "defaultMode": "agent",
+   "injection": "send_on_start",
+   "color": "#F0883E",
+   "isBuiltIn": false,
+   "fields": [
+    {
+     "key": "taskType",
+     "label": "Kind of work",
+     "type": "select",
+     "required": true,
+     "options": [
+      "Feature",
+      "Bug Fix",
+      "Refactor",
+      "Improvement",
+      "Other"
+     ],
+     "placeholderToken": "[FEATURE / BUG FIX / REFACTOR / IMPROVEMENT / OTHER]",
+     "remember": true
+    },
+    {
+     "key": "title",
+     "label": "Name",
+     "type": "text",
+     "required": true,
+     "placeholderToken": "[SHORT TITLE]"
+    },
+    {
+     "key": "description",
+     "label": "Summary",
+     "type": "multiline",
+     "required": true,
+     "placeholderToken": "[DESCRIBE WHAT NEEDS TO BE DONE]"
+    },
+    {
+     "key": "approvedPlan",
+     "label": "Steps to build",
+     "type": "multiline",
+     "required": true,
+     "placeholderToken": "[PASTE APPROVED IMPLEMENTATION PLAN HERE]",
+     "remember": true
+    },
+    {
+     "key": "additionalContext",
+     "label": "Anything else",
+     "type": "multiline",
+     "required": false,
+     "placeholderToken": "[OPTIONAL CONTEXT]",
+     "emptyBehavior": "literal:None provided"
+    }
+   ],
+   "templateFrom": "role_implementer"
+  },
+  "role_pr_reviewer:renamed-labels": {
+   "id": "role_pr_reviewer",
+   "name": "PR Reviewer",
+   "templateText": "",
+   "templateVersion": 1,
+   "templateHash": "h",
+   "schemaTemplateHash": "h",
+   "defaultMode": "agent",
+   "injection": "send_on_start",
+   "color": "#A371F7",
+   "isBuiltIn": false,
+   "fields": [
+    {
+     "key": "originalTask",
+     "label": "What was asked",
+     "type": "multiline",
+     "required": true,
+     "placeholderToken": "[PASTE THE ORIGINAL FEATURE / BUG REQUEST HERE]"
+    },
+    {
+     "key": "approvedPlan",
+     "label": "Agreed steps",
+     "type": "multiline",
+     "required": true,
+     "placeholderToken": "[PASTE THE APPROVED IMPLEMENTATION PLAN HERE]",
+     "remember": true
+    },
+    {
+     "key": "additionalContext",
+     "label": "Extra info",
+     "type": "multiline",
+     "required": false,
+     "placeholderToken": "[OPTIONAL: business rules, known constraints, previous discussion, screenshots, issue description, etc.]",
+     "emptyBehavior": "literal:None provided"
+    }
+   ],
+   "templateFrom": "role_pr_reviewer"
+  },
+  "role_planner:renamed-options": {
+   "id": "role_planner",
+   "name": "Planner",
+   "templateText": "",
+   "templateVersion": 1,
+   "templateHash": "h",
+   "schemaTemplateHash": "h",
+   "defaultMode": "plan",
+   "injection": "send_on_start",
+   "color": "#58A6FF",
+   "isBuiltIn": false,
+   "fields": [
+    {
+     "key": "taskType",
+     "label": "Task Type",
+     "type": "select",
+     "required": true,
+     "options": [
+      "New feature",
+      "Bug report",
+      "Refactoring",
+      "Chore"
+     ],
+     "placeholderToken": "[FEATURE / BUG / REFACTOR / CHANGE]",
+     "remember": true
+    },
+    {
+     "key": "title",
+     "label": "Title",
+     "type": "text",
+     "required": true,
+     "placeholderToken": "[Short title]"
+    },
+    {
+     "key": "request",
+     "label": "Request / Problem",
+     "type": "multiline",
+     "required": true,
+     "placeholderToken": "[Describe what needs to be built or what is currently wrong]"
+    },
+    {
+     "key": "expectedBehavior",
+     "label": "Expected Behavior",
+     "type": "multiline",
+     "required": true,
+     "placeholderToken": "[Describe what should happen]"
+    },
+    {
+     "key": "currentBehavior",
+     "label": "Current Behavior",
+     "type": "multiline",
+     "required": true,
+     "placeholderToken": "[Describe what currently happens]",
+     "showWhen": {
+      "fieldKey": "taskType",
+      "equals": [
+       "Bug report"
+      ]
+     }
+    },
+    {
+     "key": "additionalContext",
+     "label": "Additional Context",
+     "type": "multiline",
+     "required": false,
+     "placeholderToken": "[Any relevant business rules, screenshots, errors, logs, user feedback, etc.]",
+     "emptyBehavior": "literal:None provided"
+    }
+   ],
+   "templateFrom": "role_planner"
+  },
+  "role_custom_odd": {
+   "id": "role_custom_odd",
+   "name": "Odd Form",
+   "templateText": "Ask:\n{{ask_md}}\n\nName: {{plan_name}}\n\nSteps:\n{{steps_v2}}\n\nBackground:\n{{bg}}\n\nPriority: {{prio}}",
+   "templateVersion": 1,
+   "templateHash": "h",
+   "schemaTemplateHash": "h",
+   "defaultMode": "agent",
+   "injection": "send_on_start",
+   "color": "#F0883E",
+   "isBuiltIn": false,
+   "fields": [
+    {
+     "key": "ask_md",
+     "label": "What was asked",
+     "type": "multiline",
+     "required": true
+    },
+    {
+     "key": "plan_name",
+     "label": "Plan name",
+     "type": "text",
+     "required": false
+    },
+    {
+     "key": "steps_v2",
+     "label": "The plan (markdown)",
+     "type": "multiline",
+     "required": true
+    },
+    {
+     "key": "bg",
+     "label": "Background notes",
+     "type": "multiline",
+     "required": false
+    },
+    {
+     "key": "prio",
+     "label": "Priority",
+     "type": "select",
+     "required": true,
+     "options": [
+      "P1",
+      "P2",
+      "P3"
+     ]
+    }
+   ]
+  },
+  "role_custom_ghost": {
+   "id": "role_custom_ghost",
+   "name": "Ghost",
+   "templateText": "Plan:\n{{plan}}\n\nTicket: {{ticket}}",
+   "templateVersion": 1,
+   "templateHash": "h",
+   "schemaTemplateHash": "h",
+   "defaultMode": "agent",
+   "injection": "send_on_start",
+   "color": "#F0883E",
+   "isBuiltIn": false,
+   "fields": [
+    {
+     "key": "plan",
+     "label": "Plan",
+     "type": "multiline",
+     "required": true
+    }
+   ]
+  }
+ },
+ "cases": [
+  {
+   "name": "planner:bug → role_plan_reviewer [plan_mode, chat]",
+   "role": "role_plan_reviewer",
+   "values": {
+    "originalTask": "Title: Login 500\n\nTask type: Bug\n\nRequest:\nExpired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts.",
+    "plan": "# Fix expired-token handling\n\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add a regression test (plan-mode end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "3. Add a regression test (plan-mode end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:bug → role_plan_reviewer [plan_mode, terminal]",
+   "role": "role_plan_reviewer",
+   "values": {
+    "originalTask": "Title: Login 500\n\nTask type: Bug\n\nRequest:\nExpired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts.",
+    "plan": "# Fix expired-token handling\n\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add a regression test (plan-mode end)"
+   },
+   "handoffPlan": "# Fix expired-token handling\n\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add a regression test (plan-mode end)",
+   "errors": [],
+   "marker": "3. Add a regression test (plan-mode end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:bug → role_plan_reviewer:legacy-keys [plan_mode, chat]",
+   "role": "role_plan_reviewer:legacy-keys",
+   "values": {
+    "originalRequest": "Title: Login 500\n\nTask type: Bug\n\nRequest:\nExpired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts.",
+    "candidatePlan": "# Fix expired-token handling\n\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add a regression test (plan-mode end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "3. Add a regression test (plan-mode end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:bug → role_plan_reviewer:legacy-keys [plan_mode, terminal]",
+   "role": "role_plan_reviewer:legacy-keys",
+   "values": {
+    "originalRequest": "Title: Login 500\n\nTask type: Bug\n\nRequest:\nExpired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts.",
+    "candidatePlan": "# Fix expired-token handling\n\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add a regression test (plan-mode end)"
+   },
+   "handoffPlan": "# Fix expired-token handling\n\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add a regression test (plan-mode end)",
+   "errors": [],
+   "marker": "3. Add a regression test (plan-mode end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:bug → role_implementer [plan_mode, chat]",
+   "role": "role_implementer",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug Fix",
+    "description": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts.",
+    "approvedPlan": "# Fix expired-token handling\n\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add a regression test (plan-mode end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "3. Add a regression test (plan-mode end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:bug → role_implementer [plan_mode, terminal]",
+   "role": "role_implementer",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug Fix",
+    "description": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts.",
+    "approvedPlan": "# Fix expired-token handling\n\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add a regression test (plan-mode end)"
+   },
+   "handoffPlan": "# Fix expired-token handling\n\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add a regression test (plan-mode end)",
+   "errors": [],
+   "marker": "3. Add a regression test (plan-mode end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:bug → role_implementer:renamed-labels [plan_mode, chat]",
+   "role": "role_implementer:renamed-labels",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug Fix",
+    "description": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts.",
+    "approvedPlan": "# Fix expired-token handling\n\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add a regression test (plan-mode end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "3. Add a regression test (plan-mode end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:bug → role_implementer:renamed-labels [plan_mode, terminal]",
+   "role": "role_implementer:renamed-labels",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug Fix",
+    "description": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts.",
+    "approvedPlan": "# Fix expired-token handling\n\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add a regression test (plan-mode end)"
+   },
+   "handoffPlan": "# Fix expired-token handling\n\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add a regression test (plan-mode end)",
+   "errors": [],
+   "marker": "3. Add a regression test (plan-mode end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:bug → role_developer [plan_mode, chat]",
+   "role": "role_developer",
+   "values": {
+    "title": "Login 500",
+    "request": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.\n\nAuth lives in src/auth/middleware.ts."
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "3. Add a regression test (plan-mode end)",
+   "markerCount": 0
+  },
+  {
+   "name": "planner:bug → role_developer [plan_mode, terminal]",
+   "role": "role_developer",
+   "values": {
+    "title": "Login 500",
+    "request": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.\n\nAuth lives in src/auth/middleware.ts."
+   },
+   "handoffPlan": "# Fix expired-token handling\n\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add a regression test (plan-mode end)",
+   "errors": [],
+   "marker": "3. Add a regression test (plan-mode end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:bug → role_pr_reviewer [plan_mode, chat]",
+   "role": "role_pr_reviewer",
+   "values": {
+    "originalTask": "Title: Login 500\n\nTask type: Bug\n\nRequest:\nExpired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts.",
+    "approvedPlan": "# Fix expired-token handling\n\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add a regression test (plan-mode end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "3. Add a regression test (plan-mode end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:bug → role_pr_reviewer [plan_mode, terminal]",
+   "role": "role_pr_reviewer",
+   "values": {
+    "originalTask": "Title: Login 500\n\nTask type: Bug\n\nRequest:\nExpired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts.",
+    "approvedPlan": "# Fix expired-token handling\n\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add a regression test (plan-mode end)"
+   },
+   "handoffPlan": "# Fix expired-token handling\n\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add a regression test (plan-mode end)",
+   "errors": [],
+   "marker": "3. Add a regression test (plan-mode end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:bug → role_pr_reviewer:renamed-labels [plan_mode, chat]",
+   "role": "role_pr_reviewer:renamed-labels",
+   "values": {
+    "originalTask": "Title: Login 500\n\nTask type: Bug\n\nRequest:\nExpired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts.",
+    "approvedPlan": "# Fix expired-token handling\n\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add a regression test (plan-mode end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "3. Add a regression test (plan-mode end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:bug → role_pr_reviewer:renamed-labels [plan_mode, terminal]",
+   "role": "role_pr_reviewer:renamed-labels",
+   "values": {
+    "originalTask": "Title: Login 500\n\nTask type: Bug\n\nRequest:\nExpired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts.",
+    "approvedPlan": "# Fix expired-token handling\n\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add a regression test (plan-mode end)"
+   },
+   "handoffPlan": "# Fix expired-token handling\n\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add a regression test (plan-mode end)",
+   "errors": [],
+   "marker": "3. Add a regression test (plan-mode end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:bug → role_custom_odd [plan_mode, chat]",
+   "role": "role_custom_odd",
+   "values": {
+    "ask_md": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "bg": "Auth lives in src/auth/middleware.ts.",
+    "steps_v2": "# Fix expired-token handling\n\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add a regression test (plan-mode end)"
+   },
+   "handoffPlan": null,
+   "errors": [
+    "prio"
+   ],
+   "marker": "3. Add a regression test (plan-mode end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:bug → role_custom_odd [plan_mode, terminal]",
+   "role": "role_custom_odd",
+   "values": {
+    "ask_md": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "bg": "Auth lives in src/auth/middleware.ts.",
+    "steps_v2": "# Fix expired-token handling\n\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add a regression test (plan-mode end)"
+   },
+   "handoffPlan": "# Fix expired-token handling\n\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add a regression test (plan-mode end)",
+   "errors": [
+    "prio"
+   ],
+   "marker": "3. Add a regression test (plan-mode end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:bug → role_custom_ghost [plan_mode, chat]",
+   "role": "role_custom_ghost",
+   "values": {
+    "plan": "# Fix expired-token handling\n\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add a regression test (plan-mode end)"
+   },
+   "handoffPlan": null,
+   "errors": [
+    "ticket"
+   ],
+   "marker": "3. Add a regression test (plan-mode end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:bug → role_custom_ghost [plan_mode, terminal]",
+   "role": "role_custom_ghost",
+   "values": {
+    "plan": "# Fix expired-token handling\n\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add a regression test (plan-mode end)"
+   },
+   "handoffPlan": "# Fix expired-token handling\n\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add a regression test (plan-mode end)",
+   "errors": [
+    "ticket"
+   ],
+   "marker": "3. Add a regression test (plan-mode end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:feature-stale-hidden → role_plan_reviewer [plan_and_todos, chat]",
+   "role": "role_plan_reviewer",
+   "values": {
+    "originalTask": "Title: Effort controls\n\nTask type: Feature\n\nRequest:\nLet users pick reasoning effort.\n\nExpected behavior:\nAn effort picker in the chat header.",
+    "plan": "## Effort picker\n\n1. Read effort options\n2. Add the picker (feature end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "2. Add the picker (feature end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:feature-stale-hidden → role_plan_reviewer [plan_and_todos, terminal]",
+   "role": "role_plan_reviewer",
+   "values": {
+    "originalTask": "Title: Effort controls\n\nTask type: Feature\n\nRequest:\nLet users pick reasoning effort.\n\nExpected behavior:\nAn effort picker in the chat header.",
+    "plan": "## Effort picker\n\n1. Read effort options\n2. Add the picker (feature end)"
+   },
+   "handoffPlan": "## Effort picker\n\n1. Read effort options\n2. Add the picker (feature end)",
+   "errors": [],
+   "marker": "2. Add the picker (feature end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:feature-stale-hidden → role_plan_reviewer:legacy-keys [plan_and_todos, chat]",
+   "role": "role_plan_reviewer:legacy-keys",
+   "values": {
+    "originalRequest": "Title: Effort controls\n\nTask type: Feature\n\nRequest:\nLet users pick reasoning effort.\n\nExpected behavior:\nAn effort picker in the chat header.",
+    "candidatePlan": "## Effort picker\n\n1. Read effort options\n2. Add the picker (feature end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "2. Add the picker (feature end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:feature-stale-hidden → role_plan_reviewer:legacy-keys [plan_and_todos, terminal]",
+   "role": "role_plan_reviewer:legacy-keys",
+   "values": {
+    "originalRequest": "Title: Effort controls\n\nTask type: Feature\n\nRequest:\nLet users pick reasoning effort.\n\nExpected behavior:\nAn effort picker in the chat header.",
+    "candidatePlan": "## Effort picker\n\n1. Read effort options\n2. Add the picker (feature end)"
+   },
+   "handoffPlan": "## Effort picker\n\n1. Read effort options\n2. Add the picker (feature end)",
+   "errors": [],
+   "marker": "2. Add the picker (feature end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:feature-stale-hidden → role_implementer [plan_and_todos, chat]",
+   "role": "role_implementer",
+   "values": {
+    "title": "Effort controls",
+    "taskType": "Feature",
+    "description": "Let users pick reasoning effort.\n\nExpected behavior:\nAn effort picker in the chat header.",
+    "approvedPlan": "## Effort picker\n\n1. Read effort options\n2. Add the picker (feature end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "2. Add the picker (feature end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:feature-stale-hidden → role_implementer [plan_and_todos, terminal]",
+   "role": "role_implementer",
+   "values": {
+    "title": "Effort controls",
+    "taskType": "Feature",
+    "description": "Let users pick reasoning effort.\n\nExpected behavior:\nAn effort picker in the chat header.",
+    "approvedPlan": "## Effort picker\n\n1. Read effort options\n2. Add the picker (feature end)"
+   },
+   "handoffPlan": "## Effort picker\n\n1. Read effort options\n2. Add the picker (feature end)",
+   "errors": [],
+   "marker": "2. Add the picker (feature end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:feature-stale-hidden → role_implementer:renamed-labels [plan_and_todos, chat]",
+   "role": "role_implementer:renamed-labels",
+   "values": {
+    "title": "Effort controls",
+    "taskType": "Feature",
+    "description": "Let users pick reasoning effort.\n\nExpected behavior:\nAn effort picker in the chat header.",
+    "approvedPlan": "## Effort picker\n\n1. Read effort options\n2. Add the picker (feature end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "2. Add the picker (feature end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:feature-stale-hidden → role_implementer:renamed-labels [plan_and_todos, terminal]",
+   "role": "role_implementer:renamed-labels",
+   "values": {
+    "title": "Effort controls",
+    "taskType": "Feature",
+    "description": "Let users pick reasoning effort.\n\nExpected behavior:\nAn effort picker in the chat header.",
+    "approvedPlan": "## Effort picker\n\n1. Read effort options\n2. Add the picker (feature end)"
+   },
+   "handoffPlan": "## Effort picker\n\n1. Read effort options\n2. Add the picker (feature end)",
+   "errors": [],
+   "marker": "2. Add the picker (feature end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:feature-stale-hidden → role_developer [plan_and_todos, chat]",
+   "role": "role_developer",
+   "values": {
+    "title": "Effort controls",
+    "request": "Let users pick reasoning effort.\n\nExpected behavior:\nAn effort picker in the chat header."
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "2. Add the picker (feature end)",
+   "markerCount": 0
+  },
+  {
+   "name": "planner:feature-stale-hidden → role_developer [plan_and_todos, terminal]",
+   "role": "role_developer",
+   "values": {
+    "title": "Effort controls",
+    "request": "Let users pick reasoning effort.\n\nExpected behavior:\nAn effort picker in the chat header."
+   },
+   "handoffPlan": "## Effort picker\n\n1. Read effort options\n2. Add the picker (feature end)",
+   "errors": [],
+   "marker": "2. Add the picker (feature end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:feature-stale-hidden → role_pr_reviewer [plan_and_todos, chat]",
+   "role": "role_pr_reviewer",
+   "values": {
+    "originalTask": "Title: Effort controls\n\nTask type: Feature\n\nRequest:\nLet users pick reasoning effort.\n\nExpected behavior:\nAn effort picker in the chat header.",
+    "approvedPlan": "## Effort picker\n\n1. Read effort options\n2. Add the picker (feature end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "2. Add the picker (feature end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:feature-stale-hidden → role_pr_reviewer [plan_and_todos, terminal]",
+   "role": "role_pr_reviewer",
+   "values": {
+    "originalTask": "Title: Effort controls\n\nTask type: Feature\n\nRequest:\nLet users pick reasoning effort.\n\nExpected behavior:\nAn effort picker in the chat header.",
+    "approvedPlan": "## Effort picker\n\n1. Read effort options\n2. Add the picker (feature end)"
+   },
+   "handoffPlan": "## Effort picker\n\n1. Read effort options\n2. Add the picker (feature end)",
+   "errors": [],
+   "marker": "2. Add the picker (feature end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:feature-stale-hidden → role_pr_reviewer:renamed-labels [plan_and_todos, chat]",
+   "role": "role_pr_reviewer:renamed-labels",
+   "values": {
+    "originalTask": "Title: Effort controls\n\nTask type: Feature\n\nRequest:\nLet users pick reasoning effort.\n\nExpected behavior:\nAn effort picker in the chat header.",
+    "approvedPlan": "## Effort picker\n\n1. Read effort options\n2. Add the picker (feature end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "2. Add the picker (feature end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:feature-stale-hidden → role_pr_reviewer:renamed-labels [plan_and_todos, terminal]",
+   "role": "role_pr_reviewer:renamed-labels",
+   "values": {
+    "originalTask": "Title: Effort controls\n\nTask type: Feature\n\nRequest:\nLet users pick reasoning effort.\n\nExpected behavior:\nAn effort picker in the chat header.",
+    "approvedPlan": "## Effort picker\n\n1. Read effort options\n2. Add the picker (feature end)"
+   },
+   "handoffPlan": "## Effort picker\n\n1. Read effort options\n2. Add the picker (feature end)",
+   "errors": [],
+   "marker": "2. Add the picker (feature end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:feature-stale-hidden → role_custom_odd [plan_and_todos, chat]",
+   "role": "role_custom_odd",
+   "values": {
+    "ask_md": "Let users pick reasoning effort.\n\nExpected behavior:\nAn effort picker in the chat header.",
+    "steps_v2": "## Effort picker\n\n1. Read effort options\n2. Add the picker (feature end)"
+   },
+   "handoffPlan": null,
+   "errors": [
+    "prio"
+   ],
+   "marker": "2. Add the picker (feature end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:feature-stale-hidden → role_custom_odd [plan_and_todos, terminal]",
+   "role": "role_custom_odd",
+   "values": {
+    "ask_md": "Let users pick reasoning effort.\n\nExpected behavior:\nAn effort picker in the chat header.",
+    "steps_v2": "## Effort picker\n\n1. Read effort options\n2. Add the picker (feature end)"
+   },
+   "handoffPlan": "## Effort picker\n\n1. Read effort options\n2. Add the picker (feature end)",
+   "errors": [
+    "prio"
+   ],
+   "marker": "2. Add the picker (feature end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:feature-stale-hidden → role_custom_ghost [plan_and_todos, chat]",
+   "role": "role_custom_ghost",
+   "values": {
+    "plan": "## Effort picker\n\n1. Read effort options\n2. Add the picker (feature end)"
+   },
+   "handoffPlan": null,
+   "errors": [
+    "ticket"
+   ],
+   "marker": "2. Add the picker (feature end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:feature-stale-hidden → role_custom_ghost [plan_and_todos, terminal]",
+   "role": "role_custom_ghost",
+   "values": {
+    "plan": "## Effort picker\n\n1. Read effort options\n2. Add the picker (feature end)"
+   },
+   "handoffPlan": "## Effort picker\n\n1. Read effort options\n2. Add the picker (feature end)",
+   "errors": [
+    "ticket"
+   ],
+   "marker": "2. Add the picker (feature end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:terminal → role_plan_reviewer [plan_file, chat]",
+   "role": "role_plan_reviewer",
+   "values": {
+    "originalTask": "Title: Login 500\n\nTask type: Bug\n\nRequest:\nExpired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts.",
+    "plan": "# Plan file: token fix\n\n- Patch\n- Test (file end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "- Test (file end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:terminal → role_plan_reviewer [plan_file, terminal]",
+   "role": "role_plan_reviewer",
+   "values": {
+    "originalTask": "Title: Login 500\n\nTask type: Bug\n\nRequest:\nExpired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts.",
+    "plan": "# Plan file: token fix\n\n- Patch\n- Test (file end)"
+   },
+   "handoffPlan": "# Plan file: token fix\n\n- Patch\n- Test (file end)",
+   "errors": [],
+   "marker": "- Test (file end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:terminal → role_plan_reviewer:legacy-keys [plan_file, chat]",
+   "role": "role_plan_reviewer:legacy-keys",
+   "values": {
+    "originalRequest": "Title: Login 500\n\nTask type: Bug\n\nRequest:\nExpired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts.",
+    "candidatePlan": "# Plan file: token fix\n\n- Patch\n- Test (file end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "- Test (file end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:terminal → role_plan_reviewer:legacy-keys [plan_file, terminal]",
+   "role": "role_plan_reviewer:legacy-keys",
+   "values": {
+    "originalRequest": "Title: Login 500\n\nTask type: Bug\n\nRequest:\nExpired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts.",
+    "candidatePlan": "# Plan file: token fix\n\n- Patch\n- Test (file end)"
+   },
+   "handoffPlan": "# Plan file: token fix\n\n- Patch\n- Test (file end)",
+   "errors": [],
+   "marker": "- Test (file end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:terminal → role_implementer [plan_file, chat]",
+   "role": "role_implementer",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug Fix",
+    "description": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts.",
+    "approvedPlan": "# Plan file: token fix\n\n- Patch\n- Test (file end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "- Test (file end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:terminal → role_implementer [plan_file, terminal]",
+   "role": "role_implementer",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug Fix",
+    "description": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts.",
+    "approvedPlan": "# Plan file: token fix\n\n- Patch\n- Test (file end)"
+   },
+   "handoffPlan": "# Plan file: token fix\n\n- Patch\n- Test (file end)",
+   "errors": [],
+   "marker": "- Test (file end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:terminal → role_implementer:renamed-labels [plan_file, chat]",
+   "role": "role_implementer:renamed-labels",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug Fix",
+    "description": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts.",
+    "approvedPlan": "# Plan file: token fix\n\n- Patch\n- Test (file end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "- Test (file end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:terminal → role_implementer:renamed-labels [plan_file, terminal]",
+   "role": "role_implementer:renamed-labels",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug Fix",
+    "description": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts.",
+    "approvedPlan": "# Plan file: token fix\n\n- Patch\n- Test (file end)"
+   },
+   "handoffPlan": "# Plan file: token fix\n\n- Patch\n- Test (file end)",
+   "errors": [],
+   "marker": "- Test (file end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:terminal → role_developer [plan_file, chat]",
+   "role": "role_developer",
+   "values": {
+    "title": "Login 500",
+    "request": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.\n\nAuth lives in src/auth/middleware.ts."
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "- Test (file end)",
+   "markerCount": 0
+  },
+  {
+   "name": "planner:terminal → role_developer [plan_file, terminal]",
+   "role": "role_developer",
+   "values": {
+    "title": "Login 500",
+    "request": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.\n\nAuth lives in src/auth/middleware.ts."
+   },
+   "handoffPlan": "# Plan file: token fix\n\n- Patch\n- Test (file end)",
+   "errors": [],
+   "marker": "- Test (file end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:terminal → role_pr_reviewer [plan_file, chat]",
+   "role": "role_pr_reviewer",
+   "values": {
+    "originalTask": "Title: Login 500\n\nTask type: Bug\n\nRequest:\nExpired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts.",
+    "approvedPlan": "# Plan file: token fix\n\n- Patch\n- Test (file end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "- Test (file end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:terminal → role_pr_reviewer [plan_file, terminal]",
+   "role": "role_pr_reviewer",
+   "values": {
+    "originalTask": "Title: Login 500\n\nTask type: Bug\n\nRequest:\nExpired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts.",
+    "approvedPlan": "# Plan file: token fix\n\n- Patch\n- Test (file end)"
+   },
+   "handoffPlan": "# Plan file: token fix\n\n- Patch\n- Test (file end)",
+   "errors": [],
+   "marker": "- Test (file end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:terminal → role_pr_reviewer:renamed-labels [plan_file, chat]",
+   "role": "role_pr_reviewer:renamed-labels",
+   "values": {
+    "originalTask": "Title: Login 500\n\nTask type: Bug\n\nRequest:\nExpired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts.",
+    "approvedPlan": "# Plan file: token fix\n\n- Patch\n- Test (file end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "- Test (file end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:terminal → role_pr_reviewer:renamed-labels [plan_file, terminal]",
+   "role": "role_pr_reviewer:renamed-labels",
+   "values": {
+    "originalTask": "Title: Login 500\n\nTask type: Bug\n\nRequest:\nExpired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts.",
+    "approvedPlan": "# Plan file: token fix\n\n- Patch\n- Test (file end)"
+   },
+   "handoffPlan": "# Plan file: token fix\n\n- Patch\n- Test (file end)",
+   "errors": [],
+   "marker": "- Test (file end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:terminal → role_custom_odd [plan_file, chat]",
+   "role": "role_custom_odd",
+   "values": {
+    "ask_md": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "bg": "Auth lives in src/auth/middleware.ts.",
+    "steps_v2": "# Plan file: token fix\n\n- Patch\n- Test (file end)"
+   },
+   "handoffPlan": null,
+   "errors": [
+    "prio"
+   ],
+   "marker": "- Test (file end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:terminal → role_custom_odd [plan_file, terminal]",
+   "role": "role_custom_odd",
+   "values": {
+    "ask_md": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "bg": "Auth lives in src/auth/middleware.ts.",
+    "steps_v2": "# Plan file: token fix\n\n- Patch\n- Test (file end)"
+   },
+   "handoffPlan": "# Plan file: token fix\n\n- Patch\n- Test (file end)",
+   "errors": [
+    "prio"
+   ],
+   "marker": "- Test (file end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:terminal → role_custom_ghost [plan_file, chat]",
+   "role": "role_custom_ghost",
+   "values": {
+    "plan": "# Plan file: token fix\n\n- Patch\n- Test (file end)"
+   },
+   "handoffPlan": null,
+   "errors": [
+    "ticket"
+   ],
+   "marker": "- Test (file end)",
+   "markerCount": 1
+  },
+  {
+   "name": "planner:terminal → role_custom_ghost [plan_file, terminal]",
+   "role": "role_custom_ghost",
+   "values": {
+    "plan": "# Plan file: token fix\n\n- Patch\n- Test (file end)"
+   },
+   "handoffPlan": "# Plan file: token fix\n\n- Patch\n- Test (file end)",
+   "errors": [
+    "ticket"
+   ],
+   "marker": "- Test (file end)",
+   "markerCount": 1
+  },
+  {
+   "name": "plan_reviewer:chat → role_implementer [plan_and_todos, chat]",
+   "role": "role_implementer",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug Fix",
+    "description": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Review notes:\n- Cover refresh tokens too (notes end)\n\nAuth lives in src/auth/middleware.ts.",
+    "approvedPlan": "1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add the expired-token regression test (reviewed end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "3. Add the expired-token regression test (reviewed end)",
+   "markerCount": 1
+  },
+  {
+   "name": "plan_reviewer:chat → role_implementer [plan_and_todos, terminal]",
+   "role": "role_implementer",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug Fix",
+    "description": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Review notes:\n- Cover refresh tokens too (notes end)\n\nAuth lives in src/auth/middleware.ts.",
+    "approvedPlan": "1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add the expired-token regression test (reviewed end)"
+   },
+   "handoffPlan": "1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add the expired-token regression test (reviewed end)",
+   "errors": [],
+   "marker": "3. Add the expired-token regression test (reviewed end)",
+   "markerCount": 1
+  },
+  {
+   "name": "plan_reviewer:chat → role_implementer:renamed-labels [plan_and_todos, chat]",
+   "role": "role_implementer:renamed-labels",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug Fix",
+    "description": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Review notes:\n- Cover refresh tokens too (notes end)\n\nAuth lives in src/auth/middleware.ts.",
+    "approvedPlan": "1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add the expired-token regression test (reviewed end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "3. Add the expired-token regression test (reviewed end)",
+   "markerCount": 1
+  },
+  {
+   "name": "plan_reviewer:chat → role_implementer:renamed-labels [plan_and_todos, terminal]",
+   "role": "role_implementer:renamed-labels",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug Fix",
+    "description": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Review notes:\n- Cover refresh tokens too (notes end)\n\nAuth lives in src/auth/middleware.ts.",
+    "approvedPlan": "1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add the expired-token regression test (reviewed end)"
+   },
+   "handoffPlan": "1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add the expired-token regression test (reviewed end)",
+   "errors": [],
+   "marker": "3. Add the expired-token regression test (reviewed end)",
+   "markerCount": 1
+  },
+  {
+   "name": "plan_reviewer:chat → role_developer [plan_and_todos, chat]",
+   "role": "role_developer",
+   "values": {
+    "title": "Login 500",
+    "request": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.\n\nAuth lives in src/auth/middleware.ts."
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "- Cover refresh tokens too (notes end)",
+   "markerCount": 0
+  },
+  {
+   "name": "plan_reviewer:chat → role_developer [plan_and_todos, terminal]",
+   "role": "role_developer",
+   "values": {
+    "title": "Login 500",
+    "request": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.\n\nAuth lives in src/auth/middleware.ts."
+   },
+   "handoffPlan": "### Verdict\n**APPROVED WITH CHANGES**\n\n## Reviewed plan\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add the expired-token regression test (reviewed end)\n\n## Review notes\n- Cover refresh tokens too (notes end)",
+   "errors": [],
+   "marker": "- Cover refresh tokens too (notes end)",
+   "markerCount": 1
+  },
+  {
+   "name": "plan_reviewer:chat → role_planner [plan_and_todos, chat]",
+   "role": "role_planner",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug",
+    "expectedBehavior": "The API returns 401 with a refresh hint.",
+    "currentBehavior": "The handler panics on an expired token.",
+    "request": "Expired tokens return 500 instead of 401.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts."
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "- Cover refresh tokens too (notes end)",
+   "markerCount": 0
+  },
+  {
+   "name": "plan_reviewer:chat → role_planner [plan_and_todos, terminal]",
+   "role": "role_planner",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug",
+    "expectedBehavior": "The API returns 401 with a refresh hint.",
+    "currentBehavior": "The handler panics on an expired token.",
+    "request": "Expired tokens return 500 instead of 401.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts."
+   },
+   "handoffPlan": "### Verdict\n**APPROVED WITH CHANGES**\n\n## Reviewed plan\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add the expired-token regression test (reviewed end)\n\n## Review notes\n- Cover refresh tokens too (notes end)",
+   "errors": [],
+   "marker": "- Cover refresh tokens too (notes end)",
+   "markerCount": 1
+  },
+  {
+   "name": "plan_reviewer:chat → role_planner:renamed-options [plan_and_todos, chat]",
+   "role": "role_planner:renamed-options",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug report",
+    "expectedBehavior": "The API returns 401 with a refresh hint.",
+    "currentBehavior": "The handler panics on an expired token.",
+    "request": "Expired tokens return 500 instead of 401.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts."
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "- Cover refresh tokens too (notes end)",
+   "markerCount": 0
+  },
+  {
+   "name": "plan_reviewer:chat → role_planner:renamed-options [plan_and_todos, terminal]",
+   "role": "role_planner:renamed-options",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug report",
+    "expectedBehavior": "The API returns 401 with a refresh hint.",
+    "currentBehavior": "The handler panics on an expired token.",
+    "request": "Expired tokens return 500 instead of 401.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts."
+   },
+   "handoffPlan": "### Verdict\n**APPROVED WITH CHANGES**\n\n## Reviewed plan\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add the expired-token regression test (reviewed end)\n\n## Review notes\n- Cover refresh tokens too (notes end)",
+   "errors": [],
+   "marker": "- Cover refresh tokens too (notes end)",
+   "markerCount": 1
+  },
+  {
+   "name": "plan_reviewer:legacy-keys → role_implementer [plan_and_todos, chat]",
+   "role": "role_implementer",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug Fix",
+    "description": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Review notes:\n- Cover refresh tokens too (notes end)\n\nAuth lives in src/auth/middleware.ts.",
+    "approvedPlan": "1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add the expired-token regression test (reviewed end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "3. Add the expired-token regression test (reviewed end)",
+   "markerCount": 1
+  },
+  {
+   "name": "plan_reviewer:legacy-keys → role_implementer [plan_and_todos, terminal]",
+   "role": "role_implementer",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug Fix",
+    "description": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Review notes:\n- Cover refresh tokens too (notes end)\n\nAuth lives in src/auth/middleware.ts.",
+    "approvedPlan": "1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add the expired-token regression test (reviewed end)"
+   },
+   "handoffPlan": "1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add the expired-token regression test (reviewed end)",
+   "errors": [],
+   "marker": "3. Add the expired-token regression test (reviewed end)",
+   "markerCount": 1
+  },
+  {
+   "name": "plan_reviewer:legacy-keys → role_implementer:renamed-labels [plan_and_todos, chat]",
+   "role": "role_implementer:renamed-labels",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug Fix",
+    "description": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Review notes:\n- Cover refresh tokens too (notes end)\n\nAuth lives in src/auth/middleware.ts.",
+    "approvedPlan": "1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add the expired-token regression test (reviewed end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "3. Add the expired-token regression test (reviewed end)",
+   "markerCount": 1
+  },
+  {
+   "name": "plan_reviewer:legacy-keys → role_implementer:renamed-labels [plan_and_todos, terminal]",
+   "role": "role_implementer:renamed-labels",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug Fix",
+    "description": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Review notes:\n- Cover refresh tokens too (notes end)\n\nAuth lives in src/auth/middleware.ts.",
+    "approvedPlan": "1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add the expired-token regression test (reviewed end)"
+   },
+   "handoffPlan": "1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add the expired-token regression test (reviewed end)",
+   "errors": [],
+   "marker": "3. Add the expired-token regression test (reviewed end)",
+   "markerCount": 1
+  },
+  {
+   "name": "plan_reviewer:legacy-keys → role_developer [plan_and_todos, chat]",
+   "role": "role_developer",
+   "values": {
+    "title": "Login 500",
+    "request": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.\n\nAuth lives in src/auth/middleware.ts."
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "- Cover refresh tokens too (notes end)",
+   "markerCount": 0
+  },
+  {
+   "name": "plan_reviewer:legacy-keys → role_developer [plan_and_todos, terminal]",
+   "role": "role_developer",
+   "values": {
+    "title": "Login 500",
+    "request": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.\n\nAuth lives in src/auth/middleware.ts."
+   },
+   "handoffPlan": "### Verdict\n**APPROVED WITH CHANGES**\n\n## Reviewed plan\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add the expired-token regression test (reviewed end)\n\n## Review notes\n- Cover refresh tokens too (notes end)",
+   "errors": [],
+   "marker": "- Cover refresh tokens too (notes end)",
+   "markerCount": 1
+  },
+  {
+   "name": "plan_reviewer:legacy-keys → role_planner [plan_and_todos, chat]",
+   "role": "role_planner",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug",
+    "expectedBehavior": "The API returns 401 with a refresh hint.",
+    "currentBehavior": "The handler panics on an expired token.",
+    "request": "Expired tokens return 500 instead of 401.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts."
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "- Cover refresh tokens too (notes end)",
+   "markerCount": 0
+  },
+  {
+   "name": "plan_reviewer:legacy-keys → role_planner [plan_and_todos, terminal]",
+   "role": "role_planner",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug",
+    "expectedBehavior": "The API returns 401 with a refresh hint.",
+    "currentBehavior": "The handler panics on an expired token.",
+    "request": "Expired tokens return 500 instead of 401.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts."
+   },
+   "handoffPlan": "### Verdict\n**APPROVED WITH CHANGES**\n\n## Reviewed plan\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add the expired-token regression test (reviewed end)\n\n## Review notes\n- Cover refresh tokens too (notes end)",
+   "errors": [],
+   "marker": "- Cover refresh tokens too (notes end)",
+   "markerCount": 1
+  },
+  {
+   "name": "plan_reviewer:legacy-keys → role_planner:renamed-options [plan_and_todos, chat]",
+   "role": "role_planner:renamed-options",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug report",
+    "expectedBehavior": "The API returns 401 with a refresh hint.",
+    "currentBehavior": "The handler panics on an expired token.",
+    "request": "Expired tokens return 500 instead of 401.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts."
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "- Cover refresh tokens too (notes end)",
+   "markerCount": 0
+  },
+  {
+   "name": "plan_reviewer:legacy-keys → role_planner:renamed-options [plan_and_todos, terminal]",
+   "role": "role_planner:renamed-options",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug report",
+    "expectedBehavior": "The API returns 401 with a refresh hint.",
+    "currentBehavior": "The handler panics on an expired token.",
+    "request": "Expired tokens return 500 instead of 401.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts."
+   },
+   "handoffPlan": "### Verdict\n**APPROVED WITH CHANGES**\n\n## Reviewed plan\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add the expired-token regression test (reviewed end)\n\n## Review notes\n- Cover refresh tokens too (notes end)",
+   "errors": [],
+   "marker": "- Cover refresh tokens too (notes end)",
+   "markerCount": 1
+  },
+  {
+   "name": "plan_reviewer:crlf → role_implementer [plan_and_todos, chat]",
+   "role": "role_implementer",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug Fix",
+    "description": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Review notes:\n- Cover refresh tokens too (notes end)\n\nAuth lives in src/auth/middleware.ts.",
+    "approvedPlan": "1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add the expired-token regression test (reviewed end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "3. Add the expired-token regression test (reviewed end)",
+   "markerCount": 1
+  },
+  {
+   "name": "plan_reviewer:crlf → role_implementer [plan_and_todos, terminal]",
+   "role": "role_implementer",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug Fix",
+    "description": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Review notes:\n- Cover refresh tokens too (notes end)\n\nAuth lives in src/auth/middleware.ts.",
+    "approvedPlan": "1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add the expired-token regression test (reviewed end)"
+   },
+   "handoffPlan": "1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add the expired-token regression test (reviewed end)",
+   "errors": [],
+   "marker": "3. Add the expired-token regression test (reviewed end)",
+   "markerCount": 1
+  },
+  {
+   "name": "plan_reviewer:crlf → role_implementer:renamed-labels [plan_and_todos, chat]",
+   "role": "role_implementer:renamed-labels",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug Fix",
+    "description": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Review notes:\n- Cover refresh tokens too (notes end)\n\nAuth lives in src/auth/middleware.ts.",
+    "approvedPlan": "1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add the expired-token regression test (reviewed end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "3. Add the expired-token regression test (reviewed end)",
+   "markerCount": 1
+  },
+  {
+   "name": "plan_reviewer:crlf → role_implementer:renamed-labels [plan_and_todos, terminal]",
+   "role": "role_implementer:renamed-labels",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug Fix",
+    "description": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "additionalContext": "Review notes:\n- Cover refresh tokens too (notes end)\n\nAuth lives in src/auth/middleware.ts.",
+    "approvedPlan": "1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add the expired-token regression test (reviewed end)"
+   },
+   "handoffPlan": "1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add the expired-token regression test (reviewed end)",
+   "errors": [],
+   "marker": "3. Add the expired-token regression test (reviewed end)",
+   "markerCount": 1
+  },
+  {
+   "name": "plan_reviewer:crlf → role_developer [plan_and_todos, chat]",
+   "role": "role_developer",
+   "values": {
+    "title": "Login 500",
+    "request": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.\n\nAuth lives in src/auth/middleware.ts."
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "- Cover refresh tokens too (notes end)",
+   "markerCount": 0
+  },
+  {
+   "name": "plan_reviewer:crlf → role_developer [plan_and_todos, terminal]",
+   "role": "role_developer",
+   "values": {
+    "title": "Login 500",
+    "request": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.\n\nAuth lives in src/auth/middleware.ts."
+   },
+   "handoffPlan": "### Verdict\n**APPROVED WITH CHANGES**\n\n## Reviewed plan\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add the expired-token regression test (reviewed end)\n\n## Review notes\n- Cover refresh tokens too (notes end)",
+   "errors": [],
+   "marker": "- Cover refresh tokens too (notes end)",
+   "markerCount": 1
+  },
+  {
+   "name": "plan_reviewer:crlf → role_planner [plan_and_todos, chat]",
+   "role": "role_planner",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug",
+    "expectedBehavior": "The API returns 401 with a refresh hint.",
+    "currentBehavior": "The handler panics on an expired token.",
+    "request": "Expired tokens return 500 instead of 401.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts."
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "- Cover refresh tokens too (notes end)",
+   "markerCount": 0
+  },
+  {
+   "name": "plan_reviewer:crlf → role_planner [plan_and_todos, terminal]",
+   "role": "role_planner",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug",
+    "expectedBehavior": "The API returns 401 with a refresh hint.",
+    "currentBehavior": "The handler panics on an expired token.",
+    "request": "Expired tokens return 500 instead of 401.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts."
+   },
+   "handoffPlan": "### Verdict\n**APPROVED WITH CHANGES**\n\n## Reviewed plan\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add the expired-token regression test (reviewed end)\n\n## Review notes\n- Cover refresh tokens too (notes end)",
+   "errors": [],
+   "marker": "- Cover refresh tokens too (notes end)",
+   "markerCount": 1
+  },
+  {
+   "name": "plan_reviewer:crlf → role_planner:renamed-options [plan_and_todos, chat]",
+   "role": "role_planner:renamed-options",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug report",
+    "expectedBehavior": "The API returns 401 with a refresh hint.",
+    "currentBehavior": "The handler panics on an expired token.",
+    "request": "Expired tokens return 500 instead of 401.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts."
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "- Cover refresh tokens too (notes end)",
+   "markerCount": 0
+  },
+  {
+   "name": "plan_reviewer:crlf → role_planner:renamed-options [plan_and_todos, terminal]",
+   "role": "role_planner:renamed-options",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug report",
+    "expectedBehavior": "The API returns 401 with a refresh hint.",
+    "currentBehavior": "The handler panics on an expired token.",
+    "request": "Expired tokens return 500 instead of 401.",
+    "additionalContext": "Auth lives in src/auth/middleware.ts."
+   },
+   "handoffPlan": "### Verdict\n**APPROVED WITH CHANGES**\n\n## Reviewed plan\n1. Catch TokenExpired in the middleware\n2. Return 401 with a refresh hint\n3. Add the expired-token regression test (reviewed end)\n\n## Review notes\n- Cover refresh tokens too (notes end)",
+   "errors": [],
+   "marker": "- Cover refresh tokens too (notes end)",
+   "markerCount": 1
+  },
+  {
+   "name": "plan_reviewer:terminal → role_implementer [selection, chat]",
+   "role": "role_implementer",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug Fix",
+    "description": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "approvedPlan": "3. Add the expired-token regression test (tail selection end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "3. Add the expired-token regression test (tail selection end)",
+   "markerCount": 1
+  },
+  {
+   "name": "plan_reviewer:terminal → role_implementer [selection, terminal]",
+   "role": "role_implementer",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug Fix",
+    "description": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "approvedPlan": "3. Add the expired-token regression test (tail selection end)"
+   },
+   "handoffPlan": "3. Add the expired-token regression test (tail selection end)",
+   "errors": [],
+   "marker": "3. Add the expired-token regression test (tail selection end)",
+   "markerCount": 1
+  },
+  {
+   "name": "plan_reviewer:terminal → role_implementer:renamed-labels [selection, chat]",
+   "role": "role_implementer:renamed-labels",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug Fix",
+    "description": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "approvedPlan": "3. Add the expired-token regression test (tail selection end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "3. Add the expired-token regression test (tail selection end)",
+   "markerCount": 1
+  },
+  {
+   "name": "plan_reviewer:terminal → role_implementer:renamed-labels [selection, terminal]",
+   "role": "role_implementer:renamed-labels",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug Fix",
+    "description": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token.",
+    "approvedPlan": "3. Add the expired-token regression test (tail selection end)"
+   },
+   "handoffPlan": "3. Add the expired-token regression test (tail selection end)",
+   "errors": [],
+   "marker": "3. Add the expired-token regression test (tail selection end)",
+   "markerCount": 1
+  },
+  {
+   "name": "plan_reviewer:terminal → role_developer [selection, chat]",
+   "role": "role_developer",
+   "values": {
+    "title": "Login 500",
+    "request": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token."
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "3. Add the expired-token regression test (tail selection end)",
+   "markerCount": 0
+  },
+  {
+   "name": "plan_reviewer:terminal → role_developer [selection, terminal]",
+   "role": "role_developer",
+   "values": {
+    "title": "Login 500",
+    "request": "Expired tokens return 500 instead of 401.\n\nExpected behavior:\nThe API returns 401 with a refresh hint.\n\nCurrent behavior:\nThe handler panics on an expired token."
+   },
+   "handoffPlan": "3. Add the expired-token regression test (tail selection end)",
+   "errors": [],
+   "marker": "3. Add the expired-token regression test (tail selection end)",
+   "markerCount": 1
+  },
+  {
+   "name": "plan_reviewer:terminal → role_planner [selection, chat]",
+   "role": "role_planner",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug",
+    "expectedBehavior": "The API returns 401 with a refresh hint.",
+    "currentBehavior": "The handler panics on an expired token.",
+    "request": "Expired tokens return 500 instead of 401."
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "3. Add the expired-token regression test (tail selection end)",
+   "markerCount": 0
+  },
+  {
+   "name": "plan_reviewer:terminal → role_planner [selection, terminal]",
+   "role": "role_planner",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug",
+    "expectedBehavior": "The API returns 401 with a refresh hint.",
+    "currentBehavior": "The handler panics on an expired token.",
+    "request": "Expired tokens return 500 instead of 401."
+   },
+   "handoffPlan": "3. Add the expired-token regression test (tail selection end)",
+   "errors": [],
+   "marker": "3. Add the expired-token regression test (tail selection end)",
+   "markerCount": 1
+  },
+  {
+   "name": "plan_reviewer:terminal → role_planner:renamed-options [selection, chat]",
+   "role": "role_planner:renamed-options",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug report",
+    "expectedBehavior": "The API returns 401 with a refresh hint.",
+    "currentBehavior": "The handler panics on an expired token.",
+    "request": "Expired tokens return 500 instead of 401."
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "3. Add the expired-token regression test (tail selection end)",
+   "markerCount": 0
+  },
+  {
+   "name": "plan_reviewer:terminal → role_planner:renamed-options [selection, terminal]",
+   "role": "role_planner:renamed-options",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug report",
+    "expectedBehavior": "The API returns 401 with a refresh hint.",
+    "currentBehavior": "The handler panics on an expired token.",
+    "request": "Expired tokens return 500 instead of 401."
+   },
+   "handoffPlan": "3. Add the expired-token regression test (tail selection end)",
+   "errors": [],
+   "marker": "3. Add the expired-token regression test (tail selection end)",
+   "markerCount": 1
+  },
+  {
+   "name": "implementer → role_pr_reviewer [plan_and_todos, chat]",
+   "role": "role_pr_reviewer",
+   "values": {
+    "originalTask": "Title: Login 500\n\nTask type: Bug Fix\n\nRequest:\nExpired tokens return 500 instead of 401.",
+    "approvedPlan": "1. Catch TokenExpired\n2. Return 401\n3. Test (approved end)",
+    "additionalContext": "Auth lives in src/auth/middleware.ts.\n\nImplementation summary:\nDone. Patched the middleware and added a test. PR: https://github.com/a/b/pull/7\n\nChanged files:\n- src/auth/middleware.ts +12 -3\n\nBranch: fix/login-500\n\nPull request: https://github.com/a/b/pull/7"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "3. Test (approved end)",
+   "markerCount": 1
+  },
+  {
+   "name": "implementer → role_pr_reviewer [plan_and_todos, terminal]",
+   "role": "role_pr_reviewer",
+   "values": {
+    "originalTask": "Title: Login 500\n\nTask type: Bug Fix\n\nRequest:\nExpired tokens return 500 instead of 401.",
+    "approvedPlan": "1. Catch TokenExpired\n2. Return 401\n3. Test (approved end)",
+    "additionalContext": "Auth lives in src/auth/middleware.ts.\n\nImplementation summary:\nDone. Patched the middleware and added a test. PR: https://github.com/a/b/pull/7\n\nChanged files:\n- src/auth/middleware.ts +12 -3\n\nBranch: fix/login-500\n\nPull request: https://github.com/a/b/pull/7"
+   },
+   "handoffPlan": "1. Catch TokenExpired\n2. Return 401\n3. Test (approved end)",
+   "errors": [],
+   "marker": "3. Test (approved end)",
+   "markerCount": 1
+  },
+  {
+   "name": "implementer → role_pr_reviewer:renamed-labels [plan_and_todos, chat]",
+   "role": "role_pr_reviewer:renamed-labels",
+   "values": {
+    "originalTask": "Title: Login 500\n\nTask type: Bug Fix\n\nRequest:\nExpired tokens return 500 instead of 401.",
+    "approvedPlan": "1. Catch TokenExpired\n2. Return 401\n3. Test (approved end)",
+    "additionalContext": "Auth lives in src/auth/middleware.ts.\n\nImplementation summary:\nDone. Patched the middleware and added a test. PR: https://github.com/a/b/pull/7\n\nChanged files:\n- src/auth/middleware.ts +12 -3\n\nBranch: fix/login-500\n\nPull request: https://github.com/a/b/pull/7"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "3. Test (approved end)",
+   "markerCount": 1
+  },
+  {
+   "name": "implementer → role_pr_reviewer:renamed-labels [plan_and_todos, terminal]",
+   "role": "role_pr_reviewer:renamed-labels",
+   "values": {
+    "originalTask": "Title: Login 500\n\nTask type: Bug Fix\n\nRequest:\nExpired tokens return 500 instead of 401.",
+    "approvedPlan": "1. Catch TokenExpired\n2. Return 401\n3. Test (approved end)",
+    "additionalContext": "Auth lives in src/auth/middleware.ts.\n\nImplementation summary:\nDone. Patched the middleware and added a test. PR: https://github.com/a/b/pull/7\n\nChanged files:\n- src/auth/middleware.ts +12 -3\n\nBranch: fix/login-500\n\nPull request: https://github.com/a/b/pull/7"
+   },
+   "handoffPlan": "1. Catch TokenExpired\n2. Return 401\n3. Test (approved end)",
+   "errors": [],
+   "marker": "3. Test (approved end)",
+   "markerCount": 1
+  },
+  {
+   "name": "developer:with-task → role_pr_reviewer [plan_and_todos, chat]",
+   "role": "role_pr_reviewer",
+   "values": {
+    "originalTask": "Title: Tidy the auth module\n\nRequest:\nRemove dead token helpers.",
+    "approvedPlan": "## Summary\n\nRemoved two helpers and updated imports. (dev end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "Removed two helpers and updated imports. (dev end)",
+   "markerCount": 1
+  },
+  {
+   "name": "developer:with-task → role_pr_reviewer [plan_and_todos, terminal]",
+   "role": "role_pr_reviewer",
+   "values": {
+    "originalTask": "Title: Tidy the auth module\n\nRequest:\nRemove dead token helpers.",
+    "approvedPlan": "## Summary\n\nRemoved two helpers and updated imports. (dev end)"
+   },
+   "handoffPlan": "## Summary\n\nRemoved two helpers and updated imports. (dev end)",
+   "errors": [],
+   "marker": "Removed two helpers and updated imports. (dev end)",
+   "markerCount": 1
+  },
+  {
+   "name": "developer:with-task → role_pr_reviewer:renamed-labels [plan_and_todos, chat]",
+   "role": "role_pr_reviewer:renamed-labels",
+   "values": {
+    "originalTask": "Title: Tidy the auth module\n\nRequest:\nRemove dead token helpers.",
+    "approvedPlan": "## Summary\n\nRemoved two helpers and updated imports. (dev end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "Removed two helpers and updated imports. (dev end)",
+   "markerCount": 1
+  },
+  {
+   "name": "developer:with-task → role_pr_reviewer:renamed-labels [plan_and_todos, terminal]",
+   "role": "role_pr_reviewer:renamed-labels",
+   "values": {
+    "originalTask": "Title: Tidy the auth module\n\nRequest:\nRemove dead token helpers.",
+    "approvedPlan": "## Summary\n\nRemoved two helpers and updated imports. (dev end)"
+   },
+   "handoffPlan": "## Summary\n\nRemoved two helpers and updated imports. (dev end)",
+   "errors": [],
+   "marker": "Removed two helpers and updated imports. (dev end)",
+   "markerCount": 1
+  },
+  {
+   "name": "developer:bare → role_pr_reviewer [plan_and_todos, chat]",
+   "role": "role_pr_reviewer",
+   "values": {
+    "originalTask": "Review the work from the Developer hand-off.",
+    "approvedPlan": "Removed two helpers and updated imports. (bare dev end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "Removed two helpers and updated imports. (bare dev end)",
+   "markerCount": 1
+  },
+  {
+   "name": "developer:bare → role_pr_reviewer [plan_and_todos, terminal]",
+   "role": "role_pr_reviewer",
+   "values": {
+    "originalTask": "Review the work from the Developer hand-off.",
+    "approvedPlan": "Removed two helpers and updated imports. (bare dev end)"
+   },
+   "handoffPlan": "Removed two helpers and updated imports. (bare dev end)",
+   "errors": [],
+   "marker": "Removed two helpers and updated imports. (bare dev end)",
+   "markerCount": 1
+  },
+  {
+   "name": "developer:bare → role_pr_reviewer:renamed-labels [plan_and_todos, chat]",
+   "role": "role_pr_reviewer:renamed-labels",
+   "values": {
+    "originalTask": "Review the work from the Developer hand-off.",
+    "approvedPlan": "Removed two helpers and updated imports. (bare dev end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "Removed two helpers and updated imports. (bare dev end)",
+   "markerCount": 1
+  },
+  {
+   "name": "developer:bare → role_pr_reviewer:renamed-labels [plan_and_todos, terminal]",
+   "role": "role_pr_reviewer:renamed-labels",
+   "values": {
+    "originalTask": "Review the work from the Developer hand-off.",
+    "approvedPlan": "Removed two helpers and updated imports. (bare dev end)"
+   },
+   "handoffPlan": "Removed two helpers and updated imports. (bare dev end)",
+   "errors": [],
+   "marker": "Removed two helpers and updated imports. (bare dev end)",
+   "markerCount": 1
+  },
+  {
+   "name": "pr_reviewer → role_implementer [plan_and_todos, chat]",
+   "role": "role_implementer",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug Fix",
+    "description": "Expired tokens return 500 instead of 401.",
+    "additionalContext": "Branch: fix/login-500",
+    "approvedPlan": "### Verdict\n**CHANGES REQUESTED**\n\n1. The refresh path still panics (review end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "1. The refresh path still panics (review end)",
+   "markerCount": 1
+  },
+  {
+   "name": "pr_reviewer → role_implementer [plan_and_todos, terminal]",
+   "role": "role_implementer",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug Fix",
+    "description": "Expired tokens return 500 instead of 401.",
+    "additionalContext": "Branch: fix/login-500",
+    "approvedPlan": "### Verdict\n**CHANGES REQUESTED**\n\n1. The refresh path still panics (review end)"
+   },
+   "handoffPlan": "### Verdict\n**CHANGES REQUESTED**\n\n1. The refresh path still panics (review end)",
+   "errors": [],
+   "marker": "1. The refresh path still panics (review end)",
+   "markerCount": 1
+  },
+  {
+   "name": "pr_reviewer → role_implementer:renamed-labels [plan_and_todos, chat]",
+   "role": "role_implementer:renamed-labels",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug Fix",
+    "description": "Expired tokens return 500 instead of 401.",
+    "additionalContext": "Branch: fix/login-500",
+    "approvedPlan": "### Verdict\n**CHANGES REQUESTED**\n\n1. The refresh path still panics (review end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "1. The refresh path still panics (review end)",
+   "markerCount": 1
+  },
+  {
+   "name": "pr_reviewer → role_implementer:renamed-labels [plan_and_todos, terminal]",
+   "role": "role_implementer:renamed-labels",
+   "values": {
+    "title": "Login 500",
+    "taskType": "Bug Fix",
+    "description": "Expired tokens return 500 instead of 401.",
+    "additionalContext": "Branch: fix/login-500",
+    "approvedPlan": "### Verdict\n**CHANGES REQUESTED**\n\n1. The refresh path still panics (review end)"
+   },
+   "handoffPlan": "### Verdict\n**CHANGES REQUESTED**\n\n1. The refresh path still panics (review end)",
+   "errors": [],
+   "marker": "1. The refresh path still panics (review end)",
+   "markerCount": 1
+  },
+  {
+   "name": "recommendation:one-card → role_planner [selection, chat]",
+   "role": "role_planner",
+   "values": {
+    "title": "Effort controls",
+    "taskType": "Feature",
+    "expectedBehavior": "Add an effort picker next to the model picker.",
+    "additionalContext": "From the Recommendation report (Recommendation · demo).\n\nExisting Capability:\nThe ACP session reports effort options.",
+    "request": "## Feature: Effort controls\n\n### Problem\nUsers cannot change reasoning effort."
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "The ACP session reports effort options.",
+   "markerCount": 1
+  },
+  {
+   "name": "recommendation:one-card → role_planner [selection, terminal]",
+   "role": "role_planner",
+   "values": {
+    "title": "Effort controls",
+    "taskType": "Feature",
+    "expectedBehavior": "Add an effort picker next to the model picker.",
+    "additionalContext": "From the Recommendation report (Recommendation · demo).\n\nExisting Capability:\nThe ACP session reports effort options.",
+    "request": "## Feature: Effort controls\n\n### Problem\nUsers cannot change reasoning effort."
+   },
+   "handoffPlan": "",
+   "errors": [],
+   "marker": "The ACP session reports effort options.",
+   "markerCount": 1
+  },
+  {
+   "name": "recommendation:one-card → role_planner:renamed-options [selection, chat]",
+   "role": "role_planner:renamed-options",
+   "values": {
+    "title": "Effort controls",
+    "taskType": "New feature",
+    "expectedBehavior": "Add an effort picker next to the model picker.",
+    "additionalContext": "From the Recommendation report (Recommendation · demo).\n\nExisting Capability:\nThe ACP session reports effort options.",
+    "request": "## Feature: Effort controls\n\n### Problem\nUsers cannot change reasoning effort."
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "The ACP session reports effort options.",
+   "markerCount": 1
+  },
+  {
+   "name": "recommendation:one-card → role_planner:renamed-options [selection, terminal]",
+   "role": "role_planner:renamed-options",
+   "values": {
+    "title": "Effort controls",
+    "taskType": "New feature",
+    "expectedBehavior": "Add an effort picker next to the model picker.",
+    "additionalContext": "From the Recommendation report (Recommendation · demo).\n\nExisting Capability:\nThe ACP session reports effort options.",
+    "request": "## Feature: Effort controls\n\n### Problem\nUsers cannot change reasoning effort."
+   },
+   "handoffPlan": "",
+   "errors": [],
+   "marker": "The ACP session reports effort options.",
+   "markerCount": 1
+  },
+  {
+   "name": "recommendation:one-card → role_developer [selection, chat]",
+   "role": "role_developer",
+   "values": {
+    "title": "Effort controls"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "The ACP session reports effort options.",
+   "markerCount": 0
+  },
+  {
+   "name": "recommendation:one-card → role_developer [selection, terminal]",
+   "role": "role_developer",
+   "values": {
+    "title": "Effort controls"
+   },
+   "handoffPlan": "## Feature: Effort controls\n\n### Problem\nUsers cannot change reasoning effort.\n\n### Proposed Solution\nAdd an effort picker next to the model picker.\n\n### Existing Capability\nThe ACP session reports effort options.",
+   "errors": [],
+   "marker": "The ACP session reports effort options.",
+   "markerCount": 1
+  },
+  {
+   "name": "recommendation:two-cards-selected → role_planner [selection, chat]",
+   "role": "role_planner",
+   "values": {
+    "title": "Effort controls and 1 more",
+    "taskType": "Feature",
+    "additionalContext": "From the Recommendation report (Recommendation · demo).",
+    "request": "## Feature: Effort controls\n\n### Problem\nUsers cannot change reasoning effort.\n\n### Proposed Solution\nAdd an effort picker next to the model picker.\n\n### Existing Capability\nThe ACP session reports effort options.\n\n## Feature: Persist Up-arrow history\n\n### Problem\nComposer history is lost on restart.\n\n### Proposed Solution\nSave it with the scratch pad. (report end)"
+   },
+   "handoffPlan": null,
+   "errors": [
+    "expectedBehavior"
+   ],
+   "marker": "Save it with the scratch pad. (report end)",
+   "markerCount": 1
+  },
+  {
+   "name": "recommendation:two-cards-selected → role_planner [selection, terminal]",
+   "role": "role_planner",
+   "values": {
+    "title": "Effort controls and 1 more",
+    "taskType": "Feature",
+    "additionalContext": "From the Recommendation report (Recommendation · demo).",
+    "request": "## Feature: Effort controls\n\n### Problem\nUsers cannot change reasoning effort.\n\n### Proposed Solution\nAdd an effort picker next to the model picker.\n\n### Existing Capability\nThe ACP session reports effort options.\n\n## Feature: Persist Up-arrow history\n\n### Problem\nComposer history is lost on restart.\n\n### Proposed Solution\nSave it with the scratch pad. (report end)"
+   },
+   "handoffPlan": "## Feature: Effort controls\n\n### Problem\nUsers cannot change reasoning effort.\n\n### Proposed Solution\nAdd an effort picker next to the model picker.\n\n### Existing Capability\nThe ACP session reports effort options.\n\n## Feature: Persist Up-arrow history\n\n### Problem\nComposer history is lost on restart.\n\n### Proposed Solution\nSave it with the scratch pad. (report end)",
+   "errors": [
+    "expectedBehavior"
+   ],
+   "marker": "Save it with the scratch pad. (report end)",
+   "markerCount": 1
+  },
+  {
+   "name": "recommendation:two-cards-selected → role_planner:renamed-options [selection, chat]",
+   "role": "role_planner:renamed-options",
+   "values": {
+    "title": "Effort controls and 1 more",
+    "taskType": "New feature",
+    "additionalContext": "From the Recommendation report (Recommendation · demo).",
+    "request": "## Feature: Effort controls\n\n### Problem\nUsers cannot change reasoning effort.\n\n### Proposed Solution\nAdd an effort picker next to the model picker.\n\n### Existing Capability\nThe ACP session reports effort options.\n\n## Feature: Persist Up-arrow history\n\n### Problem\nComposer history is lost on restart.\n\n### Proposed Solution\nSave it with the scratch pad. (report end)"
+   },
+   "handoffPlan": null,
+   "errors": [
+    "expectedBehavior"
+   ],
+   "marker": "Save it with the scratch pad. (report end)",
+   "markerCount": 1
+  },
+  {
+   "name": "recommendation:two-cards-selected → role_planner:renamed-options [selection, terminal]",
+   "role": "role_planner:renamed-options",
+   "values": {
+    "title": "Effort controls and 1 more",
+    "taskType": "New feature",
+    "additionalContext": "From the Recommendation report (Recommendation · demo).",
+    "request": "## Feature: Effort controls\n\n### Problem\nUsers cannot change reasoning effort.\n\n### Proposed Solution\nAdd an effort picker next to the model picker.\n\n### Existing Capability\nThe ACP session reports effort options.\n\n## Feature: Persist Up-arrow history\n\n### Problem\nComposer history is lost on restart.\n\n### Proposed Solution\nSave it with the scratch pad. (report end)"
+   },
+   "handoffPlan": "## Feature: Effort controls\n\n### Problem\nUsers cannot change reasoning effort.\n\n### Proposed Solution\nAdd an effort picker next to the model picker.\n\n### Existing Capability\nThe ACP session reports effort options.\n\n## Feature: Persist Up-arrow history\n\n### Problem\nComposer history is lost on restart.\n\n### Proposed Solution\nSave it with the scratch pad. (report end)",
+   "errors": [
+    "expectedBehavior"
+   ],
+   "marker": "Save it with the scratch pad. (report end)",
+   "markerCount": 1
+  },
+  {
+   "name": "recommendation:two-cards-selected → role_developer [selection, chat]",
+   "role": "role_developer",
+   "values": {
+    "title": "Effort controls and 1 more"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "Save it with the scratch pad. (report end)",
+   "markerCount": 0
+  },
+  {
+   "name": "recommendation:two-cards-selected → role_developer [selection, terminal]",
+   "role": "role_developer",
+   "values": {
+    "title": "Effort controls and 1 more"
+   },
+   "handoffPlan": "## Feature: Effort controls\n\n### Problem\nUsers cannot change reasoning effort.\n\n### Proposed Solution\nAdd an effort picker next to the model picker.\n\n### Existing Capability\nThe ACP session reports effort options.\n\n## Feature: Persist Up-arrow history\n\n### Problem\nComposer history is lost on restart.\n\n### Proposed Solution\nSave it with the scratch pad. (report end)",
+   "errors": [],
+   "marker": "Save it with the scratch pad. (report end)",
+   "markerCount": 1
+  },
+  {
+   "name": "audit:one-finding → role_planner [selection, chat]",
+   "role": "role_planner",
+   "values": {
+    "title": "Token leak",
+    "taskType": "Bug",
+    "currentBehavior": "Token leak happens under load.",
+    "expectedBehavior": "Fix token leak at the source. (selected end)",
+    "additionalContext": "From the Codebase Audit report (Codebase Audit · demo).\n\nLocation:\nsrc/auth/token.rs:42\n\nEvidence:\nThe log shows it.",
+    "request": "## [HIGH] Token leak\n\nCategory:\nSecurity"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "Fix token leak at the source. (selected end)",
+   "markerCount": 1
+  },
+  {
+   "name": "audit:one-finding → role_planner [selection, terminal]",
+   "role": "role_planner",
+   "values": {
+    "title": "Token leak",
+    "taskType": "Bug",
+    "currentBehavior": "Token leak happens under load.",
+    "expectedBehavior": "Fix token leak at the source. (selected end)",
+    "additionalContext": "From the Codebase Audit report (Codebase Audit · demo).\n\nLocation:\nsrc/auth/token.rs:42\n\nEvidence:\nThe log shows it.",
+    "request": "## [HIGH] Token leak\n\nCategory:\nSecurity"
+   },
+   "handoffPlan": "",
+   "errors": [],
+   "marker": "Fix token leak at the source. (selected end)",
+   "markerCount": 1
+  },
+  {
+   "name": "audit:one-finding → role_planner:renamed-options [selection, chat]",
+   "role": "role_planner:renamed-options",
+   "values": {
+    "title": "Token leak",
+    "taskType": "Bug report",
+    "currentBehavior": "Token leak happens under load.",
+    "expectedBehavior": "Fix token leak at the source. (selected end)",
+    "additionalContext": "From the Codebase Audit report (Codebase Audit · demo).\n\nLocation:\nsrc/auth/token.rs:42\n\nEvidence:\nThe log shows it.",
+    "request": "## [HIGH] Token leak\n\nCategory:\nSecurity"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "Fix token leak at the source. (selected end)",
+   "markerCount": 1
+  },
+  {
+   "name": "audit:one-finding → role_planner:renamed-options [selection, terminal]",
+   "role": "role_planner:renamed-options",
+   "values": {
+    "title": "Token leak",
+    "taskType": "Bug report",
+    "currentBehavior": "Token leak happens under load.",
+    "expectedBehavior": "Fix token leak at the source. (selected end)",
+    "additionalContext": "From the Codebase Audit report (Codebase Audit · demo).\n\nLocation:\nsrc/auth/token.rs:42\n\nEvidence:\nThe log shows it.",
+    "request": "## [HIGH] Token leak\n\nCategory:\nSecurity"
+   },
+   "handoffPlan": "",
+   "errors": [],
+   "marker": "Fix token leak at the source. (selected end)",
+   "markerCount": 1
+  },
+  {
+   "name": "audit:one-finding → role_developer [selection, chat]",
+   "role": "role_developer",
+   "values": {
+    "title": "Token leak"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "Fix token leak at the source. (selected end)",
+   "markerCount": 0
+  },
+  {
+   "name": "audit:one-finding → role_developer [selection, terminal]",
+   "role": "role_developer",
+   "values": {
+    "title": "Token leak"
+   },
+   "handoffPlan": "## [HIGH] Token leak\n\nCategory:\nSecurity\n\nLocation:\nsrc/auth/token.rs:42\n\nProblem:\nToken leak happens under load.\n\nEvidence:\nThe log shows it.\n\nRecommended Direction:\nFix token leak at the source. (selected end)",
+   "errors": [],
+   "marker": "Fix token leak at the source. (selected end)",
+   "markerCount": 1
+  },
+  {
+   "name": "audit:one-finding → role_implementer [selection, chat]",
+   "role": "role_implementer",
+   "values": {
+    "title": "Token leak",
+    "taskType": "Bug Fix",
+    "description": "Implement the plan from the Codebase Audit hand-off.",
+    "approvedPlan": "## [HIGH] Token leak\n\nCategory:\nSecurity\n\nLocation:\nsrc/auth/token.rs:42\n\nProblem:\nToken leak happens under load.\n\nEvidence:\nThe log shows it.\n\nRecommended Direction:\nFix token leak at the source. (selected end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "Fix token leak at the source. (selected end)",
+   "markerCount": 1
+  },
+  {
+   "name": "audit:one-finding → role_implementer [selection, terminal]",
+   "role": "role_implementer",
+   "values": {
+    "title": "Token leak",
+    "taskType": "Bug Fix",
+    "description": "Implement the plan from the Codebase Audit hand-off.",
+    "approvedPlan": "## [HIGH] Token leak\n\nCategory:\nSecurity\n\nLocation:\nsrc/auth/token.rs:42\n\nProblem:\nToken leak happens under load.\n\nEvidence:\nThe log shows it.\n\nRecommended Direction:\nFix token leak at the source. (selected end)"
+   },
+   "handoffPlan": "## [HIGH] Token leak\n\nCategory:\nSecurity\n\nLocation:\nsrc/auth/token.rs:42\n\nProblem:\nToken leak happens under load.\n\nEvidence:\nThe log shows it.\n\nRecommended Direction:\nFix token leak at the source. (selected end)",
+   "errors": [],
+   "marker": "Fix token leak at the source. (selected end)",
+   "markerCount": 1
+  },
+  {
+   "name": "audit:one-finding → role_implementer:renamed-labels [selection, chat]",
+   "role": "role_implementer:renamed-labels",
+   "values": {
+    "title": "Token leak",
+    "taskType": "Bug Fix",
+    "description": "Implement the plan from the Codebase Audit hand-off.",
+    "approvedPlan": "## [HIGH] Token leak\n\nCategory:\nSecurity\n\nLocation:\nsrc/auth/token.rs:42\n\nProblem:\nToken leak happens under load.\n\nEvidence:\nThe log shows it.\n\nRecommended Direction:\nFix token leak at the source. (selected end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "Fix token leak at the source. (selected end)",
+   "markerCount": 1
+  },
+  {
+   "name": "audit:one-finding → role_implementer:renamed-labels [selection, terminal]",
+   "role": "role_implementer:renamed-labels",
+   "values": {
+    "title": "Token leak",
+    "taskType": "Bug Fix",
+    "description": "Implement the plan from the Codebase Audit hand-off.",
+    "approvedPlan": "## [HIGH] Token leak\n\nCategory:\nSecurity\n\nLocation:\nsrc/auth/token.rs:42\n\nProblem:\nToken leak happens under load.\n\nEvidence:\nThe log shows it.\n\nRecommended Direction:\nFix token leak at the source. (selected end)"
+   },
+   "handoffPlan": "## [HIGH] Token leak\n\nCategory:\nSecurity\n\nLocation:\nsrc/auth/token.rs:42\n\nProblem:\nToken leak happens under load.\n\nEvidence:\nThe log shows it.\n\nRecommended Direction:\nFix token leak at the source. (selected end)",
+   "errors": [],
+   "marker": "Fix token leak at the source. (selected end)",
+   "markerCount": 1
+  },
+  {
+   "name": "audit:terminal → role_planner [selection, chat]",
+   "role": "role_planner",
+   "values": {
+    "title": "Flaky auth test",
+    "taskType": "Chore",
+    "expectedBehavior": "Fix flaky auth test at the source. (terminal finding end)",
+    "additionalContext": "From the Codebase Audit report (Codebase Audit · demo).\n\nLocation:\nsrc/auth/token.rs:42\n\nEvidence:\nThe log shows it.",
+    "request": "## [LOW] Flaky auth test\n\nCategory:\nTesting\n\nProblem:\nFlaky auth test happens under load."
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "Fix flaky auth test at the source. (terminal finding end)",
+   "markerCount": 1
+  },
+  {
+   "name": "audit:terminal → role_planner [selection, terminal]",
+   "role": "role_planner",
+   "values": {
+    "title": "Flaky auth test",
+    "taskType": "Chore",
+    "expectedBehavior": "Fix flaky auth test at the source. (terminal finding end)",
+    "additionalContext": "From the Codebase Audit report (Codebase Audit · demo).\n\nLocation:\nsrc/auth/token.rs:42\n\nEvidence:\nThe log shows it.",
+    "request": "## [LOW] Flaky auth test\n\nCategory:\nTesting\n\nProblem:\nFlaky auth test happens under load."
+   },
+   "handoffPlan": "",
+   "errors": [],
+   "marker": "Fix flaky auth test at the source. (terminal finding end)",
+   "markerCount": 1
+  },
+  {
+   "name": "audit:terminal → role_planner:renamed-options [selection, chat]",
+   "role": "role_planner:renamed-options",
+   "values": {
+    "title": "Flaky auth test",
+    "taskType": "Chore",
+    "expectedBehavior": "Fix flaky auth test at the source. (terminal finding end)",
+    "additionalContext": "From the Codebase Audit report (Codebase Audit · demo).\n\nLocation:\nsrc/auth/token.rs:42\n\nEvidence:\nThe log shows it.",
+    "request": "## [LOW] Flaky auth test\n\nCategory:\nTesting\n\nProblem:\nFlaky auth test happens under load."
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "Fix flaky auth test at the source. (terminal finding end)",
+   "markerCount": 1
+  },
+  {
+   "name": "audit:terminal → role_planner:renamed-options [selection, terminal]",
+   "role": "role_planner:renamed-options",
+   "values": {
+    "title": "Flaky auth test",
+    "taskType": "Chore",
+    "expectedBehavior": "Fix flaky auth test at the source. (terminal finding end)",
+    "additionalContext": "From the Codebase Audit report (Codebase Audit · demo).\n\nLocation:\nsrc/auth/token.rs:42\n\nEvidence:\nThe log shows it.",
+    "request": "## [LOW] Flaky auth test\n\nCategory:\nTesting\n\nProblem:\nFlaky auth test happens under load."
+   },
+   "handoffPlan": "",
+   "errors": [],
+   "marker": "Fix flaky auth test at the source. (terminal finding end)",
+   "markerCount": 1
+  },
+  {
+   "name": "audit:terminal → role_developer [selection, chat]",
+   "role": "role_developer",
+   "values": {
+    "title": "Flaky auth test"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "Fix flaky auth test at the source. (terminal finding end)",
+   "markerCount": 0
+  },
+  {
+   "name": "audit:terminal → role_developer [selection, terminal]",
+   "role": "role_developer",
+   "values": {
+    "title": "Flaky auth test"
+   },
+   "handoffPlan": "## [LOW] Flaky auth test\n\nCategory:\nTesting\n\nLocation:\nsrc/auth/token.rs:42\n\nProblem:\nFlaky auth test happens under load.\n\nEvidence:\nThe log shows it.\n\nRecommended Direction:\nFix flaky auth test at the source. (terminal finding end)",
+   "errors": [],
+   "marker": "Fix flaky auth test at the source. (terminal finding end)",
+   "markerCount": 1
+  },
+  {
+   "name": "audit:terminal → role_implementer [selection, chat]",
+   "role": "role_implementer",
+   "values": {
+    "title": "Flaky auth test",
+    "taskType": "Other",
+    "description": "Implement the plan from the Codebase Audit hand-off.",
+    "approvedPlan": "## [LOW] Flaky auth test\n\nCategory:\nTesting\n\nLocation:\nsrc/auth/token.rs:42\n\nProblem:\nFlaky auth test happens under load.\n\nEvidence:\nThe log shows it.\n\nRecommended Direction:\nFix flaky auth test at the source. (terminal finding end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "Fix flaky auth test at the source. (terminal finding end)",
+   "markerCount": 1
+  },
+  {
+   "name": "audit:terminal → role_implementer [selection, terminal]",
+   "role": "role_implementer",
+   "values": {
+    "title": "Flaky auth test",
+    "taskType": "Other",
+    "description": "Implement the plan from the Codebase Audit hand-off.",
+    "approvedPlan": "## [LOW] Flaky auth test\n\nCategory:\nTesting\n\nLocation:\nsrc/auth/token.rs:42\n\nProblem:\nFlaky auth test happens under load.\n\nEvidence:\nThe log shows it.\n\nRecommended Direction:\nFix flaky auth test at the source. (terminal finding end)"
+   },
+   "handoffPlan": "## [LOW] Flaky auth test\n\nCategory:\nTesting\n\nLocation:\nsrc/auth/token.rs:42\n\nProblem:\nFlaky auth test happens under load.\n\nEvidence:\nThe log shows it.\n\nRecommended Direction:\nFix flaky auth test at the source. (terminal finding end)",
+   "errors": [],
+   "marker": "Fix flaky auth test at the source. (terminal finding end)",
+   "markerCount": 1
+  },
+  {
+   "name": "audit:terminal → role_implementer:renamed-labels [selection, chat]",
+   "role": "role_implementer:renamed-labels",
+   "values": {
+    "title": "Flaky auth test",
+    "taskType": "Other",
+    "description": "Implement the plan from the Codebase Audit hand-off.",
+    "approvedPlan": "## [LOW] Flaky auth test\n\nCategory:\nTesting\n\nLocation:\nsrc/auth/token.rs:42\n\nProblem:\nFlaky auth test happens under load.\n\nEvidence:\nThe log shows it.\n\nRecommended Direction:\nFix flaky auth test at the source. (terminal finding end)"
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "Fix flaky auth test at the source. (terminal finding end)",
+   "markerCount": 1
+  },
+  {
+   "name": "audit:terminal → role_implementer:renamed-labels [selection, terminal]",
+   "role": "role_implementer:renamed-labels",
+   "values": {
+    "title": "Flaky auth test",
+    "taskType": "Other",
+    "description": "Implement the plan from the Codebase Audit hand-off.",
+    "approvedPlan": "## [LOW] Flaky auth test\n\nCategory:\nTesting\n\nLocation:\nsrc/auth/token.rs:42\n\nProblem:\nFlaky auth test happens under load.\n\nEvidence:\nThe log shows it.\n\nRecommended Direction:\nFix flaky auth test at the source. (terminal finding end)"
+   },
+   "handoffPlan": "## [LOW] Flaky auth test\n\nCategory:\nTesting\n\nLocation:\nsrc/auth/token.rs:42\n\nProblem:\nFlaky auth test happens under load.\n\nEvidence:\nThe log shows it.\n\nRecommended Direction:\nFix flaky auth test at the source. (terminal finding end)",
+   "errors": [],
+   "marker": "Fix flaky auth test at the source. (terminal finding end)",
+   "markerCount": 1
+  },
+  {
+   "name": "custom_spec → role_implementer [plan_and_todos, chat]",
+   "role": "role_implementer",
+   "values": {
+    "title": "Token flow spec",
+    "description": "Document the token flow.",
+    "approvedPlan": "# Token flow spec\n\n1. Diagram the flow\n2. Write it up (spec end)"
+   },
+   "handoffPlan": null,
+   "errors": [
+    "taskType"
+   ],
+   "marker": "2. Write it up (spec end)",
+   "markerCount": 1
+  },
+  {
+   "name": "custom_spec → role_implementer [plan_and_todos, terminal]",
+   "role": "role_implementer",
+   "values": {
+    "title": "Token flow spec",
+    "description": "Document the token flow.",
+    "approvedPlan": "# Token flow spec\n\n1. Diagram the flow\n2. Write it up (spec end)"
+   },
+   "handoffPlan": "# Token flow spec\n\n1. Diagram the flow\n2. Write it up (spec end)",
+   "errors": [
+    "taskType"
+   ],
+   "marker": "2. Write it up (spec end)",
+   "markerCount": 1
+  },
+  {
+   "name": "custom_spec → role_implementer:renamed-labels [plan_and_todos, chat]",
+   "role": "role_implementer:renamed-labels",
+   "values": {
+    "title": "Token flow spec",
+    "description": "Document the token flow.",
+    "approvedPlan": "# Token flow spec\n\n1. Diagram the flow\n2. Write it up (spec end)"
+   },
+   "handoffPlan": null,
+   "errors": [
+    "taskType"
+   ],
+   "marker": "2. Write it up (spec end)",
+   "markerCount": 1
+  },
+  {
+   "name": "custom_spec → role_implementer:renamed-labels [plan_and_todos, terminal]",
+   "role": "role_implementer:renamed-labels",
+   "values": {
+    "title": "Token flow spec",
+    "description": "Document the token flow.",
+    "approvedPlan": "# Token flow spec\n\n1. Diagram the flow\n2. Write it up (spec end)"
+   },
+   "handoffPlan": "# Token flow spec\n\n1. Diagram the flow\n2. Write it up (spec end)",
+   "errors": [
+    "taskType"
+   ],
+   "marker": "2. Write it up (spec end)",
+   "markerCount": 1
+  },
+  {
+   "name": "custom_spec → role_developer [plan_and_todos, chat]",
+   "role": "role_developer",
+   "values": {
+    "title": "Token flow spec",
+    "request": "Document the token flow."
+   },
+   "handoffPlan": null,
+   "errors": [],
+   "marker": "2. Write it up (spec end)",
+   "markerCount": 0
+  },
+  {
+   "name": "custom_spec → role_developer [plan_and_todos, terminal]",
+   "role": "role_developer",
+   "values": {
+    "title": "Token flow spec",
+    "request": "Document the token flow."
+   },
+   "handoffPlan": "# Token flow spec\n\n1. Diagram the flow\n2. Write it up (spec end)",
+   "errors": [],
+   "marker": "2. Write it up (spec end)",
+   "markerCount": 1
+  },
+  {
+   "name": "custom_spec → role_custom_odd [plan_and_todos, chat]",
+   "role": "role_custom_odd",
+   "values": {
+    "ask_md": "Document the token flow.",
+    "steps_v2": "# Token flow spec\n\n1. Diagram the flow\n2. Write it up (spec end)"
+   },
+   "handoffPlan": null,
+   "errors": [
+    "prio"
+   ],
+   "marker": "2. Write it up (spec end)",
+   "markerCount": 1
+  },
+  {
+   "name": "custom_spec → role_custom_odd [plan_and_todos, terminal]",
+   "role": "role_custom_odd",
+   "values": {
+    "ask_md": "Document the token flow.",
+    "steps_v2": "# Token flow spec\n\n1. Diagram the flow\n2. Write it up (spec end)"
+   },
+   "handoffPlan": "# Token flow spec\n\n1. Diagram the flow\n2. Write it up (spec end)",
+   "errors": [
+    "prio"
+   ],
+   "marker": "2. Write it up (spec end)",
+   "markerCount": 1
+  }
+ ]
+}

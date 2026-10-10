@@ -150,8 +150,11 @@ import {
   roleDisplayName,
   mapHandoff,
   carryChainTaskType,
+  handoffFillSummary,
+  handoffStartProblem,
   needsChainTaskType,
   selectionInside,
+  terminalHandoffInput,
   type HandoffField,
   type HandoffScope,
   type HandoffSource,
@@ -511,6 +514,7 @@ export function StartupForm({
   const [handoffs, setHandoffs] = useState<HandoffRecord[]>([]);
   const [handoffTarget, setHandoffTarget] = useState<HandoffTargetId | null>(null);
   const [handoffFields, setHandoffFields] = useState<HandoffField[] | null>(null);
+  const [handoffTemplate, setHandoffTemplate] = useState<string | null>(null);
   const [handoffSelection, setHandoffSelection] = useState("");
   const [handoffError, setHandoffError] = useState<string | null>(null);
   const [savedPlan, setSavedPlan] = useState<HandoffRecord | null>(null);
@@ -2966,14 +2970,18 @@ export function StartupForm({
 
   const loadHandoffFields = useCallback((target: HandoffTargetId) => {
     setHandoffFields(null);
+    setHandoffTemplate(null);
     getRole(target)
       .then((loaded) => {
+        setHandoffTemplate(loaded.templateText ?? null);
         setHandoffFields(
           loaded.fields.map((field) => ({
             key: field.key,
             label: field.label,
             type: field.type,
             options: field.options,
+            required: field.required,
+            showWhen: field.showWhen ?? null,
           })),
         );
       })
@@ -3087,6 +3095,7 @@ export function StartupForm({
         sourceLabel: activeTabSummary?.label ?? roleDisplayName(terminalRoleId, roles),
         cwd: activeTabSummary?.cwd || values.cwd || "",
         answers: values,
+        sourceFields: role?.id === terminalRoleId ? role.fields : undefined,
         latestMessage: "",
         plan: [],
         todos: [],
@@ -3106,6 +3115,7 @@ export function StartupForm({
         savedTabs.find((tab) => tab.id === activeTabId)?.label ?? roleDisplayName(roleId, roles),
       cwd: session?.cwd || values.cwd || "",
       answers: values,
+      sourceFields: role?.id === roleId ? role.fields : undefined,
       latestMessage: latestAgentMessage(streamSegments),
       plan: cards.plan,
       todos: cards.todos,
@@ -3131,6 +3141,7 @@ export function StartupForm({
     handoffSelection,
     isPlanTerminal,
     promptInFlight,
+    role,
     roleId,
     roles,
     runtimes,
@@ -3172,6 +3183,7 @@ export function StartupForm({
               ? "Chain complete: the PR Reviewer approved."
               : "Review approved: nothing left to hand off."
             : null,
+          roleNames: roles,
           onSend: openHandoffDialog,
         }
       : null;
@@ -3289,6 +3301,17 @@ export function StartupForm({
           const view = await getPipelineRun(nextChain.chainId).catch(() => null);
           mapped = carryChainTaskType(mapped, target, view?.taskType);
         }
+        if (surface === "terminal") {
+          // A terminal starts at once: name what is missing instead of failing to start.
+          const problem = handoffStartProblem(
+            handoffFillSummary(mapped, { ...target, templateText: handoffTemplate }),
+            roleDisplayName(handoffTarget, roles),
+          );
+          if (problem) {
+            setHandoffError(problem);
+            return;
+          }
+        }
         const tagChain = async (tabId: string) => {
           if (loop) {
             await chainLoopBack({
@@ -3320,12 +3343,13 @@ export function StartupForm({
         const nextValues = { ...mapped.answers, cwd: handoffSource.cwd };
         const sourceProvider = providerOf(sourceTab ?? null);
         if (surface === "terminal") {
+          const terminal = terminalHandoffInput(mapped);
           stashActiveTab();
           const tabId = await startRoleTerminal({
             roleId: handoffTarget,
-            values: nextValues,
+            values: { ...terminal.values, cwd: handoffSource.cwd },
             tabId: null,
-            handoffPlan: mapped.planText,
+            handoffPlan: terminal.handoffPlan,
           });
           if (!tabId) {
             setHandoffError("Terminal did not start.");
@@ -3378,6 +3402,7 @@ export function StartupForm({
       handleSelectTab,
       handoffFields,
       handoffLoopBack,
+      handoffTemplate,
       handoffSource,
       handoffTarget,
       patchRuntime,
@@ -4377,6 +4402,7 @@ export function StartupForm({
           source={handoffSource}
           targetRoleId={handoffTarget}
           targetFields={handoffFields}
+          targetTemplate={handoffTemplate}
           folderWarning={folderStatusMessage(
             savedTabs.find((tab) => tab.id === activeTabId)?.folderStatus ?? "",
             handoffSource.cwd,

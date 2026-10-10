@@ -1321,6 +1321,11 @@ kbd {
   margin: 0.3rem 0;
 }
 
+.handoff-fill-line {
+  margin: 0.3rem 0;
+  font-size: 0.85rem;
+}
+
 .handoff-preview {
   max-height: 8rem;
   white-space: pre-wrap;

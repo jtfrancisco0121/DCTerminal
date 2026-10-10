@@ -5,6 +5,7 @@
 
 mod attachments;
 mod detection;
+mod handoff_matrix;
 mod json_io;
 mod roles_template;
 mod state;

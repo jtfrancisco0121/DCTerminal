@@ -3,6 +3,7 @@ import {
   composePlanText,
   defaultScope,
   handoffBlockReason,
+  handoffFillSummary,
   handoffFromRole,
   handoffTargets,
   isReportSource,
@@ -35,6 +36,8 @@ type Props = {
   source: HandoffSource;
   targetRoleId: HandoffTargetId;
   targetFields: HandoffField[] | null;
+  /** The target role's template, to name `{{tokens}}` no field fills. */
+  targetTemplate?: string | null;
   folderWarning: string | null;
   busy: boolean;
   error: string | null;
@@ -52,6 +55,7 @@ export function HandoffDialog({
   source,
   targetRoleId,
   targetFields,
+  targetTemplate = null,
   folderWarning,
   busy,
   error,
@@ -80,6 +84,17 @@ export function HandoffDialog({
         fields: targetFields ?? [],
       }),
     [source, scope, targetRoleId, targetFields],
+  );
+  const fill = useMemo(
+    () =>
+      targetFields === null
+        ? null
+        : handoffFillSummary(mapped, {
+            roleId: targetRoleId,
+            fields: targetFields,
+            templateText: targetTemplate,
+          }),
+    [mapped, targetFields, targetRoleId, targetTemplate],
   );
   const preview = composePlanText(source, scope).text;
   const previewText = Array.from(preview).slice(0, 500).join("");
@@ -192,6 +207,39 @@ export function HandoffDialog({
         {followUp?.blocked && <p className="hint">{followUp.blocked}</p>}
         {scopeHint && <p className="hint">{scopeHint}</p>}
         {!followUp && mapped.warning && <p className="hint">{mapped.warning}</p>}
+        {!followUp && fill && mapped.planText && (
+          <div className="handoff-fieldset" role="group" aria-label="Filled from the hand-off">
+            <p className="handoff-fill-line">
+              <strong>Fills:</strong>{" "}
+              {[
+                ...fill.filled.map((field) => field.label),
+                ...(fill.scratchPad ? ["scratch pad (plan)"] : []),
+              ].join(", ") || "nothing"}
+            </p>
+            {fill.empty.length > 0 && (
+              <p className="handoff-fill-line hint">
+                Left empty:{" "}
+                {fill.empty
+                  .map((field) => (field.required ? `${field.label} (required)` : field.label))
+                  .join(", ")}
+              </p>
+            )}
+            {fill.missing.length > 0 && (
+              <p className="handoff-fill-line hint">
+                {surface === "terminal"
+                  ? `A terminal starts right away, so fill ${fill.missing.join(", ")} first: open as Chat to edit the form.`
+                  : `Fill ${fill.missing.join(", ")} in the new tab before Start.`}
+              </p>
+            )}
+            {fill.unresolved.length > 0 && (
+              <p className="handoff-fill-line error">
+                {`The ${targetLabel} template uses ${fill.unresolved
+                  .map((token) => `{{${token}}}`)
+                  .join(", ")}, which no field fills. Fix the role in Settings > Roles.`}
+              </p>
+            )}
+          </div>
+        )}
         {error && <p className="error">{error}</p>}
         {followUp && preview.trim() && (
           <pre

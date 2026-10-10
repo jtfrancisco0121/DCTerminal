@@ -63,6 +63,16 @@ export type HandoffField = {
   label?: string;
   type?: string;
   options?: string[];
+  required?: boolean;
+  /** Same rule as `field_visible` (Rust): shown only while `fieldKey` equals one of `equals`. */
+  showWhen?: { fieldKey: string; equals: string[] } | null;
+};
+
+/** The role a hand-off opens. `templateText` lets the dialog spot tokens no field fills. */
+export type HandoffTarget = {
+  roleId: string;
+  fields: HandoffField[];
+  templateText?: string | null;
 };
 
 export type HandoffSource = {
@@ -92,6 +102,8 @@ export type HandoffSource = {
   branch?: string | null;
   /** Transcript text scanned for the first GitHub pull-request URL. */
   transcriptText?: string;
+  /** The source role's form fields, so hidden answers (Planner Current Behavior unless Bug) stay behind. */
+  sourceFields?: HandoffField[];
 };
 
 export type HandoffLimits = {
@@ -145,8 +157,11 @@ const REVIEWED_PLAN_HEADING = /^#{1,6}[ \t]+(?:\*\*)?Reviewed plan(?:\*\*)?[ \t]
 const REVIEW_NOTES_HEADING = /^#{1,6}[ \t]+(?:\*\*)?Review notes(?:\*\*)?[ \t]*:?[ \t]*$/im;
 const CONTEXT_FIELD_KEYS = ["additionalContext", "context", "notes"];
 const PLAN_FIELD_LABEL = /\bplan\b/i;
-const DESCRIPTION_FIELD_LABEL = /\b(original|request|requirements?|task|description)\b/i;
-const CONTEXT_FIELD_LABEL = /\b(context|notes)\b/i;
+const DESCRIPTION_FIELD_LABEL =
+  /\b(original|request|requirements?|task|description|asked|goal|objective|problem|what to work on)\b/i;
+const CONTEXT_FIELD_LABEL = /\b(context|notes|background|constraints)\b/i;
+const EXPECTED_FIELD_LABEL = /\bexpected\b/i;
+const CURRENT_FIELD_LABEL = /\b(current|actual)\b.*\bbehaviou?r\b/i;
 /** A field that holds the whole original request, so it gets every Planner answer. */
 const ORIGINAL_FIELD = /original|requirement/i;
 const NOT_FREE_TEXT = new Set(["taskType", "title", "cwd"]);
@@ -212,9 +227,57 @@ export function carryChainTaskType(
   const raw = chainTaskType?.trim() ?? "";
   const field = target.fields.find((f) => f.key === "taskType");
   if (!raw || !field || !needsChainTaskType(mapped, target)) return mapped;
-  const allowed = (value: string) => !!value && (!field.options || field.options.includes(value));
-  const value = [raw, TASK_TYPE_TO_IMPLEMENTER[raw] ?? ""].find(allowed);
+  const value = taskTypeFor(field, raw);
   return value ? { ...mapped, answers: { ...mapped.answers, taskType: value } } : mapped;
+}
+
+/** Other names for a task type, so Planner, Implementer and renamed selects understand each other. */
+const TASK_TYPE_ALIASES: Record<string, string[]> = {
+  Bug: ["Bug Fix"],
+  "Bug Fix": ["Bug"],
+  Chore: ["Other"],
+  Other: ["Chore"],
+  Improvement: ["Feature"],
+};
+
+/**
+ * The option a select can take for `wanted`: exact, then any case, then an option
+ * that starts with the same word ("Bug" → "Bug Fix", "Feature" → "Feature request").
+ * Free-text fields take the value as is. Empty when nothing fits.
+ */
+export function pickOption(options: string[] | undefined, wanted: string[]): string {
+  const values = wanted.map((value) => value.trim()).filter(Boolean);
+  if (!options || options.length === 0) return values[0] ?? "";
+  for (const value of values) if (options.includes(value)) return value;
+  for (const value of values) {
+    const hit = options.find((option) => option.toLowerCase() === value.toLowerCase());
+    if (hit) return hit;
+  }
+  // A renamed option: "Bug" → "Bug report", "Feature" → "New feature", "Refactor" → "Refactoring".
+  for (const value of values) {
+    const word = value.toLowerCase().split(/\s+/)[0];
+    const hit = options.find((option) => {
+      const lower = option.toLowerCase();
+      return lower.split(/\s+/).includes(word) || lower.startsWith(value.toLowerCase());
+    });
+    if (hit) return hit;
+  }
+  return "";
+}
+
+function taskTypeFor(field: HandoffField, raw: string): string {
+  const value = raw.trim();
+  if (!value) return "";
+  return pickOption(field.options, [
+    value,
+    TASK_TYPE_TO_IMPLEMENTER[value] ?? "",
+    ...(TASK_TYPE_ALIASES[value] ?? []),
+  ]);
+}
+
+/** Windows (`\r\n`) and old Mac (`\r`) line endings become `\n`, then the ends are trimmed. */
+export function cleanText(text: string): string {
+  return text.replace(/\r\n?/g, "\n").trim();
 }
 
 export function charCount(text: string): number {
@@ -342,15 +405,15 @@ export function composePlanText(
   scope: HandoffScope,
 ): { text: string; emptyReason: string | null } {
   let text = "";
-  if (scope === "plan_mode") text = (source.planMarkdown ?? "").trim();
-  else if (scope === "message") text = source.latestMessage.trim();
-  else if (scope === "card") text = formatPlanCard(source.plan, source.todos);
-  else if (scope === "selection") text = source.selection.trim();
-  else if (scope === "plan_file") text = (source.planFileText ?? "").trim();
-  else if (scope === "terminal_tail") text = (source.terminalTail ?? "").trim();
+  if (scope === "plan_mode") text = cleanText(source.planMarkdown ?? "");
+  else if (scope === "message") text = cleanText(source.latestMessage);
+  else if (scope === "card") text = cleanText(formatPlanCard(source.plan, source.todos));
+  else if (scope === "selection") text = cleanText(source.selection);
+  else if (scope === "plan_file") text = cleanText(source.planFileText ?? "");
+  else if (scope === "terminal_tail") text = cleanText(source.terminalTail ?? "");
   else {
-    const message = source.latestMessage.trim();
-    const card = formatPlanCard(source.plan, source.todos);
+    const message = cleanText(source.latestMessage);
+    const card = cleanText(formatPlanCard(source.plan, source.todos));
     text = message && card ? `${message}\n\n${card}` : message || card;
   }
   if (!text) return { text: "", emptyReason: "That choice has no content." };
@@ -469,43 +532,65 @@ export function defaultScope(source: HandoffSource): HandoffScope {
 }
 
 function answer(values: Record<string, string>, key: string): string {
-  return (values[key] ?? "").trim();
+  return cleanText(values[key] ?? "");
 }
 
+/** Headings that name a section, not the work ("## Plan", "## Reviewed plan"). */
+const GENERIC_TITLE =
+  /^(?:the\s+)?(?:(?:implementation|proposed|reviewed|approved|revised|final|updated)\s+)*(?:implementation\s+)?(?:plan|review notes|review|verdict|summary|overview|to-?dos|tasks|steps|notes|context|findings|recommendations|report|changes|codebase audit|audit|feature cards?)$/i;
+
+/** One line, no markdown marks, no "Feature:" / "[HIGH]" / "Title:" prefix, at most 120 characters. */
+export function cleanTitle(raw: string): string {
+  const line = cleanText(raw).split("\n")[0] ?? "";
+  const text = line
+    .replace(/^#{1,6}[ \t]+/, "")
+    .replace(/\*\*|__|`/g, "")
+    .replace(/^(?:Title|Feature)[ \t]*:[ \t]*/i, "")
+    .replace(/^\[(?:CRITICAL|HIGH|MEDIUM|LOW|INFO)\][ \t]*/i, "")
+    .replace(/\s+/g, " ")
+    .replace(/[ \t]*:$/, "")
+    .trim();
+  return takeChars(text, 120).trim();
+}
+
+/** A title the user typed: kept as typed, on one line, at most 120 characters. */
+function typedTitle(raw: string): string {
+  const line = cleanText(raw).split("\n")[0] ?? "";
+  return takeChars(line.replace(/\s+/g, " "), 120).trim();
+}
+
+/** Lines outside code fences, so a `# comment` in a bash block is never a heading. */
+function proseLines(text: string): string[] {
+  const out: string[] = [];
+  let fenced = false;
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (/^(```|~~~)/.test(line)) {
+      fenced = !fenced;
+      continue;
+    }
+    if (!fenced) out.push(line);
+  }
+  return out;
+}
+
+/** Title from the answers, else the first heading that names the work, else the first prose line. */
 export function extractTitle(source: HandoffSource, planText: string): string {
-  const fromAnswers = answer(source.answers, "title") || labelledLine(source.answers, "Title");
-  if (fromAnswers) return takeChars(fromAnswers, 120);
-  const heading = planText.match(/^#{1,3}[ \t]+(.+)$/m);
-  if (heading?.[1]?.trim()) return takeChars(heading[1].trim(), 120);
-  const firstLine = planText
-    .split("\n")
-    .map((line) => line.trim())
-    .find((line) => line && !line.startsWith("#") && !line.startsWith("-"));
-  if (firstLine) return takeChars(firstLine, 120);
-  const label = source.sourceLabel.replace(/^[^·]*·\s*/, "").trim();
-  return takeChars(label || `${roleDisplayName(source.sourceRoleId)} hand-off`, 120);
-}
-
-function extractDescription(source: HandoffSource, planText: string): string {
-  const request = sourceRequest(source.answers);
-  if (request) return request;
-  const paragraph = planText
-    .split(/\n\s*\n/)
-    .map((part) => part.trim())
-    .find((part) => part && !part.startsWith("#") && !part.startsWith("- ["));
-  if (paragraph) return takeChars(paragraph, 4_000);
-  return `Implement the plan from the ${roleDisplayName(source.sourceRoleId)} hand-off.`;
-}
-
-function extractContext(source: HandoffSource): string {
-  const parts: string[] = [];
-  const expected = answer(source.answers, "expectedBehavior");
-  const current = answer(source.answers, "currentBehavior");
-  const extra = answer(source.answers, "additionalContext");
-  if (expected) parts.push(`Expected behavior:\n${expected}`);
-  if (current) parts.push(`Current behavior:\n${current}`);
-  if (extra) parts.push(extra);
-  return parts.join("\n\n");
+  const fromAnswers = typedTitle(requestParts(source.answers, source.sourceFields).title);
+  if (fromAnswers) return fromAnswers;
+  const lines = proseLines(cleanText(planText));
+  for (const line of lines) {
+    const heading = /^#{1,3}[ \t]+(.+)$/.exec(line);
+    const title = heading ? cleanTitle(heading[1]) : "";
+    if (title && !GENERIC_TITLE.test(title)) return title;
+  }
+  for (const line of lines) {
+    if (!line || /^(#|[-*+>|]|\d+[.)][ \t])/.test(line)) continue;
+    const title = cleanTitle(line);
+    if (title && !GENERIC_TITLE.test(title)) return title;
+  }
+  const label = cleanTitle(source.sourceLabel.replace(/^[^·]*·\s*/, ""));
+  return label || `${roleDisplayName(source.sourceRoleId)} hand-off`;
 }
 
 function limitPlan(
@@ -543,34 +628,58 @@ function limitPlan(
   };
 }
 
-function firstKey(fields: HandoffField[], keys: string[]): string | null {
-  const present = new Set(fields.map((field) => field.key));
-  for (const key of keys) {
-    if (present.has(key)) return key;
-  }
-  return null;
+/** Field text cut to `max`, with a warning naming the field when anything was cut. */
+function clip(
+  text: string,
+  max: number,
+  label: string,
+  warnings: string[],
+): string {
+  if (charCount(text) <= max) return text;
+  warnings.push(`${label} was shortened to ${max.toLocaleString()} characters.`);
+  return takeChars(text, max);
 }
 
-type FieldRole = "plan" | "description" | "context";
+function joinWarnings(...parts: (string | null | undefined | string[])[]): string | null {
+  const all = parts.flat().filter((part): part is string => !!part && part.trim().length > 0);
+  return all.length > 0 ? all.join(" ") : null;
+}
+
+type FieldRole = "plan" | "description" | "context" | "expected" | "current";
 
 const ROLE_KEYS: Record<FieldRole, string[]> = {
   plan: PLAN_FIELD_KEYS,
   description: DESCRIPTION_FIELD_KEYS,
   context: CONTEXT_FIELD_KEYS,
+  expected: ["expectedBehavior", "expected"],
+  current: ["currentBehavior", "actualBehavior", "current"],
 };
 const ROLE_LABELS: Record<FieldRole, RegExp> = {
   plan: PLAN_FIELD_LABEL,
   description: DESCRIPTION_FIELD_LABEL,
   context: CONTEXT_FIELD_LABEL,
+  expected: EXPECTED_FIELD_LABEL,
+  current: CURRENT_FIELD_LABEL,
 };
+/** Order matters: a field taken by an earlier role is not offered to a later one. */
+const ROLE_ORDER: FieldRole[] = ["plan", "expected", "current", "description", "context"];
+/** A plan or context never goes into a one-line or pick-list field. */
+const LONG_TEXT_ONLY: ReadonlySet<FieldRole> = new Set(["plan", "context", "expected", "current"]);
 
 /** The target field for `role`: a known key, else a free-text field whose label says so. */
-function fieldFor(fields: HandoffField[], role: FieldRole): string | null {
-  const byKey = firstKey(fields, ROLE_KEYS[role]);
+function fieldFor(
+  fields: HandoffField[],
+  role: FieldRole,
+  taken: ReadonlySet<string> = new Set(),
+): string | null {
+  const present = new Set(fields.map((field) => field.key));
+  const byKey = ROLE_KEYS[role].find((key) => present.has(key) && !taken.has(key));
   if (byKey) return byKey;
   const known = new Set(Object.values(ROLE_KEYS).flat());
   const match = fields.find((field) => {
-    if (NOT_FREE_TEXT.has(field.key) || known.has(field.key) || field.type === "select") return false;
+    if (taken.has(field.key) || NOT_FREE_TEXT.has(field.key) || known.has(field.key)) return false;
+    if (field.type === "select" || field.type === "folder") return false;
+    if (LONG_TEXT_ONLY.has(role) && field.type === "text") return false;
     const label = field.label ?? field.key;
     if (!ROLE_LABELS[role].test(label)) return false;
     // "Original plan" is a plan, and "Request notes" is context, not the request.
@@ -580,6 +689,51 @@ function fieldFor(fields: HandoffField[], role: FieldRole): string | null {
   return match?.key ?? null;
 }
 
+type Slots = Record<FieldRole, string | null>;
+
+/** Each meaning gets its own field: one field is never filled twice. */
+function targetSlots(fields: HandoffField[]): Slots {
+  const taken = new Set<string>();
+  const slots = {} as Slots;
+  for (const role of ROLE_ORDER) {
+    const key = fieldFor(fields, role, taken);
+    slots[role] = key;
+    if (key) taken.add(key);
+  }
+  return slots;
+}
+
+/**
+ * Title and "What to work on": what the form shows for a role with no fields
+ * (Developer, General). Mirrors `fieldsForForm` in `startupFields.ts`.
+ */
+const LOOSE_FIELDS: HandoffField[] = [
+  { key: "title", label: "Title", type: "text", required: false },
+  { key: "request", label: "What to work on", type: "multiline", required: false },
+];
+
+/** The fields the target's form shows. */
+export function handoffFormFields(fields: HandoffField[]): HandoffField[] {
+  const own = fields.filter((field) => field.type !== "folder" && field.key !== "cwd");
+  return own.length > 0 ? own : LOOSE_FIELDS;
+}
+
+export function isFieldVisible(field: HandoffField, values: Record<string, string>): boolean {
+  if (!field.showWhen) return true;
+  return field.showWhen.equals.includes((values[field.showWhen.fieldKey] ?? "").trim());
+}
+
+/** Answers without the ones the source form hides (a Feature's leftover Current Behavior). */
+function visibleAnswers(source: HandoffSource): HandoffSource {
+  const fields = source.sourceFields;
+  if (!fields?.length) return source;
+  const answers = { ...source.answers };
+  for (const field of fields) {
+    if (!isFieldVisible(field, source.answers)) delete answers[field.key];
+  }
+  return { ...source, answers };
+}
+
 function isOriginalField(fields: HandoffField[], key: string | null): boolean {
   if (!key) return false;
   const field = fields.find((f) => f.key === key);
@@ -587,12 +741,91 @@ function isOriginalField(fields: HandoffField[], key: string | null): boolean {
 }
 
 /** The request as the source tab saw it, under whichever key its role uses. */
-function sourceRequest(values: Record<string, string>): string {
+function sourceRequest(values: Record<string, string>, fields?: HandoffField[]): string {
   for (const key of DESCRIPTION_FIELD_KEYS) {
     const value = answer(values, key);
     if (value) return value;
   }
-  return "";
+  // A custom source role: its own request field, found by label.
+  const key = fields?.length ? fieldFor(fields, "description") : null;
+  return key ? answer(values, key) : "";
+}
+
+type RequestParts = {
+  title: string;
+  taskType: string;
+  request: string;
+  expected: string;
+  current: string;
+};
+
+const BLOCK_LINE = /^(title|task type):[ \t]*(.+)$/i;
+const BLOCK_SECTION = /^(request|expected behaviou?r|current behaviou?r):[ \t]*$/i;
+
+/** Reads a block written by `composeOriginalTask` back into its parts. Null for plain text. */
+function parseOriginalTask(text: string): RequestParts | null {
+  const lines = text.split("\n");
+  const first = lines.find((line) => line.trim())?.trim() ?? "";
+  const labelled =
+    BLOCK_LINE.test(first) ||
+    BLOCK_SECTION.test(first) ||
+    lines.some((line) => /^(expected|current) behaviou?r:[ \t]*$/i.test(line.trim()));
+  if (!labelled) return null;
+  const parts: RequestParts = { title: "", taskType: "", request: "", expected: "", current: "" };
+  const bodies: Record<"request" | "expected" | "current", string[]> = {
+    request: [],
+    expected: [],
+    current: [],
+  };
+  let section: "request" | "expected" | "current" = "request";
+  let inBody = false;
+  for (const raw of lines) {
+    const line = raw.trim();
+    const single = inBody ? null : BLOCK_LINE.exec(line);
+    if (single) {
+      if (/^title$/i.test(single[1])) parts.title = single[2].trim();
+      else parts.taskType = single[2].trim();
+      continue;
+    }
+    const head = BLOCK_SECTION.exec(line);
+    if (head) {
+      const name = head[1].toLowerCase();
+      section = name.startsWith("expected") ? "expected" : name.startsWith("current") ? "current" : "request";
+      inBody = true;
+      continue;
+    }
+    if (line) inBody = true;
+    bodies[section].push(raw);
+  }
+  parts.request = bodies.request.join("\n").trim();
+  parts.expected = bodies.expected.join("\n").trim();
+  parts.current = bodies.current.join("\n").trim();
+  return parts;
+}
+
+/** Title, task type, request and behaviors from Planner answers or a reviewer's original-request block. */
+function requestParts(values: Record<string, string>, fields?: HandoffField[]): RequestParts {
+  const raw = sourceRequest(values, fields);
+  const block = raw ? parseOriginalTask(raw) : null;
+  return {
+    title: answer(values, "title") || block?.title || "",
+    taskType: answer(values, "taskType") || block?.taskType || "",
+    request: block ? block.request : raw,
+    expected: answer(values, "expectedBehavior") || block?.expected || "",
+    current: answer(values, "currentBehavior") || block?.current || "",
+  };
+}
+
+const NO_PARTS: RequestParts = { title: "", taskType: "", request: "", expected: "", current: "" };
+
+function composeParts(parts: RequestParts): string {
+  const out: string[] = [];
+  if (parts.title) out.push(`Title: ${parts.title}`);
+  if (parts.taskType) out.push(`Task type: ${parts.taskType}`);
+  if (parts.request) out.push(out.length > 0 ? `Request:\n${parts.request}` : parts.request);
+  if (parts.expected) out.push(`Expected behavior:\n${parts.expected}`);
+  if (parts.current) out.push(`Current behavior:\n${parts.current}`);
+  return out.join("\n\n");
 }
 
 /**
@@ -600,28 +833,14 @@ function sourceRequest(values: Record<string, string>): string {
  * The labelled lines let later steps recover the title and task type.
  */
 export function composeOriginalTask(values: Record<string, string>): string {
-  const parts: string[] = [];
-  const title = answer(values, "title");
-  const taskType = answer(values, "taskType");
-  if (title) parts.push(`Title: ${title}`);
-  if (taskType) parts.push(`Task type: ${taskType}`);
-  const request = sourceRequest(values);
-  if (request) parts.push(parts.length > 0 ? `Request:\n${request}` : request);
-  const expected = answer(values, "expectedBehavior");
-  const current = answer(values, "currentBehavior");
-  if (expected) parts.push(`Expected behavior:\n${expected}`);
-  if (current) parts.push(`Current behavior:\n${current}`);
-  return parts.join("\n\n");
+  return composeParts(requestParts(values));
 }
 
-/** `Title: …` / `Task type: …` lines written by composeOriginalTask. */
-function labelledLine(values: Record<string, string>, label: string): string {
-  const pattern = new RegExp(`^${label}:[ \t]*(.+)$`, "im");
-  for (const key of DESCRIPTION_FIELD_KEYS) {
-    const hit = answer(values, key).match(pattern);
-    if (hit?.[1]?.trim()) return hit[1].trim();
-  }
-  return "";
+function behaviorContext(parts: RequestParts, skip: { expected: boolean; current: boolean }): string[] {
+  const out: string[] = [];
+  if (parts.expected && !skip.expected) out.push(`Expected behavior:\n${parts.expected}`);
+  if (parts.current && !skip.current) out.push(`Current behavior:\n${parts.current}`);
+  return out;
 }
 
 /** Implementer form → PR Reviewer fields (no plan-scope picker). */
@@ -630,44 +849,53 @@ export function mapImplementerToReviewer(
   target: { roleId: string; fields: HandoffField[] },
   limits: HandoffLimits = DEFAULT_HANDOFF_LIMITS,
 ): MappedHandoff {
-  const title = takeChars(
-    answer(source.answers, "title") || source.sourceLabel.replace(/^Implementer\s*·\s*/i, "").trim(),
-    120,
-  );
-  const description = sourceRequest(source.answers);
+  const parts = requestParts(source.answers, source.sourceFields);
+  const title =
+    typedTitle(parts.title) ||
+    cleanTitle(source.sourceLabel.replace(/^Implementer\s*·\s*/i, ""));
+  const description = sourceRequest(source.answers, source.sourceFields);
   const planText = PLAN_FIELD_KEYS.map((key) => answer(source.answers, key)).find(Boolean) ?? "";
-  const taskType = answer(source.answers, "taskType");
   // A description handed on from the Plan Reviewer already carries its Title / Task type lines.
-  const originalTask = /^Title:/im.test(description)
+  // A block that already names its title is passed on as is; otherwise the
+  // Implementer's title and task type head the request and its behaviors.
+  const originalTask = parseOriginalTask(description)?.title
     ? description
-    : [
-        title ? `Title: ${title}` : "",
-        taskType ? `Task type: ${taskType}` : "",
-        description ? (title || taskType ? `Request:\n${description}` : description) : "",
-      ]
-        .filter(Boolean)
-        .join("\n\n") || "Review the Implementer session.";
-  const limited = limitPlan(planText || originalTask, limits);
+    : composeParts({ ...parts, title }) || "Review the Implementer session.";
+  const warnings: string[] = [];
   const answers: Record<string, string> = { cwd: source.cwd };
-  const planField = fieldFor(target.fields, "plan");
-  const descriptionKey = fieldFor(target.fields, "description");
-  if (descriptionKey) answers[descriptionKey] = takeChars(originalTask, 4_000);
-  if (planField && planText) answers[planField] = limited.inlinePlan;
-  const contextKey = fieldFor(target.fields, "context");
+  const fields = handoffFormFields(target.fields);
+  const slots = targetSlots(fields);
+  // With no approved plan, the original task is what the hand-off carries.
+  const carried = planText || originalTask;
+  const limited = limitPlan(carried, limits);
+  if (slots.description) {
+    answers[slots.description] = planText
+      ? clip(originalTask, 4_000, labelOf(fields, slots.description), warnings)
+      : limited.inlinePlan;
+  }
+  if (slots.plan && planText) answers[slots.plan] = limited.inlinePlan;
   const context = [answer(source.answers, "additionalContext"), implementationContext(source)]
     .filter((part) => part.trim().length > 0)
     .join("\n\n");
-  if (contextKey && context) answers[contextKey] = takeChars(context, 8_000);
+  if (slots.context && context) {
+    answers[slots.context] = clip(context, 8_000, labelOf(fields, slots.context), warnings);
+  }
+  if (fields.some((field) => field.key === "title")) answers.title = title;
+  const planField = planText ? slots.plan : slots.description;
   return {
     title: title || "Implementer hand-off",
     answers,
-    planText: planText ? limited.planText : originalTask,
-    inlinePlan: planText ? limited.inlinePlan : originalTask,
+    planText: limited.planText,
+    inlinePlan: limited.inlinePlan,
     planField,
     usesScratchPad: planField === null,
-    truncated: limited.truncated,
-    warning: limited.warning,
+    truncated: limited.truncated || warnings.length > 0,
+    warning: joinWarnings(limited.warning, warnings),
   };
+}
+
+function labelOf(fields: HandoffField[], key: string): string {
+  return fields.find((field) => field.key === key)?.label?.trim() || key;
 }
 
 /** Labels used by the Recommendation feature card and the Codebase Audit finding. */
@@ -714,7 +942,18 @@ function labelLine(label: string): RegExp {
  * the next heading or the next known label. Inline text after "Label:" counts.
  */
 export function reportSection(text: string, labels: string[]): string {
-  const lines = text.split("\n");
+  return sectionSpan(text.split("\n"), labels)?.body ?? "";
+}
+
+/**
+ * Line range [start, end) and body of the first non-empty labelled section.
+ * The first line under a bare label is its value even when it reads like a
+ * label ("Category:" then "Dependencies").
+ */
+function sectionSpan(
+  lines: string[],
+  labels: string[],
+): { start: number; end: number; body: string } | null {
   const matchers = labels.map(labelLine);
   const stops = REPORT_LABELS.map(labelLine);
   for (let i = 0; i < lines.length; i += 1) {
@@ -722,16 +961,28 @@ export function reportSection(text: string, labels: string[]): string {
     const hit = matchers.map((re) => re.exec(line)).find((m) => m);
     if (!hit) continue;
     const body: string[] = hit[1]?.trim() ? [hit[1].trim()] : [];
-    for (let j = i + 1; j < lines.length; j += 1) {
-      const next = lines[j].trim();
+    let end = i + 1;
+    for (; end < lines.length; end += 1) {
+      const next = lines[end].trim();
       if (/^#{1,6}[ \t]+\S/.test(next) || /^```/.test(next)) break;
-      if (stops.some((re) => re.test(next))) break;
-      body.push(lines[j]);
+      const valueLine = body.every((part) => !part.trim()) && !/^\*\*|:/.test(next);
+      if (!valueLine && stops.some((re) => re.test(next))) break;
+      body.push(lines[end]);
     }
     const out = body.join("\n").trim();
-    if (out) return out;
+    if (out) return { start: i, end, body: out };
   }
-  return "";
+  return null;
+}
+
+/** The card without the sections that now have fields of their own. */
+function withoutSections(text: string, labels: string[]): string {
+  let lines = text.split("\n");
+  for (const label of labels) {
+    const span = sectionSpan(lines, [label]);
+    if (span) lines = [...lines.slice(0, span.start), ...lines.slice(span.end)];
+  }
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 /** Number of feature-card / finding headings in a report. */
@@ -741,9 +992,13 @@ export function reportCardCount(text: string): number {
 
 /** Hint when a whole report (several cards) is about to be sent. */
 export function reportScopeHint(source: HandoffSource, scope: HandoffScope): string | null {
-  if (!isReportSource(source.sourceRoleId) || scope === "selection") return null;
+  if (!isReportSource(source.sourceRoleId)) return null;
   const text = composePlanText(source, scope).text;
-  if (reportCardCount(text) <= 1) return null;
+  const count = reportCardCount(text);
+  if (count <= 1) return null;
+  if (scope === "selection") {
+    return `The selection covers ${count} cards, so only the request is filled. Select one feature card or finding to fill in the other Planner fields.`;
+  }
   return "This sends the whole report. Select one feature card or finding in the transcript to fill in the Planner fields for just that item.";
 }
 
@@ -751,16 +1006,31 @@ function reportTitle(text: string): string {
   CARD_HEADING.lastIndex = 0;
   const card = CARD_HEADING.exec(text);
   CARD_HEADING.lastIndex = 0;
-  if (card?.[1]?.trim()) return card[1].trim();
+  return card?.[1] ? cleanTitle(card[1]) : "";
+}
+
+/** Planner task type for an audit finding's Category. Empty when the category says nothing. */
+export function auditTaskType(category: string): string {
+  const value = category.toLowerCase();
+  if (/bug|security|data|reliab|error|auth|accessib|crash|leak/.test(value)) return "Bug";
+  if (/architect|maintain|perform|debt|refactor|duplicat/.test(value)) return "Refactor";
+  if (/ci\/cd|test|depend|config|ci\b|doc|build|tooling|lint/.test(value)) return "Chore";
+  if (/feature|ux\b|usability/.test(value)) return "Feature";
   return "";
 }
 
-function auditTaskType(category: string): string {
-  const value = category.toLowerCase();
-  if (/bug|security|data|reliab|error|auth/.test(value)) return "Bug";
-  if (/architect|maintain|perform|debt|refactor/.test(value)) return "Refactor";
-  if (/ci\/cd|test|depend|config|ci\b/.test(value)) return "Chore";
-  return "";
+/** Task type a report card asks for: Recommendation cards are features, findings follow Category. */
+function reportTaskType(source: HandoffSource, text: string): string {
+  if (source.sourceRoleId !== "role_codebase_audit") return "Feature";
+  return reportCardCount(text) <= 1 ? auditTaskType(reportSection(text, ["Category"])) : "";
+}
+
+/** "Effort controls", or "Effort controls and 2 more" for several cards. */
+function reportTitleFor(source: HandoffSource, text: string): string {
+  const count = reportCardCount(text);
+  const first = reportTitle(text);
+  if (first && count > 1) return cleanTitle(`${first} and ${count - 1} more`);
+  return first || extractTitle({ ...source, answers: {} }, text);
 }
 
 /**
@@ -791,48 +1061,56 @@ export function mapReportToPlanner(
   const text = composed.text;
   const limited = limitPlan(text, limits);
   const single = reportCardCount(text) <= 1;
-  const keys = new Set(target.fields.map((field) => field.key));
+  const fields = handoffFormFields(target.fields);
+  const slots = targetSlots(fields);
+  const keys = new Set(fields.map((field) => field.key));
+  const warnings: string[] = [];
   const answers: Record<string, string> = { cwd: source.cwd };
-  const title = takeChars(
-    (single && reportTitle(text)) || extractTitle({ ...source, answers: {} }, text),
-    120,
-  );
+  const title = reportTitleFor(source, text);
   if (keys.has("title")) answers.title = title;
-  const taskField = target.fields.find((field) => field.key === "taskType");
+  const taskField = fields.find((field) => field.key === "taskType");
   if (taskField) {
-    const isAudit = source.sourceRoleId === "role_codebase_audit";
-    const taskType = isAudit
-      ? single
-        ? auditTaskType(reportSection(text, ["Category"]))
-        : ""
-      : "Feature";
-    const allowed = !taskField.options || taskField.options.includes(taskType);
-    if (taskType && allowed) answers.taskType = taskType;
+    const taskType = taskTypeFor(taskField, reportTaskType(source, text));
+    if (taskType) answers.taskType = taskType;
   }
-  const descriptionKey = fieldFor(target.fields, "description");
-  if (descriptionKey) answers[descriptionKey] = limited.inlinePlan;
-  if (single) {
+  // Sections that get their own field leave the request, so nothing is said twice.
+  const placed: string[] = [];
+  const shown = (key: string | null) => {
+    const field = key ? fields.find((f) => f.key === key) : undefined;
+    return !!field && isFieldVisible(field, answers);
+  };
+  if (single && !limited.truncated) {
     const current = reportSection(text, ["Problem"]);
-    const expected = reportSection(text, ["Proposed Solution", "Recommended Direction"]);
-    if (current && keys.has("currentBehavior")) answers.currentBehavior = takeChars(current, 4_000);
-    if (expected && keys.has("expectedBehavior")) {
-      answers.expectedBehavior = takeChars(expected, 4_000);
+    const expectedLabels = ["Proposed Solution", "Recommended Direction"];
+    const expected = reportSection(text, expectedLabels);
+    if (current && slots.current && shown(slots.current)) {
+      answers[slots.current] = clip(current, 4_000, labelOf(fields, slots.current), warnings);
+      placed.push("Problem");
+    }
+    if (expected && slots.expected && shown(slots.expected)) {
+      answers[slots.expected] = clip(expected, 4_000, labelOf(fields, slots.expected), warnings);
+      placed.push(...expectedLabels);
     }
   }
-  const contextKey = fieldFor(target.fields, "context");
-  if (contextKey) {
+  if (slots.context) {
     const parts = [`From the ${sourceName} report (${source.sourceLabel}).`];
-    if (single) {
+    if (single && !limited.truncated) {
       const extras =
         source.sourceRoleId === "role_codebase_audit"
           ? (["Location", "Evidence", "Impact"] as const)
           : (["Existing Capability", "Codebase Fit", "Dependencies"] as const);
       for (const label of extras) {
         const body = reportSection(text, [label]);
-        if (body) parts.push(`${label}:\n${body}`);
+        if (body) {
+          parts.push(`${label}:\n${body}`);
+          placed.push(label);
+        }
       }
     }
-    answers[contextKey] = takeChars(parts.join("\n\n"), 8_000);
+    answers[slots.context] = clip(parts.join("\n\n"), 8_000, labelOf(fields, slots.context), warnings);
+  }
+  if (slots.description) {
+    answers[slots.description] = placed.length > 0 ? withoutSections(text, placed) : limited.inlinePlan;
   }
   return {
     title: title || `${sourceName} hand-off`,
@@ -840,30 +1118,29 @@ export function mapReportToPlanner(
     planText: limited.planText,
     inlinePlan: limited.inlinePlan,
     // The report text lives in the request field, not the scratch pad.
-    planField: descriptionKey,
-    usesScratchPad: descriptionKey === null,
-    truncated: limited.truncated,
-    warning: limited.warning,
+    planField: slots.description,
+    usesScratchPad: slots.description === null,
+    truncated: limited.truncated || warnings.length > 0,
+    warning: joinWarnings(limited.warning, warnings),
   };
 }
 
-export function mapHandoff(
+function mapPlan(
   source: HandoffSource,
   scope: HandoffScope,
   target: { roleId: string; fields: HandoffField[] },
-  limits: HandoffLimits = DEFAULT_HANDOFF_LIMITS,
+  limits: HandoffLimits,
 ): MappedHandoff {
-  if (source.sourceRoleId === "role_implementer" && target.roleId === "role_pr_reviewer") {
-    return mapImplementerToReviewer(source, target, limits);
-  }
-  if (isReportSource(source.sourceRoleId) && target.roleId === "role_planner") {
-    return mapReportToPlanner(source, scope, target, limits);
-  }
+  const fields = handoffFormFields(target.fields);
+  const slots = targetSlots(fields);
   const composed = composePlanText(source, scope);
   let reviewNotes = "";
+  // The reviewed plan goes in the plan field and the notes in context. With no
+  // plan field (Developer, a Planner revision) the whole review stays together.
   if (
     source.sourceRoleId === "role_plan_reviewer" &&
     target.roleId !== "role_planner" &&
+    slots.plan &&
     composed.text
   ) {
     const split = splitPlanReview(composed.text);
@@ -882,48 +1159,191 @@ export function mapHandoff(
       warning: composed.emptyReason,
     };
   }
+  const report = isReportSource(source.sourceRoleId);
+  // A report tab's own form ("review the composer") is not the task the card asks for.
+  const parts = report ? NO_PARTS : requestParts(source.answers, source.sourceFields);
   const limited = limitPlan(composed.text, limits);
-  const title = extractTitle(source, composed.text);
+  const title = report
+    ? reportTitleFor(source, composed.text)
+    : extractTitle(source, composed.text);
   const answers: Record<string, string> = { cwd: source.cwd };
-  const planField = fieldFor(target.fields, "plan");
-  if (target.fields.some((field) => field.key === "title")) {
-    answers.title = title;
-  }
-  const taskField = target.fields.find((field) => field.key === "taskType");
+  if (fields.some((field) => field.key === "title")) answers.title = title;
+  const taskField = fields.find((field) => field.key === "taskType");
   if (taskField) {
-    const raw = answer(source.answers, "taskType") || labelledLine(source.answers, "Task type");
-    const allowed = (value: string) =>
-      !!value && (!taskField.options || taskField.options.includes(value));
-    const mapped = [raw, TASK_TYPE_TO_IMPLEMENTER[raw] ?? ""].find(allowed);
-    if (mapped) answers.taskType = mapped;
+    const raw = report ? reportTaskType(source, composed.text) : parts.taskType;
+    const taskType = taskTypeFor(taskField, raw);
+    if (taskType) answers.taskType = taskType;
   }
-  const descriptionKey = fieldFor(target.fields, "description");
+  if (slots.expected && parts.expected) answers[slots.expected] = parts.expected;
+  if (slots.current && parts.current) answers[slots.current] = parts.current;
   // A reviewer's "original request" gets every Planner answer, so expected and
   // current behavior travel with the request instead of landing in context.
-  const wholeRequest =
-    isOriginalField(target.fields, descriptionKey) && !!answer(source.answers, "request");
-  if (descriptionKey) {
-    answers[descriptionKey] = wholeRequest
-      ? composeOriginalTask(source.answers)
-      : extractDescription(source, composed.text);
+  const wholeRequest = isOriginalField(fields, slots.description) && !!parts.request;
+  // Behaviors without a field of their own travel with the request (the task as
+  // asked), or in context when the form has no request field.
+  const behaviors = wholeRequest
+    ? []
+    : behaviorContext(parts, { expected: !!slots.expected, current: !!slots.current });
+  const withRequest = !!slots.description && !!parts.request;
+  const context = [
+    reviewNotes ? `Review notes:\n${reviewNotes}` : "",
+    ...(withRequest ? [] : behaviors),
+    answer(source.answers, "additionalContext"),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  if (slots.description) {
+    let description = wholeRequest
+      ? composeParts(parts)
+      : [parts.request, ...(withRequest ? behaviors : [])].filter(Boolean).join("\n\n");
+    // No context field (Developer's "What to work on"): the context goes with the request.
+    if (!slots.context && context && description) description = `${description}\n\n${context}`;
+    if (!description && slots.plan) description = fillerRequest(source, target.roleId);
+    if (description) answers[slots.description] = description;
   }
-  const contextKey = fieldFor(target.fields, "context");
-  const baseContext = wholeRequest
-    ? answer(source.answers, "additionalContext")
-    : extractContext(source);
-  const context = reviewNotes
-    ? [`Review notes:\n${reviewNotes}`, baseContext].filter(Boolean).join("\n\n")
-    : baseContext;
-  if (contextKey && context) answers[contextKey] = context;
-  if (planField) answers[planField] = limited.inlinePlan;
+  if (slots.context && context) answers[slots.context] = context;
+  if (slots.plan) answers[slots.plan] = limited.inlinePlan;
   return {
     title,
     answers,
     planText: limited.planText,
     inlinePlan: limited.inlinePlan,
-    planField,
-    usesScratchPad: planField === null,
+    planField: slots.plan,
+    usesScratchPad: slots.plan === null,
     truncated: limited.truncated,
     warning: limited.warning,
   };
+}
+
+/** A required request the source never had: say where the work is, never repeat the plan. */
+function fillerRequest(source: HandoffSource, targetRoleId: string): string {
+  const from = roleDisplayName(source.sourceRoleId);
+  if (targetRoleId === "role_plan_reviewer") return `Review the plan from the ${from} hand-off.`;
+  if (/review/i.test(targetRoleId)) return `Review the work from the ${from} hand-off.`;
+  return `Implement the plan from the ${from} hand-off.`;
+}
+
+/** Values for fields the target form hides (Planner Current Behavior unless Bug) are dropped. */
+function dropHidden(mapped: MappedHandoff, fields: HandoffField[]): MappedHandoff {
+  const hidden = fields.filter(
+    (field) => field.key in mapped.answers && !isFieldVisible(field, mapped.answers),
+  );
+  if (hidden.length === 0) return mapped;
+  const answers = { ...mapped.answers };
+  for (const field of hidden) delete answers[field.key];
+  const lostPlan = !!mapped.planField && !(mapped.planField in answers);
+  return {
+    ...mapped,
+    answers,
+    planField: lostPlan ? null : mapped.planField,
+    usesScratchPad: mapped.usesScratchPad || lostPlan,
+  };
+}
+
+export function mapHandoff(
+  source: HandoffSource,
+  scope: HandoffScope,
+  target: { roleId: string; fields: HandoffField[] },
+  limits: HandoffLimits = DEFAULT_HANDOFF_LIMITS,
+): MappedHandoff {
+  const visible = visibleAnswers(source);
+  const fields = handoffFormFields(target.fields);
+  if (source.sourceRoleId === "role_implementer" && target.roleId === "role_pr_reviewer") {
+    return dropHidden(mapImplementerToReviewer(visible, target, limits), fields);
+  }
+  if (isReportSource(source.sourceRoleId) && target.roleId === "role_planner") {
+    return dropHidden(mapReportToPlanner(visible, scope, target, limits), fields);
+  }
+  return dropHidden(mapPlan(visible, scope, target, limits), fields);
+}
+
+export type FillSummary = {
+  /** Fields the hand-off fills, in form order. */
+  filled: { key: string; label: string }[];
+  /** Visible fields left blank. */
+  empty: { key: string; label: string; required: boolean }[];
+  /** Labels of visible required fields still blank (or a select value the field cannot take). */
+  missing: string[];
+  missingKeys: string[];
+  /** `{{token}}`s in the target template that no field and no built-in fills. */
+  unresolved: string[];
+  /** The plan goes to the scratch pad because the form has no plan field. */
+  scratchPad: boolean;
+};
+
+const BUILT_IN_TOKENS = new Set(["cwd", "folderName", "date", "roleName"]);
+
+/** What the target form will hold after this hand-off, for the dialog and the terminal check. */
+export function handoffFillSummary(mapped: MappedHandoff, target: HandoffTarget): FillSummary {
+  const fields = handoffFormFields(target.fields);
+  const summary: FillSummary = {
+    filled: [],
+    empty: [],
+    missing: [],
+    missingKeys: [],
+    unresolved: [],
+    scratchPad: mapped.usesScratchPad && mapped.planText.length > 0,
+  };
+  for (const field of fields) {
+    if (!isFieldVisible(field, mapped.answers)) continue;
+    const label = field.label?.trim() || field.key;
+    const value = (mapped.answers[field.key] ?? "").trim();
+    const badOption =
+      !!value && field.type === "select" && !!field.options?.length && !field.options.includes(value);
+    if (value && !badOption) summary.filled.push({ key: field.key, label });
+    else summary.empty.push({ key: field.key, label, required: !!field.required });
+    if ((field.required && !value) || badOption) {
+      summary.missing.push(label);
+      summary.missingKeys.push(field.key);
+    }
+  }
+  const known = new Set([...target.fields.map((field) => field.key), ...BUILT_IN_TOKENS]);
+  for (const match of (target.templateText ?? "").matchAll(/\{\{([^{}]*)\}\}/g)) {
+    const token = match[1].trim();
+    if (token && !known.has(token) && !summary.unresolved.includes(token)) {
+      summary.unresolved.push(token);
+    }
+  }
+  return summary;
+}
+
+/** Why a terminal hand-off cannot start yet, naming each field. Null when it can. */
+export function handoffStartProblem(summary: FillSummary, targetName: string): string | null {
+  const parts: string[] = [];
+  if (summary.missing.length > 0) {
+    parts.push(`The ${targetName} form still needs: ${summary.missing.join(", ")}.`);
+  }
+  if (summary.unresolved.length > 0) {
+    const tokens = summary.unresolved.map((token) => `{{${token}}}`).join(", ");
+    parts.push(
+      `The ${targetName} template uses ${tokens}, which no field fills. Fix the role in Settings > Roles.`,
+    );
+  }
+  return parts.length > 0 ? parts.join(" ") : null;
+}
+
+/**
+ * Values and plan for `role_terminal_start`. The terminal prompt adds the plan
+ * after the merged template unless the template already holds it. When the form
+ * holds a shortened copy, that field points at the full plan below instead, so
+ * the agent gets the whole plan once.
+ */
+export function terminalHandoffInput(mapped: MappedHandoff): {
+  values: Record<string, string>;
+  handoffPlan: string;
+} {
+  const values = { ...mapped.answers };
+  const holder = mapped.planField;
+  const held = holder ? (values[holder] ?? "") : "";
+  if (!holder || !held || held.includes(mapped.planText)) {
+    return { values, handoffPlan: mapped.planText };
+  }
+  if (held === mapped.inlinePlan) {
+    // The form copy was cut short (see the warning).
+    values[holder] =
+      `The full text (${charCount(mapped.planText).toLocaleString()} characters) follows this prompt under "Plan from the hand-off".`;
+    return { values, handoffPlan: mapped.planText };
+  }
+  // The form holds the text split across its fields (one report card): nothing to add.
+  return { values, handoffPlan: "" };
 }

@@ -136,9 +136,11 @@ test("Recommendation → Planner from one selected feature card", async ({ app, 
   expect(synced.args.values).toMatchObject({
     title: "Effort controls",
     taskType: "Feature",
-    currentBehavior: "Users cannot change reasoning effort.",
     expectedBehavior: "Add an effort picker next to the model picker.",
   });
+  // Current Behavior is hidden for a Feature: the Problem stays in the request.
+  expect((synced.args.values as Record<string, string>).currentBehavior).toBeUndefined();
+  await expect(request).toHaveValue(/Users cannot change reasoning effort\./);
   expect(String((synced.args.values as Record<string, string>).additionalContext)).toContain(
     "The ACP session reports effort options.",
   );

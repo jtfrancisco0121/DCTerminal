@@ -17,8 +17,13 @@ const TITLE = "Effort controls";
 const REQUEST = "Let users pick reasoning effort";
 const EXPECTED = "An effort picker in the chat header";
 const CURRENT = "Effort is fixed per model";
-/** What every reviewer and the Implementer receive as the original request. */
-const ORIGINAL = `Title: ${TITLE}\n\nTask type: Feature\n\nRequest:\n${REQUEST}\n\nExpected behavior:\n${EXPECTED}\n\nCurrent behavior:\n${CURRENT}`;
+/**
+ * What every reviewer receives as the original request. Current Behavior is
+ * answered but hidden for a Feature, so it does not travel.
+ */
+const ORIGINAL = `Title: ${TITLE}\n\nTask type: Feature\n\nRequest:\n${REQUEST}\n\nExpected behavior:\n${EXPECTED}`;
+/** The Implementer's description: the request as asked; Title and Task Type have their own fields. */
+const DESCRIPTION = `${REQUEST}\n\nExpected behavior:\n${EXPECTED}`;
 
 const PLAN = [
   "### Effort picker",
@@ -215,7 +220,7 @@ async function implementerStep(app: TauriApp, page: Page, chainId: string): Prom
   );
   // Task and approved plan come from the earlier steps; the review notes ride along.
   await expect(page.getByRole("textbox", { name: /^Title/ })).toHaveValue(TITLE);
-  await expect(page.getByRole("textbox", { name: /^Description/ })).toHaveValue(ORIGINAL);
+  await expect(page.getByRole("textbox", { name: /^Description/ })).toHaveValue(DESCRIPTION);
   await expect(page.getByRole("textbox", { name: /Approved Implementation Plan/ })).toHaveValue(
     REVIEWED_PLAN,
   );
@@ -245,7 +250,7 @@ async function implementerStep(app: TauriApp, page: Page, chainId: string): Prom
   const started = await app.waitForCall("role_session_start", (a) => a.tabId === "tab-3");
   expect(started.args.values).toMatchObject({
     taskType: "Feature",
-    description: ORIGINAL,
+    description: DESCRIPTION,
     approvedPlan: REVIEWED_PLAN,
   });
   await expect(chainButton(page)).toHaveText("Eagle-Eye 1 · step 3 of 4");

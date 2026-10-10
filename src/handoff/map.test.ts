@@ -103,12 +103,13 @@ describe("handoff mapping", () => {
     expect(mapped.answers.cwd).toBe("C:\\Repos\\Demo");
     expect(mapped.answers.taskType).toBe("Bug Fix");
     expect(mapped.answers.title).toBe("Login 500");
-    expect(mapped.answers.description).toBe("Expired tokens return 500.");
+    // The task as asked: the request and its behaviors (no Title / Task type lines).
+    expect(mapped.answers.description).toBe(
+      "Expired tokens return 500.\n\nExpected behavior:\nReturn 401.\n\nCurrent behavior:\nThe handler panics.",
+    );
     expect(mapped.answers.approvedPlan).toContain("Check the token expiry path.");
     expect(mapped.answers.approvedPlan).toContain("## To-dos");
-    expect(mapped.answers.additionalContext).toContain("Expected behavior:");
-    expect(mapped.answers.additionalContext).toContain("Return 401.");
-    expect(mapped.answers.additionalContext).toContain("Current behavior:");
+    expect(mapped.answers.additionalContext).toBe("See the auth middleware.");
     expect(mapped.answers.additionalContext).toContain("See the auth middleware.");
     expect(mapped.planField).toBe("approvedPlan");
     expect(mapped.usesScratchPad).toBe(false);
@@ -146,7 +147,11 @@ describe("handoff mapping", () => {
       roleId: "role_developer",
       fields: [],
     });
-    expect(mapped.answers).toEqual({ cwd: "C:\\Repos\\Demo" });
+    // The form shows Title and "What to work on"; the plan goes to the scratch pad.
+    expect(mapped.answers.cwd).toBe("C:\\Repos\\Demo");
+    expect(mapped.answers.title).toBe("Login 500");
+    expect(mapped.answers.request).toMatch(/^Expired tokens return 500\.\n\nExpected behavior:\nReturn 401\./);
+    expect(mapped.answers.request).not.toContain("Fix the login handler");
     expect(mapped.planField).toBeNull();
     expect(mapped.usesScratchPad).toBe(true);
     expect(mapped.inlinePlan).toContain("Fix the login handler");
@@ -468,7 +473,9 @@ describe("handoff mapping", () => {
           },
         });
         const mapped = mapHandoff(src, "plan_and_todos", { roleId: to, fields });
-        const allowed = new Set(["cwd", ...fields.map((f) => f.key)]);
+        // A role with no fields shows Title and "What to work on".
+        const shown = fields.length > 0 ? fields.map((f) => f.key) : ["title", "request"];
+        const allowed = new Set(["cwd", ...shown]);
         for (const key of Object.keys(mapped.answers)) {
           expect(allowed.has(key), `${from} -> ${to}: ${key}`).toBe(true);
         }
@@ -595,7 +602,8 @@ describe("handoff mapping", () => {
       expect(mapped.title).toBe("Effort controls for Claude tabs");
       expect(mapped.answers.title).toBe("Effort controls for Claude tabs");
       expect(mapped.answers.taskType).toBe("Feature");
-      expect(mapped.answers.request).toBe(FEATURE_CARD);
+      // Sections with a field of their own leave the request (no Current Behavior rule here).
+      expect(mapped.answers.request).toBe("## Feature: Effort controls for Claude tabs");
       expect(mapped.answers.currentBehavior).toBe(
         "The adapter offers effort levels but the app only sends the model.",
       );
@@ -694,9 +702,9 @@ describe("hand-offs into and out of custom roles", () => {
       fields: [{ key: "title" }, { key: "task" }, { key: "plan" }, { key: "notes" }],
     });
     expect(mapped.answers.title).toBe("Login 500");
-    expect(mapped.answers.task).toBe("Expired tokens return 500.");
+    expect(mapped.answers.task).toMatch(/^Expired tokens return 500\.\n\nExpected behavior:\nReturn 401\./);
     expect(mapped.answers.plan).toContain("Check the token expiry path.");
-    expect(mapped.answers.notes).toContain("Expected behavior:\nReturn 401.");
+    expect(mapped.answers.notes).toBe("See the auth middleware.");
     expect(mapped.planField).toBe("plan");
     expect(mapped.usesScratchPad).toBe(false);
   });
@@ -706,7 +714,8 @@ describe("hand-offs into and out of custom roles", () => {
       roleId: CUSTOM_ID,
       fields: [{ key: "title" }, { key: "request" }],
     });
-    expect(mapped.answers.request).toBe("Expired tokens return 500.");
+    // No context field: the behaviors travel with the request instead of being dropped.
+    expect(mapped.answers.request).toMatch(/^Expired tokens return 500\.\n\nExpected behavior:/);
     expect(mapped.planField).toBeNull();
     expect(mapped.usesScratchPad).toBe(true);
     expect(mapped.inlinePlan).toContain("Check the token expiry path.");
