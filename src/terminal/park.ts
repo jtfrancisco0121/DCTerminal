@@ -87,6 +87,11 @@ export function ensureParkedTerminal(id: string, fontSize: number): ParkedTermin
   return created;
 }
 
+/** False once the terminal was released (its tab closed). */
+export function isParkedHost(id: string, host: HTMLElement): boolean {
+  return parked.get(id)?.host === host;
+}
+
 export function releaseParkedTerminal(id: string): void {
   const entry = parked.get(id);
   if (!entry) return;

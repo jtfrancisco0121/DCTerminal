@@ -40,6 +40,7 @@ export function TerminalSearchBar({ search, onClose }: Props) {
   const [results, setResults] = useState<{ index: number; count: number } | null>(null);
   const [invalid, setInvalid] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const lastOptionsRef = useRef("");
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -69,6 +70,13 @@ export function TerminalSearchBar({ search, onClose }: Props) {
         incremental,
         decorations: DECORATIONS,
       };
+      // addon-search keeps its last options and misses a change on the same
+      // query; clearing first makes it recount (e.g. Match case toggled).
+      const optionKey = `${caseSensitive}|${wholeWord}|${regex}`;
+      if (lastOptionsRef.current !== optionKey) {
+        lastOptionsRef.current = optionKey;
+        search.clearDecorations();
+      }
       try {
         const hit =
           direction === "next"

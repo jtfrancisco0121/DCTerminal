@@ -98,13 +98,6 @@ test("terminal tab pad: a pad drafted before the TUI enabled bracketed paste sti
   app,
   page,
 }) => {
-  test.fail(
-    true,
-    "known bug: the pad's bracketedPaste prop is read once per render " +
-      "(src/StartupForm.tsx:4735, terminalBracketedPaste), and PTY output does not re-render the form " +
-      "(the 1 s activity sweep only does when the busy set changes, src/StartupForm.tsx:978), so a draft " +
-      "typed before the TUI sent CSI ? 2004 h is sent without bracketed paste and each line submits",
-  );
   const { pad, editor } = await openShell(app, page);
   // The program is printing (the tab shows as working), so the 1 s activity
   // sweep has nothing new to report and does not re-render the form.

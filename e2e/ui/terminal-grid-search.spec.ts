@@ -111,9 +111,10 @@ test("terminal search: Mod+Shift+F opens it, counts matches, Escape returns to t
   await expect(bar.locator(".search-status")).toHaveText("3 of 3");
   await bar.getByRole("button", { name: "Next match" }).click();
   await expect(bar.locator(".search-status")).toHaveText("1 of 3");
-  // Match case applies once the query is typed with it on.
   await bar.getByRole("button", { name: "Match case" }).click();
   await expect(bar.getByRole("button", { name: "Match case" })).toHaveAttribute("aria-pressed", "true");
+  // Toggling an option recounts the same query: "ALPHA" no longer matches "alpha".
+  await expect(bar.locator(".search-status")).toHaveText(/ of 2$/);
   await input.fill("ALPHA");
   await expect(bar.locator(".search-status")).toHaveText("1 of 1");
   await input.fill("Alpha");

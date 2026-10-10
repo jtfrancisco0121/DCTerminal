@@ -154,24 +154,25 @@ test("history from scratch.json is offered by Up", async ({ app, page }) => {
   await expect(composer).toHaveValue("");
 });
 
-test("a composer send keeps the composer read-only and the pad Send off until the turn ends", async ({ app, page }) => {
+test("during a composer-sent turn both boxes stay editable, but nothing more is sent", async ({ app, page }) => {
   const { composer, padSend, editor, turn, status } = await quietChat(app, page);
   await composer.fill("first");
   await composer.press("ControlOrMeta+Enter");
   await expect(status).toHaveText("Agent working…");
-  await expect(composer).toHaveAttribute("readonly", "");
-  await expect(composer).toHaveAttribute("aria-busy", "true");
+  // Busy covers only the hand-off, so the next message can be drafted meanwhile.
+  await expect(composer).not.toHaveAttribute("readonly");
+  await composer.fill("next draft");
   await editor.fill("queued idea");
-  await expect(padSend).toBeDisabled();
   await editor.press("Control+Enter");
+  await padSend.click();
   await app.nextFrame();
   expect(await sentPrompts(app)).toEqual(["first"]);
 
   await turn.reply("done");
-  await expect(composer).not.toHaveAttribute("readonly");
-  await expect(padSend).toBeEnabled();
-  // Nothing was queued: the pad text is still a draft.
+  await expect(status).toHaveText("Ready");
+  // Nothing was queued: both drafts are still there.
   await expect(editor).toHaveValue("queued idea");
+  await expect(composer).toHaveValue("next draft");
   expect(await sentPrompts(app)).toEqual(["first"]);
 });
 

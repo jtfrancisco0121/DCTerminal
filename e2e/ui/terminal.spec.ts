@@ -300,12 +300,6 @@ test("closing a terminal tab closes it in the backend and disposes its xterm", a
 });
 
 test("closing a terminal tab removes its xterm host from the DOM", async ({ app, page }) => {
-  test.fail(
-    true,
-    "known bug: handleCloseTab calls destroyTerminal (src/StartupForm.tsx:1805) while the TerminalView " +
-      "is still mounted; its unmount cleanup then re-appends the disposed host to #terminal-park " +
-      "(src/components/TerminalView.tsx:170-171), so every closed terminal leaks an empty .xterm-host",
-  );
   await app.open({
     tabs: [roleTab("tab-1", "role_general", "General"), terminalTab("tab-2", "shell", "Terminal · demo")],
     activeTabId: "tab-2",

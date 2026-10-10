@@ -245,6 +245,7 @@ import {
   padSelection,
   transferToInput,
   type ChainCursor,
+  type TurnOutcome,
 } from "./scratch/pad";
 import { createTurnWaiter } from "./scratch/turnWait";
 import { SessionTerminal } from "./SessionTerminal";
@@ -1851,7 +1852,6 @@ export function StartupForm({
         delete knownFoldersRef.current[tabId];
         delete scrollPositions.current[tabId];
         dropLivePty(tabId);
-        destroyTerminal(tabId);
         const snap = await closeTab(tabId);
         setRuntimes((prev) => {
           const next = { ...prev };
@@ -1874,6 +1874,9 @@ export function StartupForm({
           setPickedRoleId(null);
           setActiveTabId(null);
         }
+        // Released once the tab's view has unmounted; released earlier, the
+        // still-mounted view would create a fresh terminal and park it.
+        window.setTimeout(() => destroyTerminal(tabId), 0);
       } finally {
         setBusy(false);
       }
@@ -2079,8 +2082,13 @@ export function StartupForm({
     [activeTabId, respondQuestionFor],
   );
 
-  const sendText = useCallback(
-    async (tabId: string, text: string, onNotSent?: () => void) => {
+  /** Hands a prompt to the agent; `turn` settles when that turn ends. */
+  const dispatchText = useCallback(
+    async (
+      tabId: string,
+      text: string,
+      onNotSent?: () => void,
+    ): Promise<{ turn: Promise<TurnOutcome> } | "error"> => {
       const trimmed = text.trim();
       const blocked = trimmed ? blockedSlashCommand(trimmed) : null;
       if (blocked) {
@@ -2125,9 +2133,18 @@ export function StartupForm({
         onNotSent?.();
         return "error" as const;
       }
-      return pending;
+      return { turn: pending };
     },
     [chatImages.actions, patchRuntime, scratch],
+  );
+
+  /** Sends and waits for the turn to end (chain steps). */
+  const sendText = useCallback(
+    async (tabId: string, text: string, onNotSent?: () => void) => {
+      const sent = await dispatchText(tabId, text, onNotSent);
+      return sent === "error" ? sent : sent.turn;
+    },
+    [dispatchText],
   );
 
   const sendFollowUpFor = useCallback(
@@ -2138,14 +2155,15 @@ export function StartupForm({
       if ((!text && !chatImages.actions.has(tabId)) || !rt || rt.agentExited || rt.promptInFlight) {
         return;
       }
+      // Busy only until the prompt is handed off, not for the whole turn.
       setBusy(true);
       try {
-        await sendText(tabId, text);
+        await dispatchText(tabId, text);
       } finally {
         setBusy(false);
       }
     },
-    [chatImages.actions, sendText],
+    [chatImages.actions, dispatchText],
   );
 
   const sendFollowUp = useCallback(
@@ -4792,7 +4810,7 @@ export function StartupForm({
             beforeSubmit={snapshotTerminalTurn}
             onOpenLibrary={() => openPromptLibrary(false)}
             write={ptyWrite}
-            bracketedPaste={terminalBracketedPaste(activeTabSummary.id)}
+            bracketedPaste={() => terminalBracketedPaste(activeTabSummary.id)}
             onFocusTerminal={focusActiveTerminal}
             onFocusPad={() => blurParkedTerminal(activeTabSummary.id)}
             onOpenChange={() => refitTerminal(activeTabSummary.id)}
