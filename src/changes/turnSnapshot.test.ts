@@ -11,7 +11,7 @@ afterEach(() => {
 describe("terminal turn snapshots", () => {
   it("snapshots once per tab per 2 seconds", async () => {
     let clock = 10_000;
-    const snapshot = vi.fn(async () => {});
+    const snapshot = vi.fn(async (_tabId: string) => {});
     const before = createTurnSnapshotter({ snapshot, now: () => clock });
     await before("tab_a");
     await before("tab_a");
