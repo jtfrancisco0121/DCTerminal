@@ -12,6 +12,11 @@ pub struct SessionUpdateEvent {
     pub kind: String,
     pub text_delta: Option<String>,
     pub raw_json: String,
+    /// A `tool_call` / `tool_call_update` that writes a plan file
+    /// (`<configDir>/plans/*.md`): its path, so the UI can find the plan
+    /// when `ExitPlanMode` carries none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_path: Option<String>,
 }
 
 pub fn map_session_update(
@@ -29,6 +34,7 @@ pub fn map_session_update(
                 kind: method.to_string(),
                 text_delta: None,
                 raw_json: params.to_string(),
+                plan_path: None,
             });
         }
     }
@@ -50,6 +56,11 @@ pub fn map_session_update(
         .unwrap_or_else(|| "unknown".to_string());
 
     let text_delta = text_from_session_params(&params);
+    let plan_path = if kind == "tool_call" || kind == "tool_call_update" {
+        crate::permissions::plan_file_in_update(update)
+    } else {
+        None
+    };
 
     Some(SessionUpdateEvent {
         tab_id: tab_id.to_string(),
@@ -57,6 +68,7 @@ pub fn map_session_update(
         kind,
         text_delta,
         raw_json: params.to_string(),
+        plan_path,
     })
 }
 
@@ -112,6 +124,25 @@ mod tests {
         let evt = map_session_update("tab_1", "sess_1", &line).expect("event");
         assert_eq!(evt.kind, "tool_call_update");
         assert_eq!(evt.text_delta.as_deref(), Some("read_file (completed)"));
+    }
+
+    #[test]
+    fn a_tool_call_that_writes_a_plan_file_carries_its_path() {
+        let write = json!({
+            "method": "session/update",
+            "params": { "update": {
+                "sessionUpdate": "tool_call", "toolCallId": "w", "kind": "edit",
+                "rawInput": { "file_path": "/Users/me/.claude-account2/plans/fix.md" }
+            } }
+        });
+        let evt = map_session_update("tab_1", "sess_1", &write).expect("event");
+        assert_eq!(evt.plan_path.as_deref(), Some("/Users/me/.claude-account2/plans/fix.md"));
+        assert!(serde_json::to_string(&evt).unwrap().contains("\"planPath\""));
+        let chunk = json!({ "method": "session/update", "params": { "update": {
+            "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": "/x/plans/a.md" } } } });
+        let evt = map_session_update("tab_1", "sess_1", &chunk).expect("event");
+        assert_eq!(evt.plan_path, None);
+        assert!(!serde_json::to_string(&evt).unwrap().contains("planPath"));
     }
 
     #[test]

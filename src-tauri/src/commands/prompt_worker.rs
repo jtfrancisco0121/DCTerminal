@@ -66,6 +66,10 @@ fn run_prompt_turn(
     // F4: the "this turn" baseline for the diff panel (app data only).
     crate::commands::changes::snapshot_turn(app, tab_id);
     let state = app.state::<Mutex<SessionRegistry>>();
+    // The session this turn runs on. A Stop + Start (or a restart after the
+    // agent died) can put a new session on the tab before this thread ends;
+    // the clean-up below must leave that one alone.
+    let mut turn_client: Option<crate::commands::dev_session::SharedAcpClient> = None;
     let outcome: Result<(PromptResult, String), String> = (|| {
         let client_arc = {
             let guard = state.lock().map_err(|e| e.to_string())?;
@@ -75,6 +79,7 @@ fn run_prompt_turn(
                 .client
                 .clone()
         };
+        turn_client = Some(client_arc.clone());
         let (session_id, provider) = {
             let client = client_arc.lock().map_err(|e| e.to_string())?;
             (client.session_id().to_string(), client.provider())
@@ -164,7 +169,10 @@ fn run_prompt_turn(
         };
         {
             let mut guard = state.lock().map_err(|e| e.to_string())?;
-            if let Some(session) = guard.get_mut(tab_id) {
+            if let Some(session) = guard
+                .get_mut(tab_id)
+                .filter(|session| std::sync::Arc::ptr_eq(&session.client, &client_arc))
+            {
                 if mark_startup_injected {
                     session.startup_injected = true;
                 }
@@ -195,8 +203,15 @@ fn run_prompt_turn(
         }
         Err(err) => {
             let agent_exited = is_agent_exit(&err);
+            let mut session_id = String::new();
             if let Ok(mut guard) = state.lock() {
-                if let Some(session) = guard.get_mut(tab_id) {
+                let own = guard.get_mut(tab_id).filter(|session| {
+                    turn_client
+                        .as_ref()
+                        .is_some_and(|client| std::sync::Arc::ptr_eq(&session.client, client))
+                });
+                if let Some(session) = own {
+                    session_id = session.session_id.clone();
                     session.prompt_in_flight = false;
                     session.pending_permissions.clear();
                     session.pending_plans.clear();
@@ -207,11 +222,13 @@ fn run_prompt_turn(
                     }
                 }
             }
-            let session_id = state
-                .lock()
-                .ok()
-                .and_then(|guard| guard.get(tab_id).map(|session| session.session_id.clone()))
-                .unwrap_or_default();
+            // The turn's own session id (the frontend ignores an id it no
+            // longer shows), read without waiting on a client a turn holds.
+            if session_id.is_empty() {
+                if let Some(client) = turn_client.as_ref().and_then(|c| c.try_lock().ok()) {
+                    session_id = client.session_id().to_string();
+                }
+            }
             PromptFinishedEvent {
                 session_id,
                 tab_id: Some(tab_id.to_string()),

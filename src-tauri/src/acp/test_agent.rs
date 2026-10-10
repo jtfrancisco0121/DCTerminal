@@ -82,7 +82,6 @@ impl FakeAgent {
     pub fn work_dir(&self) -> PathBuf {
         self.dir.join("work")
     }
-
     pub fn program(&self) -> ProgramArgs {
         self.program.clone()
     }
@@ -184,7 +183,12 @@ impl Provider for FakeProvider {
         Err("no terminals in tests".into())
     }
     fn plans_dir(&self) -> Option<PathBuf> {
-        None
+        // Claude: `<fake dir>/claude-config/plans` (a temp folder). Cursor's
+        // would be the real `~/.cursor/plans`, so none.
+        match self.inner.id() {
+            ProviderId::Claude => self.inner.plans_dir(),
+            ProviderId::Cursor => None,
+        }
     }
     fn config_dir(&self) -> Option<ConfigDirInfo> {
         self.inner.config_dir()

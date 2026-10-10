@@ -657,6 +657,8 @@ export type SessionUpdateEvent = {
   kind: string;
   textDelta: string | null;
   rawJson: string;
+  /** Set when this tool call writes a plan file (`<configDir>/plans/*.md`). */
+  planPath?: string | null;
 };
 
 export function listenSessionUpdates(
@@ -939,6 +941,8 @@ export type PlanRequestEvent = {
   markdown?: string | null;
   /** Reject option. Present means Keep planning, never Accept. */
   keepOptionId?: string | null;
+  /** Claude plan file behind this ExitPlanMode, when one is known. */
+  planPath?: string | null;
 };
 
 export function listenPlanRequests(

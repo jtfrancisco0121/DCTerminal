@@ -31,19 +31,15 @@ impl StateStore {
 
     /// Load `state.json` at `path` (missing file = empty state).
     pub fn open_path(path: PathBuf) -> Result<Self, String> {
-        let mut data = if path.exists() {
-            // A damaged file falls back to state.json.bak instead of blocking startup.
-            let loaded: AppStateFile = read_json_or_recover(&path)?;
-            if loaded.schema_version != STATE_SCHEMA_VERSION {
-                return Err(format!(
-                    "unsupported state.json schemaVersion {} (expected {})",
-                    loaded.schema_version, STATE_SCHEMA_VERSION
-                ));
-            }
-            loaded
-        } else {
-            AppStateFile::default()
-        };
+        // A damaged (or missing, after an interrupted save) file falls back to
+        // state.json.bak instead of blocking startup or starting empty.
+        let mut data: AppStateFile = read_json_or_recover(&path)?;
+        if data.schema_version != STATE_SCHEMA_VERSION {
+            return Err(format!(
+                "unsupported state.json schemaVersion {} (expected {})",
+                data.schema_version, STATE_SCHEMA_VERSION
+            ));
+        }
         normalize_provider_sessions(&mut data);
         let claude_migrated = crate::store::claude_migration::migrate_state(&mut data);
         let windows_migrated = crate::store::window_migration::migrate_windows(&mut data);
@@ -537,6 +533,7 @@ impl StateStore {
                 chain: tab.chain.clone(),
                 permission_note: tab.permission_note.clone(),
                 window_id: tab.window_id.clone(),
+                pipeline_run_id: tab.pipeline_run_id.clone(),
             },
         );
         self.data.closed_tabs.truncate(15);
@@ -667,7 +664,11 @@ impl StateStore {
             model: closed.model.clone(),
             custom_label: closed.custom_label,
             worktree: closed.worktree.clone(),
-            pipeline_run_id: None,
+            // Kept only while the run exists (runs are pruned at startup).
+            pipeline_run_id: closed
+                .pipeline_run_id
+                .clone()
+                .filter(|id| self.pipeline_run_by_id(id).is_some()),
             provider: closed.provider,
             sessions: closed.sessions,
             provider_notice: closed.provider_notice,

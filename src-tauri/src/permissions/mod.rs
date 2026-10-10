@@ -11,4 +11,4 @@ pub use policy::{
     cancelled_permission_result, evaluate_permission, DecisionOutcome, PolicyDecision,
 };
 pub use redact::{append_permission_log, permission_log_record_with_meta};
-pub use tool_cache::ToolCallCache;
+pub use tool_cache::{is_plan_file_path, plan_file_in_update, ToolCallCache};

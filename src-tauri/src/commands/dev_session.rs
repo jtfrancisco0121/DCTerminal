@@ -108,6 +108,12 @@ impl LiveSession {
         }
     }
 
+    /// The agent process is gone: flagged by a failed turn, or exited
+    /// between turns without anyone noticing yet.
+    pub fn is_dead(&self) -> bool {
+        self.exited || matches!(self.process.try_wait(), Ok(Some(_)))
+    }
+
     pub fn shutdown(&mut self) {
         let pending: Vec<u64> = self.pending_permissions.drain().map(|(id, _)| id).collect();
         let plans: Vec<(u64, PendingPlan)> = self.pending_plans.drain().collect();
@@ -153,7 +159,8 @@ impl SessionRegistry {
             );
         }
         if let Some(existing) = self.sessions.get(tab_key) {
-            if !existing.exited {
+            // A process that died between turns must not block a restart.
+            if !existing.is_dead() {
                 return Err(
                     "this tab already has a live session — stop it before starting again"
                         .to_string(),
@@ -267,7 +274,7 @@ impl LiveSession {
             },
             role_id: self.role_id.clone(),
             prompt_in_flight: self.prompt_in_flight,
-            exited: self.exited,
+            exited: self.is_dead(),
         }
     }
 }

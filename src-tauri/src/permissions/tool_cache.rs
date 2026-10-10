@@ -19,6 +19,56 @@ pub struct CachedToolCall {
 #[derive(Debug, Default, Clone)]
 pub struct ToolCallCache {
     entries: HashMap<String, CachedToolCall>,
+    /// Newest plan file a tool wrote (`<configDir>/plans/*.md`). Claude's
+    /// `ExitPlanMode` can arrive with an empty `plan` when the plan lives
+    /// only in that file.
+    last_plan_file: Option<String>,
+}
+
+/// `…/plans/<name>.md`: where Claude (and Cursor) keep plan files.
+pub fn is_plan_file_path(path: &str) -> bool {
+    let path = std::path::Path::new(path.trim());
+    path.is_absolute()
+        && path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+        && path
+            .parent()
+            .and_then(|dir| dir.file_name())
+            .is_some_and(|name| name == "plans")
+}
+
+/// The plan file a `tool_call` / `tool_call_update` writes, if any:
+/// `rawInput.file_path` (Claude Write / Edit), `path`, or a location.
+/// Reads do not count.
+pub fn plan_file_in_update(update: &Value) -> Option<String> {
+    let nested = update.get("toolCall").or_else(|| update.get("tool_call"));
+    let kind = update
+        .get("kind")
+        .or_else(|| nested.and_then(|t| t.get("kind")))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if matches!(kind, "read" | "search" | "fetch" | "think") {
+        return None;
+    }
+    let mut candidates: Vec<&Value> = Vec::new();
+    for tool in std::iter::once(update).chain(nested) {
+        if let Some(raw) = tool.get("rawInput").or_else(|| tool.get("raw_input")) {
+            for key in ["file_path", "filePath", "path", "planFilePath", "plan_file_path"] {
+                if let Some(value) = raw.get(key) {
+                    candidates.push(value);
+                }
+            }
+        }
+        if let Some(locations) = tool.get("locations").and_then(Value::as_array) {
+            candidates.extend(locations.iter().filter_map(|loc| loc.get("path")));
+        }
+    }
+    candidates
+        .into_iter()
+        .filter_map(Value::as_str)
+        .find(|path| is_plan_file_path(path))
+        .map(|path| path.trim().to_string())
 }
 
 impl ToolCallCache {
@@ -45,6 +95,14 @@ impl ToolCallCache {
         let Some(id) = tool_call_id(update) else {
             return;
         };
+        let read_only = self
+            .entries
+            .get(&id)
+            .and_then(|entry| entry.kind.as_deref())
+            .is_some_and(|kind| matches!(kind, "read" | "search" | "fetch" | "think"));
+        if let Some(path) = plan_file_in_update(update).filter(|_| !read_only) {
+            self.last_plan_file = Some(path);
+        }
         let entry = self.entries.entry(id).or_default();
         if let Some(kind) = update.get("kind").and_then(|v| v.as_str()) {
             if !kind.trim().is_empty() {
@@ -81,6 +139,11 @@ impl ToolCallCache {
 
     pub fn get(&self, tool_call_id: &str) -> Option<&CachedToolCall> {
         self.entries.get(tool_call_id)
+    }
+
+    /// Newest plan file written in this session (see `last_plan_file`).
+    pub fn last_plan_file(&self) -> Option<&str> {
+        self.last_plan_file.as_deref()
     }
 
     /// Return a copy of `params` with missing rawInput/kind filled from cache
@@ -331,6 +394,31 @@ pub fn parse_fetch_url(title: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remembers_the_newest_plan_file_a_tool_wrote_but_not_reads() {
+        let mut cache = ToolCallCache::new();
+        let note = |update: Value| json!({ "method": "session/update", "params": { "update": update } });
+        cache.observe_notification(&note(json!({ "sessionUpdate": "tool_call", "toolCallId": "r1",
+            "kind": "read", "rawInput": { "file_path": "/h/.claude/plans/old.md" } })));
+        // A status-only update of the read keeps it a read.
+        cache.observe_notification(&note(json!({ "sessionUpdate": "tool_call_update", "toolCallId": "r1",
+            "rawInput": { "file_path": "/h/.claude/plans/old.md" } })));
+        assert_eq!(cache.last_plan_file(), None);
+        cache.observe_notification(&note(json!({ "sessionUpdate": "tool_call", "toolCallId": "w1",
+            "kind": "edit", "rawInput": {} })));
+        cache.observe_notification(&note(json!({ "sessionUpdate": "tool_call_update", "toolCallId": "w1",
+            "rawInput": { "file_path": "/h/.claude-account2/plans/fix-login.md", "content": "# P" } })));
+        assert_eq!(cache.last_plan_file(), Some("/h/.claude-account2/plans/fix-login.md"));
+        // Writing an ordinary markdown file is not a plan.
+        cache.observe_notification(&note(json!({ "sessionUpdate": "tool_call", "toolCallId": "w2",
+            "kind": "edit", "locations": [{ "path": "/repo/docs/plans.md" }] })));
+        assert_eq!(cache.last_plan_file(), Some("/h/.claude-account2/plans/fix-login.md"));
+        assert!(is_plan_file_path("/x/plans/a.MD"));
+        assert!(!is_plan_file_path("plans/a.md"));
+        assert!(!is_plan_file_path("/x/plans/a.txt"));
+        assert!(!is_plan_file_path("/x/notplans/a.md"));
+    }
 
     #[test]
     fn enriches_shell_from_preceding_tool_call() {

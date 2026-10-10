@@ -17,7 +17,16 @@ use std::time::{Duration, Instant};
 
 const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(30);
 const STDERR_RING_MAX: usize = 40;
+#[cfg(not(test))]
 const CANCEL_GRACE: Duration = Duration::from_secs(20);
+#[cfg(test)]
+const CANCEL_GRACE: Duration = Duration::from_secs(2);
+/// How long the next turn waits for a prompt given up on after the cancel
+/// grace to finish, before it sends its own prompt.
+#[cfg(not(test))]
+const SETTLE_WAIT: Duration = Duration::from_secs(10);
+#[cfg(test)]
+const SETTLE_WAIT: Duration = Duration::from_secs(4);
 
 pub type AgentRequestHandler = Box<dyn FnMut(&Value) -> Result<Option<Value>, String>>;
 pub type NotificationHandler = Box<dyn FnMut(&Value)>;
@@ -85,6 +94,9 @@ pub struct AcpConnection {
     provider: SharedProvider,
     /// Agent requests handed to the user and not answered yet.
     awaiting_user: HashSet<u64>,
+    /// A prompt whose cancel grace ran out before the agent answered it.
+    /// Its late updates and answer must not land in the next turn.
+    abandoned_prompt: Option<u64>,
 }
 
 impl AcpConnection {
@@ -191,6 +203,7 @@ impl AcpConnection {
             stderr_tail,
             provider,
             awaiting_user: HashSet::new(),
+            abandoned_prompt: None,
         })
     }
 
@@ -317,12 +330,20 @@ impl AcpConnection {
         dispatch: &mut LineDispatch,
         mut turn: Option<&mut TurnControl<'_>>,
     ) -> Result<Value, String> {
-        if turn.is_some() {
+        if let Some(ctrl) = turn.as_deref() {
             // Cards of an earlier turn were dropped when it ended and can never
-            // be answered; they must not pause this turn's idle limit.
+            // be answered; they must not pause this turn's idle limit, and
+            // answers queued for them (a cancel racing the turn's end) must
+            // not reach an agent that no longer waits for them.
             self.awaiting_user.clear();
+            if let Some(outbox) = &ctrl.outbox {
+                outbox.lock().map_err(|e| e.to_string())?.clear();
+            }
+            self.settle_abandoned_prompt(SETTLE_WAIT)?;
         }
-        self.request(id, method, params)?;
+        if let Err(err) = self.request(id, method, params) {
+            return Err(self.write_error(err));
+        }
         // A turn's limit counts silence, not length, and pauses while the user owes an answer.
         let idle_limit = turn.is_some();
         let mut deadline = Instant::now() + timeout;
@@ -366,6 +387,7 @@ impl AcpConnection {
             }
             if let Some(limit) = cancel_deadline {
                 if Instant::now() >= limit {
+                    self.abandoned_prompt = Some(id);
                     return Ok(json!({ "stopReason": "cancelled" }));
                 }
             }
@@ -429,9 +451,52 @@ impl AcpConnection {
             }
         }
         if cancel_deadline.is_some() {
+            self.abandoned_prompt = Some(id);
             return Ok(json!({ "stopReason": "cancelled" }));
         }
         Err(format!("timeout waiting for response id={id}"))
+    }
+
+    /// Before a new turn: let a prompt abandoned after its cancel grace
+    /// finish (up to `wait`). Its updates are dropped and its agent requests
+    /// answered as cancelled, so nothing of it reaches the new turn.
+    fn settle_abandoned_prompt(&mut self, wait: Duration) -> Result<(), String> {
+        let Some(id) = self.abandoned_prompt.take() else {
+            return Ok(());
+        };
+        let deadline = Instant::now() + wait;
+        let mut dispatch = LineDispatch::default();
+        while Instant::now() < deadline {
+            match self.lines.recv_timeout(Duration::from_millis(50)) {
+                Ok(ReaderMsg::Line(line)) => {
+                    let ParsedLine::Value(value) = parse_acp_line(&line) else {
+                        continue;
+                    };
+                    if value.get("method").is_some() {
+                        self.handle_incoming_line(&value, &mut dispatch)?;
+                        dispatch.notifications.clear();
+                    } else if value.get("id").and_then(Value::as_u64) == Some(id) {
+                        return Ok(());
+                    }
+                }
+                Ok(ReaderMsg::TooLarge) => continue,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if let Ok(Some(status)) = self.process.try_wait() {
+                        return Err(self.exit_error(Some(status.to_string())));
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Err(self.exit_error(None)),
+            }
+        }
+        Ok(())
+    }
+
+    /// A failed write to an agent that has exited says why it exited.
+    fn write_error(&self, err: String) -> String {
+        match self.process.try_wait() {
+            Ok(Some(status)) => self.exit_error(Some(status.to_string())),
+            _ => err,
+        }
     }
 
     pub fn kill(&mut self) {

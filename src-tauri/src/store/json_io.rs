@@ -25,6 +25,9 @@ pub fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), Str
         file.sync_all().map_err(|e| e.to_string())?;
     }
 
+    // Unix rename replaces the file atomically, so a crash never leaves no
+    // file at all. Windows keeps the old remove-then-rename.
+    #[cfg(windows)]
     if path.exists() {
         fs::remove_file(path).map_err(|e| e.to_string())?;
     }
@@ -44,7 +47,10 @@ where
     T: serde::de::DeserializeOwned + Default,
 {
     if !path.exists() {
-        return Ok(T::default());
+        // No file, but an intact copy beside it: a save interrupted between
+        // removing the old file and renaming the new one in (Windows), or a
+        // recovery from `.bak` that was never saved before the app quit.
+        return Ok(intact_copy(path).unwrap_or_default());
     }
     match read_json::<T>(path) {
         Ok(value) => Ok(value),
@@ -61,4 +67,12 @@ where
             Ok(T::default())
         }
     }
+}
+
+/// `.json.tmp` (a finished write that was not renamed in), then `.json.bak`.
+fn intact_copy<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
+    [path.with_extension("json.tmp"), path.with_extension("json.bak")]
+        .iter()
+        .filter(|candidate| candidate.exists())
+        .find_map(|candidate| read_json::<T>(candidate).ok())
 }

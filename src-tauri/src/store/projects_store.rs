@@ -165,16 +165,10 @@ fn listed(item: &ProjectRef, favorite: bool) -> ListedProject {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn dir() -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let path = crate::test_support::test_root().join(format!("dcterminal_projects_{nanos}"));
-        std::fs::create_dir_all(&path).unwrap();
-        path
+        // Unique per call: two tests in the same microsecond must not share it.
+        crate::test_support::temp_path("dcterminal_projects")
     }
 
     #[test]
