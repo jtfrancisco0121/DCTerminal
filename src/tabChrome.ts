@@ -20,14 +20,19 @@ export type ClosedTab = {
   closedAt: number;
 };
 
-export type SplitMode = "single" | "horizontal" | "vertical";
+export type SplitMode = "single" | "horizontal" | "vertical" | "grid";
 
 export type SplitState = {
   mode: SplitMode;
   secondaryTabId: string | null;
   /** Main pane size in percent. Kept when the split closes. */
   primarySize?: number;
+  /** Grid mode: the tabs on screen, in cell order. */
+  gridTabIds?: string[];
 };
+
+/** Most tabs a grid shows at once (matches `GRID_MAX_TABS` in Rust). */
+export const GRID_MAX_TABS = 6;
 
 export const DEFAULT_SPLIT_SIZE = 50;
 
@@ -36,7 +41,56 @@ export function emptySplit(primarySize = DEFAULT_SPLIT_SIZE): SplitState {
 }
 
 export function splitOpen(state: SplitState): boolean {
+  if (state.mode === "grid") return gridOpen(state);
   return state.mode !== "single" && !!state.secondaryTabId;
+}
+
+export function gridOpen(state: SplitState): boolean {
+  return state.mode === "grid" && (state.gridTabIds?.length ?? 0) >= 2;
+}
+
+/**
+ * Grid of `ids` (deduplicated, capped). The active tab always gets a cell:
+ * it replaces the last one when the grid is full.
+ */
+export function openGrid(state: SplitState, ids: string[], activeId: string | null): SplitState {
+  const unique = ids.filter((id, i) => id && ids.indexOf(id) === i);
+  let cells = unique.slice(0, GRID_MAX_TABS);
+  if (activeId && !cells.includes(activeId)) {
+    cells = cells.length < GRID_MAX_TABS ? [...cells, activeId] : [...cells.slice(0, -1), activeId];
+  }
+  if (cells.length < 2) return closeSplit(state);
+  return {
+    mode: "grid",
+    secondaryTabId: null,
+    gridTabIds: cells,
+    primarySize: clampSplitSize(state.primarySize),
+  };
+}
+
+/** Add one tab to the grid, or start a grid of the active tab and that tab. */
+export function addToGrid(state: SplitState, tabId: string, activeId: string | null): SplitState {
+  const current = gridOpen(state) ? (state.gridTabIds ?? []) : activeId ? [activeId] : [];
+  if (current.includes(tabId) || current.length >= GRID_MAX_TABS) return state;
+  return openGrid(state, [...current, tabId], activeId);
+}
+
+export function removeFromGrid(state: SplitState, tabId: string): SplitState {
+  if (!gridOpen(state)) return state;
+  const cells = (state.gridTabIds ?? []).filter((id) => id !== tabId);
+  return cells.length >= 2 ? { ...state, gridTabIds: cells } : closeSplit(state);
+}
+
+/**
+ * Cells per row. Landscape fills columns first (2 → 1×2, 4 → 2×2, 6 → 2×3);
+ * portrait fills rows first (2 → 2×1, 3 → 3×1, 6 → 3×2).
+ */
+export function gridRows(count: number, portrait: boolean): number[] {
+  if (count <= 0) return [];
+  if (count <= 3) return portrait ? Array(count).fill(1) : [count];
+  if (count === 4) return [2, 2];
+  if (portrait) return count === 5 ? [2, 2, 1] : [2, 2, 2];
+  return count === 5 ? [3, 2] : [3, 3];
 }
 
 export function clampSplitSize(size: number | undefined): number {
@@ -76,6 +130,7 @@ export function reconcileSplit(
   previousActive: string | null,
   nextActive: string | null,
 ): SplitState {
+  if (state.mode === "grid") return reconcileGrid(state, tabIds, previousActive, nextActive);
   if (!splitOpen(state)) return state;
   if (!state.secondaryTabId || !tabIds.includes(state.secondaryTabId)) {
     return emptySplit(state.primarySize);
@@ -89,11 +144,49 @@ export function reconcileSplit(
   return state;
 }
 
+/**
+ * Cells stay where they are. A closed tab leaves the grid. Selecting a tab
+ * that is not on screen puts it in the cell of the tab it replaced, so the
+ * other cells never move or disappear.
+ */
+function reconcileGrid(
+  state: SplitState,
+  tabIds: string[],
+  previousActive: string | null,
+  nextActive: string | null,
+): SplitState {
+  let cells = (state.gridTabIds ?? []).filter((id) => tabIds.includes(id));
+  if (nextActive && !cells.includes(nextActive)) {
+    const slot = previousActive ? cells.indexOf(previousActive) : -1;
+    if (slot >= 0) cells = cells.map((id, i) => (i === slot ? nextActive : id));
+    else if (cells.length < GRID_MAX_TABS) cells = [...cells, nextActive];
+    else cells = [...cells.slice(0, -1), nextActive];
+  }
+  if (cells.length < 2) return closeSplit(state);
+  const same =
+    cells.length === (state.gridTabIds ?? []).length &&
+    cells.every((id, i) => id === state.gridTabIds?.[i]);
+  return same ? state : { ...state, gridTabIds: cells };
+}
+
 export function splitFromLayout(layout: {
   splitMode: string;
   secondaryTabId: string | null;
   primarySize: number;
+  gridTabIds?: string[];
 }): SplitState {
+  if (layout.splitMode === "grid") {
+    const cells = layout.gridTabIds ?? [];
+    if (cells.length >= 2) {
+      return {
+        mode: "grid",
+        secondaryTabId: null,
+        gridTabIds: cells.slice(0, GRID_MAX_TABS),
+        primarySize: clampSplitSize(layout.primarySize),
+      };
+    }
+    return emptySplit(clampSplitSize(layout.primarySize));
+  }
   const mode: SplitMode =
     layout.splitMode === "horizontal" || layout.splitMode === "vertical"
       ? layout.splitMode
@@ -172,6 +265,8 @@ export const PALETTE_ACTIONS = [
   "closeSplit",
   "swapPanes",
   "focusOtherPane",
+  "toggleGrid",
+  "addToGrid",
   "toggleFilePanel",
   "showChanges",
   "find",
@@ -267,6 +362,10 @@ export function buildPalette(opts: {
   tabs: { id: string; label: string; cwd?: string }[];
   canReopen: boolean;
   splitOpen: boolean;
+  /** The grid view is on screen (Swap / Focus other pane do not apply). */
+  gridOpen?: boolean;
+  /** Another tab can still join the grid. */
+  canAddToGrid?: boolean;
   canSendPlan?: boolean;
   /** Hand-off targets of the active plan source (Planner / Plan Reviewer). Default: the Planner's. */
   sendPlanTargets?: readonly string[];
@@ -293,6 +392,12 @@ export function buildPalette(opts: {
     },
     { id: "splitRight", title: "Split right", group: "Split", keywords: "pane side by side" },
     { id: "splitDown", title: "Split down", group: "Split", keywords: "pane stacked" },
+    {
+      id: "toggleGrid",
+      title: opts.gridOpen ? "Close grid view" : "Show tabs in a grid",
+      group: "Split",
+      keywords: "grid tile monitor all panes terminals chats",
+    },
     { id: "toggleFilePanel", title: "Toggle file panel", group: "Files", keywords: "tree explorer" },
     {
       id: "showChanges",
@@ -425,7 +530,15 @@ export function buildPalette(opts: {
       keywords: "git branch worktree delete",
     });
   }
-  if (opts.splitOpen) {
+  if (opts.canAddToGrid) {
+    commands.push({
+      id: "addToGrid",
+      title: "Add tab to grid…",
+      group: "Split",
+      keywords: "grid tile monitor pane",
+    });
+  }
+  if (opts.splitOpen && !opts.gridOpen) {
     commands.push(
       { id: "closeSplit", title: "Close split", group: "Split", keywords: "pane" },
       { id: "swapPanes", title: "Swap panes", group: "Split" },

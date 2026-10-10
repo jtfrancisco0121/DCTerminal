@@ -107,11 +107,14 @@ pub struct PipelineRun {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct LayoutState {
-    /// `single`, `horizontal`, or `vertical`.
+    /// `single`, `horizontal`, `vertical`, or `grid`.
     #[serde(default = "default_split_mode")]
     pub split_mode: String,
     #[serde(default)]
     pub secondary_tab_id: Option<String>,
+    /// Tabs pinned to the grid, in cell order (`grid` mode only).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub grid_tab_ids: Vec<String>,
     /// Size of the main pane, in percent.
     #[serde(default = "default_split_size")]
     pub primary_size: f64,
@@ -134,11 +137,15 @@ fn default_file_panel_width() -> f64 {
     280.0
 }
 
+/// Most tabs a grid shows at once.
+pub const GRID_MAX_TABS: usize = 6;
+
 impl Default for LayoutState {
     fn default() -> Self {
         Self {
             split_mode: default_split_mode(),
             secondary_tab_id: None,
+            grid_tab_ids: Vec::new(),
             primary_size: default_split_size(),
             file_panel_open: false,
             file_panel_width: default_file_panel_width(),
@@ -150,15 +157,28 @@ impl LayoutState {
     pub fn sanitized(mut self) -> Self {
         if !matches!(
             self.split_mode.as_str(),
-            "single" | "horizontal" | "vertical"
+            "single" | "horizontal" | "vertical" | "grid"
         ) {
             self.split_mode = default_split_mode();
         }
-        if self.split_mode == "single" {
+        if self.split_mode == "grid" {
+            let mut seen = std::collections::HashSet::new();
+            self.grid_tab_ids
+                .retain(|id| !id.trim().is_empty() && seen.insert(id.clone()));
+            self.grid_tab_ids.truncate(GRID_MAX_TABS);
             self.secondary_tab_id = None;
-        }
-        if self.secondary_tab_id.is_none() {
-            self.split_mode = default_split_mode();
+            if self.grid_tab_ids.len() < 2 {
+                self.grid_tab_ids.clear();
+                self.split_mode = default_split_mode();
+            }
+        } else {
+            self.grid_tab_ids.clear();
+            if self.split_mode == "single" {
+                self.secondary_tab_id = None;
+            }
+            if self.secondary_tab_id.is_none() {
+                self.split_mode = default_split_mode();
+            }
         }
         if !self.primary_size.is_finite() {
             self.primary_size = default_split_size();

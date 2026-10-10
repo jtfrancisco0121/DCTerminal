@@ -88,6 +88,7 @@ Cmd replaces Ctrl on macOS (⌘). Settings > Shortcuts and Ctrl+/ show the same 
 | Ctrl+B | File panel (Ctrl+S saves while editing) |
 | Ctrl+\ / Ctrl+Alt+\ | Split right / split down |
 | Ctrl+Alt+S / Ctrl+Alt+O / Ctrl+Alt+W | Swap panes / focus other pane / close split |
+| Ctrl+Alt+G | Grid view: up to six tabs live at once, each in its own cell (the ▦ button in the tab bar does the same). Click a cell to work in it; nothing moves. |
 | Ctrl+Shift+` | Toggle the terminal pane on a chat tab |
 | Ctrl+Shift+. | Send the scratch pad to the terminal (terminal tabs) |
 | Esc | Back to the terminal from its scratch pad; closes dialogs |
