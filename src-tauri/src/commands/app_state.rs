@@ -173,6 +173,7 @@ pub fn ack_provider_notice(
 /// the chain's run keeps it for the overview.
 #[tauri::command]
 pub fn set_tab_chain(
+    app: tauri::AppHandle,
     tab_id: String,
     chain: Option<crate::store::ChainRef>,
     handoff_text: Option<String>,
@@ -183,7 +184,39 @@ pub fn set_tab_chain(
         return Err(format!("unknown tab: {tab_id}"));
     }
     // A chain is a label. Hand-off tags the next tab after it has started.
-    store.set_tab_chain(&tab_id, chain, handoff_text.as_deref())
+    crate::commands::chain_events::set_tab_chain_and_notify(
+        &app,
+        &mut store,
+        &tab_id,
+        chain,
+        handoff_text.as_deref(),
+    )
+}
+
+/// A reviewer sends its round back to an earlier stage's tab (reused or
+/// just opened). Bumps the chain's round and records the verdict. Starts
+/// nothing; the caller sends the follow-up.
+#[tauri::command]
+pub fn chain_loop_back(
+    chain_id: String,
+    reviewer_role_id: String,
+    tab_id: String,
+    verdict: Option<String>,
+    handoff_text: Option<String>,
+    app: tauri::AppHandle,
+    store: State<Mutex<StateStore>>,
+) -> Result<crate::store::ChainRef, String> {
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    let chain = store.chain_loop_back(
+        chain_id.trim(),
+        &reviewer_role_id,
+        &tab_id,
+        verdict.as_deref(),
+        handoff_text.as_deref(),
+    )?;
+    // The overview shows the new round and verdict history at once.
+    crate::commands::chain_events::notify_chain(&app, Some(&chain));
+    Ok(chain)
 }
 
 #[derive(Serialize)]
@@ -213,6 +246,7 @@ pub fn open_chain_overview(
 /// Open a Planner (Eagle-Eye 1) or Implementer (Eagle-Eye 2) draft at step 1.
 #[tauri::command]
 pub fn start_eagle_eye(
+    app: tauri::AppHandle,
     kind: String,
     cwd: String,
     window_id: Option<String>,
@@ -239,13 +273,16 @@ pub fn start_eagle_eye(
         "ee_{}",
         chrono::Utc::now().timestamp_millis()
     );
-    store.set_tab_chain(
+    crate::commands::chain_events::set_tab_chain_and_notify(
+        &app,
+        &mut store,
         &tab_id,
         Some(crate::store::ChainRef {
             chain_id,
             kind,
             step: 1,
             total,
+            round: 1,
         }),
         None,
     )?;
@@ -336,6 +373,7 @@ pub fn create_execution_pipeline_tabs(
 
 #[tauri::command]
 pub fn sync_active_tab_form(
+    app: tauri::AppHandle,
     tab_id: String,
     role_id: String,
     cwd: String,
@@ -352,6 +390,7 @@ pub fn sync_active_tab_form(
     };
     let mut store = store.lock().map_err(|e| e.to_string())?;
     store.sync_tab_form(&tab_id, &role, &values, cwd.trim())?;
+    crate::commands::chain_events::notify_form_sync(&app, &store, &tab_id);
     Ok(())
 }
 
@@ -526,7 +565,7 @@ mod pipeline_tests {
 
     fn temp_roles_store(seed: RolesFile) -> RolesStore {
         RolesStore {
-            path: std::env::temp_dir().join("dct_roles_test.json"),
+            path: crate::test_support::test_root().join("dct_roles_test.json"),
             data: seed,
         }
     }
@@ -535,7 +574,7 @@ mod pipeline_tests {
     fn pipeline_workspace_opens_overview_tab() {
         let seed: RolesFile = read_json(&seed_output_path()).expect("roles seed");
         let roles = temp_roles_store(seed);
-        let dir = std::env::temp_dir().join(format!(
+        let dir = crate::test_support::test_root().join(format!(
             "dct_pipeline_test_{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -579,7 +618,7 @@ mod pipeline_tests {
     fn execution_pipeline_workspace_opens_overview_tab() {
         let seed: RolesFile = read_json(&seed_output_path()).expect("roles seed");
         let roles = temp_roles_store(seed);
-        let dir = std::env::temp_dir().join(format!(
+        let dir = crate::test_support::test_root().join(format!(
             "dct_exec_pipeline_test_{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

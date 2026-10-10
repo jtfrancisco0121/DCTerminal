@@ -1,24 +1,28 @@
 /**
- * Review verdicts from a Plan Reviewer or PR Reviewer reply. Read-only:
- * the overview shows the verdict, nothing acts on it.
+ * Review verdicts from a Plan Reviewer or PR Reviewer reply. The overview
+ * shows them and routing.ts picks the primary hand-off button from them;
+ * nothing sends on a verdict by itself.
  */
 
 export type ReviewVerdict =
   | "APPROVED"
   | "APPROVED WITH CHANGES"
   | "REQUIRES REVISION"
-  | "REQUEST CHANGES";
+  | "REQUEST CHANGES"
+  | "REJECTED";
 
 export type VerdictTone = "ok" | "warn" | "bad";
 
 // Longest first so "approved with changes" never reads as "approved".
-const VERDICT_RE = /\b(approved\s+with\s+changes|requires\s+revision|request(?:ed)?\s+changes|approved)\b/gi;
+const VERDICT_RE =
+  /\b(approved\s+with\s+changes|requires\s+revision|request(?:ed)?\s+changes|changes\s+requested|rejected|approved)\b/gi;
 
 function normalize(match: string): ReviewVerdict {
   const words = match.toLowerCase().replace(/\s+/g, " ");
   if (words === "approved with changes") return "APPROVED WITH CHANGES";
   if (words === "requires revision") return "REQUIRES REVISION";
-  if (words.startsWith("request")) return "REQUEST CHANGES";
+  if (words.startsWith("request") || words === "changes requested") return "REQUEST CHANGES";
+  if (words === "rejected") return "REJECTED";
   return "APPROVED";
 }
 
@@ -55,6 +59,11 @@ export function verdictTone(verdict: ReviewVerdict): VerdictTone {
   if (verdict === "APPROVED") return "ok";
   if (verdict === "APPROVED WITH CHANGES") return "warn";
   return "bad";
+}
+
+/** The reviewer wants another round. */
+export function needsRevision(verdict: ReviewVerdict | null): boolean {
+  return verdict === "REQUIRES REVISION" || verdict === "REQUEST CHANGES" || verdict === "REJECTED";
 }
 
 /** Roles whose replies carry a verdict. */

@@ -85,7 +85,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("dct_windows_mig_{nanos}"));
+        let dir = crate::test_support::test_root().join(format!("dct_windows_mig_{nanos}"));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("state.json");
         let mut data = AppStateFile {

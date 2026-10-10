@@ -20,7 +20,7 @@ fn temp_dir(tag: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!("dcterminal_provider_{tag}_{nanos}"));
+    let dir = crate::test_support::test_root().join(format!("dcterminal_provider_{tag}_{nanos}"));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -291,18 +291,18 @@ fn claude_accounts_migrate_from_config_dir_and_env_is_only_the_first() {
     });
     named.claude.config_dir = named.claude.accounts[0].config_dir.clone();
     store.set_providers(named).unwrap();
-    let home = std::env::temp_dir();
+    let home = crate::test_support::test_root();
     let first = account_config(
         &store.providers().claude,
         "default",
         Some("/env/claude"),
-        Some(&home),
+        Some(home),
     );
     let second = account_config(
         &store.providers().claude,
         "company",
         Some("/env/claude"),
-        Some(&home),
+        Some(home),
     );
     assert_eq!(first.source, ConfigDirSource::Env);
     assert!(first.path.contains("env"));

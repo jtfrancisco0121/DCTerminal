@@ -28,7 +28,7 @@ export function ShortcutsOverlay({ platform, onClose }: Props) {
         </p>
         <ul className="shortcut-list">
           {rows.map((row) => (
-            <li key={`${row.action}-${row.keys}`}>
+            <li key={`${row.action}-${row.label}-${row.keys}`}>
               <kbd>{row.keys}</kbd>
               <span>
                 <strong>{row.label}</strong>

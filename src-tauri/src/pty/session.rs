@@ -465,7 +465,8 @@ mod tests {
             eprintln!("ignored: node is not on PATH");
             return;
         }
-        let dir = std::env::temp_dir().join(format!("dcterminal-dsr-{}", std::process::id()));
+        let dir =
+            crate::test_support::test_root().join(format!("dcterminal-dsr-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("dsr temp dir");
         let script = dir.join("dsr.mjs");
@@ -512,7 +513,7 @@ mod tests {
             eprintln!("ignored: this platform has no cmd.exe, powershell, or /bin/sh");
             return;
         };
-        let cwd = std::env::temp_dir();
+        let cwd = crate::test_support::test_root().to_path_buf();
         let session = PtySession::spawn(SpawnSpec {
             program,
             args,

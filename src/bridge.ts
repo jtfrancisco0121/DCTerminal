@@ -302,6 +302,10 @@ export type PipelineRun = {
   /** Role id → text a hand-off along the chain sent into that stage. */
   handoffs?: Record<string, { text: string; at: string }>;
   updatedAt?: string | null;
+  /** Chain round; missing means 1. */
+  round?: number;
+  /** Reviewer verdicts recorded as each round was sent back, oldest first. */
+  verdicts?: { roleId: string; round: number; verdict?: string | null; at: string }[];
 };
 
 export type ClosedTabSummary = {
@@ -390,6 +394,21 @@ export async function setTabChain(
   handoffText?: string | null,
 ): Promise<void> {
   return invoke("set_tab_chain", { tabId, chain, handoffText: handoffText ?? null });
+}
+
+/**
+ * A chain reviewer sends its round back to `tabId` (the earlier stage's tab,
+ * reused or just opened). Records the verdict and starts the next round.
+ * Returns the tab's new chain tag. Sends nothing.
+ */
+export async function chainLoopBack(input: {
+  chainId: string;
+  reviewerRoleId: string;
+  tabId: string;
+  verdict: string | null;
+  handoffText: string | null;
+}): Promise<import("./handoff/chains").ChainRef> {
+  return invoke("chain_loop_back", input);
 }
 
 /** Shows (or opens) the overview tab of an Eagle-Eye chain. Starts nothing. */
@@ -483,6 +502,17 @@ export type DevSessionInfo = {
   /** Claude session whose agent takes pasted images (`promptCapabilities.image`). */
   supportsImages?: boolean;
 };
+
+/** A session still running in the backend, for reattaching after a webview reload. */
+export type LiveSessionInfo = DevSessionInfo & {
+  roleId: string;
+  promptInFlight: boolean;
+  exited: boolean;
+};
+
+export async function devSessionLive(tabId: string): Promise<LiveSessionInfo | null> {
+  return invoke("dev_session_live", { tabId });
+}
 
 export type DevPromptResult = {
   stopReason: string | null;
@@ -828,8 +858,25 @@ export async function createExecutionPipelineTabs(): Promise<AppStateSnapshot> {
   return invoke("create_execution_pipeline_tabs", { windowId: await windowId() });
 }
 
-export async function getPipelineRun(runId: string): Promise<{ run: PipelineRun }> {
+export type PipelineRunView = {
+  run: PipelineRun;
+  /** Step-1 form task type, for stages whose source form has none. */
+  taskType?: string | null;
+};
+
+export async function getPipelineRun(runId: string): Promise<PipelineRunView> {
   return invoke("get_pipeline_run", { runId });
+}
+
+export type ChainRunUpdatedEvent = { chainId: string };
+
+/** A chain run (or pipeline run) changed; open overviews refetch it. */
+export function listenChainRunUpdated(
+  handler: (event: ChainRunUpdatedEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<ChainRunUpdatedEvent>("chain-run-updated", (e) => {
+    handler(e.payload);
+  });
 }
 
 export async function pipelinePromotePlan(

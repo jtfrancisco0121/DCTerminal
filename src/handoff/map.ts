@@ -74,6 +74,8 @@ export type HandoffSource = {
   todos: HandoffTodo[];
   selection: string;
   turnInFlight: boolean;
+  /** The turn is only waiting for the user to approve its plan, so the plan is final. */
+  awaitingPlanApproval?: boolean;
   /** Set when the source is a terminal-mode role tab (Planner or Plan Reviewer). */
   fromTerminal?: boolean;
   /** Body of the newest plan file written after the terminal started. */
@@ -160,6 +162,35 @@ const TASK_TYPE_TO_IMPLEMENTER: Record<string, string> = {
   Other: "Other",
 };
 
+/** True when the target asks for a task type the mapped hand-off did not fill. */
+export function needsChainTaskType(
+  mapped: MappedHandoff,
+  target: { fields: HandoffField[] },
+): boolean {
+  return (
+    !!mapped.planText &&
+    !mapped.answers.taskType &&
+    target.fields.some((field) => field.key === "taskType")
+  );
+}
+
+/**
+ * Fill the target's task type from the chain's step-1 form (Planner or
+ * Implementer) when the source had none, e.g. Plan Reviewer → Implementer.
+ */
+export function carryChainTaskType(
+  mapped: MappedHandoff,
+  target: { fields: HandoffField[] },
+  chainTaskType: string | null | undefined,
+): MappedHandoff {
+  const raw = chainTaskType?.trim() ?? "";
+  const field = target.fields.find((f) => f.key === "taskType");
+  if (!raw || !field || !needsChainTaskType(mapped, target)) return mapped;
+  const allowed = (value: string) => !!value && (!field.options || field.options.includes(value));
+  const value = [raw, TASK_TYPE_TO_IMPLEMENTER[raw] ?? ""].find(allowed);
+  return value ? { ...mapped, answers: { ...mapped.answers, taskType: value } } : mapped;
+}
+
 export function charCount(text: string): number {
   return Array.from(text).length;
 }
@@ -225,7 +256,7 @@ export function handoffBlockReason(
     if (!hasTerminal) return "There is no plan to send yet.";
     return null;
   }
-  if (source.turnInFlight) {
+  if (source.turnInFlight && !source.awaitingPlanApproval) {
     return `Wait until the ${name} finishes this turn.`;
   }
   if (roleId === "role_implementer") {

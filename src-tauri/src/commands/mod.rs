@@ -3,6 +3,7 @@ pub(crate) mod activity;
 mod agent_requests;
 mod app_state;
 mod attachments;
+pub(crate) mod chain_events;
 pub(crate) mod changes;
 mod cursor_cli;
 mod dev_session;
@@ -16,6 +17,8 @@ mod providers;
 mod role_session;
 mod usage;
 mod roles;
+#[cfg(all(test, unix))]
+mod session_flow_tests;
 mod setup;
 pub(crate) mod storage;
 mod workspace;
@@ -30,13 +33,15 @@ pub use attachments::{attachment_add, attachment_remove};
 pub use app_state::{
     ack_provider_notice, close_tab, create_execution_pipeline_tabs, create_pipeline_tabs,
     get_app_state, get_layout, get_tab, new_draft_tab, reopen_closed_tab, select_active_tab,
-    open_chain_overview, set_layout, set_tab_chain, set_tab_color, set_tab_label, start_eagle_eye,
+    chain_loop_back, open_chain_overview, set_layout, set_tab_chain, set_tab_color, set_tab_label,
+    start_eagle_eye,
     sync_active_tab_form,
 };
 pub use changes::{changes_file_diff, changes_list, changes_revert, changes_snapshot, ChangesRoot};
 pub use cursor_cli::{list_claude_history, list_cursor_cli_history, open_in_cursor_cli};
 pub use dev_session::{
-    dev_session_cancel, dev_session_send, dev_session_start, dev_session_stop, session_agent_logs,
+    dev_session_cancel, dev_session_live, dev_session_send, dev_session_start, dev_session_stop,
+    session_agent_logs,
     SessionRegistry,
 };
 pub use forms::{get_form_recall, save_form_draft};

@@ -286,7 +286,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        std::env::temp_dir().join(format!("dct_activity_{tag}_{nanos}"))
+        crate::test_support::test_root().join(format!("dct_activity_{tag}_{nanos}"))
     }
 
     fn patch(id: &str, time: &str) -> ActivityPatch {

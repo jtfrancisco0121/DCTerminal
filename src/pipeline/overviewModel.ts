@@ -76,6 +76,16 @@ export function overviewStages(
   });
 }
 
+/** A reviewer's verdict for each round it sent back, oldest first. */
+export function verdictHistory(
+  run: PipelineRun,
+  roleId: string,
+): { round: number; verdict: string }[] {
+  return (run.verdicts ?? [])
+    .filter((entry) => entry.roleId === roleId)
+    .map((entry) => ({ round: entry.round, verdict: entry.verdict?.trim() || "No verdict" }));
+}
+
 export type Pulled = { text: string; reason: string | null };
 
 const NOT_OPEN_TERMINAL = (role: string) =>

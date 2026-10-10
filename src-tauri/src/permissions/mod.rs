@@ -1,5 +1,7 @@
 pub mod activity;
 mod cli_config;
+#[cfg(test)]
+mod coverage_tests;
 mod policy;
 mod redact;
 mod tool_cache;

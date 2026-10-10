@@ -187,6 +187,19 @@ pub struct ClaudeProviderSettings {
 /// Fill `accounts` from a legacy single `configDir`, and keep `config_dir`
 /// equal to the first account. A `config_dir` that differs from account 0
 /// is a legacy edit and wins.
+fn drop_invalid_claude_accounts(claude: &mut ClaudeProviderSettings) {
+    let mut seen = std::collections::HashSet::new();
+    claude.accounts.retain(|account| {
+        let id = account.id.trim();
+        !id.is_empty()
+            && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            && !account.name.trim().is_empty()
+            && clean_optional_path(account.config_dir.clone(), "").is_ok()
+            && seen.insert(id.to_string())
+    });
+    claude.accounts.truncate(MAX_CLAUDE_ACCOUNTS);
+}
+
 pub fn normalize_claude_accounts(claude: &mut ClaudeProviderSettings) -> Result<(), String> {
     claude.config_dir = clean_optional_path(claude.config_dir.take(), "Claude config folder")?;
     if claude.accounts.len() > MAX_CLAUDE_ACCOUNTS {
@@ -466,7 +479,12 @@ impl SettingsStore {
             data = SettingsFile::default();
         }
         data.schema_version = SETTINGS_SCHEMA_VERSION;
-        normalize_claude_accounts(&mut data.providers.claude)?;
+        if normalize_claude_accounts(&mut data.providers.claude).is_err() {
+            // A hand-edited file must not stop startup: drop only the bad accounts,
+            // keeping every valid one and its config folder.
+            drop_invalid_claude_accounts(&mut data.providers.claude);
+            normalize_claude_accounts(&mut data.providers.claude)?;
+        }
         Ok(Self {
             path,
             data,
@@ -756,7 +774,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("dcterminal_ui_{nanos}"));
+        let dir = crate::test_support::test_root().join(format!("dcterminal_ui_{nanos}"));
         let mut store = SettingsStore::open(&dir).unwrap();
         assert_eq!(store.ui().theme, "github-dark");
         assert!(!store.ui().shortcut_bar);
@@ -795,7 +813,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("dcterminal_setup_{nanos}"));
+        let dir = crate::test_support::test_root().join(format!("dcterminal_setup_{nanos}"));
         let mut store = SettingsStore::open(&dir).unwrap();
         assert!(!store.setup_completed());
         store.mark_setup_complete("2026-10-06T00:00:00Z").unwrap();
@@ -845,7 +863,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("dcterminal_settings_{nanos}"));
+        let dir = crate::test_support::test_root().join(format!("dcterminal_settings_{nanos}"));
         let mut store = SettingsStore::open(&dir).unwrap();
         assert!(!store.capture_enabled());
         store.set_capture(true).unwrap();
@@ -860,7 +878,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("dcterminal_effort_{nanos}"));
+        let dir = crate::test_support::test_root().join(format!("dcterminal_effort_{nanos}"));
         let mut store = SettingsStore::open(&dir).unwrap();
         let mut next = ModelSettings::claude_default();
         next.role_effort = HashMap::from([
@@ -889,7 +907,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("dcterminal_models_{nanos}"));
+        let dir = crate::test_support::test_root().join(format!("dcterminal_models_{nanos}"));
         let mut store = SettingsStore::open(&dir).unwrap();
         assert_eq!(store.models().default_model, "composer-2.5");
         assert_eq!(store.effective_model("role_planner", None), "composer-2.5");
@@ -920,7 +938,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("dcterminal_notify_{nanos}"));
+        let dir = crate::test_support::test_root().join(format!("dcterminal_notify_{nanos}"));
         let mut store = SettingsStore::open(&dir).unwrap();
         assert_eq!(store.notifications(), &NotificationSettings::default());
         assert!(store.notifications().enabled);

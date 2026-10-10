@@ -24,6 +24,10 @@ pub mod turn_changes;
 mod usage;
 mod windows;
 pub mod worktree;
+#[cfg(test)]
+mod coverage_tests;
+#[cfg(test)]
+pub(crate) mod test_support;
 
 use acp::{probe_acp, probe_acp_handshake};
 use cli_detect::{cli_login_status, detect_cli};
@@ -32,12 +36,12 @@ use commands::{
     acp_set_effort, acp_set_model, get_claude_usage, check_working_folder, close_tab, create_execution_pipeline_tabs,
     create_pipeline_tabs, cursor_approval_mode, get_pipeline_run, pipeline_promote_plan,
     pipeline_set_candidate_plan,
-    dev_session_cancel, dev_session_send, dev_session_start, dev_session_stop,
+    dev_session_cancel, dev_session_live, dev_session_send, dev_session_start, dev_session_stop,
     diagnostics_read_log, diagnostics_set_capture, diagnostics_status, get_app_state,
     get_form_recall, get_layout, get_role, get_tab,
     handoff_bind_tab, handoff_get, handoff_list, handoff_save, list_claude_history,
     list_cursor_cli_history, list_roles,
-    new_draft_tab, ack_provider_notice, open_chain_overview, set_tab_chain, start_eagle_eye,
+    new_draft_tab, ack_provider_notice, chain_loop_back, open_chain_overview, set_tab_chain, start_eagle_eye,
     open_in_cursor_cli, projects_list, projects_remember, projects_remove,
     projects_toggle_favorite, reopen_closed_tab, reset_builtin_role, respond_permission_request,
     respond_plan_request, respond_question_request, role_session_start, save_form_draft,
@@ -173,6 +177,7 @@ pub fn run() {
             new_draft_tab,
             ack_provider_notice,
             set_tab_chain,
+            chain_loop_back,
             open_chain_overview,
             start_eagle_eye,
             create_pipeline_tabs,
@@ -189,6 +194,7 @@ pub fn run() {
             attachment_remove,
             dev_session_cancel,
             dev_session_stop,
+            dev_session_live,
             respond_permission_request,
             respond_plan_request,
             respond_question_request,

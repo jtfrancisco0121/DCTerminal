@@ -219,7 +219,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("dcterminal_prompts_{nanos}"));
+        let path = crate::test_support::test_root().join(format!("dcterminal_prompts_{nanos}"));
         std::fs::create_dir_all(&path).unwrap();
         path
     }

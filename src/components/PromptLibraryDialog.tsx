@@ -198,7 +198,7 @@ export function PromptLibraryDialog({
         </div>
 
         {form ? (
-          <div className="prompt-library-form" onKeyDown={onFormKey}>
+          <div className="prompt-library-form" onKeyDown={onFormKey} data-own-escape="">
             <label>
               <span>Name</span>
               <input

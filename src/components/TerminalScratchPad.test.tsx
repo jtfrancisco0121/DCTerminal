@@ -46,7 +46,7 @@ function renderPad(
       platform={overrides.platform ?? "mac"}
       onChange={overrides.onChange ?? (() => {})}
       write={write}
-      bracketedPaste={overrides.bracketedPaste ?? true}
+      bracketedPaste={() => overrides.bracketedPaste ?? true}
       onFocusTerminal={onFocusTerminal}
       onFocusPad={overrides.onFocusPad}
       onOpenChange={overrides.onOpenChange}
@@ -211,7 +211,7 @@ describe("terminal scratch pad", () => {
         platform="mac"
         onChange={() => {}}
         write={vi.fn(async () => {})}
-        bracketedPaste
+        bracketedPaste={() => true}
         onFocusTerminal={() => {}}
         open
         onOpenToggle={onOpenToggle}
@@ -237,7 +237,7 @@ describe("terminal scratch pad", () => {
         platform="mac"
         onChange={() => {}}
         write={vi.fn(async () => {})}
-        bracketedPaste
+        bracketedPaste={() => true}
         onFocusTerminal={() => {}}
         open={false}
         onOpenToggle={onOpenToggle}
@@ -278,7 +278,7 @@ describe("terminal scratch pad", () => {
           onChange={(value) => scratch.setContent(tabId, value)}
           onBlur={() => scratch.flush()}
           write={write}
-          bracketedPaste
+          bracketedPaste={() => true}
           onFocusTerminal={() => {}}
         />
       );

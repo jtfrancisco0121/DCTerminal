@@ -26,6 +26,18 @@ pub enum PendingPlan {
     ClaudeExit { reject_option_id: Option<String> },
 }
 
+impl PendingPlan {
+    /// The answer when the turn is cancelled or the tab stops. Claude's
+    /// `ExitPlanMode` is a `session/request_permission`, so it needs the
+    /// permission shape (`{outcome: {outcome: "cancelled"}}`), not Cursor's.
+    pub fn cancelled_result(&self) -> Value {
+        match self {
+            PendingPlan::Cursor => json!({ "outcome": "cancelled" }),
+            PendingPlan::ClaudeExit { .. } => cancelled_permission_result(),
+        }
+    }
+}
+
 /// A permission card waiting for JT: which activity row it answers and the
 /// offered options (`(id, kind)`), so the decision can be logged as allow or
 /// reject.
@@ -98,14 +110,14 @@ impl LiveSession {
 
     pub fn shutdown(&mut self) {
         let pending: Vec<u64> = self.pending_permissions.drain().map(|(id, _)| id).collect();
-        let plans: Vec<u64> = self.pending_plans.drain().map(|(id, _)| id).collect();
+        let plans: Vec<(u64, PendingPlan)> = self.pending_plans.drain().collect();
         let questions: Vec<u64> = self.pending_questions.drain().map(|(id, _)| id).collect();
         if let Ok(mut outbox) = self.outbox.lock() {
             for id in pending {
                 outbox.push((id, cancelled_permission_result()));
             }
-            for id in plans {
-                outbox.push((id, json!({ "outcome": "cancelled" })));
+            for (id, plan) in plans {
+                outbox.push((id, plan.cancelled_result()));
             }
             for id in questions {
                 outbox.push((id, json!({ "outcome": "cancelled" })));
@@ -219,6 +231,54 @@ pub struct DevSessionInfo {
     pub effort_options: Vec<String>,
     /// Claude session whose agent takes pasted images.
     pub supports_images: bool,
+}
+
+/// A session still running for a tab, so a reloaded webview can reattach to it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveSessionInfo {
+    #[serde(flatten)]
+    pub session: DevSessionInfo,
+    pub role_id: String,
+    pub prompt_in_flight: bool,
+    pub exited: bool,
+}
+
+impl LiveSession {
+    pub fn live_info(&self) -> LiveSessionInfo {
+        // A turn holds the client lock; model and effort are skipped rather than waited for.
+        let (model, effort, effort_options) = match self.client.try_lock() {
+            Ok(client) => (
+                client.current_model().map(String::from),
+                client.current_effort().map(String::from),
+                client.effort_options().to_vec(),
+            ),
+            Err(_) => (None, None, Vec::new()),
+        };
+        LiveSessionInfo {
+            session: DevSessionInfo {
+                session_id: self.session_id.clone(),
+                mode_id: self.mode_id.clone(),
+                cwd: self.cwd.clone(),
+                model,
+                effort,
+                effort_options,
+                supports_images: self.supports_images,
+            },
+            role_id: self.role_id.clone(),
+            prompt_in_flight: self.prompt_in_flight,
+            exited: self.exited,
+        }
+    }
+}
+
+#[tauri::command]
+pub fn dev_session_live(
+    tab_id: String,
+    state: State<Mutex<SessionRegistry>>,
+) -> Result<Option<LiveSessionInfo>, String> {
+    let guard = state.lock().map_err(|e| e.to_string())?;
+    Ok(guard.get(&tab_id).map(LiveSession::live_info))
 }
 
 #[derive(Serialize)]
@@ -338,7 +398,7 @@ pub fn dev_session_cancel(
         .get_mut(&tab_id)
         .ok_or_else(|| "no active session".to_string())?;
     let pending: Vec<(u64, PendingPermission)> = session.pending_permissions.drain().collect();
-    let plans: Vec<u64> = session.pending_plans.drain().map(|(id, _)| id).collect();
+    let plans: Vec<(u64, PendingPlan)> = session.pending_plans.drain().collect();
     let questions: Vec<u64> = session.pending_questions.drain().map(|(id, _)| id).collect();
     let outbox = Arc::clone(&session.outbox);
     let cancel = Arc::clone(&session.cancel);
@@ -356,8 +416,8 @@ pub fn dev_session_cancel(
         for (id, _) in pending {
             queue.push((id, cancelled_permission_result()));
         }
-        for id in plans {
-            queue.push((id, json!({ "outcome": "cancelled" })));
+        for (id, plan) in plans {
+            queue.push((id, plan.cancelled_result()));
         }
         for id in questions {
             queue.push((id, json!({ "outcome": "cancelled" })));
@@ -393,6 +453,7 @@ pub fn session_agent_logs(
 
 #[tauri::command]
 pub fn dev_session_stop(
+    app: tauri::AppHandle,
     transcript: Option<String>,
     tab_id: Option<String>,
     state: State<Mutex<SessionRegistry>>,
@@ -414,6 +475,7 @@ pub fn dev_session_stop(
         };
         let mut store = state_store.lock().map_err(|e| e.to_string())?;
         store.mark_tab_awaiting_input(&tab_id, transcript.clone())?;
+        crate::commands::chain_events::notify_tab(&app, &store, &tab_id);
         if let Some(text) = transcript.as_ref().filter(|text| !text.trim().is_empty()) {
             let keep = store
                 .data

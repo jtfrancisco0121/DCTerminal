@@ -15,27 +15,27 @@ pub fn merge_template(
     fields: &[RoleField],
     values: &HashMap<String, String>,
 ) -> MergeResult {
-    let mut text = template.to_string();
+    // Blank optional and hidden fields first, while only template text is present.
+    let mut skeleton = template.to_string();
+    let mut filled: HashMap<&str, &str> = HashMap::new();
     for field in fields {
         let token = format!("{{{{{}}}}}", field.key);
         let raw = values.get(&field.key).map(|s| s.as_str()).unwrap_or("");
         let blank = raw.trim().is_empty();
         let hidden = !field_visible(field, values);
         if hidden || (blank && !field.required) {
-            text = apply_empty_behavior(&text, &token, field);
+            skeleton = apply_empty_behavior(&skeleton, &token, field);
             continue;
         }
-        text = text.replace(&token, raw);
+        filled.insert(field.key.as_str(), raw);
     }
-
-    for (key, value) in values {
-        if key == "cwd" || key == "folderName" || key == "date" || key == "roleName" {
-            let token = format!("{{{{{}}}}}", key);
-            text = text.replace(&token, value);
+    for key in ["cwd", "folderName", "date", "roleName"] {
+        if let Some(value) = values.get(key) {
+            filled.entry(key).or_insert(value.as_str());
         }
     }
-
-    let unresolved = find_unresolved_tokens(&text);
+    // One pass: values are inserted as typed and never scanned for tokens again.
+    let (text, unresolved) = fill_tokens(&skeleton, &filled);
     let char_count = text.len();
     MergeResult {
         text,
@@ -83,22 +83,29 @@ fn is_label_only(trimmed: &str) -> bool {
             .all(|c| c.is_alphanumeric() || c.is_whitespace() || c == '-' || c == '_')
 }
 
-fn find_unresolved_tokens(text: &str) -> Vec<String> {
-    let mut found = Vec::new();
-    let mut i = 0;
-    let bytes = text.as_bytes();
-    while i < bytes.len() {
-        if bytes[i] == b'{' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
-            if let Some(end) = text[i + 2..].find("}}") {
-                let key = text[i + 2..i + 2 + end].trim();
-                if !key.is_empty() && !found.contains(&key.to_string()) {
-                    found.push(key.to_string());
+fn fill_tokens(template: &str, filled: &HashMap<&str, &str>) -> (String, Vec<String>) {
+    let mut out = String::with_capacity(template.len());
+    let mut unresolved: Vec<String> = Vec::new();
+    let mut rest = template;
+    while let Some(open) = rest.find("{{") {
+        let Some(close) = rest[open + 2..].find("}}") else {
+            break;
+        };
+        out.push_str(&rest[..open]);
+        let key = &rest[open + 2..open + 2 + close];
+        match filled.get(key) {
+            Some(value) => out.push_str(value),
+            None => {
+                out.push_str(&rest[open..open + 2 + close + 2]);
+                let key = key.trim();
+                if !key.is_empty() && !unresolved.iter().any(|k| k == key) {
+                    unresolved.push(key.to_string());
                 }
-                i = i + 2 + end + 2;
-                continue;
             }
         }
-        i += 1;
+        rest = &rest[open + 2 + close + 2..];
     }
-    found
+    out.push_str(rest);
+    (out, unresolved)
 }
+

@@ -22,7 +22,8 @@ type Props = {
   onChange: (value: string) => void;
   onBlur?: () => void;
   write: (ptyId: string, data: string) => Promise<void>;
-  bracketedPaste: boolean;
+  /** Read at send time: a TUI can switch bracketed paste on without a re-render. */
+  bracketedPaste: () => boolean;
   onFocusTerminal: () => void;
   /** Blur a parked xterm so pad keystrokes cannot reach the PTY. */
   onFocusPad?: () => void;
@@ -93,7 +94,7 @@ export const TerminalScratchPad = forwardRef<TerminalPadHandle, Props>(
       const text = padText(fieldRef.current, content);
       if (!text.trim()) return;
       const before = content;
-      const data = encodeTerminalPaste(text, { bracketedPaste, submit });
+      const data = encodeTerminalPaste(text, { bracketedPaste: bracketedPaste(), submit });
       let written: Promise<void>;
       if (submit && beforeSubmit) {
         written = beforeSubmit(tabId)

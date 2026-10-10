@@ -2,15 +2,22 @@ import { useCallback, useEffect, useState } from "react";
 import type { PipelineRun, TabSummary } from "../bridge";
 import {
   getPipelineRun,
+  listenChainRunUpdated,
   pipelinePromotePlan,
   pipelineSetCandidatePlan,
 } from "../bridge";
+import {
+  coalescedReload,
+  isForRun,
+  OVERVIEW_FALLBACK_POLL_MS,
+} from "../pipeline/overviewRefresh";
 import type { TabRuntime } from "../liveTabs";
 import type { PipelineKind } from "../pipeline/stages";
 import {
   overviewStages,
   pullPlannerText,
   pullPlanReviewText,
+  verdictHistory,
 } from "../pipeline/overviewModel";
 import { liveTerminalReader, type TerminalReader } from "../pipeline/terminalText";
 import { verdictTone } from "../handoff/verdict";
@@ -63,10 +70,26 @@ export function PipelineOverview({
   }, [runId]);
 
   useEffect(() => {
-    void reload();
-    const timer = window.setInterval(() => void reload(), 4000);
-    return () => window.clearInterval(timer);
-  }, [reload]);
+    const refresh = coalescedReload(reload);
+    let unlisten: (() => void) | null = null;
+    let disposed = false;
+    listenChainRunUpdated((event) => {
+      if (isForRun(event, runId)) refresh.request();
+    })
+      .then((stop) => {
+        if (disposed) stop();
+        else unlisten = stop;
+      })
+      .catch(() => {});
+    refresh.request();
+    const timer = window.setInterval(() => refresh.request(), OVERVIEW_FALLBACK_POLL_MS);
+    return () => {
+      disposed = true;
+      refresh.stop();
+      unlisten?.();
+      window.clearInterval(timer);
+    };
+  }, [reload, runId]);
 
   const kind = (run?.kind ?? "full") as PipelineKind;
 
@@ -139,6 +162,7 @@ export function PipelineOverview({
   // A chain's Implementer may already be running; promote only fills a draft form.
   const canPromote = !run.chainId || implementerTab?.phase === "draft";
   const originalRequest = run.originalRequest?.trim() ?? "";
+  const round = Math.max(1, run.round ?? 1);
 
   return (
     <section className="pipeline-overview" aria-label="Pipeline overview">
@@ -152,6 +176,7 @@ export function PipelineOverview({
         </div>
         <p className="hint">
           Stage: <strong>{run.stage}</strong>
+          {round > 1 && <span className="pipeline-round"> · round {round}</span>}
         </p>
       </header>
 
@@ -184,6 +209,18 @@ export function PipelineOverview({
               >
                 {stage.verdict}
               </p>
+            )}
+            {verdictHistory(run, stage.def.roleId).length > 0 && (
+              <ol
+                className="pipeline-verdict-history"
+                aria-label={`${stage.def.title} verdicts by round`}
+              >
+                {verdictHistory(run, stage.def.roleId).map((entry, i) => (
+                  <li key={`${entry.round}-${i}`}>
+                    Round {entry.round}: {entry.verdict}
+                  </li>
+                ))}
+              </ol>
             )}
             {stage.handedIn && (
               <details className="pipeline-handed-in">

@@ -320,6 +320,9 @@ pub fn role_session_start(
             }
         }
     };
+    if let Ok(store) = state_store.lock() {
+        crate::commands::chain_events::notify_tab(&app, &store, &persisted_tab_id);
+    }
 
     if provider.id() == ProviderId::Claude {
         let mut store = state_store.lock().map_err(|e| e.to_string())?;

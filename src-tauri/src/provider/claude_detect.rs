@@ -608,7 +608,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("dct_claude_detect_{tag}_{nanos}"));
+        let dir = crate::test_support::test_root().join(format!("dct_claude_detect_{tag}_{nanos}"));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }

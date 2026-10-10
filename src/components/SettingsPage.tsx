@@ -466,7 +466,7 @@ export function SettingsPage({
               </div>
               <ul className="settings-shortcuts">
                 {rows.map((row) => (
-                  <li key={`${row.action}-${row.keys}`}>
+                  <li key={`${row.action}-${row.label}-${row.keys}`}>
                     <span>{row.label}</span>
                     <kbd>{row.keys}</kbd>
                   </li>

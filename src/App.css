@@ -1275,6 +1275,18 @@ kbd {
   margin-top: 0.45rem;
 }
 
+.handoff-complete {
+  align-self: center;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--success);
+}
+
+.handoff-target {
+  margin: 0 0 0.5rem;
+  font-size: 0.9rem;
+}
+
 .handoff-banner {
   margin: 0 0 0.65rem;
   font-size: 0.85rem;
@@ -4674,6 +4686,17 @@ mark.search-hit-current {
 
 .pipeline-verdict-bad {
   color: var(--danger);
+}
+
+.pipeline-verdict-history {
+  margin: 0 0 0.5rem;
+  padding-left: 1.1rem;
+  font-size: 0.75rem;
+  color: var(--fg-subtle);
+}
+
+.pipeline-round {
+  font-weight: 600;
 }
 
 .pipeline-handed-in {

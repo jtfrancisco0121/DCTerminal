@@ -436,6 +436,7 @@ function codeLabel(code: string): string {
   if (code.startsWith("Key")) return code.slice(3);
   if (code.startsWith("Digit")) return code.slice(5);
   if (code === "Period") return ".";
+  if (code === "Comma") return ",";
   if (code === "Slash") return "/";
   if (code === "Backslash") return "\\";
   if (code === "PageUp") return "PageUp";

@@ -96,7 +96,10 @@ mod tests {
         let role = role_with_required_title();
         let mut values = HashMap::new();
         values.insert("title".into(), "  \t ".into());
-        values.insert("cwd".into(), std::env::temp_dir().display().to_string());
+        values.insert(
+            "cwd".into(),
+            crate::test_support::test_root().display().to_string(),
+        );
         let errors = validate_values(&role, &values);
         assert!(errors.iter().any(|err| err.key == "title"), "{errors:?}");
     }

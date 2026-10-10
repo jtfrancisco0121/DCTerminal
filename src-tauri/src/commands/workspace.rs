@@ -357,7 +357,7 @@ mod tests {
         let missing = check_working_folder(r"C:\no\such\dcterminal-folder".into()).unwrap_err();
         assert!(missing.contains("not found"));
 
-        let real = std::env::temp_dir();
+        let real = crate::test_support::test_root();
         let ok = check_working_folder(format!("  {}  ", real.display())).unwrap();
         assert_eq!(ok, real.display().to_string().trim());
     }

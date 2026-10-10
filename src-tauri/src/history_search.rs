@@ -289,7 +289,7 @@ mod tests {
     #[test]
     fn sources_cover_open_closed_and_archived_chats() {
         let mut state = StateStore {
-            path: std::env::temp_dir().join("unused-state.json"),
+            path: crate::test_support::test_root().join("unused-state.json"),
             data: crate::store::AppStateFile::default(),
             new_tab_provider: crate::provider::ProviderId::DEFAULT,
             draft_window: crate::store::MAIN_WINDOW_ID.to_string(),

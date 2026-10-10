@@ -88,7 +88,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("dcterminal_storage_cmd_{nanos}"));
+        let dir = crate::test_support::test_root().join(format!("dcterminal_storage_cmd_{nanos}"));
         std::fs::create_dir_all(&dir).unwrap();
         let mut scratch = ScratchStore::open(&dir).unwrap();
         scratch.upsert("open_tab", "keep", &[], "2020-01-01T00:00:00Z");

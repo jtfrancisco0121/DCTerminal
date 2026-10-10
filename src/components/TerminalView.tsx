@@ -17,6 +17,7 @@ import {
   ensureParkedTerminal,
   blurParkedTerminal,
   focusParkedTerminal,
+  isParkedHost,
   pasteTerminalText,
   releaseParkedTerminal,
   setTerminalRefitter,
@@ -168,7 +169,10 @@ export function TerminalView({
       detach?.();
       blurParkedTerminal(ptyId);
       const root = document.getElementById("terminal-park");
-      if (root && parked.host.parentElement !== root) root.appendChild(parked.host);
+      // A closed tab already released its terminal; don't park the disposed host.
+      if (root && isParkedHost(ptyId, parked.host) && parked.host.parentElement !== root) {
+        root.appendChild(parked.host);
+      }
     };
   }, [autoFocus, ptyId, fontSize, generation]);
 

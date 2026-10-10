@@ -71,6 +71,13 @@ function paintFindHighlights(root: HTMLElement, query: string, current: HTMLElem
 }
 
 const markdownComponents: Components = {
+  // target=_blank lets the opener plugin open links in the system browser
+  // instead of navigating the app's own webview.
+  a: ({ href, children }) => (
+    <a href={href} target="_blank" rel="noreferrer noopener">
+      {children}
+    </a>
+  ),
   table: ({ children }) => (
     <div className="session-markdown-table-wrap">
       <table>{children}</table>
@@ -111,6 +118,8 @@ type Props = {
     reason: string | null;
     targets?: HandoffTargetId[];
     primaryTarget?: string | null;
+    primaryLabel?: string | null;
+    completeNote?: string | null;
     onSend: (target: HandoffTargetId) => void;
   } | null;
   /** "Eagle-Eye 1 · step 2 of 4" */
@@ -495,6 +504,8 @@ export function SessionTerminal({
                       reason={handoff.reason}
                       targets={handoff.targets ?? []}
                       primaryTarget={handoff.primaryTarget}
+                      primaryLabel={handoff.primaryLabel}
+                      completeNote={handoff.completeNote}
                       busy={busy}
                       onSend={handoff.onSend}
                     />
@@ -558,7 +569,9 @@ export function SessionTerminal({
           }}
           onSelect={slash.onCaret}
           onKeyDown={handleKeyDown}
-          disabled={busy}
+          // readOnly, not disabled: a disabled field drops focus during a tab switch.
+          readOnly={busy}
+          aria-busy={busy}
           {...slash.inputProps}
           {...imageInputHandlers(images)}
         />

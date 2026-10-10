@@ -41,6 +41,10 @@ export function createTurnWaiter() {
       }
       early.set(evt.tabId, outcome);
     },
+    /** A new turn starts: a result left over from an earlier, unwatched turn is stale. */
+    forget(tabId: string): void {
+      early.delete(tabId);
+    },
     cancel(tabId: string): void {
       const waiter = pending.get(tabId);
       if (!waiter) return;

@@ -16,6 +16,7 @@ import {
   type ModelList,
   type ProviderModelSettings,
   devSessionSend,
+  devSessionLive,
   devSessionStop,
   cursorApprovalMode,
   createExecutionPipelineTabs,
@@ -56,6 +57,7 @@ import {
   getAppState,
   getTab,
   getFormRecall,
+  getPipelineRun,
   getRole,
   listenPromptFinished,
   listenSessionUpdates,
@@ -67,6 +69,7 @@ import {
   newDraftTab,
   openAccountWindow,
   openChainOverview,
+  chainLoopBack,
   setTabChain,
   startEagleEye,
   roleSessionStart,
@@ -129,6 +132,7 @@ import {
   HandoffActions,
   HandoffBanner,
   HandoffDialog,
+  type LoopBackTarget,
   SavedPlanDialog,
 } from "./components/HandoffDialog";
 import { PipelineOverview } from "./components/PipelineOverview";
@@ -142,8 +146,11 @@ import {
   isHandoffSource,
   isPlanSource,
   latestAgentMessage,
+  composePlanText,
   roleDisplayName,
   mapHandoff,
+  carryChainTaskType,
+  needsChainTaskType,
   selectionInside,
   type HandoffField,
   type HandoffScope,
@@ -194,7 +201,17 @@ import { PromptLibraryDialog } from "./components/PromptLibraryDialog";
 import { WorkspacesDialog } from "./components/WorkspacesDialog";
 import { FirstRunSetup, type FirstRunFinish } from "./components/FirstRunSetup";
 import { insertIntoPad, type PadSelection } from "./prompts/library";
-import { advanceChain, chainLabel, newChain, nextChainRole } from "./handoff/chains";
+import {
+  advanceChain,
+  chainLabel,
+  chainRound,
+  chainTabFor,
+  loopBackChain,
+  newChain,
+  nextChainRole,
+} from "./handoff/chains";
+import { handoffRoute, loopBackMessage } from "./handoff/routing";
+import { isReviewerRole, parseReviewVerdict } from "./handoff/verdict";
 import { contextPercent, limitAlerts, statusLimit } from "./usage/limits";
 import type { ChatFindRequest } from "./SessionTerminal";
 import { classifyPromptFinished, type NotificationSettings } from "./notify/agentNotify";
@@ -244,6 +261,7 @@ import {
   padSelection,
   transferToInput,
   type ChainCursor,
+  type TurnOutcome,
 } from "./scratch/pad";
 import { createTurnWaiter } from "./scratch/turnWait";
 import { SessionTerminal } from "./SessionTerminal";
@@ -358,6 +376,8 @@ type Props = {
   roles: RoleSummary[];
   cli: CliDetectResult | null;
   cliError: string | null;
+  /** Why the roles failed to load, if they did. */
+  rolesError?: string | null;
   cliFound: boolean;
   showDevTools: boolean;
   /** F8: re-run CLI detection (App keeps the result). */
@@ -369,6 +389,7 @@ export function StartupForm({
   roles,
   cli,
   cliError,
+  rolesError = null,
   cliFound,
   showDevTools,
   onRedetectCli,
@@ -478,6 +499,14 @@ export function StartupForm({
   const limitAlertedRef = useRef<Set<string>>(new Set());
   const eagleOnRef = useRef(false);
   const [eagleOn, setEagleOn] = useState(false);
+  // The Eagle-Eye tick belongs to the tab it was set on.
+  useEffect(() => {
+    eagleOnRef.current = false;
+    setEagleOn(false);
+  }, [activeTabId]);
+  /** A tab already in a chain keeps it; starting it never begins a new one. */
+  const inChain = (tabId: string | null | undefined) =>
+    !!tabId && !!savedTabsRef.current.find((tab) => tab.id === tabId)?.chain;
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [handoffs, setHandoffs] = useState<HandoffRecord[]>([]);
   const [handoffTarget, setHandoffTarget] = useState<HandoffTargetId | null>(null);
@@ -530,6 +559,16 @@ export function StartupForm({
   const startLockRef = useRef(false);
   const activeTabIdRef = useRef(activeTabId);
   activeTabIdRef.current = activeTabId;
+  // A grid cell clicked in its composer: the active cell renders a new one, so focus it.
+  const gridFocusRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!activeTabId || gridFocusRef.current !== activeTabId) return;
+    gridFocusRef.current = null;
+    const input = document.querySelector<HTMLTextAreaElement>(
+      "[data-pane='primary'] textarea.session-terminal-input",
+    );
+    input?.focus();
+  }, [activeTabId]);
   const roleIdRef = useRef(roleId);
   roleIdRef.current = roleId;
   const valuesRef = useRef(values);
@@ -569,7 +608,8 @@ export function StartupForm({
   const padTextRef = useRef<Record<string, string>>({});
   if (activeTabId) padTextRef.current[activeTabId] = scratch.content;
   /** Up-arrow history, oldest first. The pad keeps the same sends, newest first, on disk. */
-  const composerHistory = useMemo(() => [...scratch.history].reverse(), [scratch.history]);
+  // scratch.history is newest first, the order historyNavigate walks.
+  const composerHistory = scratch.history;
   const padRef = useRef<HTMLTextAreaElement>(null);
   const terminalPadRef = useRef<TerminalPadHandle>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -617,7 +657,15 @@ export function StartupForm({
     },
     tabLabel: (tabId) => savedTabsRef.current.find((tab) => tab.id === tabId)?.label ?? "",
   });
-  const notifyAgent = agentNotifications.notify;
+  const rawNotifyAgent = agentNotifications.notify;
+  // A late event for a closed or unknown tab is not news.
+  const notifyAgent = useCallback(
+    (...args: Parameters<typeof rawNotifyAgent>) => {
+      if (!savedTabsRef.current.some((tab) => tab.id === args[0])) return;
+      rawNotifyAgent(...args);
+    },
+    [rawNotifyAgent],
+  );
   /** On screen in a focused window: nothing is left unseen. */
   const isWatchingTab = useCallback((tabId: string) => {
     if (!isWindowFocused()) return false;
@@ -629,6 +677,9 @@ export function StartupForm({
   }, []);
   const dismissTabToasts = agentNotifications.dismissTab;
   const showNotice = agentNotifications.notice;
+  useEffect(() => {
+    if (rolesError) showNotice("Roles did not load", rolesError, "question");
+  }, [rolesError, showNotice]);
 
   const launchAccountWindow = useCallback(
     (accountId: string) => {
@@ -785,6 +836,28 @@ export function StartupForm({
     const seedRoleId = roles[0]?.id ?? "role_implementer";
     refreshTabs()
       .then(async (snap) => {
+        // A reloaded webview reattaches to chats whose agent is still running.
+        for (const running of snap.tabs) {
+          if (running.phase !== "running" || running.kind === "terminal") continue;
+          if (running.kind === "pipeline_overview") continue;
+          const live = await devSessionLive(running.id).catch(() => null);
+          if (!live) continue;
+          const { roleId: _role, promptInFlight: inFlight, exited, ...info } = live;
+          patchRuntime(running.id, (rt) => ({
+            ...rt,
+            session: info,
+            promptInFlight: inFlight,
+            agentExited: exited,
+            accepting: true,
+            segments: rt.segments.length
+              ? rt.segments
+              : [
+                  streamSegmentFromSystemMessage(
+                    "Reconnected to the running agent. Output from before the reload is in the saved transcript.",
+                  ),
+                ],
+          }));
+        }
         if (snap.tabs.length === 0) {
           const { tab } = await newDraftTab(seedRoleId, "");
           await refreshTabs();
@@ -807,7 +880,7 @@ export function StartupForm({
         loadTabIntoForm(tab);
       })
       .catch(() => setSavedTabs([]));
-  }, [loadTabIntoForm, refreshTabs, roles]);
+  }, [loadTabIntoForm, patchRuntime, refreshTabs, roles]);
 
   useEffect(() => {
     sessionActiveRef.current = !!session;
@@ -864,6 +937,13 @@ export function StartupForm({
       }),
       listenPromptFinished((evt) => {
         if (!evt.tabId) return;
+        // Chunks still waiting for the next frame belong to this turn; apply them first
+        // so the final reply isn't added on top of them.
+        if (flushRafRef.current !== null) {
+          cancelAnimationFrame(flushRafRef.current);
+          flushRafRef.current = null;
+        }
+        flushUpdates();
         waiterRef.current.notify({
           tabId: evt.tabId,
           success: evt.success,
@@ -1452,6 +1532,7 @@ export function StartupForm({
         !resumeId &&
         eagleOnRef.current &&
         targetId &&
+        !inChain(targetId) &&
         (roleId === "role_planner" || roleId === "role_implementer")
       ) {
         const kind = roleId === "role_planner" ? "eagle1" : "eagle2";
@@ -1556,6 +1637,8 @@ export function StartupForm({
         if (
           !options &&
           eagleOnRef.current &&
+          !inChain(pendingId) &&
+          !inChain(result.tabId) &&
           (roleToStart === "role_planner" || roleToStart === "role_implementer")
         ) {
           const kind = roleToStart === "role_planner" ? "eagle1" : "eagle2";
@@ -1785,7 +1868,6 @@ export function StartupForm({
         delete knownFoldersRef.current[tabId];
         delete scrollPositions.current[tabId];
         dropLivePty(tabId);
-        destroyTerminal(tabId);
         const snap = await closeTab(tabId);
         setRuntimes((prev) => {
           const next = { ...prev };
@@ -1808,6 +1890,9 @@ export function StartupForm({
           setPickedRoleId(null);
           setActiveTabId(null);
         }
+        // Released once the tab's view has unmounted; released earlier, the
+        // still-mounted view would create a fresh terminal and park it.
+        window.setTimeout(() => destroyTerminal(tabId), 0);
       } finally {
         setBusy(false);
       }
@@ -2013,8 +2098,13 @@ export function StartupForm({
     [activeTabId, respondQuestionFor],
   );
 
-  const sendText = useCallback(
-    async (tabId: string, text: string, onNotSent?: () => void) => {
+  /** Hands a prompt to the agent; `turn` settles when that turn ends. */
+  const dispatchText = useCallback(
+    async (
+      tabId: string,
+      text: string,
+      onNotSent?: () => void,
+    ): Promise<{ turn: Promise<TurnOutcome> } | "error"> => {
       const trimmed = text.trim();
       const blocked = trimmed ? blockedSlashCommand(trimmed) : null;
       if (blocked) {
@@ -2026,6 +2116,7 @@ export function StartupForm({
       // Pasted images go with this message only, so a --- chain's later steps send none.
       const images = chatImages.actions.take(tabId);
       if (!trimmed && images.length === 0) return "error" as const;
+      waiterRef.current.forget(tabId);
       const pending = waiterRef.current.expect(tabId);
       setHistoryCursor(-1);
       if (trimmed) {
@@ -2058,9 +2149,18 @@ export function StartupForm({
         onNotSent?.();
         return "error" as const;
       }
-      return pending;
+      return { turn: pending };
     },
     [chatImages.actions, patchRuntime, scratch],
+  );
+
+  /** Sends and waits for the turn to end (chain steps). */
+  const sendText = useCallback(
+    async (tabId: string, text: string, onNotSent?: () => void) => {
+      const sent = await dispatchText(tabId, text, onNotSent);
+      return sent === "error" ? sent : sent.turn;
+    },
+    [dispatchText],
   );
 
   const sendFollowUpFor = useCallback(
@@ -2071,14 +2171,15 @@ export function StartupForm({
       if ((!text && !chatImages.actions.has(tabId)) || !rt || rt.agentExited || rt.promptInFlight) {
         return;
       }
+      // Busy only until the prompt is handed off, not for the whole turn.
       setBusy(true);
       try {
-        await sendText(tabId, text);
+        await dispatchText(tabId, text);
       } finally {
         setBusy(false);
       }
     },
-    [chatImages.actions, sendText],
+    [chatImages.actions, dispatchText],
   );
 
   const sendFollowUp = useCallback(
@@ -2106,6 +2207,12 @@ export function StartupForm({
     if (!activeTabId || promptInFlight || permissionRequest || questionRequest) return;
     const started = chainStart(scratch.content);
     if (!started) return;
+    // Refuse the whole chain up front, so no step goes out before a blocked one.
+    const blocked = started.steps.map(blockedSlashCommand).find(Boolean);
+    if (blocked) {
+      patchRuntime(activeTabId, (rt) => ({ ...rt, promptError: blocked }));
+      return;
+    }
     const tabId = activeTabId;
     const padAtStart = scratch.content;
     chainAbortRef.current = false;
@@ -2135,11 +2242,13 @@ export function StartupForm({
     if (cursor.phase === "done" && padTextRef.current[tabId] === padAtStart) {
       scratch.setContent(tabId, "");
     }
-  }, [activeTabId, permissionRequest, questionRequest, promptInFlight, scratch, sendText]);
+  }, [activeTabId, patchRuntime, permissionRequest, questionRequest, promptInFlight, scratch, sendText]);
 
   const sendFromPad = useCallback(() => {
-    if (!activeTabId) return;
-    if (splitChainSteps(scratch.content).length > 1 && !followUp.trim()) {
+    // One turn at a time: a second send would be refused and must not end the running one.
+    if (!activeTabId || runtimesRef.current[activeTabId]?.promptInFlight) return;
+    const steps = splitChainSteps(scratch.content);
+    if (steps.length > 1 && !followUp.trim()) {
       void runChain();
       return;
     }
@@ -2147,14 +2256,16 @@ export function StartupForm({
       void sendFollowUp();
       return;
     }
-    const text = scratch.content;
+    const pad = scratch.content;
+    // A pad with one real step and stray --- lines sends just that step.
+    const text = steps.length === 1 ? steps[0] : pad;
     if (text.trim() || chatImages.actions.has(activeTabId)) {
       const tabId = activeTabId;
       // Sent text leaves the pad (Recent sends keeps it). If it never
       // reached the agent and the pad is still empty, put it back.
       scratch.setContent(tabId, "");
       void sendText(tabId, text, () => {
-        if (!padTextRef.current[tabId]) scratch.setContent(tabId, text);
+        if (!padTextRef.current[tabId]) scratch.setContent(tabId, pad);
       });
     }
   }, [activeTabId, chatImages.actions, followUp, runChain, scratch, sendFollowUp, sendText]);
@@ -2968,6 +3079,7 @@ export function StartupForm({
       todos: cards.todos,
       selection: handoffSelection,
       turnInFlight: !!promptInFlight,
+      awaitingPlanApproval: !!runtimes[activeTabId ?? ""]?.plan,
       planMarkdown: (runtimes[activeTabId ?? ""]?.plan?.markdown ?? "").trim(),
       branch: activeTabSummary?.worktreeBranch ?? null,
       transcriptText: streamSegments.map((segment) => segment.text).join("\n"),
@@ -2990,22 +3102,113 @@ export function StartupForm({
   ]);
 
   const handoffBlock = handoffBlockReason({ ...handoffSource, selection: "" }, roles);
+  // A reviewer's verdict picks the primary button; the user still sends.
+  const sourceVerdict =
+    isReviewerRole(handoffSource.sourceRoleId) && !handoffSource.turnInFlight
+      ? parseReviewVerdict(
+          handoffSource.fromTerminal
+            ? (handoffSource.terminalTail ?? "")
+            : handoffSource.latestMessage,
+        )
+      : null;
+  const offerTargets = handoffTargets(roleId, roles);
+  const offerRoute = handoffRoute({
+    sourceRoleId: roleId,
+    targets: offerTargets,
+    verdict: sourceVerdict,
+    chain: activeTabSummary?.chain ?? null,
+    roles,
+  });
   const handoffOffer =
     session && isHandoffSource(roleId, roles)
       ? {
           enabled: handoffBlock === null,
           reason: handoffBlock,
-          targets: handoffTargets(roleId, roles),
-          primaryTarget: activeTabSummary?.chain
-            ? nextChainRole(activeTabSummary.chain, roleId)
+          targets: offerTargets,
+          primaryTarget: offerRoute.primaryTarget,
+          primaryLabel: offerRoute.primaryLabel,
+          completeNote: offerRoute.complete
+            ? activeTabSummary?.chain
+              ? "Chain complete: the PR Reviewer approved."
+              : "Review approved: nothing left to hand off."
             : null,
           onSend: openHandoffDialog,
         }
       : null;
 
+  /** Plan Reviewer → Planner or PR Reviewer → Implementer on the source's chain. */
+  const handoffLoopBack = useMemo(() => {
+    if (!handoffTarget) return null;
+    const chain = savedTabs.find((tab) => tab.id === handoffSource.sourceTabId)?.chain;
+    const next = chain ? loopBackChain(chain, handoffSource.sourceRoleId, handoffTarget) : null;
+    if (!chain || !next) return null;
+    const liveChat = (tab: TabSummary) => {
+      const rt = runtimes[tab.id];
+      return tab.kind !== "terminal" && !!rt?.session && !rt.agentExited;
+    };
+    const tab = chainTabFor(savedTabs, chain, next.step, liveChat);
+    const live = !!tab && liveChat(tab);
+    const target: LoopBackTarget = {
+      round: chainRound(chain),
+      tabLabel: tab?.label ?? null,
+      live,
+      blocked:
+        live && runtimes[tab.id]?.promptInFlight
+          ? `The ${tab.label} tab is still working. Wait for its turn to end.`
+          : null,
+    };
+    return { chain, next, tab: live ? tab : null, target };
+  }, [handoffSource.sourceRoleId, handoffSource.sourceTabId, handoffTarget, runtimes, savedTabs]);
+
   const confirmHandoff = useCallback(
     async (scope: HandoffScope, surface: HandoffSurface) => {
       if (!handoffTarget || !handoffSource.sourceTabId) return;
+      const loop = handoffLoopBack;
+      const cancelPendingPlan = async () => {
+        const pendingPlan = runtimesRef.current[handoffSource.sourceTabId]?.plan;
+        if (pendingPlan?.markdown || pendingPlan?.keepOptionId) {
+          await respondPlanRequest(handoffSource.sourceTabId, pendingPlan.jsonRpcId, "cancelled");
+          patchRuntime(handoffSource.sourceTabId, (rt) => ({ ...rt, plan: null }));
+        }
+      };
+      if (loop?.tab) {
+        // The chain's tab is live: the findings go in as a follow-up there.
+        const targetTab = loop.tab;
+        const findings = composePlanText(handoffSource, scope).text;
+        if (!findings.trim() || loop.target.blocked) {
+          setHandoffError(loop.target.blocked ?? "That choice has no content.");
+          return;
+        }
+        const text = loopBackMessage(handoffSource.sourceRoleId, findings, loop.target.round, roles);
+        setBusy(true);
+        setHandoffError(null);
+        try {
+          const sent = await dispatchText(targetTab.id, text);
+          if (sent === "error") {
+            setHandoffError(
+              runtimesRef.current[targetTab.id]?.promptError ?? "The follow-up was not sent.",
+            );
+            return;
+          }
+          await chainLoopBack({
+            chainId: loop.chain.chainId,
+            reviewerRoleId: handoffSource.sourceRoleId,
+            tabId: targetTab.id,
+            verdict: sourceVerdict,
+            handoffText: text,
+          });
+          await cancelPendingPlan();
+          setTerminalCapture(null);
+          setHandoffTarget(null);
+          await refreshTabs();
+          await handleSelectTab(targetTab.id);
+        } catch (err: unknown) {
+          setHandoffError(err instanceof Error ? err.message : String(err));
+        } finally {
+          setBusy(false);
+        }
+        return;
+      }
       let source = handoffSource;
       if (source.sourceRoleId === "role_implementer") {
         const [changes, repo] = await Promise.all([
@@ -3025,10 +3228,8 @@ export function StartupForm({
           branch: repo?.currentBranch ?? source.branch ?? null,
         };
       }
-      const mapped = mapHandoff(source, scope, {
-        roleId: handoffTarget,
-        fields: handoffFields ?? [],
-      });
+      const target = { roleId: handoffTarget, fields: handoffFields ?? [] };
+      let mapped = mapHandoff(source, scope, target);
       if (!mapped.planText) {
         setHandoffError(mapped.warning ?? "That choice has no content.");
         return;
@@ -3037,9 +3238,30 @@ export function StartupForm({
       setHandoffError(null);
       try {
         const sourceTab = savedTabs.find((tab) => tab.id === handoffSource.sourceTabId);
-        const nextChain = sourceTab?.chain
-          ? advanceChain(sourceTab.chain, handoffSource.sourceRoleId, handoffTarget)
-          : null;
+        // A loop-back whose tab is gone or not live opens a new tab on the chain.
+        const nextChain =
+          loop?.next ??
+          (sourceTab?.chain
+            ? advanceChain(sourceTab.chain, handoffSource.sourceRoleId, handoffTarget)
+            : null);
+        if (nextChain && needsChainTaskType(mapped, target)) {
+          // Plan Reviewer has no task type; the chain's Planner form does.
+          const view = await getPipelineRun(nextChain.chainId).catch(() => null);
+          mapped = carryChainTaskType(mapped, target, view?.taskType);
+        }
+        const tagChain = async (tabId: string) => {
+          if (loop) {
+            await chainLoopBack({
+              chainId: loop.chain.chainId,
+              reviewerRoleId: handoffSource.sourceRoleId,
+              tabId,
+              verdict: sourceVerdict,
+              handoffText: mapped.planText,
+            });
+          } else if (nextChain) {
+            await setTabChain(tabId, nextChain, mapped.planText);
+          }
+        };
         const saved = await handoffSave({
           sourceTabId: handoffSource.sourceTabId,
           sourceRoleId: handoffSource.sourceRoleId,
@@ -3054,11 +3276,7 @@ export function StartupForm({
           planField: mapped.planField,
           chain: nextChain,
         });
-        const pendingPlan = runtimesRef.current[handoffSource.sourceTabId]?.plan;
-        if (pendingPlan?.markdown || pendingPlan?.keepOptionId) {
-          await respondPlanRequest(handoffSource.sourceTabId, pendingPlan.jsonRpcId, "cancelled");
-          patchRuntime(handoffSource.sourceTabId, (rt) => ({ ...rt, plan: null }));
-        }
+        await cancelPendingPlan();
         const nextValues = { ...mapped.answers, cwd: handoffSource.cwd };
         const sourceProvider = providerOf(sourceTab ?? null);
         if (surface === "terminal") {
@@ -3074,7 +3292,7 @@ export function StartupForm({
             return;
           }
           await setTabProvider(tabId, sourceProvider);
-          if (nextChain) await setTabChain(tabId, nextChain, mapped.planText);
+          await tagChain(tabId);
           const bound = await handoffBindTab(saved.id, tabId);
           if (mapped.usesScratchPad) {
             scratch.setContent(tabId, mapped.inlinePlan);
@@ -3088,7 +3306,7 @@ export function StartupForm({
         stashActiveTab();
         const { tab } = await newDraftTab(handoffTarget, handoffSource.cwd);
         await setTabProvider(tab.id, sourceProvider);
-        if (nextChain) await setTabChain(tab.id, nextChain, mapped.planText);
+        await tagChain(tab.id);
         await syncActiveTabForm(tab.id, handoffTarget, handoffSource.cwd, nextValues);
         const bound = await handoffBindTab(saved.id, tab.id);
         if (mapped.usesScratchPad) {
@@ -3116,13 +3334,18 @@ export function StartupForm({
     },
     [
       applyDraft,
+      dispatchText,
+      handleSelectTab,
       handoffFields,
+      handoffLoopBack,
       handoffSource,
       handoffTarget,
       patchRuntime,
       refreshTabs,
+      roles,
       savedTabs,
       scratch,
+      sourceVerdict,
       startRoleTerminal,
       stashActiveTab,
     ],
@@ -4120,6 +4343,7 @@ export function StartupForm({
           )}
           busy={busy}
           error={handoffError}
+          loopBack={handoffLoopBack?.target ?? null}
           preferredSurface={rememberedSurface(handoffTarget)}
           roleNames={roles}
           onTarget={(target) => {
@@ -4358,14 +4582,24 @@ export function StartupForm({
     const tone = gridTone(tab);
     const activate = (event: { target: EventTarget }) => {
       if (event.target instanceof Element && event.target.closest(".grid-cell-remove")) return;
-      if (tab.id !== activeTabIdRef.current) void handleSelectTab(tab.id);
+      if (tab.id === activeTabIdRef.current) return;
+      gridFocusRef.current =
+        event.target instanceof Element && event.target.closest(".session-terminal-input")
+          ? tab.id
+          : null;
+      void handleSelectTab(tab.id);
     };
     return (
       <div
         className={`split-pane grid-cell grid-cell-${tone}`}
         data-pane="grid"
         aria-label={`Grid cell: ${tab.label}`}
-        onMouseDownCapture={activate}
+        onMouseDownCapture={(event) => {
+          // Fields switch tabs on focus instead: switching on mousedown re-renders the
+          // cell before the browser focuses the clicked field, so focus would be lost.
+          if (event.target instanceof Element && event.target.closest("textarea, input, select")) return;
+          activate(event);
+        }}
         onFocusCapture={activate}
       >
         {gridCellBar(tab)}
@@ -4704,7 +4938,7 @@ export function StartupForm({
             beforeSubmit={snapshotTerminalTurn}
             onOpenLibrary={() => openPromptLibrary(false)}
             write={ptyWrite}
-            bracketedPaste={terminalBracketedPaste(activeTabSummary.id)}
+            bracketedPaste={() => terminalBracketedPaste(activeTabSummary.id)}
             onFocusTerminal={focusActiveTerminal}
             onFocusPad={() => blurParkedTerminal(activeTabSummary.id)}
             onOpenChange={() => refitTerminal(activeTabSummary.id)}
@@ -4939,6 +5173,7 @@ export function StartupForm({
   const eagleToggle =
     showFields &&
     activeTabSummary?.phase === "draft" &&
+    !activeTabSummary.chain &&
     (roleId === "role_planner" || roleId === "role_implementer") ? (
       <label className="eagle-toggle">
         <input

@@ -223,7 +223,8 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("dct_missing_cli_config_{nanos}.json"));
+        let path =
+            crate::test_support::test_root().join(format!("dct_missing_cli_config_{nanos}.json"));
         let status = read_approval_mode_at(&path);
         assert_eq!(status.kind, ApprovalModeKind::Unknown);
         assert!(!status.role_rules_off);
