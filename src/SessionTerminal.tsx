@@ -19,6 +19,8 @@ import { summarizeSessionActivity } from "./sessionActivity";
 import type { StreamSegment, ToolStatus } from "./transcript";
 import { ChatFindBar } from "./components/ChatFindBar";
 import { findAll, searchSegments } from "./search/textSearch";
+import { useSlashAutocomplete } from "./composer/SlashCommandMenu";
+import { blockedSlashCommand, type SlashCommand } from "./composer/slashCommands";
 
 /** F5: open the find bar, optionally landing on one message's n-th hit. */
 export type ChatFindRequest = {
@@ -121,6 +123,8 @@ type Props = {
   details?: string;
   /** U3: the workspace status bar shows activity and folder warnings. */
   statusInBar?: boolean;
+  /** Claude commands and skills offered by `/` autocomplete. */
+  slashCommands?: SlashCommand[];
 };
 
 function folderName(path: string): string {
@@ -165,6 +169,7 @@ export function SessionTerminal({
   onSearchAllChats,
   details,
   statusInBar = false,
+  slashCommands = [],
 }: Props) {
   const screenRef = useRef<HTMLDivElement>(null);
   const permissionRef = useRef<HTMLDivElement>(null);
@@ -250,7 +255,22 @@ export function SessionTerminal({
     permissionRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [permissionRequest]);
 
+  // Own ref for the menu: split panes share `inputRef`.
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const setComposer = (node: HTMLTextAreaElement | null) => {
+    composerRef.current = node;
+    if (inputRef) inputRef.current = node;
+  };
+  const slash = useSlashAutocomplete({
+    value: followUp,
+    commands: slashCommands,
+    onChange: onFollowUpChange,
+    textareaRef: composerRef,
+  });
+  const blockedWarning = blockedSlashCommand(followUp);
+
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (slash.onKeyDown(e)) return;
     if ((e.key === "ArrowUp" || e.key === "ArrowDown") && onHistoryCursor) {
       const navigated = historyNavigate({
         history,
@@ -268,7 +288,7 @@ export function SessionTerminal({
     }
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
       e.preventDefault();
-      if (!busy && followUp.trim()) onSendFollowUp();
+      if (!busy && followUp.trim() && !blockedWarning) onSendFollowUp();
     }
   };
 
@@ -506,10 +526,15 @@ export function SessionTerminal({
         <p className="error session-terminal-error">{promptError}</p>
       )}
 
+      {blockedWarning && (
+        <p className="error session-terminal-error" role="alert">{blockedWarning}</p>
+      )}
+
       <div className="session-terminal-composer">
         <span className="session-terminal-prompt" aria-hidden>›</span>
+        {slash.menu}
         <textarea
-          ref={inputRef}
+          ref={setComposer}
           className="session-terminal-input"
           aria-label={canSendFollowUp ? "Follow-up message" : "Message"}
           rows={3}
@@ -519,15 +544,20 @@ export function SessionTerminal({
               : "Message"
           }
           value={followUp}
-          onChange={(e) => onFollowUpChange(e.target.value)}
+          onChange={(e) => {
+            slash.onCaret(e);
+            onFollowUpChange(e.target.value);
+          }}
+          onSelect={slash.onCaret}
           onKeyDown={handleKeyDown}
           disabled={busy}
+          {...slash.inputProps}
         />
         <button
           type="button"
           className="primary-button session-terminal-send"
           onClick={onSendFollowUp}
-          disabled={busy || agentExited || !followUp.trim()}
+          disabled={busy || agentExited || !followUp.trim() || !!blockedWarning}
         >
           Send
         </button>

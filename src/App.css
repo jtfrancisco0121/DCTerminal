@@ -962,6 +962,51 @@ body,
   font-size: 0.8125rem;
 }
 
+/* `/` command autocomplete, fixed above the chat input or scratch pad. */
+.slash-menu {
+  position: fixed;
+  z-index: 50;
+  max-height: calc(8 * 2.6rem);
+  overflow-y: auto;
+  margin: 0;
+  padding: 0.25rem 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elev);
+  box-shadow: 0 8px 24px var(--shadow);
+}
+
+.slash-menu-option {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.3rem 0.6rem;
+  cursor: pointer;
+}
+
+.slash-menu-option-active {
+  background: var(--accent-subtle);
+}
+
+.slash-menu-name {
+  color: var(--fg);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.8125rem;
+}
+
+.slash-menu-hint {
+  color: var(--fg-subtle);
+}
+
+.slash-menu-description {
+  overflow: hidden;
+  color: var(--fg-muted);
+  font-size: 0.75rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .session-turn-hint {
   margin: 0.35rem 0 0;
   font-size: 0.75rem;

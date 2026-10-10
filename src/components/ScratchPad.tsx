@@ -1,5 +1,7 @@
 import { forwardRef, useRef, type KeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
-import type { ChainCursor } from "../scratch/pad";
+import { splitChainSteps, type ChainCursor } from "../scratch/pad";
+import { useSlashAutocomplete } from "../composer/SlashCommandMenu";
+import { blockedSlashCommandIn, type SlashCommand } from "../composer/slashCommands";
 
 type Props = {
   content: string;
@@ -29,6 +31,8 @@ type Props = {
   onHeightChange?: (height: number) => void;
   /** U2: final height after a drag or a keyboard step (save it). */
   onHeightCommit?: (height: number) => void;
+  /** Chat tabs: Claude commands and skills offered by `/` autocomplete. */
+  slashCommands?: SlashCommand[];
 };
 
 export const PAD_MIN_HEIGHT = 40;
@@ -63,6 +67,7 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
     height = null,
     onHeightChange,
     onHeightCommit,
+    slashCommands = [],
   },
   ref,
 ) {
@@ -104,8 +109,16 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
   const terminal = mode === "terminal";
   const chained = !terminal && content.split(/\r?\n/).some((line) => /^\s*-{3,}\s*$/.test(line));
   const running = !terminal && (chain?.phase === "inFlight" || chain?.phase === "paused");
+  const slash = useSlashAutocomplete({
+    value: content,
+    commands: terminal ? [] : slashCommands,
+    onChange,
+    textareaRef: editorRef,
+  });
+  const blockedWarning = terminal ? null : blockedSlashCommandIn(splitChainSteps(content));
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (slash.onKeyDown(event)) return;
     if (event.key === "Escape" && terminal && !event.ctrlKey && !event.metaKey && !event.altKey) {
       event.preventDefault();
       event.stopPropagation();
@@ -114,7 +127,7 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
     }
     if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !event.shiftKey) {
       event.preventDefault();
-      if (!disabled) onSend();
+      if (!disabled && !blockedWarning) onSend();
     }
   };
 
@@ -198,7 +211,7 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
             className="primary-button"
             onMouseDown={terminal ? (event) => event.preventDefault() : undefined}
             onClick={onSend}
-            disabled={disabled || (terminal && !content.trim())}
+            disabled={disabled || (terminal && !content.trim()) || !!blockedWarning}
           >
             {chained ? "Send steps" : "Send"}
           </button>
@@ -232,11 +245,19 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
       {persistError && (
         <p className="error scratch-pad-status">Could not save the scratch pad: {persistError}</p>
       )}
+      {blockedWarning && !collapsed && (
+        <p className="error scratch-pad-status" role="alert">{blockedWarning}</p>
+      )}
+      {!collapsed && slash.menu}
       <textarea
         ref={setEditor}
         className="scratch-pad-input"
         value={content}
-        onChange={(event) => onChange(event.target.value)}
+        onChange={(event) => {
+          slash.onCaret(event);
+          onChange(event.target.value);
+        }}
+        onSelect={slash.onCaret}
         onBlur={onBlur}
         onFocus={onFocus}
         onKeyDown={onKeyDown}
@@ -250,6 +271,7 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
         }
         aria-label="Scratch pad editor"
         hidden={collapsed}
+        {...slash.inputProps}
       />
     </section>
   );

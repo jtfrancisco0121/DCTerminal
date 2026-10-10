@@ -17,6 +17,7 @@ import {
   streamSegmentFromSystemMessage,
   type StreamSegment,
 } from "./transcript";
+import { parseAvailableCommands, type SlashCommand } from "./composer/slashCommands";
 
 export type TabRuntime = {
   session: DevSessionInfo | null;
@@ -33,6 +34,8 @@ export type TabRuntime = {
   /** True while Start is in flight so early ACP events are not dropped. */
   accepting: boolean;
   followUp: string;
+  /** Latest `available_commands_update` list (Claude commands and skills). */
+  slashCommands: SlashCommand[];
 };
 
 export function emptyRuntime(): TabRuntime {
@@ -50,6 +53,7 @@ export function emptyRuntime(): TabRuntime {
     agentExited: false,
     accepting: false,
     followUp: "",
+    slashCommands: [],
   };
 }
 
@@ -72,6 +76,8 @@ export function applySessionUpdate(
   evt: SessionUpdateEvent,
 ): TabRuntime {
   if (!sameSession(rt, evt.sessionId)) return rt;
+  const commands = parseAvailableCommands(evt);
+  if (commands) return { ...rt, slashCommands: commands };
   const seg = streamSegmentFromEvent(evt);
   if (!seg) return rt;
   return { ...rt, segments: appendStreamSegment(rt.segments, seg) };
