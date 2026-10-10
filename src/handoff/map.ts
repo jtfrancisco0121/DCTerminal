@@ -93,6 +93,8 @@ export type HandoffSource = {
   /** Body of the newest plan file written after the terminal started. */
   planFileText?: string;
   planFileName?: string;
+  /** The terminal's Claude session log was read: `latestMessage` is its last reply. */
+  terminalLog?: boolean;
   /** Last lines of the terminal buffer, already stripped of ANSI codes. */
   terminalTail?: string;
   /** Claude ExitPlanMode body ("Ready to code?"). Preferred over the card. */
@@ -378,6 +380,8 @@ export function handoffBlockReason(
     // The Implementer's own form carries the task; the terminal adds a summary.
     if (roleId === "role_implementer" && implementerAnswersReady(source.answers)) return null;
     const hasTerminal =
+      (source.planMarkdown ?? "").trim().length > 0 ||
+      source.latestMessage.trim().length > 0 ||
       (source.planFileText ?? "").trim().length > 0 ||
       source.selection.trim().length > 0 ||
       (source.terminalTail ?? "").trim().length > 0;
@@ -521,6 +525,36 @@ export type ScopeChoice = {
   enabled: boolean;
 };
 
+function lastReplyChoice(source: HandoffSource): ScopeChoice {
+  return {
+    id: "message",
+    label: "Claude's last reply",
+    enabled: composePlanText(source, "message").text.length > 0,
+  };
+}
+
+/**
+ * Terminal defaults once the session log is read: a Planner's ExitPlanMode
+ * plan first; reviewers, the Implementer and other roles lead with the last
+ * reply. A plan the user answered after is skipped while a newer reply exists.
+ */
+function terminalScopeOrder(source: HandoffSource): HandoffScope[] {
+  const roleId = source.sourceRoleId;
+  const order: HandoffScope[] =
+    roleId === "role_planner"
+      ? ["plan_mode", "message", "plan_file", "selection", "terminal_tail"]
+      : isPlanSource(roleId)
+        ? ["message", "plan_mode", "plan_file", "selection", "terminal_tail"]
+        : ["message", "selection", "terminal_tail"];
+  const newerReply = !!source.planMarkdownStale && !!source.latestMessage.trim();
+  return order.filter(
+    (scope) =>
+      (scope !== "message" || !!source.terminalLog) &&
+      (scope !== "plan_mode" || !newerReply) &&
+      (scope !== "plan_file" || isPlanSource(roleId)),
+  );
+}
+
 export function scopeChoices(source: HandoffSource): ScopeChoice[] {
   if (isReportSource(source.sourceRoleId)) {
     const latest: HandoffScope = source.fromTerminal ? "terminal_tail" : "message";
@@ -530,6 +564,7 @@ export function scopeChoices(source: HandoffSource): ScopeChoice[] {
         label: "Selected card or finding",
         enabled: composePlanText(source, "selection").text.length > 0,
       },
+      ...(source.terminalLog ? [lastReplyChoice(source)] : []),
       {
         id: latest,
         label: source.fromTerminal
@@ -540,15 +575,30 @@ export function scopeChoices(source: HandoffSource): ScopeChoice[] {
     ];
   }
   if (source.fromTerminal) {
+    const planSource = isPlanSource(source.sourceRoleId);
     const fileLabel = source.planFileName
       ? `Newest plan file (${source.planFileName})`
       : "Newest plan file";
-    const terminalChoices: ScopeChoice[] = [
-      {
+    const terminalChoices: ScopeChoice[] = [];
+    if (planSource && (source.planMarkdown ?? "").trim()) {
+      terminalChoices.push({
+        id: "plan_mode",
+        label: source.planMarkdownStale
+          ? "Claude's earlier plan (ExitPlanMode)"
+          : "Claude's plan (ExitPlanMode)",
+        enabled: composePlanText(source, "plan_mode").text.length > 0,
+      });
+    }
+    if (source.terminalLog) terminalChoices.push(lastReplyChoice(source));
+    // Only Planner and Plan Reviewer terminals write plan files.
+    if (planSource) {
+      terminalChoices.push({
         id: "plan_file",
         label: fileLabel,
         enabled: composePlanText(source, "plan_file").text.length > 0,
-      },
+      });
+    }
+    terminalChoices.push(
       {
         id: "selection",
         label: "Selected text",
@@ -559,11 +609,8 @@ export function scopeChoices(source: HandoffSource): ScopeChoice[] {
         label: `Last ${TERMINAL_TAIL_LINES} lines`,
         enabled: composePlanText(source, "terminal_tail").text.length > 0,
       },
-    ];
-    // Only Planner and Plan Reviewer terminals write plan files.
-    return isPlanSource(source.sourceRoleId)
-      ? terminalChoices
-      : terminalChoices.filter((choice) => choice.id !== "plan_file");
+    );
+    return terminalChoices;
   }
   const choices: ScopeChoice[] = [];
   if ((source.planMarkdown ?? "").trim()) {
@@ -610,14 +657,13 @@ export function scopeChoices(source: HandoffSource): ScopeChoice[] {
 export function defaultScope(source: HandoffSource): HandoffScope {
   if (isReportSource(source.sourceRoleId)) {
     if (composePlanText(source, "selection").text) return "selection";
+    if (source.terminalLog && composePlanText(source, "message").text) return "message";
     return source.fromTerminal ? "terminal_tail" : "message";
   }
   if (source.fromTerminal) {
-    if (isPlanSource(source.sourceRoleId) && composePlanText(source, "plan_file").text) {
-      return "plan_file";
+    for (const scope of terminalScopeOrder(source)) {
+      if (composePlanText(source, scope).text) return scope;
     }
-    if (composePlanText(source, "selection").text) return "selection";
-    if (composePlanText(source, "terminal_tail").text) return "terminal_tail";
     return isPlanSource(source.sourceRoleId) ? "plan_file" : "terminal_tail";
   }
   const preferred: HandoffScope[] = [
@@ -951,8 +997,28 @@ function behaviorContext(parts: RequestParts, skip: { expected: boolean; current
 }
 
 /**
- * A terminal Implementer has no chat reply: the chosen selection or tail is
- * the summary, and the whole scrollback is searched for the PR URL.
+ * The session log's reply and ExitPlanMode plan as hand-off source fields.
+ * The plan is stale when the user wrote to Claude after it.
+ */
+export function terminalLogFields(
+  log: { lastReply: string; plan: string | null; planAt: string | null; lastPromptAt: string | null } | null,
+): Pick<HandoffSource, "terminalLog" | "latestMessage" | "planMarkdown" | "planMarkdownStale"> {
+  if (!log) return { latestMessage: "" };
+  const plan = (log.plan ?? "").trim();
+  const planAt = log.planAt ? Date.parse(log.planAt) : NaN;
+  const promptAt = log.lastPromptAt ? Date.parse(log.lastPromptAt) : NaN;
+  return {
+    terminalLog: true,
+    latestMessage: log.lastReply,
+    planMarkdown: plan,
+    planMarkdownStale: !!plan && promptAt > planAt,
+  };
+}
+
+/**
+ * A terminal Implementer's summary is the chosen scope: Claude's last reply
+ * from the session log, else the selection or tail. The whole scrollback is
+ * searched for the PR URL.
  */
 export function terminalImplementerSource(
   source: HandoffSource,

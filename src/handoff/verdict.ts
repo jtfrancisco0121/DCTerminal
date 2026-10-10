@@ -139,3 +139,18 @@ export function needsRevision(verdict: ReviewVerdict | null): boolean {
 export function isReviewerRole(roleId: string): boolean {
   return roleId === "role_plan_reviewer" || roleId === "role_pr_reviewer";
 }
+
+/**
+ * A terminal reviewer's verdict: the session log's last reply once its turn
+ * has ended, else the screen text (selection or tail).
+ */
+export function terminalLogVerdict(
+  log: { turnDone: boolean; lastReply: string } | null | undefined,
+  screen: string,
+): ReviewVerdict | null {
+  if (log?.turnDone) {
+    const fromLog = parseReviewVerdict(log.lastReply);
+    if (fromLog) return fromLog;
+  }
+  return parseTerminalVerdict(screen);
+}

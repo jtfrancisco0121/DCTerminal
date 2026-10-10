@@ -1,4 +1,4 @@
-import type { ActivityEntry } from "../bridge";
+import type { ActivityEntry, TerminalToolCall } from "../bridge";
 
 /** Panel order. "rejected" is a decision filter, not a tool kind. */
 export const ACTIVITY_KINDS = [
@@ -98,6 +98,36 @@ export function statusLabel(status: string | null): string {
     default:
       return status ?? "";
   }
+}
+
+const TERMINAL_KIND: Record<TerminalToolCall["kind"], (typeof ACTIVITY_KINDS)[number]> = {
+  execute: "shell",
+  read: "read",
+  edit: "edit",
+  fetch: "fetch",
+  other: "other",
+};
+
+/** A terminal tab's session-log tool calls as read-only activity rows (no permission data). */
+export function terminalActivityEntries(
+  tabId: string,
+  calls: readonly TerminalToolCall[],
+): ActivityEntry[] {
+  return calls.map((call) => ({
+    id: call.id,
+    tabId,
+    time: call.at ?? "",
+    updatedAt: call.at ?? "",
+    kind:
+      call.kind === "other" && call.name.startsWith("mcp__")
+        ? "mcp"
+        : (TERMINAL_KIND[call.kind] ?? "other"),
+    title: call.title || call.name,
+    summary: call.command || call.path || call.url || call.title || call.name,
+    decision: "none",
+    network: call.kind === "fetch",
+    status: call.status,
+  }));
 }
 
 export function timeOfDay(iso: string): string {

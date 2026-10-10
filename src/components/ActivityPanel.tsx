@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { activityClear, activityList, type ActivityEntry } from "../bridge";
+import {
+  activityClear,
+  activityList,
+  terminalSessionLog,
+  type ActivityEntry,
+} from "../bridge";
 import {
   ACTIVITY_KINDS,
   countActivity,
@@ -10,6 +15,7 @@ import {
   matchesFilter,
   statusLabel,
   summaryLine,
+  terminalActivityEntries,
   timeOfDay,
   type ActivityFilter,
 } from "../activity/activityModel";
@@ -19,7 +25,7 @@ type Props = {
   tabLabel: string;
   /** The tab's agent is working: refresh every POLL_MS while open. */
   busy: boolean;
-  /** Terminal tabs run the CLI directly, so nothing is recorded for them. */
+  /** Terminal tabs show their Claude session log's tool calls (read-only). */
   terminal?: boolean;
   /** Latest row count, for the "Activity (n)" button. */
   onCount?: (count: number) => void;
@@ -27,6 +33,21 @@ type Props = {
 };
 
 export const ACTIVITY_POLL_MS = 2000;
+
+/**
+ * A terminal tab's rows come from its Claude session log (`fromLog`); a tab
+ * without one (Cursor, older tabs) falls back to the recorded activity.
+ */
+export async function loadActivity(
+  tabId: string,
+  terminal?: boolean,
+): Promise<{ entries: ActivityEntry[]; fromLog: boolean }> {
+  if (terminal) {
+    const log = await terminalSessionLog(tabId).catch(() => null);
+    if (log) return { entries: terminalActivityEntries(tabId, log.toolCalls), fromLog: true };
+  }
+  return { entries: await activityList(tabId), fromLog: false };
+}
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -38,20 +59,22 @@ export function ActivityPanel({ tabId, tabLabel, busy, terminal, onCount, onClos
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<ActivityFilter | null>(null);
+  const [fromLog, setFromLog] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const next = await activityList(tabId);
-      setEntries(next);
+      const next = await loadActivity(tabId, terminal);
+      setEntries(next.entries);
+      setFromLog(next.fromLog);
       setError(null);
-      onCount?.(next.length);
+      onCount?.(next.entries.length);
     } catch (err: unknown) {
       setError(errorText(err));
     } finally {
       setLoading(false);
     }
-  }, [onCount, tabId]);
+  }, [onCount, tabId, terminal]);
 
   useEffect(() => {
     void load();
@@ -90,7 +113,9 @@ export function ActivityPanel({ tabId, tabLabel, busy, terminal, onCount, onClos
   } else if (entries.length === 0) {
     body = (
       <p className="hint">
-        {terminal
+        {fromLog
+          ? "No tool calls yet in this Claude session. Commands, file edits, and fetches show up here as Claude runs them."
+          : terminal
           ? "Terminal tabs run the CLI directly, so DCTerminal cannot see their tool calls. Chat tabs record every command, file write, and fetch here."
           : "No tool calls yet. Commands, file writes, fetches, and MCP calls show up here as the agent runs them."}
       </p>
@@ -178,14 +203,16 @@ export function ActivityPanel({ tabId, tabLabel, busy, terminal, onCount, onClos
           >
             {loading ? "Loading…" : "Refresh"}
           </button>
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={!entries || entries.length === 0}
-            onClick={() => void clear()}
-          >
-            Clear…
-          </button>
+          {!fromLog && (
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={!entries || entries.length === 0}
+              onClick={() => void clear()}
+            >
+              Clear…
+            </button>
+          )}
           <button
             type="button"
             className="secondary-button"

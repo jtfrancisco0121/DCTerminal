@@ -94,6 +94,7 @@ import {
   setTerminalSettings,
   shellTerminalStart,
   terminalPlanFile,
+  terminalSessionLog,
   validateAndPreview,
   type ClosedTabSummary,
   type FieldError,
@@ -108,6 +109,7 @@ import {
   type SessionUpdateEvent,
   type TabSummary,
   type TerminalLaunch,
+  type TerminalSessionLog,
   type TerminalSettings,
   type ValidatePreviewResult,
 } from "./bridge";
@@ -157,6 +159,7 @@ import {
   needsChainTaskType,
   selectionInside,
   terminalHandoffInput,
+  terminalLogFields,
   terminalStartMessage,
   type HandoffField,
   type HandoffScope,
@@ -219,7 +222,7 @@ import { handoffRoute, loopBackMessage } from "./handoff/routing";
 import {
   isReviewerRole,
   parseReviewVerdict,
-  parseTerminalVerdict,
+  terminalLogVerdict,
   type ReviewVerdict,
 } from "./handoff/verdict";
 import { contextPercent, limitAlerts, statusLimit } from "./usage/limits";
@@ -229,6 +232,13 @@ import { showSystemNotification } from "./notify/systemNotify";
 import { useAgentNotifications } from "./notify/useAgentNotifications";
 import { isWindowFocused, useWindowFocused } from "./notify/windowFocus";
 import { terminalActivity } from "./terminal/activity";
+import {
+  afterSessionLogRead,
+  sameSessionLog,
+  sessionLogDue,
+  sessionLogTick,
+  type SessionLogPollState,
+} from "./terminal/sessionLogPoll";
 import {
   clearMarks,
   computeTabStatus,
@@ -319,7 +329,7 @@ import { useAppShortcuts } from "./useAppShortcuts";
 import { useScratchPads } from "./useScratchPads";
 import { useChatImages } from "./attachments/useChatImages";
 import { withImageMarkers } from "./attachments/chatImages";
-import { snapshotTerminalTurn } from "./changes/turnSnapshot";
+import { promptNeedsSnapshot, snapshotTerminalTurn } from "./changes/turnSnapshot";
 import { useUiSettings } from "./useUiSettings";
 import { useProviders } from "./provider/useProviders";
 import {
@@ -456,6 +466,13 @@ export function StartupForm({
   // F2: finished/question/error left on a tab the user was not watching.
   const [tabMarks, setTabMarks] = useState<Record<string, TabMark>>({});
   const [terminalBusy, setTerminalBusy] = useState<string[]>([]);
+  /** Claude session logs of terminal role tabs on screen or in a chain (null: none). */
+  const [sessionLogs, setSessionLogs] = useState<Record<string, TerminalSessionLog | null>>({});
+  const sessionLogsRef = useRef(sessionLogs);
+  sessionLogsRef.current = sessionLogs;
+  const sessionLogWatch = useRef(
+    new Map<string, { since: number; poll?: SessionLogPollState; seenPromptAt?: string | null }>(),
+  );
   const [renamingTabId, setRenamingTabId] = useState<string | null>(null);
   const [worktreeDialogOpen, setWorktreeDialogOpen] = useState(false);
   /** F4: the tab whose changes (diff) panel is open. */
@@ -578,6 +595,8 @@ export function StartupForm({
     tail: string;
     scrollback: string;
     planFile: PlanFileInfo | null;
+    /** The tab's Claude session log, read when the dialog opened. */
+    log: TerminalSessionLog | null;
     /** The terminal tab's own saved form, not the form on screen. */
     answers: Record<string, string>;
   } | null>(null);
@@ -1104,14 +1123,18 @@ export function StartupForm({
       setTerminalBusy((prev) =>
         prev.length === busy.length && prev.every((id, i) => id === busy[i]) ? prev : busy,
       );
-      if (settled.length > 0) {
-        for (const id of settled) {
+      // A tab with a session log is marked when its turn ends, not when output stops.
+      const quiet = settled.filter(
+        (id) => !(sessionLogWatch.current.has(id) && sessionLogsRef.current[id]),
+      );
+      if (quiet.length > 0) {
+        for (const id of quiet) {
           if (!isWatchingTab(id)) {
             notifyAgent(id, { kind: "finished", detail: "Terminal output settled." });
           }
         }
         setTabMarks((marks) =>
-          settled.reduce(
+          quiet.reduce(
             (acc, id) => markAfterTurn(acc, id, "finished", isWatchingTab(id)),
             marks,
           ),
@@ -1120,6 +1143,106 @@ export function StartupForm({
     }, 1000);
     return () => window.clearInterval(timer);
   }, [hasTerminalTabs, isWatchingTab, notifyAgent]);
+
+  const storeSessionLog = useCallback(
+    (tabId: string, log: TerminalSessionLog | null) => {
+      const prev = sessionLogsRef.current[tabId];
+      const watched = sessionLogWatch.current.get(tabId);
+      if (watched && log) {
+        // A prompt typed straight into the terminal: same "This turn" snapshot as a pad send.
+        if (
+          promptNeedsSnapshot({
+            promptAt: log.lastPromptAt,
+            seenPromptAt: watched.seenPromptAt,
+            watchedSinceMs: watched.since,
+            lastSnapshotMs: snapshotTerminalTurn.lastAt(tabId),
+          })
+        ) {
+          void snapshotTerminalTurn(tabId);
+        }
+        watched.seenPromptAt = log.lastPromptAt;
+        const ended =
+          !!prev && log.turnDone && (!prev.turnDone || prev.lastPromptAt !== log.lastPromptAt);
+        if (ended && !isWatchingTab(tabId)) {
+          notifyAgent(tabId, { kind: "finished", detail: "Claude finished its turn." });
+          setTabMarks((marks) => markAfterTurn(marks, tabId, "finished", false));
+        }
+      }
+      if (prev !== undefined && sameSessionLog(prev, log)) return;
+      sessionLogsRef.current = { ...sessionLogsRef.current, [tabId]: log };
+      setSessionLogs(sessionLogsRef.current);
+    },
+    [isWatchingTab, notifyAgent],
+  );
+
+  // Terminal role tabs on screen or in a chain: read their Claude session log
+  // while the PTY streams output, until the turn ends (see sessionLogPoll.ts).
+  const sessionLogTabIds = useMemo(() => {
+    const onScreen = new Set([
+      activeTabId,
+      splitOpen(split) ? split.secondaryTabId : null,
+      ...(gridOpen(split) ? (split.gridTabIds ?? []) : []),
+    ]);
+    return savedTabs
+      .filter(
+        (tab) =>
+          tab.kind === "terminal" &&
+          tab.terminalLaunch === "role" &&
+          tab.provider !== "cursor" &&
+          (onScreen.has(tab.id) || !!tab.chain),
+      )
+      .map((tab) => tab.id)
+      .join("\n");
+  }, [activeTabId, savedTabs, split]);
+  useEffect(() => {
+    const ids = sessionLogTabIds ? sessionLogTabIds.split("\n") : [];
+    const watch = sessionLogWatch.current;
+    for (const id of [...watch.keys()]) if (!ids.includes(id)) watch.delete(id);
+    const logs = sessionLogsRef.current;
+    if (Object.keys(logs).some((id) => !ids.includes(id))) {
+      sessionLogsRef.current = Object.fromEntries(
+        Object.entries(logs).filter(([id]) => ids.includes(id)),
+      );
+      setSessionLogs(sessionLogsRef.current);
+    }
+    if (ids.length === 0) return;
+    for (const id of ids) if (!watch.has(id)) watch.set(id, { since: Date.now() });
+    let cancelled = false;
+    const reading = new Set<string>();
+    const tick = () => {
+      const now = Date.now();
+      for (const id of ids) {
+        const entry = watch.get(id);
+        if (!entry || reading.has(id)) continue;
+        const busy = terminalActivity.isBusy(id, now);
+        entry.poll = sessionLogTick(entry.poll, busy);
+        if (!sessionLogDue(entry.poll, busy, now)) continue;
+        reading.add(id);
+        void terminalSessionLog(id)
+          .catch(() => null)
+          .then((log) => {
+            reading.delete(id);
+            if (cancelled) return;
+            entry.poll = afterSessionLogRead(entry.poll, busy, log, Date.now());
+            storeSessionLog(id, log);
+          });
+      }
+    };
+    tick();
+    const timer = window.setInterval(tick, 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [sessionLogTabIds, storeSessionLog]);
+  /** Idle by the session log's turn when the tab has one, else by PTY output. */
+  const terminalWorking = useCallback(
+    (tabId: string) => {
+      const log = sessionLogs[tabId];
+      return log ? !log.turnDone : terminalBusy.includes(tabId);
+    },
+    [sessionLogs, terminalBusy],
+  );
 
   const tabStatuses = useMemo(() => {
     const out: Record<string, TabStatus> = {};
@@ -2516,6 +2639,7 @@ export function StartupForm({
     <ActivityButton
       tabId={tabId}
       busy={!!tabStatuses[tabId]?.busy}
+      terminal={savedTabs.find((tab) => tab.id === tabId)?.kind === "terminal"}
       refreshKey={activityTabId}
       onOpen={() => setActivityTabId(tabId)}
     />
@@ -3057,19 +3181,39 @@ export function StartupForm({
   const planTerminalTargets: HandoffTargetId[] =
     isPlanTerminal && activeTabSummary ? handoffTargets(activeTabSummary.roleId, roles) : [];
 
-  /** Reads a reviewer terminal's verdict from its selection, else its tail. */
-  const readTerminalVerdict = useCallback((tabId: string | null | undefined) => {
-    const tab = tabId ? savedTabsRef.current.find((item) => item.id === tabId) : undefined;
-    if (!tab || tab.kind !== "terminal" || !isReviewerRole(tab.roleId)) return;
-    const verdict = parseTerminalVerdict(terminalSelection(tab.id) || terminalTailText(tab.id));
-    setTerminalVerdict((prev) =>
-      prev?.tabId === tab.id && prev.verdict === verdict ? prev : { tabId: tab.id, verdict },
-    );
-  }, []);
-  const activeTerminalBusy = !!activeTabId && terminalBusy.includes(activeTabId);
+  /**
+   * Reads a reviewer terminal's verdict: the session log's last reply, else
+   * its selection, else its tail. `fresh` re-reads the log first.
+   */
+  const readTerminalVerdict = useCallback(
+    (tabId: string | null | undefined, fresh = false) => {
+      const tab = tabId ? savedTabsRef.current.find((item) => item.id === tabId) : undefined;
+      if (!tab || tab.kind !== "terminal" || !isReviewerRole(tab.roleId)) return;
+      const apply = (log: TerminalSessionLog | null | undefined) => {
+        const verdict = terminalLogVerdict(
+          log,
+          terminalSelection(tab.id) || terminalTailText(tab.id),
+        );
+        setTerminalVerdict((prev) =>
+          prev?.tabId === tab.id && prev.verdict === verdict ? prev : { tabId: tab.id, verdict },
+        );
+      };
+      apply(sessionLogsRef.current[tab.id]);
+      if (!fresh) return;
+      void terminalSessionLog(tab.id)
+        .catch(() => null)
+        .then((log) => {
+          storeSessionLog(tab.id, log);
+          apply(log);
+        });
+    },
+    [storeSessionLog],
+  );
+  const activeTerminalBusy = !!activeTabId && terminalWorking(activeTabId);
+  const activeLogReply = activeTabId ? sessionLogs[activeTabId]?.lastReply : undefined;
   useEffect(() => {
     if (isPlanTerminal && !activeTerminalBusy) readTerminalVerdict(activeTabId);
-  }, [activeTabId, activeTerminalBusy, isPlanTerminal, readTerminalVerdict]);
+  }, [activeLogReply, activeTabId, activeTerminalBusy, isPlanTerminal, readTerminalVerdict]);
   const terminalRoute =
     isPlanTerminal && activeTabSummary
       ? handoffRoute({
@@ -3090,7 +3234,7 @@ export function StartupForm({
       const tab = savedTabsRef.current.find((item) => item.id === tabId);
       const sourceRoleId = tab?.roleId ?? "";
       setHandoffError(null);
-      readTerminalVerdict(tabId);
+      const logRead = terminalSessionLog(tabId).catch(() => null);
       const answers = await getTab(tabId)
         .then(({ tab: record }) => ({ ...record.answers }))
         .catch(() => ({ cwd: tab?.cwd ?? "" }));
@@ -3111,19 +3255,23 @@ export function StartupForm({
           setHandoffError(message);
         }
       }
+      const log = await logRead;
+      storeSessionLog(tabId, log);
+      readTerminalVerdict(tabId);
       setTerminalCapture({
         tabId,
         selection: captured.selection,
         tail: captured.tail,
         scrollback: captured.scrollback,
         planFile,
+        log,
         answers,
       });
       setHandoffSelection(captured.selection);
       setHandoffTarget(target);
       loadHandoffFields(target);
     },
-    [loadHandoffFields, readTerminalVerdict],
+    [loadHandoffFields, readTerminalVerdict, storeSessionLog],
   );
 
   const openHandoffDialog = useCallback(
@@ -3179,7 +3327,7 @@ export function StartupForm({
         cwd: captureTab.cwd || values.cwd || "",
         answers: terminalCapture.answers,
         sourceFields: role?.id === captureTab.roleId ? role.fields : undefined,
-        latestMessage: "",
+        ...terminalLogFields(terminalCapture.log),
         plan: [],
         todos: [],
         selection: terminalCapture.selection,
@@ -3248,7 +3396,10 @@ export function StartupForm({
   const sourceVerdict =
     isReviewerRole(handoffSource.sourceRoleId) && !handoffSource.turnInFlight
       ? handoffSource.fromTerminal
-        ? parseTerminalVerdict(handoffSource.selection || (handoffSource.terminalTail ?? ""))
+        ? terminalLogVerdict(
+            terminalCapture?.log,
+            handoffSource.selection || (handoffSource.terminalTail ?? ""),
+          )
         : parseReviewVerdict(handoffSource.latestMessage)
       : null;
   const offerTargets = handoffTargets(roleId, roles);
@@ -3297,7 +3448,7 @@ export function StartupForm({
     const live = !!tab && liveTarget(tab);
     const terminal = live && tab.kind === "terminal";
     const rt = tab && !terminal ? runtimes[tab.id] : undefined;
-    const working = live && (terminal ? terminalBusy.includes(tab.id) : !!rt?.promptInFlight);
+    const working = live && (terminal ? terminalWorking(tab.id) : !!rt?.promptInFlight);
     // A turn held by a card never ends on its own: say what it waits for.
     const waitingOn = rt?.plan
       ? "a plan card"
@@ -3324,7 +3475,7 @@ export function StartupForm({
     handoffTarget,
     runtimes,
     savedTabs,
-    terminalBusy,
+    terminalWorking,
   ]);
 
   const confirmHandoffNow = useCallback(
@@ -5192,7 +5343,7 @@ export function StartupForm({
             fontSize={fontSize}
             resumeSessionId={activeTabSummary.resumeSessionId}
             autoOpen={!livePty(activeTabSummary.id)}
-            onMenuOpen={() => readTerminalVerdict(activeTabSummary.id)}
+            onMenuOpen={() => readTerminalVerdict(activeTabSummary.id, true)}
             menuActions={
               isPlanTerminal
                 ? handoffMenuItems(activeTabSummary.roleId, roles).map((item) => ({

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../bridge", () => ({ changesSnapshot: vi.fn(async () => ({})) }));
 
-import { createTurnSnapshotter } from "./turnSnapshot";
+import { createTurnSnapshotter, promptNeedsSnapshot } from "./turnSnapshot";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -49,5 +49,35 @@ describe("terminal turn snapshots", () => {
     expect(released).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
     expect(released).toBe(true);
+  });
+});
+
+describe("prompts typed straight into a terminal", () => {
+  const at = Date.parse("2026-10-10T10:00:00Z");
+  const base = {
+    promptAt: "2026-10-10T10:00:00Z",
+    seenPromptAt: "2026-10-10T09:00:00Z",
+    watchedSinceMs: at - 60_000,
+    lastSnapshotMs: undefined,
+  };
+
+  it("snapshots a new prompt with no pad snapshot", () => {
+    expect(promptNeedsSnapshot(base)).toBe(true);
+    expect(promptNeedsSnapshot({ ...base, seenPromptAt: undefined })).toBe(true);
+    expect(promptNeedsSnapshot({ ...base, lastSnapshotMs: at - 60_000 })).toBe(true);
+  });
+
+  it("skips a prompt already seen, sent before watching, or sent from the pad", () => {
+    expect(promptNeedsSnapshot({ ...base, seenPromptAt: base.promptAt })).toBe(false);
+    expect(promptNeedsSnapshot({ ...base, promptAt: null })).toBe(false);
+    expect(promptNeedsSnapshot({ ...base, watchedSinceMs: at + 1 })).toBe(false);
+    expect(promptNeedsSnapshot({ ...base, lastSnapshotMs: at - 300 })).toBe(false);
+  });
+
+  it("remembers when each tab last snapshotted", async () => {
+    const before = createTurnSnapshotter({ snapshot: async () => {}, now: () => 5_000 });
+    expect(before.lastAt("tab_a")).toBeUndefined();
+    await before("tab_a");
+    expect(before.lastAt("tab_a")).toBe(5_000);
   });
 });

@@ -165,6 +165,7 @@ vi.mock("./bridge", () => {
   shellTerminalStart: vi.fn(),
   createPtyChannel: vi.fn(() => ({ onmessage: null })),
   terminalPlanFile: vi.fn(),
+  terminalSessionLog: vi.fn(async () => null),
   validateAndPreview: vi.fn(),
   projectsList: vi.fn(async () => ({ favorites: [], recent: [] })),
   projectsRemove: vi.fn(),

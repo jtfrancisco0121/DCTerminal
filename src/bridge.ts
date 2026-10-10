@@ -1303,6 +1303,25 @@ export async function terminalPlanFile(
   });
 }
 
+export type TerminalToolCall = {
+  id: string; name: string;
+  kind: "read" | "edit" | "execute" | "fetch" | "other";
+  title: string; path?: string | null; command?: string | null; url?: string | null;
+  status: "pending" | "completed" | "failed"; at?: string | null;
+};
+export type TerminalSessionLog = {
+  sessionId: string; path: string;
+  turnDone: boolean;            // the latest turn has ended
+  lastReply: string;            // assistant text of the latest turn
+  plan: string | null;          // newest ExitPlanMode plan in the session
+  planAt: string | null;
+  lastPromptAt: string | null;  // latest real user prompt
+  toolCalls: TerminalToolCall[]; // oldest → newest, last 500
+};
+export async function terminalSessionLog(tabId: string): Promise<TerminalSessionLog | null> {
+  return invoke<TerminalSessionLog | null>("terminal_session_log", { tabId });
+}
+
 export type ModelEntry = {
   id: string;
   label: string;
