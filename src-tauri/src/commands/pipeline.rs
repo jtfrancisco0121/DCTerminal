@@ -15,10 +15,14 @@ pub fn get_pipeline_run(
     store: State<Mutex<StateStore>>,
 ) -> Result<PipelineRunView, String> {
     let store = store.lock().map_err(|e| e.to_string())?;
-    let run = store
+    let mut run = store
         .pipeline_run_by_id(run_id.trim())
         .cloned()
         .ok_or_else(|| format!("unknown pipeline run: {run_id}"))?;
+    // A chain's Planner form may have been filled after the run was made.
+    if run.original_request.is_none() {
+        run.original_request = store.chain_original_request(&run.id);
+    }
     Ok(PipelineRunView { run })
 }
 

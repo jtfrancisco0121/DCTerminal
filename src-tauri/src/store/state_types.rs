@@ -90,7 +90,8 @@ pub struct PipelineRun {
     pub cwd: String,
     /// Coarse stage id, e.g. `planner`, `plan_reviewer`, `implementer`, `pr_reviewer`.
     pub stage: String,
-    /// Overview tab id for this run.
+    /// Overview tab id for this run. Empty until a chain's overview is opened.
+    #[serde(default)]
     pub overview_tab_id: String,
     /// `role_id` → worker tab id.
     pub tab_ids: HashMap<String, String>,
@@ -101,6 +102,54 @@ pub struct PipelineRun {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub original_request: Option<String>,
     pub created_at: String,
+    /// Eagle-Eye chain this run follows. `None` on palette preset runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_id: Option<String>,
+    /// `role_id` → the text a hand-off along the chain sent into that stage.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub handoffs: HashMap<String, StageHandoff>,
+    /// Last chain step recorded. Pruning keeps the most recent runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+}
+
+/// Text handed into one stage of a chain run.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StageHandoff {
+    pub text: String,
+    pub at: String,
+}
+
+/// `(stage id, role id)` for each stage of a run kind, PR Reviewer last.
+pub const FULL_PIPELINE_STAGES: [(&str, &str); 4] = [
+    ("planner", "role_planner"),
+    ("plan_reviewer", "role_plan_reviewer"),
+    ("implementer", "role_implementer"),
+    ("pr_reviewer", "role_pr_reviewer"),
+];
+
+pub const EXECUTE_PIPELINE_STAGES: [(&str, &str); 2] = [
+    ("implementer", "role_implementer"),
+    ("pr_reviewer", "role_pr_reviewer"),
+];
+
+/// Stages of a `full` or `execute` run. Unknown kinds read as `full`.
+pub fn pipeline_stages(kind: &str) -> &'static [(&'static str, &'static str)] {
+    if kind == "execute" {
+        &EXECUTE_PIPELINE_STAGES
+    } else {
+        &FULL_PIPELINE_STAGES
+    }
+}
+
+/// Run kind of an Eagle-Eye chain: `eagle1` → `full`, `eagle2` → `execute`.
+pub fn run_kind_for_chain(chain_kind: &str) -> Option<&'static str> {
+    match chain_kind {
+        "eagle1" => Some("full"),
+        "eagle2" => Some("execute"),
+        _ => None,
+    }
 }
 
 /// Split view and file panel. Restored on relaunch.

@@ -4416,6 +4416,61 @@ mark.search-hit-current {
   margin: 0.5rem 0;
 }
 
+.pipeline-request {
+  margin-bottom: 1rem;
+}
+
+.pipeline-request h3 {
+  margin: 0 0 0.35rem;
+  font-size: 1rem;
+}
+
+.pipeline-request-text {
+  margin: 0;
+  max-height: 10rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 0.85rem;
+}
+
+.pipeline-verdict {
+  margin: 0 0 0.45rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+.pipeline-verdict-ok {
+  color: var(--success);
+}
+
+.pipeline-verdict-warn {
+  color: var(--warning-bright);
+}
+
+.pipeline-verdict-bad {
+  color: var(--danger);
+}
+
+.pipeline-handed-in {
+  margin: 0 0 0.5rem;
+  font-size: 0.8rem;
+}
+
+.pipeline-handed-in summary {
+  cursor: pointer;
+  color: var(--fg-subtle);
+}
+
+button.chain-label {
+  border: 0;
+  padding: 0;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+
 /* Settings > Providers */
 .settings-folder-row {
   display: flex;

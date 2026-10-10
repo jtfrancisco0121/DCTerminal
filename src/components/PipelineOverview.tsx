@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { PipelineRun, TabSummary } from "../bridge";
 import {
   getPipelineRun,
@@ -6,9 +6,14 @@ import {
   pipelineSetCandidatePlan,
 } from "../bridge";
 import type { TabRuntime } from "../liveTabs";
-import { stagesForKind, type PipelineKind } from "../pipeline/stages";
-import { latestAgentMessage } from "../handoff/map";
-import { segmentsToPlainText } from "../transcript";
+import type { PipelineKind } from "../pipeline/stages";
+import {
+  overviewStages,
+  pullPlannerText,
+  pullPlanReviewText,
+} from "../pipeline/overviewModel";
+import { liveTerminalReader, type TerminalReader } from "../pipeline/terminalText";
+import { verdictTone } from "../handoff/verdict";
 
 type Props = {
   runId: string;
@@ -19,18 +24,13 @@ type Props = {
   onWatch: (tabId: string) => void;
   onRefreshTabs: () => Promise<unknown>;
   onNotice: (title: string, body: string) => void;
+  /** Reads terminal stage tabs. Tests pass a fake. */
+  terminalReader?: TerminalReader;
 };
 
-function laneStatus(
-  tab: TabSummary | undefined,
-  rt: TabRuntime | undefined,
-): { label: string; tone: "idle" | "live" | "done" } {
-  if (!tab) return { label: "Missing tab", tone: "idle" };
-  if (rt?.promptInFlight) return { label: "Working…", tone: "live" };
-  if (tab.phase === "running" || rt?.session) return { label: "Session open", tone: "live" };
-  if (tab.hasTranscript || tab.startupPromptSent) return { label: "Stopped", tone: "done" };
-  if (tab.phase === "draft") return { label: "Ready", tone: "idle" };
-  return { label: tab.phase, tone: "idle" };
+function overviewTitle(run: PipelineRun, kind: PipelineKind): string {
+  if (!run.chainId) return "Pipeline overview";
+  return kind === "execute" ? "Eagle-Eye 2 overview" : "Eagle-Eye 1 overview";
 }
 
 export function PipelineOverview({
@@ -42,6 +42,7 @@ export function PipelineOverview({
   onWatch,
   onRefreshTabs,
   onNotice,
+  terminalReader = liveTerminalReader,
 }: Props) {
   const [run, setRun] = useState<PipelineRun | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -68,24 +69,20 @@ export function PipelineOverview({
   }, [reload]);
 
   const kind = (run?.kind ?? "full") as PipelineKind;
-  const stageDefs = stagesForKind(kind);
 
-  const tabById = useMemo(() => new Map(tabs.map((t) => [t.id, t])), [tabs]);
+  const pullFromPlanner = async () => {
+    if (!run) return;
+    const pulled = await pullPlannerText(run, tabs, runtimes, terminalReader);
+    if (pulled.text) setCandidateDraft(pulled.text);
+    else onNotice("Nothing to pull", pulled.reason ?? "No Planner reply yet.");
+  };
 
-  const pullPlannerText = useCallback(() => {
-    const plannerTabId = run?.tabIds.role_planner;
-    if (!plannerTabId) return "";
-    const rt = runtimes[plannerTabId];
-    const fromStream = latestAgentMessage(
-      rt?.segments.map((s) => ({ kind: s.kind, text: s.text })) ?? [],
-    );
-    if (fromStream.trim()) return fromStream.trim();
-    const tab = tabById.get(plannerTabId);
-    if (tab?.hasTranscript) {
-      return segmentsToPlainText(rt?.segments ?? []).trim();
-    }
-    return "";
-  }, [run?.tabIds.role_planner, runtimes, tabById]);
+  const pullFromPlanReviewer = () => {
+    if (!run) return;
+    const pulled = pullPlanReviewText(run, tabs, runtimes, terminalReader);
+    if (pulled.text) setApprovedDraft(pulled.text);
+    else onNotice("Nothing to pull", pulled.reason ?? "No Plan Reviewer reply yet.");
+  };
 
   const saveCandidate = async () => {
     const text = candidateDraft.trim();
@@ -137,14 +134,20 @@ export function PipelineOverview({
     );
   }
 
+  const stages = overviewStages(run, tabs, runtimes, terminalReader);
+  const implementerTab = tabs.find((t) => t.id === run.tabIds.role_implementer);
+  // A chain's Implementer may already be running; promote only fills a draft form.
+  const canPromote = !run.chainId || implementerTab?.phase === "draft";
+  const originalRequest = run.originalRequest?.trim() ?? "";
+
   return (
     <section className="pipeline-overview" aria-label="Pipeline overview">
       <header className="pipeline-overview-header">
         <div>
-          <h2 className="pipeline-overview-title">Pipeline overview</h2>
+          <h2 className="pipeline-overview-title">{overviewTitle(run, kind)}</h2>
           <p className="hint pipeline-overview-meta">
-            {kind === "execute" ? "Execute" : "Plan → review → implement → PR"} ·{" "}
-            <span className="pipeline-overview-cwd">{cwd}</span>
+            {kind === "execute" ? "Implement → PR review" : "Plan → review → implement → PR"} ·{" "}
+            <span className="pipeline-overview-cwd">{cwd || run.cwd}</span>
           </p>
         </div>
         <p className="hint">
@@ -152,42 +155,62 @@ export function PipelineOverview({
         </p>
       </header>
 
+      <section className="pipeline-request" aria-label="Original request">
+        <h3>Original request</h3>
+        {originalRequest ? (
+          <p className="pipeline-request-text">{originalRequest}</p>
+        ) : (
+          <p className="hint">Not filled in yet. It comes from the first stage's form.</p>
+        )}
+      </section>
+
       <div className="pipeline-lanes">
-        {stageDefs.map((def) => {
-          const tabId = run.tabIds[def.roleId];
-          const tab = tabId ? tabById.get(tabId) : undefined;
-          const rt = tabId ? runtimes[tabId] : undefined;
-          const status = laneStatus(tab, rt);
-          const isCurrent = run.stage === def.stageId;
-          return (
-            <article
-              key={def.roleId}
-              className={`pipeline-lane${isCurrent ? " pipeline-lane-current" : ""}`}
-            >
-              <div className="pipeline-lane-head">
-                <h3>{def.title}</h3>
-                <span className={`pipeline-lane-status pipeline-lane-status-${status.tone}`}>
-                  {status.label}
-                </span>
+        {stages.map((stage) => (
+          <article
+            key={stage.def.roleId}
+            className={`pipeline-lane${stage.current ? " pipeline-lane-current" : ""}`}
+            aria-label={stage.def.title}
+          >
+            <div className="pipeline-lane-head">
+              <h3>{stage.def.title}</h3>
+              <span className={`pipeline-lane-status pipeline-lane-status-${stage.status.tone}`}>
+                {stage.status.label}
+              </span>
+            </div>
+            <p className="hint pipeline-lane-tab">{stage.tab?.label ?? "—"}</p>
+            {stage.verdict && (
+              <p
+                className={`pipeline-verdict pipeline-verdict-${verdictTone(stage.verdict)}`}
+              >
+                {stage.verdict}
+              </p>
+            )}
+            {stage.handedIn && (
+              <details className="pipeline-handed-in">
+                <summary>Handed in ({stage.handedIn.length.toLocaleString()} chars)</summary>
+                <pre className="plan-markdown">{stage.handedIn}</pre>
+              </details>
+            )}
+            {stage.tabId && stage.tab && (
+              <div className="button-row pipeline-lane-actions">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => onJump(stage.tabId!)}
+                >
+                  Jump
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => onWatch(stage.tabId!)}
+                >
+                  Watch in split
+                </button>
               </div>
-              <p className="hint pipeline-lane-tab">{tab?.label ?? "—"}</p>
-              {tabId && (
-                <div className="button-row pipeline-lane-actions">
-                  <button type="button" className="secondary-button" onClick={() => onJump(tabId)}>
-                    Jump
-                  </button>
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    onClick={() => onWatch(tabId)}
-                  >
-                    Watch in split
-                  </button>
-                </div>
-              )}
-            </article>
-          );
-        })}
+            )}
+          </article>
+        ))}
       </div>
 
       {kind === "full" && (
@@ -208,11 +231,7 @@ export function PipelineOverview({
               type="button"
               className="secondary-button"
               disabled={busy}
-              onClick={() => {
-                const text = pullPlannerText();
-                if (text) setCandidateDraft(text);
-                else onNotice("Nothing to pull", "Start the Planner tab or wait for a reply.");
-              }}
+              onClick={() => void pullFromPlanner()}
             >
               Pull from Planner
             </button>
@@ -233,7 +252,7 @@ export function PipelineOverview({
         <p className="hint">
           {kind === "execute"
             ? "Paste your final plan here, then promote to the Implementer tab."
-            : "After Plan Reviewer approves, paste the final plan and promote."}
+            : "After Plan Reviewer approves, pull or paste the final plan and promote."}
         </p>
         <textarea
           className="text-input prompt-area pipeline-plan-area"
@@ -243,10 +262,25 @@ export function PipelineOverview({
           disabled={busy}
         />
         <div className="button-row">
+          {kind === "full" && (
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={busy}
+              onClick={pullFromPlanReviewer}
+            >
+              Pull from Plan Reviewer
+            </button>
+          )}
           <button
             type="button"
             className="primary-button"
-            disabled={busy || !approvedDraft.trim()}
+            disabled={busy || !approvedDraft.trim() || !canPromote}
+            title={
+              canPromote
+                ? undefined
+                : "Use Hand off on the Plan Reviewer tab. Promote only fills a draft Implementer form."
+            }
             onClick={() => void promote()}
           >
             {kind === "execute" ? "Send to Implementer" : "Approve for implementation"}

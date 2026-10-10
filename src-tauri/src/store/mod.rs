@@ -1,3 +1,4 @@
+mod chain_runs;
 mod claude_migration;
 mod forms_store;
 mod forms_types;
@@ -37,6 +38,7 @@ pub(crate) use state_store::{
 pub use claude_migration::{backup_pre_claude_first, migrate_state, CLAUDE_MIGRATION_NOTICE};
 pub use state_types::{
     window_matches, AppStateFile, ChainRef, LayoutState, Migrations, PipelineRun, RoleSnapshot,
+    StageHandoff,
     TabRecord, TabSessionRef, WindowRecord, MAIN_WINDOW_ID,
 };
 pub use transcript_store::{TranscriptFile, TranscriptStore};

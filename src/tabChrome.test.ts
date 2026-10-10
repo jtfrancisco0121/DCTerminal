@@ -239,6 +239,20 @@ describe("tab chrome", () => {
     expect(ids).toEqual(expect.arrayContaining(["startEagleEye1", "startEagleEye2"]));
   });
 
+  it("offers the chain overview only for a tab on an Eagle-Eye chain", () => {
+    const base = { tabs: [], canReopen: false, splitOpen: false };
+    const off = buildPalette(base).map((c) => c.id);
+    expect(off).not.toContain("openChainOverview");
+    const on = buildPalette({ ...base, canOpenChainOverview: true });
+    const command = on.find((c) => c.id === "openChainOverview");
+    expect(command?.title).toBe("Open chain overview…");
+    expect(command?.group).toBe("Hand-off");
+    expect(parsePaletteId("openChainOverview")).toEqual({
+      kind: "action",
+      id: "openChainOverview",
+    });
+  });
+
   it("a Recommendation or Audit session offers Send to Planner and Developer", () => {
     const commands = buildPalette({
       tabs: [],
