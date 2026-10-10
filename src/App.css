@@ -1897,6 +1897,28 @@ kbd {
   }
 }
 
+/* Claude reasoning effort: chat header and Settings > Models. */
+.effort-select {
+  height: 1.4rem;
+  padding: 0 0.3rem;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.effort-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.settings-model-row .effort-select {
+  margin-left: 0.35rem;
+}
+
 .tab-bar-icon-active {
   border-color: var(--accent);
   color: var(--accent);

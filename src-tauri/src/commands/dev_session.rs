@@ -198,6 +198,11 @@ pub struct DevSessionInfo {
     pub cwd: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Claude reasoning effort, and the levels the session offers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub effort_options: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -236,6 +241,8 @@ pub fn dev_session_start(
         mode_id: client.mode_id().to_string(),
         cwd: client.cwd().display().to_string(),
         model: client.current_model().map(String::from),
+        effort: client.current_effort().map(String::from),
+        effort_options: client.effort_options().to_vec(),
     };
     let session = LiveSession::from_client(DEV_TAB_ID, "role_developer", client);
     let mut guard = state.lock().map_err(|e| e.to_string())?;

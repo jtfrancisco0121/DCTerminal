@@ -19,7 +19,7 @@ import {
 import { normalizeTheme, THEMES } from "../theme";
 import { DevToolsPanel } from "../DevToolsPanel";
 import { shortcutRows, type Platform } from "../keymap";
-import { CLAUDE_DEFAULT_MODEL_ID, DEFAULT_MODEL_ID } from "../models";
+import { CLAUDE_DEFAULT_MODEL_ID, CLAUDE_EFFORT_LEVELS, DEFAULT_MODEL_ID } from "../models";
 import type { ProviderId } from "../provider/types";
 import { ModelPicker } from "./ModelPicker";
 import { ProvidersSettingsSection } from "./ProvidersSettings";
@@ -305,6 +305,7 @@ export function SettingsPage({
                   }
                 }
                 fallbackId={CLAUDE_DEFAULT_MODEL_ID}
+                effortLevels={CLAUDE_EFFORT_LEVELS}
                 roleRows={[
                   ...roles.map((role) => ({ id: role.id, name: role.name })),
                   { id: "claude-cli", name: "Claude Code tabs" },
@@ -658,6 +659,7 @@ function ModelSettingsBlock({
   disabled,
   onChange,
   refresh = null,
+  effortLevels = null,
 }: {
   title: string;
   models: ModelList["models"];
@@ -669,6 +671,8 @@ function ModelSettingsBlock({
   disabled: boolean;
   onChange: (next: ModelSettings) => void;
   refresh?: { busy: boolean; onClick: () => void } | null;
+  /** Claude: a per-role reasoning effort next to each role's model. */
+  effortLevels?: readonly string[] | null;
 }) {
   return (
     <div className="settings-subsection">
@@ -699,6 +703,28 @@ function ModelSettingsBlock({
               onChange({ ...current, roleModels });
             }}
           />
+          {effortLevels && row.id.startsWith("role_") && (
+            <select
+              className="effort-select"
+              aria-label={`${title} effort for ${row.name}`}
+              title="Reasoning effort when this role starts a chat. Each chat can change it from its header."
+              value={current.roleEffort?.[row.id] ?? ""}
+              disabled={disabled}
+              onChange={(event) => {
+                const roleEffort = { ...(current.roleEffort ?? {}) };
+                if (event.target.value) roleEffort[row.id] = event.target.value;
+                else delete roleEffort[row.id];
+                onChange({ ...current, roleEffort });
+              }}
+            >
+              <option value="">Effort: default</option>
+              {effortLevels.map((level) => (
+                <option key={level} value={level}>
+                  Effort: {level}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
       ))}
       <div className="button-row">

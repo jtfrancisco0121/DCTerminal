@@ -201,6 +201,12 @@ impl AcpClient {
                             self.models.current = refreshed.current;
                             self.models.available = refreshed.available;
                         }
+                        // A new model can offer different effort levels.
+                        if refreshed.effort_config_id.is_some() {
+                            self.models.effort_config_id = refreshed.effort_config_id;
+                            self.models.effort_current = refreshed.effort_current;
+                            self.models.effort_available = refreshed.effort_available;
+                        }
                     }
                     self.models.current = Some(model.to_string());
                     return Ok(if method == "session/set_config_option" {
@@ -225,6 +231,44 @@ impl AcpClient {
 
     pub fn current_model(&self) -> Option<&str> {
         self.models.current.as_deref()
+    }
+
+    /// Reasoning effort the session reports (Claude only).
+    pub fn current_effort(&self) -> Option<&str> {
+        self.models.effort_current.as_deref()
+    }
+
+    /// Effort values the session offers. Empty when it has no effort option.
+    pub fn effort_options(&self) -> &[String] {
+        &self.models.effort_available
+    }
+
+    /// Switch this session's reasoning effort with `session/set_config_option`.
+    /// Only values the session offered are sent.
+    pub fn apply_effort(&mut self, effort: &str) -> Result<(), String> {
+        let Some(config_id) = self.models.effort_config_id.clone() else {
+            return Err("This agent does not offer an effort setting.".to_string());
+        };
+        if !self.models.effort_available.iter().any(|value| value == effort) {
+            return Err(format!("not an effort level: {effort}"));
+        }
+        if self.models.effort_current.as_deref() == Some(effort) {
+            return Ok(());
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        self.conn.call(
+            id,
+            "session/set_config_option",
+            serde_json::json!({
+                "sessionId": self.session_id,
+                "configId": config_id,
+                "value": effort,
+            }),
+            default_io_timeout(),
+        )?;
+        self.models.effort_current = Some(effort.to_string());
+        Ok(())
     }
 
     /// Claude model options reported by `session/new` / `session/load`.

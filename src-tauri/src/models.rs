@@ -785,6 +785,7 @@ Tip: use --model <id> to pick one\n";
         let settings = ModelSettings {
             default_model: "auto".to_string(),
             role_models: HashMap::from([("role_planner".to_string(), "gpt-5".to_string())]),
+            role_effort: HashMap::new(),
         };
         assert_eq!(effective_model(&settings, "role_general", None), "auto");
         assert_eq!(effective_model(&settings, "role_planner", None), "gpt-5");

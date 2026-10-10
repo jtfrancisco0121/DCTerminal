@@ -56,6 +56,29 @@ fn live_snapshot(
     }))
 }
 
+/// Change a running Claude chat's reasoning effort in place. It applies to
+/// this session only; the next start uses the role's effort again.
+#[tauri::command]
+pub fn acp_set_effort(
+    tab_id: String,
+    effort: String,
+    registry: State<Mutex<SessionRegistry>>,
+) -> Result<String, String> {
+    let effort = effort.trim().to_string();
+    if !crate::store::settings_store::valid_effort(&effort) {
+        return Err(format!("not an effort level: {effort}"));
+    }
+    let Some(live) = live_snapshot(&registry, &tab_id)? else {
+        return Err("Start the session first, then change its effort.".to_string());
+    };
+    let mut client = live
+        .client
+        .try_lock()
+        .map_err(|_| "The agent is busy. Try again when the turn finishes.".to_string())?;
+    client.apply_effort(&effort)?;
+    Ok(client.current_effort().unwrap_or(&effort).to_string())
+}
+
 #[tauri::command]
 pub fn acp_set_model(
     tab_id: String,

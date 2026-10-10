@@ -36,7 +36,7 @@ pub use dev_session::{
 pub use forms::{get_form_recall, save_form_draft};
 pub use handoff::{handoff_bind_tab, handoff_get, handoff_list, handoff_save};
 pub use pipeline::{get_pipeline_run, pipeline_promote_plan, pipeline_set_candidate_plan};
-pub use model_session::acp_set_model;
+pub use model_session::{acp_set_effort, acp_set_model};
 pub use usage::get_claude_usage;
 pub use prompts::{
     prompt_clear_recent, prompt_delete, prompt_library_get, prompt_mark_used, prompt_record_send,

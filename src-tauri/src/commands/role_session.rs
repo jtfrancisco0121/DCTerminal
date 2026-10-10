@@ -238,11 +238,26 @@ pub fn role_session_start(
             finish_starting(&state, &start_key);
             return Err(e);
         }
-        Ok((client, notes, via)) => {
+        Ok((mut client, notes, via)) => {
             // Cache the adapter's model list (Phase 5). App data only.
             if provider.id() == ProviderId::Claude && !client.model_entries().is_empty() {
                 let dir = crate::data_dir::app_data_dir(&app).path;
                 let _ = crate::models::remember_claude_models(&dir, client.model_entries());
+            }
+            // The role's reasoning effort (Settings > Models). A level the
+            // session does not offer is skipped; the session keeps its own.
+            if provider.id() == ProviderId::Claude {
+                let wanted = settings.lock().ok().and_then(|s| {
+                    s.models_for(ProviderId::Claude)
+                        .role_effort
+                        .get(&role.id)
+                        .cloned()
+                });
+                if let Some(effort) = wanted {
+                    if let Err(err) = client.apply_effort(&effort) {
+                        eprintln!("DCTerminal: effort {effort} not applied ({err})");
+                    }
+                }
             }
             (client, notes, via)
         }
@@ -256,6 +271,8 @@ pub fn role_session_start(
             .current_model()
             .map(String::from)
             .or(Some(model.clone())),
+        effort: client.current_effort().map(String::from),
+        effort_options: client.effort_options().to_vec(),
     };
     let mut folder_warning = {
         let guard = state.lock().map_err(|e| e.to_string())?;
