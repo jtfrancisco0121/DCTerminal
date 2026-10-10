@@ -3,6 +3,7 @@ pub(crate) mod activity;
 mod agent_requests;
 mod app_state;
 mod attachments;
+pub(crate) mod chain_events;
 pub(crate) mod changes;
 mod cursor_cli;
 mod dev_session;

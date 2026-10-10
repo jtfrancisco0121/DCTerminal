@@ -839,8 +839,25 @@ export async function createExecutionPipelineTabs(): Promise<AppStateSnapshot> {
   return invoke("create_execution_pipeline_tabs", { windowId: await windowId() });
 }
 
-export async function getPipelineRun(runId: string): Promise<{ run: PipelineRun }> {
+export type PipelineRunView = {
+  run: PipelineRun;
+  /** Step-1 form task type, for stages whose source form has none. */
+  taskType?: string | null;
+};
+
+export async function getPipelineRun(runId: string): Promise<PipelineRunView> {
   return invoke("get_pipeline_run", { runId });
+}
+
+export type ChainRunUpdatedEvent = { chainId: string };
+
+/** A chain run (or pipeline run) changed; open overviews refetch it. */
+export function listenChainRunUpdated(
+  handler: (event: ChainRunUpdatedEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<ChainRunUpdatedEvent>("chain-run-updated", (e) => {
+    handler(e.payload);
+  });
 }
 
 export async function pipelinePromotePlan(

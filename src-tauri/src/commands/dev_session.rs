@@ -453,6 +453,7 @@ pub fn session_agent_logs(
 
 #[tauri::command]
 pub fn dev_session_stop(
+    app: tauri::AppHandle,
     transcript: Option<String>,
     tab_id: Option<String>,
     state: State<Mutex<SessionRegistry>>,
@@ -474,6 +475,7 @@ pub fn dev_session_stop(
         };
         let mut store = state_store.lock().map_err(|e| e.to_string())?;
         store.mark_tab_awaiting_input(&tab_id, transcript.clone())?;
+        crate::commands::chain_events::notify_tab(&app, &store, &tab_id);
         if let Some(text) = transcript.as_ref().filter(|text| !text.trim().is_empty()) {
             let keep = store
                 .data

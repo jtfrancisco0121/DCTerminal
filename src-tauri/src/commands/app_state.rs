@@ -173,6 +173,7 @@ pub fn ack_provider_notice(
 /// the chain's run keeps it for the overview.
 #[tauri::command]
 pub fn set_tab_chain(
+    app: tauri::AppHandle,
     tab_id: String,
     chain: Option<crate::store::ChainRef>,
     handoff_text: Option<String>,
@@ -183,7 +184,13 @@ pub fn set_tab_chain(
         return Err(format!("unknown tab: {tab_id}"));
     }
     // A chain is a label. Hand-off tags the next tab after it has started.
-    store.set_tab_chain(&tab_id, chain, handoff_text.as_deref())
+    crate::commands::chain_events::set_tab_chain_and_notify(
+        &app,
+        &mut store,
+        &tab_id,
+        chain,
+        handoff_text.as_deref(),
+    )
 }
 
 #[derive(Serialize)]
@@ -213,6 +220,7 @@ pub fn open_chain_overview(
 /// Open a Planner (Eagle-Eye 1) or Implementer (Eagle-Eye 2) draft at step 1.
 #[tauri::command]
 pub fn start_eagle_eye(
+    app: tauri::AppHandle,
     kind: String,
     cwd: String,
     window_id: Option<String>,
@@ -239,7 +247,9 @@ pub fn start_eagle_eye(
         "ee_{}",
         chrono::Utc::now().timestamp_millis()
     );
-    store.set_tab_chain(
+    crate::commands::chain_events::set_tab_chain_and_notify(
+        &app,
+        &mut store,
         &tab_id,
         Some(crate::store::ChainRef {
             chain_id,
@@ -336,6 +346,7 @@ pub fn create_execution_pipeline_tabs(
 
 #[tauri::command]
 pub fn sync_active_tab_form(
+    app: tauri::AppHandle,
     tab_id: String,
     role_id: String,
     cwd: String,
@@ -352,6 +363,7 @@ pub fn sync_active_tab_form(
     };
     let mut store = store.lock().map_err(|e| e.to_string())?;
     store.sync_tab_form(&tab_id, &role, &values, cwd.trim())?;
+    crate::commands::chain_events::notify_form_sync(&app, &store, &tab_id);
     Ok(())
 }
 

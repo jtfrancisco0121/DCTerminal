@@ -2,9 +2,15 @@ import { useCallback, useEffect, useState } from "react";
 import type { PipelineRun, TabSummary } from "../bridge";
 import {
   getPipelineRun,
+  listenChainRunUpdated,
   pipelinePromotePlan,
   pipelineSetCandidatePlan,
 } from "../bridge";
+import {
+  coalescedReload,
+  isForRun,
+  OVERVIEW_FALLBACK_POLL_MS,
+} from "../pipeline/overviewRefresh";
 import type { TabRuntime } from "../liveTabs";
 import type { PipelineKind } from "../pipeline/stages";
 import {
@@ -63,10 +69,26 @@ export function PipelineOverview({
   }, [runId]);
 
   useEffect(() => {
-    void reload();
-    const timer = window.setInterval(() => void reload(), 4000);
-    return () => window.clearInterval(timer);
-  }, [reload]);
+    const refresh = coalescedReload(reload);
+    let unlisten: (() => void) | null = null;
+    let disposed = false;
+    listenChainRunUpdated((event) => {
+      if (isForRun(event, runId)) refresh.request();
+    })
+      .then((stop) => {
+        if (disposed) stop();
+        else unlisten = stop;
+      })
+      .catch(() => {});
+    refresh.request();
+    const timer = window.setInterval(() => refresh.request(), OVERVIEW_FALLBACK_POLL_MS);
+    return () => {
+      disposed = true;
+      refresh.stop();
+      unlisten?.();
+      window.clearInterval(timer);
+    };
+  }, [reload, runId]);
 
   const kind = (run?.kind ?? "full") as PipelineKind;
 

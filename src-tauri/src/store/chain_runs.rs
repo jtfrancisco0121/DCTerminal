@@ -124,19 +124,42 @@ impl StateStore {
         if let Some(request) = run.original_request.as_ref() {
             return Some(request.clone());
         }
+        request_from_answers(self.chain_first_answers(run_id)?)
+    }
+
+    /// The step-1 form's task type. Stages whose form has no such field
+    /// (Plan Reviewer) do not pass it on, so later stages read it here.
+    pub fn chain_task_type(&self, run_id: &str) -> Option<String> {
+        self.chain_first_answers(run_id)?
+            .get("taskType")
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    }
+
+    /// Form answers of the run's step-1 tab (open or closed tab).
+    fn chain_first_answers(&self, run_id: &str) -> Option<&HashMap<String, String>> {
+        let run = self.pipeline_run_by_id(run_id)?;
         let (_, first_role) = pipeline_stages(&run.kind).first()?;
         let tab_id = run.tab_ids.get(*first_role)?;
-        let answers = self
-            .tab_by_id(tab_id)
-            .map(|tab| &tab.answers)
-            .or_else(|| {
-                self.data
-                    .closed_tabs
-                    .iter()
-                    .find(|tab| &tab.id == tab_id)
-                    .map(|tab| &tab.answers)
-            })?;
-        request_from_answers(answers)
+        self.tab_by_id(tab_id).map(|tab| &tab.answers).or_else(|| {
+            self.data
+                .closed_tabs
+                .iter()
+                .find(|tab| &tab.id == tab_id)
+                .map(|tab| &tab.answers)
+        })
+    }
+
+    /// Chain (or pipeline run) whose overview lists `tab_id`.
+    pub fn overview_run_for_tab(&self, tab_id: &str) -> Option<String> {
+        if let Some(chain) = self.tab_by_id(tab_id).and_then(|tab| tab.chain.as_ref()) {
+            return Some(chain.chain_id.clone());
+        }
+        self.data
+            .pipeline_runs
+            .iter()
+            .find(|run| run.tab_ids.values().any(|id| id == tab_id))
+            .map(|run| run.id.clone())
     }
 
     /// Run for `chain_id`, rebuilt from the tabs on that chain when none
@@ -320,6 +343,7 @@ mod tests {
         if let Some(tab) = store.data.tabs.iter_mut().find(|t| t.id == planner) {
             tab.answers.insert("title".into(), "Fix login".into());
             tab.answers.insert("request".into(), "Users get logged out".into());
+            tab.answers.insert("taskType".into(), "Bug".into());
         }
         store
             .set_tab_chain(&planner, Some(chain("ee_1", "eagle1", 1)), None)
@@ -333,6 +357,8 @@ mod tests {
             run.original_request.as_deref(),
             Some("Fix login\n\nUsers get logged out")
         );
+        assert_eq!(store.chain_task_type("ee_1").as_deref(), Some("Bug"));
+        assert_eq!(store.overview_run_for_tab(&planner).as_deref(), Some("ee_1"));
 
         let implementer = store
             .create_draft_tab(&role("role_implementer"), "/tmp/p", true, None)

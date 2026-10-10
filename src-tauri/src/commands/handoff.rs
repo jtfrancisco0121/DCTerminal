@@ -1,5 +1,6 @@
 //! Save and reload Planner hand-offs from app data.
 
+use crate::commands::chain_events::notify_chain;
 use crate::store::{HandoffRecord, HandoffStore, NewHandoff};
 use serde::Deserialize;
 use std::sync::Mutex;
@@ -25,6 +26,7 @@ pub struct HandoffSaveInput {
 
 #[tauri::command]
 pub fn handoff_save(
+    app: tauri::AppHandle,
     input: HandoffSaveInput,
     store: State<Mutex<HandoffStore>>,
 ) -> Result<HandoffRecord, String> {
@@ -32,7 +34,7 @@ pub fn handoff_save(
         return Err("There is no plan to send.".into());
     }
     let mut store = store.lock().map_err(|e| e.to_string())?;
-    store.insert(NewHandoff {
+    let record = store.insert(NewHandoff {
         source_tab_id: input.source_tab_id,
         source_role_id: input.source_role_id,
         source_label: input.source_label,
@@ -45,17 +47,22 @@ pub fn handoff_save(
         warning: input.warning,
         plan_field: input.plan_field,
         chain: input.chain,
-    })
+    })?;
+    notify_chain(&app, record.chain.as_ref());
+    Ok(record)
 }
 
 #[tauri::command]
 pub fn handoff_bind_tab(
+    app: tauri::AppHandle,
     id: String,
     tab_id: String,
     store: State<Mutex<HandoffStore>>,
 ) -> Result<HandoffRecord, String> {
     let mut store = store.lock().map_err(|e| e.to_string())?;
-    store.bind_target(&id, &tab_id)
+    let record = store.bind_target(&id, &tab_id)?;
+    notify_chain(&app, record.chain.as_ref());
+    Ok(record)
 }
 
 #[tauri::command]

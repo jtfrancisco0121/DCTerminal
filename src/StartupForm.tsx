@@ -57,6 +57,7 @@ import {
   getAppState,
   getTab,
   getFormRecall,
+  getPipelineRun,
   getRole,
   listenPromptFinished,
   listenSessionUpdates,
@@ -145,6 +146,8 @@ import {
   latestAgentMessage,
   roleDisplayName,
   mapHandoff,
+  carryChainTaskType,
+  needsChainTaskType,
   selectionInside,
   type HandoffField,
   type HandoffScope,
@@ -3121,10 +3124,8 @@ export function StartupForm({
           branch: repo?.currentBranch ?? source.branch ?? null,
         };
       }
-      const mapped = mapHandoff(source, scope, {
-        roleId: handoffTarget,
-        fields: handoffFields ?? [],
-      });
+      const target = { roleId: handoffTarget, fields: handoffFields ?? [] };
+      let mapped = mapHandoff(source, scope, target);
       if (!mapped.planText) {
         setHandoffError(mapped.warning ?? "That choice has no content.");
         return;
@@ -3136,6 +3137,11 @@ export function StartupForm({
         const nextChain = sourceTab?.chain
           ? advanceChain(sourceTab.chain, handoffSource.sourceRoleId, handoffTarget)
           : null;
+        if (nextChain && needsChainTaskType(mapped, target)) {
+          // Plan Reviewer has no task type; the chain's Planner form does.
+          const view = await getPipelineRun(nextChain.chainId).catch(() => null);
+          mapped = carryChainTaskType(mapped, target, view?.taskType);
+        }
         const saved = await handoffSave({
           sourceTabId: handoffSource.sourceTabId,
           sourceRoleId: handoffSource.sourceRoleId,
