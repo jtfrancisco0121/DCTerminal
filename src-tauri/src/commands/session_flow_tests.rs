@@ -1052,3 +1052,25 @@ fn unknown_extension_methods_and_updates_do_not_stall_a_turn() {
     );
     assert_eq!(reply(&result.agent_text, 131), json!({}));
 }
+
+#[test]
+fn a_live_session_reports_what_a_reloaded_webview_needs() {
+    let agent = fake!("live_info", claude_scenario(json!([])));
+    let client = connect(&agent, ProviderId::Claude, "bypassPermissions");
+    let mut live = super::dev_session::LiveSession::from_client("tab-1", "role_planner", client);
+    let info = live.live_info();
+    assert_eq!(info.session.session_id, "fake-session-1");
+    assert_eq!(info.role_id, "role_planner");
+    assert_eq!(info.session.model.as_deref(), Some("opus[1m]"));
+    assert!(!info.prompt_in_flight && !info.exited);
+
+    // While a turn holds the client, the info comes back without waiting on it.
+    live.prompt_in_flight = true;
+    let client = Arc::clone(&live.client);
+    let held = client.lock().unwrap();
+    let busy = live.live_info();
+    assert!(busy.prompt_in_flight);
+    assert_eq!(busy.session.model, None);
+    drop(held);
+    live.process.kill_tree();
+}

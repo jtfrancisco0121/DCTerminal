@@ -492,12 +492,6 @@ test.describe("many tabs and stray events", () => {
   });
 
   test("events for closed and unknown tabs raise no notifications", async ({ app, page }) => {
-    test.fail(
-      true,
-      "known bug: the permission/question/plan/prompt-finished listeners call notifyAgent for any " +
-        "tabId, so a late event for a closed tab or an unknown tab shows an 'Agent stopped with an " +
-        "error' toast (src/StartupForm.tsx:869,892,901,907)",
-    );
     await strayEventsAfterClose(app, page);
     await app.turn("tab-1").chunk(" still streaming");
     await expect(log(page)).toContainText("alpha text still streaming");
@@ -732,11 +726,6 @@ test.describe("rejected commands", () => {
   });
 
   test("roles that fail to load show why", async ({ app, page }) => {
-    test.fail(
-      true,
-      "known bug: a roles load failure is swallowed (catch(() => setRoles([]))), so the role picker " +
-        "just disappears with no notice (src/App.tsx:23)",
-    );
     await app.open({
       handlers: {
         list_roles: () => {
@@ -764,13 +753,6 @@ test.describe("reload", () => {
   }
 
   test("a reload mid-turn reattaches the running session", async ({ app, page }) => {
-    test.fail(
-      true,
-      "known bug: after a webview reload a running tab is never reattached. Bootstrap only sets the " +
-        'active id for phase "running" (src/StartupForm.tsx:806-813), no command asks the backend for ' +
-        "the live session, and later events are dropped because the tab has no session " +
-        "(src/liveTabs.ts:67-71). The agent keeps running with no Stop button.",
-    );
     await app.open();
     const turn = await app.start("tab-1");
     await turn.chunk("before the reload");

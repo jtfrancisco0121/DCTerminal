@@ -16,6 +16,7 @@ import {
   type ModelList,
   type ProviderModelSettings,
   devSessionSend,
+  devSessionLive,
   devSessionStop,
   cursorApprovalMode,
   createExecutionPipelineTabs,
@@ -358,6 +359,8 @@ type Props = {
   roles: RoleSummary[];
   cli: CliDetectResult | null;
   cliError: string | null;
+  /** Why the roles failed to load, if they did. */
+  rolesError?: string | null;
   cliFound: boolean;
   showDevTools: boolean;
   /** F8: re-run CLI detection (App keeps the result). */
@@ -369,6 +372,7 @@ export function StartupForm({
   roles,
   cli,
   cliError,
+  rolesError = null,
   cliFound,
   showDevTools,
   onRedetectCli,
@@ -636,7 +640,15 @@ export function StartupForm({
     },
     tabLabel: (tabId) => savedTabsRef.current.find((tab) => tab.id === tabId)?.label ?? "",
   });
-  const notifyAgent = agentNotifications.notify;
+  const rawNotifyAgent = agentNotifications.notify;
+  // A late event for a closed or unknown tab is not news.
+  const notifyAgent = useCallback(
+    (...args: Parameters<typeof rawNotifyAgent>) => {
+      if (!savedTabsRef.current.some((tab) => tab.id === args[0])) return;
+      rawNotifyAgent(...args);
+    },
+    [rawNotifyAgent],
+  );
   /** On screen in a focused window: nothing is left unseen. */
   const isWatchingTab = useCallback((tabId: string) => {
     if (!isWindowFocused()) return false;
@@ -648,6 +660,9 @@ export function StartupForm({
   }, []);
   const dismissTabToasts = agentNotifications.dismissTab;
   const showNotice = agentNotifications.notice;
+  useEffect(() => {
+    if (rolesError) showNotice("Roles did not load", rolesError, "question");
+  }, [rolesError, showNotice]);
 
   const launchAccountWindow = useCallback(
     (accountId: string) => {
@@ -804,6 +819,28 @@ export function StartupForm({
     const seedRoleId = roles[0]?.id ?? "role_implementer";
     refreshTabs()
       .then(async (snap) => {
+        // A reloaded webview reattaches to chats whose agent is still running.
+        for (const running of snap.tabs) {
+          if (running.phase !== "running" || running.kind === "terminal") continue;
+          if (running.kind === "pipeline_overview") continue;
+          const live = await devSessionLive(running.id).catch(() => null);
+          if (!live) continue;
+          const { roleId: _role, promptInFlight: inFlight, exited, ...info } = live;
+          patchRuntime(running.id, (rt) => ({
+            ...rt,
+            session: info,
+            promptInFlight: inFlight,
+            agentExited: exited,
+            accepting: true,
+            segments: rt.segments.length
+              ? rt.segments
+              : [
+                  streamSegmentFromSystemMessage(
+                    "Reconnected to the running agent. Output from before the reload is in the saved transcript.",
+                  ),
+                ],
+          }));
+        }
         if (snap.tabs.length === 0) {
           const { tab } = await newDraftTab(seedRoleId, "");
           await refreshTabs();
@@ -826,7 +863,7 @@ export function StartupForm({
         loadTabIntoForm(tab);
       })
       .catch(() => setSavedTabs([]));
-  }, [loadTabIntoForm, refreshTabs, roles]);
+  }, [loadTabIntoForm, patchRuntime, refreshTabs, roles]);
 
   useEffect(() => {
     sessionActiveRef.current = !!session;

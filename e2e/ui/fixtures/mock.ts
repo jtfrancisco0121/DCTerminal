@@ -391,6 +391,21 @@ export function installTauriMock(config: MockConfig): void {
     dev_session_send: () => ({ dispatched: true }),
     dev_session_cancel: () => null,
     dev_session_stop: () => null,
+    // The Rust registry's view of a running tab (dev_session_live).
+    dev_session_live: (a) => {
+      const tab = findTab(a.tabId);
+      if (!tab || tab.phase !== "running" || !tab.acpSessionId) return null;
+      const role = findRole(tab.roleId);
+      return {
+        sessionId: tab.acpSessionId,
+        modeId: role?.defaultMode ?? "agent",
+        cwd: tab.cwd,
+        supportsImages: true,
+        roleId: tab.roleId,
+        promptInFlight: true,
+        exited: false,
+      };
+    },
     respond_plan_request: () => null,
     respond_permission_request: () => null,
     respond_question_request: () => null,

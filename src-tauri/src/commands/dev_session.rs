@@ -233,6 +233,54 @@ pub struct DevSessionInfo {
     pub supports_images: bool,
 }
 
+/// A session still running for a tab, so a reloaded webview can reattach to it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveSessionInfo {
+    #[serde(flatten)]
+    pub session: DevSessionInfo,
+    pub role_id: String,
+    pub prompt_in_flight: bool,
+    pub exited: bool,
+}
+
+impl LiveSession {
+    pub fn live_info(&self) -> LiveSessionInfo {
+        // A turn holds the client lock; model and effort are skipped rather than waited for.
+        let (model, effort, effort_options) = match self.client.try_lock() {
+            Ok(client) => (
+                client.current_model().map(String::from),
+                client.current_effort().map(String::from),
+                client.effort_options().to_vec(),
+            ),
+            Err(_) => (None, None, Vec::new()),
+        };
+        LiveSessionInfo {
+            session: DevSessionInfo {
+                session_id: self.session_id.clone(),
+                mode_id: self.mode_id.clone(),
+                cwd: self.cwd.clone(),
+                model,
+                effort,
+                effort_options,
+                supports_images: self.supports_images,
+            },
+            role_id: self.role_id.clone(),
+            prompt_in_flight: self.prompt_in_flight,
+            exited: self.exited,
+        }
+    }
+}
+
+#[tauri::command]
+pub fn dev_session_live(
+    tab_id: String,
+    state: State<Mutex<SessionRegistry>>,
+) -> Result<Option<LiveSessionInfo>, String> {
+    let guard = state.lock().map_err(|e| e.to_string())?;
+    Ok(guard.get(&tab_id).map(LiveSession::live_info))
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptDispatchResult {

@@ -484,6 +484,17 @@ export type DevSessionInfo = {
   supportsImages?: boolean;
 };
 
+/** A session still running in the backend, for reattaching after a webview reload. */
+export type LiveSessionInfo = DevSessionInfo & {
+  roleId: string;
+  promptInFlight: boolean;
+  exited: boolean;
+};
+
+export async function devSessionLive(tabId: string): Promise<LiveSessionInfo | null> {
+  return invoke("dev_session_live", { tabId });
+}
+
 export type DevPromptResult = {
   stopReason: string | null;
   agentText: string;

@@ -11,6 +11,7 @@ function App() {
   const [cli, setCli] = useState<CliDetectResult | null>(null);
   const [cliError, setCliError] = useState<string | null>(null);
   const [roles, setRoles] = useState<RoleSummary[]>([]);
+  const [rolesError, setRolesError] = useState<string | null>(null);
 
   useEffect(() => {
     detectCli()
@@ -20,7 +21,10 @@ function App() {
       });
     listRoles()
       .then(setRoles)
-      .catch(() => setRoles([]));
+      .catch((err: unknown) => {
+        setRoles([]);
+        setRolesError(err instanceof Error ? err.message : String(err));
+      });
   }, []);
 
   const redetectCli = async () => {
@@ -36,10 +40,16 @@ function App() {
         roles={roles}
         cli={cli}
         cliError={cliError}
+        rolesError={rolesError}
         cliFound={!!cli?.found}
         showDevTools={showDevTools}
         onRedetectCli={redetectCli}
-        onRefreshRoles={() => listRoles().then(setRoles)}
+        onRefreshRoles={() =>
+          listRoles().then((next) => {
+            setRoles(next);
+            setRolesError(null);
+          })
+        }
       />
     </main>
   );
