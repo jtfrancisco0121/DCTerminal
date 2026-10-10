@@ -369,9 +369,6 @@ impl AcpConnection {
                     return Ok(json!({ "stopReason": "cancelled" }));
                 }
             }
-            if let Ok(Some(status)) = self.process.try_wait() {
-                return Err(self.exit_error(Some(status.to_string())));
-            }
             let remaining = deadline.saturating_duration_since(Instant::now());
             let wait = remaining.min(Duration::from_millis(50));
             match self.lines.recv_timeout(wait) {
@@ -416,6 +413,11 @@ impl AcpConnection {
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
+                    // Checked only once no line is waiting, so a reply written just
+                    // before the agent exits is still read.
+                    if let Ok(Some(status)) = self.process.try_wait() {
+                        return Err(self.exit_error(Some(status.to_string())));
+                    }
                     if remaining <= Duration::from_millis(50) && cancel_deadline.is_none() {
                         return Err(format!("timeout waiting for response id={id}"));
                     }

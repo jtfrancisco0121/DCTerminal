@@ -101,14 +101,16 @@ fn read_session(path: &Path, wanted: &str) -> Option<ClaudeHistoryEntry> {
         sidechain: false,
         saw_user: false,
     };
-    let mut line = String::new();
+    // Bytes, not read_line: one bad UTF-8 line (or the read cap splitting a
+    // character) must skip that line, not drop the whole session.
+    let mut line = Vec::new();
     loop {
         line.clear();
-        let read = reader.read_line(&mut line).ok()?;
+        let read = reader.read_until(b'\n', &mut line).ok()?;
         if read == 0 {
             break;
         }
-        let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
+        let Ok(value) = serde_json::from_slice::<Value>(line.trim_ascii()) else {
             continue;
         };
         observe(&mut scan, &value);

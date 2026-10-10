@@ -155,13 +155,8 @@ fn a_newer_settings_schema_opens_with_defaults() {
     assert_eq!(store.ui().theme, "github-dark");
 }
 
-// Known bug: `SettingsStore::open` returns the error from
-// `normalize_claude_accounts` (src/store/settings_store.rs:469), and
-// `lib.rs` setup propagates it with `?`, so one hand-edited or synced
-// settings.json with a duplicate account id stops the app from starting.
-// Every other store falls back instead of failing open.
+// Regression: one bad account in settings.json must not stop startup; only it is dropped.
 #[test]
-#[ignore = "known bug: invalid Claude accounts in settings.json make SettingsStore::open fail (settings_store.rs:469)"]
 fn invalid_claude_accounts_on_disk_do_not_block_open() {
     let dir = TempDir::new("settings_bad_accounts");
     std::fs::write(
@@ -174,6 +169,10 @@ fn invalid_claude_accounts_on_disk_do_not_block_open() {
     .unwrap();
     let store = SettingsStore::open(dir.path());
     assert!(store.is_ok(), "open failed: {:?}", store.err());
+    let store = store.unwrap();
+    let accounts = &store.providers().claude.accounts;
+    assert_eq!(accounts.len(), 1, "only the duplicate is dropped");
+    assert_eq!(accounts[0].name, "Personal");
 }
 
 #[test]

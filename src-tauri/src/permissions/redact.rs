@@ -56,6 +56,22 @@ fn sensitive_key(key: &str) -> bool {
     SENSITIVE_KEYS
         .iter()
         .any(|name| normalized == *name || normalized.ends_with(&format!("_{name}")))
+        || normalized
+            .split('_')
+            .any(|part| matches!(part, "secret" | "password" | "passwd" | "token"))
+}
+
+/// `scheme://user:pass@host/…` with the credential part masked.
+fn mask_url_userinfo(word: &str) -> Option<String> {
+    let (scheme, rest) = word.split_once("://")?;
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(end);
+    let (userinfo, host) = authority.rsplit_once('@')?;
+    let user = match userinfo.split_once(':') {
+        Some((user, _)) => format!("{user}:{REDACTED}"),
+        None => REDACTED.to_string(),
+    };
+    Some(format!("{scheme}://{user}@{host}{tail}"))
 }
 
 fn redact_string(key: Option<&str>, text: &str) -> String {
@@ -117,6 +133,10 @@ pub fn redact_summary(text: &str, max_chars: usize) -> String {
                 mask_next = true;
                 continue;
             }
+        }
+        if let Some(masked) = mask_url_userinfo(bare) {
+            out.push(masked);
+            continue;
         }
         if let Some((base, query)) = bare.split_once("://").and_then(|_| bare.split_once('?')) {
             let pairs: Vec<String> = query

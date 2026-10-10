@@ -167,14 +167,8 @@ fn dir_size_does_not_follow_symlinks_out_of_the_data_dir() {
     assert_eq!(dir_size(data.path()), 5);
 }
 
-// Known bug: `sweep_leftovers` reads `<data>/transcripts` and `<data>/logs`
-// with `read_dir`, which follows a symlinked folder, and then deletes old
-// `.corrupt-*` / orphan `.json.bak` files inside the link target
-// (src/store/storage_sweep.rs:62-66). The module promises to only ever touch
-// files inside the app data dir.
-#[cfg(unix)]
+// Regression: a symlinked transcripts/ or logs/ folder is never swept through.
 #[test]
-#[ignore = "known bug: sweep follows a symlinked transcripts/ or logs/ folder out of the data dir (storage_sweep.rs:62)"]
 fn a_symlinked_store_folder_is_not_swept_outside_the_data_dir() {
     let data = TempDir::new("sweep_linkdir_data");
     let outside = TempDir::new("sweep_linkdir_outside");

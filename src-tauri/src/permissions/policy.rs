@@ -74,7 +74,10 @@ pub fn evaluate_permission(role_id: &str, params: &Value) -> DecisionOutcome {
     let offered = permission_options(params);
     // Synthesized Allow/Reject buttons (no options on the request) are for
     // the card only. Auto-answer only an allow_once the agent actually sent.
-    let agent_offered = params.get("options").and_then(Value::as_array).is_some();
+    let agent_offered = params
+        .get("options")
+        .and_then(Value::as_array)
+        .is_some_and(|options| !options.is_empty());
     let role_allows = decide_for_role(role_id, class) == PolicyDecision::AllowOnce;
     let decision = if role_allows && agent_offered && offered.iter().any(is_allow_once_choice) {
         PolicyDecision::AllowOnce
@@ -115,10 +118,13 @@ pub fn decide_for_role(role_id: &str, class: ToolClass) -> PolicyDecision {
     PolicyDecision::AllowOnce
 }
 
+/// The kind decides when the agent sent one; the id is only a fallback for kindless options.
 fn is_allow_once_choice(opt: &PermissionChoice) -> bool {
     let kind = opt.kind.to_ascii_lowercase();
-    let id = opt.id.to_ascii_lowercase();
-    kind == "allow_once" || id == "allow-once"
+    if !kind.is_empty() {
+        return kind == "allow_once";
+    }
+    opt.id.eq_ignore_ascii_case("allow-once")
 }
 
 pub fn classify_permission_params(params: &Value) -> ToolClass {
@@ -198,11 +204,7 @@ fn reject_result(options: &[PermissionChoice]) -> Value {
 
 fn choice_id(options: &[PermissionChoice], allow: bool) -> String {
     if allow {
-        if let Some(opt) = options.iter().find(|opt| {
-            let kind = opt.kind.to_ascii_lowercase();
-            let id = opt.id.to_ascii_lowercase();
-            kind == "allow_once" || id == "allow-once"
-        }) {
+        if let Some(opt) = options.iter().find(|opt| is_allow_once_choice(opt)) {
             return opt.id.clone();
         }
         return "allow-once".to_string();

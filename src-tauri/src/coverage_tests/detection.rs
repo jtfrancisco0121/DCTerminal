@@ -457,12 +457,8 @@ fn history_for_a_blank_folder_or_missing_projects_is_empty_and_creates_nothing()
     assert!(names_in(config.path()).is_empty());
 }
 
-// Known bug: `read_session` stops at the first line that is not valid UTF-8
-// (`reader.read_line(&mut line).ok()?`, src/claude_history.rs:106) and drops
-// the whole session, while torn JSON lines are skipped. The 256 KB read cap
-// can also cut a multi-byte character in half and hit the same path.
+// Regression: a non-UTF-8 line skips that line, not the whole Claude session.
 #[test]
-#[ignore = "known bug: one non-UTF-8 line hides the whole Claude session (claude_history.rs:106)"]
 fn history_skips_a_non_utf8_line_instead_of_dropping_the_session() {
     let config = TempDir::new("hist_utf8");
     let work = TempDir::new("hist_utf8_work");

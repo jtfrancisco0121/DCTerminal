@@ -403,13 +403,8 @@ fn hidden_fields_drop_out_and_built_ins_fill_in() {
     assert_eq!(merged.unresolved, vec!["other"]);
 }
 
-// Known bug: `merge_template` substitutes field values into the template text
-// and then scans the whole result for `{{…}}` (src/template/merge.rs:39), so
-// text the user typed is treated as template. A request that quotes
-// Handlebars/Jinja code such as `{{user.name}}` is refused at session start
-// as an "Unresolved placeholder", and a typed `{{cwd}}` is replaced.
+// Regression: `{{…}}` typed in an answer is user text, never a template token.
 #[test]
-#[ignore = "known bug: {{…}} inside a user's answer is treated as a template placeholder (template/merge.rs:39)"]
 fn user_text_with_braces_is_not_a_placeholder() {
     let folder = TempDir::new("merge_braces");
     let r = role(

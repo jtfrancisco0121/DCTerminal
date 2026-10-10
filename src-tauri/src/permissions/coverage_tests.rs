@@ -142,12 +142,8 @@ fn a_request_without_options_shows_synthesized_buttons_on_the_card() {
     assert_eq!(out.decision, PolicyDecision::Ask);
 }
 
-// Known bug: `agent_offered` is true for any `options` array, even an empty
-// one, and `permission_options` then synthesizes an `allow-once` button that
-// the agent never sent, which gets auto-selected
-// (src/permissions/policy.rs:83-87).
+// Regression: an empty options array is never auto-answered.
 #[test]
-#[ignore = "known bug: options: [] auto-answers a synthesized allow-once the agent never offered (policy.rs:83)"]
 fn an_empty_options_array_is_not_auto_answered() {
     let out = evaluate_permission(
         "role_implementer",
@@ -157,11 +153,8 @@ fn an_empty_options_array_is_not_auto_answered() {
     assert!(out.auto_result.is_none());
 }
 
-// Known bug: `is_allow_once_choice` accepts the id `allow-once` whatever the
-// option's kind says (src/permissions/policy.rs:122-126), so an option whose
-// kind is `allow_always` but whose id is `allow-once` is auto-selected.
+// Regression: an option whose kind is allow_always is never auto-selected by its id.
 #[test]
-#[ignore = "known bug: an allow_always option with id allow-once is auto-selected (policy.rs:125)"]
 fn an_allow_always_option_is_never_auto_selected_by_its_id() {
     let out = evaluate_permission(
         "role_implementer",
@@ -280,13 +273,8 @@ fn summaries_mask_common_inline_secrets() {
     assert!(capped.ends_with('…'));
 }
 
-// Known gaps in `redact_summary` (src/permissions/redact.rs:117-162):
-// credentials in a URL's user-info part are not masked, and `sensitive_key`
-// only matches whole names or `_<name>` suffixes from its list, so
-// `AWS_SECRET_ACCESS_KEY=…` (ends in `_access_key`) is written to the
-// activity log in clear.
+// Regression: URL credentials and *_SECRET_* values are masked in summaries.
 #[test]
-#[ignore = "known bug: URL user-info and AWS_SECRET_ACCESS_KEY values are not redacted (redact.rs:117)"]
 fn summaries_mask_url_credentials_and_aws_secret_keys() {
     let url = redact_summary(
         "git clone https://x-access-token:ghp_SECRET@github.com/o/r.git",

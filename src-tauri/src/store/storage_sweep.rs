@@ -56,7 +56,13 @@ fn is_leftover(path: &Path) -> bool {
 /// recursive). Returns the bytes freed.
 pub fn sweep_leftovers(data_dir: &Path, now: SystemTime, max_age: Duration) -> u64 {
     let mut dirs = vec![data_dir.to_path_buf()];
-    dirs.extend(SWEPT_SUBDIRS.iter().map(|sub| data_dir.join(sub)));
+    // A symlinked subfolder points outside the data dir; never sweep through it.
+    dirs.extend(
+        SWEPT_SUBDIRS
+            .iter()
+            .map(|sub| data_dir.join(sub))
+            .filter(|dir| !std::fs::symlink_metadata(dir).is_ok_and(|meta| meta.is_symlink())),
+    );
     let mut freed = 0;
     for dir in dirs {
         let Ok(entries) = std::fs::read_dir(&dir) else {

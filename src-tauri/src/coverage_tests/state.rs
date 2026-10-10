@@ -32,12 +32,8 @@ fn an_unknown_state_schema_is_refused_and_left_on_disk() {
     );
 }
 
-// Known bug: `StateStore::open_path` uses `read_json` (src/store/state_store.rs:36),
-// so a damaged state.json is an error and `lib.rs` setup aborts startup with
-// it, even though `write_json_atomic` kept a good `state.json.bak` beside it.
-// The other stores use `read_json_or_recover`.
+// Regression: a damaged state.json falls back to state.json.bak instead of blocking startup.
 #[test]
-#[ignore = "known bug: a corrupt state.json blocks startup instead of falling back to state.json.bak (state_store.rs:36)"]
 fn a_corrupt_state_file_falls_back_to_the_backup() {
     let dir = TempDir::new("state_corrupt");
     let mut store = store_at(&dir);

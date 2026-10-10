@@ -1,6 +1,6 @@
 use crate::orchestrator::TabPhase;
 use crate::roles::Role;
-use crate::store::json_io::{read_json, write_json_atomic};
+use crate::store::json_io::{read_json_or_recover, write_json_atomic};
 use crate::store::state_types::{
     AppStateFile, PipelineRun, RoleSnapshot, TabRecord, TabSessionRef, STATE_SCHEMA_VERSION,
 };
@@ -32,7 +32,8 @@ impl StateStore {
     /// Load `state.json` at `path` (missing file = empty state).
     pub fn open_path(path: PathBuf) -> Result<Self, String> {
         let mut data = if path.exists() {
-            let loaded: AppStateFile = read_json(&path)?;
+            // A damaged file falls back to state.json.bak instead of blocking startup.
+            let loaded: AppStateFile = read_json_or_recover(&path)?;
             if loaded.schema_version != STATE_SCHEMA_VERSION {
                 return Err(format!(
                     "unsupported state.json schemaVersion {} (expected {})",
