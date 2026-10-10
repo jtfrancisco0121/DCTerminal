@@ -3445,6 +3445,10 @@ export function StartupForm({
       runPaletteModel(route.model);
       return;
     }
+    if (route.kind === "handoff") {
+      openHandoffDialog(route.roleId);
+      return;
+    }
     runPaletteAction(route.id);
   };
 
@@ -4043,6 +4047,9 @@ export function StartupForm({
           canAddToGrid={gridCandidates.length > 0 && (!gridOpen(split) || (split.gridTabIds?.length ?? 0) < GRID_MAX_TABS)}
           canSendPlan={(isCaptureSource(roleId) && !!session) || !!isPlanTerminal}
           sendPlanTargets={isPlanTerminal ? planTerminalTargets : handoffTargets(roleId, roles)}
+          handoffTargets={(isPlanTerminal ? planTerminalTargets : (handoffOffer?.targets ?? [])).map(
+            (id) => ({ id, name: roleDisplayName(id, roles) }),
+          )}
           canExportTranscript={
             !!activeTabSummary &&
             (activeTabSummary.hasTranscript ||

@@ -322,10 +322,24 @@ export type PaletteCommand = {
 export type PaletteRoute =
   | { kind: "action"; id: PaletteAction }
   | { kind: "goto"; tabId: string }
-  | { kind: "model"; model: string | null };
+  | { kind: "model"; model: string | null }
+  | { kind: "handoff"; roleId: string };
+
+/** Fixed hand-off commands and the target role each one opens. */
+const FIXED_HANDOFF_COMMANDS: Readonly<Record<string, string>> = {
+  sendPlanPlanReviewer: "role_plan_reviewer",
+  sendPlanImplementer: "role_implementer",
+  sendPlanDeveloper: "role_developer",
+  sendToPlanner: "role_planner",
+  sendImplementerToReviewer: "role_pr_reviewer",
+};
 
 /** Turn a palette command id into what to run, or null if it is unknown. */
 export function parsePaletteId(id: string): PaletteRoute | null {
+  if (id.startsWith("handoff:")) {
+    const roleId = id.slice("handoff:".length);
+    return roleId ? { kind: "handoff", roleId } : null;
+  }
   if (id.startsWith("goto:")) {
     const tabId = id.slice("goto:".length);
     return tabId ? { kind: "goto", tabId } : null;
@@ -379,6 +393,11 @@ export function buildPalette(opts: {
   model?: PaletteModelOptions | null;
   /** The active tab is on an Eagle-Eye chain. */
   canOpenChainOverview?: boolean;
+  /**
+   * The active role's hand-off targets right now (role data or the built-in
+   * table). Each one without a fixed command gets "Hand off to <name>…".
+   */
+  handoffTargets?: readonly { id: string; name: string }[];
 }): PaletteCommand[] {
   const commands: PaletteCommand[] = [
     { id: "newTab", title: "New tab", group: "Tabs" },
@@ -616,6 +635,23 @@ export function buildPalette(opts: {
       title: "Open chain overview…",
       group: "Hand-off",
       keywords: "eagle eye chain pipeline overview stages verdict",
+    });
+  }
+  // Targets from role data (custom roles, edited built-ins) with no fixed command above.
+  const covered = new Set(
+    commands.flatMap((cmd) => {
+      const target = FIXED_HANDOFF_COMMANDS[cmd.id];
+      return target ? [target] : [];
+    }),
+  );
+  for (const target of opts.handoffTargets ?? []) {
+    if (covered.has(target.id)) continue;
+    covered.add(target.id);
+    commands.push({
+      id: `handoff:${target.id}`,
+      title: `Hand off to ${target.name}…`,
+      group: "Hand-off",
+      keywords: "handoff send custom role",
     });
   }
   if (opts.canExportTranscript) {

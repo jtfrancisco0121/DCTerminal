@@ -481,3 +481,57 @@ describe("grid view", () => {
     expect(on.some((c) => c.id === "swapPanes")).toBe(false);
   });
 });
+
+describe("palette hand-offs from role data", () => {
+  const base = { tabs: [], canReopen: false, splitOpen: false };
+
+  it("adds Hand off to <name>… only for targets with no fixed command", () => {
+    const commands = buildPalette({
+      ...base,
+      canSendPlan: true,
+      sendPlanTargets: ["role_implementer", "role_custom_docs"],
+      handoffTargets: [
+        { id: "role_implementer", name: "Implementer" },
+        { id: "role_custom_docs", name: "Docs writer" },
+      ],
+    });
+    const handoff = commands
+      .filter((c) => c.group === "Hand-off" && !c.id.startsWith("startEagleEye"))
+      .map((c) => c.id);
+    expect(handoff).toEqual(["sendPlanImplementer", "handoff:role_custom_docs"]);
+    expect(commands.find((c) => c.id === "handoff:role_custom_docs")?.title).toBe(
+      "Hand off to Docs writer…",
+    );
+  });
+
+  it("a custom source role gets entries for every target", () => {
+    const commands = buildPalette({
+      ...base,
+      canSendImplementerToReviewer: false,
+      handoffTargets: [
+        { id: "role_pr_reviewer", name: "PR Reviewer" },
+        { id: "role_custom_qa", name: "QA" },
+      ],
+    });
+    const ids = commands.map((c) => c.id);
+    expect(ids).toContain("handoff:role_pr_reviewer");
+    expect(ids).toContain("handoff:role_custom_qa");
+  });
+
+  it("the Implementer's PR Reviewer command is not doubled", () => {
+    const commands = buildPalette({
+      ...base,
+      canSendImplementerToReviewer: true,
+      handoffTargets: [{ id: "role_pr_reviewer", name: "PR Reviewer" }],
+    });
+    expect(commands.some((c) => c.id === "handoff:role_pr_reviewer")).toBe(false);
+  });
+
+  it("routes handoff:<role id> to that role", () => {
+    expect(parsePaletteId("handoff:role_custom_docs")).toEqual({
+      kind: "handoff",
+      roleId: "role_custom_docs",
+    });
+    expect(parsePaletteId("handoff:")).toBeNull();
+  });
+});

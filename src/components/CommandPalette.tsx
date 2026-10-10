@@ -16,6 +16,8 @@ type Props = {
   canOpenChainOverview?: boolean;
   /** The active tab's model choices; absent when it has no model. */
   model?: PaletteModelOptions | null;
+  /** The active role's hand-off targets (adds "Hand off to <name>…" for unlisted ones). */
+  handoffTargets?: readonly { id: string; name: string }[];
   /** Text to start with, e.g. "use model " from Change model…. */
   initialQuery?: string;
   onRun: (id: string) => void;
@@ -35,6 +37,7 @@ export function CommandPalette({
   canRemoveWorktree = false,
   canOpenChainOverview = false,
   model = null,
+  handoffTargets,
   initialQuery = "",
   onRun,
   onClose,
@@ -57,6 +60,7 @@ export function CommandPalette({
           canRemoveWorktree,
           canOpenChainOverview,
           model,
+          handoffTargets,
         }),
         query,
       ),
@@ -73,6 +77,7 @@ export function CommandPalette({
       canRemoveWorktree,
       canOpenChainOverview,
       model,
+      handoffTargets,
       query,
     ],
   );
