@@ -8,6 +8,6 @@ export default defineConfig((env) => {
   return {
     ...config,
     root: new URL("../..", import.meta.url).pathname,
-    server: { ...config.server, port: 1430, strictPort: true, host: "127.0.0.1", hmr: false },
+    server: { ...config.server, port: Number(process.env.E2E_PORT ?? 1430), strictPort: true, host: "127.0.0.1", hmr: false },
   };
 });

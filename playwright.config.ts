@@ -2,7 +2,8 @@ import { defineConfig, devices } from "@playwright/test";
 
 // UI tests against the Vite dev server with a faked Tauri IPC layer (e2e/ui).
 // The WebdriverIO suite that drives the built app lives in e2e/specs.
-const PORT = 1430;
+// E2E_PORT lets several checkouts run the suite at once.
+const PORT = Number(process.env.E2E_PORT ?? 1430);
 // E2E_SLOWMO=<ms> with --headed slows every action down so a person can follow along.
 const SLOWMO = Number(process.env.E2E_SLOWMO ?? 0);
 export default defineConfig({
