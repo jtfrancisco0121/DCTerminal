@@ -3,6 +3,7 @@ import type {
   PermissionRequestEvent,
   PlanRequestEvent,
   PromptFinishedEvent,
+  PtyPacket,
   QuestionRequestEvent,
   Role,
   SessionUpdateEvent,
@@ -92,6 +93,32 @@ export class TauriApp {
   async handle(cmd: string, fn: PageHandler): Promise<void> {
     await this.page.evaluate(([c, s]) => window.__E2E.handle(c, s), [cmd, fn.toString()] as const);
   }
+
+  // ---- Terminal tabs (e2e/ui/terminal*.spec.ts) ----
+  /** Sends `text` as one PTY data packet (base64, like the Rust reader) to PTY `ptyId`. */
+  async ptyOutput(ptyId: string, text: string): Promise<void> {
+    await this.ptyBytes(ptyId, new TextEncoder().encode(text));
+  }
+
+  /** Raw bytes as one PTY data packet, e.g. half of a UTF-8 sequence. */
+  async ptyBytes(ptyId: string, bytes: Uint8Array): Promise<void> {
+    const data = btoa(Array.from(bytes, (b) => String.fromCharCode(b)).join(""));
+    await this.ptyPacket(ptyId, { kind: "data", data, code: null });
+  }
+
+  /** The PTY's process exited with `code`. */
+  async ptyExit(ptyId: string, code: number | null): Promise<void> {
+    await this.ptyPacket(ptyId, { kind: "exit", data: "", code });
+  }
+
+  private async ptyPacket(ptyId: string, packet: PtyPacket): Promise<void> {
+    const sent = await this.page.evaluate(
+      ([id, p]) => window.__E2E.ptySend(id as string, p),
+      [ptyId, packet] as const,
+    );
+    if (!sent) throw new Error(`no PTY channel for ${ptyId}`);
+  }
+  // ---- end Terminal tabs ----
 
   async nextFrame(): Promise<void> {
     await this.page.evaluate(
@@ -325,6 +352,8 @@ declare global {
       listenerCount: (event: string) => number;
       respond: (cmd: string, value: unknown) => void;
       handle: (cmd: string, source: string) => void;
+      /** Terminal tabs: delivers one PtyPacket; false when PTY `ptyId` has no channel. */
+      ptySend: (ptyId: string, packet: unknown) => boolean;
     };
   }
 }

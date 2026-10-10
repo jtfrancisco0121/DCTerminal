@@ -420,6 +420,106 @@ export function installTauriMock(config: MockConfig): void {
     storage_status: () => ({ appDataDir: "/tmp/dct-e2e", bytes: 0 }),
   };
 
+  // ---- Terminal tabs (e2e/ui/terminal*.spec.ts) -------------------------
+  // Mirrors src-tauri/src/pty/mod.rs. shell_terminal_start and
+  // role_terminal_start save a terminal tab (reusing a non-running preferred
+  // tab), open its PTY and remember the folder (remember_folder). PTY output
+  // goes to the Channel passed as `onOutput`; __E2E.ptySend delivers packets.
+  const ptyChannels: Record<string, number> = {};
+  const channelIndex: Record<number, number> = {};
+  const rememberPty = (id: string, channel: Json) => {
+    if (!state.ptys.includes(id)) state.ptys.push(id);
+    if (channel && typeof channel.id === "number") ptyChannels[id] = channel.id;
+  };
+  const saveTerminalTab = (preferred: string | null, draft: Json) => {
+    let tab = preferred ? findTab(preferred) : null;
+    if (!tab || tab.phase === "running") {
+      state.tabCounter += 1;
+      tab = { id: `tab-${state.tabCounter}` };
+      state.tabs.push(tab);
+    }
+    Object.assign(tab, {
+      label: draft.label,
+      roleId: draft.roleId,
+      cwd: draft.cwd,
+      phase: "terminal",
+      mergedPromptChars: 0,
+      startupPromptSent: draft.startupPromptSent,
+      hasTranscript: false,
+      folderStatus: "ok",
+      color: draft.color,
+      kind: "terminal",
+      terminalLaunch: draft.launch,
+      acpSessionId: null,
+      resumeSessionId: draft.resumeSessionId ?? null,
+      model: null,
+      provider: draft.provider,
+      chain: null,
+    });
+    state.answers[tab.id] = clone(draft.answers);
+    state.activeTabId = tab.id;
+    if (!state.recentFolders.includes(draft.cwd)) state.recentFolders.push(draft.cwd);
+    return tab;
+  };
+  const folderName = (path: string) => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+  state.recentFolders = [] as string[];
+  defaults.shell_terminal_start = (a) => {
+    const input = a.input;
+    const launch = input.launch === "cursor-cli" || input.launch === "claude-cli" ? input.launch : "shell";
+    const name = { "cursor-cli": "Cursor CLI", "claude-cli": "Claude Code", shell: "Terminal" }[launch as string];
+    const resume = String(input.resumeSessionId ?? "").trim() || null;
+    if (resume && launch === "shell") throw new Error("Resume is only used for a Cursor CLI or Claude Code terminal.");
+    const tab = saveTerminalTab(input.tabId, {
+      launch,
+      cwd: input.cwd,
+      label: `${name} · ${folderName(input.cwd)}`,
+      roleId: launch === "shell" ? "terminal" : launch,
+      color: "#2dd4bf",
+      answers: resume ? { cwd: input.cwd, resumeSessionId: resume } : { cwd: input.cwd },
+      resumeSessionId: resume,
+      startupPromptSent: false,
+      provider: launch === "cursor-cli" ? "cursor" : launch === "claude-cli" ? "claude" : undefined,
+    });
+    rememberPty(tab.id, a.onOutput);
+    return { errors: [], tabId: tab.id, pid: 4242, usedPromptFile: false };
+  };
+  defaults.role_terminal_start = (a) => {
+    const input = a.input;
+    const role = findRole(input.roleId);
+    if (!role) throw new Error(`unknown role: ${input.roleId}`);
+    const cwd = String(input.values.cwd ?? "").trim();
+    if (!cwd) throw new Error("cwd is required");
+    const title = String(input.values.title ?? "").trim();
+    const tab = saveTerminalTab(input.tabId, {
+      launch: "role",
+      cwd,
+      label: title ? `${role.name} · ${title}` : role.name,
+      roleId: role.id,
+      color: role.color,
+      answers: input.values,
+      startupPromptSent: true,
+      provider: "claude",
+    });
+    rememberPty(tab.id, a.onOutput);
+    return { errors: [], tabId: tab.id, pid: 4243, usedPromptFile: false };
+  };
+  const ptyOpenDefault = defaults.pty_open;
+  defaults.pty_open = (a, s) => {
+    rememberPty(a.input.id, a.onOutput);
+    return ptyOpenDefault(a, s);
+  };
+  defaults.terminal_plan_file = () => null;
+  const ptySend = (ptyId: string, packet: Json): boolean => {
+    const channel = ptyChannels[ptyId];
+    const entry = channel === undefined ? undefined : callbacks.get(channel);
+    if (!entry) return false;
+    const index = channelIndex[channel] ?? 0;
+    channelIndex[channel] = index + 1;
+    entry.fn({ index, message: packet });
+    return true;
+  };
+  // ---- end Terminal tabs ------------------------------------------------
+
   const overrides: Record<string, Handler> = {};
   const compile = (source: string): Handler =>
     new Function(`return (${source});`)() as Handler;
@@ -542,5 +642,7 @@ export function installTauriMock(config: MockConfig): void {
     handle(cmd: string, source: string) {
       overrides[cmd] = compile(source);
     },
+    // Terminal tabs: one PtyPacket to the channel of PTY `ptyId`.
+    ptySend,
   };
 }
