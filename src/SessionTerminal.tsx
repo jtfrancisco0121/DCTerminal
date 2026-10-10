@@ -511,6 +511,7 @@ export function SessionTerminal({
         <textarea
           ref={inputRef}
           className="session-terminal-input"
+          aria-label={canSendFollowUp ? "Follow-up message" : "Message"}
           rows={3}
           placeholder={
             canSendFollowUp

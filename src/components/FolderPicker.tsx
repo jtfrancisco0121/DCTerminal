@@ -47,6 +47,11 @@ export function FolderPicker({ value, disabled, unavailable, onChange, compact =
     void refresh();
   }, [refresh]);
 
+  // Folders opened by other tabs (chat or terminal) appear without a remount.
+  useEffect(() => {
+    if (openMenu) void refresh();
+  }, [openMenu, refresh]);
+
   const choose = (path: string) => {
     const picked = folderPickFillsField(path);
     onChange(picked.cwd);
