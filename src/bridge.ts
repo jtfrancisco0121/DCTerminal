@@ -1303,6 +1303,45 @@ export async function terminalPlanFile(
   });
 }
 
+export type SessionToolCallKind = "read" | "edit" | "execute" | "fetch" | "other";
+export type SessionToolCallStatus = "pending" | "completed" | "failed";
+
+export type SessionToolCall = {
+  id: string;
+  name: string;
+  kind: SessionToolCallKind;
+  /** Redacted. */
+  title: string;
+  path: string | null;
+  /** Redacted. */
+  command: string | null;
+  /** Redacted. */
+  url: string | null;
+  status: SessionToolCallStatus;
+  at: string | null;
+};
+
+/** A Claude terminal tab's own session log (read-only, last ~8 MB). */
+export type TerminalSessionLog = {
+  sessionId: string;
+  path: string;
+  /** The latest assistant message ended the turn and no tool call is open. */
+  turnDone: boolean;
+  /** Assistant text since the latest real user prompt. */
+  lastReply: string;
+  /** `input.plan` of the newest ExitPlanMode call. */
+  plan: string | null;
+  planAt: string | null;
+  lastPromptAt: string | null;
+  /** Oldest to newest, at most 500. */
+  toolCalls: SessionToolCall[];
+};
+
+/** `null` until the tab has a pinned Claude session whose log exists. */
+export async function terminalSessionLog(tabId: string): Promise<TerminalSessionLog | null> {
+  return invoke<TerminalSessionLog | null>("terminal_session_log", { tabId });
+}
+
 export type ModelEntry = {
   id: string;
   label: string;

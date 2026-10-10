@@ -1,6 +1,7 @@
 mod acp;
 mod attachments;
 mod claude_history;
+mod claude_session_log;
 mod cli_detect;
 mod cli_launch;
 mod commands;
@@ -51,7 +52,7 @@ use commands::{
     transcript_save,
     validate_and_preview, SessionRegistry,
 };
-use commands::{activity_clear, activity_list};
+use commands::{activity_clear, activity_list, terminal_session_log};
 use commands::{changes_file_diff, changes_list, changes_revert, changes_snapshot, ChangesRoot};
 use commands::{first_run_complete, first_run_status, provider_status};
 use commands::{storage_cleanup, storage_status};
@@ -245,6 +246,7 @@ pub fn run() {
             get_terminal_settings,
             set_terminal_settings,
             terminal_plan_file,
+            terminal_session_log,
             list_models,
             get_model_settings,
             set_model_settings,

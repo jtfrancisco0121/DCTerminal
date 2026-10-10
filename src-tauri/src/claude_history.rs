@@ -110,7 +110,7 @@ fn read_session(path: &Path, wanted: &str) -> Option<ClaudeHistoryEntry> {
         if read == 0 {
             break;
         }
-        let Ok(value) = serde_json::from_slice::<Value>(line.trim_ascii()) else {
+        let Some(value) = parse_jsonl_line(&line) else {
             continue;
         };
         observe(&mut scan, &value);
@@ -159,6 +159,12 @@ fn read_session(path: &Path, wanted: &str) -> Option<ClaudeHistoryEntry> {
         git_branch: scan.git_branch,
         entrypoint: scan.entrypoint,
     })
+}
+
+/// One transcript record from raw bytes. Bad JSON or bad UTF-8 yields `None`,
+/// so callers skip that line and keep the rest of the session.
+pub(crate) fn parse_jsonl_line(line: &[u8]) -> Option<Value> {
+    serde_json::from_slice::<Value>(line.trim_ascii()).ok()
 }
 
 fn observe(scan: &mut Scan, value: &Value) {

@@ -255,6 +255,21 @@ impl StateStore {
         self.save()
     }
 
+    pub fn remember_claude_terminal_session(
+        &mut self,
+        tab_id: &str,
+        session_id: &str,
+    ) -> Result<(), String> {
+        let tab = self
+            .data
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == tab_id)
+            .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
+        tab.sessions.claude_terminal_session_id = Some(session_id.to_string());
+        self.save()
+    }
+
     pub fn set_provider_notice(&mut self, tab_id: &str, notice: Option<String>) -> Result<(), String> {
         let tab = self
             .data

@@ -17,6 +17,7 @@ mod providers;
 mod role_session;
 mod usage;
 mod roles;
+mod session_log;
 #[cfg(all(test, unix))]
 mod pipeline_flow_tests;
 #[cfg(all(test, unix))]
@@ -59,6 +60,7 @@ pub use providers::{
     claude_account_logins, get_provider_settings, set_provider_settings, set_tab_provider,
 };
 pub use role_session::role_session_start;
+pub use session_log::terminal_session_log;
 pub use roles::{get_role, list_roles, reset_builtin_role, save_role, validate_and_preview};
 pub use roles::{create_role, delete_role, duplicate_role, export_role, import_role, preview_role_template};
 pub use setup::{first_run_complete, first_run_status, provider_status};
