@@ -16,7 +16,9 @@
     "build": "tsc && vite build",
     "test": "vitest run",
     "e2e": "node e2e/run.mjs",
+    "e2e:ui": "tsc -p e2e/ui && playwright test",
     "check": "node scripts/local-check.mjs",
+    "check:e2e": "npm run check && npm run e2e:ui",
     "install-app": "node scripts/install-app.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
@@ -42,6 +44,7 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.0",
     "@tauri-apps/cli": "^2",
     "@testing-library/dom": "^10.4.2",
     "@testing-library/react": "^16.3.3",
