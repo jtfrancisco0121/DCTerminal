@@ -472,6 +472,44 @@ export function installTauriMock(config: MockConfig): void {
       if (a.chain) recordChainStep(a.tabId, a.chain, a.handoffText);
       return null;
     },
+    // Eagle-Eye routing: a reviewer sends its round back (store/chain_runs.rs chain_loop_back).
+    chain_loop_back: (a) => {
+      const target = findTab(a.tabId);
+      if (!target) throw new Error(`unknown tab: ${a.tabId}`);
+      const chainId = String(a.chainId).trim();
+      if (!findRun(chainId)) {
+        const tagged = state.tabs
+          .filter((t: Json) => t.chain?.chainId === chainId)
+          .sort((x: Json, y: Json) => x.chain.step - y.chain.step);
+        for (const t of tagged) recordChainStep(t.id, t.chain, null);
+      }
+      const run = findRun(chainId);
+      if (!run) throw new Error("No open tab is on this Eagle-Eye chain.");
+      const stages = PIPELINE_STAGES[run.kind] ?? PIPELINE_STAGES.full;
+      const at = stages.findIndex(([, role]) => role === target.roleId);
+      const reviewer = stages.findIndex(([, role]) => role === a.reviewerRoleId);
+      if (at < 0 || reviewer < 0 || at >= reviewer) {
+        throw new Error("That hand-off is not a loop-back on this chain.");
+      }
+      const ending = Math.max(1, run.round ?? 1);
+      run.verdicts = [
+        ...(run.verdicts ?? []),
+        { roleId: a.reviewerRoleId, round: ending, verdict: a.verdict ?? null, at: now() },
+      ];
+      run.round = ending + 1;
+      run.stage = stages[at][0];
+      const chain = {
+        chainId,
+        kind: run.kind === "execute" ? "eagle2" : "eagle1",
+        step: at + 1,
+        total: run.kind === "execute" ? 2 : 4,
+        round: run.round,
+      };
+      for (const t of state.tabs) if (t.chain?.chainId === chainId) t.chain.round = run.round;
+      target.chain = clone(chain);
+      recordChainStep(target.id, chain, a.handoffText);
+      return clone(chain);
+    },
     open_chain_overview: (a) => {
       const chainId = String(a.chainId).trim();
       if (!findRun(chainId)) {

@@ -1,7 +1,8 @@
 /**
  * Eagle-Eye 1: Planner → Plan Reviewer → Implementer → PR Reviewer, the
- * review verdicts, and the chain overview tab (handoff/chains.ts,
- * handoff/verdict.ts, components/PipelineOverview.tsx).
+ * review verdicts, verdict routing and loop-backs, and the chain overview tab
+ * (handoff/chains.ts, handoff/routing.ts, handoff/verdict.ts,
+ * components/PipelineOverview.tsx).
  *
  * handoff.spec.ts covers the single Planner → Plan Reviewer step during plan
  * approval; this file follows a chain end to end with each turn finished.
@@ -97,6 +98,12 @@ const REPO: RepoInfo = {
 };
 
 const CHAIN_ID = /^ee_\d+$/;
+
+// Loop-backs (handoff/routing.ts loopBackMessage): the follow-up a reviewer sends back.
+const PLANNER_ASK = "Revise the plan to address these findings, then reply with the full revised plan.";
+const IMPLEMENTER_ASK = "Address these findings, then summarize what changed.";
+const followUp = (from: string, round: number, findings: string, ask: string) =>
+  `Review findings from the ${from} (round ${round}):\n\n${findings.trim()}\n\n${ask}`;
 
 const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
 
@@ -318,11 +325,12 @@ test.describe("Eagle-Eye 1 chain", () => {
     await review.reply(PR_APPROVED);
     await expect(statusBar(page)).toHaveText("Ready");
     await expect(chainButton(page)).toHaveText("Eagle-Eye 1 · step 4 of 4");
-    // Last step: no "Next:" action, only the fix-up edge back to the Implementer.
-    await expect(page.getByRole("button", { name: /^Next: / })).toHaveCount(0);
+    // Approved on the last step: the chain is complete. The fix-up edge stays secondary.
+    await expect(page.getByText("Chain complete: the PR Reviewer approved.")).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Next: |^Send back/ })).toHaveCount(0);
     await expect(
       page.getByRole("button", { name: "Send to Implementer", exact: true }),
-    ).toBeVisible();
+    ).toHaveClass(/secondary-button/);
 
     // Every hand-off along the edge carried the same chain id; nothing started by itself.
     const chains = (await app.calls("set_tab_chain")).map((c) => c.args.chain as ChainRef);
@@ -367,7 +375,7 @@ test.describe("Eagle-Eye 1 chain", () => {
     await expect(chainButton(page)).toHaveText("Eagle-Eye 1 · step 3 of 4");
   });
 
-  test("PR Reviewer requests changes: Send to Implementer opens a new fix-up tab with the findings", async ({
+  test("PR Reviewer requests changes: Send back reuses the chain's Implementer tab", async ({
     app,
     page,
   }) => {
@@ -376,30 +384,95 @@ test.describe("Eagle-Eye 1 chain", () => {
     await review.reply(PR_CHANGES);
     await expect(statusBar(page)).toHaveText("Ready");
 
-    // The verdict is read-only (verdict.ts): the only offer is the transition
-    // table's PR Reviewer → Implementer edge, and it is not a chain "Next:" step.
+    // The verdict makes the loop-back primary; nothing is sent until the user confirms.
     await expect(page.getByRole("button", { name: /^Next: / })).toHaveCount(0);
-    await handOff(page, "Send to Implementer", "Implementer");
+    const sendBack = page.getByRole("button", { name: "Send back to Implementer", exact: true });
+    await expect(sendBack).toHaveClass(/primary-button/);
+    expect(await app.calls("dev_session_send")).toHaveLength(0);
+    await sendBack.click();
 
-    // A new Implementer draft, not the chain's Implementer (tab-3).
-    await expect(page.getByRole("tab")).toHaveCount(5);
-    const implementers = page.getByRole("tab", { name: "Implementer", exact: true });
-    const fixUp = implementers.last();
+    // The Implementer (tab-3) is live: the dialog shows the follow-up and where it goes.
+    const message = followUp("PR Reviewer", 1, PR_CHANGES, IMPLEMENTER_ASK);
+    const dialog = page.getByRole("dialog", { name: "Send back to Implementer" });
+    await expect(dialog.getByLabel("Target tab")).toHaveText("To tab: Implementer");
+    await expect(dialog.getByLabel("Follow-up message")).toHaveText(message);
+    await expect(dialog.getByRole("radio", { name: "Chat" })).toHaveCount(0);
+    await dialog.getByRole("button", { name: "Send follow-up to Implementer" }).click();
+    await expect(dialog).toBeHidden();
+
+    // Same tab, through the normal send path; round 2 starts on every chain tab.
+    const sent = await app.waitForCall("dev_session_send");
+    expect(sent.args).toMatchObject({ prompt: message, tabId: "tab-3" });
+    expect((await app.waitForCall("chain_loop_back")).args).toEqual({
+      chainId,
+      reviewerRoleId: "role_pr_reviewer",
+      tabId: "tab-3",
+      verdict: "REQUEST CHANGES",
+      handoffText: message,
+    });
+    await expect(page.getByRole("tab")).toHaveCount(4);
+    // Its tab now reads "Implementer , Working".
+    await expect(page.getByRole("tab", { name: /^Implementer/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await expect(chainButton(page)).toHaveText("Eagle-Eye 1 · step 3 of 4 · round 2");
+    await expect(tabButton(page, "PR Reviewer")).toHaveAttribute("title", /step 4 of 4 · round 2/);
+    await expect(page.getByRole("log")).toContainText("Review findings from the PR Reviewer (round 1)");
+    await app.turn("tab-3").reply("Hid the picker during a turn and added a test.");
+    await expect(page.getByRole("log")).toContainText("added a test");
+    expect(await app.calls("handoff_save")).toHaveLength(3);
+    expect(await app.calls("set_tab_chain")).toHaveLength(4);
+
+    await chainButton(page).click();
+    const overview = page.getByRole("region", { name: "Pipeline overview" });
+    await expect(overview.getByText("Stage: implementer · round 2")).toBeVisible();
+    const lane = (title: string) => overview.getByRole("article", { name: title, exact: true });
+    await expect(lane("PR Reviewer").locator(".pipeline-verdict")).toHaveText("REQUEST CHANGES");
+    await expect(
+      lane("PR Reviewer").getByRole("list", { name: "PR Reviewer verdicts by round" }),
+    ).toHaveText("Round 1: REQUEST CHANGES");
+    await lane("Implementer").getByText(/^Handed in/).click();
+    await expect(lane("Implementer").locator(".pipeline-handed-in pre")).toHaveText(message);
+  });
+
+  test("the chain's Implementer tab is gone: Send back opens a new tab on the chain", async ({
+    app,
+    page,
+  }) => {
+    const chainId = await chainToPrReviewer(app, page);
+    const review = await app.start("tab-4");
+    await review.reply(PR_CHANGES);
+    await expect(statusBar(page)).toHaveText("Ready");
+    await tabButton(page, "Implementer").click();
+    await page.getByRole("button", { name: "Stop and close Implementer" }).click();
+    await app.waitForCall("close_tab", (a) => a.tabId === "tab-3");
+    await expect(tabButton(page, "Implementer")).toHaveCount(0);
+    await tabButton(page, "PR Reviewer").click();
+
+    await page.getByRole("button", { name: "Send back to Implementer", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Send plan" });
+    await expect(dialog).toContainText(
+      "The chain's Implementer tab is closed, so a new tab opens on the chain (round 2).",
+    );
+    await expect(dialog.getByRole("radio", { name: "Implementer", exact: true })).toBeChecked();
+    await dialog.getByRole("button", { name: "Open Implementer tab" }).click();
+    await expect(dialog).toBeHidden();
+
+    // A new Implementer draft at the chain's step 3, round 2; nothing starts by itself.
+    const fixUp = tabButton(page, "Implementer");
     await expect(fixUp).toHaveAttribute("aria-selected", "true");
-    await expect(fixUp).not.toHaveAttribute("title", /Eagle-Eye/);
-    await expect(implementers.first()).toHaveAttribute("title", /Eagle-Eye 1 · step 3 of 4/);
-
-    // Findings land in the Implementer's plan field; the task comes from the PR Reviewer form.
+    await expect(fixUp).toHaveAttribute("title", /Eagle-Eye 1 · step 3 of 4 · round 2/);
     await expect(page.getByRole("textbox", { name: /Approved Implementation Plan/ })).toHaveValue(
       PR_CHANGES,
     );
-    await expect(page.getByRole("textbox", { name: /^Description/ })).toHaveValue(
-      `Effort picker\n\n${REQUEST}`,
-    );
-    await expect(page.getByRole("textbox", { name: "Additional Context" })).toHaveValue(
-      /Changed files:\n- src\/EffortPicker\.tsx \+48 -0/,
-    );
-
+    expect((await app.waitForCall("chain_loop_back")).args).toEqual({
+      chainId,
+      reviewerRoleId: "role_pr_reviewer",
+      tabId: "tab-5",
+      verdict: "REQUEST CHANGES",
+      handoffText: PR_CHANGES,
+    });
     const saved = await app.waitForCall(
       "handoff_save",
       (a) => input(a).sourceRoleId === "role_pr_reviewer",
@@ -408,67 +481,81 @@ test.describe("Eagle-Eye 1 chain", () => {
       sourceTabId: "tab-4",
       targetRoleId: "role_implementer",
       planText: PR_CHANGES,
-      planField: "approvedPlan",
-      chain: null,
+      chain: { chainId, kind: "eagle1", step: 3, total: 4, round: 2 },
     });
-    expect((await app.waitForCall("handoff_bind_tab", (a) => a.id === "handoff-4")).args).toEqual(
-      { id: "handoff-4", tabId: "tab-5" },
-    );
-    // The chain is not extended to the fix-up tab, so its overview still lists tab-3.
-    expect((await app.calls("set_tab_chain")).map((c) => c.args.tabId)).toEqual([
-      "tab-1",
-      "tab-2",
-      "tab-3",
-      "tab-4",
-    ]);
-    await tabButton(page, "PR Reviewer").click();
-    await chainButton(page).click();
-    expect((await app.waitForCall("open_chain_overview")).args.chainId).toBe(chainId);
-    const overview = page.getByRole("region", { name: "Pipeline overview" });
-    const lane = (title: string) => overview.getByRole("article", { name: title, exact: true });
-    await expect(lane("PR Reviewer").locator(".pipeline-verdict")).toHaveText("REQUEST CHANGES");
-    await lane("Implementer").getByRole("button", { name: "Jump" }).click();
-    await expect(implementers.first()).toHaveAttribute("aria-selected", "true");
-    await expect(page.getByRole("log")).toContainText(IMPLEMENTATION);
+    expect(await app.calls("dev_session_send")).toHaveLength(0);
+    expect((await app.calls("role_session_start")).map((c) => c.args.tabId)).not.toContain("tab-5");
   });
 
-  test("Plan Reviewer requires revision: the review goes back to a new Planner tab", async ({
+  test("Plan Reviewer requires revision: Send back reuses the Planner tab, round 2 is approved", async ({
     app,
     page,
   }) => {
     const chainId = await plannerStep(app, page);
     await planReviewerStep(app, page, chainId, "REQUIRES REVISION");
 
-    // Nothing acts on the verdict: the chain still offers the Implementer as "Next".
-    await expect(page.getByRole("button", { name: "Next: Send to Implementer" })).toBeVisible();
-    await handOff(page, "Send to Planner", "Planner");
+    // The verdict points back at the Planner; the Implementer stays as a secondary.
+    await expect(page.getByRole("button", { name: /^Next: / })).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Send to Implementer", exact: true }),
+    ).toHaveClass(/secondary-button/);
+    await page.getByRole("button", { name: "Send back to Planner", exact: true }).click();
 
-    await expect(page.getByRole("tab")).toHaveCount(3);
-    const planners = page.getByRole("tab", { name: "Planner", exact: true });
-    const revision = planners.last();
-    await expect(revision).toHaveAttribute("aria-selected", "true");
-    await expect(revision).not.toHaveAttribute("title", /Eagle-Eye/);
-    await expect(planners.first()).toHaveAttribute("title", /Eagle-Eye 1 · step 1 of 4/);
-    await expect(page.getByRole("textbox", { name: /Request \/ Problem/ })).toHaveValue(REQUEST);
-    // The Planner has no plan field: the whole review, findings included, goes to the scratch pad.
-    const scratch = await app.waitForCall("scratch_save", (a) => a.tabId === "tab-3");
-    expect(scratch.args.content).toBe(planReview("REQUIRES REVISION"));
+    // The whole review, findings included, goes into the live Planner tab.
+    const message = followUp("Plan Reviewer", 1, planReview("REQUIRES REVISION"), PLANNER_ASK);
+    const dialog = page.getByRole("dialog", { name: "Send back to Planner" });
+    await expect(dialog.getByLabel("Target tab")).toHaveText("To tab: Planner");
+    await expect(dialog.getByLabel("Follow-up message")).toHaveText(message);
+    await dialog.getByRole("button", { name: "Send follow-up to Planner" }).click();
+    await expect(dialog).toBeHidden();
 
-    const saved = await app.waitForCall(
-      "handoff_save",
-      (a) => input(a).targetRoleId === "role_planner",
-    );
-    expect(saved.args.input).toMatchObject({
-      sourceTabId: "tab-2",
-      sourceRoleId: "role_plan_reviewer",
-      // Sent back whole, not split into reviewed plan and notes.
-      planText: planReview("REQUIRES REVISION"),
-      planField: null,
-      chain: null,
+    expect((await app.waitForCall("dev_session_send")).args).toMatchObject({
+      prompt: message,
+      tabId: "tab-1",
     });
+    expect((await app.waitForCall("chain_loop_back")).args).toEqual({
+      chainId,
+      reviewerRoleId: "role_plan_reviewer",
+      tabId: "tab-1",
+      verdict: "REQUIRES REVISION",
+      handoffText: message,
+    });
+    await expect(page.getByRole("tab")).toHaveCount(2);
+    await expect(page.getByRole("tab", { name: /^Planner/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await expect(chainButton(page)).toHaveText("Eagle-Eye 1 · step 1 of 4 · round 2");
+
+    // Round 2: the revised plan goes forward to a new Plan Reviewer on the chain.
+    await app.turn("tab-1").reply(REVIEWED_PLAN);
+    await expect(statusBar(page)).toHaveText("Ready");
+    await handOff(page, "Next: Send to Plan Reviewer", "Plan Reviewer");
+    expect(await taggedChain(app, "tab-3")).toEqual({
+      chain: { chainId, kind: "eagle1", step: 2, total: 4, round: 2 },
+      handoffText: REVIEWED_PLAN,
+    });
+    const second = await app.start("tab-3");
+    await second.reply(planReview("APPROVED"));
+    await expect(statusBar(page)).toHaveText("Ready");
+    await expect(chainButton(page)).toHaveText("Eagle-Eye 1 · step 2 of 4 · round 2");
+    await expect(page.getByRole("button", { name: "Next: Send to Implementer" })).toHaveClass(
+      /primary-button/,
+    );
+
+    await chainButton(page).click();
+    const overview = page.getByRole("region", { name: "Pipeline overview" });
+    await expect(overview.getByText("Stage: plan_reviewer · round 2")).toBeVisible();
+    const planReviewer = overview.getByRole("article", { name: "Plan Reviewer", exact: true });
+    await expect(planReviewer.locator(".pipeline-lane-tab")).toHaveText("Plan Reviewer");
+    await expect(planReviewer.locator(".pipeline-verdict")).toHaveText("APPROVED");
+    await expect(
+      planReviewer.getByRole("list", { name: "Plan Reviewer verdicts by round" }),
+    ).toHaveText("Round 1: REQUIRES REVISION");
     expect((await app.calls("set_tab_chain")).map((c) => c.args.tabId)).toEqual([
       "tab-1",
       "tab-2",
+      "tab-3",
     ]);
   });
 

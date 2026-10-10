@@ -965,6 +965,8 @@ impl StateStore {
             chain_id: None,
             handoffs: HashMap::new(),
             updated_at: None,
+            round: 1,
+            verdicts: Vec::new(),
         };
         self.data.pipeline_runs.push(run);
         self.save()?;

@@ -68,6 +68,7 @@ import {
   newDraftTab,
   openAccountWindow,
   openChainOverview,
+  chainLoopBack,
   setTabChain,
   startEagleEye,
   roleSessionStart,
@@ -130,6 +131,7 @@ import {
   HandoffActions,
   HandoffBanner,
   HandoffDialog,
+  type LoopBackTarget,
   SavedPlanDialog,
 } from "./components/HandoffDialog";
 import { PipelineOverview } from "./components/PipelineOverview";
@@ -143,6 +145,7 @@ import {
   isHandoffSource,
   isPlanSource,
   latestAgentMessage,
+  composePlanText,
   roleDisplayName,
   mapHandoff,
   selectionInside,
@@ -195,7 +198,17 @@ import { PromptLibraryDialog } from "./components/PromptLibraryDialog";
 import { WorkspacesDialog } from "./components/WorkspacesDialog";
 import { FirstRunSetup, type FirstRunFinish } from "./components/FirstRunSetup";
 import { insertIntoPad, type PadSelection } from "./prompts/library";
-import { advanceChain, chainLabel, newChain, nextChainRole } from "./handoff/chains";
+import {
+  advanceChain,
+  chainLabel,
+  chainRound,
+  chainTabFor,
+  loopBackChain,
+  newChain,
+  nextChainRole,
+} from "./handoff/chains";
+import { handoffRoute, loopBackMessage } from "./handoff/routing";
+import { isReviewerRole, parseReviewVerdict } from "./handoff/verdict";
 import { contextPercent, limitAlerts, statusLimit } from "./usage/limits";
 import type { ChatFindRequest } from "./SessionTerminal";
 import { classifyPromptFinished, type NotificationSettings } from "./notify/agentNotify";
@@ -3086,22 +3099,113 @@ export function StartupForm({
   ]);
 
   const handoffBlock = handoffBlockReason({ ...handoffSource, selection: "" }, roles);
+  // A reviewer's verdict picks the primary button; the user still sends.
+  const sourceVerdict =
+    isReviewerRole(handoffSource.sourceRoleId) && !handoffSource.turnInFlight
+      ? parseReviewVerdict(
+          handoffSource.fromTerminal
+            ? (handoffSource.terminalTail ?? "")
+            : handoffSource.latestMessage,
+        )
+      : null;
+  const offerTargets = handoffTargets(roleId, roles);
+  const offerRoute = handoffRoute({
+    sourceRoleId: roleId,
+    targets: offerTargets,
+    verdict: sourceVerdict,
+    chain: activeTabSummary?.chain ?? null,
+    roles,
+  });
   const handoffOffer =
     session && isHandoffSource(roleId, roles)
       ? {
           enabled: handoffBlock === null,
           reason: handoffBlock,
-          targets: handoffTargets(roleId, roles),
-          primaryTarget: activeTabSummary?.chain
-            ? nextChainRole(activeTabSummary.chain, roleId)
+          targets: offerTargets,
+          primaryTarget: offerRoute.primaryTarget,
+          primaryLabel: offerRoute.primaryLabel,
+          completeNote: offerRoute.complete
+            ? activeTabSummary?.chain
+              ? "Chain complete: the PR Reviewer approved."
+              : "Review approved: nothing left to hand off."
             : null,
           onSend: openHandoffDialog,
         }
       : null;
 
+  /** Plan Reviewer → Planner or PR Reviewer → Implementer on the source's chain. */
+  const handoffLoopBack = useMemo(() => {
+    if (!handoffTarget) return null;
+    const chain = savedTabs.find((tab) => tab.id === handoffSource.sourceTabId)?.chain;
+    const next = chain ? loopBackChain(chain, handoffSource.sourceRoleId, handoffTarget) : null;
+    if (!chain || !next) return null;
+    const liveChat = (tab: TabSummary) => {
+      const rt = runtimes[tab.id];
+      return tab.kind !== "terminal" && !!rt?.session && !rt.agentExited;
+    };
+    const tab = chainTabFor(savedTabs, chain, next.step, liveChat);
+    const live = !!tab && liveChat(tab);
+    const target: LoopBackTarget = {
+      round: chainRound(chain),
+      tabLabel: tab?.label ?? null,
+      live,
+      blocked:
+        live && runtimes[tab.id]?.promptInFlight
+          ? `The ${tab.label} tab is still working. Wait for its turn to end.`
+          : null,
+    };
+    return { chain, next, tab: live ? tab : null, target };
+  }, [handoffSource.sourceRoleId, handoffSource.sourceTabId, handoffTarget, runtimes, savedTabs]);
+
   const confirmHandoff = useCallback(
     async (scope: HandoffScope, surface: HandoffSurface) => {
       if (!handoffTarget || !handoffSource.sourceTabId) return;
+      const loop = handoffLoopBack;
+      const cancelPendingPlan = async () => {
+        const pendingPlan = runtimesRef.current[handoffSource.sourceTabId]?.plan;
+        if (pendingPlan?.markdown || pendingPlan?.keepOptionId) {
+          await respondPlanRequest(handoffSource.sourceTabId, pendingPlan.jsonRpcId, "cancelled");
+          patchRuntime(handoffSource.sourceTabId, (rt) => ({ ...rt, plan: null }));
+        }
+      };
+      if (loop?.tab) {
+        // The chain's tab is live: the findings go in as a follow-up there.
+        const targetTab = loop.tab;
+        const findings = composePlanText(handoffSource, scope).text;
+        if (!findings.trim() || loop.target.blocked) {
+          setHandoffError(loop.target.blocked ?? "That choice has no content.");
+          return;
+        }
+        const text = loopBackMessage(handoffSource.sourceRoleId, findings, loop.target.round, roles);
+        setBusy(true);
+        setHandoffError(null);
+        try {
+          const sent = await dispatchText(targetTab.id, text);
+          if (sent === "error") {
+            setHandoffError(
+              runtimesRef.current[targetTab.id]?.promptError ?? "The follow-up was not sent.",
+            );
+            return;
+          }
+          await chainLoopBack({
+            chainId: loop.chain.chainId,
+            reviewerRoleId: handoffSource.sourceRoleId,
+            tabId: targetTab.id,
+            verdict: sourceVerdict,
+            handoffText: text,
+          });
+          await cancelPendingPlan();
+          setTerminalCapture(null);
+          setHandoffTarget(null);
+          await refreshTabs();
+          await handleSelectTab(targetTab.id);
+        } catch (err: unknown) {
+          setHandoffError(err instanceof Error ? err.message : String(err));
+        } finally {
+          setBusy(false);
+        }
+        return;
+      }
       let source = handoffSource;
       if (source.sourceRoleId === "role_implementer") {
         const [changes, repo] = await Promise.all([
@@ -3133,9 +3237,25 @@ export function StartupForm({
       setHandoffError(null);
       try {
         const sourceTab = savedTabs.find((tab) => tab.id === handoffSource.sourceTabId);
-        const nextChain = sourceTab?.chain
-          ? advanceChain(sourceTab.chain, handoffSource.sourceRoleId, handoffTarget)
-          : null;
+        // A loop-back whose tab is gone or not live opens a new tab on the chain.
+        const nextChain =
+          loop?.next ??
+          (sourceTab?.chain
+            ? advanceChain(sourceTab.chain, handoffSource.sourceRoleId, handoffTarget)
+            : null);
+        const tagChain = async (tabId: string) => {
+          if (loop) {
+            await chainLoopBack({
+              chainId: loop.chain.chainId,
+              reviewerRoleId: handoffSource.sourceRoleId,
+              tabId,
+              verdict: sourceVerdict,
+              handoffText: mapped.planText,
+            });
+          } else if (nextChain) {
+            await setTabChain(tabId, nextChain, mapped.planText);
+          }
+        };
         const saved = await handoffSave({
           sourceTabId: handoffSource.sourceTabId,
           sourceRoleId: handoffSource.sourceRoleId,
@@ -3150,11 +3270,7 @@ export function StartupForm({
           planField: mapped.planField,
           chain: nextChain,
         });
-        const pendingPlan = runtimesRef.current[handoffSource.sourceTabId]?.plan;
-        if (pendingPlan?.markdown || pendingPlan?.keepOptionId) {
-          await respondPlanRequest(handoffSource.sourceTabId, pendingPlan.jsonRpcId, "cancelled");
-          patchRuntime(handoffSource.sourceTabId, (rt) => ({ ...rt, plan: null }));
-        }
+        await cancelPendingPlan();
         const nextValues = { ...mapped.answers, cwd: handoffSource.cwd };
         const sourceProvider = providerOf(sourceTab ?? null);
         if (surface === "terminal") {
@@ -3170,7 +3286,7 @@ export function StartupForm({
             return;
           }
           await setTabProvider(tabId, sourceProvider);
-          if (nextChain) await setTabChain(tabId, nextChain, mapped.planText);
+          await tagChain(tabId);
           const bound = await handoffBindTab(saved.id, tabId);
           if (mapped.usesScratchPad) {
             scratch.setContent(tabId, mapped.inlinePlan);
@@ -3184,7 +3300,7 @@ export function StartupForm({
         stashActiveTab();
         const { tab } = await newDraftTab(handoffTarget, handoffSource.cwd);
         await setTabProvider(tab.id, sourceProvider);
-        if (nextChain) await setTabChain(tab.id, nextChain, mapped.planText);
+        await tagChain(tab.id);
         await syncActiveTabForm(tab.id, handoffTarget, handoffSource.cwd, nextValues);
         const bound = await handoffBindTab(saved.id, tab.id);
         if (mapped.usesScratchPad) {
@@ -3212,13 +3328,18 @@ export function StartupForm({
     },
     [
       applyDraft,
+      dispatchText,
+      handleSelectTab,
       handoffFields,
+      handoffLoopBack,
       handoffSource,
       handoffTarget,
       patchRuntime,
       refreshTabs,
+      roles,
       savedTabs,
       scratch,
+      sourceVerdict,
       startRoleTerminal,
       stashActiveTab,
     ],
@@ -4216,6 +4337,7 @@ export function StartupForm({
           )}
           busy={busy}
           error={handoffError}
+          loopBack={handoffLoopBack?.target ?? null}
           preferredSurface={rememberedSurface(handoffTarget)}
           roleNames={roles}
           onTarget={(target) => {

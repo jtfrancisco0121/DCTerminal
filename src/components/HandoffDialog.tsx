@@ -17,6 +17,19 @@ import {
   type HandoffTargetId,
   type RoleName,
 } from "../handoff/map";
+import { loopBackMessage } from "../handoff/routing";
+
+/** A chain reviewer sending its round back to an earlier stage. */
+export type LoopBackTarget = {
+  /** Round the reviewer is ending. */
+  round: number;
+  /** The chain's tab for the target role; null when it is closed. */
+  tabLabel: string | null;
+  /** That tab's session is live: the findings go in there as a follow-up. */
+  live: boolean;
+  /** Why the follow-up cannot go yet (the tab is mid-turn). */
+  blocked: string | null;
+};
 
 type Props = {
   source: HandoffSource;
@@ -28,6 +41,8 @@ type Props = {
   preferredSurface: HandoffSurface;
   /** Loaded roles, for display names and hand-off targets. Built-ins are used when absent. */
   roleNames?: readonly RoleName[] | null;
+  /** Set when the chosen target is this chain's loop-back. */
+  loopBack?: LoopBackTarget | null;
   onTarget: (id: HandoffTargetId) => void;
   onConfirm: (scope: HandoffScope, surface: HandoffSurface) => void;
   onClose: () => void;
@@ -42,6 +57,7 @@ export function HandoffDialog({
   error,
   preferredSurface,
   roleNames = null,
+  loopBack = null,
   onTarget,
   onConfirm,
   onClose,
@@ -68,10 +84,20 @@ export function HandoffDialog({
   const preview = composePlanText(source, scope).text;
   const previewText = Array.from(preview).slice(0, 500).join("");
   const targetLabel = roleDisplayName(targetRoleId, roleNames);
-  const heading = isReportSource(source.sourceRoleId) ? "Send for planning" : "Send plan";
+  const followUp = loopBack?.live ? loopBack : null;
+  const heading = followUp
+    ? `Send back to ${targetLabel}`
+    : isReportSource(source.sourceRoleId)
+      ? "Send for planning"
+      : "Send plan";
   const scopeHint =
     targetRoleId === "role_planner" ? reportScopeHint(source, scope) : null;
-  const canConfirm = !busy && !block && mapped.planText.length > 0 && targetFields !== null;
+  const message = followUp
+    ? loopBackMessage(source.sourceRoleId, preview, followUp.round, roleNames)
+    : "";
+  const canConfirm = followUp
+    ? !busy && !block && !followUp.blocked && preview.trim().length > 0
+    : !busy && !block && mapped.planText.length > 0 && targetFields !== null;
 
   return (
     <div className="overlay-backdrop" role="presentation" onClick={onClose}>
@@ -82,11 +108,30 @@ export function HandoffDialog({
         onClick={(event) => event.stopPropagation()}
       >
         <h2>{heading}</h2>
-        <p className="hint">
-          {surface === "terminal"
-            ? "Starts the role in a terminal tab (Claude Code or Cursor CLI, per the tab's provider) with the hand-off text as the first prompt."
-            : "Opens a new tab in the same folder with the hand-off text filled in. Review it, then press Start. Nothing starts on its own."}
-        </p>
+        {followUp ? (
+          <>
+            <p className="hint">
+              Sends the review findings below as a follow-up message in the chain's existing{" "}
+              {targetLabel} tab. Round {followUp.round + 1} starts. Nothing else is sent.
+            </p>
+            <p className="handoff-target" aria-label="Target tab">
+              To tab: <strong>{followUp.tabLabel}</strong>
+            </p>
+          </>
+        ) : (
+          <p className="hint">
+            {surface === "terminal"
+              ? "Starts the role in a terminal tab (Claude Code or Cursor CLI, per the tab's provider) with the hand-off text as the first prompt."
+              : "Opens a new tab in the same folder with the hand-off text filled in. Review it, then press Start. Nothing starts on its own."}
+          </p>
+        )}
+        {loopBack && !followUp && (
+          <p className="hint">
+            {loopBack.tabLabel
+              ? `The chain's ${targetLabel} tab has no live session, so a new tab opens on the chain (round ${loopBack.round + 1}).`
+              : `The chain's ${targetLabel} tab is closed, so a new tab opens on the chain (round ${loopBack.round + 1}).`}
+          </p>
+        )}
         <fieldset className="handoff-fieldset">
           <legend>Send to</legend>
           {targets.map((target) => (
@@ -102,6 +147,7 @@ export function HandoffDialog({
             </label>
           ))}
         </fieldset>
+        {!followUp && (
         <fieldset className="handoff-fieldset">
           <legend>Open as</legend>
           <label className="handoff-choice">
@@ -125,6 +171,7 @@ export function HandoffDialog({
             <span>Terminal</span>
           </label>
         </fieldset>
+        )}
         <fieldset className="handoff-fieldset">
           <legend>What to send</legend>
           {choices.map((choice) => (
@@ -140,12 +187,21 @@ export function HandoffDialog({
             </label>
           ))}
         </fieldset>
-        {folderWarning && <p className="error">{folderWarning} You can still open the tab and pick another folder before Start.</p>}
+        {!followUp && folderWarning && <p className="error">{folderWarning} You can still open the tab and pick another folder before Start.</p>}
         {block && <p className="hint">{block}</p>}
+        {followUp?.blocked && <p className="hint">{followUp.blocked}</p>}
         {scopeHint && <p className="hint">{scopeHint}</p>}
-        {mapped.warning && <p className="hint">{mapped.warning}</p>}
+        {!followUp && mapped.warning && <p className="hint">{mapped.warning}</p>}
         {error && <p className="error">{error}</p>}
-        {previewText && (
+        {followUp && preview.trim() && (
+          <pre
+            className="mono-snippet handoff-preview handoff-preview-full"
+            aria-label="Follow-up message"
+          >
+            {message}
+          </pre>
+        )}
+        {!followUp && previewText && (
           <pre className="mono-snippet handoff-preview">
             {previewText}
             {preview.length > previewText.length ? "…" : ""}
@@ -162,8 +218,12 @@ export function HandoffDialog({
             onClick={() => onConfirm(scope, surface)}
           >
             {busy
-              ? "Opening…"
-              : surface === "terminal"
+              ? followUp
+                ? "Sending…"
+                : "Opening…"
+              : followUp
+                ? `Send follow-up to ${followUp.tabLabel}`
+                : surface === "terminal"
                 ? `Start ${targetLabel} terminal`
                 : `Open ${targetLabel} tab`}
           </button>
@@ -180,6 +240,8 @@ export function HandoffActions({
   sourceRoleId,
   targets,
   primaryTarget = null,
+  primaryLabel = null,
+  completeNote = null,
   roleNames = null,
   onSend,
 }: {
@@ -190,14 +252,19 @@ export function HandoffActions({
   sourceRoleId?: string;
   /** Explicit targets; overrides `sourceRoleId`. */
   targets?: HandoffTargetId[];
-  /** Chain's next role. That button is the primary "Next:" action. */
+  /** Chain's next role, or where the verdict points. That button is primary. */
   primaryTarget?: string | null;
+  /** Primary button text; default "Next: Send to …". */
+  primaryLabel?: string | null;
+  /** Shown when nothing is left to hand on (PR Reviewer approved). */
+  completeNote?: string | null;
   roleNames?: readonly RoleName[] | null;
   onSend: (target: HandoffTargetId) => void;
 }) {
   const ids = targets ?? (sourceRoleId ? handoffTargets(sourceRoleId, roleNames) : []);
   return (
     <div className="button-row handoff-actions">
+      {completeNote && <span className="handoff-complete">{completeNote}</span>}
       {ids.map((id) => {
         const name = roleDisplayName(id, roleNames);
         const primary = id === primaryTarget;
@@ -210,7 +277,7 @@ export function HandoffActions({
             title={reason ?? `Open a ${name} tab with this hand-off`}
             onClick={() => onSend(id)}
           >
-            {primary ? `Next: Send to ${name}` : `Send to ${name}`}
+            {primary ? (primaryLabel ?? `Next: Send to ${name}`) : `Send to ${name}`}
           </button>
         );
       })}

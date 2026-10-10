@@ -18,6 +18,8 @@ type HandoffOffer = {
   reason: string | null;
   targets?: HandoffTargetId[];
   primaryTarget?: string | null;
+  primaryLabel?: string | null;
+  completeNote?: string | null;
   onSend: (target: HandoffTargetId) => void;
 };
 
@@ -52,6 +54,8 @@ export function SessionCards({
       reason={handoff.reason}
       targets={handoff.targets}
       primaryTarget={handoff.primaryTarget}
+      primaryLabel={handoff.primaryLabel}
+      completeNote={handoff.completeNote}
       busy={busy}
       onSend={handoff.onSend}
     />

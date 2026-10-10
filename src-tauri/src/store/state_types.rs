@@ -65,6 +65,17 @@ pub struct ChainRef {
     pub kind: String,
     pub step: u32,
     pub total: u32,
+    /// Review round. Starts at 1; each loop-back (reviewer → earlier stage) adds one.
+    #[serde(default = "first_round", skip_serializing_if = "is_first_round")]
+    pub round: u32,
+}
+
+pub fn first_round() -> u32 {
+    1
+}
+
+fn is_first_round(round: &u32) -> bool {
+    *round <= 1
 }
 
 /// Flags for one-time data migrations. `Default` is all false so an old
@@ -111,6 +122,24 @@ pub struct PipelineRun {
     /// Last chain step recorded. Pruning keeps the most recent runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
+    /// Chain round; see `ChainRef::round`.
+    #[serde(default = "first_round")]
+    pub round: u32,
+    /// Reviewer verdicts recorded when a round was sent back, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verdicts: Vec<StageVerdict>,
+}
+
+/// A reviewer's verdict at the end of one round.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StageVerdict {
+    pub role_id: String,
+    pub round: u32,
+    /// `None` when the reply had no verdict.
+    #[serde(default)]
+    pub verdict: Option<String>,
+    pub at: String,
 }
 
 /// Text handed into one stage of a chain run.

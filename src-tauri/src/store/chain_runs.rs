@@ -4,6 +4,7 @@
 
 use crate::store::state_types::{
     pipeline_stages, run_kind_for_chain, window_matches, ChainRef, PipelineRun, StageHandoff,
+    StageVerdict,
 };
 use crate::store::StateStore;
 use chrono::{DateTime, Utc};
@@ -88,6 +89,8 @@ impl StateStore {
                     chain_id: Some(chain.chain_id.clone()),
                     handoffs: HashMap::new(),
                     updated_at: None,
+                    round: chain.round.max(1),
+                    verdicts: Vec::new(),
                 });
                 chain.chain_id.clone()
             }
@@ -116,6 +119,70 @@ impl StateStore {
                 run.original_request = request;
             }
         }
+    }
+
+    /// A reviewer sends its round back to an earlier stage (`target_tab_id`,
+    /// reused or newly opened). Records the reviewer's verdict for the round
+    /// ending, starts the next round on every tab of the chain, and tags the
+    /// target with its stage. Returns the target's chain. Saves.
+    pub fn chain_loop_back(
+        &mut self,
+        chain_id: &str,
+        reviewer_role_id: &str,
+        target_tab_id: &str,
+        verdict: Option<&str>,
+        handoff_text: Option<&str>,
+    ) -> Result<ChainRef, String> {
+        let target_role = self
+            .tab_by_id(target_tab_id)
+            .map(|tab| tab.role_id.clone())
+            .ok_or_else(|| format!("unknown tab: {target_tab_id}"))?;
+        let run_id = self.ensure_chain_run(chain_id)?;
+        let run = self
+            .pipeline_run_by_id_mut(&run_id)
+            .ok_or_else(|| format!("unknown pipeline run: {run_id}"))?;
+        let stages = pipeline_stages(&run.kind);
+        let position = |role: &str| stages.iter().position(|(_, id)| *id == role);
+        let (Some(target), Some(reviewer)) = (position(&target_role), position(reviewer_role_id))
+        else {
+            return Err("That hand-off is not a loop-back on this chain.".to_string());
+        };
+        if target >= reviewer {
+            return Err("That hand-off is not a loop-back on this chain.".to_string());
+        }
+        let now = Utc::now().to_rfc3339();
+        let ending = run.round.max(1);
+        run.verdicts.push(StageVerdict {
+            role_id: reviewer_role_id.to_string(),
+            round: ending,
+            verdict: verdict.map(str::trim).filter(|v| !v.is_empty()).map(str::to_string),
+            at: now,
+        });
+        run.round = ending + 1;
+        run.stage = stages[target].0.to_string();
+        let (kind, total) = if run.kind == "execute" {
+            ("eagle2", 2)
+        } else {
+            ("eagle1", 4)
+        };
+        let chain = ChainRef {
+            chain_id: chain_id.to_string(),
+            kind: kind.to_string(),
+            step: target as u32 + 1,
+            total,
+            round: run.round,
+        };
+        for tab in self.data.tabs.iter_mut() {
+            if let Some(tagged) = tab.chain.as_mut().filter(|c| c.chain_id == chain_id) {
+                tagged.round = chain.round;
+            }
+        }
+        if let Some(tab) = self.data.tabs.iter_mut().find(|t| t.id == target_tab_id) {
+            tab.chain = Some(chain.clone());
+        }
+        self.record_chain_step(target_tab_id, &chain, handoff_text);
+        self.save()?;
+        Ok(chain)
     }
 
     /// The step-1 tab's request, read from its form (open or closed tab).
@@ -290,6 +357,7 @@ mod tests {
             kind: kind.to_string(),
             step,
             total: if kind == "eagle1" { 4 } else { 2 },
+            round: 1,
         }
     }
 
@@ -308,6 +376,8 @@ mod tests {
             chain_id: None,
             handoffs: HashMap::new(),
             updated_at: None,
+            round: 1,
+            verdicts: Vec::new(),
         }
     }
 
@@ -388,6 +458,71 @@ mod tests {
     }
 
     #[test]
+    fn loop_backs_bump_the_round_and_keep_each_verdict() {
+        let mut store = store("loop_back");
+        let ids: Vec<String> = [
+            "role_planner",
+            "role_plan_reviewer",
+            "role_implementer",
+            "role_pr_reviewer",
+        ]
+        .iter()
+        .map(|id| store.create_draft_tab(&role(id), "/tmp/p", true, None).unwrap())
+        .collect();
+        for (i, id) in ids.iter().enumerate().take(2) {
+            store
+                .set_tab_chain(id, Some(chain("ee_5", "eagle1", i as u32 + 1)), None)
+                .unwrap();
+        }
+        assert_eq!(store.pipeline_run_by_id("ee_5").unwrap().round, 1);
+
+        // Plan Reviewer → the same Planner tab.
+        let back = store
+            .chain_loop_back("ee_5", "role_plan_reviewer", &ids[0], Some("REQUIRES REVISION"), Some("fix it"))
+            .unwrap();
+        assert_eq!((back.step, back.round), (1, 2));
+        let run = store.pipeline_run_by_id("ee_5").unwrap();
+        assert_eq!((run.round, run.stage.as_str()), (2, "planner"));
+        assert_eq!(run.handoffs["role_planner"].text, "fix it");
+        assert_eq!(run.verdicts.len(), 1);
+        assert_eq!(run.verdicts[0].role_id, "role_plan_reviewer");
+        assert_eq!((run.verdicts[0].round, run.verdicts[0].verdict.as_deref()), (1, Some("REQUIRES REVISION")));
+        // Every tab on the chain moves to round 2.
+        assert!(store.data.tabs[..2].iter().all(|t| t.chain.as_ref().unwrap().round == 2));
+
+        // Later stages, then PR Reviewer → a new Implementer tab (the old one is gone).
+        for (i, id) in ids.iter().enumerate().skip(1) {
+            let mut next = chain("ee_5", "eagle1", i as u32 + 1);
+            next.round = 2;
+            store.set_tab_chain(id, Some(next), None).unwrap();
+        }
+        let fresh = store
+            .create_draft_tab(&role("role_implementer"), "/tmp/p", true, None)
+            .unwrap();
+        let back = store
+            .chain_loop_back("ee_5", "role_pr_reviewer", &fresh, None, None)
+            .unwrap();
+        assert_eq!((back.step, back.round, back.total), (3, 3, 4));
+        let run = store.pipeline_run_by_id("ee_5").unwrap();
+        assert_eq!(run.round, 3);
+        assert_eq!(run.stage, "implementer");
+        assert_eq!(run.tab_ids.get("role_implementer"), Some(&fresh));
+        assert_eq!(run.verdicts[1].round, 2);
+        assert!(run.verdicts[1].verdict.is_none());
+        assert_eq!(store.tab_by_id(&fresh).unwrap().chain, Some(back));
+
+        // Only reviewer → earlier stage counts as a loop-back.
+        assert!(store
+            .chain_loop_back("ee_5", "role_planner", &ids[3], None, None)
+            .is_err());
+        // Saved, and round 1 stays off the wire.
+        let loaded = StateStore::open_path(store.path.clone()).unwrap();
+        assert_eq!(loaded.pipeline_run_by_id("ee_5").unwrap().verdicts.len(), 2);
+        let json = serde_json::to_string(&chain("ee_5", "eagle1", 1)).unwrap();
+        assert!(!json.contains("round"));
+    }
+
+    #[test]
     fn overview_tab_is_created_once_and_rebuilt_for_untracked_chains() {
         let mut store = store("overview");
         let implementer = store
@@ -451,6 +586,11 @@ mod tests {
         assert!(run.chain_id.is_none());
         assert!(run.handoffs.is_empty());
         assert!(run.updated_at.is_none());
+        assert_eq!(run.round, 1);
+        assert!(run.verdicts.is_empty());
         assert_eq!(run.overview_tab_id, "tab_x");
+        let tag: ChainRef =
+            serde_json::from_str(r#"{"chainId":"ee_1","kind":"eagle1","step":2,"total":4}"#).unwrap();
+        assert_eq!(tag.round, 1);
     }
 }
