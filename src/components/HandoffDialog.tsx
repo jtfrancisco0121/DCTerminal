@@ -43,6 +43,8 @@ type Props = {
   roleNames?: readonly RoleName[] | null;
   /** Set when the chosen target is this chain's loop-back. */
   loopBack?: LoopBackTarget | null;
+  /** On a chain, Start fills the task type from the chain's first form. */
+  chainFillsTaskType?: boolean;
   onTarget: (id: HandoffTargetId) => void;
   onConfirm: (scope: HandoffScope, surface: HandoffSurface) => void;
   onClose: () => void;
@@ -58,6 +60,7 @@ export function HandoffDialog({
   preferredSurface,
   roleNames = null,
   loopBack = null,
+  chainFillsTaskType = false,
   onTarget,
   onConfirm,
   onClose,
@@ -66,12 +69,18 @@ export function HandoffDialog({
     id,
     label: roleDisplayName(id, roleNames),
   }));
-  const [scope, setScope] = useState<HandoffScope>(() => defaultScope(source));
+  // Until the user picks, the default follows the source: a plan file read
+  // after the dialog opened, or a reply that finished meanwhile, takes over.
+  const [pickedScope, setScope] = useState<HandoffScope | null>(null);
   const [surface, setSurface] = useState<HandoffSurface>(preferredSurface);
   useEffect(() => {
     setSurface(preferredSurface);
   }, [preferredSurface, targetRoleId]);
   const choices = scopeChoices(source);
+  const scope =
+    pickedScope && choices.some((choice) => choice.id === pickedScope && choice.enabled)
+      ? pickedScope
+      : defaultScope(source);
   const block = handoffBlockReason(source, roleNames);
   const mapped = useMemo(
     () =>
@@ -95,6 +104,15 @@ export function HandoffDialog({
   const message = followUp
     ? loopBackMessage(source.sourceRoleId, preview, followUp.round, roleNames)
     : "";
+  // Required target fields the hand-off cannot fill: say so now, not at Start.
+  const missing =
+    followUp || !targetFields || !mapped.planText
+      ? []
+      : targetFields
+          .filter((field) => field.required && field.key !== "cwd")
+          .filter((field) => !(chainFillsTaskType && field.key === "taskType"))
+          .filter((field) => !(mapped.answers[field.key] ?? "").trim())
+          .map((field) => field.label?.trim() || field.key);
   const canConfirm = followUp
     ? !busy && !block && !followUp.blocked && preview.trim().length > 0
     : !busy && !block && mapped.planText.length > 0 && targetFields !== null;
@@ -192,6 +210,12 @@ export function HandoffDialog({
         {followUp?.blocked && <p className="hint">{followUp.blocked}</p>}
         {scopeHint && <p className="hint">{scopeHint}</p>}
         {!followUp && mapped.warning && <p className="hint">{mapped.warning}</p>}
+        {missing.length > 0 && (
+          <p className="hint" role="note" aria-label="Fields to fill in">
+            The {targetLabel} tab opens with {missing.join(", ")} empty. Fill{" "}
+            {missing.length > 1 ? "them" : "it"} in before Start.
+          </p>
+        )}
         {error && <p className="error">{error}</p>}
         {followUp && preview.trim() && (
           <pre

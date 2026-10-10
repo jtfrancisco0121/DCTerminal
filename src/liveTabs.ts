@@ -27,6 +27,8 @@ export type TabRuntime = {
   plan: PlanRequestEvent | null;
   /** The last plan Claude submitted ("Ready to code?"), kept after the card closes. */
   lastPlanMarkdown: string;
+  /** The user sent a message after that plan, so a newer reply may revise it. */
+  planStale: boolean;
   question: QuestionRequestEvent | null;
   promptError: string | null;
   lastResult: DevPromptResult | null;
@@ -48,6 +50,7 @@ export function emptyRuntime(): TabRuntime {
     permission: null,
     plan: null,
     lastPlanMarkdown: "",
+    planStale: false,
     question: null,
     promptError: null,
     lastResult: null,
@@ -135,7 +138,12 @@ export function applyPermission(
 export function applyPlan(rt: TabRuntime, evt: PlanRequestEvent): TabRuntime {
   if (!sameSession(rt, evt.sessionId)) return rt;
   const markdown = (evt.markdown ?? "").trim();
-  return { ...rt, plan: evt, lastPlanMarkdown: markdown || rt.lastPlanMarkdown };
+  return {
+    ...rt,
+    plan: evt,
+    lastPlanMarkdown: markdown || rt.lastPlanMarkdown,
+    planStale: markdown ? false : rt.planStale,
+  };
 }
 
 export function clearPlan(rt: TabRuntime): TabRuntime {
