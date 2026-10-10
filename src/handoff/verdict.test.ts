@@ -1,5 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { isReviewerRole, needsRevision, parseReviewVerdict, verdictTone } from "./verdict";
+import {
+  isReviewerRole,
+  needsRevision,
+  parseReviewVerdict,
+  parseTerminalVerdict,
+  verdictTone,
+} from "./verdict";
+
+describe("parseTerminalVerdict", () => {
+  it("reads the newest round in a terminal's scrollback", () => {
+    const tail = "Verdict: REQUIRES REVISION\nfixed it\n## Verdict\nAPPROVED\nanything else";
+    expect(parseTerminalVerdict(tail)).toBe("APPROVED");
+    // The chat reader also takes the newest Verdict label now.
+    expect(parseReviewVerdict(tail)).toBe("APPROVED");
+    expect(parseTerminalVerdict("rounds later: rejected")).toBe("REJECTED");
+    expect(parseTerminalVerdict("no decision yet")).toBeNull();
+  });
+});
 
 describe("parseReviewVerdict", () => {
   it("reads each verdict, case-insensitive", () => {
@@ -44,6 +61,50 @@ describe("parseReviewVerdict", () => {
     expect(parseReviewVerdict("")).toBeNull();
     expect(parseReviewVerdict("Looks fine, reviewing more later.")).toBeNull();
     expect(parseReviewVerdict("unapproved")).toBeNull();
+  });
+
+  it("reads verdicts written in prose", () => {
+    expect(parseReviewVerdict("I approve this plan with changes.")).toBe("APPROVED WITH CHANGES");
+    expect(parseReviewVerdict("Approved, with minor changes listed below.")).toBe(
+      "APPROVED WITH CHANGES",
+    );
+    expect(parseReviewVerdict("I approve this plan.")).toBe("APPROVED");
+    expect(parseReviewVerdict("The plan needs revision before anyone builds it.")).toBe(
+      "REQUIRES REVISION",
+    );
+    expect(parseReviewVerdict("I'm requesting changes on two points.")).toBe("REQUEST CHANGES");
+  });
+
+  it("does not read the approved plan or a negation as a verdict", () => {
+    expect(parseReviewVerdict("The code follows the approved plan closely.")).toBeNull();
+    expect(parseReviewVerdict("Matches the Approved Implementation Plan.")).toBeNull();
+    expect(parseReviewVerdict("This is not approved.")).toBeNull();
+    expect(parseReviewVerdict("Not approved yet: requires revision.")).toBe("REQUIRES REVISION");
+  });
+
+  it("reads bold, numbered and labelled Verdict headings", () => {
+    expect(parseReviewVerdict("**Verdict:** **APPROVED WITH CHANGES**")).toBe("APPROVED WITH CHANGES");
+    expect(parseReviewVerdict("## 1. Verdict\n\nAfter checking the code:\n\n**REQUIRES REVISION**")).toBe(
+      "REQUIRES REVISION",
+    );
+    // A verdict word in the reviewed plan after the heading does not win.
+    expect(
+      parseReviewVerdict("### Verdict\n**REQUIRES REVISION**\n\n## Reviewed plan\n1. Show approved requests"),
+    ).toBe("REQUIRES REVISION");
+    // A sentence that merely mentions a verdict is not a label.
+    expect(parseReviewVerdict("We store the verdict per round.\nApproved.")).toBe("APPROVED");
+  });
+
+  it("falls back to the Final Recommendation option", () => {
+    const reply = (option: string) =>
+      `### 9. Final Recommendation\n\n- **${option}**\n\n## Reviewed plan\n1. Step`;
+    expect(parseReviewVerdict(reply("Proceed as-is"))).toBe("APPROVED");
+    expect(parseReviewVerdict(reply("Update the plan, then proceed"))).toBe("APPROVED WITH CHANGES");
+    expect(parseReviewVerdict(reply("Return to planning because significant changes are required"))).toBe(
+      "REQUIRES REVISION",
+    );
+    // A written verdict beats the recommendation.
+    expect(parseReviewVerdict(`## Verdict\nAPPROVED\n\n${reply("Return to planning")}`)).toBe("APPROVED");
   });
 
   it("tones and reviewer roles", () => {

@@ -112,8 +112,7 @@ impl ActivityStore {
         let existed = match std::fs::metadata(&path) {
             Ok(meta) => {
                 if meta.len() >= self.max_file_bytes {
-                    std::fs::rename(&path, Self::rotated_path(&path))
-                        .map_err(|e| format!("activity rotate: {e}"))?;
+                    self.rotate(&path)?;
                 }
                 true
             }
@@ -129,6 +128,59 @@ impl ActivityStore {
         if !existed {
             self.enforce_tab_cap(&patch.tab_id);
         }
+        Ok(())
+    }
+
+    /// Start a new current file. The rotated file becomes one merged line
+    /// per row (old rotated rows + current rows), newest kept within
+    /// `max_file_bytes`. A long turn's many `tool_call_update` lines thus
+    /// collapse into their rows instead of pushing the turn's opening lines
+    /// out: a row is only lost once a whole file's worth of newer *rows*
+    /// exists, never because its own updates were chatty.
+    fn rotate(&self, current: &Path) -> Result<(), String> {
+        let rotated = Self::rotated_path(current);
+        let mut patches = Vec::new();
+        for file in [&rotated, &current.to_path_buf()] {
+            if let Ok(text) = std::fs::read_to_string(file) {
+                patches.extend(
+                    text.lines()
+                        .filter(|line| !line.trim().is_empty())
+                        .filter_map(|line| serde_json::from_str::<ActivityPatch>(line).ok()),
+                );
+            }
+        }
+        let entries = merge_patches(&patches);
+        let mut lines: Vec<String> = Vec::new();
+        let mut bytes = 0u64;
+        for entry in entries.iter().rev() {
+            let mut entry_lines = vec![serde_json::to_string(&entry_patch(entry, false))
+                .map_err(|e| e.to_string())?];
+            if entry.updated_at != entry.time {
+                entry_lines.push(
+                    serde_json::to_string(&entry_patch(entry, true)).map_err(|e| e.to_string())?,
+                );
+            }
+            let size: u64 = entry_lines.iter().map(|line| line.len() as u64 + 1).sum();
+            if bytes + size > self.max_file_bytes && !lines.is_empty() {
+                break;
+            }
+            bytes += size;
+            // Built newest first; reversed below.
+            lines.extend(entry_lines.into_iter().rev());
+        }
+        lines.reverse();
+        let mut body = lines.join("\n");
+        if !body.is_empty() {
+            body.push('\n');
+        }
+        let tmp = {
+            let mut name = rotated.as_os_str().to_owned();
+            name.push(".tmp");
+            PathBuf::from(name)
+        };
+        std::fs::write(&tmp, body).map_err(|e| format!("activity rotate: {e}"))?;
+        std::fs::rename(&tmp, &rotated).map_err(|e| format!("activity rotate: {e}"))?;
+        std::fs::remove_file(current).map_err(|e| format!("activity rotate: {e}"))?;
         Ok(())
     }
 
@@ -215,6 +267,29 @@ impl ActivityStore {
                 excess -= 1;
             }
         }
+    }
+}
+
+/// A merged row as one line again (`touch_only`: just its last-update time).
+fn entry_patch(entry: &ActivityEntry, touch_only: bool) -> ActivityPatch {
+    if touch_only {
+        return ActivityPatch {
+            id: entry.id.clone(),
+            tab_id: entry.tab_id.clone(),
+            time: entry.updated_at.clone(),
+            ..Default::default()
+        };
+    }
+    ActivityPatch {
+        id: entry.id.clone(),
+        tab_id: entry.tab_id.clone(),
+        time: entry.time.clone(),
+        kind: Some(entry.kind.clone()),
+        title: Some(entry.title.clone()).filter(|t| !t.is_empty()),
+        summary: Some(entry.summary.clone()).filter(|s| !s.is_empty()),
+        decision: Some(entry.decision.clone()).filter(|d| d != "none"),
+        network: entry.network.then_some(true),
+        status: entry.status.clone(),
     }
 }
 
@@ -414,6 +489,60 @@ mod tests {
             .unwrap()
             .iter()
             .all(|e| e.id != "t0"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_chatty_long_turn_does_not_rotate_away_its_own_early_rows() {
+        // One long pipeline turn: a build starts, then hundreds of updates
+        // on a test run stream in. The build's row (opened once, early) must
+        // survive several rotations, with its status and decision.
+        let root = temp_root("chatty");
+        let store = ActivityStore::with_limits(root.clone(), 2_000, 10);
+        store
+            .append(&ActivityPatch {
+                kind: Some("shell".into()),
+                title: Some("Terminal".into()),
+                summary: Some("cargo build".into()),
+                status: Some("in_progress".into()),
+                decision: Some("auto_allow".into()),
+                ..patch("t_build", "2026-10-10T10:00:00Z")
+            })
+            .unwrap();
+        for n in 0..300 {
+            store
+                .append(&ActivityPatch {
+                    kind: Some("shell".into()),
+                    title: Some("Terminal".into()),
+                    summary: Some(format!("cargo test -- part {}", n % 3)),
+                    status: Some("in_progress".into()),
+                    ..patch(&format!("t_test{}", n % 3), "2026-10-10T10:00:01Z")
+                })
+                .unwrap();
+        }
+        store
+            .append(&ActivityPatch {
+                status: Some("completed".into()),
+                ..patch("t_build", "2026-10-10T10:05:00Z")
+            })
+            .unwrap();
+        assert!(root.join("tab_a.jsonl.1").exists(), "it did rotate");
+        let entries = store.list("tab_a", None).unwrap();
+        let build = entries
+            .iter()
+            .find(|e| e.id == "t_build")
+            .expect("the turn's first row is still there");
+        assert_eq!(build.summary, "cargo build");
+        assert_eq!(build.decision, "auto_allow");
+        assert_eq!(build.status.as_deref(), Some("completed"));
+        assert_eq!(build.time, "2026-10-10T10:00:00Z");
+        assert_eq!(build.updated_at, "2026-10-10T10:05:00Z");
+        assert_eq!(entries.len(), 4);
+        // Both files stay near the limit.
+        for name in ["tab_a.jsonl", "tab_a.jsonl.1"] {
+            let len = std::fs::metadata(root.join(name)).map(|m| m.len()).unwrap_or(0);
+            assert!(len <= 2_000 + 400, "{name}: {len}");
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 

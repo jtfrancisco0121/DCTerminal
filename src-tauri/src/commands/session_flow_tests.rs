@@ -30,7 +30,7 @@ const WAIT: Duration = Duration::from_secs(10);
 // ---------- scenario helpers ----------
 
 /// Claude adapter 0.88 as captured: initialize + session/new (models, effort).
-fn claude_scenario(prompts: Value) -> Value {
+pub(super) fn claude_scenario(prompts: Value) -> Value {
     json!({
         "initialize": claude_fixture_result("initialize-response.json", "/result"),
         "session_new": claude_fixture_result("session-new.json", "/response/result"),
@@ -39,7 +39,7 @@ fn claude_scenario(prompts: Value) -> Value {
     })
 }
 
-fn cursor_scenario(prompts: Value) -> Value {
+pub(super) fn cursor_scenario(prompts: Value) -> Value {
     json!({
         "initialize": { "protocolVersion": 1, "agentCapabilities": { "loadSession": true } },
         "session_new": {
@@ -60,18 +60,18 @@ macro_rules! fake {
     };
 }
 
-fn connect(agent: &FakeAgent, base: ProviderId, mode: &str) -> AcpClient {
+pub(super) fn connect(agent: &FakeAgent, base: ProviderId, mode: &str) -> AcpClient {
     AcpClient::connect_with_model(agent.provider(base), &agent.work_dir(), mode, None)
         .expect("handshake with fake agent")
         .0
 }
 
-fn kill(client: &AcpClient) {
+pub(super) fn kill(client: &AcpClient) {
     client.process_handle().kill_tree();
 }
 
 /// The JSON the fake agent echoed for its request `id` ("[reply id] {...}").
-fn reply(text: &str, id: u64) -> Value {
+pub(super) fn reply(text: &str, id: u64) -> Value {
     let tag = format!("[reply {id}] ");
     let start = text
         .find(&tag)
@@ -81,7 +81,7 @@ fn reply(text: &str, id: u64) -> Value {
     stream.next().unwrap().unwrap()
 }
 
-fn permission_request(id: u64, tool_call: Value, options: Value) -> Value {
+pub(super) fn permission_request(id: u64, tool_call: Value, options: Value) -> Value {
     json!({ "id": id, "request": {
         "method": "session/request_permission",
         "params": { "sessionId": "fake-session-1", "toolCall": tool_call, "options": options }
@@ -89,7 +89,7 @@ fn permission_request(id: u64, tool_call: Value, options: Value) -> Value {
 }
 
 /// Claude's usual options for a tool call (adapter 0.88).
-fn claude_tool_options() -> Value {
+pub(super) fn claude_tool_options() -> Value {
     json!([
         { "optionId": "allow_always", "name": "Always Allow", "kind": "allow_always" },
         { "optionId": "allow", "name": "Allow", "kind": "allow_once" },
@@ -98,7 +98,7 @@ fn claude_tool_options() -> Value {
 }
 
 /// ExitPlanMode as a permission request ("Ready to code?").
-fn exit_plan_request(id: u64) -> Value {
+pub(super) fn exit_plan_request(id: u64) -> Value {
     permission_request(
         id,
         json!({
@@ -119,19 +119,19 @@ fn exit_plan_request(id: u64) -> Value {
 
 /// What the router did with an agent request: `Some` answered at once,
 /// `None` handed to the user (a card).
-type Routed = (Value, Option<Value>);
+pub(super) type Routed = (Value, Option<Value>);
 
-struct Running {
-    notes: Receiver<Value>,
-    asks: Receiver<Routed>,
-    outbox: AgentOutbox,
-    cancel: Arc<AtomicBool>,
-    handle: JoinHandle<(AcpClient, Result<PromptResult, String>)>,
+pub(super) struct Running {
+    pub(super) notes: Receiver<Value>,
+    pub(super) asks: Receiver<Routed>,
+    pub(super) outbox: AgentOutbox,
+    pub(super) cancel: Arc<AtomicBool>,
+    pub(super) handle: JoinHandle<(AcpClient, Result<PromptResult, String>)>,
 }
 
 /// The prompt worker's routing (`prompt_worker.rs`) without the AppHandle:
 /// the same pure decisions, with "card" meaning `Ok(None)`.
-fn route(provider: &SharedProvider, role_id: &str, request: &Value) -> Option<Value> {
+pub(super) fn route(provider: &SharedProvider, role_id: &str, request: &Value) -> Option<Value> {
     let method = request["method"].as_str().unwrap_or("");
     let params = request.get("params").unwrap_or(&Value::Null);
     match provider.classify_request(method, params) {
@@ -149,7 +149,7 @@ fn route(provider: &SharedProvider, role_id: &str, request: &Value) -> Option<Va
     }
 }
 
-fn start(
+pub(super) fn start(
     client: AcpClient,
     role_id: &'static str,
     text: &str,
@@ -184,11 +184,11 @@ fn start(
 }
 
 impl Running {
-    fn next_ask(&self) -> Routed {
+    pub(super) fn next_ask(&self) -> Routed {
         self.asks.recv_timeout(WAIT).expect("agent request")
     }
 
-    fn wait_note(&self, pred: impl Fn(&Value) -> bool) -> Value {
+    pub(super) fn wait_note(&self, pred: impl Fn(&Value) -> bool) -> Value {
         let deadline = Instant::now() + WAIT;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
@@ -199,11 +199,11 @@ impl Running {
         }
     }
 
-    fn answer(&self, id: u64, result: Value) {
+    pub(super) fn answer(&self, id: u64, result: Value) {
         self.outbox.lock().unwrap().push((id, result));
     }
 
-    fn finish(
+    pub(super) fn finish(
         self,
     ) -> (
         AcpClient,
@@ -218,7 +218,7 @@ impl Running {
     }
 }
 
-fn is_text(note: &Value, text: &str) -> bool {
+pub(super) fn is_text(note: &Value, text: &str) -> bool {
     note.pointer("/params/update/content/text")
         .and_then(Value::as_str)
         == Some(text)

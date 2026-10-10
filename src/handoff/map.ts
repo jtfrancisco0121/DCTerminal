@@ -88,7 +88,7 @@ export type HandoffSource = {
   turnInFlight: boolean;
   /** The turn is only waiting for the user to approve its plan, so the plan is final. */
   awaitingPlanApproval?: boolean;
-  /** Set when the source is a terminal-mode role tab (Planner or Plan Reviewer). */
+  /** Set when the source is a terminal-mode role tab. */
   fromTerminal?: boolean;
   /** Body of the newest plan file written after the terminal started. */
   planFileText?: string;
@@ -97,6 +97,8 @@ export type HandoffSource = {
   terminalTail?: string;
   /** Claude ExitPlanMode body ("Ready to code?"). Preferred over the card. */
   planMarkdown?: string;
+  /** The user wrote to the agent after that plan, so a newer reply may revise it. */
+  planMarkdownStale?: boolean;
   /** Whole-tab snapshot: path and +/− only. Diffs are not pasted. */
   changes?: { path: string; additions: number | null; deletions: number | null }[];
   branch?: string | null;
@@ -153,8 +155,6 @@ const DESCRIPTION_FIELD_KEYS = [
   "task",
   "requirements",
 ];
-const REVIEWED_PLAN_HEADING = /^#{1,6}[ \t]+(?:\*\*)?Reviewed plan(?:\*\*)?[ \t]*:?[ \t]*$/im;
-const REVIEW_NOTES_HEADING = /^#{1,6}[ \t]+(?:\*\*)?Review notes(?:\*\*)?[ \t]*:?[ \t]*$/im;
 const CONTEXT_FIELD_KEYS = ["additionalContext", "context", "notes"];
 const PLAN_FIELD_LABEL = /\bplan\b/i;
 const DESCRIPTION_FIELD_LABEL =
@@ -299,6 +299,43 @@ export function latestAgentMessage(
   return "";
 }
 
+const REPLY_START = /^[ \t]*(?:#{1,6}[ \t]+\S|(?:\*\*|__)?verdict\b)/im;
+
+/**
+ * The agent's reply in the current turn. A reply split by tool calls (a
+ * verdict, a check, then the reviewed plan) is joined from its first part
+ * that opens with a heading or a Verdict label; short "Let me check" lines
+ * before it are left out. Without such a part, the last agent message.
+ */
+export function latestReplyText(segments: { kind: string; text: string }[]): string {
+  let start = segments.length;
+  while (start > 0 && segments[start - 1].kind !== "user") start -= 1;
+  const parts = segments.slice(start).filter((s) => s.kind === "agent" && s.text.trim());
+  if (parts.length === 0) return latestAgentMessage(segments);
+  const first = parts.findIndex((s) => REPLY_START.test(s.text));
+  if (first < 0) return parts[parts.length - 1].text.trim();
+  return parts
+    .slice(first)
+    .map((s) => s.text.trim())
+    .join("\n\n");
+}
+
+/**
+ * A plan message without its short lead-in ("Nothing has been approved yet.
+ * Here is the revised plan:"), so the next role does not take the lead-in
+ * as part of the plan. Only a few short lines before the first heading go.
+ */
+export function stripPlanPreamble(text: string): string {
+  const lines = text.split("\n");
+  const heading = lines.findIndex((line) => /^#{1,3}[ \t]+\S/.test(line));
+  if (heading <= 0) return text;
+  const lead = lines.slice(0, heading).filter((line) => line.trim());
+  const rest = lines.slice(heading).join("\n").trim();
+  const leadChars = lead.join(" ").length;
+  if (lead.length > 3 || leadChars > 300 || rest.length < leadChars) return text;
+  return rest;
+}
+
 export function selectionInside(root: HTMLElement | null): string {
   if (!root || typeof window === "undefined") return "";
   const selection = window.getSelection();
@@ -338,6 +375,8 @@ export function handoffBlockReason(
   }
   const name = roleDisplayName(roleId, roles);
   if (source.fromTerminal) {
+    // The Implementer's own form carries the task; the terminal adds a summary.
+    if (roleId === "role_implementer" && implementerAnswersReady(source.answers)) return null;
     const hasTerminal =
       (source.planFileText ?? "").trim().length > 0 ||
       source.selection.trim().length > 0 ||
@@ -363,21 +402,76 @@ export function handoffBlockReason(
   return hasChatContent(source) ? null : "There is nothing to send yet.";
 }
 
-/** Text under a markdown heading, up to the next heading of the same or higher level. */
-function sectionUnder(text: string, heading: RegExp): string | null {
-  const match = heading.exec(text);
-  if (!match) return null;
-  const level = match[0].match(/^#+/)?.[0].length ?? 2;
-  const rest = text.slice(match.index + match[0].length);
-  const next = new RegExp(`^#{1,${level}}[ \\t]+\\S`, "m").exec(rest);
-  const body = (next ? rest.slice(0, next.index) : rest).trim();
-  return body || null;
+/**
+ * A Plan Reviewer section heading line. Accepts what models actually write:
+ * "## Reviewed plan", "### **Revised Plan:**", "## 10. Reviewed implementation
+ * plan", a bold "**Reviewed plan**" line, or a plain "Reviewed plan" line
+ * (rendered markdown copied without its marks).
+ */
+function sectionHeading(title: string): RegExp {
+  return new RegExp(
+    `^[ \\t]*(#{1,6}[ \\t]+)?(?:\\*\\*|__)?[ \\t]*(?:\\d+[.)][ \\t]*)?(?:${title})[ \\t]*(?:\\*\\*|__)?[ \\t]*:?[ \\t]*(?:\\*\\*|__)?[ \\t]*$`,
+    "gim",
+  );
+}
+const REVIEWED_PLAN_HEADING = sectionHeading(
+  "(?:final[ \\t]+)?(?:reviewed|revised|updated|corrected)[ \\t]+(?:implementation[ \\t]+)?plan",
+);
+const REVIEW_NOTES_HEADING = sectionHeading(
+  "review(?:er)?(?:'s)?[ \\t]+notes|notes[ \\t]+for[ \\t]+(?:the[ \\t]+)?implementer",
+);
+/** Review sections that may follow the reviewed plan; anything else is part of the plan. */
+const AFTER_PLAN_HEADING = sectionHeading(
+  "(?:final[ \\t]+)?verdict|final[ \\t]+recommendation|review(?:er)?(?:'s)?[ \\t]+notes|notes[ \\t]+for[ \\t]+(?:the[ \\t]+)?implementer",
+);
+
+type HeadingHit = { start: number; end: number; level: number | null };
+
+function headingHits(text: string, re: RegExp): HeadingHit[] {
+  re.lastIndex = 0;
+  return Array.from(text.matchAll(re), (m) => ({
+    start: m.index ?? 0,
+    end: (m.index ?? 0) + m[0].length,
+    level: m[1] ? m[1].trim().length : null,
+  }));
 }
 
-/** Plan Reviewer output → the **Reviewed plan** and **Review notes** sections. */
+function lastOf<T>(items: T[]): T | undefined {
+  return items[items.length - 1];
+}
+
+/** First markdown heading at `level` or higher after `from`. */
+function nextHeadingAt(text: string, from: number, level: number): number | null {
+  const next = new RegExp(`^[ \\t]*#{1,${level}}[ \\t]+\\S`, "m").exec(text.slice(from));
+  return next ? from + next.index : null;
+}
+
+/**
+ * Plan Reviewer output → the **Reviewed plan** and **Review notes** sections.
+ * The reviewed plan is often the Planner's plan repeated, with its own `##`
+ * headings, so it runs to the next review section (notes, verdict, final
+ * recommendation), not to the next heading. The last heading of each kind
+ * wins, so a reply that first quotes the instructions still splits.
+ */
 export function splitPlanReview(text: string): { plan: string; notes: string } {
-  const plan = sectionUnder(text, REVIEWED_PLAN_HEADING);
-  const notes = sectionUnder(text, REVIEW_NOTES_HEADING) ?? "";
+  const planHit = lastOf(headingHits(text, REVIEWED_PLAN_HEADING));
+  const notesHits = headingHits(text, REVIEW_NOTES_HEADING);
+  let plan: string | null = null;
+  if (planHit) {
+    const stop = headingHits(text, AFTER_PLAN_HEADING).find((hit) => hit.start >= planHit.end);
+    plan = text.slice(planHit.end, stop ? stop.start : text.length).trim() || null;
+  }
+  const notesHit =
+    (planHit ? lastOf(notesHits.filter((hit) => hit.start >= planHit.end)) : undefined) ??
+    lastOf(notesHits);
+  let notes = "";
+  if (notesHit) {
+    const nextPlan = planHit && planHit.start > notesHit.end ? planHit.start : null;
+    const nextHeading =
+      notesHit.level !== null ? nextHeadingAt(text, notesHit.end, notesHit.level) : null;
+    const ends = [nextPlan, nextHeading].filter((n): n is number => n !== null);
+    notes = text.slice(notesHit.end, ends.length ? Math.min(...ends) : text.length).trim();
+  }
   return { plan: plan ?? text.trim(), notes };
 }
 
@@ -412,7 +506,8 @@ export function composePlanText(
   else if (scope === "plan_file") text = cleanText(source.planFileText ?? "");
   else if (scope === "terminal_tail") text = cleanText(source.terminalTail ?? "");
   else {
-    const message = cleanText(source.latestMessage);
+    const latest = cleanText(source.latestMessage);
+    const message = source.sourceRoleId === "role_planner" ? stripPlanPreamble(latest) : latest;
     const card = cleanText(formatPlanCard(source.plan, source.todos));
     text = message && card ? `${message}\n\n${card}` : message || card;
   }
@@ -448,7 +543,7 @@ export function scopeChoices(source: HandoffSource): ScopeChoice[] {
     const fileLabel = source.planFileName
       ? `Newest plan file (${source.planFileName})`
       : "Newest plan file";
-    return [
+    const terminalChoices: ScopeChoice[] = [
       {
         id: "plan_file",
         label: fileLabel,
@@ -465,12 +560,18 @@ export function scopeChoices(source: HandoffSource): ScopeChoice[] {
         enabled: composePlanText(source, "terminal_tail").text.length > 0,
       },
     ];
+    // Only Planner and Plan Reviewer terminals write plan files.
+    return isPlanSource(source.sourceRoleId)
+      ? terminalChoices
+      : terminalChoices.filter((choice) => choice.id !== "plan_file");
   }
   const choices: ScopeChoice[] = [];
   if ((source.planMarkdown ?? "").trim()) {
     choices.push({
       id: "plan_mode",
-      label: "Claude's plan (Ready to code?)",
+      label: source.planMarkdownStale
+        ? "Claude's earlier plan (Ready to code?)"
+        : "Claude's plan (Ready to code?)",
       enabled: composePlanText(source, "plan_mode").text.length > 0,
     });
   }
@@ -512,10 +613,12 @@ export function defaultScope(source: HandoffSource): HandoffScope {
     return source.fromTerminal ? "terminal_tail" : "message";
   }
   if (source.fromTerminal) {
-    if (composePlanText(source, "plan_file").text) return "plan_file";
+    if (isPlanSource(source.sourceRoleId) && composePlanText(source, "plan_file").text) {
+      return "plan_file";
+    }
     if (composePlanText(source, "selection").text) return "selection";
     if (composePlanText(source, "terminal_tail").text) return "terminal_tail";
-    return "plan_file";
+    return isPlanSource(source.sourceRoleId) ? "plan_file" : "terminal_tail";
   }
   const preferred: HandoffScope[] = [
     "plan_mode",
@@ -525,7 +628,11 @@ export function defaultScope(source: HandoffSource): HandoffScope {
     "card",
     "selection",
   ];
+  // A reply written after the user answered the plan may revise it, so it
+  // wins over a plan Claude submitted before that message.
+  const newerReply = !!source.planMarkdownStale && !!source.latestMessage.trim();
   for (const scope of preferred) {
+    if (newerReply && scope === "plan_mode") continue;
     if (composePlanText(source, scope).text) return scope;
   }
   return "plan_and_todos";
@@ -841,6 +948,23 @@ function behaviorContext(parts: RequestParts, skip: { expected: boolean; current
   if (parts.expected && !skip.expected) out.push(`Expected behavior:\n${parts.expected}`);
   if (parts.current && !skip.current) out.push(`Current behavior:\n${parts.current}`);
   return out;
+}
+
+/**
+ * A terminal Implementer has no chat reply: the chosen selection or tail is
+ * the summary, and the whole scrollback is searched for the PR URL.
+ */
+export function terminalImplementerSource(
+  source: HandoffSource,
+  scope: HandoffScope,
+): HandoffSource {
+  if (!source.fromTerminal) return source;
+  const summary = composePlanText(source, scope).text;
+  return {
+    ...source,
+    latestMessage: summary,
+    transcriptText: [source.transcriptText ?? "", source.terminalTail ?? "", summary].join("\n"),
+  };
 }
 
 /** Implementer form → PR Reviewer fields (no plan-scope picker). */
@@ -1249,7 +1373,10 @@ export function mapHandoff(
   const visible = visibleAnswers(source);
   const fields = handoffFormFields(target.fields);
   if (source.sourceRoleId === "role_implementer" && target.roleId === "role_pr_reviewer") {
-    return dropHidden(mapImplementerToReviewer(visible, target, limits), fields);
+    return dropHidden(
+      mapImplementerToReviewer(terminalImplementerSource(visible, scope), target, limits),
+      fields,
+    );
   }
   if (isReportSource(source.sourceRoleId) && target.roleId === "role_planner") {
     return dropHidden(mapReportToPlanner(visible, scope, target, limits), fields);
@@ -1309,17 +1436,19 @@ export function handoffFillSummary(mapped: MappedHandoff, target: HandoffTarget)
 
 /** Why a terminal hand-off cannot start yet, naming each field. Null when it can. */
 export function handoffStartProblem(summary: FillSummary, targetName: string): string | null {
-  const parts: string[] = [];
-  if (summary.missing.length > 0) {
-    parts.push(`The ${targetName} form still needs: ${summary.missing.join(", ")}.`);
-  }
-  if (summary.unresolved.length > 0) {
-    const tokens = summary.unresolved.map((token) => `{{${token}}}`).join(", ");
-    parts.push(
-      `The ${targetName} template uses ${tokens}, which no field fills. Fix the role in Settings > Roles.`,
-    );
-  }
-  return parts.length > 0 ? parts.join(" ") : null;
+  const items = [
+    ...summary.missing.map((label) => `${label} is required`),
+    ...summary.unresolved.map(
+      (token) => `the template uses {{${token}}}, which no field fills (fix the role in Settings > Roles)`,
+    ),
+  ];
+  return terminalStartMessage(targetName, items);
+}
+
+/** The one message for a terminal hand-off that cannot start; null when `items` is empty. */
+export function terminalStartMessage(targetName: string, items: string[]): string | null {
+  if (items.length === 0) return null;
+  return `The ${targetName} terminal cannot start: ${items.join("; ")}. Open it as Chat to fill these in.`;
 }
 
 /**

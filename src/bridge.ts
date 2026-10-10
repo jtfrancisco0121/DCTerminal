@@ -657,6 +657,8 @@ export type SessionUpdateEvent = {
   kind: string;
   textDelta: string | null;
   rawJson: string;
+  /** Set when this tool call writes a plan file (`<configDir>/plans/*.md`). */
+  planPath?: string | null;
 };
 
 export function listenSessionUpdates(
@@ -939,6 +941,8 @@ export type PlanRequestEvent = {
   markdown?: string | null;
   /** Reject option. Present means Keep planning, never Accept. */
   keepOptionId?: string | null;
+  /** Claude plan file behind this ExitPlanMode, when one is known. */
+  planPath?: string | null;
 };
 
 export function listenPlanRequests(
@@ -1163,6 +1167,8 @@ export type PlanFileInfo = {
   name: string;
   modifiedMs: number;
   text: string;
+  /** Cut at 8 MB. */
+  truncated?: boolean;
 };
 
 export type TerminalSettings = {
@@ -1281,11 +1287,20 @@ export async function setTerminalSettings(
  * Newest plan file since the terminal started, read-only from the tab's
  * provider (`~/.cursor/plans`, or `<configDir>/plans` for Claude).
  */
+/**
+ * `mentioned`: plan file names this terminal printed (they win). `claimed`:
+ * names other open terminals printed (never this tab's plan).
+ */
 export async function terminalPlanFile(
   startedAtMs: number,
   tabId?: string | null,
+  names?: { mentioned: string[]; claimed: string[] },
 ): Promise<PlanFileInfo | null> {
-  return invoke<PlanFileInfo | null>("terminal_plan_file", { startedAtMs, tabId: tabId ?? null });
+  return invoke<PlanFileInfo | null>("terminal_plan_file", {
+    startedAtMs,
+    tabId: tabId ?? null,
+    ...(names ? { mentioned: names.mentioned, claimed: names.claimed } : {}),
+  });
 }
 
 export type ModelEntry = {

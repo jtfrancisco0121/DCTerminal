@@ -28,6 +28,8 @@ export type LoopBackTarget = {
   tabLabel: string | null;
   /** That tab's session is live: the findings go in there as a follow-up. */
   live: boolean;
+  /** The live tab is a running terminal: the follow-up is pasted, then Enter. */
+  terminal?: boolean;
   /** Why the follow-up cannot go yet (the tab is mid-turn). */
   blocked: string | null;
 };
@@ -46,6 +48,8 @@ type Props = {
   roleNames?: readonly RoleName[] | null;
   /** Set when the chosen target is this chain's loop-back. */
   loopBack?: LoopBackTarget | null;
+  /** On a chain, Start fills the task type from the chain's first form. */
+  chainFillsTaskType?: boolean;
   onTarget: (id: HandoffTargetId) => void;
   onConfirm: (scope: HandoffScope, surface: HandoffSurface) => void;
   onClose: () => void;
@@ -62,6 +66,7 @@ export function HandoffDialog({
   preferredSurface,
   roleNames = null,
   loopBack = null,
+  chainFillsTaskType = false,
   onTarget,
   onConfirm,
   onClose,
@@ -70,12 +75,18 @@ export function HandoffDialog({
     id,
     label: roleDisplayName(id, roleNames),
   }));
-  const [scope, setScope] = useState<HandoffScope>(() => defaultScope(source));
+  // Until the user picks, the default follows the source: a plan file read
+  // after the dialog opened, or a reply that finished meanwhile, takes over.
+  const [pickedScope, setScope] = useState<HandoffScope | null>(null);
   const [surface, setSurface] = useState<HandoffSurface>(preferredSurface);
   useEffect(() => {
     setSurface(preferredSurface);
   }, [preferredSurface, targetRoleId]);
   const choices = scopeChoices(source);
+  const scope =
+    pickedScope && choices.some((choice) => choice.id === pickedScope && choice.enabled)
+      ? pickedScope
+      : defaultScope(source);
   const block = handoffBlockReason(source, roleNames);
   const mapped = useMemo(
     () =>
@@ -110,6 +121,13 @@ export function HandoffDialog({
   const message = followUp
     ? loopBackMessage(source.sourceRoleId, preview, followUp.round, roleNames)
     : "";
+  // Required target fields the hand-off cannot fill: say so now, not at Start.
+  // Visible fields only; on a chain, Start fills the task type from step 1.
+  const chainFilled = (key: string) => chainFillsTaskType && key === "taskType";
+  const missing =
+    followUp || !fill || !mapped.planText
+      ? []
+      : fill.missing.filter((_, index) => !chainFilled(fill.missingKeys[index]));
   const canConfirm = followUp
     ? !busy && !block && !followUp.blocked && preview.trim().length > 0
     : !busy && !block && mapped.planText.length > 0 && targetFields !== null;
@@ -126,8 +144,10 @@ export function HandoffDialog({
         {followUp ? (
           <>
             <p className="hint">
-              Sends the review findings below as a follow-up message in the chain's existing{" "}
-              {targetLabel} tab. Round {followUp.round + 1} starts. Nothing else is sent.
+              {followUp.terminal
+                ? `Pastes the review findings below into the chain's running ${targetLabel} terminal and presses Enter.`
+                : `Sends the review findings below as a follow-up message in the chain's existing ${targetLabel} tab.`}{" "}
+              Round {followUp.round + 1} starts. Nothing else is sent.
             </p>
             <p className="handoff-target" aria-label="Target tab">
               To tab: <strong>{followUp.tabLabel}</strong>
@@ -220,15 +240,23 @@ export function HandoffDialog({
               <p className="handoff-fill-line hint">
                 Left empty:{" "}
                 {fill.empty
-                  .map((field) => (field.required ? `${field.label} (required)` : field.label))
+                  .map((field) =>
+                    chainFilled(field.key)
+                      ? `${field.label} (from the chain at Start)`
+                      : field.required
+                        ? `${field.label} (required)`
+                        : field.label,
+                  )
                   .join(", ")}
               </p>
             )}
-            {fill.missing.length > 0 && (
-              <p className="handoff-fill-line hint">
+            {missing.length > 0 && (
+              <p className="handoff-fill-line hint" role="note" aria-label="Fields to fill in">
                 {surface === "terminal"
-                  ? `A terminal starts right away, so fill ${fill.missing.join(", ")} first: open as Chat to edit the form.`
-                  : `Fill ${fill.missing.join(", ")} in the new tab before Start.`}
+                  ? `A terminal starts right away, so fill ${missing.join(", ")} first: open as Chat to edit the form.`
+                  : `The ${targetLabel} tab opens with ${missing.join(", ")} empty. Fill ${
+                      missing.length > 1 ? "them" : "it"
+                    } in before Start.`}
               </p>
             )}
             {fill.unresolved.length > 0 && (

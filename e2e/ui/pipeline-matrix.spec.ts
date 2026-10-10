@@ -119,12 +119,16 @@ test("Planner → custom role with a required select: named in the dialog, termi
   const dialog = dialogFor(page);
   await expect(fills(page)).toContainText("Fills: What was asked, The plan (markdown)");
   await expect(fills(page)).toContainText("Left empty: Priority (required)");
-  await expect(fills(page)).toContainText("Fill Priority in the new tab before Start.");
+  await expect(dialog.getByRole("note", { name: "Fields to fill in" })).toHaveText(
+    "The Odd Form tab opens with Priority empty. Fill it in before Start.",
+  );
 
   await dialog.getByRole("radio", { name: "Terminal" }).check();
   await expect(fills(page)).toContainText("A terminal starts right away, so fill Priority first");
   await dialog.getByRole("button", { name: "Start Odd Form terminal" }).click();
-  await expect(dialog.locator(".error")).toHaveText("The Odd Form form still needs: Priority.");
+  await expect(dialog.locator(".error")).toHaveText(
+    "The Odd Form terminal cannot start: Priority is required. Open it as Chat to fill these in.",
+  );
   expect(await app.calls("role_terminal_start")).toHaveLength(0);
   expect(await app.calls("handoff_save")).toHaveLength(0);
 

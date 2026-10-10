@@ -110,7 +110,12 @@ test("hand-off from a Planner terminal sends the newest plan file", async ({ app
 
   await page.locator(".terminal-toolbar").getByRole("button", { name: "Send to Plan Reviewer" }).click();
   const read = await app.waitForCall("terminal_plan_file");
-  expect(read.args).toEqual({ startedAtMs: expect.any(Number), tabId: "tab-1" });
+  expect(read.args).toEqual({
+    startedAtMs: expect.any(Number),
+    tabId: "tab-1",
+    mentioned: ["effort.md"],
+    claimed: [],
+  });
   const dialog = page.getByRole("dialog", { name: "Send plan" });
   await expect(dialog.getByRole("radio", { name: "Plan Reviewer" })).toBeChecked();
   await expect(dialog.getByRole("radio", { name: "Newest plan file (effort.md)" })).toBeChecked();

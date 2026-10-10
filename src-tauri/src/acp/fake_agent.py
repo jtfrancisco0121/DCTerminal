@@ -25,11 +25,18 @@ Steps:
   {"request": {"method", "params"}, "id": n}
                                agent->client request; waits for the client's
                                answer, then says "[reply <id>] <result json>"
+  {"request": ..., "id": n, "nowait": true}
+                               sends the request and goes on (a parallel
+                               tool call); {"await": n} collects the answer
+  {"await": n}                 waits for the answer to request n, then says
+                               "[reply <n>] <result json>"
   {"wait_cancel": true}        waits for session/cancel
   {"sleep": seconds}           only for timing tests
   {"stderr": "text"}           a line on stderr
   {"exit": code}               exits at once (crash)
   {"end": "stopReason"}        ends the turn now with this stop reason
+  {"end_exit": code}           ends the turn (end_turn), then exits between
+                               turns
 A turn ends with stopReason "cancelled" when a session/cancel arrived during
 it, otherwise "end_turn".
 """
@@ -123,6 +130,25 @@ def permission_answer_error(result):
     return "bad outcome %s" % json.dumps(outcome)
 
 
+methods = {}
+
+
+def collect_reply(req_id, rid):
+    """Wait for the client's answer to request `rid` and echo it. False when
+    the answer failed the strict permission check (the turn already ended)."""
+    reply = wait_for(lambda m: m.get("id") == rid and "method" not in m)
+    answer = reply.get("result", {"error": reply.get("error")})
+    if (scenario.get("strict_permission")
+            and methods.get(rid) == "session/request_permission"):
+        problem = permission_answer_error(answer)
+        if problem:
+            send({"jsonrpc": "2.0", "id": req_id, "error": {
+                "code": -32602, "message": "invalid permission response: " + problem}})
+            return False
+    say("[reply %s] %s" % (rid, json.dumps(answer, sort_keys=True)))
+    return True
+
+
 def run_turn(req_id, steps):
     for step in steps:
         if "update" in step:
@@ -139,16 +165,14 @@ def run_turn(req_id, steps):
             body = step["request"]
             send({"jsonrpc": "2.0", "id": rid, "method": body["method"],
                   "params": body.get("params", {})})
-            reply = wait_for(lambda m: m.get("id") == rid and "method" not in m)
-            answer = reply.get("result", {"error": reply.get("error")})
-            if (scenario.get("strict_permission")
-                    and body["method"] == "session/request_permission"):
-                problem = permission_answer_error(answer)
-                if problem:
-                    send({"jsonrpc": "2.0", "id": req_id, "error": {
-                        "code": -32602, "message": "invalid permission response: " + problem}})
-                    return
-            say("[reply %s] %s" % (rid, json.dumps(answer, sort_keys=True)))
+            methods[rid] = body["method"]
+            if step.get("nowait"):
+                continue
+            if not collect_reply(req_id, rid):
+                return
+        elif "await" in step:
+            if not collect_reply(req_id, step["await"]):
+                return
         elif "wait_cancel" in step:
             wait_for(is_cancel)
             held.append({"method": "session/cancel"})
@@ -164,6 +188,11 @@ def run_turn(req_id, steps):
         elif "end" in step:
             send({"jsonrpc": "2.0", "id": req_id, "result": {"stopReason": step["end"]}})
             return
+        elif "end_exit" in step:
+            send({"jsonrpc": "2.0", "id": req_id, "result": {"stopReason": "end_turn"}})
+            sys.stdout.flush()
+            time.sleep(0.2)
+            os._exit(step["end_exit"])
     cancelled = any(is_cancel(m) for m in held)
     held[:] = [m for m in held if not is_cancel(m)]
     send({"jsonrpc": "2.0", "id": req_id,

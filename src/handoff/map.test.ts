@@ -852,3 +852,52 @@ describe("hand-off fields are found by meaning", () => {
     expect(defaultScope({ ...withFile, planMarkdown: "# Card plan" })).toBe("plan_mode");
   });
 });
+
+describe("terminal Implementer → PR Reviewer", () => {
+  const terminal = (overrides: Partial<HandoffSource> = {}) =>
+    source({
+      sourceRoleId: "role_implementer",
+      sourceLabel: "Implementer · Login",
+      answers: {
+        taskType: "Bug Fix",
+        title: "Login 500",
+        description: "Expired tokens return 500.",
+        approvedPlan: "1. Return 401",
+      },
+      latestMessage: "",
+      fromTerminal: true,
+      selection: "",
+      terminalTail: "Done: tokens now return 401.\nOpened https://github.com/acme/app/pull/42",
+      transcriptText: "older output",
+      changes: [{ path: "src/auth.ts", additions: 4, deletions: 1 }],
+      branch: "fix/login",
+      ...overrides,
+    });
+
+  it("uses the tail or selection as the summary, plus files, branch, and PR URL", () => {
+    const mapped = mapHandoff(terminal(), "terminal_tail", {
+      roleId: "role_pr_reviewer",
+      fields: REVIEWER_FIELDS,
+    });
+    expect(mapped.answers.approvedPlan).toBe("1. Return 401");
+    expect(mapped.answers.originalTask).toContain("Title: Login 500");
+    const context = mapped.answers.additionalContext;
+    expect(context).toContain("Implementation summary:\nDone: tokens now return 401.");
+    expect(context).toContain("- src/auth.ts +4 -1");
+    expect(context).toContain("Branch: fix/login");
+    expect(context).toContain("Pull request: https://github.com/acme/app/pull/42");
+    const picked = mapHandoff(terminal({ selection: "Only this part" }), "selection", {
+      roleId: "role_pr_reviewer",
+      fields: REVIEWER_FIELDS,
+    });
+    expect(picked.answers.additionalContext).toContain("Implementation summary:\nOnly this part");
+  });
+
+  it("offers no plan file, and needs only the Implementer form to send", () => {
+    const empty = terminal({ terminalTail: "" });
+    expect(scopeChoices(empty).map((c) => c.id)).toEqual(["selection", "terminal_tail"]);
+    expect(defaultScope(empty)).toBe("terminal_tail");
+    expect(handoffBlockReason(empty)).toBeNull();
+    expect(handoffBlockReason({ ...empty, answers: {} })).toBe("There is no plan to send yet.");
+  });
+});

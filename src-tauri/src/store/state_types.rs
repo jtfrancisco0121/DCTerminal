@@ -345,6 +345,10 @@ pub struct ClosedTabRecord {
     /// Window this tab belongs to. Old files are the original window.
     #[serde(default = "default_window_id")]
     pub window_id: String,
+    /// Pipeline run of an overview or pipeline stage tab, so a reopened
+    /// overview still renders its run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pipeline_run_id: Option<String>,
 }
 
 /// Persisted tab snapshot (blueprint §17.2 `state.json`).

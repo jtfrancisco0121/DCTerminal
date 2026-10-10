@@ -22,6 +22,7 @@ import {
   releaseParkedTerminal,
   setTerminalRefitter,
   setTerminalSearchOpener,
+  terminalScrollbackText,
   terminalSelection,
   terminalTailText,
 } from "../terminal/park";
@@ -47,6 +48,8 @@ type Props = {
   /** When set, the process is `agent --resume <id>`. */
   resumeSessionId?: string | null;
   menuActions?: TerminalMenuAction[];
+  /** Right-click, before the menu shows (e.g. read a reviewer's verdict). */
+  onMenuOpen?: () => void;
 };
 
 /**
@@ -61,8 +64,16 @@ export function focusBelongsElsewhere(slot: HTMLElement): boolean {
   return !!otherPane && otherPane !== slot.closest("[data-pane]");
 }
 
-export function readTerminalHandoff(ptyId: string): { selection: string; tail: string } {
-  return { selection: terminalSelection(ptyId), tail: terminalTailText(ptyId) };
+export function readTerminalHandoff(ptyId: string): {
+  selection: string;
+  tail: string;
+  scrollback: string;
+} {
+  return {
+    selection: terminalSelection(ptyId),
+    tail: terminalTailText(ptyId),
+    scrollback: terminalScrollbackText(ptyId),
+  };
 }
 
 export function TerminalView({
@@ -76,6 +87,7 @@ export function TerminalView({
   prompt = null,
   resumeSessionId = null,
   menuActions = [],
+  onMenuOpen,
 }: Props) {
   const slotRef = useRef<HTMLDivElement>(null);
   const [exitCode, setExitCode] = useState<number | null>(livePty(ptyId)?.exitCode ?? null);
@@ -203,7 +215,10 @@ export function TerminalView({
     setFailed(null);
     const parked = ensureParkedTerminal(ptyId, fontSize);
     parked.term.reset();
+    // Same tab, same run: plan files written before the restart still count.
+    const firstStart = livePty(ptyId)?.startedAt;
     const live = beginLivePty(ptyId);
+    if (firstStart) live.startedAt = firstStart;
     void ptyOpen({
       id: ptyId,
       cwd,
@@ -224,6 +239,7 @@ export function TerminalView({
       className="terminal-view"
       onContextMenu={(event) => {
         event.preventDefault();
+        onMenuOpen?.();
         setMenu({ x: event.clientX, y: event.clientY });
       }}
     >

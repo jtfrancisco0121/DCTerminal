@@ -105,6 +105,27 @@ export function splitChainSteps(pad: string): string[] {
   return steps;
 }
 
+/**
+ * A terminal has no turn-end signal, so a `---` pad goes one step per send:
+ * the first step, and the range it takes up through its `---` line (for
+ * `padAfterSend`). Null when the pad has fewer than two steps.
+ */
+export function firstChainStep(
+  pad: string,
+): { text: string; range: { start: number; end: number } } | null {
+  if (splitChainSteps(pad).length < 2) return null;
+  const separator = /^[ \t]*-{3,}[ \t\r]*$/gm;
+  let from = 0;
+  for (let match = separator.exec(pad); match; match = separator.exec(pad)) {
+    const text = pad.slice(from, match.index).trim();
+    let end = match.index + match[0].length;
+    if (pad[end] === "\n") end += 1;
+    if (text) return { text, range: { start: 0, end } };
+    from = end;
+  }
+  return null;
+}
+
 export function chainStart(pad: string): ChainCursor | null {
   const steps = splitChainSteps(pad);
   if (steps.length === 0) return null;

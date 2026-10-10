@@ -5,6 +5,7 @@
 use crate::store::json_io::{read_json_or_recover, write_json_atomic};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -117,7 +118,18 @@ impl HandoffStore {
     }
 
     pub fn insert(&mut self, draft: NewHandoff) -> Result<HandoffRecord, String> {
-        let id = new_handoff_id();
+        self.insert_keeping(draft, &HashSet::new())
+    }
+
+    /// Insert, then trim to `MAX_HANDOFFS` without dropping a record whose
+    /// target tab is in `live_tabs` (open or reopenable): that tab still
+    /// reads its hand-off back.
+    pub fn insert_keeping(
+        &mut self,
+        draft: NewHandoff,
+        live_tabs: &HashSet<String>,
+    ) -> Result<HandoffRecord, String> {
+        let id = self.unused_id();
         let original_chars = char_len(&draft.plan_text);
         let mut truncated = draft.truncated;
         let mut warning = draft.warning;
@@ -161,9 +173,23 @@ impl HandoffStore {
             chain: draft.chain,
         };
         self.data.handoffs.push(record.clone());
-        self.drop_oldest();
+        self.drop_oldest(live_tabs);
         self.save()?;
         Ok(record)
+    }
+
+    /// A fresh id no record or sidecar file uses yet.
+    fn unused_id(&self) -> String {
+        let base = new_handoff_id();
+        let mut id = base.clone();
+        let mut n = 1;
+        while self.data.handoffs.iter().any(|item| item.id == id)
+            || self.plans_dir.join(format!("{id}.txt")).exists()
+        {
+            id = format!("{base}_{n}");
+            n += 1;
+        }
+        id
     }
 
     pub fn bind_target(&mut self, id: &str, tab_id: &str) -> Result<HandoffRecord, String> {
@@ -213,13 +239,29 @@ impl HandoffStore {
             .cloned()
     }
 
-    fn drop_oldest(&mut self) {
-        while self.data.handoffs.len() > MAX_HANDOFFS {
-            let old = self.data.handoffs.remove(0);
-            if let Some(file_name) = old.plan_file {
-                if safe_plan_file_name(&file_name) {
-                    let _ = std::fs::remove_file(self.plans_dir.join(file_name));
-                }
+    fn drop_oldest(&mut self, live_tabs: &HashSet<String>) {
+        let mut excess = self.data.handoffs.len().saturating_sub(MAX_HANDOFFS);
+        if excess == 0 {
+            return;
+        }
+        let bound_to_live = |item: &HandoffRecord| {
+            item.target_tab_id
+                .as_ref()
+                .is_some_and(|tab| live_tabs.contains(tab))
+        };
+        let mut dropped = Vec::new();
+        self.data.handoffs.retain(|item| {
+            if excess > 0 && !bound_to_live(item) {
+                excess -= 1;
+                dropped.push(item.plan_file.clone());
+                false
+            } else {
+                true
+            }
+        });
+        for file_name in dropped.into_iter().flatten() {
+            if safe_plan_file_name(&file_name) {
+                let _ = std::fs::remove_file(self.plans_dir.join(file_name));
             }
         }
     }
@@ -253,13 +295,8 @@ mod tests {
     use super::*;
 
     fn dir() -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let path = crate::test_support::test_root().join(format!("dcterminal_handoff_{nanos}"));
-        std::fs::create_dir_all(&path).unwrap();
-        path
+        // Unique per call: two tests in the same microsecond must not share it.
+        crate::test_support::temp_path("dcterminal_handoff")
     }
 
     fn draft(plan: &str) -> NewHandoff {
@@ -349,6 +386,38 @@ mod tests {
         assert_eq!(store.list()[0].title, format!("Plan {}", MAX_HANDOFFS));
         let file_name = first_file.expect("first sidecar");
         assert!(!store.plans_dir.join(file_name).exists());
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn the_cap_never_drops_a_record_a_live_tab_is_bound_to() {
+        let path = dir();
+        let mut store = HandoffStore::open(&path).unwrap();
+        let mut first = draft(&"z".repeat(JSON_PLAN_CHARS + 1));
+        first.title = "bound".into();
+        let bound = store.insert(first).unwrap();
+        store.bind_target(&bound.id, "tab_live").unwrap();
+        let live = HashSet::from(["tab_live".to_string()]);
+        let mut ids = HashSet::new();
+        for index in 0..(MAX_HANDOFFS + 5) {
+            let mut item = draft("short");
+            item.title = format!("Plan {index}");
+            let saved = store.insert_keeping(item, &live).unwrap();
+            assert!(ids.insert(saved.id), "ids are unique");
+        }
+        assert_eq!(store.data.handoffs.len(), MAX_HANDOFFS);
+        let kept = store.get(&bound.id).unwrap().expect("bound record kept");
+        assert_eq!(kept.target_tab_id.as_deref(), Some("tab_live"));
+        assert_eq!(kept.plan_text.chars().count(), JSON_PLAN_CHARS + 1, "sidecar kept");
+        assert_eq!(store.for_target_tab("tab_live").unwrap().id, bound.id);
+        // The oldest unbound ones went instead.
+        assert!(store.list().iter().all(|item| item.title != "Plan 0"));
+
+        // Once its tab is gone, it is dropped like any other.
+        store.insert_keeping(draft("one more"), &HashSet::new()).unwrap();
+        assert!(store.get(&bound.id).unwrap().is_none());
+        let sidecar = kept.plan_file.expect("sidecar name");
+        assert!(!store.plans_dir.join(sidecar).exists());
         let _ = std::fs::remove_dir_all(path);
     }
 

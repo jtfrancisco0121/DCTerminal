@@ -3,7 +3,7 @@
  * of tabs, runtimes, and open terminals; nothing here starts or sends.
  */
 import type { PipelineRun, TabSummary } from "../bridge";
-import { latestAgentMessage, splitPlanReview } from "../handoff/map";
+import { latestAgentMessage, latestReplyText, splitPlanReview } from "../handoff/map";
 import { isReviewerRole, parseReviewVerdict, type ReviewVerdict } from "../handoff/verdict";
 import type { TabRuntime } from "../liveTabs";
 import { segmentsToPlainText } from "../transcript";
@@ -36,7 +36,9 @@ export function stageReply(
 ): string {
   if (!tab) return "";
   if (isTerminal(tab)) return reader.tail(tab.id).trim();
-  return latestAgentMessage(rt?.segments.map((s) => ({ kind: s.kind, text: s.text })) ?? []);
+  const segments = rt?.segments.map((s) => ({ kind: s.kind, text: s.text })) ?? [];
+  // Same reply the tab's hand-off reads, so the verdicts agree.
+  return tab.roleId === "role_implementer" ? latestAgentMessage(segments) : latestReplyText(segments);
 }
 
 export type StageView = {

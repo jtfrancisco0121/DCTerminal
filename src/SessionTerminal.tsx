@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -85,8 +86,15 @@ const markdownComponents: Components = {
   ),
 };
 
+/** Where each tab's transcript was scrolled, kept across tab switches. */
+const savedScroll = new Map<string, { top: number; stick: boolean }>();
+/** Within this many pixels of the end counts as "at the bottom". */
+const STICK_PX = 48;
+
 type Props = {
   title: string;
+  /** The tab shown; its scroll position is kept when another tab is shown. */
+  scrollKey?: string | null;
   cwd: string;
   sessionId: string;
   segments: StreamSegment[];
@@ -153,6 +161,7 @@ function folderName(path: string): string {
 
 export function SessionTerminal({
   title,
+  scrollKey = null,
   cwd,
   sessionId,
   segments,
@@ -203,13 +212,35 @@ export function SessionTerminal({
   const findOpenRef = useRef(findOpen);
   findOpenRef.current = findOpen;
 
-  useEffect(() => {
-    // Reading search results must not be yanked back to the bottom.
-    if (findOpenRef.current) return;
+  // Follow new output only while the reader is at the bottom; a tab switch
+  // brings back where that tab was left. A new turn returns to the bottom.
+  const stickRef = useRef(true);
+  const shownKeyRef = useRef<string | null>(null);
+  const inFlightRef = useRef(promptInFlight);
+  useLayoutEffect(() => {
     const el = screenRef.current;
     if (!el) return;
+    const key = scrollKey ?? null;
+    if (key !== shownKeyRef.current) {
+      shownKeyRef.current = key;
+      const saved = key ? savedScroll.get(key) : undefined;
+      stickRef.current = !saved || saved.stick;
+      if (saved && !saved.stick) el.scrollTop = saved.top;
+    }
+    if (promptInFlight && !inFlightRef.current) stickRef.current = true;
+    inFlightRef.current = promptInFlight;
+    // Reading search results must not be yanked back to the bottom.
+    if (findOpenRef.current || !stickRef.current) return;
     el.scrollTop = el.scrollHeight;
-  }, [segments, promptInFlight]);
+  }, [segments, promptInFlight, scrollKey]);
+
+  const rememberScroll = () => {
+    const el = screenRef.current;
+    if (!el) return;
+    const stick = el.scrollHeight - el.scrollTop - el.clientHeight < STICK_PX;
+    stickRef.current = stick;
+    if (scrollKey) savedScroll.set(scrollKey, { top: el.scrollTop, stick });
+  };
 
   const requestNonce = findRequest?.nonce;
   useEffect(() => {
@@ -462,7 +493,13 @@ export function SessionTerminal({
       )}
 
       <div className="session-terminal-screen-wrap">
-        <div ref={screenRef} className="session-terminal-screen" data-session-screen role="log">
+        <div
+          ref={screenRef}
+          className="session-terminal-screen"
+          data-session-screen
+          role="log"
+          onScroll={rememberScroll}
+        >
           {!hasContent && promptInFlight && (
             <p className="session-terminal-placeholder">Agent is thinking…</p>
           )}

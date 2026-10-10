@@ -295,6 +295,26 @@ impl StateStore {
             .map(|tab| tab.id.as_str())
             .chain(self.data.closed_tabs.iter().map(|tab| tab.id.as_str()))
             .collect();
+        // A tab can still be on a run that no longer lists it (a loop-back
+        // put a newer tab in its stage slot), or point at it as its overview.
+        let referenced: HashSet<&str> = self
+            .data
+            .tabs
+            .iter()
+            .flat_map(|tab| {
+                [
+                    tab.chain.as_ref().map(|chain| chain.chain_id.as_str()),
+                    tab.pipeline_run_id.as_deref(),
+                ]
+            })
+            .chain(self.data.closed_tabs.iter().flat_map(|tab| {
+                [
+                    tab.chain.as_ref().map(|chain| chain.chain_id.as_str()),
+                    tab.pipeline_run_id.as_deref(),
+                ]
+            }))
+            .flatten()
+            .collect();
         let mut order: Vec<(usize, i64)> = self
             .data
             .pipeline_runs
@@ -315,6 +335,11 @@ impl StateStore {
             .enumerate()
             .map(|(i, run)| {
                 recent.contains(&i)
+                    || referenced.contains(run.id.as_str())
+                    || run
+                        .chain_id
+                        .as_deref()
+                        .is_some_and(|id| referenced.contains(id))
                     || tab_ids.contains(run.overview_tab_id.as_str())
                     || run.tab_ids.values().any(|id| tab_ids.contains(id.as_str()))
             })
@@ -586,6 +611,147 @@ mod tests {
         assert!(store.pipeline_run_by_id("run_0").is_some());
         assert!(store.pipeline_run_by_id(&format!("run_{}", KEEP_RECENT_RUNS + 4)).is_none());
         assert!(!store.prune_pipeline_runs());
+    }
+
+    /// A Planner and Plan Reviewer on `ee_p`, reviewed once (round 2, one
+    /// verdict), the Planner running with an ACP session. Saved.
+    fn reviewed_chain(name: &str) -> (StateStore, String, String) {
+        let mut store = store(name);
+        let planner = store
+            .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
+            .unwrap();
+        let reviewer = store
+            .create_draft_tab(&role("role_plan_reviewer"), "/tmp/p", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&planner, Some(chain("ee_p", "eagle1", 1)), None)
+            .unwrap();
+        store
+            .set_tab_chain(&reviewer, Some(chain("ee_p", "eagle1", 2)), Some("the plan"))
+            .unwrap();
+        store
+            .chain_loop_back("ee_p", "role_plan_reviewer", &planner, Some("REVISE"), Some("fix"))
+            .unwrap();
+        store
+            .promote_tab_to_running(
+                Some(&planner),
+                &role("role_planner"),
+                &HashMap::from([("cwd".to_string(), "/tmp/p".to_string())]),
+                "/tmp/p",
+                "prompt",
+                crate::store::TabSessionRef {
+                    acp_session_id: "sess-planner".into(),
+                    mode_id: "plan".into(),
+                    injection_pending: false,
+                    injected_at: None,
+                },
+                crate::provider::ProviderId::Claude,
+            )
+            .unwrap();
+        (store, planner, reviewer)
+    }
+
+    fn assert_chain_intact(store: &StateStore, planner: &str, reviewer: &str) {
+        let tab = store.tab_by_id(planner).expect("planner tab");
+        let tag = tab.chain.as_ref().expect("chain tag");
+        assert_eq!((tag.chain_id.as_str(), tag.step, tag.round), ("ee_p", 1, 2));
+        // Continue (session/load) needs the ACP session id after a restart.
+        assert_eq!(
+            tab.session.as_ref().map(|s| s.acp_session_id.as_str()),
+            Some("sess-planner")
+        );
+        assert_eq!(store.tab_by_id(reviewer).unwrap().chain.as_ref().unwrap().round, 2);
+        let run = store.pipeline_run_by_id("ee_p").expect("run");
+        assert_eq!(run.round, 2);
+        assert_eq!(run.verdicts.len(), 1);
+        assert_eq!(run.verdicts[0].verdict.as_deref(), Some("REVISE"));
+        assert_eq!(run.handoffs["role_plan_reviewer"].text, "the plan");
+    }
+
+    #[test]
+    fn chain_tags_rounds_and_verdicts_survive_restart_corruption_and_a_lost_file() {
+        let (mut store, planner, reviewer) = reviewed_chain("persist");
+        let path = store.path.clone();
+
+        // App restart: running tabs become idle, the chain and session stay.
+        let mut reopened = StateStore::open_path(path.clone()).unwrap();
+        reopened.reconcile_stale_running_tabs().unwrap();
+        assert_eq!(reopened.tab_by_id(&planner).unwrap().phase, "awaitingInput");
+        assert_chain_intact(&reopened, &planner, &reviewer);
+
+        // One more save so state.json.bak holds the reviewed chain too.
+        store.save().unwrap();
+        std::fs::write(&path, b"{\"schemaVersion\": 1, \"tabs\": [").unwrap();
+        let recovered = StateStore::open_path(path.clone()).unwrap();
+        assert_chain_intact(&recovered, &planner, &reviewer);
+
+        // The damaged file was moved aside. Quitting before any save must
+        // not leave the next start with an empty state.
+        assert!(!path.exists());
+        let again = StateStore::open_path(path.clone()).unwrap();
+        assert_chain_intact(&again, &planner, &reviewer);
+
+        // A save interrupted after the new copy was written but before it
+        // was renamed in: the finished `.tmp` is the newest state.
+        let mut newer = again;
+        newer.set_tab_label(&planner, "Renamed").unwrap();
+        std::fs::rename(&path, path.with_extension("json.tmp")).unwrap();
+        let from_tmp = StateStore::open_path(path.clone()).unwrap();
+        assert_eq!(from_tmp.tab_by_id(&planner).unwrap().label, "Renamed");
+        assert_chain_intact(&from_tmp, &planner, &reviewer);
+    }
+
+    #[test]
+    fn closing_chained_tabs_keeps_the_run_and_a_reopened_overview_still_renders() {
+        let (mut store, planner, reviewer) = reviewed_chain("close");
+        let overview = store.open_chain_overview("ee_p").unwrap();
+        store.close_tab(&reviewer).unwrap();
+        store.close_tab(&overview).unwrap();
+        let run = store.pipeline_run_by_id("ee_p").expect("run kept");
+        assert_eq!(run.tab_ids.get("role_plan_reviewer"), Some(&reviewer));
+        assert!(store.tab_by_id(&planner).is_some());
+
+        let reopened = store.reopen_closed_id(Some(&overview), None).unwrap();
+        assert_eq!(reopened.kind, "pipeline_overview");
+        assert_eq!(reopened.pipeline_run_id.as_deref(), Some("ee_p"));
+        let reviewer_back = store.reopen_closed_id(Some(&reviewer), None).unwrap();
+        assert_eq!(reviewer_back.chain.as_ref().map(|c| c.round), Some(2));
+
+        // After a restart too.
+        store.close_tab(&overview).unwrap();
+        let mut loaded = StateStore::open_path(store.path.clone()).unwrap();
+        let again = loaded.reopen_closed_id(Some(&overview), None).unwrap();
+        assert_eq!(again.pipeline_run_id.as_deref(), Some("ee_p"));
+    }
+
+    #[test]
+    fn prune_never_drops_a_run_a_tab_still_points_at() {
+        let mut store = store("prune_refs");
+        // Only a chain tag points at this run (its stage slot moved on to a
+        // tab that has since gone).
+        let tagged = store
+            .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
+            .unwrap();
+        store.data.tabs[0].chain = Some(chain("ee_tagged", "eagle1", 1));
+        let mut by_tag = old_run("ee_tagged", "tab_gone", 500);
+        by_tag.chain_id = Some("ee_tagged".into());
+        store.data.pipeline_runs.push(by_tag);
+        // Only a closed overview tab points at this one.
+        store.data.pipeline_runs.push(old_run("run_overview", "tab_gone2", 500));
+        let overview = store
+            .create_pipeline_overview_tab("/tmp/p", "run_overview", "Pipeline · Plan")
+            .unwrap();
+        store.close_tab(&overview).unwrap();
+        for i in 0..KEEP_RECENT_RUNS + 3 {
+            store
+                .data
+                .pipeline_runs
+                .push(old_run(&format!("run_{i}"), "gone", i as i64 + 1));
+        }
+        assert!(store.prune_pipeline_runs());
+        assert!(store.pipeline_run_by_id("ee_tagged").is_some(), "tab {tagged} is on it");
+        assert!(store.pipeline_run_by_id("run_overview").is_some());
+        assert_eq!(store.data.pipeline_runs.len(), KEEP_RECENT_RUNS + 2);
     }
 
     #[test]

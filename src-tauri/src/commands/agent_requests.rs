@@ -216,30 +216,91 @@ pub(crate) fn reject_option_id(params: &Value) -> Option<String> {
 /// Plan markdown from ExitPlanMode. The adapter's field is unverified on a
 /// Mac; this reads `toolCall.rawInput.plan` (string or JSON), then content.
 pub fn exit_plan_markdown(params: &Value) -> String {
+    exit_plan_body(params).unwrap_or_else(|| {
+        params
+            .get("toolCall")
+            .and_then(|call| call.get("title"))
+            .and_then(Value::as_str)
+            .unwrap_or("Plan")
+            .to_string()
+    })
+}
+
+/// The plan text ExitPlanMode carries itself, if any: `rawInput.plan`, then
+/// the tool content (a string, or ACP content blocks).
+pub fn exit_plan_body(params: &Value) -> Option<String> {
     let call = params.get("toolCall").unwrap_or(&Value::Null);
     let raw = call.get("rawInput").unwrap_or(&Value::Null);
     if let Some(plan) = raw.get("plan").or_else(|| params.get("plan")) {
         if let Some(text) = plan.as_str() {
             if !text.trim().is_empty() {
-                return text.to_string();
+                return Some(text.to_string());
             }
-        } else if !plan.is_null() {
+        } else if !plan.is_null() && !is_empty_json(plan) {
             if let Ok(text) = serde_json::to_string_pretty(plan) {
-                if text != "null" {
-                    return text;
-                }
+                return Some(text);
             }
         }
     }
-    if let Some(text) = call.get("content").and_then(Value::as_str) {
-        if !text.trim().is_empty() {
-            return text.to_string();
+    match call.get("content") {
+        Some(Value::String(text)) if !text.trim().is_empty() => Some(text.clone()),
+        Some(Value::Array(blocks)) => {
+            let text = blocks
+                .iter()
+                .filter_map(|block| {
+                    block
+                        .pointer("/content/text")
+                        .or_else(|| block.get("text"))
+                        .and_then(Value::as_str)
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            (!text.trim().is_empty()).then_some(text)
+        }
+        _ => None,
+    }
+}
+
+fn is_empty_json(value: &Value) -> bool {
+    match value {
+        Value::Object(map) => map.is_empty(),
+        Value::Array(items) => items.is_empty(),
+        _ => false,
+    }
+}
+
+/// Largest plan file read back for a plan card.
+const PLAN_FILE_MAX_BYTES: u64 = 2 * 1024 * 1024;
+
+/// The plan file behind an ExitPlanMode: named in its input, else the
+/// newest plan file a tool wrote in this session.
+pub(crate) fn exit_plan_file(params: &Value, cache: &ToolCallCache) -> Option<String> {
+    params
+        .get("toolCall")
+        .and_then(crate::permissions::plan_file_in_update)
+        .or_else(|| cache.last_plan_file().map(str::to_string))
+}
+
+/// Read a plan file for the card (read-only). Only `*/plans/*.md`, under
+/// the provider's plans folder when it has one, and at most 2 MB.
+pub(crate) fn read_plan_file(path: &str, plans_dir: Option<&std::path::Path>) -> Option<String> {
+    if !crate::permissions::is_plan_file_path(path) {
+        return None;
+    }
+    let file = std::path::Path::new(path).canonicalize().ok()?;
+    if let Some(dir) = plans_dir {
+        let dir = dir.canonicalize().ok()?;
+        if !file.starts_with(&dir) {
+            return None;
         }
     }
-    call.get("title")
-        .and_then(Value::as_str)
-        .unwrap_or("Plan")
-        .to_string()
+    let meta = std::fs::metadata(&file).ok()?;
+    if !meta.is_file() || meta.len() > PLAN_FILE_MAX_BYTES {
+        return None;
+    }
+    std::fs::read_to_string(&file)
+        .ok()
+        .filter(|text| !text.trim().is_empty())
 }
 
 fn stage_exit_plan_request(
@@ -254,9 +315,8 @@ fn stage_exit_plan_request(
         .and_then(Value::as_u64)
         .ok_or_else(|| "plan request missing id".to_string())?;
     let params = request.get("params").cloned().unwrap_or(Value::Null);
-    let markdown = exit_plan_markdown(&params);
     let reject = reject_option_id(&params);
-    {
+    let (plan_path, plans_dir) = {
         let mut guard = state.lock().map_err(|e| e.to_string())?;
         let Some(session) = guard.get_mut(tab_id) else {
             return Ok(Some(cancelled_permission_result()));
@@ -267,7 +327,20 @@ fn stage_exit_plan_request(
                 reject_option_id: reject.clone(),
             },
         );
-    }
+        (
+            exit_plan_file(&params, &session.tool_call_cache),
+            session.provider.plans_dir(),
+        )
+    };
+    // Newer Claude Code keeps the plan in `<configDir>/plans/*.md` and can
+    // send ExitPlanMode with an empty `plan`; the card then reads the file.
+    let markdown = exit_plan_body(&params)
+        .or_else(|| {
+            plan_path
+                .as_deref()
+                .and_then(|path| read_plan_file(path, plans_dir.as_deref()))
+        })
+        .unwrap_or_else(|| exit_plan_markdown(&params));
     let _ = app.emit(
         PLAN_REQUEST_EVENT,
         PlanRequestEvent {
@@ -282,6 +355,7 @@ fn stage_exit_plan_request(
             }],
             markdown: Some(markdown),
             keep_option_id: reject,
+            plan_path,
         },
     );
     Ok(None)
@@ -503,6 +577,10 @@ pub struct PlanRequestEvent {
     /// Reject / keep-planning option. Selecting it never approves the plan.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_option_id: Option<String>,
+    /// Plan file behind a Claude ExitPlanMode (`<configDir>/plans/*.md`),
+    /// when one was named or written this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_path: Option<String>,
 }
 
 pub fn stage_plan_request(
@@ -543,6 +621,7 @@ pub fn stage_plan_request(
             entries,
             markdown: None,
             keep_option_id: None,
+            plan_path: None,
         },
     );
     Ok(None)

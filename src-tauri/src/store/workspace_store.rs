@@ -278,13 +278,8 @@ mod tests {
     use super::*;
 
     fn dir() -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let path = crate::test_support::test_root().join(format!("dcterminal_workspaces_{nanos}"));
-        std::fs::create_dir_all(&path).unwrap();
-        path
+        // Unique per call: two tests in the same microsecond must not share it.
+        crate::test_support::temp_path("dcterminal_workspaces")
     }
 
     pub(crate) fn tab(label: &str, role: &str, cwd: &str, kind: &str) -> WorkspaceTab {

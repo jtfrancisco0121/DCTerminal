@@ -838,7 +838,9 @@ describe("Report → Planner", () => {
     expect(mapped.answers.taskType).toBeUndefined();
     const summary = handoffFillSummary(mapped, PLANNER);
     expect(summary.missing).toEqual(["Task Type"]);
-    expect(handoffStartProblem(summary, "Planner")).toBe("The Planner form still needs: Task Type.");
+    expect(handoffStartProblem(summary, "Planner")).toBe(
+      "The Planner terminal cannot start: Task Type is required. Open it as Chat to fill these in.",
+    );
   });
 
   it.each(["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"])("[%s] severity is not part of the title", (severity) => {
