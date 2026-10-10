@@ -1,6 +1,7 @@
 /**
  * The one hand-off transition table. Every "Send to …" button, dialog
  * target list, terminal menu item, and palette command reads from here.
+ * A role's own `handoffTargets` (Settings > Roles) replaces its row.
  *
  * Eagle-Eye 1: Planner → Plan Reviewer → Implementer → PR Reviewer
  * Eagle-Eye 2: Implementer → PR Reviewer
@@ -42,14 +43,27 @@ export const BUILT_IN_ROLE_NAMES: Readonly<Record<string, string>> = {
   role_codebase_audit: "Codebase Audit",
 };
 
-export type RoleName = { id: string; name: string };
+/**
+ * A loaded role. `handoffTargets` is set when the role's targets are data
+ * (edited in Settings > Roles, or a custom role); missing means the table above.
+ */
+export type RoleName = { id: string; name: string; handoffTargets?: readonly string[] | null };
 
-export function handoffTargets(sourceRoleId: string): HandoffTargetId[] {
+/**
+ * Where a role may hand off: the loaded role's own `handoffTargets` when it
+ * has them, else the built-in table. Unknown roles have no targets.
+ */
+export function handoffTargets(
+  sourceRoleId: string,
+  roles?: readonly RoleName[] | null,
+): HandoffTargetId[] {
+  const own = roles?.find((role) => role.id === sourceRoleId)?.handoffTargets;
+  if (own) return own.filter((id) => id !== sourceRoleId);
   return [...(HANDOFF_TRANSITIONS[sourceRoleId] ?? [])];
 }
 
-export function isHandoffSource(sourceRoleId: string): boolean {
-  return handoffTargets(sourceRoleId).length > 0;
+export function isHandoffSource(sourceRoleId: string, roles?: readonly RoleName[] | null): boolean {
+  return handoffTargets(sourceRoleId, roles).length > 0;
 }
 
 export function isPlanSource(roleId: string): boolean {
@@ -65,8 +79,12 @@ export function isCaptureSource(roleId: string): boolean {
   return isPlanSource(roleId) || isReportSource(roleId);
 }
 
-export function isValidTransition(sourceRoleId: string, targetRoleId: string): boolean {
-  return handoffTargets(sourceRoleId).includes(targetRoleId);
+export function isValidTransition(
+  sourceRoleId: string,
+  targetRoleId: string,
+  roles?: readonly RoleName[] | null,
+): boolean {
+  return handoffTargets(sourceRoleId, roles).includes(targetRoleId);
 }
 
 /** Role name from the loaded roles, then the built-in names, then "role". */
@@ -81,7 +99,7 @@ export function handoffMenuItems(
   sourceRoleId: string,
   roles?: readonly RoleName[] | null,
 ): { target: HandoffTargetId; label: string }[] {
-  return handoffTargets(sourceRoleId).map((target) => ({
+  return handoffTargets(sourceRoleId, roles).map((target) => ({
     target,
     label: `Send to ${roleDisplayName(target, roles)}`,
   }));

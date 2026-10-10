@@ -43,6 +43,7 @@ pub fn build_role_from_markdown(spec: &RoleSeedSpec, markdown: &str) -> Role {
         is_built_in: true,
         fields: spec.fields.clone(),
         updated_at: None,
+        handoff_targets: None,
     }
 }
 

@@ -644,3 +644,41 @@ describe("handoff mapping", () => {
     });
   });
 });
+
+describe("hand-offs into and out of custom roles", () => {
+  const CUSTOM_ID = "role_custom_ab12cd34ef56";
+
+  it("maps a plan onto a custom role's fields by the usual keys", () => {
+    const mapped = mapHandoff(source(), "plan_and_todos", {
+      roleId: CUSTOM_ID,
+      fields: [{ key: "title" }, { key: "task" }, { key: "plan" }, { key: "notes" }],
+    });
+    expect(mapped.answers.title).toBe("Login 500");
+    expect(mapped.answers.task).toBe("Expired tokens return 500.");
+    expect(mapped.answers.plan).toContain("Check the token expiry path.");
+    expect(mapped.answers.notes).toContain("Expected behavior:\nReturn 401.");
+    expect(mapped.planField).toBe("plan");
+    expect(mapped.usesScratchPad).toBe(false);
+  });
+
+  it("falls back to the scratch pad when the custom role has no plan field", () => {
+    const mapped = mapHandoff(source(), "message", {
+      roleId: CUSTOM_ID,
+      fields: [{ key: "title" }, { key: "request" }],
+    });
+    expect(mapped.answers.request).toBe("Expired tokens return 500.");
+    expect(mapped.planField).toBeNull();
+    expect(mapped.usesScratchPad).toBe(true);
+    expect(mapped.inlinePlan).toContain("Check the token expiry path.");
+  });
+
+  it("a custom source role can hand off once it has targets as data", () => {
+    const custom = source({ sourceRoleId: CUSTOM_ID, answers: {} });
+    expect(handoffBlockReason(custom)).toMatch(/no hand-off targets/);
+    const roles = [{ id: CUSTOM_ID, name: "Docs", handoffTargets: ["role_developer"] }];
+    expect(handoffBlockReason(custom, roles)).toBeNull();
+    expect(handoffBlockReason({ ...custom, turnInFlight: true }, roles)).toBe(
+      "Wait until the Docs finishes this turn.",
+    );
+  });
+});

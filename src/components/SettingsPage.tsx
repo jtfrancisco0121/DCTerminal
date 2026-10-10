@@ -1,9 +1,6 @@
 import { useEffect, useState } from "react";
 import {
   getClaudeUsage,
-  getRole,
-  resetBuiltinRole,
-  saveRole,
   type UsageSnapshot,
   type ApprovalModeStatus,
   type CliDetectResult,
@@ -11,7 +8,6 @@ import {
   type ModelList,
   type ModelSettings,
   type ProviderModelSettings,
-  type Role,
   type RoleSummary,
   type TerminalSettings,
   type UiSettings,
@@ -27,7 +23,8 @@ import { StorageRow } from "./StorageRow";
 import type { ProvidersState } from "../provider/useProviders";
 import type { NotificationSettings } from "../notify/agentNotify";
 import { formatReset, formatSeen, isStale, limitTone } from "../usage/limits";
-import { APP_VERSION, rolePermissionSummary } from "../workspaceView";
+import { APP_VERSION } from "../workspaceView";
+import { RoleEditor } from "./RoleEditor";
 
 type Props = {
   roles: RoleSummary[];
@@ -112,11 +109,6 @@ export function SettingsPage({
   onClose,
 }: Props) {
   const [category, setCategory] = useState<SettingsCategory>(initialCategory);
-  const [selectedId, setSelectedId] = useState(roles[0]?.id ?? "");
-  const [detail, setDetail] = useState<Role | null>(null);
-  const [editTemplate, setEditTemplate] = useState("");
-  const [roleBusy, setRoleBusy] = useState(false);
-  const [roleMessage, setRoleMessage] = useState<string | null>(null);
   const [usage, setUsage] = useState<UsageSnapshot | null>(null);
   const [usageError, setUsageError] = useState<string | null>(null);
   const rows = shortcutRows(platform);
@@ -135,59 +127,6 @@ export function SettingsPage({
       cancelled = true;
     };
   }, [category]);
-
-  useEffect(() => {
-    if (!selectedId) return;
-    let cancelled = false;
-    getRole(selectedId)
-      .then((role) => {
-        if (!cancelled) {
-          setDetail(role);
-          setEditTemplate(role.templateText);
-          setRoleMessage(null);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setDetail(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedId]);
-
-  const saveRoleTemplate = async () => {
-    if (!detail) return;
-    setRoleBusy(true);
-    setRoleMessage(null);
-    try {
-      const updated = await saveRole({ roleId: detail.id, templateText: editTemplate });
-      setDetail(updated);
-      setEditTemplate(updated.templateText);
-      setRoleMessage("Saved.");
-      await onRefreshRoles?.();
-    } catch (err: unknown) {
-      setRoleMessage(err instanceof Error ? err.message : String(err));
-    } finally {
-      setRoleBusy(false);
-    }
-  };
-
-  const resetRoleTemplate = async () => {
-    if (!detail?.isBuiltIn) return;
-    setRoleBusy(true);
-    setRoleMessage(null);
-    try {
-      const updated = await resetBuiltinRole(detail.id);
-      setDetail(updated);
-      setEditTemplate(updated.templateText);
-      setRoleMessage("Reset to built-in template.");
-      await onRefreshRoles?.();
-    } catch (err: unknown) {
-      setRoleMessage(err instanceof Error ? err.message : String(err));
-    } finally {
-      setRoleBusy(false);
-    }
-  };
 
   return (
     <div className="settings-page">
@@ -213,71 +152,7 @@ export function SettingsPage({
           ))}
         </nav>
         <div className="settings-content">
-          {category === "Roles" && (
-            <section className="settings-section" aria-label="Roles">
-              <h3>Roles</h3>
-              <ul className="settings-role-list">
-                {roles.map((role) => (
-                  <li key={role.id}>
-                    <button
-                      type="button"
-                      className={
-                        role.id === selectedId ? "settings-role settings-role-active" : "settings-role"
-                      }
-                      onClick={() => setSelectedId(role.id)}
-                    >
-                      <span className="role-dot" style={{ background: role.color }} aria-hidden />
-                      <span>{role.name}</span>
-                      <span className="hint">
-                        {role.defaultMode} · {role.fieldCount} fields
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-              {detail && (
-                <div className="settings-role-detail">
-                  <p>
-                    <strong>{detail.name}</strong> · {detail.defaultMode} · {detail.fields.length}{" "}
-                    fields
-                  </p>
-                  <p className="hint">{rolePermissionSummary(detail.id)}</p>
-                  <label className="field-label" htmlFor="settings-role-template">
-                    Role template
-                  </label>
-                  <textarea
-                    id="settings-role-template"
-                    className="settings-role-template"
-                    rows={14}
-                    value={editTemplate}
-                    disabled={roleBusy}
-                    onChange={(event) => setEditTemplate(event.target.value)}
-                  />
-                  <div className="button-row">
-                    <button
-                      type="button"
-                      className="primary-button"
-                      disabled={roleBusy}
-                      onClick={() => void saveRoleTemplate()}
-                    >
-                      {roleBusy ? "Saving…" : "Save template"}
-                    </button>
-                    {detail.isBuiltIn && (
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        disabled={roleBusy}
-                        onClick={() => void resetRoleTemplate()}
-                      >
-                        Reset built-in
-                      </button>
-                    )}
-                  </div>
-                  {roleMessage && <p className="hint">{roleMessage}</p>}
-                </div>
-              )}
-            </section>
-          )}
+          {category === "Roles" && <RoleEditor roles={roles} onRefreshRoles={onRefreshRoles} />}
           {category === "Providers" &&
             (providers ? (
               <ProvidersSettingsSection providers={providers} />

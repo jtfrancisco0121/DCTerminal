@@ -22,6 +22,10 @@ pub struct Role {
     pub fields: Vec<RoleField>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
+    /// Roles this role may hand off to. Missing on built-ins and on older
+    /// roles.json files: the UI then uses its built-in transition table.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_targets: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

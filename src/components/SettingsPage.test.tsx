@@ -16,6 +16,7 @@ vi.mock("../bridge", () => ({
     isBuiltIn: true,
     fields: [],
   })),
+  previewRoleTemplate: vi.fn(async () => ({ fields: [], error: null })),
   getClaudeUsage: vi.fn(async () => ({
     configDir: "/tmp/claude",
     windows: [],

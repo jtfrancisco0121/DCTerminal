@@ -53,6 +53,7 @@ pub use providers::{
 };
 pub use role_session::role_session_start;
 pub use roles::{get_role, list_roles, reset_builtin_role, save_role, validate_and_preview};
+pub use roles::{create_role, delete_role, duplicate_role, export_role, import_role, preview_role_template};
 pub use setup::{first_run_complete, first_run_status, provider_status};
 pub use storage::{storage_cleanup, storage_status};
 pub use workspace::{

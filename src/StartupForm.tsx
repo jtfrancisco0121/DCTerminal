@@ -2872,7 +2872,7 @@ export function StartupForm({
     activeTabSummary.terminalLaunch === "role" &&
     isCaptureSource(activeTabSummary.roleId);
   const planTerminalTargets: HandoffTargetId[] = isPlanTerminal
-    ? handoffTargets(activeTabSummary.roleId)
+    ? handoffTargets(activeTabSummary.roleId, roles)
     : [];
 
   const openTerminalHandoff = useCallback(
@@ -2989,13 +2989,13 @@ export function StartupForm({
     values,
   ]);
 
-  const handoffBlock = handoffBlockReason({ ...handoffSource, selection: "" });
+  const handoffBlock = handoffBlockReason({ ...handoffSource, selection: "" }, roles);
   const handoffOffer =
-    session && isHandoffSource(roleId)
+    session && isHandoffSource(roleId, roles)
       ? {
           enabled: handoffBlock === null,
           reason: handoffBlock,
-          targets: handoffTargets(roleId),
+          targets: handoffTargets(roleId, roles),
           primaryTarget: activeTabSummary?.chain
             ? nextChainRole(activeTabSummary.chain, roleId)
             : null,
@@ -3443,6 +3443,10 @@ export function StartupForm({
     }
     if (route.kind === "model") {
       runPaletteModel(route.model);
+      return;
+    }
+    if (route.kind === "handoff") {
+      openHandoffDialog(route.roleId);
       return;
     }
     runPaletteAction(route.id);
@@ -4042,7 +4046,10 @@ export function StartupForm({
           gridOpen={gridOpen(split)}
           canAddToGrid={gridCandidates.length > 0 && (!gridOpen(split) || (split.gridTabIds?.length ?? 0) < GRID_MAX_TABS)}
           canSendPlan={(isCaptureSource(roleId) && !!session) || !!isPlanTerminal}
-          sendPlanTargets={isPlanTerminal ? planTerminalTargets : handoffTargets(roleId)}
+          sendPlanTargets={isPlanTerminal ? planTerminalTargets : handoffTargets(roleId, roles)}
+          handoffTargets={(isPlanTerminal ? planTerminalTargets : (handoffOffer?.targets ?? [])).map(
+            (id) => ({ id, name: roleDisplayName(id, roles) }),
+          )}
           canExportTranscript={
             !!activeTabSummary &&
             (activeTabSummary.hasTranscript ||

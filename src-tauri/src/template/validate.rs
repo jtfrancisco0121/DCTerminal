@@ -87,6 +87,7 @@ mod tests {
                 remember: None,
             }],
             updated_at: None,
+            handoff_targets: None,
         }
     }
 

@@ -280,6 +280,7 @@ mod tests {
             is_built_in: true,
             fields: vec![],
             updated_at: None,
+            handoff_targets: None,
         }
     }
 

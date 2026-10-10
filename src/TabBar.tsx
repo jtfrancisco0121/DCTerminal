@@ -114,7 +114,8 @@ function RenameField({
   );
 }
 
-const CHIP_COLORS = ["#58a6ff", "#3fb950", "#d29922", "#f0883e", "#bc8cff", "#f85149", "#8b949e"];
+/** Tab chip and role colors (Settings > Roles uses the same choices). */
+export const CHIP_COLORS = ["#58a6ff", "#3fb950", "#d29922", "#f0883e", "#bc8cff", "#f85149", "#8b949e"];
 
 export function TabBar({
   tabs,

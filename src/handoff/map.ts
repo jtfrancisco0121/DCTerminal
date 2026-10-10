@@ -208,12 +208,15 @@ function hasChatContent(source: HandoffSource): boolean {
   );
 }
 
-export function handoffBlockReason(source: HandoffSource): string | null {
+export function handoffBlockReason(
+  source: HandoffSource,
+  roles?: readonly RoleName[] | null,
+): string | null {
   const roleId = source.sourceRoleId;
-  if (!isHandoffSource(roleId)) {
-    return "This role has no hand-off. Send from a Planner, Plan Reviewer, Implementer, Developer, PR Reviewer, Recommendation, or Codebase Audit tab.";
+  if (!isHandoffSource(roleId, roles)) {
+    return "This role has no hand-off targets. Pick some in Settings > Roles, or send from a Planner, Plan Reviewer, Implementer, Developer, PR Reviewer, Recommendation, or Codebase Audit tab.";
   }
-  const name = roleDisplayName(roleId);
+  const name = roleDisplayName(roleId, roles);
   if (source.fromTerminal) {
     const hasTerminal =
       (source.planFileText ?? "").trim().length > 0 ||
