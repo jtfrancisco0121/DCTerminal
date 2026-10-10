@@ -209,8 +209,9 @@ export function ChangesPanel({
     body = (
       <div className="changes-empty">
         <p className="hint">
-          No snapshot yet. Chat tabs take one at the start of every prompt. For a terminal tab,
-          take one before you start the agent.
+          No snapshot yet. Chat tabs take one at the start of every prompt. Terminal tabs take
+          one when you Send from the scratch pad; for commands typed straight into the terminal,
+          take one before you start.
         </p>
         <button type="button" className="primary-button" onClick={() => void snapshotNow()}>
           Snapshot now

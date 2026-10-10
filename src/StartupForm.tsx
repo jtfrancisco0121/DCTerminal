@@ -281,6 +281,7 @@ import { useAppShortcuts } from "./useAppShortcuts";
 import { useScratchPads } from "./useScratchPads";
 import { useChatImages } from "./attachments/useChatImages";
 import { withImageMarkers } from "./attachments/chatImages";
+import { snapshotTerminalTurn } from "./changes/turnSnapshot";
 import { useUiSettings } from "./useUiSettings";
 import { useProviders } from "./provider/useProviders";
 import {
@@ -4636,6 +4637,7 @@ export function StartupForm({
               scratch.flush();
             }}
             onSent={(text) => void promptRecordSend(text, "terminal").catch(() => {})}
+            beforeSubmit={snapshotTerminalTurn}
             onOpenLibrary={() => openPromptLibrary(false)}
             write={ptyWrite}
             bracketedPaste={terminalBracketedPaste(activeTabSummary.id)}

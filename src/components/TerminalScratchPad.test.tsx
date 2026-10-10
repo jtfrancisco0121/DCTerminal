@@ -29,6 +29,7 @@ function renderPad(
     onOpenChange: (open: boolean) => void;
     onSent: (text: string) => void;
     onOpenLibrary: () => void;
+    beforeSubmit: (tabId: string) => Promise<void>;
   }> = {},
   ref?: Ref<TerminalPadHandle>,
 ) {
@@ -51,6 +52,7 @@ function renderPad(
       onOpenChange={overrides.onOpenChange}
       onSent={overrides.onSent}
       onOpenLibrary={overrides.onOpenLibrary}
+      beforeSubmit={overrides.beforeSubmit}
     />,
   );
   return { write, onFocusTerminal, ...view };
@@ -93,6 +95,36 @@ describe("terminal scratch pad", () => {
       "pty-cli",
       `${PASTE_START}line1\nline2${PASTE_END}\r`,
     );
+  });
+
+  it("takes the turn snapshot before a Send writes, but not before a paste", async () => {
+    const order: string[] = [];
+    let release: () => void = () => {};
+    const beforeSubmit = vi.fn(
+      (tabId: string) =>
+        new Promise<void>((resolve) => {
+          order.push(`snapshot:${tabId}`);
+          release = resolve;
+        }),
+    );
+    const write = vi.fn(async () => {
+      order.push("write");
+    });
+    renderPad({ tabId: "tab-t", beforeSubmit, write });
+    fireEvent.click(screen.getByRole("button", { name: "Paste to terminal" }));
+    expect(beforeSubmit).not.toHaveBeenCalled();
+    order.length = 0;
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(order).toEqual(["snapshot:tab-t"]);
+    release();
+    await waitFor(() => expect(order).toEqual(["snapshot:tab-t", "write"]));
+  });
+
+  it("still sends when the snapshot hook rejects", async () => {
+    const write = vi.fn(async () => {});
+    renderPad({ beforeSubmit: () => Promise.reject(new Error("not a repository")), write });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(write).toHaveBeenCalledTimes(1));
   });
 
   it("pastes without Enter and keeps a selection instead of the whole pad", () => {
