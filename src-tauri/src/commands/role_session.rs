@@ -273,6 +273,7 @@ pub fn role_session_start(
             .or(Some(model.clone())),
         effort: client.current_effort().map(String::from),
         effort_options: client.effort_options().to_vec(),
+        supports_images: client.supports_images(),
     };
     let mut folder_warning = {
         let guard = state.lock().map_err(|e| e.to_string())?;
@@ -372,7 +373,14 @@ pub fn role_session_start(
     }
 
     if injection_in_flight {
-        spawn_prompt_turn(app, persisted_tab_id.clone(), merged_text, true, true);
+        spawn_prompt_turn(
+            app,
+            persisted_tab_id.clone(),
+            merged_text,
+            Default::default(),
+            true,
+            true,
+        );
     }
 
     let replay = replay_events(&persisted_tab_id, &info.session_id, &replay_notes);

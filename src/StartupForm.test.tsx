@@ -31,6 +31,8 @@ vi.mock("./bridge", () => {
   closeTab: vi.fn(),
   devSessionCancel: vi.fn(),
   devSessionSend: vi.fn(),
+  attachmentAdd: vi.fn(async (_tab: string, mime: string) => ({ id: "img_1", mime, bytes: 3 })),
+  attachmentRemove: vi.fn(async () => {}),
   devSessionStop: vi.fn(),
   diagnosticsSetCapture: vi.fn(),
   diagnosticsStatus: vi.fn(async () => ({
@@ -552,6 +554,54 @@ describe("blank tab card", () => {
     expect((screen.getByRole("textbox", { name: "Follow-up message" }) as HTMLTextAreaElement).value).toBe(
       "Try again",
     );
+  });
+
+  it("sends pasted images with the next pad message on a Claude chat that takes images", async () => {
+    vi.mocked(roleSessionStart).mockReset();
+    vi.mocked(roleSessionStart).mockResolvedValue({
+      errors: [],
+      session: { sessionId: "sess_img", modeId: "auto", cwd: tab.cwd, supportsImages: true },
+      mergedChars: 10,
+      injectionStrategy: "send_on_start",
+      startupInjected: true,
+      injectionInFlight: false,
+      tabId: "tab_dev",
+      resumedSession: false,
+      skippedStartupInjection: false,
+      folderWarning: null,
+      loadedViaSessionLoad: false,
+      replayMessageCount: 0,
+      replayTruncated: false,
+      replay: [],
+    } as never);
+    vi.mocked(devSessionSend).mockReset();
+    vi.mocked(devSessionSend).mockResolvedValue({ dispatched: true } as never);
+    render(
+      <StartupForm
+        roles={[
+          { id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 },
+        ]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+    await screen.findByLabelText("Title");
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    const pad = (await screen.findByLabelText("Scratch pad editor")) as HTMLTextAreaElement;
+    const padBox = pad.closest(".scratch-pad") as HTMLElement;
+    const shot = new File([new Uint8Array([1, 2, 3])], "image.png", { type: "image/png" });
+    fireEvent.paste(pad, { clipboardData: { files: [shot], items: [] } });
+    await within(padBox).findByRole("button", { name: "Remove screenshot.png" });
+
+    fireEvent.change(pad, { target: { value: "Why is this red?" } });
+    fireEvent.click(within(padBox).getByRole("button", { name: "Send" }));
+    await waitFor(() =>
+      expect(devSessionSend).toHaveBeenCalledWith("Why is this red?", "tab_dev", ["img_1"]),
+    );
+    expect(within(padBox).queryByRole("button", { name: "Remove screenshot.png" })).toBeNull();
+    expect(await screen.findByText("🖼 screenshot.png")).toBeTruthy();
   });
 
   it("resumes history from the side list", async () => {

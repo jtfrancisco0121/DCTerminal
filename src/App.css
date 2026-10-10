@@ -4446,3 +4446,59 @@ mark.search-hit-current {
   white-space: nowrap;
   opacity: 0.85;
 }
+
+/* Pasted images waiting for the next chat message. */
+.attachment-chips {
+  padding: 0.4rem 0.75rem 0;
+  background: var(--bg-elev);
+}
+
+.attachment-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: 14rem;
+  padding: 0.2rem 0.25rem 0.2rem 0.2rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  font-size: 0.75rem;
+}
+
+.attachment-chip-thumb {
+  width: 2rem;
+  height: 2rem;
+  object-fit: cover;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.attachment-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-chip-remove {
+  padding: 0 0.3rem;
+  border: none;
+  background: none;
+  color: var(--fg);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.attachment-chips-error {
+  margin: 0.3rem 0 0;
+  font-size: 0.75rem;
+}

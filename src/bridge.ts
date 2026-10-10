@@ -461,6 +461,8 @@ export type DevSessionInfo = {
   /** Claude reasoning effort, and the levels the session offers. */
   effort?: string | null;
   effortOptions?: string[];
+  /** Claude session whose agent takes pasted images (`promptCapabilities.image`). */
+  supportsImages?: boolean;
 };
 
 export type DevPromptResult = {
@@ -476,14 +478,32 @@ export async function devSessionStart(
   return invoke<DevSessionInfo>("dev_session_start", { cwd, modeId });
 }
 
+/** `attachments` are ids from `attachmentAdd`; they go as ACP image blocks. */
 export async function devSessionSend(
   prompt: string,
   tabId?: string | null,
+  attachments?: string[],
 ): Promise<PromptDispatchResult> {
   return invoke<PromptDispatchResult>("dev_session_send", {
     prompt,
     tabId: tabId ?? null,
+    attachments: attachments?.length ? attachments : null,
   });
+}
+
+export type StagedAttachment = { id: string; mime: string; bytes: number };
+
+/** Stage a pasted image in app data for the tab's next send. `data` is plain base64. */
+export async function attachmentAdd(
+  tabId: string,
+  mime: string,
+  data: string,
+): Promise<StagedAttachment> {
+  return invoke<StagedAttachment>("attachment_add", { tabId, mime, data });
+}
+
+export async function attachmentRemove(tabId: string, id: string): Promise<void> {
+  return invoke("attachment_remove", { tabId, id });
 }
 
 export function listenPromptFinished(

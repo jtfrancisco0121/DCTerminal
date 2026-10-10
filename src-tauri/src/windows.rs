@@ -312,6 +312,8 @@ fn build_window(app: &AppHandle, label: &str, title: &str) -> Result<(), String>
     tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::App("index.html".into()))
         .title(title)
         .inner_size(1400.0, 900.0)
+        // Lets the WebView see HTML5 drops (images dropped into a chat).
+        .disable_drag_drop_handler()
         .build()
         .map_err(|err| err.to_string())?;
     Ok(())

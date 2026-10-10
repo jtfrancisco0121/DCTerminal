@@ -116,10 +116,21 @@ pub fn acp_launch_args() -> &'static [&'static str] {
     &["acp"]
 }
 
-pub fn session_prompt_params(session_id: &str, text: &str) -> Value {
+/// ACP `session/prompt` params: the text block, then one image block per
+/// attachment. An image-only prompt has no empty text block.
+pub fn session_prompt_params(
+    session_id: &str,
+    text: &str,
+    images: &[crate::attachments::PromptImage],
+) -> Value {
+    let mut prompt = Vec::with_capacity(images.len() + 1);
+    if !text.trim().is_empty() || images.is_empty() {
+        prompt.push(serde_json::json!({ "type": "text", "text": text }));
+    }
+    prompt.extend(images.iter().map(|image| image.content_block()));
     serde_json::json!({
         "sessionId": session_id,
-        "prompt": [{ "type": "text", "text": text }]
+        "prompt": prompt
     })
 }
 
@@ -184,12 +195,38 @@ mod tests {
     }
 
     #[test]
+    fn prompt_carries_text_then_image_blocks() {
+        let image = crate::attachments::PromptImage {
+            mime: "image/png".into(),
+            data_base64: "iVBORw0K".into(),
+        };
+        let params = session_prompt_params("sess", "what is wrong here?", std::slice::from_ref(&image));
+        assert_eq!(
+            params,
+            serde_json::json!({
+                "sessionId": "sess",
+                "prompt": [
+                    { "type": "text", "text": "what is wrong here?" },
+                    { "type": "image", "mimeType": "image/png", "data": "iVBORw0K" }
+                ]
+            })
+        );
+        let image_only = session_prompt_params("sess", "  ", &[image]);
+        assert_eq!(image_only["prompt"].as_array().unwrap().len(), 1);
+        assert_eq!(image_only["prompt"][0]["type"], "image");
+        assert_eq!(
+            session_prompt_params("sess", "hi", &[])["prompt"],
+            serde_json::json!([{ "type": "text", "text": "hi" }])
+        );
+    }
+
+    #[test]
     fn launch_args_never_carry_the_prompt() {
         let prompt = "x".repeat(100_000);
         let args = acp_launch_args();
         assert_eq!(args, &["acp"]);
         assert!(args.iter().all(|a| !a.contains(&prompt[..32])));
-        let params = session_prompt_params("sess", &prompt);
+        let params = session_prompt_params("sess", &prompt, &[]);
         let encoded = params.to_string();
         assert!(encoded.contains(&prompt));
         assert!(!args.join(" ").contains("sess"));

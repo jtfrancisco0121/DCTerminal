@@ -22,7 +22,10 @@ fn fixture(name: &str) -> Value {
 fn initialize_offers_load_and_no_login_methods() {
     let init = fixture("initialize-response.json");
     let result = &init["result"];
-    assert!(capabilities_from_initialize(result).load_session);
+    let caps = capabilities_from_initialize(result);
+    assert!(caps.load_session);
+    // Pasted screenshots are only offered because of this flag.
+    assert!(caps.prompt_image);
     assert_eq!(result["authMethods"], json!([]));
     assert_eq!(result["agentInfo"]["version"], json!("0.88.0"));
 }

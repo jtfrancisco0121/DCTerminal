@@ -1,6 +1,7 @@
 use crate::acp::connection::ClientFollowups;
 use crate::acp::AcpClient;
-use crate::commands::prompt_worker::spawn_prompt_turn;
+use crate::attachments::AttachmentStore;
+use crate::commands::prompt_worker::{spawn_prompt_turn, TurnImages};
 use crate::paths::validate_working_folder;
 use crate::permissions::{cancelled_permission_result, ToolCallCache};
 use crate::process_tree::SharedProcess;
@@ -50,6 +51,8 @@ pub struct LiveSession {
     pub startup_injected: bool,
     pub prompt_in_flight: bool,
     pub exited: bool,
+    /// Copied from the client so a send can check it without the client lock.
+    pub supports_images: bool,
 }
 
 impl LiveSession {
@@ -59,7 +62,9 @@ impl LiveSession {
         let outbox = client.outbox();
         let followups = client.followups();
         let provider = client.provider();
+        let supports_images = client.supports_images();
         Self {
+            supports_images,
             provider,
             tab_id: tab_id.to_string(),
             role_id: role_id.to_string(),
@@ -203,6 +208,8 @@ pub struct DevSessionInfo {
     pub effort: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub effort_options: Vec<String>,
+    /// Claude session whose agent takes pasted images.
+    pub supports_images: bool,
 }
 
 #[derive(Serialize)]
@@ -243,6 +250,7 @@ pub fn dev_session_start(
         model: client.current_model().map(String::from),
         effort: client.current_effort().map(String::from),
         effort_options: client.effort_options().to_vec(),
+        supports_images: client.supports_images(),
     };
     let session = LiveSession::from_client(DEV_TAB_ID, "role_developer", client);
     let mut guard = state.lock().map_err(|e| e.to_string())?;
@@ -256,7 +264,9 @@ pub fn dev_session_send(
     app: AppHandle,
     prompt: String,
     tab_id: Option<String>,
+    attachments: Option<Vec<String>>,
     state: State<Mutex<SessionRegistry>>,
+    staged: State<AttachmentStore>,
 ) -> Result<PromptDispatchResult, String> {
     let tab_id = resolve_tab_id(tab_id);
     let mut guard = state.lock().map_err(|e| e.to_string())?;
@@ -271,6 +281,17 @@ pub fn dev_session_send(
     if session.prompt_in_flight {
         return Err("a prompt is already running — wait or cancel the turn".to_string());
     }
+    let staged_ids = attachments.unwrap_or_default();
+    if !staged_ids.is_empty() && !session.supports_images {
+        return Err(
+            "This chat's agent does not accept images — remove them and send text only."
+                .to_string(),
+        );
+    }
+    let images = TurnImages {
+        images: staged.load(&tab_id, &staged_ids)?,
+        staged_ids,
+    };
     let attached_startup = session.pending_startup_prompt.take();
     let had_attached_startup = attached_startup.is_some();
     let prompt_to_send = if let Some(startup) = attached_startup {
@@ -289,6 +310,7 @@ pub fn dev_session_send(
         app,
         tab_id,
         prompt_to_send,
+        images,
         tab_id_for_injection.is_some(),
         had_attached_startup,
     );
