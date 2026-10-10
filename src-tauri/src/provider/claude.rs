@@ -9,6 +9,7 @@
 //! - Planner: `--permission-mode plan`
 //! - every other role: `--permission-mode bypassPermissions`
 //! - `--model <id>` first when a model other than `default` is set
+//! - `--session-id <uuid>` on fresh Plain / Role launches, so the tab knows its log
 //! - the startup prompt as the positional argument (`deliver_prompt_limited`)
 //!
 //! Never passed: `--dangerously-skip-permissions`, `--allowedTools`,
@@ -119,8 +120,20 @@ fn valid_session_id(id: &str) -> bool {
 /// argv after `claude` for one terminal launch.
 pub fn claude_terminal_args(req: &TerminalLaunch) -> Result<Vec<String>, String> {
     let mut args = claude_model_args(req.model.as_deref());
+    let pin = |args: &mut Vec<String>| -> Result<(), String> {
+        if let Some(id) = req.session_id.as_deref().map(str::trim) {
+            if !valid_session_id(id) {
+                return Err(format!("not a Claude session id: {id}"));
+            }
+            args.push("--session-id".to_string());
+            args.push(id.to_string());
+        }
+        Ok(())
+    };
     match &req.kind {
-        TerminalKind::Plain => {}
+        TerminalKind::Plain => pin(&mut args)?,
+        // `--resume <id>` keeps appending to `<id>.jsonl` (no `--fork-session`),
+        // so the terminal's session id is the resumed one.
         TerminalKind::Resume { session_id } => {
             let id = session_id.trim();
             if !valid_session_id(id) {
@@ -132,6 +145,7 @@ pub fn claude_terminal_args(req: &TerminalLaunch) -> Result<Vec<String>, String>
         TerminalKind::Role {
             role_id, prompt, ..
         } => {
+            pin(&mut args)?;
             args.push("--permission-mode".to_string());
             args.push(claude_role_mode(role_id).to_string());
             if let Some(text) = prompt.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
@@ -434,7 +448,8 @@ mod tests {
         assert_eq!(
             claude_terminal_args(&TerminalLaunch {
                 kind: TerminalKind::Plain,
-                model: Some("opus[1m]".into())
+                model: Some("opus[1m]".into()),
+                session_id: None,
             })
             .unwrap(),
             vec!["--model", "opus[1m]"]
@@ -466,6 +481,7 @@ mod tests {
                 prompt: prompt.map(str::to_string),
             },
             model: model.map(str::to_string),
+            session_id: None,
         }
     }
 
@@ -536,6 +552,7 @@ mod tests {
             TerminalLaunch {
                 kind: TerminalKind::Plain,
                 model: None,
+                session_id: None,
             },
         ];
         for launch in launches {
@@ -561,6 +578,7 @@ mod tests {
         let plain = TerminalLaunch {
             kind: TerminalKind::Plain,
             model: Some("default".into()),
+            session_id: None,
         };
         assert!(claude_terminal_args(&plain).unwrap().is_empty());
         let resume = |id: &str| TerminalLaunch {
@@ -568,12 +586,51 @@ mod tests {
                 session_id: id.to_string(),
             },
             model: None,
+            session_id: None,
         };
         assert_eq!(
             claude_terminal_args(&resume("0b6c1d2e-aaaa-bbbb-cccc-1234567890ab")).unwrap(),
             vec!["--resume", "0b6c1d2e-aaaa-bbbb-cccc-1234567890ab"]
         );
         assert!(claude_terminal_args(&resume("--continue")).is_err());
+    }
+
+    #[test]
+    fn plain_and_role_launches_pin_a_session_id() {
+        let id = crate::provider::new_claude_session_id();
+        assert_eq!(id.len(), 36);
+        assert_eq!(id.as_bytes()[14], b'4');
+        let plain = TerminalLaunch {
+            kind: TerminalKind::Plain,
+            model: Some("opus".into()),
+            session_id: Some(id.clone()),
+        };
+        assert_eq!(
+            claude_terminal_args(&plain).unwrap(),
+            vec!["--model", "opus", "--session-id", id.as_str()]
+        );
+        let mut planner = role("role_planner", RunMode::Default, None, Some("Plan it"));
+        planner.session_id = Some(id.clone());
+        assert_eq!(
+            claude_terminal_args(&planner).unwrap(),
+            vec!["--session-id", id.as_str(), "--permission-mode", "plan", "Plan it"]
+        );
+        planner.session_id = Some("--continue".into());
+        assert!(claude_terminal_args(&planner).is_err());
+    }
+
+    #[test]
+    fn resume_keeps_its_own_id_and_never_adds_session_id() {
+        let launch = TerminalLaunch {
+            kind: TerminalKind::Resume {
+                session_id: "0b6c1d2e-aaaa-bbbb-cccc-1234567890ab".into(),
+            },
+            model: None,
+            session_id: Some("11111111-2222-4333-8444-555555555555".into()),
+        };
+        let args = claude_terminal_args(&launch).unwrap();
+        assert_eq!(args, vec!["--resume", "0b6c1d2e-aaaa-bbbb-cccc-1234567890ab"]);
+        assert!(!args.iter().any(|a| a == "--session-id" || a == "--fork-session"));
     }
 
     #[test]
@@ -730,6 +787,7 @@ mod tests {
             .terminal_command(&TerminalLaunch {
                 kind: TerminalKind::Plain,
                 model: None,
+                session_id: None,
             })
             .unwrap();
         assert_eq!(terminal.program, exe.display().to_string());
@@ -824,6 +882,7 @@ mod tests {
                 TerminalLaunch {
                     kind: TerminalKind::Plain,
                     model: None,
+                    session_id: None,
                 },
                 role("role_planner", RunMode::Default, Some("opus"), Some("hi")),
             ] {

@@ -201,6 +201,7 @@ mod tests {
                 prompt: Some("Ship it".into()),
             },
             model: Some("composer-2.5".into()),
+            session_id: None,
         };
         assert_eq!(
             cursor_terminal_args(&role).unwrap(),
@@ -216,6 +217,7 @@ mod tests {
         let plain = TerminalLaunch {
             kind: TerminalKind::Plain,
             model: Some("gpt-5".into()),
+            session_id: None,
         };
         assert_eq!(
             cursor_terminal_args(&plain).unwrap(),
@@ -226,6 +228,7 @@ mod tests {
                 session_id: "11111111-2222-3333-4444-555555555555".into(),
             },
             model: None,
+            session_id: None,
         };
         assert_eq!(
             cursor_terminal_args(&resume).unwrap(),
@@ -236,6 +239,7 @@ mod tests {
                 session_id: "x;rm".into(),
             },
             model: None,
+            session_id: None,
         };
         assert!(cursor_terminal_args(&bad).is_err());
     }

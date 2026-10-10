@@ -75,11 +75,17 @@ pub struct ProviderSessions {
     pub claude: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_config_dir: Option<String>,
+    /// The session the live Claude terminal writes (`--session-id` / `--resume`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_terminal_session_id: Option<String>,
 }
 
 impl ProviderSessions {
     pub fn is_empty(&self) -> bool {
-        self.cursor.is_none() && self.claude.is_none() && self.claude_config_dir.is_none()
+        self.cursor.is_none()
+            && self.claude.is_none()
+            && self.claude_config_dir.is_none()
+            && self.claude_terminal_session_id.is_none()
     }
 
     pub fn get(&self, provider: ProviderId) -> Option<&str> {
@@ -167,6 +173,13 @@ pub enum TerminalKind {
 pub struct TerminalLaunch {
     pub kind: TerminalKind,
     pub model: Option<String>,
+    /// Claude `Plain` / `Role`: pin the new session to this id. Cursor ignores it.
+    pub session_id: Option<String>,
+}
+
+/// A fresh v4 UUID for `claude --session-id`.
+pub fn new_claude_session_id() -> String {
+    uuid::Uuid::new_v4().to_string()
 }
 
 /// Session options for `session/new`.

@@ -7,7 +7,8 @@ mod shell;
 
 use crate::paths::validate_working_folder;
 use crate::provider::{
-    provider_for_account, CursorProvider, Provider, ProviderId, TerminalKind, TerminalLaunch,
+    new_claude_session_id, provider_for_account, CursorProvider, Provider, ProviderId,
+    TerminalKind, TerminalLaunch,
 };
 pub use crate::pty::launch::RunMode;
 use crate::pty::launch::{
@@ -60,28 +61,59 @@ pub struct PlanFileInfo {
 
 pub struct PtyRegistry {
     sessions: HashMap<String, PtySession>,
+    /// Claude session id per live PTY (the `<id>.jsonl` it writes).
+    claude_sessions: HashMap<String, String>,
 }
 
 impl PtyRegistry {
     pub fn new() -> Self {
         Self {
             sessions: HashMap::new(),
+            claude_sessions: HashMap::new(),
         }
     }
 
     pub fn kill(&mut self, id: &str) {
         self.sessions.remove(id);
+        self.claude_sessions.remove(id);
     }
 
     pub fn kill_tab(&mut self, tab_id: &str) {
         let pane = format!("{tab_id}::pane");
-        self.sessions.remove(tab_id);
-        self.sessions.remove(&pane);
+        self.kill(tab_id);
+        self.kill(&pane);
     }
 
     pub fn shutdown_all(&mut self) {
         self.sessions.clear();
+        self.claude_sessions.clear();
     }
+
+    pub fn claude_session(&self, id: &str) -> Option<&str> {
+        self.claude_sessions.get(id).map(String::as_str)
+    }
+
+    fn pin_claude_session(&mut self, id: &str, session_id: Option<String>) {
+        if let Some(session_id) = session_id {
+            self.claude_sessions.insert(id.to_string(), session_id);
+        }
+    }
+}
+
+/// Persist the Claude session a terminal tab writes, so it survives a restart.
+fn remember_terminal_session(
+    store: &Mutex<StateStore>,
+    tab_id: &str,
+    session_id: Option<&str>,
+) -> Result<(), String> {
+    let Some(session_id) = session_id else {
+        return Ok(());
+    };
+    let mut state = store.lock().map_err(|err| err.to_string())?;
+    if state.tab_by_id(tab_id).is_some() {
+        state.remember_claude_terminal_session(tab_id, session_id)?;
+    }
+    Ok(())
 }
 
 impl Drop for PtyRegistry {
@@ -331,6 +363,8 @@ pub fn shell_terminal_start(
         resume_id = id;
         claude_notice = notice;
     }
+    let claude_session = (launch == "claude-cli")
+        .then(|| resume_id.clone().unwrap_or_else(new_claude_session_id));
     let command = if launch == "claude-cli" {
         let provider = {
             let mut state = store.lock().map_err(|err| err.to_string())?;
@@ -359,6 +393,7 @@ pub fn shell_terminal_start(
         provider.terminal_command(&TerminalLaunch {
             kind,
             model: Some(model),
+            session_id: claude_session.clone(),
         })?
     } else if launch == "cursor-cli" {
         let model =
@@ -372,6 +407,7 @@ pub fn shell_terminal_start(
         CursorProvider.terminal_command(&TerminalLaunch {
             kind,
             model: Some(model),
+            session_id: None,
         })?
     } else {
         let resolved = resolve_shell_for_host(&configured);
@@ -425,6 +461,9 @@ pub fn shell_terminal_start(
         if claude_notice.is_some() {
             state.set_provider_notice(&tab_id, claude_notice)?;
         }
+        if let Some(id) = &claude_session {
+            state.remember_claude_terminal_session(&tab_id, id)?;
+        }
     }
     let mut registry = registry.lock().map_err(|err| err.to_string())?;
     let pid = open_session(
@@ -440,6 +479,7 @@ pub fn shell_terminal_start(
         },
         on_output,
     )?;
+    registry.pin_claude_session(&tab_id, claude_session);
     remember_folder(&projects, &recent_folder);
     Ok(TerminalStartResult {
         errors: Vec::new(),
@@ -538,6 +578,7 @@ pub fn role_terminal_start(
         &role.id,
         provider.id(),
     )?;
+    let claude_session = (provider.id() == ProviderId::Claude).then(new_claude_session_id);
     let role_launch = |prompt: Option<String>| TerminalLaunch {
         kind: TerminalKind::Role {
             role_id: role.id.clone(),
@@ -545,6 +586,7 @@ pub fn role_terminal_start(
             prompt,
         },
         model: Some(model.clone()),
+        session_id: claude_session.clone(),
     };
     // Fail before the tab is saved when the CLI is missing.
     let program = provider.terminal_command(&role_launch(None))?.program;
@@ -582,6 +624,9 @@ pub fn role_terminal_start(
         if let Some(dir) = provider.config_dir() {
             state.remember_claude_config(&tab_id, &dir.path)?;
         }
+        if let Some(id) = &claude_session {
+            state.remember_claude_terminal_session(&tab_id, id)?;
+        }
     }
     let delivery = store_prompt(&app, &tab_id, &program, &prompt)?;
     let command = provider.terminal_command(&role_launch(Some(delivery.argument.clone())))?;
@@ -599,6 +644,7 @@ pub fn role_terminal_start(
         },
         on_output,
     )?;
+    registry.pin_claude_session(&tab_id, claude_session);
     remember_folder(&projects, &recent_folder);
     Ok(TerminalStartResult {
         errors: Vec::new(),
@@ -659,6 +705,7 @@ pub fn pty_open(
         let settings = settings.lock().map_err(|err| err.to_string())?;
         settings.terminal().shell.clone()
     };
+    let mut claude_session: Option<String> = None;
     let (program, mut args, env) = match input.launch.as_str() {
         "cursor-cli" => {
             let kind = if let Some(id) = input
@@ -682,6 +729,7 @@ pub fn pty_open(
             let command = CursorProvider.terminal_command(&TerminalLaunch {
                 kind,
                 model: Some(model),
+                session_id: None,
             })?;
             (command.program, command.args, command.env)
         }
@@ -708,6 +756,7 @@ pub fn pty_open(
                 "claude-cli",
                 ProviderId::Claude,
             )?;
+            let session_id = resume.clone().unwrap_or_else(new_claude_session_id);
             let kind = match resume {
                 Some(id) => TerminalKind::Resume { session_id: id },
                 None => TerminalKind::Plain,
@@ -715,7 +764,10 @@ pub fn pty_open(
             let mut command = provider.terminal_command(&TerminalLaunch {
                 kind,
                 model: Some(model),
+                session_id: Some(session_id.clone()),
             })?;
+            remember_terminal_session(&store, &input.id, Some(&session_id))?;
+            claude_session = Some(session_id);
             let resuming = input
                 .resume_session_id
                 .as_deref()
@@ -765,6 +817,8 @@ pub fn pty_open(
                 &role_id,
                 provider.id(),
             )?;
+            // A restart relaunches the role fresh (as before) under a new pinned id.
+            claude_session = (provider.id() == ProviderId::Claude).then(new_claude_session_id);
             let role_launch = |prompt: Option<String>| TerminalLaunch {
                 kind: TerminalKind::Role {
                     role_id: role_id.clone(),
@@ -772,6 +826,7 @@ pub fn pty_open(
                     prompt,
                 },
                 model: Some(model.clone()),
+                session_id: claude_session.clone(),
             };
             let program = provider.terminal_command(&role_launch(None))?.program;
             let prompt = input
@@ -784,6 +839,7 @@ pub fn pty_open(
                 None => None,
             };
             let command = provider.terminal_command(&role_launch(argument))?;
+            remember_terminal_session(&store, &input.id, claude_session.as_deref())?;
             (command.program, command.args, command.env)
         }
         _ => {
@@ -806,7 +862,7 @@ pub fn pty_open(
         }
     }
     let mut registry = registry.lock().map_err(|err| err.to_string())?;
-    open_session(
+    let pid = open_session(
         &mut registry,
         &input.id,
         SpawnSpec {
@@ -818,7 +874,9 @@ pub fn pty_open(
             rows: input.rows,
         },
         on_output,
-    )
+    )?;
+    registry.pin_claude_session(&input.id, claude_session);
+    Ok(pid)
 }
 
 #[tauri::command]
