@@ -61,6 +61,10 @@ impl StateStore {
             crate::store::window_migration::backup_pre_windows(&path)?;
             store.save()?;
         }
+        // The save keeps the unpruned file as state.json.bak.
+        if store.prune_pipeline_runs() {
+            store.save()?;
+        }
         Ok(store)
     }
 
@@ -280,6 +284,7 @@ impl StateStore {
         &mut self,
         tab_id: &str,
         chain: Option<crate::store::ChainRef>,
+        handoff_text: Option<&str>,
     ) -> Result<(), String> {
         let tab = self
             .data
@@ -287,7 +292,11 @@ impl StateStore {
             .iter_mut()
             .find(|t| t.id == tab_id)
             .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
-        tab.chain = chain;
+        tab.chain = chain.clone();
+        // Each chain keeps one run so its overview can list every stage.
+        if let Some(chain) = chain {
+            self.record_chain_step(tab_id, &chain, handoff_text);
+        }
         self.save()
     }
 
@@ -952,6 +961,9 @@ impl StateStore {
             approved_plan: None,
             original_request: None,
             created_at: Utc::now().to_rfc3339(),
+            chain_id: None,
+            handoffs: HashMap::new(),
+            updated_at: None,
         };
         self.data.pipeline_runs.push(run);
         self.save()?;

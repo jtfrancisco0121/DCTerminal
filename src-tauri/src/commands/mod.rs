@@ -27,7 +27,8 @@ pub use attachments::{attachment_add, attachment_remove};
 pub use app_state::{
     ack_provider_notice, close_tab, create_execution_pipeline_tabs, create_pipeline_tabs,
     get_app_state, get_layout, get_tab, new_draft_tab, reopen_closed_tab, select_active_tab,
-    set_layout, set_tab_chain, set_tab_color, set_tab_label, start_eagle_eye, sync_active_tab_form,
+    open_chain_overview, set_layout, set_tab_chain, set_tab_color, set_tab_label, start_eagle_eye,
+    sync_active_tab_form,
 };
 pub use changes::{changes_file_diff, changes_list, changes_revert, changes_snapshot, ChangesRoot};
 pub use cursor_cli::{list_claude_history, list_cursor_cli_history, open_in_cursor_cli};

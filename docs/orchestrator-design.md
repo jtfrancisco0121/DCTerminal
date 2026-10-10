@@ -16,7 +16,7 @@ Two pipeline **kinds** share the same `PipelineRun` machinery but differ in stag
 1. **Planner** — produces `candidatePlan` (and task context).
 2. **Plan Reviewer** — reads request + `candidatePlan`; verdict drives next step.
 3. **Promote** — operator **Approve for implementation** copies/edits into `approvedPlan` (only after `APPROVED` / `APPROVED WITH CHANGES` + “update then proceed”, or equivalent UX).
-4. **Implementer** — **auto-starts** after approval (v1: only this stage auto-starts in `full`).
+4. **Implementer** — operator **Start** after approval. Nothing auto-starts (locked decision: hand-offs are always user-triggered).
 5. **PR Reviewer** — hand-off after implementer turn completes (prefill + manual Start in v1 unless we add auto-open).
 
 Verdict mapping (Plan Reviewer output):
@@ -52,6 +52,12 @@ Until `PipelineRun` exists, use palette presets:
 
 Hand-off targets for each role come from `src/handoff/transitions.ts` (Phase 1 of `CLAUDE-FIRST-PLAN.md`).
 
+## Eagle-Eye chains and runs
+
+Each Eagle-Eye chain keeps one `PipelineRun` whose id is the chain id (`eagle1` → `full`, `eagle2` → `execute`). Tagging a tab with a chain (palette **Start Eagle-Eye 1/2**, the start-screen checkbox, or a hand-off along the chain) records that stage's tab, and the hand-off text, on the run (`handoffs[roleId]`). Runs carry the PR Reviewer stage. Chains from before runs existed are rebuilt from their tabs when the overview opens. At startup, runs are pruned to those with a tab left plus the 50 most recent.
+
+The overview opens from the palette (**Open chain overview…**, when the active tab has a chain) or by clicking the chain label on a chat header or terminal toolbar. Per stage: role, tab, status, text handed in (collapsed), Jump, Watch in split, and the verdict parsed from the latest Plan Reviewer / PR Reviewer reply (`src/handoff/verdict.ts`). It shows `originalRequest`, **Pull from Planner** (chat reply, or a terminal's selection → new plan file → tail), and **Pull from Plan Reviewer** (its Reviewed plan). Read-only display: nothing starts or sends.
+
 ## Hand-off reuse
 
 - Planner → Plan Reviewer / Implementer: existing `mapHandoff` + new target in UI.
@@ -67,7 +73,9 @@ Hand-off targets for each role come from `src/handoff/transitions.ts` (Phase 1 o
 
 ## Acceptance (v1)
 
-- [ ] `full`: review → promote → auto Implementer → PR hand-off path works end-to-end on dogfood repo.
+- [ ] `full`: review → promote → Start Implementer → PR hand-off path works end-to-end on dogfood repo.
 - [ ] `execute`: paste plan → Implementer → PR Reviewer without Planner/Plan Reviewer tabs.
-- [ ] Overview shows correct lanes for 2-stage vs 4-stage runs.
+- [x] Overview shows correct lanes for 2-stage vs 4-stage runs (Vitest `PipelineOverview.test.tsx`; live GUI not checked).
+- [x] Eagle-Eye chains create one run each; hand-offs record tab + text per stage, PR Reviewer included; old `state.json` loads (Rust `store::chain_runs` tests).
+- [x] Review verdict parsed from the latest Plan Reviewer / PR Reviewer reply, shown read-only.
 - [ ] Terminal tabs never auto-chained.

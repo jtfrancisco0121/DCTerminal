@@ -12,6 +12,8 @@ type Props = {
   canExportTranscript?: boolean;
   canSendImplementerToReviewer?: boolean;
   canRemoveWorktree?: boolean;
+  /** The active tab is on an Eagle-Eye chain. */
+  canOpenChainOverview?: boolean;
   /** The active tab's model choices; absent when it has no model. */
   model?: PaletteModelOptions | null;
   /** Text to start with, e.g. "use model " from Change model…. */
@@ -31,6 +33,7 @@ export function CommandPalette({
   canExportTranscript = false,
   canSendImplementerToReviewer = false,
   canRemoveWorktree = false,
+  canOpenChainOverview = false,
   model = null,
   initialQuery = "",
   onRun,
@@ -52,6 +55,7 @@ export function CommandPalette({
           canExportTranscript,
           canSendImplementerToReviewer,
           canRemoveWorktree,
+          canOpenChainOverview,
           model,
         }),
         query,
@@ -67,6 +71,7 @@ export function CommandPalette({
       canExportTranscript,
       canSendImplementerToReviewer,
       canRemoveWorktree,
+      canOpenChainOverview,
       model,
       query,
     ],

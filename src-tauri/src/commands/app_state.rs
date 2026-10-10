@@ -169,10 +169,13 @@ pub fn ack_provider_notice(
 }
 
 /// Tag or clear an Eagle-Eye chain on a tab that is not running.
+/// `handoff_text` is what a hand-off along the chain sent into this tab;
+/// the chain's run keeps it for the overview.
 #[tauri::command]
 pub fn set_tab_chain(
     tab_id: String,
     chain: Option<crate::store::ChainRef>,
+    handoff_text: Option<String>,
     store: State<Mutex<StateStore>>,
 ) -> Result<(), String> {
     let mut store = store.lock().map_err(|e| e.to_string())?;
@@ -180,7 +183,31 @@ pub fn set_tab_chain(
         return Err(format!("unknown tab: {tab_id}"));
     }
     // A chain is a label. Hand-off tags the next tab after it has started.
-    store.set_tab_chain(&tab_id, chain)
+    store.set_tab_chain(&tab_id, chain, handoff_text.as_deref())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChainOverviewOpened {
+    pub tab_id: String,
+    pub state: AppStateSnapshot,
+}
+
+/// Show the overview tab of an Eagle-Eye chain, opening one if needed.
+/// Only opens a tab; no session starts.
+#[tauri::command]
+pub fn open_chain_overview(
+    chain_id: String,
+    window_id: Option<String>,
+    store: State<Mutex<StateStore>>,
+) -> Result<ChainOverviewOpened, String> {
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    store.bind_window(window_id.as_deref());
+    let tab_id = store.open_chain_overview(chain_id.trim())?;
+    Ok(ChainOverviewOpened {
+        tab_id,
+        state: snapshot_from_store(&store),
+    })
 }
 
 /// Open a Planner (Eagle-Eye 1) or Implementer (Eagle-Eye 2) draft at step 1.
@@ -220,6 +247,7 @@ pub fn start_eagle_eye(
             step: 1,
             total,
         }),
+        None,
     )?;
     let tab = store
         .tab_by_id(&tab_id)

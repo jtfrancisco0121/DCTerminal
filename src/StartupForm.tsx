@@ -66,6 +66,7 @@ import {
   listCursorCliHistory,
   newDraftTab,
   openAccountWindow,
+  openChainOverview,
   setTabChain,
   startEagleEye,
   roleSessionStart,
@@ -131,6 +132,7 @@ import {
   SavedPlanDialog,
 } from "./components/HandoffDialog";
 import { PipelineOverview } from "./components/PipelineOverview";
+import { ChainLabel } from "./components/ChainLabel";
 import { destroyTerminal, TerminalView, readTerminalHandoff } from "./components/TerminalView";
 import {
   handoffBlockReason,
@@ -1741,6 +1743,22 @@ export function StartupForm({
     [applyDraft, loadTabIntoForm, refreshTabs, savedTabs, stashActiveTab],
   );
 
+  /** Show (or open) an Eagle-Eye chain's overview tab. Starts nothing. */
+  const openChainOverviewTab = useCallback(
+    async (chainId: string) => {
+      try {
+        stashActiveTab();
+        const { tabId, state } = await openChainOverview(chainId);
+        setSavedTabs(state.tabs);
+        setClosedTabs(state.closedTabs ?? []);
+        setActiveTabId(tabId);
+      } catch (err: unknown) {
+        showNotice("Chain overview", err instanceof Error ? err.message : String(err), "question");
+      }
+    },
+    [showNotice, stashActiveTab],
+  );
+
   const handleCloseTab = useCallback(
     async (tabId: string) => {
       setBusy(true);
@@ -3040,7 +3058,7 @@ export function StartupForm({
             return;
           }
           await setTabProvider(tabId, sourceProvider);
-          if (nextChain) await setTabChain(tabId, nextChain);
+          if (nextChain) await setTabChain(tabId, nextChain, mapped.planText);
           const bound = await handoffBindTab(saved.id, tabId);
           if (mapped.usesScratchPad) {
             scratch.setContent(tabId, mapped.inlinePlan);
@@ -3054,7 +3072,7 @@ export function StartupForm({
         stashActiveTab();
         const { tab } = await newDraftTab(handoffTarget, handoffSource.cwd);
         await setTabProvider(tab.id, sourceProvider);
-        if (nextChain) await setTabChain(tab.id, nextChain);
+        if (nextChain) await setTabChain(tab.id, nextChain, mapped.planText);
         await syncActiveTabForm(tab.id, handoffTarget, handoffSource.cwd, nextValues);
         const bound = await handoffBindTab(saved.id, tab.id);
         if (mapped.usesScratchPad) {
@@ -3183,6 +3201,9 @@ export function StartupForm({
           .finally(() => setBusy(false));
         return;
       }
+      case "openChainOverview":
+        if (activeTabSummary?.chain) void openChainOverviewTab(activeTabSummary.chain.chainId);
+        return;
       case "showLogs": {
         setLogDrawerOpen(true);
         void (async () => {
@@ -3999,6 +4020,7 @@ export function StartupForm({
           }
           canSendImplementerToReviewer={roleId === "role_implementer" && !!session}
           canRemoveWorktree={!!activeTabSummary?.worktreePath}
+          canOpenChainOverview={!!activeTabSummary?.chain}
           model={paletteModel}
           initialQuery={palettePrefill.query}
           key={palettePrefill.key}
@@ -4140,6 +4162,7 @@ export function StartupForm({
           onSearchAllChats={(query) => setChatSearchQuery(query)}
           branch={tab.worktreeBranch ?? null}
           chainLabel={tab.chain ? chainLabel(tab.chain) : null}
+          onOpenChain={tab.chain ? () => void openChainOverviewTab(tab.chain!.chainId) : null}
           contextFill={
             providerOf(tab) === "claude" ? contextPercent(usageSnap?.contextByTab[tab.id]) : null
           }
@@ -4570,7 +4593,10 @@ export function StartupForm({
             activeTabSummary.cwd) && (
             <div className="terminal-toolbar">
               {activeTabSummary.chain && (
-                <span className="chain-label">{chainLabel(activeTabSummary.chain)}</span>
+                <ChainLabel
+                  label={chainLabel(activeTabSummary.chain)}
+                  onOpen={() => void openChainOverviewTab(activeTabSummary.chain!.chainId)}
+                />
               )}
               {activeTabSummary.worktreeBranch && (
                 <span
@@ -4967,6 +4993,11 @@ export function StartupForm({
               onSearchAllChats={(query) => setChatSearchQuery(query)}
               branch={activeTabSummary?.worktreeBranch ?? null}
               chainLabel={activeTabSummary?.chain ? chainLabel(activeTabSummary.chain) : null}
+              onOpenChain={
+                activeTabSummary?.chain
+                  ? () => void openChainOverviewTab(activeTabSummary.chain!.chainId)
+                  : null
+              }
               contextFill={
                 activeProvider === "claude" && activeTabId
                   ? contextPercent(usageSnap?.contextByTab[activeTabId])

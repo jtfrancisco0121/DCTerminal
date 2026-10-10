@@ -107,6 +107,7 @@ vi.mock("./bridge", () => {
   getClaudeUsage: vi.fn(async () => ({ configDir: "/tmp/claude", windows: [], contextByTab: {} })),
   ackProviderNotice: vi.fn(async () => {}),
   setTabChain: vi.fn(async () => {}),
+  openChainOverview: vi.fn(async () => ({ tabId: "ov", state: { activeTabId: "ov", tabs: [], closedTabs: [] } })),
   startEagleEye: vi.fn(async () => ({ tab: { id: "ee" } })),
   newDraftTab: vi.fn(),
   openAccountWindow: vi.fn(async () => "win-2"),

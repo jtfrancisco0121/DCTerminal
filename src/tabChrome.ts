@@ -283,6 +283,7 @@ export const PALETTE_ACTIONS = [
   "executionPipelineWorkspace",
   "startEagleEye1",
   "startEagleEye2",
+  "openChainOverview",
   "handoffHelp",
   "changeModel",
   "refreshModels",
@@ -375,6 +376,8 @@ export function buildPalette(opts: {
   canRemoveWorktree?: boolean;
   /** The active tab can change model (absent for plain shells). */
   model?: PaletteModelOptions | null;
+  /** The active tab is on an Eagle-Eye chain. */
+  canOpenChainOverview?: boolean;
 }): PaletteCommand[] {
   const commands: PaletteCommand[] = [
     { id: "newTab", title: "New tab", group: "Tabs" },
@@ -598,6 +601,14 @@ export function buildPalette(opts: {
       title: "Hand off to PR Reviewer…",
       group: "Hand-off",
       keywords: "handoff send implementer reviewer pr review",
+    });
+  }
+  if (opts.canOpenChainOverview) {
+    commands.push({
+      id: "openChainOverview",
+      title: "Open chain overview…",
+      group: "Hand-off",
+      keywords: "eagle eye chain pipeline overview stages verdict",
     });
   }
   if (opts.canExportTranscript) {

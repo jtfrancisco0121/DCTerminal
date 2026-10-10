@@ -292,6 +292,11 @@ export type PipelineRun = {
   approvedPlan?: string | null;
   originalRequest?: string | null;
   createdAt: string;
+  /** Eagle-Eye chain this run follows. Missing on palette preset runs. */
+  chainId?: string | null;
+  /** Role id → text a hand-off along the chain sent into that stage. */
+  handoffs?: Record<string, { text: string; at: string }>;
+  updatedAt?: string | null;
 };
 
 export type ClosedTabSummary = {
@@ -376,8 +381,17 @@ export async function ackProviderNotice(tabId: string): Promise<void> {
 export async function setTabChain(
   tabId: string,
   chain: import("./handoff/chains").ChainRef | null,
+  /** Text a hand-off along the chain sent into this tab (kept on the chain's run). */
+  handoffText?: string | null,
 ): Promise<void> {
-  return invoke("set_tab_chain", { tabId, chain });
+  return invoke("set_tab_chain", { tabId, chain, handoffText: handoffText ?? null });
+}
+
+/** Shows (or opens) the overview tab of an Eagle-Eye chain. Starts nothing. */
+export async function openChainOverview(
+  chainId: string,
+): Promise<{ tabId: string; state: AppStateSnapshot }> {
+  return invoke("open_chain_overview", { chainId, windowId: await windowId() });
 }
 
 /** Opens a Planner (eagle1) or Implementer (eagle2) draft at step 1. */

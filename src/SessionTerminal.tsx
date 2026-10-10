@@ -17,6 +17,7 @@ import { PermissionCard } from "./PermissionCard";
 import { QuestionCard } from "./components/QuestionCard";
 import { summarizeSessionActivity } from "./sessionActivity";
 import type { StreamSegment, ToolStatus } from "./transcript";
+import { ChainLabel } from "./components/ChainLabel";
 import { ChatFindBar } from "./components/ChatFindBar";
 import { findAll, searchSegments } from "./search/textSearch";
 import { useSlashAutocomplete } from "./composer/SlashCommandMenu";
@@ -113,6 +114,8 @@ type Props = {
   } | null;
   /** "Eagle-Eye 1 · step 2 of 4" */
   chainLabel?: string | null;
+  /** Opens the chain overview when the chain label is clicked. */
+  onOpenChain?: (() => void) | null;
   /** Claude chat context fill, e.g. "Context 3%". */
   contextFill?: string | null;
   /** Extra header controls, for example the model picker or pane buttons. */
@@ -167,6 +170,7 @@ export function SessionTerminal({
   onHistoryCursor,
   handoff,
   chainLabel = null,
+  onOpenChain = null,
   contextFill = null,
   headerExtra,
   branch = null,
@@ -351,7 +355,7 @@ export function SessionTerminal({
               </span>
             )}
             {folderName(cwd)}
-            {chainLabel && <span className="chain-label">{chainLabel}</span>}
+            {chainLabel && <ChainLabel label={chainLabel} onOpen={onOpenChain} />}
             {contextFill && <span className="chain-label">{contextFill}</span>}
           </span>
         </div>
