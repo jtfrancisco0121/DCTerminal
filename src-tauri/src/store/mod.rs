@@ -13,6 +13,7 @@ mod scratch_store;
 pub(crate) mod settings_store;
 mod state_store;
 mod state_types;
+pub mod storage_sweep;
 mod window_migration;
 mod transcript_store;
 mod workspace_store;

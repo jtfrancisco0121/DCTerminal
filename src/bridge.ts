@@ -639,7 +639,11 @@ export type ScratchPadEntry = {
   history: string[];
 };
 
-export async function scratchLoad(): Promise<{ pads: ScratchPadEntry[] }> {
+export async function scratchLoad(): Promise<{
+  pads: ScratchPadEntry[];
+  /** Open and closed tabs in every window (absent from older backends). */
+  knownTabIds?: string[];
+}> {
   return invoke("scratch_load");
 }
 
@@ -725,6 +729,26 @@ export type DiagnosticsLogTail = {
 
 export async function diagnosticsReadLog(maxBytes?: number): Promise<DiagnosticsLogTail> {
   return invoke("diagnostics_read_log", { maxBytes });
+}
+
+export type StorageStatus = {
+  appDataDir: string;
+  bytes: number;
+};
+
+export type StorageCleanup = {
+  bytesFreed: number;
+  bytes: number;
+};
+
+/** Size of DCTerminal's own app data folder (Settings > Data). */
+export async function storageStatus(): Promise<StorageStatus> {
+  return invoke("storage_status");
+}
+
+/** Run the startup sweep now: orphan scratch pads, stale leftovers, log rotation. */
+export async function storageCleanup(): Promise<StorageCleanup> {
+  return invoke("storage_cleanup");
 }
 
 export type SessionAgentLogs = {

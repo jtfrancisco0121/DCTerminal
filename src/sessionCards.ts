@@ -215,3 +215,14 @@ export function activeToolProgress(
       status: seg.toolStatus ?? "unknown",
     }));
 }
+
+/** The last agent message with text. Chat shows the hand-off buttons under
+ * it, so the session cards do not repeat them while it exists. */
+export function lastAgentSegmentId(
+  segments: readonly { id: string; kind: string; text: string }[],
+): string | null {
+  for (let i = segments.length - 1; i >= 0; i -= 1) {
+    if (segments[i].kind === "agent" && segments[i].text.trim()) return segments[i].id;
+  }
+  return null;
+}

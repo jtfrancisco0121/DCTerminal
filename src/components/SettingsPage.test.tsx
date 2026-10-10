@@ -21,6 +21,8 @@ vi.mock("../bridge", () => ({
     windows: [],
     contextByTab: {},
   })),
+  storageStatus: vi.fn(async () => ({ appDataDir: "/tmp/dct", bytes: 2048 })),
+  storageCleanup: vi.fn(async () => ({ bytesFreed: 0, bytes: 2048 })),
 }));
 
 import { SettingsPage } from "./SettingsPage";

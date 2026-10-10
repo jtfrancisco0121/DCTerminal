@@ -8,6 +8,7 @@ import {
   chainStepToSend,
   chainStop,
   clampPad,
+  dropUnknownLocalPads,
   classifyTurn,
   HISTORY_LIMIT,
   historyNavigate,
@@ -164,6 +165,22 @@ describe("scratch pad persistence", () => {
     );
     expect(merged.pads.tab_a.content).toBe("local");
     expect(merged.pads.tab_b.content).toBe("b");
+  });
+
+  it("drops mirrored pads of deleted tabs before merging with disk", () => {
+    const local = {
+      pads: {
+        open: { content: "o", updatedAt: 1, history: [] },
+        closed: { content: "c", updatedAt: 1, history: [] },
+        deleted: { content: "d", updatedAt: 9, history: [] },
+      },
+    };
+    const kept = dropUnknownLocalPads(local, ["open", "closed"]);
+    expect(Object.keys(kept?.pads ?? {}).sort()).toEqual(["closed", "open"]);
+    expect(mergeDraftFiles(kept, { pads: {} }).pads.deleted).toBeUndefined();
+    expect(dropUnknownLocalPads(local, undefined)).toBe(local);
+    expect(dropUnknownLocalPads(null, ["open"])).toBeNull();
+    expect(dropUnknownLocalPads(local, [])?.pads).toEqual({});
   });
 
   it("ignores a corrupted local draft instead of throwing", () => {

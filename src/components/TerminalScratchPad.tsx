@@ -32,6 +32,9 @@ type Props = {
   onSent?: (text: string) => void;
   /** F6: open the prompt library. */
   onOpenLibrary?: () => void;
+  /** Runs before a Send (submit) writes, e.g. the "This turn" snapshot.
+   * Must resolve quickly and never reject; the paste waits for it. */
+  beforeSubmit?: (tabId: string) => Promise<void>;
   /** U2: Hide/Show shared with chat tabs. Uncontrolled when omitted. */
   open?: boolean;
   onOpenToggle?: (open: boolean) => void;
@@ -66,6 +69,7 @@ export const TerminalScratchPad = forwardRef<TerminalPadHandle, Props>(
       onOpenChange,
       onSent,
       onOpenLibrary,
+      beforeSubmit,
       open: openProp,
       onOpenToggle,
       height = null,
@@ -91,10 +95,16 @@ export const TerminalScratchPad = forwardRef<TerminalPadHandle, Props>(
       const before = content;
       const data = encodeTerminalPaste(text, { bracketedPaste, submit });
       let written: Promise<void>;
-      try {
-        written = Promise.resolve(write(ptyId, data));
-      } catch {
-        return;
+      if (submit && beforeSubmit) {
+        written = beforeSubmit(tabId)
+          .catch(() => {})
+          .then(() => write(ptyId, data));
+      } else {
+        try {
+          written = Promise.resolve(write(ptyId, data));
+        } catch {
+          return;
+        }
       }
       void written
         .then(() => {

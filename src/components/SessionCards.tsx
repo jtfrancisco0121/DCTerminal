@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import type { PlanEntry, SessionCards as Cards, TaskUpdate, TodoItem } from "../sessionCards";
-import { activeToolProgress } from "../sessionCards";
+import { activeToolProgress, lastAgentSegmentId } from "../sessionCards";
 import type { StreamSegment } from "../transcript";
 import { HandoffActions } from "./HandoffDialog";
 import type { HandoffTargetId } from "../handoff/map";
@@ -56,13 +56,17 @@ export function SessionCards({
       onSend={handoff.onSend}
     />
   ) : null;
+  // Chat already shows these buttons under the last agent message; the
+  // cards only carry them before there is one. Claude's plan exit keeps its
+  // own row because it pairs them with Keep planning.
+  const cardHandoff = lastAgentSegmentId(segments) ? null : handoffActions;
   if (
     plan.length === 0 &&
     !markdown &&
     cards.todos.length === 0 &&
     cards.tasks.length === 0 &&
     !hasTools &&
-    !handoffActions
+    !cardHandoff
   ) {
     return null;
   }
@@ -98,7 +102,7 @@ export function SessionCards({
               </button>
             </div>
           )}
-          {!claudeExit && handoffActions}
+          {!claudeExit && cardHandoff}
         </Card>
       )}
       {cards.todos.length > 0 && (
@@ -110,11 +114,11 @@ export function SessionCards({
               status: todo.status,
             }))}
           />
-          {plan.length === 0 && !markdown ? handoffActions : null}
+          {plan.length === 0 && !markdown ? cardHandoff : null}
         </Card>
       )}
-      {plan.length === 0 && !markdown && cards.todos.length === 0 && handoffActions && (
-        <Card title="Hand-off">{handoffActions}</Card>
+      {plan.length === 0 && !markdown && cards.todos.length === 0 && cardHandoff && (
+        <Card title="Hand-off">{cardHandoff}</Card>
       )}
       {cards.tasks.length > 0 && (
         <Card title="Sub-agents">

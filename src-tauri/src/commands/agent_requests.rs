@@ -708,7 +708,11 @@ fn capture_permission_payload(
         return;
     }
     let dir = crate::data_dir::app_data_dir(app).path;
-    let path = dir.join("logs").join("permission-payloads.jsonl");
+    let path = crate::store::storage_sweep::permission_log_path(&dir);
+    crate::store::storage_sweep::rotate_log_if_large(
+        &path,
+        crate::store::storage_sweep::PERMISSION_LOG_MAX_BYTES,
+    );
     let (display_kind, network, tool_class) = meta.unwrap_or(("", false, ""));
     let record = permission_log_record_with_meta(
         tab_id,
