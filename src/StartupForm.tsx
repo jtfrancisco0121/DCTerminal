@@ -1634,8 +1634,9 @@ export function StartupForm({
   }, []);
 
   const rememberedSurface = useCallback(
+    // Terminal by default (the real Claude Code CLI); Chat only when chosen for the role.
     (id: string): HandoffSurface =>
-      terminalSettings?.roleSurface[id] === "terminal" ? "terminal" : "chat",
+      terminalSettings?.roleSurface[id] === "chat" ? "chat" : "terminal",
     [terminalSettings],
   );
 

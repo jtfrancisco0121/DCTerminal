@@ -116,10 +116,22 @@ vi.mock("./bridge", () => {
   saveFormDraft: vi.fn(async () => {}),
   selectActiveTab: vi.fn(),
   syncActiveTabForm: vi.fn(async () => {}),
+  // These tests exercise chat tabs; with no saved choice a role opens as Terminal.
   getTerminalSettings: vi.fn(async () => ({
     shell: "",
     fontSize: 14,
-    roleSurface: {},
+    roleSurface: Object.fromEntries(
+      [
+        "role_planner",
+        "role_plan_reviewer",
+        "role_implementer",
+        "role_pr_reviewer",
+        "role_developer",
+        "role_general",
+        "role_recommendation",
+        "role_codebase_audit",
+      ].map((id) => [id, "chat"]),
+    ),
     roleRunMode: {},
   })),
   handoffBindTab: vi.fn(),
@@ -238,6 +250,7 @@ vi.mock("./bridge", () => {
 });
 
 import {
+  getTerminalSettings,
   changesFileDiff,
   changesList,
   changesRevert,
@@ -467,6 +480,33 @@ describe("blank tab card", () => {
         expect.objectContaining({
           roleSurface: expect.objectContaining({ role_developer: "chat" }),
         }),
+      ),
+    );
+  });
+
+  it("opens a role as Terminal when no surface was chosen for it", async () => {
+    vi.mocked(getTerminalSettings).mockResolvedValueOnce({
+      shell: "",
+      fontSize: 14,
+      roleSurface: {},
+      roleRunMode: {},
+    });
+    render(
+      <StartupForm
+        roles={[
+          { id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 },
+        ]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+    await screen.findByLabelText("Title");
+    const openAs = screen.getByRole("group", { name: "Open as" });
+    await waitFor(() =>
+      expect(within(openAs).getByRole("button", { name: "Terminal" }).getAttribute("aria-pressed")).toBe(
+        "true",
       ),
     );
   });
