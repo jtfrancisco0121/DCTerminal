@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { ActivityEntry } from "../bridge";
+import type { ActivityEntry, SessionToolCall } from "../bridge";
 import {
   countActivity,
   decisionLabel,
   matchesFilter,
   statusLabel,
   summaryLine,
+  terminalActivityEntries,
 } from "./activityModel";
 
 function entry(over: Partial<ActivityEntry>): ActivityEntry {
@@ -69,5 +70,35 @@ describe("activityModel", () => {
     expect(decisionLabel("none")).toBe("no ask");
     expect(statusLabel("completed")).toBe("done");
     expect(statusLabel(null)).toBe("");
+  });
+});
+
+describe("terminalActivityEntries", () => {
+  it("maps session-log tool calls to activity rows", () => {
+    // The backend sends path, command, url and at as null when they are empty.
+    const filled = (call: Partial<SessionToolCall>) =>
+      ({ path: null, command: null, url: null, at: null, ...call }) as SessionToolCall;
+    const rows = terminalActivityEntries("t1", ([
+      { id: "a", name: "Bash", kind: "execute", title: "Run", command: "npm test", status: "completed", at: "2026-10-10T10:00:00Z" },
+      { id: "b", name: "Read", kind: "read", title: "Read a.ts", path: "src/a.ts", status: "completed" },
+      { id: "c", name: "Write", kind: "edit", title: "Write b.ts", path: "src/b.ts", status: "failed" },
+      { id: "d", name: "WebFetch", kind: "fetch", title: "Fetch", url: "https://x.dev", status: "pending" },
+      { id: "e", name: "mcp__github__get_issue", kind: "other", title: "get_issue", status: "completed" },
+      { id: "f", name: "TodoWrite", kind: "other", title: "", status: "completed" },
+    ] as Partial<SessionToolCall>[]).map(filled));
+    expect(rows.map((row) => [row.kind, row.summary, row.network, row.status])).toEqual([
+      ["shell", "npm test", false, "completed"],
+      ["read", "src/a.ts", false, "completed"],
+      ["edit", "src/b.ts", false, "failed"],
+      ["fetch", "https://x.dev", true, "pending"],
+      ["mcp", "get_issue", false, "completed"],
+      ["other", "TodoWrite", false, "completed"],
+    ]);
+    expect(rows.every((row) => row.decision === "none" && row.tabId === "t1")).toBe(true);
+    expect(rows[0].time).toBe("2026-10-10T10:00:00Z");
+    expect(rows[1].time).toBe("");
+    expect(summaryLine(countActivity(rows))).toBe(
+      "shell 1 · write 0 · edit 1 · fetch 1 · mcp 1 · read 1 · other 1 · rejected 0",
+    );
   });
 });

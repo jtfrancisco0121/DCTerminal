@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { activityList } from "../bridge";
+import { loadActivity } from "./ActivityPanel";
 
 /** Slower than the open panel: the button only shows a count. */
 export const ACTIVITY_BUTTON_POLL_MS = 5000;
@@ -7,20 +7,22 @@ export const ACTIVITY_BUTTON_POLL_MS = 5000;
 type Props = {
   tabId: string;
   busy: boolean;
+  /** Count the terminal's Claude session-log tool calls. */
+  terminal?: boolean;
   /** Changes when the panel closes, so the count catches up. */
   refreshKey?: unknown;
   onOpen: () => void;
 };
 
 /** "Activity (n)" next to "Changes (n)" in chat headers and terminal toolbars. */
-export function ActivityButton({ tabId, busy, refreshKey, onOpen }: Props) {
+export function ActivityButton({ tabId, busy, terminal, refreshKey, onOpen }: Props) {
   const [count, setCount] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     const refresh = () => {
-      activityList(tabId)
-        .then((entries) => {
+      loadActivity(tabId, terminal)
+        .then(({ entries }) => {
           if (!cancelled) setCount(entries.length);
         })
         .catch(() => {});
@@ -32,7 +34,7 @@ export function ActivityButton({ tabId, busy, refreshKey, onOpen }: Props) {
       cancelled = true;
       if (timer !== undefined) window.clearInterval(timer);
     };
-  }, [busy, refreshKey, tabId]);
+  }, [busy, refreshKey, tabId, terminal]);
 
   return (
     <button
