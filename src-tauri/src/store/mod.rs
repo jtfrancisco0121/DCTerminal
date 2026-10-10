@@ -19,7 +19,7 @@ mod workspace_store;
 pub use forms_store::FormsStore;
 pub use forms_types::FormSnapshot;
 pub use handoff_store::{HandoffRecord, HandoffStore, NewHandoff};
-pub use json_io::{read_json, write_json_atomic};
+pub use json_io::{read_json, read_json_or_recover, write_json_atomic};
 pub use projects_store::{ListedProject, ProjectsStore};
 pub use prompt_store::{PromptStore, RecentSend, SavedPrompt};
 pub use roles_store::{add_missing_builtin_roles, docs_roles_dir, seed_output_path, write_seed_file, RolesStore};

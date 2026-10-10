@@ -140,7 +140,7 @@ pub fn run() {
             app.manage(Mutex::new(handoff_store));
             app.manage(Mutex::new(prompt_store));
             app.manage(Mutex::new(workspace_store));
-            app.manage(Mutex::new(crate::usage::UsageStore::default()));
+            app.manage(Mutex::new(crate::usage::UsageStore::open(&data_dir)));
             app.manage(Mutex::new(SessionRegistry::new()));
             app.manage(Mutex::new(PtyRegistry::new()));
             windows::install_macos_menu(app)?;

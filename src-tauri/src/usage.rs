@@ -1,15 +1,20 @@
 //! Last Claude rate-limit windows and per-tab context fill.
 //!
 //! Values come from `usage_update` (`_meta["_claude/rateLimit"]` and
-//! `used`/`size`). They stay in memory, keyed by the Claude config folder,
-//! and are never written into that folder. Token totals and dollar amounts
-//! on the same event are ignored.
+//! `used`/`size`), keyed by the Claude config folder. The rate windows are
+//! also saved to `usage.json` in DCTerminal's app data, so the last reading
+//! is shown after a restart; nothing is written into the config folder.
+//! Context fill stays in memory. Token totals and dollar amounts on the same
+//! event are ignored.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+pub const USAGE_FILE: &str = "usage.json";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RateWindow {
     pub rate_limit_type: String,
@@ -38,14 +43,47 @@ pub struct UsageSnapshot {
     pub context_by_tab: HashMap<String, ContextFill>,
 }
 
+/// What `usage.json` holds: the last rate windows per config folder.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UsageFile {
+    #[serde(default)]
+    by_config: HashMap<String, HashMap<String, RateWindow>>,
+}
+
 #[derive(Debug, Default)]
 pub struct UsageStore {
     by_config: HashMap<String, HashMap<String, RateWindow>>,
     context: HashMap<String, ContextFill>,
     tab_config: HashMap<String, String>,
+    /// `usage.json` in app data. `None` keeps everything in memory (tests).
+    path: Option<PathBuf>,
 }
 
 impl UsageStore {
+    /// Load the last rate windows from app data. A damaged file starts empty.
+    pub fn open(data_dir: &Path) -> Self {
+        let path = data_dir.join(USAGE_FILE);
+        let file: UsageFile = crate::store::read_json_or_recover(&path).unwrap_or_default();
+        Self {
+            by_config: file.by_config,
+            path: Some(path),
+            ..Self::default()
+        }
+    }
+
+    fn save(&self) {
+        let Some(path) = &self.path else {
+            return;
+        };
+        let file = UsageFile {
+            by_config: self.by_config.clone(),
+        };
+        if let Err(err) = crate::store::write_json_atomic(path, &file) {
+            eprintln!("DCTerminal: could not save Claude usage ({err})");
+        }
+    }
+
     pub fn note(&mut self, config_dir: &str, tab_id: &str, raw_json: &str, seen_at_ms: i64) {
         let Ok(params) = serde_json::from_str::<Value>(raw_json) else {
             return;
@@ -96,10 +134,17 @@ impl UsageStore {
             seen_at_ms,
             rate_limit_type: rate_type.clone(),
         };
-        self.by_config
-            .entry(key)
-            .or_default()
-            .insert(rate_type, window);
+        let windows = self.by_config.entry(key).or_default();
+        let changed = windows.get(&rate_type).map(|old| {
+            old.utilization != window.utilization
+                || old.resets_at != window.resets_at
+                || old.status != window.status
+        });
+        windows.insert(rate_type, window);
+        // Every turn repeats the same reading; write only when it changes.
+        if changed != Some(false) {
+            self.save();
+        }
     }
 
     pub fn snapshot(&self, config_dir: &str) -> UsageSnapshot {
@@ -184,6 +229,37 @@ mod tests {
         assert_eq!(fill.size, 1_000_000);
         // A different config folder does not see this account.
         assert!(store.snapshot("/tmp/other").windows.is_empty());
+    }
+
+    #[test]
+    fn last_reading_survives_a_restart_without_context_fill() {
+        let dir = std::env::temp_dir().join(format!(
+            "dcterminal_usage_{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let params = serde_json::json!({
+            "update": {
+                "sessionUpdate": "usage_update",
+                "used": 10,
+                "size": 100,
+                "_meta": { "_claude/rateLimit": {
+                    "status": "allowed", "resetsAt": 200, "rateLimitType": "five_hour", "utilization": 0.42
+                } }
+            }
+        });
+        let mut store = UsageStore::open(&dir);
+        store.note("/cfg", "tab_1", &params.to_string(), 5);
+        let reopened = UsageStore::open(&dir);
+        let snap = reopened.snapshot("/cfg");
+        assert_eq!(snap.windows.len(), 1);
+        assert_eq!(snap.windows[0].utilization, Some(42.0));
+        assert_eq!(snap.windows[0].seen_at_ms, 5);
+        assert!(snap.context_by_tab.is_empty());
+        // A damaged file starts empty instead of failing.
+        std::fs::write(dir.join(USAGE_FILE), "{oops").unwrap();
+        assert!(UsageStore::open(&dir).snapshot("/cfg").windows.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
