@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pipeline Reply Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one reading column; a flow strip up top, then one section per role, prompts as copyable terminal blocks. */
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --fg: #1b2230;
+  --muted: #5a6476;
+  --line: #dde2ea;
+  --code-bg: #101722;
+  --code-fg: #e6edf6;
+  --accent: #2f6fd6;
+  --planner: #3b82f6;
+  --reviewer: #9b6bd9;
+  --implementer: #d98a2b;
+  --pr: #2f9e6e;
+  --warn-bg: #fff6e6;
+  --warn-fg: #7a4a00;
+  --display: "Bricolage Grotesque", "Avenir Next", system-ui, sans-serif;
+  --body: "Instrument Sans", -apple-system, "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e131b; --surface: #151c27; --fg: #e3e8f0; --muted: #98a3b5; --line: #263042;
+    --code-bg: #0a0f16; --code-fg: #e6edf6; --accent: #6ea2f2;
+    --planner: #6aa5ff; --reviewer: #b892f0; --implementer: #f0a754; --pr: #4cc490;
+    --warn-bg: #2a2110; --warn-fg: #f3cd8a; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e131b; --surface: #151c27; --fg: #e3e8f0; --muted: #98a3b5; --line: #263042;
+  --code-bg: #0a0f16; --code-fg: #e6edf6; --accent: #6ea2f2;
+  --planner: #6aa5ff; --reviewer: #b892f0; --implementer: #f0a754; --pr: #4cc490;
+  --warn-bg: #2a2110; --warn-fg: #f3cd8a; color-scheme: dark;
+}
+body { background: var(--bg); color: var(--fg); font-family: var(--body); font-size: 16px; line-height: 1.6; }
+.wrap { max-width: 760px; margin: 0 auto; padding: 0 16px; padding-block: 40px 80px; display: grid; gap: 44px; }
+h1, h2, h3 { font-family: var(--display); text-wrap: balance; line-height: 1.2; margin: 0; }
+h1 { font-size: 2.2rem; }
+h2 { font-size: 1.5rem; }
+h3 { font-size: 1.05rem; font-family: var(--body); font-weight: 600; }
+p { margin: 0; }
+.lede { color: var(--muted); font-size: 1.05rem; max-width: 62ch; }
+header { display: grid; gap: 12px; }
+section { display: grid; gap: 16px; min-width: 0; }
+.eyebrow { font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+code { font-family: var(--mono); font-size: 0.86em; background: color-mix(in srgb, var(--line) 55%, transparent); padding: 1px 5px; border-radius: 4px; }
+ul, ol { margin: 0; padding-left: 1.3em; display: grid; gap: 6px; }
+
+.flow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 0.92rem; }
+.flow .step { padding: 6px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); display: inline-flex; gap: 8px; align-items: center; font-weight: 500; }
+.dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.flow .arrow { color: var(--muted); }
+
+.role { border-left: 3px solid var(--role); padding-left: 18px; display: grid; gap: 14px; }
+.role h2 { display: flex; gap: 10px; align-items: center; }
+.role h2 .dot { width: 12px; height: 12px; background: var(--role); }
+
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 0.74rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+tr:last-child td { border-bottom: 0; }
+td code { white-space: nowrap; }
+
+.prompt { background: var(--code-bg); color: var(--code-fg); border-radius: 8px; overflow: hidden; }
+.prompt-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid #ffffff1a; font-size: 0.8rem; color: #9fb0c6; }
+.prompt pre { margin: 0; padding: 12px 14px; font-family: var(--mono); font-size: 0.83rem; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+.copy { font: inherit; font-size: 0.78rem; color: var(--code-fg); background: #ffffff14; border: 1px solid #ffffff2a; border-radius: 6px; padding: 3px 10px; cursor: pointer; }
+.copy:hover { background: #ffffff24; }
+.copy:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.check { list-style: none; padding: 0; }
+.check li { padding-left: 26px; position: relative; }
+.check li::before { content: ""; position: absolute; left: 2px; top: 0.42em; width: 12px; height: 12px; border: 1.5px solid var(--muted); border-radius: 3px; }
+
+.note { background: var(--warn-bg); color: var(--warn-fg); border-radius: 8px; padding: 12px 14px; font-size: 0.94rem; }
+.note strong { color: inherit; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; display: grid; gap: 6px; min-width: 0; }
+.card p { color: var(--muted); font-size: 0.93rem; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <span class="eyebrow">DCTerminal · Eagle-Eye pipeline</span>
+    <h1>Pipeline Reply Guide</h1>
+    <p class="lede">How to get replies from the Planner, Plan Reviewer, Implementer and PR Reviewer that fill the next role's fields correctly. The short version: every reply must end with its <code>HANDOFF:</code> sections, and you check them before you press Send.</p>
+    <div class="flow" aria-label="Pipeline order">
+      <span class="step"><span class="dot" style="background:var(--planner)"></span>Planner</span><span class="arrow">→</span>
+      <span class="step"><span class="dot" style="background:var(--reviewer)"></span>Plan Reviewer</span><span class="arrow">→</span>
+      <span class="step"><span class="dot" style="background:var(--implementer)"></span>Implementer</span><span class="arrow">→</span>
+      <span class="step"><span class="dot" style="background:var(--pr)"></span>PR Reviewer</span>
+    </div>
+  </header>
+
+  <section>
+    <h2>Before you start a chain</h2>
+    <ul class="check">
+      <li>Run <code>./install.sh</code> after pulling, so the roles have the newest prompts.</li>
+      <li>If you ever edited a built-in role, press <strong>Settings › Roles › &lt;role&gt; › Reset built-in</strong>. Edited roles keep your old prompt and may not write the HANDOFF sections.</li>
+      <li>Run <code>gh auth status</code> once. The Implementer opens PRs and the PR Reviewer posts on them through <code>gh</code>.</li>
+      <li>Start roles in the parent folder (<code>~/Documents/Koneksi</code>) when the work spans several repos. Each role runs git inside the right repo.</li>
+      <li>A tab keeps the prompt it started with. Changes to roles apply to new tabs only.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>What each reply must end with</h2>
+    <p>DCTerminal reads these sections to fill the next role's form and decide the next button. If they're missing, it falls back to guessing, and the next role gets less.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Role</th><th>Required sections, in order</th></tr></thead>
+        <tbody>
+          <tr><td>Planner</td><td><code>HANDOFF: Plan</code> · <code>HANDOFF: Pull requests</code> · <code>HANDOFF: Open questions</code></td></tr>
+          <tr><td>Plan Reviewer</td><td><code>HANDOFF: Verdict</code> · <code>HANDOFF: Reviewed plan</code> · <code>HANDOFF: Pull requests</code> · <code>HANDOFF: Review notes</code></td></tr>
+          <tr><td>Implementer</td><td><code>HANDOFF: Implementation summary</code> · <code>Files changed</code> · <code>Tests run</code> · <code>Deviations from the plan</code> · <code>Pull requests</code></td></tr>
+          <tr><td>PR Reviewer</td><td><code>HANDOFF: Verdict</code> · <code>HANDOFF: Findings for the Implementer</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>If a reply is missing them, don't send it. Paste this into the same terminal:</p>
+    <div class="prompt">
+      <div class="prompt-head"><span>Any role · missing HANDOFF sections</span><button class="copy" type="button">Copy</button></div>
+      <pre>Your reply is missing the HANDOFF sections. Repeat your result, complete and self-contained, ending with the HANDOFF sections your instructions list, using those headings exactly. Put nothing after them.</pre>
+    </div>
+  </section>
+
+  <section>
+    <h2>Which “What to send” option to pick</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Option</th><th>Use it when</th></tr></thead>
+        <tbody>
+          <tr><td>Claude's plan (ExitPlanMode)</td><td>The role worked in plan mode and the newest plan is the bordered box in the terminal. Usual choice for the Planner.</td></tr>
+          <tr><td>Claude's last reply</td><td>The role answered in a normal reply (Plan Reviewer, Implementer, PR Reviewer), or the plan box is older than the latest answer.</td></tr>
+          <tr><td>Newest plan file</td><td>Only if the plan box and last reply are both wrong but the saved plan file is right.</td></tr>
+          <tr><td>Selected text</td><td>You want to send just one part you highlighted.</td></tr>
+          <tr><td>Last 200 lines</td><td>Last resort. Sends raw scrollback, so fields fill less precisely.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><strong>Always scroll to the bottom of the preview</strong> before pressing Send. You should see the plan's <code>Pull requests:</code> list and, for a Planner, its <code>Open questions:</code>. If the preview looks like an older version, switch to <em>Claude's last reply</em>.</p>
+  </section>
+
+  <section class="role" style="--role:var(--planner)">
+    <h2><span class="dot"></span>Planner</h2>
+    <h3>Check before sending</h3>
+    <ul class="check">
+      <li>The plan is complete on its own, not “see section 9”.</li>
+      <li><code>Pull requests</code> lists each unit with its repo, scope and <code>Depends on</code>, or says <code>One pull request.</code></li>
+      <li>Manual steps (releases, deploys) are marked <code>Manual step</code>.</li>
+      <li><strong>Open questions are answered.</strong> Product decisions are yours. The Plan Reviewer can only weigh in on technical ones.</li>
+    </ul>
+    <div class="prompt">
+      <div class="prompt-head"><span>Answering open questions</span><button class="copy" type="button">Copy</button></div>
+      <pre>Answers to your open questions:
+1. …
+2. …
+3. Defer to the backlog.
+
+Update the plan with these answers and resubmit it, ending with the HANDOFF: Plan, HANDOFF: Pull requests and HANDOFF: Open questions sections.</pre>
+    </div>
+    <div class="prompt">
+      <div class="prompt-head"><span>Asking for changes</span><button class="copy" type="button">Copy</button></div>
+      <pre>Revise the plan: … (what to change and why).
+
+Resubmit the full revised plan, not a list of changes, ending with the three HANDOFF sections.</pre>
+    </div>
+    <div class="prompt">
+      <div class="prompt-head"><span>Work that should ship as several PRs</span><button class="copy" type="button">Copy</button></div>
+      <pre>Split this into pull requests: one per repository, with dependent changes stacked in order and independent ones marked Depends on: none. Mark releases and deploys as Manual step. Put the list in HANDOFF: Pull requests.</pre>
+    </div>
+    <p>Then press <strong>Send to Plan Reviewer</strong> → Terminal → <em>Claude's plan (ExitPlanMode)</em>.</p>
+  </section>
+
+  <section class="role" style="--role:var(--reviewer)">
+    <h2><span class="dot"></span>Plan Reviewer</h2>
+    <h3>Read the verdict, then act</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Verdict</th><th>What you do</th></tr></thead>
+        <tbody>
+          <tr><td><code>APPROVED</code></td><td>Press <strong>Next: Send to Implementer</strong> → <em>Claude's last reply</em>.</td></tr>
+          <tr><td><code>APPROVED WITH CHANGES</code></td><td>Check that <code>Reviewed plan</code> is the full plan with the changes applied. If it only lists the changes, use the prompt below first.</td></tr>
+          <tr><td><code>REQUIRES REVISION</code></td><td>Press <strong>Send to Planner</strong>. The findings go back to the same Planner tab as a new round.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="prompt">
+      <div class="prompt-head"><span>It recommended changes but didn't apply them</span><button class="copy" type="button">Copy</button></div>
+      <pre>Apply all your recommended changes and write the full revised plan. Make the remaining choices yourself and say why. End with the four HANDOFF sections: Verdict, Reviewed plan, Pull requests, Review notes.</pre>
+    </div>
+    <p>To make a decision yourself instead, add a line before the last sentence, for example “Stability check: use #150.” Things it couldn't verify belong in <code>Review notes</code>, and the Implementer will see them.</p>
+  </section>
+
+  <section class="role" style="--role:var(--implementer)">
+    <h2><span class="dot"></span>Implementer</h2>
+    <h3>Check before sending</h3>
+    <ul class="check">
+      <li>Final status is <code>IMPLEMENTED</code> or <code>IMPLEMENTED WITH DEVIATIONS</code>, not <code>BLOCKED</code>.</li>
+      <li><code>Pull requests</code> has one line per PR: link, branch and base. Stacked PRs show the branch they're based on.</li>
+      <li>Manual steps are listed as waiting for you. Do them before merging the PRs that need them.</li>
+      <li><code>Tests run</code> shows real commands and results. A skipped test is not a pass.</li>
+    </ul>
+    <div class="prompt">
+      <div class="prompt-head"><span>No PR was opened</span><button class="copy" type="button">Copy</button></div>
+      <pre>Publish the verified work as draft pull requests, one per unit in the plan's pull-request list, following section 17. Then repeat the HANDOFF sections with every PR link under HANDOFF: Pull requests.</pre>
+    </div>
+    <div class="prompt">
+      <div class="prompt-head"><span>It stopped as BLOCKED</span><button class="copy" type="button">Copy</button></div>
+      <pre>Answer to your blocker: …
+
+Continue with the remaining units. Don't let one blocked unit stop the others. End with the HANDOFF sections.</pre>
+    </div>
+    <p>Then press <strong>Next: Send to PR Reviewer</strong> → <em>Claude's last reply</em>. The reviewer receives every PR link, not just the first.</p>
+  </section>
+
+  <section class="role" style="--role:var(--pr)">
+    <h2><span class="dot"></span>PR Reviewer</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Verdict</th><th>What happens</th></tr></thead>
+        <tbody>
+          <tr><td><code>REQUEST CHANGES</code></td><td>Press <strong>Send back to Implementer</strong>. The Implementer fixes only the PRs named, pushes to the same branches, and you send it back for round 2. Round 2 checks the earlier findings first.</td></tr>
+          <tr><td><code>APPROVED</code></td><td>The chain is complete. The review is posted on each PR, and approved PRs are marked ready. <strong>You merge</strong>, in dependency order (PR1 before anything stacked on it).</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>With several PRs, the overall verdict is <code>APPROVED</code> only when every PR passes. PRs that already pass are marked ready right away, even if others need changes.</p>
+    <div class="prompt">
+      <div class="prompt-head"><span>Findings aren't grouped by PR</span><button class="copy" type="button">Copy</button></div>
+      <pre>Group HANDOFF: Findings for the Implementer by pull request: one PR&lt;n&gt; — &lt;URL&gt; line per PR with its verdict, then that PR's numbered findings with file, line and expected fix.</pre>
+    </div>
+  </section>
+
+  <section>
+    <h2>Common mistakes</h2>
+    <div class="grid2">
+      <div class="card"><h3>Sending with open questions</h3><p>The next role guesses or asks again. Answer them in the Planner first, or write “defer” for each one.</p></div>
+      <div class="card"><h3>Sending a list of changes</h3><p>The Implementer needs the whole plan. Ask for “the full revised plan, not a list of changes”.</p></div>
+      <div class="card"><h3>Picking an old plan</h3><p>After a revision, check the end of the preview matches the newest answer before sending.</p></div>
+      <div class="card"><h3>Typing <code>/clear</code> in a role tab</h3><p>It starts a new Claude session, and DCTerminal loses track of the replies. Start a new tab instead.</p></div>
+      <div class="card"><h3>Quitting mid-turn</h3><p>Tabs come back, but Claude restarts fresh. Let the Implementer finish and push first.</p></div>
+      <div class="card"><h3>Merging out of order</h3><p>Merge a PR before anything stacked on it, and do any manual steps they need first.</p></div>
+    </div>
+  </section>
+</div>
+
+<script>
+document.querySelectorAll(".prompt").forEach((block) => {
+  const button = block.querySelector(".copy");
+  const pre = block.querySelector("pre");
+  button.addEventListener("click", () => {
+    const done = () => { button.textContent = "Copied"; setTimeout(() => { button.textContent = "Copy"; }, 1500); };
+    const select = () => {
+      const range = document.createRange();
+      range.selectNodeContents(pre);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      button.textContent = "Press ⌘C";
+    };
+    try {
+      navigator.clipboard.writeText(pre.textContent).then(done, select);
+    } catch (e) { select(); }
+  });
+});
+</script>
+</body>
+</html>
