@@ -176,6 +176,11 @@ export function firstGithubPrUrl(text: string): string | null {
   return text.match(GITHUB_PR_URL)?.[0] ?? null;
 }
 
+/** Every distinct GitHub pull-request URL in `text`, in order. */
+export function githubPrUrls(text: string): string[] {
+  return [...new Set(text.match(new RegExp(GITHUB_PR_URL.source, "g")) ?? [])];
+}
+
 /** Implementer → PR Reviewer extra context. Paths and counts, never a diff. */
 export function implementationContext(source: HandoffSource): string {
   const parts: string[] = [];
@@ -206,10 +211,15 @@ export function implementationContext(source: HandoffSource): string {
       `Findings from the previous review (round ${previous.round}). Check each one is resolved and say which in your review:\n${takeChars(previous.findings.trim(), 4_000)}`,
     );
   }
-  const pr =
-    firstGithubPrUrl(declared?.pullRequest ?? "") ??
-    firstGithubPrUrl(`${source.transcriptText ?? ""}\n${source.latestMessage}`);
-  if (pr) parts.push(`Pull request: ${pr}`);
+  const declaredPrs = githubPrUrls(declared?.pullRequest ?? "");
+  // Several pull requests: pass the Implementer's whole list (branches, bases, manual steps).
+  if (declared && (declaredPrs.length > 1 || /manual step/i.test(declared.pullRequest))) {
+    parts.push(`Pull requests:\n${takeChars(declared.pullRequest, 4_000)}`);
+  } else {
+    const pr =
+      declaredPrs[0] ?? firstGithubPrUrl(`${source.transcriptText ?? ""}\n${source.latestMessage}`);
+    if (pr) parts.push(`Pull request: ${pr}`);
+  }
   return parts.join("\n\n");
 }
 

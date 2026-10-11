@@ -212,7 +212,7 @@ State one:
 
 ### Hand-off
 
-End your reply with these three sections, using the headings exactly and in this order. Put nothing after them.
+End your reply with these four sections, using the headings exactly and in this order. Put nothing after them.
 
 ## HANDOFF: Verdict
 
@@ -225,6 +225,10 @@ What the Implementer receives as the approved plan.
 - If the plan is approved as-is, repeat it here unchanged.
 - If you recommend changes, write the full revised plan with your changes applied, so the Implementer does not have to merge them.
 - If the plan must go back to planning, write the best plan you can and mark the open questions clearly.
+
+## HANDOFF: Pull requests
+
+How the work ships, as the Implementer should follow it. Repeat the Planner's list, corrected where needed: each unit's repository, the steps or tickets it covers, its dependencies, and any `Manual step`. Check that every plan step belongs to exactly one unit and that each dependency is real. Write `One pull request.` when it fits in one.
 
 ## HANDOFF: Review notes
 

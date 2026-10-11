@@ -191,7 +191,7 @@ describe("HandoffDialog loop-back", () => {
     expect(screen.getByRole("dialog", { name: "Send back to Implementer" })).toBeTruthy();
     expect(screen.getByLabelText("Target tab").textContent).toBe("To tab: Implementer · Fix");
     expect(screen.getByLabelText("Follow-up message").textContent).toBe(
-      "Review findings from the PR Reviewer (round 1):\n\n## Verdict\nREQUEST CHANGES\n\nAddress these findings, then push to the same branch so the existing pull request updates (do not open a new one). End your reply with the HANDOFF sections: Implementation summary, Files changed, Tests run, Deviations from the plan, and Pull request (the same URL).",
+      "Review findings from the PR Reviewer (round 1):\n\n## Verdict\nREQUEST CHANGES\n\nAddress these findings, then push to the same branch of each pull request they name so the existing pull requests update (do not open new ones). End your reply with the HANDOFF sections: Implementation summary, Files changed, Tests run, Deviations from the plan, and Pull requests (the same URLs).",
     );
     expect(screen.queryByRole("radio", { name: "Terminal" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Send follow-up to Implementer · Fix" }));

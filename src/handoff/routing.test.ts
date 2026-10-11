@@ -95,7 +95,7 @@ describe("handoffRoute", () => {
 describe("loopBackMessage", () => {
   it("frames the findings for the earlier stage", () => {
     expect(loopBackMessage("role_pr_reviewer", "  - bug\n", 1)).toBe(
-      "Review findings from the PR Reviewer (round 1):\n\n- bug\n\nAddress these findings, then push to the same branch so the existing pull request updates (do not open a new one). End your reply with the HANDOFF sections: Implementation summary, Files changed, Tests run, Deviations from the plan, and Pull request (the same URL).",
+      "Review findings from the PR Reviewer (round 1):\n\n- bug\n\nAddress these findings, then push to the same branch of each pull request they name so the existing pull requests update (do not open new ones). End your reply with the HANDOFF sections: Implementation summary, Files changed, Tests run, Deviations from the plan, and Pull requests (the same URLs).",
     );
     expect(loopBackMessage("role_plan_reviewer", "x", 2)).toMatch(
       /^Review findings from the Plan Reviewer \(round 2\)[\s\S]*revised plan, ending with the `## HANDOFF: Plan`/,

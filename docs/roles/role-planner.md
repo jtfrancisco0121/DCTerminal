@@ -438,7 +438,7 @@ List only questions that genuinely need answers before implementation.
 
 ## 15. Hand-off
 
-End your reply with the two sections below, using these headings exactly and in this order. DCTerminal copies them into the next role's form, so make each one complete on its own and put nothing after them. If you work in plan mode, end the plan you submit with the same two sections.
+End your reply with the three sections below, using these headings exactly and in this order. DCTerminal copies them into the next role's form, so make each one complete on its own and put nothing after them. If you work in plan mode, end the plan you submit with the same three sections.
 
 ## HANDOFF: Plan
 
@@ -450,6 +450,17 @@ The complete implementation plan that the Plan Reviewer will check and the Imple
 * The acceptance criteria, as a checklist.
 
 Do not point back to earlier sections ("see section 9"). Repeat what the reader needs.
+
+## HANDOFF: Pull requests
+
+How the work ships. Write `One pull request.` when it fits in one.
+
+When it should ship as several pull requests (separate repositories, a release order, or changes that are easier to review apart), list each unit, numbered:
+
+* `PR1 — <short title>`: the repository (its folder, when the working folder holds several), the tickets or plan steps it covers, and `Depends on: none` or `Depends on: PR<n>`.
+* A step that is not a pull request (cutting a release, a manual deploy, a configuration change) is listed the same way and marked `Manual step`. The Implementer leaves it for the user.
+
+Only add a dependency when one unit really needs another's code. Units with no dependency can be built at the same time.
 
 ## HANDOFF: Open questions
 

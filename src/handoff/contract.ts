@@ -52,19 +52,39 @@ export function hasHandoffContract(text: string): boolean {
   return HEADING.test(text);
 }
 
-/** A Planner's plan, with its open questions when there are any. */
+/**
+ * The plan's pull-request list when the work ships as several pull requests,
+ * or null for one pull request (or none given).
+ */
+export function contractPullRequestList(text: string): string | null {
+  const list = handoffSection(text, "Pull requests", "Pull request plan");
+  if (!list || /^one pull request\.?$/i.test(list.trim())) return null;
+  return list;
+}
+
+/** `plan` followed by the pull-request list, unless the plan already carries it. */
+function withPullRequestList(plan: string, list: string | null): string {
+  if (!list || /^Pull requests:/im.test(plan)) return plan;
+  return `${plan}\n\nPull requests:\n${list}`;
+}
+
+/** A Planner's plan, with its pull-request list and open questions when there are any. */
 export function contractPlan(text: string): string | null {
   const plan = handoffSection(text, "Plan", "Implementation plan");
   if (plan === null || !plan) return null;
+  const full = withPullRequestList(plan, contractPullRequestList(text));
   const questions = handoffSection(text, "Open questions", "Questions");
-  return questions ? `${plan}\n\nOpen questions:\n${questions}` : plan;
+  return questions ? `${full}\n\nOpen questions:\n${questions}` : full;
 }
 
-/** A Plan Reviewer's reviewed plan and notes. */
+/** A Plan Reviewer's reviewed plan (with its pull-request list) and notes. */
 export function contractReview(text: string): { plan: string; notes: string } | null {
   const plan = handoffSection(text, "Reviewed plan", "Revised plan");
   if (plan === null || !plan) return null;
-  return { plan, notes: handoffSection(text, "Review notes", "Notes") ?? "" };
+  return {
+    plan: withPullRequestList(plan, contractPullRequestList(text)),
+    notes: handoffSection(text, "Review notes", "Notes") ?? "",
+  };
 }
 
 /** A PR Reviewer's findings for the Implementer. */
@@ -92,6 +112,6 @@ export function contractImplementation(text: string): {
     files: handoffSection(text, "Files changed") ?? "",
     tests: handoffSection(text, "Tests run", "Tests") ?? "",
     deviations: handoffSection(text, "Deviations from the plan", "Deviations") ?? "",
-    pullRequest: handoffSection(text, "Pull request", "PR") ?? "",
+    pullRequest: handoffSection(text, "Pull requests", "Pull request", "PR") ?? "",
   };
 }

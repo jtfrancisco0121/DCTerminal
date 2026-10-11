@@ -165,4 +165,57 @@ describe("hand-off contract", () => {
       "Findings from the previous review (round 1). Check each one is resolved and say which in your review:\n1. src/a.ts:10 — add a guard",
     );
   });
+
+  it("a plan that ships as several pull requests carries its list to the next role", () => {
+    const list = [
+      "1. PR1 — Rename identity: koneksi-engine, R2 + T4. Depends on: none",
+      "2. PR3 — Startup sync: koneksi-engine, R1 + R3. Depends on: PR1",
+      "3. Release — Manual step: cut an engine release.",
+    ].join("\n");
+    const planner = [
+      "## HANDOFF: Plan",
+      "1. Fix the engine.",
+      "## HANDOFF: Pull requests",
+      list,
+      "## HANDOFF: Open questions",
+      "None.",
+    ].join("\n");
+    expect(contractPlan(planner)).toBe(`1. Fix the engine.\n\nPull requests:\n${list}`);
+    const single = planner.replace(list, "One pull request.");
+    expect(contractPlan(single)).toBe("1. Fix the engine.");
+
+    const review = [
+      "## HANDOFF: Verdict",
+      "APPROVED",
+      "## HANDOFF: Reviewed plan",
+      "1. Fix the engine.",
+      "## HANDOFF: Pull requests",
+      list,
+      "## HANDOFF: Review notes",
+      "None.",
+    ].join("\n");
+    expect(contractReview(review)?.plan).toBe(`1. Fix the engine.\n\nPull requests:\n${list}`);
+    // A reviewed plan that already repeats the list is not given it twice.
+    const repeated = review.replace("1. Fix the engine.", `1. Fix the engine.\n\nPull requests:\n${list}`);
+    expect(contractReview(repeated)?.plan.match(/Pull requests:/g)).toHaveLength(1);
+  });
+
+  it("an Implementer's several pull requests all reach the PR Reviewer", () => {
+    const prs = [
+      "PR1 — https://github.com/koneksi/engine/pull/11 — branch fix/rename, based on main — koneksi-engine",
+      "PR3 — https://github.com/koneksi/engine/pull/12 — branch fix/sync, based on fix/rename — koneksi-engine",
+      "PR6 — https://github.com/koneksi/desktop/pull/40 — branch fix/t2, based on main — koneksi-desktop",
+      "Manual step — waiting for the user: cut engine release v1.2.6",
+    ].join("\n");
+    const reply = [
+      "## HANDOFF: Implementation summary",
+      "Built all units. IMPLEMENTED",
+      "## HANDOFF: Pull requests",
+      prs,
+    ].join("\n");
+    expect(contractImplementation(reply)?.pullRequest).toBe(prs);
+    const context = implementationContext(source({ sourceRoleId: "role_implementer", latestMessage: reply }));
+    expect(context).toContain(`Pull requests:\n${prs}`);
+    expect(context).not.toContain("Pull request: ");
+  });
 });

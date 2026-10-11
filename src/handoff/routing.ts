@@ -52,7 +52,11 @@ export function handoffRoute(options: {
 const PLANNER_ASK =
   "Revise the plan to address these findings, then reply with the full revised plan, ending with the `## HANDOFF: Plan` and `## HANDOFF: Open questions` sections.";
 const IMPLEMENTER_ASK =
-  "Address these findings, then push to the same branch so the existing pull request updates (do not open a new one). End your reply with the HANDOFF sections: Implementation summary, Files changed, Tests run, Deviations from the plan, and Pull request (the same URL).";
+  "Address these findings, then push to the same branch of each pull request they name so the existing pull requests update (do not open new ones). End your reply with the HANDOFF sections: Implementation summary, Files changed, Tests run, Deviations from the plan, and Pull requests (the same URLs).";
+/** Asks from earlier releases, stripped from recorded send-backs. */
+const OLD_ASKS = [
+  "Address these findings, then push to the same branch so the existing pull request updates (do not open a new one). End your reply with the HANDOFF sections: Implementation summary, Files changed, Tests run, Deviations from the plan, and Pull request (the same URL).",
+];
 
 export function loopBackMessage(
   sourceRoleId: string,
@@ -70,7 +74,7 @@ export function loopBackFindings(text: string): { from: string; round: number; f
   const head = /^Review findings from the (.+?) \(round (\d+)\):\n\n/.exec(text.trimStart());
   if (!head) return null;
   let findings = text.trimStart().slice(head[0].length);
-  for (const ask of [PLANNER_ASK, IMPLEMENTER_ASK]) {
+  for (const ask of [PLANNER_ASK, IMPLEMENTER_ASK, ...OLD_ASKS]) {
     if (findings.trimEnd().endsWith(ask)) findings = findings.trimEnd().slice(0, -ask.length);
   }
   // Messages from before the HANDOFF asks end with a short plain ask.

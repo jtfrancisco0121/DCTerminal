@@ -500,13 +500,26 @@ When the work is verified (tests pass, the diff is clean, Final Status is not `B
 2. Stage only the files this task changed (`git add <paths>`, never a blind `git add -A`) and commit with a clear message.
 3. Push the branch: `git push -u origin HEAD`.
 4. Open a draft pull request with GitHub CLI: `gh pr create --draft --title "<title>" --body "<what changed, how it was tested, deviations from the plan>"`.
-5. Put the pull request URL in `## HANDOFF: Pull request`.
+5. Put the pull request URL in `## HANDOFF: Pull requests`.
 
 If the current branch already has an open pull request, push to it and give its URL instead of opening another.
 
-If the repository has no GitHub remote, `gh` is not installed or not signed in, or the push is refused, do not work around it. Leave the work committed on the branch, say exactly what failed, and write `None.` with the reason under `## HANDOFF: Pull request`.
+If the repository has no GitHub remote, `gh` is not installed or not signed in, or the push is refused, do not work around it. Leave the work committed on the branch, say exactly what failed, and write `None.` with the reason under `## HANDOFF: Pull requests`.
 
 Never force-push, merge, or close a pull request.
+
+## When the plan ships as several pull requests
+
+Follow the plan's pull-request list (`Pull requests:` in the approved plan). Each unit becomes its own branch and its own draft pull request, opened as above.
+
+* **Repository.** The working folder may hold several repositories. Run every git and `gh` command inside the unit's own repository folder.
+* **Independent units** (`Depends on: none`): build them in separate git worktrees (`git worktree add ../<repo>-<branch> -b <branch> <default branch>`) so they never share a checkout. You may hand each one to a sub-agent, giving it the unit's plan steps, its worktree, and these rules. Check each sub-agent's result yourself before you open its pull request.
+* **Dependent units** (`Depends on: PR<n>`): branch from the dependency's branch, and open the pull request against it (`gh pr create --draft --base <dependency branch> …`) so its diff shows only its own changes. Build these in order.
+* **Manual steps** (a release, a deploy, a configuration change): do not do them. List them under `## HANDOFF: Pull requests` as `Manual step — waiting for the user`, with exactly what the user needs to do.
+* **A blocked unit** does not stop the others. Finish what you can and mark the blocked unit with the reason.
+* Remove each worktree you created once its branch is pushed (`git worktree remove <path>`).
+
+When a review sends work back, fix only the pull requests the findings name, on their existing branches, and push. If a fix changes a branch that another unit is built on, merge it into that dependent branch (`git merge <dependency branch>`) and push. Never rebase or force-push a pushed branch.
 
 ---
 
@@ -690,9 +703,9 @@ One line per command: `command — result`.
 
 What differs from the approved plan and why, or `None.`
 
-## HANDOFF: Pull request
+## HANDOFF: Pull requests
 
-The pull request URL, or `None.`
+One line per pull request: `PR<n> — <URL> — branch <branch>, based on <base branch> — <repository>`. Add `Manual step — waiting for the user: <what to do>` lines and blocked units with their reason. For a single pull request, just the URL. `None.` with the reason if nothing could be published.
 
 ---
 
@@ -721,7 +734,7 @@ The pull request URL, or `None.`
 21. Do not claim something works without verification.
 22. Do not stop merely because implementation is difficult; investigate and solve problems where the requirements are clear.
 23. Prefer the smallest safe implementation that fully satisfies the requirements.
-24. Publish verified work as a draft pull request (section 17). Never force-push, merge, or close a pull request.
+24. Publish verified work as draft pull requests, one per unit of the plan's pull-request list (section 17). Never force-push, merge, or close a pull request.
 
 ---
 

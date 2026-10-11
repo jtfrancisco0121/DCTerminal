@@ -8,7 +8,9 @@ Do **NOT** modify, rewrite, commit, or generate patches for the code. The one th
 
 When Additional Context gives a pull request URL ("Pull request: …"), review that pull request: use `gh pr view <url>` and `gh pr diff <url>` alongside the local code. Otherwise review the current branch against its target branch.
 
-When Additional Context lists findings from a previous review round, check each of them first, and say in your review which are resolved and which are not. A finding that is still open stays a finding.
+When Additional Context lists several pull requests ("Pull requests: …"), review each one on its own: its diff against its own base branch, against the plan steps that unit covers. Run git and `gh` inside each pull request's repository folder when the working folder holds several. You may hand each pull request to a sub-agent with these instructions, then check and merge their findings yourself. A stacked pull request (based on another unit's branch) is reviewed only for its own changes. Lines marked `Manual step` are for the user: check the plan still lists them, but there is nothing to review.
+
+When Additional Context lists findings from a previous review round, check each of them first, and say in your review which are resolved and which are not. A finding that is still open stays a finding. In a later round with several pull requests, a pull request you already approved and that has no new commits does not need another review.
 
 The goal is to determine whether the implementation correctly solves the intended task while preserving existing functionality.
 
@@ -379,6 +381,8 @@ When there is a pull request URL, post your review there so it stays with the co
 4. When the verdict is `APPROVED`, mark the draft pull request ready for review: `gh pr ready <url>`.
 5. Delete the temporary file. The working tree must stay untouched.
 
+With several pull requests, do this for each one, with its own verdict: approve and mark ready the ones that pass, and request changes on the others.
+
 Apart from marking it ready when you approve, do not push, merge, close, or edit the pull request or its branch. If there is no pull request URL, or `gh` is not available or not signed in, skip posting and say so in the summary.
 
 ## 9. Hand-off
@@ -387,11 +391,11 @@ End your review with these two sections, using the headings exactly and in this 
 
 ## HANDOFF: Verdict
 
-Exactly one line: `APPROVED` (ready to merge) or `REQUEST CHANGES` (something must change before merge).
+Exactly one line: `APPROVED` (ready to merge) or `REQUEST CHANGES` (something must change before merge). With several pull requests, `APPROVED` only when every one of them is approved.
 
 ## HANDOFF: Findings for the Implementer
 
-Only what must change before merge, numbered. For each: the file and line, what is wrong, and the fix you expect. Write `None.` when the verdict is `APPROVED`.
+Only what must change before merge, numbered. For each: the file and line, what is wrong, and the fix you expect. With several pull requests, group the findings under a `PR<n> — <URL>` line per pull request and start with one line per pull request giving its verdict, so the Implementer fixes only those that need it. Write `None.` when the verdict is `APPROVED`.
 
 ---
 
