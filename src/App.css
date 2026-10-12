@@ -4776,3 +4776,45 @@ button.chain-label {
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--success) 50%, transparent);
   }
 }
+
+.terminal-exit-strip {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  padding: 0.4rem 0.6rem;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+}
+
+.terminal-exit-strip-text {
+  min-width: 0;
+  flex: 1 1 14rem;
+}
+
+.terminal-exit-strip-text p {
+  margin: 0;
+}
+
+.terminal-exit-strip-last {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, monospace);
+  opacity: 0.8;
+}
+
+.terminal-exit-strip-reason,
+.terminal-exit-strip-note {
+  font-size: 0.85em;
+  opacity: 0.8;
+}
+
+.terminal-exit-strip-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
