@@ -1,4 +1,5 @@
 import { Dialog } from "./Dialog";
+import { DisabledReason } from "./DisabledReason";
 import { InlineNotice } from "./InlineNotice";
 import { useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -173,6 +174,13 @@ export function FirstRunSetup({
   const dir = claude?.configDir ?? null;
   const claudeAccount = accountLabel(claude?.login);
 
+  const nextReason =
+    step === "claude"
+      ? "Install Claude Code or the Cursor CLI to continue."
+      : step === "folder"
+        ? "Choose a folder to continue."
+        : "Pick a role to continue.";
+
   const startReason = !roleId
     ? "Pick a role to start with."
     : !folder.trim()
@@ -184,7 +192,8 @@ export function FirstRunSetup({
       <button type="button" className="link-button first-run-skip" disabled={busy} onClick={onSkip}>
         Skip setup
       </button>
-      {step === "role" && startReason && <span className="dialog-footer-note">{startReason}</span>}
+      {step === "role" && <DisabledReason>{startReason}</DisabledReason>}
+      {step !== "role" && !canNext && !busy && <DisabledReason>{nextReason}</DisabledReason>}
       {at > 0 && (
         <button
           type="button"
@@ -261,7 +270,7 @@ export function FirstRunSetup({
                     href={CLAUDE_INSTALL_URL}
                     onClick={(event) => {
                       event.preventDefault();
-                      void openUrl(CLAUDE_INSTALL_URL).catch(() => {});
+                      void openUrl(CLAUDE_INSTALL_URL).catch((err: unknown) => setError(errorText(err)));
                     }}
                   >
                     Install Claude Code
@@ -368,7 +377,7 @@ export function FirstRunSetup({
                   href={INSTALL_URL}
                   onClick={(event) => {
                     event.preventDefault();
-                    void openUrl(INSTALL_URL).catch(() => {});
+                    void openUrl(INSTALL_URL).catch((err: unknown) => setError(errorText(err)));
                   }}
                 >
                   install the Cursor CLI

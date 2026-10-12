@@ -61,6 +61,7 @@ export function useChatImages() {
       remove(tabId: string, id: string) {
         setItems(tabId, (itemsRef.current[tabId] ?? []).filter((item) => item.id !== id));
         setError(tabId, null);
+        // intentionally silent: the chip is already gone; Rust deletes leftover files after the turn.
         void attachmentRemove(tabId, id).catch(() => {});
       },
       /** Hand the chips to a send and clear them. Rust deletes the files after the turn. */
