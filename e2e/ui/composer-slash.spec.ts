@@ -21,7 +21,7 @@ test.beforeEach(async ({ app, page }) => {
 });
 
 test("the pad offers the same commands and Enter picks one", async ({ app, page }) => {
-  const { editor, pad } = chat;
+  const { editor } = chat;
   await editor.fill("/");
   const menu = page.getByRole("listbox", { name: "Slash commands" });
   await expect(menu.getByRole("option")).toHaveText([/^\/compact/, /^\/context/, /^\/review/, /^\/security-review/]);
