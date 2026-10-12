@@ -201,6 +201,7 @@ import {
 } from "./handoff/chains";
 import { handoffRoute, loopBackMessage } from "./handoff/routing";
 import { attachHandoff, handoffFieldsOf, prepareHandoff, saveHandoff } from "./handoff/executor";
+import { pipelineDef } from "./pipeline/defs";
 import {
   isReviewerRole,
   parseReviewVerdict,
@@ -421,6 +422,8 @@ type Props = {
   /** F8: re-run CLI detection (App keeps the result). */
   onRedetectCli?: () => Promise<CliDetectResult>;
   onRefreshRoles?: () => Promise<void>;
+  /** Your own pipelines were saved (Settings › Pipelines). */
+  onPipelinesChanged?: () => void;
 };
 
 export function StartupForm({
@@ -432,6 +435,7 @@ export function StartupForm({
   showDevTools,
   onRedetectCli,
   onRefreshRoles,
+  onPipelinesChanged,
 }: Props) {
   const [roleId, setRoleId] = useState("role_implementer");
   const [role, setRole] = useState<Role | null>(null);
@@ -3511,10 +3515,14 @@ export function StartupForm({
 
   /** Role terminal that can hand off: a plan, a report, a review, or finished work (selection or tail). */
   const isTerminalSource = (tab: TabSummary | null | undefined): boolean =>
-    tab?.kind === "terminal" && tab.terminalLaunch === "role" && isHandoffSource(tab.roleId, roles);
+    tab?.kind === "terminal" &&
+    tab.terminalLaunch === "role" &&
+    isHandoffSource(tab.roleId, roles, tab.chain ?? null);
   const isPlanTerminal = isTerminalSource(activeTabSummary);
   const planTerminalTargets: HandoffTargetId[] =
-    isPlanTerminal && activeTabSummary ? handoffTargets(activeTabSummary.roleId, roles) : [];
+    isPlanTerminal && activeTabSummary
+      ? handoffTargets(activeTabSummary.roleId, roles, activeTabSummary.chain ?? null)
+      : [];
 
   /**
    * Reads a reviewer terminal's verdict: the session log's last reply, else
@@ -3768,7 +3776,7 @@ export function StartupForm({
           )
         : parseReviewVerdict(handoffSource.latestMessage)
       : null;
-  const offerTargets = handoffTargets(roleId, roles);
+  const offerTargets = handoffTargets(roleId, roles, activeTabSummary?.chain ?? null);
   const offerRoute = handoffRoute({
     sourceRoleId: roleId,
     targets: offerTargets,
@@ -3777,7 +3785,7 @@ export function StartupForm({
     roles,
   });
   const handoffOffer =
-    session && isHandoffSource(roleId, roles)
+    session && isHandoffSource(roleId, roles, activeTabSummary?.chain ?? null)
       ? {
           enabled: handoffBlock === null,
           reason: handoffBlock,
@@ -4137,29 +4145,9 @@ export function StartupForm({
         openHandoffDialog("role_pr_reviewer");
         return;
       case "startEagleEye1":
-      case "startEagleEye2": {
-        const kind = id === "startEagleEye1" ? "eagle1" : "eagle2";
-        const cwd = activeTabSummary?.cwd || values.cwd || "";
-        if (!cwd.trim()) {
-          showNotice("Pick a folder first", "Eagle-Eye starts in the current tab's folder.", "question");
-          return;
-        }
-        setBusy(true);
-        startEagleEye(kind, cwd)
-          .then(async ({ tab }) => {
-            setActiveTabId(tab.id);
-            await refreshTabs();
-          })
-          .catch((err: unknown) => {
-            showNotice(
-              "Eagle-Eye",
-              errorText(err),
-              "failed",
-            );
-          })
-          .finally(() => setBusy(false));
+      case "startEagleEye2":
+        startPipeline(id === "startEagleEye1" ? "eagle1" : "eagle2");
         return;
-      }
       case "openChainOverview":
         if (activeTabSummary?.chain) void openChainOverviewTab(activeTabSummary.chain.chainId);
         return;
@@ -4391,6 +4379,26 @@ export function StartupForm({
     }
   };
 
+  /** A draft of the pipeline's first stage, tagged step 1, in the current tab's folder. */
+  const startPipeline = (kind: string) => {
+    const cwd = activeTabSummary?.cwd || values.cwd || "";
+    const name = pipelineDef(kind)?.name ?? "The pipeline";
+    if (!cwd.trim()) {
+      showNotice("Pick a folder first", `${name} starts in the current tab's folder.`, "question");
+      return;
+    }
+    setBusy(true);
+    startEagleEye(kind, cwd)
+      .then(async ({ tab }) => {
+        setActiveTabId(tab.id);
+        await refreshTabs();
+      })
+      .catch((err: unknown) => {
+        showNotice(name, errorText(err), "failed");
+      })
+      .finally(() => setBusy(false));
+  };
+
   const runPalette = (id: string) => {
     setPaletteOpen(false);
     const route = parsePaletteId(id);
@@ -4405,6 +4413,10 @@ export function StartupForm({
     }
     if (route.kind === "handoff") {
       openHandoffDialog(route.roleId);
+      return;
+    }
+    if (route.kind === "pipeline") {
+      startPipeline(route.pipelineId);
       return;
     }
     runPaletteAction(route.id);
@@ -4624,6 +4636,7 @@ export function StartupForm({
       modelSettings={modelSettings}
       providers={providers}
       onRefreshRoles={onRefreshRoles}
+      onPipelinesChanged={onPipelinesChanged}
       onModelSettings={(provider, next) => {
         setModelSettingsState((current) =>
           current
@@ -5063,7 +5076,11 @@ export function StartupForm({
           gridOpen={gridOpen(split)}
           canAddToGrid={gridCandidates.length > 0 && (!gridOpen(split) || (split.gridTabIds?.length ?? 0) < GRID_MAX_TABS)}
           canSendPlan={(isCaptureSource(roleId) && !!session) || !!isPlanTerminal}
-          sendPlanTargets={isPlanTerminal ? planTerminalTargets : handoffTargets(roleId, roles)}
+          sendPlanTargets={
+            isPlanTerminal
+              ? planTerminalTargets
+              : handoffTargets(roleId, roles, activeTabSummary?.chain ?? null)
+          }
           handoffTargets={(isPlanTerminal ? planTerminalTargets : (handoffOffer?.targets ?? [])).map(
             (id) => ({ id, name: roleDisplayName(id, roles) }),
           )}
@@ -5143,6 +5160,7 @@ export function StartupForm({
           busy={busy}
           error={handoffError}
           loopBack={handoffLoopBack?.target ?? null}
+          chain={savedTabs.find((tab) => tab.id === handoffSource.sourceTabId)?.chain ?? null}
           chainFillsTaskType={
             !!savedTabs.find((tab) => tab.id === handoffSource.sourceTabId)?.chain
           }

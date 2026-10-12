@@ -26,6 +26,7 @@ import { formatReset, formatSeen, isStale, limitTone } from "../usage/limits";
 import { APP_VERSION } from "../workspaceView";
 import { errorText } from "./InlineNotice";
 import { RoleEditor } from "./RoleEditor";
+import { PipelinesSettings } from "./PipelinesSettings";
 import { useConfirm } from "./confirm";
 
 type Props = {
@@ -57,6 +58,8 @@ type Props = {
   /** Settings > Providers data (shared with the status bar). */
   providers?: ProvidersState | null;
   onRefreshRoles?: () => Promise<void>;
+  /** Your own pipelines were saved. */
+  onPipelinesChanged?: () => void;
   /** Reports whether Settings holds edits that leaving would discard. */
   onUnsavedChange?: (dirty: boolean) => void;
   onClose: () => void;
@@ -65,6 +68,7 @@ type Props = {
 /** U6: left-hand menu, in display order. */
 export const SETTINGS_CATEGORIES = [
   "Roles",
+  "Pipelines",
   "Providers",
   "Models",
   "Appearance",
@@ -112,6 +116,7 @@ export function SettingsPage({
   initialCategory = "Roles",
   providers = null,
   onRefreshRoles,
+  onPipelinesChanged,
   onUnsavedChange,
   onClose,
 }: Props) {
@@ -208,6 +213,7 @@ export function SettingsPage({
         </nav>
         <div className="settings-content">
           {category === "Roles" && <RoleEditor roles={roles} onRefreshRoles={onRefreshRoles} onDirtyChange={setRolesDirty} />}
+          {category === "Pipelines" && <PipelinesSettings onSaved={onPipelinesChanged} />}
           {category === "Providers" &&
             (providers ? (
               <ProvidersSettingsSection providers={providers} />

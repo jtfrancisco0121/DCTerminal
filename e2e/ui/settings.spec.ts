@@ -8,6 +8,7 @@ const START_HEADING = /^(Start a session|New .+ session|New terminal)$/;
 
 const CATEGORIES = [
   "Roles",
+  "Pipelines",
   "Providers",
   "Models",
   "Appearance",

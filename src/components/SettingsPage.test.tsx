@@ -139,6 +139,7 @@ describe("SettingsPage categories (U6)", () => {
     const nav = screen.getByRole("navigation", { name: "Settings categories" });
     expect(within(nav).getAllByRole("button").map((button) => button.textContent)).toEqual([
       "Roles",
+      "Pipelines",
       "Providers",
       "Models",
       "Appearance",

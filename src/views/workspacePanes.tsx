@@ -131,7 +131,7 @@ export function createPaneRenderers({
           autoFocus={false}
           menuActions={
             isTerminalSource(tab)
-              ? handoffMenuItems(tab.roleId, roles).map((item) => ({
+              ? handoffMenuItems(tab.roleId, roles, tab.chain ?? null).map((item) => ({
                   id: `send-${item.target}`,
                   label: item.label,
                   onSelect: () => {

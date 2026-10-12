@@ -66,7 +66,7 @@ export function terminalHeaderFor(
 
   let next: NextStep | null = null;
   if (deps.isTerminalSource(tab)) {
-    const targets = handoffTargets(tab.roleId, deps.roles);
+    const targets = handoffTargets(tab.roleId, deps.roles, tab.chain ?? null);
     const route = handoffRoute({
       sourceRoleId: tab.roleId,
       targets,

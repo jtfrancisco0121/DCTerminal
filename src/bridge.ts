@@ -311,6 +311,43 @@ export type PipelineRun = {
   round?: number;
   /** Reviewer verdicts recorded as each round was sent back, oldest first. */
   verdicts?: { roleId: string; round: number; verdict?: string | null; at: string }[];
+  /** The run ledger, oldest first (ADR-014). */
+  events?: RunEvent[];
+  /** Latest gate results per stage id. */
+  gates?: Record<string, { round: number; at: string; results: GateResult[] }>;
+  /** Opt-in autopilot; missing or off means manual. */
+  autopilot?: RunAutopilot | null;
+};
+
+export type RunEvent = {
+  at: string;
+  /** `handoff`, `loopBack`, `gate`, `autopilot`, `stop`, `complete`, `note`. */
+  kind: string;
+  stageId?: string | null;
+  roleId?: string | null;
+  round: number;
+  summary: string;
+  detail?: string | null;
+};
+
+export type GateResult = {
+  /** `command`, `pullRequest` or `contract`. */
+  kind: string;
+  label: string;
+  /** `passed`, `failed` or `skipped`. */
+  status: string;
+  summary: string;
+  output?: string;
+  durationMs: number;
+};
+
+export type RunAutopilot = {
+  enabled: boolean;
+  /** Why autopilot is waiting for you, if it is. */
+  waiting?: string | null;
+  passedCheckpoints?: string[];
+  reasked?: string[];
+  gateRetries?: Record<string, number>;
 };
 
 export type ClosedTabSummary = {
@@ -423,9 +460,9 @@ export async function openChainOverview(
   return invoke("open_chain_overview", { chainId, windowId: await windowId() });
 }
 
-/** Opens a Planner (eagle1) or Implementer (eagle2) draft at step 1. */
+/** Opens a draft of the pipeline's first stage (Planner for eagle1), tagged step 1. */
 export async function startEagleEye(
-  kind: "eagle1" | "eagle2",
+  kind: string,
   cwd: string,
 ): Promise<{ tab: TabRecord }> {
   return invoke("start_eagle_eye", { kind, cwd, windowId: await windowId() });
@@ -890,6 +927,70 @@ export function listenChainRunUpdated(
 ): Promise<UnlistenFn> {
   return listen<ChainRunUpdatedEvent>("chain-run-updated", (e) => {
     handler(e.payload);
+  });
+}
+
+/** Built-in pipelines, then your own (`docs/pipelines`, Settings › Pipelines). */
+export async function pipelineDefsList(): Promise<import("./pipeline/defs").PipelineDef[]> {
+  return invoke("pipeline_defs_list");
+}
+
+/** Replaces your own pipelines. Returns every pipeline. */
+export async function pipelineDefsSave(
+  pipelines: import("./pipeline/defs").PipelineDef[],
+): Promise<import("./pipeline/defs").PipelineDef[]> {
+  return invoke("pipeline_defs_save", { pipelines });
+}
+
+/** Runs a stage's gates in `cwd` (else the run's folder) and keeps the results on the run. */
+export async function pipelineRunGates(
+  runId: string,
+  stageId: string,
+  cwd: string | null,
+  prUrls: string[],
+): Promise<GateResult[]> {
+  return invoke("pipeline_run_gates", { runId, stageId, cwd, prUrls });
+}
+
+export async function pipelineSetAutopilot(runId: string, enabled: boolean): Promise<void> {
+  return invoke("pipeline_set_autopilot", { runId, enabled });
+}
+
+/** What a stage's finished turn reported, for the autopilot decision. */
+export type TurnReport = {
+  stageId: string;
+  verdict: string | null;
+  findings: { severity: string; summary: string }[];
+  findingsKnown: boolean;
+  missingSections: string[];
+  usagePercent: number | null;
+  chat: boolean;
+};
+
+export type AutopilotDecision = {
+  action: "advance" | "loopBack" | "retry" | "reask" | "stop" | "complete";
+  stageId?: string;
+  roleId?: string;
+  reason: string;
+  message?: string;
+  followUps?: string[];
+};
+
+export async function pipelineDecide(runId: string, report: TurnReport): Promise<AutopilotDecision> {
+  return invoke("pipeline_decide", { runId, report });
+}
+
+/** Adds a line to the run ledger; `stop` also marks autopilot as waiting for you. */
+export async function pipelineNote(
+  runId: string,
+  note: { stageId?: string | null; summary: string; detail?: string | null; stop: boolean },
+): Promise<void> {
+  return invoke("pipeline_note", {
+    runId,
+    stageId: note.stageId ?? null,
+    summary: note.summary,
+    detail: note.detail ?? null,
+    stop: note.stop,
   });
 }
 

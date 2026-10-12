@@ -1,13 +1,16 @@
 /**
- * Eagle-Eye chains. EE1 is Planner → Plan Reviewer → Implementer → PR Reviewer.
- * EE2 is Implementer → PR Reviewer. A hand-off along the next edge advances
- * the step. A reviewer sending its round back (Plan Reviewer → Planner,
- * PR Reviewer → Implementer) is a loop-back: it stays on the chain and starts
- * the next round. Any other hand-off drops the chain label. Nothing starts by
- * itself.
+ * Chains along a pipeline (`src/pipeline/defs.ts`). EE1 is Planner → Plan
+ * Reviewer → Implementer → PR Reviewer; EE2 is Implementer → PR Reviewer;
+ * your own pipelines work the same way. A hand-off along the next edge
+ * advances the step. A reviewer sending its round back along its stage's
+ * `loopBack` (Plan Reviewer → Planner, PR Reviewer → Implementer) stays on
+ * the chain and starts the next round. Any other hand-off drops the chain
+ * label. Only an opt-in autopilot starts anything by itself.
  */
+import { loopBackRole, pipelineDef } from "../pipeline/defs";
 
-export type ChainKind = "eagle1" | "eagle2";
+/** A pipeline id: `eagle1`, `eagle2`, or one of your own. */
+export type ChainKind = string;
 
 export type ChainRef = {
   chainId: string;
@@ -18,23 +21,13 @@ export type ChainRef = {
   round?: number;
 };
 
-const EAGLE1 = [
-  "role_planner",
-  "role_plan_reviewer",
-  "role_implementer",
-  "role_pr_reviewer",
-] as const;
-
-const EAGLE2 = ["role_implementer", "role_pr_reviewer"] as const;
-
+/** Role id per step of a pipeline, or null for an unknown pipeline. */
 export function chainSteps(kind: string): readonly string[] | null {
-  if (kind === "eagle1") return EAGLE1;
-  if (kind === "eagle2") return EAGLE2;
-  return null;
+  return pipelineDef(kind)?.stages.map((stage) => stage.roleId) ?? null;
 }
 
 export function chainLabel(chain: ChainRef): string {
-  const name = chain.kind === "eagle2" ? "Eagle-Eye 2" : "Eagle-Eye 1";
+  const name = pipelineDef(chain.kind)?.name ?? "Pipeline";
   const round = chainRound(chain);
   return `${name} · step ${chain.step} of ${chain.total}${round > 1 ? ` · round ${round}` : ""}`;
 }
@@ -43,14 +36,25 @@ export function chainRound(chain: Pick<ChainRef, "round">): number {
   return Math.max(1, chain.round ?? 1);
 }
 
-/** Reviewer → earlier stage edges that send a round back. */
+/** Reviewer → earlier stage edges of the built-in chains, for tabs off any chain. */
 const LOOP_BACKS: Readonly<Record<string, string>> = {
   role_plan_reviewer: "role_planner",
   role_pr_reviewer: "role_implementer",
 };
 
-export function isLoopBackEdge(sourceRoleId: string, targetRoleId: string): boolean {
-  return LOOP_BACKS[sourceRoleId] === targetRoleId;
+/** The role `sourceRoleId` sends its round back to: on `kind`'s pipeline, else the built-in edge. */
+export function loopBackTarget(sourceRoleId: string, kind?: string | null): string | null {
+  const def = kind ? pipelineDef(kind) : null;
+  if (def) return loopBackRole(def, sourceRoleId);
+  return LOOP_BACKS[sourceRoleId] ?? null;
+}
+
+export function isLoopBackEdge(
+  sourceRoleId: string,
+  targetRoleId: string,
+  kind?: string | null,
+): boolean {
+  return loopBackTarget(sourceRoleId, kind) === targetRoleId;
 }
 
 /**
@@ -62,7 +66,7 @@ export function loopBackStep(
   sourceRoleId: string,
   targetRoleId: string,
 ): number | null {
-  if (!isLoopBackEdge(sourceRoleId, targetRoleId)) return null;
+  if (!isLoopBackEdge(sourceRoleId, targetRoleId, chain.kind)) return null;
   const steps = chainSteps(chain.kind);
   if (!steps || steps[chain.step - 1] !== sourceRoleId) return null;
   const index = steps.indexOf(targetRoleId);
@@ -124,6 +128,6 @@ export function newChain(kind: ChainKind, now = Date.now()): ChainRef {
     chainId: `ee_${now}`,
     kind,
     step: 1,
-    total: kind === "eagle1" ? 4 : 2,
+    total: chainSteps(kind)?.length ?? 1,
   };
 }

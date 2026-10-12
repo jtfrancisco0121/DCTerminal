@@ -1,3 +1,4 @@
+import { allPipelineDefs } from "./pipeline/defs";
 import { commandTitle } from "./keymap";
 
 export const CLOSED_TAB_LIMIT = 15;
@@ -329,7 +330,8 @@ export type PaletteRoute =
   | { kind: "action"; id: PaletteAction }
   | { kind: "goto"; tabId: string }
   | { kind: "model"; model: string | null }
-  | { kind: "handoff"; roleId: string };
+  | { kind: "handoff"; roleId: string }
+  | { kind: "pipeline"; pipelineId: string };
 
 /** Fixed hand-off commands and the target role each one opens. */
 const FIXED_HANDOFF_COMMANDS: Readonly<Record<string, string>> = {
@@ -345,6 +347,10 @@ export function parsePaletteId(id: string): PaletteRoute | null {
   if (id.startsWith("handoff:")) {
     const roleId = id.slice("handoff:".length);
     return roleId ? { kind: "handoff", roleId } : null;
+  }
+  if (id.startsWith("pipeline:")) {
+    const pipelineId = id.slice("pipeline:".length);
+    return pipelineId ? { kind: "pipeline", pipelineId } : null;
   }
   if (id.startsWith("goto:")) {
     const tabId = id.slice("goto:".length);
@@ -404,6 +410,8 @@ export function buildPalette(opts: {
    * table). Each one without a fixed command gets "Hand off to <name>…".
    */
   handoffTargets?: readonly { id: string; name: string }[];
+  /** Your own pipelines: each gets "Start <name>…". Default: the registry's. */
+  pipelines?: readonly { id: string; name: string }[];
 }): PaletteCommand[] {
   const commands: PaletteCommand[] = [
     { id: "newTab", title: commandTitle("newTab"), group: "Tabs" },
@@ -682,6 +690,15 @@ export function buildPalette(opts: {
       title: `Hand off to ${target.name}…`,
       group: "Hand-off",
       keywords: "handoff send custom role",
+    });
+  }
+  const own = opts.pipelines ?? allPipelineDefs().filter((def) => !def.builtIn);
+  for (const pipeline of own) {
+    commands.push({
+      id: `pipeline:${pipeline.id}`,
+      title: `Start ${pipeline.name}…`,
+      group: "Hand-off",
+      keywords: "pipeline chain start custom",
     });
   }
   if (opts.canExportTranscript) {

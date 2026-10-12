@@ -4890,6 +4890,142 @@ mark.search-hit-current {
   color: var(--fg-subtle);
 }
 
+.pipeline-round-cap {
+  margin: 0 0 0.45rem;
+  font-size: var(--text-xs);
+}
+
+.pipeline-gates {
+  margin: 0 0 0.5rem;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-xs);
+}
+
+.pipeline-gate {
+  margin-bottom: 0.25rem;
+}
+
+.pipeline-gate-status {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.pipeline-gate-passed .pipeline-gate-status {
+  color: var(--success);
+}
+
+.pipeline-gate-failed .pipeline-gate-status {
+  color: var(--danger);
+}
+
+.pipeline-gate-skipped .pipeline-gate-status {
+  color: var(--fg-subtle);
+}
+
+.pipeline-autopilot {
+  margin-bottom: 1rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elev);
+}
+
+.pipeline-autopilot-toggle {
+  cursor: pointer;
+}
+
+.pipeline-autopilot .hint {
+  margin: 0.35rem 0 0;
+}
+
+.pipeline-autopilot-waiting {
+  margin: 0.45rem 0 0;
+  color: var(--attention);
+  font-weight: 600;
+  font-size: var(--text-sm);
+}
+
+.pipeline-followups {
+  margin-bottom: 1rem;
+}
+
+.pipeline-followups h3,
+.pipeline-ledger h3 {
+  margin: 0 0 0.35rem;
+  font-size: var(--text-lg);
+}
+
+.pipeline-ledger {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.pipeline-ledger-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.pipeline-ledger-list {
+  margin: 0.5rem 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-sm);
+}
+
+.pipeline-event {
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.pipeline-event-when {
+  color: var(--fg-subtle);
+  font-size: var(--text-xs);
+}
+
+.pipeline-event-kind {
+  font-weight: 600;
+}
+
+.pipeline-event-stop .pipeline-event-kind {
+  color: var(--attention);
+}
+
+.pipeline-event-complete .pipeline-event-kind {
+  color: var(--success);
+}
+
+.pipeline-list {
+  margin: 0 0 1rem;
+  padding: 0;
+  list-style: none;
+}
+
+.pipeline-list > li {
+  margin-bottom: 0.75rem;
+}
+
+.pipeline-strip {
+  margin: 0.35rem 0 0;
+  padding-left: 1.25rem;
+  font-size: var(--text-sm);
+}
+
+.pipeline-strip-stage {
+  font-weight: 600;
+  margin-right: 0.4rem;
+}
+
+.pipeline-json {
+  width: 100%;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--text-sm);
+}
+
 button.chain-label {
   border: 0;
   padding: 0;

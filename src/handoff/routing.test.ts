@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ChainRef } from "./chains";
 import { handoffRoute, loopBackFindings, loopBackMessage } from "./routing";
+import { setPipelineDefs } from "../pipeline/defs";
 import { handoffTargets } from "./transitions";
 import type { ReviewVerdict } from "./verdict";
 
@@ -108,5 +109,55 @@ describe("loopBackMessage", () => {
     const old = "Review findings from the PR Reviewer (round 2):\n\n- bug\n\nAddress these findings, then summarize what changed.";
     expect(loopBackFindings(old)?.findings).toBe("- bug");
     expect(loopBackFindings("## Reviewed plan\n1. x")).toBeNull();
+  });
+});
+
+describe("pipelines of your own", () => {
+  const custom = {
+    id: "hardening_test",
+    name: "Hardening",
+    stages: [
+      { id: "build", roleId: "role_implementer", title: "Implementer" },
+      {
+        id: "security",
+        roleId: "role_security",
+        title: "Security Reviewer",
+        loopBack: { to: "build" },
+      },
+    ],
+  };
+  const onCustom = (step: number): ChainRef => ({
+    chainId: "ee_9",
+    kind: "hardening_test",
+    step,
+    total: 2,
+  });
+
+  it("offers the chain's next role and its loop-back even when the table lacks them", () => {
+    setPipelineDefs([custom]);
+    try {
+      expect(handoffTargets("role_implementer", null, onCustom(1))).toEqual([
+        "role_pr_reviewer",
+        "role_security",
+      ]);
+      expect(handoffTargets("role_security", null, onCustom(2))).toEqual(["role_implementer"]);
+      expect(handoffTargets("role_implementer", null, null)).toEqual(["role_pr_reviewer"]);
+      const back = handoffRoute({
+        sourceRoleId: "role_security",
+        targets: ["role_implementer"],
+        verdict: "REQUEST CHANGES",
+        chain: onCustom(2),
+      });
+      expect(back.primaryLabel).toBe("Send back to Implementer");
+      const done = handoffRoute({
+        sourceRoleId: "role_security",
+        targets: ["role_implementer"],
+        verdict: "APPROVED",
+        chain: onCustom(2),
+      });
+      expect(done.complete).toBe(true);
+    } finally {
+      setPipelineDefs([]);
+    }
   });
 });

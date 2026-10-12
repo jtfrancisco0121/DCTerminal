@@ -451,6 +451,37 @@ export function installTauriMock(config: MockConfig): void {
       return null;
     },
 
+    // Pipelines (commands/pipeline.rs). Built-ins are bundled in the UI.
+    pipeline_defs_list: () => clone(state.pipelineDefs ?? []),
+    pipeline_defs_save: (a) => {
+      state.pipelineDefs = clone(a.pipelines);
+      return clone(state.pipelineDefs);
+    },
+    pipeline_set_autopilot: (a) => {
+      const run = findRun(a.runId);
+      if (!run) throw new Error(`unknown pipeline run: ${a.runId}`);
+      run.autopilot = { ...(run.autopilot ?? {}), enabled: a.enabled, waiting: null };
+      return null;
+    },
+    pipeline_run_gates: (a) => {
+      const run = findRun(a.runId);
+      if (!run) throw new Error(`unknown pipeline run: ${a.runId}`);
+      const results = clone(state.gateResults?.[a.stageId] ?? []);
+      run.gates = { ...(run.gates ?? {}), [a.stageId]: { round: run.round ?? 1, at: now(), results } };
+      return results;
+    },
+    pipeline_decide: () => ({ action: "stop", reason: "e2e mock: no autopilot decision" }),
+    pipeline_note: (a) => {
+      const run = findRun(a.runId);
+      if (run) {
+        run.events = [
+          ...(run.events ?? []),
+          { at: now(), kind: a.stop ? "stop" : "note", stageId: a.stageId, round: run.round ?? 1, summary: a.summary },
+        ];
+      }
+      return null;
+    },
+
     handoff_list: () => clone(state.handoffs),
     handoff_save: (a) => {
       const rec = {

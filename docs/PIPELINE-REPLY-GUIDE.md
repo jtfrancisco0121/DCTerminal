@@ -21,9 +21,11 @@ DCTerminal reads these sections to fill the next role's form and decide the next
 | Role | Required sections, in order |
 | --- | --- |
 | Planner | `HANDOFF: Plan` · `HANDOFF: Pull requests` · `HANDOFF: Open questions` |
-| Plan Reviewer | `HANDOFF: Verdict` · `HANDOFF: Reviewed plan` · `HANDOFF: Pull requests` · `HANDOFF: Review notes` |
+| Plan Reviewer | `HANDOFF: Verdict` · `HANDOFF: Reviewed plan` · `HANDOFF: Pull requests` · `HANDOFF: Review notes` · `HANDOFF: Result` (JSON) |
 | Implementer | `HANDOFF: Implementation summary` · `Files changed` · `Tests run` · `Deviations from the plan` · `Pull requests` |
-| PR Reviewer | `HANDOFF: Verdict` · `HANDOFF: Findings for the Implementer` |
+| PR Reviewer | `HANDOFF: Verdict` · `HANDOFF: Findings for the Implementer` · `HANDOFF: Result` (JSON) |
+
+`HANDOFF: Result` is one JSON block: the verdict and every finding with its severity (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`). Manual hand-offs work without it. Autopilot uses it to tell a finding worth another round (MEDIUM and above by default) from a follow-up. Without it, autopilot treats every finding as blocking.
 
 If a reply is missing them, don't send it. Paste this into the same terminal:
 
@@ -134,6 +136,21 @@ Findings aren't grouped by PR:
 ```
 Group HANDOFF: Findings for the Implementer by pull request: one PR<n> — <URL> line per PR with its verdict, then that PR's numbered findings with file, line and expected fix.
 ```
+
+## Autopilot
+
+Each chain run can turn on **Autopilot** in its overview (ADR-014). It drives terminal stages only. After each stage's turn:
+
+| What happened | Autopilot does |
+| --- | --- |
+| The stage has checks (Implementer: the project's check command, and the PRs exist) and one failed | Sends the output back to the same tab. After the third failure it stops. |
+| HANDOFF sections are missing | Asks once (the paste above), then stops. |
+| Verdict needs changes, with a finding at or above the threshold | Sends the round back, up to the round cap (3), then stops. |
+| Verdict needs changes, but only LOW findings | Moves on and lists them under **Follow-ups**. |
+| Approved | Moves on, or finishes the run on the last stage. |
+| The next stage is a checkpoint (Implementer, by default) | Stops. Send it yourself; autopilot carries on after that. |
+
+It also stops when Claude needs you (a permission, a question, a plan), when usage reaches 90%, or when a stage is a chat tab. It never merges. Every decision is in the overview's **Timeline**, and **Export run report** saves it as Markdown.
 
 ## Common mistakes
 

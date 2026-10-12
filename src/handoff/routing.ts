@@ -1,8 +1,9 @@
 /**
  * Which hand-off button is primary, and what it says, from the reviewer's
- * verdict. Only labels and emphasis: every hand-off still waits for the user.
+ * verdict. Only labels and emphasis: a manual hand-off still waits for the
+ * user (autopilot, when a run turns it on, is `src/pipeline/autopilot.ts`).
  */
-import { nextChainRole, type ChainRef } from "./chains";
+import { chainSteps, loopBackTarget, nextChainRole, type ChainRef } from "./chains";
 import { roleDisplayName, type HandoffTargetId, type RoleName } from "./transitions";
 import { needsRevision, type ReviewVerdict } from "./verdict";
 
@@ -14,10 +15,6 @@ export type HandoffRoute = {
   complete: boolean;
 };
 
-const REVISE_TARGET: Readonly<Record<string, string>> = {
-  role_plan_reviewer: "role_planner",
-  role_pr_reviewer: "role_implementer",
-};
 
 export function handoffRoute(options: {
   sourceRoleId: string;
@@ -34,9 +31,15 @@ export function handoffRoute(options: {
   const next = (id: string | null) => offer(id, (name) => `Next: Send to ${name}`);
   const chainNext = chain ? nextChainRole(chain, sourceRoleId) : null;
 
-  const revise = REVISE_TARGET[sourceRoleId];
+  const revise = loopBackTarget(sourceRoleId, chain?.kind);
   if (revise && needsRevision(verdict)) {
     return offer(revise, (name) => `Send back to ${name}`);
+  }
+  const lastStep =
+    !!chain && chain.step >= chain.total && chainSteps(chain.kind)?.[chain.step - 1] === sourceRoleId;
+  if (lastStep && revise && verdict) {
+    // A reviewer approved on the chain's last step: nothing left to hand on.
+    return { primaryTarget: null, primaryLabel: null, complete: true };
   }
   if (sourceRoleId === "role_plan_reviewer" && verdict) {
     // APPROVED / APPROVED WITH CHANGES: on to the Implementer, chain or not.

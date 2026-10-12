@@ -92,6 +92,85 @@ export function contractFindings(text: string): string | null {
   return handoffSection(text, "Findings for the Implementer", "Findings");
 }
 
+export type ResultFinding = {
+  /** `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`, `INFO`, or what the reply wrote. */
+  severity: string;
+  summary: string;
+  file?: string;
+  pr?: string;
+};
+
+export type ContractResult = {
+  verdict: string | null;
+  findings: ResultFinding[];
+};
+
+const SEVERITY_WORDS: Readonly<Record<string, string>> = {
+  CRITICAL: "CRITICAL",
+  BLOCKER: "CRITICAL",
+  HIGH: "HIGH",
+  MAJOR: "HIGH",
+  MEDIUM: "MEDIUM",
+  MODERATE: "MEDIUM",
+  LOW: "LOW",
+  MINOR: "LOW",
+  INFO: "INFO",
+  NIT: "INFO",
+  NITPICK: "INFO",
+};
+
+/** A severity in its canonical spelling, or the trimmed text when unknown. */
+export function normalizeSeverity(text: string): string {
+  const word = text.trim().toUpperCase();
+  return SEVERITY_WORDS[word] ?? word;
+}
+
+const text = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
+
+/**
+ * A reviewer's `HANDOFF: Result` JSON (verdict and findings with severity),
+ * or null when the reply has none or it does not parse. A finding without a
+ * summary is dropped; one without a severity keeps an empty one, which the
+ * autopilot treats as blocking.
+ */
+export function contractResult(reply: string): ContractResult | null {
+  const section = handoffSection(reply, "Result");
+  if (!section) return null;
+  const fenced = /```(?:json)?[ \t]*\n([\s\S]*?)```/i.exec(section)?.[1];
+  const body = (fenced ?? section).trim();
+  const start = body.indexOf("{");
+  const end = body.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const record = parsed as Record<string, unknown>;
+  const findings = Array.isArray(record.findings) ? record.findings : [];
+  return {
+    verdict: text(record.verdict).toUpperCase() || null,
+    findings: findings.flatMap((item): ResultFinding[] => {
+      if (!item || typeof item !== "object") return [];
+      const f = item as Record<string, unknown>;
+      const summary = text(f.summary) || text(f.title) || text(f.description);
+      if (!summary) return [];
+      const file = text(f.file);
+      const pr = text(f.pr);
+      return [
+        {
+          severity: normalizeSeverity(text(f.severity)),
+          summary,
+          ...(file ? { file } : {}),
+          ...(pr ? { pr } : {}),
+        },
+      ];
+    }),
+  };
+}
+
 /** The raw text of a `HANDOFF: Verdict` section, if the reply has one. */
 export function contractVerdictText(text: string): string | null {
   return handoffSection(text, "Verdict");

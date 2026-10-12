@@ -21,6 +21,7 @@ import {
 } from "../handoff/map";
 import { ASK_FOR_HANDOFF_SECTIONS, missingHandoffSections } from "../handoff/contract";
 import { loopBackMessage } from "../handoff/routing";
+import type { ChainRef } from "../handoff/chains";
 import { Dialog } from "./Dialog";
 import { InlineNotice } from "./InlineNotice";
 
@@ -54,6 +55,8 @@ type Props = {
   loopBack?: LoopBackTarget | null;
   /** On a chain, Start fills the task type from the chain's first form. */
   chainFillsTaskType?: boolean;
+  /** The source tab's chain: its next role and loop-back target are offered too. */
+  chain?: ChainRef | null;
   onTarget: (id: HandoffTargetId) => void;
   onConfirm: (scope: HandoffScope, surface: HandoffSurface) => void;
   /** Terminal sources: paste this into the source terminal. Hides the button when absent. */
@@ -72,13 +75,14 @@ export function HandoffDialog({
   preferredSurface,
   roleNames = null,
   loopBack = null,
+  chain = null,
   chainFillsTaskType = false,
   onTarget,
   onConfirm,
   onAskForSections,
   onClose,
 }: Props) {
-  const targets = handoffTargets(source.sourceRoleId, roleNames).map((id) => ({
+  const targets = handoffTargets(source.sourceRoleId, roleNames, chain).map((id) => ({
     id,
     label: roleDisplayName(id, roleNames),
   }));
