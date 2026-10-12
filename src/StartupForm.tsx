@@ -82,7 +82,7 @@ import {
   worktreeTabCheck,
   worktreeTabNew,
   worktreeTabRemove,
-  handoffBindTab,
+  handoffAttach,
   handoffGet,
   handoffList,
   handoffSave,
@@ -4038,19 +4038,24 @@ export function StartupForm({
             return;
           }
         }
-        const tagChain = async (tabId: string) => {
-          if (loop) {
-            await chainLoopBack({
-              chainId: loop.chain.chainId,
-              reviewerRoleId: handoffSource.sourceRoleId,
+        // The new tab's chain step (or the loop-back round) and the hand-off
+        // binding are recorded together.
+        const attach = async (tabId: string) =>
+          (
+            await handoffAttach({
+              id: saved.id,
               tabId,
-              verdict: sourceVerdict,
-              handoffText: mapped.planText,
-            });
-          } else if (nextChain) {
-            await setTabChain(tabId, nextChain, mapped.planText);
-          }
-        };
+              chain: loop ? null : nextChain,
+              loopBack: loop
+                ? {
+                    chainId: loop.chain.chainId,
+                    reviewerRoleId: handoffSource.sourceRoleId,
+                    verdict: sourceVerdict,
+                  }
+                : null,
+              handoffText: loop || nextChain ? mapped.planText : null,
+            })
+          ).record;
         const saved = await handoffSave({
           sourceTabId: handoffSource.sourceTabId,
           sourceRoleId: handoffSource.sourceRoleId,
@@ -4082,8 +4087,7 @@ export function StartupForm({
             return;
           }
           await setTabProvider(tabId, sourceProvider);
-          await tagChain(tabId);
-          const bound = await handoffBindTab(saved.id, tabId);
+          const bound = await attach(tabId);
           if (mapped.usesScratchPad) {
             scratch.setContent(tabId, mapped.inlinePlan);
             await scratchSave(tabId, mapped.inlinePlan, []);
@@ -4096,9 +4100,8 @@ export function StartupForm({
         stashActiveTab();
         const { tab } = await newDraftTab(handoffTarget, handoffSource.cwd);
         await setTabProvider(tab.id, sourceProvider);
-        await tagChain(tab.id);
+        const bound = await attach(tab.id);
         await syncActiveTabForm(tab.id, handoffTarget, handoffSource.cwd, nextValues);
-        const bound = await handoffBindTab(saved.id, tab.id);
         if (mapped.usesScratchPad) {
           scratch.setContent(tab.id, mapped.inlinePlan);
           await scratchSave(tab.id, mapped.inlinePlan, []);

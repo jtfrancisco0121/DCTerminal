@@ -1,8 +1,8 @@
 //! Save and reload Planner hand-offs from app data.
 
-use crate::commands::chain_events::notify_chain;
-use crate::store::{HandoffRecord, HandoffStore, NewHandoff};
-use serde::Deserialize;
+use crate::commands::chain_events::{notify_chain, set_tab_chain_and_notify, ChainEvents};
+use crate::store::{ChainRef, HandoffRecord, HandoffStore, NewHandoff, StateStore};
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::Mutex;
 use tauri::State;
@@ -148,6 +148,94 @@ pub fn handoff_bind_tab(
     Ok(record)
 }
 
+/// A reviewer's round going back to an earlier stage (`chain_loop_back`).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoopBackInput {
+    pub chain_id: String,
+    pub reviewer_role_id: String,
+    #[serde(default)]
+    pub verdict: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HandoffAttachInput {
+    pub id: String,
+    pub tab_id: String,
+    /// The chain step the new tab takes (`advanceChain`).
+    #[serde(default)]
+    pub chain: Option<ChainRef>,
+    /// Or: this hand-off sends a reviewer's round back.
+    #[serde(default)]
+    pub loop_back: Option<LoopBackInput>,
+    /// What the hand-off sent, for the chain's run.
+    #[serde(default)]
+    pub handoff_text: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HandoffAttached {
+    pub record: HandoffRecord,
+    /// The chain the tab now carries, if any.
+    pub chain: Option<ChainRef>,
+}
+
+/// Bind a saved hand-off to the tab it opened and record that tab's chain
+/// step (or the loop-back round) in one call, so the two cannot be left
+/// half done by a failure between two frontend calls. The hand-off id is
+/// checked first; nothing is written when it is unknown.
+pub fn attach_handoff(
+    events: &dyn ChainEvents,
+    state: &Mutex<StateStore>,
+    handoffs: &Mutex<HandoffStore>,
+    input: HandoffAttachInput,
+) -> Result<HandoffAttached, String> {
+    if !handoffs.lock().map_err(|e| e.to_string())?.contains(&input.id) {
+        return Err(format!("unknown hand-off: {}", input.id));
+    }
+    let text = input.handoff_text.as_deref();
+    let chain = {
+        let mut store = state.lock().map_err(|e| e.to_string())?;
+        if store.tab_by_id(&input.tab_id).is_none() {
+            return Err(format!("unknown tab: {}", input.tab_id));
+        }
+        if let Some(back) = &input.loop_back {
+            let chain = store.chain_loop_back(
+                back.chain_id.trim(),
+                &back.reviewer_role_id,
+                &input.tab_id,
+                back.verdict.as_deref(),
+                text,
+            )?;
+            notify_chain(events, Some(&chain));
+            Some(chain)
+        } else if let Some(chain) = input.chain.clone() {
+            set_tab_chain_and_notify(events, &mut store, &input.tab_id, Some(chain.clone()), text)?;
+            Some(chain)
+        } else {
+            None
+        }
+    };
+    let record = handoffs
+        .lock()
+        .map_err(|e| e.to_string())?
+        .bind_target(&input.id, &input.tab_id)?;
+    notify_chain(events, record.chain.as_ref());
+    Ok(HandoffAttached { record, chain })
+}
+
+#[tauri::command]
+pub fn handoff_attach(
+    app: tauri::AppHandle,
+    input: HandoffAttachInput,
+    state: State<Mutex<StateStore>>,
+    handoffs: State<Mutex<HandoffStore>>,
+) -> Result<HandoffAttached, String> {
+    attach_handoff(&app, &state, &handoffs, input)
+}
+
 #[tauri::command]
 pub fn handoff_list(store: State<Mutex<HandoffStore>>) -> Result<Vec<HandoffRecord>, String> {
     let store = store.lock().map_err(|e| e.to_string())?;
@@ -187,6 +275,199 @@ mod tests {
                 total: 4,
                 round: 1,
             }),
+        }
+    }
+
+    mod attach {
+        use super::super::{attach_handoff, HandoffAttachInput, LoopBackInput};
+        use crate::commands::chain_events::ChainEvents;
+        use crate::roles::Role;
+        use crate::store::{
+            AppStateFile, ChainRef, HandoffStore, NewHandoff, StateStore, MAIN_WINDOW_ID,
+        };
+        use std::cell::RefCell;
+        use std::collections::HashSet;
+        use std::sync::Mutex;
+
+        #[derive(Default)]
+        struct Recorded(RefCell<Vec<String>>);
+        impl ChainEvents for Recorded {
+            fn chain_run_updated(&self, chain_id: &str) {
+                self.0.borrow_mut().push(chain_id.to_string());
+            }
+        }
+
+        fn role(id: &str) -> Role {
+            Role {
+                id: id.to_string(),
+                name: id.to_string(),
+                template_text: String::new(),
+                template_version: 1,
+                template_hash: String::new(),
+                schema_template_hash: String::new(),
+                default_mode: "agent".to_string(),
+                injection: "send_on_start".to_string(),
+                color: "#fff".to_string(),
+                is_built_in: true,
+                fields: vec![],
+                updated_at: None,
+                handoff_targets: None,
+            }
+        }
+
+        fn chain(step: u32) -> ChainRef {
+            ChainRef {
+                chain_id: "ee_1".into(),
+                kind: "eagle1".into(),
+                step,
+                total: 4,
+                round: 1,
+            }
+        }
+
+        fn stores(name: &str) -> (crate::test_support::TempDir, Mutex<StateStore>, Mutex<HandoffStore>) {
+            let dir = crate::test_support::TempDir::new(name);
+            let state = StateStore {
+                path: dir.path().join("state.json"),
+                data: AppStateFile::default(),
+                new_tab_provider: crate::provider::ProviderId::DEFAULT,
+                draft_window: MAIN_WINDOW_ID.to_string(),
+            };
+            let handoffs = HandoffStore::open(dir.path()).unwrap();
+            (dir, Mutex::new(state), Mutex::new(handoffs))
+        }
+
+        fn save(handoffs: &Mutex<HandoffStore>, source: &str, target_role: &str) -> String {
+            handoffs
+                .lock()
+                .unwrap()
+                .insert_keeping(
+                    NewHandoff {
+                        source_tab_id: source.into(),
+                        source_role_id: "role_planner".into(),
+                        source_label: "Planner".into(),
+                        target_role_id: target_role.into(),
+                        title: "Login".into(),
+                        cwd: "/tmp/p".into(),
+                        scope: "plan_mode".into(),
+                        plan_text: "# Plan".into(),
+                        truncated: false,
+                        warning: None,
+                        plan_field: None,
+                        chain: Some(chain(2)),
+                    },
+                    &HashSet::new(),
+                )
+                .unwrap()
+                .id
+        }
+
+        #[test]
+        fn binds_the_tab_and_records_its_chain_step_together() {
+            let (_dir, state, handoffs) = stores("attach_step");
+            let events = Recorded::default();
+            let (planner, reviewer) = {
+                let mut s = state.lock().unwrap();
+                let planner = s.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
+                s.set_tab_chain(&planner, Some(chain(1)), None).unwrap();
+                let reviewer = s
+                    .create_draft_tab(&role("role_plan_reviewer"), "/tmp/p", true, None)
+                    .unwrap();
+                (planner, reviewer)
+            };
+            let id = save(&handoffs, &planner, "role_plan_reviewer");
+            let attached = attach_handoff(
+                &events,
+                &state,
+                &handoffs,
+                HandoffAttachInput {
+                    id: id.clone(),
+                    tab_id: reviewer.clone(),
+                    chain: Some(chain(2)),
+                    loop_back: None,
+                    handoff_text: Some("# Plan".into()),
+                },
+            )
+            .unwrap();
+            assert_eq!(attached.record.target_tab_id.as_deref(), Some(reviewer.as_str()));
+            assert_eq!(attached.chain.unwrap().step, 2);
+            let s = state.lock().unwrap();
+            assert_eq!(s.tab_by_id(&reviewer).unwrap().chain.as_ref().unwrap().step, 2);
+            let run = s.pipeline_run_by_id("ee_1").unwrap();
+            assert_eq!(run.tab_ids.get("role_plan_reviewer"), Some(&reviewer));
+            assert_eq!(run.handoffs["role_plan_reviewer"].text, "# Plan");
+            assert!(!events.0.borrow().is_empty());
+        }
+
+        #[test]
+        fn an_unknown_hand_off_changes_nothing() {
+            let (_dir, state, handoffs) = stores("attach_unknown");
+            let events = Recorded::default();
+            let reviewer = state
+                .lock()
+                .unwrap()
+                .create_draft_tab(&role("role_plan_reviewer"), "/tmp/p", true, None)
+                .unwrap();
+            let err = attach_handoff(
+                &events,
+                &state,
+                &handoffs,
+                HandoffAttachInput {
+                    id: "handoff_missing".into(),
+                    tab_id: reviewer.clone(),
+                    chain: Some(chain(2)),
+                    loop_back: None,
+                    handoff_text: None,
+                },
+            )
+            .unwrap_err();
+            assert!(err.contains("unknown hand-off"), "{err}");
+            let s = state.lock().unwrap();
+            assert!(s.tab_by_id(&reviewer).unwrap().chain.is_none());
+            assert!(s.pipeline_run_by_id("ee_1").is_none());
+            assert!(events.0.borrow().is_empty());
+        }
+
+        #[test]
+        fn a_loop_back_records_the_verdict_and_next_round() {
+            let (_dir, state, handoffs) = stores("attach_loop");
+            let events = Recorded::default();
+            let (planner, reviewer, again) = {
+                let mut s = state.lock().unwrap();
+                let planner = s.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
+                s.set_tab_chain(&planner, Some(chain(1)), None).unwrap();
+                let reviewer = s
+                    .create_draft_tab(&role("role_plan_reviewer"), "/tmp/p", true, None)
+                    .unwrap();
+                s.set_tab_chain(&reviewer, Some(chain(2)), None).unwrap();
+                let again = s.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
+                (planner, reviewer, again)
+            };
+            let _ = planner;
+            let id = save(&handoffs, &reviewer, "role_planner");
+            let attached = attach_handoff(
+                &events,
+                &state,
+                &handoffs,
+                HandoffAttachInput {
+                    id,
+                    tab_id: again.clone(),
+                    chain: None,
+                    loop_back: Some(LoopBackInput {
+                        chain_id: "ee_1".into(),
+                        reviewer_role_id: "role_plan_reviewer".into(),
+                        verdict: Some("REQUIRES REVISION".into()),
+                    }),
+                    handoff_text: Some("findings".into()),
+                },
+            )
+            .unwrap();
+            let chain = attached.chain.unwrap();
+            assert_eq!((chain.step, chain.round), (1, 2));
+            let s = state.lock().unwrap();
+            let run = s.pipeline_run_by_id("ee_1").unwrap();
+            assert_eq!(run.round, 2);
+            assert_eq!(run.verdicts[0].verdict.as_deref(), Some("REQUIRES REVISION"));
         }
     }
 

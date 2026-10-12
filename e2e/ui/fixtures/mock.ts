@@ -748,6 +748,39 @@ export function installTauriMock(config: MockConfig): void {
   afterCall("dev_session_stop", (a) => {
     if (a.tabId) chainRunUpdated(overviewRunForTab(a.tabId));
   });
+  // commands/handoff.rs handoff_attach: the chain step (or loop-back) and the
+  // hand-off binding in one call. It records each step under the command the
+  // app used to call for it, so specs keep asserting the same data.
+  defaults.handoff_attach = (a, s) => {
+    const input = a.input as Json;
+    if (!state.handoffs.some((h: Json) => h.id === input.id)) {
+      throw new Error(`unknown hand-off: ${input.id}`);
+    }
+    if (!findTab(input.tabId)) throw new Error(`unknown tab: ${input.tabId}`);
+    const step = (cmd: string, args: Json) => {
+      calls.push({ cmd, args: clone(args) });
+      return defaults[cmd](args, s);
+    };
+    let chain: Json = null;
+    if (input.loopBack) {
+      chain = step("chain_loop_back", {
+        chainId: input.loopBack.chainId,
+        reviewerRoleId: input.loopBack.reviewerRoleId,
+        tabId: input.tabId,
+        verdict: input.loopBack.verdict ?? null,
+        handoffText: input.handoffText ?? null,
+      });
+    } else if (input.chain) {
+      step("set_tab_chain", {
+        tabId: input.tabId,
+        chain: input.chain,
+        handoffText: input.handoffText ?? null,
+      });
+      chain = clone(input.chain);
+    }
+    const record = step("handoff_bind_tab", { id: input.id, tabId: input.tabId });
+    return { record, chain };
+  };
   afterCall("get_pipeline_run", (_a, out) => {
     const first = PIPELINE_STAGES[out.run.kind]?.[0]?.[1];
     const tabId = first ? out.run.tabIds[first] : null;

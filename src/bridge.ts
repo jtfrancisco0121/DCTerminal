@@ -1041,8 +1041,18 @@ export async function handoffSave(input: HandoffSaveInput): Promise<HandoffRecor
   return invoke<HandoffRecord>("handoff_save", { input });
 }
 
-export async function handoffBindTab(id: string, tabId: string): Promise<HandoffRecord> {
-  return invoke<HandoffRecord>("handoff_bind_tab", { id, tabId });
+/**
+ * Binds a saved hand-off to the tab it opened and records that tab's chain
+ * step, or the reviewer's loop-back round, in one backend call.
+ */
+export async function handoffAttach(input: {
+  id: string;
+  tabId: string;
+  chain: import("./handoff/chains").ChainRef | null;
+  loopBack: { chainId: string; reviewerRoleId: string; verdict: string | null } | null;
+  handoffText: string | null;
+}): Promise<{ record: HandoffRecord; chain: import("./handoff/chains").ChainRef | null }> {
+  return invoke("handoff_attach", { input });
 }
 
 /** F7: one tab of a saved workspace (no live session). */
