@@ -64,6 +64,7 @@ export function useAppShortcuts({
           repeat: event.repeat,
           isComposing: event.isComposing,
           keyCode: event.keyCode,
+          altGraph: event.getModifierState?.("AltGraph"),
           targetTag,
         },
         { platform: host, dialogOpen, surface },

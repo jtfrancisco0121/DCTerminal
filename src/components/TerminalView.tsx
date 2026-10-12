@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import "@xterm/xterm/css/xterm.css";
-import { ptyOpen, ptyResize, ptyWrite, type TerminalLaunch } from "../bridge";
+import { ptyOpen, ptyResize, ptyWrite, terminalSessionLog, type TerminalLaunch } from "../bridge";
 import { detectPlatform, routeKey } from "../keymap";
-import { isShiftEnter, SHIFT_ENTER_SEQUENCE } from "../terminal/keys";
+import { isShiftEnter, SHIFT_ENTER_SEQUENCE, shiftEnterSendsNewline } from "../terminal/keys";
 import { TerminalSearchBar } from "./TerminalSearchBar";
+import { TerminalExitStrip, lastFiftyLines, lastOutputLine } from "./TerminalExitStrip";
 import { TerminalContextMenu, type ContextMenuItem } from "./TerminalContextMenu";
 import { formatDroppedPaths } from "../terminal/drop";
 import { elementAtDropPosition } from "../dragDropPosition";
@@ -22,6 +23,9 @@ import {
   copyTerminalSelection,
   pasteIntoTerminal,
   ensureParkedTerminal,
+  type ParkedTerminal,
+  measuredTerminalSize,
+  noteTerminalSize,
   blurParkedTerminal,
   focusParkedTerminal,
   isParkedHost,
@@ -54,6 +58,8 @@ type Props = {
   prompt?: string | null;
   /** When set, the process is `agent --resume <id>`. */
   resumeSessionId?: string | null;
+  /** A Claude Code terminal: an exit offers Resume session instead of Restart. */
+  claudeSession?: boolean;
   menuActions?: TerminalMenuAction[];
   /** Right-click, before the menu shows (e.g. read a reviewer's verdict). */
   onMenuOpen?: () => void;
@@ -83,6 +89,27 @@ export function readTerminalHandoff(ptyId: string): {
   };
 }
 
+/**
+ * The size to open a PTY at: the mounted slot, measured now, so the program
+ * draws its first screen at the right width. Before any slot exists, the last
+ * measured terminal (else 80x24); the next fit corrects it.
+ */
+function openSize(parked: ParkedTerminal): { cols: number; rows: number } {
+  const slot = parked.host.parentElement;
+  if (parked.host.isConnected && slot && slot.clientWidth > 0 && slot.clientHeight > 0) {
+    try {
+      parked.fit.fit();
+    } catch {
+      // Fall through to whatever xterm currently has.
+    }
+    if (parked.term.cols >= 2 && parked.term.rows >= 1) {
+      noteTerminalSize(parked.term.cols, parked.term.rows);
+      return { cols: parked.term.cols, rows: parked.term.rows };
+    }
+  }
+  return measuredTerminalSize();
+}
+
 export function TerminalView({
   ptyId,
   cwd,
@@ -93,6 +120,7 @@ export function TerminalView({
   autoFocus = true,
   prompt = null,
   resumeSessionId = null,
+  claudeSession = false,
   menuActions = [],
   onMenuOpen,
 }: Props) {
@@ -105,6 +133,25 @@ export function TerminalView({
   const viewRef = useRef<HTMLDivElement>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const [generation, setGeneration] = useState(0);
+  const [resumeId, setResumeId] = useState<string | null | undefined>(undefined);
+  const [lastLine, setLastLine] = useState("");
+  const [copied, setCopied] = useState(false);
+
+  // Once a Claude terminal exits: is there a session to resume, and what did
+  // it print last.
+  useEffect(() => {
+    if (!claudeSession || exitCode == null) return;
+    let current = true;
+    setResumeId(undefined);
+    setCopied(false);
+    setLastLine(lastOutputLine(terminalScrollbackText(ptyId)));
+    terminalSessionLog(ptyId)
+      .then((log) => current && setResumeId(log?.sessionId ?? null))
+      .catch(() => current && setResumeId(null));
+    return () => {
+      current = false;
+    };
+  }, [claudeSession, exitCode, ptyId]);
 
   // Escape closes the right-click menu. Capture it so the program in the
   // terminal does not also see the key.
@@ -218,8 +265,9 @@ export function TerminalView({
     });
     if (live?.exitCode != null) setExitCode(live.exitCode);
     const platform = detectPlatform(navigator.platform);
+    const newlineOnShiftEnter = shiftEnterSendsNewline(launch);
     parked.term.attachCustomKeyEventHandler((event) => {
-      if (isShiftEnter(event)) {
+      if (newlineOnShiftEnter && isShiftEnter(event)) {
         // Handle keydown only; swallow keypress and keyup so xterm sends no CR.
         if (event.type === "keydown" && !event.repeat) {
           notePtyInput(ptyId, SHIFT_ENTER_SEQUENCE);
@@ -236,6 +284,7 @@ export function TerminalView({
           altKey: event.altKey,
           shiftKey: event.shiftKey,
           repeat: event.repeat,
+          altGraph: event.getModifierState?.("AltGraph"),
         },
         { platform, surface: "terminal" },
       );
@@ -250,6 +299,7 @@ export function TerminalView({
       const cols = parked.term.cols;
       const rows = parked.term.rows;
       if (cols >= 2 && rows >= 1) {
+        noteTerminalSize(cols, rows);
         void ptyResize(ptyId, cols, rows).catch(() => {});
       }
     };
@@ -284,7 +334,7 @@ export function TerminalView({
         root.appendChild(parked.host);
       }
     };
-  }, [autoFocus, ptyId, fontSize, generation]);
+  }, [autoFocus, ptyId, fontSize, generation, launch]);
 
   useEffect(() => {
     if (!autoOpen || !cwd) return;
@@ -292,6 +342,7 @@ export function TerminalView({
     if (!markPtyOpening(ptyId)) return;
     const live = beginLivePty(ptyId);
     const parked = ensureParkedTerminal(ptyId, fontSize);
+    const size = openSize(parked);
     void ptyOpen({
       id: ptyId,
       cwd,
@@ -299,8 +350,8 @@ export function TerminalView({
       roleId,
       prompt,
       resumeSessionId,
-      cols: Math.max(parked.term.cols, 80),
-      rows: Math.max(parked.term.rows, 24),
+      cols: size.cols,
+      rows: size.rows,
       onOutput: live.channel,
     }).catch((err: unknown) => {
       clearPtyOpening(ptyId);
@@ -308,7 +359,7 @@ export function TerminalView({
     });
   }, [autoOpen, cwd, fontSize, launch, prompt, ptyId, resumeSessionId, roleId]);
 
-  const restart = () => {
+  const restart = (resume?: string | null) => {
     setExitCode(null);
     setFailed(null);
     const parked = ensureParkedTerminal(ptyId, fontSize);
@@ -323,9 +374,10 @@ export function TerminalView({
       launch,
       roleId,
       prompt: null,
-      resumeSessionId,
-      cols: Math.max(parked.term.cols, 80),
-      rows: Math.max(parked.term.rows, 24),
+      // Start fresh on a Claude terminal drops the conversation on purpose.
+      resumeSessionId: claudeSession ? (resume ?? null) : resumeSessionId,
+      cols: openSize(parked).cols,
+      rows: openSize(parked).rows,
       onOutput: live.channel,
     }).catch((err: unknown) => {
       setFailed(err instanceof Error ? err.message : String(err));
@@ -384,6 +436,23 @@ export function TerminalView({
         });
       }}
     >
+      {claudeSession && (failed || exitCode != null) && (
+        <TerminalExitStrip
+          exitCode={exitCode}
+          lastLine={lastLine}
+          failed={failed}
+          resumeId={resumeId}
+          copied={copied}
+          onResume={() => restart(resumeId)}
+          onFresh={() => restart(null)}
+          onCopy={() => {
+            void navigator.clipboard
+              .writeText(lastFiftyLines(terminalScrollbackText(ptyId)))
+              .then(() => setCopied(true))
+              .catch(() => {});
+          }}
+        />
+      )}
       {searchOpen && (
         <TerminalSearchBar
           search={ensureParkedTerminal(ptyId, fontSize).search}
@@ -399,11 +468,11 @@ export function TerminalView({
         className="terminal-slot"
         onMouseDown={() => focusParkedTerminal(ptyId)}
       />
-      {(failed || exitCode != null) && (
+      {!claudeSession && (failed || exitCode != null) && (
         <div className="terminal-exit">
           {failed && <p className="error">{failed}</p>}
           {exitCode != null && <p>Process exited ({exitCode}).</p>}
-          <button type="button" className="primary-button" onClick={restart}>
+          <button type="button" className="primary-button" onClick={() => restart()}>
             Restart
           </button>
         </div>

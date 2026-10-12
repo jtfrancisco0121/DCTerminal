@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   bindingConflicts,
   defaultBindings,
+  isAltGrText,
   isImeEvent,
   isReservedForTerminal,
   matchShortcut,
@@ -363,13 +364,42 @@ describe("pane and file panel shortcuts", () => {
     expect(
       routeKey(event({ code: "KeyS", key: "$", ctrlKey: true, altKey: true }), term).kind,
     ).toBe("shell");
+    // German AltGr+Q "@" is text, whether or not the event reports AltGraph.
     expect(
-      routeKey(event({ code: "Backslash", key: "#", ctrlKey: true, altKey: true }), term).kind,
+      routeKey(event({ code: "KeyS", key: "@", ctrlKey: true, altKey: true, altGraph: true }), term).kind,
     ).toBe("shell");
     // A real Ctrl+Alt+O still moves focus between panes.
     expect(
       routeKey(event({ code: "KeyO", key: "o", ctrlKey: true, altKey: true }), term).kind,
     ).toBe("app");
+  });
+
+  it("R21: AltGr+Q on a German layout is text", () => {
+    const at = event({ code: "KeyQ", key: "@", ctrlKey: true, altKey: true });
+    expect(isAltGrText(at, "windows")).toBe(true);
+    expect(isAltGrText({ ...at, altGraph: true }, "windows")).toBe(true);
+    expect(isAltGrText({ ...at, altGraph: true }, "linux")).toBe(true);
+    expect(isAltGrText(event({ code: "Digit7", key: "{", ctrlKey: true, altKey: true, altGraph: true }), "windows")).toBe(true);
+  });
+
+  it("R21: Ctrl+Alt pane shortcuts work on AZERTY, Dvorak, Colemak and German", () => {
+    const term = { platform: "windows" as const, surface: "terminal" as const };
+    const chord = (code: string, key: string, extra: Partial<KeyEventLike> = {}) =>
+      routeKey(event({ code, key, ctrlKey: true, altKey: true, ...extra }), term);
+    // AZERTY: KeyW prints "z".
+    expect(chord("KeyW", "z")).toEqual({ kind: "app", match: { action: "closeSplit" } });
+    // Dvorak: KeyS "o", KeyO "r", KeyW ",", KeyG "i".
+    expect(chord("KeyS", "o")).toEqual({ kind: "app", match: { action: "swapPanes" } });
+    expect(chord("KeyO", "r")).toEqual({ kind: "app", match: { action: "focusOtherPane" } });
+    expect(chord("KeyW", ",", { altGraph: false })).toEqual({ kind: "app", match: { action: "closeSplit" } });
+    expect(chord("KeyG", "i").kind).toBe("app");
+    // Colemak: KeyS "r", KeyO "y".
+    expect(chord("KeyS", "r")).toEqual({ kind: "app", match: { action: "swapPanes" } });
+    expect(chord("KeyO", "y")).toEqual({ kind: "app", match: { action: "focusOtherPane" } });
+    // German: the Backslash key prints "#" without AltGr.
+    expect(chord("Backslash", "#", { altGraph: false }).kind).toBe("app");
+    expect(isAltGrText(event({ code: "Backslash", key: "#", ctrlKey: true, altKey: true, altGraph: false }), "windows")).toBe(false);
+    expect(isAltGrText(event({ code: "KeyW", key: "z", ctrlKey: true, altKey: true }), "linux")).toBe(false);
   });
 });
 

@@ -70,7 +70,7 @@ use commands::{workspace_delete, workspace_open, workspace_save, workspaces_list
 use files::{files_list, files_read, files_reveal, files_write};
 use models::{get_model_settings, list_models, set_model_settings, set_tab_model};
 use pty::{
-    get_terminal_settings, pty_kill, pty_open, pty_resize, pty_write, role_terminal_start,
+    get_terminal_settings, pty_kill, pty_open, pty_resize, pty_set_scheme, pty_write, role_terminal_start,
     set_terminal_settings, shell_terminal_start, terminal_plan_file, PtyRegistry,
 };
 use std::sync::Mutex;
@@ -244,6 +244,7 @@ pub fn run() {
             pty_write,
             pty_resize,
             pty_kill,
+            pty_set_scheme,
             get_terminal_settings,
             set_terminal_settings,
             terminal_plan_file,

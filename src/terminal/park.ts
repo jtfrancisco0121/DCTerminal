@@ -9,7 +9,8 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal } from "@xterm/xterm";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { lastLines, TERMINAL_TAIL_LINES } from "./text";
-import { cachedTheme, terminalTheme } from "../theme";
+import { ptySetScheme } from "../bridge";
+import { cachedTheme, terminalTheme, THEMES, normalizeTheme } from "../theme";
 import { detectPlatform } from "../keymap";
 import { findPathLinks, isLinkModifier } from "./links";
 
@@ -31,7 +32,41 @@ let currentTheme = terminalTheme(cachedTheme());
 /** U8: repaint every terminal (and future ones) in the app theme. */
 export function setTerminalTheme(id: string): void {
   currentTheme = terminalTheme(id);
+  const light = THEMES.find((item) => item.id === normalizeTheme(id))?.scheme === "light";
+  try {
+    void ptySetScheme(light).catch(() => {});
+  } catch {
+    // No Tauri bridge (unit tests, plain browser): nothing to tell.
+  }
   for (const entry of parked.values()) entry.term.options.theme = currentTheme;
+}
+
+const MAC_FONTS = '"SF Mono", SFMono-Regular, Menlo, ';
+const FONTS = '"Cascadia Code", "Cascadia Mono", Consolas, ui-monospace, monospace';
+
+/** SF Mono and Menlo first on macOS; the Windows stack elsewhere. */
+export function terminalFontFamily(platform: string): string {
+  return /mac/i.test(platform) ? MAC_FONTS + FONTS : FONTS;
+}
+
+function prefersReducedMotion(): boolean {
+  try {
+    return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+  } catch {
+    return false;
+  }
+}
+
+/** Size of the last terminal that was fitted to a real slot. */
+let lastFitSize: { cols: number; rows: number } | null = null;
+
+export function noteTerminalSize(cols: number, rows: number): void {
+  if (cols >= 2 && rows >= 1) lastFitSize = { cols, rows };
+}
+
+/** Where a new PTY should open: the measured slot size, else 80x24 until the first fit. */
+export function measuredTerminalSize(): { cols: number; rows: number } {
+  return lastFitSize ?? { cols: 80, rows: 24 };
 }
 
 function parkHost(): HTMLDivElement {
@@ -98,12 +133,14 @@ export function ensureParkedTerminal(id: string, fontSize: number): ParkedTermin
   const host = document.createElement("div");
   host.className = "xterm-host";
   const term = new Terminal({
-    fontFamily: '"Cascadia Code", "Cascadia Mono", Consolas, ui-monospace, monospace',
+    fontFamily: terminalFontFamily(navigator.platform),
     fontSize,
     scrollback: 10000,
     theme: currentTheme,
-    cursorBlink: true,
+    cursorBlink: !prefersReducedMotion(),
     macOptionIsMeta: optionAsMeta,
+    // Dim and low-contrast ANSI colors are lifted to a readable ratio.
+    minimumContrastRatio: 4.5,
     rightClickSelectsWord: false,
     // The search addon's match highlights use the decoration API.
     allowProposedApi: true,

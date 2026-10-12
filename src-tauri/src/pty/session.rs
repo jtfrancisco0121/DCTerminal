@@ -79,6 +79,7 @@ impl PtySession {
         }
         command.cwd(spec.cwd);
         command.env("TERM", "xterm-256color");
+        command.env("COLORTERM", "truecolor");
         for (key, value) in &spec.env {
             command.env(key, value);
         }

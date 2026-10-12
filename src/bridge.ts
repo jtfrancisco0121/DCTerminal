@@ -1277,6 +1277,11 @@ export async function ptyOpen(input: {
   });
 }
 
+/** Tell the backend whether the app theme is light, so Claude terminals pick a matching palette. */
+export async function ptySetScheme(light: boolean): Promise<void> {
+  return invoke("pty_set_scheme", { light });
+}
+
 export async function ptyWrite(id: string, data: string): Promise<void> {
   return invoke("pty_write", { id, data });
 }

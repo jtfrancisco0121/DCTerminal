@@ -18,6 +18,7 @@ import {
   pullPlannerText,
   pullPlanReviewText,
   verdictHistory,
+  type SessionLogs,
 } from "../pipeline/overviewModel";
 import { liveTerminalReader, type TerminalReader } from "../pipeline/terminalText";
 import { verdictTone } from "../handoff/verdict";
@@ -36,6 +37,8 @@ type Props = {
   terminalReader?: TerminalReader;
   /** Claude role terminal states by tab id (Working / Needs you / Exited). */
   terminalStates?: Record<string, TerminalState>;
+  /** Claude session logs by tab id: verdicts and plans of Claude terminals come from here. */
+  sessionLogs?: SessionLogs;
 };
 
 function overviewTitle(run: PipelineRun, kind: PipelineKind): string {
@@ -54,6 +57,7 @@ export function PipelineOverview({
   onNotice,
   terminalReader = liveTerminalReader,
   terminalStates,
+  sessionLogs,
 }: Props) {
   const [run, setRun] = useState<PipelineRun | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -99,14 +103,14 @@ export function PipelineOverview({
 
   const pullFromPlanner = async () => {
     if (!run) return;
-    const pulled = await pullPlannerText(run, tabs, runtimes, terminalReader);
+    const pulled = await pullPlannerText(run, tabs, runtimes, terminalReader, sessionLogs);
     if (pulled.text) setCandidateDraft(pulled.text);
     else onNotice("Nothing to pull", pulled.reason ?? "No Planner reply yet.");
   };
 
   const pullFromPlanReviewer = () => {
     if (!run) return;
-    const pulled = pullPlanReviewText(run, tabs, runtimes, terminalReader);
+    const pulled = pullPlanReviewText(run, tabs, runtimes, terminalReader, sessionLogs);
     if (pulled.text) setApprovedDraft(pulled.text);
     else onNotice("Nothing to pull", pulled.reason ?? "No Plan Reviewer reply yet.");
   };
@@ -161,7 +165,7 @@ export function PipelineOverview({
     );
   }
 
-  const stages = overviewStages(run, tabs, runtimes, terminalReader, terminalStates);
+  const stages = overviewStages(run, tabs, runtimes, terminalReader, terminalStates, sessionLogs);
   const implementerTab = tabs.find((t) => t.id === run.tabIds.role_implementer);
   // A chain's Implementer may already be running; promote only fills a draft form.
   const canPromote = !run.chainId || implementerTab?.phase === "draft";

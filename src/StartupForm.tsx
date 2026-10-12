@@ -296,6 +296,7 @@ import {
   terminalScrollbackText,
   terminalSelection,
   terminalTailText,
+  measuredTerminalSize,
 } from "./terminal/park";
 import { encodeTerminalPaste } from "./terminal/paste";
 import { planFileMentions } from "./terminal/text";
@@ -458,6 +459,15 @@ function terminalLaunchOf(tab: TabSummary): TerminalLaunch {
     default:
       return "shell";
   }
+}
+
+/** A Claude Code terminal (role or plain tile) whose exit can offer a resume. */
+function isClaudeTerminal(tab: TabSummary): boolean {
+  return (
+    tab.kind === "terminal" &&
+    tab.provider === "claude" &&
+    (tab.terminalLaunch === "role" || tab.terminalLaunch === "claude-cli")
+  );
 }
 
 type CliLaunch = "cursor-cli" | "claude-cli";
@@ -1378,7 +1388,7 @@ export function StartupForm({
       .filter(
         (tab) =>
           isClaudeRoleTerminal(tab) &&
-          (running(tab.id) || onScreen.has(tab.id) || !!tab.chain),
+          (running(tab.id) || onScreen.has(tab.id) || !!tab.chain || !!tab.pipelineRunId),
       )
       .map((tab) => tab.id)
       .join("\n");
@@ -2048,8 +2058,7 @@ export function StartupForm({
           values: form,
           tabId: preferred,
           handoffPlan: options?.handoffPlan ?? null,
-          cols: 80,
-          rows: 24,
+          ...measuredTerminalSize(),
           onOutput: live.channel,
         });
         if (result.errors.length > 0 || !result.tabId) {
@@ -2109,8 +2118,7 @@ export function StartupForm({
           tabId: activeTabId,
           cwd,
           launch,
-          cols: 80,
-          rows: 24,
+          ...measuredTerminalSize(),
           onOutput: live.channel,
         });
         if (result.errors.length > 0 || !result.tabId) {
@@ -2154,8 +2162,7 @@ export function StartupForm({
         cwd,
         launch: source === "claude" ? "claude-cli" : "cursor-cli",
         resumeSessionId: sessionId,
-        cols: 80,
-        rows: 24,
+        ...measuredTerminalSize(),
         onOutput: live.channel,
       });
       if (result.errors.length > 0 || !result.tabId) {
@@ -5187,6 +5194,7 @@ export function StartupForm({
           roleId={tab.roleId}
           fontSize={fontSize}
           resumeSessionId={tab.resumeSessionId}
+          claudeSession={isClaudeTerminal(tab)}
           autoOpen={!livePty(tab.id)}
           autoFocus={false}
           menuActions={
@@ -5631,6 +5639,7 @@ export function StartupForm({
           tabs={savedTabs}
           runtimes={runtimes}
           terminalStates={terminalStates}
+          sessionLogs={sessionLogs}
           onJump={(tabId) => void handleSelectTab(tabId)}
           onWatch={(tabId) => {
             setSplit((current) => ({
@@ -5723,6 +5732,7 @@ export function StartupForm({
             roleId={activeTabSummary.roleId}
             fontSize={fontSize}
             resumeSessionId={activeTabSummary.resumeSessionId}
+            claudeSession={isClaudeTerminal(activeTabSummary)}
             autoOpen={!livePty(activeTabSummary.id)}
             onMenuOpen={() => readTerminalVerdict(activeTabSummary.id, true)}
             menuActions={
