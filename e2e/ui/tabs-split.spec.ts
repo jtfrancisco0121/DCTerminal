@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import { expect, test } from "./fixtures/tauri";
+import { expect, sessionIdFor, test } from "./fixtures/tauri";
 import {
   cellTops,
   chord,
@@ -168,6 +168,66 @@ test.describe("classic split", () => {
     await expect(secondPane(page, "Gamma")).toHaveCount(0);
     await layoutWhere(app, (l) => l.splitMode === "single");
     await expectActive(page, "Alpha");
+  });
+
+  test("the second pane's Stop asks first; its Restart starts that tab again in its pane", async ({
+    app,
+    page,
+  }) => {
+    await app.open({
+      tabs: namedTabs(2),
+      // General starts as a chat here (the default surface is the terminal).
+      responses: {
+        get_terminal_settings: {
+          shell: "/bin/zsh",
+          fontSize: 13,
+          roleSurface: { role_general: "chat" },
+          roleRunMode: {},
+        },
+      },
+    });
+    await startReady(app, page, "tab-1", "alpha ready");
+    await tabChip(page, "Beta").click();
+    await startReady(app, page, "tab-2", "beta ready");
+    await splitWith(page, "Alpha");
+    const alpha = secondPane(page, "Alpha");
+    await expect(alpha.getByRole("log")).toContainText("alpha ready");
+
+    // Stop asks first; Cancel keeps the agent running.
+    const confirm = page.getByRole("alertdialog", { name: "Stop this session?" });
+    await alpha.getByRole("button", { name: "Stop session" }).click();
+    await confirm.getByRole("button", { name: "Cancel" }).click();
+    await expect(confirm).toHaveCount(0);
+    expect(await app.calls("dev_session_stop")).toHaveLength(0);
+
+    // The agent exits: Restart stops it and starts the same tab again, resuming its session.
+    await app.emit("role_session/prompt-finished", {
+      sessionId: sessionIdFor("tab-1"),
+      tabId: "tab-1",
+      success: false,
+      result: null,
+      error: "agent exited (exit status: 1)",
+      agentExited: true,
+    });
+    await alpha.getByRole("button", { name: "Restart" }).click();
+    const stop = await app.waitForCall("dev_session_stop");
+    expect(stop.args.tabId).toBe("tab-1");
+    const start = await app.waitForCall(
+      "role_session_start",
+      (args) => args.tabId === "tab-1" && !!args.resumeSessionId,
+    );
+    expect(start.args).toMatchObject({ roleId: "role_general", resumeSessionId: sessionIdFor("tab-1") });
+    await app.turn("tab-1").reply("alpha back");
+    await expect(alpha.getByRole("log")).toContainText("alpha back");
+    // The restarted tab stays in the second pane; Beta is still the main tab.
+    await expectActive(page, "Beta");
+
+    // Confirming Stop stops only the second pane's tab.
+    await alpha.getByRole("button", { name: "Stop session" }).click();
+    await confirm.getByRole("button", { name: "Stop session" }).click();
+    await expect.poll(async () => (await app.calls("dev_session_stop")).length).toBe(2);
+    expect((await app.calls("dev_session_stop"))[1].args.tabId).toBe("tab-1");
+    await expect(alpha.getByText("This tab has no running session.")).toBeVisible();
   });
 
   test("Mod+\\ with one tab explains there is nothing to split with", async ({ app, page }) => {

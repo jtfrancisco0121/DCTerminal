@@ -57,7 +57,8 @@ export type PaneDeps = {
   cancelTurnFor: (tabId: string | null) => Promise<void>;
   setFollowUpFor: (tabId: string | null, value: string) => void;
   sendFollowUpFor: (tabId: string | null) => Promise<void>;
-  stopSecondarySession: (tabId: string) => Promise<void>;
+  requestStopSecondarySession: (tabId: string) => Promise<void>;
+  restartSecondarySession: (tabId: string) => Promise<void>;
 };
 
 export type PaneRenderers = ReturnType<typeof createPaneRenderers>;
@@ -96,7 +97,8 @@ export function createPaneRenderers({
   cancelTurnFor,
   setFollowUpFor,
   sendFollowUpFor,
-  stopSecondarySession,
+  requestStopSecondarySession,
+  restartSecondarySession,
 }: PaneDeps) {
   /**
    * A live view of a tab that is not the active one: the same terminal
@@ -169,10 +171,10 @@ export function createPaneRenderers({
           onCancelTurn={() => void cancelTurnFor(tab.id)}
           onFollowUpChange={(value) => setFollowUpFor(tab.id, value)}
           onSendFollowUp={() => void sendFollowUpFor(tab.id)}
-          onStop={() => void stopSecondarySession(tab.id)}
+          onStop={() => void requestStopSecondarySession(tab.id)}
           folderWarning={rt.folderWarning}
           agentExited={rt.agentExited}
-          onRestart={() => void stopSecondarySession(tab.id)}
+          onRestart={() => void restartSecondarySession(tab.id)}
           inputRef={inputRef}
           slashCommands={rt.slashCommands}
           images={imagesFor(tab.id, rt.session)}
