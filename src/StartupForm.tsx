@@ -196,10 +196,12 @@ import { PromptLibraryDialog } from "./components/PromptLibraryDialog";
 import { WorkspacesDialog } from "./components/WorkspacesDialog";
 import { FirstRunSetup, type FirstRunFinish } from "./components/FirstRunSetup";
 import { insertIntoPad, type PadSelection } from "./prompts/library";
+import { startQueue } from "./terminal/startQueue";
 import {
   chainRound,
   chainTabFor,
   loopBackChain,
+  loopBackRecord,
   newChain,
 } from "./handoff/chains";
 import { handoffRoute, loopBackMessage } from "./handoff/routing";
@@ -2055,7 +2057,9 @@ export function StartupForm({
 
   /** Terminals whose startup prompt was too long to pass inline and went through a file. */
   const [promptFileTabs, setPromptFileTabs] = useState<string[]>([]);
-  const startRoleTerminal = useCallback(
+  /** Quiet starts wait their turn here instead of failing on a start in progress. */
+  const quietStarts = useMemo(() => startQueue(() => startLockRef.current), []);
+  const startRoleTerminalNow = useCallback(
     async (options?: {
       roleId: string;
       values: Record<string, string>;
@@ -2066,12 +2070,15 @@ export function StartupForm({
     }) => {
       const quiet = !!options?.quiet;
       if (startLockRef.current) {
+        // Unreachable for quiet starts: startQueue waits for the lock.
         if (quiet) throw new Error("Another tab is starting. Try again when it has started.");
         return null;
       }
       startLockRef.current = true;
-      setBusy(true);
-      setTerminalError(null);
+      if (!quiet) {
+        setBusy(true);
+        setTerminalError(null);
+      }
       const roleToStart = options?.roleId ?? roleId;
       const form = options?.values ?? formValues;
       const preferred = options && "tabId" in options ? options.tabId : activeTabId;
@@ -2125,10 +2132,15 @@ export function StartupForm({
         return null;
       } finally {
         startLockRef.current = false;
-        setBusy(false);
+        if (!quiet) setBusy(false);
       }
     },
     [activeTabId, formValues, refreshTabs, roleId],
+  );
+  const startRoleTerminal = useCallback(
+    (options?: Parameters<typeof startRoleTerminalNow>[0]) =>
+      options?.quiet ? quietStarts(() => startRoleTerminalNow(options)) : startRoleTerminalNow(options),
+    [quietStarts, startRoleTerminalNow],
   );
 
   /** Starts a lane's role terminal in its own (worktree) draft tab, without taking focus. */
@@ -2142,7 +2154,7 @@ export function StartupForm({
       const laneRole =
         pipelineStages(run.kind).find((stage) => stage.id === run.fanOutStage)?.roleId ??
         "role_implementer";
-      await startLane(run, lane, laneRole, { startTerminal: laneStartTerminal, refreshTabs });
+      return startLane(run, lane, laneRole, { startTerminal: laneStartTerminal, refreshTabs });
     },
     [laneStartTerminal, refreshTabs],
   );
@@ -2211,7 +2223,7 @@ export function StartupForm({
       const { run } = await getPipelineRun(runId);
       const lane = run.lanes?.find((item) => item.id === laneId);
       if (!lane) throw new Error(`No lane ${laneId} on this run.`);
-      await startLaneOf(run, lane);
+      if (!(await startLaneOf(run, lane))) throw new Error(`${lane.title} is not waiting to start.`);
     },
     [startLaneOf],
   );
@@ -4031,13 +4043,9 @@ export function StartupForm({
           setTerminalCapture(null);
           setHandoffTarget(null);
           try {
-            await chainLoopBack({
-              chainId: loop.chain.chainId,
-              reviewerRoleId: handoffSource.sourceRoleId,
-              tabId: targetTab.id,
-              verdict: sourceVerdict,
-              handoffText: text,
-            });
+            await chainLoopBack(
+              loopBackRecord(loop.chain, handoffSource.sourceRoleId, targetTab.id, sourceVerdict, text),
+            );
           } catch (err: unknown) {
             showNotice(
               "Round not recorded",

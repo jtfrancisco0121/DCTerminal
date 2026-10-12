@@ -71,17 +71,23 @@ export function lanesFromReply(reply: string): PlannedPr[] {
   return lanes.length >= 2 ? lanes : [];
 }
 
+/** A git branch name for a lane's worktree: `ee-1760…-pr1`. */
+export function laneBranch(runId: string, laneId: string): string {
+  return `${runId}-${laneId}`.replace(/[^A-Za-z0-9._/-]+/g, "-").replace(/^-+/, "");
+}
+
 /** The lane's own instructions, added to the Implementer's context. */
-export function laneNote(lane: PlannedPr, all: readonly PlannedPr[], branch: string): string {
+export function laneNote(lane: PlannedPr, all: readonly PlannedPr[], runId: string): string {
   const others = all.filter((pr) => pr.id !== lane.id).map((pr) => pr.title);
-  const deps = all.filter((pr) => lane.dependsOn.includes(pr.id)).map((pr) => pr.title);
+  const deps = all.filter((pr) => lane.dependsOn.includes(pr.id));
+  const branches = deps.map((pr) => `\`${laneBranch(runId, pr.id)}\``);
   return [
-    `This tab implements only ${lane.title}, in its own git worktree on branch \`${branch}\`.`,
+    `This tab implements only ${lane.title}, in its own git worktree on branch \`${laneBranch(runId, lane.id)}\`.`,
     others.length
       ? `${others.join("; ")} ${others.length === 1 ? "is" : "are"} built in other tabs at the same time: do not implement ${others.length === 1 ? "it" : "them"} here.`
       : "",
     deps.length
-      ? `It builds on ${deps.join("; ")}, already approved: start from ${deps.length === 1 ? "that pull request's branch" : "those pull requests' branches"} as the plan says.`
+      ? `It builds on ${deps.map((pr) => pr.title).join("; ")}, already approved: start from branch ${branches[0]}${branches.length > 1 ? ` and merge in ${branches.slice(1).join(", ")}` : ""} as the plan says.`
       : "",
     "Open exactly one draft pull request for it, and report only that one under HANDOFF: Pull requests.",
   ]

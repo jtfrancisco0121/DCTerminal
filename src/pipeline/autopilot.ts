@@ -44,8 +44,13 @@ export function turnReport(args: {
   awaitingPlan?: boolean;
   /** The tab's lane, when the run fanned out. */
   lane?: string | null;
+  /**
+   * The stage reviewer's own reply, when `reply` merges parallel reviews:
+   * its HANDOFF sections are checked, not the merged ones.
+   */
+  ownReply?: string;
 }): TurnReport {
-  const { stage, reply, chat, usage, awaitingPlan = false, lane = null } = args;
+  const { stage, reply, chat, usage, awaitingPlan = false, lane = null, ownReply = reply } = args;
   const result = contractResult(reply);
   const reviewer = !!stage.loopBack;
   return {
@@ -55,7 +60,7 @@ export function turnReport(args: {
       ? (result?.findings ?? []).map((f) => ({ severity: f.severity, summary: f.summary }))
       : [],
     findingsKnown: reviewer && !!result,
-    missingSections: awaitingPlan ? [] : missingHandoffSections(stage.roleId, reply),
+    missingSections: awaitingPlan ? [] : missingHandoffSections(stage.roleId, ownReply),
     usagePercent: usage,
     chat,
     lane,

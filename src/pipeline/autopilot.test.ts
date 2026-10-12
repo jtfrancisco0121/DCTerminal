@@ -98,6 +98,27 @@ describe("autopilot helpers", () => {
     ).toEqual([]);
   });
 
+  it("merged parallel reviews: sections are checked on the stage reviewer's own reply", () => {
+    const stage = pipelineDef("eagle1")!.stages[3];
+    const merged = mergeReviews(
+      [
+        { name: "PR Reviewer", reply: "## HANDOFF: Verdict\nAPPROVED" },
+        { name: "Security", reply: "## HANDOFF: Verdict\nAPPROVED" },
+      ],
+      "REQUEST CHANGES",
+    );
+    const report = turnReport({
+      stage,
+      reply: merged,
+      ownReply: "## HANDOFF: Verdict\nAPPROVED",
+      chat: false,
+      usage: null,
+    });
+    expect(report.verdict).toBe("APPROVED");
+    expect(report.missingSections).toEqual(["Findings for the Implementer"]);
+    expect(turnReport({ stage, reply: merged, chat: false, usage: null }).missingSections).toEqual([]);
+  });
+
   it("sends back the findings section, else the Result findings, else the reply", () => {
     expect(loopBackText(REVIEW)).toBe("1. src/a.ts:4 guard the null token.");
     const onlyResult =

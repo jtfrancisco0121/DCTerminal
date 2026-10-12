@@ -93,6 +93,27 @@ export function loopBackChain(
 }
 
 /**
+ * What `chainLoopBack` records for a round sent back to a live tab. A
+ * fanned-out chain carries its lane, so the lane's round moves, not the run's.
+ */
+export function loopBackRecord(
+  chain: ChainRef,
+  reviewerRoleId: string,
+  tabId: string,
+  verdict: string | null,
+  handoffText: string | null,
+): {
+  chainId: string;
+  reviewerRoleId: string;
+  tabId: string;
+  verdict: string | null;
+  handoffText: string | null;
+  lane: string | null;
+} {
+  return { chainId: chain.chainId, reviewerRoleId, tabId, verdict, handoffText, lane: chain.lane ?? null };
+}
+
+/**
  * The chain's open tab for `step`: the newest tagged tab that `prefer`
  * accepts (a live session), else the newest tagged tab.
  */

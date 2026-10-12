@@ -23,7 +23,7 @@ import {
   type TabSummary,
   type TerminalSessionLog,
 } from "../bridge";
-import { chainTabFor, loopBackChain, type ChainRef } from "../handoff/chains";
+import { chainTabFor, loopBackChain, loopBackRecord, type ChainRef } from "../handoff/chains";
 import { ASK_FOR_HANDOFF_SECTIONS } from "../handoff/contract";
 import { attachHandoff, prepareHandoff, saveHandoff, type LoopBackStep } from "../handoff/executor";
 import { defaultScope, githubPrUrls, terminalHandoffInput, type HandoffSource } from "../handoff/map";
@@ -60,8 +60,8 @@ export type AutopilotDeps = {
   /** Tells you autopilot stopped on `tabId` (toast and system notification). */
   notifyStop: (tabId: string, reason: string) => void;
   notice: (title: string, body: string) => void;
-  /** Starts a waiting lane's Implementer (fanOut.startLane). */
-  startLane: (run: PipelineRun, lane: RunLane) => Promise<void>;
+  /** Claims and starts a waiting lane's Implementer (fanOut.startLane); false when it was not waiting. */
+  startLane: (run: PipelineRun, lane: RunLane) => Promise<boolean>;
   /** The newest session log read for a tab, if any. */
   sessionLog: (tabId: string) => TerminalSessionLog | null | undefined;
 };
@@ -89,7 +89,7 @@ export function useAutopilot(deps: AutopilotDeps) {
   const handled = useRef(new Map<string, string>());
   /** Tabs whose turn is being handled now. */
   const busy = useRef(new Set<string>());
-  /** Parallel reviewers' turn keys already merged into a decision. */
+  /** Stage reviewers' turn keys already decided on with their parallel reviewers. */
   const merged = useRef(new Set<string>());
   /** Tabs whose log was read at least once since the app started. */
   const seen = useRef(new Set<string>());
@@ -157,6 +157,7 @@ export function useAutopilot(deps: AutopilotDeps) {
           if (!ids.length) return;
           const view = await getPipelineRun(runId);
           for (const id of ids) {
+            // startLane re-reads the run and skips a lane no longer waiting.
             const lane = view.run.lanes?.find((l) => l.id === id);
             if (!lane) continue;
             try {
@@ -227,14 +228,7 @@ export function useAutopilot(deps: AutopilotDeps) {
             }
             const text = loopBackMessage(tab.roleId, findings, round, d.roles());
             await pasteInto(target.id, text);
-            await chainLoopBack({
-              chainId: chain.chainId,
-              reviewerRoleId: tab.roleId,
-              tabId: target.id,
-              verdict,
-              handoffText: text,
-              lane: chain.lane ?? null,
-            });
+            await chainLoopBack(loopBackRecord(chain, tab.roleId, target.id, verdict, text));
             await d.refreshTabs();
             return;
           }
@@ -242,9 +236,10 @@ export function useAutopilot(deps: AutopilotDeps) {
           const answers = await getTab(tab.id)
             .then(({ tab: record }) => ({ ...record.answers }))
             .catch(() => ({ cwd: tab.cwd }));
+          // The findings sent are the decided reply (merged, with parallel reviewers).
           const source = terminalStageSource({
             tab,
-            log: job.log,
+            log: { ...job.log, lastReply: reply },
             answers,
             tail: terminalTailText(tab.id),
             roles: d.roles(),
@@ -275,7 +270,7 @@ export function useAutopilot(deps: AutopilotDeps) {
       const tab = d.tabs().find((t) => t.id === tabId);
       if (!tab?.chain || tab.kind !== "terminal" || ptyExitCode(tabId) != null) return;
       const turn = finishedTurn(tab.roleId, log);
-      if (!seen.current.has(tabId)) {
+      if (log && !seen.current.has(tabId)) {
         seen.current.add(tabId);
         // Finished before this app session (a restart): never acted on again.
         const at = Date.parse(log?.lastPromptAt ?? "");
@@ -298,11 +293,13 @@ export function useAutopilot(deps: AutopilotDeps) {
           const view = await getPipelineRun(runId).catch(() => null);
           if (!view?.run.autopilot?.enabled) return;
           let reply = (turn.awaitingPlan ? log.plan : log.lastReply)?.trim() ?? "";
+          let ownReply = reply;
           const roles = stageRoles(placed.stage);
           if (roles.length > 1) {
-            // Parallel reviewers: decide once every one of them has finished
-            // a turn not merged yet, on their merged reviews, as the stage's
-            // own reviewer.
+            // Parallel reviewers: decide when the stage's own reviewer has a
+            // finished turn not decided on yet and every parallel reviewer
+            // has finished one (its latest, even if used before). A re-ask
+            // then needs only the stage's reviewer to answer again.
             const laneId = tab.chain!.lane ?? null;
             const tabIds = laneId
               ? (view.run.lanes?.find((l) => l.id === laneId)?.tabIds ?? {})
@@ -314,10 +311,12 @@ export function useAutopilot(deps: AutopilotDeps) {
               const done = id ? finishedTurn(role, own) : null;
               return { role, id, log: own, key: done ? `${id}|${done.key}` : null };
             });
-            if (reviews.some((r) => !r.id || !r.key || merged.current.has(r.key))) return;
-            for (const r of reviews) merged.current.add(r.key!);
-            const main = d.tabs().find((t) => t.id === reviews[0].id);
+            const first = reviews[0];
+            if (reviews.some((r) => !r.id || !r.key || !r.log) || merged.current.has(first.key!)) return;
+            merged.current.add(first.key!);
+            const main = d.tabs().find((t) => t.id === first.id);
             if (!main?.chain) return;
+            ownReply = first.log!.lastReply.trim();
             reply = mergeReviews(
               reviews.map((r) => ({
                 name: roleDisplayName(r.role, d.roles()),
@@ -327,7 +326,8 @@ export function useAutopilot(deps: AutopilotDeps) {
                 ? "REQUIRES REVISION"
                 : "REQUEST CHANGES",
             );
-            job = { tab: main, chain: main.chain, log: { ...reviews[0].log!, lastReply: reply }, awaitingPlan: false };
+            // The hand-off carries the stage reviewer's own reply; the merged one decides.
+            job = { tab: main, chain: main.chain, log: first.log!, awaitingPlan: false };
           }
           const lane = job.chain.lane ?? null;
           if (placed.stage.gates?.length) {
@@ -342,6 +342,7 @@ export function useAutopilot(deps: AutopilotDeps) {
             usage,
             awaitingPlan: turn.awaitingPlan,
             lane,
+            ownReply,
           });
           const decision = await pipelineDecide(runId, report);
           await carryOut(job, runId, decision, reply, report.verdict);

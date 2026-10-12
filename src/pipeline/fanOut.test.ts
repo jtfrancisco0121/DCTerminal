@@ -34,8 +34,10 @@ vi.mock("../bridge", () => ({
 }));
 
 import {
+  getPipelineRun,
   handoffAttach,
   handoffGet,
+  handoffSave,
   handoffList,
   getTab,
   pipelineFanOut,
@@ -86,11 +88,14 @@ describe("pull-request plan", () => {
 
   it("a lane note names the lane, the others, and what it builds on", () => {
     const lanes = lanesFromReply(REVIEW);
-    const note = laneNote(lanes[1], lanes, "ee_1-pr2");
+    const note = laneNote(lanes[1], lanes, "ee_1");
     expect(note).toContain("only PR2 — Login screen");
-    expect(note).toContain("`ee_1-pr2`");
+    expect(note).toContain("on branch `ee_1-pr2`");
     expect(note).toContain("PR1 — Token refresh; PR4 — Docs are built in other tabs");
-    expect(note).toContain("It builds on PR1 — Token refresh, already approved");
+    expect(note).toContain("It builds on PR1 — Token refresh, already approved: start from branch `ee_1-pr1`");
+    const both = laneNote({ ...lanes[1], dependsOn: ["pr1", "pr4"] }, lanes, "ee_1");
+    expect(both).toContain("start from branch `ee_1-pr1` and merge in `ee_1-pr4`");
+    expect(laneNote(lanes[0], lanes, "ee_1")).not.toContain("builds on");
     expect(laneBranch("ee_17", "pr1")).toBe("ee_17-pr1");
   });
 });
@@ -157,6 +162,11 @@ describe("fan out", () => {
       "/repo-worktrees/ee_1-pr2",
       expect.objectContaining({ cwd: "/repo-worktrees/ee_1-pr2" }),
     );
+    // Worktrees and saved hand-offs come before the lanes are recorded; attach and start after.
+    const order = (fn: unknown) => vi.mocked(fn as () => void).mock.invocationCallOrder;
+    const recorded = order(pipelineFanOut)[0];
+    expect(Math.max(...order(worktreeTabNew), ...order(handoffSave))).toBeLessThan(recorded);
+    expect(Math.min(...order(handoffAttach), ...startTerminal.mock.invocationCallOrder)).toBeGreaterThan(recorded);
     expect(vi.mocked(handoffAttach).mock.calls.map((c) => c[0].chain)).toEqual([
       { chainId: "ee_1", kind: "eagle1", step: 3, total: 4, lane: "pr1" },
       { chainId: "ee_1", kind: "eagle1", step: 3, total: 4, lane: "pr2" },
@@ -180,7 +190,11 @@ describe("fan out", () => {
     expect(worktreeTabNew).not.toHaveBeenCalled();
   });
 
+  const waitingLane = { id: "pr2", title: "PR2", status: "waiting", stage: "implementer", round: 1, tabIds: { role_implementer: "tab-2" } };
+  const withLane = (status: string) => ({ run: { ...run, lanes: [{ ...waitingLane, status }] } }) as never;
+
   it("starting a waiting lane uses its filled form, the full saved plan when the form was cut, and marks it active", async () => {
+    vi.mocked(getPipelineRun).mockResolvedValue(withLane("waiting"));
     vi.mocked(getTab).mockResolvedValue({
       tab: {
         cwd: "/wt",
@@ -193,12 +207,8 @@ describe("fan out", () => {
       async (tabId: string, _roleId: string, _values: Record<string, string>, _plan: string | null) =>
         tabId,
     );
-    await startLane(
-      run,
-      { id: "pr2", title: "PR2", status: "waiting", stage: "implementer", round: 1, tabIds: { role_implementer: "tab-2" } },
-      "role_implementer",
-      { startTerminal, refreshTabs: async () => {} },
-    );
+    const started = await startLane(run, waitingLane, "role_implementer", { startTerminal, refreshTabs: async () => {} });
+    expect(started).toBe(true);
     expect(startTerminal).toHaveBeenCalledWith(
       "tab-2",
       "role_implementer",
@@ -206,5 +216,66 @@ describe("fan out", () => {
       "the whole plan",
     );
     expect(pipelineLaneStatus).toHaveBeenCalledWith("ee_1", "pr2", "active");
+    // Claimed before the terminal starts.
+    expect(vi.mocked(pipelineLaneStatus).mock.invocationCallOrder[0]).toBeLessThan(
+      startTerminal.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("a lane no longer waiting is not started, and a lane started twice at once starts once", async () => {
+    vi.mocked(getTab).mockResolvedValue({ tab: { cwd: "/wt", answers: {} } } as never);
+    const startTerminal = vi.fn(async (tabId: string) => tabId);
+    const deps = { startTerminal, refreshTabs: async () => {} };
+    vi.mocked(getPipelineRun).mockResolvedValue(withLane("active"));
+    expect(await startLane(run, waitingLane, "role_implementer", deps)).toBe(false);
+    expect(startTerminal).not.toHaveBeenCalled();
+    expect(pipelineLaneStatus).not.toHaveBeenCalled();
+    vi.mocked(getPipelineRun).mockResolvedValue(withLane("waiting"));
+    const both = await Promise.all([
+      startLane(run, waitingLane, "role_implementer", deps),
+      startLane(run, waitingLane, "role_implementer", deps),
+    ]);
+    expect(both.sort()).toEqual([false, true]);
+    expect(startTerminal).toHaveBeenCalledTimes(1);
+  });
+
+  it("a lane whose terminal fails to start goes back to waiting", async () => {
+    vi.mocked(getTab).mockResolvedValue({ tab: { cwd: "/wt", answers: {} } } as never);
+    vi.mocked(getPipelineRun).mockResolvedValue(withLane("waiting"));
+    await expect(
+      startLane(run, waitingLane, "role_implementer", { startTerminal: async () => null, refreshTabs: async () => {} }),
+    ).rejects.toThrow("did not start");
+    expect(vi.mocked(pipelineLaneStatus).mock.calls).toEqual([
+      ["ee_1", "pr2", "active"],
+      ["ee_1", "pr2", "waiting"],
+    ]);
+  });
+
+  it("a worktree that fails partway names the ones already made and records nothing", async () => {
+    vi.mocked(worktreeTabNew)
+      .mockResolvedValueOnce({ tab: { id: "t1", cwd: "/repo-worktrees/ee_1-pr1", answers: {} } } as never)
+      .mockRejectedValueOnce(new Error("branch exists"));
+    const startTerminal = vi.fn();
+    const err = await fanOutRun(
+      { run, stage: pipelineDef("eagle1")!.stages[2], source, sourceChain: { chainId: "ee_1", kind: "eagle1", step: 2, total: 4 } },
+      { startTerminal, syncForm: vi.fn(async () => {}), refreshTabs: async () => {}, roles: null },
+    ).catch((e: Error) => e);
+    expect(String(err)).toContain("branch exists");
+    expect(String(err)).toContain("/repo-worktrees/ee_1-pr1 (branch `ee_1-pr1`)");
+    expect(pipelineFanOut).not.toHaveBeenCalled();
+    expect(handoffAttach).not.toHaveBeenCalled();
+    expect(startTerminal).not.toHaveBeenCalled();
+  });
+
+  it("a free lane that fails to start after recording goes back to waiting and is named", async () => {
+    const startTerminal = vi.fn(async (tabId: string) => (tabId === "tab-ee_1-pr4" ? null : tabId));
+    await expect(
+      fanOutRun(
+        { run, stage: pipelineDef("eagle1")!.stages[2], source, sourceChain: { chainId: "ee_1", kind: "eagle1", step: 2, total: 4 } },
+        { startTerminal, syncForm: vi.fn(async () => {}), refreshTabs: async () => {}, roles: null },
+      ),
+    ).rejects.toThrow("PR4 — Docs (the terminal did not start) did not start");
+    expect(pipelineLaneStatus).toHaveBeenCalledWith("ee_1", "pr4", "waiting");
+    expect(handoffAttach).toHaveBeenCalledTimes(3);
   });
 });
