@@ -62,6 +62,8 @@ export function sameSessionLog(
     plan: string | null;
     planAt: string | null;
     lastPromptAt: string | null;
+    openTool?: { id: string; name: string } | null;
+    permissionMode?: string | null;
   } | null | undefined,
   b: typeof a,
 ): boolean {
@@ -71,6 +73,9 @@ export function sameSessionLog(
     a.lastReply === b.lastReply &&
     a.plan === b.plan &&
     a.planAt === b.planAt &&
-    a.lastPromptAt === b.lastPromptAt
+    a.lastPromptAt === b.lastPromptAt &&
+    (a.openTool?.id ?? null) === (b.openTool?.id ?? null) &&
+    (a.openTool?.name ?? null) === (b.openTool?.name ?? null) &&
+    (a.permissionMode ?? null) === (b.permissionMode ?? null)
   );
 }

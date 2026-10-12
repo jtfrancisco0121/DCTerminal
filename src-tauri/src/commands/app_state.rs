@@ -44,6 +44,23 @@ pub struct TabSummary {
     pub chain: Option<crate::store::ChainRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_note: Option<String>,
+    /// `--permission-mode` a Claude role terminal launches with (`plan` | `auto`).
+    /// Computed, not saved; None for chat, Cursor, plain and resume terminals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
+}
+
+/// Permission mode shown for a tab: only Claude role terminals have one.
+pub(crate) fn tab_permission_mode(
+    provider: crate::provider::ProviderId,
+    kind: &str,
+    terminal_launch: &str,
+    role_id: &str,
+) -> Option<String> {
+    (provider == crate::provider::ProviderId::Claude
+        && kind == "terminal"
+        && terminal_launch == "role")
+        .then(|| crate::provider::claude::claude_terminal_role_mode(role_id).to_string())
 }
 
 #[derive(Serialize)]
@@ -455,6 +472,12 @@ pub(crate) fn snapshot_from_store(store: &StateStore) -> AppStateSnapshot {
                 provider_notice: t.provider_notice.clone(),
                 chain: t.chain.clone(),
                 permission_note: t.permission_note.clone(),
+                permission_mode: tab_permission_mode(
+                    crate::provider::ProviderId::resolve(t.provider),
+                    &t.kind,
+                    &t.terminal_launch,
+                    &t.role_id,
+                ),
             })
             .collect(),
         closed_tabs: store
@@ -650,5 +673,43 @@ mod pipeline_tests {
         assert_eq!(store.data.pipeline_runs[0].kind, "execute");
         assert_eq!(store.data.pipeline_runs[0].tab_ids.len(), 2);
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod permission_mode_tests {
+    use super::tab_permission_mode;
+    use crate::provider::ProviderId;
+
+    #[test]
+    fn claude_role_terminals_report_their_permission_mode() {
+        assert_eq!(
+            tab_permission_mode(ProviderId::Claude, "terminal", "role", "implementer").as_deref(),
+            Some("auto")
+        );
+        assert_eq!(
+            tab_permission_mode(ProviderId::Claude, "terminal", "role", "planner").as_deref(),
+            Some("plan")
+        );
+    }
+
+    #[test]
+    fn other_tabs_have_no_permission_mode() {
+        assert_eq!(
+            tab_permission_mode(ProviderId::Claude, "chat", "", "planner"),
+            None
+        );
+        assert_eq!(
+            tab_permission_mode(ProviderId::Cursor, "terminal", "role", "implementer"),
+            None
+        );
+        assert_eq!(
+            tab_permission_mode(ProviderId::Claude, "terminal", "claude-cli", ""),
+            None
+        );
+        assert_eq!(
+            tab_permission_mode(ProviderId::Claude, "terminal", "shell", ""),
+            None
+        );
     }
 }

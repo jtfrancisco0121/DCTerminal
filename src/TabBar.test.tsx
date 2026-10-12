@@ -173,6 +173,27 @@ describe("TabBar status", () => {
     );
     expect(chip(/Idle tab/).className).not.toMatch(/tab-chip-(busy|unseen|needs)/);
   });
+
+  it("shows an exited terminal in red with its exit code", () => {
+    render(
+      <TabBar
+        tabs={[tab({ id: "gone", label: "Gone tab", kind: "terminal", terminalLaunch: "role" })]}
+        activeTabId="gone"
+        statuses={{ gone: { busy: false, unseen: false, needsYou: "error", exitCode: 2 } }}
+        onSelect={() => {}}
+        onClose={() => {}}
+        onNew={() => {}}
+      />,
+    );
+    const button = screen.getByRole("tab", { name: /Gone tab/ });
+    const chip = button.closest(".tab-chip")!;
+    expect(chip.className).toContain("tab-chip-error");
+    expect(chip.className).not.toContain("tab-chip-needs");
+    expect(chip.getAttribute("data-status")).toBe("exited");
+    expect(chip.querySelector(".tab-error-flag")!.textContent).toBe("×");
+    expect(button.textContent).toContain("Exited · code 2");
+    expect(button.getAttribute("title")).toContain("Exited · code 2");
+  });
 });
 
 describe("TabBar rename", () => {

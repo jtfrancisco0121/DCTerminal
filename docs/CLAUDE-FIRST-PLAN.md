@@ -78,6 +78,8 @@ JT resolved the four open decisions on 2026-10-09:
 | Recommendation | `bypassPermissions` | `--permission-mode bypassPermissions` | auto-approve `allow_once` | `agent` / `--yolo` |
 | Custom roles | `bypassPermissions` | `--permission-mode bypassPermissions` | auto-approve `allow_once` | `agent` / `--yolo` |
 
+> **Changed 2026-10-12 (Claude terminal column):** role terminals now launch with `--permission-mode plan` for the Planner and `--permission-mode auto` for every other role (`claude_terminal_role_mode`), so Claude Code still asks before risky actions and the tab shows "Needs you". Claude chat modes are unchanged.
+
 Rules that go with the table:
 
 - `ExitPlanMode` outside a Planner tab (Claude entered plan mode on its own via `EnterPlanMode`, which is auto-approved): auto-answer the `allow_once` option ("Yes, manually approve edits"), then re-send `session/set_mode <role mode>` so the tab returns to its mode from the table.

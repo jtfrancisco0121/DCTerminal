@@ -21,6 +21,7 @@ import {
 } from "../pipeline/overviewModel";
 import { liveTerminalReader, type TerminalReader } from "../pipeline/terminalText";
 import { verdictTone } from "../handoff/verdict";
+import type { TerminalState } from "../terminal/claudeState";
 
 type Props = {
   runId: string;
@@ -33,6 +34,8 @@ type Props = {
   onNotice: (title: string, body: string) => void;
   /** Reads terminal stage tabs. Tests pass a fake. */
   terminalReader?: TerminalReader;
+  /** Claude role terminal states by tab id (Working / Needs you / Exited). */
+  terminalStates?: Record<string, TerminalState>;
 };
 
 function overviewTitle(run: PipelineRun, kind: PipelineKind): string {
@@ -50,6 +53,7 @@ export function PipelineOverview({
   onRefreshTabs,
   onNotice,
   terminalReader = liveTerminalReader,
+  terminalStates,
 }: Props) {
   const [run, setRun] = useState<PipelineRun | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -157,7 +161,7 @@ export function PipelineOverview({
     );
   }
 
-  const stages = overviewStages(run, tabs, runtimes, terminalReader);
+  const stages = overviewStages(run, tabs, runtimes, terminalReader, terminalStates);
   const implementerTab = tabs.find((t) => t.id === run.tabIds.role_implementer);
   // A chain's Implementer may already be running; promote only fills a draft form.
   const canPromote = !run.chainId || implementerTab?.phase === "draft";

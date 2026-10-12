@@ -7,7 +7,8 @@
 import type { Channel } from "@tauri-apps/api/core";
 import { createPtyChannel, type PtyPacket } from "../bridge";
 import { createPtyBuffer, decodeBase64, type PtyBuffer } from "./buffer";
-import { terminalActivity } from "./activity";
+import { isUserInput, terminalActivity } from "./activity";
+import { dialogDetector } from "./permissionDialog";
 
 export type LivePty = {
   id: string;
@@ -15,11 +16,14 @@ export type LivePty = {
   channel: Channel<PtyPacket>;
   startedAt: number;
   exitCode: number | null;
+  /** The process exited (its code can be null after a signal). */
+  exited: boolean;
 };
 
 const sessions = new Map<string, LivePty>();
 const opening = new Set<string>();
 const listeners = new Set<() => void>();
+const exitListeners = new Set<(id: string, code: number) => void>();
 
 function notify(): void {
   for (const listener of listeners) listener();
@@ -28,6 +32,29 @@ function notify(): void {
 export function subscribeLivePty(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
+}
+
+/** Called once per process exit with the terminal id and exit code. */
+export function subscribePtyExit(listener: (id: string, code: number) => void): () => void {
+  exitListeners.add(listener);
+  return () => exitListeners.delete(listener);
+}
+
+/**
+ * Keystrokes or pasted text the user sent to a terminal. Every write that
+ * comes from the user goes through here so busy tracking and the permission
+ * dialog detector both see it.
+ */
+export function notePtyInput(id: string, data?: string): void {
+  if (data !== undefined && !isUserInput(data)) return;
+  terminalActivity.input(id);
+  dialogDetector.input(id);
+}
+
+/** The exit code once the process exited (-1 after a signal), else null. */
+export function ptyExitCode(id: string): number | null {
+  const live = sessions.get(id);
+  return live?.exited ? (live.exitCode ?? -1) : null;
 }
 
 export function livePty(id: string): LivePty | undefined {
@@ -50,6 +77,9 @@ export function clearPtyOpening(id: string): void {
 
 /** Fresh buffer and channel. Replaces any previous session for this id. */
 export function beginLivePty(id: string): LivePty {
+  // A restart starts fresh.
+  terminalActivity.forget(id);
+  dialogDetector.forget(id);
   const buffer = createPtyBuffer();
   const live: LivePty = {
     id,
@@ -57,16 +87,26 @@ export function beginLivePty(id: string): LivePty {
     channel: createPtyChannel(() => {}),
     startedAt: Date.now(),
     exitCode: null,
+    exited: false,
   };
   live.channel = createPtyChannel((packet) => {
     if (packet.kind === "exit") {
       live.exitCode = packet.code;
+      live.exited = true;
       buffer.pushExit(packet.code);
+      // A closed tab or a replaced (restarted) process is not news.
+      if (sessions.get(live.id) !== live) return;
+      terminalActivity.forget(live.id);
+      dialogDetector.forget(live.id);
+      for (const listener of exitListeners) listener(live.id, packet.code ?? -1);
+      notify();
       return;
     }
     if (packet.data) {
       terminalActivity.output(live.id);
-      buffer.pushData(decodeBase64(packet.data));
+      const bytes = decodeBase64(packet.data);
+      if (!live.id.endsWith("::pane")) dialogDetector.feed(live.id, bytes);
+      buffer.pushData(bytes);
     }
   });
   sessions.set(id, live);
@@ -89,6 +129,7 @@ export function rekeyLivePty(from: string, to: string): LivePty | undefined {
 
 export function dropLivePty(tabId: string): void {
   terminalActivity.forget(tabId);
+  dialogDetector.forget(tabId);
   sessions.delete(tabId);
   sessions.delete(`${tabId}::pane`);
   opening.delete(tabId);

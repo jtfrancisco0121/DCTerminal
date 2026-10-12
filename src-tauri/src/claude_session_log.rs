@@ -9,6 +9,9 @@
 //! `end_turn`, `stop_sequence`, or null mid-stream). Tool results come back as
 //! `user` records whose content is `tool_result {tool_use_id,is_error}`. A
 //! `system` record with `subtype: turn_duration` follows a finished turn.
+//! A real user prompt carries `permissionMode`. A `tool_use` is written before
+//! the user answers its permission prompt, so an unanswered one in the current
+//! turn is `openTool`.
 //! Nothing under the config folder is created or written.
 
 use crate::claude_history::parse_jsonl_line;
@@ -36,6 +39,19 @@ pub struct TerminalSessionLog {
     pub plan_at: Option<String>,
     pub last_prompt_at: Option<String>,
     pub tool_calls: Vec<SessionToolCall>,
+    /// The current turn's unanswered tool: ExitPlanMode, then
+    /// AskUserQuestion, then the newest. `None` once the turn is done.
+    pub open_tool: Option<OpenTool>,
+    /// `permissionMode` of the latest real prompt.
+    pub permission_mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenTool {
+    pub id: String,
+    pub name: String,
+    pub title: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -126,6 +142,7 @@ pub fn read_session_log(path: &Path, session_id: &str) -> Option<TerminalSession
 struct Parser {
     reply: Vec<String>,
     last_prompt_at: Option<String>,
+    permission_mode: Option<String>,
     last_stop: Option<String>,
     ended: bool,
     turn_tools: Vec<String>,
@@ -270,19 +287,36 @@ impl Parser {
         self.last_stop = None;
         self.ended = false;
         self.last_prompt_at = at;
+        if let Some(mode) = value.get("permissionMode").and_then(Value::as_str) {
+            self.permission_mode = Some(mode.to_string());
+        }
     }
 
     fn finish(mut self, session_id: &str, path: &Path) -> TerminalSessionLog {
-        let unanswered = self.turn_tools.iter().any(|id| {
-            self.by_id
-                .get(id)
-                .is_some_and(|i| self.tools[*i].status == ToolCallStatus::Pending)
-        });
+        let pending: Vec<&SessionToolCall> = self
+            .turn_tools
+            .iter()
+            .filter_map(|id| self.by_id.get(id).map(|i| &self.tools[*i]))
+            .filter(|call| call.status == ToolCallStatus::Pending)
+            .collect();
         let stopped = matches!(
             self.last_stop.as_deref(),
             Some("end_turn" | "stop_sequence")
         );
-        let turn_done = self.ended || (stopped && !unanswered);
+        let turn_done = self.ended || (stopped && pending.is_empty());
+        let open_tool = (!turn_done)
+            .then(|| {
+                let named = |name: &str| pending.iter().find(|call| call.name == name).copied();
+                named("ExitPlanMode")
+                    .or_else(|| named("AskUserQuestion"))
+                    .or_else(|| pending.last().copied())
+            })
+            .flatten()
+            .map(|call| OpenTool {
+                id: call.id.clone(),
+                name: call.name.clone(),
+                title: call.title.clone(),
+            });
         if self.tools.len() > MAX_TOOL_CALLS {
             let extra = self.tools.len() - MAX_TOOL_CALLS;
             self.tools.drain(..extra);
@@ -296,6 +330,8 @@ impl Parser {
             plan_at: self.plan_at,
             last_prompt_at: self.last_prompt_at,
             tool_calls: self.tools,
+            open_tool,
+            permission_mode: self.permission_mode,
         }
     }
 }
@@ -678,6 +714,109 @@ mod tests {
         assert_eq!(log.tool_calls.len(), MAX_TOOL_CALLS);
         assert_eq!(log.tool_calls[0].id, "t20");
         assert_eq!(log.tool_calls[499].id, "t519");
+    }
+
+    fn open_name(log: &TerminalSessionLog) -> Option<&str> {
+        log.open_tool.as_ref().map(|t| t.name.as_str())
+    }
+
+    #[test]
+    fn open_tool_names_the_unanswered_tool() {
+        let plan = parse(&[
+            prompt("plan", "t1"),
+            tool("p1", "ExitPlanMode", json!({ "plan": "# P" }), "t2"),
+        ]);
+        assert_eq!(open_name(&plan), Some("ExitPlanMode"));
+        assert_eq!(plan.open_tool.as_ref().unwrap().id, "p1");
+        let ask = parse(&[
+            prompt("go", "t1"),
+            tool("q1", "AskUserQuestion", json!({ "questions": [] }), "t2"),
+        ]);
+        assert_eq!(open_name(&ask), Some("AskUserQuestion"));
+        let bash = parse(&[
+            prompt("go", "t1"),
+            tool("b1", "Bash", json!({ "command": "rm -rf build" }), "t2"),
+        ]);
+        let open = bash.open_tool.as_ref().unwrap();
+        assert_eq!(
+            (open.name.as_str(), open.title.as_str()),
+            ("Bash", "Bash: rm -rf build")
+        );
+        let json = serde_json::to_value(&bash).unwrap();
+        assert_eq!(json["openTool"]["name"], json!("Bash"));
+    }
+
+    #[test]
+    fn open_tool_clears_after_a_result_or_a_rejection() {
+        let answered = parse(&[
+            prompt("go", "t1"),
+            tool("b1", "Bash", json!({ "command": "ls" }), "t2"),
+            result("b1", false, "t3"),
+        ]);
+        assert_eq!(answered.open_tool, None);
+        assert!(!answered.turn_done);
+        let rejected = parse(&[
+            prompt("go", "t1"),
+            tool("b1", "Bash", json!({ "command": "ls" }), "t2"),
+            result("b1", true, "t3"),
+        ]);
+        assert_eq!(rejected.open_tool, None);
+        let previous_turn = parse(&[
+            prompt("go", "t1"),
+            tool("b1", "Bash", json!({ "command": "ls" }), "t2"),
+            prompt("[Request interrupted by user]", "t3"),
+        ]);
+        assert_eq!(previous_turn.open_tool, None);
+        let new_turn = parse(&[
+            prompt("go", "t1"),
+            tool("b1", "Bash", json!({ "command": "ls" }), "t2"),
+            prompt("next", "t3"),
+        ]);
+        assert_eq!(new_turn.open_tool, None);
+    }
+
+    #[test]
+    fn open_tool_prefers_plan_then_question_over_parallel_tools() {
+        let log = parse(&[
+            prompt("go", "t1"),
+            tool("r1", "Read", json!({ "file_path": "/a" }), "t2"),
+            tool("q1", "AskUserQuestion", json!({}), "t2"),
+            tool("b1", "Bash", json!({ "command": "ls" }), "t2"),
+        ]);
+        assert_eq!(open_name(&log), Some("AskUserQuestion"));
+        let log = parse(&[
+            prompt("go", "t1"),
+            tool("q1", "AskUserQuestion", json!({}), "t2"),
+            tool("p1", "ExitPlanMode", json!({ "plan": "x" }), "t2"),
+        ]);
+        assert_eq!(open_name(&log), Some("ExitPlanMode"));
+        let log = parse(&[
+            prompt("go", "t1"),
+            tool("r1", "Read", json!({ "file_path": "/a" }), "t2"),
+            tool("b1", "Bash", json!({ "command": "ls" }), "t2"),
+            result("b1", false, "t3"),
+        ]);
+        assert_eq!(log.open_tool.as_ref().map(|t| t.id.as_str()), Some("r1"));
+    }
+
+    #[test]
+    fn permission_mode_comes_from_the_latest_prompt() {
+        let mut first = prompt("one", "t1");
+        first["permissionMode"] = json!("plan");
+        let mut second = prompt("two", "t3");
+        second["permissionMode"] = json!("auto");
+        let mut meta = prompt("<system-reminder>", "t4");
+        meta["isMeta"] = json!(true);
+        meta["permissionMode"] = json!("default");
+        let log = parse(&[
+            first.clone(),
+            text("ok", Some("end_turn"), "t2"),
+            second,
+            meta,
+        ]);
+        assert_eq!(log.permission_mode.as_deref(), Some("auto"));
+        assert_eq!(parse(&[first]).permission_mode.as_deref(), Some("plan"));
+        assert_eq!(parse(&[prompt("x", "t1")]).permission_mode, None);
     }
 
     #[test]

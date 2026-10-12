@@ -1910,6 +1910,10 @@ kbd {
   border-color: color-mix(in srgb, var(--warning) 60%, var(--border));
 }
 
+.grid-cell-error {
+  border-color: color-mix(in srgb, var(--danger) 60%, var(--border));
+}
+
 .grid-cell .split-pane-bar {
   gap: 0.35rem;
   min-height: 1.5rem;
@@ -1942,6 +1946,10 @@ kbd {
   background: var(--warning);
 }
 
+.grid-cell-dot-error {
+  background: var(--danger);
+}
+
 .grid-cell-status {
   overflow: hidden;
   color: var(--fg-muted);
@@ -1952,6 +1960,10 @@ kbd {
 
 .grid-cell-needs .grid-cell-status {
   color: var(--warning);
+}
+
+.grid-cell-error .grid-cell-status {
+  color: var(--danger);
 }
 
 .grid-cell-remove {
@@ -2516,6 +2528,15 @@ kbd {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--attention) 45%, transparent);
 }
 
+.tab-chip-error {
+  border-color: var(--danger);
+}
+
+.tab-chip-error .tab-phase {
+  background: var(--danger) !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 45%, transparent);
+}
+
 .tab-needs-flag {
   display: inline-flex;
   align-items: center;
@@ -2529,6 +2550,10 @@ kbd {
   font-size: 0.7rem;
   font-weight: 700;
   vertical-align: middle;
+}
+
+.tab-error-flag {
+  background: var(--danger);
 }
 
 .tab-unseen-dot {
@@ -3779,6 +3804,10 @@ mark.search-hit-current {
   background: var(--danger);
 }
 
+.status-tone-error {
+  color: var(--danger);
+}
+
 .status-bar-label {
   color: var(--fg-subtle);
 }
@@ -4630,6 +4659,16 @@ mark.search-hit-current {
 
 .pipeline-lane-status-done {
   color: var(--fg-subtle);
+}
+
+.pipeline-lane-status-needs {
+  color: var(--attention);
+  font-weight: 600;
+}
+
+.pipeline-lane-status-error {
+  color: var(--danger);
+  font-weight: 600;
 }
 
 .pipeline-lane-tab {

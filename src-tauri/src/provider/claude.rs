@@ -4,10 +4,10 @@
 //! Every Claude process gets `CLAUDE_CONFIG_DIR=<configDir>` (Task 2.3), so a
 //! GUI launch uses the same account as JT's `claude2` alias.
 //!
-//! Terminal flags (Phase 3, Decisions → per-role mode table):
-//! - General: `--permission-mode auto`
+//! Terminal flags (`claude_terminal_role_mode`):
 //! - Planner: `--permission-mode plan`
-//! - every other role: `--permission-mode bypassPermissions`
+//! - every other role: `--permission-mode auto`, so Claude Code still asks
+//!   before risky actions and the tab can show "Needs you"
 //! - `--model <id>` first when a model other than `default` is set
 //! - `--session-id <uuid>` on fresh Plain / Role launches, so the tab knows its log
 //! - the startup prompt as the positional argument (`deliver_prompt_limited`)
@@ -60,6 +60,15 @@ pub fn claude_role_mode(role_id: &str) -> &'static str {
         "role_general" | "general" => "auto",
         "role_planner" | "planner" => "plan",
         _ => "bypassPermissions",
+    }
+}
+
+/// Claude Code permission mode for a role *terminal*: plan for the Planner,
+/// auto for every other role. Chat keeps `claude_role_mode`.
+pub fn claude_terminal_role_mode(role_id: &str) -> &'static str {
+    match claude_role_mode(role_id) {
+        "plan" => "plan",
+        _ => "auto",
     }
 }
 
@@ -147,7 +156,7 @@ pub fn claude_terminal_args(req: &TerminalLaunch) -> Result<Vec<String>, String>
         } => {
             pin(&mut args)?;
             args.push("--permission-mode".to_string());
-            args.push(claude_role_mode(role_id).to_string());
+            args.push(claude_terminal_role_mode(role_id).to_string());
             if let Some(text) = prompt.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
                 args.push(text.to_string());
             }
@@ -490,6 +499,27 @@ mod tests {
         let cases = [
             ("role_general", "auto"),
             ("role_planner", "plan"),
+            ("planner", "plan"),
+            ("role_plan_reviewer", "auto"),
+            ("role_implementer", "auto"),
+            ("role_developer", "auto"),
+            ("role_pr_reviewer", "auto"),
+            ("role_codebase_audit", "auto"),
+            ("role_recommendation", "auto"),
+            ("role_custom_1234", "auto"),
+        ];
+        for (role_id, mode) in cases {
+            let args = claude_terminal_args(&role(role_id, RunMode::Default, None, None)).unwrap();
+            assert_eq!(args, vec!["--permission-mode", mode], "{role_id}");
+            assert!(!args.iter().any(|a| a == "bypassPermissions"), "{role_id}");
+        }
+    }
+
+    #[test]
+    fn chat_role_modes_are_unchanged() {
+        let cases = [
+            ("role_general", "auto"),
+            ("role_planner", "plan"),
             ("role_plan_reviewer", "bypassPermissions"),
             ("role_implementer", "bypassPermissions"),
             ("role_developer", "bypassPermissions"),
@@ -499,11 +529,7 @@ mod tests {
             ("role_custom_1234", "bypassPermissions"),
         ];
         for (role_id, mode) in cases {
-            assert_eq!(
-                claude_terminal_args(&role(role_id, RunMode::Default, None, None)).unwrap(),
-                vec!["--permission-mode", mode],
-                "{role_id}"
-            );
+            assert_eq!(claude_role_mode(role_id), mode, "{role_id}");
         }
     }
 
@@ -517,7 +543,7 @@ mod tests {
         ] {
             assert_eq!(
                 claude_terminal_args(&role("role_pr_reviewer", mode, None, None)).unwrap(),
-                vec!["--permission-mode", "bypassPermissions"]
+                vec!["--permission-mode", "auto"]
             );
         }
     }
