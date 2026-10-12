@@ -3790,8 +3790,10 @@ mark.search-hit-current {
   opacity: 1;
 }
 
+/* Keyboard focus only: a mouse press on × must not widen the chip under the
+   pointer, or the click lands beside the button. */
 .tab-chip-active:hover .tab-color-select,
-.tab-chip:focus-within .tab-color-select,
+.tab-chip:has(:focus-visible) .tab-color-select,
 .tab-color-select:focus {
   opacity: 1;
   max-width: 5.5rem;
