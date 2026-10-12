@@ -639,7 +639,7 @@ describe("blank tab card", () => {
     const padBox = pad.closest(".scratch-pad") as HTMLElement;
     const shot = new File([new Uint8Array([1, 2, 3])], "image.png", { type: "image/png" });
     fireEvent.paste(pad, { clipboardData: { files: [shot], items: [] } });
-    await within(padBox).findByRole("button", { name: "Remove screenshot.png" });
+    await screen.findByRole("button", { name: "Remove screenshot.png" });
 
     fireEvent.change(pad, { target: { value: "Why is this red?" } });
     fireEvent.click(within(padBox).getByRole("button", { name: "Send" }));

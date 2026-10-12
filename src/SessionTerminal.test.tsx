@@ -142,3 +142,24 @@ describe("SessionTerminal find (F5)", () => {
     expect(onSearchAll).toHaveBeenCalledWith("nothing here");
   });
 });
+
+describe("SessionTerminal errors and Restart", () => {
+  it("shows a failed turn as an error notice", () => {
+    render(<SessionTerminal {...base} promptError="Agent crashed" />);
+    expect(screen.getByRole("alert").textContent).toContain("Agent crashed");
+  });
+
+  it("offers Restart only for an exited agent, and it is not Stop", () => {
+    const onStop = vi.fn();
+    const onRestart = vi.fn();
+    render(<SessionTerminal {...base} agentExited onStop={onStop} onRestart={onRestart} />);
+    fireEvent.click(screen.getByRole("button", { name: "Restart" }));
+    expect(onRestart).toHaveBeenCalledOnce();
+    expect(onStop).not.toHaveBeenCalled();
+  });
+
+  it("copies an agent reply", () => {
+    render(<SessionTerminal {...base} segments={[{ id: "a1", kind: "agent", text: "Hello" }] as never} />);
+    expect(screen.getByRole("button", { name: "Copy reply" })).toBeTruthy();
+  });
+});

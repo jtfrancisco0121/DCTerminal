@@ -47,6 +47,8 @@ export type StartScreenProps = {
   activeTabSummary: TabSummary | null | undefined;
   session: DevSessionInfo | null;
   busy: boolean;
+  /** A chat session is being started (Start was pressed, the agent is not up yet). */
+  starting?: boolean;
   cliFound: boolean;
   providers: ProvidersState;
   activeProvider: ProviderId;
@@ -123,6 +125,7 @@ export function StartScreen({
   activeTabSummary,
   session,
   busy,
+  starting = false,
   cliFound,
   providers,
   activeProvider,
@@ -242,7 +245,8 @@ export function StartScreen({
         <ul className="field-errors">
           {errors.map((e) => (
             <li key={`${e.key}-${e.message}`}>
-              <strong>{e.key}:</strong> {e.message}
+              {e.key.startsWith("_") ? null : <strong>{e.key}: </strong>}
+              {e.message}
             </li>
           ))}
         </ul>
@@ -407,9 +411,16 @@ export function StartScreen({
         if (rememberedSurface(roleId) === "terminal") void startRoleTerminal();
         else void startSession(surface === "restore" && resendStartup);
       }}
-      disabled={busy || (activeProvider === "cursor" && !cliFound)}
+      disabled={
+        busy || folderNotice?.tone === "error" || (activeProvider === "cursor" && !cliFound)
+      }
+      title={folderNotice?.tone === "error" ? folderNotice.text : undefined}
     >
-      {rememberedSurface(roleId) === "terminal" ? "Start terminal" : "Start"}
+      {starting
+        ? "Starting…"
+        : rememberedSurface(roleId) === "terminal"
+          ? "Start terminal"
+          : "Start"}
     </button>
   );
 

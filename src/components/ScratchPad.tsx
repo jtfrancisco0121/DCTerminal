@@ -40,6 +40,8 @@ type Props = {
    * A `---` chain sends them with its first step only.
    */
   images?: ChatImagesProps | null;
+  /** False when the composer beside this pad already lists the images. */
+  showImageChips?: boolean;
 };
 
 export const PAD_MIN_HEIGHT = 40;
@@ -76,6 +78,7 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
     onHeightCommit,
     slashCommands = [],
     images = null,
+    showImageChips = true,
   },
   ref,
 ) {
@@ -257,7 +260,7 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
         <p className="error scratch-pad-status" role="alert">{blockedWarning}</p>
       )}
       {!collapsed && slash.menu}
-      {!terminal && images && !collapsed && <AttachmentChips images={images} />}
+      {!terminal && images && showImageChips && !collapsed && <AttachmentChips images={images} />}
       <textarea
         ref={setEditor}
         className="scratch-pad-input"

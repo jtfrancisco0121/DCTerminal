@@ -168,6 +168,7 @@ import { LogDrawer } from "./components/LogDrawer";
 import { SettingsPage } from "./components/SettingsPage";
 import { StatusBar, type StatusMessage, type StatusTone } from "./components/StatusBar";
 import { summarizeSessionActivity } from "./sessionActivity";
+import { chatSessionStatus } from "./chatStatus";
 import { folderForTab } from "./projectsView";
 import {
   canContinueStoredSession,
@@ -951,7 +952,13 @@ export function StartupForm({
         for (const running of snap.tabs) {
           if (running.phase !== "running" || running.kind === "terminal") continue;
           if (running.kind === "pipeline_overview") continue;
-          const live = await devSessionLive(running.id).catch(() => null);
+          let live: Awaited<ReturnType<typeof devSessionLive>> | null = null;
+          try {
+            live = await devSessionLive(running.id);
+          } catch (err: unknown) {
+            showNotice(`${running.label} not reconnected`, errorText(err), "failed");
+            continue;
+          }
           if (!live) continue;
           const { roleId: _role, promptInFlight: inFlight, exited, ...info } = live;
           patchRuntime(running.id, (rt) => ({
@@ -2169,6 +2176,27 @@ export function StartupForm({
       setBusy(false);
     }
   }, [refreshTabs, streamSegments, activeTabId, patchRuntime]);
+
+  /** The Stop button: ends the agent for good, so it asks first. */
+  const requestStopSession = useCallback(async () => {
+    const ok = await confirm({
+      title: "Stop this session?",
+      message:
+        "The agent stops and any turn in progress is lost. The transcript is saved with the tab, and you can continue the session later.",
+      confirmLabel: "Stop session",
+      danger: true,
+    });
+    if (ok) await stopSession();
+  }, [confirm, stopSession]);
+
+  /** Restart: stop an agent that exited and start the same tab again, resuming its session. */
+  const restartSession = useCallback(async () => {
+    const tabId = activeTabId;
+    if (!tabId) return;
+    const resumeId = session?.sessionId || activeTabSummary?.acpSessionId || undefined;
+    await stopSession();
+    await startSession(false, resumeId ? { tabId, sessionId: resumeId } : { tabId });
+  }, [activeTabId, session, activeTabSummary, stopSession, startSession]);
 
   const handleSelectTab = useCallback(
     async (tabId: string) => {
@@ -5135,9 +5163,16 @@ export function StartupForm({
         promptInFlight: !!promptInFlight,
         waitingPermission: !!permissionRequest,
       });
-      if (activity) return { tone: permissionRequest ? "needs" : "busy", text: activity };
-      return { tone: "ok", text: activeRuntime.agentExited ? "Agent exited" : "Ready" };
+      return chatSessionStatus({
+        activity,
+        waitingPermission: !!permissionRequest,
+        promptError: activeRuntime.promptError,
+        agentExited: activeRuntime.agentExited,
+        accepting: activeRuntime.accepting,
+        hasSession: true,
+      });
     }
+    if (activeRuntime.accepting && busy) return { tone: "busy", text: "Starting…" };
     return { tone: "idle", text: "Not started" };
   })();
   const providerNotice = activeTabSummary?.providerNotice?.trim() ?? "";
@@ -5363,7 +5398,8 @@ export function StartupForm({
         cancelTurn={cancelTurn}
         setFollowUp={setFollowUp}
         sendFollowUp={sendFollowUp}
-        stopSession={stopSession}
+        stopSession={requestStopSession}
+        restartSession={restartSession}
         transferPad={transferPad}
         transferToTerminalNow={transferToTerminalNow}
         sendFromPad={sendFromPad}
@@ -5386,6 +5422,7 @@ export function StartupForm({
       activeTabSummary={activeTabSummary}
       session={session}
       busy={busy}
+      starting={busy && activeRuntime.accepting}
       cliFound={cliFound}
       providers={providers}
       activeProvider={activeProvider}
