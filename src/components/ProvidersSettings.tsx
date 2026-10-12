@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useConfirm } from "./confirm";
+import { errorText, InlineNotice } from "./InlineNotice";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { LoginStatus, ProviderReport, ProvidersSettings } from "../bridge";
 import { nativeDialogPath } from "../projectsView";
@@ -73,6 +74,7 @@ export function ProvidersSettingsSection({ providers }: Props) {
   const { view, claude, cursor, accountLogins, checking, error, refresh, save } = providers;
   const confirm = useConfirm();
   const [drafts, setDrafts] = useState<Record<string, { name: string; folder: string }>>({});
+  const [browseError, setBrowseError] = useState<string | null>(null);
 
   const accounts = view ? claudeAccounts(view.settings.claude) : [];
   useEffect(() => {
@@ -120,6 +122,8 @@ export function ProvidersSettingsSection({ providers }: Props) {
   return (
     <section className="settings-section" aria-label="Providers">
       <h3>Providers</h3>
+      {error && <InlineNotice tone="error">{error}</InlineNotice>}
+      {browseError && <InlineNotice tone="error">{browseError}</InlineNotice>}
       <div className="field-label">
         Default provider for new tabs
         <div className="role-choices" role="radiogroup" aria-label="Default provider">
@@ -225,7 +229,12 @@ export function ProvidersSettingsSection({ providers }: Props) {
                     type="button"
                     className="secondary-button"
                     disabled={envLocked}
-                    onClick={() => void browse().catch(() => {})}
+                    onClick={() => {
+                      setBrowseError(null);
+                      browse().catch((err: unknown) =>
+                        setBrowseError(`Could not open the folder picker: ${errorText(err)}`),
+                      );
+                    }}
                   >
                     Browse…
                   </button>
