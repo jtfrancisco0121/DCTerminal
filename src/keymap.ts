@@ -665,7 +665,10 @@ export function routeKey(
   return match ? { kind: "app", match } : { kind: "none" };
 }
 
-export function shortcutRows(platform: Platform): ShortcutRow[] {
+export function shortcutRows(
+  platform: Platform,
+  options: { terminalAlternatives?: boolean } = {},
+): ShortcutRow[] {
   const rows = SHORTCUTS.filter((def) => !PALETTE_ONLY.has(def.action)).map((def) => {
     if (def.digits) {
       const mod = platform === "mac" ? "⌘" : "Ctrl";
@@ -690,7 +693,7 @@ export function shortcutRows(platform: Platform): ShortcutRow[] {
       keys: formatChord(chord, platform),
     };
   });
-  if (platform !== "mac") {
+  if (platform !== "mac" && options.terminalAlternatives !== false) {
     for (const row of rows) {
       if (!PLAIN_CTRL_TO_TERMINAL.has(row.action)) continue;
       const code = Object.entries(CTRL_SHIFT_ALTERNATIVE).find(([, a]) => a === row.action)?.[0];
@@ -777,4 +780,37 @@ export function shortcutRows(platform: Platform): ShortcutRow[] {
     },
   );
   return rows;
+}
+
+/** Commands whose palette entry opens a dialog or picker (title ends with an ellipsis). */
+const OPENS_DIALOG = new Set<ShortcutAction>(["tabSwitcher", "searchChats"]);
+
+/**
+ * The one name for a shortcut-backed command. SHORTCUTS holds the name; the
+ * palette and the shortcut list both read it.
+ */
+export function commandTitle(action: ShortcutAction): string {
+  // searchChats has no SHORTCUTS entry; its row (shortcutRows) names it.
+  const label =
+    SHORTCUTS.find((def) => def.action === action)?.label ??
+    shortcutRows("windows").find((row) => row.action === action)?.label ??
+    action;
+  return OPENS_DIALOG.has(action) ? `${label}…` : label;
+}
+
+/**
+ * The shortcut text for a command id, e.g. "Ctrl+K" or "⌘+K". Null when the
+ * id is not a shortcut action.
+ */
+export function shortcutLabel(id: string, platform: Platform): string | null {
+  // A short label for buttons and the palette; the shortcuts list names the
+  // Ctrl+Shift form a focused terminal needs.
+  const rows = shortcutRows(platform, { terminalAlternatives: false });
+  return rows.find((row) => row.action === id)?.keys ?? null;
+}
+
+/** shortcutLabel for the platform this window runs on. */
+export function localShortcutLabel(id: string): string | null {
+  const platform = detectPlatform(typeof navigator === "undefined" ? "" : navigator.platform);
+  return shortcutLabel(id, platform);
 }

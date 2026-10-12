@@ -8,6 +8,8 @@ import {
   matchShortcut,
   routeKey,
   shortcutRows,
+  shortcutLabel,
+  commandTitle,
   type KeyEventLike,
 } from "./keymap";
 
@@ -302,6 +304,19 @@ describe("pane and file panel shortcuts", () => {
       "Search terminal=Ctrl+Shift+F",
     );
     expect(bindingConflicts(defaultBindings())).toEqual([]);
+  });
+
+  it("derives shortcut labels and command titles from the keymap", () => {
+    expect(shortcutLabel("commandPalette", "mac")).toBe("⌘+K");
+    expect(shortcutLabel("commandPalette", "windows")).toBe("Ctrl+K");
+    // The shortcuts list still names the form a focused terminal needs.
+    expect(shortcutRows("windows").find((row) => row.action === "commandPalette")?.keys).toBe(
+      "Ctrl+K (Ctrl+Shift+K in a terminal)",
+    );
+    expect(shortcutLabel("goToTab", "windows")).toBe("Ctrl+1…9");
+    expect(shortcutLabel("loadWorkspace", "mac")).toBeNull();
+    expect(commandTitle("tabSwitcher")).toBe("Go to tab…");
+    expect(commandTitle("closeTab")).toBe("Close tab");
   });
 
   it("R21: Windows/Linux terminals keep plain Ctrl globals and offer Ctrl+Shift", () => {

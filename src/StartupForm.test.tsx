@@ -1850,7 +1850,10 @@ describe("command palette (F9)", () => {
       ["Open workspace…", "Workspaces"],
     ]) {
       const button = within(palette).getByRole("button", { name: new RegExp(`^${title}`) });
-      expect(button.textContent).toContain(group);
+      expect(button).toBeTruthy();
+      expect(within(palette).getAllByText(group).some((el) => el.className === "palette-group")).toBe(
+        true,
+      );
     }
   });
 

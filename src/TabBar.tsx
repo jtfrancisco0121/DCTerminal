@@ -1,4 +1,5 @@
-import { Fragment, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { localShortcutLabel } from "./keymap";
 import type { TabSummary } from "./bridge";
 import { chainLabel } from "./handoff/chains";
 import { tabStatusLabel, type TabStatus } from "./tabStatus";
@@ -149,6 +150,45 @@ export const CHIP_COLORS = [
   "#8b949e",
 ];
 
+/** Names for the colour menu, so it does not read out hex codes. */
+export const CHIP_COLOR_NAMES: Record<string, string> = {
+  "#58a6ff": "Blue",
+  "#3fb950": "Green",
+  "#d29922": "Yellow",
+  "#f0883e": "Orange",
+  "#bc8cff": "Purple",
+  "#f85149": "Red",
+  "#8b949e": "Gray",
+};
+
+/** Text for a phase, since the dot's colour and shape alone are not enough. */
+export function phaseText(phase: string): string {
+  return PHASE_TEXT[phase] || phase;
+}
+
+/** "Label (Ctrl+K)", or just the label when the command has no shortcut. */
+function withShortcut(label: string, id: string): string {
+  const keys = localShortcutLabel(id);
+  return keys ? `${label} (${keys})` : label;
+}
+
+/** Left and right arrows move between the tabs, like a tablist. */
+function onTabKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
+  const step =
+    event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : event.key === "Home" ? "first" : event.key === "End" ? "last" : 0;
+  if (!step) return;
+  const list = event.currentTarget.closest(".tab-list");
+  const labels = Array.from(list?.querySelectorAll<HTMLButtonElement>(".tab-chip-label") ?? []).filter(
+    (el) => !el.disabled,
+  );
+  const at = labels.indexOf(event.currentTarget);
+  const next =
+    step === "first" ? labels[0] : step === "last" ? labels[labels.length - 1] : labels[at + step];
+  if (!next) return;
+  event.preventDefault();
+  next.focus();
+}
+
 export function TabBar({
   tabs,
   activeTabId,
@@ -178,9 +218,17 @@ export function TabBar({
   providerFor,
   doneTabIds = [],
 }: Props) {
+  const listRef = useRef<HTMLDivElement>(null);
+  // The strip scrolls instead of squeezing every tab; keep the active one in view.
+  useEffect(() => {
+    const active = listRef.current?.querySelector(".tab-chip-active");
+    if (active && typeof active.scrollIntoView === "function") {
+      active.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+  }, [activeTabId, tabs.length]);
   return (
     <div className="tab-bar">
-      <div className="tab-list" role="tablist">
+      <div className="tab-list" role="tablist" aria-label="Open tabs" ref={listRef}>
         {tabs.map((t, index) => {
           const chainId = t.chain?.chainId ?? null;
           const startsChainRun = !!chainId && tabs[index - 1]?.chain?.chainId !== chainId;
@@ -224,7 +272,7 @@ export function TabBar({
             return (
               <Fragment key={t.id}>
                 {chainHead}
-                <div className={chipClass} style={{ boxShadow: `inset 0 3px 0 ${color}` }}>
+                <div className={chipClass} style={{ "--chip-color": color } as CSSProperties}>
                   <RenameField
                     label={t.label}
                     onCommit={(label) => onRename?.(t.id, label)}
@@ -239,7 +287,7 @@ export function TabBar({
               {chainHead}
               <div
                 className={chipClass}
-                style={{ boxShadow: `inset 0 3px 0 ${color}` }}
+                style={{ "--chip-color": color } as CSSProperties}
                 data-status={
                   exited
                     ? "exited"
@@ -260,6 +308,8 @@ export function TabBar({
                   onClick={() => onSelect(t.id)}
                   onDoubleClick={() => onRenameStart?.(t.id)}
                   disabled={disableSwitch}
+                  onKeyDown={onTabKeyDown}
+                  aria-description={statusText ? undefined : phaseText(t.phase)}
                   title={tabTooltip(t, {
                     roleName:
                       t.kind === "terminal" && t.terminalLaunch !== "role"
@@ -321,7 +371,7 @@ export function TabBar({
                   >
                     {CHIP_COLORS.map((choice) => (
                       <option key={choice} value={choice}>
-                        {choice}
+                        {CHIP_COLOR_NAMES[choice] ?? choice}
                       </option>
                     ))}
                   </select>
@@ -352,7 +402,7 @@ export function TabBar({
           onClick={onReopen}
           disabled={disableNew}
           aria-label="Reopen closed tab"
-          title="Reopen the most recently closed tab (F6)"
+          title={withShortcut("Reopen the most recently closed tab", "reopenClosedTab")}
         >
           ↺
         </button>
@@ -363,7 +413,7 @@ export function TabBar({
         onClick={onNew}
         disabled={disableNew}
         aria-label="New tab"
-        title="New tab. Other sessions keep running."
+        title={`${withShortcut("New tab", "newTab")}. Other sessions keep running.`}
       >
         +
       </button>
@@ -419,7 +469,7 @@ export function TabBar({
           onClick={onSettings}
           aria-label="Settings"
           aria-pressed={settingsOpen}
-          title="Settings (Ctrl+,)"
+          title={withShortcut("Settings", "settings")}
         >
           <svg
             className="tab-gear-icon"
