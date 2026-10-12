@@ -505,6 +505,11 @@ export function installTauriMock(config: MockConfig): void {
         log("note", `${lane.title}: approved by you`);
       } else {
         if (lanes.length) throw new Error("This run has pull requests: mark each one approved instead.");
+        const stages = PIPELINE_STAGES[run.kind];
+        const last = stages?.[stages.length - 1]?.[0];
+        if (stages && run.stage !== last) {
+          throw new Error(`Mark complete is for the last stage; this run is at ${run.stage}.`);
+        }
         log("note", "Approved by you");
       }
       if (run.autopilot) run.autopilot.waiting = null;

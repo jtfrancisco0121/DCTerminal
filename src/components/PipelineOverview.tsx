@@ -331,6 +331,8 @@ export function PipelineOverview({
   const def = pipelineDef(run.kind);
   const stageDefs = pipelineStages(run.kind);
   const autopilotOn = !!run.autopilot?.enabled;
+  // Mark complete is only for a run that reached its last stage.
+  const atLastStage = stageDefs.length > 0 && run.stage === stageDefs[stageDefs.length - 1].id;
   const later = followUps(run);
   const events = [...(run.events ?? [])].reverse();
   const lanes = run.lanes ?? [];
@@ -386,7 +388,7 @@ export function PipelineOverview({
               Waiting for you: {run.autopilot.waiting}
             </p>
           )}
-          {autopilotOn && run.autopilot?.waiting && lanes.length === 0 && onApproveRun && (
+          {autopilotOn && run.autopilot?.waiting && lanes.length === 0 && atLastStage && onApproveRun && (
             <div className="button-row">
               <button
                 type="button"

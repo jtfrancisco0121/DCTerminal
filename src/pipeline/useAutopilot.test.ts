@@ -290,6 +290,25 @@ describe("useAutopilot", () => {
     expect(vi.mocked(pipelineRunGates)).not.toHaveBeenCalled();
   });
 
+  it("a turn in an already-approved lane is ignored without a notice", async () => {
+    const lanes = [{ id: "pr1", title: "PR1", status: "approved", stage: "pr_reviewer", round: 1, tabIds: {} }];
+    vi.mocked(getPipelineRun).mockResolvedValue({ run: { ...run(true).run, lanes } });
+    vi.mocked(pipelineDecide).mockResolvedValue({
+      action: "ignore",
+      lane: "pr1",
+      reason: "That pull request is already approved.",
+    });
+    const reviewer = { ...tab("pr", "role_pr_reviewer", 4), chain: { chainId: "ee_1", kind: "eagle1", step: 4, total: 4, lane: "pr1" } };
+    const { deps, onLog } = setup([reviewer as TabSummary]);
+    onLog("pr", log("## HANDOFF: Verdict\nREQUEST CHANGES\n\n## HANDOFF: Findings for the Implementer\n1. Late."));
+    await waitFor(() => expect(pipelineDecide).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(deps.notifyStop).not.toHaveBeenCalled();
+    expect(deps.notice).not.toHaveBeenCalled();
+    expect(deps.startTerminal).not.toHaveBeenCalled();
+    expect(ptyWrite).not.toHaveBeenCalled();
+  });
+
   it("a turn that finished before the app started is not acted on after a restart", async () => {
     vi.mocked(getPipelineRun).mockResolvedValue(run(true));
     const { deps, onLog } = setup([tab("impl", "role_implementer", 3)]);

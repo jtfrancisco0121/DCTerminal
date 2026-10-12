@@ -433,7 +433,20 @@ pub fn approve(store: &mut StateStore, run_id: &str, lane: Option<&str>) -> Resu
         None if !run.lanes.is_empty() => {
             return Err("This run has pull requests: mark each one approved instead.".into());
         }
-        None => "Approved by you".to_string(),
+        None => {
+            if let Some(def) = crate::pipelines::find(&run.kind) {
+                let at_last = def.stages.last().is_some_and(|last| last.id == run.stage);
+                if !at_last {
+                    let title = def
+                        .stages
+                        .iter()
+                        .find(|s| s.id == run.stage)
+                        .map_or(run.stage.as_str(), |s| s.title.as_str());
+                    return Err(format!("Mark complete is for the last stage; this run is at {title}."));
+                }
+            }
+            "Approved by you".to_string()
+        }
     };
     if let Some(autopilot) = run.autopilot.as_mut() {
         autopilot.waiting = None;
@@ -627,10 +640,46 @@ mod tests {
     }
 
     #[test]
+    fn sending_an_approved_lane_back_by_hand_makes_it_active_again() {
+        let (_dir, mut store) = store("approved_send_back");
+        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        fan_out(&mut store, "ee_f", "implementer", lanes()).unwrap();
+        let impl1 = store.create_draft_tab(&role("role_implementer"), "/tmp/wt1", true, None).unwrap();
+        store.set_tab_chain(&impl1, Some(chain(3, Some("pr1"))), Some("plan")).unwrap();
+        let review1 = store.create_draft_tab(&role("role_pr_reviewer"), "/tmp/wt1", true, None).unwrap();
+        store.set_tab_chain(&review1, Some(chain(4, Some("pr1"))), Some("summary")).unwrap();
+        approve(&mut store, "ee_f", Some("pr1")).unwrap();
+        assert_eq!(store.pipeline_run_by_id("ee_f").unwrap().lane("pr1").unwrap().status, "approved");
+
+        store
+            .chain_loop_back_in("ee_f", Some("pr1"), "role_pr_reviewer", &impl1, Some("REQUEST CHANGES"), Some("fix"))
+            .unwrap();
+        let run = store.pipeline_run_by_id("ee_f").unwrap();
+        assert_eq!(run.lane("pr1").unwrap().status, "active", "autopilot follows its turns again");
+        assert_eq!(run.lane("pr2").unwrap().status, "waiting", "other lanes untouched");
+    }
+
+    #[test]
+    fn mark_complete_is_refused_before_the_last_stage() {
+        let (_dir, mut store) = store("approve_early");
+        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        waiting_on(&mut store, "waiting");
+        let before = store.pipeline_run_by_id("ee_f").unwrap().clone();
+        let err = approve(&mut store, "ee_f", None).unwrap_err();
+        assert_eq!(err, "Mark complete is for the last stage; this run is at Planner.");
+        assert_eq!(store.pipeline_run_by_id("ee_f").unwrap(), &before, "nothing logged or changed");
+    }
+
+    #[test]
     fn approving_a_run_without_lanes_completes_it() {
         let (_dir, mut store) = store("approve_run");
         let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
         store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        let reviewer = store.create_draft_tab(&role("role_pr_reviewer"), "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&reviewer, Some(chain(4, None)), Some("summary")).unwrap();
+        assert_eq!(store.pipeline_run_by_id("ee_f").unwrap().stage, "pr_reviewer");
         waiting_on(&mut store, "Send it back, or press Mark complete in the chain overview.");
         let done = approve(&mut store, "ee_f", None).unwrap();
         assert_eq!(done, ApproveResult { complete: true, unblocked: vec![] });

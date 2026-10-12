@@ -302,6 +302,7 @@ describe("PipelineOverview: autopilot, checks and timeline", () => {
   it("marks a run without lanes complete when autopilot waits at its last stage", async () => {
     const onApproveRun = vi.fn(async () => {});
     const waiting = run({
+      stage: "pr_reviewer",
       autopilot: { enabled: true, waiting: "Send it back, or press Mark complete in the chain overview." },
     });
     vi.mocked(getPipelineRun).mockResolvedValue({ run: waiting });
@@ -324,10 +325,13 @@ describe("PipelineOverview: autopilot, checks and timeline", () => {
     await waitFor(() => expect(onApproveRun).toHaveBeenCalledWith("ee_1"));
     unmount();
 
-    // Not waiting, or a run with lanes (approved per lane): no run-level button.
+    // Not waiting, not at the last stage, or a run with lanes (approved per
+    // lane): no run-level button.
     for (const view of [
-      run({ autopilot: { enabled: true } }),
+      run({ stage: "pr_reviewer", autopilot: { enabled: true } }),
+      run({ stage: "implementer", autopilot: { enabled: true, waiting: "Implementer is a chat tab." } }),
       run({
+        stage: "pr_reviewer",
         autopilot: { enabled: true, waiting: "stopped" },
         lanes: [{ id: "pr1", title: "PR1", status: "active", stage: "pr_reviewer", round: 1, tabIds: {} }],
       }),

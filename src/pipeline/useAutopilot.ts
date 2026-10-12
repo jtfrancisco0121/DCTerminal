@@ -147,6 +147,9 @@ export function useAutopilot(deps: AutopilotDeps) {
       const fail = (what: string) =>
         stop(runId, tab.id, decision.stageId ?? null, `Autopilot could not ${what}`);
       switch (decision.action) {
+        case "ignore":
+          // A late turn in an already-approved lane: nothing to do or tell.
+          return;
         case "stop":
           depsRef.current.notifyStop(tab.id, decision.reason);
           return;

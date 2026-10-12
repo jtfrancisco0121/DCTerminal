@@ -281,6 +281,10 @@ impl StateStore {
                 l.verdicts.push(entry);
                 l.round = ending + 1;
                 l.stage = target_stage;
+                // Sent back by hand after approval: the lane is in play again.
+                if l.status == "approved" {
+                    l.status = "active".to_string();
+                }
             }
             None => {
                 run.verdicts.push(entry);

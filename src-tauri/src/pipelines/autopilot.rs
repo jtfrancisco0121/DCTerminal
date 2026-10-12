@@ -56,7 +56,8 @@ pub fn stage_key(stage_id: &str, lane: Option<&str>) -> String {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Decision {
-    /// `advance`, `loopBack`, `retry`, `reask`, `stop`, `complete`.
+    /// `advance`, `loopBack`, `retry`, `reask`, `stop`, `complete`, `laneDone`,
+    /// `ignore` (a late turn in an approved lane: nothing to do or tell).
     pub action: String,
     /// Stage to send into (`advance`, `loopBack`, `retry`).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -217,8 +218,8 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
     let stage = def.stages[index].clone();
     if let Some(lane) = report.lane.as_deref().and_then(|id| run.lane(id)).filter(|l| l.status == "approved") {
         // Approved already (by hand, or a late turn): nothing to rework, and
-        // nothing to wait for, so no stop is recorded.
-        let mut decision = Decision::new("stop", "That pull request is already approved.").for_stage(&stage);
+        // nothing to wait for, so no stop is recorded or shown.
+        let mut decision = Decision::new("ignore", "That pull request is already approved.").for_stage(&stage);
         decision.lane = Some(lane.id.clone());
         return decision;
     }

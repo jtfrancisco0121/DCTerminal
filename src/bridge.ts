@@ -1021,7 +1021,7 @@ export type TurnReport = {
 };
 
 export type AutopilotDecision = {
-  action: "advance" | "loopBack" | "retry" | "reask" | "stop" | "complete" | "laneDone";
+  action: "advance" | "loopBack" | "retry" | "reask" | "stop" | "complete" | "laneDone" | "ignore";
   stageId?: string;
   roleId?: string;
   reason: string;

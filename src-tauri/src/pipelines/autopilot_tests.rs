@@ -402,7 +402,7 @@ fn a_turn_in_an_approved_lane_changes_nothing() {
     rep.findings = vec![finding("HIGH", "late finding")];
     rep.findings_known = true;
     let d = decide(&eagle1(), &mut r, &rep);
-    assert_eq!((d.action.as_str(), d.lane.as_deref()), ("stop", Some("pr1")));
+    assert_eq!((d.action.as_str(), d.lane.as_deref()), ("ignore", Some("pr1")));
     assert_eq!(d.reason, "That pull request is already approved.");
     assert!(r.events.is_empty(), "nothing logged");
     assert!(r.autopilot.as_ref().unwrap().waiting.is_none(), "not waiting");
