@@ -390,7 +390,7 @@ describe("SettingsPage save model", () => {
     captureOn: false,
     showDevTools: false,
     onToggleCapture: () => {},
-    terminalSettings: { shell: "", fontSize: 14, roleSurface: {}, roleRunMode: {} },
+    terminalSettings: { shell: "", fontSize: 14, optionAsMeta: true, copyOnSelect: false, roleSurface: {}, roleRunMode: {} },
     approvalMode: null,
     initialCategory: "Terminal" as const,
     onClose: () => {},

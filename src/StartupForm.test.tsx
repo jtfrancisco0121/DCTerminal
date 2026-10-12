@@ -524,6 +524,8 @@ describe("blank tab card", () => {
     vi.mocked(getTerminalSettings).mockResolvedValueOnce({
       shell: "",
       fontSize: 14,
+      optionAsMeta: true,
+      copyOnSelect: false,
       roleSurface: { role_developer: "terminal" },
       roleRunMode: {},
     });
