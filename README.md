@@ -1,190 +1,183 @@
 # DCTerminal
 
-Local desktop app: **role-aware, multi-tab UI** on top of the Cursor CLI via **ACP** (`agent acp`). See the full spec in [docs/DCTerminal-Project-Blueprint.md](docs/DCTerminal-Project-Blueprint.md).
+**A desktop workspace for running Claude Code (and Cursor CLI) agents side by side, one role per tab.**
 
-## Quick start
+Plan, review, implement and review the PR in a chain of tabs, with hand-offs that carry each role's result into the next one. Built with Tauri 2, React and Rust. Runs on macOS, Linux and Windows.
 
-One command builds DCTerminal for this computer and installs it. There is no code signing and no GitHub Actions release.
+> **Status:** pre-MVP, personal tool, version 0.1.0. See [docs/MVP-FINISH.md](docs/MVP-FINISH.md) for what "done" means.
+
+---
+
+## Contents
+
+- [Features](#features)
+- [Install](#install)
+- [Set up Claude Code](#set-up-claude-code)
+- [The role pipeline](#the-role-pipeline)
+- [Keyboard shortcuts](#keyboard-shortcuts)
+- [Development](#development)
+- [Troubleshooting](#troubleshooting)
+- [Project layout](#project-layout)
+- [Docs](#docs)
+
+---
+
+## Features
+
+| | |
+|---|---|
+| **Tabs per task** | Each tab runs its own agent in its own folder. Leaving a tab keeps its agent running. |
+| **Chat or Terminal** | Chat tabs talk to Claude over ACP. Terminal tabs run the real `claude` CLI. |
+| **Roles** | Planner, Plan Reviewer, Implementer, PR Reviewer, and more. Each one has its own prompt, color, model and permission mode. You can edit roles or add your own. |
+| **Hand-offs** | **Send to …** passes a finished role's result to the next role's form. Nothing starts until you press Start. |
+| **Truthful status** | Every tab shows **Working**, **Needs you**, **Done** or **Exited**. It also sends a notification when Claude waits on you or finishes. |
+| **Scratch pad** | Draft long prompts under any session. A `---` line splits the pad into steps that send one after another. |
+| **Split and grid** | Show a second tab live beside the current one, or watch up to six tabs in a grid. |
+| **File panel, Changes, Activity** | Browse and edit files, review the git diff, and see every command and file write an agent made. |
+| **Your data stays local** | Transcripts, roles and settings live in the app data folder. DCTerminal never handles your credentials. |
+
+## Install
+
+One command builds DCTerminal for this computer and installs it. It needs Node 20+ and Rust. The script checks both and asks before installing anything.
 
 ```bash
-./install.sh          # macOS or Linux
-npm run install-app   # same thing, including Windows
+./install.sh            # macOS or Linux
+npm run install-app     # any OS, including Windows
 ```
 
-Windows PowerShell 5.1 or PowerShell 7:
-
 ```powershell
+# Windows (PowerShell 5.1 or 7)
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-The script checks Node 20+, Rust (rustup), and the platform libraries, prints the exact install command, and asks before installing anything that is missing. `--yes` answers yes. `--skip-checks` skips `npm run check`. On a Mac the `.app` matches that Mac (Apple Silicon or Intel); `--universal` builds both. `--uninstall` removes the app and leaves your data.
+<details>
+<summary>Installer options, and where things go</summary>
+
+| Flag | Effect |
+|---|---|
+| `--yes` | Answer yes to every prompt |
+| `--skip-checks` | Skip `npm run check` before building |
+| `--universal` | macOS: build for Apple Silicon and Intel |
+| `--uninstall` | Remove the app, keep your data |
 
 | OS | App | Your data (kept on uninstall) |
-|----|-----|-------------------------------|
-| macOS | `/Applications/DCTerminal.app`, or `~/Applications` if that folder is not writable | `~/Library/Application Support/com.jtfrancisco.dcterminal/` |
+|---|---|---|
+| macOS | `/Applications/DCTerminal.app` (or `~/Applications`) | `~/Library/Application Support/com.jtfrancisco.dcterminal/` |
 | Linux (apt) | `/usr/bin/dcterminal` | `~/.local/share/com.jtfrancisco.dcterminal/` |
 | Linux (no apt) | `~/.local/bin/DCTerminal.AppImage` | `~/.local/share/com.jtfrancisco.dcterminal/` |
 | Windows | `%LOCALAPPDATA%\DCTerminal\dcterminal.exe` | `%APPDATA%\com.jtfrancisco.dcterminal\` |
 
-Launch it with `open -a DCTerminal`, `dcterminal`, the AppImage path, or the Start menu shortcut. Claude chat needs Claude Code and the ACP adapter (below). Cursor stays available (`agent login`). The installer warns if `agent` is not on PATH. Details: **[docs/RELEASE.md](docs/RELEASE.md)**.
+The build has no code signing and no CI release. See [docs/RELEASE.md](docs/RELEASE.md).
+</details>
 
-### Claude Code
+## Set up Claude Code
 
-DCTerminal's default provider is Claude. Chat tabs talk to `@agentclientprotocol/claude-agent-acp` 0.88.0. Terminal tabs run `claude`.
+Claude is the default provider. Chat tabs use the ACP adapter, and terminal tabs run `claude`.
 
 ```bash
-# Claude Code: https://code.claude.com (Homebrew cask on a Mac: brew install --cask claude-code)
+# 1. Install Claude Code: https://code.claude.com  (macOS: brew install --cask claude-code)
+# 2. Install the ACP adapter
 npm install -g --omit=optional @agentclientprotocol/claude-agent-acp@0.88.0
+# 3. Sign in with your own subscription
+claude      # then /login
 ```
 
-Sign in with your own Claude subscription. DCTerminal never handles credentials. In a terminal: `claude`, then `/login`.
+- **Second account:** point **Settings › Providers › Claude config folder** at it (for example `~/.claude-account2`), or set `DCT_CLAUDE_CONFIG_DIR` before launch. DCTerminal only reads that folder.
+- **Cursor CLI (optional):** install it and run `agent login`.
 
-A second account (the `claude2` alias) is a different config folder. Point DCTerminal at it in **Settings > Providers > Claude config folder** (for example `~/.claude-account2`), or set `DCT_CLAUDE_CONFIG_DIR` before launch. That value becomes `CLAUDE_CONFIG_DIR` on every Claude process. Unset, DCTerminal uses `~/.claude`. The folder is only read. History comes from `<configDir>/projects`.
+## The role pipeline
 
-## Status
+```
+Planner  →  Plan Reviewer  →  Implementer  →  PR Reviewer
+ (plan)       (verdict)        (draft PRs)     (verdict per PR)
+```
 
-**Pre-MVP** — each tab can run its own `agent acp` session, with role permission policy, a scratch pad, and local transcripts. A local install is `./install.sh` / `install.ps1`. Track:
+1. Start a **Planner** tab: pick a folder, the role, Chat or Terminal, and describe the task.
+2. When its turn ends, press **Send to Plan Reviewer**. The plan fills the next role's fields. Check the preview and press Start.
+3. Repeat down the chain. When a reviewer asks for changes, **Send back to …** returns the findings to the earlier tab as a new round.
+4. Use **Open chain overview…** to see every stage, its status and its verdict in one place.
 
-- **[docs/MVP-FINISH.md](docs/MVP-FINISH.md)** — what “done” means and finish order
-- **[docs/PROGRESS.md](docs/PROGRESS.md)** — snapshot before each push
-- **[docs/TASKS.md](docs/TASKS.md)** — full checklist
+Terminal roles launch Claude Code in `plan` mode (Planner) or `auto` mode (the others), so Claude still asks before risky actions. Those questions show up as **Needs you**.
 
-## Using the app (daily)
+**How to reply to each role:** see [docs/PIPELINE-REPLY-GUIDE.md](docs/PIPELINE-REPLY-GUIDE.md).
 
-1. Install Claude Code and the adapter (above). Cursor CLI (`agent login`) is optional.
-2. Run `npm run dev:ui` + `npm run dev:app` (or a release build when available).
-3. The window opens on a tab bar and one blank tab. **Start a session** is a two-column card: on the left, one sticky row has the **folder** (click the name to choose another; ▾ for recent and favorites), the model, and **Start**; below that are **role tiles** (colored dots), **Chat** or **Terminal**, Title, **What to work on**, and **Preview**. **Cursor CLI history** for that folder is a dense list on the right (Resume / Open in Cursor CLI). A fresh profile first gets **Set up DCTerminal** (palette: **Run first-run setup…**).
-4. **Continue the same agent** with the `›` follow-up box (Ctrl+Enter) — do not press Stop. In a Claude chat, `/` at the start of a line in the box or the chat scratch pad lists your Claude Code commands and skills (↑/↓, Enter or Tab inserts, Esc closes). `/model`, `/login`, and `/logout` are never offered or sent; use the model picker.
-5. Draft long prompts in the **scratch pad** under the session (chat or terminal). It starts at three rows; drag its top edge (or focus the edge and use ↑/↓) to make it taller. **Hide pad** / **Show pad** and the height are shared by chat and terminal tabs and saved. Ctrl+. copies the selection (or the whole pad) into the input. A line that is only `---` splits the pad into steps; Send waits for each reply to finish before the next step. **Images (Claude chats):** paste (or drop) a PNG, JPEG, GIF or WebP screenshot into the chat input or the scratch pad. Each one shows as a chip with ×, and it goes with your next message (up to 5, 5 MB each; a `---` chain sends them with the first step). Images are staged in DCTerminal's app data, never in your repo, and the transcript keeps an `[image: name.png]` marker. This is only offered on Claude chats whose agent accepts images.
-6. **Choose folder…** opens the system folder dialog. The form shows the folder name and path, and does not start the session. Recent and favorites are in the menu on that control. A new tab asks you to choose a folder. A restored tab keeps the folder it already had.
-7. **Stop session** when done — the transcript is saved on the tab and in the app data folder. After a restart it comes back as read-only history. **Start new session** begins a fresh agent. A missing folder does not hide that history, but Start stays blocked until the folder exists.
-8. On a restored tab, **Continue session** loads the same ACP session and does not re-inject the startup prompt. **Start new session** opens the startup fields and starts a new session. **Cursor CLI history** lists sessions for the folder. **Resume** continues one in the app. **Open in Cursor CLI** is only for a saved chat, and it opens a terminal tab running `agent --resume`.
-9. **+ New tab** for another task. The tab you left keeps its agent running. Close (×) stops only that tab. Ctrl+K opens the command palette; Ctrl+/ lists shortcuts. Ctrl+\\ (or Ctrl+Alt+\\ for below) picks a tab to show live in a second pane: a terminal there is the same process, and a chat there has its own composer. Ctrl+Alt+S swaps panes, Ctrl+Alt+O moves focus, Ctrl+Alt+W closes the split. Ctrl+B opens the file panel (tree, preview, Edit + Ctrl+S, Insert @file). Cmd replaces Ctrl on macOS. On a finished **Planner** turn, **Send to Plan Reviewer** (then Implementer, then PR Reviewer) opens a new tab in the same folder with the plan mapped onto that role’s fields; nothing starts until you press Start. **Start Eagle-Eye 1…** / **Start Eagle-Eye 2…** in the palette tag that chain. Click the chain label ("Eagle-Eye 1 · step 2 of 4") or use **Open chain overview…** to see every stage: its tab, status, the text handed into it, the reviewer's verdict, and Jump / Watch in split. A Claude Planner's "Ready to code?" card is **Hand off…** and **Keep planning**.
-10. The gear in the tab bar, **Settings** in the command palette, and Ctrl+, open **Settings**. A menu on the left picks one category: **Roles**, **Providers** (Claude config folder and account), **Models** (Claude default `default`; Cursor default `composer-2.5`; a Claude reasoning effort per role, and **Effort** in each Claude chat header), **Terminal**, **Permissions** (full access, allow-once), **Usage** (Claude 5-hour and 7-day limits), **Notifications**, **Shortcuts**, and **Data**. **Record permission payloads** lives under Permissions (off by default). **Activity (n)** in a chat header (palette: **Show activity…**) lists every command, file write, fetch, and MCP call the agent made in that tab, with the permission decision, a network ⚠, and done / failed; it is kept in app data (`activity/<tab id>.jsonl`), redacted, and size-capped. See [docs/permission-payload-capture.md](docs/permission-payload-capture.md).
-11. **Settings > Roles** edits a role's name, color, default mode, template (it lists the form fields the `{{tokens}}` make), and **hand-off targets** (which roles its **Send to …** buttons offer). **New role**, **Duplicate**, **Delete** (custom roles only; refused while a tab uses it), **Export…** and **Import…** (one role as JSON). Roles live in DCTerminal's app data `roles.json`, never in `~/.claude` or a repo. **Reset built-in** restores a shipped role.
+## Keyboard shortcuts
 
-**Continue session** resumes the same thread when the CLI allows it, using the session id stored on the tab. See [docs/cursor-cli-history.md](docs/cursor-cli-history.md). Ctrl+Shift+` toggles the terminal pane. Ctrl+Shift+. sends the scratch pad to the terminal.
+Use ⌘ in place of Ctrl on macOS. **Ctrl+/** shows the full list for your platform, and **Ctrl+K** runs any action by name.
 
-The status bar shows the active tab’s status, provider, model, folder, **Full permissions**, and Claude 5-hour usage once a Claude chat has reported it. Hover a tab chip for its role, folder, branch, model, Eagle-Eye step, and status. The look is **GitHub Dark** by default; **GitHub Light** is in Settings > Terminal or **Switch theme** in the palette.
+| Keys | Action | Keys | Action |
+|---|---|---|---|
+| `Ctrl+K` | Command palette | `Ctrl+P` | Go to tab |
+| `Ctrl+T` / `Ctrl+W` | New / close tab | `F6` | Reopen closed tab |
+| `Ctrl+1…9` | Go to tab | `F2` | Rename tab |
+| `Ctrl+Enter` | Send | `Ctrl+.` | Scratch pad → input |
+| `Ctrl+J` / `Ctrl+L` | Focus pad / input | `Ctrl+F` | Find in tab |
+| `Ctrl+\` / `Ctrl+Alt+\` | Split right / down | `Ctrl+Alt+G` | Grid view |
+| `Ctrl+B` | File panel | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | Terminal text size |
+| `Ctrl+,` | Settings | `Esc` | Back to terminal / close dialog |
 
-### Keyboard shortcuts
-
-Cmd replaces Ctrl on macOS (⌘). Settings > Shortcuts and Ctrl+/ show the same list for your platform. The optional **shortcut bar** (Settings > Shortcuts, **Toggle shortcut bar** in the palette, or the first-use tip) puts the everyday keys at the right end of the status bar; click a hint to run it.
-
-| Keys | Action |
-|------|--------|
-| Ctrl+K | Command palette (every action below, plus hand-off, worktree, model, history, prompts, workspaces, theme, shortcut bar) |
-| Ctrl+P | Go to tab (matches name, folder, status) |
-| Ctrl+/ | Keyboard shortcuts |
-| Ctrl+T / Ctrl+W | New tab / close tab |
-| F6 | Reopen closed tab |
-| F2 | Rename tab (or double-click the chip) |
-| Ctrl+1…9 | Go to tab 1–9 |
-| Ctrl+PageDown / Ctrl+PageUp (Ctrl+Tab / Ctrl+Shift+Tab) | Next / previous tab |
-| Ctrl+Enter | Send the composer |
-| Ctrl+. | Transfer the scratch pad into the input |
-| Ctrl+J / Ctrl+L | Focus the scratch pad / focus the input |
-| Ctrl+F | Find in tab (in a terminal tab: ⌘F on macOS, Ctrl+Shift+F elsewhere) |
-| Ctrl+Shift+F | Search all chats (from a chat tab) |
-| Ctrl+B | File panel (Ctrl+S saves while editing) |
-| Ctrl+\ / Ctrl+Alt+\ | Split right / split down |
-| Ctrl+Alt+S / Ctrl+Alt+O / Ctrl+Alt+W | Swap panes / focus other pane / close split |
-| Ctrl+Alt+G | Grid view: up to six tabs live at once, each in its own cell (the ▦ button in the tab bar does the same). Click a cell to work in it; nothing moves. |
-| Ctrl+Shift+` | Toggle the terminal pane on a chat tab |
-| Ctrl+Shift+. | Send the scratch pad to the terminal (terminal tabs) |
-| Esc | Back to the terminal from its scratch pad; closes dialogs |
-| Ctrl+, | Settings |
-
-## Prerequisites
-
-- [Node.js](https://nodejs.org/) 20+
-- [Rust](https://www.rust-lang.org/tools/install) 1.90+ (the locked Tauri 2.12 crates require it) + [Tauri prerequisites](https://tauri.app/start/prerequisites/) (for `tauri dev` / `tauri build`)
-- [Claude Code](https://code.claude.com) and `@agentclientprotocol/claude-agent-acp@0.88.0` (default provider)
-- [Cursor CLI](https://cursor.com/docs/cli) with `agent login` (optional second provider)
-- Windows: WebView2 (usually preinstalled on Windows 10/11)
+In terminal tabs, Option works as Meta for Claude Code's Option shortcuts, and Shift+Enter adds a new line. You can turn Option as Meta off under **Settings › Terminal**.
 
 ## Development
 
 ```bash
 npm install
-npm run build          # frontend TypeScript + Vite (no Rust)
-npm run dev:full       # desktop app (starts Vite if needed)
+npm run dev:ui      # terminal 1: Vite, leave running (React/CSS hot-reload)
+npm run dev:app     # terminal 2: the desktop app (restarts on Rust changes)
 ```
 
-### Hot reload (recommended daily workflow)
+`npm run dev:full` does both in one terminal. `npm run dev:ui` alone is browser-only and can't call Rust commands.
 
-Keep the UI dev server running in one terminal; restart only the Rust shell when you change `src-tauri/`.
-
-**Terminal 1 — leave running**
+**Before merging, run:**
 
 ```bash
-npm run dev:ui
+npm run check       # cargo test, clippy -D warnings, vitest, build
 ```
 
-**Terminal 2 — desktop app**
+| Command | What it does |
+|---|---|
+| `npm test` | Unit tests (vitest) |
+| `npm run e2e:ui` | Playwright UI tests against a fake backend (slow) |
+| `npm run build:roles` | Rebuild `seed/roles.seed.json` from `docs/roles/*.md` |
+| `npm run release:mac` / `:linux` / `:win` | Build installers without installing |
 
-```bash
-npm run dev:app
-```
+**Requirements:** Node 20+, Rust 1.90+, the [Tauri prerequisites](https://tauri.app/start/prerequisites/), and WebView2 on Windows (usually preinstalled). GitHub Actions is off, so `npm run check` is the gate.
 
-- **React / CSS (`src/`)** — Vite HMR updates the open window (no restart).
-- **Rust (`src-tauri/`)** — `tauri dev` recompiles and relaunches the app (Vite keeps running).
-- **Single terminal** — `npm run dev:full` still works; if Vite is already on port `1420`, Tauri reuses it instead of failing.
+## Troubleshooting
 
-IPC-only checks (roles list, etc.) need the Tauri window — `npm run dev:ui` alone is browser-only and cannot call Rust commands.
-
-### Checks and installers
-
-Automatic GitHub Actions is **disabled** (no Actions subscription). Before merging, run:
-
-```bash
-npm run check
-```
-
-That runs Rust tests, Clippy (`-D warnings`), `npm test`, and `npm run build`. `./install.sh` runs the same check, then builds and installs for this OS only. To produce installers without installing them:
-
-```bash
-npm run release:win      # NSIS + MSI, on Windows
-npm run release:mac      # .app + .dmg, on macOS
-npm run release:linux    # .deb + .AppImage, on Linux
-```
-
-Unsigned Windows installers trip SmartScreen until they are code-signed. Cut a release, output paths, and how to add signing later: **[docs/RELEASE.md](docs/RELEASE.md)**.
-
-**Windows:** If `tauri dev` says `cargo metadata` / `program not found`, Rust is not on your PATH. Either open a new terminal after installing Rust, or for this session:
-
-```powershell
-$env:Path = "$env:USERPROFILE\.cargo\bin;" + $env:Path
-npm run tauri dev
-```
-
-Permanent fix: add `%USERPROFILE%\.cargo\bin` to your user **Path** environment variable (Settings → System → About → Advanced system settings → Environment Variables).
-
-### Troubleshooting
-
-| Symptom | What to try |
-|---------|-------------|
-| Blank window / UI not loading | Use **two terminals** (`dev:ui` + `dev:app`), or run **`npm run dev:stable`** (bundled UI, no Vite). |
-| Port 1420 in use | Stop other `vite`/`tauri` processes, or keep one `npm run dev:ui` running and only restart `dev:app`. |
-| `Chrome_WidgetWin_0` on exit | Harmless WebView2 message when closing the window or pressing Ctrl+C. |
-| Agent stuck / no output | Yellow **status bar** = waiting for permission or tools still running. Scroll up for the **permission** card; use **Cancel turn** if a tool hangs. |
-| Long list of `pending` tools | Tool rows **update in place** when the agent reports completion; reasoning stays in collapsed **Reasoning**. |
-| “Not authenticated” | Run `agent login` in a terminal, then **Start** again. |
-
-`devUrl` is **`http://127.0.0.1:1420`** (must match Vite’s host).
+| Symptom | Fix |
+|---|---|
+| Blank window | Use two terminals (`dev:ui` + `dev:app`), or `npm run dev:stable` |
+| Port 1420 in use | Stop other `vite`/`tauri` processes, or keep one `dev:ui` and restart only `dev:app` |
+| Windows: `cargo metadata` / `program not found` | Rust isn't on PATH. Open a new terminal, or add `%USERPROFILE%\.cargo\bin` to Path |
+| Tab shows **Needs you** | Claude is waiting on a permission prompt, question or plan. Answer it in the tab |
+| "Not authenticated" | `claude` then `/login` (or `agent login` for Cursor), then Start again |
+| `Chrome_WidgetWin_0` on exit | Harmless WebView2 message |
 
 ## Project layout
 
-| Path | Purpose |
-|------|---------|
-| `src/` | React UI, `bridge.ts` IPC |
-| `src-tauri/` | Rust core (ACP, store, template engine — in progress) |
-| `docs/roles/` | Source-of-truth role prompts (Markdown) |
-| `seed/roles.seed.json` | Generated via `npm run build:roles` |
-| `fixtures/` | Golden merges + ACP recordings |
-| `tools/fake-acp-agent/` | Test harness (planned) |
-| `docs/` | Blueprint, progress, tasks, ADRs, [release steps](docs/RELEASE.md) |
+| Path | What's there |
+|---|---|
+| `src/` | React UI (`views/`, `components/`, `terminal/`, `handoff/`, `pipeline/`), IPC in `bridge.ts` |
+| `src-tauri/` | Rust core: PTY, ACP, providers, session logs, stores |
+| `docs/roles/` | Role prompts (source of truth) |
+| `seed/` | Generated built-in roles |
+| `e2e/` | Playwright UI tests and the fake-agent harness |
+| `fixtures/` | Recorded ACP sessions and terminal captures |
+| `docs/` | Plans, guides, ADRs |
 
-## License
+## Docs
 
-Private / personal tool (see repository owner).
+| Doc | For |
+|---|---|
+| [PIPELINE-REPLY-GUIDE.md](docs/PIPELINE-REPLY-GUIDE.md) | Getting clean hand-offs from each role |
+| [RELEASE.md](docs/RELEASE.md) | Building and releasing installers |
+| [TESTING.md](docs/TESTING.md) | Test layers and how to run them |
+| [DCTerminal-Project-Blueprint.md](docs/DCTerminal-Project-Blueprint.md) | Full product spec |
+| [MVP-FINISH.md](docs/MVP-FINISH.md) · [PROGRESS.md](docs/PROGRESS.md) · [TASKS.md](docs/TASKS.md) | Status and checklists |
+| [permission-payload-capture.md](docs/permission-payload-capture.md) | Recording permission payloads |
+| [cursor-cli-history.md](docs/cursor-cli-history.md) | Cursor CLI session history and resume |
+
+---
+
+Private, personal tool.
