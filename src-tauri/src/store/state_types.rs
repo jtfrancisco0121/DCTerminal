@@ -68,6 +68,9 @@ pub struct ChainRef {
     /// Review round. Starts at 1; each loop-back (reviewer → earlier stage) adds one.
     #[serde(default = "first_round", skip_serializing_if = "is_first_round")]
     pub round: u32,
+    /// Lane id (`pr1`) when the run fanned out by pull request (ADR-014 phase 3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lane: Option<String>,
 }
 
 pub fn first_round() -> u32 {
@@ -137,6 +140,66 @@ pub struct PipelineRun {
     /// Opt-in autopilot for this run. `None` (or off) means manual.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub autopilot: Option<RunAutopilot>,
+    /// One lane per pull request once the run fanned out; empty otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lanes: Vec<RunLane>,
+    /// The stage where the lanes start (the Implementer's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fan_out_stage: Option<String>,
+}
+
+/// One pull request's own Implementer → PR Reviewer track after a fan-out.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RunLane {
+    /// `pr1`.
+    pub id: String,
+    /// "PR1 — Token refresh".
+    pub title: String,
+    /// Lane ids that must be approved before this one starts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<String>,
+    /// `waiting` (for its dependencies), `active`, `approved`.
+    pub status: String,
+    #[serde(default)]
+    pub stage: String,
+    #[serde(default = "first_round")]
+    pub round: u32,
+    /// `role_id` → tab id in this lane.
+    #[serde(default)]
+    pub tab_ids: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub handoffs: HashMap<String, StageHandoff>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verdicts: Vec<StageVerdict>,
+}
+
+impl PipelineRun {
+    pub fn lane(&self, id: &str) -> Option<&RunLane> {
+        self.lanes.iter().find(|lane| lane.id == id)
+    }
+
+    pub fn lane_mut(&mut self, id: &str) -> Option<&mut RunLane> {
+        self.lanes.iter_mut().find(|lane| lane.id == id)
+    }
+
+    /// The round a stage is on: its lane's, else the run's.
+    pub fn round_for(&self, lane: Option<&str>) -> u32 {
+        lane.and_then(|id| self.lane(id))
+            .map(|lane| lane.round)
+            .unwrap_or(self.round)
+            .max(1)
+    }
+
+    /// Waiting lanes whose dependencies are all approved now.
+    pub fn unblocked_lanes(&self) -> Vec<String> {
+        let approved = |id: &String| self.lane(id).is_some_and(|l| l.status == "approved");
+        self.lanes
+            .iter()
+            .filter(|lane| lane.status == "waiting" && lane.depends_on.iter().all(approved))
+            .map(|lane| lane.id.clone())
+            .collect()
+    }
 }
 
 /// Most ledger events a run keeps; older ones are dropped first.

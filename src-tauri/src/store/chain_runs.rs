@@ -111,6 +111,8 @@ impl StateStore {
                     events: Vec::new(),
                     gates: HashMap::new(),
                     autopilot: None,
+                    lanes: Vec::new(),
+                    fan_out_stage: None,
                 });
                 chain.chain_id.clone()
             }
@@ -118,27 +120,56 @@ impl StateStore {
         let Some(run) = self.pipeline_run_by_id_mut(&run_id) else {
             return;
         };
-        run.tab_ids.insert(role_id.to_string(), tab_id.to_string());
-        let current = stages.iter().position(|(id, _)| *id == run.stage);
-        if current.is_none_or(|at| index >= at) {
-            run.stage = stage_id.to_string();
+        let text = handoff_text.map(str::trim).filter(|text| !text.is_empty());
+        let lane_id = chain.lane.as_deref().filter(|id| run.lane(id).is_some());
+        if let Some(lane) = lane_id.and_then(|id| run.lanes.iter_mut().find(|l| l.id == id)) {
+            // A fanned-out pull request: its own tabs, stage and hand-offs.
+            lane.tab_ids.insert(role_id.to_string(), tab_id.to_string());
+            let current = stages.iter().position(|(id, _)| *id == lane.stage);
+            if current.is_none_or(|at| index >= at) {
+                lane.stage = stage_id.to_string();
+            }
+            if lane.status == "waiting" {
+                lane.status = "active".to_string();
+            }
+            if let Some(text) = text {
+                lane.handoffs.insert(
+                    role_id.to_string(),
+                    StageHandoff {
+                        text: text.to_string(),
+                        at: now.clone(),
+                    },
+                );
+            }
+        } else {
+            run.tab_ids.insert(role_id.to_string(), tab_id.to_string());
+            let current = stages.iter().position(|(id, _)| *id == run.stage);
+            if current.is_none_or(|at| index >= at) {
+                run.stage = stage_id.to_string();
+            }
+            if let Some(text) = text {
+                run.handoffs.insert(
+                    role_id.to_string(),
+                    StageHandoff {
+                        text: text.to_string(),
+                        at: now.clone(),
+                    },
+                );
+            }
         }
-        if let Some(text) = handoff_text.map(str::trim).filter(|text| !text.is_empty()) {
-            run.handoffs.insert(
-                role_id.to_string(),
-                StageHandoff {
-                    text: text.to_string(),
-                    at: now.clone(),
-                },
-            );
+        if let Some(text) = text {
             let title = crate::pipelines::find(&kind)
                 .and_then(|def| def.stage(&stage_id).map(|stage| stage.title.clone()))
                 .unwrap_or_else(|| stage_id.clone());
+            let lane_tag = lane_id
+                .and_then(|id| run.lane(id))
+                .map(|lane| format!("{}: ", lane.title))
+                .unwrap_or_default();
             run.log(
                 "handoff",
                 Some(&stage_id),
                 Some(&role_id),
-                format!("Handed to {title}"),
+                format!("{lane_tag}Handed to {title}"),
                 Some(text.to_string()),
             );
             // Sending into a checkpoint stage yourself passes it; autopilot
@@ -171,6 +202,20 @@ impl StateStore {
         verdict: Option<&str>,
         handoff_text: Option<&str>,
     ) -> Result<ChainRef, String> {
+        self.chain_loop_back_in(chain_id, None, reviewer_role_id, target_tab_id, verdict, handoff_text)
+    }
+
+    /// `chain_loop_back` for one lane of a fanned-out run (`lane`), or the
+    /// whole run (`None`). A lane keeps its own round and verdicts.
+    pub fn chain_loop_back_in(
+        &mut self,
+        chain_id: &str,
+        lane: Option<&str>,
+        reviewer_role_id: &str,
+        target_tab_id: &str,
+        verdict: Option<&str>,
+        handoff_text: Option<&str>,
+    ) -> Result<ChainRef, String> {
         let target_role = self
             .tab_by_id(target_tab_id)
             .map(|tab| tab.role_id.clone())
@@ -189,35 +234,61 @@ impl StateStore {
             return Err("That hand-off is not a loop-back on this chain.".to_string());
         }
         let now = Utc::now().to_rfc3339();
-        let ending = run.round.max(1);
-        run.verdicts.push(StageVerdict {
+        let lane = lane.filter(|id| run.lane(id).is_some()).map(str::to_string);
+        let ending = run.round_for(lane.as_deref());
+        let entry = StageVerdict {
             role_id: reviewer_role_id.to_string(),
             round: ending,
             verdict: verdict.map(str::trim).filter(|v| !v.is_empty()).map(str::to_string),
             at: now,
-        });
+        };
         let verdict_text = verdict.map(str::trim).filter(|v| !v.is_empty()).unwrap_or("no verdict");
+        let lane_tag = lane
+            .as_deref()
+            .and_then(|id| run.lane(id))
+            .map(|l| format!("{}: ", l.title))
+            .unwrap_or_default();
         run.log(
             "loopBack",
             Some(&stages[target].0),
             Some(reviewer_role_id),
-            format!("Round {ending} sent back ({verdict_text})"),
+            format!("{lane_tag}Round {ending} sent back ({verdict_text})"),
             None,
         );
-        run.round = ending + 1;
-        run.stage = stages[target].0.clone();
+        let target_stage = stages[target].0.clone();
+        match lane.as_deref().and_then(|id| run.lanes.iter_mut().find(|l| l.id == id)) {
+            Some(l) => {
+                l.verdicts.push(entry);
+                l.round = ending + 1;
+                l.stage = target_stage;
+            }
+            None => {
+                run.verdicts.push(entry);
+                run.round = ending + 1;
+                run.stage = target_stage;
+            }
+        }
         if let Some(autopilot) = run.autopilot.as_mut() {
-            autopilot.gate_retries.clear();
+            let prefix = lane.as_deref().map(|id| format!("@{id}"));
+            match prefix {
+                Some(suffix) => autopilot.gate_retries.retain(|key, _| !key.ends_with(&suffix)),
+                None => autopilot.gate_retries.clear(),
+            }
         }
         let chain = ChainRef {
             chain_id: chain_id.to_string(),
             kind: crate::pipelines::chain_kind_for_run(&run.kind),
             step: target as u32 + 1,
             total: stages.len() as u32,
-            round: run.round,
+            round: ending + 1,
+            lane: lane.clone(),
         };
         for tab in self.data.tabs.iter_mut() {
-            if let Some(tagged) = tab.chain.as_mut().filter(|c| c.chain_id == chain_id) {
+            if let Some(tagged) = tab
+                .chain
+                .as_mut()
+                .filter(|c| c.chain_id == chain_id && c.lane == lane)
+            {
                 tagged.round = chain.round;
             }
         }
@@ -450,6 +521,7 @@ mod tests {
             step,
             total: if kind == "eagle1" { 4 } else { 2 },
             round: 1,
+            lane: None,
         }
     }
 
@@ -473,6 +545,8 @@ mod tests {
             events: Vec::new(),
             gates: HashMap::new(),
             autopilot: None,
+            lanes: Vec::new(),
+            fan_out_stage: None,
         }
     }
 

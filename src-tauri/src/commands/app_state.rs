@@ -214,18 +214,21 @@ pub fn set_tab_chain(
 /// just opened). Bumps the chain's round and records the verdict. Starts
 /// nothing; the caller sends the follow-up.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri injects each managed state as its own argument.
 pub fn chain_loop_back(
     chain_id: String,
     reviewer_role_id: String,
     tab_id: String,
     verdict: Option<String>,
     handoff_text: Option<String>,
+    lane: Option<String>,
     app: tauri::AppHandle,
     store: State<Mutex<StateStore>>,
 ) -> Result<crate::store::ChainRef, String> {
     let mut store = store.lock().map_err(|e| e.to_string())?;
-    let chain = store.chain_loop_back(
+    let chain = store.chain_loop_back_in(
         chain_id.trim(),
+        lane.as_deref(),
         &reviewer_role_id,
         &tab_id,
         verdict.as_deref(),
@@ -299,6 +302,7 @@ pub fn start_eagle_eye(
             step: 1,
             total,
             round: 1,
+            lane: None,
         }),
         None,
     )?;

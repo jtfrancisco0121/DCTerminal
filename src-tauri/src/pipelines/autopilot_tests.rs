@@ -26,6 +26,8 @@ fn run(round: u32) -> PipelineRun {
             enabled: true,
             ..RunAutopilot::default()
         }),
+        lanes: Vec::new(),
+        fan_out_stage: None,
     }
 }
 
@@ -196,4 +198,77 @@ fn chat_stages_and_high_usage_stop() {
     assert!(d.reason.contains("93%"));
     busy.usage_percent = Some(89);
     assert_eq!(decide(&eagle1(), &mut run(1), &busy).action, "advance");
+}
+
+fn lane(id: &str, depends_on: &[&str], status: &str, round: u32) -> crate::store::RunLane {
+    crate::store::RunLane {
+        id: id.into(),
+        title: id.to_uppercase(),
+        depends_on: depends_on.iter().map(|d| d.to_string()).collect(),
+        status: status.into(),
+        stage: "implementer".into(),
+        round,
+        tab_ids: HashMap::new(),
+        handoffs: HashMap::new(),
+        verdicts: Vec::new(),
+    }
+}
+
+fn in_lane(stage: &str, verdict: Option<&str>, lane_id: &str) -> TurnReport {
+    TurnReport {
+        lane: Some(lane_id.into()),
+        ..report(stage, verdict)
+    }
+}
+
+#[test]
+fn an_approved_lane_unblocks_the_lanes_waiting_on_it() {
+    let mut r = run(1);
+    r.lanes = vec![
+        lane("pr1", &[], "active", 1),
+        lane("pr2", &["pr1"], "waiting", 1),
+        lane("pr3", &[], "active", 1),
+    ];
+    let d = decide(&eagle1(), &mut r, &in_lane("pr_reviewer", Some("APPROVED"), "pr1"));
+    assert_eq!(d.action, "laneDone");
+    assert_eq!(d.unblocked, vec!["pr2"]);
+    assert_eq!(d.lane.as_deref(), Some("pr1"));
+    assert_eq!(r.lane("pr1").unwrap().status, "approved");
+    // The last lane approved completes the run.
+    r.lane_mut("pr2").unwrap().status = "approved".into();
+    let d = decide(&eagle1(), &mut r, &in_lane("pr_reviewer", Some("APPROVED"), "pr3"));
+    assert_eq!(d.action, "complete");
+}
+
+#[test]
+fn a_lane_counts_its_own_rounds_and_gates() {
+    let mut r = run(1);
+    r.lanes = vec![lane("pr1", &[], "active", 3), lane("pr2", &[], "active", 1)];
+    let rep = in_lane("pr_reviewer", Some("REQUEST CHANGES"), "pr1");
+    let capped = decide(&eagle1(), &mut r, &rep);
+    assert_eq!(capped.action, "stop");
+    assert!(capped.reason.contains("3 of 3"), "{}", capped.reason);
+    let other = decide(&eagle1(), &mut r, &in_lane("pr_reviewer", Some("REQUEST CHANGES"), "pr2"));
+    assert_eq!((other.action.as_str(), other.lane.as_deref()), ("loopBack", Some("pr2")));
+    // A failed check on one lane does not hold up the other.
+    r.gates.insert(
+        "implementer@pr2".into(),
+        StageGates {
+            round: 1,
+            at: "now".into(),
+            results: vec![GateResult {
+                kind: "command".into(),
+                label: "cargo test".into(),
+                status: "failed".into(),
+                summary: "Failed (exit code 101).".into(),
+                output: String::new(),
+                duration_ms: 1,
+            }],
+        },
+    );
+    assert_eq!(decide(&eagle1(), &mut r, &in_lane("implementer", None, "pr2")).action, "retry");
+    let pr1 = decide(&eagle1(), &mut r, &in_lane("implementer", None, "pr1"));
+    assert_eq!((pr1.action.as_str(), pr1.stage_id.as_deref()), ("advance", Some("pr_reviewer")));
+    assert_eq!(pr1.lane.as_deref(), Some("pr1"));
+    assert!(r.events.last().unwrap().summary.starts_with("PR1: "));
 }

@@ -156,6 +156,9 @@ pub struct LoopBackInput {
     pub reviewer_role_id: String,
     #[serde(default)]
     pub verdict: Option<String>,
+    /// The fanned-out pull request whose round goes back, if any.
+    #[serde(default)]
+    pub lane: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -202,8 +205,9 @@ pub fn attach_handoff(
             return Err(format!("unknown tab: {}", input.tab_id));
         }
         if let Some(back) = &input.loop_back {
-            let chain = store.chain_loop_back(
+            let chain = store.chain_loop_back_in(
                 back.chain_id.trim(),
+                back.lane.as_deref(),
                 &back.reviewer_role_id,
                 &input.tab_id,
                 back.verdict.as_deref(),
@@ -274,6 +278,7 @@ mod tests {
                 step: 2,
                 total: 4,
                 round: 1,
+                lane: None,
             }),
         }
     }
@@ -322,6 +327,7 @@ mod tests {
                 step,
                 total: 4,
                 round: 1,
+                lane: None,
             }
         }
 
@@ -457,6 +463,7 @@ mod tests {
                         chain_id: "ee_1".into(),
                         reviewer_role_id: "role_plan_reviewer".into(),
                         verdict: Some("REQUIRES REVISION".into()),
+                        lane: None,
                     }),
                     handoff_text: Some("findings".into()),
                 },

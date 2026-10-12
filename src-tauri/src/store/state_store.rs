@@ -986,6 +986,8 @@ impl StateStore {
             events: Vec::new(),
             gates: HashMap::new(),
             autopilot: None,
+            lanes: Vec::new(),
+            fan_out_stage: None,
         };
         self.data.pipeline_runs.push(run);
         self.save()?;

@@ -40,6 +40,17 @@ pub struct TurnReport {
     /// The stage's tab is a chat tab (autopilot drives terminals only).
     #[serde(default)]
     pub chat: bool,
+    /// The fanned-out pull request this stage belongs to, if any.
+    #[serde(default)]
+    pub lane: Option<String>,
+}
+
+/// Key of per-stage state (gate results, retries): `stage` or `stage@lane`.
+pub fn stage_key(stage_id: &str, lane: Option<&str>) -> String {
+    match lane {
+        Some(lane) => format!("{stage_id}@{lane}"),
+        None => stage_id.to_string(),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -59,6 +70,12 @@ pub struct Decision {
     /// LOW findings kept for later instead of another round.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub follow_ups: Vec<String>,
+    /// The lane the decision is for (same as the report's).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lane: Option<String>,
+    /// `laneDone`: waiting lanes whose dependencies are now all approved.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unblocked: Vec<String>,
 }
 
 impl Decision {
@@ -70,6 +87,8 @@ impl Decision {
             reason: reason.into(),
             message: None,
             follow_ups: Vec::new(),
+            lane: None,
+            unblocked: Vec::new(),
         }
     }
 
@@ -107,11 +126,17 @@ fn stop(run: &mut PipelineRun, stage: Option<&StageDef>, reason: String) -> Deci
 fn go(run: &mut PipelineRun, decision: Decision, detail: Option<String>) -> Decision {
     autopilot(run).waiting = None;
     let kind = if decision.action == "complete" { "complete" } else { "autopilot" };
+    let summary = match decision.lane.as_deref().and_then(|id| run.lane(id)) {
+        Some(lane) if decision.action != "laneDone" && decision.action != "complete" => {
+            format!("{}: {}", lane.title, decision.reason)
+        }
+        _ => decision.reason.clone(),
+    };
     run.log(
         kind,
         decision.stage_id.as_deref(),
         decision.role_id.as_deref(),
-        decision.reason.clone(),
+        summary,
         detail,
     );
     decision
@@ -124,11 +149,37 @@ fn advance(
     index: usize,
     why: &str,
     follow_ups: Vec<String>,
+    lane: Option<&str>,
 ) -> Decision {
+    let detail = (!follow_ups.is_empty()).then(|| follow_ups.join("\n"));
     let Some(next) = def.stages.get(index + 1) else {
+        if let Some(lane_id) = lane.filter(|id| run.lane(id).is_some()) {
+            // One pull request is done; the run is done when every one is.
+            let title = run.lane(lane_id).map(|l| l.title.clone()).unwrap_or_default();
+            if let Some(l) = run.lane_mut(lane_id) {
+                l.status = "approved".to_string();
+            }
+            if run.lanes.iter().all(|l| l.status == "approved") {
+                let mut done = Decision::new("complete", format!("{why}: every pull request is approved; the run is complete."));
+                done.follow_ups = follow_ups;
+                done.lane = Some(lane_id.to_string());
+                return go(run, done, detail);
+            }
+            let unblocked = run.unblocked_lanes();
+            let reason = if unblocked.is_empty() {
+                format!("{why}: {title} is approved. Waiting on the other pull requests.")
+            } else {
+                format!("{why}: {title} is approved. Starting {}.", unblocked.join(", "))
+            };
+            let mut done = Decision::new("laneDone", reason);
+            done.follow_ups = follow_ups;
+            done.lane = Some(lane_id.to_string());
+            done.unblocked = unblocked;
+            return go(run, done, detail);
+        }
         let mut done = Decision::new("complete", format!("{why}: the run is complete."));
-        done.follow_ups = follow_ups.clone();
-        return go(run, done, (!follow_ups.is_empty()).then(|| follow_ups.join("\n")));
+        done.follow_ups = follow_ups;
+        return go(run, done, detail);
     };
     let passed = run
         .autopilot
@@ -142,8 +193,9 @@ fn advance(
         return stop(run, Some(next), reason);
     }
     let mut decision = Decision::new("advance", format!("{why}: on to {}.", next.title)).for_stage(next);
-    decision.follow_ups = follow_ups.clone();
-    go(run, decision, (!follow_ups.is_empty()).then(|| follow_ups.join("\n")))
+    decision.follow_ups = follow_ups;
+    decision.lane = lane.map(str::to_string);
+    go(run, decision, detail)
 }
 
 pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> Decision {
@@ -170,8 +222,11 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             format!("Paused: Claude usage is at {used}% (autopilot pauses at {pause}%)."),
         );
     }
+    let lane = report.lane.as_deref().filter(|id| run.lane(id).is_some());
+    let key_of_stage = stage_key(&stage.id, lane);
+    let round = run.round_for(lane);
     if !report.missing_sections.is_empty() {
-        let key = format!("{}@{}", stage.id, run.round.max(1));
+        let key = format!("{key_of_stage}#{round}");
         let missing = report.missing_sections.join(", ");
         if autopilot(run).reasked.contains(&key) {
             return stop(
@@ -181,18 +236,18 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             );
         }
         autopilot(run).reasked.push(key);
-        let decision = Decision::new("reask", format!("Asked {} for the missing HANDOFF sections ({missing}).", stage.title))
+        let mut decision = Decision::new("reask", format!("Asked {} for the missing HANDOFF sections ({missing}).", stage.title))
             .for_stage(&stage);
+        decision.lane = lane.map(str::to_string);
         return go(run, decision, None);
     }
-    let round = run.round.max(1);
     let failed_gate = run
         .gates
-        .get(&stage.id)
+        .get(&key_of_stage)
         .filter(|gates| gates.round == round)
         .and_then(|gates| gates.results.iter().find(|r| r.failed()).cloned());
     if let Some(gate) = failed_gate {
-        let retries = *autopilot(run).gate_retries.get(&stage.id).unwrap_or(&0);
+        let retries = *autopilot(run).gate_retries.get(&key_of_stage).unwrap_or(&0);
         if retries >= MAX_GATE_RETRIES {
             return stop(
                 run,
@@ -200,12 +255,13 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
                 format!("The {} check failed {} times in a row. {}", gate.label, retries + 1, gate.summary),
             );
         }
-        autopilot(run).gate_retries.insert(stage.id.clone(), retries + 1);
+        autopilot(run).gate_retries.insert(key_of_stage.clone(), retries + 1);
         let mut decision = Decision::new(
             "retry",
             format!("The {} check failed; sent the output back to {}.", gate.label, stage.title),
         )
         .for_stage(&stage);
+        decision.lane = lane.map(str::to_string);
         let output = if gate.output.trim().is_empty() {
             String::new()
         } else {
@@ -221,7 +277,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
         if stage.loop_back.is_some() {
             return stop(run, Some(&stage), format!("No verdict could be read from {}'s reply.", stage.title));
         }
-        return advance(def, run, index, &format!("{} finished", stage.title), Vec::new());
+        return advance(def, run, index, &format!("{} finished", stage.title), Vec::new(), lane);
     };
     let threshold = stage
         .loop_back
@@ -257,6 +313,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
                     threshold.label()
                 ),
                 follow_ups,
+                lane,
             );
         }
         let Some(back) = stage.loop_back.clone() else {
@@ -272,14 +329,15 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
         let Some(target) = def.stage(&back.to).cloned() else {
             return stop(run, Some(&stage), format!("Loop-back stage \"{}\" is missing.", back.to));
         };
-        let decision = Decision::new(
+        let mut decision = Decision::new(
             "loopBack",
             format!("{verdict}: round {round} goes back to {}.", target.title),
         )
         .for_stage(&target);
+        decision.lane = lane.map(str::to_string);
         return go(run, decision, None);
     }
-    advance(def, run, index, verdict, follow_ups)
+    advance(def, run, index, verdict, follow_ups, lane)
 }
 
 #[cfg(test)]
