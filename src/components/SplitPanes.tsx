@@ -19,7 +19,7 @@ export function SplitPanes({ mode, primary, secondary }: Props) {
         {primary}
       </Panel>
       <PanelResizeHandle className="split-handle" />
-      <Panel minSize={20} defaultSize={50}>
+      <Panel minSize={20} defaultSize={50} className="split-panel-secondary">
         {secondary}
       </Panel>
     </PanelGroup>

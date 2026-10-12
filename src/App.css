@@ -1631,6 +1631,15 @@ kbd {
   width: 4px;
 }
 
+/* The shell pane's .terminal-pane flexes to fill this panel, so its
+   .terminal-slot (flex: 1 1 0) gets the panel's height instead of 0. */
+.split-panel-secondary {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
 .split-secondary {
   height: 100%;
   overflow: auto;
