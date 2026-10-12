@@ -137,6 +137,7 @@ vi.mock("./bridge", () => {
     roleRunMode: {},
   })),
   handoffAttach: vi.fn(),
+  getPipelineRun: vi.fn(async () => null),
   handoffGet: vi.fn(),
   handoffList: vi.fn(async () => []),
   handoffSave: vi.fn(),

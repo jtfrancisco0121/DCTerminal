@@ -56,7 +56,6 @@ import {
   getAppState,
   getTab,
   getFormRecall,
-  getPipelineRun,
   getRole,
   listenPromptFinished,
   listenSessionUpdates,
@@ -82,10 +81,8 @@ import {
   worktreeTabCheck,
   worktreeTabNew,
   worktreeTabRemove,
-  handoffAttach,
   handoffGet,
   handoffList,
-  handoffSave,
   ptyWrite,
   roleTerminalStart,
   scratchSave,
@@ -149,15 +146,9 @@ import {
   latestReplyText,
   composePlanText,
   roleDisplayName,
-  mapHandoff,
-  carryChainTaskType,
-  handoffFillSummary,
-  handoffStartProblem,
-  needsChainTaskType,
   selectionInside,
   terminalHandoffInput,
   terminalLogFields,
-  terminalStartMessage,
   type HandoffField,
   type HandoffScope,
   type HandoffSource,
@@ -203,13 +194,13 @@ import { WorkspacesDialog } from "./components/WorkspacesDialog";
 import { FirstRunSetup, type FirstRunFinish } from "./components/FirstRunSetup";
 import { insertIntoPad, type PadSelection } from "./prompts/library";
 import {
-  advanceChain,
   chainRound,
   chainTabFor,
   loopBackChain,
   newChain,
 } from "./handoff/chains";
-import { handoffRoute, loopBackFindings, loopBackMessage } from "./handoff/routing";
+import { handoffRoute, loopBackMessage } from "./handoff/routing";
+import { attachHandoff, handoffFieldsOf, prepareHandoff, saveHandoff } from "./handoff/executor";
 import {
   isReviewerRole,
   parseReviewVerdict,
@@ -377,17 +368,6 @@ import {
   streamSegmentFromUserMessage,
   segmentsToPlainText,
 } from "./transcript";
-
-function handoffFieldsOf(role: Role): HandoffField[] {
-  return role.fields.map((field) => ({
-    key: field.key,
-    label: field.label,
-    type: field.type,
-    options: field.options,
-    required: field.required,
-    showWhen: field.showWhen ?? null,
-  }));
-}
 
 /** A role terminal running Claude Code (not Cursor CLI, not a shell). */
 function isClaudeRoleTerminal(tab: TabSummary): boolean {
@@ -3949,127 +3929,37 @@ export function StartupForm({
         }
         return;
       }
-      let source = handoffSource;
-      const planFile = terminalCapture?.planFile;
-      if (source.fromTerminal && scope === "plan_file" && planFile) {
-        // The plan may have been edited since the dialog opened.
-        const fresh = await terminalPlanFile(0, source.sourceTabId, {
-          mentioned: [planFile.name],
-          claimed: [],
-          // intentionally silent: falls back to the plan text captured earlier.
-        }).catch(() => null);
-        if (fresh?.path === planFile.path && fresh.text.trim()) {
-          source = { ...source, planFileText: fresh.text };
-        }
-      }
-      if (source.sourceRoleId === "role_implementer") {
-        const chainId = savedTabs.find((tab) => tab.id === source.sourceTabId)?.chain?.chainId;
-        // intentionally silent: each lookup only enriches the hand-off; it works without them.
-        const [changes, repo, run] = await Promise.all([
-          changesList(source.sourceTabId, "tab").catch(() => null),
-          gitRepoInfo(source.cwd).catch(() => null),
-          chainId ? getPipelineRun(chainId).catch(() => null) : Promise.resolve(null),
-        ]);
-        // A send-back from the PR Reviewer: the next review checks those findings.
-        const sentBack = loopBackFindings(run?.run.handoffs?.role_implementer?.text ?? "");
-        source = {
-          ...source,
-          changes:
-            changes?.state === "ok"
-              ? changes.files.map((file) => ({
-                  path: file.path,
-                  additions: file.additions,
-                  deletions: file.deletions,
-                }))
-              : source.changes,
-          branch: repo?.currentBranch ?? source.branch ?? null,
-          previousReview: sentBack ? { round: sentBack.round, findings: sentBack.findings } : null,
-        };
-      }
-      // Settings can stay open over the dialog: map onto the role as saved now.
-      // intentionally silent: falls back to the role fields loaded with the dialog.
-      const saved = await getRole(handoffTarget).catch(() => null);
-      const fields = saved ? handoffFieldsOf(saved) : (handoffFields ?? []);
-      const templateText = saved ? saved.templateText : handoffTemplate;
-      const target = { roleId: handoffTarget, fields };
-      let mapped = mapHandoff(source, scope, target);
-      if (!mapped.planText) {
-        setHandoffError(mapped.warning ?? "That choice has no content.");
-        return;
-      }
       setBusy(true);
       setHandoffError(null);
       try {
         const sourceTab = savedTabs.find((tab) => tab.id === handoffSource.sourceTabId);
-        // A loop-back whose tab is gone or not live opens a new tab on the chain.
-        const nextChain =
-          loop?.next ??
-          (sourceTab?.chain
-            ? advanceChain(sourceTab.chain, handoffSource.sourceRoleId, handoffTarget)
-            : null);
-        if (nextChain && needsChainTaskType(mapped, target)) {
-          // Plan Reviewer has no task type; the chain's Planner form does.
-          // intentionally silent: without it the task type is simply not carried over.
-          const view = await getPipelineRun(nextChain.chainId).catch(() => null);
-          mapped = carryChainTaskType(mapped, target, view?.taskType);
-        }
-        if (surface === "terminal") {
-          // A terminal starts the CLI at once, so its prompt must be complete:
-          // the form summary names what the hand-off left empty, then the
-          // backend validates exactly what will be sent.
-          const targetName = roleDisplayName(handoffTarget, roles);
-          let problem = handoffStartProblem(
-            handoffFillSummary(mapped, { ...target, templateText }),
-            targetName,
-          );
-          if (!problem) {
-            // intentionally silent: the backend validates again when the terminal starts.
-            const check = await validateAndPreview(handoffTarget, {
-              ...terminalHandoffInput(mapped).values,
-              cwd: handoffSource.cwd,
-            }).catch(() => null);
-            problem = terminalStartMessage(
-              targetName,
-              (check?.errors ?? []).filter((err) => err.key !== "cwd").map((err) => err.message),
-            );
-          }
-          if (problem) {
-            setHandoffError(problem);
-            return;
-          }
-        }
-        // The new tab's chain step (or the loop-back round) and the hand-off
-        // binding are recorded together.
-        const attach = async (tabId: string) =>
-          (
-            await handoffAttach({
-              id: saved.id,
-              tabId,
-              chain: loop ? null : nextChain,
-              loopBack: loop
-                ? {
-                    chainId: loop.chain.chainId,
-                    reviewerRoleId: handoffSource.sourceRoleId,
-                    verdict: sourceVerdict,
-                  }
-                : null,
-              handoffText: loop || nextChain ? mapped.planText : null,
-            })
-          ).record;
-        const saved = await handoffSave({
-          sourceTabId: handoffSource.sourceTabId,
-          sourceRoleId: handoffSource.sourceRoleId,
-          sourceLabel: handoffSource.sourceLabel,
-          targetRoleId: handoffTarget,
-          title: mapped.title,
-          cwd: handoffSource.cwd,
+        const loopStep = loop ? { chainId: loop.chain.chainId, next: loop.next } : null;
+        const prepared = await prepareHandoff({
+          source: handoffSource,
           scope,
-          planText: mapped.planText,
-          truncated: mapped.truncated,
-          warning: mapped.warning,
-          planField: mapped.planField,
-          chain: nextChain,
+          surface,
+          targetRoleId: handoffTarget,
+          sourceChain: sourceTab?.chain ?? null,
+          loopBack: loopStep,
+          planFile: terminalCapture?.planFile ?? null,
+          fallbackFields: handoffFields,
+          fallbackTemplate: handoffTemplate,
+          roles,
         });
+        if (!prepared.ok) {
+          setHandoffError(prepared.error);
+          return;
+        }
+        const { mapped } = prepared.value;
+        const saved = await saveHandoff(prepared.value, scope);
+        const attach = (tabId: string) =>
+          attachHandoff({
+            record: saved,
+            tabId,
+            prepared: prepared.value,
+            loopBack: loopStep,
+            verdict: sourceVerdict,
+          });
         await cancelPendingPlan();
         const nextValues = { ...mapped.answers, cwd: handoffSource.cwd };
         const sourceProvider = providerOf(sourceTab ?? null);
