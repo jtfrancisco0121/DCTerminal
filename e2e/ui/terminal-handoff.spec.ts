@@ -61,7 +61,7 @@ test("Planner opened as Terminal: role_terminal_start with the form, then a role
   await expect(page.locator(".status-bar-status")).toHaveText("Role terminal");
   await app.ptyOutput("tab-1", "Planning the effort picker…\r\n");
   await expect(screen(page)).toContainText("Planning the effort picker…");
-  await expect(page.locator(".terminal-toolbar").getByRole("button", { name: "Send to Plan Reviewer" })).toBeVisible();
+  await expect(page.locator(".terminal-screen > .terminal-header").getByRole("button", { name: "Send to Plan Reviewer" })).toBeVisible();
 });
 
 test("Plan Reviewer opened as Terminal starts a role terminal for that role", async ({ app, page }) => {
@@ -108,7 +108,7 @@ test("hand-off from a Planner terminal sends the newest plan file", async ({ app
   await app.ptyOutput("tab-1", "Wrote plan to effort.md\r\n");
   await expect(screen(page)).toContainText("Wrote plan to effort.md");
 
-  await page.locator(".terminal-toolbar").getByRole("button", { name: "Send to Plan Reviewer" }).click();
+  await page.locator(".terminal-screen > .terminal-header").getByRole("button", { name: "Send to Plan Reviewer" }).click();
   const read = await app.waitForCall("terminal_plan_file");
   expect(read.args).toEqual({
     startedAtMs: expect.any(Number),
@@ -152,7 +152,7 @@ test("hand-off from a terminal selection starts a Plan Reviewer terminal with th
   const box = (await row.boundingBox())!;
   await page.mouse.click(box.x + 10, box.y + box.height / 2, { clickCount: 3 });
 
-  await page.locator(".terminal-toolbar").getByRole("button", { name: "Send to Plan Reviewer" }).click();
+  await page.locator(".terminal-screen > .terminal-header").getByRole("button", { name: "Send to Plan Reviewer" }).click();
   const dialog = page.getByRole("dialog", { name: "Send plan" });
   // No plan file since the terminal started, so the selection is the default.
   await expect(dialog.getByRole("radio", { name: "Newest plan file" })).toBeDisabled();
@@ -208,7 +208,7 @@ test("hand-off falls back to the terminal tail, stripped of ANSI codes", async (
 test("an empty Planner terminal has no plan to send", async ({ app, page }) => {
   await app.open({ tabs: [plannerTerminal()] });
   await app.waitForCall("pty_open");
-  await page.locator(".terminal-toolbar").getByRole("button", { name: "Send to Plan Reviewer" }).click();
+  await page.locator(".terminal-screen > .terminal-header").getByRole("button", { name: "Send to Plan Reviewer" }).click();
   const dialog = page.getByRole("dialog", { name: "Send plan" });
   await expect(dialog.getByText("There is no plan to send yet.")).toBeVisible();
   await expect(dialog.getByRole("button", { name: "Open Plan Reviewer tab" })).toBeDisabled();

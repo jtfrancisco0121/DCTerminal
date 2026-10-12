@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { headerPillText, type HeaderState } from "../terminal/headerState";
+import { formatElapsed, type HeaderState } from "../terminal/headerState";
 
 export type NextStep = {
   /** Hand-off targets with their display names. */
@@ -20,6 +20,8 @@ export type TerminalHeaderProps = {
   /** Task title; left out when it only repeats the role. */
   title: string;
   state: HeaderState;
+  /** When the tab's working turn started (ms); "Working · 12s" counts from it. */
+  workingSince?: number | null;
   /** Folder name and branch, shown beside the title. */
   folder?: string | null;
   folderTitle?: string;
@@ -42,19 +44,16 @@ export type TerminalHeaderProps = {
   onPrepare?: () => void;
 };
 
-/** Seconds since `active` last turned on; 0 while it is off. */
-function useElapsed(active: boolean): number {
-  const startedAt = useRef<number | null>(null);
+/** Seconds since `since`, ticking each second; null without a start. */
+function useElapsed(since: number | null): number | null {
   const [now, setNow] = useState(() => Date.now());
-  if (active && startedAt.current === null) startedAt.current = Date.now();
-  if (!active) startedAt.current = null;
   useEffect(() => {
-    if (!active) return;
+    if (since === null) return;
     setNow(Date.now());
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [active]);
-  return startedAt.current === null ? 0 : Math.max(0, (now - startedAt.current) / 1000);
+  }, [since]);
+  return since === null ? null : Math.max(0, (now - since) / 1000);
 }
 
 /** "Send to <next role> ▾": the main target on the button, the others in its menu. */
@@ -160,6 +159,7 @@ export function TerminalHeader({
   roleColor,
   title,
   state,
+  workingSince = null,
   folder,
   folderTitle,
   branch,
@@ -173,7 +173,7 @@ export function TerminalHeader({
   actions,
   onPrepare,
 }: TerminalHeaderProps) {
-  const elapsed = useElapsed(state.timed);
+  const elapsed = useElapsed(state.timed ? workingSince : null);
   const showTitle = title && title !== roleName;
   return (
     <div
@@ -189,12 +189,10 @@ export function TerminalHeader({
             {title}
           </span>
         )}
-        <span
-          className={`terminal-header-pill terminal-header-pill-${state.tone}`}
-          role="status"
-          aria-label={`State: ${state.text}`}
-        >
-          {headerPillText(state, elapsed)}
+        <span className={`terminal-header-pill terminal-header-pill-${state.tone}`}>
+          {/* Only the state is live; the ticking seconds would be announced every second. */}
+          <span role="status">{state.text}</span>
+          {elapsed !== null && <span aria-hidden> · {formatElapsed(elapsed)}</span>}
         </span>
         {chain}
         {folder && (

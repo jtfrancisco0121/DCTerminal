@@ -5,6 +5,7 @@ import { blockedSlashCommandIn, type SlashCommand } from "../composer/slashComma
 import type { ChatImagesProps } from "../attachments/useChatImages";
 import { localShortcutLabel, shortcutLabel, type Platform } from "../keymap";
 import { AttachmentChips, imageInputHandlers } from "./AttachmentChips";
+import { useImageFileDrop } from "../attachments/useImageFileDrop";
 
 type Props = {
   content: string;
@@ -119,6 +120,7 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
     onHeightCommit?.(next);
   };
   const terminal = mode === "terminal";
+  useImageFileDrop(editorRef, terminal ? null : images);
   const chained = !terminal && content.split(/\r?\n/).some((line) => /^\s*-{3,}\s*$/.test(line));
   const running = !terminal && (chain?.phase === "inFlight" || chain?.phase === "paused");
   const slash = useSlashAutocomplete({

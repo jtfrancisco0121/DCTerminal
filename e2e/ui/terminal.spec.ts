@@ -317,7 +317,7 @@ test("changing a live CLI terminal's model can stop its PTY (pty_kill)", async (
     tabs: [terminalTab("tab-1", "claude-cli", "Claude Code · demo", { provider: "claude" })],
   });
   await app.waitForCall("pty_open");
-  await page.locator(".terminal-toolbar").getByRole("button", { name: "Model for Claude Code · demo" }).click();
+  await page.locator(".terminal-screen > .terminal-header").getByRole("button", { name: "Model for Claude Code · demo" }).click();
   await page.getByRole("listbox", { name: "Model for Claude Code · demo" }).getByRole("option", { name: /Sonnet/ }).click();
   const model = await app.waitForCall("set_tab_model");
   expect(model.args).toEqual({ tabId: "tab-1", model: "sonnet" });

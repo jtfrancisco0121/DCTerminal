@@ -137,6 +137,7 @@ import {
   SavedPlanDialog,
 } from "./components/HandoffDialog";
 import { PipelineOverview } from "./components/PipelineOverview";
+import { relativeToCwd } from "./terminal/links";
 import { destroyTerminal, readTerminalHandoff } from "./components/TerminalView";
 import {
   handoffBlockReason,
@@ -239,6 +240,7 @@ import {
   type TerminalState,
 } from "./terminal/claudeState";
 import { dialogDetector } from "./terminal/permissionDialog";
+import { headerStateOf, trackWorkingSince } from "./terminal/headerState";
 import {
   clearMarks,
   computeTabStatus,
@@ -269,12 +271,19 @@ import {
   focusedTerminalId,
   parkedTerminal,
   pasteTerminalText,
+  setOptionAsMeta,
+  setCopyOnSelect,
+  setTerminalFileOpener,
+  clearTerminalScrollback,
+  TERMINAL_FONT_DEFAULT,
+  zoomedFontSize,
   requestTerminalSearch,
   setLinkOpenErrorHandler,
   terminalBracketedPaste,
   terminalScrollbackText,
   terminalSelection,
   terminalTailText,
+  measuredTerminalSize,
 } from "./terminal/park";
 import { encodeTerminalPaste } from "./terminal/paste";
 import { planFileMentions } from "./terminal/text";
@@ -603,6 +612,10 @@ export function StartupForm({
   const [pickedRoleId, setPickedRoleId] = useState<string | null>(null);
   const [launchChoice, setLaunchChoice] = useState<"shell" | CliLaunch | null>(null);
   const [terminalSettings, setTerminalSettingsState] = useState<TerminalSettings | null>(null);
+  const optionAsMeta = terminalSettings?.optionAsMeta ?? true;
+  useEffect(() => setOptionAsMeta(optionAsMeta), [optionAsMeta]);
+  const copyOnSelect = terminalSettings?.copyOnSelect ?? false;
+  useEffect(() => setCopyOnSelect(copyOnSelect), [copyOnSelect]);
   const [notificationSettings, setNotificationSettingsState] =
     useState<NotificationSettings | null>(null);
   const [terminalError, setTerminalError] = useState<string | null>(null);
@@ -1334,7 +1347,7 @@ export function StartupForm({
       .filter(
         (tab) =>
           isClaudeRoleTerminal(tab) &&
-          (running(tab.id) || onScreen.has(tab.id) || !!tab.chain),
+          (running(tab.id) || onScreen.has(tab.id) || !!tab.chain || !!tab.pipelineRunId),
       )
       .map((tab) => tab.id)
       .join("\n");
@@ -1457,6 +1470,26 @@ export function StartupForm({
     }
     return out;
   }, [runtimes, savedTabs, tabMarks, terminalBusy, terminalStates]);
+
+  /** When each terminal's working turn started, for the header's "Working · 12s". */
+  const workingSinceRef = useRef<Record<string, number>>({});
+  const workingSince = useMemo(() => {
+    const tabs = savedTabs
+      .filter((tab) => tab.kind === "terminal")
+      .map((tab) => {
+        const state = terminalStates[tab.id];
+        const lastPromptAt = state ? sessionLogs[tab.id]?.lastPromptAt : null;
+        return {
+          tabId: tab.id,
+          working:
+            headerStateOf({ state, status: tabStatuses[tab.id], turnEnded: false }).tone ===
+            "working",
+          turnStartedAt: lastPromptAt ? Date.parse(lastPromptAt) : null,
+        };
+      });
+    workingSinceRef.current = trackWorkingSince(workingSinceRef.current, tabs, Date.now());
+    return workingSinceRef.current;
+  }, [savedTabs, sessionLogs, tabStatuses, terminalStates]);
 
   const uiSettings = useUiSettings((title, message) => showNotice(title, message, "failed"));
   // U2: one pad size for chat and terminal tabs; saved when a drag ends.
@@ -1974,6 +2007,8 @@ export function StartupForm({
       const current = terminalSettings ?? {
         shell: "",
         fontSize: 14,
+        optionAsMeta: true,
+        copyOnSelect: false,
         roleSurface: {},
         roleRunMode: {},
       };
@@ -2009,8 +2044,7 @@ export function StartupForm({
           values: form,
           tabId: preferred,
           handoffPlan: options?.handoffPlan ?? null,
-          cols: 80,
-          rows: 24,
+          ...measuredTerminalSize(),
           onOutput: live.channel,
         });
         if (result.errors.length > 0 || !result.tabId) {
@@ -2074,8 +2108,7 @@ export function StartupForm({
           tabId: activeTabId,
           cwd,
           launch,
-          cols: 80,
-          rows: 24,
+          ...measuredTerminalSize(),
           onOutput: live.channel,
         });
         if (result.errors.length > 0 || !result.tabId) {
@@ -2119,8 +2152,7 @@ export function StartupForm({
         cwd,
         launch: source === "claude" ? "claude-cli" : "cursor-cli",
         resumeSessionId: sessionId,
-        cols: 80,
-        rows: 24,
+        ...measuredTerminalSize(),
         onOutput: live.channel,
       });
       if (result.errors.length > 0 || !result.tabId) {
@@ -3125,6 +3157,23 @@ export function StartupForm({
         handleFind();
         return;
       }
+      if (
+        match.action === "zoomIn" ||
+        match.action === "zoomOut" ||
+        match.action === "zoomReset"
+      ) {
+        const current = terminalSettings ?? {
+          shell: "",
+          fontSize: TERMINAL_FONT_DEFAULT,
+          optionAsMeta: true,
+          copyOnSelect: false,
+          roleSurface: {},
+          roleRunMode: {},
+        };
+        const next = zoomedFontSize(current.fontSize, match.action);
+        if (next !== current.fontSize) updateTerminalSettings({ ...current, fontSize: next });
+        return;
+      }
       if (match.action === "searchChats") {
         setChatSearchQuery("");
         return;
@@ -3138,6 +3187,8 @@ export function StartupForm({
       confirm,
       settingsOpen,
       handleFind,
+      terminalSettings,
+      updateTerminalSettings,
       cycleTab,
       handleCloseTab,
       handleNewTab,
@@ -3229,6 +3280,26 @@ export function StartupForm({
     },
     [togglePane, transferToTerminalNow],
   );
+
+  // path:line in terminal output opens that file in the Files panel.
+  const openTerminalFileRef = useRef<(id: string, path: string) => void>(() => {});
+  openTerminalFileRef.current = (id, path) => {
+    const tabId = id.replace(/::pane$/, "");
+    const tab = savedTabs.find((item) => item.id === tabId);
+    if (!tab) return;
+    const relative = relativeToCwd(path, tab.cwd);
+    if (!relative) {
+      showNotice("Cannot open file", `${path} is outside this tab's folder.`, "question");
+      return;
+    }
+    if (tabId !== activeTabIdRef.current) void handleSelectTab(tabId);
+    setFilePanelOpen(true);
+    setFileFocus({ path: relative, nonce: Date.now() });
+  };
+  useEffect(() => {
+    setTerminalFileOpener((id, path) => openTerminalFileRef.current(id, path));
+    return () => setTerminalFileOpener(null);
+  }, []);
 
   const getSurface = useCallback(() => {
     const el = document.activeElement;
@@ -3494,6 +3565,24 @@ export function StartupForm({
     [loadHandoffFields, openTerminalHandoff, savedTabs, roles],
   );
 
+  /** The hand-off source terminal's session log: live while the dialog is open. */
+  const captureLog = terminalCapture
+    ? (sessionLogs[terminalCapture.tabId] ?? terminalCapture.log)
+    : null;
+  const captureTabId = terminalCapture?.tabId ?? null;
+  const captureKind = captureTabId ? terminalStates[captureTabId]?.kind : undefined;
+  // The source's state changed (a turn ended, a prompt opened): re-read its
+  // screen so the tail and scrollback match the live log.
+  useEffect(() => {
+    if (!captureTabId || !captureKind) return;
+    const { tail, scrollback } = readTerminalHandoff(captureTabId);
+    setTerminalCapture((capture) =>
+      capture?.tabId === captureTabId && (capture.tail !== tail || capture.scrollback !== scrollback)
+        ? { ...capture, tail, scrollback }
+        : capture,
+    );
+  }, [captureKind, captureTabId]);
+
   const handoffSource = useMemo((): HandoffSource => {
     const captureTab = terminalCapture
       ? savedTabs.find((tab) => tab.id === terminalCapture.tabId)
@@ -3508,7 +3597,9 @@ export function StartupForm({
         cwd: captureTab.cwd || values.cwd || "",
         answers: terminalCapture.answers,
         sourceFields: role?.id === captureTab.roleId ? role.fields : undefined,
-        ...terminalLogFields(terminalCapture.log),
+        // The poller keeps the log fresh: a turn that ends while the dialog
+        // is open sends its new reply, not the one read when it opened.
+        ...terminalLogFields(captureLog),
         plan: [],
         todos: [],
         selection: terminalCapture.selection,
@@ -3516,6 +3607,7 @@ export function StartupForm({
         terminalWorking: captureState?.kind === "working",
         terminalWaiting:
           captureState?.kind === "needs" ? terminalWaitingText(captureState.needs) : null,
+        awaitingPlanApproval: captureState?.kind === "needs" && captureState.needs === "plan",
         fromTerminal: true,
         planFileText: file?.text ?? "",
         planFileName: file ? (file.truncated ? `${file.name}, first 8 MB` : file.name) : "",
@@ -3560,6 +3652,7 @@ export function StartupForm({
   }, [
     activeTabId,
     activeTabSummary,
+    captureLog,
     cardsByTab,
     chatPlanFile,
     handoffSelection,
@@ -3582,7 +3675,7 @@ export function StartupForm({
     isReviewerRole(handoffSource.sourceRoleId) && !handoffSource.turnInFlight
       ? handoffSource.fromTerminal
         ? terminalLogVerdict(
-            terminalCapture?.log,
+            captureLog,
             handoffSource.selection || (handoffSource.terminalTail ?? ""),
           )
         : parseReviewVerdict(handoffSource.latestMessage)
@@ -4221,6 +4314,12 @@ export function StartupForm({
           setCaptureOn(status.capturePermissionPayloads);
         });
         return;
+      case "clearScrollback": {
+        const summary = savedTabs.find((tab) => tab.id === activeTabId);
+        const id = summary?.kind === "terminal" ? summary.id : focusedTerminalId();
+        if (id) clearTerminalScrollback(id);
+        return;
+      }
       case "firstRunSetup":
         setFirstRunOpen(true);
         return;
@@ -4274,6 +4373,9 @@ export function StartupForm({
       case "toggleFilePanel":
       case "find":
       case "searchChats":
+      case "zoomIn":
+      case "zoomOut":
+      case "zoomReset":
       case "focusPad":
       case "focusInput":
       case "transferPad":
@@ -5097,6 +5199,7 @@ export function StartupForm({
     controls,
     terminalStates,
     tabStatuses,
+    workingSince,
     sessionLogs,
     terminalVerdict,
     isTerminalSource,
@@ -5328,6 +5431,7 @@ export function StartupForm({
           tabs={savedTabs}
           runtimes={runtimes}
           terminalStates={terminalStates}
+          sessionLogs={sessionLogs}
           onJump={(tabId) => void handleSelectTab(tabId)}
           onWatch={(tabId) => {
             setSplit((current) => ({

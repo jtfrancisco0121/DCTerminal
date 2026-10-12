@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { TerminalHeader, type NextStep } from "./TerminalHeader";
 
@@ -33,9 +33,41 @@ describe("TerminalHeader", () => {
     );
     expect(screen.getByText("Plan Reviewer")).toBeTruthy();
     expect(screen.getByText("Effort picker")).toBeTruthy();
-    expect(screen.getByRole("status").textContent).toMatch(/^Working · \d+s$/);
+    expect(screen.getByRole("status").textContent).toBe("Working");
     expect(screen.getByText("app")).toBeTruthy();
     expect(screen.getByLabelText("Git branch").textContent).toContain("feat/x");
+  });
+
+  it("keeps the ticking seconds out of the live region", () => {
+    vi.useFakeTimers();
+    try {
+      const start = Date.now();
+      const { container } = render(
+        <TerminalHeader {...base} state={working} workingSince={start - 12_000} />,
+      );
+      const status = screen.getByRole("status");
+      const pill = container.querySelector(".terminal-header-pill")!;
+      expect(status.textContent).toBe("Working");
+      expect(pill.textContent).toBe("Working · 12s");
+      const seconds = pill.querySelector("[aria-hidden]")!;
+      expect(seconds.textContent).toBe(" · 12s");
+      expect(status.contains(seconds)).toBe(false);
+      act(() => {
+        vi.advanceTimersByTime(3000);
+      });
+      expect(pill.textContent).toBe("Working · 15s");
+      expect(status.textContent).toBe("Working");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows no seconds without a start time or when not working", () => {
+    const { container, rerender } = render(<TerminalHeader {...base} state={working} />);
+    const pill = () => container.querySelector(".terminal-header-pill")!.textContent;
+    expect(pill()).toBe("Working");
+    rerender(<TerminalHeader {...base} state={done} workingSince={Date.now() - 5000} turnEnded />);
+    expect(pill()).toBe("Done · APPROVED");
   });
 
   it("has a primary split button only when the turn ended, with the others in its menu", () => {

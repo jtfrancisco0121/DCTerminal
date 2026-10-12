@@ -432,7 +432,7 @@ export function TabBar({
       {onToggleGrid && (
         <button
           type="button"
-          className={`secondary-button tab-new tab-bar-icon${gridOpen ? " tab-bar-icon-active" : ""}`}
+          className={`secondary-button icon-button tab-new tab-bar-icon${gridOpen ? " tab-bar-icon-active" : ""}`}
           onClick={onToggleGrid}
           aria-label={gridOpen ? "Close grid view" : "Grid view"}
           aria-pressed={!!gridOpen}
