@@ -326,6 +326,49 @@ export function SettingsPage({
                   }}
                 />
               </label>
+              <label className="field-label settings-inline-field">
+                <span>
+                  <input
+                    type="checkbox"
+                    checked={terminalSettings?.copyOnSelect ?? false}
+                    disabled={!terminalSettings}
+                    onChange={(event) => {
+                      if (!terminalSettings) return;
+                      onTerminalSettings({
+                        ...terminalSettings,
+                        copyOnSelect: event.target.checked,
+                      });
+                    }}
+                  />{" "}
+                  Copy on select
+                </span>
+                <span className="hint">
+                  Copy terminal text to the clipboard as soon as you select it.
+                </span>
+              </label>
+              {platform === "mac" && (
+                <label className="field-label settings-inline-field">
+                  <span>
+                    <input
+                      type="checkbox"
+                      checked={terminalSettings?.optionAsMeta ?? true}
+                      disabled={!terminalSettings}
+                      onChange={(event) => {
+                        if (!terminalSettings) return;
+                        onTerminalSettings({
+                          ...terminalSettings,
+                          optionAsMeta: event.target.checked,
+                        });
+                      }}
+                    />{" "}
+                    Use Option as Meta
+                  </span>
+                  <span className="hint">
+                    Option+P, Option+O and Option+Enter reach Claude Code instead of typing a
+                    symbol. Turn off to type characters such as é with Option.
+                  </span>
+                </label>
+              )}
               {roles.map((role) => (
                 <label className="field-label settings-inline-field" key={role.id}>
                   {role.name} run mode

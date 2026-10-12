@@ -3,14 +3,16 @@
  * into a hidden park so the scrollback survives an unmount.
  */
 
-import { confirmAction } from "../components/confirm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal } from "@xterm/xterm";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { lastLines, TERMINAL_TAIL_LINES } from "./text";
-import { cachedTheme, terminalTheme } from "../theme";
+import { ptySetScheme } from "../bridge";
+import { cachedTheme, terminalTheme, THEMES, normalizeTheme } from "../theme";
+import { detectPlatform } from "../keymap";
+import { findPathLinks, isLinkModifier } from "./links";
 
 export type ParkedTerminal = {
   host: HTMLDivElement;
@@ -37,7 +39,41 @@ export function setLinkOpenErrorHandler(handler: ((message: string) => void) | n
 /** U8: repaint every terminal (and future ones) in the app theme. */
 export function setTerminalTheme(id: string): void {
   currentTheme = terminalTheme(id);
+  const light = THEMES.find((item) => item.id === normalizeTheme(id))?.scheme === "light";
+  try {
+    void ptySetScheme(light).catch(() => {});
+  } catch {
+    // No Tauri bridge (unit tests, plain browser): nothing to tell.
+  }
   for (const entry of parked.values()) entry.term.options.theme = currentTheme;
+}
+
+const MAC_FONTS = '"SF Mono", SFMono-Regular, Menlo, ';
+const FONTS = '"Cascadia Code", "Cascadia Mono", Consolas, ui-monospace, monospace';
+
+/** SF Mono and Menlo first on macOS; the Windows stack elsewhere. */
+export function terminalFontFamily(platform: string): string {
+  return /mac/i.test(platform) ? MAC_FONTS + FONTS : FONTS;
+}
+
+function prefersReducedMotion(): boolean {
+  try {
+    return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+  } catch {
+    return false;
+  }
+}
+
+/** Size of the last terminal that was fitted to a real slot. */
+let lastFitSize: { cols: number; rows: number } | null = null;
+
+export function noteTerminalSize(cols: number, rows: number): void {
+  if (cols >= 2 && rows >= 1) lastFitSize = { cols, rows };
+}
+
+/** Where a new PTY should open: the measured slot size, else 80x24 until the first fit. */
+export function measuredTerminalSize(): { cols: number; rows: number } {
+  return lastFitSize ?? { cols: 80, rows: 24 };
 }
 
 function parkHost(): HTMLDivElement {
@@ -60,6 +96,41 @@ export function terminalBracketedPaste(id: string): boolean {
   return parked.get(id)?.term.modes.bracketedPasteMode === true;
 }
 
+let optionAsMeta = true;
+
+/** macOS: Option acts as Meta. Applies live to every open terminal. */
+export function setOptionAsMeta(value: boolean): void {
+  optionAsMeta = value;
+  for (const entry of parked.values()) entry.term.options.macOptionIsMeta = value;
+}
+
+let copyOnSelect = false;
+
+/** Copy a finished selection to the clipboard. Off by default. */
+export function setCopyOnSelect(value: boolean): void {
+  copyOnSelect = value;
+}
+
+type FileOpener = (id: string, path: string, line: number) => void;
+let fileOpener: FileOpener | null = null;
+
+/** The app opens `path:line` links from terminal output in the Files panel. */
+export function setTerminalFileOpener(open: FileOpener | null): void {
+  fileOpener = open;
+}
+
+/** Terminal font size steps for Cmd+= / Cmd+- (the Rust side clamps to 8–32). */
+export const TERMINAL_FONT_MIN = 8;
+export const TERMINAL_FONT_MAX = 32;
+export const TERMINAL_FONT_DEFAULT = 14;
+
+/** The font size after a zoom step, kept inside the supported range. */
+export function zoomedFontSize(current: number, action: "zoomIn" | "zoomOut" | "zoomReset"): number {
+  if (action === "zoomReset") return TERMINAL_FONT_DEFAULT;
+  const step = action === "zoomIn" ? 1 : -1;
+  return Math.min(TERMINAL_FONT_MAX, Math.max(TERMINAL_FONT_MIN, current + step));
+}
+
 export function ensureParkedTerminal(id: string, fontSize: number): ParkedTerminal {
   const existing = parked.get(id);
   if (existing) {
@@ -69,11 +140,14 @@ export function ensureParkedTerminal(id: string, fontSize: number): ParkedTermin
   const host = document.createElement("div");
   host.className = "xterm-host";
   const term = new Terminal({
-    fontFamily: '"Cascadia Code", "Cascadia Mono", Consolas, ui-monospace, monospace',
+    fontFamily: terminalFontFamily(navigator.platform),
     fontSize,
     scrollback: 10000,
     theme: currentTheme,
-    cursorBlink: true,
+    cursorBlink: !prefersReducedMotion(),
+    macOptionIsMeta: optionAsMeta,
+    // Dim and low-contrast ANSI colors are lifted to a readable ratio.
+    minimumContrastRatio: 4.5,
     rightClickSelectsWord: false,
     // The search addon's match highlights use the decoration API.
     allowProposedApi: true,
@@ -83,21 +157,46 @@ export function ensureParkedTerminal(id: string, fontSize: number): ParkedTermin
   term.loadAddon(fit);
   term.loadAddon(search);
   term.loadAddon(
-    new WebLinksAddon((_event, uri) => {
-      void confirmAction({
-        title: "Open link",
-        message: `Open this link?\n${uri}`,
-        confirmLabel: "Open",
-      }).then((open) => {
-        if (open) {
-          void openUrl(uri).catch((err: unknown) => {
-            console.warn("Could not open link", err);
-            linkOpenError?.(err instanceof Error ? err.message : String(err));
-          });
-        }
+    // Cmd-click (Ctrl-click elsewhere) opens a URL. A plain click only selects.
+    new WebLinksAddon((event, uri) => {
+      if (!isLinkModifier(event, detectPlatform(navigator.platform))) return;
+      void openUrl(uri).catch((err: unknown) => {
+        console.warn("Could not open link", err);
+        linkOpenError?.(err instanceof Error ? err.message : String(err));
       });
     }),
   );
+  term.registerLinkProvider({
+    provideLinks(row, callback) {
+      const line = term.buffer.active.getLine(row - 1);
+      const links = line ? findPathLinks(line.translateToString(true)) : [];
+      callback(
+        links.length === 0
+          ? undefined
+          : links.map((link) => ({
+              text: link.text,
+              range: {
+                start: { x: link.start + 1, y: row },
+                end: { x: link.end, y: row },
+              },
+              activate: (event) => {
+                if (!isLinkModifier(event, detectPlatform(navigator.platform))) return;
+                fileOpener?.(id, link.path, link.line);
+              },
+            })),
+      );
+    },
+  });
+  let copyTimer = 0;
+  term.onSelectionChange(() => {
+    if (!copyOnSelect) return;
+    window.clearTimeout(copyTimer);
+    // Wait for the drag to settle, then copy once.
+    copyTimer = window.setTimeout(() => {
+      if (!term.hasSelection()) return;
+      void navigator.clipboard.writeText(term.getSelection()).catch(() => {});
+    }, 200);
+  });
   term.open(host);
   parkHost().appendChild(host);
   const created = { host, term, fit, search };
@@ -195,6 +294,16 @@ export function terminalScrollbackText(id: string): string {
     else lines.push(text);
   }
   return lines.join("\n");
+}
+
+/** Clear the screen and the scrollback; the current prompt line stays. */
+export function clearTerminalScrollback(id: string): void {
+  parked.get(id)?.term.clear();
+}
+
+/** Paste text as the user's own paste: bracketed when the program asked for it. */
+export function pasteIntoTerminal(id: string, text: string): void {
+  if (text) parked.get(id)?.term.paste(text);
 }
 
 export async function copyTerminalSelection(id: string): Promise<void> {

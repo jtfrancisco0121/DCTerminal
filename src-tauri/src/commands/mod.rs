@@ -32,7 +32,7 @@ pub use activity::{activity_clear, activity_list};
 pub use agent_requests::{
     respond_permission_request, respond_plan_request, respond_question_request,
 };
-pub use attachments::{attachment_add, attachment_remove};
+pub use attachments::{attachment_add, attachment_read_file, attachment_remove};
 pub use app_state::{
     ack_provider_notice, close_tab, create_execution_pipeline_tabs, create_pipeline_tabs,
     get_app_state, get_layout, get_tab, new_draft_tab, reopen_closed_tab, select_active_tab,

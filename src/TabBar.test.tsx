@@ -61,6 +61,23 @@ describe("TabBar", () => {
     expect(screen.getByLabelText("Role terminal")).toBeTruthy();
     expect(screen.queryByText("Terminal")).toBeNull();
   });
+
+  it("sizes every tab-bar icon button with the shared icon-button class", () => {
+    const { container } = render(
+      <TabBar
+        tabs={[tab({})]}
+        activeTabId="tab_1"
+        onSelect={() => {}}
+        onClose={() => {}}
+        onNew={() => {}}
+        onToggleGrid={() => {}}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Grid view" }).classList).toContain("icon-button");
+    for (const button of container.querySelectorAll(".tab-bar-icon, .tab-new")) {
+      expect(button.classList).toContain("icon-button");
+    }
+  });
 });
 
 describe("TabBar density (U1/U4)", () => {
@@ -324,5 +341,115 @@ describe("tabTooltip provider line", () => {
       "Role: Planner",
       "Provider: Claude · /Users/jt/.claude-account2 · jt@example.com",
     ]);
+  });
+});
+
+describe("TabBar chain tabs (R19)", () => {
+  const chainTab = (id: string, roleId: string, step: number, partial: Partial<TabSummary> = {}) =>
+    tab({
+      id,
+      roleId,
+      label: `${roleId === "role_planner" ? "Planner" : "Plan Reviewer"} · Effort picker`,
+      kind: "terminal",
+      terminalLaunch: "role",
+      chain: { chainId: "c1", kind: "eagle1", step, total: 4 },
+      ...partial,
+    });
+  const renderBar = (statuses = {}, doneTabIds: string[] = []) =>
+    render(
+      <TabBar
+        tabs={[
+          tab({ id: "plain", label: "Shell" }),
+          chainTab("a", "role_planner", 1),
+          chainTab("b", "role_plan_reviewer", 2),
+        ]}
+        activeTabId="a"
+        statuses={statuses}
+        doneTabIds={doneTabIds}
+        roleNames={{ role_planner: "Planner", role_plan_reviewer: "Plan Reviewer" }}
+        onSelect={() => {}}
+        onClose={() => {}}
+        onNew={() => {}}
+      />,
+    );
+
+  it("shows one chain label and only the role on each chain chip", () => {
+    renderBar();
+    expect(screen.getAllByText("Effort picker ▸")).toHaveLength(1);
+    const chips = screen.getAllByRole("tab");
+    expect(chips[0].textContent).toBe("Shell");
+    expect(chips[1].textContent).toBe("Planner");
+    expect(chips[2].textContent).toBe("Plan Reviewer");
+  });
+
+  it("badges done, needs you and working chips", () => {
+    renderBar(
+      {
+        a: { busy: true, unseen: false, needsYou: null },
+        b: { busy: false, unseen: false, needsYou: "permission" },
+      },
+      [],
+    );
+    const [, a, b] = screen.getAllByRole("tab");
+    expect(a.textContent).toContain("●");
+    expect(b.textContent).toContain("!");
+  });
+
+  it("badges a finished chain step with a check", () => {
+    renderBar({}, ["a"]);
+    const [, a, b] = screen.getAllByRole("tab");
+    expect(a.textContent).toContain("✓");
+    expect(b.textContent).not.toMatch(/[✓●!]/);
+  });
+
+  describe("keyboard and non-colour cues (R14)", () => {
+    const two = [tab({ id: "tab_1", label: "A" }), tab({ id: "tab_2", label: "B", phase: "running" })];
+    const bar = () => (
+      <TabBar
+        tabs={two}
+        activeTabId="tab_1"
+        onSelect={() => {}}
+        onClose={() => {}}
+        onNew={() => {}}
+        onColor={() => {}}
+      />
+    );
+
+    it("keeps close and colour controls in the tab order, with named colours", () => {
+      render(bar());
+      const close = screen.getByRole("button", { name: "Stop and close B" });
+      expect(close.hasAttribute("disabled")).toBe(false);
+      const color = screen.getByRole("combobox", { name: "Color for B" });
+      expect(Array.from(color.querySelectorAll("option")).map((o) => o.textContent)).toContain(
+        "Green",
+      );
+    });
+
+    it("moves between tabs with the arrow keys", () => {
+      render(bar());
+      const first = screen.getByRole("tab", { name: /A/ });
+      first.focus();
+      fireEvent.keyDown(first, { key: "ArrowRight" });
+      expect(document.activeElement).toBe(screen.getByRole("tab", { name: /B/ }));
+      fireEvent.keyDown(document.activeElement!, { key: "Home" });
+      expect(document.activeElement).toBe(first);
+    });
+
+    it("names the phase in text for screen readers", () => {
+      render(bar());
+      expect(screen.getByRole("tab", { name: /B/ }).getAttribute("aria-description")).toBe("Running");
+      expect(screen.getByRole("tab", { name: /A/ }).getAttribute("aria-description")).toBe(
+        "Not started",
+      );
+    });
+
+    it("takes the settings shortcut from the keymap", () => {
+      render(
+        <TabBar {...{ tabs: two, activeTabId: "tab_1", onSelect() {}, onClose() {}, onNew() {}, onSettings() {} }} />,
+      );
+      expect(screen.getByRole("button", { name: "Settings" }).getAttribute("title")).toMatch(
+        /^Settings \((Ctrl|⌘)\+,\)$/,
+      );
+    });
   });
 });

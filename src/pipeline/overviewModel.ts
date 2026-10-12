@@ -2,8 +2,8 @@
  * What the pipeline / Eagle-Eye chain overview shows per stage. Pure reads
  * of tabs, runtimes, and open terminals; nothing here starts or sends.
  */
-import type { PipelineRun, TabSummary } from "../bridge";
-import { latestAgentMessage, latestReplyText, splitPlanReview } from "../handoff/map";
+import type { PipelineRun, TabSummary, TerminalSessionLog } from "../bridge";
+import { latestAgentMessage, latestReplyText, splitPlanReview, terminalLogFields } from "../handoff/map";
 import { isReviewerRole, parseReviewVerdict, type ReviewVerdict } from "../handoff/verdict";
 import type { TabRuntime } from "../liveTabs";
 import { segmentsToPlainText } from "../transcript";
@@ -39,13 +39,26 @@ function isTerminal(tab: TabSummary | undefined): boolean {
   return tab?.kind === "terminal";
 }
 
-/** The stage's latest reply: chat's last agent message, or a terminal's tail. */
+/** Claude session logs by tab id; null or absent until a tab's log is read. */
+export type SessionLogs = Record<string, TerminalSessionLog | null | undefined>;
+
+/** A Claude role terminal: its text comes from the session log, never xterm. */
+function isClaudeRoleTerminal(tab: TabSummary | undefined): boolean {
+  return !!tab && tab.kind === "terminal" && tab.terminalLaunch === "role" && tab.provider !== "cursor";
+}
+
+/**
+ * The stage's latest reply: chat's last agent message, a Claude terminal's
+ * session-log reply, or another terminal's xterm tail.
+ */
 export function stageReply(
   tab: TabSummary | undefined,
   rt: TabRuntime | undefined,
   reader: TerminalReader,
+  logs?: SessionLogs,
 ): string {
   if (!tab) return "";
+  if (isClaudeRoleTerminal(tab)) return (logs?.[tab.id]?.lastReply ?? "").trim();
   if (isTerminal(tab)) return reader.tail(tab.id).trim();
   const segments = rt?.segments.map((s) => ({ kind: s.kind, text: s.text })) ?? [];
   // Same reply the tab's hand-off reads, so the verdicts agree.
@@ -69,6 +82,7 @@ export function overviewStages(
   runtimes: Record<string, TabRuntime>,
   reader: TerminalReader,
   terminalStates?: Record<string, TerminalState>,
+  logs?: SessionLogs,
 ): StageView[] {
   const byId = new Map(tabs.map((t) => [t.id, t]));
   return stagesForKind((run.kind ?? "full") as PipelineKind).map((def) => {
@@ -76,7 +90,7 @@ export function overviewStages(
     const tab = tabId ? byId.get(tabId) : undefined;
     const rt = tabId ? runtimes[tabId] : undefined;
     const verdict = isReviewerRole(def.roleId)
-      ? parseReviewVerdict(stageReply(tab, rt, reader))
+      ? parseReviewVerdict(stageReply(tab, rt, reader, logs))
       : null;
     return {
       def,
@@ -116,18 +130,28 @@ export async function pullPlannerText(
   tabs: TabSummary[],
   runtimes: Record<string, TabRuntime>,
   reader: TerminalReader,
+  logs?: SessionLogs,
 ): Promise<Pulled> {
   const tab = stageTab(run, tabs, "role_planner");
   if (!tab) return { text: "", reason: "This run has no open Planner tab." };
   if (isTerminal(tab)) {
-    const text =
-      reader.selection(tab.id) || (await reader.planFile(tab.id)) || reader.tail(tab.id);
+    let text: string;
+    if (isClaudeRoleTerminal(tab)) {
+      // The user's selection wins; then the log's ExitPlanMode plan (unless
+      // a later prompt made it stale), the plan file, and the last reply.
+      const log = logs?.[tab.id] ?? null;
+      const fields = terminalLogFields(log);
+      const plan = fields.planMarkdown && !fields.planMarkdownStale ? fields.planMarkdown : "";
+      text = reader.selection(tab.id) || plan || (await reader.planFile(tab.id)) || (log?.lastReply ?? "");
+    } else {
+      text = reader.selection(tab.id) || (await reader.planFile(tab.id)) || reader.tail(tab.id);
+    }
     return text.trim()
       ? { text: text.trim(), reason: null }
       : { text: "", reason: NOT_OPEN_TERMINAL("Planner") };
   }
   const rt = runtimes[tab.id];
-  const reply = stageReply(tab, rt, reader);
+  const reply = stageReply(tab, rt, reader, logs);
   if (reply) return { text: reply, reason: null };
   if (tab.hasTranscript) {
     const text = segmentsToPlainText(rt?.segments ?? []).trim();
@@ -142,12 +166,13 @@ export function pullPlanReviewText(
   tabs: TabSummary[],
   runtimes: Record<string, TabRuntime>,
   reader: TerminalReader,
+  logs?: SessionLogs,
 ): Pulled {
   const tab = stageTab(run, tabs, "role_plan_reviewer");
   if (!tab) return { text: "", reason: "This run has no open Plan Reviewer tab." };
   const reply = isTerminal(tab)
-    ? reader.selection(tab.id) || reader.tail(tab.id)
-    : stageReply(tab, runtimes[tab.id], reader);
+    ? reader.selection(tab.id) || stageReply(tab, runtimes[tab.id], reader, logs)
+    : stageReply(tab, runtimes[tab.id], reader, logs);
   if (!reply.trim()) {
     return {
       text: "",
