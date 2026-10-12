@@ -504,6 +504,50 @@ fn agent_logs_read_while_a_turn_holds_the_client_lock() {
 }
 
 #[test]
+fn a_session_displaced_from_its_tab_is_shut_down_not_leaked() {
+    let first = fake!("displaced-a", claude_scenario(json!([])));
+    let second = fake!("displaced-b", claude_scenario(json!([])));
+    let old = LiveSession::from_client(
+        "tab-swap",
+        "role_implementer",
+        connect(&first, ProviderId::Claude, "bypassPermissions"),
+    );
+    let old_process = old.process.clone();
+    let mut registry = SessionRegistry::new();
+    registry.insert(old);
+    registry.insert(LiveSession::from_client(
+        "tab-swap",
+        "role_implementer",
+        connect(&second, ProviderId::Claude, "bypassPermissions"),
+    ));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !matches!(old_process.try_wait(), Ok(Some(_))) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        matches!(old_process.try_wait(), Ok(Some(_))),
+        "the displaced agent process is stopped"
+    );
+    let live = registry.get("tab-swap").expect("the new session stays");
+    assert!(!live.is_dead());
+    registry.shutdown_tab("tab-swap");
+}
+
+#[test]
+fn a_model_restart_waits_for_a_start_in_progress() {
+    let mut registry = SessionRegistry::new();
+    registry.try_begin_start("tab-restart").unwrap();
+    assert!(registry.begin_restart("tab-restart").is_err());
+    registry.finish_start("tab-restart");
+    assert!(registry.begin_restart("tab-restart").unwrap().is_none());
+    assert!(
+        registry.try_begin_start("tab-restart").is_err(),
+        "a restart holds the tab like a start"
+    );
+    registry.finish_start("tab-restart");
+}
+
+#[test]
 fn a_long_tool_run_with_sparse_heartbeats_does_not_hit_the_idle_limit() {
     let mut steps = vec![
         json!({ "update": { "sessionUpdate": "tool_call", "toolCallId": "toolu_build",

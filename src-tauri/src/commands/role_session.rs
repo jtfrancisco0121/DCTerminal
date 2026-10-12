@@ -61,7 +61,9 @@ fn finish_starting(state: &Mutex<SessionRegistry>, key: &str) {
     }
 }
 
-#[tauri::command]
+// async: the spawn and handshake block (up to the 30 s IO timeout), so they
+// run off the main thread and the window keeps drawing.
+#[tauri::command(async)]
 #[allow(clippy::too_many_arguments)] // Tauri injects each managed state as its own argument.
 pub fn role_session_start(
     app: AppHandle,

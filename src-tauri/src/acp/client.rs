@@ -74,7 +74,7 @@ impl AcpClient {
         let Some(model) = model else {
             return Ok((client, ModelVia::Unchanged));
         };
-        match client.apply_model(model)? {
+        match client.apply_model_or_kill(model)? {
             ModelVia::Unsupported => {
                 client.conn.kill();
                 let mut flagged = Self::spawn_new(&provider, &folder, mode_id, Some(model))?;
@@ -83,6 +83,12 @@ impl AcpClient {
             }
             via => Ok((client, via)),
         }
+    }
+
+    /// `apply_model` during a connect. On an error the client is dropped by
+    /// the caller, so stop its agent first (no kill-on-drop on Unix).
+    fn apply_model_or_kill(&mut self, model: &str) -> Result<ModelVia, String> {
+        self.apply_model(model).inspect_err(|_| self.conn.kill())
     }
 
     fn spawn_new(
@@ -136,7 +142,7 @@ impl AcpClient {
         let Some(model) = model else {
             return Ok((client, replay, ModelVia::Unchanged));
         };
-        match client.apply_model(model)? {
+        match client.apply_model_or_kill(model)? {
             ModelVia::Unsupported => {
                 client.conn.kill();
                 let (mut flagged, replay) =

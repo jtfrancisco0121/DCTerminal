@@ -182,8 +182,30 @@ impl SessionRegistry {
         self.starting.remove(tab_key);
     }
 
+    /// Add `session`. A different session it displaces is shut down, so its
+    /// agent process is never left running without an owner.
     pub fn insert(&mut self, session: LiveSession) {
-        self.sessions.insert(session.tab_id.clone(), session);
+        let client = Arc::clone(&session.client);
+        if let Some(mut old) = self.sessions.insert(session.tab_id.clone(), session) {
+            if !Arc::ptr_eq(&old.client, &client) {
+                old.shutdown();
+            }
+        }
+    }
+
+    /// Take the tab's session for a restart and mark the tab as starting,
+    /// so no other start runs until `finish_start`. Refused while a start
+    /// is already in progress.
+    pub fn begin_restart(&mut self, tab_key: &str) -> Result<Option<LiveSession>, String> {
+        if self.starting.contains(tab_key) {
+            return Err(
+                "Start already in progress for this tab — wait for the first click to finish"
+                    .to_string(),
+            );
+        }
+        let old = self.sessions.remove(tab_key);
+        self.starting.insert(tab_key.to_string());
+        Ok(old)
     }
 
     pub fn get(&self, tab_id: &str) -> Option<&LiveSession> {
@@ -200,11 +222,6 @@ impl SessionRegistry {
             .filter(|session| session.tab_id != tab_id && !session.exited)
             .map(|session| (session.cwd.clone(), session.mode_id.clone()))
             .collect()
-    }
-
-    /// Remove a session without shutting it down. The caller owns it.
-    pub fn take(&mut self, tab_id: &str) -> Option<LiveSession> {
-        self.sessions.remove(tab_id)
     }
 
     pub fn shutdown_tab(&mut self, tab_id: &str) {
@@ -302,7 +319,8 @@ fn resolve_tab_id(tab_id: Option<String>) -> String {
     tab_id.unwrap_or_else(|| DEV_TAB_ID.to_string())
 }
 
-#[tauri::command]
+// async: the spawn and handshake block, so keep them off the main thread.
+#[tauri::command(async)]
 pub fn dev_session_start(
     cwd: String,
     mode_id: Option<String>,
