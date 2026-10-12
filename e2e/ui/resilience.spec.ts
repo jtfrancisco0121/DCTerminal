@@ -262,10 +262,11 @@ test.describe("agent process failures", () => {
       },
     });
     const turn = await app.start("tab-1");
-    await expect(page.locator(".status-bar-message-warn")).toHaveText(warning);
+    // The tone is spelled out for screen readers ("Warning: ", visually hidden).
+    await expect(page.locator(".status-bar-message-warn")).toHaveText(`Warning: ${warning}`);
     await turn.reply("Started anyway.");
     await expect(status(page)).toHaveText("Ready");
-    await expect(page.locator(".status-bar-message-warn")).toHaveText(warning);
+    await expect(page.locator(".status-bar-message-warn")).toHaveText(`Warning: ${warning}`);
   });
 
   test("a turn that times out shows the error and the tab keeps working", async ({ app, page }) => {
@@ -306,7 +307,7 @@ test.describe("cancel and stop", () => {
 
     await turn.finish("cancelled");
     await expect(status(page)).toHaveText("Ready");
-    await expect(page.getByText("Last turn: cancelled")).toBeVisible();
+    await expect(page.getByText("Last turn cancelled", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Cancel turn" })).toBeDisabled();
     await expect(log(page)).toContainText("Partial answer");
     // A cancelled turn leaves no mark on the tab.
@@ -719,7 +720,9 @@ test.describe("rejected commands", () => {
     await expect(page.getByRole("tab", { name: "General", exact: true })).toBeVisible();
     await expect(status(page)).toHaveText("Not started");
     // Terminals do not need roles and stay available.
-    await expect(page.getByRole("button", { name: "Terminal", exact: true }).first()).toBeVisible();
+    await expect(
+      page.getByRole("radiogroup", { name: "Terminals" }).getByRole("radio", { name: "Terminal", exact: true }),
+    ).toBeVisible();
   });
 
   test("roles that fail to load show why", async ({ app, page }) => {

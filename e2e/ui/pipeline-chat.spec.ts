@@ -101,7 +101,7 @@ test.describe("plan card lifecycle", () => {
     await app.waitForCall("dev_session_send");
     await turn.chunk("Updated.");
     await turn.plan(PLAN_V2, 11);
-    await expect(planCard(page).locator("pre.plan-markdown")).toContainText("Hide it when the agent reports");
+    await expect(planCard(page).locator(".plan-markdown")).toContainText("Hide it when the agent reports");
 
     const dialog = await openPlanDialog(page);
     await expect(dialog.getByRole("radio", { name: "Claude's plan (Ready to code?)" })).toBeChecked();

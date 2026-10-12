@@ -201,7 +201,7 @@ test("ExitPlanMode open in a background terminal: needs you for a plan, one toas
 
   await expectChip(page, label, "needs", "Needs you: plan to review");
   await expect(chip(page, label)).toHaveClass(/tab-chip-needs/);
-  await expect(page.locator(".status-bar-message-warn")).toHaveText(`${label}: Needs you: plan to review`);
+  await expect(page.locator(".status-bar-message-warn")).toHaveText(`Warning: ${label}: Needs you: plan to review`);
   const toast = page.getByRole("alert").filter({ hasText: `${label} has a plan to review` });
   await expect(toast).toBeVisible();
   await expect(toast).toContainText("Open the tab to accept or reject the plan.");

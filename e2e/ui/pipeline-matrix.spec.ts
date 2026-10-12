@@ -126,7 +126,7 @@ test("Planner → custom role with a required select: named in the dialog, termi
   await dialog.getByRole("radio", { name: "Terminal" }).check();
   await expect(fills(page)).toContainText("A terminal starts right away, so fill Priority first");
   await dialog.getByRole("button", { name: "Start Odd Form terminal" }).click();
-  await expect(dialog.locator(".error")).toHaveText(
+  await expect(dialog.getByRole("alert")).toHaveText(
     "The Odd Form terminal cannot start: Priority is required. Open it as Chat to fill these in.",
   );
   expect(await app.calls("role_terminal_start")).toHaveLength(0);

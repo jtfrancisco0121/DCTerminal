@@ -229,7 +229,12 @@ export function installTauriMock(config: MockConfig): void {
     claude_account_logins: () => [
       { id: "default", name: "Claude", config: configDir, login: loggedIn },
     ],
-    get_terminal_settings: () => ({ shell: "/bin/zsh", fontSize: 13, roleSurface: {}, roleRunMode: {} }),
+    get_terminal_settings: () => ({
+      shell: "/bin/zsh",
+      fontSize: 13,
+      roleSurface: clone(config.roleSurface),
+      roleRunMode: {},
+    }),
     set_terminal_settings: (a) => a.terminal,
     get_notification_settings: () => ({ enabled: true, system: false, toastWhenFocused: false }),
     set_notification_settings: (a) => a.notifications,

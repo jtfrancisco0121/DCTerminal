@@ -23,10 +23,13 @@ test.describe("command palette", () => {
   test("Mod+K opens it; search narrows by every word; Escape closes it", async ({ app, page }) => {
     await app.open({ tabs: namedTabs(2) });
     const input = await openPalette(page);
-    // Groups are listed in PALETTE_GROUPS order: Tabs first, Open tabs last.
+    // Groups are listed in PALETTE_GROUPS order, each under its own heading: Tabs first, Open tabs last.
     const items = palette(page).locator(".palette-item");
-    await expect(items.first()).toHaveText(/^New tab\s*Tabs$/);
-    await expect(items.last()).toHaveText(/^Switch to: Beta\s*Open tabs$/);
+    const groups = palette(page).locator(".palette-group");
+    await expect(groups.first()).toHaveText("Tabs");
+    await expect(groups.last()).toHaveText("Open tabs");
+    await expect(items.first()).toHaveText(/^New tab\b/);
+    await expect(items.last()).toHaveText(/^Switch to: Beta\b/);
     // Commands that do not apply yet are left out, not listed.
     await expect(entry(page, "Swap panes")).toHaveCount(0);
     await expect(entry(page, "Close split")).toHaveCount(0);

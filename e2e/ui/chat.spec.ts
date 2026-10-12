@@ -20,7 +20,7 @@ test("General chat: streamed reply renders and the turn ends Ready", async ({ ap
 
   await turn.finish();
   await expect(status).toHaveText("Ready");
-  await expect(page.getByText("Last turn: end_turn")).toBeVisible();
+  await expect(page.getByText("Last turn finished", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Cancel turn" })).toBeDisabled();
   await expect(page.getByRole("tab", { name: "General", exact: true })).toBeVisible();
 

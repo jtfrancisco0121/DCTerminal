@@ -132,7 +132,7 @@ test("history: Open in Claude Code / Cursor CLI resumes that chat in a new termi
   await expect(screen(page)).toContainText("Resumed session claude-sess-1");
 
   await page.getByRole("tab", { name: "General" }).click();
-  await page.getByRole("group", { name: "History provider" }).getByRole("button", { name: "Cursor" }).click();
+  await page.getByRole("radiogroup", { name: "History provider" }).getByRole("radio", { name: "Cursor" }).click();
   await page.getByRole("button", { name: "Open in Cursor CLI" }).click();
   const cursor = await app.waitForCall("shell_terminal_start", (a) => (a.input as { launch: string }).launch === "cursor-cli");
   expect(cursor.args.input).toMatchObject({ tabId: null, launch: "cursor-cli", resumeSessionId: "cursor-chat-9" });
