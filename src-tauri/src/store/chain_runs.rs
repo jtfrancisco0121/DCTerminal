@@ -238,7 +238,15 @@ impl StateStore {
             .ok_or_else(|| format!("unknown pipeline run: {run_id}"))?;
         let stages = pipeline_stages(&run.kind);
         let position = |role: &str| stages.iter().position(|(_, id)| id == role);
-        let (Some(target), Some(reviewer)) = (position(&target_role), position(reviewer_role_id))
+        // A specialist reviewer (alsoReviewers) sits on its stage's step too.
+        let reviewer_at = position(reviewer_role_id).or_else(|| {
+            crate::pipelines::find(&run.kind).and_then(|def| {
+                def.stages
+                    .iter()
+                    .position(|stage| stage.also_reviewers.iter().any(|r| r == reviewer_role_id))
+            })
+        });
+        let (Some(target), Some(reviewer)) = (position(&target_role), reviewer_at)
         else {
             return Err("That hand-off is not a loop-back on this chain.".to_string());
         };
@@ -785,6 +793,11 @@ mod tests {
         let run = store.pipeline_run_by_id("ee_pair").unwrap();
         assert_eq!(run.tab_ids.get("role_pr_reviewer"), Some(&review));
         assert_eq!(run.tab_ids.get("role_security"), Some(&security));
+        // The specialist can send the round back too.
+        let chain = store
+            .chain_loop_back("ee_pair", "role_security", &build, Some("REQUEST CHANGES"), Some("fix"))
+            .unwrap();
+        assert_eq!((chain.step, chain.round), (1, 2));
         crate::pipelines::unregister_for_test("pair_review_test");
     }
 

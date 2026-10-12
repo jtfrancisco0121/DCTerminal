@@ -37,7 +37,7 @@ export function handoffRoute(options: {
   }
   const lastStep =
     !!chain && chain.step >= chain.total && chainSteps(chain.kind)?.[chain.step - 1] === sourceRoleId;
-  if (lastStep && revise && verdict) {
+  if (lastStep && revise && verdict === "APPROVED") {
     // A reviewer approved on the chain's last step: nothing left to hand on.
     return { primaryTarget: null, primaryLabel: null, complete: true };
   }
