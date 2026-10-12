@@ -1,8 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import "@xterm/xterm/css/xterm.css";
-import { ptyOpen, ptyResize, ptyWrite, type TerminalLaunch } from "../bridge";
+import { ptyOpen, ptyResize, ptyWrite, terminalSessionLog, type TerminalLaunch } from "../bridge";
 import { detectPlatform, routeKey } from "../keymap";
+import { isShiftEnter, SHIFT_ENTER_SEQUENCE, shiftEnterSendsNewline } from "../terminal/keys";
 import { TerminalSearchBar } from "./TerminalSearchBar";
+import { TerminalExitStrip, lastFiftyLines, lastOutputLine } from "./TerminalExitStrip";
+import { TerminalContextMenu, type ContextMenuItem } from "./TerminalContextMenu";
+import { formatDroppedPaths } from "../terminal/drop";
+import { elementAtDropPosition } from "../dragDropPosition";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   beginLivePty,
   clearPtyOpening,
@@ -13,8 +19,13 @@ import {
   subscribeLivePty,
 } from "../terminal/live";
 import {
+  clearTerminalScrollback,
   copyTerminalSelection,
+  pasteIntoTerminal,
   ensureParkedTerminal,
+  type ParkedTerminal,
+  measuredTerminalSize,
+  noteTerminalSize,
   blurParkedTerminal,
   focusParkedTerminal,
   isParkedHost,
@@ -47,6 +58,8 @@ type Props = {
   prompt?: string | null;
   /** When set, the process is `agent --resume <id>`. */
   resumeSessionId?: string | null;
+  /** A Claude Code terminal: an exit offers Resume session instead of Restart. */
+  claudeSession?: boolean;
   menuActions?: TerminalMenuAction[];
   /** Right-click, before the menu shows (e.g. read a reviewer's verdict). */
   onMenuOpen?: () => void;
@@ -76,6 +89,27 @@ export function readTerminalHandoff(ptyId: string): {
   };
 }
 
+/**
+ * The size to open a PTY at: the mounted slot, measured now, so the program
+ * draws its first screen at the right width. Before any slot exists, the last
+ * measured terminal (else 80x24); the next fit corrects it.
+ */
+function openSize(parked: ParkedTerminal): { cols: number; rows: number } {
+  const slot = parked.host.parentElement;
+  if (parked.host.isConnected && slot && slot.clientWidth > 0 && slot.clientHeight > 0) {
+    try {
+      parked.fit.fit();
+    } catch {
+      // Fall through to whatever xterm currently has.
+    }
+    if (parked.term.cols >= 2 && parked.term.rows >= 1) {
+      noteTerminalSize(parked.term.cols, parked.term.rows);
+      return { cols: parked.term.cols, rows: parked.term.rows };
+    }
+  }
+  return measuredTerminalSize();
+}
+
 export function TerminalView({
   ptyId,
   cwd,
@@ -86,15 +120,118 @@ export function TerminalView({
   autoFocus = true,
   prompt = null,
   resumeSessionId = null,
+  claudeSession = false,
   menuActions = [],
   onMenuOpen,
 }: Props) {
   const slotRef = useRef<HTMLDivElement>(null);
   const [exitCode, setExitCode] = useState<number | null>(livePty(ptyId)?.exitCode ?? null);
   const [searchOpen, setSearchOpen] = useState(false);
-  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; hasSelection: boolean } | null>(null);
+  const [hint, setHint] = useState<string | null>(null);
+  const [dropOver, setDropOver] = useState(false);
+  const viewRef = useRef<HTMLDivElement>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const [generation, setGeneration] = useState(0);
+  const [resumeId, setResumeId] = useState<string | null | undefined>(undefined);
+  const [lastLine, setLastLine] = useState("");
+  const [copied, setCopied] = useState(false);
+
+  // Once a Claude terminal exits: is there a session to resume, and what did
+  // it print last.
+  useEffect(() => {
+    if (!claudeSession || exitCode == null) return;
+    let current = true;
+    setResumeId(undefined);
+    setCopied(false);
+    setLastLine(lastOutputLine(terminalScrollbackText(ptyId)));
+    terminalSessionLog(ptyId)
+      .then((log) => current && setResumeId(log?.sessionId ?? null))
+      .catch(() => current && setResumeId(null));
+    return () => {
+      current = false;
+    };
+  }, [claudeSession, exitCode, ptyId]);
+
+  // Escape closes the right-click menu. Capture it so the program in the
+  // terminal does not also see the key.
+  useEffect(() => {
+    if (!menu) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      setMenu(null);
+      focusParkedTerminal(ptyId);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [menu, ptyId]);
+
+  // Files dropped from the OS paste their quoted paths, like a paste. Tauri
+  // reports the drop for the whole window, so each view checks the position.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    const over = (position: { x: number; y: number }) => {
+      const target = elementAtDropPosition(position);
+      return !!target && !!viewRef.current?.contains(target);
+    };
+    try {
+      void getCurrentWebview()
+        .onDragDropEvent((event) => {
+          const payload = event.payload;
+          if (payload.type === "leave") {
+            setDropOver(false);
+          } else if (payload.type === "drop") {
+            setDropOver(false);
+            if (!over(payload.position)) return;
+            const text = formatDroppedPaths(payload.paths, detectPlatform(navigator.platform) === "windows");
+            pasteIntoTerminal(ptyId, text);
+            ensureParkedTerminal(ptyId, fontSize).term.focus();
+            focusParkedTerminal(ptyId);
+          } else {
+            setDropOver(over(payload.position));
+          }
+        })
+        .then((fn) => {
+          if (disposed) fn();
+          else unlisten = fn;
+        })
+        .catch(() => {});
+    } catch {
+      // Not running inside Tauri (unit tests, a plain browser).
+    }
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ptyId]);
+
+  // Cmd+V with only an image on the clipboard types nothing; say how to attach it.
+  useEffect(() => {
+    if (detectPlatform(navigator.platform) !== "mac") return;
+    const host = ensureParkedTerminal(ptyId, fontSize).host;
+    let timer = 0;
+    const onPaste = (event: ClipboardEvent) => {
+      const data = event.clipboardData;
+      if (!data || data.getData("text/plain")) return;
+      const hasImage = Array.from(data.items ?? []).some(
+        (item) => item.kind === "file" && item.type.startsWith("image/"),
+      );
+      if (!hasImage) return;
+      setHint("Press Ctrl+V to attach images in Claude Code");
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => setHint(null), 5000);
+    };
+    host.addEventListener("paste", onPaste, true);
+    return () => {
+      window.clearTimeout(timer);
+      host.removeEventListener("paste", onPaste, true);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ptyId]);
 
   useEffect(() => subscribeLivePty(() => setGeneration((value) => value + 1)), []);
 
@@ -128,7 +265,16 @@ export function TerminalView({
     });
     if (live?.exitCode != null) setExitCode(live.exitCode);
     const platform = detectPlatform(navigator.platform);
+    const newlineOnShiftEnter = shiftEnterSendsNewline(launch);
     parked.term.attachCustomKeyEventHandler((event) => {
+      if (newlineOnShiftEnter && isShiftEnter(event)) {
+        // Handle keydown only; swallow keypress and keyup so xterm sends no CR.
+        if (event.type === "keydown" && !event.repeat) {
+          notePtyInput(ptyId, SHIFT_ENTER_SEQUENCE);
+          void ptyWrite(ptyId, SHIFT_ENTER_SEQUENCE).catch(() => {});
+        }
+        return false;
+      }
       const routed = routeKey(
         {
           code: event.code,
@@ -138,6 +284,7 @@ export function TerminalView({
           altKey: event.altKey,
           shiftKey: event.shiftKey,
           repeat: event.repeat,
+          altGraph: event.getModifierState?.("AltGraph"),
         },
         { platform, surface: "terminal" },
       );
@@ -152,6 +299,7 @@ export function TerminalView({
       const cols = parked.term.cols;
       const rows = parked.term.rows;
       if (cols >= 2 && rows >= 1) {
+        noteTerminalSize(cols, rows);
         void ptyResize(ptyId, cols, rows).catch(() => {});
       }
     };
@@ -186,7 +334,7 @@ export function TerminalView({
         root.appendChild(parked.host);
       }
     };
-  }, [autoFocus, ptyId, fontSize, generation]);
+  }, [autoFocus, ptyId, fontSize, generation, launch]);
 
   useEffect(() => {
     if (!autoOpen || !cwd) return;
@@ -194,6 +342,7 @@ export function TerminalView({
     if (!markPtyOpening(ptyId)) return;
     const live = beginLivePty(ptyId);
     const parked = ensureParkedTerminal(ptyId, fontSize);
+    const size = openSize(parked);
     void ptyOpen({
       id: ptyId,
       cwd,
@@ -201,8 +350,8 @@ export function TerminalView({
       roleId,
       prompt,
       resumeSessionId,
-      cols: Math.max(parked.term.cols, 80),
-      rows: Math.max(parked.term.rows, 24),
+      cols: size.cols,
+      rows: size.rows,
       onOutput: live.channel,
     }).catch((err: unknown) => {
       clearPtyOpening(ptyId);
@@ -210,7 +359,7 @@ export function TerminalView({
     });
   }, [autoOpen, cwd, fontSize, launch, prompt, ptyId, resumeSessionId, roleId]);
 
-  const restart = () => {
+  const restart = (resume?: string | null) => {
     setExitCode(null);
     setFailed(null);
     const parked = ensureParkedTerminal(ptyId, fontSize);
@@ -225,24 +374,85 @@ export function TerminalView({
       launch,
       roleId,
       prompt: null,
-      resumeSessionId,
-      cols: Math.max(parked.term.cols, 80),
-      rows: Math.max(parked.term.rows, 24),
+      // Start fresh on a Claude terminal drops the conversation on purpose.
+      resumeSessionId: claudeSession ? (resume ?? null) : resumeSessionId,
+      cols: openSize(parked).cols,
+      rows: openSize(parked).rows,
       onOutput: live.channel,
     }).catch((err: unknown) => {
       setFailed(err instanceof Error ? err.message : String(err));
     });
   };
 
+  const mac = detectPlatform(navigator.platform) === "mac";
+  const menuItems = (hasSelection: boolean): ContextMenuItem[] => {
+    const close = (run: () => void) => () => {
+      setMenu(null);
+      run();
+    };
+    const items: ContextMenuItem[] = [
+      {
+        id: "copy",
+        label: "Copy",
+        shortcut: mac ? "⌘⇧C" : "Ctrl+Shift+C",
+        disabled: !hasSelection,
+        onSelect: close(() => void copyTerminalSelection(ptyId)),
+      },
+      {
+        id: "paste",
+        label: "Paste",
+        shortcut: mac ? "⌘⇧V" : "Ctrl+Shift+V",
+        onSelect: close(() => void pasteTerminalText(ptyId)),
+      },
+      {
+        id: "clear",
+        label: "Clear scrollback",
+        divider: true,
+        onSelect: close(() => clearTerminalScrollback(ptyId)),
+      },
+    ];
+    menuActions.forEach((action, index) =>
+      items.push({
+        id: action.id,
+        label: action.label,
+        divider: index === 0,
+        onSelect: close(action.onSelect),
+      }),
+    );
+    return items;
+  };
+
   return (
     <div
-      className="terminal-view"
+      ref={viewRef}
+      className={dropOver ? "terminal-view terminal-drop-over" : "terminal-view"}
       onContextMenu={(event) => {
         event.preventDefault();
         onMenuOpen?.();
-        setMenu({ x: event.clientX, y: event.clientY });
+        setMenu({
+          x: event.clientX,
+          y: event.clientY,
+          hasSelection: terminalSelection(ptyId).length > 0,
+        });
       }}
     >
+      {claudeSession && (failed || exitCode != null) && (
+        <TerminalExitStrip
+          exitCode={exitCode}
+          lastLine={lastLine}
+          failed={failed}
+          resumeId={resumeId}
+          copied={copied}
+          onResume={() => restart(resumeId)}
+          onFresh={() => restart(null)}
+          onCopy={() => {
+            void navigator.clipboard
+              .writeText(lastFiftyLines(terminalScrollbackText(ptyId)))
+              .then(() => setCopied(true))
+              .catch(() => {});
+          }}
+        />
+      )}
       {searchOpen && (
         <TerminalSearchBar
           search={ensureParkedTerminal(ptyId, fontSize).search}
@@ -258,55 +468,26 @@ export function TerminalView({
         className="terminal-slot"
         onMouseDown={() => focusParkedTerminal(ptyId)}
       />
-      {(failed || exitCode != null) && (
+      {!claudeSession && (failed || exitCode != null) && (
         <div className="terminal-exit">
           {failed && <p className="error">{failed}</p>}
           {exitCode != null && <p>Process exited ({exitCode}).</p>}
-          <button type="button" className="primary-button" onClick={restart}>
+          <button type="button" className="primary-button" onClick={() => restart()}>
             Restart
           </button>
         </div>
       )}
-      {menu && (
-        <div
-          className="terminal-menu"
-          style={{ left: menu.x, top: menu.y }}
-          role="menu"
-        >
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              setMenu(null);
-              void copyTerminalSelection(ptyId);
-            }}
-          >
-            Copy
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              setMenu(null);
-              void pasteTerminalText(ptyId);
-            }}
-          >
-            Paste
-          </button>
-          {menuActions.map((action) => (
-            <button
-              key={action.id}
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                setMenu(null);
-                action.onSelect();
-              }}
-            >
-              {action.label}
-            </button>
-          ))}
+      {hint && (
+        <div className="terminal-hint" role="status">
+          {hint}
         </div>
+      )}
+      {menu && (
+        <TerminalContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={menuItems(menu.hasSelection)}
+        />
       )}
       {menu && (
         <button

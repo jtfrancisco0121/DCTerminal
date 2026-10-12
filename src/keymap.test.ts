@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   bindingConflicts,
   defaultBindings,
+  isAltGrText,
   isImeEvent,
   isReservedForTerminal,
   matchShortcut,
@@ -192,11 +193,8 @@ describe("keymap", () => {
     });
     expect(routeKey(event({ code: "KeyC", ctrlKey: true }), term).kind).toBe("shell");
     expect(routeKey(event({ code: "Enter", ctrlKey: true }), term).kind).toBe("shell");
-    expect(routeKey(event({ code: "KeyT", ctrlKey: true }), term)).toEqual({
-      kind: "app",
-      match: { action: "newTab" },
-    });
-    expect(routeKey(event({ code: "KeyW", ctrlKey: true }), term).kind).toBe("app");
+    expect(routeKey(event({ code: "KeyT", ctrlKey: true }), term).kind).toBe("shell");
+    expect(routeKey(event({ code: "KeyW", ctrlKey: true }), term).kind).toBe("shell");
     expect(routeKey(event({ code: "Digit1", ctrlKey: true }), term)).toEqual({
       kind: "app",
       match: { action: "goToTab", tabIndex: 0 },
@@ -205,12 +203,9 @@ describe("keymap", () => {
     expect(
       routeKey(event({ code: "Tab", ctrlKey: true, shiftKey: true }), term),
     ).toEqual({ kind: "app", match: { action: "prevTab" } });
-    expect(routeKey(event({ code: "KeyP", ctrlKey: true }), term).kind).toBe("app");
+    expect(routeKey(event({ code: "KeyP", ctrlKey: true }), term).kind).toBe("shell");
     expect(routeKey(event({ code: "Comma", ctrlKey: true, key: "," }), term).kind).toBe("app");
-    expect(routeKey(event({ code: "KeyK", ctrlKey: true, key: "k" }), term)).toEqual({
-      kind: "app",
-      match: { action: "commandPalette" },
-    });
+    expect(routeKey(event({ code: "KeyK", ctrlKey: true, key: "k" }), term).kind).toBe("shell");
     expect(routeKey(event({ code: "KeyC", ctrlKey: true }), term).kind).toBe("shell");
   });
 
@@ -307,5 +302,133 @@ describe("pane and file panel shortcuts", () => {
       "Search terminal=Ctrl+Shift+F",
     );
     expect(bindingConflicts(defaultBindings())).toEqual([]);
+  });
+
+  it("R21: Windows/Linux terminals keep plain Ctrl globals and offer Ctrl+Shift", () => {
+    for (const platform of ["windows", "linux"] as const) {
+      const term = { platform, surface: "terminal" as const };
+      const chat = { platform, surface: "chat" as const };
+      for (const code of ["KeyJ", "KeyW", "KeyK", "KeyT", "KeyP", "Slash"]) {
+        expect(routeKey(event({ code, key: "x", ctrlKey: true }), term).kind).toBe("shell");
+        // Chat still uses plain Ctrl.
+        expect(routeKey(event({ code, key: "x", ctrlKey: true }), chat).kind).toBe("app");
+      }
+      const alt: Record<string, string> = {
+        KeyT: "newTab",
+        KeyW: "closeTab",
+        KeyK: "commandPalette",
+        KeyP: "tabSwitcher",
+        Slash: "shortcutsHelp",
+        KeyJ: "focusPad",
+      };
+      for (const [code, action] of Object.entries(alt)) {
+        expect(
+          routeKey(event({ code, key: "X", ctrlKey: true, shiftKey: true }), term),
+        ).toEqual({ kind: "app", match: { action } });
+      }
+      // Tab and settings keys a program does not use stay global.
+      expect(routeKey(event({ code: "Tab", ctrlKey: true }), term).kind).toBe("app");
+    }
+  });
+
+  it("R21: macOS terminals still pass every Ctrl key to the program", () => {
+    const term = { platform: "mac" as const, surface: "terminal" as const };
+    for (const code of ["KeyJ", "KeyW", "KeyK", "KeyT", "KeyP", "KeyA", "KeyE"]) {
+      expect(routeKey(event({ code, key: "x", ctrlKey: true }), term).kind).toBe("shell");
+    }
+    expect(routeKey(event({ code: "KeyT", key: "t", metaKey: true }), term)).toEqual({
+      kind: "app",
+      match: { action: "newTab" },
+    });
+    // Option+letter is Meta input for the program.
+    expect(routeKey(event({ code: "KeyP", key: "π", altKey: true }), term).kind).toBe("shell");
+  });
+
+  it("R21: F2 and F6 and Escape reach a focused terminal", () => {
+    for (const platform of ["mac", "windows", "linux"] as const) {
+      const term = { platform, surface: "terminal" as const };
+      const chat = { platform, surface: "chat" as const };
+      expect(routeKey(event({ code: "F2", key: "F2" }), term).kind).toBe("shell");
+      expect(routeKey(event({ code: "F6", key: "F6" }), term).kind).toBe("shell");
+      expect(routeKey(event({ code: "Escape", key: "Escape" }), term).kind).toBe("shell");
+      expect(routeKey(event({ code: "F2", key: "F2" }), chat).kind).toBe("app");
+    }
+  });
+
+  it("R21: AltGr text is not a pane shortcut", () => {
+    const term = { platform: "windows" as const, surface: "terminal" as const };
+    // German AltGr+Q types "@" (code KeyQ); AltGr+S types "ſ"... and AltGr+7 "{".
+    expect(
+      routeKey(event({ code: "KeyO", key: "ø", ctrlKey: true, altKey: true }), term).kind,
+    ).toBe("shell");
+    expect(
+      routeKey(event({ code: "KeyS", key: "$", ctrlKey: true, altKey: true }), term).kind,
+    ).toBe("shell");
+    // German AltGr+Q "@" is text, whether or not the event reports AltGraph.
+    expect(
+      routeKey(event({ code: "KeyS", key: "@", ctrlKey: true, altKey: true, altGraph: true }), term).kind,
+    ).toBe("shell");
+    // A real Ctrl+Alt+O still moves focus between panes.
+    expect(
+      routeKey(event({ code: "KeyO", key: "o", ctrlKey: true, altKey: true }), term).kind,
+    ).toBe("app");
+  });
+
+  it("R21: AltGr+Q on a German layout is text", () => {
+    const at = event({ code: "KeyQ", key: "@", ctrlKey: true, altKey: true });
+    expect(isAltGrText(at, "windows")).toBe(true);
+    expect(isAltGrText({ ...at, altGraph: true }, "windows")).toBe(true);
+    expect(isAltGrText({ ...at, altGraph: true }, "linux")).toBe(true);
+    expect(isAltGrText(event({ code: "Digit7", key: "{", ctrlKey: true, altKey: true, altGraph: true }), "windows")).toBe(true);
+  });
+
+  it("R21: Ctrl+Alt pane shortcuts work on AZERTY, Dvorak, Colemak and German", () => {
+    const term = { platform: "windows" as const, surface: "terminal" as const };
+    const chord = (code: string, key: string, extra: Partial<KeyEventLike> = {}) =>
+      routeKey(event({ code, key, ctrlKey: true, altKey: true, ...extra }), term);
+    // AZERTY: KeyW prints "z".
+    expect(chord("KeyW", "z")).toEqual({ kind: "app", match: { action: "closeSplit" } });
+    // Dvorak: KeyS "o", KeyO "r", KeyW ",", KeyG "i".
+    expect(chord("KeyS", "o")).toEqual({ kind: "app", match: { action: "swapPanes" } });
+    expect(chord("KeyO", "r")).toEqual({ kind: "app", match: { action: "focusOtherPane" } });
+    expect(chord("KeyW", ",", { altGraph: false })).toEqual({ kind: "app", match: { action: "closeSplit" } });
+    expect(chord("KeyG", "i").kind).toBe("app");
+    // Colemak: KeyS "r", KeyO "y".
+    expect(chord("KeyS", "r")).toEqual({ kind: "app", match: { action: "swapPanes" } });
+    expect(chord("KeyO", "y")).toEqual({ kind: "app", match: { action: "focusOtherPane" } });
+    // German: the Backslash key prints "#" without AltGr.
+    expect(chord("Backslash", "#", { altGraph: false }).kind).toBe("app");
+    expect(isAltGrText(event({ code: "Backslash", key: "#", ctrlKey: true, altKey: true, altGraph: false }), "windows")).toBe(false);
+    expect(isAltGrText(event({ code: "KeyW", key: "z", ctrlKey: true, altKey: true }), "linux")).toBe(false);
+  });
+});
+
+describe("terminal zoom", () => {
+  it("binds Mod+=, Mod+- and Mod+0, and Cmd+Plus", () => {
+    const mac = { platform: "mac" as const };
+    expect(matchShortcut(event({ code: "Equal", metaKey: true }), mac)?.action).toBe("zoomIn");
+    expect(matchShortcut(event({ code: "Equal", metaKey: true, shiftKey: true }), mac)?.action).toBe("zoomIn");
+    expect(matchShortcut(event({ code: "Minus", metaKey: true }), mac)?.action).toBe("zoomOut");
+    expect(matchShortcut(event({ code: "Digit0", metaKey: true }), mac)?.action).toBe("zoomReset");
+    expect(matchShortcut(event({ code: "Equal", ctrlKey: true }), { platform: "linux" })?.action).toBe("zoomIn");
+  });
+
+  it("reaches the app from a focused terminal on every platform", () => {
+    for (const [platform, mod] of [
+      ["mac", { metaKey: true }],
+      ["windows", { ctrlKey: true }],
+      ["linux", { ctrlKey: true }],
+    ] as const) {
+      const routed = routeKey(event({ code: "Minus", ...mod }), { platform, surface: "terminal" });
+      expect(routed).toEqual({ kind: "app", match: { action: "zoomOut", tabIndex: undefined } });
+    }
+  });
+
+  it("steps the font inside 8–32 and resets to 14", async () => {
+    const { zoomedFontSize } = await import("./terminal/park");
+    expect(zoomedFontSize(14, "zoomIn")).toBe(15);
+    expect(zoomedFontSize(32, "zoomIn")).toBe(32);
+    expect(zoomedFontSize(8, "zoomOut")).toBe(8);
+    expect(zoomedFontSize(20, "zoomReset")).toBe(14);
   });
 });

@@ -91,6 +91,11 @@ body,
   --z-menu: 50;
   --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
   --term-pad: 6px;
+  /* Terminal search highlights (read by TerminalSearchBar; hex only). */
+  --search-match: #d2992266;
+  --search-match-border: #d29922;
+  --search-active: #f0883e;
+  --search-active-border: #ffa657;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   line-height: 1.5;
   color: var(--fg);
@@ -99,6 +104,10 @@ body,
 
 :root[data-theme="github-light"] {
   color-scheme: light;
+  --search-match: #bf870066;
+  --search-match-border: #9a6700;
+  --search-active: #fb8f44;
+  --search-active-border: #bc4c00;
   --bg: #ffffff;
   --bg-elev: #f6f8fa;
   --bg-inset: #f6f8fa;
@@ -1963,6 +1972,9 @@ kbd {
 
 .terminal-slot .xterm {
   height: 100%;
+  box-sizing: border-box;
+  /* FitAddon subtracts this padding when it measures the slot. */
+  padding: var(--term-pad);
 }
 
 .terminal-exit {
@@ -1989,10 +2001,56 @@ kbd {
   padding: 0.35rem 0.5rem;
   font: inherit;
   cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  gap: 1.5rem;
 }
 
-.terminal-menu button:hover {
+.terminal-menu button:hover,
+.terminal-menu button:focus-visible {
   background: var(--accent-subtle);
+}
+
+.terminal-menu button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.terminal-menu button:disabled:hover {
+  background: transparent;
+}
+
+.terminal-menu-divided {
+  margin-top: 0.25rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.5rem;
+}
+
+.terminal-menu-shortcut {
+  color: var(--muted, var(--fg));
+  opacity: 0.7;
+  font-size: 0.85em;
+}
+
+.terminal-view {
+  position: relative;
+}
+
+.terminal-drop-over {
+  outline: 2px dashed var(--accent-fg);
+  outline-offset: -2px;
+}
+
+.terminal-hint {
+  position: absolute;
+  right: 0.75rem;
+  bottom: 0.75rem;
+  z-index: var(--z-dropdown);
+  padding: 0.35rem 0.6rem;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: 0.85em;
 }
 
 .terminal-menu-dismiss {
@@ -5073,6 +5131,48 @@ button.chain-label {
 
 .tab-chain-badge-busy {
   color: var(--accent-bright);
+}
+
+.terminal-exit-strip {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  padding: 0.4rem 0.6rem;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+}
+
+.terminal-exit-strip-text {
+  min-width: 0;
+  flex: 1 1 14rem;
+}
+
+.terminal-exit-strip-text p {
+  margin: 0;
+}
+
+.terminal-exit-strip-last {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, monospace);
+  opacity: 0.8;
+}
+
+.terminal-exit-strip-reason,
+.terminal-exit-strip-note {
+  font-size: 0.85em;
+  opacity: 0.8;
+}
+
+.terminal-exit-strip-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
 }
 
 /* R12: a disabled-reason note inside a button row sits next to its button. */

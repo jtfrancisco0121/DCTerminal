@@ -376,7 +376,7 @@ test("Planner terminal → Implementer terminal gets every required field from t
   expect(input.handoffPlan).toBe("## Plan\n1. Return 401 for expired tokens");
 });
 
-test("a chained Planner terminal: exit mid-turn, hand off from the tail, restart keeps the chain and start time", async ({
+test("a chained Planner terminal: exit mid-turn, hand off from the tail, Start fresh keeps the chain and start time", async ({
   app,
   page,
 }) => {
@@ -395,11 +395,71 @@ test("a chained Planner terminal: exit mid-turn, hand off from the tail, restart
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await expect(dialog).toBeHidden();
 
-  await page.getByRole("button", { name: "Restart" }).click();
+  // A Claude terminal shows the exit strip, not Restart. With no session in
+  // the log only Start fresh is offered.
+  const strip = page.getByRole("alert", { name: "Terminal ended" });
+  await expect(strip.getByRole("button", { name: "Resume session" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Restart" })).toHaveCount(0);
+  await strip.getByRole("button", { name: "Start fresh" }).click();
   await expect.poll(async () => (await app.calls("pty_open")).length).toBe(2);
+  const reopened = (await app.calls("pty_open"))[1];
+  expect(reopened.args.input).toMatchObject({ id: "tab-1", launch: "role", prompt: null, resumeSessionId: null });
   await expect(page.getByText("Process exited (130).")).toBeHidden();
+  await expect(strip).toBeHidden();
   await expect(toolbar(page).getByTitle("Open chain overview")).toHaveText("Eagle-Eye 1 · step 1 of 4");
   await app.ptyOutput("tab-1", "back again\r\n");
+  await toolbar(page).getByRole("button", { name: "Next: Send to Plan Reviewer" }).click();
+  await expect.poll(async () => (await app.calls("terminal_plan_file")).length).toBe(2);
+  const second = (await app.calls("terminal_plan_file"))[1];
+  expect(second.args.startedAtMs).toBe(first.args.startedAtMs);
+});
+
+test("a chained Planner terminal: Resume session reopens the saved Claude session and keeps the start time", async ({
+  app,
+  page,
+}) => {
+  await app.open({
+    tabs: [terminalTab("tab-1", "role_planner", "Planner · Login 500", { chain: chain(1) })],
+    handlers: {
+      terminal_session_log: () => ({
+        sessionId: "claude-sess-1",
+        path: "/Users/e2e/.claude/projects/demo/claude-sess-1.jsonl",
+        turnDone: false,
+        lastReply: "",
+        plan: null,
+        planAt: null,
+        lastPromptAt: null,
+        toolCalls: [],
+        openTool: null,
+        permissionMode: "plan",
+      }),
+    },
+  });
+  await app.waitForCall("pty_open");
+  await app.ptyOutput("tab-1", "## Plan\r\n1. Half-written step");
+  await toolbar(page).getByRole("button", { name: "Next: Send to Plan Reviewer" }).click();
+  const first = await app.waitForCall("terminal_plan_file");
+  const dialog = page.getByRole("dialog", { name: "Send plan" });
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toBeHidden();
+
+  await app.ptyExit("tab-1", 1);
+  const strip = page.getByRole("alert", { name: "Terminal ended" });
+  await expect(strip).toContainText("Process exited (1).");
+  await expect(strip).toContainText("1. Half-written step");
+  await strip.getByRole("button", { name: "Resume session" }).click();
+  await expect.poll(async () => (await app.calls("pty_open")).length).toBe(2);
+  const reopened = (await app.calls("pty_open"))[1];
+  expect(reopened.args.input).toMatchObject({
+    id: "tab-1",
+    launch: "role",
+    roleId: "role_planner",
+    prompt: null,
+    resumeSessionId: "claude-sess-1",
+  });
+  await expect(strip).toBeHidden();
+  await expect(toolbar(page).getByTitle("Open chain overview")).toHaveText("Eagle-Eye 1 · step 1 of 4");
+  await app.ptyOutput("tab-1", "\r\nback again\r\n");
   await toolbar(page).getByRole("button", { name: "Next: Send to Plan Reviewer" }).click();
   await expect.poll(async () => (await app.calls("terminal_plan_file")).length).toBe(2);
   const second = (await app.calls("terminal_plan_file"))[1];
