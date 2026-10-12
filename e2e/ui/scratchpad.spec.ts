@@ -20,7 +20,7 @@ test("pad Send: prompt goes to the agent, pad clears, Recent sends lists it", as
   const pad = await readyChat(app, page);
   const editor = pad.getByRole("textbox", { name: "Scratch pad editor" });
   await editor.fill("Summarize the open questions");
-  await pad.getByRole("button", { name: "Send", exact: true }).click();
+  await editor.press("Control+Enter");
 
   const send = await app.waitForCall("dev_session_send");
   expect(send.args).toEqual({ prompt: "Summarize the open questions", tabId: "tab-1", attachments: null });

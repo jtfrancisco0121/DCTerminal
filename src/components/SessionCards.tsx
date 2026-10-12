@@ -1,7 +1,9 @@
 import type { ReactNode } from "react";
 import type { PlanEntry, SessionCards as Cards, TaskUpdate, TodoItem } from "../sessionCards";
-import { activeToolProgress, lastAgentSegmentId } from "../sessionCards";
+import { lastAgentSegmentId } from "../sessionCards";
 import type { StreamSegment } from "../transcript";
+import { humanizeStatus } from "../chatStatus";
+import { ChatMarkdown } from "./ChatMarkdown";
 import { HandoffActions } from "./HandoffDialog";
 import type { HandoffTargetId, RoleName } from "../handoff/map";
 
@@ -48,8 +50,6 @@ export function SessionCards({
   const markdown = planRequest?.markdown?.trim() ?? "";
   // Claude ExitPlanMode. Never offer Accept / "Yes" — implementation is a hand-off.
   const claudeExit = markdown.length > 0 || !!planRequest?.keepOptionId;
-  const tools = activeToolProgress(segments);
-  const hasTools = tools.length > 0;
   const handoffActions = handoff ? (
     <HandoffActions
       enabled={handoff.enabled}
@@ -72,7 +72,6 @@ export function SessionCards({
     !markdown &&
     cards.todos.length === 0 &&
     cards.tasks.length === 0 &&
-    !hasTools &&
     !cardHandoff
   ) {
     return null;
@@ -81,7 +80,11 @@ export function SessionCards({
     <div className="session-cards">
       {(plan.length > 0 || markdown) && (
         <Card title={planRequest?.title || "Plan"}>
-          {markdown && <pre className="plan-markdown">{markdown}</pre>}
+          {markdown && (
+            <div className="plan-markdown">
+              <ChatMarkdown>{markdown}</ChatMarkdown>
+            </div>
+          )}
           {plan.length > 0 && (
             <StatusList items={plan.map((entry) => ({
               key: entry.content,
@@ -134,24 +137,13 @@ export function SessionCards({
               <li key={task.agentId}>
                 <span>{task.description}</span>
                 <span className="hint">
-                  {task.status}
+                  {humanizeStatus(task.status)}
                   {task.model ? ` · ${task.model}` : ""}
                   {task.durationMs != null ? ` · ${task.durationMs} ms` : ""}
                 </span>
               </li>
             ))}
           </ul>
-        </Card>
-      )}
-      {hasTools && (
-        <Card title="Tool progress">
-          <StatusList
-            items={tools.map((tool, index) => ({
-              key: `${tool.text}-${index}`,
-              label: tool.text,
-              status: tool.status,
-            }))}
-          />
         </Card>
       )}
     </div>
@@ -178,7 +170,7 @@ function StatusList({
         <li key={item.key}>
           <span className={`status-dot status-dot-${item.status}`} aria-hidden />
           <span>{item.label}</span>
-          <span className="hint">{item.status}</span>
+          <span className="hint">{humanizeStatus(item.status)}</span>
         </li>
       ))}
     </ul>

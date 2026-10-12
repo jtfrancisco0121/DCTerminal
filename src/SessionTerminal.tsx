@@ -12,14 +12,14 @@ import {
 import { HandoffActions } from "./components/HandoffDialog";
 import type { HandoffTargetId, RoleName } from "./handoff/map";
 import { historyNavigate } from "./scratch/pad";
-import ReactMarkdown, { type Components } from "react-markdown";
-import remarkGfm from "remark-gfm";
 import type { PermissionRequestEvent, QuestionRequestEvent } from "./bridge";
 import { PermissionCard } from "./PermissionCard";
 import { QuestionCard } from "./components/QuestionCard";
 import { summarizeSessionActivity } from "./sessionActivity";
 import { lastAgentSegmentId } from "./sessionCards";
 import type { StreamSegment, ToolStatus } from "./transcript";
+import { ChatMarkdown, CopyButton } from "./components/ChatMarkdown";
+import { InlineNotice } from "./components/InlineNotice";
 import { ChainLabel } from "./components/ChainLabel";
 import { ChatFindBar } from "./components/ChatFindBar";
 import { findAll, searchSegments } from "./search/textSearch";
@@ -72,21 +72,6 @@ function paintFindHighlights(root: HTMLElement, query: string, current: HTMLElem
   if (active) CSS.highlights.set(HIGHLIGHT_CURRENT, new Highlight(active));
   else CSS.highlights.delete(HIGHLIGHT_CURRENT);
 }
-
-const markdownComponents: Components = {
-  // target=_blank lets the opener plugin open links in the system browser
-  // instead of navigating the app's own webview.
-  a: ({ href, children }) => (
-    <a href={href} target="_blank" rel="noreferrer noopener">
-      {children}
-    </a>
-  ),
-  table: ({ children }) => (
-    <div className="session-markdown-table-wrap">
-      <table>{children}</table>
-    </div>
-  ),
-};
 
 /** Where each tab's transcript was scrolled, kept across tab switches. */
 const savedScroll = new Map<string, { top: number; stick: boolean }>();
@@ -236,11 +221,22 @@ export function SessionTerminal({
     el.scrollTop = el.scrollHeight;
   }, [segments, promptInFlight, scrollKey]);
 
+  const [atBottom, setAtBottom] = useState(true);
+  const jumpToLatest = () => {
+    const el = screenRef.current;
+    if (!el) return;
+    stickRef.current = true;
+    setAtBottom(true);
+    if (scrollKey) savedScroll.set(scrollKey, { top: el.scrollHeight, stick: true });
+    el.scrollTop = el.scrollHeight;
+  };
+
   const rememberScroll = () => {
     const el = screenRef.current;
     if (!el) return;
     const stick = el.scrollHeight - el.scrollTop - el.clientHeight < STICK_PX;
     stickRef.current = stick;
+    setAtBottom(stick);
     if (scrollKey) savedScroll.set(scrollKey, { top: el.scrollTop, stick });
   };
 
@@ -349,7 +345,6 @@ export function SessionTerminal({
   };
 
   const hasContent = segments.some((s) => s.text.length > 0);
-  const remarkPlugins = useMemo(() => [remarkGfm], []);
   const activity = summarizeSessionActivity(segments, {
     promptInFlight,
     waitingPermission: !!permissionRequest,
@@ -417,7 +412,7 @@ export function SessionTerminal({
               className="primary-button"
               onClick={onRestart}
               disabled={busy}
-              title="Stop this agent and return to the form so you can start it again"
+              title="Start this agent again, continuing the same session"
             >
               Restart
             </button>
@@ -496,6 +491,15 @@ export function SessionTerminal({
       )}
 
       <div className="session-terminal-screen-wrap">
+        {!atBottom && hasContent && (
+          <button
+            type="button"
+            className="secondary-button session-jump-latest"
+            onClick={jumpToLatest}
+          >
+            Jump to latest
+          </button>
+        )}
         <div
           ref={screenRef}
           className="session-terminal-screen"
@@ -520,24 +524,19 @@ export function SessionTerminal({
                 <div className="session-user-turn">
                   <div className="session-user-label" aria-hidden>You ›</div>
                   <div className="session-user-body">
-                    <ReactMarkdown
-                      remarkPlugins={remarkPlugins}
-                      components={markdownComponents}
-                    >
-                      {renderImageMarkers(seg.text)}
-                    </ReactMarkdown>
+                    <ChatMarkdown>{renderImageMarkers(seg.text)}</ChatMarkdown>
                   </div>
                 </div>
               ) : seg.kind === "agent" ? (
                 <div className="session-agent-turn">
-                  <div className="session-agent-label" aria-hidden>Agent</div>
+                  <div className="session-agent-head">
+                    <div className="session-agent-label" aria-hidden>Agent</div>
+                    {!promptInFlight || seg.id !== lastAgentId ? (
+                      <CopyButton text={seg.text} label="Copy reply" />
+                    ) : null}
+                  </div>
                   <div className="session-agent-body">
-                    <ReactMarkdown
-                      remarkPlugins={remarkPlugins}
-                      components={markdownComponents}
-                    >
-                      {seg.text}
-                    </ReactMarkdown>
+                    <ChatMarkdown>{seg.text}</ChatMarkdown>
                   </div>
                   {handoff && seg.id === lastAgentId && (
                     <HandoffActions
@@ -583,11 +582,15 @@ export function SessionTerminal({
       </div>
 
       {promptError && (
-        <p className="error session-terminal-error">{promptError}</p>
+        <InlineNotice tone="error" className="session-terminal-error">
+          {promptError}
+        </InlineNotice>
       )}
 
       {blockedWarning && (
-        <p className="error session-terminal-error" role="alert">{blockedWarning}</p>
+        <InlineNotice tone="error" className="session-terminal-error">
+          {blockedWarning}
+        </InlineNotice>
       )}
       {images && <AttachmentChips images={images} />}
 

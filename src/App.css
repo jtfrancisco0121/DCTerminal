@@ -722,6 +722,7 @@ body,
 }
 
 .session-terminal-screen-wrap {
+  position: relative;
   flex: 1;
   min-height: 0;
   overflow: hidden;
@@ -3953,10 +3954,62 @@ mark.search-hit-current {
 
 .plan-markdown {
   margin: 0.2rem 0 0.4rem;
-  max-height: 14rem;
+  max-height: 18rem;
   overflow: auto;
-  white-space: pre-wrap;
   font-size: var(--text-sm);
+}
+
+.plan-markdown > :first-child {
+  margin-top: 0;
+}
+
+.chat-code-block {
+  position: relative;
+  margin: 0.5rem 0;
+}
+
+.chat-code-block pre {
+  margin: 0;
+  overflow-x: auto;
+}
+
+.chat-code-block .chat-copy-button {
+  position: absolute;
+  top: var(--space-1);
+  right: var(--space-1);
+  z-index: var(--z-sticky);
+  opacity: 0;
+  font-size: var(--text-xs);
+}
+
+.chat-code-block:hover .chat-copy-button,
+.chat-code-block .chat-copy-button:focus-visible {
+  opacity: 1;
+}
+
+.session-agent-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.session-agent-head .chat-copy-button {
+  font-size: var(--text-xs);
+  opacity: 0.7;
+}
+
+.session-agent-head .chat-copy-button:hover,
+.session-agent-head .chat-copy-button:focus-visible {
+  opacity: 1;
+}
+
+.session-jump-latest {
+  position: absolute;
+  right: var(--space-4);
+  bottom: var(--space-3);
+  z-index: var(--z-sticky);
+  box-shadow: var(--elev-2);
 }
 
 .usage-window {

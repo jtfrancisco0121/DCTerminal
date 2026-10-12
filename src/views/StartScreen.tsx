@@ -48,6 +48,8 @@ export type StartScreenProps = {
   activeTabSummary: TabSummary | null | undefined;
   session: DevSessionInfo | null;
   busy: boolean;
+  /** A chat session is being started (Start was pressed, the agent is not up yet). */
+  starting?: boolean;
   cliFound: boolean;
   providers: ProvidersState;
   activeProvider: ProviderId;
@@ -126,6 +128,7 @@ export function StartScreen({
   activeTabSummary,
   session,
   busy,
+  starting = false,
   cliFound,
   providers,
   activeProvider,
@@ -256,7 +259,8 @@ export function StartScreen({
         <ul className="field-errors">
           {errors.map((e) => (
             <li key={`${e.key}-${e.message}`}>
-              <strong>{e.key}:</strong> {e.message}
+              {e.key.startsWith("_") ? null : <strong>{e.key}: </strong>}
+              {e.message}
             </li>
           ))}
         </ul>
@@ -443,7 +447,11 @@ export function StartScreen({
       title={startReason ?? undefined}
       aria-describedby={startHint ? startReasonId : undefined}
     >
-      {startsTerminal && startRoleName ? `Start ${startRoleName} terminal` : "Start"}
+      {starting
+        ? "Starting…"
+        : startsTerminal && startRoleName
+          ? `Start ${startRoleName} terminal`
+          : "Start"}
     </button>
   );
 

@@ -51,10 +51,10 @@ test("an image-only message can be sent from the composer", async ({ app, page }
 });
 
 test("an image-only message can be sent from the pad", async ({ app, page }) => {
-  const { editor, padSend } = await quietChat(app, page);
+  const { editor, padSendKey } = await quietChat(app, page);
   await app.pasteImage(editor, png("pad.png"));
   await expect(page.getByRole("list", { name: "Attached images" }).first()).toBeVisible();
-  await padSend.click();
+  await padSendKey();
   const send = await app.waitForCall("dev_session_send");
   expect(send.args).toEqual({ prompt: "", tabId: "tab-1", attachments: ["att-1"] });
 });

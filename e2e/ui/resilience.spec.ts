@@ -99,7 +99,7 @@ const LOGIN_ATTEMPT = /login|auth|pty_open|terminal_start|open_url|shell\|open/i
 const LOGIN_STATUS_READS = new Set(["cli_login_status", "claude_account_logins"]);
 
 test.describe("agent process failures", () => {
-  test("the agent exiting mid-turn shows the error, blocks sending and offers Restart", async ({
+  test("the agent exiting mid-turn shows the error, blocks sending and Restart starts it again", async ({
     app,
     page,
   }) => {
@@ -127,13 +127,9 @@ test.describe("agent process failures", () => {
     expect(String(stop.args.transcript)).toContain("Working on it");
     expect(await app.calls("dev_session_send")).toHaveLength(0);
 
-    // Back on the start surface with the old transcript kept read-only.
-    await expect(page.getByRole("button", { name: "Stop session" })).toHaveCount(0);
-    await expect(status(page)).toHaveText("Not started");
-    await expect(page.getByRole("tab", { name: "General", exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "Start new session" }).click();
-    const again = await app.start("tab-1");
-    expect(await app.calls("role_session_start")).toHaveLength(2);
+    // Restart is not Stop: it starts the same tab again, continuing its session.
+    await expect.poll(async () => (await app.calls("role_session_start")).length).toBe(2);
+    const again = app.turn("tab-1");
     await again.reply("Back online.");
     await expect(status(page)).toHaveText("Ready");
     await expect(page.getByText("segfault in adapter")).toHaveCount(0);
@@ -365,6 +361,7 @@ test.describe("cancel and stop", () => {
       await expect(page.getByRole("tab", { name: /General.*Needs you/ })).toBeVisible();
 
       await page.getByRole("button", { name: "Stop session" }).click();
+      await page.getByRole("alertdialog", { name: "Stop this session?" }).getByRole("button", { name: "Stop session" }).click();
       const stop = await app.waitForCall("dev_session_stop");
       expect(stop.args.tabId).toBe("tab-1");
       expect(String(stop.args.transcript)).toContain("Thinking about it");

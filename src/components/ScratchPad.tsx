@@ -44,6 +44,8 @@ type Props = {
    * A `---` chain sends them with its first step only.
    */
   images?: ChatImagesProps | null;
+  /** False when the composer beside this pad already lists the images. */
+  showImageChips?: boolean;
 };
 
 export const PAD_MIN_HEIGHT = 40;
@@ -81,6 +83,7 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
     onHeightCommit,
     slashCommands = [],
     images = null,
+    showImageChips = true,
   },
   ref,
 ) {
@@ -167,7 +170,7 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
         <span className="hint scratch-pad-hint">
           {terminal
             ? `${modLabel}+Shift+. send · ${(platform ? shortcutLabel("focusPad", platform) : localShortcutLabel("focusPad")) ?? `${modLabel}+J`} focus · Esc terminal`
-            : `${localShortcutLabel("transferPad")} transfer · ${localShortcutLabel("send")} send${
+            : `${localShortcutLabel("transferPad")} transfer · ${localShortcutLabel("send")} send to chat${
                 chained ? " · --- starts the next step after the turn ends" : ""
               }`}
         </span>
@@ -220,15 +223,20 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
               Paste to terminal
             </button>
           )}
-          <button
-            type="button"
-            className="primary-button"
-            onMouseDown={terminal ? (event) => event.preventDefault() : undefined}
-            onClick={onSend}
-            disabled={disabled || (terminal && !content.trim()) || !!blockedWarning}
-          >
-            {chained ? "Send steps" : "Send"}
-          </button>
+          {/* A chat has one Send (the composer's). Its pad keeps only the chain
+              entry, "Send steps"; a plain chat pad sends with Ctrl+Enter or
+              Transfer, and a terminal pad keeps its own Send. */}
+          {(terminal || chained) && (
+            <button
+              type="button"
+              className="primary-button"
+              onMouseDown={terminal ? (event) => event.preventDefault() : undefined}
+              onClick={onSend}
+              disabled={disabled || (terminal && !content.trim()) || !!blockedWarning}
+            >
+              {chained ? "Send steps" : "Send"}
+            </button>
+          )}
           {running && (
             <button type="button" className="secondary-button" onClick={onStopChain}>
               Stop chain
@@ -263,7 +271,7 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
         <p className="error scratch-pad-status" role="alert">{blockedWarning}</p>
       )}
       {!collapsed && slash.menu}
-      {!terminal && images && !collapsed && <AttachmentChips images={images} />}
+      {!terminal && images && showImageChips && !collapsed && <AttachmentChips images={images} />}
       <textarea
         ref={setEditor}
         className="scratch-pad-input"

@@ -169,6 +169,7 @@ import { LogDrawer } from "./components/LogDrawer";
 import { SettingsPage } from "./components/SettingsPage";
 import { StatusBar, type StatusMessage, type StatusTone } from "./components/StatusBar";
 import { summarizeSessionActivity } from "./sessionActivity";
+import { chatSessionStatus } from "./chatStatus";
 import { folderForTab } from "./projectsView";
 import {
   canContinueStoredSession,
@@ -996,8 +997,13 @@ export function StartupForm({
         for (const running of snap.tabs) {
           if (running.phase !== "running" || running.kind === "terminal") continue;
           if (running.kind === "pipeline_overview") continue;
-          // intentionally silent: a failed probe just means the tab is not reattached.
-          const live = await devSessionLive(running.id).catch(() => null);
+          let live: Awaited<ReturnType<typeof devSessionLive>> | null = null;
+          try {
+            live = await devSessionLive(running.id);
+          } catch (err: unknown) {
+            showNotice(`${running.label} not reconnected`, errorText(err), "failed");
+            continue;
+          }
           if (!live) continue;
           const { roleId: _role, promptInFlight: inFlight, exited, ...info } = live;
           patchRuntime(running.id, (rt) => ({
@@ -1877,12 +1883,20 @@ export function StartupForm({
       cwd?: string;
       /** Continue button: load the id stored on this tab. Start new session does not. */
       resumeStored?: boolean;
+      /**
+       * Start a tab that is not the active one (the second pane's Restart):
+       * its own role, answers and transcript, and it stays in its pane.
+       */
+      pane?: { roleId: string; values: Record<string, string>; transcript: string };
     },
   ) => {
     if (startLockRef.current) return;
     startLockRef.current = true;
     setBusy(true);
+    const pane = resume?.pane ?? null;
     const tabKey = resume?.tabId ?? activeTabId;
+    const startRoleId = pane?.roleId ?? roleId;
+    const transcript = pane ? pane.transcript : savedTranscript;
     const resend = forceResend;
     const resumeId = resumeIdForStart({
       explicitSessionId: resume?.sessionId,
@@ -1891,9 +1905,10 @@ export function StartupForm({
       forceResend: resend,
     });
     const continuing = !!resumeId;
+    const baseValues = pane?.values ?? formValues;
     const startValues = resume?.cwd
-      ? { ...formValues, cwd: resume.cwd }
-      : formValues;
+      ? { ...baseValues, cwd: resume.cwd }
+      : baseValues;
     if (tabKey) {
       patchRuntime(tabKey, (rt) => ({
         ...rt,
@@ -1905,14 +1920,14 @@ export function StartupForm({
         segments: segmentsWhileStarting({
           continuing,
           sessionId: resumeId,
-          savedTranscript,
+          savedTranscript: transcript,
           existing: rt.segments,
         }),
       }));
     }
     try {
       const result = await roleSessionStart(
-        roleId,
+        startRoleId,
         startValues,
         tabKey,
         resend,
@@ -1929,18 +1944,19 @@ export function StartupForm({
         }
         return;
       }
-      setActiveTabId(targetId);
+      if (!pane) setActiveTabId(targetId);
       patchRuntime(targetId, (rt) => {
         let segments = segmentsAfterResume({
           segments: rt.segments,
           loaded: result.loadedViaSessionLoad,
           replay: result.replay ?? [],
           replayMessageCount: result.replayMessageCount ?? 0,
-          savedTranscript,
+          savedTranscript: transcript,
           folderWarning: result.folderWarning,
         });
         if (result.injectionInFlight && !continuing) {
-          const startupText = preview?.merged?.text?.trim();
+          // The preview belongs to the active tab, not to a tab in its own pane.
+          const startupText = pane ? undefined : preview?.merged?.text?.trim();
           segments = startupText
             ? appendStreamSegment(segments, streamSegmentFromUserMessage(startupText))
             : [
@@ -1968,15 +1984,15 @@ export function StartupForm({
           segments,
         };
       });
-      setPreview(null);
+      if (!pane) setPreview(null);
       if (
         !resumeId &&
         eagleOnRef.current &&
         targetId &&
         !inChain(targetId) &&
-        (roleId === "role_planner" || roleId === "role_implementer")
+        (startRoleId === "role_planner" || startRoleId === "role_implementer")
       ) {
-        const kind = roleId === "role_planner" ? "eagle1" : "eagle2";
+        const kind = startRoleId === "role_planner" ? "eagle1" : "eagle2";
         await setTabChain(targetId, newChain(kind));
       }
       await refreshTabs();
@@ -2247,6 +2263,60 @@ export function StartupForm({
       setBusy(false);
     }
   }, [refreshTabs, streamSegments, activeTabId, patchRuntime]);
+
+  const confirmStop = useCallback(
+    () =>
+      confirm({
+        title: "Stop this session?",
+        message:
+          "The agent stops and any turn in progress is lost. The transcript is saved with the tab, and you can continue the session later.",
+        confirmLabel: "Stop session",
+        danger: true,
+      }),
+    [confirm],
+  );
+
+  /** The Stop button: ends the agent for good, so it asks first. */
+  const requestStopSession = useCallback(async () => {
+    if (await confirmStop()) await stopSession();
+  }, [confirmStop, stopSession]);
+
+  /** The second pane's Stop button: asks first, like the main pane's. */
+  const requestStopSecondarySession = useCallback(
+    async (tabId: string) => {
+      if (await confirmStop()) await stopSecondarySession(tabId);
+    },
+    [confirmStop, stopSecondarySession],
+  );
+
+  /** The second pane's Restart: stop that tab and start it again in its pane, resuming its session. */
+  const restartSecondarySession = useCallback(
+    async (tabId: string) => {
+      const tab = savedTabsRef.current.find((t) => t.id === tabId);
+      if (!tab) return;
+      const rt = runtimesRef.current[tabId];
+      const resumeId = rt?.session?.sessionId || tab.acpSessionId || undefined;
+      const transcript = segmentsToPlainText(rt?.segments ?? []);
+      const draft = draftsRef.current[tabId];
+      const values = { ...(draft?.values ?? {}), cwd: tab.cwd || draft?.values.cwd || "" };
+      await stopSecondarySession(tabId);
+      await startSession(false, {
+        tabId,
+        sessionId: resumeId,
+        pane: { roleId: draft?.roleId ?? tab.roleId, values, transcript },
+      });
+    },
+    [stopSecondarySession, startSession],
+  );
+
+  /** Restart: stop an agent that exited and start the same tab again, resuming its session. */
+  const restartSession = useCallback(async () => {
+    const tabId = activeTabId;
+    if (!tabId) return;
+    const resumeId = session?.sessionId || activeTabSummary?.acpSessionId || undefined;
+    await stopSession();
+    await startSession(false, resumeId ? { tabId, sessionId: resumeId } : { tabId });
+  }, [activeTabId, session, activeTabSummary, stopSession, startSession]);
 
   const handleSelectTab = useCallback(
     async (tabId: string) => {
@@ -5281,7 +5351,8 @@ export function StartupForm({
     cancelTurnFor,
     setFollowUpFor,
     sendFollowUpFor,
-    stopSecondarySession,
+    requestStopSecondarySession,
+    restartSecondarySession,
     headerDeps,
   });
 
@@ -5340,9 +5411,16 @@ export function StartupForm({
         promptInFlight: !!promptInFlight,
         waitingPermission: !!permissionRequest,
       });
-      if (activity) return { tone: permissionRequest ? "needs" : "busy", text: activity };
-      return { tone: "ok", text: activeRuntime.agentExited ? "Agent exited" : "Ready" };
+      return chatSessionStatus({
+        activity,
+        waitingPermission: !!permissionRequest,
+        promptError: activeRuntime.promptError,
+        agentExited: activeRuntime.agentExited,
+        accepting: activeRuntime.accepting,
+        hasSession: true,
+      });
     }
+    if (activeRuntime.accepting && busy) return { tone: "busy", text: "Starting…" };
     return { tone: "idle", text: "Not started" };
   })();
   const providerNotice = activeTabSummary?.providerNotice?.trim() ?? "";
@@ -5568,7 +5646,8 @@ export function StartupForm({
         cancelTurn={cancelTurn}
         setFollowUp={setFollowUp}
         sendFollowUp={sendFollowUp}
-        stopSession={stopSession}
+        stopSession={requestStopSession}
+        restartSession={restartSession}
         transferPad={transferPad}
         transferToTerminalNow={transferToTerminalNow}
         sendFromPad={sendFromPad}
@@ -5591,6 +5670,7 @@ export function StartupForm({
       activeTabSummary={activeTabSummary}
       session={session}
       busy={busy}
+      starting={busy && activeRuntime.accepting}
       cliFound={cliFound}
       providers={providers}
       activeProvider={activeProvider}

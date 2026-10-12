@@ -7,10 +7,12 @@ import type {
   SetStateAction,
 } from "react";
 import type { DevSessionInfo, getClaudeUsage, TabSummary } from "../bridge";
+import { InlineNotice } from "../components/InlineNotice";
 import { ScratchPad } from "../components/ScratchPad";
 import { SessionCards } from "../components/SessionCards";
 import { SplitPanes } from "../components/SplitPanes";
 import { TerminalView } from "../components/TerminalView";
+import { stopReasonText } from "../chatStatus";
 import { chainLabel } from "../handoff/chains";
 import type { TabRuntime } from "../liveTabs";
 import type { ProviderId } from "../provider/types";
@@ -75,6 +77,7 @@ export type ChatSessionViewProps = {
   setFollowUp: (value: string) => void;
   sendFollowUp: TerminalProps["onSendFollowUp"];
   stopSession: TerminalProps["onStop"];
+  restartSession: () => void;
   transferPad: () => void;
   transferToTerminalNow: () => Promise<void>;
   sendFromPad: () => void;
@@ -129,6 +132,7 @@ export function ChatSessionView({
   setFollowUp,
   sendFollowUp,
   stopSession,
+  restartSession,
   transferPad,
   transferToTerminalNow,
   sendFromPad,
@@ -144,6 +148,9 @@ export function ChatSessionView({
   const permissionRequest = activeRuntime.permission;
   const planRequest = activeRuntime.plan;
   const questionRequest = activeRuntime.question;
+  // The plan card carries the hand-off buttons, so the last reply does not repeat them.
+  const planHandoffInCard =
+    !!planRequest && (!!planRequest.markdown?.trim() || !!planRequest.keepOptionId);
   const attachFirst = startResult?.injectionStrategy === "attach_to_first_message";
   return (
     <section className="status-card status-card-session-full">
@@ -204,13 +211,13 @@ export function ChatSessionView({
             onStop={stopSession}
             folderWarning={activeRuntime.folderWarning}
             agentExited={activeRuntime.agentExited}
-            onRestart={stopSession}
+            onRestart={restartSession}
             inputRef={inputRef}
             slashCommands={activeRuntime.slashCommands}
             history={composerHistory}
             historyCursor={historyCursor}
             onHistoryCursor={setHistoryCursor}
-            handoff={handoffOffer}
+            handoff={planHandoffInCard ? null : handoffOffer}
             images={imagesFor(activeTabId, session)}
             statusInBar
             details={[
@@ -276,6 +283,7 @@ export function ChatSessionView({
         }}
         onOpenLibrary={() => openPromptLibrary(false)}
         images={imagesFor(activeTabId, session)}
+        showImageChips={false}
         collapsed={!padOpen}
         onToggle={() => uiSettings.update({ padHidden: padOpen })}
         {...padSizeProps}
@@ -286,14 +294,10 @@ export function ChatSessionView({
         }}
       />
       {transcriptSaveError && (
-        <p className="error scratch-pad-status">
-          Could not save the transcript: {transcriptSaveError}
-        </p>
+        <InlineNotice tone="error">Could not save the transcript: {transcriptSaveError}</InlineNotice>
       )}
       {lastPromptResult && !promptInFlight && (
-        <p className="hint session-turn-hint">
-          Last turn: {lastPromptResult.stopReason ?? "finished"}
-        </p>
+        <p className="hint session-turn-hint">{stopReasonText(lastPromptResult.stopReason)}</p>
       )}
     </section>
   );

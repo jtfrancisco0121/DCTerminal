@@ -32,7 +32,7 @@ describe("Claude plan card", () => {
         }}
       />,
     );
-    expect(screen.getByText("1. Add the picker")).toBeTruthy();
+    expect(screen.getByText("Add the picker")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Accept plan" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Next: Send to Plan Reviewer" }));
     expect(onSend).toHaveBeenCalledWith("role_plan_reviewer");
@@ -108,5 +108,34 @@ describe("lastAgentSegmentId", () => {
       ]),
     ).toBe("a1");
     expect(lastAgentSegmentId([{ id: "u1", kind: "user", text: "x" }])).toBeNull();
+  });
+});
+
+describe("Session cards de-duplication and wording", () => {
+  it("does not repeat running tools that the transcript already lists", () => {
+    const { container } = render(
+      <SessionCards
+        cards={emptySessionCards()}
+        segments={[{ id: "t1", kind: "tool", text: "Edit file", toolStatus: "in_progress" }]}
+        planRequest={null}
+        busy={false}
+      />,
+    );
+    expect(container.textContent).not.toContain("Tool progress");
+    expect(container.textContent).not.toContain("Edit file");
+  });
+
+  it("renders the plan as markdown and words statuses plainly", () => {
+    render(
+      <SessionCards
+        cards={{ plan: [{ content: "Step", status: "in_progress" }], todos: [], tasks: [] }}
+        segments={[]}
+        planRequest={{ jsonRpcId: 1, title: "Plan", entries: [], markdown: "## Heading\n\n- one", keepOptionId: "k" }}
+        busy={false}
+      />,
+    );
+    expect(screen.getByRole("heading", { name: "Heading" })).toBeTruthy();
+    expect(screen.getByText("In progress")).toBeTruthy();
+    expect(screen.queryByText("in_progress")).toBeNull();
   });
 });

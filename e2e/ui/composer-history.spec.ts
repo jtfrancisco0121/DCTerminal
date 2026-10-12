@@ -157,7 +157,7 @@ test("history from scratch.json is offered by Up", async ({ app, page }) => {
 });
 
 test("during a composer-sent turn both boxes stay editable, but nothing more is sent", async ({ app, page }) => {
-  const { composer, padSend, editor, turn, status } = await quietChat(app, page);
+  const { composer, padSendKey, editor, turn, status } = await quietChat(app, page);
   await composer.fill("first");
   await composer.press("ControlOrMeta+Enter");
   await expect(status).toHaveText("Agent working…");
@@ -166,7 +166,7 @@ test("during a composer-sent turn both boxes stay editable, but nothing more is 
   await composer.fill("next draft");
   await editor.fill("queued idea");
   await editor.press("Control+Enter");
-  await padSend.click();
+  await padSendKey();
   await app.nextFrame();
   expect(await sentPrompts(app)).toEqual(["first"]);
 
@@ -179,9 +179,9 @@ test("during a composer-sent turn both boxes stay editable, but nothing more is 
 });
 
 test("after a pad send, a composer Send during the turn is held back and the text stays", async ({ app, page }) => {
-  const { composer, composerSend, editor, padSend, turn, status } = await quietChat(app, page);
+  const { composer, composerSend, editor, padSendKey, turn, status } = await quietChat(app, page);
   await editor.fill("from the pad");
-  await padSend.click();
+  await padSendKey();
   await expect(status).toHaveText("Agent working…");
   await expect(editor).toHaveValue("");
 
@@ -202,12 +202,12 @@ test("after a pad send, a composer Send during the turn is held back and the tex
 });
 
 test("a chain is not started while a turn is in flight", async ({ app, page }) => {
-  const { editor, padSend, turn } = await quietChat(app, page);
+  const { editor, padSendKey, turn } = await quietChat(app, page);
   await editor.fill("busy");
-  await padSend.click();
+  await padSendKey();
   await expect.poll(() => sentPrompts(app)).toEqual(["busy"]);
   await editor.fill("one\n---\ntwo");
-  await padSend.click();
+  await padSendKey();
   await app.nextFrame();
   expect(await sentPrompts(app)).toEqual(["busy"]);
   await expect(editor).toHaveValue("one\n---\ntwo");
@@ -216,12 +216,12 @@ test("a chain is not started while a turn is in flight", async ({ app, page }) =
 });
 
 test("pad Send while a pad-sent turn is in flight does not end the running turn", async ({ app, page }) => {
-  const { editor, padSend, status } = await quietChat(app, page);
+  const { editor, padSendKey, status } = await quietChat(app, page);
   await editor.fill("long job");
-  await padSend.click();
+  await padSendKey();
   await expect(status).toHaveText("Agent working…");
   await editor.fill("one more thing");
-  await padSend.click();
+  await padSendKey();
   await app.nextFrame();
   // Nothing is sent while the turn runs; the text stays in the pad.
   expect(await sentPrompts(app)).toEqual(["long job"]);
