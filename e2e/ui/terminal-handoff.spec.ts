@@ -19,8 +19,8 @@ const plannerTerminal = () =>
   });
 
 async function openAsTerminal(page: Page, role: string) {
-  await page.getByRole("group", { name: "Role" }).getByRole("button", { name: role, exact: true }).click();
-  await page.getByRole("group", { name: "Open as" }).getByRole("button", { name: "Terminal" }).click();
+  await page.getByRole("group", { name: "Role" }).getByRole("radio", { name: role, exact: true }).click();
+  await page.getByRole("radiogroup", { name: "Open as" }).getByRole("radio", { name: "Terminal" }).click();
 }
 
 test("Planner opened as Terminal: role_terminal_start with the form, then a role terminal", async ({ app, page }) => {
@@ -30,13 +30,13 @@ test("Planner opened as Terminal: role_terminal_start with the form, then a role
   expect((surface.args.terminal as { roleSurface: Record<string, string> }).roleSurface).toEqual({
     role_planner: "terminal",
   });
-  await expect(page.getByRole("group", { name: "Open as" }).getByRole("button", { name: "Terminal" })).toHaveAttribute(
-    "aria-pressed",
+  await expect(page.getByRole("radiogroup", { name: "Open as" }).getByRole("radio", { name: "Terminal" })).toHaveAttribute(
+    "aria-checked",
     "true",
   );
   await page.getByRole("textbox", { name: /^Title/ }).fill("Effort controls");
   await page.getByRole("textbox", { name: /Request \/ Problem/ }).fill("Let users pick reasoning effort");
-  await page.getByRole("group", { name: "Start a session" }).getByRole("button", { name: "Start terminal" }).click();
+  await page.getByRole("group", { name: "Start a session" }).getByRole("button", { name: "Start Planner terminal" }).click();
 
   const start = await app.waitForCall("role_terminal_start");
   expect(start.args.input).toMatchObject({
@@ -69,7 +69,7 @@ test("Plan Reviewer opened as Terminal starts a role terminal for that role", as
   await openAsTerminal(page, "Plan Reviewer");
   await page.getByRole("textbox", { name: /Original Task/ }).fill("Effort controls");
   await page.getByRole("textbox", { name: /Proposed Implementation Plan/ }).fill(PLAN);
-  await page.getByRole("group", { name: "Start a session" }).getByRole("button", { name: "Start terminal" }).click();
+  await page.getByRole("group", { name: "Start a session" }).getByRole("button", { name: "Start Plan Reviewer terminal" }).click();
   const start = await app.waitForCall("role_terminal_start");
   expect(start.args.input).toMatchObject({ roleId: "role_plan_reviewer", tabId: "tab-1", handoffPlan: null });
   expect((start.args.input as { values: Record<string, string> }).values).toMatchObject({

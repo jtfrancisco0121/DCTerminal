@@ -428,7 +428,7 @@ describe("blank tab card", () => {
     expect(within(row).queryByRole("button", { name: "Validate & preview" })).toBeNull();
     const roles = screen.getByRole("group", { name: "Role" });
     expect(row.contains(roles)).toBe(false);
-    expect(within(roles).getByRole("button", { name: "Developer" })).toBeTruthy();
+    expect(within(roles).getByRole("radio", { name: "Developer" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Validate & preview" })).toBeTruthy();
     const history = await screen.findByRole("region", { name: "Cursor CLI history" });
     expect(history.closest(".start-history")).toBeTruthy();
@@ -451,7 +451,7 @@ describe("blank tab card", () => {
     );
     await screen.findByLabelText("Title");
     vi.mocked(syncActiveTabForm).mockClear();
-    fireEvent.click(screen.getByRole("button", { name: "Planner" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Planner" }));
     await waitFor(() => expect(syncActiveTabForm).toHaveBeenCalled());
     const calls = vi.mocked(syncActiveTabForm).mock.calls;
     const last = calls[calls.length - 1];
@@ -472,8 +472,8 @@ describe("blank tab card", () => {
       />,
     );
     await screen.findByLabelText("Title");
-    const openAs = screen.getByRole("group", { name: "Open as" });
-    fireEvent.click(within(openAs).getByRole("button", { name: "Terminal" }));
+    const openAs = screen.getByRole("radiogroup", { name: "Open as" });
+    fireEvent.click(within(openAs).getByRole("radio", { name: "Terminal" }));
     await waitFor(() =>
       expect(setTerminalSettings).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -481,7 +481,7 @@ describe("blank tab card", () => {
         }),
       ),
     );
-    fireEvent.click(within(openAs).getByRole("button", { name: "Chat" }));
+    fireEvent.click(within(openAs).getByRole("radio", { name: "Chat" }));
     await waitFor(() =>
       expect(setTerminalSettings).toHaveBeenLastCalledWith(
         expect.objectContaining({
@@ -512,12 +512,80 @@ describe("blank tab card", () => {
       />,
     );
     await screen.findByLabelText("Title");
-    const openAs = screen.getByRole("group", { name: "Open as" });
+    const openAs = screen.getByRole("radiogroup", { name: "Open as" });
     await waitFor(() =>
-      expect(within(openAs).getByRole("button", { name: "Terminal" }).getAttribute("aria-pressed")).toBe(
+      expect(within(openAs).getByRole("radio", { name: "Terminal" }).getAttribute("aria-checked")).toBe(
         "true",
       ),
     );
+  });
+
+  it("names the role in the heading and the terminal Start button", async () => {
+    vi.mocked(getTerminalSettings).mockResolvedValueOnce({
+      shell: "",
+      fontSize: 14,
+      optionAsMeta: true,
+      copyOnSelect: false,
+      roleSurface: { role_developer: "terminal" },
+      roleRunMode: {},
+    });
+    render(
+      <StartupForm
+        roles={[
+          { id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 },
+        ]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+    await screen.findByLabelText("Title");
+    const row = screen.getByRole("group", { name: "Start a session" });
+    await waitFor(() =>
+      expect(within(row).getByRole("button", { name: "Start Developer terminal" })).toBeTruthy(),
+    );
+    expect(screen.getByRole("heading", { name: "New Developer session" })).toBeTruthy();
+  });
+
+  it("keeps Start on screen, disabled with the reason, until a folder is chosen", async () => {
+    vi.mocked(getAppState).mockResolvedValue({
+      activeTabId: "tab_dev",
+      tabs: [
+        {
+          id: "tab_dev",
+          label: "New tab",
+          roleId: "",
+          cwd: "",
+          phase: "draft",
+          mergedPromptChars: 0,
+          startupPromptSent: false,
+          hasTranscript: false,
+          folderStatus: "",
+          color: "#3fb950",
+          kind: "role",
+          terminalLaunch: "",
+          acpSessionId: null,
+        },
+      ],
+      closedTabs: [],
+    });
+    vi.mocked(selectActiveTab).mockResolvedValue({ tab: { ...tab, cwd: "", roleId: "" } });
+    render(
+      <StartupForm
+        roles={[
+          { id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 },
+        ]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+    const start = await screen.findByRole("button", { name: "Start" });
+    expect((start as HTMLButtonElement).disabled).toBe(true);
+    expect(start.getAttribute("aria-describedby")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Start a session" })).toBeTruthy();
   });
 
   it("still starts a role session from the start row", async () => {
@@ -1916,9 +1984,9 @@ describe("command palette (F9)", () => {
       usedPromptFile: false,
     });
     const tiles = screen.getByRole("group", { name: "Role" });
-    fireEvent.click(within(tiles).getByRole("button", { name: "Claude Code" }));
+    fireEvent.click(within(tiles).getByRole("radio", { name: "Claude Code" }));
     expect(
-      within(tiles).getByRole("button", { name: "Claude Code" }).getAttribute("aria-pressed"),
+      within(tiles).getByRole("radio", { name: "Claude Code" }).getAttribute("aria-checked"),
     ).toBe("true");
     fireEvent.click(screen.getByRole("button", { name: "Model for this tab" }));
     const list = await screen.findByRole("listbox", { name: "Model for this tab" });
@@ -2079,7 +2147,7 @@ describe("start form recall", () => {
     await waitFor(() => expect(screen.queryByRole("button", { name: "Start new session" })).toBeNull());
     expect(screen.queryByLabelText("Title")).toBeNull();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Planner" }));
+    fireEvent.click(await screen.findByRole("radio", { name: "Planner" }));
     await screen.findByLabelText("Title");
     await waitFor(() => expect(getFormRecall).toHaveBeenCalledWith("role_planner"));
     expect(fieldValue("Title")).toBe("");
@@ -2093,7 +2161,7 @@ describe("start form recall", () => {
     vi.mocked(getAppState).mockResolvedValue(appState([summary("tab_blank", { cwd: "" })], "tab_blank"));
     vi.mocked(selectActiveTab).mockResolvedValue({ tab: blank } as never);
     renderRecall();
-    fireEvent.click(await screen.findByRole("button", { name: "Planner" }));
+    fireEvent.click(await screen.findByRole("radio", { name: "Planner" }));
     await screen.findByLabelText("Task Type");
     await waitFor(() => expect(getFormRecall).toHaveBeenCalledWith("role_planner"));
     expect(fieldValue("Task Type")).toBe("");

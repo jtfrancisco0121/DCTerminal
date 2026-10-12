@@ -311,7 +311,7 @@ import { createTurnWaiter } from "./scratch/turnWait";
 import { answersForRole, fieldsForForm } from "./startupFields";
 import { ShortcutBar } from "./components/ShortcutBar";
 import { FIRST_USE_TIP_ID, FirstUseTip, shouldShowTip } from "./components/FirstUseTip";
-import { normalizeTheme, THEMES } from "./theme";
+import { normalizeTheme, THEME_CHOICES } from "./theme";
 import { ChatHistoryDialog } from "./components/ChatHistoryDialog";
 import {
   resumeIdForStart,
@@ -650,6 +650,7 @@ export function StartupForm({
   const [historyOverride, setHistoryOverride] = useState<ProviderId | null>(null);
   const [historyReadFrom, setHistoryReadFrom] = useState<string | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [cliLaunchNote, setCliLaunchNote] = useState<string | null>(null);
   const [historyCursor, setHistoryCursor] = useState(-1);
   const [logDrawerOpen, setLogDrawerOpen] = useState(false);
@@ -1509,7 +1510,7 @@ export function StartupForm({
 
   const notificationSettingsRef = useRef(notificationSettings);
   notificationSettingsRef.current = notificationSettings;
-  const updateNotificationSettings = useCallback((next: NotificationSettings) => {
+  const updateNotificationSettings = useCallback((next: NotificationSettings): Promise<void> => {
     const prev = notificationSettingsRef.current;
     // Turning system notifications on is a click, so ask the OS now.
     if (next.enabled && next.system && !(prev?.enabled && prev?.system)) {
@@ -1518,10 +1519,8 @@ export function StartupForm({
       });
     }
     setNotificationSettingsState(next);
-    void setNotificationSettings(next)
-      .then(setNotificationSettingsState)
-      .catch((err: unknown) => showNotice("Notification settings not saved", errorText(err), "failed"));
-  }, [showNotice]);
+    return setNotificationSettings(next).then(setNotificationSettingsState);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -1723,11 +1722,14 @@ export function StartupForm({
 
   const historyFolder = folderForTab(values.cwd);
   useEffect(() => {
+    // Rows of the previous folder or provider never show under the new one.
+    setHistoryEntries([]);
+    setHistoryError(null);
     if (session || !historyFolder) {
-      setHistoryEntries([]);
-      setHistoryError(null);
+      setHistoryLoading(false);
       return;
     }
+    setHistoryLoading(true);
     let cancelled = false;
     const load =
       historyProvider === "claude"
@@ -1750,6 +1752,9 @@ export function StartupForm({
         if (!cancelled) {
           setHistoryError(errorText(err));
         }
+      })
+      .finally(() => {
+        if (!cancelled) setHistoryLoading(false);
       });
     return () => {
       cancelled = true;
@@ -1985,15 +1990,19 @@ export function StartupForm({
     savedTranscript,
   ]);
 
-  const updateTerminalSettings = useCallback((next: TerminalSettings) => {
+  /** Applies and saves. Rejects when the save fails, so Settings can show it. */
+  const saveTerminalSettings = useCallback((next: TerminalSettings): Promise<void> => {
     setTerminalSettingsState(next);
-    setTerminalSettings(next)
-      .then(setTerminalSettingsState)
-      .catch((err: unknown) => {
-        const message = errorText(err);
-        setTerminalError(message);
-      });
+    return setTerminalSettings(next).then(setTerminalSettingsState);
   }, []);
+  const updateTerminalSettings = useCallback(
+    (next: TerminalSettings) => {
+      void saveTerminalSettings(next).catch((err: unknown) => {
+        setTerminalError(errorText(err));
+      });
+    },
+    [saveTerminalSettings],
+  );
 
   const rememberedSurface = useCallback(
     // Terminal by default (the real Claude Code CLI); Chat only when chosen for the role.
@@ -4328,8 +4337,8 @@ export function StartupForm({
         return;
       case "switchTheme": {
         const current = normalizeTheme(uiSettings.ui.theme);
-        const index = THEMES.findIndex((theme) => theme.id === current);
-        uiSettings.update({ theme: THEMES[(index + 1) % THEMES.length].id });
+        const index = THEME_CHOICES.findIndex((theme) => theme.id === current);
+        uiSettings.update({ theme: THEME_CHOICES[(index + 1) % THEME_CHOICES.length].id });
         return;
       }
       case "workspaces":
@@ -4605,18 +4614,18 @@ export function StartupForm({
       diagnostics={diagnostics}
       captureOn={captureOn}
       showDevTools={showDevTools}
-      onToggleCapture={(enabled) => {
-        void diagnosticsSetCapture(enabled).then((status) => {
+      onToggleCapture={(enabled) =>
+        diagnosticsSetCapture(enabled).then((status) => {
           setDiagnostics(status);
           setCaptureOn(status.capturePermissionPayloads);
-        });
-      }}
+        })
+      }
       terminalSettings={terminalSettings}
-      onTerminalSettings={updateTerminalSettings}
+      onTerminalSettings={saveTerminalSettings}
       notificationSettings={notificationSettings}
       onNotificationSettings={updateNotificationSettings}
       uiSettings={uiSettings.ui}
-      onUiSettings={uiSettings.update}
+      onUiSettings={uiSettings.updateChecked}
       onTestNotification={agentNotifications.sendTest}
       modelList={modelList}
       claudeModelList={claudeModelList}
@@ -4629,13 +4638,11 @@ export function StartupForm({
             ? { ...current, [provider]: next }
             : { cursor: next, claude: next, [provider]: next },
         );
-        void setModelSettings(next, provider)
-          .then((saved) =>
-            setModelSettingsState((current) =>
-              current ? { ...current, [provider]: saved } : { cursor: saved, claude: saved },
-            ),
-          )
-          .catch((err: unknown) => showNotice("Model setting not saved", errorText(err), "failed"));
+        return setModelSettings(next, provider).then((saved) =>
+          setModelSettingsState((current) =>
+            current ? { ...current, [provider]: saved } : { cursor: saved, claude: saved },
+          ),
+        );
       }}
       modelsRefreshing={modelsRefreshing}
       onRefreshModels={() => {
@@ -5618,6 +5625,7 @@ export function StartupForm({
       setHistoryOverride={setHistoryOverride}
       historyEntries={historyEntries}
       historyError={historyError}
+      historyLoading={historyLoading}
       historyReadFrom={historyReadFrom}
       resumeHistoryEntry={resumeHistoryEntry}
       openCursorCli={openCursorCli}

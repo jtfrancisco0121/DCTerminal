@@ -43,4 +43,40 @@ describe("useUiSettings (U7/U8)", () => {
     expect(result.current.ui.tipsSeen).toEqual(["palette"]);
     expect(setUiSettings).toHaveBeenCalledTimes(1);
   });
+
+  it("follows the OS light/dark setting live while the theme is Match system", async () => {
+    let dark = false;
+    const listeners = new Set<() => void>();
+    vi.stubGlobal("matchMedia", () => ({
+      get matches() {
+        return dark;
+      },
+      addEventListener: (_: string, fn: () => void) => listeners.add(fn),
+      removeEventListener: (_: string, fn: () => void) => listeners.delete(fn),
+    }));
+    try {
+      const { result, unmount } = renderHook(() => useUiSettings());
+      await waitFor(() => expect(result.current.loaded).toBe(true));
+      act(() => result.current.update({ theme: "system" }));
+      expect(document.documentElement.dataset.theme).toBe("github-light");
+      expect(setUiSettings).toHaveBeenLastCalledWith(expect.objectContaining({ theme: "system" }));
+      dark = true;
+      act(() => listeners.forEach((fn) => fn()));
+      expect(document.documentElement.dataset.theme).toBe("github-dark");
+      expect(setTerminalTheme).toHaveBeenLastCalledWith("github-dark");
+      // An old saved theme stops following the OS.
+      act(() => result.current.update({ theme: "github-light" }));
+      expect(listeners.size).toBe(0);
+      unmount();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("updateChecked rejects when the save fails", async () => {
+    const { result } = renderHook(() => useUiSettings());
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+    vi.mocked(setUiSettings).mockRejectedValueOnce(new Error("disk full"));
+    await expect(result.current.updateChecked({ shortcutBar: true })).rejects.toThrow("disk full");
+  });
 });

@@ -249,6 +249,19 @@ fn terminal_settings_are_cleaned_and_run_modes_checked() {
 }
 
 #[test]
+fn ui_settings_keep_the_match_system_theme() {
+    let dir = TempDir::new("settings_ui_system");
+    let mut store = SettingsStore::open(dir.path()).unwrap();
+    store
+        .set_ui(UiSettings {
+            theme: "system".into(),
+            ..UiSettings::default()
+        })
+        .unwrap();
+    assert_eq!(store.ui().theme, "system");
+}
+
+#[test]
 fn ui_settings_clamp_the_pad_and_cap_tips() {
     let dir = TempDir::new("settings_ui");
     let mut store = SettingsStore::open(dir.path()).unwrap();

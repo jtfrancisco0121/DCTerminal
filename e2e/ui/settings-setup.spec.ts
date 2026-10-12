@@ -3,6 +3,9 @@ import type { ProvidersSettings } from "../../src/bridge";
 import { CWD } from "./fixtures/data";
 import { expect, test, type PageHandler } from "./fixtures/tauri";
 
+/** The start card names what it is starting: "Start a session", "New Planner session", "New terminal". */
+const START_HEADING = /^(Start a session|New .+ session|New terminal)$/;
+
 /** First-run setup ("Set up DCTerminal"): src/components/FirstRunSetup.tsx. */
 
 const FIRST_RUN = { first_run_status: { needed: true, completed: false } };
@@ -36,7 +39,7 @@ async function expectStep(page: Page, label: string) {
 test("does not open on a profile that finished setup", async ({ app, page }) => {
   await app.open();
   await app.waitForCall("first_run_status");
-  await expect(page.getByRole("heading", { name: "Start a session" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: START_HEADING })).toBeVisible();
   await expect(wizard(page)).toHaveCount(0);
 });
 
@@ -215,7 +218,7 @@ test("Skip setup closes the wizard and marks setup done", async ({ app, page }) 
   await expect(dialog).toBeHidden();
   await app.waitForCall("first_run_complete");
   expect(await app.calls("role_session_start")).toHaveLength(0);
-  await expect(page.getByRole("heading", { name: "Start a session" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: START_HEADING })).toBeVisible();
 });
 
 test("full walk: folder and role steps, then Start opens the chosen role", async ({ app, page }) => {

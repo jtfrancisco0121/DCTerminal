@@ -16,13 +16,14 @@ import { CursorHistoryList } from "../components/CursorHistoryList";
 import { FolderPicker } from "../components/FolderPicker";
 import { errorText } from "../components/InlineNotice";
 import { ModelPicker } from "../components/ModelPicker";
+import { RadioGroup, radioProps } from "../components/RadioGroup";
 import { RoleTiles } from "../components/RoleTiles";
 import { TranscriptView } from "../components/TranscriptView";
 import type { CursorHistoryEntry } from "../cursorHistory";
 import { roleDisplayName, type HandoffSurface } from "../handoff/map";
 import { folderTabNotice } from "../liveTabs";
 import { effectiveModelFor } from "../models";
-import { folderForTab } from "../projectsView";
+import { CHOOSE_FOLDER_PROMPT, folderForTab } from "../projectsView";
 import { modelsForProvider, PROVIDERS } from "../provider/descriptor";
 import { PROVIDER_IDS, type ProviderId } from "../provider/types";
 import type { ProvidersState } from "../provider/useProviders";
@@ -100,6 +101,8 @@ export type StartScreenProps = {
   setHistoryOverride: (provider: ProviderId | null) => void;
   historyEntries: CursorHistoryEntry[];
   historyError: string | null;
+  /** The folder's history is being read. */
+  historyLoading?: boolean;
   historyReadFrom: string | null;
   resumeHistoryEntry: (entry: CursorHistoryEntry) => Promise<unknown>;
   openCursorCli: (sessionId: string, cwd: string, source?: string) => Promise<unknown>;
@@ -175,6 +178,7 @@ export function StartScreen({
   setHistoryOverride,
   historyEntries,
   historyError,
+  historyLoading = false,
   historyReadFrom,
   resumeHistoryEntry,
   openCursorCli,
@@ -192,6 +196,16 @@ export function StartScreen({
     savedCwd: activeTabSummary?.cwd ?? "",
     displayedCwd: displayedFolder,
   });
+
+  const launchTitle =
+    launchChoice === "shell"
+      ? "New terminal"
+      : launchChoice
+        ? `New ${CLI_LABEL[launchChoice]} session`
+        : null;
+  const pickedRoleName = roles.find((item) => item.id === pickedRoleId)?.name;
+  const startTitle =
+    launchTitle ?? (pickedRoleName ? `New ${pickedRoleName} session` : "Start a session");
 
   const composerFields = (
     <div className="composer-fields">
@@ -363,22 +377,20 @@ export function StartScreen({
   };
   const providerChip =
     activeTabSummary && activeTabSummary.phase === "draft" && showFields ? (
-      <div className="provider-chip-group" role="radiogroup" aria-label="Provider for this tab">
+      <RadioGroup className="provider-chip-group" label="Provider for this tab">
         {PROVIDER_IDS.map((id) => (
           <button
             key={id}
             type="button"
-            role="radio"
             className="role-choice"
-            aria-checked={activeProvider === id}
-            aria-pressed={activeProvider === id}
+            {...radioProps(activeProvider === id)}
             disabled={busy}
             onClick={() => chooseProvider(id)}
           >
             {PROVIDERS[id].label}
           </button>
         ))}
-      </div>
+      </RadioGroup>
     ) : null;
 
   const eagleToggle =
@@ -399,17 +411,39 @@ export function StartScreen({
       </label>
     ) : null;
 
-  const roleStartButton = showFields && (
+  // Start is always on screen. Until it can run it says why.
+  const folderBlocked = folderNotice?.tone === "error";
+  const startRoleId = pickedRoleId || (showFields ? roleId : "");
+  const startRoleName = roles.find((item) => item.id === startRoleId)?.name ?? "";
+  const startsTerminal = !!startRoleId && rememberedSurface(startRoleId) === "terminal";
+  const startReason = launchChoice
+    ? !displayedFolder
+      ? CHOOSE_FOLDER_PROMPT
+      : folderBlocked
+        ? "The folder is not available."
+        : null
+    : !startRoleId
+      ? "Choose a role"
+      : !displayedFolder
+        ? CHOOSE_FOLDER_PROMPT
+        : folderBlocked
+          ? "The folder is not available."
+          : null;
+  const startHint = startReason && !folderBlocked ? startReason : null;
+  const startReasonId = "start-reason";
+  const roleStartButton = (showFields || surface === "pick") && (
     <button
       type="button"
       className="primary-button"
       onClick={() => {
-        if (rememberedSurface(roleId) === "terminal") void startRoleTerminal();
+        if (startsTerminal) void startRoleTerminal();
         else void startSession(surface === "restore" && resendStartup);
       }}
-      disabled={busy || (activeProvider === "cursor" && !cliFound)}
+      disabled={busy || !showFields || !!startReason || (activeProvider === "cursor" && !cliFound)}
+      title={startReason ?? undefined}
+      aria-describedby={startHint ? startReasonId : undefined}
     >
-      {rememberedSurface(roleId) === "terminal" ? "Start terminal" : "Start"}
+      {startsTerminal && startRoleName ? `Start ${startRoleName} terminal` : "Start"}
     </button>
   );
 
@@ -439,7 +473,7 @@ export function StartScreen({
       ) : (
         <button
           type="button"
-          className="link-button"
+          className="ghost-button"
           onClick={clearForm}
           disabled={busy || !formHasText}
           title="Empty the text fields. The folder stays."
@@ -520,7 +554,7 @@ export function StartScreen({
           className={`start-body${historyFolder && !launchChoice ? " start-body-with-history" : ""}`}
         >
           <div className="start-main start-session-card">
-            <h2 className="start-session-title">Start a session</h2>
+            <h2 className="start-session-title">{startTitle}</h2>
             <div className="start-row" role="group" aria-label="Start a session">
               <FolderPicker
                 compact
@@ -537,9 +571,11 @@ export function StartScreen({
                     type="button"
                     className="primary-button"
                     onClick={() => void startBlankTerminal(launchChoice)}
+                    title={startReason ?? undefined}
+                    aria-describedby={startHint ? startReasonId : undefined}
                     disabled={
                       busy ||
-                      !displayedFolder ||
+                      !!startReason ||
                       (launchChoice === "cursor-cli" && !cliFound) ||
                       (launchChoice === "claude-cli" && providers.claude?.status.found === false)
                     }
@@ -556,6 +592,11 @@ export function StartScreen({
                 </>
               )}
             </div>
+            {startHint && (
+              <p className="hint start-reason" id={startReasonId}>
+                {startHint}
+              </p>
+            )}
             {folderNotice?.tone === "error" && <p className="error">{folderNotice.text}</p>}
             {activeTabSummary?.worktreeBranch && (
               <p className="hint">
@@ -583,28 +624,38 @@ export function StartScreen({
               }}
             />
             {pickedRoleId && !launchChoice && (
-              <div className="start-surface-choices" role="group" aria-label="Open as">
-                <button
-                  type="button"
-                  className="role-choice"
-                  aria-pressed={rememberedSurface(pickedRoleId) === "chat"}
-                  onClick={() => rememberSurface(pickedRoleId, "chat")}
-                  disabled={busy}
-                  title="Open as chat"
-                >
-                  Chat
-                </button>
-                <button
-                  type="button"
-                  className="role-choice"
-                  aria-pressed={rememberedSurface(pickedRoleId) === "terminal"}
-                  onClick={() => rememberSurface(pickedRoleId, "terminal")}
-                  disabled={busy}
-                  aria-label="Terminal"
-                  title="Open as terminal (agent CLI in a terminal)"
-                >
-                  <span aria-hidden>›_</span>
-                </button>
+              <div className="start-surface-choices">
+                <span className="start-surface-label" aria-hidden>
+                  Open as
+                </span>
+                <RadioGroup label="Open as" className="start-surface-group">
+                  {(["chat", "terminal"] as const).map((choice) => {
+                    const checked = rememberedSurface(pickedRoleId) === choice;
+                    return (
+                      <button
+                        key={choice}
+                        type="button"
+                        className="role-choice"
+                        {...radioProps(checked)}
+                        onClick={() => rememberSurface(pickedRoleId, choice)}
+                        disabled={busy}
+                        title={
+                          choice === "chat"
+                            ? "Open as chat"
+                            : "Open as terminal (agent CLI in a terminal)"
+                        }
+                      >
+                        {choice === "chat" ? (
+                          "Chat"
+                        ) : (
+                          <>
+                            <span aria-hidden>›_</span>&nbsp;Terminal
+                          </>
+                        )}
+                      </button>
+                    );
+                  })}
+                </RadioGroup>
               </div>
             )}
             {!launchChoice && (
@@ -626,27 +677,23 @@ export function StartScreen({
           </div>
           {historyFolder && !launchChoice && (
             <aside className="start-history">
-              <div className="history-provider-toggle" role="group" aria-label="History provider">
-                <button
-                  type="button"
-                  className="role-choice"
-                  aria-pressed={historyProvider === "claude"}
-                  onClick={() => setHistoryOverride("claude")}
-                >
-                  Claude
-                </button>
-                <button
-                  type="button"
-                  className="role-choice"
-                  aria-pressed={historyProvider === "cursor"}
-                  onClick={() => setHistoryOverride("cursor")}
-                >
-                  Cursor
-                </button>
-              </div>
+              <RadioGroup className="history-provider-toggle" label="History provider">
+                {(["claude", "cursor"] as const).map((id) => (
+                  <button
+                    key={id}
+                    type="button"
+                    className="role-choice"
+                    {...radioProps(historyProvider === id)}
+                    onClick={() => setHistoryOverride(id)}
+                  >
+                    {PROVIDERS[id].label}
+                  </button>
+                ))}
+              </RadioGroup>
               <CursorHistoryList
                 entries={historyEntries}
                 error={historyError}
+                loading={historyLoading}
                 busy={busy}
                 title={PROVIDERS[historyProvider].historyTitle}
                 readFrom={historyProvider === "claude" ? historyReadFrom : null}

@@ -84,7 +84,7 @@ test("a built-in role shows Reset but no Delete; Duplicate makes an editable cus
   await expect(roles.getByRole("button", { name: "Reset built-in" })).toHaveCount(0);
   // The start screen picker lists it too.
   await page.getByRole("button", { name: "Close", exact: true }).click();
-  await expect(page.getByRole("group", { name: "Role" }).getByRole("button", { name: "Planner copy" })).toBeVisible();
+  await expect(page.getByRole("group", { name: "Role" }).getByRole("radio", { name: "Planner copy" })).toBeVisible();
 });
 
 test("Delete asks first: Keep it cancels, Delete role removes the role", async ({ app, page }) => {
@@ -108,7 +108,7 @@ test("Delete asks first: Keep it cancels, Delete role removes the role", async (
   // Selection moves to the first remaining role.
   await expect(roles.getByLabel("Name", { exact: true })).toHaveValue("Planner");
   await page.getByRole("button", { name: "Close", exact: true }).click();
-  await expect(page.getByRole("group", { name: "Role" }).getByRole("button", { name: "Triage" })).toHaveCount(0);
+  await expect(page.getByRole("group", { name: "Role" }).getByRole("radio", { name: "Triage" })).toHaveCount(0);
 });
 
 test("deleting a role an open tab uses is refused and the role stays", async ({ app, page }) => {

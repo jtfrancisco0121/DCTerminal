@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type InputHTMLAttributes } from "react";
 import {
   getClaudeUsage,
   type UsageSnapshot,
@@ -12,7 +12,7 @@ import {
   type TerminalSettings,
   type UiSettings,
 } from "../bridge";
-import { normalizeTheme, THEMES } from "../theme";
+import { normalizeTheme, THEME_CHOICES } from "../theme";
 import { DevToolsPanel } from "../DevToolsPanel";
 import { shortcutRows, type Platform } from "../keymap";
 import { CLAUDE_DEFAULT_MODEL_ID, CLAUDE_EFFORT_LEVELS, DEFAULT_MODEL_ID } from "../models";
@@ -24,6 +24,7 @@ import type { ProvidersState } from "../provider/useProviders";
 import type { NotificationSettings } from "../notify/agentNotify";
 import { formatReset, formatSeen, isStale, limitTone } from "../usage/limits";
 import { APP_VERSION } from "../workspaceView";
+import { errorText } from "./InlineNotice";
 import { RoleEditor } from "./RoleEditor";
 import { useConfirm } from "./confirm";
 
@@ -35,21 +36,22 @@ type Props = {
   diagnostics: DiagnosticsStatus | null;
   captureOn: boolean;
   showDevTools: boolean;
-  onToggleCapture: (enabled: boolean) => void;
+  onToggleCapture: (enabled: boolean) => void | Promise<unknown>;
   terminalSettings: TerminalSettings | null;
-  onTerminalSettings: (next: TerminalSettings) => void;
+  /** A returned promise reports the save: Saved, or the error. */
+  onTerminalSettings: (next: TerminalSettings) => void | Promise<unknown>;
   modelList?: ModelList | null;
   claudeModelList?: ModelList | null;
   modelSettings?: ProviderModelSettings | null;
-  onModelSettings?: (provider: ProviderId, next: ModelSettings) => void;
+  onModelSettings?: (provider: ProviderId, next: ModelSettings) => void | Promise<unknown>;
   onRefreshModels?: () => void;
   modelsRefreshing?: boolean;
   approvalMode: ApprovalModeStatus | null;
   notificationSettings?: NotificationSettings | null;
-  onNotificationSettings?: (next: NotificationSettings) => void;
+  onNotificationSettings?: (next: NotificationSettings) => void | Promise<unknown>;
   onTestNotification?: () => void;
   uiSettings?: UiSettings | null;
-  onUiSettings?: (patch: Partial<UiSettings>) => void;
+  onUiSettings?: (patch: Partial<UiSettings>) => void | Promise<unknown>;
   /** U6: category shown first (Roles when omitted). */
   initialCategory?: SettingsCategory;
   /** Settings > Providers data (shared with the status bar). */
@@ -65,6 +67,7 @@ export const SETTINGS_CATEGORIES = [
   "Roles",
   "Providers",
   "Models",
+  "Appearance",
   "Terminal",
   "Permissions",
   "Usage",
@@ -91,21 +94,21 @@ export function SettingsPage({
   diagnostics,
   captureOn,
   showDevTools,
-  onToggleCapture,
+  onToggleCapture: toggleCapture,
   terminalSettings,
-  onTerminalSettings,
+  onTerminalSettings: saveTerminalSettings,
   modelList = null,
   claudeModelList = null,
   modelSettings = null,
-  onModelSettings,
+  onModelSettings: saveModelSettings,
   onRefreshModels,
   modelsRefreshing = false,
   approvalMode,
   notificationSettings = null,
-  onNotificationSettings,
+  onNotificationSettings: saveNotificationSettings,
   onTestNotification,
   uiSettings = null,
-  onUiSettings,
+  onUiSettings: saveUiSettings,
   initialCategory = "Roles",
   providers = null,
   onRefreshRoles,
@@ -113,6 +116,19 @@ export function SettingsPage({
   onClose,
 }: Props) {
   const confirm = useConfirm();
+  const { marker, track } = useSaveMarker();
+  // Every setting goes through track(): one Saving / Saved / error marker.
+  const onToggleCapture = (enabled: boolean) => track(toggleCapture(enabled));
+  const onTerminalSettings = (next: TerminalSettings) => track(saveTerminalSettings(next));
+  const onModelSettings = saveModelSettings
+    ? (provider: ProviderId, next: ModelSettings) => track(saveModelSettings(provider, next))
+    : undefined;
+  const onNotificationSettings = saveNotificationSettings
+    ? (next: NotificationSettings) => track(saveNotificationSettings(next))
+    : undefined;
+  const onUiSettings = saveUiSettings
+    ? (patch: Partial<UiSettings>) => track(saveUiSettings(patch))
+    : undefined;
   const [rolesDirty, setRolesDirty] = useState(false);
   useEffect(() => {
     onUnsavedChange?.(rolesDirty);
@@ -156,6 +172,7 @@ export function SettingsPage({
     <div className="settings-page">
       <header className="settings-header">
         <h2>Settings</h2>
+        {marker}
         <button type="button" className="secondary-button" onClick={() => void close()}>
           Close
         </button>
@@ -250,9 +267,9 @@ export function SettingsPage({
               />
             </section>
           )}
-          {category === "Terminal" && (
-            <section className="settings-section" aria-label="Terminal">
-              <h3>Terminal</h3>
+          {category === "Appearance" && (
+            <section className="settings-section" aria-label="Appearance">
+              <h3>Appearance</h3>
               <label className="field-label settings-inline-field">
                 Theme
                 <select
@@ -261,40 +278,51 @@ export function SettingsPage({
                   disabled={!onUiSettings}
                   onChange={(event) => onUiSettings?.({ theme: event.target.value })}
                 >
-                  {THEMES.map((theme) => (
+                  {THEME_CHOICES.map((theme) => (
                     <option key={theme.id} value={theme.id}>
                       {theme.label}
                     </option>
                   ))}
                 </select>
               </label>
+              <p className="hint">
+                Match system follows your operating system&apos;s light or dark setting and
+                changes with it.
+              </p>
+            </section>
+          )}
+          {category === "Terminal" && (
+            <section className="settings-section" aria-label="Terminal">
+              <h3>Terminal</h3>
               <label className="field-label settings-inline-field">
                 Shell program
-                <input
+                <DebouncedInput
                   className="text-input"
                   value={terminalSettings?.shell ?? ""}
                   placeholder="Blank uses pwsh, then PowerShell, or $SHELL"
                   disabled={!terminalSettings}
-                  onChange={(event) => {
-                    if (!terminalSettings) return;
-                    onTerminalSettings({ ...terminalSettings, shell: event.target.value });
+                  onCommit={(shell) => {
+                    if (terminalSettings) onTerminalSettings({ ...terminalSettings, shell });
                   }}
                 />
               </label>
               <label className="field-label settings-inline-field">
                 Font size
-                <input
+                <DebouncedInput
                   className="text-input"
                   type="number"
                   min={8}
                   max={32}
-                  value={terminalSettings?.fontSize ?? 14}
+                  value={String(terminalSettings?.fontSize ?? 14)}
                   disabled={!terminalSettings}
-                  onChange={(event) => {
+                  onCommit={(text) => {
                     if (!terminalSettings) return;
-                    const fontSize = Number(event.target.value);
-                    if (!Number.isFinite(fontSize)) return;
-                    onTerminalSettings({ ...terminalSettings, fontSize });
+                    const typed = Number(text);
+                    if (text.trim() === "" || !Number.isFinite(typed)) return;
+                    const fontSize = Math.min(32, Math.max(8, Math.round(typed)));
+                    if (fontSize !== terminalSettings.fontSize) {
+                      onTerminalSettings({ ...terminalSettings, fontSize });
+                    }
                   }}
                 />
               </label>
@@ -708,5 +736,97 @@ function ModelSettingsBlock({
       </div>
       {error && <p className="hint">{error}</p>}
     </div>
+  );
+}
+
+type SaveState =
+  | { kind: "idle" }
+  | { kind: "saving" }
+  | { kind: "saved" }
+  | { kind: "error"; message: string };
+
+/**
+ * One save model for the page. track() takes what a settings handler returned:
+ * a promise (Saving, then Saved or the error) or nothing (saved at once).
+ */
+function useSaveMarker() {
+  const [state, setState] = useState<SaveState>({ kind: "idle" });
+  const pending = useRef(0);
+  const track = useCallback((result: unknown) => {
+    if (!result || typeof (result as Promise<unknown>).then !== "function") {
+      setState({ kind: "saved" });
+      return;
+    }
+    pending.current += 1;
+    setState({ kind: "saving" });
+    (result as Promise<unknown>).then(
+      () => {
+        pending.current -= 1;
+        if (pending.current === 0) setState({ kind: "saved" });
+      },
+      (err: unknown) => {
+        pending.current -= 1;
+        setState({ kind: "error", message: errorText(err) });
+      },
+    );
+  }, []);
+  const marker =
+    state.kind === "idle" ? null : state.kind === "error" ? (
+      <span className="save-marker save-marker-error" role="alert">
+        Not saved: {state.message}
+      </span>
+    ) : (
+      <span className="save-marker" role="status">
+        {state.kind === "saving" ? "Saving…" : "Saved"}
+      </span>
+    );
+  return { marker, track };
+}
+
+/**
+ * A text or number input that keeps its own draft and saves once typing
+ * pauses, on blur, or when it goes away, not on every keystroke.
+ */
+function DebouncedInput({
+  value,
+  onCommit,
+  delay = 600,
+  ...rest
+}: Omit<InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "onBlur"> & {
+  value: string;
+  onCommit: (value: string) => void;
+  delay?: number;
+}) {
+  const [draft, setDraft] = useState(value);
+  const dirty = useRef(false);
+  const timer = useRef<number | undefined>(undefined);
+  const latest = useRef({ draft, onCommit });
+  latest.current = { draft, onCommit };
+
+  useEffect(() => {
+    if (!dirty.current) setDraft(value);
+  }, [value]);
+
+  const flush = useCallback(() => {
+    window.clearTimeout(timer.current);
+    if (!dirty.current) return;
+    dirty.current = false;
+    latest.current.onCommit(latest.current.draft);
+  }, []);
+  useEffect(() => flush, [flush]);
+
+  return (
+    <input
+      {...rest}
+      value={draft}
+      onChange={(event) => {
+        dirty.current = true;
+        latest.current.draft = event.target.value;
+        setDraft(event.target.value);
+        window.clearTimeout(timer.current);
+        timer.current = window.setTimeout(flush, delay);
+      }}
+      onBlur={flush}
+    />
   );
 }
