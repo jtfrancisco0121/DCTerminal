@@ -109,34 +109,40 @@ fn stage_gates(
 /// turn) and keep the results on the run. `cwd` is the stage tab's folder
 /// (a worktree), else the run's. `pr_urls` are the pull requests the stage
 /// reported. No store lock is held while the commands run.
-#[tauri::command(async)]
-#[allow(clippy::too_many_arguments)] // Tauri injects each managed state as its own argument.
-pub fn pipeline_run_gates(
+#[tauri::command]
+pub async fn pipeline_run_gates(
     app: tauri::AppHandle,
     run_id: String,
     stage_id: String,
     lane: Option<String>,
     cwd: Option<String>,
     pr_urls: Vec<String>,
-    store: State<Mutex<StateStore>>,
 ) -> Result<Vec<GateResult>, String> {
+    use tauri::Manager;
     let run_id = run_id.trim().to_string();
     let (gates, folder, _) = {
-        let store = store.lock().map_err(|e| e.to_string())?;
+        let state = app.state::<Mutex<StateStore>>();
+        let store = state.lock().map_err(|e| e.to_string())?;
         stage_gates(&store, &run_id, &stage_id, cwd.as_deref())?
     };
-    let results: Vec<GateResult> = gates
-        .iter()
-        .map(|gate| match gate {
-            GateDef::Command { run, timeout_secs } => crate::pipelines::run_command_gate(
-                &folder,
-                run,
-                timeout_secs.map(Duration::from_secs),
-            ),
-            GateDef::PullRequest => crate::pipelines::run_pull_request_gate(&folder, &pr_urls),
-        })
-        .collect();
-    let mut store = store.lock().map_err(|e| e.to_string())?;
+    // Checks can run for many minutes: the blocking pool, never a runtime worker.
+    let results: Vec<GateResult> = tauri::async_runtime::spawn_blocking(move || {
+        gates
+            .iter()
+            .map(|gate| match gate {
+                GateDef::Command { run, timeout_secs } => crate::pipelines::run_command_gate(
+                    &folder,
+                    run,
+                    timeout_secs.map(Duration::from_secs),
+                ),
+                GateDef::PullRequest => crate::pipelines::run_pull_request_gate(&folder, &pr_urls),
+            })
+            .collect()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let state = app.state::<Mutex<StateStore>>();
+    let mut store = state.lock().map_err(|e| e.to_string())?;
     let run = store
         .pipeline_run_by_id_mut(&run_id)
         .ok_or_else(|| format!("unknown pipeline run: {run_id}"))?;
@@ -303,6 +309,22 @@ pub fn fan_out(store: &mut StateStore, run_id: &str, stage_id: &str, lanes: Vec<
         if let Some(missing) = lane.depends_on.iter().find(|d| !ids.contains(d.as_str()) || *d == &lane.id) {
             return Err(format!("{} depends on \"{missing}\", which is not another pull request here.", lane.title));
         }
+    }
+    // Every lane must be reachable: no dependency cycle.
+    let mut done: std::collections::HashSet<String> = std::collections::HashSet::new();
+    loop {
+        let ready: Vec<String> = lanes
+            .iter()
+            .filter(|l| !done.contains(&l.id) && l.depends_on.iter().all(|d| done.contains(d)))
+            .map(|l| l.id.clone())
+            .collect();
+        if ready.is_empty() {
+            break;
+        }
+        done.extend(ready);
+    }
+    if done.len() != lanes.len() {
+        return Err("The pull requests depend on each other in a cycle, so none of them could start.".into());
     }
     let round = 1;
     run.lanes = lanes
@@ -490,5 +512,18 @@ mod tests {
         assert!(fan_out(&mut store, "ee_f", "implementer", bad).unwrap_err().contains("pr9"));
         assert!(fan_out(&mut store, "ee_f", "nowhere", lanes()).is_err());
         assert!(store.pipeline_run_by_id("ee_f").unwrap().lanes.is_empty());
+    }
+
+    #[test]
+    fn a_fan_out_refuses_a_dependency_cycle() {
+        let (_dir, mut store) = store("fan_out_cycle");
+        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        let mut cycle = lanes();
+        cycle[0].depends_on = vec!["pr2".into()];
+        assert!(fan_out(&mut store, "ee_f", "implementer", cycle).unwrap_err().contains("cycle"));
+        let run = store.pipeline_run_by_id("ee_f").unwrap();
+        assert!(run.lanes.is_empty());
+        assert!(run.fan_out_stage.is_none());
     }
 }

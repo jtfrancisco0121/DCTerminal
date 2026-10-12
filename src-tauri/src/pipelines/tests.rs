@@ -113,6 +113,17 @@ fn parallel_reviewers_need_a_loop_back_and_distinct_roles() {
     twice.stages[1].also_reviewers = vec!["role_pr_reviewer".into()];
     assert!(validate_user_pipelines(&[twice]).unwrap_err().contains("twice"));
     let mut no_loop = def.clone();
-    no_loop.stages[0].also_reviewers = vec!["role_security".into()];
+    no_loop.stages[0].also_reviewers = vec!["role_docs".into()];
     assert!(validate_user_pipelines(&[no_loop]).unwrap_err().contains("loopBack"));
+}
+
+#[test]
+fn a_role_used_in_two_stages_is_rejected() {
+    let mut def = user_def("dup");
+    def.stages[1].role_id = "role_implementer".into();
+    assert!(validate_user_pipelines(&[def]).unwrap_err().contains("two stages"));
+    // Also when the second use is a parallel reviewer.
+    let mut also = user_def("dup_also");
+    also.stages[1].also_reviewers = vec!["role_implementer".into()];
+    assert!(validate_user_pipelines(&[also]).unwrap_err().contains("two stages"));
 }

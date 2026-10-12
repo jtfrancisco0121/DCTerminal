@@ -319,11 +319,16 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
         let Some(back) = stage.loop_back.clone() else {
             return stop(run, Some(&stage), format!("{} asked for changes, but this stage has no loop-back.", stage.title));
         };
-        if round >= back.max_rounds {
+        // Rounds per loop-back edge: this reviewer's own rounds so far.
+        let edge_round = review_round(run, lane, &stage.role_id);
+        if edge_round >= back.max_rounds {
             return stop(
                 run,
                 Some(&stage),
-                format!("Round cap reached ({round} of {}): {} still asks for changes.", back.max_rounds, stage.title),
+                format!(
+                    "Round cap reached ({edge_round} of {}): {} still asks for changes.",
+                    back.max_rounds, stage.title
+                ),
             );
         }
         let Some(target) = def.stage(&back.to).cloned() else {
@@ -331,13 +336,47 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
         };
         let mut decision = Decision::new(
             "loopBack",
-            format!("{verdict}: round {round} goes back to {}.", target.title),
+            format!(
+                "{verdict}: round {} goes back to {}.",
+                review_round(run, lane, &stage.role_id),
+                target.title
+            ),
         )
         .for_stage(&target);
         decision.lane = lane.map(str::to_string);
         return go(run, decision, None);
     }
+    // An approval that still lists findings at or above the threshold is
+    // not a clean pass: stop and show them instead of moving on.
+    let blocking: Vec<String> = severities
+        .iter()
+        .filter(|(sev, _)| sev.is_some_and(|s| s.at_least(threshold)))
+        .map(|(sev, f)| format!("[{}] {}", sev.map(Severity::label).unwrap_or("?"), f.summary.trim()))
+        .collect();
+    if report.findings_known && !blocking.is_empty() {
+        let reason = format!(
+            "{} said {verdict} but lists {} finding(s) at {} or above. Check them, then send it on or back yourself.",
+            stage.title,
+            blocking.len(),
+            threshold.label()
+        );
+        autopilot(run).waiting = Some(reason.clone());
+        run.log("stop", Some(&stage.id), Some(&stage.role_id), reason.clone(), Some(blocking.join("\n")));
+        let mut decision = Decision::new("stop", reason).for_stage(&stage);
+        decision.lane = lane.map(str::to_string);
+        return decision;
+    }
     advance(def, run, index, verdict, follow_ups, lane)
+}
+
+/// The round a reviewer is on along its loop-back edge: its own recorded
+/// send-backs (in its lane, or the run) plus one. Other edges do not count.
+fn review_round(run: &PipelineRun, lane: Option<&str>, role_id: &str) -> u32 {
+    let verdicts = match lane.and_then(|id| run.lane(id)) {
+        Some(l) => &l.verdicts,
+        None => &run.verdicts,
+    };
+    verdicts.iter().filter(|v| v.role_id == role_id).count() as u32 + 1
 }
 
 #[cfg(test)]

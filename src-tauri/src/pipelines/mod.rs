@@ -328,6 +328,18 @@ pub fn validate_user_pipelines(defs: &[PipelineDef]) -> Result<(), String> {
             return fail(format!("a pipeline has 1 to {MAX_STAGES} stages."));
         }
         let mut stage_ids = HashSet::new();
+        let mut roles_used: HashSet<String> = HashSet::new();
+        for stage in &def.stages {
+            // A repeat inside one stage is reported below as listed "twice".
+            let in_stage: HashSet<String> = stage.roles().into_iter().collect();
+            for role in in_stage {
+                if !roles_used.insert(role.clone()) {
+                    return fail(format!(
+                        "the role \"{role}\" is in two stages. A run keeps one tab per role, so use a copy of the role (Settings › Roles › Duplicate)."
+                    ));
+                }
+            }
+        }
         for (index, stage) in def.stages.iter().enumerate() {
             if !valid_id(&stage.id) {
                 return fail(format!("stage {} needs an id of letters, digits, _ and -.", index + 1));
