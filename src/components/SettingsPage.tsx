@@ -135,16 +135,25 @@ export function SettingsPage({
     ? (patch: Partial<UiSettings>) => track(saveUiSettings(patch))
     : undefined;
   const [rolesDirty, setRolesDirty] = useState(false);
+  const [pipelinesDirty, setPipelinesDirty] = useState(false);
+  const unsaved = rolesDirty || pipelinesDirty;
+  // Names what would be lost: role edits, pipeline edits, or both.
+  const unsavedMessage =
+    rolesDirty && pipelinesDirty
+      ? "Your role and pipeline edits are not saved. Leaving discards them."
+      : pipelinesDirty
+        ? "Your pipeline edits are not saved. Leaving discards them."
+        : "Your role edits are not saved. Leaving discards them.";
   useEffect(() => {
-    onUnsavedChange?.(rolesDirty);
+    onUnsavedChange?.(unsaved);
     return () => onUnsavedChange?.(false);
-  }, [rolesDirty, onUnsavedChange]);
+  }, [unsaved, onUnsavedChange]);
   const close = async () => {
     if (
-      rolesDirty &&
+      unsaved &&
       !(await confirm({
         title: "Leave Settings?",
-        message: "Your role edits are not saved. Leaving discards them.",
+        message: unsavedMessage,
         confirmLabel: "Discard and leave",
         danger: true,
       }))
@@ -193,13 +202,15 @@ export function SettingsPage({
               aria-current={category === name ? "page" : undefined}
               onClick={() => {
                 if (name === category) return;
-                if (!rolesDirty) {
+                if (!unsaved) {
                   setCategory(name);
                   return;
                 }
                 void confirm({
-                  title: "Leave the role editor?",
-                  message: "Your role edits are not saved. Leaving discards them.",
+                  title: pipelinesDirty && !rolesDirty
+                    ? "Leave the pipeline editor?"
+                    : "Leave the role editor?",
+                  message: unsavedMessage,
                   confirmLabel: "Discard and leave",
                   danger: true,
                 }).then((ok) => {
@@ -213,7 +224,7 @@ export function SettingsPage({
         </nav>
         <div className="settings-content">
           {category === "Roles" && <RoleEditor roles={roles} onRefreshRoles={onRefreshRoles} onDirtyChange={setRolesDirty} />}
-          {category === "Pipelines" && <PipelinesSettings onSaved={onPipelinesChanged} />}
+          {category === "Pipelines" && <PipelinesSettings onSaved={onPipelinesChanged} onDirtyChange={setPipelinesDirty} />}
           {category === "Providers" &&
             (providers ? (
               <ProvidersSettingsSection providers={providers} />

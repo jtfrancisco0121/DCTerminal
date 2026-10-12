@@ -40,4 +40,29 @@ describe("Settings › Pipelines", () => {
     expect(allPipelineDefs().map((def) => def.id)).toEqual(["eagle1", "eagle2", "bugfix"]);
     expect(screen.getByText("Saved 1 pipeline.")).toBeTruthy();
   });
+
+  it("reports dirty while the JSON differs from what is saved, and clean after discard, save and unmount", async () => {
+    const onDirtyChange = vi.fn();
+    const { unmount } = render(<PipelinesSettings onDirtyChange={onDirtyChange} />);
+    const editor = screen.getByLabelText("Your pipelines (JSON)") as HTMLTextAreaElement;
+    await waitFor(() => expect(editor.value).toBe("[]"));
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+
+    fireEvent.change(editor, { target: { value: "[ ]x" } });
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+    expect(editor.value).toBe("[]");
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Add example" }));
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    fireEvent.click(screen.getByRole("button", { name: "Save pipelines" }));
+    await waitFor(() => expect(screen.getByText("Saved 1 pipeline.")).toBeTruthy());
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+
+    fireEvent.change(editor, { target: { value: "[]" } });
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    unmount();
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+  });
 });

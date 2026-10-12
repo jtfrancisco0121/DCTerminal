@@ -24,6 +24,8 @@ vi.mock("../bridge", () => ({
   })),
   storageStatus: vi.fn(async () => ({ appDataDir: "/tmp/dct", bytes: 2048 })),
   storageCleanup: vi.fn(async () => ({ bytesFreed: 0, bytes: 2048 })),
+  pipelineDefsList: vi.fn(async () => []),
+  pipelineDefsSave: vi.fn(async (defs: unknown[]) => defs),
 }));
 
 import { SettingsPage } from "./SettingsPage";
@@ -444,5 +446,87 @@ describe("SettingsPage save model", () => {
     await waitFor(() =>
       expect(onTerminalSettings).toHaveBeenCalledWith(expect.objectContaining({ shell: "/bin/fish" })),
     );
+  });
+});
+
+describe("SettingsPage unsaved pipeline edits", () => {
+  const props = {
+    roles,
+    cli: null,
+    cliError: null,
+    platform: "mac" as const,
+    diagnostics: null,
+    captureOn: false,
+    showDevTools: false,
+    onToggleCapture: () => {},
+    terminalSettings: null,
+    onTerminalSettings: () => {},
+    approvalMode: null,
+  };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function editPipelines() {
+    const editor = (await screen.findByLabelText("Your pipelines (JSON)")) as HTMLTextAreaElement;
+    await waitFor(() => expect(editor.value).toBe("[]"));
+    fireEvent.change(editor, { target: { value: "[{}]" } });
+    return editor;
+  }
+
+  it("marks the page unsaved, confirms before switching category, and Discard clears it", async () => {
+    const onUnsavedChange = vi.fn();
+    const ask = vi.spyOn(window, "confirm").mockReturnValue(false);
+    render(
+      <SettingsPage
+        {...props}
+        initialCategory="Pipelines"
+        onUnsavedChange={onUnsavedChange}
+        onClose={() => {}}
+      />,
+    );
+    await editPipelines();
+    await waitFor(() => expect(onUnsavedChange).toHaveBeenLastCalledWith(true));
+
+    openCategory("Terminal");
+    await waitFor(() => expect(ask).toHaveBeenCalledOnce());
+    expect(ask.mock.calls[0][0]).toContain("Leave the pipeline editor?");
+    expect(ask.mock.calls[0][0]).toContain("Your pipeline edits are not saved.");
+    // Cancelled: still on Pipelines with the draft kept.
+    expect(screen.getByRole("region", { name: "Pipelines" })).toBeTruthy();
+    expect((screen.getByLabelText("Your pipelines (JSON)") as HTMLTextAreaElement).value).toBe("[{}]");
+
+    fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+    await waitFor(() => expect(onUnsavedChange).toHaveBeenLastCalledWith(false));
+    openCategory("Terminal");
+    expect(ask).toHaveBeenCalledOnce();
+    expect(screen.getByLabelText("Shell program")).toBeTruthy();
+  });
+
+  it("confirms Close with pipeline wording and leaves when confirmed", async () => {
+    const onClose = vi.fn();
+    const ask = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    render(<SettingsPage {...props} initialCategory="Pipelines" onClose={onClose} />);
+    await editPipelines();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(ask).toHaveBeenCalledTimes(1));
+    expect(ask.mock.calls[0][0]).toContain("Leave Settings?");
+    expect(ask.mock.calls[0][0]).toContain("Your pipeline edits are not saved.");
+    expect(onClose).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+  });
+
+  it("switching to Pipelines and back without edits asks nothing", async () => {
+    const ask = vi.spyOn(window, "confirm");
+    render(<SettingsPage {...props} initialCategory="Pipelines" onClose={() => {}} />);
+    const editor = (await screen.findByLabelText("Your pipelines (JSON)")) as HTMLTextAreaElement;
+    await waitFor(() => expect(editor.value).toBe("[]"));
+    openCategory("Terminal");
+    expect(ask).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Shell program")).toBeTruthy();
   });
 });

@@ -69,7 +69,14 @@ function StageStrip({ def }: { def: PipelineDef }) {
 }
 
 /** Settings › Pipelines: the built-ins, and your own as JSON (`docs/pipelines/README.md`). */
-export function PipelinesSettings({ onSaved }: { onSaved?: () => void }) {
+export function PipelinesSettings({
+  onSaved,
+  onDirtyChange,
+}: {
+  onSaved?: () => void;
+  /** True while the JSON editor differs from the saved pipelines; false after save, discard or unmount. */
+  onDirtyChange?: (dirty: boolean) => void;
+}) {
   const [saved, setSaved] = useState<PipelineDef[]>([]);
   const [text, setText] = useState("[]");
   const [error, setError] = useState<string | null>(null);
@@ -94,6 +101,10 @@ export function PipelinesSettings({ onSaved }: { onSaved?: () => void }) {
   }, []);
 
   const dirty = text.trim() !== asJson(saved).trim();
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
 
   const save = async () => {
     setError(null);
