@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useConfirm } from "./confirm";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { LoginStatus, ProviderReport, ProvidersSettings } from "../bridge";
 import { nativeDialogPath } from "../projectsView";
@@ -70,6 +71,7 @@ function LoginLine({ report }: { report: ProviderReport | null }) {
 /** Settings > Providers (Claude-first plan, Task 2.5). */
 export function ProvidersSettingsSection({ providers }: Props) {
   const { view, claude, cursor, accountLogins, checking, error, refresh, save } = providers;
+  const confirm = useConfirm();
   const [drafts, setDrafts] = useState<Record<string, { name: string; folder: string }>>({});
 
   const accounts = view ? claudeAccounts(view.settings.claude) : [];
@@ -266,7 +268,16 @@ export function ProvidersSettingsSection({ providers }: Props) {
               key={`remove-${account.id}`}
               type="button"
               className="secondary-button"
-              onClick={() => writeAccounts(accounts.filter((item) => item.id !== account.id))}
+              onClick={() => {
+                void confirm({
+                  title: "Remove account",
+                  message: `Remove the account “${account.name}” from DCTerminal? Its config folder (${account.configDir}) and sign-in are not deleted.`,
+                  confirmLabel: "Remove account",
+                  danger: true,
+                }).then((ok) => {
+                  if (ok) writeAccounts(accounts.filter((item) => item.id !== account.id));
+                });
+              }}
             >
               Remove {account.name}
             </button>

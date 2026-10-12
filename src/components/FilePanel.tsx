@@ -11,6 +11,7 @@ import {
 import { highlightCode } from "../files/highlight";
 import { formatSize, isSaveChord, joinRoot } from "../files/paths";
 import type { Platform } from "../keymap";
+import { useConfirm } from "./confirm";
 
 type Props = {
   tabId: string;
@@ -37,6 +38,7 @@ function errorText(err: unknown): string {
 }
 
 export function FilePanel({ tabId, cwd, platform, focusFile, onInsertReference, onClose }: Props) {
+  const confirm = useConfirm();
   const [dirs, setDirs] = useState<Record<string, DirState>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set([""]));
   const [root, setRoot] = useState("");
@@ -94,11 +96,17 @@ export function FilePanel({ tabId, cwd, platform, focusFile, onInsertReference, 
     if (cwd) void loadDir("");
   }, [cwd, loadDir, tabId]);
 
-  const confirmDiscard = () =>
-    !dirtyRef.current || window.confirm("Discard your unsaved edits to this file?");
+  const confirmDiscard = async () =>
+    !dirtyRef.current ||
+    (await confirm({
+      title: "Discard unsaved edits",
+      message: "Discard your unsaved edits to this file?",
+      confirmLabel: "Discard edits",
+      danger: true,
+    }));
 
   const openFile = async (path: string) => {
-    if (!confirmDiscard()) return;
+    if (!(await confirmDiscard())) return;
     setSelected({ path, isDir: false });
     setEditing(false);
     setConflict(false);
@@ -187,7 +195,17 @@ export function FilePanel({ tabId, cwd, platform, focusFile, onInsertReference, 
 
   const reload = async () => {
     if (!file) return;
-    if (dirty && !window.confirm("Reload from disk and drop your edits?")) return;
+    if (
+      dirty &&
+      !(await confirm({
+        title: "Reload from disk",
+        message: "Reload from disk and drop your edits?",
+        confirmLabel: "Reload",
+        danger: true,
+      }))
+    ) {
+      return;
+    }
     try {
       const content = await filesRead(tabId, file.path);
       setFile(content);
@@ -299,9 +317,9 @@ export function FilePanel({ tabId, cwd, platform, focusFile, onInsertReference, 
             type="button"
             className="secondary-button"
             aria-pressed={editing}
-            onClick={() => {
+            onClick={async () => {
               if (editing) {
-                if (!confirmDiscard()) return;
+                if (!(await confirmDiscard())) return;
                 setDraft(file.text ?? "");
                 setEditing(false);
                 setConflict(false);
@@ -384,8 +402,8 @@ export function FilePanel({ tabId, cwd, platform, focusFile, onInsertReference, 
           type="button"
           className="secondary-button"
           disabled={!cwd}
-          onClick={() => {
-            if (!confirmDiscard()) return;
+          onClick={async () => {
+            if (!(await confirmDiscard())) return;
             setDirs({});
             setExpanded(new Set([""]));
             void loadDir("");

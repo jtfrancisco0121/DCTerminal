@@ -19,6 +19,9 @@ import {
   timeOfDay,
   type ActivityFilter,
 } from "../activity/activityModel";
+import { Dialog } from "./Dialog";
+import { InlineNotice, errorText } from "./InlineNotice";
+import { useConfirm } from "./confirm";
 
 type Props = {
   tabId: string;
@@ -49,12 +52,9 @@ export async function loadActivity(
   return { entries: await activityList(tabId), fromLog: false };
 }
 
-function errorText(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
 /** Every tool call the tab's agent made: what ran, what was written, what hit the network. */
 export function ActivityPanel({ tabId, tabLabel, busy, terminal, onCount, onClose }: Props) {
+  const confirm = useConfirm();
   const [entries, setEntries] = useState<ActivityEntry[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -94,7 +94,13 @@ export function ActivityPanel({ tabId, tabLabel, busy, terminal, onCount, onClos
   );
 
   const clear = async () => {
-    if (!window.confirm(`Clear the activity log for ${tabLabel}? This cannot be undone.`)) return;
+    const ok = await confirm({
+      title: "Clear activity log",
+      message: `Clear the activity log for ${tabLabel}? This cannot be undone.`,
+      confirmLabel: "Clear log",
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await activityClear(tabId);
       await load();
@@ -107,7 +113,7 @@ export function ActivityPanel({ tabId, tabLabel, busy, terminal, onCount, onClos
 
   let body;
   if (error) {
-    body = <p className="error">{error}</p>;
+    body = <InlineNotice tone="error">{error}</InlineNotice>;
   } else if (!entries) {
     body = <p className="hint">Loading…</p>;
   } else if (entries.length === 0) {
@@ -175,22 +181,8 @@ export function ActivityPanel({ tabId, tabLabel, busy, terminal, onCount, onClos
   }
 
   return (
-    <div className="overlay-backdrop" role="presentation" onClick={onClose}>
-      <div
-        className="overlay-panel activity-panel"
-        role="dialog"
-        aria-label={`Activity in ${tabLabel}`}
-        onClick={(event) => event.stopPropagation()}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            event.stopPropagation();
-            onClose();
-          }
-        }}
-      >
+    <Dialog title={`Activity in ${tabLabel}`} className="activity-panel" onClose={onClose}>
         <div className="changes-bar">
-          <h3>Activity</h3>
-          <span className="hint">{tabLabel}</span>
           <span className="activity-counts" data-testid="activity-counts">
             {summaryLine(counts)}
           </span>
@@ -213,14 +205,6 @@ export function ActivityPanel({ tabId, tabLabel, busy, terminal, onCount, onClos
               Clear…
             </button>
           )}
-          <button
-            type="button"
-            className="secondary-button"
-            aria-label="Close activity"
-            onClick={onClose}
-          >
-            ×
-          </button>
         </div>
         <div className="activity-chips" role="group" aria-label="Filter by kind">
           <button
@@ -250,7 +234,6 @@ export function ActivityPanel({ tabId, tabLabel, busy, terminal, onCount, onClos
           </p>
         )}
         {body}
-      </div>
-    </div>
+    </Dialog>
   );
 }

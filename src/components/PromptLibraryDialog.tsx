@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { PromptLibrary } from "../bridge";
 import { defaultPromptName, filterPrompts } from "../prompts/library";
+import { Dialog } from "./Dialog";
+import { InlineNotice, errorText } from "./InlineNotice";
+import { useConfirm } from "./confirm";
 
 type View = "saved" | "recent";
 
@@ -35,9 +38,7 @@ function when(iso: string): string {
   });
 }
 
-function message(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
+const message = errorText;
 
 /** F6: saved named prompts and recent sends; insert into the scratch pad. */
 export function PromptLibraryDialog({
@@ -51,6 +52,7 @@ export function PromptLibraryDialog({
   onClearRecent,
   onClose,
 }: Props) {
+  const confirm = useConfirm();
   const [view, setView] = useState<View>("saved");
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
@@ -132,10 +134,6 @@ export function PromptLibraryDialog({
     } else if (event.key === "Enter") {
       event.preventDefault();
       insert(current);
-    } else if (event.key === "Escape") {
-      event.preventDefault();
-      event.stopPropagation();
-      onClose();
     }
   };
 
@@ -156,15 +154,8 @@ export function PromptLibraryDialog({
   const listLabel = view === "saved" ? "Saved prompts" : "Recent sends";
 
   return (
-    <div className="overlay-backdrop" role="presentation" onClick={onClose}>
-      <div
-        className="overlay-panel prompt-library"
-        role="dialog"
-        aria-label="Prompt library"
-        onClick={(event) => event.stopPropagation()}
-      >
+    <Dialog title="Prompt library" className="prompt-library" onClose={onClose}>
         <div className="prompt-library-head">
-          <h3>Prompt library</h3>
           <div className="prompt-library-tabs" role="tablist" aria-label="Prompt lists">
             <button
               type="button"
@@ -221,7 +212,7 @@ export function PromptLibraryDialog({
                 onChange={(event) => setForm({ ...form, body: event.target.value })}
               />
             </label>
-            {error && <p className="error">{error}</p>}
+            {error && <InlineNotice tone="error">{error}</InlineNotice>}
             <div className="prompt-library-actions">
               <button
                 type="button"
@@ -255,8 +246,8 @@ export function PromptLibraryDialog({
               onChange={(event) => setQuery(event.target.value)}
               onKeyDown={onFilterKey}
             />
-            {loadError && <p className="error">{loadError}</p>}
-            {error && <p className="error">{error}</p>}
+            {loadError && <InlineNotice tone="error">{loadError}</InlineNotice>}
+            {error && <InlineNotice tone="error">{error}</InlineNotice>}
             <div className="prompt-library-body-grid">
               {!library && !loadError ? (
                 <p className="hint">Loading…</p>
@@ -319,8 +310,15 @@ export function PromptLibraryDialog({
                           className="secondary-button"
                           onClick={() => {
                             const id = current.promptId;
-                            if (!id || !window.confirm(`Delete the prompt "${current.title}"?`)) return;
-                            void run(() => onDelete(id));
+                            if (!id) return;
+                            void confirm({
+                              title: "Delete prompt",
+                              message: `Delete the prompt "${current.title}"?`,
+                              confirmLabel: "Delete",
+                              danger: true,
+                            }).then((ok) => {
+                              if (ok) void run(() => onDelete(id));
+                            });
                           }}
                         >
                           Delete
@@ -347,7 +345,14 @@ export function PromptLibraryDialog({
                 type="button"
                 className="link-button prompt-library-clear"
                 onClick={() => {
-                  if (window.confirm("Clear the list of recent sends?")) void run(onClearRecent);
+                  void confirm({
+                    title: "Clear recent sends",
+                    message: "Clear the list of recent sends?",
+                    confirmLabel: "Clear list",
+                    danger: true,
+                  }).then((ok) => {
+                    if (ok) void run(onClearRecent);
+                  });
                 }}
               >
                 Clear recent sends
@@ -360,7 +365,6 @@ export function PromptLibraryDialog({
             Stored in DCTerminal's app data: <code>{library.path}</code>
           </p>
         )}
-      </div>
-    </div>
+    </Dialog>
   );
 }

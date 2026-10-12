@@ -1,3 +1,5 @@
+import { Dialog } from "./Dialog";
+import { InlineNotice } from "./InlineNotice";
 import { useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { CliDetectResult, LoginStatus, ProviderReport, RoleSummary } from "../bridge";
@@ -171,10 +173,62 @@ export function FirstRunSetup({
   const dir = claude?.configDir ?? null;
   const claudeAccount = accountLabel(claude?.login);
 
+  const startReason = !roleId
+    ? "Pick a role to start with."
+    : !folder.trim()
+      ? "Choose a folder to start in."
+      : null;
+
+  const footer = (
+    <>
+      <button type="button" className="link-button first-run-skip" disabled={busy} onClick={onSkip}>
+        Skip setup
+      </button>
+      {step === "role" && startReason && <span className="dialog-footer-note">{startReason}</span>}
+      {at > 0 && (
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={busy}
+          onClick={() => setStep(STEPS[at - 1])}
+        >
+          Back
+        </button>
+      )}
+      {step !== "role" ? (
+        <button
+          type="button"
+          className="primary-button"
+          disabled={busy || !canNext}
+          onClick={() => setStep(STEPS[at + 1])}
+        >
+          Next
+        </button>
+      ) : (
+        <button
+          type="button"
+          className="primary-button"
+          disabled={busy || !!startReason}
+          onClick={() => {
+            if (!roleId) return;
+            onFinish({ roleId, folder: folder.trim(), surface });
+          }}
+        >
+          Start
+        </button>
+      )}
+    </>
+  );
+
   return (
-    <div className="overlay-backdrop" role="presentation">
-      <div className="overlay-panel first-run" role="dialog" aria-label="Set up DCTerminal">
-        <h3>Set up DCTerminal</h3>
+    <Dialog
+      title="Set up DCTerminal"
+      className="first-run"
+      hideClose
+      dismissible={false}
+      onClose={onSkip}
+      footer={footer}
+    >
         <ol className="first-run-steps" aria-label="Setup steps">
           {STEPS.map((item, i) => (
             <li
@@ -389,46 +443,7 @@ export function FirstRunSetup({
           </section>
         )}
 
-        {error && <p className="error">{error}</p>}
-
-        <div className="first-run-actions">
-          {at > 0 && (
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={busy}
-              onClick={() => setStep(STEPS[at - 1])}
-            >
-              Back
-            </button>
-          )}
-          {step !== "role" ? (
-            <button
-              type="button"
-              className="primary-button"
-              disabled={busy || !canNext}
-              onClick={() => setStep(STEPS[at + 1])}
-            >
-              Next
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="primary-button"
-              disabled={busy || !roleId || !folder.trim()}
-              onClick={() => {
-                if (!roleId) return;
-                onFinish({ roleId, folder: folder.trim(), surface });
-              }}
-            >
-              Start
-            </button>
-          )}
-          <button type="button" className="link-button" disabled={busy} onClick={onSkip}>
-            Skip setup
-          </button>
-        </div>
-      </div>
-    </div>
+        {error && <InlineNotice tone="error">{error}</InlineNotice>}
+    </Dialog>
   );
 }

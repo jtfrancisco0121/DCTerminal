@@ -72,4 +72,40 @@ describe("AgentToasts", () => {
     render(<AgentToasts toasts={toasts} onOpen={() => {}} onDismiss={() => {}} />);
     expect(screen.getByRole("alert").textContent).toContain("Reviewer needs permission");
   });
+
+  it("pauses while hovered and counts down again after the pointer leaves", () => {
+    vi.useFakeTimers();
+    const onDismiss = vi.fn();
+    render(<AgentToasts toasts={[toasts[1]]} onOpen={() => {}} onDismiss={onDismiss} />);
+    const toast = screen.getByRole("status");
+    fireEvent.mouseEnter(toast);
+    act(() => {
+      vi.advanceTimersByTime(60000);
+    });
+    expect(onDismiss).not.toHaveBeenCalled();
+    fireEvent.mouseLeave(toast);
+    act(() => {
+      vi.advanceTimersByTime(6100);
+    });
+    expect(onDismiss).toHaveBeenCalledWith("2");
+  });
+
+  it("a failure toast stays until it is dismissed", () => {
+    vi.useFakeTimers();
+    const onDismiss = vi.fn();
+    const failed: AgentToast = {
+      id: "f",
+      tabId: "c",
+      kind: "failed",
+      title: "Worktree not removed",
+      body: "git said no",
+    };
+    render(<AgentToasts toasts={[failed]} onOpen={() => {}} onDismiss={onDismiss} />);
+    act(() => {
+      vi.advanceTimersByTime(10 * 60000);
+    });
+    expect(onDismiss).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss notification" }));
+    expect(onDismiss).toHaveBeenCalledWith("f");
+  });
 });

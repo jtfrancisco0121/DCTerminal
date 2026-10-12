@@ -130,6 +130,9 @@ import {
 } from "./liveTabs";
 import { blockedSlashCommand } from "./composer/slashCommands";
 import { CommandPalette } from "./components/CommandPalette";
+import { useConfirm } from "./components/confirm";
+import { Dialog } from "./components/Dialog";
+import { errorText } from "./components/InlineNotice";
 import {
   HandoffActions,
   HandoffBanner,
@@ -841,6 +844,11 @@ export function StartupForm({
   }, []);
   const dismissTabToasts = agentNotifications.dismissTab;
   const showNotice = agentNotifications.notice;
+  const confirm = useConfirm();
+  const settingsDirtyRef = useRef(false);
+  const onSettingsUnsaved = useCallback((dirty: boolean) => {
+    settingsDirtyRef.current = dirty;
+  }, []);
   useEffect(() => {
     if (rolesError) showNotice("Roles did not load", rolesError, "question");
   }, [rolesError, showNotice]);
@@ -851,8 +859,8 @@ export function StartupForm({
       void openAccountWindow(accountId).catch((err: unknown) => {
         showNotice(
           "New window",
-          err instanceof Error ? err.message : String(err),
-          "question",
+          errorText(err),
+          "failed",
         );
       });
     },
@@ -918,7 +926,7 @@ export function StartupForm({
           await transcriptSave(tabId, segmentsToPlainText(rt.segments), cwd);
           setTranscriptSaveError(null);
         } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : String(err);
+          const message = errorText(err);
           setTranscriptSaveError(message);
         }
       });
@@ -1045,8 +1053,11 @@ export function StartupForm({
         const { tab } = await selectActiveTab(activeId);
         loadTabIntoForm(tab);
       })
-      .catch(() => setSavedTabs([]));
-  }, [loadTabIntoForm, patchRuntime, refreshTabs, roles]);
+      .catch((err: unknown) => {
+        setSavedTabs([]);
+        showNotice("Tabs did not load", errorText(err), "failed");
+      });
+  }, [loadTabIntoForm, patchRuntime, refreshTabs, roles, showNotice]);
 
   useEffect(() => {
     sessionActiveRef.current = !!session;
@@ -1519,8 +1530,8 @@ export function StartupForm({
     setNotificationSettingsState(next);
     void setNotificationSettings(next)
       .then(setNotificationSettingsState)
-      .catch(() => {});
-  }, []);
+      .catch((err: unknown) => showNotice("Notification settings not saved", errorText(err), "failed"));
+  }, [showNotice]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1743,7 +1754,7 @@ export function StartupForm({
       })
       .catch((err: unknown) => {
         if (!cancelled) {
-          setHistoryError(err instanceof Error ? err.message : String(err));
+          setHistoryError(errorText(err));
         }
       });
     return () => {
@@ -1819,7 +1830,7 @@ export function StartupForm({
         errors: [
           {
             key: "_form",
-            message: err instanceof Error ? err.message : String(err),
+            message: errorText(err),
           },
         ],
         merged: null,
@@ -1958,7 +1969,7 @@ export function StartupForm({
       }
       await refreshTabs();
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = errorText(err);
       if (tabKey) {
         patchRuntime(tabKey, (rt) => ({
           ...clearLiveSession(rt),
@@ -1985,7 +1996,7 @@ export function StartupForm({
     setTerminalSettings(next)
       .then(setTerminalSettingsState)
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorText(err);
         setTerminalError(message);
       });
   }, []);
@@ -2067,7 +2078,7 @@ export function StartupForm({
         return result.tabId;
       } catch (err: unknown) {
         dropLivePty(pendingId);
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorText(err);
         setTerminalError(message);
         return null;
       } finally {
@@ -2117,7 +2128,7 @@ export function StartupForm({
         await refreshTabs();
       } catch (err: unknown) {
         dropLivePty(pendingId);
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorText(err);
         setTerminalError(message);
       } finally {
         startLockRef.current = false;
@@ -2157,7 +2168,7 @@ export function StartupForm({
       await refreshTabs();
     } catch (err: unknown) {
       dropLivePty(pendingId);
-      setCliLaunchNote(err instanceof Error ? err.message : String(err));
+      setCliLaunchNote(errorText(err));
     } finally {
       startLockRef.current = false;
       setBusy(false);
@@ -2179,7 +2190,7 @@ export function StartupForm({
           cwd: entry.cwd,
         });
       } catch (err: unknown) {
-        setHistoryError(err instanceof Error ? err.message : String(err));
+        setHistoryError(errorText(err));
         setBusy(false);
       }
     },
@@ -2261,7 +2272,7 @@ export function StartupForm({
         setClosedTabs(state.closedTabs ?? []);
         setActiveTabId(tabId);
       } catch (err: unknown) {
-        showNotice("Chain overview", err instanceof Error ? err.message : String(err), "question");
+        showNotice("Chain overview", errorText(err), "failed");
       }
     },
     [showNotice, stashActiveTab],
@@ -2276,7 +2287,7 @@ export function StartupForm({
           const cwd = rt.session?.cwd ?? values.cwd ?? "";
           await transcriptSave(tabId, segmentsToPlainText(rt.segments), cwd).catch(
             (err: unknown) => {
-              const message = err instanceof Error ? err.message : String(err);
+              const message = errorText(err);
               setTranscriptSaveError(message);
             },
           );
@@ -2358,11 +2369,15 @@ export function StartupForm({
           );
           return;
         }
-        const ok = window.confirm(
-          `Remove the worktree for ${branch}?\n\n${check.worktree.path}\n\n` +
+        const ok = await confirm({
+          title: "Remove worktree",
+          message:
+            `Remove the worktree for ${branch}?\n\n${check.worktree.path}\n\n` +
             "This closes the tab, stops its agent or shell, and deletes that folder. " +
             "The branch and its commits are kept.",
-        );
+          confirmLabel: "Remove worktree",
+          danger: true,
+        });
         if (!ok) return;
         await handleCloseTab(tabId);
         await worktreeTabRemove(tabId, true);
@@ -2370,12 +2385,12 @@ export function StartupForm({
       } catch (err: unknown) {
         showNotice(
           "Worktree not removed",
-          err instanceof Error ? err.message : String(err),
+          errorText(err),
           "failed",
         );
       }
     },
-    [handleCloseTab, showNotice],
+    [confirm, handleCloseTab, showNotice],
   );
 
   const handleNewTab = useCallback(async () => {
@@ -2418,7 +2433,7 @@ export function StartupForm({
         ],
       }));
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = errorText(err);
       patchRuntime(tabId, (rt) => ({ ...rt, promptError: message }));
     } finally {
       setBusy(false);
@@ -2442,7 +2457,7 @@ export function StartupForm({
         }
         patchRuntime(tabId, (rt) => ({ ...rt, permission: null }));
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorText(err);
         patchRuntime(tabId, (rt) => ({ ...rt, promptError: message }));
       } finally {
         setBusy(false);
@@ -2471,7 +2486,7 @@ export function StartupForm({
         await respondPlanRequest(tabId, request.jsonRpcId, outcome);
         patchRuntime(tabId, (rt) => clearPlan(rt));
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorText(err);
         patchRuntime(tabId, (rt) => ({ ...rt, promptError: message }));
       } finally {
         setBusy(false);
@@ -2494,7 +2509,7 @@ export function StartupForm({
         await respondQuestionRequest(tabId, request.jsonRpcId, outcome, choiceId);
         patchRuntime(tabId, (rt) => clearQuestion(rt));
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorText(err);
         patchRuntime(tabId, (rt) => ({ ...rt, promptError: message }));
       } finally {
         setBusy(false);
@@ -2563,7 +2578,7 @@ export function StartupForm({
       } catch (err: unknown) {
         waiterRef.current.cancel(tabId);
         chatImages.actions.restore(tabId, images);
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorText(err);
         patchRuntime(tabId, (rt) => ({
           ...rt,
           promptError: message,
@@ -2770,7 +2785,7 @@ export function StartupForm({
       await refreshTabs();
       loadTabIntoForm(tab);
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = errorText(err);
       setPreview({ errors: [{ key: "_session", message }], merged: null });
     } finally {
       setBusy(false);
@@ -2837,11 +2852,16 @@ export function StartupForm({
           await setTabModel(tab.id, model);
           const live = livePty(tab.id);
           if (tab.kind === "terminal" && live && live.exitCode == null) {
-            const restart = window.confirm(
-              "The new model applies when the terminal restarts. Stop the running agent now?",
-            );
+            const restart = await confirm({
+              title: "Restart to apply the model",
+              message: "The new model applies when the terminal restarts. Stop the running agent now?",
+              confirmLabel: "Stop the agent",
+              cancelLabel: "Later",
+            });
             if (restart) {
-              await ptyKill(tab.id).catch(() => {});
+              await ptyKill(tab.id).catch((err: unknown) =>
+                showNotice("Could not stop the agent", errorText(err), "failed"),
+              );
               setModelNotice("The agent stopped. Press Restart to use the new model.");
             } else {
               setModelNotice("The new model applies the next time this terminal starts.");
@@ -2850,10 +2870,10 @@ export function StartupForm({
         }
         await refreshTabs();
       } catch (err: unknown) {
-        setModelNotice(err instanceof Error ? err.message : String(err));
+        setModelNotice(errorText(err));
       }
     },
-    [modelSettings, patchRuntime, refreshTabs],
+    [confirm, modelSettings, patchRuntime, refreshTabs, showNotice],
   );
 
   const changesButton = (tabId: string) => {
@@ -2946,7 +2966,7 @@ export function StartupForm({
             .catch((err: unknown) =>
               showNotice(
                 "Effort not changed",
-                err instanceof Error ? err.message : String(err),
+                errorText(err),
                 "failed",
               ),
             );
@@ -3034,6 +3054,18 @@ export function StartupForm({
   const onShortcut = useCallback(
     (match: ShortcutMatch) => {
       if (match.action === "closeDialog") {
+        // Settings holds unsaved role edits: Escape asks before dropping them.
+        if (settingsOpen && settingsDirtyRef.current) {
+          void confirm({
+            title: "Leave Settings?",
+            message: "Your role edits are not saved. Leaving discards them.",
+            confirmLabel: "Discard and leave",
+            danger: true,
+          }).then((ok) => {
+            if (ok) setSettingsOpen(false);
+          });
+          return;
+        }
         setChangesTabId(null);
         setActivityTabId(null);
         setChatSearchQuery(null);
@@ -3134,8 +3166,21 @@ export function StartupForm({
       }
       if (match.action === "closeTab" && activeTabId) {
         const running = savedTabs.find((tab) => tab.id === activeTabId)?.phase === "running";
-        if (running && !window.confirm("Stop this tab's agent and close it?")) return;
-        void handleCloseTab(activeTabId);
+        const closing = activeTabId;
+        void (async () => {
+          if (
+            running &&
+            !(await confirm({
+              title: "Close tab",
+              message: "Stop this tab's agent and close it?",
+              confirmLabel: "Stop and close",
+              danger: true,
+            }))
+          ) {
+            return;
+          }
+          await handleCloseTab(closing);
+        })();
         return;
       }
       if (match.action === "nextTab") {
@@ -3198,6 +3243,8 @@ export function StartupForm({
     },
     [
       activeTabId,
+      confirm,
+      settingsOpen,
       handleFind,
       cycleTab,
       handleCloseTab,
@@ -3399,7 +3446,7 @@ export function StartupForm({
         setHandoffFields(handoffFieldsOf(loaded));
       })
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorText(err);
         setHandoffError(message);
       });
   }, []);
@@ -3488,7 +3535,7 @@ export function StartupForm({
           );
           if (file?.text.trim()) planFile = file;
         } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : String(err);
+          const message = errorText(err);
           setHandoffError(message);
         }
       }
@@ -3785,7 +3832,7 @@ export function StartupForm({
           } catch (err: unknown) {
             showNotice(
               "Round not recorded",
-              `The follow-up was sent, but the chain round was not saved: ${err instanceof Error ? err.message : String(err)}`,
+              `The follow-up was sent, but the chain round was not saved: ${errorText(err)}`,
               "question",
             );
           }
@@ -3793,7 +3840,7 @@ export function StartupForm({
           await refreshTabs();
           await handleSelectTab(targetTab.id);
         } catch (err: unknown) {
-          setHandoffError(err instanceof Error ? err.message : String(err));
+          setHandoffError(errorText(err));
         } finally {
           setBusy(false);
         }
@@ -3961,7 +4008,7 @@ export function StartupForm({
         setHandoffTarget(null);
         await refreshTabs();
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorText(err);
         setHandoffError(message);
       } finally {
         setBusy(false);
@@ -4013,7 +4060,7 @@ export function StartupForm({
     handoffGet(record.id)
       .then((full) => setSavedPlan(full))
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorText(err);
         setHandoffError(message);
       })
       .finally(() => setSavedPlanLoading(false));
@@ -4084,8 +4131,8 @@ export function StartupForm({
           .catch((err: unknown) => {
             showNotice(
               "Eagle-Eye",
-              err instanceof Error ? err.message : String(err),
-              "question",
+              errorText(err),
+              "failed",
             );
           })
           .finally(() => setBusy(false));
@@ -4142,8 +4189,8 @@ export function StartupForm({
           .catch((err: unknown) =>
             showNotice(
               "Could not open pipeline",
-              err instanceof Error ? err.message : String(err),
-              "question",
+              errorText(err),
+              "failed",
             ),
           );
         return;
@@ -4173,8 +4220,8 @@ export function StartupForm({
           .catch((err: unknown) =>
             showNotice(
               "Could not open execution pipeline",
-              err instanceof Error ? err.message : String(err),
-              "question",
+              errorText(err),
+              "failed",
             ),
           );
         return;
@@ -4217,8 +4264,8 @@ export function StartupForm({
           .catch((err: unknown) =>
             showNotice(
               "Could not refresh models",
-              err instanceof Error ? err.message : String(err),
-              "question",
+              errorText(err),
+              "failed",
             ),
           );
         return;
@@ -4455,7 +4502,7 @@ export function StartupForm({
         if (want !== providerOf(tab)) {
           void setTabProvider(tabId, want)
             .then(() => refreshTabs())
-            .catch(() => {});
+            .catch((err: unknown) => showNotice("Provider not changed", errorText(err), "failed"));
         }
       }
     }
@@ -4479,7 +4526,7 @@ export function StartupForm({
       onRename={(tabId, label) => {
         void setTabLabel(tabId, label)
           .then(() => refreshTabs())
-          .catch(() => {});
+          .catch((err: unknown) => showNotice("Tab not renamed", errorText(err), "failed"));
       }}
       onRenameEnd={() => setRenamingTabId(null)}
       canReopen={closedTabs.length > 0}
@@ -4546,13 +4593,16 @@ export function StartupForm({
               current ? { ...current, [provider]: saved } : { cursor: saved, claude: saved },
             ),
           )
-          .catch(() => {});
+          .catch((err: unknown) => showNotice("Model setting not saved", errorText(err), "failed"));
       }}
       modelsRefreshing={modelsRefreshing}
       onRefreshModels={() => {
-        void refreshModelList().catch(() => {});
+        void refreshModelList().catch((err: unknown) =>
+          showNotice("Could not refresh the model list", errorText(err), "failed"),
+        );
       }}
       approvalMode={approvalMode}
+      onUnsavedChange={onSettingsUnsaved}
       onClose={() => setSettingsOpen(false)}
     />
   );
@@ -4583,7 +4633,7 @@ export function StartupForm({
     void workspacesList()
       .then(setWorkspaceList)
       .catch((err: unknown) =>
-        setWorkspaceError(err instanceof Error ? err.message : String(err)),
+        setWorkspaceError(errorText(err)),
       );
   }
 
@@ -4601,11 +4651,14 @@ export function StartupForm({
       );
       if (
         live.length > 0 &&
-        !window.confirm(
-          `Replace the open tabs? ${live.length} running agent or terminal${
+        !(await confirm({
+          title: "Replace the open tabs",
+          message: `Replace the open tabs? ${live.length} running agent or terminal${
             live.length === 1 ? "" : "s"
           } will be stopped. Closed tabs stay in Reopen closed tab.`,
-        )
+          confirmLabel: "Replace",
+          danger: true,
+        }))
       ) {
         return;
       }
@@ -4693,7 +4746,7 @@ export function StartupForm({
         setPromptLibraryError(null);
       })
       .catch((err: unknown) =>
-        setPromptLibraryError(err instanceof Error ? err.message : String(err)),
+        setPromptLibraryError(errorText(err)),
       );
 
   /** F6: open the library; `save` starts "Save as prompt" with the pad (or its selection). */
@@ -4770,7 +4823,7 @@ export function StartupForm({
         nonce,
       });
     } catch (err: unknown) {
-      showNotice("Could not open that chat", err instanceof Error ? err.message : String(err), "failed");
+      showNotice("Could not open that chat", errorText(err), "failed");
     }
   };
 
@@ -4885,41 +4938,23 @@ export function StartupForm({
         />
       )}
       {accountPickerOpen && (
-        <div
-          className="overlay-backdrop"
-          role="presentation"
-          onClick={() => setAccountPickerOpen(false)}
-        >
-          <div
-            className="overlay-panel"
-            role="dialog"
-            aria-label="New window"
-            onClick={(event) => event.stopPropagation()}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                event.stopPropagation();
-                setAccountPickerOpen(false);
-              }
-            }}
-          >
-            <h3>New window</h3>
-            <p className="hint">
-              Claude tabs in the new window use the account you pick. Cursor tabs are unchanged.
-            </p>
-            <div className="button-row">
-              {(providers.view ? claudeAccounts(providers.view.settings.claude) : []).map((account) => (
-                <button
-                  key={account.id}
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => launchAccountWindow(account.id)}
-                >
-                  {account.name}
-                </button>
-              ))}
-            </div>
+        <Dialog title="New window" onClose={() => setAccountPickerOpen(false)}>
+          <p className="hint">
+            Claude tabs in the new window use the account you pick. Cursor tabs are unchanged.
+          </p>
+          <div className="button-row">
+            {(providers.view ? claudeAccounts(providers.view.settings.claude) : []).map((account) => (
+              <button
+                key={account.id}
+                type="button"
+                className="secondary-button"
+                onClick={() => launchAccountWindow(account.id)}
+              >
+                {account.name}
+              </button>
+            ))}
           </div>
-        </div>
+        </Dialog>
       )}
       {worktreeDialogOpen && (
         <WorktreeDialog
@@ -4963,7 +4998,7 @@ export function StartupForm({
                   logPath: app.path || null,
                 });
               })
-              .catch(() => {})
+              .catch((err: unknown) => showNotice("Could not read the logs", errorText(err), "failed"))
               .finally(() => setLogBusy(false));
           }}
           onClose={() => setLogDrawerOpen(false)}
@@ -5827,7 +5862,7 @@ export function StartupForm({
           void setTabModel(tabId, model)
             .then(() => refreshTabs())
             .catch((err: unknown) =>
-              setModelNotice(err instanceof Error ? err.message : String(err)),
+              setModelNotice(errorText(err)),
             );
         }}
       />
@@ -5906,7 +5941,7 @@ export function StartupForm({
       .then(() => setTabProvider(tabId, provider, pickedRoleId || roleId || null))
       .then(() => refreshTabs())
       .then(() => providers.refreshSettings())
-      .catch((err: unknown) => setModelNotice(err instanceof Error ? err.message : String(err)));
+      .catch((err: unknown) => setModelNotice(errorText(err)));
   };
   const providerChip =
     activeTabSummary && activeTabSummary.phase === "draft" && showFields ? (

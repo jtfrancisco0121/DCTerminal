@@ -1,3 +1,4 @@
+import { Dialog } from "./Dialog";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { folderName, searchTabs } from "../tabSearch";
 import { tabStatusLabel, type TabStatus } from "../tabStatus";
@@ -48,13 +49,7 @@ export function TabSwitcher({
   const selected = Math.min(index, Math.max(matches.length - 1, 0));
 
   return (
-    <div className="overlay-backdrop" role="presentation" onClick={onClose}>
-      <div
-        className="overlay-panel overlay-panel-palette"
-        role="dialog"
-        aria-label={title}
-        onClick={(event) => event.stopPropagation()}
-      >
+    <Dialog title={title} hideTitle placement="top" className="overlay-panel-palette" onClose={onClose}>
         <input
           className="text-input"
           autoFocus
@@ -72,10 +67,6 @@ export function TabSwitcher({
             } else if (event.key === "Enter" && matches[selected]) {
               event.preventDefault();
               onSelect(matches[selected].id);
-            } else if (event.key === "Escape") {
-              event.preventDefault();
-              event.stopPropagation();
-              onClose();
             }
           }}
         />
@@ -107,7 +98,6 @@ export function TabSwitcher({
           })}
           {matches.length === 0 && <li className="hint">No tabs match</li>}
         </ul>
-      </div>
-    </div>
+    </Dialog>
   );
 }

@@ -40,18 +40,16 @@ test.describe("tab lifecycle", () => {
     // The chip's close button says what it will do.
     await expect(page.getByRole("button", { name: "Stop and close Alpha" })).toBeVisible();
 
-    const prompts: string[] = [];
-    page.once("dialog", (dialog) => {
-      prompts.push(dialog.message());
-      void dialog.dismiss();
-    });
+    const closeConfirm = page.getByRole("alertdialog", { name: "Close tab" });
     await chord(page, "KeyW");
-    await expect.poll(() => prompts).toEqual(["Stop this tab's agent and close it?"]);
+    await expect(closeConfirm).toContainText("Stop this tab's agent and close it?");
+    await closeConfirm.getByRole("button", { name: "Cancel" }).click();
+    await expect(closeConfirm).toBeHidden();
     expect(await app.calls("close_tab")).toHaveLength(0);
     await expectActive(page, "Alpha");
 
-    page.once("dialog", (dialog) => void dialog.accept());
     await chord(page, "KeyW");
+    await closeConfirm.getByRole("button", { name: "Stop and close" }).click();
     const closed = await app.waitForCall("close_tab");
     expect(closed.args.tabId).toBe("tab-1");
     // The chat is saved before the tab goes away.
@@ -64,15 +62,10 @@ test.describe("tab lifecycle", () => {
 
   test("Mod+W on a draft tab closes it without asking", async ({ app, page }) => {
     await app.open({ tabs: namedTabs(2) });
-    let asked = false;
-    page.on("dialog", (dialog) => {
-      asked = true;
-      void dialog.dismiss();
-    });
     await chord(page, "KeyW");
     await app.waitForCall("close_tab", (args) => args.tabId === "tab-1");
     await expect(tabChip(page, "Alpha")).toHaveCount(0);
-    expect(asked).toBe(false);
+    await expect(page.getByRole("alertdialog")).toHaveCount(0);
   });
 
   test("closing a tab mid-turn drops it; late events for it are ignored", async ({ app, page }) => {

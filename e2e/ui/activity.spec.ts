@@ -41,6 +41,6 @@ test("Activity panel lists the turn's tool calls", async ({ app, page }) => {
   await expect(rows).toHaveCount(1);
   await expect(rows.first()).toContainText("ls -la");
 
-  await panel.getByRole("button", { name: "Close activity" }).click();
+  await panel.getByRole("button", { name: "Close", exact: true }).click();
   await expect(panel).toBeHidden();
 });

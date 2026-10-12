@@ -1,5 +1,5 @@
-import { useEffect, useRef } from "react";
-import { toastLifetimeMs, type AgentToast } from "../notify/agentNotify";
+import { useEffect, useRef, useState } from "react";
+import { toastIsSticky, toastLifetimeMs, type AgentToast } from "../notify/agentNotify";
 
 type Props = {
   toasts: AgentToast[];
@@ -24,17 +24,24 @@ function ToastItem({
   const dismissRef = useRef(onDismiss);
   dismissRef.current = onDismiss;
 
+  // Hovering or focusing a toast holds it, so it can be read and clicked.
+  const [held, setHeld] = useState(false);
+
   useEffect(() => {
-    if (paused) return;
+    if (paused || held || toastIsSticky(toast.kind)) return;
     const timer = window.setTimeout(() => dismissRef.current(toast.id), toastLifetimeMs(toast.kind));
     return () => window.clearTimeout(timer);
-  }, [paused, toast.id, toast.kind]);
+  }, [paused, held, toast.id, toast.kind]);
 
   const urgent = toast.kind !== "finished";
   return (
     <div
       className={`agent-toast agent-toast-${toast.kind}`}
       role={urgent ? "alert" : "status"}
+      onMouseEnter={() => setHeld(true)}
+      onMouseLeave={() => setHeld(false)}
+      onFocus={() => setHeld(true)}
+      onBlur={() => setHeld(false)}
     >
       <button
         type="button"

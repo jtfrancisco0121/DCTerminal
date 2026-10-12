@@ -59,6 +59,9 @@ export function PipelineOverview({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [candidateDraft, setCandidateDraft] = useState("");
   const [approvedDraft, setApprovedDraft] = useState("");
+  // The plan boxes stay folded until they hold text or the user opens them.
+  const [candidateOpen, setCandidateOpen] = useState(false);
+  const [approvedOpen, setApprovedOpen] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const reload = useCallback(async () => {
@@ -260,13 +263,25 @@ export function PipelineOverview({
           <p className="hint">
             Paste or pull the Planner output, save as candidate plan, then run Plan Reviewer.
           </p>
-          <textarea
-            className="text-input prompt-area pipeline-plan-area"
-            rows={8}
-            value={candidateDraft}
-            onChange={(e) => setCandidateDraft(e.target.value)}
-            disabled={busy}
-          />
+          <details
+            className="pipeline-plan-details"
+            open={candidateOpen || candidateDraft.trim().length > 0}
+            onToggle={(e) => setCandidateOpen(e.currentTarget.open)}
+          >
+            <summary>
+              {candidateDraft.trim()
+                ? `Plan text (${candidateDraft.length.toLocaleString()} chars)`
+                : "Paste the plan text"}
+            </summary>
+            <textarea
+              className="text-input prompt-area pipeline-plan-area"
+              aria-label="Plan for review"
+              rows={8}
+              value={candidateDraft}
+              onChange={(e) => setCandidateDraft(e.target.value)}
+              disabled={busy}
+            />
+          </details>
           <div className="button-row">
             <button
               type="button"
@@ -295,13 +310,25 @@ export function PipelineOverview({
             ? "Paste your final plan here, then promote to the Implementer tab."
             : "After Plan Reviewer approves, pull or paste the final plan and promote."}
         </p>
-        <textarea
-          className="text-input prompt-area pipeline-plan-area"
-          rows={8}
-          value={approvedDraft}
-          onChange={(e) => setApprovedDraft(e.target.value)}
-          disabled={busy}
-        />
+        <details
+          className="pipeline-plan-details"
+          open={approvedOpen || approvedDraft.trim().length > 0}
+          onToggle={(e) => setApprovedOpen(e.currentTarget.open)}
+        >
+          <summary>
+            {approvedDraft.trim()
+              ? `Plan text (${approvedDraft.length.toLocaleString()} chars)`
+              : "Paste the plan text"}
+          </summary>
+          <textarea
+            className="text-input prompt-area pipeline-plan-area"
+            aria-label={kind === "execute" ? "Approved plan" : "Plan to approve"}
+            rows={8}
+            value={approvedDraft}
+            onChange={(e) => setApprovedDraft(e.target.value)}
+            disabled={busy}
+          />
+        </details>
         <div className="button-row">
           {kind === "full" && (
             <button

@@ -19,6 +19,8 @@ import {
   type RoleName,
 } from "../handoff/map";
 import { loopBackMessage } from "../handoff/routing";
+import { Dialog } from "./Dialog";
+import { InlineNotice } from "./InlineNotice";
 
 /** A chain reviewer sending its round back to an earlier stage. */
 export type LoopBackTarget = {
@@ -132,15 +134,50 @@ export function HandoffDialog({
     ? !busy && !block && !followUp.blocked && preview.trim().length > 0
     : !busy && !block && mapped.planText.length > 0 && targetFields !== null;
 
+  // Why the main button is off, shown beside it.
+  const disabledReason = busy
+    ? null
+    : (block ??
+      followUp?.blocked ??
+      (!followUp && targetFields === null ? "Loading the target role's form…" : null) ??
+      (preview.trim().length === 0 || (!followUp && mapped.planText.length === 0)
+        ? "There is nothing to send yet."
+        : null));
+
   return (
-    <div className="overlay-backdrop" role="presentation" onClick={onClose}>
-      <div
-        className="overlay-panel"
-        role="dialog"
-        aria-label={heading}
-        onClick={(event) => event.stopPropagation()}
-      >
-        <h2>{heading}</h2>
+    <Dialog
+      title={heading}
+      onClose={onClose}
+      dismissible={!busy}
+      footer={
+        <>
+          {!canConfirm && disabledReason && (
+            <span className="dialog-footer-note" role="note">
+              {disabledReason}
+            </span>
+          )}
+          <button type="button" className="secondary-button" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="primary-button"
+            disabled={!canConfirm}
+            onClick={() => onConfirm(scope, surface)}
+          >
+            {busy
+              ? followUp
+                ? "Sending…"
+                : "Opening…"
+              : followUp
+                ? `Send follow-up to ${followUp.tabLabel}`
+                : surface === "terminal"
+                  ? `Start ${targetLabel} terminal`
+                  : `Open ${targetLabel} tab`}
+          </button>
+        </>
+      }
+    >
         {followUp ? (
           <>
             <p className="hint">
@@ -222,9 +259,11 @@ export function HandoffDialog({
             </label>
           ))}
         </fieldset>
-        {!followUp && folderWarning && <p className="error">{folderWarning} You can still open the tab and pick another folder before Start.</p>}
-        {block && <p className="hint">{block}</p>}
-        {followUp?.blocked && <p className="hint">{followUp.blocked}</p>}
+        {!followUp && folderWarning && (
+          <InlineNotice tone="warning">
+            {folderWarning} You can still open the tab and pick another folder before Start.
+          </InlineNotice>
+        )}
         {scopeHint && <p className="hint">{scopeHint}</p>}
         {!followUp && mapped.warning && <p className="hint">{mapped.warning}</p>}
         {!followUp && fill && mapped.planText && (
@@ -268,7 +307,7 @@ export function HandoffDialog({
             )}
           </div>
         )}
-        {error && <p className="error">{error}</p>}
+        {error && <InlineNotice tone="error">{error}</InlineNotice>}
         {followUp && preview.trim() && (
           <pre
             className="mono-snippet handoff-preview handoff-preview-full"
@@ -283,29 +322,7 @@ export function HandoffDialog({
             {preview.length > previewText.length ? "…" : ""}
           </pre>
         )}
-        <div className="button-row">
-          <button type="button" className="secondary-button" onClick={onClose} disabled={busy}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="primary-button"
-            disabled={!canConfirm}
-            onClick={() => onConfirm(scope, surface)}
-          >
-            {busy
-              ? followUp
-                ? "Sending…"
-                : "Opening…"
-              : followUp
-                ? `Send follow-up to ${followUp.tabLabel}`
-                : surface === "terminal"
-                ? `Start ${targetLabel} terminal`
-                : `Open ${targetLabel} tab`}
-          </button>
-        </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }
 
@@ -403,28 +420,24 @@ export function SavedPlanDialog({
   onClose: () => void;
 }) {
   return (
-    <div className="overlay-backdrop" role="presentation" onClick={onClose}>
-      <div
-        className="overlay-panel"
-        role="dialog"
-        aria-label="Saved plan"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <h2>{title}</h2>
-        <p className="hint">
-          {createdAt}
-          {cwd ? ` · ${cwd}` : ""}
-        </p>
-        <p className="hint">The Planner tab is closed. This copy is stored in app data.</p>
-        {loading && <p className="hint">Loading the saved plan…</p>}
-        {error && <p className="error">{error}</p>}
-        {!loading && <pre className="mono-snippet handoff-preview handoff-preview-full">{planText}</pre>}
-        <div className="button-row">
-          <button type="button" className="secondary-button" onClick={onClose}>
-            Close
-          </button>
-        </div>
-      </div>
-    </div>
+    <Dialog
+      title="Saved plan"
+      onClose={onClose}
+      footer={
+        <button type="button" className="secondary-button" onClick={onClose}>
+          Close
+        </button>
+      }
+    >
+      <h3 className="dialog-subtitle">{title}</h3>
+      <p className="hint">
+        {createdAt}
+        {cwd ? ` · ${cwd}` : ""}
+      </p>
+      <p className="hint">The Planner tab is closed. This copy is stored in app data.</p>
+      {loading && <p className="hint">Loading the saved plan…</p>}
+      {error && <InlineNotice tone="error">{error}</InlineNotice>}
+      {!loading && <pre className="mono-snippet handoff-preview handoff-preview-full">{planText}</pre>}
+    </Dialog>
   );
 }

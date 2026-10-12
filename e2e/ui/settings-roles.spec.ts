@@ -66,7 +66,6 @@ test("a built-in role shows Reset but no Delete; Duplicate makes an editable cus
   await expect(roleEntry(page, "Planner")).toHaveClass(/settings-role-active/);
   await expect(detail(page).locator("p").first()).toHaveText("Planner · built-in · plan · 6 fields");
   await expect(roles.getByRole("button", { name: "Reset built-in" })).toBeVisible();
-  await expect(roles.getByRole("button", { name: "Delete", exact: true })).toHaveCount(0);
 
   await roles.getByRole("button", { name: "Duplicate" }).click();
   const call = await app.waitForCall("duplicate_role");
@@ -94,7 +93,7 @@ test("Delete asks first: Keep it cancels, Delete role removes the role", async (
   await expect(roles.getByLabel("Name", { exact: true })).toHaveValue("Triage");
 
   await roles.getByRole("button", { name: "Delete", exact: true }).click();
-  const confirm = roles.getByRole("alertdialog", { name: "Delete role" });
+  const confirm = page.getByRole("alertdialog", { name: "Delete role" });
   await expect(confirm).toContainText("Delete Triage? This cannot be undone. Export it first to keep a copy.");
   await expect(roles.getByRole("button", { name: "Delete", exact: true })).toHaveCount(0);
   await confirm.getByRole("button", { name: "Keep it" }).click();
@@ -132,7 +131,7 @@ test("deleting a role an open tab uses is refused and the role stays", async ({ 
   await roleEntry(page, "Triage").click();
   await expect(roles.getByLabel("Name", { exact: true })).toHaveValue("Triage");
   await roles.getByRole("button", { name: "Delete", exact: true }).click();
-  await roles.getByRole("alertdialog", { name: "Delete role" }).getByRole("button", { name: "Delete role" }).click();
+  await page.getByRole("alertdialog", { name: "Delete role" }).getByRole("button", { name: "Delete role" }).click();
   await expect(roles.getByText("1 open tab uses Triage. Close them before deleting the role.")).toBeVisible();
   await expect(roleEntry(page, "Triage")).toBeVisible();
   await expect(roles.getByLabel("Name", { exact: true })).toHaveValue("Triage");

@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { Dialog } from "./Dialog";
+import { errorText } from "./InlineNotice";
 import type { CursorHistoryEntry } from "../cursorHistory";
 import { CursorHistoryList } from "./CursorHistoryList";
 
@@ -16,13 +18,8 @@ type Props = {
 export function ChatHistoryDialog({ folder, load, busy, onResume, onOpenCli, onClose }: Props) {
   const [entries, setEntries] = useState<CursorHistoryEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const panelRef = useRef<HTMLDivElement>(null);
   const loadRef = useRef(load);
   loadRef.current = load;
-
-  useEffect(() => {
-    panelRef.current?.focus();
-  }, []);
 
   useEffect(() => {
     if (!folder) return;
@@ -37,7 +34,7 @@ export function ChatHistoryDialog({ folder, load, busy, onResume, onOpenCli, onC
       .catch((err: unknown) => {
         if (!cancelled) {
           setEntries([]);
-          setError(err instanceof Error ? err.message : String(err));
+          setError(errorText(err));
         }
       });
     return () => {
@@ -46,22 +43,11 @@ export function ChatHistoryDialog({ folder, load, busy, onResume, onOpenCli, onC
   }, [folder]);
 
   return (
-    <div className="overlay-backdrop" role="presentation" onClick={onClose}>
-      <div
-        ref={panelRef}
-        tabIndex={-1}
-        className="overlay-panel chat-history-dialog"
-        role="dialog"
-        aria-label="Chat history"
-        onClick={(event) => event.stopPropagation()}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            event.preventDefault();
-            event.stopPropagation();
-            onClose();
-          }
-        }}
-      >
+    <Dialog
+      title="Chat history"
+      className="chat-history-dialog"
+      onClose={onClose}
+    >
         {folder ? (
           <>
             <p className="hint">
@@ -82,12 +68,6 @@ export function ChatHistoryDialog({ folder, load, busy, onResume, onOpenCli, onC
         ) : (
           <p className="hint">Pick a folder for this tab first, then open chat history again.</p>
         )}
-        <div className="button-row">
-          <button type="button" className="secondary-button" onClick={onClose}>
-            Close
-          </button>
-        </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }

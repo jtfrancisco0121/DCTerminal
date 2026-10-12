@@ -3,6 +3,7 @@
  * into a hidden park so the scrollback survives an unmount.
  */
 
+import { confirmAction } from "../components/confirm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -76,8 +77,13 @@ export function ensureParkedTerminal(id: string, fontSize: number): ParkedTermin
   term.loadAddon(search);
   term.loadAddon(
     new WebLinksAddon((_event, uri) => {
-      const open = window.confirm(`Open this link?\n${uri}`);
-      if (open) void openUrl(uri).catch(() => {});
+      void confirmAction({
+        title: "Open link",
+        message: `Open this link?\n${uri}`,
+        confirmLabel: "Open",
+      }).then((open) => {
+        if (open) void openUrl(uri).catch((err: unknown) => console.warn("Could not open link", err));
+      });
     }),
   );
   term.open(host);
