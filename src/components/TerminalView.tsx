@@ -6,6 +6,7 @@ import { isShiftEnter, SHIFT_ENTER_SEQUENCE } from "../terminal/keys";
 import { TerminalSearchBar } from "./TerminalSearchBar";
 import { TerminalContextMenu, type ContextMenuItem } from "./TerminalContextMenu";
 import { formatDroppedPaths } from "../terminal/drop";
+import { elementAtDropPosition } from "../dragDropPosition";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   beginLivePty,
@@ -126,8 +127,7 @@ export function TerminalView({
     let unlisten: (() => void) | undefined;
     let disposed = false;
     const over = (position: { x: number; y: number }) => {
-      const scale = window.devicePixelRatio || 1;
-      const target = document.elementFromPoint(position.x / scale, position.y / scale);
+      const target = elementAtDropPosition(position);
       return !!target && !!viewRef.current?.contains(target);
     };
     try {

@@ -51,6 +51,26 @@ describe("image file drop through Tauri's drag-drop event", () => {
     expect(files[0].size).toBe(3);
   });
 
+  it("hit-tests the drop position unscaled on a 2x Mac screen", async () => {
+    const dpr = window.devicePixelRatio;
+    Object.defineProperty(window, "devicePixelRatio", { value: 2, configurable: true });
+    Object.defineProperty(navigator, "platform", { value: "MacIntel", configurable: true });
+    try {
+      const images = props();
+      const { getByTestId } = render(<Host images={images} />);
+      await flush();
+      const efp = document.elementFromPoint as ReturnType<typeof vi.fn>;
+      efp.mockReturnValue(getByTestId("box"));
+      handlers[0]({ payload: { type: "drop", paths: ["/x/a.png"], position: { x: 1000, y: 700 } } });
+      await flush();
+      expect(efp).toHaveBeenCalledWith(1000, 700);
+      expect(images.onAddFiles).toHaveBeenCalledTimes(1);
+    } finally {
+      Object.defineProperty(window, "devicePixelRatio", { value: dpr, configurable: true });
+      delete (navigator as unknown as Record<string, unknown>).platform;
+    }
+  });
+
   it("ignores drops elsewhere", async () => {
     const images = props();
     render(<Host images={images} />);

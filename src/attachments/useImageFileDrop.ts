@@ -1,6 +1,7 @@
 import { useEffect, useRef, type RefObject } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { attachmentReadFile } from "../bridge";
+import { elementAtDropPosition } from "../dragDropPosition";
 import type { ChatImagesProps } from "./useChatImages";
 
 /**
@@ -62,8 +63,7 @@ export function useImageFileDrop(
           const el = ref.current;
           const current = imagesRef.current;
           if (!el || !current) return;
-          const scale = window.devicePixelRatio || 1;
-          const target = document.elementFromPoint(payload.position.x / scale, payload.position.y / scale);
+          const target = elementAtDropPosition(payload.position);
           if (!target || !el.contains(target)) return;
           if (lastDomDrop && lastDomDrop.el === el && Date.now() - lastDomDrop.at < DOM_DROP_WINDOW_MS) return;
           void filesFromDroppedPaths(payload.paths, current.onError).then((files) => {
