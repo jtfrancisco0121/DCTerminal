@@ -11,17 +11,16 @@ test("several images: each gets a chip, one is removed, the send carries the res
   await app.pasteImage(editor, png("two.png"));
   await app.pasteImage(composer, { name: "three.gif", mime: "image/gif", base64: PNG_1X1 });
 
-  // The composer and the pad show one shared set.
+  // Images pasted into the composer or the pad show as one set, once, beside the composer.
   const lists = page.getByRole("list", { name: "Attached images" });
-  await expect(lists).toHaveCount(2);
-  for (const list of await lists.all()) {
-    await expect(list.getByRole("listitem")).toHaveText([/one\.png/, /two\.png/, /three\.gif/]);
-  }
+  await expect(lists).toHaveCount(1);
+  await expect(page.getByRole("region", { name: "Scratch pad" }).getByRole("list", { name: "Attached images" })).toHaveCount(0);
+  await expect(lists.getByRole("listitem")).toHaveText([/one\.png/, /two\.png/, /three\.gif/]);
   await expect.poll(async () => (await app.calls("attachment_add")).length).toBe(3);
   expect((await app.calls("attachment_add")).map((c) => c.args.mime)).toEqual(["image/png", "image/png", "image/gif"]);
 
-  // Removing from the pad's chips removes it everywhere and unstages it.
-  await page.getByRole("region", { name: "Scratch pad" }).getByRole("button", { name: "Remove two.png" }).click();
+  // Removing a chip unstages it.
+  await lists.getByRole("button", { name: "Remove two.png" }).click();
   const removed = await app.waitForCall("attachment_remove");
   expect(removed.args).toEqual({ tabId: "tab-1", id: "att-2" });
   await expect(lists.first().getByRole("listitem")).toHaveText([/one\.png/, /three\.gif/]);

@@ -24,7 +24,8 @@ async function openAsTerminal(page: Page, role: string) {
 }
 
 test("Planner opened as Terminal: role_terminal_start with the form, then a role terminal", async ({ app, page }) => {
-  await app.open();
+  // Planner remembered as Chat, so choosing Terminal is a change that is saved.
+  await app.open({ roleSurface: { role_planner: "chat" } });
   await openAsTerminal(page, "Planner");
   const surface = await app.waitForCall("set_terminal_settings");
   expect((surface.args.terminal as { roleSurface: Record<string, string> }).roleSurface).toEqual({

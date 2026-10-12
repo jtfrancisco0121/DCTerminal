@@ -60,7 +60,7 @@ test.describe("transcript rendering", () => {
 
     const code = body.locator("pre > code");
     await expect(code).toHaveText("const answer: number = 42;");
-    await expect(code).toHaveClass(/language-ts/);
+    await expect(code).toHaveClass(/\bhljs language-typescript\b/);
 
     // Agent HTML is not rendered.
     await expect(body.locator("img")).toHaveCount(0);
@@ -68,14 +68,28 @@ test.describe("transcript rendering", () => {
     await expect(body).toContainText("raw HTML stays text");
   });
 
-  // Requested coverage: code blocks with a copy button. The chat renders plain <pre><code>
-  // (SessionTerminal markdownComponents only overrides `table`), so there is nothing to click.
-  test("code blocks have no copy button (feature not built)", async ({ app, page }) => {
+  // Code blocks carry a Copy code button (ChatMarkdown CodeBlock).
+  test("a code block's Copy code button copies its source", async ({ app, page }) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: {
+          writeText: async (text: string) => {
+            (window as any).__copied = text;
+          },
+        },
+      });
+    });
     const turn = await started(app);
     await turn.reply("```sh\nnpm run build\n```\n");
     const pre = log(page).locator("pre").last();
     await expect(pre).toHaveText("npm run build");
-    await expect(pre.locator("xpath=..").getByRole("button")).toHaveCount(0);
+    const copy = pre.locator("xpath=..").getByRole("button");
+    await expect(copy).toHaveCount(1);
+    await expect(copy).toHaveAccessibleName("Copy code");
+    await copy.click();
+    await expect(copy).toHaveText("Copied");
+    expect(await page.evaluate(() => (window as any).__copied)).toBe("npm run build");
   });
 
   test("long lines wrap; only code blocks scroll sideways", async ({ app, page }) => {
@@ -134,9 +148,8 @@ test.describe("transcript rendering", () => {
     await expect(tools).toHaveCount(1);
     await expect(tools.first().locator(".session-tool-label")).toHaveText("Run tests");
     await expect(tools.first().locator(".session-tool-status")).toHaveText("pending");
-    // Active tools also show in the Tool progress card.
-    await expect(cards.getByRole("heading", { name: "Tool progress" })).toBeVisible();
-    await expect(cards).toContainText("Run tests");
+    // Tool calls show only in the chat, not again in a Tool progress card.
+    await expect(cards.getByRole("heading", { name: "Tool progress" })).toHaveCount(0);
 
     await turn.toolCall({ id: "t1", title: "Run tests", kind: "execute", status: "in_progress" });
     await expect(tools.first().locator(".session-tool-status")).toHaveText("running");
@@ -147,14 +160,10 @@ test.describe("transcript rendering", () => {
     await expect(tools.locator(".session-tool-status")).toHaveText(["done", "running", "failed"]);
     await expect(tools.nth(2)).toHaveClass(/session-stream-tool-failed/);
 
-    // A finished turn completes the tools still in flight; the card keeps the last calls.
+    // A finished turn completes the tools still in flight.
     await turn.reply("All done.");
     await expect(tools.locator(".session-tool-status")).toHaveText(["done", "done", "failed"]);
-    await expect(cards.locator(".session-card", { hasText: "Tool progress" }).locator("li .hint")).toHaveText([
-      "completed",
-      "completed",
-      "failed",
-    ]);
+    await expect(cards.getByRole("heading", { name: "Tool progress" })).toHaveCount(0);
   });
 
   test("a failed turn marks tools still running as cancelled", async ({ app, page }) => {
@@ -183,7 +192,7 @@ test.describe("transcript rendering", () => {
     const plan = cards.locator(".session-card", { has: page.getByRole("heading", { name: "Plan" }) });
     await expect(plan.locator("li")).toHaveCount(3);
     await expect(plan.locator("li").nth(1)).toContainText("Write the fix");
-    await expect(plan.locator("li").nth(1).locator(".hint")).toHaveText("in_progress");
+    await expect(plan.locator("li").nth(1).locator(".hint")).toHaveText("In progress");
     await expect(plan.locator("li").nth(1).locator(".status-dot")).toHaveClass(/status-dot-in_progress/);
 
     // A later plan update replaces the list.
@@ -198,7 +207,7 @@ test.describe("transcript rendering", () => {
       },
       null,
     );
-    await expect(plan.locator("li .hint")).toHaveText(["completed", "completed", "in_progress"]);
+    await expect(plan.locator("li .hint")).toHaveText(["Completed", "Completed", "In progress"]);
 
     await turn.update(
       {
@@ -213,7 +222,7 @@ test.describe("transcript rendering", () => {
     const todos = cards.locator(".session-card", { has: page.getByRole("heading", { name: "To-dos" }) });
     await expect(todos.locator("li")).toHaveCount(2);
     await expect(todos.locator("li").first()).toContainText("Ship it");
-    await expect(todos.locator("li").last().locator(".hint")).toHaveText("completed");
+    await expect(todos.locator("li").last().locator(".hint")).toHaveText("Completed");
     // Card updates are not chat messages.
     await expect(log(page)).not.toContainText("Write the fix");
     await turn.reply("Working on it.");

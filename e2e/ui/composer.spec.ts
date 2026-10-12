@@ -68,9 +68,10 @@ test("pasting an image adds a chip and the send carries it", async ({ app, page 
   const composer = page.getByRole("textbox", { name: "Follow-up message" });
   await app.pasteImage(composer, { name: "screenshot.png", mime: "image/png", base64: PNG_1X1 });
 
-  // The composer and the scratch pad show the same staged images.
+  // The staged images show once, beside the composer (the pad does not repeat them).
   const lists = page.getByRole("list", { name: "Attached images" });
-  await expect(lists).toHaveCount(2);
+  await expect(lists).toHaveCount(1);
+  await expect(page.getByRole("region", { name: "Scratch pad" }).getByRole("list", { name: "Attached images" })).toHaveCount(0);
   const chips = lists.first();
   await expect(chips.getByRole("listitem")).toHaveCount(1);
   await expect(chips).toContainText("screenshot.png");

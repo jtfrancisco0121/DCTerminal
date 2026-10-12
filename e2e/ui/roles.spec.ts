@@ -38,6 +38,12 @@ test("role editor: a new role is saved with its hand-off targets and shows in th
     "true",
   );
 
+  // A new role has no saved "Open as" choice, so it opens as Terminal; pick Chat.
+  const openAs = page.getByRole("radiogroup", { name: "Open as" });
+  await expect(openAs.getByRole("radio", { name: "Terminal" })).toHaveAttribute("aria-checked", "true");
+  await openAs.getByRole("radio", { name: "Chat" }).click();
+  await expect(openAs.getByRole("radio", { name: "Chat" })).toHaveAttribute("aria-checked", "true");
+
   // Its "Send to …" buttons follow the saved targets, in the order ticked.
   const turn = await app.start("tab-1");
   expect((await app.waitForCall("role_session_start")).args.roleId).toBe("role_custom_new_role");

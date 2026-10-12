@@ -129,7 +129,8 @@ test("a permission request pauses the chain until the turn ends", async ({ app, 
 test("pasted images go with the first step only", async ({ app, page }) => {
   const { turn, editor, pad } = await quietChat(app, page);
   await app.pasteImage(editor, { name: "ui.png", mime: "image/png", base64: PNG_1X1 });
-  await expect(pad.getByRole("list", { name: "Attached images" }).getByRole("listitem")).toHaveCount(1);
+  // Shown once, beside the composer (the pad does not repeat the chips).
+  await expect(page.getByRole("list", { name: "Attached images" }).getByRole("listitem")).toHaveCount(1);
   await editor.fill("look at this\n---\nnow fix it");
   await pad.getByRole("button", { name: "Send steps" }).click();
 

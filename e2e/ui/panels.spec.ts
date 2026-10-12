@@ -172,9 +172,9 @@ test.describe("Changes panel", () => {
 
     await dialog.getByText("Side by side").click();
     await expect(table).toHaveAttribute("data-view", "split");
-    // The removal pairs with the first addition on one row.
+    // The removal pairs with the first addition on one row, each side keeping its −/+ marker.
     const paired = table.locator("tr", { has: page.locator("td.diff-del") });
-    await expect(paired.locator("td.diff-text")).toHaveText(["const a = 1;", "const a = 2;"]);
+    await expect(paired.locator("td.diff-text")).toHaveText(["−const a = 1;", "+const a = 2;"]);
     const lone = table.locator("tr", { hasText: "const b = 3;" });
     await expect(lone.locator("td.diff-empty")).toHaveCount(1);
     expect(await page.evaluate(() => localStorage.getItem("dcterminal.diffView"))).toBe("split");

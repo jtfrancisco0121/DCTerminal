@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test";
-import { CWD } from "./fixtures/data";
-import { expect, roleTab, test, type PageHandler } from "./fixtures/tauri";
+import { builtInRoles, CWD } from "./fixtures/data";
+import { allChat, expect, roleTab, test, type PageHandler } from "./fixtures/tauri";
 
 /** The start card names what it is starting: "Start a session", "New Planner session", "New terminal". */
 const START_HEADING = /^(Start a session|New .+ session|New terminal)$/;
@@ -547,7 +547,21 @@ test.describe("validate and start", () => {
       },
     });
     await page.getByRole("button", { name: "Validate & preview" }).click();
-    await expect(page.locator(".field-errors li")).toHaveText(["_form: template has an unclosed {{"]);
+    await expect(page.locator(".field-errors li")).toHaveText(["template has an unclosed {{"]);
+  });
+
+  test("a role with no saved choice opens as Terminal", async ({ app, page }) => {
+    await app.open({ roleSurface: {} });
+    const openAs = page.getByRole("radiogroup", { name: "Open as" });
+    await expect(openAs.getByRole("radio", { name: "Terminal" })).toHaveAttribute("aria-checked", "true");
+    await expect(openAs.getByRole("radio", { name: "Chat" })).toHaveAttribute("aria-checked", "false");
+    await expect(startRow(page).getByRole("button", { name: "Start General terminal" })).toBeVisible();
+    await expect(startRow(page).getByRole("button", { name: "Start", exact: true })).toHaveCount(0);
+
+    await roleGroup(page).getByRole("radio", { name: "Developer" }).click();
+    await expect(openAs.getByRole("radio", { name: "Terminal" })).toHaveAttribute("aria-checked", "true");
+    await expect(startRow(page).getByRole("button", { name: "Start Developer terminal" })).toBeVisible();
+    expect(await app.calls("set_terminal_settings")).toHaveLength(0);
   });
 
   test("Open as Terminal is remembered per role and starts the role in a terminal", async ({
@@ -570,7 +584,9 @@ test.describe("validate and start", () => {
     await openAs.getByRole("radio", { name: "Terminal" }).click();
 
     const saved = await app.waitForCall("set_terminal_settings");
+    // The fixture remembers Chat for every role; only General changes.
     expect((saved.args.terminal as { roleSurface: Record<string, string> }).roleSurface).toEqual({
+      ...allChat(builtInRoles()),
       role_general: "terminal",
     });
     await expect(openAs.getByRole("radio", { name: "Terminal" })).toHaveAttribute("aria-checked", "true");
@@ -596,7 +612,7 @@ test.describe("validate and start", () => {
       windowId: "main",
     });
     expect(await app.calls("role_session_start")).toHaveLength(0);
-    await expect(page.locator(".field-errors li")).toHaveText(["_session: claude was not found on PATH"]);
+    await expect(page.locator(".field-errors li")).toHaveText(["claude was not found on PATH"]);
 
     // Back to Chat: Start opens a chat again.
     await openAs.getByRole("radio", { name: "Chat" }).click();

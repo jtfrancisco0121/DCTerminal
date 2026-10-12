@@ -25,7 +25,17 @@ export type OpenOptions = {
   responses?: Record<string, unknown>;
   handlers?: Record<string, PageHandler>;
   strict?: boolean;
+  /**
+   * Saved "Open as" choice per role id. A role with no entry opens as Terminal
+   * (the app's default). Defaults to Chat for every role, since most specs
+   * drive the chat surface; pass `{}` to see the app's own default.
+   */
+  roleSurface?: Record<string, string>;
 };
+
+/** Every role remembered as Chat (the fixture default, see OpenOptions.roleSurface). */
+export const allChat = (roles: Role[]): Record<string, string> =>
+  Object.fromEntries(roles.map((role) => [role.id, "chat"]));
 
 export const sessionIdFor = (tabId: string) => `sess-${tabId}`;
 
@@ -47,6 +57,7 @@ export class TauriApp {
         Object.entries(options.handlers ?? {}).map(([cmd, fn]) => [cmd, fn.toString()]),
       ),
       strict: options.strict,
+      roleSurface: options.roleSurface ?? allChat(roles),
     };
     await this.page.addInitScript(installTauriMock, config);
     await this.page.goto("/");

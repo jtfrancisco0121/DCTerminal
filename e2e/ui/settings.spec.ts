@@ -233,7 +233,7 @@ test.describe("Terminal and theme", () => {
   });
 
   test("shell, font size and per-role run mode are saved", async ({ app, page }) => {
-    await app.open();
+    await app.open({ roleSurface: {} });
     const terminal = await openSettings(page, "Terminal");
     await expect(terminal.getByRole("textbox", { name: "Shell program" })).toHaveValue("/bin/zsh");
     await expect(terminal.getByRole("spinbutton", { name: "Font size" })).toHaveValue("13");

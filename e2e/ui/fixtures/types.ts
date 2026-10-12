@@ -13,6 +13,8 @@ export type MockConfig = {
   handlers?: Record<string, string>;
   /** Reject commands that have no handler instead of resolving null. */
   strict?: boolean;
+  /** Saved "Open as" choice per role id (`get_terminal_settings` → `roleSurface`). */
+  roleSurface: Record<string, string>;
 };
 
 export type InvokeCall = { cmd: string; args: Record<string, unknown> };
