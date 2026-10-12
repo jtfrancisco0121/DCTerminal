@@ -18,6 +18,7 @@ import {
   type HandoffTargetId,
   type RoleName,
 } from "../handoff/map";
+import { ASK_FOR_HANDOFF_SECTIONS, missingHandoffSections } from "../handoff/contract";
 import { loopBackMessage } from "../handoff/routing";
 import { Dialog } from "./Dialog";
 import { InlineNotice } from "./InlineNotice";
@@ -54,6 +55,8 @@ type Props = {
   chainFillsTaskType?: boolean;
   onTarget: (id: HandoffTargetId) => void;
   onConfirm: (scope: HandoffScope, surface: HandoffSurface) => void;
+  /** Terminal sources: paste this into the source terminal. Hides the button when absent. */
+  onAskForSections?: (prompt: string) => void;
   onClose: () => void;
 };
 
@@ -71,6 +74,7 @@ export function HandoffDialog({
   chainFillsTaskType = false,
   onTarget,
   onConfirm,
+  onAskForSections,
   onClose,
 }: Props) {
   const targets = handoffTargets(source.sourceRoleId, roleNames).map((id) => ({
@@ -110,7 +114,11 @@ export function HandoffDialog({
     [mapped, targetFields, targetRoleId, targetTemplate],
   );
   const preview = composePlanText(source, scope).text;
-  const previewText = Array.from(preview).slice(0, 500).join("");
+  // A terminal's last reply should end with the role's HANDOFF sections.
+  const missingSections =
+    source.fromTerminal && source.terminalLog && scope === "message"
+      ? missingHandoffSections(source.sourceRoleId, source.latestMessage)
+      : [];
   const targetLabel = roleDisplayName(targetRoleId, roleNames);
   const followUp = loopBack?.live ? loopBack : null;
   const heading = followUp
@@ -316,10 +324,31 @@ export function HandoffDialog({
             {message}
           </pre>
         )}
-        {!followUp && previewText && (
-          <pre className="mono-snippet handoff-preview">
-            {previewText}
-            {preview.length > previewText.length ? "…" : ""}
+        {!followUp && missingSections.length > 0 && (
+          <InlineNotice
+            tone="warning"
+            action={
+              onAskForSections ? (
+                <button
+                  type="button"
+                  className="link-button"
+                  disabled={busy || !!block}
+                  onClick={() => onAskForSections(ASK_FOR_HANDOFF_SECTIONS)}
+                >
+                  Ask Claude to add them
+                </button>
+              ) : undefined
+            }
+          >
+            Missing: {missingSections.map((name) => `HANDOFF: ${name}`).join(", ")}
+          </InlineNotice>
+        )}
+        {!followUp && preview.trim() && (
+          <pre
+            className="mono-snippet handoff-preview handoff-preview-full"
+            aria-label="Hand-off text"
+          >
+            {preview}
           </pre>
         )}
     </Dialog>
@@ -384,7 +413,13 @@ export function HandoffBanner({
   warning,
   roleNames = null,
   onOpen,
+  fileNote = null,
+  onOpenText,
 }: {
+  /** The prompt was too long to pass inline: Claude Code was told to read a file. */
+  fileNote?: string | null;
+  /** Shows the full hand-off text; the "Open" link beside `fileNote`. */
+  onOpenText?: () => void;
   sourceRoleId: string;
   roleNames?: readonly RoleName[] | null;
   title: string;
@@ -398,6 +433,20 @@ export function HandoffBanner({
         {title}
       </button>
       {warning ? <span className="hint"> {warning}</span> : null}
+      {fileNote ? (
+        <span className="hint">
+          {" "}
+          {fileNote}
+          {onOpenText ? (
+            <>
+              {" "}
+              <button type="button" className="link-button" onClick={onOpenText}>
+                Open
+              </button>
+            </>
+          ) : null}
+        </span>
+      ) : null}
     </p>
   );
 }

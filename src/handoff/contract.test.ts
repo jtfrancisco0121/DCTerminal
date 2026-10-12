@@ -6,6 +6,7 @@ import {
   contractReview,
   handoffSections,
   hasHandoffContract,
+  missingHandoffSections,
 } from "./contract";
 import { composePlanText, implementationContext, mapHandoff, splitPlanReview, type HandoffSource } from "./map";
 import { parseReviewVerdict, parseTerminalVerdict } from "./verdict";
@@ -217,5 +218,26 @@ describe("hand-off contract", () => {
     const context = implementationContext(source({ sourceRoleId: "role_implementer", latestMessage: reply }));
     expect(context).toContain(`Pull requests:\n${prs}`);
     expect(context).not.toContain("Pull request: ");
+  });
+});
+
+describe("missingHandoffSections", () => {
+  it("names the sections a reply lacks", () => {
+    expect(missingHandoffSections("role_planner", "## HANDOFF: Plan\nx")).toEqual([
+      "Pull requests",
+      "Open questions",
+    ]);
+    expect(missingHandoffSections("role_pr_reviewer", "## HANDOFF: Verdict\nApproved")).toEqual([
+      "Findings for the Implementer",
+    ]);
+  });
+  it("is empty for a full reply, an alias, a None answer, or a role without a contract", () => {
+    expect(
+      missingHandoffSections(
+        "role_planner",
+        "## HANDOFF: Implementation plan\nx\n## HANDOFF: Pull requests\nOne pull request.\n## HANDOFF: Open questions\nNone.",
+      ),
+    ).toEqual([]);
+    expect(missingHandoffSections("role_general", "anything")).toEqual([]);
   });
 });
