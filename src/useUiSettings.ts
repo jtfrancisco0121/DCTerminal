@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { DEFAULT_UI_SETTINGS, getUiSettings, setUiSettings, type UiSettings } from "./bridge";
 import { setTerminalTheme } from "./terminal/park";
+import { errorText } from "./components/InlineNotice";
 import { applyTheme, cachedTheme, SYSTEM_THEME, watchSystemTheme } from "./theme";
 
 /**
  * U7/U8: theme, shortcut bar, and one-time tips, stored in settings.json in
  * DCTerminal's app data dir. Changes apply at once and are saved behind.
  */
-export function useUiSettings() {
+export function useUiSettings(onError?: (title: string, message: string) => void) {
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
   const [ui, setUi] = useState<UiSettings>(() => ({
     ...DEFAULT_UI_SETTINGS,
     theme: cachedTheme(),
@@ -23,7 +26,9 @@ export function useUiSettings() {
         if (cancelled) return;
         setUi(value);
       })
-      .catch(() => {})
+      .catch((err: unknown) =>
+        onErrorRef.current?.("Display settings did not load", errorText(err)),
+      )
       .finally(() => {
         if (!cancelled) setLoaded(true);
       });
@@ -52,9 +57,11 @@ export function useUiSettings() {
     });
   }, []);
 
-  /** Fire and forget, for callers with nowhere to show a failure. */
+  /** Fire and forget: a failed save is shown as a toast. */
   const save = useCallback((next: UiSettings) => {
-    void persist(next).catch(() => {});
+    void persist(next).catch((err: unknown) =>
+      onErrorRef.current?.("Display settings not saved", errorText(err)),
+    );
   }, [persist]);
 
   const update = useCallback(

@@ -29,6 +29,7 @@ export function ensureWindow(): Promise<WindowContext> {
     pending = Promise.resolve()
       .then(() => invoke<WindowContext | null>("window_context"))
       .then((ctx) => (ctx?.id ? ctx : FALLBACK))
+      // intentionally silent: outside Tauri (or before it is ready) the default window applies.
       .catch(() => FALLBACK);
   }
   return pending;

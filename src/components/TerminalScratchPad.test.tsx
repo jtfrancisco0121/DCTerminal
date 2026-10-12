@@ -30,6 +30,7 @@ function renderPad(
     onSent: (text: string) => void;
     onOpenLibrary: () => void;
     beforeSubmit: (tabId: string) => Promise<void>;
+    onError: (message: string) => void;
   }> = {},
   ref?: Ref<TerminalPadHandle>,
 ) {
@@ -53,6 +54,7 @@ function renderPad(
       onSent={overrides.onSent}
       onOpenLibrary={overrides.onOpenLibrary}
       beforeSubmit={overrides.beforeSubmit}
+      onError={overrides.onError}
     />,
   );
   return { write, onFocusTerminal, ...view };
@@ -95,6 +97,18 @@ describe("terminal scratch pad", () => {
       "pty-cli",
       `${PASTE_START}line1\nline2${PASTE_END}\r`,
     );
+  });
+
+  it("reports a failed write and keeps the text in the pad", async () => {
+    const onError = vi.fn();
+    const onChange = vi.fn();
+    const write = vi.fn(async () => {
+      throw new Error("pty closed");
+    });
+    renderPad({ write, onError, onChange });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onError).toHaveBeenCalledWith("pty closed"));
+    expect(onChange).not.toHaveBeenCalled();
   });
 
   it("takes the turn snapshot before a Send writes, but not before a paste", async () => {

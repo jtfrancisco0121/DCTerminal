@@ -144,6 +144,16 @@ describe("PipelineOverview", () => {
     expect(screen.getByText(/Not filled in yet/)).toBeTruthy();
   });
 
+  it("says why the plan buttons are off", async () => {
+    const run = baseRun({ stage: "planner", chainId: undefined, tabIds: { role_planner: "plan" } });
+    renderOverview(run, [tab("plan", "role_planner")], {});
+    await screen.findByText("Pull from Planner");
+    const notes = screen.getAllByRole("note").map((n) => n.textContent);
+    expect(notes).toContain("Paste or pull the plan text to save it.");
+    expect(notes).toContain("Paste or pull the plan text first.");
+    expect((screen.getByRole("button", { name: "Save candidate plan" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it("pulls the reviewed plan from the Plan Reviewer", async () => {
     const run = baseRun({
       stage: "plan_reviewer",

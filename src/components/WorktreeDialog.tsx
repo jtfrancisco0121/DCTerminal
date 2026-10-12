@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { DisabledReason } from "./DisabledReason";
 import type { RepoInfo, RoleSummary } from "../bridge";
 import {
   worktreeDestination,
@@ -118,11 +119,7 @@ export function WorktreeDialog({
       dismissible={!busy}
       footer={
         <>
-          {!canCreate && createReason && (
-            <span className="dialog-footer-note" role="note">
-              {createReason}
-            </span>
-          )}
+          {!canCreate && <DisabledReason>{createReason}</DisabledReason>}
           <button type="button" className="secondary-button" onClick={onClose} disabled={busy}>
             Cancel
           </button>

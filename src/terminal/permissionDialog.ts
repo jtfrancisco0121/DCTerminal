@@ -230,6 +230,7 @@ export function createDialogDetector(opts: DetectorOptions = {}): DialogDetector
       try {
         l(id);
       } catch (e) {
+        // intentionally silent in the UI: one bad listener must not stop the others; it is logged.
         console.error("permission dialog listener failed", e);
       }
     }
