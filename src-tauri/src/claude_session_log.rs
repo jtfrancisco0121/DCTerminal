@@ -42,6 +42,9 @@ pub struct TerminalSessionLog {
     /// The current turn's unanswered tool: ExitPlanMode, then
     /// AskUserQuestion, then the newest. `None` once the turn is done.
     pub open_tool: Option<OpenTool>,
+    /// The current turn's unanswered tools, oldest first. Claude Code asks
+    /// about parallel calls in this order. Empty once the turn is done.
+    pub pending_tools: Vec<OpenTool>,
     /// `permissionMode` of the latest real prompt.
     pub permission_mode: Option<String>,
 }
@@ -304,6 +307,11 @@ impl Parser {
             Some("end_turn" | "stop_sequence")
         );
         let turn_done = self.ended || (stopped && pending.is_empty());
+        let as_open = |call: &SessionToolCall| OpenTool {
+            id: call.id.clone(),
+            name: call.name.clone(),
+            title: call.title.clone(),
+        };
         let open_tool = (!turn_done)
             .then(|| {
                 let named = |name: &str| pending.iter().find(|call| call.name == name).copied();
@@ -312,11 +320,12 @@ impl Parser {
                     .or_else(|| pending.last().copied())
             })
             .flatten()
-            .map(|call| OpenTool {
-                id: call.id.clone(),
-                name: call.name.clone(),
-                title: call.title.clone(),
-            });
+            .map(as_open);
+        let pending_tools: Vec<OpenTool> = if turn_done {
+            Vec::new()
+        } else {
+            pending.iter().map(|call| as_open(call)).collect()
+        };
         if self.tools.len() > MAX_TOOL_CALLS {
             let extra = self.tools.len() - MAX_TOOL_CALLS;
             self.tools.drain(..extra);
@@ -331,6 +340,7 @@ impl Parser {
             last_prompt_at: self.last_prompt_at,
             tool_calls: self.tools,
             open_tool,
+            pending_tools,
             permission_mode: self.permission_mode,
         }
     }
@@ -797,6 +807,34 @@ mod tests {
             result("b1", false, "t3"),
         ]);
         assert_eq!(log.open_tool.as_ref().map(|t| t.id.as_str()), Some("r1"));
+    }
+
+    #[test]
+    fn pending_tools_list_the_turns_unanswered_tools_oldest_first() {
+        let ids = |log: &TerminalSessionLog| {
+            log.pending_tools.iter().map(|t| t.id.clone()).collect::<Vec<_>>()
+        };
+        let parallel = parse(&[
+            prompt("go", "t1"),
+            tool("e1", "Edit", json!({ "file_path": "/a" }), "t2"),
+            tool("e2", "Edit", json!({ "file_path": "/b" }), "t2"),
+        ]);
+        assert_eq!(ids(&parallel), vec!["e1", "e2"]);
+        let first_answered = parse(&[
+            prompt("go", "t1"),
+            tool("e1", "Edit", json!({ "file_path": "/a" }), "t2"),
+            tool("e2", "Edit", json!({ "file_path": "/b" }), "t2"),
+            result("e1", false, "t3"),
+        ]);
+        assert_eq!(ids(&first_answered), vec!["e2"]);
+        let earlier_turn = parse(&[
+            prompt("go", "t1"),
+            tool("b1", "Bash", json!({ "command": "ls" }), "t2"),
+            prompt("next", "t3"),
+        ]);
+        assert!(earlier_turn.pending_tools.is_empty());
+        let json = serde_json::to_value(&parallel).unwrap();
+        assert_eq!(json["pendingTools"][1]["id"], json!("e2"));
     }
 
     #[test]

@@ -245,7 +245,7 @@ import {
   deriveTerminalState,
   dialogAfterRead,
   dialogDrawn,
-  dialogShownFor,
+  dialogToolFor,
   sameTerminalState,
   terminalNeedsMessage,
   terminalWaitingText,
@@ -527,6 +527,8 @@ export function StartupForm({
         seenPromptAt?: string | null;
         /** lastPromptAt of the turn already reported as finished. */
         finishedPromptAt?: string | null;
+        /** Read at the next tick even if a read is in flight now (a dialog appeared). */
+        forceRead?: boolean;
       }
     >(),
   );
@@ -1220,10 +1222,9 @@ export function StartupForm({
       // A Claude role terminal is marked when its turn ends, not when output
       // stops; an exited process is reported as exited, never as finished.
       const quiet = settled.filter((id) => {
-        if (ptyExitCode(id) != null) return false;
         const tab = savedTabsRef.current.find((item) => item.id === id);
-        // Without a readable session log, output settling is all there is.
-        if (tab && isClaudeRoleTerminal(tab)) return sessionLogsRef.current[id] === null;
+        if (tab && isClaudeRoleTerminal(tab)) return false;
+        if (ptyExitCode(id) != null) return false;
         return !(sessionLogWatch.current.has(id) && sessionLogsRef.current[id]);
       });
       if (quiet.length > 0) {
@@ -1244,8 +1245,8 @@ export function StartupForm({
   }, [hasTerminalTabs, isWatchingTab, notifyAgent]);
 
   const storeSessionLog = useCallback(
-    /** `readAt`: when the read started; omitted for one-off reads. */
-    (tabId: string, log: TerminalSessionLog | null, readAt?: number) => {
+    /** `readAt`: when the read started, so a read older than a dialog is not used for it. */
+    (tabId: string, log: TerminalSessionLog | null, readAt: number) => {
       const prev = sessionLogsRef.current[tabId];
       const watched = sessionLogWatch.current.get(tabId);
       if (watched && log) {
@@ -1281,11 +1282,9 @@ export function StartupForm({
       }
       // Hide the dialog once the tool it asked about was answered: a later
       // tool needs a fresh dialog. An earlier tool finishing is not that.
-      if (readAt !== undefined) {
-        const next = dialogAfterRead(dialogOwners.current.get(tabId), log, readAt);
-        setDialogOwner(tabId, next.owner);
-        if (next.clear) dialogDetector.clear(tabId);
-      }
+      const next = dialogAfterRead(dialogOwners.current.get(tabId), log, readAt);
+      setDialogOwner(tabId, next.owner);
+      if (next.clear) dialogDetector.clear(tabId);
       if (prev !== undefined && sameSessionLog(prev, log)) return;
       sessionLogsRef.current = { ...sessionLogsRef.current, [tabId]: log };
       setSessionLogs(sessionLogsRef.current);
@@ -1324,7 +1323,7 @@ export function StartupForm({
       setDialogOwner(id, visible ? dialogDrawn(dialogOwners.current.get(id), Date.now()) : undefined);
       // Read the log now: the open tool decides what the dialog is for.
       const entry = sessionLogWatch.current.get(id);
-      if (visible && entry) entry.poll = undefined;
+      if (visible && entry) entry.forceRead = true;
     });
     return () => {
       unsubscribeLive();
@@ -1378,6 +1377,10 @@ export function StartupForm({
         const entry = watch.get(id);
         if (!entry || reading.has(id)) continue;
         const busy = terminalActivity.isBusy(id, now);
+        if (entry.forceRead) {
+          entry.forceRead = false;
+          entry.poll = undefined;
+        }
         entry.poll = sessionLogTick(entry.poll, busy);
         if (!sessionLogDue(entry.poll, busy, now)) continue;
         reading.add(id);
@@ -1411,10 +1414,10 @@ export function StartupForm({
       if (!isClaudeRoleTerminal(tab)) continue;
       const state = deriveTerminalState({
         log: sessionLogs[tab.id],
-        // Only once a log read tied the dialog to this open tool.
-        dialogVisible:
-          dialogTabs.includes(tab.id) &&
-          dialogShownFor(dialogOwners.current.get(tab.id), sessionLogs[tab.id]),
+        // Only once a log read tied the dialog to one of the turn's tools.
+        dialogTool: dialogTabs.includes(tab.id)
+          ? dialogToolFor(dialogOwners.current.get(tab.id), sessionLogs[tab.id])
+          : null,
         ptyBusy: terminalBusy.includes(tab.id),
         exitCode: ptyExitCode(tab.id),
       });
@@ -3411,10 +3414,11 @@ export function StartupForm({
       };
       apply(sessionLogsRef.current[tab.id]);
       if (!fresh) return;
+      const readAt = Date.now();
       void terminalSessionLog(tab.id)
         .catch(() => null)
         .then((log) => {
-          storeSessionLog(tab.id, log);
+          storeSessionLog(tab.id, log, readAt);
           apply(log);
         });
     },
@@ -3445,6 +3449,7 @@ export function StartupForm({
       const tab = savedTabsRef.current.find((item) => item.id === tabId);
       const sourceRoleId = tab?.roleId ?? "";
       setHandoffError(null);
+      const logReadAt = Date.now();
       const logRead = terminalSessionLog(tabId).catch(() => null);
       const answers = await getTab(tabId)
         .then(({ tab: record }) => ({ ...record.answers }))
@@ -3467,7 +3472,7 @@ export function StartupForm({
         }
       }
       const log = await logRead;
-      storeSessionLog(tabId, log);
+      storeSessionLog(tabId, log, logReadAt);
       readTerminalVerdict(tabId);
       setTerminalCapture({
         tabId,

@@ -3,7 +3,7 @@ import {
   deriveTerminalState,
   dialogAfterRead,
   dialogDrawn,
-  dialogShownFor,
+  dialogToolFor,
   sameTerminalState,
   terminalNeedsMessage,
   terminalWaitingText,
@@ -11,7 +11,7 @@ import {
 } from "./claudeState";
 
 const open = (name: string, id = "toolu_1") => ({ id, name, title: `${name}: x` });
-const base: TerminalStateInput = { log: null, dialogVisible: false, ptyBusy: false, exitCode: null };
+const base: TerminalStateInput = { log: null, dialogTool: null, ptyBusy: false, exitCode: null };
 const derive = (over: Partial<TerminalStateInput>) => deriveTerminalState({ ...base, ...over });
 
 describe("deriveTerminalState", () => {
@@ -20,7 +20,7 @@ describe("deriveTerminalState", () => {
       derive({
         exitCode: 2,
         log: { turnDone: false, openTool: open("ExitPlanMode") },
-        dialogVisible: true,
+        dialogTool: open("Bash"),
         ptyBusy: true,
       }),
     ).toEqual({ kind: "exited", code: 2 });
@@ -39,21 +39,24 @@ describe("deriveTerminalState", () => {
     });
   });
 
-  it("needs permission only while the dialog is on screen", () => {
-    const log = { turnDone: false, openTool: open("Bash") };
-    expect(derive({ log, dialogVisible: true })).toMatchObject({ kind: "needs", needs: "permission" });
+  it("needs permission only while the dialog is on screen, naming the dialog's tool", () => {
+    const first = open("Edit", "toolu_e1");
+    const log = { turnDone: false, openTool: open("Edit", "toolu_e2"), pendingTools: [first, open("Edit", "toolu_e2")] };
+    expect(derive({ log, dialogTool: first })).toEqual({
+      kind: "needs",
+      needs: "permission",
+      toolId: "toolu_e1",
+      toolTitle: "Edit: x",
+    });
     // A quiet long-running tool: working, never needs you.
-    expect(derive({ log, dialogVisible: false, ptyBusy: false })).toEqual({ kind: "working" });
+    expect(derive({ log, dialogTool: null, ptyBusy: false })).toEqual({ kind: "working" });
   });
 
-  it("ignores the dialog without an open tool or after the turn", () => {
-    expect(derive({ log: { turnDone: false, openTool: null }, dialogVisible: true })).toEqual({
-      kind: "working",
-    });
-    expect(derive({ log: { turnDone: true, openTool: open("Bash") }, dialogVisible: true })).toEqual({
+  it("ignores the dialog after the turn or without a log", () => {
+    expect(derive({ log: { turnDone: true, openTool: open("Bash") }, dialogTool: open("Bash") })).toEqual({
       kind: "idle",
     });
-    expect(derive({ log: null, dialogVisible: true, ptyBusy: false })).toEqual({ kind: "idle" });
+    expect(derive({ log: null, dialogTool: open("Bash"), ptyBusy: false })).toEqual({ kind: "idle" });
   });
 
   it("is working by the log when there is one, else by PTY output", () => {
@@ -88,44 +91,63 @@ describe("terminal state text", () => {
 
 describe("dialog owner", () => {
   const owner = (toolId: string | null, since = 100, fresh = false) => ({ since, toolId, fresh });
-  const log = (openId: string | null, turnDone = false) => ({
+  const log = (pending: string[], turnDone = false) => ({
     turnDone,
-    openTool: openId ? open("Bash", openId) : null,
+    openTool: pending.length ? open("Bash", pending[pending.length - 1]) : null,
+    pendingTools: pending.map((id) => open("Bash", id)),
   });
+  const shown = (o: ReturnType<typeof owner> | undefined, l: ReturnType<typeof log>) =>
+    dialogToolFor(o, l)?.id ?? null;
 
-  it("adopts the open tool from the first read after the dialog appeared", () => {
-    expect(dialogAfterRead(dialogDrawn(undefined, 100), log("toolu_b"), 150)).toEqual({
+  it("adopts the oldest unanswered tool from the first read after the draw", () => {
+    expect(dialogAfterRead(dialogDrawn(undefined, 100), log(["toolu_b"]), 150)).toEqual({
       owner: owner("toolu_b"),
       clear: false,
     });
   });
 
+  it("skips tools that show their own prompt", () => {
+    const l = {
+      turnDone: false,
+      openTool: open("AskUserQuestion", "toolu_q"),
+      pendingTools: [open("AskUserQuestion", "toolu_q"), open("Bash", "toolu_b")],
+    };
+    expect(dialogAfterRead(owner(null), l, 150).owner?.toolId).toBe("toolu_b");
+  });
+
   it("does not show or clear a new dialog because an earlier tool was still open", () => {
     // Tool A (no dialog) was open at the last read; B's dialog was drawn since.
     const drawn = dialogDrawn(undefined, 100);
-    expect(dialogShownFor(drawn, log("toolu_a"))).toBe(false);
-    const read = dialogAfterRead(drawn, log("toolu_b"), 150);
+    expect(shown(drawn, log(["toolu_a"]))).toBe(null);
+    const read = dialogAfterRead(drawn, log(["toolu_b"]), 150);
     expect(read.clear).toBe(false);
-    expect(dialogShownFor(read.owner, log("toolu_b"))).toBe(true);
+    expect(shown(read.owner, log(["toolu_b"]))).toBe("toolu_b");
   });
 
-  it("after an answer, a redrawn dialog is re-read for the next tool, steady meanwhile", () => {
-    const shown = owner("toolu_a");
-    const redrawn = dialogDrawn(shown, 200);
-    // Until the next read the log still says A: keep showing it (no flicker).
-    expect(dialogShownFor(redrawn, log("toolu_a"))).toBe(true);
-    expect(dialogAfterRead(redrawn, log("toolu_b"), 250)).toEqual({
+  it("parallel calls: the dialog is for the oldest, and a later call appearing does not clear it", () => {
+    const first = dialogAfterRead(owner(null), log(["toolu_e1", "toolu_e2"]), 150).owner;
+    expect(first?.toolId).toBe("toolu_e1");
+    expect(dialogAfterRead(owner("toolu_b1"), log(["toolu_b1", "toolu_b2"]), 200).clear).toBe(false);
+    // e1 answered, e2's dialog drawn: the next read moves to e2.
+    const redrawn = dialogDrawn(owner("toolu_e1"), 300);
+    expect(dialogAfterRead(redrawn, log(["toolu_e2"]), 350).owner?.toolId).toBe("toolu_e2");
+  });
+
+  it("after an answer, a redrawn dialog keeps its tool on screen until the next read", () => {
+    const redrawn = dialogDrawn(owner("toolu_a"), 200);
+    expect(shown(redrawn, log(["toolu_a"]))).toBe("toolu_a");
+    expect(dialogAfterRead(redrawn, log(["toolu_b"]), 250)).toEqual({
       owner: owner("toolu_b", 200),
       clear: false,
     });
   });
 
   it("waits while the dialog's tool is not in the log yet", () => {
-    expect(dialogAfterRead(owner(null), log(null), 150)).toEqual({ owner: owner(null), clear: false });
+    expect(dialogAfterRead(owner(null), log([]), 150)).toEqual({ owner: owner(null), clear: false });
   });
 
   it("ignores reads that started before the dialog was drawn", () => {
-    expect(dialogAfterRead(owner(null, 100), log("toolu_a"), 90)).toEqual({
+    expect(dialogAfterRead(owner(null, 100), log(["toolu_a"]), 90)).toEqual({
       owner: owner(null, 100),
       clear: false,
     });
@@ -139,13 +161,18 @@ describe("dialog owner", () => {
   });
 
   it("clears once its own tool is answered or rejected, or the turn ends", () => {
-    expect(dialogAfterRead(owner("toolu_b"), log(null), 200)).toEqual({ owner: undefined, clear: true });
-    expect(dialogAfterRead(owner("toolu_b"), log("toolu_c"), 200).clear).toBe(true);
-    expect(dialogAfterRead(owner(null), log(null, true), 200).clear).toBe(true);
+    expect(dialogAfterRead(owner("toolu_b"), log([]), 200)).toEqual({ owner: undefined, clear: true });
+    expect(dialogAfterRead(owner("toolu_b"), log(["toolu_c"]), 200).clear).toBe(true);
+    expect(dialogAfterRead(owner(null), log([], true), 200).clear).toBe(true);
+  });
+
+  it("falls back to the open tool on older backends", () => {
+    const old = { turnDone: false, openTool: open("Bash", "toolu_x") };
+    expect(dialogAfterRead(owner(null), old, 150).owner?.toolId).toBe("toolu_x");
   });
 
   it("does nothing while no dialog is shown", () => {
-    expect(dialogAfterRead(undefined, log(null), 200)).toEqual({ owner: undefined, clear: false });
-    expect(dialogShownFor(undefined, log("toolu_a"))).toBe(false);
+    expect(dialogAfterRead(undefined, log([]), 200)).toEqual({ owner: undefined, clear: false });
+    expect(shown(undefined, log(["toolu_a"]))).toBe(null);
   });
 });

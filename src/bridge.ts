@@ -1345,6 +1345,8 @@ export type TerminalSessionLog = {
    * then the newest). Absent on older backends.
    */
   openTool?: { id: string; name: string; title: string } | null;
+  /** The current turn's unanswered tools, oldest first. Absent on older backends. */
+  pendingTools?: { id: string; name: string; title: string }[];
   /** `permissionMode` of the latest real prompt. */
   permissionMode?: string | null;
 };
