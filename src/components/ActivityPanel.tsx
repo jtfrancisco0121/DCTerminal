@@ -19,6 +19,7 @@ import {
   timeOfDay,
   type ActivityFilter,
 } from "../activity/activityModel";
+import { PanelHeader } from "./PanelHeader";
 
 type Props = {
   tabId: string;
@@ -188,40 +189,38 @@ export function ActivityPanel({ tabId, tabLabel, busy, terminal, onCount, onClos
           }
         }}
       >
-        <div className="changes-bar">
-          <h3>Activity</h3>
-          <span className="hint">{tabLabel}</span>
+        <PanelHeader
+          title="Activity"
+          subtitle={tabLabel}
+          closeLabel="Close activity"
+          onClose={onClose}
+          actions={
+            <>
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={loading}
+                onClick={() => void load()}
+              >
+                {loading ? "Loading…" : "Refresh"}
+              </button>
+              {!fromLog && (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={!entries || entries.length === 0}
+                  onClick={() => void clear()}
+                >
+                  Clear…
+                </button>
+              )}
+            </>
+          }
+        >
           <span className="activity-counts" data-testid="activity-counts">
             {summaryLine(counts)}
           </span>
-          <span className="changes-bar-spacer" />
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={loading}
-            onClick={() => void load()}
-          >
-            {loading ? "Loading…" : "Refresh"}
-          </button>
-          {!fromLog && (
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={!entries || entries.length === 0}
-              onClick={() => void clear()}
-            >
-              Clear…
-            </button>
-          )}
-          <button
-            type="button"
-            className="secondary-button"
-            aria-label="Close activity"
-            onClick={onClose}
-          >
-            ×
-          </button>
-        </div>
+        </PanelHeader>
         <div className="activity-chips" role="group" aria-label="Filter by kind">
           <button
             type="button"

@@ -11,6 +11,8 @@ import {
 import { highlightCode } from "../files/highlight";
 import { formatSize, isSaveChord, joinRoot } from "../files/paths";
 import type { Platform } from "../keymap";
+import { ConfirmBar } from "./ConfirmBar";
+import { PanelHeader } from "./PanelHeader";
 
 type Props = {
   tabId: string;
@@ -94,11 +96,23 @@ export function FilePanel({ tabId, cwd, platform, focusFile, onInsertReference, 
     if (cwd) void loadDir("");
   }, [cwd, loadDir, tabId]);
 
-  const confirmDiscard = () =>
-    !dirtyRef.current || window.confirm("Discard your unsaved edits to this file?");
+  // Run `action` now, or after the user agrees to drop unsaved edits.
+  const [pendingDiscard, setPendingDiscard] = useState<{
+    message: string;
+    confirmLabel: string;
+    run: () => void;
+  } | null>(null);
+  const guardDiscard = (run: () => void, message = "Discard your unsaved edits to this file?") => {
+    if (!dirtyRef.current) {
+      run();
+      return;
+    }
+    setPendingDiscard({ message, confirmLabel: "Discard edits", run });
+  };
 
-  const openFile = async (path: string) => {
-    if (!confirmDiscard()) return;
+  const openFile = (path: string) => guardDiscard(() => void doOpenFile(path));
+
+  const doOpenFile = async (path: string) => {
     setSelected({ path, isDir: false });
     setEditing(false);
     setConflict(false);
@@ -185,9 +199,13 @@ export function FilePanel({ tabId, cwd, platform, focusFile, onInsertReference, 
     }
   };
 
-  const reload = async () => {
+  const reload = () => {
     if (!file) return;
-    if (dirty && !window.confirm("Reload from disk and drop your edits?")) return;
+    guardDiscard(() => void doReload(), "Reload from disk and drop your edits?");
+  };
+
+  const doReload = async () => {
+    if (!file) return;
     try {
       const content = await filesRead(tabId, file.path);
       setFile(content);
@@ -301,10 +319,11 @@ export function FilePanel({ tabId, cwd, platform, focusFile, onInsertReference, 
             aria-pressed={editing}
             onClick={() => {
               if (editing) {
-                if (!confirmDiscard()) return;
-                setDraft(file.text ?? "");
-                setEditing(false);
-                setConflict(false);
+                guardDiscard(() => {
+                  setDraft(file.text ?? "");
+                  setEditing(false);
+                  setConflict(false);
+                });
               } else {
                 setEditing(true);
                 window.setTimeout(() => editorRef.current?.focus(), 0);
@@ -375,28 +394,42 @@ export function FilePanel({ tabId, cwd, platform, focusFile, onInsertReference, 
 
   return (
     <aside className="file-panel" aria-label="Files" ref={panelRef} tabIndex={-1}>
-      <div className="file-panel-bar">
-        <strong>Files</strong>
-        <span className="hint file-panel-root" title={root || cwd}>
-          {(root || cwd).split(/[\\/]/).filter(Boolean).pop() ?? ""}
-        </span>
-        <button
-          type="button"
-          className="secondary-button"
-          disabled={!cwd}
-          onClick={() => {
-            if (!confirmDiscard()) return;
-            setDirs({});
-            setExpanded(new Set([""]));
-            void loadDir("");
+      <PanelHeader
+        title="Files"
+        subtitle={(root || cwd).split(/[\\/]/).filter(Boolean).pop() ?? ""}
+        subtitleTitle={root || cwd}
+        closeLabel="Close file panel"
+        onClose={onClose}
+        actions={
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={!cwd}
+            onClick={() =>
+              guardDiscard(() => {
+                setDirs({});
+                setExpanded(new Set([""]));
+                void loadDir("");
+              })
+            }
+          >
+            Refresh
+          </button>
+        }
+      />
+      {pendingDiscard && (
+        <ConfirmBar
+          message={pendingDiscard.message}
+          confirmLabel={pendingDiscard.confirmLabel}
+          cancelLabel="Keep editing"
+          onCancel={() => setPendingDiscard(null)}
+          onConfirm={() => {
+            const { run } = pendingDiscard;
+            setPendingDiscard(null);
+            run();
           }}
-        >
-          Refresh
-        </button>
-        <button type="button" className="secondary-button" aria-label="Close file panel" onClick={onClose}>
-          ×
-        </button>
-      </div>
+        />
+      )}
       {!cwd ? (
         <p className="hint file-panel-empty">Choose a working folder first.</p>
       ) : (

@@ -111,4 +111,32 @@ describe("FilePanel", () => {
     expect(item.className).toContain("file-tree-item-selected");
     await waitFor(() => expect(document.activeElement).toBe(item));
   });
+
+  it("asks before dropping unsaved edits when opening another file", async () => {
+    render(
+      <FilePanel tabId="t1" cwd="/work/app" platform="mac" onInsertReference={() => {}} onClose={() => {}} />,
+    );
+    fireEvent.click(await screen.findByText("README.md"));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("Edit README.md"), { target: { value: "changed" } });
+    readMock.mockClear();
+    fireEvent.click(screen.getByText("src"));
+    fireEvent.click(await screen.findByText("main.ts"));
+    expect(screen.getByRole("alertdialog")).toBeTruthy();
+    expect(readMock).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(readMock).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText("main.ts"));
+    fireEvent.click(screen.getByRole("button", { name: "Discard edits" }));
+    await waitFor(() => expect(readMock).toHaveBeenCalledWith("t1", "src/main.ts"));
+  });
+
+  it("uses the shared panel header", async () => {
+    render(
+      <FilePanel tabId="t1" cwd="/work/app" platform="mac" onInsertReference={() => {}} onClose={() => {}} />,
+    );
+    expect(await screen.findByRole("heading", { name: "Files" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Close file panel" })).toBeTruthy();
+  });
 });

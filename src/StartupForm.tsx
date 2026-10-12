@@ -204,6 +204,7 @@ import { ModelPicker } from "./components/ModelPicker";
 import { AgentToasts } from "./components/AgentToasts";
 import { WorktreeDialog, type WorktreeCreateInput } from "./components/WorktreeDialog";
 import { ChangesPanel } from "./components/ChangesPanel";
+import { PanelResizer } from "./components/PanelResizer";
 import { ActivityPanel } from "./components/ActivityPanel";
 import { ActivityButton } from "./components/ActivityButton";
 import { ChatSearchDialog, type ChatSearchHit } from "./components/ChatSearchDialog";
@@ -5365,26 +5366,12 @@ export function StartupForm({
             <p className="hint">Choose a working folder to see its files.</p>
           </div>
         )}
-        <div
-          className="file-panel-resizer"
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize file panel"
-          onMouseDown={(event) => {
-            event.preventDefault();
-            const startX = event.clientX;
-            const startWidth = filePanelWidth;
-            const onMove = (move: MouseEvent) => {
-              const next = Math.min(900, Math.max(160, startWidth + move.clientX - startX));
-              setFilePanelWidth(next);
-            };
-            const onUp = () => {
-              window.removeEventListener("mousemove", onMove);
-              window.removeEventListener("mouseup", onUp);
-            };
-            window.addEventListener("mousemove", onMove);
-            window.addEventListener("mouseup", onUp);
-          }}
+        <PanelResizer
+          label="Resize file panel"
+          value={filePanelWidth}
+          min={160}
+          max={900}
+          onChange={setFilePanelWidth}
         />
       </div>
     ) : null;

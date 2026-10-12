@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, type KeyboardEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   changesFileDiff,
   changesList,
@@ -19,6 +19,7 @@ import {
   unaccepted,
   type DiffLine,
 } from "../changes/diffModel";
+import { PanelHeader } from "./PanelHeader";
 
 type View = "unified" | "split";
 
@@ -35,6 +36,23 @@ type Props = {
 };
 
 const VIEW_KEY = "dcterminal.diffView";
+
+/** Index to select after a list key press, or null when the key does nothing. */
+export function nextListIndex(key: string, current: number, count: number): number | null {
+  if (count === 0) return null;
+  switch (key) {
+    case "ArrowDown":
+      return Math.min(count - 1, current + 1);
+    case "ArrowUp":
+      return Math.max(0, current - 1);
+    case "Home":
+      return 0;
+    case "End":
+      return count - 1;
+    default:
+      return null;
+  }
+}
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -69,7 +87,10 @@ function Cell({ line, side }: { line: DiffLine | null; side: "old" | "new" }) {
   return (
     <>
       <td className="diff-no">{no ?? ""}</td>
-      <td className={`diff-text diff-${line.kind}`}>{line.text}</td>
+      <td className={`diff-text diff-${line.kind}`}>
+        <span className="diff-marker">{line.kind === "add" ? "+" : line.kind === "del" ? "−" : " "}</span>
+        {line.text}
+      </td>
     </>
   );
 }
@@ -140,6 +161,8 @@ export function ChangesPanel({
   }, [file, set?.baseTree, set?.nowTree, tabId]);
 
   const hunks = useMemo(() => (diff && !diff.binary ? parseUnifiedDiff(diff.text) : []), [diff]);
+  // Outside a git repository there is nothing to snapshot, scope or revert.
+  const inRepo = set?.state !== "noRepo";
   const pending = set ? unaccepted(set.files, accepted) : [];
 
   const chooseView = (next: View) => {
@@ -192,6 +215,24 @@ export function ChangesPanel({
     }
   };
 
+  // Arrow keys / Home / End move the selection through the file list.
+  const onListKey = (event: KeyboardEvent<HTMLUListElement>) => {
+    if (!set) return;
+    const next = nextListIndex(
+      event.key,
+      set.files.findIndex((item) => item.path === selected),
+      set.files.length,
+    );
+    if (next === null) return;
+    event.preventDefault();
+    const path = set.files[next].path;
+    setSelected(path);
+    const items = event.currentTarget.querySelectorAll<HTMLElement>("[data-path]");
+    Array.from(items)
+      .find((el) => el.dataset.path === path)
+      ?.focus();
+  };
+
   const isAccepted = (item: ChangedFile) => accepted.has(acceptKey(item));
 
   let body;
@@ -228,12 +269,19 @@ export function ChangesPanel({
   } else {
     body = (
       <div className="changes-body">
-        <ul className="changes-list" role="listbox" aria-label="Changed files">
+        <ul
+          className="changes-list"
+          role="listbox"
+          aria-label="Changed files"
+          onKeyDown={onListKey}
+        >
           {set.files.map((item) => (
             <li
               key={item.path}
               role="option"
               aria-selected={item.path === selected}
+              tabIndex={item.path === selected ? 0 : -1}
+              data-path={item.path}
               className={[
                 "changes-item",
                 item.path === selected ? "changes-item-selected" : "",
@@ -356,65 +404,76 @@ export function ChangesPanel({
           }
         }}
       >
-        <div className="changes-bar">
-          <h3>Changes</h3>
-          <span className="hint">{tabLabel}</span>
-          <div className="segmented" role="radiogroup" aria-label="Changes since">
-            {(["turn", "tab"] as const).map((value) => (
-              <label key={value} className="segmented-option">
-                <input
-                  type="radio"
-                  name="changes-scope"
-                  checked={scope === value}
-                  onChange={() => setScope(value)}
-                />
-                {value === "turn" ? "This turn" : "Whole tab"}
-              </label>
-            ))}
-          </div>
-          <div className="segmented" role="radiogroup" aria-label="Diff view">
-            {(["unified", "split"] as const).map((value) => (
-              <label key={value} className="segmented-option">
-                <input
-                  type="radio"
-                  name="changes-view"
-                  checked={view === value}
-                  onChange={() => chooseView(value)}
-                />
-                {value === "unified" ? "Unified" : "Side by side"}
-              </label>
-            ))}
-          </div>
-          <span className="changes-bar-spacer" />
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={loading}
-            onClick={() => void load()}
-          >
-            {loading ? "Loading…" : "Refresh"}
-          </button>
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={loading}
-            onClick={() => void snapshotNow()}
-            title="Start counting changes from now"
-          >
-            New snapshot
-          </button>
-          <button
-            type="button"
-            className="danger-button"
-            disabled={busy || reverting || pending.length === 0}
-            onClick={() => void revert(pending, (set?.files.length ?? 0) - pending.length)}
-          >
-            Revert all…
-          </button>
-          <button type="button" className="secondary-button" aria-label="Close changes" onClick={onClose}>
-            ×
-          </button>
-        </div>
+        <PanelHeader
+          title="Changes"
+          subtitle={tabLabel}
+          closeLabel="Close changes"
+          onClose={onClose}
+          actions={
+            <>
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={loading}
+                onClick={() => void load()}
+              >
+                {loading ? "Loading…" : "Refresh"}
+              </button>
+              {inRepo && (
+                <>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={loading}
+                    onClick={() => void snapshotNow()}
+                    title="Start counting changes from now"
+                  >
+                    New snapshot
+                  </button>
+                  <button
+                    type="button"
+                    className="danger-button"
+                    disabled={busy || reverting || pending.length === 0}
+                    onClick={() => void revert(pending, (set?.files.length ?? 0) - pending.length)}
+                  >
+                    Revert all…
+                  </button>
+                </>
+              )}
+            </>
+          }
+        >
+          {inRepo && (
+            <>
+              <div className="segmented" role="radiogroup" aria-label="Changes since">
+                {(["turn", "tab"] as const).map((value) => (
+                  <label key={value} className="segmented-option">
+                    <input
+                      type="radio"
+                      name="changes-scope"
+                      checked={scope === value}
+                      onChange={() => setScope(value)}
+                    />
+                    {value === "turn" ? "This turn" : "Whole tab"}
+                  </label>
+                ))}
+              </div>
+              <div className="segmented" role="radiogroup" aria-label="Diff view">
+                {(["unified", "split"] as const).map((value) => (
+                  <label key={value} className="segmented-option">
+                    <input
+                      type="radio"
+                      name="changes-view"
+                      checked={view === value}
+                      onChange={() => chooseView(value)}
+                    />
+                    {value === "unified" ? "Unified" : "Side by side"}
+                  </label>
+                ))}
+              </div>
+            </>
+          )}
+        </PanelHeader>
         {set?.state === "ok" && set.baselineAt && (
           <p className="hint changes-since">
             Since {timeLabel(set.baselineAt)}
