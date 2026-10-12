@@ -12,7 +12,10 @@ export type Chat = {
   composerSend: Locator;
   pad: Locator;
   editor: Locator;
+  /** The chain button ("Send steps"); a plain chat pad has no Send button. */
   padSend: Locator;
+  /** Sends the pad with Ctrl+Enter, the plain-pad send. */
+  padSendKey: () => Promise<void>;
   status: Locator;
   log: Locator;
 };
@@ -34,13 +37,15 @@ export async function readyChat(
 
 export function chatLocators(page: Page, turn: Turn): Chat {
   const pad = page.getByRole("region", { name: "Scratch pad" });
+  const editor = pad.getByRole("textbox", { name: "Scratch pad editor" });
   return {
     turn,
     composer: page.getByRole("textbox", { name: "Follow-up message" }),
     composerSend: page.locator(".session-terminal-send"),
     pad,
-    editor: pad.getByRole("textbox", { name: "Scratch pad editor" }),
-    padSend: pad.getByRole("button", { name: /^Send( steps)?$/ }),
+    editor,
+    padSend: pad.getByRole("button", { name: "Send steps" }),
+    padSendKey: () => editor.press("Control+Enter"),
     status: page.locator(".status-bar-status"),
     log: page.getByRole("log"),
   };

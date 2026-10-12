@@ -73,3 +73,28 @@ describe("ScratchPad size (U2)", () => {
     expect(screen.getByRole("button", { name: "Show pad" })).toBeTruthy();
   });
 });
+
+describe("ScratchPad Send (one composer)", () => {
+  it("a plain chat pad has no Send button but Ctrl+Enter still sends", () => {
+    const onSend = vi.fn();
+    render(<ScratchPad {...base} content="hello" onSend={onSend} />);
+    expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Send steps" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Transfer" })).toBeTruthy();
+    fireEvent.keyDown(editor(), { key: "Enter", ctrlKey: true });
+    expect(onSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("a chained chat pad keeps only the Send steps entry", () => {
+    const onSend = vi.fn();
+    render(<ScratchPad {...base} content={"one\n---\ntwo"} onSend={onSend} />);
+    expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Send steps" }));
+    expect(onSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("a terminal pad keeps its Send button", () => {
+    render(<ScratchPad {...base} mode="terminal" content="ls" />);
+    expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
+  });
+});

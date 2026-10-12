@@ -32,7 +32,7 @@ test("the pad offers the same commands and Enter picks one", async ({ app, page 
   await expect(editor).toHaveValue("/review ");
   await expect(menu).toBeHidden();
   await editor.pressSequentially("42");
-  await pad.getByRole("button", { name: "Send" }).click();
+  await editor.press("Control+Enter");
   await expect.poll(() => sentPrompts(app)).toEqual(["/review 42"]);
 });
 
@@ -102,10 +102,10 @@ test("Escape closes the menu until the text changes, and Enter then sends nothin
 });
 
 test("Escape that closes the menu during a turn does not cancel the turn", async ({ app, page }) => {
-  const { composer, editor, padSend, status } = chat;
+  const { composer, editor, padSendKey, status } = chat;
   // A pad send leaves the composer editable while the turn runs.
   await editor.fill("long job");
-  await padSend.click();
+  await padSendKey();
   await expect(status).toHaveText("Agent working…");
   await composer.fill("/co");
   const menu = page.getByRole("listbox", { name: "Slash commands" });

@@ -164,7 +164,7 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
         <span className="hint scratch-pad-hint">
           {terminal
             ? `${modLabel}+Shift+. send · ${modLabel}+J focus · Esc terminal`
-            : `Ctrl+. transfer · Ctrl+Enter send${
+            : `Ctrl+. transfer · Ctrl+Enter send to chat${
                 chained ? " · --- starts the next step after the turn ends" : ""
               }`}
         </span>
@@ -217,15 +217,20 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
               Paste to terminal
             </button>
           )}
-          <button
-            type="button"
-            className="primary-button"
-            onMouseDown={terminal ? (event) => event.preventDefault() : undefined}
-            onClick={onSend}
-            disabled={disabled || (terminal && !content.trim()) || !!blockedWarning}
-          >
-            {chained ? "Send steps" : "Send"}
-          </button>
+          {/* A chat has one Send (the composer's). Its pad keeps only the chain
+              entry, "Send steps"; a plain chat pad sends with Ctrl+Enter or
+              Transfer, and a terminal pad keeps its own Send. */}
+          {(terminal || chained) && (
+            <button
+              type="button"
+              className="primary-button"
+              onMouseDown={terminal ? (event) => event.preventDefault() : undefined}
+              onClick={onSend}
+              disabled={disabled || (terminal && !content.trim()) || !!blockedWarning}
+            >
+              {chained ? "Send steps" : "Send"}
+            </button>
+          )}
           {running && (
             <button type="button" className="secondary-button" onClick={onStopChain}>
               Stop chain

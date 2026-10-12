@@ -51,10 +51,10 @@ test("Transfer with a blank pad changes nothing", async ({ app, page }) => {
 });
 
 test("pad Send with text in the composer sends the composer and keeps the pad", async ({ app, page }) => {
-  const { editor, composer, padSend, turn } = await readyChat(app, page);
+  const { editor, composer, padSendKey, turn } = await readyChat(app, page);
   await editor.fill("still drafting");
   await composer.fill("ship it");
-  await padSend.click();
+  await padSendKey();
   const send = await app.waitForCall("dev_session_send");
   expect(send.args).toEqual({ prompt: "ship it", tabId: "tab-1", attachments: null });
   await expect(composer).toHaveValue("");

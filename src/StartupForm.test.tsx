@@ -583,7 +583,7 @@ describe("blank tab card", () => {
     const padBox = pad.closest(".scratch-pad") as HTMLElement;
 
     fireEvent.change(pad, { target: { value: "Explain the auth flow" } });
-    fireEvent.click(within(padBox).getByRole("button", { name: "Send" }));
+    fireEvent.keyDown(pad, { key: "Enter", ctrlKey: true });
     await waitFor(() => expect(devSessionSend).toHaveBeenCalledWith("Explain the auth flow", "tab_dev"));
     expect(promptRecordSend).toHaveBeenCalledWith("Explain the auth flow", "chat");
     await waitFor(() => expect(pad.value).toBe(""));
@@ -591,7 +591,7 @@ describe("blank tab card", () => {
     // A send that never reaches the agent puts the text back.
     vi.mocked(devSessionSend).mockRejectedValueOnce(new Error("agent exited"));
     fireEvent.change(pad, { target: { value: "Try again" } });
-    fireEvent.click(within(padBox).getByRole("button", { name: "Send" }));
+    fireEvent.keyDown(pad, { key: "Enter", ctrlKey: true });
     await waitFor(() => expect(pad.value).toBe("Try again"));
 
     // Transfer moves the text into the input.
@@ -642,7 +642,7 @@ describe("blank tab card", () => {
     await screen.findByRole("button", { name: "Remove screenshot.png" });
 
     fireEvent.change(pad, { target: { value: "Why is this red?" } });
-    fireEvent.click(within(padBox).getByRole("button", { name: "Send" }));
+    fireEvent.keyDown(pad, { key: "Enter", ctrlKey: true });
     await waitFor(() =>
       expect(devSessionSend).toHaveBeenCalledWith("Why is this red?", "tab_dev", ["img_1"]),
     );
