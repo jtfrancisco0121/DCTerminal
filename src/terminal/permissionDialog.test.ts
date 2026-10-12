@@ -220,6 +220,23 @@ describe("dialog detector", () => {
     expect(d.isVisible("a", 99_999)).toBe(true);
   });
 
+  it("exposes the dialog's text and whether the user typed since it was drawn", () => {
+    const { d, timers } = setup();
+    expect(d.prompt("a")).toBe("");
+    d.feed("a", bytes(PROCEED));
+    expect(d.prompt("a")).toBe("Bash command\ntouch x\nDo you want to proceed?");
+    expect(d.answering("a")).toBe(false);
+    d.input("a", 1000);
+    expect(d.answering("a")).toBe(true);
+    d.feed("a", bytes(`\x1b[1mBash command\x1b[22m\r\n  rm y\r\nDo you want to proceed?\r\n${options("Yes")}`));
+    expect(d.answering("a")).toBe(false);
+    expect(d.prompt("a")).toBe("Bash command\nrm y\nDo you want to proceed?");
+    d.input("a", 2000);
+    timers.runAll();
+    expect(d.prompt("a")).toBe("");
+    expect(d.answering("a")).toBe(false);
+  });
+
   it("input clears stale text so an old dialog cannot re-match", () => {
     const { d, timers } = setup();
     d.feed("a", bytes("Do you want to proceed?\r\n"));

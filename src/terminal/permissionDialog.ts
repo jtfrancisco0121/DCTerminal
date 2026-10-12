@@ -14,6 +14,13 @@ export type DialogDetector = {
   /** The user typed into this terminal. */
   input(id: string, now?: number): void;
   isVisible(id: string, now?: number): boolean;
+  /**
+   * The visible dialog's text: the question and the lines above it (tool,
+   * command, file). Tells one prompt from the next. "" when none is shown.
+   */
+  prompt(id: string): string;
+  /** The user typed since the dialog was last drawn (it may be answered). */
+  answering(id: string): boolean;
   /** Explicitly hide (e.g. the log's open tool was answered). */
   clear(id: string): void;
   /** Drop all state for this id (process exited / tab closed). */
@@ -112,14 +119,24 @@ function optionsFrom(lines: string[], from: number, limit: number): boolean {
   return false;
 }
 
+/** Lines above the question kept as the prompt's text (tool, command, file). */
+const PROMPT_LINES = 10;
+
+/** The newest permission dialog in this normalized text: its question and the lines above. */
+export function findPermissionDialog(text: string): string | null {
+  if (!QUESTION_RE.test(text)) return null;
+  const lines = plainLines(text);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (QUESTION_RE.test(lines[i]) && optionsFrom(lines, i + 1, OPTION_LINES)) {
+      return lines.slice(Math.max(0, i - PROMPT_LINES), i + 1).join("\n");
+    }
+  }
+  return null;
+}
+
 /** Does this normalized text contain the permission dialog? */
 export function matchPermissionDialog(text: string): boolean {
-  if (!QUESTION_RE.test(text)) return false;
-  const lines = plainLines(text);
-  for (let i = 0; i < lines.length; i++) {
-    if (QUESTION_RE.test(lines[i]) && optionsFrom(lines, i + 1, OPTION_LINES)) return true;
-  }
-  return false;
+  return findPermissionDialog(text) !== null;
 }
 
 /** Just the option list ("1. Yes" ... "N. No"), e.g. a redraw after an arrow key. */
@@ -152,6 +169,8 @@ type TermState = {
   pending: string;
   window: string;
   visible: boolean;
+  /** Text of the dialog last drawn in full. */
+  prompt: string;
   /** When the hide debounce expires (set by input while visible). */
   hideAt: number | null;
   timer: unknown;
@@ -187,6 +206,7 @@ export function createDialogDetector(opts: DetectorOptions = {}): DialogDetector
         pending: "",
         window: "",
         visible: false,
+        prompt: "",
         hideAt: null,
         timer: undefined,
         hasTimer: false,
@@ -206,6 +226,7 @@ export function createDialogDetector(opts: DetectorOptions = {}): DialogDetector
   const hide = (id: string, s: TermState) => {
     cancelHide(s);
     s.window = "";
+    s.prompt = "";
     if (s.visible) {
       s.visible = false;
       notify(id);
@@ -222,8 +243,10 @@ export function createDialogDetector(opts: DetectorOptions = {}): DialogDetector
       if (!complete) return;
       s.window += normalizeTerminalText(complete);
       if (s.window.length > windowChars) s.window = s.window.slice(-windowChars);
-      const full = matchPermissionDialog(s.window);
+      const found = findPermissionDialog(s.window);
+      const full = found !== null;
       if (!full && !(s.visible && matchOptionList(s.window))) return;
+      if (found !== null) s.prompt = found;
       // A whole question drawn after an answer may be the next tool's dialog.
       const redrawn = full && s.visible && s.hideAt !== null;
       // A fresh draw after the last input: the dialog is still up.
@@ -253,6 +276,7 @@ export function createDialogDetector(opts: DetectorOptions = {}): DialogDetector
         s.hideAt = null;
         if (s.visible) {
           s.visible = false;
+          s.prompt = "";
           notify(id);
         }
       }, debounceMs);
@@ -263,6 +287,16 @@ export function createDialogDetector(opts: DetectorOptions = {}): DialogDetector
       if (!s || !s.visible) return false;
       if (s.hideAt !== null && (now ?? Date.now()) >= s.hideAt) return false;
       return true;
+    },
+
+    prompt(id) {
+      const s = states.get(id);
+      return s?.visible ? s.prompt : "";
+    },
+
+    answering(id) {
+      const s = states.get(id);
+      return !!s?.visible && s.hideAt !== null;
     },
 
     clear(id) {

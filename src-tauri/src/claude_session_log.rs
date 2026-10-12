@@ -55,6 +55,24 @@ pub struct OpenTool {
     pub id: String,
     pub name: String,
     pub title: String,
+    /// What Claude Code's permission dialog shows for this call: the file
+    /// name, the URL host, or the start of the command. Empty otherwise.
+    pub hint: String,
+}
+
+/// Shown text that ties a permission dialog on screen to this call.
+fn tool_hint(call: &SessionToolCall) -> String {
+    if let Some(path) = call.path.as_deref() {
+        return path.rsplit(['/', '\\']).next().unwrap_or_default().to_string();
+    }
+    if let Some(url) = call.url.as_deref() {
+        let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+        return rest.split(['/', '?', '#']).next().unwrap_or_default().to_string();
+    }
+    call.command
+        .as_deref()
+        .map(|cmd| cmd.chars().take(40).collect())
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -311,6 +329,7 @@ impl Parser {
             id: call.id.clone(),
             name: call.name.clone(),
             title: call.title.clone(),
+            hint: tool_hint(call),
         };
         let open_tool = (!turn_done)
             .then(|| {
@@ -835,6 +854,20 @@ mod tests {
         assert!(earlier_turn.pending_tools.is_empty());
         let json = serde_json::to_value(&parallel).unwrap();
         assert_eq!(json["pendingTools"][1]["id"], json!("e2"));
+        assert_eq!(json["pendingTools"][1]["hint"], json!("b"));
+    }
+
+    #[test]
+    fn pending_tool_hints_name_what_the_dialog_shows() {
+        let log = parse(&[
+            prompt("go", "t1"),
+            tool("e1", "Edit", json!({ "file_path": "/repo/src/auth.ts" }), "t2"),
+            tool("w1", "WebFetch", json!({ "url": "https://docs.example.com/a?b=1" }), "t2"),
+            tool("b1", "Bash", json!({ "command": "npm test", "description": "Run tests" }), "t2"),
+            tool("g1", "Grep", json!({ "pattern": "fn main" }), "t2"),
+        ]);
+        let hints: Vec<&str> = log.pending_tools.iter().map(|t| t.hint.as_str()).collect();
+        assert_eq!(hints, vec!["auth.ts", "docs.example.com", "npm test", ""]);
     }
 
     #[test]

@@ -544,7 +544,9 @@ export function StartupForm({
     const prev = dialogOwners.current.get(tabId);
     if (owner) dialogOwners.current.set(tabId, owner);
     else dialogOwners.current.delete(tabId);
-    if (prev?.toolId !== owner?.toolId) setDialogOwnerVersion((value) => value + 1);
+    if (prev?.toolId !== owner?.toolId || prev?.shownPrompt !== owner?.shownPrompt) {
+      setDialogOwnerVersion((value) => value + 1);
+    }
   }, []);
   /** Tabs whose PTYs a workspace replace is stopping: their exit is not news. */
   const replacingTabs = useRef(new Set<string>());
@@ -1282,7 +1284,12 @@ export function StartupForm({
       }
       // Hide the dialog once the tool it asked about was answered: a later
       // tool needs a fresh dialog. An earlier tool finishing is not that.
-      const next = dialogAfterRead(dialogOwners.current.get(tabId), log, readAt);
+      const next = dialogAfterRead(
+        dialogOwners.current.get(tabId),
+        log,
+        readAt,
+        dialogDetector.answering(tabId),
+      );
       setDialogOwner(tabId, next.owner);
       if (next.clear) dialogDetector.clear(tabId);
       if (prev !== undefined && sameSessionLog(prev, log)) return;
@@ -1320,7 +1327,10 @@ export function StartupForm({
         return visible ? [...prev, id] : prev.filter((item) => item !== id);
       });
       // A new draw belongs to whatever tool the next read finds open.
-      setDialogOwner(id, visible ? dialogDrawn(dialogOwners.current.get(id), Date.now()) : undefined);
+      setDialogOwner(
+        id,
+        visible ? dialogDrawn(dialogOwners.current.get(id), Date.now(), dialogDetector.prompt(id)) : undefined,
+      );
       // Read the log now: the open tool decides what the dialog is for.
       const entry = sessionLogWatch.current.get(id);
       if (visible && entry) entry.forceRead = true;
@@ -1436,7 +1446,8 @@ export function StartupForm({
   useEffect(() => {
     for (const [tabId, state] of Object.entries(terminalStates)) {
       if (state.kind !== "needs") continue;
-      const key = `${tabId}\n${state.toolId}\n${state.needs}`;
+      // A subagent's prompts share its Agent call: the dialog text tells them apart.
+      const key = `${tabId}\n${state.toolId}\n${state.needs}\n${state.prompt ?? ""}`;
       if (needsNotified.current.has(key)) continue;
       needsNotified.current.add(key);
       notifyAgent(tabId, { kind: state.needs, detail: terminalNeedsMessage(state) });
