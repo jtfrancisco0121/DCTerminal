@@ -453,6 +453,15 @@ function terminalLaunchOf(tab: TabSummary): TerminalLaunch {
   }
 }
 
+/** A Claude Code terminal (role or plain tile) whose exit can offer a resume. */
+function isClaudeTerminal(tab: TabSummary): boolean {
+  return (
+    tab.kind === "terminal" &&
+    tab.provider === "claude" &&
+    (tab.terminalLaunch === "role" || tab.terminalLaunch === "claude-cli")
+  );
+}
+
 type CliLaunch = "cursor-cli" | "claude-cli";
 const CLI_LABEL: Record<CliLaunch, string> = {
   "cursor-cli": "Cursor CLI",
@@ -5126,6 +5135,7 @@ export function StartupForm({
           roleId={tab.roleId}
           fontSize={fontSize}
           resumeSessionId={tab.resumeSessionId}
+          claudeSession={isClaudeTerminal(tab)}
           autoOpen={!livePty(tab.id)}
           autoFocus={false}
           menuActions={
@@ -5662,6 +5672,7 @@ export function StartupForm({
             roleId={activeTabSummary.roleId}
             fontSize={fontSize}
             resumeSessionId={activeTabSummary.resumeSessionId}
+            claudeSession={isClaudeTerminal(activeTabSummary)}
             autoOpen={!livePty(activeTabSummary.id)}
             onMenuOpen={() => readTerminalVerdict(activeTabSummary.id, true)}
             menuActions={
