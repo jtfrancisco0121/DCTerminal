@@ -25,6 +25,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::Mutex;
 use std::thread;
@@ -140,6 +141,25 @@ fn forward(output: Receiver<PtyOutput>, channel: Channel<PtyPacket>) {
             break;
         }
     }
+}
+
+/// True while the app theme is a light one. Claude Code reads COLORFGBG to pick
+/// its own light or dark palette (theme "auto"), so a Claude terminal is told
+/// the app theme through that variable. Nothing is written to ~/.claude*.
+static LIGHT_SCHEME: AtomicBool = AtomicBool::new(false);
+
+fn claude_scheme_env() -> (String, String) {
+    let value = if LIGHT_SCHEME.load(Ordering::Relaxed) {
+        "0;15"
+    } else {
+        "15;0"
+    };
+    ("COLORFGBG".to_string(), value.to_string())
+}
+
+#[tauri::command]
+pub fn pty_set_scheme(light: bool) {
+    LIGHT_SCHEME.store(light, Ordering::Relaxed);
 }
 
 fn open_session(
@@ -365,7 +385,7 @@ pub fn shell_terminal_start(
     }
     let claude_session = (launch == "claude-cli")
         .then(|| resume_id.clone().unwrap_or_else(new_claude_session_id));
-    let command = if launch == "claude-cli" {
+    let mut command = if launch == "claude-cli" {
         let provider = {
             let mut state = store.lock().map_err(|err| err.to_string())?;
             state.bind_window(input.window_id.as_deref());
@@ -413,6 +433,9 @@ pub fn shell_terminal_start(
         let resolved = resolve_shell_for_host(&configured);
         launch::ProgramArgs::new(resolved.program, resolved.args)
     };
+    if launch == "claude-cli" {
+        command.env.push(claude_scheme_env());
+    }
     let tab_id = {
         let mut store = store.lock().map_err(|err| err.to_string())?;
         store.bind_window(input.window_id.as_deref());
@@ -629,7 +652,10 @@ pub fn role_terminal_start(
         }
     }
     let delivery = store_prompt(&app, &tab_id, &program, &prompt)?;
-    let command = provider.terminal_command(&role_launch(Some(delivery.argument.clone())))?;
+    let mut command = provider.terminal_command(&role_launch(Some(delivery.argument.clone())))?;
+    if provider.id() == ProviderId::Claude {
+        command.env.push(claude_scheme_env());
+    }
     let mut registry = registry.lock().map_err(|err| err.to_string())?;
     let pid = open_session(
         &mut registry,
@@ -766,6 +792,7 @@ pub fn pty_open(
                 model: Some(model),
                 session_id: Some(session_id.clone()),
             })?;
+            command.env.push(claude_scheme_env());
             remember_terminal_session(&store, &input.id, Some(&session_id))?;
             claude_session = Some(session_id);
             let resuming = input
@@ -838,7 +865,10 @@ pub fn pty_open(
                 Some(text) => Some(store_prompt(&app, &input.id, &program, text)?.argument),
                 None => None,
             };
-            let command = provider.terminal_command(&role_launch(argument))?;
+            let mut command = provider.terminal_command(&role_launch(argument))?;
+            if provider.id() == ProviderId::Claude {
+                command.env.push(claude_scheme_env());
+            }
             remember_terminal_session(&store, &input.id, claude_session.as_deref())?;
             (command.program, command.args, command.env)
         }

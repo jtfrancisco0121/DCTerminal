@@ -289,6 +289,7 @@ import {
   terminalScrollbackText,
   terminalSelection,
   terminalTailText,
+  measuredTerminalSize,
 } from "./terminal/park";
 import { encodeTerminalPaste } from "./terminal/paste";
 import { planFileMentions } from "./terminal/text";
@@ -2035,8 +2036,7 @@ export function StartupForm({
           values: form,
           tabId: preferred,
           handoffPlan: options?.handoffPlan ?? null,
-          cols: 80,
-          rows: 24,
+          ...measuredTerminalSize(),
           onOutput: live.channel,
         });
         if (result.errors.length > 0 || !result.tabId) {
@@ -2096,8 +2096,7 @@ export function StartupForm({
           tabId: activeTabId,
           cwd,
           launch,
-          cols: 80,
-          rows: 24,
+          ...measuredTerminalSize(),
           onOutput: live.channel,
         });
         if (result.errors.length > 0 || !result.tabId) {
@@ -2141,8 +2140,7 @@ export function StartupForm({
         cwd,
         launch: source === "claude" ? "claude-cli" : "cursor-cli",
         resumeSessionId: sessionId,
-        cols: 80,
-        rows: 24,
+        ...measuredTerminalSize(),
         onOutput: live.channel,
       });
       if (result.errors.length > 0 || !result.tabId) {

@@ -15,6 +15,9 @@ import {
 import {
   copyTerminalSelection,
   ensureParkedTerminal,
+  type ParkedTerminal,
+  measuredTerminalSize,
+  noteTerminalSize,
   blurParkedTerminal,
   focusParkedTerminal,
   isParkedHost,
@@ -74,6 +77,27 @@ export function readTerminalHandoff(ptyId: string): {
     tail: terminalTailText(ptyId),
     scrollback: terminalScrollbackText(ptyId),
   };
+}
+
+/**
+ * The size to open a PTY at: the mounted slot, measured now, so the program
+ * draws its first screen at the right width. Before any slot exists, the last
+ * measured terminal (else 80x24); the next fit corrects it.
+ */
+function openSize(parked: ParkedTerminal): { cols: number; rows: number } {
+  const slot = parked.host.parentElement;
+  if (parked.host.isConnected && slot && slot.clientWidth > 0 && slot.clientHeight > 0) {
+    try {
+      parked.fit.fit();
+    } catch {
+      // Fall through to whatever xterm currently has.
+    }
+    if (parked.term.cols >= 2 && parked.term.rows >= 1) {
+      noteTerminalSize(parked.term.cols, parked.term.rows);
+      return { cols: parked.term.cols, rows: parked.term.rows };
+    }
+  }
+  return measuredTerminalSize();
 }
 
 export function TerminalView({
@@ -152,6 +176,7 @@ export function TerminalView({
       const cols = parked.term.cols;
       const rows = parked.term.rows;
       if (cols >= 2 && rows >= 1) {
+        noteTerminalSize(cols, rows);
         void ptyResize(ptyId, cols, rows).catch(() => {});
       }
     };
@@ -194,6 +219,7 @@ export function TerminalView({
     if (!markPtyOpening(ptyId)) return;
     const live = beginLivePty(ptyId);
     const parked = ensureParkedTerminal(ptyId, fontSize);
+    const size = openSize(parked);
     void ptyOpen({
       id: ptyId,
       cwd,
@@ -201,8 +227,8 @@ export function TerminalView({
       roleId,
       prompt,
       resumeSessionId,
-      cols: Math.max(parked.term.cols, 80),
-      rows: Math.max(parked.term.rows, 24),
+      cols: size.cols,
+      rows: size.rows,
       onOutput: live.channel,
     }).catch((err: unknown) => {
       clearPtyOpening(ptyId);
@@ -226,8 +252,8 @@ export function TerminalView({
       roleId,
       prompt: null,
       resumeSessionId,
-      cols: Math.max(parked.term.cols, 80),
-      rows: Math.max(parked.term.rows, 24),
+      cols: openSize(parked).cols,
+      rows: openSize(parked).rows,
       onOutput: live.channel,
     }).catch((err: unknown) => {
       setFailed(err instanceof Error ? err.message : String(err));
