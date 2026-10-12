@@ -27,6 +27,7 @@ import { blockedSlashCommand, type SlashCommand } from "./composer/slashCommands
 import { renderImageMarkers } from "./attachments/chatImages";
 import type { ChatImagesProps } from "./attachments/useChatImages";
 import { AttachmentChips, imageInputHandlers } from "./components/AttachmentChips";
+import { useImageFileDrop } from "./attachments/useImageFileDrop";
 
 /** F5: open the find bar, optionally landing on one message's n-th hit. */
 export type ChatFindRequest = {
@@ -314,6 +315,7 @@ export function SessionTerminal({
     composerRef.current = node;
     if (inputRef) inputRef.current = node;
   };
+  useImageFileDrop(composerRef, images);
   const slash = useSlashAutocomplete({
     value: followUp,
     commands: slashCommands,

@@ -4,6 +4,7 @@ import { useSlashAutocomplete } from "../composer/SlashCommandMenu";
 import { blockedSlashCommandIn, type SlashCommand } from "../composer/slashCommands";
 import type { ChatImagesProps } from "../attachments/useChatImages";
 import { AttachmentChips, imageInputHandlers } from "./AttachmentChips";
+import { useImageFileDrop } from "../attachments/useImageFileDrop";
 
 type Props = {
   content: string;
@@ -115,6 +116,7 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
     onHeightCommit?.(next);
   };
   const terminal = mode === "terminal";
+  useImageFileDrop(editorRef, terminal ? null : images);
   const chained = !terminal && content.split(/\r?\n/).some((line) => /^\s*-{3,}\s*$/.test(line));
   const running = !terminal && (chain?.phase === "inFlight" || chain?.phase === "paused");
   const slash = useSlashAutocomplete({
