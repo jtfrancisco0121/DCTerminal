@@ -202,6 +202,7 @@ import {
 import { handoffRoute, loopBackMessage } from "./handoff/routing";
 import { attachHandoff, handoffFieldsOf, prepareHandoff, saveHandoff } from "./handoff/executor";
 import { pipelineDef } from "./pipeline/defs";
+import { useAutopilot } from "./pipeline/useAutopilot";
 import {
   isReviewerRole,
   parseReviewVerdict,
@@ -1230,6 +1231,10 @@ export function StartupForm({
     return () => window.clearInterval(timer);
   }, [hasTerminalTabs, isWatchingTab, notifyAgent]);
 
+  /** Autopilot sees every fresh session log (set once the hook exists). */
+  const autopilotLogRef = useRef<((tabId: string, log: TerminalSessionLog | null) => void) | null>(
+    null,
+  );
   const storeSessionLog = useCallback(
     /** `readAt`: when the read started, so a read older than a dialog is not used for it. */
     (tabId: string, log: TerminalSessionLog | null, readAt: number) => {
@@ -1277,6 +1282,7 @@ export function StartupForm({
       setDialogOwner(tabId, next.owner);
       // Mid-turn, the next call's dialog may be half drawn already.
       if (next.clear) dialogDetector.clear(tabId, { keepPartial: !!log && !log.turnDone });
+      autopilotLogRef.current?.(tabId, log);
       if (prev !== undefined && sameSessionLog(prev, log)) return;
       sessionLogsRef.current = { ...sessionLogsRef.current, [tabId]: log };
       setSessionLogs(sessionLogsRef.current);
@@ -2050,8 +2056,14 @@ export function StartupForm({
       values: Record<string, string>;
       tabId?: string | null;
       handoffPlan?: string | null;
+      /** Autopilot: keep the current tab on screen and throw errors instead of showing them. */
+      quiet?: boolean;
     }) => {
-      if (startLockRef.current) return null;
+      const quiet = !!options?.quiet;
+      if (startLockRef.current) {
+        if (quiet) throw new Error("Another tab is starting. Try again when it has started.");
+        return null;
+      }
       startLockRef.current = true;
       setBusy(true);
       setTerminalError(null);
@@ -2071,13 +2083,12 @@ export function StartupForm({
         });
         if (result.errors.length > 0 || !result.tabId) {
           dropLivePty(pendingId);
-          setPreview({
-            errors:
-              result.errors.length > 0
-                ? result.errors
-                : [{ key: "_session", message: "Terminal did not start" }],
-            merged: null,
-          });
+          const errors =
+            result.errors.length > 0
+              ? result.errors
+              : [{ key: "_session", message: "Terminal did not start" }];
+          if (quiet) throw new Error(errors.map((err) => err.message).join(" "));
+          setPreview({ errors, merged: null });
           return null;
         }
         if (result.tabId !== pendingId) rekeyLivePty(pendingId, result.tabId);
@@ -2085,8 +2096,10 @@ export function StartupForm({
           const fileTab = result.tabId;
           setPromptFileTabs((prev) => (prev.includes(fileTab) ? prev : [...prev, fileTab]));
         }
-        setActiveTabId(result.tabId);
-        setPreview(null);
+        if (!quiet) {
+          setActiveTabId(result.tabId);
+          setPreview(null);
+        }
         if (
           !options &&
           eagleOnRef.current &&
@@ -2101,6 +2114,7 @@ export function StartupForm({
         return result.tabId;
       } catch (err: unknown) {
         dropLivePty(pendingId);
+        if (quiet) throw err;
         const message = errorText(err);
         setTerminalError(message);
         return null;
@@ -2111,6 +2125,18 @@ export function StartupForm({
     },
     [activeTabId, formValues, refreshTabs, roleId],
   );
+
+  const autopilot = useAutopilot({
+    tabs: () => savedTabsRef.current,
+    roles: () => roles,
+    terminalState: (tabId) => terminalStatesRef.current[tabId],
+    startTerminal: (options) =>
+      startRoleTerminal({ ...options, tabId: null, quiet: true }),
+    refreshTabs,
+    notifyStop: (tabId, reason) => notifyAgent(tabId, { kind: "question", detail: `Autopilot: ${reason}` }),
+    notice: (title, body) => showNotice(title, body),
+  });
+  autopilotLogRef.current = autopilot.onTerminalLog;
 
   const startBlankTerminal = useCallback(
     async (launch: "shell" | CliLaunch) => {

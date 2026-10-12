@@ -1,0 +1,230 @@
+// @vitest-environment jsdom
+import { renderHook, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../bridge", () => ({
+  chainLoopBack: vi.fn(async () => ({})),
+  getClaudeUsage: vi.fn(async () => ({ configDir: "", windows: [], contextByTab: {} })),
+  getPipelineRun: vi.fn(),
+  getTab: vi.fn(async () => ({ tab: { answers: { cwd: "/repo", title: "Login 500" } } })),
+  pipelineDecide: vi.fn(),
+  pipelineNote: vi.fn(async () => {}),
+  pipelineRunGates: vi.fn(async () => []),
+  ptyWrite: vi.fn(async () => {}),
+  setTabProvider: vi.fn(async () => {}),
+  // HandoffIo (handoff/executor)
+  getRole: vi.fn(async (id: string) => ({
+    id,
+    name: id,
+    templateText: "",
+    fields: ["originalTask", "approvedPlan", "additionalContext"].map((key) => ({
+      key,
+      label: key,
+      type: "multiline",
+      required: false,
+    })),
+  })),
+  changesList: vi.fn(async () => ({ state: "none" })),
+  gitRepoInfo: vi.fn(async () => ({ currentBranch: "fix/login" })),
+  terminalPlanFile: vi.fn(async () => null),
+  validateAndPreview: vi.fn(async () => ({ errors: [] })),
+  handoffSave: vi.fn(async (input: Record<string, unknown>) => ({ ...input, id: "handoff-1" })),
+  handoffAttach: vi.fn(async (input: { id: string; tabId: string }) => ({
+    record: { id: input.id, targetTabId: input.tabId },
+    chain: null,
+  })),
+}));
+const live = new Map<string, { exited: boolean }>();
+vi.mock("../terminal/live", () => ({
+  livePty: (id: string) => live.get(id) ?? null,
+  notePtyInput: () => {},
+  ptyExitCode: () => null,
+}));
+vi.mock("../terminal/park", () => ({
+  terminalBracketedPaste: () => true,
+  terminalTailText: () => "",
+}));
+
+import {
+  chainLoopBack,
+  getPipelineRun,
+  handoffAttach,
+  pipelineDecide,
+  pipelineRunGates,
+  ptyWrite,
+  type PipelineRun,
+  type TabSummary,
+  type TerminalSessionLog,
+} from "../bridge";
+import type { TerminalState } from "../terminal/claudeState";
+import { useAutopilot, type AutopilotDeps } from "./useAutopilot";
+
+function tab(id: string, roleId: string, step: number): TabSummary {
+  return {
+    id,
+    label: `Tab ${id}`,
+    roleId,
+    cwd: "/repo",
+    kind: "terminal",
+    terminalLaunch: "role",
+    provider: "claude",
+    phase: "terminal",
+    mergedPromptChars: 0,
+    startupPromptSent: true,
+    hasTranscript: false,
+    folderStatus: "ok",
+    color: "#fff",
+    acpSessionId: null,
+    chain: { chainId: "ee_1", kind: "eagle1", step, total: 4 },
+  } as TabSummary;
+}
+
+function log(reply: string, prompt = "p1"): TerminalSessionLog {
+  return {
+    sessionId: "s",
+    path: "/x",
+    turnDone: true,
+    lastReply: reply,
+    plan: null,
+    planAt: null,
+    lastPromptAt: prompt,
+    toolCalls: [],
+    openTool: null,
+  };
+}
+
+function run(enabled: boolean): { run: PipelineRun } {
+  return {
+    run: {
+      id: "ee_1",
+      kind: "full",
+      cwd: "/repo",
+      stage: "implementer",
+      overviewTabId: "",
+      tabIds: {},
+      createdAt: "x",
+      chainId: "ee_1",
+      autopilot: { enabled },
+    },
+  };
+}
+
+const IMPLEMENTED = [
+  "## HANDOFF: Implementation summary\nIMPLEMENTED",
+  "## HANDOFF: Files changed\nsrc/a.ts",
+  "## HANDOFF: Tests run\nnpm test",
+  "## HANDOFF: Deviations from the plan\nNone.",
+  "## HANDOFF: Pull requests\nPR1 — https://github.com/jt/app/pull/7",
+].join("\n\n");
+
+function setup(tabs: TabSummary[], states: Record<string, TerminalState> = {}) {
+  const deps: AutopilotDeps = {
+    tabs: () => tabs,
+    roles: () => null,
+    terminalState: (id) => states[id],
+    startTerminal: vi.fn(async () => "tab-new"),
+    refreshTabs: vi.fn(async () => {}),
+    notifyStop: vi.fn(),
+    notice: vi.fn(),
+  };
+  const { result } = renderHook(() => useAutopilot(deps));
+  return { deps, onLog: result.current.onTerminalLog };
+}
+
+describe("useAutopilot", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    live.clear();
+  });
+
+  it("runs the stage's checks, then opens the next stage's terminal on the chain", async () => {
+    vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+    vi.mocked(pipelineDecide).mockResolvedValue({
+      action: "advance",
+      stageId: "pr_reviewer",
+      roleId: "role_pr_reviewer",
+      reason: "on to PR Reviewer",
+    });
+    const { deps, onLog } = setup([tab("impl", "role_implementer", 3)]);
+    onLog("impl", log(IMPLEMENTED));
+    await waitFor(() => expect(handoffAttach).toHaveBeenCalled());
+    expect(pipelineRunGates).toHaveBeenCalledWith("ee_1", "implementer", "/repo", [
+      "https://github.com/jt/app/pull/7",
+    ]);
+    expect(vi.mocked(pipelineDecide).mock.calls[0][1]).toMatchObject({
+      stageId: "implementer",
+      verdict: null,
+      missingSections: [],
+      chat: false,
+    });
+    expect(deps.startTerminal).toHaveBeenCalledWith(
+      expect.objectContaining({ roleId: "role_pr_reviewer" }),
+    );
+    expect(vi.mocked(handoffAttach).mock.calls[0][0]).toMatchObject({
+      tabId: "tab-new",
+      chain: { chainId: "ee_1", kind: "eagle1", step: 4, total: 4 },
+      loopBack: null,
+    });
+  });
+
+  it("a turn seen while autopilot was off is never replayed", async () => {
+    vi.mocked(getPipelineRun).mockResolvedValue(run(false));
+    const { deps, onLog } = setup([tab("impl", "role_implementer", 3)]);
+    onLog("impl", log(IMPLEMENTED));
+    await waitFor(() => expect(getPipelineRun).toHaveBeenCalledTimes(1));
+    vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+    onLog("impl", log(IMPLEMENTED));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(getPipelineRun).toHaveBeenCalledTimes(1);
+    expect(pipelineDecide).not.toHaveBeenCalled();
+    expect(deps.startTerminal).not.toHaveBeenCalled();
+  });
+
+  it("sends a round back into the earlier stage's idle terminal", async () => {
+    vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+    vi.mocked(pipelineDecide).mockResolvedValue({
+      action: "loopBack",
+      stageId: "implementer",
+      roleId: "role_implementer",
+      reason: "round 1 goes back",
+    });
+    live.set("impl", { exited: false });
+    const review =
+      "## HANDOFF: Verdict\nREQUEST CHANGES\n\n## HANDOFF: Findings for the Implementer\n1. Guard the null token.";
+    const { onLog } = setup(
+      [tab("impl", "role_implementer", 3), tab("pr", "role_pr_reviewer", 4)],
+      { impl: { kind: "idle" } },
+    );
+    onLog("pr", log(review));
+    await waitFor(() => expect(chainLoopBack).toHaveBeenCalled());
+    const pasted = String(vi.mocked(ptyWrite).mock.calls[0][1]);
+    expect(vi.mocked(ptyWrite).mock.calls[0][0]).toBe("impl");
+    expect(pasted).toContain("Review findings from the PR Reviewer (round 1)");
+    expect(pasted).toContain("Guard the null token.");
+    expect(vi.mocked(chainLoopBack).mock.calls[0][0]).toMatchObject({
+      chainId: "ee_1",
+      reviewerRoleId: "role_pr_reviewer",
+      tabId: "impl",
+      verdict: "REQUEST CHANGES",
+    });
+  });
+
+  it("stops instead of pasting into a terminal that is waiting for you", async () => {
+    vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+    vi.mocked(pipelineDecide).mockResolvedValue({
+      action: "loopBack",
+      stageId: "implementer",
+      roleId: "role_implementer",
+      reason: "round 1 goes back",
+    });
+    live.set("impl", { exited: false });
+    const { deps, onLog } = setup(
+      [tab("impl", "role_implementer", 3), tab("pr", "role_pr_reviewer", 4)],
+      { impl: { kind: "needs", needs: "permission", toolId: "t", toolTitle: "Bash" } },
+    );
+    onLog("pr", log("## HANDOFF: Verdict\nREQUEST CHANGES"));
+    await waitFor(() => expect(deps.notifyStop).toHaveBeenCalled());
+    expect(ptyWrite).not.toHaveBeenCalled();
+    expect(vi.mocked(deps.notifyStop).mock.calls[0][1]).toContain("waiting for you");
+  });
+});
