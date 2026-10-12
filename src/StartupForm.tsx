@@ -1367,7 +1367,7 @@ export function StartupForm({
       .filter(
         (tab) =>
           isClaudeRoleTerminal(tab) &&
-          (running(tab.id) || onScreen.has(tab.id) || !!tab.chain),
+          (running(tab.id) || onScreen.has(tab.id) || !!tab.chain || !!tab.pipelineRunId),
       )
       .map((tab) => tab.id)
       .join("\n");
@@ -5570,6 +5570,7 @@ export function StartupForm({
           tabs={savedTabs}
           runtimes={runtimes}
           terminalStates={terminalStates}
+          sessionLogs={sessionLogs}
           onJump={(tabId) => void handleSelectTab(tabId)}
           onWatch={(tabId) => {
             setSplit((current) => ({
