@@ -99,6 +99,8 @@ describe("PipelineOverview: autopilot, checks and timeline", () => {
     };
     show(
       run({
+        // The plan was sent back once: run round 2, but the PR Reviewer's own edge is on round 1.
+        verdicts: [{ roleId: "role_plan_reviewer", round: 1, verdict: "REQUEST CHANGES", at: "then" }],
         gates: {
           implementer: {
             round: 2,
@@ -123,7 +125,9 @@ describe("PipelineOverview: autopilot, checks and timeline", () => {
     expect(checks.textContent).toContain("failed");
     expect(checks.textContent).toContain("npm run check");
     const reviewer = screen.getByRole("article", { name: "PR Reviewer" });
-    expect(within(reviewer).getByText("Round 2 of at most 3")).toBeTruthy();
+    expect(within(reviewer).getByText("Round 1 of at most 3")).toBeTruthy();
+    const planReviewer = screen.getByRole("article", { name: "Plan Reviewer" });
+    expect(within(planReviewer).getByText("Round 2 of at most 3")).toBeTruthy();
     fireEvent.click(within(lane).getByRole("button", { name: "Run checks" }));
     await waitFor(() =>
       expect(pipelineRunGates).toHaveBeenCalledWith("ee_1", "implementer", "/worktree", [
@@ -242,6 +246,40 @@ describe("PipelineOverview: autopilot, checks and timeline", () => {
     expect(pr2.textContent).toContain("waiting");
     fireEvent.click(within(pr2).getByRole("button", { name: "Start anyway" }));
     await waitFor(() => expect(onStartLane).toHaveBeenCalledWith("ee_1", "pr2"));
+  });
+
+  it("marks an active pull request approved by hand", async () => {
+    const onApproveLane = vi.fn(async () => {});
+    vi.mocked(getPipelineRun).mockResolvedValue({
+      run: run({
+        lanes: [
+          { id: "pr1", title: "PR1 — API", status: "active", stage: "pr_reviewer", round: 1, tabIds: { role_implementer: "impl" } },
+          { id: "pr2", title: "PR2 — UI", status: "waiting", dependsOn: ["pr1"], stage: "implementer", round: 1, tabIds: {} },
+        ],
+      }),
+    });
+    render(
+      <PipelineOverview
+        runId="ee_1"
+        cwd="/p"
+        tabs={[tab("impl", "role_implementer")]}
+        runtimes={{}}
+        onJump={() => {}}
+        onWatch={() => {}}
+        onRefreshTabs={async () => {}}
+        onNotice={() => {}}
+        terminalReader={noTerminal}
+        onStartLane={async () => {}}
+        onApproveLane={onApproveLane}
+      />,
+    );
+    const lanes = await screen.findByRole("region", { name: "Pull requests" });
+    const pr2 = within(lanes).getByRole("listitem", { name: "PR2 — UI" });
+    // Only an active lane can be marked approved.
+    expect(within(pr2).queryByRole("button", { name: "Mark approved" })).toBeNull();
+    const pr1 = within(lanes).getByRole("listitem", { name: "PR1 — API" });
+    fireEvent.click(within(pr1).getByRole("button", { name: "Mark approved" }));
+    await waitFor(() => expect(onApproveLane).toHaveBeenCalledWith("ee_1", "pr1"));
   });
 });
 

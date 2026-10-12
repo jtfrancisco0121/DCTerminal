@@ -12,7 +12,7 @@ import {
   pipelineSetCandidatePlan,
 } from "../bridge";
 import { maxRounds, pipelineDef, pipelineStages } from "../pipeline/defs";
-import { eventLabel, eventTime, followUps, formatRunReport, stageTitle } from "../pipeline/runReport";
+import { eventLabel, eventTime, followUps, formatRunReport, reviewRound, stageTitle } from "../pipeline/runReport";
 import { githubPrUrls } from "../handoff/map";
 import { lanesFromReply } from "../pipeline/prPlan";
 import { errorText } from "./InlineNotice";
@@ -55,6 +55,8 @@ type Props = {
   onFanOut?: (runId: string) => Promise<void>;
   /** Start a waiting lane's Implementer. */
   onStartLane?: (runId: string, laneId: string) => Promise<void>;
+  /** Marks an active lane approved by hand, then starts the lanes that unblocks. */
+  onApproveLane?: (runId: string, laneId: string) => Promise<void>;
 };
 
 function overviewTitle(run: PipelineRun, kind: PipelineKind): string {
@@ -115,6 +117,7 @@ export function PipelineOverview({
   sessionLogs,
   onFanOut,
   onStartLane,
+  onApproveLane,
 }: Props) {
   const [run, setRun] = useState<PipelineRun | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -209,6 +212,20 @@ export function PipelineOverview({
       await reload();
     } catch (err: unknown) {
       onNotice("Lane did not start", errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const approveLaneNow = async (laneId: string) => {
+    if (!run || !onApproveLane) return;
+    setBusy(true);
+    try {
+      await onApproveLane(run.id, laneId);
+      await reload();
+    } catch (err: unknown) {
+      onNotice("Lane not marked approved", errorText(err));
+      await reload();
     } finally {
       setBusy(false);
     }
@@ -412,7 +429,7 @@ export function PipelineOverview({
             })}
             {stageDef?.loopBack && (
               <p className="hint pipeline-round-cap">
-                Round {round} of at most {maxRounds(stageDef)}
+                Round {reviewRound(run, null, stageDef)} of at most {maxRounds(stageDef)}
               </p>
             )}
             {gates && (
@@ -530,6 +547,17 @@ export function PipelineOverview({
                         onClick={() => void startLaneNow(lane.id)}
                       >
                         {blocked.length ? "Start anyway" : "Start"}
+                      </button>
+                    )}
+                    {lane.status === "active" && onApproveLane && (
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={busy}
+                        title="Approve this pull request yourself, for example when its reviewer approved it but listed findings."
+                        onClick={() => void approveLaneNow(lane.id)}
+                      >
+                        Mark approved
                       </button>
                     )}
                   </div>

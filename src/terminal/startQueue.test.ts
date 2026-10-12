@@ -36,4 +36,15 @@ describe("startQueue", () => {
     locked = false;
     await expect(done).resolves.toBe("tab");
   });
+
+  it("gives up when the lock is held past the deadline", async () => {
+    const enqueue = startQueue(() => true, 1, 20);
+    let ran = false;
+    await expect(
+      enqueue(async () => {
+        ran = true;
+      }),
+    ).rejects.toThrow("Another tab is still starting.");
+    expect(ran).toBe(false);
+  });
 });

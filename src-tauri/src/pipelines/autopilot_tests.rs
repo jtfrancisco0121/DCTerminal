@@ -130,25 +130,59 @@ fn the_round_cap_counts_each_loop_back_edge_on_its_own() {
 }
 
 #[test]
-fn an_approval_with_findings_at_the_threshold_stops_instead_of_advancing() {
+fn a_plain_approval_with_findings_at_the_threshold_stops_instead_of_advancing() {
     let mut r = run(1);
-    let mut rep = report("pr_reviewer", Some("APPROVED WITH CHANGES"));
+    let mut rep = report("pr_reviewer", Some("APPROVED"));
     rep.findings = vec![finding("HIGH", "token leaks to log"), finding("LOW", "typo")];
     rep.findings_known = true;
     let d = decide(&eagle1(), &mut r, &rep);
     assert_eq!((d.action.as_str(), d.stage_id.as_deref()), ("stop", Some("pr_reviewer")));
     assert!(d.reason.contains("1 finding(s)"), "{}", d.reason);
+    // The last stage has nothing to send it on to: say how to get past it.
+    assert!(d.reason.ends_with("Send it back, or mark it approved in the chain overview."), "{}", d.reason);
     assert!(r.autopilot.as_ref().unwrap().waiting.is_some());
     let logged = r.events.last().unwrap();
     assert_eq!(logged.kind, "stop");
     assert!(logged.detail.as_deref().unwrap_or("").contains("[HIGH] token leaks to log"));
     // Only LOW findings: a clean approval that completes, with follow-ups.
-    let mut low = report("pr_reviewer", Some("APPROVED WITH CHANGES"));
+    let mut low = report("pr_reviewer", Some("APPROVED"));
     low.findings = vec![finding("LOW", "typo")];
     low.findings_known = true;
     let d = decide(&eagle1(), &mut run(1), &low);
     assert_eq!(d.action, "complete");
     assert_eq!(d.follow_ups, vec!["[LOW] typo"]);
+}
+
+#[test]
+fn approved_with_changes_advances_and_logs_the_applied_findings() {
+    let mut r = run(1);
+    r.autopilot.as_mut().unwrap().passed_checkpoints.push("implementer".into());
+    let mut rep = report("plan_reviewer", Some("APPROVED WITH CHANGES"));
+    rep.findings = vec![finding("MEDIUM", "missing rollback step"), finding("LOW", "typo")];
+    rep.findings_known = true;
+    let d = decide(&eagle1(), &mut r, &rep);
+    assert_eq!((d.action.as_str(), d.stage_id.as_deref()), ("advance", Some("implementer")), "{}", d.reason);
+    // Applied findings are in the event detail, not the follow-ups.
+    assert_eq!(d.follow_ups, vec!["[LOW] typo"]);
+    let detail = r.events.last().unwrap().detail.clone().unwrap_or_default();
+    assert!(detail.contains("[MEDIUM] missing rollback step"), "{detail}");
+    assert!(detail.contains("[LOW] typo"), "{detail}");
+}
+
+#[test]
+fn a_specialist_send_back_counts_toward_its_stage_round() {
+    let mut def = eagle1();
+    let pr = def.stage_index("pr_reviewer").unwrap();
+    def.stages[pr].also_reviewers = vec!["role_security".into()];
+    // One send-back by the PR Reviewer, one (manual) by the specialist.
+    let mut r = run(3);
+    r.verdicts = sent_back(&["role_pr_reviewer", "role_security"]);
+    let mut rep = report("pr_reviewer", Some("REQUEST CHANGES"));
+    rep.findings = vec![finding("MEDIUM", "null token")];
+    rep.findings_known = true;
+    let d = decide(&def, &mut r, &rep);
+    assert_eq!(d.action, "stop");
+    assert!(d.reason.contains("3 of 3"), "{}", d.reason);
 }
 
 #[test]

@@ -4,7 +4,7 @@
  * Pure; `exportRunReport` in the overview saves it.
  */
 import type { GateResult, PipelineRun, RunEvent } from "../bridge";
-import { pipelineDef, pipelineStages, type StageDef } from "./defs";
+import { pipelineDef, pipelineStages, stageRoles, type StageDef } from "./defs";
 
 const EVENT_LABEL: Record<string, string> = {
   handoff: "Hand-off",
@@ -36,6 +36,17 @@ export function eventTime(at: string): string {
 export function stageTitle(run: PipelineRun, stageId: string | null | undefined): string {
   if (!stageId) return "";
   return pipelineStages(run.kind).find((stage) => stage.id === stageId)?.title ?? stageId;
+}
+
+/**
+ * The round a reviewer stage is on along its loop-back edge, as the round
+ * cap counts it (Rust `review_round`): the recorded send-backs of any of the
+ * stage's roles in the lane (or the run), plus one.
+ */
+export function reviewRound(run: PipelineRun, laneId: string | null | undefined, stage: StageDef): number {
+  const lane = laneId ? run.lanes?.find((l) => l.id === laneId) : undefined;
+  const roles = stageRoles(stage);
+  return ((lane ?? run).verdicts ?? []).filter((v) => roles.includes(v.roleId)).length + 1;
 }
 
 /** Follow-ups autopilot kept instead of another round (from its decisions). */

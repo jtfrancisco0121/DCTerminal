@@ -143,15 +143,23 @@ fn go(run: &mut PipelineRun, decision: Decision, detail: Option<String>) -> Deci
 }
 
 /// Next stage after `index`, or completion. Stops at a checkpoint not yet passed.
+/// `applied` are findings the reviewer already applied; they go in the
+/// event detail only, never in the follow-ups.
 fn advance(
     def: &PipelineDef,
     run: &mut PipelineRun,
     index: usize,
     why: &str,
     follow_ups: Vec<String>,
+    applied: Vec<String>,
     lane: Option<&str>,
 ) -> Decision {
-    let detail = (!follow_ups.is_empty()).then(|| follow_ups.join("\n"));
+    let lines: Vec<String> = applied
+        .iter()
+        .map(|f| format!("Applied: {f}"))
+        .chain(follow_ups.iter().cloned())
+        .collect();
+    let detail = (!lines.is_empty()).then(|| lines.join("\n"));
     let Some(next) = def.stages.get(index + 1) else {
         if let Some(lane_id) = lane.filter(|id| run.lane(id).is_some()) {
             // One pull request is done; the run is done when every one is.
@@ -277,7 +285,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
         if stage.loop_back.is_some() {
             return stop(run, Some(&stage), format!("No verdict could be read from {}'s reply.", stage.title));
         }
-        return advance(def, run, index, &format!("{} finished", stage.title), Vec::new(), lane);
+        return advance(def, run, index, &format!("{} finished", stage.title), Vec::new(), Vec::new(), lane);
     };
     let threshold = stage
         .loop_back
@@ -313,6 +321,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
                     threshold.label()
                 ),
                 follow_ups,
+                Vec::new(),
                 lane,
             );
         }
@@ -320,7 +329,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             return stop(run, Some(&stage), format!("{} asked for changes, but this stage has no loop-back.", stage.title));
         };
         // Rounds per loop-back edge: this reviewer's own rounds so far.
-        let edge_round = review_round(run, lane, &stage.role_id);
+        let edge_round = review_round(run, lane, &stage);
         if edge_round >= back.max_rounds {
             return stop(
                 run,
@@ -338,7 +347,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             "loopBack",
             format!(
                 "{verdict}: round {} goes back to {}.",
-                review_round(run, lane, &stage.role_id),
+                review_round(run, lane, &stage),
                 target.title
             ),
         )
@@ -346,16 +355,22 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
         decision.lane = lane.map(str::to_string);
         return go(run, decision, None);
     }
-    // An approval that still lists findings at or above the threshold is
-    // not a clean pass: stop and show them instead of moving on.
     let blocking: Vec<String> = severities
         .iter()
         .filter(|(sev, _)| sev.is_some_and(|s| s.at_least(threshold)))
         .map(|(sev, f)| format!("[{}] {}", sev.map(Severity::label).unwrap_or("?"), f.summary.trim()))
         .collect();
-    if report.findings_known && !blocking.is_empty() {
+    // A plain APPROVED that still lists findings at or above the threshold
+    // is not a clean pass: stop and show them. APPROVED WITH CHANGES means
+    // the reviewer applied them already, so it moves on.
+    if verdict == "APPROVED" && report.findings_known && !blocking.is_empty() {
+        let next_step = if index + 1 == def.stages.len() {
+            "Send it back, or mark it approved in the chain overview."
+        } else {
+            "Check them, then send it on or back yourself."
+        };
         let reason = format!(
-            "{} said {verdict} but lists {} finding(s) at {} or above. Check them, then send it on or back yourself.",
+            "{} said {verdict} but lists {} finding(s) at {} or above. {next_step}",
             stage.title,
             blocking.len(),
             threshold.label()
@@ -366,17 +381,20 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
         decision.lane = lane.map(str::to_string);
         return decision;
     }
-    advance(def, run, index, verdict, follow_ups, lane)
+    let applied = if report.findings_known { blocking } else { Vec::new() };
+    advance(def, run, index, verdict, follow_ups, applied, lane)
 }
 
-/// The round a reviewer is on along its loop-back edge: its own recorded
-/// send-backs (in its lane, or the run) plus one. Other edges do not count.
-fn review_round(run: &PipelineRun, lane: Option<&str>, role_id: &str) -> u32 {
+/// The round a reviewer stage is on along its loop-back edge: the recorded
+/// send-backs of any of its roles (in its lane, or the run) plus one. A
+/// specialist's manual send-back counts too. Other edges do not count.
+fn review_round(run: &PipelineRun, lane: Option<&str>, stage: &StageDef) -> u32 {
     let verdicts = match lane.and_then(|id| run.lane(id)) {
         Some(l) => &l.verdicts,
         None => &run.verdicts,
     };
-    verdicts.iter().filter(|v| v.role_id == role_id).count() as u32 + 1
+    let roles = stage.roles();
+    verdicts.iter().filter(|v| roles.contains(&v.role_id)).count() as u32 + 1
 }
 
 #[cfg(test)]

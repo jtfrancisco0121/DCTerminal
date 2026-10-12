@@ -219,6 +219,37 @@ describe("useAutopilot", () => {
     });
   });
 
+  it("a round sent back is numbered by the reviewer's own edge, as the round cap counts it", async () => {
+    // The plan went back once and the PR Reviewer sent it back once: run round 3, PR Reviewer round 2.
+    const base = run(true).run;
+    vi.mocked(getPipelineRun).mockResolvedValue({
+      run: {
+        ...base,
+        round: 3,
+        verdicts: [
+          { roleId: "role_plan_reviewer", round: 1, verdict: "REQUEST CHANGES", at: "then" },
+          { roleId: "role_pr_reviewer", round: 2, verdict: "REQUEST CHANGES", at: "then" },
+        ],
+      },
+    });
+    vi.mocked(pipelineDecide).mockResolvedValue({
+      action: "loopBack",
+      stageId: "implementer",
+      roleId: "role_implementer",
+      reason: "round 2 goes back",
+    });
+    live.set("impl", { exited: false });
+    const review =
+      "## HANDOFF: Verdict\nREQUEST CHANGES\n\n## HANDOFF: Findings for the Implementer\n1. Guard the null token.";
+    const { onLog } = setup(
+      [tab("impl", "role_implementer", 3), { ...tab("pr", "role_pr_reviewer", 4), chain: { chainId: "ee_1", kind: "eagle1", step: 4, total: 4, round: 3 } } as TabSummary],
+      { impl: { kind: "idle" } },
+    );
+    onLog("pr", log(review));
+    await waitFor(() => expect(chainLoopBack).toHaveBeenCalled());
+    expect(String(vi.mocked(ptyWrite).mock.calls[0][1])).toContain("Review findings from the PR Reviewer (round 2)");
+  });
+
   it("stops instead of pasting into a terminal that is waiting for you", async () => {
     vi.mocked(getPipelineRun).mockResolvedValue(run(true));
     vi.mocked(pipelineDecide).mockResolvedValue({

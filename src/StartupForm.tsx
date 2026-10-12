@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
   acpSetModel,
   getPipelineRun,
+  pipelineLaneStatus,
   type PipelineRun,
   type RunLane,
   closeTab,
@@ -2072,6 +2073,7 @@ export function StartupForm({
       if (startLockRef.current) {
         // Unreachable for quiet starts: startQueue waits for the lock.
         if (quiet) throw new Error("Another tab is starting. Try again when it has started.");
+        setTerminalError("Another tab is starting. Try again in a moment.");
         return null;
       }
       startLockRef.current = true;
@@ -2224,6 +2226,27 @@ export function StartupForm({
       const lane = run.lanes?.find((item) => item.id === laneId);
       if (!lane) throw new Error(`No lane ${laneId} on this run.`);
       if (!(await startLaneOf(run, lane))) throw new Error(`${lane.title} is not waiting to start.`);
+    },
+    [startLaneOf],
+  );
+  /** Overview › Mark approved: approve an active lane by hand, then start the lanes it unblocks. */
+  const approveLaneById = useCallback(
+    async (runId: string, laneId: string) => {
+      await pipelineLaneStatus(runId, laneId, "approved");
+      const { run } = await getPipelineRun(runId);
+      const lanes = run.lanes ?? [];
+      const approved = (id: string) => lanes.find((l) => l.id === id)?.status === "approved";
+      const ready = lanes.filter(
+        (lane) => lane.status === "waiting" && (lane.dependsOn ?? []).every(approved),
+      );
+      const failed: string[] = [];
+      for (const lane of ready) {
+        // startLaneOf claims the lane, so one autopilot may have started is skipped.
+        await startLaneOf(run, lane).catch((err: unknown) => {
+          failed.push(`${lane.title}: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }
+      if (failed.length) throw new Error(`Marked approved, but did not start ${failed.join("; ")}`);
     },
     [startLaneOf],
   );
@@ -5584,6 +5607,7 @@ export function StartupForm({
           onNotice={(title, body) => showNotice(title, body)}
           onFanOut={fanOutRunOf}
           onStartLane={startLaneById}
+          onApproveLane={approveLaneById}
         />
       </section>,
     );

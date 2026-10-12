@@ -34,7 +34,8 @@ import { terminalBracketedPaste, terminalTailText } from "../terminal/park";
 import { encodeTerminalPaste } from "../terminal/paste";
 import type { TerminalState } from "../terminal/claudeState";
 import type { ProviderId } from "../provider/types";
-import { pipelineDef, stageRoles } from "./defs";
+import { pipelineDef, stageOfRole, stageRoles } from "./defs";
+import { reviewRound } from "./runReport";
 import { roleDisplayName } from "../handoff/transitions";
 import {
   finishedTurn,
@@ -215,7 +216,6 @@ export function useAutopilot(deps: AutopilotDeps) {
           const live = (t: TabSummary) => !!livePty(t.id) && !livePty(t.id)?.exited;
           const target = chainTabFor(tabs, chain, next.step, live);
           const findings = loopBackText(reply) || reply.trim();
-          const round = Math.max(1, chain.round ?? 1);
           if (target && live(target)) {
             const state = d.terminalState(target.id);
             if (!liveIdleTerminal(target, state)) {
@@ -226,6 +226,13 @@ export function useAutopilot(deps: AutopilotDeps) {
               await stop(runId, tab.id, decision.stageId ?? null, why);
               return;
             }
+            // The reviewer's own round on this edge, as the round cap counts it.
+            const view = await getPipelineRun(runId);
+            const def = pipelineDef(view.run.kind) ?? pipelineDef(chain.kind);
+            const reviewer = def ? stageOfRole(def, tab.roleId) : null;
+            const round = reviewer
+              ? reviewRound(view.run, decision.lane, reviewer)
+              : Math.max(1, chain.round ?? 1);
             const text = loopBackMessage(tab.roleId, findings, round, d.roles());
             await pasteInto(target.id, text);
             await chainLoopBack(loopBackRecord(chain, tab.roleId, target.id, verdict, text));

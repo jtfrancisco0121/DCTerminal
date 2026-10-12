@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { PipelineRun } from "../bridge";
-import { followUps, formatRunReport } from "./runReport";
+import type { StageDef } from "./defs";
+import { followUps, formatRunReport, reviewRound } from "./runReport";
 
 function run(overrides: Partial<PipelineRun> = {}): PipelineRun {
   return {
@@ -76,5 +77,30 @@ describe("run report", () => {
 
   it("an empty ledger says so", () => {
     expect(formatRunReport(run({ events: [], gates: {} }))).toContain("Nothing recorded yet.");
+  });
+});
+
+describe("reviewRound", () => {
+  const prReviewer = {
+    id: "pr_reviewer",
+    title: "PR Reviewer",
+    roleId: "role_pr_reviewer",
+    alsoReviewers: ["role_security"],
+  } as StageDef;
+
+  it("counts send-backs of every role of the stage, in the lane or the run, plus one", () => {
+    const sent = (roleId: string) => ({ roleId, round: 1, verdict: "REQUEST CHANGES", at: "x" });
+    const view = run({
+      round: 4,
+      // A specialist's manual send-back counts; another stage's does not.
+      verdicts: [sent("role_pr_reviewer"), sent("role_security"), sent("role_plan_reviewer")],
+      lanes: [
+        { id: "pr1", title: "PR1", status: "active", stage: "pr_reviewer", round: 2, tabIds: {}, verdicts: [sent("role_security")] },
+      ],
+    });
+    expect(reviewRound(view, null, prReviewer)).toBe(3);
+    expect(reviewRound(view, "pr1", prReviewer)).toBe(2);
+    // An unknown lane falls back to the run, as in the engine.
+    expect(reviewRound(view, "gone", prReviewer)).toBe(3);
   });
 });
