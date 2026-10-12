@@ -409,7 +409,9 @@ export function handoffBlockReason(
   }
   const name = roleDisplayName(roleId, roles);
   if (source.fromTerminal) {
-    if (source.terminalWaiting) {
+    // A pending plan box (ExitPlanMode) leaves the plan final, as in chat:
+    // Planner terminals run in plan mode, so their finished plan always waits there.
+    if (source.terminalWaiting && !source.awaitingPlanApproval) {
       return `The ${name} terminal is ${source.terminalWaiting}. Answer it there, then send.`;
     }
     if (source.terminalWorking) return `Wait until the ${name} finishes this turn.`;

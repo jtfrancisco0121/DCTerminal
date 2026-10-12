@@ -3632,6 +3632,24 @@ export function StartupForm({
     [loadHandoffFields, openTerminalHandoff, savedTabs, roles],
   );
 
+  /** The hand-off source terminal's session log: live while the dialog is open. */
+  const captureLog = terminalCapture
+    ? (sessionLogs[terminalCapture.tabId] ?? terminalCapture.log)
+    : null;
+  const captureTabId = terminalCapture?.tabId ?? null;
+  const captureKind = captureTabId ? terminalStates[captureTabId]?.kind : undefined;
+  // The source's state changed (a turn ended, a prompt opened): re-read its
+  // screen so the tail and scrollback match the live log.
+  useEffect(() => {
+    if (!captureTabId || !captureKind) return;
+    const { tail, scrollback } = readTerminalHandoff(captureTabId);
+    setTerminalCapture((capture) =>
+      capture?.tabId === captureTabId && (capture.tail !== tail || capture.scrollback !== scrollback)
+        ? { ...capture, tail, scrollback }
+        : capture,
+    );
+  }, [captureKind, captureTabId]);
+
   const handoffSource = useMemo((): HandoffSource => {
     const captureTab = terminalCapture
       ? savedTabs.find((tab) => tab.id === terminalCapture.tabId)
@@ -3646,7 +3664,9 @@ export function StartupForm({
         cwd: captureTab.cwd || values.cwd || "",
         answers: terminalCapture.answers,
         sourceFields: role?.id === captureTab.roleId ? role.fields : undefined,
-        ...terminalLogFields(terminalCapture.log),
+        // The poller keeps the log fresh: a turn that ends while the dialog
+        // is open sends its new reply, not the one read when it opened.
+        ...terminalLogFields(captureLog),
         plan: [],
         todos: [],
         selection: terminalCapture.selection,
@@ -3654,6 +3674,7 @@ export function StartupForm({
         terminalWorking: captureState?.kind === "working",
         terminalWaiting:
           captureState?.kind === "needs" ? terminalWaitingText(captureState.needs) : null,
+        awaitingPlanApproval: captureState?.kind === "needs" && captureState.needs === "plan",
         fromTerminal: true,
         planFileText: file?.text ?? "",
         planFileName: file ? (file.truncated ? `${file.name}, first 8 MB` : file.name) : "",
@@ -3698,6 +3719,7 @@ export function StartupForm({
   }, [
     activeTabId,
     activeTabSummary,
+    captureLog,
     cardsByTab,
     chatPlanFile,
     handoffSelection,
@@ -3720,7 +3742,7 @@ export function StartupForm({
     isReviewerRole(handoffSource.sourceRoleId) && !handoffSource.turnInFlight
       ? handoffSource.fromTerminal
         ? terminalLogVerdict(
-            terminalCapture?.log,
+            captureLog,
             handoffSource.selection || (handoffSource.terminalTail ?? ""),
           )
         : parseReviewVerdict(handoffSource.latestMessage)
