@@ -48,6 +48,7 @@ export type TerminalTabViewProps = {
   notePadSelection: () => void;
   openPromptLibrary: (save: boolean) => void;
   focusActiveTerminal: () => void;
+  onPadError: (message: string) => void;
 };
 
 /** The active terminal tab: hand-off banner, toolbar, terminal and scratch pad. */
@@ -75,6 +76,7 @@ export function TerminalTabView({
   notePadSelection,
   openPromptLibrary,
   focusActiveTerminal,
+  onPadError,
 }: TerminalTabViewProps) {
   const linked = handoffs.find((item) => item.targetTabId === activeTabId) ?? null;
   const launch = terminalLaunchOf(activeTabSummary);
@@ -135,7 +137,9 @@ export function TerminalTabView({
             notePadSelection();
             scratch.flush();
           }}
+          // intentionally silent: the recent-sends record is best effort.
           onSent={(text) => void promptRecordSend(text, "terminal").catch(() => {})}
+          onError={onPadError}
           beforeSubmit={snapshotTerminalTurn}
           onOpenLibrary={() => openPromptLibrary(false)}
           write={ptyWrite}

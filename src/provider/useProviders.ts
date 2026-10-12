@@ -52,6 +52,7 @@ export function useProviders(enabled = true): ProvidersState {
       try {
         setAccountLogins(await claudeAccountLogins());
       } catch {
+        // intentionally silent: the sign-in lines show "unknown" without it.
         setAccountLogins([]);
       }
     } catch (err: unknown) {
@@ -80,6 +81,7 @@ export function useProviders(enabled = true): ProvidersState {
         try {
           setAccountLogins(await claudeAccountLogins());
         } catch {
+          // intentionally silent: the sign-in lines show "unknown" without it.
           setAccountLogins([]);
         }
       } catch (err: unknown) {

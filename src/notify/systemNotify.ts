@@ -40,6 +40,7 @@ export async function showSystemNotification(
     sendNotification({ title, body });
     return true;
   } catch {
+    // intentionally silent: false tells the caller to fall back to an in-app toast.
     return false;
   }
 }

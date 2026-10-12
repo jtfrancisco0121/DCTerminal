@@ -5106,3 +5106,9 @@ button.chain-label {
 .tab-chain-badge-busy {
   color: var(--accent-bright);
 }
+
+/* R12: a disabled-reason note inside a button row sits next to its button. */
+.disabled-reason-inline {
+  margin-right: 0;
+  align-self: center;
+}

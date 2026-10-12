@@ -65,6 +65,7 @@ export function parseAvailableCommands(evt: SessionUpdateEvent): SlashCommand[] 
     const raw = JSON.parse(evt.rawJson) as Record<string, unknown>;
     update = (raw?.update as Record<string, unknown>) ?? raw;
   } catch {
+    // intentionally silent: a malformed command list just shows no extra commands.
     return [];
   }
   const list = update?.availableCommands;

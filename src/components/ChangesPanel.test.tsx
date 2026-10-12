@@ -142,6 +142,15 @@ describe("ChangesPanel", () => {
     confirm.mockRestore();
   });
 
+  it("says why Revert all is off when there is nothing to revert", async () => {
+    vi.mocked(changesList).mockResolvedValue({ ...okSet(), files: [] });
+    render(<Harness />);
+    await waitFor(() =>
+      expect((screen.getByRole("button", { name: "Revert all…" }) as HTMLButtonElement).disabled).toBe(true),
+    );
+    expect(screen.getByRole("note").textContent).toBe("Nothing to revert.");
+  });
+
   it("opens a file in the file panel by its folder-relative path", async () => {
     const onOpen = vi.fn();
     render(<Harness onOpen={onOpen} />);
