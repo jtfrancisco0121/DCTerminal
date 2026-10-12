@@ -199,7 +199,7 @@ import {
   saveAccepted,
   type AcceptedChanges,
 } from "./changes/acceptedStore";
-import { FilePanel } from "./components/FilePanel";
+import { FilePanel, type FileDiscardGuard } from "./components/FilePanel";
 import { ModelPicker } from "./components/ModelPicker";
 import { AgentToasts } from "./components/AgentToasts";
 import { WorktreeDialog, type WorktreeCreateInput } from "./components/WorktreeDialog";
@@ -607,6 +607,18 @@ export function StartupForm({
   focusedPaneRef.current = focusedPane;
   const [filePanelOpen, setFilePanelOpen] = useState(false);
   const [filePanelWidth, setFilePanelWidth] = useState(280);
+  // Set while the file panel is mounted; asks there before unsaved edits go.
+  const fileDiscardGuardRef = useRef<FileDiscardGuard | null>(null);
+  const guardFileEdits = useCallback((run: () => void) => {
+    const guard = fileDiscardGuardRef.current;
+    if (!guard?.dirty()) {
+      run();
+      return;
+    }
+    void guard.confirm().then((ok) => {
+      if (ok) run();
+    });
+  }, []);
   const layoutLoadedRef = useRef(false);
   const previousActiveRef = useRef<string | null>(null);
   const secondaryInputRef = useRef<HTMLTextAreaElement>(null);
@@ -2220,6 +2232,10 @@ export function StartupForm({
   const handleSelectTab = useCallback(
     async (tabId: string) => {
       if (tabId === activeTabIdRef.current) return;
+      const fileGuard = fileDiscardGuardRef.current;
+      if (fileGuard?.dirty() && !(await fileGuard.confirm())) return;
+      // The answer can come after another switch.
+      if (tabId === activeTabIdRef.current) return;
       stashActiveTab();
       const summary = savedTabs.find((tab) => tab.id === tabId);
       if (summary?.kind === "terminal" || summary?.kind === "pipeline_overview") {
@@ -2255,6 +2271,8 @@ export function StartupForm({
   /** Show (or open) an Eagle-Eye chain's overview tab. Starts nothing. */
   const openChainOverviewTab = useCallback(
     async (chainId: string) => {
+      const fileGuard = fileDiscardGuardRef.current;
+      if (fileGuard?.dirty() && !(await fileGuard.confirm())) return;
       try {
         stashActiveTab();
         const { tabId, state } = await openChainOverview(chainId);
@@ -2269,7 +2287,11 @@ export function StartupForm({
   );
 
   const handleCloseTab = useCallback(
-    async (tabId: string) => {
+    async (tabId: string): Promise<boolean> => {
+      const fileGuard = fileDiscardGuardRef.current;
+      if (tabId === activeTabIdRef.current && fileGuard?.dirty() && !(await fileGuard.confirm())) {
+        return false;
+      }
       setBusy(true);
       try {
         const rt = runtimes[tabId];
@@ -2314,6 +2336,7 @@ export function StartupForm({
         // Released once the tab's view has unmounted; released earlier, the
         // still-mounted view would create a fresh terminal and park it.
         window.setTimeout(() => destroyTerminal(tabId), 0);
+        return true;
       } finally {
         setBusy(false);
       }
@@ -2365,7 +2388,7 @@ export function StartupForm({
             "The branch and its commits are kept.",
         );
         if (!ok) return;
-        await handleCloseTab(tabId);
+        if (!(await handleCloseTab(tabId))) return;
         await worktreeTabRemove(tabId, true);
         showNotice("Worktree removed", `${branch} · ${check.worktree.path}`);
       } catch (err: unknown) {
@@ -2380,6 +2403,8 @@ export function StartupForm({
   );
 
   const handleNewTab = useCallback(async () => {
+    const fileGuard = fileDiscardGuardRef.current;
+    if (fileGuard?.dirty() && !(await fileGuard.confirm())) return;
     setBusy(true);
     try {
       stashActiveTab();
@@ -2764,6 +2789,8 @@ export function StartupForm({
   );
 
   const reopenTab = useCallback(async () => {
+    const fileGuard = fileDiscardGuardRef.current;
+    if (fileGuard?.dirty() && !(await fileGuard.confirm())) return;
     setBusy(true);
     try {
       stashActiveTab();
@@ -3058,7 +3085,7 @@ export function StartupForm({
         setPaletteOpen(false);
         setSwitcherOpen(false);
         setShortcutsOpen(false);
-        setSettingsOpen((open) => toggleSettings(open));
+        guardFileEdits(() => setSettingsOpen((open) => toggleSettings(open)));
         return;
       }
       if (match.action === "commandPalette") {
@@ -3182,7 +3209,7 @@ export function StartupForm({
         return;
       }
       if (match.action === "toggleFilePanel") {
-        setFilePanelOpen((open) => !open);
+        guardFileEdits(() => setFilePanelOpen((open) => !open));
         return;
       }
       if (match.action === "find") {
@@ -3217,6 +3244,7 @@ export function StartupForm({
       transferPad,
       padHiddenNow,
       updateUi,
+      guardFileEdits,
     ],
   );
 
@@ -4233,7 +4261,7 @@ export function StartupForm({
         void transferToTerminalNow();
         return;
       case "settings":
-        setSettingsOpen(true);
+        guardFileEdits(() => setSettingsOpen(true));
         return;
       case "toggleCapture":
         void diagnosticsSetCapture(!captureOn).then((status) => {
@@ -4501,7 +4529,7 @@ export function StartupForm({
       onToggleGrid={toggleGrid}
       gridOpen={gridOpen(split)}
       onReopen={() => void reopenTab()}
-      onSettings={() => setSettingsOpen((open) => toggleSettings(open))}
+      onSettings={() => guardFileEdits(() => setSettingsOpen((open) => toggleSettings(open)))}
       onColor={(tabId, color) => {
         void setTabColor(tabId, color).then(() => refreshTabs());
       }}
@@ -4595,6 +4623,8 @@ export function StartupForm({
 
   /** F7: open a saved workspace as new tabs; `replace` closes the open ones. */
   const openWorkspace = async (id: string, replace: boolean) => {
+    const fileGuard = fileDiscardGuardRef.current;
+    if (fileGuard?.dirty() && !(await fileGuard.confirm())) return;
     const old = savedTabs;
     if (replace) {
       const live = old.filter(
@@ -5360,6 +5390,7 @@ export function StartupForm({
               scratch.setContent(activeTabId, appendReference(scratch.content, path));
             }}
             onClose={() => setFilePanelOpen(false)}
+            discardGuardRef={fileDiscardGuardRef}
           />
         ) : (
           <div className="file-panel">

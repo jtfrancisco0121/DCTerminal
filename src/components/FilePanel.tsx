@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MutableRefObject,
+} from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import {
   filesList,
@@ -14,6 +21,14 @@ import type { Platform } from "../keymap";
 import { ConfirmBar } from "./ConfirmBar";
 import { PanelHeader } from "./PanelHeader";
 
+/** What the parent asks before it closes or swaps the panel away. */
+export type FileDiscardGuard = {
+  /** True while the open file has edits that are not saved. */
+  dirty: () => boolean;
+  /** Ask in the panel; resolves true once the user agrees to drop the edits. */
+  confirm: () => Promise<boolean>;
+};
+
 type Props = {
   tabId: string;
   /** The tab's working folder. Empty when the tab has none yet. */
@@ -23,6 +38,8 @@ type Props = {
   focusFile?: { path: string; nonce: number } | null;
   onInsertReference: (path: string) => void;
   onClose: () => void;
+  /** Filled while mounted so the parent can guard closing, tab switch and Settings. */
+  discardGuardRef?: MutableRefObject<FileDiscardGuard | null>;
 };
 
 type DirState = {
@@ -33,12 +50,28 @@ type DirState = {
 };
 
 const CONFLICT = "CONFLICT:";
+const DISCARD_MESSAGE = "Discard your unsaved edits to this file?";
+
+type PendingDiscard = {
+  message: string;
+  cancelLabel: string;
+  onConfirm: () => void;
+  onCancel?: () => void;
+};
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export function FilePanel({ tabId, cwd, platform, focusFile, onInsertReference, onClose }: Props) {
+export function FilePanel({
+  tabId,
+  cwd,
+  platform,
+  focusFile,
+  onInsertReference,
+  onClose,
+  discardGuardRef,
+}: Props) {
   const [dirs, setDirs] = useState<Record<string, DirState>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set([""]));
   const [root, setRoot] = useState("");
@@ -85,30 +118,75 @@ export function FilePanel({ tabId, cwd, platform, focusFile, onInsertReference, 
     [tabId],
   );
 
-  useEffect(() => {
-    setDirs({});
-    setExpanded(new Set([""]));
-    setSelected(null);
-    setFile(null);
-    setEditing(false);
-    setConflict(false);
-    setNotice(null);
-    if (cwd) void loadDir("");
-  }, [cwd, loadDir, tabId]);
+  // Ask in the panel before unsaved edits are dropped. A newer question
+  // replaces an open one, which counts as "keep editing".
+  const [pendingDiscard, setPendingDiscard] = useState<PendingDiscard | null>(null);
+  const pendingRef = useRef<PendingDiscard | null>(null);
+  const askDiscard = useCallback((next: PendingDiscard | null) => {
+    const previous = pendingRef.current;
+    pendingRef.current = next;
+    setPendingDiscard(next);
+    previous?.onCancel?.();
+  }, []);
+  useEffect(() => () => pendingRef.current?.onCancel?.(), []);
 
   // Run `action` now, or after the user agrees to drop unsaved edits.
-  const [pendingDiscard, setPendingDiscard] = useState<{
-    message: string;
-    confirmLabel: string;
-    run: () => void;
-  } | null>(null);
-  const guardDiscard = (run: () => void, message = "Discard your unsaved edits to this file?") => {
+  const guardDiscard = (run: () => void, message = DISCARD_MESSAGE) => {
     if (!dirtyRef.current) {
       run();
       return;
     }
-    setPendingDiscard({ message, confirmLabel: "Discard edits", run });
+    askDiscard({ message, cancelLabel: "Keep editing", onConfirm: run });
   };
+
+  useEffect(() => {
+    if (!discardGuardRef) return;
+    discardGuardRef.current = {
+      dirty: () => dirtyRef.current,
+      confirm: () =>
+        new Promise<boolean>((resolve) => {
+          if (!dirtyRef.current) {
+            resolve(true);
+            return;
+          }
+          askDiscard({
+            message: DISCARD_MESSAGE,
+            cancelLabel: "Keep editing",
+            onConfirm: () => resolve(true),
+            onCancel: () => resolve(false),
+          });
+        }),
+    };
+    return () => {
+      discardGuardRef.current = null;
+    };
+  }, [discardGuardRef, askDiscard]);
+
+  // A new working folder resets the panel. With unsaved edits it waits for
+  // the user, who can keep the text to copy it out first.
+  const shownCwdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const reset = () => {
+      shownCwdRef.current = cwd;
+      setDirs({});
+      setExpanded(new Set([""]));
+      setSelected(null);
+      setFile(null);
+      setEditing(false);
+      setConflict(false);
+      setNotice(null);
+      if (cwd) void loadDir("");
+    };
+    if (shownCwdRef.current !== null && shownCwdRef.current !== cwd && dirtyRef.current) {
+      askDiscard({
+        message: "The working folder changed. Discard your unsaved edits to this file?",
+        cancelLabel: "Keep my edits",
+        onConfirm: reset,
+      });
+      return;
+    }
+    reset();
+  }, [cwd, loadDir, tabId, askDiscard]);
 
   const openFile = (path: string) => guardDiscard(() => void doOpenFile(path));
 
@@ -399,7 +477,7 @@ export function FilePanel({ tabId, cwd, platform, focusFile, onInsertReference, 
         subtitle={(root || cwd).split(/[\\/]/).filter(Boolean).pop() ?? ""}
         subtitleTitle={root || cwd}
         closeLabel="Close file panel"
-        onClose={onClose}
+        onClose={() => guardDiscard(onClose)}
         actions={
           <button
             type="button"
@@ -420,13 +498,14 @@ export function FilePanel({ tabId, cwd, platform, focusFile, onInsertReference, 
       {pendingDiscard && (
         <ConfirmBar
           message={pendingDiscard.message}
-          confirmLabel={pendingDiscard.confirmLabel}
-          cancelLabel="Keep editing"
-          onCancel={() => setPendingDiscard(null)}
+          confirmLabel="Discard edits"
+          cancelLabel={pendingDiscard.cancelLabel}
+          onCancel={() => askDiscard(null)}
           onConfirm={() => {
-            const { run } = pendingDiscard;
+            const { onConfirm } = pendingDiscard;
+            pendingRef.current = null;
             setPendingDiscard(null);
-            run();
+            onConfirm();
           }}
         />
       )}

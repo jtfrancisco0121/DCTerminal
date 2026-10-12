@@ -1256,6 +1256,57 @@ describe("changes (diff) panel", () => {
     expect(changesRevert).not.toHaveBeenCalled();
   });
 
+  it("asks in the file panel before ⌘B or a tab switch drops unsaved edits", async () => {
+    const second = { ...terminalTab, id: "tab_b", label: "Second" };
+    vi.mocked(getAppState).mockResolvedValue({
+      activeTabId: "tab_a",
+      tabs: [terminalTab, second],
+      closedTabs: [],
+    });
+    vi.mocked(selectActiveTab).mockResolvedValue({ tab: second } as never);
+    render(
+      <StartupForm
+        roles={[{ id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 }]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+    await screen.findByRole("tab", { name: /Second/ });
+    const toggle = () =>
+      fireEvent.keyDown(window, { key: "b", code: "KeyB", ctrlKey: true, metaKey: true });
+    toggle();
+    const panel = await screen.findByRole("complementary", { name: "Files" });
+    fireEvent.click(await within(panel).findByText("src"));
+    fireEvent.click(await within(panel).findByText("app.ts"));
+    fireEvent.click(await within(panel).findByRole("button", { name: "Edit" }));
+    fireEvent.change(within(panel).getByLabelText("Edit src/app.ts"), {
+      target: { value: "draft\n" },
+    });
+    vi.mocked(selectActiveTab).mockClear();
+
+    fireEvent.click(screen.getByRole("tab", { name: /Second/ }));
+    await within(panel).findByRole("alertdialog");
+    expect(selectActiveTab).not.toHaveBeenCalled();
+    fireEvent.click(within(panel).getByRole("button", { name: "Keep editing" }));
+    await waitFor(() => expect(within(panel).queryByRole("alertdialog")).toBeNull());
+    expect(selectActiveTab).not.toHaveBeenCalled();
+
+    toggle();
+    await within(panel).findByRole("alertdialog");
+    fireEvent.click(within(panel).getByRole("button", { name: "Keep editing" }));
+    await waitFor(() => expect(within(panel).queryByRole("alertdialog")).toBeNull());
+    expect(screen.getByRole("complementary", { name: "Files" })).toBe(panel);
+    expect((within(panel).getByLabelText("Edit src/app.ts") as HTMLTextAreaElement).value).toBe(
+      "draft\n",
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: /Second/ }));
+    fireEvent.click(await within(panel).findByRole("button", { name: "Discard edits" }));
+    await waitFor(() => expect(selectActiveTab).toHaveBeenCalledWith("tab_b"));
+  });
+
   it("opens the activity log next to Changes", async () => {
     render(
       <StartupForm

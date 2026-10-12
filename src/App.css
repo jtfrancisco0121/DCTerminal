@@ -2182,23 +2182,6 @@ kbd {
   font-size: var(--text-sm);
 }
 
-.file-panel-bar {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-  padding: 0.3rem 0.4rem;
-  border-bottom: 1px solid var(--border);
-}
-
-.file-panel-root {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  margin: 0;
-}
-
 .file-panel-body {
   flex: 1;
   min-height: 0;
@@ -2749,21 +2732,6 @@ kbd {
   flex-direction: column;
   gap: 0.5rem;
   overflow: hidden;
-}
-
-.changes-bar {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.changes-bar h3 {
-  margin: 0;
-}
-
-.changes-bar-spacer {
-  flex: 1;
 }
 
 .segmented {
