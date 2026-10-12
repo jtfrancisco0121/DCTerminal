@@ -1417,6 +1417,7 @@ CI never calls the real Cursor service. Live tests are opt-in (`DCT_LIVE=1`).
 - **ADR-011: Role inputs come from a confirmed schema, not ad-hoc parsing at every start.** *Accepted.* Bracket placeholders are auto-detected once per template version, confirmed by JT, and optionally converted to canonical `{{key}}` tokens. The schema is bound to the template hash. Rationale: brackets are ambiguous in Markdown, and silent misparsing would inject wrong prompts.
 - **ADR-012: Custom minimal template engine in Rust (no Handlebars/Jinja).** *Accepted.* Substitution plus emptyBehavior plus showWhen only, no logic or escaping. It is deterministic and testable. The core does validation and merge (single source of truth), and the UI previews through the same code.
 - **ADR-013: No session starts with unresolved placeholders.** *Accepted.* A hard guard in the core.
+- **ADR-014: Pipeline engine with opt-in autopilot, terminal-first.** *Accepted 2026-10-13.* See [adr/014-pipeline-engine-opt-in-autopilot.md](adr/014-pipeline-engine-opt-in-autopilot.md).
 
 ---
 

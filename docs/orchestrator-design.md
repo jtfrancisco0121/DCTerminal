@@ -16,7 +16,7 @@ Two pipeline **kinds** share the same `PipelineRun` machinery but differ in stag
 1. **Planner** — produces `candidatePlan` (and task context).
 2. **Plan Reviewer** — reads request + `candidatePlan`; verdict drives next step.
 3. **Promote** — operator **Approve for implementation** copies/edits into `approvedPlan` (only after `APPROVED` / `APPROVED WITH CHANGES` + “update then proceed”, or equivalent UX).
-4. **Implementer** — operator **Start** after approval. Nothing auto-starts (locked decision: hand-offs are always user-triggered).
+4. **Implementer** — operator **Start** after approval. Nothing auto-starts (manual by default; opt-in autopilot per run is [ADR-014](adr/014-pipeline-engine-opt-in-autopilot.md)).
 5. **PR Reviewer** — hand-off after implementer turn completes (prefill + manual Start in v1 unless we add auto-open).
 
 Verdict mapping (Plan Reviewer output):
