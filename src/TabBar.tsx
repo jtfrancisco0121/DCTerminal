@@ -271,7 +271,7 @@ export function TabBar({
       {canReopen && onReopen && (
         <button
           type="button"
-          className="secondary-button tab-bar-icon"
+          className="secondary-button icon-button tab-bar-icon"
           onClick={onReopen}
           disabled={disableNew}
           aria-label="Reopen closed tab"
@@ -282,7 +282,7 @@ export function TabBar({
       )}
       <button
         type="button"
-        className="secondary-button tab-new tab-bar-icon"
+        className="secondary-button icon-button tab-new tab-bar-icon"
         onClick={onNew}
         disabled={disableNew}
         aria-label="New tab"
@@ -293,7 +293,7 @@ export function TabBar({
       {onNewWindow && (
         <button
           type="button"
-          className="secondary-button tab-new tab-bar-icon"
+          className="secondary-button icon-button tab-new tab-bar-icon"
           onClick={onNewWindow}
           disabled={disableNew}
           aria-label="New window"
@@ -326,7 +326,7 @@ export function TabBar({
       {onNewWorktree && (
         <button
           type="button"
-          className="secondary-button tab-new tab-bar-icon"
+          className="secondary-button icon-button tab-new tab-bar-icon"
           onClick={onNewWorktree}
           disabled={disableNew}
           aria-label="New tab in worktree…"
