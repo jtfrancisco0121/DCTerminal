@@ -11,16 +11,23 @@
 export type DialogDetector = {
   /** Feed raw PTY bytes. */
   feed(id: string, bytes: Uint8Array, now?: number): void;
-  /** The user typed into this terminal. */
-  input(id: string, now?: number): void;
+  /**
+   * The user typed into this terminal. `kind` (default "key"): an `answer`
+   * key (Enter, Esc, a digit) or a `press` (mouse click) may answer the
+   * dialog. A click starts no hide timer: only a log read or a new draw
+   * settles it.
+   */
+  input(id: string, now?: number, kind?: "answer" | "key" | "press"): void;
   isVisible(id: string, now?: number): boolean;
   /**
    * The visible dialog's text: the question and the lines above it (tool,
    * command, file). Tells one prompt from the next. "" when none is shown.
    */
   prompt(id: string): string;
-  /** The user typed since the dialog was last drawn (it may be answered). */
+  /** The user typed or clicked since the dialog was last drawn (it may be answered). */
   answering(id: string): boolean;
+  /** The last full draw came after an answer key or click: maybe the next call's dialog. */
+  drawnAfterAnswer(id: string): boolean;
   /**
    * Explicitly hide (e.g. the log's open tool was answered). `keepPartial`
    * keeps a question whose options have not arrived yet, so the next
@@ -143,6 +150,26 @@ export function matchPermissionDialog(text: string): boolean {
   return findPermissionDialog(text) !== null;
 }
 
+/**
+ * The newest question and the lines above it (tool, command, file), up to
+ * an earlier dialog's question or "No" option. "" without a question.
+ */
+function partialDialog(window: string): string {
+  const at = window.lastIndexOf("Do you want to");
+  if (at < 0) return "";
+  const above = window.slice(0, at).split("\n");
+  // The question's own line starts mid-way in the last element.
+  const kept: string[] = [above.pop() ?? ""];
+  let lines = 0;
+  while (above.length > 0 && lines < PROMPT_LINES) {
+    const line = above.pop() ?? "";
+    if (QUESTION_RE.test(line) || NO_RE.test(line)) break;
+    kept.unshift(line);
+    if (line.trim()) lines += 1;
+  }
+  return kept.join("\n") + window.slice(at);
+}
+
 /** Just the option list ("1. Yes" ... "N. No"), e.g. a redraw after an arrow key. */
 function matchOptionList(text: string): boolean {
   if (!/Yes/.test(text)) return false;
@@ -175,6 +202,12 @@ type TermState = {
   visible: boolean;
   /** Text of the dialog last drawn in full. */
   prompt: string;
+  /** A click since the last full draw (no hide timer for those). */
+  pressed: boolean;
+  /** An answer key or click since the last full draw. */
+  answered: boolean;
+  /** The last full draw followed an answer key or click. */
+  drawAfterAnswer: boolean;
   /** When the hide debounce expires (set by input while visible). */
   hideAt: number | null;
   timer: unknown;
@@ -211,6 +244,9 @@ export function createDialogDetector(opts: DetectorOptions = {}): DialogDetector
         window: "",
         visible: false,
         prompt: "",
+        pressed: false,
+        answered: false,
+        drawAfterAnswer: false,
         hideAt: null,
         timer: undefined,
         hasTimer: false,
@@ -231,6 +267,9 @@ export function createDialogDetector(opts: DetectorOptions = {}): DialogDetector
     cancelHide(s);
     s.window = "";
     s.prompt = "";
+    s.pressed = false;
+    s.answered = false;
+    s.drawAfterAnswer = false;
     if (s.visible) {
       s.visible = false;
       notify(id);
@@ -250,9 +289,14 @@ export function createDialogDetector(opts: DetectorOptions = {}): DialogDetector
       const found = findPermissionDialog(s.window);
       const full = found !== null;
       if (!full && !(s.visible && matchOptionList(s.window))) return;
-      if (found !== null) s.prompt = found;
-      // A whole question drawn after an answer may be the next tool's dialog.
-      const redrawn = full && s.visible && s.hideAt !== null;
+      // A whole question drawn after input may be the next tool's dialog.
+      const redrawn = full && s.visible && (s.hideAt !== null || s.pressed);
+      if (found !== null) {
+        s.prompt = found;
+        if (redrawn || !s.visible) s.drawAfterAnswer = s.answered;
+        s.answered = false;
+        s.pressed = false;
+      }
       // A fresh draw after the last input: the dialog is still up.
       cancelHide(s);
       if (!s.visible) {
@@ -263,13 +307,18 @@ export function createDialogDetector(opts: DetectorOptions = {}): DialogDetector
       }
     },
 
-    input(id, now) {
+    input(id, now, kind = "key") {
       if (ignored(id)) return;
       const s = states.get(id);
       if (!s) return;
       // Stale dialog text from before the answer must not re-match.
       s.window = "";
       if (!s.visible) return;
+      if (kind !== "key") s.answered = true;
+      if (kind === "press") {
+        s.pressed = true;
+        return;
+      }
       cancelHide(s);
       s.hideAt = (now ?? Date.now()) + debounceMs;
       s.hasTimer = true;
@@ -281,6 +330,8 @@ export function createDialogDetector(opts: DetectorOptions = {}): DialogDetector
         if (s.visible) {
           s.visible = false;
           s.prompt = "";
+          s.pressed = false;
+          s.answered = false;
           notify(id);
         }
       }, debounceMs);
@@ -300,14 +351,18 @@ export function createDialogDetector(opts: DetectorOptions = {}): DialogDetector
 
     answering(id) {
       const s = states.get(id);
-      return !!s?.visible && s.hideAt !== null;
+      return !!s?.visible && (s.hideAt !== null || s.pressed);
+    },
+
+    drawnAfterAnswer(id) {
+      const s = states.get(id);
+      return !!s?.visible && s.drawAfterAnswer;
     },
 
     clear(id, opts) {
       const s = states.get(id);
       if (!s) return;
-      const at = opts?.keepPartial ? s.window.lastIndexOf("Do you want to") : -1;
-      const partial = at >= 0 ? s.window.slice(at) : "";
+      const partial = opts?.keepPartial ? partialDialog(s.window) : "";
       hide(id, s);
       // A whole dialog left here is the answered one: never keep that.
       if (partial && !matchPermissionDialog(partial)) s.window = partial;

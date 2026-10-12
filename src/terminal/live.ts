@@ -7,7 +7,7 @@
 import type { Channel } from "@tauri-apps/api/core";
 import { createPtyChannel, type PtyPacket } from "../bridge";
 import { createPtyBuffer, decodeBase64, type PtyBuffer } from "./buffer";
-import { isUserInput, terminalActivity } from "./activity";
+import { isUserInput, ptyInputKind, terminalActivity } from "./activity";
 import { dialogDetector } from "./permissionDialog";
 
 export type LivePty = {
@@ -48,7 +48,9 @@ export function subscribePtyExit(listener: (id: string, code: number) => void): 
 export function notePtyInput(id: string, data?: string): void {
   if (data !== undefined && !isUserInput(data)) return;
   terminalActivity.input(id);
-  dialogDetector.input(id);
+  // Without data it is a pad send or hand-off paste, which ends with Enter.
+  const kind = data === undefined ? "answer" : ptyInputKind(data);
+  if (kind !== "pointer") dialogDetector.input(id, undefined, kind);
 }
 
 /** The exit code once the process exited (-1 after a signal), else null. */

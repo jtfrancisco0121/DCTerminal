@@ -1330,7 +1330,14 @@ export function StartupForm({
       // A new draw belongs to whatever tool the next read finds open.
       setDialogOwner(
         id,
-        visible ? dialogDrawn(dialogOwners.current.get(id), Date.now(), dialogDetector.prompt(id)) : undefined,
+        visible
+          ? dialogDrawn(
+              dialogOwners.current.get(id),
+              Date.now(),
+              dialogDetector.prompt(id),
+              dialogDetector.drawnAfterAnswer(id),
+            )
+          : undefined,
       );
       // Read the log now: the open tool decides what the dialog is for.
       const entry = sessionLogWatch.current.get(id);

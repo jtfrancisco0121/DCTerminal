@@ -250,6 +250,37 @@ describe("dialog detector", () => {
     expect(calls).toEqual(["a", "a", "a"]);
   });
 
+  it("clear with keepPartial keeps the lines above the question, for the hint", () => {
+    const { d } = setup();
+    d.feed("a", bytes(PROCEED));
+    d.input("a", 1000, "answer");
+    d.feed("a", bytes("⏺ Bash(touch x)\r\n  ⎿ done\r\nBash command\r\n  rm y\r\nDo you want to proceed?\r\n"));
+    d.clear("a", { keepPartial: true });
+    d.feed("a", bytes(options("Yes")));
+    expect(d.prompt("a")).toContain("rm y\nDo you want to proceed?");
+  });
+
+  it("mouse clicks may answer without a hide timer; the next full draw follows an answer", () => {
+    const { d, timers, calls } = setup();
+    d.feed("a", bytes(PROCEED));
+    d.input("a", 1000, "press");
+    expect(timers.count).toBe(0);
+    expect(d.answering("a")).toBe(true);
+    expect(d.isVisible("a", 99_999)).toBe(true);
+    d.feed("a", bytes(`Bash command\r\n  rm y\r\nDo you want to proceed?\r\n${options("Yes")}`));
+    expect(calls).toEqual(["a", "a"]);
+    expect(d.drawnAfterAnswer("a")).toBe(true);
+    expect(d.answering("a")).toBe(false);
+  });
+
+  it("an arrow key then a full redraw is not after an answer", () => {
+    const { d } = setup();
+    d.feed("a", bytes(PROCEED));
+    d.input("a", 1000, "key");
+    d.feed("a", bytes(PROCEED));
+    expect(d.drawnAfterAnswer("a")).toBe(false);
+  });
+
   it("clear with keepPartial never keeps a whole (answered) dialog", () => {
     const { d } = setup();
     d.feed("a", bytes(PROCEED));

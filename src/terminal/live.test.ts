@@ -9,7 +9,7 @@ vi.mock("../bridge", () => ({
   },
 }));
 
-const { beginLivePty, dropLivePty, ptyExitCode, subscribePtyExit } = await import("./live");
+const { beginLivePty, dropLivePty, notePtyInput, ptyExitCode, subscribePtyExit } = await import("./live");
 const { dialogDetector } = await import("./permissionDialog");
 
 const last = () => handlers[handlers.length - 1];
@@ -56,5 +56,22 @@ describe("live PTY exit", () => {
     expect(dialogDetector.isVisible("t1")).toBe(true);
     exit(0);
     expect(dialogDetector.isVisible("t1")).toBe(false);
+  });
+});
+
+describe("notePtyInput and the permission dialog", () => {
+  it("mouse moves over a dialog never answer it; Enter may", async () => {
+    // @ts-expect-error type error without @types/node package
+    const { readFileSync } = await import("node:fs");
+    const capture = new Uint8Array(readFileSync(new URL("./fixtures/claude-2.1.287-proceed.bin", import.meta.url)));
+    dialogDetector.feed("mouse", capture);
+    expect(dialogDetector.isVisible("mouse")).toBe(true);
+    notePtyInput("mouse", "\x1b[<35;40;12M");
+    notePtyInput("mouse", "\x1b[<64;40;12M");
+    expect(dialogDetector.answering("mouse")).toBe(false);
+    expect(dialogDetector.isVisible("mouse", Date.now() + 60_000)).toBe(true);
+    notePtyInput("mouse", "\r");
+    expect(dialogDetector.answering("mouse")).toBe(true);
+    dialogDetector.forget("mouse");
   });
 });

@@ -113,7 +113,8 @@ describe("dialog owner", () => {
   };
   const read = (o: Owner, l: ReturnType<typeof log> | null, at = 150, answering = false) =>
     dialogAfterRead(o, l, at, answering);
-  const drawn = (context = ASK, prev?: Owner, at = 100) => dialogDrawn(prev, at, context);
+  const drawn = (context = ASK, prev?: Owner, at = 100, afterAnswer = false) =>
+    dialogDrawn(prev, at, context, afterAnswer);
   /** Drawn at `at`, then tied by a read to `toolId`. */
   const tied = (toolId: string, context = ASK, at = 100) =>
     read(drawn(context, undefined, at), log([toolId]), at + 50).owner;
@@ -202,8 +203,26 @@ describe("dialog owner", () => {
     const body = "Bash command\nnpm test\n" + ASK;
     const first = read(drawn(body), log([b, b2])).owner;
     expect(first?.toolId).toBe("toolu_b");
-    const again = read(drawn(body, first, 200), log([b, b2]), 250).owner;
+    const again = read(drawn(body, first, 200, true), log([b, b2]), 250).owner;
     expect(shown(again, log([b, b2]))).toMatchObject({ id: "toolu_b2", promptKey: "200" });
+  });
+
+  it("the same dialog redrawn after an arrow key or a resize stays with its call", () => {
+    const b = open("Bash", "toolu_b", "npm test");
+    const b2 = open("Bash", "toolu_b2", "npm test");
+    const body = "Bash command\nnpm test\n" + ASK;
+    const first = read(drawn(body), log([b, b2])).owner;
+    const again = read(drawn(body, first, 200, false), log([b, b2]), 250).owner;
+    expect(shown(again, log([b, b2]))).toMatchObject({ id: "toolu_b", promptKey: "100" });
+  });
+
+  it("a subagent's next prompt keeps its Agent call's title while another call waits", () => {
+    const agent = open("Agent", "toolu_x");
+    const build = open("Bash", "toolu_a", "npm run build");
+    const first = read(drawn("Bash command\nrm a\n" + ASK), log([agent, build])).owner;
+    expect(first?.toolId).toBe("toolu_x");
+    const next = read(drawn("Bash command\nrm b\n" + ASK, first, 200, true), log([agent, build]), 250).owner;
+    expect(shown(next, log([agent, build]))).toMatchObject({ id: "toolu_x", promptKey: "200" });
   });
 
   it("a hint inside another call's hint does not win", () => {

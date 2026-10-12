@@ -117,6 +117,8 @@ const OWN_PROMPT = new Set(["ExitPlanMode", "AskUserQuestion"]);
  * - `since`, `context`: when it was last drawn in full, and its text then
  *   (the question and the lines above, which may include transcript lines).
  * - `drawNew`: that draw showed a different dialog body than the one before.
+ * - `afterAnswer`: that draw followed an answer key or click, so it may be
+ *   the next call's dialog rather than the same one drawn again.
  * - `toolId`: the unanswered call it asks about, set by a log read after the
  *   draw. `fresh`: drawn since that read, so the next read decides again.
  * - `promptKey`: which prompt is shown; it changes only for a new prompt, so
@@ -127,6 +129,7 @@ export type DialogOwner = {
   since: number;
   context: string;
   drawNew: boolean;
+  afterAnswer: boolean;
   toolId: string | null;
   fresh: boolean;
   promptKey: number | null;
@@ -137,13 +140,20 @@ const BODY_LINES = 4;
 const dialogBody = (context: string) => context.split("\n").slice(-BODY_LINES).join("\n");
 
 /** A dialog that was just drawn (again), keeping what it showed until the next read. */
-export function dialogDrawn(owner: DialogOwner | undefined, now: number, context: string): DialogOwner {
+export function dialogDrawn(
+  owner: DialogOwner | undefined,
+  now: number,
+  context: string,
+  afterAnswer = false,
+): DialogOwner {
   const changed = !owner || dialogBody(owner.context) !== dialogBody(context);
+  const unread = !!owner?.fresh;
   return {
     since: now,
     context,
-    // A change not yet seen by a read still counts.
-    drawNew: changed || (!!owner?.fresh && owner.drawNew),
+    // What a read has not seen yet still counts.
+    drawNew: changed || (unread && !!owner?.drawNew),
+    afterAnswer: afterAnswer || (unread && !!owner?.afterAnswer),
     toolId: owner?.toolId ?? null,
     fresh: true,
     promptKey: owner?.promptKey ?? null,
@@ -211,8 +221,11 @@ export function dialogAfterRead(
   const settled = !owner.fresh && owner.toolId !== null;
   if (settled && stillOpen) return { owner, clear: false };
   if (settled && answering) return { owner: undefined, clear: true };
-  // A fresh draw with a call already tied is a redraw after the user typed.
-  const next = toolForPrompt(log, owner.context, owner.fresh ? owner.toolId : null);
+  // The same body drawn again right after an answer is the next of two
+  // identical parallel calls; a new body names its own call, and a redraw
+  // after an arrow key or a resize is the same call.
+  const answered = owner.fresh && owner.afterAnswer && !owner.drawNew ? owner.toolId : null;
+  const next = toolForPrompt(log, owner.context, answered);
   if (!next && settled) return { owner: undefined, clear: true };
   // Not written to the log yet: keep waiting for its call.
   if (!next) return { owner: { ...owner, toolId: stillOpen ? owner.toolId : null }, clear: false };
@@ -227,6 +240,7 @@ export function dialogAfterRead(
       toolId: next.id,
       fresh: false,
       drawNew: false,
+      afterAnswer: false,
       promptKey: isNew || owner.promptKey === null ? owner.since : owner.promptKey,
     },
     clear: false,
