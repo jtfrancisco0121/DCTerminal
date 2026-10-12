@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { WorkspaceList } from "../bridge";
+import { Dialog } from "./Dialog";
+import { InlineNotice, errorText } from "./InlineNotice";
+import { useConfirm } from "./confirm";
 
 type Props = {
   /** null while loading. */
@@ -27,9 +30,7 @@ function when(iso: string): string {
   });
 }
 
-function message(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
+const message = errorText;
 
 /** F7: save the open tabs as a named workspace, or open a saved one. */
 export function WorkspacesDialog({
@@ -42,6 +43,7 @@ export function WorkspacesDialog({
   onDelete,
   onClose,
 }: Props) {
+  const confirm = useConfirm();
   const [name, setName] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -75,10 +77,18 @@ export function WorkspacesDialog({
     }
   };
 
-  const save = () => {
+  const save = async () => {
     const trimmed = name.trim();
     if (!trimmed || openTabCount === 0) return;
-    if (clash && !window.confirm(`Replace the saved workspace “${clash.name}” with the tabs open now?`)) {
+    if (
+      clash &&
+      !(await confirm({
+        title: "Replace workspace",
+        message: `Replace the saved workspace “${clash.name}” with the tabs open now?`,
+        confirmLabel: "Replace",
+        danger: true,
+      }))
+    ) {
       return;
     }
     void run(async () => {
@@ -90,21 +100,7 @@ export function WorkspacesDialog({
   const tabsWord = (n: number) => `${n} tab${n === 1 ? "" : "s"}`;
 
   return (
-    <div className="overlay-backdrop" role="presentation" onClick={onClose}>
-      <div
-        className="overlay-panel workspaces-dialog"
-        role="dialog"
-        aria-label="Workspaces"
-        onClick={(event) => event.stopPropagation()}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            event.preventDefault();
-            event.stopPropagation();
-            onClose();
-          }
-        }}
-      >
-        <h3>Workspaces</h3>
+    <Dialog title="Workspaces" className="workspaces-dialog" onClose={onClose}>
         <div className="workspaces-save">
           <input
             ref={nameRef}
@@ -117,7 +113,7 @@ export function WorkspacesDialog({
             onKeyDown={(event) => {
               if (event.key === "Enter") {
                 event.preventDefault();
-                save();
+                void save();
               }
             }}
           />
@@ -125,13 +121,13 @@ export function WorkspacesDialog({
             type="button"
             className="primary-button"
             disabled={busy || !name.trim() || openTabCount === 0}
-            onClick={save}
+            onClick={() => void save()}
           >
             {clash ? `Replace “${clash.name}”` : `Save ${tabsWord(openTabCount)}`}
           </button>
         </div>
-        {loadError && <p className="error">{loadError}</p>}
-        {error && <p className="error">{error}</p>}
+        {loadError && <InlineNotice tone="error">{loadError}</InlineNotice>}
+        {error && <InlineNotice tone="error">{error}</InlineNotice>}
         {list && workspaces.length === 0 ? (
           <p className="hint">
             No saved workspaces yet. Name the tabs open now and save them; each tab's title,
@@ -220,8 +216,14 @@ export function WorkspacesDialog({
                     className="secondary-button"
                     disabled={busy}
                     onClick={() => {
-                      if (!window.confirm(`Delete the workspace “${selected.name}”?`)) return;
-                      void run(() => onDelete(selected.id));
+                      void confirm({
+                        title: "Delete workspace",
+                        message: `Delete the workspace “${selected.name}”?`,
+                        confirmLabel: "Delete",
+                        danger: true,
+                      }).then((ok) => {
+                        if (ok) void run(() => onDelete(selected.id));
+                      });
                     }}
                   >
                     Delete
@@ -240,7 +242,6 @@ export function WorkspacesDialog({
             Stored in DCTerminal's app data: <code>{list.path}</code>
           </p>
         )}
-      </div>
-    </div>
+    </Dialog>
   );
 }

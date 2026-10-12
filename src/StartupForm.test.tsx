@@ -1273,7 +1273,7 @@ describe("changes (diff) panel", () => {
     fireEvent.click(await screen.findByRole("button", { name: /^Activity/ }));
     const dialog = await screen.findByRole("dialog", { name: "Activity in Main" });
     expect(dialog.textContent).toContain("Terminal tabs run the CLI directly");
-    fireEvent.click(screen.getByRole("button", { name: "Close activity" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
     await waitFor(() =>
       expect(screen.queryByRole("dialog", { name: "Activity in Main" })).toBeNull(),
     );

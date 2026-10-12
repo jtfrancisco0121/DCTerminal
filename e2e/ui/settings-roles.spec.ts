@@ -94,9 +94,8 @@ test("Delete asks first: Keep it cancels, Delete role removes the role", async (
   await expect(roles.getByLabel("Name", { exact: true })).toHaveValue("Triage");
 
   await roles.getByRole("button", { name: "Delete", exact: true }).click();
-  const confirm = roles.getByRole("alertdialog", { name: "Delete role" });
+  const confirm = page.getByRole("alertdialog", { name: "Delete role" });
   await expect(confirm).toContainText("Delete Triage? This cannot be undone. Export it first to keep a copy.");
-  await expect(roles.getByRole("button", { name: "Delete", exact: true })).toHaveCount(0);
   await confirm.getByRole("button", { name: "Keep it" }).click();
   await expect(confirm).toBeHidden();
   expect(await app.calls("delete_role")).toHaveLength(0);
@@ -132,7 +131,7 @@ test("deleting a role an open tab uses is refused and the role stays", async ({ 
   await roleEntry(page, "Triage").click();
   await expect(roles.getByLabel("Name", { exact: true })).toHaveValue("Triage");
   await roles.getByRole("button", { name: "Delete", exact: true }).click();
-  await roles.getByRole("alertdialog", { name: "Delete role" }).getByRole("button", { name: "Delete role" }).click();
+  await page.getByRole("alertdialog", { name: "Delete role" }).getByRole("button", { name: "Delete role" }).click();
   await expect(roles.getByText("1 open tab uses Triage. Close them before deleting the role.")).toBeVisible();
   await expect(roleEntry(page, "Triage")).toBeVisible();
   await expect(roles.getByLabel("Name", { exact: true })).toHaveValue("Triage");
@@ -248,6 +247,9 @@ test("Reset built-in restores the shipped role", async ({ app, page }) => {
   await expect(roleEntry(page, "My Planner")).toBeVisible();
 
   await roles.getByRole("button", { name: "Reset built-in" }).click();
+  const confirm = page.getByRole("alertdialog", { name: "Reset built-in role" });
+  await expect(confirm).toContainText("Reset My Planner to the shipped template? Your edits to it are lost.");
+  await confirm.getByRole("button", { name: "Reset", exact: true }).click();
   expect((await app.waitForCall("reset_builtin_role")).args).toEqual({ roleId: "role_planner" });
   await expect(roles.getByText("Reset to built-in template.")).toBeVisible();
   await expect(roles.getByLabel("Name", { exact: true })).toHaveValue("Planner");

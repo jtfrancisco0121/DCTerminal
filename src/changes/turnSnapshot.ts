@@ -63,6 +63,7 @@ export function createTurnSnapshotter({
     try {
       started = Promise.resolve(snapshot(tabId));
     } catch {
+      // intentionally silent: the snapshot is best effort and must not block a send.
       return Promise.resolve();
     }
     const done = started.then(

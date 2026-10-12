@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { HistoryHit } from "../bridge";
 import { searchSegments, type SegmentLike } from "../search/textSearch";
+import { Dialog } from "./Dialog";
+import { errorText } from "./InlineNotice";
 import { TranscriptView } from "./TranscriptView";
 
 export type ChatSearchHit = {
@@ -101,7 +103,7 @@ export function ChatSearchDialog({
           if (!cancelled) setSaved({ query, hits });
         })
         .catch((err: unknown) => {
-          if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+          if (!cancelled) setError(errorText(err));
         });
     }, DEBOUNCE_MS);
     return () => {
@@ -147,20 +149,28 @@ export function ChatSearchDialog({
     try {
       setPreview({ hit, text: await loadTranscript(hit.tabId) });
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errorText(err));
     }
   };
 
   const pending = query.trim() !== "" && (!saved || saved.query !== query) && !error;
 
   return (
-    <div className="overlay-backdrop" role="presentation" onClick={onClose}>
-      <div
-        className="overlay-panel chat-search-dialog"
-        role="dialog"
-        aria-label="Search chats"
-        onClick={(event) => event.stopPropagation()}
-      >
+    <Dialog
+      title="Search chats"
+      hideTitle
+      placement="top"
+      className="chat-search-dialog"
+      onClose={onClose}
+      onRequestClose={() => {
+        // Escape closes the transcript preview first, then the dialog.
+        if (preview) {
+          setPreview(null);
+          return false;
+        }
+        return true;
+      }}
+    >
         <input
           ref={inputRef}
           type="search"
@@ -179,11 +189,6 @@ export function ChatSearchDialog({
             } else if (event.key === "Enter") {
               event.preventDefault();
               void activate(results[index]);
-            } else if (event.key === "Escape") {
-              event.preventDefault();
-              event.stopPropagation();
-              if (preview) setPreview(null);
-              else onClose();
             }
           }}
         />
@@ -245,7 +250,6 @@ export function ChatSearchDialog({
             </div>
           )}
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }

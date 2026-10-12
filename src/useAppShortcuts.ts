@@ -8,6 +8,7 @@ import {
   type ShortcutMatch,
   type TerminalAction,
 } from "./keymap";
+import { openDialogCount } from "./components/Dialog";
 
 type Options = {
   platform?: Platform;
@@ -50,6 +51,8 @@ export function useAppShortcuts({
       })) {
         return;
       }
+      // A Dialog on screen owns Escape: only the top one closes, and it asks first.
+      if (event.key === "Escape" && openDialogCount() > 0) return;
       // Popovers such as the model picker close themselves on Escape.
       if (event.key === "Escape" && target?.closest?.("[data-own-escape]")) return;
       const surface = getSurface?.() ?? "chat";
@@ -67,7 +70,7 @@ export function useAppShortcuts({
           altGraph: event.getModifierState?.("AltGraph"),
           targetTag,
         },
-        { platform: host, dialogOpen, surface },
+        { platform: host, dialogOpen: dialogOpen || openDialogCount() > 0, surface },
       );
       if (routed.kind === "app") {
         event.preventDefault();

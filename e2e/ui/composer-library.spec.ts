@@ -102,16 +102,16 @@ test("edit and delete a saved prompt; Cancel on the confirm keeps it", async ({ 
     body: "What did I do yesterday?",
   });
 
-  page.once("dialog", (d) => {
-    expect(d.message()).toBe('Delete the prompt "Daily standup"?');
-    void d.dismiss();
-  });
+  const confirmDialog = page.getByRole("alertdialog", { name: "Delete prompt" });
   await dialog.getByRole("button", { name: "Delete" }).click();
+  await expect(confirmDialog).toContainText('Delete the prompt "Daily standup"?');
+  await confirmDialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(confirmDialog).toBeHidden();
   await expect(dialog.getByRole("option")).toHaveText(["Daily standup"]);
   expect(await app.calls("prompt_delete")).toHaveLength(0);
 
-  page.once("dialog", (d) => void d.accept());
   await dialog.getByRole("button", { name: "Delete" }).click();
+  await confirmDialog.getByRole("button", { name: "Delete" }).click();
   const deleted = await app.waitForCall("prompt_delete");
   expect(deleted.args).toEqual({ id: "p1" });
   await expect(dialog.getByRole("tab", { name: "Saved (0)" })).toBeVisible();
@@ -178,8 +178,8 @@ test("Recent sends: newest first, filter, save as prompt, insert, and clear", as
 
   await openLibrary(page);
   await dialog.getByRole("tab", { name: /Recent sends/ }).click();
-  page.once("dialog", (d) => void d.accept());
   await dialog.getByRole("button", { name: "Clear recent sends" }).click();
+  await page.getByRole("alertdialog", { name: "Clear recent sends" }).getByRole("button", { name: "Clear list" }).click();
   await app.waitForCall("prompt_clear_recent");
   await expect(dialog.getByRole("tab", { name: "Recent sends (0)" })).toBeVisible();
   await expect(dialog).toContainText("Prompts you send from a chat or a terminal pad show up here.");

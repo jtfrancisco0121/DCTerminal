@@ -1,3 +1,4 @@
+import { Dialog } from "./Dialog";
 import { useEffect, useMemo, useState } from "react";
 import { buildPalette, filterCommands, type PaletteModelOptions } from "../tabChrome";
 
@@ -87,13 +88,13 @@ export function CommandPalette({
   }, [query]);
 
   return (
-    <div className="overlay-backdrop" role="presentation" onClick={onClose}>
-      <div
-        className="overlay-panel overlay-panel-palette"
-        role="dialog"
-        aria-label="Command palette"
-        onClick={(event) => event.stopPropagation()}
-      >
+    <Dialog
+      title="Command palette"
+      hideTitle
+      placement="top"
+      className="overlay-panel-palette"
+      onClose={onClose}
+    >
         <input
           className="text-input"
           autoFocus
@@ -131,7 +132,6 @@ export function CommandPalette({
           ))}
           {commands.length === 0 && <li className="hint">No matching commands</li>}
         </ul>
-      </div>
-    </div>
+    </Dialog>
   );
 }

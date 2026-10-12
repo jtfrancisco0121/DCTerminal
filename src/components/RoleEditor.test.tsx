@@ -2,6 +2,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Role, RoleSummary } from "../bridge";
+import { ConfirmHost } from "./confirm";
 
 const CUSTOM_ID = "role_custom_0123456789ab";
 
@@ -112,10 +113,15 @@ describe("RoleEditor", () => {
     expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("built-ins have no Delete; a custom role asks in the page before deleting", async () => {
+  it("built-ins have no Delete; a custom role asks before deleting", async () => {
     const onRefreshRoles = vi.fn(async () => {});
     const confirmSpy = vi.spyOn(window, "confirm");
-    render(<RoleEditor roles={roles} onRefreshRoles={onRefreshRoles} />);
+    render(
+      <>
+        <RoleEditor roles={roles} onRefreshRoles={onRefreshRoles} />
+        <ConfirmHost />
+      </>,
+    );
     await screen.findByLabelText("Name");
     expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
     expect(screen.getByRole("button", { name: "Reset built-in" })).toBeTruthy();
@@ -126,11 +132,11 @@ describe("RoleEditor", () => {
     expect(bridge.deleteRole).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "Keep it" }));
-    expect(screen.queryByRole("alertdialog")).toBeNull();
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
     expect(bridge.deleteRole).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
-    fireEvent.click(screen.getByRole("button", { name: "Delete role" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Delete role" }));
     await waitFor(() => expect(bridge.deleteRole).toHaveBeenCalledWith(CUSTOM_ID));
     expect(await screen.findByText("Deleted Docs writer.")).toBeTruthy();
     expect(onRefreshRoles).toHaveBeenCalled();
@@ -139,11 +145,58 @@ describe("RoleEditor", () => {
 
   it("shows why a delete was refused", async () => {
     bridge.deleteRole.mockRejectedValue(new Error("1 open tab uses Docs writer. Close them before deleting the role."));
-    render(<RoleEditor roles={roles} />);
+    render(
+      <>
+        <RoleEditor roles={roles} />
+        <ConfirmHost />
+      </>,
+    );
     fireEvent.click(screen.getByRole("button", { name: /^Docs writer/ }));
     fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
-    fireEvent.click(screen.getByRole("button", { name: "Delete role" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Delete role" }));
     expect(await screen.findByText(/1 open tab uses Docs writer/)).toBeTruthy();
+    expect(screen.getByRole("alert").textContent).toContain("1 open tab uses Docs writer");
+  });
+
+  it("Reset built-in asks first, and only resets after confirming", async () => {
+    bridge.resetBuiltinRole.mockResolvedValue(role("role_planner"));
+    render(
+      <>
+        <RoleEditor roles={roles} />
+        <ConfirmHost />
+      </>,
+    );
+    await screen.findByLabelText("Name");
+    fireEvent.click(screen.getByRole("button", { name: "Reset built-in" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(bridge.resetBuiltinRole).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Reset built-in" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Reset" }));
+    await waitFor(() => expect(bridge.resetBuiltinRole).toHaveBeenCalledWith("role_planner"));
+  });
+
+  it("reports unsaved edits and asks before switching roles", async () => {
+    const onDirtyChange = vi.fn();
+    render(
+      <>
+        <RoleEditor roles={roles} onDirtyChange={onDirtyChange} />
+        <ConfirmHost />
+      </>,
+    );
+    const name = await screen.findByLabelText("Name");
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+    fireEvent.change(name, { target: { value: "Planner 2" } });
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    fireEvent.click(screen.getByRole("button", { name: /^Docs writer/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("Planner 2");
+    fireEvent.click(screen.getByRole("button", { name: /^Docs writer/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Discard edits" }));
+    await waitFor(() =>
+      expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("Docs writer"),
+    );
   });
 
   it("Duplicate passes the shown targets and selects the copy", async () => {

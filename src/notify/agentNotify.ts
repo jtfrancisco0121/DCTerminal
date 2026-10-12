@@ -134,6 +134,11 @@ export function dismissToastsForTab(list: AgentToast[], tabId: string): AgentToa
   return next.length === list.length ? list : next;
 }
 
+/** Failures stay until dismissed: an error must not vanish unread. */
+export function toastIsSticky(kind: AgentEventKind): boolean {
+  return kind === "failed";
+}
+
 /** Needs-you toasts linger; plain completions fade sooner. */
 export function toastLifetimeMs(kind: AgentEventKind): number {
   return kind === "finished" ? 6000 : 15000;

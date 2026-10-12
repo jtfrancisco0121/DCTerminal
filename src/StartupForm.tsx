@@ -130,6 +130,9 @@ import {
 } from "./liveTabs";
 import { blockedSlashCommand } from "./composer/slashCommands";
 import { CommandPalette } from "./components/CommandPalette";
+import { useConfirm } from "./components/confirm";
+import { Dialog } from "./components/Dialog";
+import { errorText } from "./components/InlineNotice";
 import {
   HandoffActions,
   HandoffBanner,
@@ -292,6 +295,7 @@ import {
   TERMINAL_FONT_DEFAULT,
   zoomedFontSize,
   requestTerminalSearch,
+  setLinkOpenErrorHandler,
   terminalBracketedPaste,
   terminalScrollbackText,
   terminalSelection,
@@ -614,6 +618,7 @@ export function StartupForm({
         const count = set.state === "ok" ? set.files.length : 0;
         setChangeCounts((prev) => (prev[tabId] === count ? prev : { ...prev, [tabId]: count }));
       })
+      // intentionally silent: a polled badge count; the Changes panel shows its own errors.
       .catch(() => {});
   }, []);
   const [split, setSplit] = useState<SplitState>(emptySplit());
@@ -862,6 +867,24 @@ export function StartupForm({
   }, []);
   const dismissTabToasts = agentNotifications.dismissTab;
   const showNotice = agentNotifications.notice;
+  const showNoticeRef = useRef(showNotice);
+  showNoticeRef.current = showNotice;
+  useEffect(() => {
+    setLinkOpenErrorHandler((message) => showNoticeRef.current("Could not open link", message, "failed"));
+    return () => setLinkOpenErrorHandler(null);
+  }, []);
+  const reportedRef = useRef(new Set<string>());
+  /** A background load or poll that failed: say so once per `key`, not per retry. */
+  const reportOnce = useCallback((key: string, title: string, err: unknown) => {
+    if (reportedRef.current.has(key)) return;
+    reportedRef.current.add(key);
+    showNoticeRef.current(title, errorText(err), "failed");
+  }, []);
+  const confirm = useConfirm();
+  const settingsDirtyRef = useRef(false);
+  const onSettingsUnsaved = useCallback((dirty: boolean) => {
+    settingsDirtyRef.current = dirty;
+  }, []);
   useEffect(() => {
     if (rolesError) showNotice("Roles did not load", rolesError, "question");
   }, [rolesError, showNotice]);
@@ -872,8 +895,8 @@ export function StartupForm({
       void openAccountWindow(accountId).catch((err: unknown) => {
         showNotice(
           "New window",
-          err instanceof Error ? err.message : String(err),
-          "question",
+          errorText(err),
+          "failed",
         );
       });
     },
@@ -939,7 +962,7 @@ export function StartupForm({
           await transcriptSave(tabId, segmentsToPlainText(rt.segments), cwd);
           setTranscriptSaveError(null);
         } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : String(err);
+          const message = errorText(err);
           setTranscriptSaveError(message);
         }
       });
@@ -996,7 +1019,9 @@ export function StartupForm({
     // draft stays in memory only.
     if (tabWasStarted(savedTabsRef.current, leaving)) return;
     const payload = answersForRole({ ...snap.values, cwd }, fieldsForForm(role));
-    void syncActiveTabForm(leaving, snap.roleId, cwd, payload).catch(() => {});
+    void syncActiveTabForm(leaving, snap.roleId, cwd, payload).catch((err: unknown) =>
+      reportOnce("tabFormSync", "Tab form not saved", err),
+    );
   }, [captureDraft, role]);
 
   const loadTabIntoForm = useCallback((tab: {
@@ -1027,6 +1052,7 @@ export function StartupForm({
         for (const running of snap.tabs) {
           if (running.phase !== "running" || running.kind === "terminal") continue;
           if (running.kind === "pipeline_overview") continue;
+          // intentionally silent: a failed probe just means the tab is not reattached.
           const live = await devSessionLive(running.id).catch(() => null);
           if (!live) continue;
           const { roleId: _role, promptInFlight: inFlight, exited, ...info } = live;
@@ -1066,8 +1092,11 @@ export function StartupForm({
         const { tab } = await selectActiveTab(activeId);
         loadTabIntoForm(tab);
       })
-      .catch(() => setSavedTabs([]));
-  }, [loadTabIntoForm, patchRuntime, refreshTabs, roles]);
+      .catch((err: unknown) => {
+        setSavedTabs([]);
+        showNotice("Tabs did not load", errorText(err), "failed");
+      });
+  }, [loadTabIntoForm, patchRuntime, refreshTabs, roles, showNotice]);
 
   useEffect(() => {
     sessionActiveRef.current = !!session;
@@ -1214,11 +1243,11 @@ export function StartupForm({
   useEffect(() => {
     getTerminalSettings()
       .then(setTerminalSettingsState)
-      .catch(() => {});
+      .catch((err: unknown) => reportOnce("settingsLoad", "Settings did not load", err));
     getNotificationSettings()
       .then(setNotificationSettingsState)
-      .catch(() => {});
-  }, []);
+      .catch((err: unknown) => reportOnce("settingsLoad", "Settings did not load", err));
+  }, [reportOnce]);
 
   // A tab's toasts are stale once it is on screen in a focused window.
   useEffect(() => {
@@ -1424,6 +1453,7 @@ export function StartupForm({
         if (!sessionLogDue(entry.poll, busy, now)) continue;
         reading.add(id);
         void terminalSessionLog(id)
+          // intentionally silent: a polled status read; the next tick retries.
           .catch(() => null)
           .then((log) => {
             reading.delete(id);
@@ -1511,7 +1541,7 @@ export function StartupForm({
     return out;
   }, [runtimes, savedTabs, tabMarks, terminalBusy, terminalStates]);
 
-  const uiSettings = useUiSettings();
+  const uiSettings = useUiSettings((title, message) => showNotice(title, message, "failed"));
   // U2: one pad size for chat and terminal tabs; saved when a drag ends.
   const [padHeight, setPadHeight] = useState<number | null>(null);
   const savedPadHeight = uiSettings.ui.padHeight;
@@ -1540,8 +1570,8 @@ export function StartupForm({
     setNotificationSettingsState(next);
     void setNotificationSettings(next)
       .then(setNotificationSettingsState)
-      .catch(() => {});
-  }, []);
+      .catch((err: unknown) => showNotice("Notification settings not saved", errorText(err), "failed"));
+  }, [showNotice]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1552,7 +1582,7 @@ export function StartupForm({
         setFilePanelOpen(layout.filePanelOpen);
         setFilePanelWidth(layout.filePanelWidth);
       })
-      .catch(() => {})
+      .catch((err: unknown) => reportOnce("layoutLoad", "Layout did not load", err))
       .finally(() => {
         if (!cancelled) layoutLoadedRef.current = true;
       });
@@ -1560,17 +1590,17 @@ export function StartupForm({
       .then((value) => {
         if (!cancelled) setModelSettingsState(value);
       })
-      .catch(() => {});
+      .catch((err: unknown) => reportOnce("modelsLoad", "Model settings did not load", err));
     listModels("cursor", false)
       .then((list) => {
         if (!cancelled) setModelList(list);
       })
-      .catch(() => {});
+      .catch((err: unknown) => reportOnce("modelsLoad", "Model settings did not load", err));
     listModels("claude", false)
       .then((list) => {
         if (!cancelled) setClaudeModelList(list);
       })
-      .catch(() => {});
+      .catch((err: unknown) => reportOnce("modelsLoad", "Model settings did not load", err));
     return () => {
       cancelled = true;
     };
@@ -1589,6 +1619,7 @@ export function StartupForm({
         primarySize: clampSplitSize(split.primarySize),
         filePanelOpen,
         filePanelWidth,
+        // intentionally silent: the layout is saved again on the next change.
       }).catch(() => {});
     }, 300);
     return () => window.clearTimeout(timer);
@@ -1640,8 +1671,10 @@ export function StartupForm({
           }
         }
       })
-      .catch(() => {
-        if (!cancelled) setRole(null);
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setRole(null);
+        reportOnce("roleLoad", "The role did not load", err);
       });
     return () => {
       cancelled = true;
@@ -1677,6 +1710,7 @@ export function StartupForm({
           return next;
         });
       })
+      // intentionally silent: recalling the last folder is a convenience.
       .catch(() => {});
   }, [roleId, session]);
 
@@ -1764,7 +1798,7 @@ export function StartupForm({
       })
       .catch((err: unknown) => {
         if (!cancelled) {
-          setHistoryError(err instanceof Error ? err.message : String(err));
+          setHistoryError(errorText(err));
         }
       });
     return () => {
@@ -1812,7 +1846,7 @@ export function StartupForm({
         .then(() => {
           if (activeTabIdRef.current === tabId) void refreshTabs();
         })
-        .catch(() => {});
+        .catch((err: unknown) => reportOnce("tabFormSync", "Tab form not saved", err));
     }, 800);
     return () => {
       if (draftTimerRef.current) clearTimeout(draftTimerRef.current);
@@ -1840,7 +1874,7 @@ export function StartupForm({
         errors: [
           {
             key: "_form",
-            message: err instanceof Error ? err.message : String(err),
+            message: errorText(err),
           },
         ],
         merged: null,
@@ -1979,7 +2013,7 @@ export function StartupForm({
       }
       await refreshTabs();
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = errorText(err);
       if (tabKey) {
         patchRuntime(tabKey, (rt) => ({
           ...clearLiveSession(rt),
@@ -2006,7 +2040,7 @@ export function StartupForm({
     setTerminalSettings(next)
       .then(setTerminalSettingsState)
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorText(err);
         setTerminalError(message);
       });
   }, []);
@@ -2089,7 +2123,7 @@ export function StartupForm({
         return result.tabId;
       } catch (err: unknown) {
         dropLivePty(pendingId);
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorText(err);
         setTerminalError(message);
         return null;
       } finally {
@@ -2138,7 +2172,7 @@ export function StartupForm({
         await refreshTabs();
       } catch (err: unknown) {
         dropLivePty(pendingId);
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorText(err);
         setTerminalError(message);
       } finally {
         startLockRef.current = false;
@@ -2177,7 +2211,7 @@ export function StartupForm({
       await refreshTabs();
     } catch (err: unknown) {
       dropLivePty(pendingId);
-      setCliLaunchNote(err instanceof Error ? err.message : String(err));
+      setCliLaunchNote(errorText(err));
     } finally {
       startLockRef.current = false;
       setBusy(false);
@@ -2199,7 +2233,7 @@ export function StartupForm({
           cwd: entry.cwd,
         });
       } catch (err: unknown) {
-        setHistoryError(err instanceof Error ? err.message : String(err));
+        setHistoryError(errorText(err));
         setBusy(false);
       }
     },
@@ -2281,7 +2315,7 @@ export function StartupForm({
         setClosedTabs(state.closedTabs ?? []);
         setActiveTabId(tabId);
       } catch (err: unknown) {
-        showNotice("Chain overview", err instanceof Error ? err.message : String(err), "question");
+        showNotice("Chain overview", errorText(err), "failed");
       }
     },
     [showNotice, stashActiveTab],
@@ -2296,7 +2330,7 @@ export function StartupForm({
           const cwd = rt.session?.cwd ?? values.cwd ?? "";
           await transcriptSave(tabId, segmentsToPlainText(rt.segments), cwd).catch(
             (err: unknown) => {
-              const message = err instanceof Error ? err.message : String(err);
+              const message = errorText(err);
               setTranscriptSaveError(message);
             },
           );
@@ -2378,11 +2412,15 @@ export function StartupForm({
           );
           return;
         }
-        const ok = window.confirm(
-          `Remove the worktree for ${branch}?\n\n${check.worktree.path}\n\n` +
+        const ok = await confirm({
+          title: "Remove worktree",
+          message:
+            `Remove the worktree for ${branch}?\n\n${check.worktree.path}\n\n` +
             "This closes the tab, stops its agent or shell, and deletes that folder. " +
             "The branch and its commits are kept.",
-        );
+          confirmLabel: "Remove worktree",
+          danger: true,
+        });
         if (!ok) return;
         await handleCloseTab(tabId);
         await worktreeTabRemove(tabId, true);
@@ -2390,12 +2428,12 @@ export function StartupForm({
       } catch (err: unknown) {
         showNotice(
           "Worktree not removed",
-          err instanceof Error ? err.message : String(err),
+          errorText(err),
           "failed",
         );
       }
     },
-    [handleCloseTab, showNotice],
+    [confirm, handleCloseTab, showNotice],
   );
 
   const handleNewTab = useCallback(async () => {
@@ -2438,7 +2476,7 @@ export function StartupForm({
         ],
       }));
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = errorText(err);
       patchRuntime(tabId, (rt) => ({ ...rt, promptError: message }));
     } finally {
       setBusy(false);
@@ -2462,7 +2500,7 @@ export function StartupForm({
         }
         patchRuntime(tabId, (rt) => ({ ...rt, permission: null }));
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorText(err);
         patchRuntime(tabId, (rt) => ({ ...rt, promptError: message }));
       } finally {
         setBusy(false);
@@ -2491,7 +2529,7 @@ export function StartupForm({
         await respondPlanRequest(tabId, request.jsonRpcId, outcome);
         patchRuntime(tabId, (rt) => clearPlan(rt));
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorText(err);
         patchRuntime(tabId, (rt) => ({ ...rt, promptError: message }));
       } finally {
         setBusy(false);
@@ -2514,7 +2552,7 @@ export function StartupForm({
         await respondQuestionRequest(tabId, request.jsonRpcId, outcome, choiceId);
         patchRuntime(tabId, (rt) => clearQuestion(rt));
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorText(err);
         patchRuntime(tabId, (rt) => ({ ...rt, promptError: message }));
       } finally {
         setBusy(false);
@@ -2564,6 +2602,7 @@ export function StartupForm({
       if (trimmed && !fromHandoff) {
         // Saved with the tab's pad (scratch.json), so Up-arrow history survives a restart.
         scratch.remember(tabId, trimmed);
+        // intentionally silent: the recent-sends record is best effort.
         void promptRecordSend(trimmed, "chat").catch(() => {});
       }
       patchRuntime(tabId, (rt) => ({
@@ -2583,7 +2622,7 @@ export function StartupForm({
       } catch (err: unknown) {
         waiterRef.current.cancel(tabId);
         chatImages.actions.restore(tabId, images);
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorText(err);
         patchRuntime(tabId, (rt) => ({
           ...rt,
           promptError: message,
@@ -2720,7 +2759,7 @@ export function StartupForm({
       .then((status) => {
         if (!cancelled && status?.needed) setFirstRunOpen(true);
       })
-      .catch(() => {});
+      .catch((err: unknown) => reportOnce("firstRunStatus", "Setup check failed", err));
     return () => {
       cancelled = true;
     };
@@ -2790,7 +2829,7 @@ export function StartupForm({
       await refreshTabs();
       loadTabIntoForm(tab);
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = errorText(err);
       setPreview({ errors: [{ key: "_session", message }], merged: null });
     } finally {
       setBusy(false);
@@ -2857,11 +2896,16 @@ export function StartupForm({
           await setTabModel(tab.id, model);
           const live = livePty(tab.id);
           if (tab.kind === "terminal" && live && live.exitCode == null) {
-            const restart = window.confirm(
-              "The new model applies when the terminal restarts. Stop the running agent now?",
-            );
+            const restart = await confirm({
+              title: "Restart to apply the model",
+              message: "The new model applies when the terminal restarts. Stop the running agent now?",
+              confirmLabel: "Stop the agent",
+              cancelLabel: "Later",
+            });
             if (restart) {
-              await ptyKill(tab.id).catch(() => {});
+              await ptyKill(tab.id).catch((err: unknown) =>
+                showNotice("Could not stop the agent", errorText(err), "failed"),
+              );
               setModelNotice("The agent stopped. Press Restart to use the new model.");
             } else {
               setModelNotice("The new model applies the next time this terminal starts.");
@@ -2870,10 +2914,10 @@ export function StartupForm({
         }
         await refreshTabs();
       } catch (err: unknown) {
-        setModelNotice(err instanceof Error ? err.message : String(err));
+        setModelNotice(errorText(err));
       }
     },
-    [modelSettings, patchRuntime, refreshTabs],
+    [confirm, modelSettings, patchRuntime, refreshTabs, showNotice],
   );
 
   const changesButton = (tabId: string) => {
@@ -2966,7 +3010,7 @@ export function StartupForm({
             .catch((err: unknown) =>
               showNotice(
                 "Effort not changed",
-                err instanceof Error ? err.message : String(err),
+                errorText(err),
                 "failed",
               ),
             );
@@ -3054,6 +3098,18 @@ export function StartupForm({
   const onShortcut = useCallback(
     (match: ShortcutMatch) => {
       if (match.action === "closeDialog") {
+        // Settings holds unsaved role edits: Escape asks before dropping them.
+        if (settingsOpen && settingsDirtyRef.current) {
+          void confirm({
+            title: "Leave Settings?",
+            message: "Your role edits are not saved. Leaving discards them.",
+            confirmLabel: "Discard and leave",
+            danger: true,
+          }).then((ok) => {
+            if (ok) setSettingsOpen(false);
+          });
+          return;
+        }
         setChangesTabId(null);
         setActivityTabId(null);
         setChatSearchQuery(null);
@@ -3154,8 +3210,21 @@ export function StartupForm({
       }
       if (match.action === "closeTab" && activeTabId) {
         const running = savedTabs.find((tab) => tab.id === activeTabId)?.phase === "running";
-        if (running && !window.confirm("Stop this tab's agent and close it?")) return;
-        void handleCloseTab(activeTabId);
+        const closing = activeTabId;
+        void (async () => {
+          if (
+            running &&
+            !(await confirm({
+              title: "Close tab",
+              message: "Stop this tab's agent and close it?",
+              confirmLabel: "Stop and close",
+              danger: true,
+            }))
+          ) {
+            return;
+          }
+          await handleCloseTab(closing);
+        })();
         return;
       }
       if (match.action === "nextTab") {
@@ -3235,6 +3304,8 @@ export function StartupForm({
     },
     [
       activeTabId,
+      confirm,
+      settingsOpen,
       handleFind,
       terminalSettings,
       updateTerminalSettings,
@@ -3300,12 +3371,14 @@ export function StartupForm({
         await ptyWrite(target, payload);
         setTerminalError(null);
         // Sent to the shell: it leaves the pad and joins Recent sends.
+        // intentionally silent: the recent-sends record is best effort.
         void promptRecordSend(text.trim(), "terminal").catch(() => {});
         if (padTextRef.current[tabId] === padBefore) {
           scratch.setContent(tabId, padAfterSend(padBefore, sent));
         }
         return;
       } catch {
+        // The PTY may not be attached yet: retry; the loop ends in a visible error below.
         await new Promise((resolve) => window.setTimeout(resolve, 50));
       }
     }
@@ -3393,7 +3466,7 @@ export function StartupForm({
   useEffect(() => {
     handoffList()
       .then(setHandoffs)
-      .catch(() => {});
+      .catch((err: unknown) => reportOnce("handoffList", "Hand-offs did not load", err));
   }, []);
 
   useEffect(() => {
@@ -3402,7 +3475,7 @@ export function StartupForm({
         setDiagnostics(status);
         setCaptureOn(status.capturePermissionPayloads);
       })
-      .catch(() => {});
+      .catch((err: unknown) => reportOnce("diagnosticsStatus", "Diagnostics status did not load", err));
   }, []);
 
   useEffect(() => {
@@ -3419,7 +3492,7 @@ export function StartupForm({
             showNotice(alert.title, alert.body, alert.reached ? "failed" : "question");
           }
         })
-        .catch(() => {});
+        .catch((err: unknown) => reportOnce("usageLimits", "Usage limits did not load", err));
     };
     load();
     const timer = window.setInterval(load, 20_000);
@@ -3432,8 +3505,8 @@ export function StartupForm({
   const refreshApprovalMode = useCallback(() => {
     cursorApprovalMode()
       .then(setApprovalMode)
-      .catch(() => {});
-  }, []);
+      .catch((err: unknown) => reportOnce("approvalMode", "Approval mode did not load", err));
+  }, [reportOnce]);
 
   useEffect(() => {
     refreshApprovalMode();
@@ -3458,7 +3531,7 @@ export function StartupForm({
         setHandoffFields(handoffFieldsOf(loaded));
       })
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorText(err);
         setHandoffError(message);
       });
   }, []);
@@ -3496,6 +3569,7 @@ export function StartupForm({
       if (!fresh) return;
       const readAt = Date.now();
       void terminalSessionLog(tab.id)
+        // intentionally silent: a polled status read; the next tick retries.
         .catch(() => null)
         .then((log) => {
           storeSessionLog(tab.id, log, readAt);
@@ -3547,7 +3621,7 @@ export function StartupForm({
           );
           if (file?.text.trim()) planFile = file;
         } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : String(err);
+          const message = errorText(err);
           setHandoffError(message);
         }
       }
@@ -3596,6 +3670,7 @@ export function StartupForm({
                 setChatPlanFile({ tabId, text: file.text, name: file.name });
               }
             })
+            // intentionally silent: the plan file preview is best effort.
             .catch(() => {});
         }
       }
@@ -3793,6 +3868,7 @@ export function StartupForm({
             handoffSource.sourceTabId,
             pendingPlan.jsonRpcId,
             "cancelled",
+            // intentionally silent: the request may already be gone; the hand-off goes ahead.
           ).catch(() => {});
           patchRuntime(handoffSource.sourceTabId, (rt) => ({ ...rt, plan: null }));
         }
@@ -3844,7 +3920,7 @@ export function StartupForm({
           } catch (err: unknown) {
             showNotice(
               "Round not recorded",
-              `The follow-up was sent, but the chain round was not saved: ${err instanceof Error ? err.message : String(err)}`,
+              `The follow-up was sent, but the chain round was not saved: ${errorText(err)}`,
               "question",
             );
           }
@@ -3852,7 +3928,7 @@ export function StartupForm({
           await refreshTabs();
           await handleSelectTab(targetTab.id);
         } catch (err: unknown) {
-          setHandoffError(err instanceof Error ? err.message : String(err));
+          setHandoffError(errorText(err));
         } finally {
           setBusy(false);
         }
@@ -3865,6 +3941,7 @@ export function StartupForm({
         const fresh = await terminalPlanFile(0, source.sourceTabId, {
           mentioned: [planFile.name],
           claimed: [],
+          // intentionally silent: falls back to the plan text captured earlier.
         }).catch(() => null);
         if (fresh?.path === planFile.path && fresh.text.trim()) {
           source = { ...source, planFileText: fresh.text };
@@ -3872,6 +3949,7 @@ export function StartupForm({
       }
       if (source.sourceRoleId === "role_implementer") {
         const chainId = savedTabs.find((tab) => tab.id === source.sourceTabId)?.chain?.chainId;
+        // intentionally silent: each lookup only enriches the hand-off; it works without them.
         const [changes, repo, run] = await Promise.all([
           changesList(source.sourceTabId, "tab").catch(() => null),
           gitRepoInfo(source.cwd).catch(() => null),
@@ -3894,6 +3972,7 @@ export function StartupForm({
         };
       }
       // Settings can stay open over the dialog: map onto the role as saved now.
+      // intentionally silent: falls back to the role fields loaded with the dialog.
       const saved = await getRole(handoffTarget).catch(() => null);
       const fields = saved ? handoffFieldsOf(saved) : (handoffFields ?? []);
       const templateText = saved ? saved.templateText : handoffTemplate;
@@ -3915,6 +3994,7 @@ export function StartupForm({
             : null);
         if (nextChain && needsChainTaskType(mapped, target)) {
           // Plan Reviewer has no task type; the chain's Planner form does.
+          // intentionally silent: without it the task type is simply not carried over.
           const view = await getPipelineRun(nextChain.chainId).catch(() => null);
           mapped = carryChainTaskType(mapped, target, view?.taskType);
         }
@@ -3928,6 +4008,7 @@ export function StartupForm({
             targetName,
           );
           if (!problem) {
+            // intentionally silent: the backend validates again when the terminal starts.
             const check = await validateAndPreview(handoffTarget, {
               ...terminalHandoffInput(mapped).values,
               cwd: handoffSource.cwd,
@@ -4020,7 +4101,7 @@ export function StartupForm({
         setHandoffTarget(null);
         await refreshTabs();
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorText(err);
         setHandoffError(message);
       } finally {
         setBusy(false);
@@ -4072,7 +4153,7 @@ export function StartupForm({
     handoffGet(record.id)
       .then((full) => setSavedPlan(full))
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorText(err);
         setHandoffError(message);
       })
       .finally(() => setSavedPlanLoading(false));
@@ -4143,8 +4224,8 @@ export function StartupForm({
           .catch((err: unknown) => {
             showNotice(
               "Eagle-Eye",
-              err instanceof Error ? err.message : String(err),
-              "question",
+              errorText(err),
+              "failed",
             );
           })
           .finally(() => setBusy(false));
@@ -4161,8 +4242,14 @@ export function StartupForm({
           setLogBusy(true);
           try {
             const [agent, app] = await Promise.all([
-              sessionAgentLogs(tabId).catch(() => ({ stderr: "" })),
-              diagnosticsReadLog().catch(() => ({ text: "", path: "" })),
+              sessionAgentLogs(tabId).catch((err: unknown) => {
+                showNotice("Agent log not read", errorText(err), "failed");
+                return { stderr: "" };
+              }),
+              diagnosticsReadLog().catch((err: unknown) => {
+                showNotice("App log not read", errorText(err), "failed");
+                return { text: "", path: "" };
+              }),
             ]);
             setLogDrawer({
               stderr: agent.stderr,
@@ -4201,8 +4288,8 @@ export function StartupForm({
           .catch((err: unknown) =>
             showNotice(
               "Could not open pipeline",
-              err instanceof Error ? err.message : String(err),
-              "question",
+              errorText(err),
+              "failed",
             ),
           );
         return;
@@ -4232,8 +4319,8 @@ export function StartupForm({
           .catch((err: unknown) =>
             showNotice(
               "Could not open execution pipeline",
-              err instanceof Error ? err.message : String(err),
-              "question",
+              errorText(err),
+              "failed",
             ),
           );
         return;
@@ -4276,8 +4363,8 @@ export function StartupForm({
           .catch((err: unknown) =>
             showNotice(
               "Could not refresh models",
-              err instanceof Error ? err.message : String(err),
-              "question",
+              errorText(err),
+              "failed",
             ),
           );
         return;
@@ -4523,7 +4610,7 @@ export function StartupForm({
         if (want !== providerOf(tab)) {
           void setTabProvider(tabId, want)
             .then(() => refreshTabs())
-            .catch(() => {});
+            .catch((err: unknown) => showNotice("Provider not changed", errorText(err), "failed"));
         }
       }
     }
@@ -4547,7 +4634,7 @@ export function StartupForm({
       onRename={(tabId, label) => {
         void setTabLabel(tabId, label)
           .then(() => refreshTabs())
-          .catch(() => {});
+          .catch((err: unknown) => showNotice("Tab not renamed", errorText(err), "failed"));
       }}
       onRenameEnd={() => setRenamingTabId(null)}
       canReopen={closedTabs.length > 0}
@@ -4614,13 +4701,16 @@ export function StartupForm({
               current ? { ...current, [provider]: saved } : { cursor: saved, claude: saved },
             ),
           )
-          .catch(() => {});
+          .catch((err: unknown) => showNotice("Model setting not saved", errorText(err), "failed"));
       }}
       modelsRefreshing={modelsRefreshing}
       onRefreshModels={() => {
-        void refreshModelList().catch(() => {});
+        void refreshModelList().catch((err: unknown) =>
+          showNotice("Could not refresh the model list", errorText(err), "failed"),
+        );
       }}
       approvalMode={approvalMode}
+      onUnsavedChange={onSettingsUnsaved}
       onClose={() => setSettingsOpen(false)}
     />
   );
@@ -4631,7 +4721,9 @@ export function StartupForm({
   /** F8: setup finished: put the role and folder on the active draft tab, then Start. */
   const finishFirstRun = (choice: FirstRunFinish) => {
     setFirstRunOpen(false);
-    void firstRunComplete().catch(() => {});
+    void firstRunComplete().catch((err: unknown) =>
+      showNotice("Setup state not saved", errorText(err), "failed"),
+    );
     chooseRole(choice.roleId);
     setField("cwd", choice.folder);
     setPendingStart(choice);
@@ -4640,7 +4732,9 @@ export function StartupForm({
 
   const skipFirstRun = () => {
     setFirstRunOpen(false);
-    void firstRunComplete().catch(() => {});
+    void firstRunComplete().catch((err: unknown) =>
+      showNotice("Setup state not saved", errorText(err), "failed"),
+    );
   };
 
   /** F7: open the workspaces dialog (and push the active form to state.json). */
@@ -4651,7 +4745,7 @@ export function StartupForm({
     void workspacesList()
       .then(setWorkspaceList)
       .catch((err: unknown) =>
-        setWorkspaceError(err instanceof Error ? err.message : String(err)),
+        setWorkspaceError(errorText(err)),
       );
   }
 
@@ -4669,11 +4763,14 @@ export function StartupForm({
       );
       if (
         live.length > 0 &&
-        !window.confirm(
-          `Replace the open tabs? ${live.length} running agent or terminal${
+        !(await confirm({
+          title: "Replace the open tabs",
+          message: `Replace the open tabs? ${live.length} running agent or terminal${
             live.length === 1 ? "" : "s"
           } will be stopped. Closed tabs stay in Reopen closed tab.`,
-        )
+          confirmLabel: "Replace",
+          danger: true,
+        }))
       ) {
         return;
       }
@@ -4681,7 +4778,7 @@ export function StartupForm({
         const rt = runtimes[t.id];
         if (rt && rt.segments.length > 0) {
           await transcriptSave(t.id, segmentsToPlainText(rt.segments), rt.session?.cwd ?? t.cwd).catch(
-            () => {},
+            (err: unknown) => reportOnce("transcriptSave", "Transcript not saved", err),
           );
         }
       }
@@ -4737,7 +4834,7 @@ export function StartupForm({
         setFilePanelOpen(layout.filePanelOpen);
         setFilePanelWidth(layout.filePanelWidth);
       })
-      .catch(() => {});
+      .catch((err: unknown) => reportOnce("layoutLoad", "Layout did not load", err));
   };
 
   /** The active tab's pad editor (chat pad or terminal pad), if mounted. */
@@ -4761,7 +4858,7 @@ export function StartupForm({
         setPromptLibraryError(null);
       })
       .catch((err: unknown) =>
-        setPromptLibraryError(err instanceof Error ? err.message : String(err)),
+        setPromptLibraryError(errorText(err)),
       );
 
   /** F6: open the library; `save` starts "Save as prompt" with the pad (or its selection). */
@@ -4793,6 +4890,7 @@ export function StartupForm({
     if (promptId) {
       void promptMarkUsed(promptId)
         .then(setPromptLibrary)
+        // intentionally silent: the "last used" counter is cosmetic.
         .catch(() => {});
     }
     const terminal = savedTabs.find((tab) => tab.id === tabId)?.kind === "terminal";
@@ -4821,7 +4919,10 @@ export function StartupForm({
         });
         return;
       }
-      const file = await transcriptLoad(hit.tabId).catch(() => null);
+      const file = await transcriptLoad(hit.tabId).catch((err: unknown) => {
+        showNotice("Transcript not loaded", errorText(err), "failed");
+        return null;
+      });
       if (hit.source === "closed") {
         stashActiveTab();
         const { tab } = await reopenClosedTab(hit.tabId);
@@ -4838,7 +4939,7 @@ export function StartupForm({
         nonce,
       });
     } catch (err: unknown) {
-      showNotice("Could not open that chat", err instanceof Error ? err.message : String(err), "failed");
+      showNotice("Could not open that chat", errorText(err), "failed");
     }
   };
 
@@ -4953,41 +5054,23 @@ export function StartupForm({
         />
       )}
       {accountPickerOpen && (
-        <div
-          className="overlay-backdrop"
-          role="presentation"
-          onClick={() => setAccountPickerOpen(false)}
-        >
-          <div
-            className="overlay-panel"
-            role="dialog"
-            aria-label="New window"
-            onClick={(event) => event.stopPropagation()}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                event.stopPropagation();
-                setAccountPickerOpen(false);
-              }
-            }}
-          >
-            <h3>New window</h3>
-            <p className="hint">
-              Claude tabs in the new window use the account you pick. Cursor tabs are unchanged.
-            </p>
-            <div className="button-row">
-              {(providers.view ? claudeAccounts(providers.view.settings.claude) : []).map((account) => (
-                <button
-                  key={account.id}
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => launchAccountWindow(account.id)}
-                >
-                  {account.name}
-                </button>
-              ))}
-            </div>
+        <Dialog title="New window" onClose={() => setAccountPickerOpen(false)}>
+          <p className="hint">
+            Claude tabs in the new window use the account you pick. Cursor tabs are unchanged.
+          </p>
+          <div className="button-row">
+            {(providers.view ? claudeAccounts(providers.view.settings.claude) : []).map((account) => (
+              <button
+                key={account.id}
+                type="button"
+                className="secondary-button"
+                onClick={() => launchAccountWindow(account.id)}
+              >
+                {account.name}
+              </button>
+            ))}
           </div>
-        </div>
+        </Dialog>
       )}
       {worktreeDialogOpen && (
         <WorktreeDialog
@@ -5031,7 +5114,7 @@ export function StartupForm({
                   logPath: app.path || null,
                 });
               })
-              .catch(() => {})
+              .catch((err: unknown) => showNotice("Could not read the logs", errorText(err), "failed"))
               .finally(() => setLogBusy(false));
           }}
           onClose={() => setLogDrawerOpen(false)}
@@ -5763,7 +5846,9 @@ export function StartupForm({
               notePadSelection();
               scratch.flush();
             }}
+            // intentionally silent: the recent-sends record is best effort.
             onSent={(text) => void promptRecordSend(text, "terminal").catch(() => {})}
+            onError={(message) => showNotice("Not sent to the terminal", message, "failed")}
             beforeSubmit={snapshotTerminalTurn}
             onOpenLibrary={() => openPromptLibrary(false)}
             write={ptyWrite}
@@ -5898,7 +5983,7 @@ export function StartupForm({
           void setTabModel(tabId, model)
             .then(() => refreshTabs())
             .catch((err: unknown) =>
-              setModelNotice(err instanceof Error ? err.message : String(err)),
+              setModelNotice(errorText(err)),
             );
         }}
       />
@@ -5977,7 +6062,7 @@ export function StartupForm({
       .then(() => setTabProvider(tabId, provider, pickedRoleId || roleId || null))
       .then(() => refreshTabs())
       .then(() => providers.refreshSettings())
-      .catch((err: unknown) => setModelNotice(err instanceof Error ? err.message : String(err)));
+      .catch((err: unknown) => setModelNotice(errorText(err)));
   };
   const providerChip =
     activeTabSummary && activeTabSummary.phase === "draft" && showFields ? (

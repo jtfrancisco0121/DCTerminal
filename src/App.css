@@ -1279,50 +1279,147 @@ body,
   z-index: var(--z-overlay);
 }
 
+.overlay-backdrop-center {
+  align-items: center;
+  padding-top: 0;
+}
+
 .overlay-panel {
   width: min(40rem, 92vw);
-  max-height: 70vh;
-  overflow: auto;
+  max-height: min(85vh, 60rem);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 1rem;
+  box-shadow: var(--elev-3);
+  padding: 0;
 }
 
-.log-drawer-backdrop {
-  position: fixed;
-  inset: 0;
-  background: var(--backdrop);
-  display: flex;
-  align-items: stretch;
-  justify-content: flex-end;
-  z-index: var(--z-drawer);
+.overlay-panel:focus {
+  outline: none;
 }
 
-.log-drawer {
-  width: min(36rem, 96vw);
-  max-width: 100%;
-  height: 100%;
-  overflow: auto;
-  background: var(--bg-elev);
-  border-left: 1px solid var(--border);
-  padding: 1rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.log-drawer-header {
+.dialog-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+  flex: none;
 }
 
-.log-drawer-header h2 {
+.dialog-header-hidden {
+  display: none;
+}
+
+.dialog-title {
+  flex: 1;
+  min-width: 0;
   margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 600;
+}
+
+.dialog-close {
   font-size: var(--text-xl);
 }
+
+.dialog-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-4);
+}
+
+.dialog-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--border);
+  flex: none;
+}
+
+.first-run-skip {
+  margin-right: auto;
+}
+
+.dialog-footer-note {
+  margin-right: auto;
+  font-size: var(--text-sm);
+  color: var(--fg-muted);
+}
+
+/* R4: inline notices. */
+.inline-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: var(--radius-md);
+  background: var(--bg-inset);
+  font-size: var(--text-md);
+  overflow-wrap: anywhere;
+}
+
+.inline-notice-info {
+  border-left-color: var(--accent);
+}
+
+.inline-notice-warning {
+  border-left-color: var(--attention);
+  background: var(--warning-subtle);
+}
+
+.inline-notice-error {
+  border-left-color: var(--danger);
+  background: var(--danger-subtle);
+}
+
+.inline-notice-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.inline-notice-action {
+  flex: none;
+}
+
+.pipeline-plan-details > summary {
+  cursor: pointer;
+  margin-bottom: var(--space-2);
+  color: var(--fg-muted);
+  font-size: var(--text-md);
+}
+
+.dialog-subtitle {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-md);
+}
+
+.confirm-dialog {
+  width: min(28rem, 92vw);
+}
+
+.confirm-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+
+.log-drawer {
+  width: min(40rem, 94vw);
+}
+
+
 
 .log-drawer-section h3 {
   margin: 0 0 0.35rem;
@@ -2775,11 +2872,10 @@ kbd {
   white-space: nowrap;
 }
 
-.worktree-dialog {
+.worktree-dialog .dialog-body {
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
-  max-height: 85vh;
 }
 
 .worktree-dialog h3 {
@@ -2803,6 +2899,10 @@ kbd {
   width: min(84rem, 96vw);
   height: 86vh;
   max-height: 86vh;
+}
+
+.changes-panel .dialog-body,
+.activity-panel .dialog-body {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
@@ -2970,10 +3070,6 @@ kbd {
   width: min(84rem, 96vw);
   height: 86vh;
   max-height: 86vh;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  overflow: hidden;
 }
 
 .activity-counts {
@@ -3231,11 +3327,15 @@ mark.search-hit-current {
 }
 
 .chat-search-dialog {
+  width: min(56rem, 94vw);
+}
+
+.chat-search-dialog .dialog-body,
+.prompt-library .dialog-body,
+.workspaces-dialog .dialog-body {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-  width: min(56rem, 94vw);
-  max-height: 85vh;
   overflow: hidden;
 }
 
@@ -3333,12 +3433,7 @@ mark.search-hit-current {
 
 /* F6: prompt library. */
 .prompt-library {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
   width: min(52rem, 94vw);
-  max-height: 85vh;
-  overflow: hidden;
 }
 
 .prompt-library-head {
@@ -3471,12 +3566,7 @@ mark.search-hit-current {
 
 /* F7: workspaces. */
 .workspaces-dialog {
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
   width: min(50rem, 94vw);
-  max-height: 85vh;
-  overflow: hidden;
 }
 
 .workspaces-dialog h3 {
@@ -3602,10 +3692,13 @@ mark.search-hit-current {
 
 /* F8: first-run setup. */
 .first-run {
+  width: min(36rem, 94vw);
+}
+
+.first-run .dialog-body {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
-  width: min(36rem, 94vw);
 }
 
 .first-run h3 {
@@ -3667,24 +3760,17 @@ mark.search-hit-current {
   word-break: break-all;
 }
 
-.first-run-actions {
-  display: flex;
-  gap: 0.5rem;
-  align-items: center;
-}
 
-.first-run-actions .link-button {
-  margin-left: auto;
-}
 
 /* F9: chat history from the palette. */
 .chat-history-dialog {
+  width: min(40rem, 94vw);
+}
+
+.chat-history-dialog .dialog-body {
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
-  width: min(40rem, 94vw);
-  max-height: 80vh;
-  overflow: auto;
 }
 
 .chat-history-dialog:focus,
@@ -4875,4 +4961,10 @@ button.chain-label {
   flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
+}
+
+/* R12: a disabled-reason note inside a button row sits next to its button. */
+.disabled-reason-inline {
+  margin-right: 0;
+  align-self: center;
 }

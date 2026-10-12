@@ -25,6 +25,7 @@ import type { NotificationSettings } from "../notify/agentNotify";
 import { formatReset, formatSeen, isStale, limitTone } from "../usage/limits";
 import { APP_VERSION } from "../workspaceView";
 import { RoleEditor } from "./RoleEditor";
+import { useConfirm } from "./confirm";
 
 type Props = {
   roles: RoleSummary[];
@@ -54,6 +55,8 @@ type Props = {
   /** Settings > Providers data (shared with the status bar). */
   providers?: ProvidersState | null;
   onRefreshRoles?: () => Promise<void>;
+  /** Reports whether Settings holds edits that leaving would discard. */
+  onUnsavedChange?: (dirty: boolean) => void;
   onClose: () => void;
 };
 
@@ -106,8 +109,29 @@ export function SettingsPage({
   initialCategory = "Roles",
   providers = null,
   onRefreshRoles,
+  onUnsavedChange,
   onClose,
 }: Props) {
+  const confirm = useConfirm();
+  const [rolesDirty, setRolesDirty] = useState(false);
+  useEffect(() => {
+    onUnsavedChange?.(rolesDirty);
+    return () => onUnsavedChange?.(false);
+  }, [rolesDirty, onUnsavedChange]);
+  const close = async () => {
+    if (
+      rolesDirty &&
+      !(await confirm({
+        title: "Leave Settings?",
+        message: "Your role edits are not saved. Leaving discards them.",
+        confirmLabel: "Discard and leave",
+        danger: true,
+      }))
+    ) {
+      return;
+    }
+    onClose();
+  };
   const [category, setCategory] = useState<SettingsCategory>(initialCategory);
   const [usage, setUsage] = useState<UsageSnapshot | null>(null);
   const [usageError, setUsageError] = useState<string | null>(null);
@@ -132,7 +156,7 @@ export function SettingsPage({
     <div className="settings-page">
       <header className="settings-header">
         <h2>Settings</h2>
-        <button type="button" className="secondary-button" onClick={onClose}>
+        <button type="button" className="secondary-button" onClick={() => void close()}>
           Close
         </button>
       </header>
@@ -145,14 +169,28 @@ export function SettingsPage({
               type="button"
               className="settings-nav-item"
               aria-current={category === name ? "page" : undefined}
-              onClick={() => setCategory(name)}
+              onClick={() => {
+                if (name === category) return;
+                if (!rolesDirty) {
+                  setCategory(name);
+                  return;
+                }
+                void confirm({
+                  title: "Leave the role editor?",
+                  message: "Your role edits are not saved. Leaving discards them.",
+                  confirmLabel: "Discard and leave",
+                  danger: true,
+                }).then((ok) => {
+                  if (ok) setCategory(name);
+                });
+              }}
             >
               {name}
             </button>
           ))}
         </nav>
         <div className="settings-content">
-          {category === "Roles" && <RoleEditor roles={roles} onRefreshRoles={onRefreshRoles} />}
+          {category === "Roles" && <RoleEditor roles={roles} onRefreshRoles={onRefreshRoles} onDirtyChange={setRolesDirty} />}
           {category === "Providers" &&
             (providers ? (
               <ProvidersSettingsSection providers={providers} />

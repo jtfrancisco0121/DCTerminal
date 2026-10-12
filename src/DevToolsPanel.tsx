@@ -75,6 +75,11 @@ export function DevToolsPanel({ cli, cliError }: Props) {
       setDevSession(await devSessionStart(devCwd, "agent"));
     } catch (err: unknown) {
       setDevSession(null);
+      setDevResult({
+        stopReason: err instanceof Error ? err.message : String(err),
+        agentText: "",
+        updateCount: 0,
+      });
     } finally {
       setDevBusy(false);
     }

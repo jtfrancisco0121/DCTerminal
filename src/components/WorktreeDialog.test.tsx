@@ -150,4 +150,32 @@ describe("WorktreeDialog", () => {
     expect(onClose).toHaveBeenCalledOnce();
     expect(onCreate).not.toHaveBeenCalled();
   });
+
+  it("says why Create is off, and cannot be dismissed while creating", async () => {
+    let finish: () => void = () => {};
+    const onCreate = vi.fn(() => new Promise<void>((resolve) => (finish = resolve)));
+    const onClose = vi.fn();
+    render(
+      <WorktreeDialog
+        initialRepo="/Users/jt/Koneksi"
+        roles={roles}
+        defaultRoleId="role_planner"
+        loadRepo={async () => info}
+        onCreate={onCreate}
+        onClose={onClose}
+      />,
+    );
+    const name = await screen.findByLabelText("New branch name");
+    expect(screen.getByRole("note").textContent).toBe("Enter a name for the new branch.");
+    fireEvent.change(name, { target: { value: "feat/login" } });
+    expect(screen.queryByRole("note")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Create worktree and open tab" }));
+    await screen.findByRole("button", { name: "Creating…" });
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+    expect((screen.getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByLabelText("New branch name") as HTMLInputElement).disabled).toBe(true);
+    finish();
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Creating…" })).toBeNull());
+  });
 });

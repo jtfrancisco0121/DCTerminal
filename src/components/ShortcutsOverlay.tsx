@@ -1,3 +1,4 @@
+import { Dialog } from "./Dialog";
 import { shortcutRows, type Platform } from "../keymap";
 
 type Props = {
@@ -8,19 +9,7 @@ type Props = {
 export function ShortcutsOverlay({ platform, onClose }: Props) {
   const rows = shortcutRows(platform);
   return (
-    <div className="overlay-backdrop" role="presentation" onClick={onClose}>
-      <div
-        className="overlay-panel"
-        role="dialog"
-        aria-labelledby="shortcuts-title"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <header className="overlay-header">
-          <h2 id="shortcuts-title">Keyboard shortcuts</h2>
-          <button type="button" className="secondary-button" onClick={onClose}>
-            Close
-          </button>
-        </header>
+    <Dialog title="Keyboard shortcuts" onClose={onClose}>
         <p className="hint">
           Plain Ctrl in the chat and scratch pad (⌘ on macOS). Ctrl+Shift is for the terminal:
           copy, paste, search, the shell pane, and transfer. Ctrl+C still goes to the shell.
@@ -44,7 +33,6 @@ export function ShortcutsOverlay({ platform, onClose }: Props) {
             </span>
           </li>
         </ul>
-      </div>
-    </div>
+    </Dialog>
   );
 }

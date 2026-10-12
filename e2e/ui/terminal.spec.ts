@@ -313,7 +313,6 @@ test("closing a terminal tab removes its xterm host from the DOM", async ({ app,
 });
 
 test("changing a live CLI terminal's model can stop its PTY (pty_kill)", async ({ app, page }) => {
-  page.on("dialog", (dialog) => void dialog.accept());
   await app.open({
     tabs: [terminalTab("tab-1", "claude-cli", "Claude Code · demo", { provider: "claude" })],
   });
@@ -322,6 +321,7 @@ test("changing a live CLI terminal's model can stop its PTY (pty_kill)", async (
   await page.getByRole("listbox", { name: "Model for Claude Code · demo" }).getByRole("option", { name: /Sonnet/ }).click();
   const model = await app.waitForCall("set_tab_model");
   expect(model.args).toEqual({ tabId: "tab-1", model: "sonnet" });
+  await page.getByRole("alertdialog", { name: "Restart to apply the model" }).getByRole("button", { name: "Stop the agent" }).click();
   const killed = await app.waitForCall("pty_kill");
   expect(killed.args).toEqual({ id: "tab-1" });
   await expect(page.getByText("The agent stopped. Press Restart to use the new model.")).toBeVisible();

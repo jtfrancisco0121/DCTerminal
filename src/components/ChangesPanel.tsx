@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { DisabledReason } from "./DisabledReason";
 import {
   changesFileDiff,
   changesList,
@@ -19,6 +20,8 @@ import {
   unaccepted,
   type DiffLine,
 } from "../changes/diffModel";
+import { Dialog } from "./Dialog";
+import { useConfirm } from "./confirm";
 
 type View = "unified" | "split";
 
@@ -84,6 +87,7 @@ export function ChangesPanel({
   onOpenInFilePanel,
   onClose,
 }: Props) {
+  const confirm = useConfirm();
   const [scope, setScope] = useState<ChangeScope>("turn");
   const [view, setView] = useState<View>(readView);
   const [set, setSet] = useState<ChangeSet | null>(null);
@@ -153,7 +157,13 @@ export function ChangesPanel({
 
   const revert = async (files: ChangedFile[], kept = 0) => {
     if (!set?.baseTree || files.length === 0 || busy || reverting) return;
-    if (!window.confirm(revertConfirmText(files, kept))) return;
+    const ok = await confirm({
+      title: files.length === 1 ? "Revert file" : "Revert files",
+      message: revertConfirmText(files, kept),
+      confirmLabel: files.length === 1 ? "Revert file" : `Revert ${files.length} files`,
+      danger: true,
+    });
+    if (!ok) return;
     setReverting(true);
     setNotice(null);
     try {
@@ -343,22 +353,8 @@ export function ChangesPanel({
   }
 
   return (
-    <div className="overlay-backdrop" role="presentation" onClick={onClose}>
-      <div
-        className="overlay-panel changes-panel"
-        role="dialog"
-        aria-label={`Changes in ${tabLabel}`}
-        onClick={(event) => event.stopPropagation()}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            event.stopPropagation();
-            onClose();
-          }
-        }}
-      >
+    <Dialog title={`Changes in ${tabLabel}`} className="changes-panel" onClose={onClose}>
         <div className="changes-bar">
-          <h3>Changes</h3>
-          <span className="hint">{tabLabel}</span>
           <div className="segmented" role="radiogroup" aria-label="Changes since">
             {(["turn", "tab"] as const).map((value) => (
               <label key={value} className="segmented-option">
@@ -411,9 +407,9 @@ export function ChangesPanel({
           >
             Revert all…
           </button>
-          <button type="button" className="secondary-button" aria-label="Close changes" onClick={onClose}>
-            ×
-          </button>
+          {!busy && !reverting && pending.length === 0 && (
+            <DisabledReason>Nothing to revert.</DisabledReason>
+          )}
         </div>
         {set?.state === "ok" && set.baselineAt && (
           <p className="hint changes-since">
@@ -432,7 +428,6 @@ export function ChangesPanel({
           </p>
         )}
         {body}
-      </div>
-    </div>
+    </Dialog>
   );
 }
