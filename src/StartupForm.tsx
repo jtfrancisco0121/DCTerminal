@@ -243,9 +243,11 @@ import {
 } from "./terminal/sessionLogPoll";
 import {
   deriveTerminalState,
+  dialogAfterRead,
   sameTerminalState,
   terminalNeedsMessage,
   terminalWaitingText,
+  type DialogOwner,
   type TerminalState,
 } from "./terminal/claudeState";
 import { dialogDetector } from "./terminal/permissionDialog";
@@ -530,6 +532,10 @@ export function StartupForm({
   const [ptyVersion, setPtyVersion] = useState(0);
   /** Terminals whose PTY output shows Claude Code's permission dialog. */
   const [dialogTabs, setDialogTabs] = useState<string[]>([]);
+  /** The open tool each visible permission dialog asks about. */
+  const dialogOwners = useRef(new Map<string, DialogOwner>());
+  /** Tabs whose PTYs a workspace replace is stopping: their exit is not news. */
+  const replacingTabs = useRef(new Set<string>());
   const [renamingTabId, setRenamingTabId] = useState<string | null>(null);
   const [worktreeDialogOpen, setWorktreeDialogOpen] = useState(false);
   /** F4: the tab whose changes (diff) panel is open. */
@@ -1204,9 +1210,10 @@ export function StartupForm({
       // A Claude role terminal is marked when its turn ends, not when output
       // stops; an exited process is reported as exited, never as finished.
       const quiet = settled.filter((id) => {
-        const tab = savedTabsRef.current.find((item) => item.id === id);
-        if (tab && isClaudeRoleTerminal(tab)) return false;
         if (ptyExitCode(id) != null) return false;
+        const tab = savedTabsRef.current.find((item) => item.id === id);
+        // Without a readable session log, output settling is all there is.
+        if (tab && isClaudeRoleTerminal(tab)) return sessionLogsRef.current[id] === null;
         return !(sessionLogWatch.current.has(id) && sessionLogsRef.current[id]);
       });
       if (quiet.length > 0) {
@@ -1227,7 +1234,8 @@ export function StartupForm({
   }, [hasTerminalTabs, isWatchingTab, notifyAgent]);
 
   const storeSessionLog = useCallback(
-    (tabId: string, log: TerminalSessionLog | null) => {
+    /** `readAt`: when the read started; omitted for one-off reads. */
+    (tabId: string, log: TerminalSessionLog | null, readAt?: number) => {
       const prev = sessionLogsRef.current[tabId];
       const watched = sessionLogWatch.current.get(tabId);
       if (watched && log) {
@@ -1261,9 +1269,17 @@ export function StartupForm({
           setTabMarks((marks) => markAfterTurn(marks, tabId, "finished", watching));
         }
       }
-      // The tool the dialog asked about was answered: a later tool needs a fresh dialog.
-      const prevTool = prev?.openTool?.id;
-      if (prevTool && prevTool !== log?.openTool?.id) dialogDetector.clear(tabId);
+      // Hide the dialog once the tool it asked about was answered: a later
+      // tool needs a fresh dialog. An earlier tool finishing is not that.
+      if (readAt !== undefined) {
+        const next = dialogAfterRead(dialogOwners.current.get(tabId), log, readAt);
+        if (next.clear) {
+          dialogOwners.current.delete(tabId);
+          dialogDetector.clear(tabId);
+        } else if (next.owner) {
+          dialogOwners.current.set(tabId, next.owner);
+        }
+      }
       if (prev !== undefined && sameSessionLog(prev, log)) return;
       sessionLogsRef.current = { ...sessionLogsRef.current, [tabId]: log };
       setSessionLogs(sessionLogsRef.current);
@@ -1285,6 +1301,7 @@ export function StartupForm({
     });
     const unsubscribeExit = subscribePtyExit((id, code) => {
       setPtyVersion((value) => value + 1);
+      if (replacingTabs.current.has(id)) return;
       const tab = savedTabsRef.current.find((item) => item.id === id);
       if (!tab || !isClaudeRoleTerminal(tab)) return;
       const watching = isWatchingTab(id);
@@ -1297,6 +1314,9 @@ export function StartupForm({
         if (visible === prev.includes(id)) return prev;
         return visible ? [...prev, id] : prev.filter((item) => item !== id);
       });
+      // A new draw belongs to whatever tool the next read finds open.
+      if (visible) dialogOwners.current.set(id, { since: Date.now(), toolId: null });
+      else dialogOwners.current.delete(id);
       // Read the log now: the open tool decides what the dialog is for.
       const entry = sessionLogWatch.current.get(id);
       if (visible && entry) entry.poll = undefined;
@@ -1362,7 +1382,7 @@ export function StartupForm({
             reading.delete(id);
             if (cancelled) return;
             entry.poll = afterSessionLogRead(entry.poll, busy, log, Date.now());
-            storeSessionLog(id, log);
+            storeSessionLog(id, log, now);
           });
       }
     };
@@ -4566,7 +4586,15 @@ export function StartupForm({
     }
     scratch.flush();
     stashActiveTab();
-    const result = await workspaceOpen(id, replace);
+    // The backend stops the old PTYs before this returns; that is not a crash.
+    const replacing = replace ? old.map((t) => t.id) : [];
+    for (const tabId of replacing) replacingTabs.current.add(tabId);
+    let result: Awaited<ReturnType<typeof workspaceOpen>>;
+    try {
+      result = await workspaceOpen(id, replace);
+    } finally {
+      for (const tabId of replacing) replacingTabs.current.delete(tabId);
+    }
     if (replace) {
       for (const t of old) {
         delete draftsRef.current[t.id];

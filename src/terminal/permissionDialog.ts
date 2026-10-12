@@ -18,7 +18,11 @@ export type DialogDetector = {
   clear(id: string): void;
   /** Drop all state for this id (process exited / tab closed). */
   forget(id: string): void;
-  /** Called with the id whenever isVisible(id) flips (including the debounce expiring). Returns unsubscribe. */
+  /**
+   * Called with the id whenever isVisible(id) flips (including the debounce
+   * expiring), and when a whole dialog is drawn again after user input.
+   * Returns unsubscribe.
+   */
   subscribe(listener: (id: string) => void): () => void;
 };
 
@@ -218,14 +222,16 @@ export function createDialogDetector(opts: DetectorOptions = {}): DialogDetector
       if (!complete) return;
       s.window += normalizeTerminalText(complete);
       if (s.window.length > windowChars) s.window = s.window.slice(-windowChars);
-      const matched = s.visible
-        ? matchPermissionDialog(s.window) || matchOptionList(s.window)
-        : matchPermissionDialog(s.window);
-      if (!matched) return;
+      const full = matchPermissionDialog(s.window);
+      if (!full && !(s.visible && matchOptionList(s.window))) return;
+      // A whole question drawn after an answer may be the next tool's dialog.
+      const redrawn = full && s.visible && s.hideAt !== null;
       // A fresh draw after the last input: the dialog is still up.
       cancelHide(s);
       if (!s.visible) {
         s.visible = true;
+        notify(id);
+      } else if (redrawn) {
         notify(id);
       }
     },

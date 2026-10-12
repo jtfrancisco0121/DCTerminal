@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   deriveTerminalState,
+  dialogAfterRead,
   sameTerminalState,
   terminalNeedsMessage,
   terminalWaitingText,
@@ -80,5 +81,50 @@ describe("terminal state text", () => {
     expect(
       terminalNeedsMessage({ kind: "needs", needs: "permission", toolId: "t", toolTitle: "Bash: ls" }),
     ).toBe("Claude Code needs your permission: Bash: ls");
+  });
+});
+
+describe("dialogAfterRead", () => {
+  const owner = (toolId: string | null, since = 100) => ({ since, toolId });
+  const log = (openId: string | null, turnDone = false) => ({
+    turnDone,
+    openTool: openId ? open("Bash", openId) : null,
+  });
+
+  it("adopts the open tool from the first read after the dialog appeared", () => {
+    expect(dialogAfterRead(owner(null), log("toolu_b"), 150)).toEqual({
+      owner: owner("toolu_b"),
+      clear: false,
+    });
+  });
+
+  it("does not clear a new dialog because an earlier tool finished", () => {
+    // Tool A was open at the last read; B's dialog was drawn since.
+    expect(dialogAfterRead(owner(null), log("toolu_b"), 150).clear).toBe(false);
+    expect(dialogAfterRead(owner("toolu_b"), log("toolu_b"), 200).clear).toBe(false);
+  });
+
+  it("ignores reads that started before the dialog was drawn", () => {
+    expect(dialogAfterRead(owner(null, 100), log("toolu_a"), 90)).toEqual({
+      owner: owner(null, 100),
+      clear: false,
+    });
+  });
+
+  it("ignores a failed read", () => {
+    expect(dialogAfterRead(owner("toolu_b"), null, 200)).toEqual({
+      owner: owner("toolu_b"),
+      clear: false,
+    });
+  });
+
+  it("clears once its own tool is answered or rejected, or the turn ends", () => {
+    expect(dialogAfterRead(owner("toolu_b"), log(null), 200)).toEqual({ owner: undefined, clear: true });
+    expect(dialogAfterRead(owner("toolu_b"), log("toolu_c"), 200).clear).toBe(true);
+    expect(dialogAfterRead(owner(null), log(null, true), 200).clear).toBe(true);
+  });
+
+  it("does nothing while no dialog is shown", () => {
+    expect(dialogAfterRead(undefined, log(null), 200)).toEqual({ owner: undefined, clear: false });
   });
 });

@@ -207,6 +207,19 @@ describe("dialog detector", () => {
     expect(d.isVisible("a")).toBe(false);
   });
 
+  it("notifies again when a whole dialog is drawn after an answer (the next tool's)", () => {
+    const { d, timers, calls } = setup();
+    d.feed("a", bytes(PROCEED));
+    d.input("a", 1000);
+    d.feed("a", bytes(`Do you want to make this edit to auth.ts?\r\n${options("Yes, allow all edits")}`));
+    expect(calls).toEqual(["a", "a"]);
+    expect(timers.count).toBe(0);
+    // Later spinner output with the dialog still in the window is not a new draw.
+    d.feed("a", bytes("\r\x1b[2K✻ Thinking…"));
+    expect(calls).toEqual(["a", "a"]);
+    expect(d.isVisible("a", 99_999)).toBe(true);
+  });
+
   it("input clears stale text so an old dialog cannot re-match", () => {
     const { d, timers } = setup();
     d.feed("a", bytes("Do you want to proceed?\r\n"));

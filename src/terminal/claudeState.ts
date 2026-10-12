@@ -78,3 +78,29 @@ export function terminalNeedsMessage(state: Extract<TerminalState, { kind: "need
     ? `Claude Code needs your permission: ${state.toolTitle}`
     : "Claude Code needs your permission";
 }
+
+/**
+ * The permission dialog on screen: when the detector saw it drawn, and the
+ * open tool it asks about (null until a log read after `since` names one).
+ */
+export type DialogOwner = { since: number; toolId: string | null };
+
+/**
+ * After a session-log read that started at `readAt`: which tool the visible
+ * dialog belongs to, and whether to hide it. It is hidden only once its own
+ * tool leaves the log (answered or rejected) or the turn ends; never because
+ * an earlier tool finished, and never on a failed or stale read.
+ */
+export function dialogAfterRead(
+  owner: DialogOwner | undefined,
+  log: Pick<TerminalSessionLog, "turnDone" | "openTool"> | null,
+  readAt: number,
+): { owner: DialogOwner | undefined; clear: boolean } {
+  if (!owner || !log || readAt < owner.since) return { owner, clear: false };
+  if (log.turnDone) return { owner: undefined, clear: true };
+  const openId = log.openTool?.id ?? null;
+  if (owner.toolId === null) {
+    return { owner: openId ? { ...owner, toolId: openId } : owner, clear: false };
+  }
+  return openId === owner.toolId ? { owner, clear: false } : { owner: undefined, clear: true };
+}
