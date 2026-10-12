@@ -167,7 +167,8 @@ const squash = (text: string) => text.replace(/\s+/g, "");
  * name, host, command) ends closest to the question, since lines higher up
  * can be transcript lines for other calls; on a tie the longer hint, then a
  * call other than `answered` (a dialog drawn again after an answer is for
- * the next call); else the oldest. Claude Code asks about parallel calls
+ * the next of two identical calls); else the oldest, or the twin of
+ * `answered`. Claude Code asks about parallel calls
  * oldest first, but calls that need no permission (reads, fetches to allowed
  * hosts, subagents) may still be running ahead.
  */
@@ -195,8 +196,13 @@ function toolForPrompt(
     }
   }
   if (best) return best;
-  // Nothing named: the oldest, but not the call just answered.
-  return candidates.find((tool) => tool.id !== answered) ?? candidates[0];
+  // Nothing named: the oldest, or after an answer the twin of the call just
+  // answered (identical parallel calls), never an unrelated call.
+  const done = candidates.find((tool) => tool.id === answered);
+  const twin = done
+    ? candidates.find((tool) => tool.id !== done.id && tool.name === done.name && tool.title === done.title)
+    : undefined;
+  return twin ?? candidates[0];
 }
 
 /**
@@ -229,11 +235,15 @@ export function dialogAfterRead(
   if (!next && settled) return { owner: undefined, clear: true };
   // Not written to the log yet: keep waiting for its call.
   if (!next) return { owner: { ...owner, toolId: stillOpen ? owner.toolId : null }, clear: false };
-  // A new prompt: first one, a different dialog body, or the same body drawn
-  // again for another call (the same command asked twice).
+  // A new prompt: the first one, a different dialog body, a dialog drawn
+  // after an answer key or click (which dismisses the one before), or the
+  // same body drawn again for another call.
   const isNew =
     owner.fresh &&
-    (owner.promptKey === null || owner.drawNew || (owner.toolId !== null && next.id !== owner.toolId));
+    (owner.promptKey === null ||
+      owner.drawNew ||
+      owner.afterAnswer ||
+      (owner.toolId !== null && next.id !== owner.toolId));
   return {
     owner: {
       ...owner,

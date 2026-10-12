@@ -216,6 +216,24 @@ describe("dialog owner", () => {
     expect(shown(again, log([b, b2]))).toMatchObject({ id: "toolu_b", promptKey: "100" });
   });
 
+  it("a subagent asking the same thing again stays on its Agent call, not an unrelated one", () => {
+    const agent = open("Agent", "toolu_x");
+    const build = open("Bash", "toolu_a", "npm run build");
+    const body = "Bash command\nrm -rf dist\n" + ASK;
+    const first = read(drawn(body), log([agent, build])).owner;
+    const again = read(drawn(body, first, 200, true), log([agent, build]), 250).owner;
+    expect(shown(again, log([agent, build]))).toMatchObject({ id: "toolu_x", promptKey: "200" });
+  });
+
+  it("identical hintless parallel calls: the redraw after an answer is the twin's prompt", () => {
+    const m1 = open("mcp__db__query", "toolu_m1");
+    const m2 = open("mcp__db__query", "toolu_m2");
+    const first = read(drawn(), log([m1, m2])).owner;
+    expect(first?.toolId).toBe("toolu_m1");
+    const again = read(drawn(ASK, first, 200, true), log([m1, m2]), 250).owner;
+    expect(shown(again, log([m1, m2]))).toMatchObject({ id: "toolu_m2", promptKey: "200" });
+  });
+
   it("a subagent's next prompt keeps its Agent call's title while another call waits", () => {
     const agent = open("Agent", "toolu_x");
     const build = open("Bash", "toolu_a", "npm run build");
