@@ -1,5 +1,6 @@
 import { Fragment, useId, type ReactNode } from "react";
 import type { RoleSummary } from "../bridge";
+import { isTabStop, onRadioKeyDown, radioProps } from "./RadioGroup";
 
 type LaunchChoice = "shell" | "cursor-cli" | "claude-cli" | null;
 
@@ -36,14 +37,47 @@ export function groupRoleTiles(roles: RoleSummary[]): {
   return { pipeline, other };
 }
 
-function TileRow({ label, children }: { label: string; children: ReactNode }) {
+type Tile = {
+  key: string;
+  checked: boolean;
+  onClick: () => void;
+  content: ReactNode;
+};
+
+/** One labelled row of tiles. The choice spans rows, but each row is one tab stop. */
+function TileRow({ label, tiles, busy }: { label: string; tiles: Tile[]; busy: boolean }) {
   const labelId = useId();
+  const anyChecked = tiles.some((tile) => tile.checked);
   return (
-    <div className="role-tile-row" role="group" aria-labelledby={labelId}>
+    <div
+      className="role-tile-row"
+      role="radiogroup"
+      aria-labelledby={labelId}
+      onKeyDown={onRadioKeyDown}
+    >
       <span className="role-tile-row-label" id={labelId}>
         {label}
       </span>
-      <div className="role-tile-row-tiles">{children}</div>
+      <div className="role-tile-row-tiles">
+        {tiles.map((tile, index) => (
+          <Fragment key={tile.key}>
+            {label === "Pipeline" && index > 0 && (
+              <span className="role-tile-arrow" aria-hidden>
+                →
+              </span>
+            )}
+            <button
+              type="button"
+              className="role-tile"
+              {...radioProps(tile.checked, isTabStop(tile.checked, anyChecked, index))}
+              onClick={tile.onClick}
+              disabled={busy}
+            >
+              {tile.content}
+            </button>
+          </Fragment>
+        ))}
+      </div>
     </div>
   );
 }
@@ -60,67 +94,39 @@ export function RoleTiles({
   onLaunchClaudeCli,
 }: Props) {
   const { pipeline, other } = groupRoleTiles(roles);
-  const roleTile = (item: RoleSummary) => (
-    <button
-      key={item.id}
-      type="button"
-      className="role-tile"
-      aria-pressed={pickedRoleId === item.id && !launchChoice}
-      onClick={() => onChooseRole(item.id)}
-      disabled={busy}
-    >
-      <span className="role-dot" style={{ background: item.color }} aria-hidden />
-      {item.name}
-    </button>
-  );
+  const roleTile = (item: RoleSummary): Tile => ({
+    key: item.id,
+    checked: pickedRoleId === item.id && !launchChoice,
+    onClick: () => onChooseRole(item.id),
+    content: (
+      <>
+        <span className="role-dot" style={{ background: item.color }} aria-hidden />
+        {item.name}
+      </>
+    ),
+  });
+  const terminals: Tile[] = [
+    { key: "shell", checked: launchChoice === "shell", onClick: onLaunchShell, content: "Terminal" },
+  ];
+  if (onLaunchClaudeCli) {
+    terminals.push({
+      key: "claude-cli",
+      checked: launchChoice === "claude-cli",
+      onClick: onLaunchClaudeCli,
+      content: "Claude Code",
+    });
+  }
+  terminals.push({
+    key: "cursor-cli",
+    checked: launchChoice === "cursor-cli",
+    onClick: onLaunchCursorCli,
+    content: "Cursor CLI",
+  });
   return (
     <div className="role-tile-grid" role="group" aria-label="Role">
-      {pipeline.length > 0 && (
-        <TileRow label="Pipeline">
-          {pipeline.map((item, index) => (
-            <Fragment key={item.id}>
-              {index > 0 && (
-                <span className="role-tile-arrow" aria-hidden>
-                  →
-                </span>
-              )}
-              {roleTile(item)}
-            </Fragment>
-          ))}
-        </TileRow>
-      )}
-      {other.length > 0 && <TileRow label="Other roles">{other.map(roleTile)}</TileRow>}
-      <TileRow label="Terminals">
-        <button
-          type="button"
-          className="role-tile"
-          aria-pressed={launchChoice === "shell"}
-          onClick={onLaunchShell}
-          disabled={busy}
-        >
-          Terminal
-        </button>
-        {onLaunchClaudeCli && (
-          <button
-            type="button"
-            className="role-tile"
-            aria-pressed={launchChoice === "claude-cli"}
-            onClick={onLaunchClaudeCli}
-            disabled={busy}
-          >
-            Claude Code
-          </button>
-        )}
-        <button
-          type="button"
-          className="role-tile"
-          aria-pressed={launchChoice === "cursor-cli"}
-          onClick={onLaunchCursorCli}
-          disabled={busy}
-        >
-          Cursor CLI
-        </button>
-      </TileRow>
+      {pipeline.length > 0 && <TileRow label="Pipeline" tiles={pipeline.map(roleTile)} busy={busy} />}
+      {other.length > 0 && <TileRow label="Other roles" tiles={other.map(roleTile)} busy={busy} />}
+      <TileRow label="Terminals" tiles={terminals} busy={busy} />
     </div>
   );
 }

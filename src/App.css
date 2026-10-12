@@ -1752,7 +1752,6 @@ kbd {
   min-height: 0;
   overflow: hidden;
   padding: 0.25rem 0.25rem 0.75rem;
-  max-width: 60rem;
   display: flex;
   flex-direction: column;
 }
@@ -4190,7 +4189,8 @@ mark.search-hit-current {
   cursor: pointer;
 }
 
-.role-tile[aria-pressed="true"] {
+.role-tile[aria-pressed="true"],
+.role-tile[aria-checked="true"] {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent);
   background: var(--accent-subtle);
@@ -4211,8 +4211,24 @@ mark.search-hit-current {
 .start-surface-choices {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 0.35rem;
   margin: 0 0 0.5rem;
+}
+
+.start-surface-label {
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+}
+
+.start-surface-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.start-reason {
+  margin: 0 0 0.35rem;
 }
 
 .start-surface-choices .role-choice {
@@ -4272,10 +4288,10 @@ mark.search-hit-current {
 .folder-picker-compact .folder-picker-menu {
   position: absolute;
   top: calc(100% + 4px);
-  right: 0;
+  left: 0;
   z-index: var(--z-dropdown);
   width: 26rem;
-  max-width: 80vw;
+  max-width: calc(100vw - 3rem);
   box-shadow: var(--elev-2);
 }
 
@@ -4487,6 +4503,17 @@ mark.search-hit-current {
 .settings-inline-field .text-input {
   margin-top: 0;
   padding: 0.25rem 0.45rem;
+}
+
+.save-marker {
+  margin-right: auto;
+  margin-left: 0.75rem;
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+}
+
+.save-marker-error {
+  color: var(--danger-bright);
 }
 
 .settings-toolbar {
@@ -4846,6 +4873,70 @@ button.chain-label {
 .attachment-chips-error {
   margin: 0.3rem 0 0;
   font-size: var(--text-xs);
+}
+
+/* R15: narrow windows (checked at 820px). */
+@media (max-width: 820px) {
+  /* Start row: folder first, the rest wraps under it. */
+  .start-row-spacer {
+    display: none;
+  }
+
+  .start-row > .folder-picker-compact {
+    flex: 1 1 100%;
+  }
+
+  .folder-picker-compact .folder-picker-chosen {
+    max-width: none;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .start-row .primary-button {
+    margin-left: auto;
+  }
+
+  /* Settings: the category menu becomes a scrolling row above the content. */
+  .settings-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 0.5rem;
+  }
+
+  .settings-nav {
+    flex-direction: row;
+    overflow-x: auto;
+    padding: 0 0 0.35rem;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .settings-nav-item {
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+
+  .settings-nav-item[aria-current="page"] {
+    box-shadow: inset 0 -2px 0 var(--accent);
+  }
+
+  .settings-inline-field {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.2rem;
+  }
+
+  /* Two-pane dialogs and Changes: list above detail. */
+  .chat-search-body-preview,
+  .prompt-library-body-grid,
+  .workspaces-body,
+  .changes-body {
+    grid-template-columns: minmax(0, 1fr);
+    overflow: auto;
+  }
+
+  .changes-list {
+    max-height: 14rem;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

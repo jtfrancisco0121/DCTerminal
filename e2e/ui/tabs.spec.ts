@@ -1,6 +1,9 @@
 import { expect, roleTab, test } from "./fixtures/tauri";
 import { chord, expectActive, namedTabs, startReady, tabChip } from "./tabs-helpers";
 
+/** The start card names what it is starting: "Start a session", "New Planner session", "New terminal". */
+const START_HEADING = /^(Start a session|New .+ session|New terminal)$/;
+
 // Tab lifecycle, attention marks, New window and New tab in worktree.
 // Sources: src/TabBar.tsx, src/tabStatus.ts, src/StartupForm.tsx (handleNewTab,
 // handleCloseTab, reopenTab, requestNewWindow, createWorktreeTab).
@@ -15,7 +18,7 @@ test.describe("tab lifecycle", () => {
     // The mock names a new tab after its role; it is the second chip and selected.
     await expect(page.getByRole("tab").nth(1)).toHaveAttribute("aria-selected", "true");
     await expect(tabChip(page, "Planner").first()).toHaveAttribute("aria-selected", "false");
-    await expect(page.getByRole("heading", { name: "Start a session" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: START_HEADING })).toBeVisible();
 
     // Mod+T does the same.
     await chord(page, "KeyT");
@@ -81,7 +84,7 @@ test.describe("tab lifecycle", () => {
     expect(String(saved.args.text)).toContain("half a thought");
     await expect(tabChip(page, "Alpha")).toHaveCount(0);
     await expectActive(page, "Beta");
-    await expect(page.getByRole("heading", { name: "Start a session" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: START_HEADING })).toBeVisible();
 
     // The agent's last chunks and the finish land after the tab is gone.
     await turn.chunk(" and the rest");

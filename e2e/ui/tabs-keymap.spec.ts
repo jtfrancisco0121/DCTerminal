@@ -1,6 +1,9 @@
 import { expect, test } from "./fixtures/tauri";
 import { chord, expectActive, namedTabs, startReady } from "./tabs-helpers";
 
+/** The start card names what it is starting: "Start a session", "New Planner session", "New terminal". */
+const START_HEADING = /^(Start a session|New .+ session|New terminal)$/;
+
 // Every binding in src/keymap.ts that works in a browser page. The pane and
 // grid chords (Mod+\, Mod+Alt+\ / S / O / W / G) are in tabs-split.spec.ts,
 // Mod+T / Mod+W / F2 / F6 in tabs.spec.ts, Mod+K / Mod+P / Mod+/ in
@@ -99,7 +102,7 @@ test("Mod+, opens and closes Settings", async ({ app, page }) => {
   await expect(gear).toHaveAttribute("aria-pressed", "true");
   await chord(page, "Comma");
   await expect(gear).toHaveAttribute("aria-pressed", "false");
-  await expect(page.getByRole("heading", { name: "Start a session" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: START_HEADING })).toBeVisible();
 });
 
 test("Mod+F finds in a running chat; Mod+Shift+F searches every chat", async ({ app, page }) => {

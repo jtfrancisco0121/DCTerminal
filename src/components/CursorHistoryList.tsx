@@ -15,6 +15,8 @@ import {
 type Props = {
   entries: CursorHistoryEntry[];
   error: string | null;
+  /** The list is being read; show that instead of "No saved sessions". */
+  loading?: boolean;
   busy: boolean;
   title?: string;
   /** Folder the list was read from, shown under the title. */
@@ -26,6 +28,7 @@ type Props = {
 export function CursorHistoryList({
   entries,
   error,
+  loading = false,
   busy,
   title = "Cursor CLI history",
   readFrom = null,
@@ -40,7 +43,12 @@ export function CursorHistoryList({
         {readFrom ? ` Read from ${readFrom}.` : ""}
       </p>
       {error && <p className="error">{error}</p>}
-      {entries.length === 0 && !error && (
+      {loading && (
+        <p className="hint" role="status">
+          Loading sessions…
+        </p>
+      )}
+      {entries.length === 0 && !error && !loading && (
         <p className="hint">No saved sessions for this folder.</p>
       )}
       <ul>

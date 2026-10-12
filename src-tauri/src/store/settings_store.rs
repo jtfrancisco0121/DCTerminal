@@ -398,7 +398,7 @@ pub struct UiSettings {
     pub pad_hidden: bool,
 }
 
-pub const UI_THEMES: &[&str] = &["github-dark", "github-light"];
+pub const UI_THEMES: &[&str] = &["github-dark", "github-light", "system"];
 const TIPS_SEEN_LIMIT: usize = 50;
 const PAD_MIN_HEIGHT: u32 = 40;
 const PAD_MAX_HEIGHT: u32 = 600;

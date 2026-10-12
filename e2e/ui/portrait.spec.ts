@@ -1,6 +1,9 @@
 import type { Page } from "@playwright/test";
 import { expect, roleTab, test } from "./fixtures/tauri";
 
+/** The start card names what it is starting: "Start a session", "New Planner session", "New terminal". */
+const START_HEADING = /^(Start a session|New .+ session|New terminal)$/;
+
 test.use({ viewport: { width: 900, height: 1440 } });
 
 async function expectNoHorizontalScroll(page: Page) {
@@ -28,7 +31,7 @@ test("portrait 900x1440: start screen and a running chat fit the width", async (
     ],
     activeTabId: "tab-2",
   });
-  await expect(page.getByRole("heading", { name: "Start a session" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: START_HEADING })).toBeVisible();
   await expectNoHorizontalScroll(page);
   await expectInViewport(page, "Start", page.getByRole("button", { name: "Start", exact: true }));
 
