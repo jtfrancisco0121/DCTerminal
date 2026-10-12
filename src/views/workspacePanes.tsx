@@ -18,6 +18,7 @@ import { tabStatusLabel, type TabStatus } from "../tabStatus";
 import { livePty } from "../terminal/live";
 import { contextPercent } from "../usage/limits";
 import { SessionHeaderControls, type HeaderControls } from "./SessionHeaderControls";
+import { terminalHeaderFor, type TerminalHeaderDeps } from "./terminalHeader";
 import { isClaudeTerminal, terminalLaunchOf } from "./tabHelpers";
 
 /** What the second pane and the grid cells read and change in the workspace. */
@@ -58,6 +59,8 @@ export type PaneDeps = {
   setFollowUpFor: (tabId: string | null, value: string) => void;
   sendFollowUpFor: (tabId: string | null) => Promise<void>;
   stopSecondarySession: (tabId: string) => Promise<void>;
+  /** What the terminal header reads (R16). */
+  headerDeps: TerminalHeaderDeps;
 };
 
 export type PaneRenderers = ReturnType<typeof createPaneRenderers>;
@@ -97,6 +100,7 @@ export function createPaneRenderers({
   setFollowUpFor,
   sendFollowUpFor,
   stopSecondarySession,
+  headerDeps,
 }: PaneDeps) {
   /**
    * A live view of a tab that is not the active one: the same terminal
@@ -162,9 +166,7 @@ export function createPaneRenderers({
           onPermissionSelect={(optionId) => void respondPermissionFor(tab.id, optionId)}
           onPermissionCancel={() => void respondPermissionFor(tab.id, null)}
           questionRequest={rt.question}
-          onQuestionAnswer={(choiceId) =>
-            void respondQuestionFor(tab.id, "answered", choiceId)
-          }
+          onQuestionAnswer={(choiceId) => void respondQuestionFor(tab.id, "answered", choiceId)}
           onQuestionSkip={() => void respondQuestionFor(tab.id, "skipped")}
           onQuestionCancel={() => void respondQuestionFor(tab.id, "cancelled")}
           onCancelTurn={() => void cancelTurnFor(tab.id)}
@@ -177,9 +179,7 @@ export function createPaneRenderers({
           inputRef={inputRef}
           slashCommands={rt.slashCommands}
           images={imagesFor(tab.id, rt.session)}
-          headerExtra={
-            <SessionHeaderControls controls={controls} tab={tab} session={rt.session} />
-          }
+          headerExtra={<SessionHeaderControls controls={controls} tab={tab} session={rt.session} />}
         />
       );
     } else {
@@ -202,44 +202,55 @@ export function createPaneRenderers({
       secondaryInputRef,
     );
     const planWaiting = rt?.plan != null;
+    const paneButtons = (
+      <>
+        <button
+          type="button"
+          className="secondary-button"
+          onClick={swapPanes}
+          title="Swap panes"
+          aria-label="Swap panes"
+        >
+          Swap
+        </button>
+        <button
+          type="button"
+          className="secondary-button"
+          onClick={() => {
+            setSplit((current) => closeSplit(current));
+            setFocusedPane("primary");
+          }}
+          title="Close split"
+          aria-label="Close split"
+        >
+          Close
+        </button>
+      </>
+    );
     return (
       <div
-        className={
-          focusedPane === "secondary" ? "split-pane split-pane-focused" : "split-pane"
-        }
+        className={focusedPane === "secondary" ? "split-pane split-pane-focused" : "split-pane"}
         data-pane="secondary"
         aria-label={`Second pane: ${tab.label}`}
         onFocusCapture={() => setFocusedPane("secondary")}
         onMouseDown={() => setFocusedPane("secondary")}
       >
-        <div className="split-pane-bar">
-          <span className="split-pane-title" title={tab.cwd}>
-            {tab.label}
-          </span>
-          {!liveChat && controls.modelPickerFor(tab)}
-          <span className="split-pane-spacer" />
-          <button
-            type="button"
-            className="secondary-button"
-            onClick={swapPanes}
-            title="Swap panes"
-            aria-label="Swap panes"
-          >
-            Swap
-          </button>
-          <button
-            type="button"
-            className="secondary-button"
-            onClick={() => {
-              setSplit((current) => closeSplit(current));
-              setFocusedPane("primary");
-            }}
-            title="Close split"
-            aria-label="Close split"
-          >
-            Close
-          </button>
-        </div>
+        {tab.kind === "terminal" ? (
+          terminalHeaderFor(headerDeps, tab, {
+            compact: true,
+            controls: true,
+            actions: paneButtons,
+          })
+        ) : (
+          <div className="split-pane-bar">
+            <span className="split-pane-title" title={tab.cwd}>
+              {tab.label}
+            </span>
+            {!liveChat && controls.modelPickerFor(tab)}
+            <span className="split-pane-spacer" />
+            {paneButtons}
+          </div>
+        )}
         {planWaiting && (
           <p className="hint split-pane-note">
             A plan is waiting for review. Swap panes to answer it.
@@ -273,6 +284,25 @@ export function createPaneRenderers({
   const gridCellBar = (tab: TabSummary) => {
     const status = tabStatuses[tab.id];
     const tone = gridTone(tab);
+    const removeButton = (
+      <button
+        type="button"
+        className="secondary-button grid-cell-remove"
+        onClick={() => removeGridCell(tab.id)}
+        title="Remove from grid. The tab keeps running."
+        aria-label={`Remove ${tab.label} from grid`}
+      >
+        ×
+      </button>
+    );
+    // R25: a terminal cell gets the compact terminal header with its state and next step.
+    if (tab.kind === "terminal") {
+      return terminalHeaderFor(headerDeps, tab, {
+        compact: true,
+        controls: tab.id === activeTabIdRef.current,
+        actions: removeButton,
+      });
+    }
     return (
       <div className="split-pane-bar">
         <span className={`grid-cell-dot grid-cell-dot-${tone}`} aria-hidden />
@@ -283,15 +313,7 @@ export function createPaneRenderers({
           <span className="grid-cell-status">{tabStatusLabel(status)}</span>
         )}
         <span className="split-pane-spacer" />
-        <button
-          type="button"
-          className="secondary-button grid-cell-remove"
-          onClick={() => removeGridCell(tab.id)}
-          title="Remove from grid. The tab keeps running."
-          aria-label={`Remove ${tab.label} from grid`}
-        >
-          ×
-        </button>
+        {removeButton}
       </div>
     );
   };
@@ -299,7 +321,11 @@ export function createPaneRenderers({
   const renderGridCell = (tab: TabSummary) => {
     const tone = gridTone(tab);
     const activate = (event: { target: EventTarget }) => {
-      if (event.target instanceof Element && event.target.closest(".grid-cell-remove")) return;
+      if (
+        event.target instanceof Element &&
+        event.target.closest(".grid-cell-remove, .terminal-header button")
+      )
+        return;
       if (tab.id === activeTabIdRef.current) return;
       gridFocusRef.current =
         event.target instanceof Element && event.target.closest(".session-terminal-input")
@@ -315,7 +341,8 @@ export function createPaneRenderers({
         onMouseDownCapture={(event) => {
           // Fields switch tabs on focus instead: switching on mousedown re-renders the
           // cell before the browser focuses the clicked field, so focus would be lost.
-          if (event.target instanceof Element && event.target.closest("textarea, input, select")) return;
+          if (event.target instanceof Element && event.target.closest("textarea, input, select"))
+            return;
           activate(event);
         }}
         onFocusCapture={activate}

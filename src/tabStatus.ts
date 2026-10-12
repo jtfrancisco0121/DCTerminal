@@ -98,7 +98,7 @@ export function computeTabStatus(input: {
   };
 }
 
-const NEEDS_YOU_TEXT: Record<NeedsYou, string> = {
+export const NEEDS_YOU_TEXT: Record<NeedsYou, string> = {
   permission: "permission request",
   plan: "plan to review",
   question: "agent asked a question",

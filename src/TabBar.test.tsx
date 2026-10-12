@@ -343,3 +343,62 @@ describe("tabTooltip provider line", () => {
     ]);
   });
 });
+
+describe("TabBar chain tabs (R19)", () => {
+  const chainTab = (id: string, roleId: string, step: number, partial: Partial<TabSummary> = {}) =>
+    tab({
+      id,
+      roleId,
+      label: `${roleId === "role_planner" ? "Planner" : "Plan Reviewer"} · Effort picker`,
+      kind: "terminal",
+      terminalLaunch: "role",
+      chain: { chainId: "c1", kind: "eagle1", step, total: 4 },
+      ...partial,
+    });
+  const renderBar = (statuses = {}, doneTabIds: string[] = []) =>
+    render(
+      <TabBar
+        tabs={[
+          tab({ id: "plain", label: "Shell" }),
+          chainTab("a", "role_planner", 1),
+          chainTab("b", "role_plan_reviewer", 2),
+        ]}
+        activeTabId="a"
+        statuses={statuses}
+        doneTabIds={doneTabIds}
+        roleNames={{ role_planner: "Planner", role_plan_reviewer: "Plan Reviewer" }}
+        onSelect={() => {}}
+        onClose={() => {}}
+        onNew={() => {}}
+      />,
+    );
+
+  it("shows one chain label and only the role on each chain chip", () => {
+    renderBar();
+    expect(screen.getAllByText("Effort picker ▸")).toHaveLength(1);
+    const chips = screen.getAllByRole("tab");
+    expect(chips[0].textContent).toBe("Shell");
+    expect(chips[1].textContent).toBe("Planner");
+    expect(chips[2].textContent).toBe("Plan Reviewer");
+  });
+
+  it("badges done, needs you and working chips", () => {
+    renderBar(
+      {
+        a: { busy: true, unseen: false, needsYou: null },
+        b: { busy: false, unseen: false, needsYou: "permission" },
+      },
+      [],
+    );
+    const [, a, b] = screen.getAllByRole("tab");
+    expect(a.textContent).toContain("●");
+    expect(b.textContent).toContain("!");
+  });
+
+  it("badges a finished chain step with a check", () => {
+    renderBar({}, ["a"]);
+    const [, a, b] = screen.getAllByRole("tab");
+    expect(a.textContent).toContain("✓");
+    expect(b.textContent).not.toMatch(/[✓●!]/);
+  });
+});

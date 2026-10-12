@@ -25,7 +25,7 @@ const terminalTab = (id: string, roleId: string, label: string, extra = {}) =>
     ...extra,
   });
 
-const toolbar = (page: Page) => page.locator(".terminal-toolbar");
+const toolbar = (page: Page) => page.locator(".terminal-screen > .terminal-header");
 const screen = (page: Page) => page.locator(".terminal-screen .xterm-rows");
 
 const IMPLEMENTER_ANSWERS = {
@@ -161,16 +161,39 @@ test("Plan Reviewer terminal: the verdict in its output picks the primary button
       terminalTab("tab-2", "role_plan_reviewer", "Plan Reviewer", { chain: chain(2) }),
     ],
     activeTabId: "tab-2",
+    // The reviewer's turn has ended, so the hand-off is the header's primary action.
+    handlers: {
+      terminal_session_log: (args) =>
+        args.tabId === "tab-2"
+          ? {
+              sessionId: "claude-sess-2",
+              path: "/Users/e2e/.claude/projects/demo/claude-sess-2.jsonl",
+              turnDone: true,
+              lastReply: "Reviewed.",
+              plan: null,
+              planAt: null,
+              lastPromptAt: new Date().toISOString(),
+              toolCalls: [],
+              openTool: null,
+              permissionMode: "auto",
+            }
+          : null,
+    },
   });
   await app.waitForCall("pty_open");
-  const actions = toolbar(page).locator(".handoff-actions");
-  await expect(actions.getByRole("button", { name: "Next: Send to Implementer" })).toHaveClass(/primary-button/);
+  const actions = toolbar(page).locator(".split-button");
+  await expect(actions.getByRole("button", { name: "Next: Send to Implementer" })).toHaveClass(/primary-button/, {
+    timeout: 10_000,
+  });
 
   await app.ptyOutput("tab-2", "## Review notes\r\nMissing a test.\r\nVerdict: REQUIRES REVISION\r\n");
   await expect(screen(page)).toContainText("REQUIRES REVISION");
   await actions.hover();
   await expect(actions.getByRole("button", { name: "Send back to Planner" })).toHaveClass(/primary-button/);
-  await expect(actions.getByRole("button", { name: "Send to Implementer" })).toHaveClass(/secondary-button/);
+  // The other target moves to the split button's menu.
+  await actions.getByRole("button", { name: "More hand-off targets" }).click();
+  await expect(actions.getByRole("menuitem", { name: "Send to Implementer" })).toBeVisible();
+  await page.keyboard.press("Escape");
 
   await app.ptyOutput("tab-2", "Re-checked.\r\nVerdict: APPROVED\r\n");
   await expect(screen(page)).toContainText("Re-checked.");
@@ -199,7 +222,7 @@ test("send back into the chain's running Planner terminal: one bracketed paste a
   await app.ptyOutput("tab-2", "Add a regression test.\r\nVerdict: REQUIRES REVISION\r\n");
   await expect(screen(page)).toContainText("REQUIRES REVISION");
 
-  await toolbar(page).locator(".handoff-actions").hover();
+  await toolbar(page).locator(".split-button").hover();
   await toolbar(page).getByRole("button", { name: "Send back to Planner" }).click();
   const dialog = page.getByRole("dialog", { name: "Send back to Planner" });
   await expect(dialog.getByText(/Pastes the review findings below into the chain's running Planner terminal/)).toBeVisible();
@@ -243,7 +266,7 @@ test("send back when the Planner's PTY has exited opens a new tab on the chain",
   await visit(app, page, /^Plan Reviewer/, "tab-2");
   await app.ptyOutput("tab-2", "Verdict: REJECTED\r\n");
   await expect(screen(page)).toContainText("REJECTED");
-  await toolbar(page).locator(".handoff-actions").hover();
+  await toolbar(page).locator(".split-button").hover();
   await toolbar(page).getByRole("button", { name: "Send back to Planner" }).click();
   const dialog = page.getByRole("dialog", { name: "Send plan" });
   await expect(dialog.getByText(/has no live session, so a new tab opens on the chain \(round 2\)/)).toBeVisible();
@@ -338,7 +361,9 @@ test("Planner terminal → Implementer terminal gets every required field from t
   await app.waitForCall("pty_open");
   await app.ptyOutput("tab-1", "## Plan\r\n1. Return 401 for expired tokens\r\n");
   await expect(screen(page)).toContainText("Return 401");
-  await toolbar(page).getByRole("button", { name: "Send to Implementer" }).click();
+  // The Planner's main hand-off is the Plan Reviewer; the Implementer is in the split button's menu.
+  await toolbar(page).getByRole("button", { name: "More hand-off targets" }).click();
+  await toolbar(page).getByRole("menuitem", { name: "Send to Implementer" }).click();
   const dialog = page.getByRole("dialog", { name: "Send plan" });
   await dialog.getByRole("radio", { name: "Terminal" }).check();
   await dialog.getByRole("button", { name: "Start Implementer terminal" }).click();

@@ -240,6 +240,7 @@ import {
   type TerminalState,
 } from "./terminal/claudeState";
 import { dialogDetector } from "./terminal/permissionDialog";
+import { headerStateOf, trackWorkingSince } from "./terminal/headerState";
 import {
   clearMarks,
   computeTabStatus,
@@ -345,6 +346,7 @@ import { TerminalTabView } from "./views/TerminalTabView";
 import { ChatSessionView } from "./views/ChatSessionView";
 import { StartScreen } from "./views/StartScreen";
 import { createPaneRenderers } from "./views/workspacePanes";
+import { terminalHeaderFor, type TerminalHeaderDeps } from "./views/terminalHeader";
 import { WorkspaceShell } from "./views/WorkspaceShell";
 import { CLI_LABEL, type CliLaunch, tabHasModel, visibleFields } from "./views/tabHelpers";
 import { useChatImages } from "./attachments/useChatImages";
@@ -1468,6 +1470,26 @@ export function StartupForm({
     }
     return out;
   }, [runtimes, savedTabs, tabMarks, terminalBusy, terminalStates]);
+
+  /** When each terminal's working turn started, for the header's "Working · 12s". */
+  const workingSinceRef = useRef<Record<string, number>>({});
+  const workingSince = useMemo(() => {
+    const tabs = savedTabs
+      .filter((tab) => tab.kind === "terminal")
+      .map((tab) => {
+        const state = terminalStates[tab.id];
+        const lastPromptAt = state ? sessionLogs[tab.id]?.lastPromptAt : null;
+        return {
+          tabId: tab.id,
+          working:
+            headerStateOf({ state, status: tabStatuses[tab.id], turnEnded: false }).tone ===
+            "working",
+          turnStartedAt: lastPromptAt ? Date.parse(lastPromptAt) : null,
+        };
+      });
+    workingSinceRef.current = trackWorkingSince(workingSinceRef.current, tabs, Date.now());
+    return workingSinceRef.current;
+  }, [savedTabs, sessionLogs, tabStatuses, terminalStates]);
 
   const uiSettings = useUiSettings((title, message) => showNotice(title, message, "failed"));
   // U2: one pad size for chat and terminal tabs; saved when a drag ends.
@@ -4527,6 +4549,11 @@ export function StartupForm({
     return runtimes[tab.id]?.session?.model ?? tab.model ?? inheritedModel(tab);
   };
 
+  /** Tabs whose turn ended: a chain chip shows a check mark. */
+  const doneTabIds = savedTabs
+    .filter((tab) => terminalStates[tab.id]?.kind === "idle" && !!sessionLogs[tab.id]?.turnDone)
+    .map((tab) => tab.id);
+
   const tabBar = (
     <TabBar
       tabs={savedTabs}
@@ -4535,6 +4562,7 @@ export function StartupForm({
       disableSwitch={busy && !session}
       disableNew={busy}
       statuses={tabStatuses}
+      doneTabIds={doneTabIds}
       renamingTabId={renamingTabId}
       onRenameStart={setRenamingTabId}
       onRename={(tabId, label) => {
@@ -5164,6 +5192,27 @@ export function StartupForm({
       ? savedTabs.find((tab) => tab.id === split.secondaryTabId)
       : undefined;
 
+  const headerDeps: TerminalHeaderDeps = {
+    roles,
+    roleColors,
+    controls,
+    terminalStates,
+    tabStatuses,
+    workingSince,
+    sessionLogs,
+    terminalVerdict,
+    isTerminalSource,
+    busy,
+    openTerminalHandoff,
+    openChainOverviewTab,
+    readTerminalVerdict,
+    // Esc interrupts Claude Code's running turn.
+    stopTerminalTurn: (tabId) => {
+      notePtyInput(tabId);
+      void ptyWrite(tabId, "\x1b").catch(() => {});
+    },
+  };
+
   const panes = createPaneRenderers({
     runtimes,
     roles,
@@ -5194,6 +5243,7 @@ export function StartupForm({
     setFollowUpFor,
     sendFollowUpFor,
     stopSecondarySession,
+    headerDeps,
   });
 
   const activeCwd = activeTabSummary?.cwd ?? "";
@@ -5406,11 +5456,10 @@ export function StartupForm({
         promptFileTabs={promptFileTabs}
         terminalError={terminalError}
         isPlanTerminal={isPlanTerminal}
-        planTerminalTargets={planTerminalTargets}
         terminalRoute={terminalRoute}
-        busy={busy}
         fontSize={fontSize}
-        controls={controls}
+        header={terminalHeaderFor(headerDeps, activeTabSummary)}
+        inGrid={showGrid}
         scratch={scratch}
         platform={platform}
         padOpen={padOpen}
@@ -5418,7 +5467,6 @@ export function StartupForm({
         padSizeProps={padSizeProps}
         terminalPadRef={terminalPadRef}
         openSavedHandoff={openSavedHandoff}
-        openChainOverviewTab={openChainOverviewTab}
         readTerminalVerdict={readTerminalVerdict}
         openTerminalHandoff={openTerminalHandoff}
         notePadSelection={notePadSelection}

@@ -1,4 +1,4 @@
-import type { RefObject } from "react";
+import type { ReactNode, RefObject } from "react";
 import {
   promptRecordSend,
   ptyWrite,
@@ -7,11 +7,9 @@ import {
   type TabSummary,
 } from "../bridge";
 import { snapshotTerminalTurn } from "../changes/turnSnapshot";
-import { ChainLabel } from "../components/ChainLabel";
-import { HandoffActions, HandoffBanner } from "../components/HandoffDialog";
+import { HandoffBanner } from "../components/HandoffDialog";
 import { TerminalScratchPad, type TerminalPadHandle } from "../components/TerminalScratchPad";
 import { TerminalView } from "../components/TerminalView";
-import { chainLabel } from "../handoff/chains";
 import { handoffMenuItems, type HandoffTargetId } from "../handoff/map";
 import type { HandoffRoute } from "../handoff/routing";
 import type { Platform } from "../keymap";
@@ -19,7 +17,6 @@ import { livePty } from "../terminal/live";
 import { blurParkedTerminal, refitTerminal, terminalBracketedPaste } from "../terminal/park";
 import type { useScratchPads } from "../useScratchPads";
 import type { useUiSettings } from "../useUiSettings";
-import type { HeaderControls } from "./SessionHeaderControls";
 import { isClaudeTerminal, terminalLaunchOf, type PadSizeProps } from "./tabHelpers";
 
 export type TerminalTabViewProps = {
@@ -33,11 +30,12 @@ export type TerminalTabViewProps = {
   terminalError: string | null;
   /** A role terminal that can hand off. */
   isPlanTerminal: boolean;
-  planTerminalTargets: HandoffTargetId[];
   terminalRoute: HandoffRoute | null;
-  busy: boolean;
   fontSize: number;
-  controls: HeaderControls;
+  /** The terminal header (R16); null in a grid cell, whose own bar shows it. */
+  header: ReactNode;
+  /** Grid view: the cell bar is the header and the scratch pad is hidden. */
+  inGrid: boolean;
   scratch: ReturnType<typeof useScratchPads>;
   platform: Platform;
   padOpen: boolean;
@@ -45,7 +43,6 @@ export type TerminalTabViewProps = {
   padSizeProps: PadSizeProps;
   terminalPadRef: RefObject<TerminalPadHandle | null>;
   openSavedHandoff: (record: HandoffRecord, showText?: boolean) => void;
-  openChainOverviewTab: (chainId: string) => Promise<void>;
   readTerminalVerdict: (tabId: string | null | undefined, fresh?: boolean) => void;
   openTerminalHandoff: (target: HandoffTargetId, sourceTabId?: string) => Promise<void>;
   notePadSelection: () => void;
@@ -63,11 +60,10 @@ export function TerminalTabView({
   promptFileTabs,
   terminalError,
   isPlanTerminal,
-  planTerminalTargets,
   terminalRoute,
-  busy,
   fontSize,
-  controls,
+  header,
+  inGrid,
   scratch,
   platform,
   padOpen,
@@ -75,7 +71,6 @@ export function TerminalTabView({
   padSizeProps,
   terminalPadRef,
   openSavedHandoff,
-  openChainOverviewTab,
   readTerminalVerdict,
   openTerminalHandoff,
   notePadSelection,
@@ -85,7 +80,6 @@ export function TerminalTabView({
 }: TerminalTabViewProps) {
   const linked = handoffs.find((item) => item.targetTabId === activeTabId) ?? null;
   const launch = terminalLaunchOf(activeTabSummary);
-  const terminalModelPicker = controls.modelPickerFor(activeTabSummary);
   return (
     <section className="status-card status-card-session-full terminal-screen">
       {linked && (
@@ -104,60 +98,7 @@ export function TerminalTabView({
         />
       )}
       {terminalError && <p className="error">{terminalError}</p>}
-      {(isPlanTerminal ||
-        terminalModelPicker ||
-        activeTabSummary.worktreeBranch ||
-        activeTabSummary.chain ||
-        activeTabSummary.cwd) && (
-        <div className="terminal-toolbar">
-          {activeTabSummary.chain && (
-            <ChainLabel
-              label={chainLabel(activeTabSummary.chain)}
-              onOpen={() => void openChainOverviewTab(activeTabSummary.chain!.chainId)}
-            />
-          )}
-          {activeTabSummary.worktreeBranch && (
-            <span
-              className="session-branch"
-              aria-label="Git branch"
-              title={activeTabSummary.worktreePath ?? undefined}
-            >
-              ⎇ {activeTabSummary.worktreeBranch}
-            </span>
-          )}
-          {terminalModelPicker}
-          {activeTabSummary.cwd && controls.changesButton(activeTabSummary.id)}
-          {activeTabSummary.cwd && controls.activityButton(activeTabSummary.id)}
-          {isPlanTerminal && (
-            <span
-              className="terminal-handoff"
-              style={{ display: "contents" }}
-              onPointerOver={() => readTerminalVerdict(activeTabSummary.id)}
-              onFocus={() => readTerminalVerdict(activeTabSummary.id)}
-            >
-              <HandoffActions
-                enabled
-                reason={null}
-                busy={busy}
-                targets={planTerminalTargets}
-                primaryTarget={terminalRoute?.primaryTarget ?? null}
-                primaryLabel={terminalRoute?.primaryLabel ?? null}
-                completeNote={
-                  terminalRoute?.complete
-                    ? activeTabSummary.chain
-                      ? "Chain complete: the PR Reviewer approved."
-                      : "Review approved: nothing left to hand off."
-                    : null
-                }
-                roleNames={roles}
-                onSend={(target) => {
-                  void openTerminalHandoff(target);
-                }}
-              />
-            </span>
-          )}
-        </div>
-      )}
+      {!inGrid && header}
       <TerminalView
         ptyId={activeTabSummary.id}
         cwd={activeTabSummary.cwd}
@@ -183,33 +124,35 @@ export function TerminalTabView({
             : []
         }
       />
-      <TerminalScratchPad
-        ref={terminalPadRef}
-        tabId={activeTabSummary.id}
-        ptyId={activeTabSummary.id}
-        content={scratch.content}
-        truncated={scratch.truncated}
-        persistError={scratch.persistError}
-        platform={platform}
-        onChange={(value) => scratch.setContent(activeTabSummary.id, value)}
-        onBlur={() => {
-          notePadSelection();
-          scratch.flush();
-        }}
-        // intentionally silent: the recent-sends record is best effort.
-        onSent={(text) => void promptRecordSend(text, "terminal").catch(() => {})}
-        onError={onPadError}
-        beforeSubmit={snapshotTerminalTurn}
-        onOpenLibrary={() => openPromptLibrary(false)}
-        write={ptyWrite}
-        bracketedPaste={() => terminalBracketedPaste(activeTabSummary.id)}
-        onFocusTerminal={focusActiveTerminal}
-        onFocusPad={() => blurParkedTerminal(activeTabSummary.id)}
-        onOpenChange={() => refitTerminal(activeTabSummary.id)}
-        open={padOpen}
-        onOpenToggle={(open) => uiSettings.update({ padHidden: !open })}
-        {...padSizeProps}
-      />
+      {!inGrid && (
+        <TerminalScratchPad
+          ref={terminalPadRef}
+          tabId={activeTabSummary.id}
+          ptyId={activeTabSummary.id}
+          content={scratch.content}
+          truncated={scratch.truncated}
+          persistError={scratch.persistError}
+          platform={platform}
+          onChange={(value) => scratch.setContent(activeTabSummary.id, value)}
+          onBlur={() => {
+            notePadSelection();
+            scratch.flush();
+          }}
+          // intentionally silent: the recent-sends record is best effort.
+          onSent={(text) => void promptRecordSend(text, "terminal").catch(() => {})}
+          onError={onPadError}
+          beforeSubmit={snapshotTerminalTurn}
+          onOpenLibrary={() => openPromptLibrary(false)}
+          write={ptyWrite}
+          bracketedPaste={() => terminalBracketedPaste(activeTabSummary.id)}
+          onFocusTerminal={focusActiveTerminal}
+          onFocusPad={() => blurParkedTerminal(activeTabSummary.id)}
+          onOpenChange={() => refitTerminal(activeTabSummary.id)}
+          open={padOpen}
+          onOpenToggle={(open) => uiSettings.update({ padHidden: !open })}
+          {...padSizeProps}
+        />
+      )}
     </section>
   );
 }
