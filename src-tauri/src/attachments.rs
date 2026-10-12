@@ -42,6 +42,51 @@ pub struct AttachmentInfo {
     pub bytes: usize,
 }
 
+/// An image file the user dropped on the chat. Tauri's native drop handler
+/// (on for terminal file drops) hides the page's own `drop` events on macOS
+/// and Linux, so the webview gets the path and asks for the bytes here.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DroppedImage {
+    pub name: String,
+    pub mime: String,
+    pub data: String,
+}
+
+fn mime_for_extension(path: &Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    match ext.as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        _ => None,
+    }
+}
+
+/// Read a dropped image (by extension, up to the size limit) as base64.
+pub fn read_image_file(path: &Path) -> Result<DroppedImage, String> {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("image")
+        .to_string();
+    let mime = mime_for_extension(path)
+        .ok_or_else(|| format!("{name} is not a PNG, JPEG, GIF or WebP image."))?;
+    let meta = std::fs::metadata(path).map_err(|err| format!("{name}: {err}"))?;
+    if !meta.is_file() {
+        return Err(format!("{name} is not a file."));
+    }
+    validate_image(mime, usize::try_from(meta.len()).unwrap_or(usize::MAX))
+        .map_err(|_| format!("{name} is empty or larger than 5 MB."))?;
+    let bytes = std::fs::read(path).map_err(|err| format!("{name}: {err}"))?;
+    Ok(DroppedImage {
+        name,
+        mime: mime.to_string(),
+        data: base64::engine::general_purpose::STANDARD.encode(bytes),
+    })
+}
+
 fn extension_for(mime: &str) -> Option<&'static str> {
     IMAGE_MIMES
         .iter()
@@ -199,6 +244,29 @@ mod tests {
             .join(format!("dct-attach-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
+    }
+
+    #[test]
+    fn a_dropped_image_file_is_read_and_checked() {
+        let dir = temp_root("drop");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ok = dir.join("Shot.PNG");
+        std::fs::write(&ok, [1u8, 2, 3]).unwrap();
+        let got = read_image_file(&ok).unwrap();
+        assert_eq!((got.name.as_str(), got.mime.as_str()), ("Shot.PNG", "image/png"));
+        assert_eq!(got.data, b64(&[1, 2, 3]));
+
+        let txt = dir.join("notes.txt");
+        std::fs::write(&txt, "x").unwrap();
+        assert!(read_image_file(&txt).is_err());
+        let empty = dir.join("e.jpg");
+        std::fs::write(&empty, []).unwrap();
+        assert!(read_image_file(&empty).is_err());
+        let big = dir.join("big.gif");
+        std::fs::write(&big, vec![0u8; MAX_IMAGE_BYTES + 1]).unwrap();
+        assert!(read_image_file(&big).is_err());
+        assert!(read_image_file(&dir).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

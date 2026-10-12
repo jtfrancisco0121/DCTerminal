@@ -2,6 +2,9 @@ import type { Page } from "@playwright/test";
 import { expect, roleTab, test, type TauriApp } from "./fixtures/tauri";
 import { CWD } from "./fixtures/data";
 
+/** The start card names what it is starting: "Start a session", "New Planner session", "New terminal". */
+const START_HEADING = /^(Start a session|New .+ session|New terminal)$/;
+
 // Terminal tabs: launch arguments, PTY output into xterm, keyboard bytes,
 // resize, exit/restart, and close. PTY output reaches the page through the
 // Tauri Channel passed as `onOutput` (src/terminal/live.ts), which
@@ -20,7 +23,7 @@ async function written(app: TauriApp, id: string): Promise<string> {
 
 /** Picks a tile in the Terminals row of the start card and presses its Start button. */
 async function startFromTile(page: Page, tile: "Terminal" | "Claude Code" | "Cursor CLI") {
-  await page.getByRole("group", { name: "Terminals" }).getByRole("button", { name: tile, exact: true }).click();
+  await page.getByRole("radiogroup", { name: "Terminals" }).getByRole("radio", { name: tile, exact: true }).click();
   const label = tile === "Terminal" ? "Start terminal" : `Start ${tile}`;
   await page.getByRole("group", { name: "Start a session" }).getByRole("button", { name: label }).click();
 }
@@ -191,7 +194,7 @@ test("starting a terminal remembers its folder: Recent lists it in another tab",
   await expect(page.getByRole("tab", { name: "Terminal · other" })).toBeVisible();
 
   await page.getByRole("button", { name: "New tab", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Start a session" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: START_HEADING })).toBeVisible();
   await page.getByRole("group", { name: "Start a session" }).getByRole("button", { name: "Recent" }).click();
   await expect(page.getByRole("menu", { name: "Saved folders" }).getByRole("menuitem", { name: /other/ })).toBeVisible();
 });
@@ -317,7 +320,7 @@ test("changing a live CLI terminal's model can stop its PTY (pty_kill)", async (
     tabs: [terminalTab("tab-1", "claude-cli", "Claude Code · demo", { provider: "claude" })],
   });
   await app.waitForCall("pty_open");
-  await page.locator(".terminal-toolbar").getByRole("button", { name: "Model for Claude Code · demo" }).click();
+  await page.locator(".terminal-screen > .terminal-header").getByRole("button", { name: "Model for Claude Code · demo" }).click();
   await page.getByRole("listbox", { name: "Model for Claude Code · demo" }).getByRole("option", { name: /Sonnet/ }).click();
   const model = await app.waitForCall("set_tab_model");
   expect(model.args).toEqual({ tabId: "tab-1", model: "sonnet" });

@@ -3,6 +3,9 @@ import type { CursorHistoryEntry } from "../../src/cursorHistory";
 import { CWD } from "./fixtures/data";
 import { expect, roleTab, test, type PageHandler } from "./fixtures/tauri";
 
+/** The start card names what it is starting: "Start a session", "New Planner session", "New terminal". */
+const START_HEADING = /^(Start a session|New .+ session|New terminal)$/;
+
 // Session history beside the start card (CursorHistoryList) and the restore
 // actions of a tab that already ran (Continue session / Start new session).
 
@@ -89,10 +92,10 @@ test.describe("Claude Code history", () => {
       throw new Error("projects folder is unreadable");
     });
     // Re-read by switching the history list away and back.
-    const toggle = page.getByRole("group", { name: "History provider" });
-    await toggle.getByRole("button", { name: "Cursor" }).click();
+    const toggle = page.getByRole("radiogroup", { name: "History provider" });
+    await toggle.getByRole("radio", { name: "Cursor" }).click();
     await expect(history(page, "Cursor CLI history")).toBeVisible();
-    await toggle.getByRole("button", { name: "Claude" }).click();
+    await toggle.getByRole("radio", { name: "Claude" }).click();
     await expect(region.getByText("projects folder is unreadable")).toBeVisible();
   });
 
@@ -138,7 +141,7 @@ test.describe("Claude Code history", () => {
       windowId: "main",
     });
     await expect(page.getByRole("tab", { name: /Claude Code/ })).toHaveAttribute("aria-selected", "true");
-    await expect(page.getByRole("heading", { name: "Start a session" })).toBeHidden();
+    await expect(page.getByRole("heading", { name: START_HEADING })).toBeHidden();
     expect(await app.calls("role_session_start")).toHaveLength(0);
   });
 
@@ -158,7 +161,7 @@ test.describe("Claude Code history", () => {
       .getByRole("button", { name: "Open in Claude Code" })
       .click();
     await expect(page.locator(".start-session-card").getByText("claude was not found on PATH")).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Start a session" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: START_HEADING })).toBeVisible();
   });
 });
 
@@ -173,10 +176,10 @@ test.describe("Cursor history", () => {
       responses: { list_cursor_cli_history: cursorRows },
       handlers: { shell_terminal_start: openTerminalTab },
     });
-    const toggle = page.getByRole("group", { name: "History provider" });
-    await expect(toggle.getByRole("button", { name: "Claude" })).toHaveAttribute("aria-pressed", "true");
-    await toggle.getByRole("button", { name: "Cursor" }).click();
-    await expect(toggle.getByRole("button", { name: "Cursor" })).toHaveAttribute("aria-pressed", "true");
+    const toggle = page.getByRole("radiogroup", { name: "History provider" });
+    await expect(toggle.getByRole("radio", { name: "Claude" })).toHaveAttribute("aria-checked", "true");
+    await toggle.getByRole("radio", { name: "Cursor" }).click();
+    await expect(toggle.getByRole("radio", { name: "Cursor" })).toHaveAttribute("aria-checked", "true");
     expect((await app.waitForCall("list_cursor_cli_history")).args).toEqual({ cwd: CWD });
 
     const region = history(page, "Cursor CLI history");
@@ -201,7 +204,7 @@ test.describe("Cursor history", () => {
 
   test("Resume on an ACP session starts it in a new tab", async ({ app, page }) => {
     await app.open({ responses: { list_cursor_cli_history: cursorRows } });
-    await page.getByRole("group", { name: "History provider" }).getByRole("button", { name: "Cursor" }).click();
+    await page.getByRole("radiogroup", { name: "History provider" }).getByRole("radio", { name: "Cursor" }).click();
     await row(page, "Cursor CLI history", "Plan the cache").getByRole("button", { name: "Resume" }).click();
     const start = await app.waitForCall("role_session_start");
     expect(start.args).toMatchObject({ tabId: "tab-2", resumeSessionId: "acp-1", values: { cwd: CWD } });
@@ -216,7 +219,7 @@ test.describe("Cursor history", () => {
         },
       },
     });
-    await page.getByRole("group", { name: "History provider" }).getByRole("button", { name: "Cursor" }).click();
+    await page.getByRole("radiogroup", { name: "History provider" }).getByRole("radio", { name: "Cursor" }).click();
     await expect(history(page, "Cursor CLI history").getByText("Cursor's home folder was not found")).toBeVisible();
   });
 });

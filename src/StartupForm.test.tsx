@@ -120,6 +120,8 @@ vi.mock("./bridge", () => {
   getTerminalSettings: vi.fn(async () => ({
     shell: "",
     fontSize: 14,
+    optionAsMeta: true,
+    copyOnSelect: false,
     roleSurface: Object.fromEntries(
       [
         "role_planner",
@@ -295,8 +297,11 @@ import {
   selectActiveTab,
   setTabLabel,
   syncActiveTabForm,
+  terminalPlanFile,
+  terminalSessionLog,
 } from "./bridge";
 import { StartupForm } from "./StartupForm";
+import { ConfirmHost } from "./components/confirm";
 
 const developer = {
   id: "role_developer",
@@ -424,7 +429,7 @@ describe("blank tab card", () => {
     expect(within(row).queryByRole("button", { name: "Validate & preview" })).toBeNull();
     const roles = screen.getByRole("group", { name: "Role" });
     expect(row.contains(roles)).toBe(false);
-    expect(within(roles).getByRole("button", { name: "Developer" })).toBeTruthy();
+    expect(within(roles).getByRole("radio", { name: "Developer" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Validate & preview" })).toBeTruthy();
     const history = await screen.findByRole("region", { name: "Cursor CLI history" });
     expect(history.closest(".start-history")).toBeTruthy();
@@ -447,7 +452,7 @@ describe("blank tab card", () => {
     );
     await screen.findByLabelText("Title");
     vi.mocked(syncActiveTabForm).mockClear();
-    fireEvent.click(screen.getByRole("button", { name: "Planner" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Planner" }));
     await waitFor(() => expect(syncActiveTabForm).toHaveBeenCalled());
     const calls = vi.mocked(syncActiveTabForm).mock.calls;
     const last = calls[calls.length - 1];
@@ -468,8 +473,8 @@ describe("blank tab card", () => {
       />,
     );
     await screen.findByLabelText("Title");
-    const openAs = screen.getByRole("group", { name: "Open as" });
-    fireEvent.click(within(openAs).getByRole("button", { name: "Terminal" }));
+    const openAs = screen.getByRole("radiogroup", { name: "Open as" });
+    fireEvent.click(within(openAs).getByRole("radio", { name: "Terminal" }));
     await waitFor(() =>
       expect(setTerminalSettings).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -477,7 +482,7 @@ describe("blank tab card", () => {
         }),
       ),
     );
-    fireEvent.click(within(openAs).getByRole("button", { name: "Chat" }));
+    fireEvent.click(within(openAs).getByRole("radio", { name: "Chat" }));
     await waitFor(() =>
       expect(setTerminalSettings).toHaveBeenLastCalledWith(
         expect.objectContaining({
@@ -491,6 +496,8 @@ describe("blank tab card", () => {
     vi.mocked(getTerminalSettings).mockResolvedValueOnce({
       shell: "",
       fontSize: 14,
+      optionAsMeta: true,
+      copyOnSelect: false,
       roleSurface: {},
       roleRunMode: {},
     });
@@ -506,12 +513,83 @@ describe("blank tab card", () => {
       />,
     );
     await screen.findByLabelText("Title");
-    const openAs = screen.getByRole("group", { name: "Open as" });
+    const openAs = screen.getByRole("radiogroup", { name: "Open as" });
     await waitFor(() =>
-      expect(within(openAs).getByRole("button", { name: "Terminal" }).getAttribute("aria-pressed")).toBe(
+      expect(within(openAs).getByRole("radio", { name: "Terminal" }).getAttribute("aria-checked")).toBe(
         "true",
       ),
     );
+  });
+
+  it("names the role in the heading and the terminal Start button", async () => {
+    vi.mocked(getTerminalSettings).mockResolvedValueOnce({
+      shell: "",
+      fontSize: 14,
+      optionAsMeta: true,
+      copyOnSelect: false,
+      roleSurface: { role_developer: "terminal" },
+      roleRunMode: {},
+    });
+    render(
+      <StartupForm
+        roles={[
+          { id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 },
+        ]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+    await screen.findByLabelText("Title");
+    const row = screen.getByRole("group", { name: "Start a session" });
+    await waitFor(() =>
+      expect(within(row).getByRole("button", { name: "Start Developer terminal" })).toBeTruthy(),
+    );
+    expect(screen.getByRole("heading", { name: "New Developer session" })).toBeTruthy();
+  });
+
+  it("keeps Start on screen, disabled with the reason, until a folder is chosen", async () => {
+    vi.mocked(getAppState).mockResolvedValue({
+      activeTabId: "tab_dev",
+      tabs: [
+        {
+          id: "tab_dev",
+          label: "New tab",
+          roleId: "",
+          cwd: "",
+          phase: "draft",
+          mergedPromptChars: 0,
+          startupPromptSent: false,
+          hasTranscript: false,
+          folderStatus: "",
+          color: "#3fb950",
+          kind: "role",
+          terminalLaunch: "",
+          acpSessionId: null,
+        },
+      ],
+      closedTabs: [],
+    });
+    vi.mocked(selectActiveTab).mockResolvedValue({ tab: { ...tab, cwd: "", roleId: "" } });
+    render(
+      <StartupForm
+        roles={[
+          { id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 },
+        ]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+    // The first render can show Start before the saved tab (no folder) loads.
+    await waitFor(() =>
+      expect((screen.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(true),
+    );
+    const start = screen.getByRole("button", { name: "Start" });
+    expect(start.getAttribute("aria-describedby")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Start a session" })).toBeTruthy();
   });
 
   it("still starts a role session from the start row", async () => {
@@ -1256,6 +1334,60 @@ describe("changes (diff) panel", () => {
     expect(changesRevert).not.toHaveBeenCalled();
   });
 
+  it("asks before ⌘B or a tab switch drops unsaved edits", async () => {
+    const second = { ...terminalTab, id: "tab_b", label: "Second" };
+    vi.mocked(getAppState).mockResolvedValue({
+      activeTabId: "tab_a",
+      tabs: [terminalTab, second],
+      closedTabs: [],
+    });
+    vi.mocked(selectActiveTab).mockResolvedValue({ tab: second } as never);
+    render(
+      <>
+        <StartupForm
+          roles={[{ id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 }]}
+          cli={{ found: true, path: "agent", version: "test", error: null }}
+          cliError={null}
+          cliFound
+          showDevTools={false}
+        />
+        <ConfirmHost />
+      </>,
+    );
+    await screen.findByRole("tab", { name: /Second/ });
+    const toggle = () =>
+      fireEvent.keyDown(window, { key: "b", code: "KeyB", ctrlKey: true, metaKey: true });
+    toggle();
+    const panel = await screen.findByRole("complementary", { name: "Files" });
+    fireEvent.click(await within(panel).findByText("src"));
+    fireEvent.click(await within(panel).findByText("app.ts"));
+    fireEvent.click(await within(panel).findByRole("button", { name: "Edit" }));
+    fireEvent.change(within(panel).getByLabelText("Edit src/app.ts"), {
+      target: { value: "draft\n" },
+    });
+    vi.mocked(selectActiveTab).mockClear();
+
+    fireEvent.click(screen.getByRole("tab", { name: /Second/ }));
+    await screen.findByRole("alertdialog");
+    expect(selectActiveTab).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(selectActiveTab).not.toHaveBeenCalled();
+
+    toggle();
+    await screen.findByRole("alertdialog");
+    fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(screen.getByRole("complementary", { name: "Files" })).toBe(panel);
+    expect((within(panel).getByLabelText("Edit src/app.ts") as HTMLTextAreaElement).value).toBe(
+      "draft\n",
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: /Second/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Discard edits" }));
+    await waitFor(() => expect(selectActiveTab).toHaveBeenCalledWith("tab_b"));
+  });
+
   it("opens the activity log next to Changes", async () => {
     render(
       <StartupForm
@@ -1844,7 +1976,10 @@ describe("command palette (F9)", () => {
       ["Open workspace…", "Workspaces"],
     ]) {
       const button = within(palette).getByRole("button", { name: new RegExp(`^${title}`) });
-      expect(button.textContent).toContain(group);
+      expect(button).toBeTruthy();
+      expect(within(palette).getAllByText(group).some((el) => el.className === "palette-group")).toBe(
+        true,
+      );
     }
   });
 
@@ -1907,9 +2042,9 @@ describe("command palette (F9)", () => {
       usedPromptFile: false,
     });
     const tiles = screen.getByRole("group", { name: "Role" });
-    fireEvent.click(within(tiles).getByRole("button", { name: "Claude Code" }));
+    fireEvent.click(within(tiles).getByRole("radio", { name: "Claude Code" }));
     expect(
-      within(tiles).getByRole("button", { name: "Claude Code" }).getAttribute("aria-pressed"),
+      within(tiles).getByRole("radio", { name: "Claude Code" }).getAttribute("aria-checked"),
     ).toBe("true");
     fireEvent.click(screen.getByRole("button", { name: "Model for this tab" }));
     const list = await screen.findByRole("listbox", { name: "Model for this tab" });
@@ -2070,7 +2205,7 @@ describe("start form recall", () => {
     await waitFor(() => expect(screen.queryByRole("button", { name: "Start new session" })).toBeNull());
     expect(screen.queryByLabelText("Title")).toBeNull();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Planner" }));
+    fireEvent.click(await screen.findByRole("radio", { name: "Planner" }));
     await screen.findByLabelText("Title");
     await waitFor(() => expect(getFormRecall).toHaveBeenCalledWith("role_planner"));
     expect(fieldValue("Title")).toBe("");
@@ -2084,7 +2219,7 @@ describe("start form recall", () => {
     vi.mocked(getAppState).mockResolvedValue(appState([summary("tab_blank", { cwd: "" })], "tab_blank"));
     vi.mocked(selectActiveTab).mockResolvedValue({ tab: blank } as never);
     renderRecall();
-    fireEvent.click(await screen.findByRole("button", { name: "Planner" }));
+    fireEvent.click(await screen.findByRole("radio", { name: "Planner" }));
     await screen.findByLabelText("Task Type");
     await waitFor(() => expect(getFormRecall).toHaveBeenCalledWith("role_planner"));
     expect(fieldValue("Task Type")).toBe("");
@@ -2171,5 +2306,109 @@ describe("start form recall", () => {
     await waitFor(() => expect(fieldValue("Title")).toBe("From the planner"));
     expect(fieldValue("Task Type")).toBe("Bug");
     expect(fieldValue("What to work on")).toBe("Plan text");
+  });
+});
+
+describe("terminal hand-off source", () => {
+  const plannerTerminal = {
+    id: "tab_plan",
+    label: "Planner · Login",
+    roleId: "role_planner",
+    cwd: "/Users/jt/Koneksi",
+    phase: "running",
+    mergedPromptChars: 0,
+    startupPromptSent: true,
+    hasTranscript: false,
+    folderStatus: "ok",
+    color: "#58a6ff",
+    kind: "terminal",
+    terminalLaunch: "role",
+    acpSessionId: null,
+  };
+  const sessionLog = (patch: Record<string, unknown>) => ({
+    sessionId: "s1",
+    path: "/tmp/s1.jsonl",
+    turnDone: true,
+    lastReply: "",
+    plan: null,
+    planAt: null,
+    lastPromptAt: "2026-10-12T10:00:00Z",
+    toolCalls: [],
+    openTool: null,
+    pendingTools: [],
+    ...patch,
+  });
+
+  beforeEach(() => {
+    vi.mocked(listCursorCliHistory).mockResolvedValue([]);
+    vi.mocked(getRole).mockResolvedValue(developer);
+    vi.mocked(getAppState).mockResolvedValue({
+      activeTabId: "tab_plan",
+      tabs: [plannerTerminal],
+      closedTabs: [],
+    } as never);
+    vi.mocked(getTab).mockResolvedValue({ tab: { ...tab, id: "tab_plan", answers: {} } } as never);
+    vi.mocked(terminalPlanFile).mockResolvedValue(null as never);
+  });
+
+  afterEach(() => {
+    vi.mocked(terminalSessionLog).mockReset();
+    vi.mocked(terminalSessionLog).mockResolvedValue(null);
+    vi.mocked(getTab).mockReset();
+  });
+
+  const renderPlanner = () =>
+    render(
+      <StartupForm
+        roles={[
+          { id: "role_planner", name: "Planner", defaultMode: "agent", color: "#58a6ff", fieldCount: 0 },
+          { id: "role_plan_reviewer", name: "Plan Reviewer", defaultMode: "agent", color: "#d29922", fieldCount: 0 },
+        ]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+
+  it("sends the reply of a turn that ends while the dialog is open", async () => {
+    let done = false;
+    vi.mocked(terminalSessionLog).mockImplementation(async () =>
+      (done
+        ? sessionLog({ turnDone: true, lastReply: "New plan reply" })
+        : sessionLog({ turnDone: false, lastReply: "Old reply" })) as never,
+    );
+    renderPlanner();
+    fireEvent.click(await screen.findByRole("button", { name: /Send to Plan Reviewer/ }));
+    const dialog = await screen.findByRole("dialog", { name: "Send plan" });
+    await within(dialog).findByText("Wait until the Planner finishes this turn.");
+    expect(within(dialog).getByLabelText("Hand-off text").textContent).toContain("Old reply");
+
+    done = true;
+    // The poller reads the log again; the dialog follows it.
+    await waitFor(
+      () => expect(within(dialog).getByLabelText("Hand-off text").textContent).toContain("New plan reply"),
+      { timeout: 6000 },
+    );
+    expect(within(dialog).queryByText("Wait until the Planner finishes this turn.")).toBeNull();
+  }, 10000);
+
+  it("does not block on the Planner's open plan box", async () => {
+    vi.mocked(terminalSessionLog).mockResolvedValue(
+      sessionLog({
+        turnDone: false,
+        plan: "# The login plan",
+        planAt: "2026-10-12T10:01:00Z",
+        openTool: { id: "t1", name: "ExitPlanMode", title: "Plan" },
+        pendingTools: [{ id: "t1", name: "ExitPlanMode", title: "Plan" }],
+      }) as never,
+    );
+    renderPlanner();
+    fireEvent.click(await screen.findByRole("button", { name: /Send to Plan Reviewer/ }));
+    const dialog = await screen.findByRole("dialog", { name: "Send plan" });
+    await waitFor(() =>
+      expect(within(dialog).getByLabelText("Hand-off text").textContent).toContain("# The login plan"),
+    );
+    expect(within(dialog).queryByText(/waiting for you on a plan/)).toBeNull();
   });
 });

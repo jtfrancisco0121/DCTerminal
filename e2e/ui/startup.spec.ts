@@ -2,6 +2,9 @@ import type { Page } from "@playwright/test";
 import { CWD } from "./fixtures/data";
 import { expect, roleTab, test, type PageHandler } from "./fixtures/tauri";
 
+/** The start card names what it is starting: "Start a session", "New Planner session", "New terminal". */
+const START_HEADING = /^(Start a session|New .+ session|New terminal)$/;
+
 // The "Start a session" card: provider, model and effort, role tiles, fields,
 // Validate & preview, Start, and per-tab drafts (src/StartupForm.tsx).
 
@@ -125,8 +128,8 @@ test.describe("provider", () => {
     await expect(chip.getByRole("radio", { name: "Cursor" })).toBeChecked();
     await expect(chip.getByRole("radio", { name: "Claude" })).not.toBeChecked();
     await expect(page.getByRole("region", { name: "Cursor CLI history" })).toBeVisible();
-    await expect(page.getByRole("group", { name: "History provider" }).getByRole("button", { name: "Cursor" }))
-      .toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("radiogroup", { name: "History provider" }).getByRole("radio", { name: "Cursor" }))
+      .toHaveAttribute("aria-checked", "true");
     expect((await app.waitForCall("list_cursor_cli_history")).args).toEqual({ cwd: CWD });
     await expect(startRow(page).getByRole("button", { name: "Model for this tab" })).toContainText("Auto");
 
@@ -150,7 +153,7 @@ test.describe("provider", () => {
     // Remember Cursor for the Planner, then move to another role (default: Claude).
     await providerChip(page).getByRole("radio", { name: "Cursor" }).click();
     await expect(providerChip(page).getByRole("radio", { name: "Cursor" })).toBeChecked();
-    await roleGroup(page).getByRole("button", { name: "Developer" }).click();
+    await roleGroup(page).getByRole("radio", { name: "Developer" }).click();
     await expect(providerChip(page).getByRole("radio", { name: "Claude" })).toBeChecked();
     expect((await app.calls("set_tab_provider")).at(-1)!.args).toEqual({
       tabId: "tab-1",
@@ -158,7 +161,7 @@ test.describe("provider", () => {
       roleId: null,
     });
 
-    await roleGroup(page).getByRole("button", { name: "Planner" }).click();
+    await roleGroup(page).getByRole("radio", { name: "Planner" }).click();
     await expect(providerChip(page).getByRole("radio", { name: "Cursor" })).toBeChecked();
     expect((await app.calls("set_tab_provider")).at(-1)!.args).toEqual({
       tabId: "tab-1",
@@ -288,28 +291,28 @@ test.describe("role tiles", () => {
   test("tiles are grouped Pipeline (in hand-off order), Other roles, Terminals", async ({ app, page }) => {
     await app.open();
     const tiles = roleGroup(page);
-    await expect(tiles.getByRole("group")).toHaveCount(3);
-    await expect(tiles.getByRole("group", { name: "Pipeline" }).getByRole("button")).toHaveText([
+    await expect(tiles.getByRole("radiogroup")).toHaveCount(3);
+    await expect(tiles.getByRole("radiogroup", { name: "Pipeline" }).getByRole("radio")).toHaveText([
       "Planner",
       "Plan Reviewer",
       "Implementer",
       "PR Reviewer",
     ]);
-    await expect(tiles.getByRole("group", { name: "Pipeline" })).toContainText(
+    await expect(tiles.getByRole("radiogroup", { name: "Pipeline" })).toContainText(
       "Planner→Plan Reviewer→Implementer→PR Reviewer",
     );
-    await expect(tiles.getByRole("group", { name: "Other roles" }).getByRole("button")).toHaveText([
+    await expect(tiles.getByRole("radiogroup", { name: "Other roles" }).getByRole("radio")).toHaveText([
       "Developer",
       "General",
       "Recommendation",
       "Codebase Audit",
     ]);
-    await expect(tiles.getByRole("group", { name: "Terminals" }).getByRole("button")).toHaveText([
+    await expect(tiles.getByRole("radiogroup", { name: "Terminals" }).getByRole("radio")).toHaveText([
       "Terminal",
       "Claude Code",
       "Cursor CLI",
     ]);
-    await expect(tiles.getByRole("button", { name: "General" })).toHaveAttribute("aria-pressed", "true");
+    await expect(tiles.getByRole("radio", { name: "General" })).toHaveAttribute("aria-checked", "true");
   });
 
   test("a custom role joins Other roles, after the built-ins", async ({ app, page }) => {
@@ -319,7 +322,7 @@ test.describe("role tiles", () => {
         { ...roles.find((r) => r.id === "role_general")!, id: "role_custom_notes", name: "Release Notes", isBuiltIn: false },
       ],
     });
-    await expect(roleGroup(page).getByRole("group", { name: "Other roles" }).getByRole("button")).toHaveText([
+    await expect(roleGroup(page).getByRole("radiogroup", { name: "Other roles" }).getByRole("radio")).toHaveText([
       "Developer",
       "General",
       "Recommendation",
@@ -345,10 +348,10 @@ test.describe("role tiles", () => {
       // Start from another role so the tile click really switches the form.
       const from = name === "Developer" ? "role_planner" : "role_developer";
       await app.open({ tabs: [roleTab("tab-1", from, "Draft")] });
-      const tile = roleGroup(page).getByRole("button", { name, exact: true });
+      const tile = roleGroup(page).getByRole("radio", { name, exact: true });
       await tile.click();
-      await expect(tile).toHaveAttribute("aria-pressed", "true");
-      await expect(roleGroup(page).locator('[aria-pressed="true"]')).toHaveCount(1);
+      await expect(tile).toHaveAttribute("aria-checked", "true");
+      await expect(roleGroup(page).locator('[aria-checked="true"]')).toHaveCount(1);
       for (const label of labels) {
         const role = label.startsWith("Task Type") ? "combobox" : "textbox";
         await expect(page.getByRole(role, { name: label, exact: true })).toBeVisible();
@@ -356,7 +359,7 @@ test.describe("role tiles", () => {
       await expect(fieldControls(page)).toHaveCount(labels.length);
       if (eagle[name]) await expect(page.getByRole("checkbox", { name: eagle[name] })).not.toBeChecked();
       else await expect(page.getByRole("checkbox", { name: /Eagle-Eye/ })).toHaveCount(0);
-      await expect(page.getByRole("group", { name: "Open as" })).toBeVisible();
+      await expect(page.getByRole("radiogroup", { name: "Open as" })).toBeVisible();
       await expect(page.getByRole("button", { name: "Validate & preview" })).toBeVisible();
       await expect(startRow(page).getByRole("button", { name: "Start", exact: true })).toBeEnabled();
     });
@@ -388,20 +391,20 @@ test.describe("role tiles", () => {
       ["Cursor CLI", "Start Cursor CLI", true],
     ];
     for (const [tile, button, hasModel] of cases) {
-      await tiles.getByRole("button", { name: tile, exact: true }).click();
-      await expect(tiles.getByRole("button", { name: tile, exact: true })).toHaveAttribute("aria-pressed", "true");
+      await tiles.getByRole("radio", { name: tile, exact: true }).click();
+      await expect(tiles.getByRole("radio", { name: tile, exact: true })).toHaveAttribute("aria-checked", "true");
       // No role is selected while a terminal tile is.
-      await expect(tiles.getByRole("button", { name: "General" })).toHaveAttribute("aria-pressed", "false");
+      await expect(tiles.getByRole("radio", { name: "General" })).toHaveAttribute("aria-checked", "false");
       await expect(startRow(page).getByRole("button", { name: button })).toBeEnabled();
       await expect(startRow(page).getByRole("button", { name: "Model for this tab" })).toHaveCount(hasModel ? 1 : 0);
       await expect(providerChip(page)).toBeHidden();
-      await expect(page.getByRole("group", { name: "Open as" })).toBeHidden();
+      await expect(page.getByRole("radiogroup", { name: "Open as" })).toBeHidden();
       await expect(fieldControls(page)).toHaveCount(0);
       await expect(page.getByRole("button", { name: "Validate & preview" })).toBeHidden();
       await expect(page.locator(".start-history")).toBeHidden();
     }
 
-    await tiles.getByRole("button", { name: "Terminal", exact: true }).click();
+    await tiles.getByRole("radio", { name: "Terminal", exact: true }).click();
     await startRow(page).getByRole("button", { name: "Start terminal" }).click();
     const call = await app.waitForCall("shell_terminal_start");
     expect(call.args.input).toEqual({
@@ -416,7 +419,7 @@ test.describe("role tiles", () => {
     await expect(page.getByText("could not spawn /bin/zsh")).toBeVisible();
 
     // Picking a role again brings the form back.
-    await tiles.getByRole("button", { name: "Developer" }).click();
+    await tiles.getByRole("radio", { name: "Developer" }).click();
     await expect(fieldControls(page)).toHaveCount(2);
     await expect(startRow(page).getByRole("button", { name: "Start", exact: true })).toBeVisible();
   });
@@ -484,7 +487,7 @@ test.describe("validate and start", () => {
     expect(start.args).toMatchObject({ roleId: "role_planner", tabId: "tab-1", values: { cwd: CWD } });
     await expect(errors).toHaveText(missing);
     await expect(page.getByRole("button", { name: "Stop session" })).toHaveCount(0);
-    await expect(page.getByRole("heading", { name: "Start a session" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: START_HEADING })).toBeVisible();
 
     // Fill some: only what is left is listed, and a Bug also needs Current Behavior.
     await page.getByRole("combobox", { name: "Task Type *" }).selectOption("Bug");
@@ -562,24 +565,24 @@ test.describe("validate and start", () => {
         },
       },
     });
-    const openAs = page.getByRole("group", { name: "Open as" });
-    await expect(openAs.getByRole("button", { name: "Chat" })).toHaveAttribute("aria-pressed", "true");
-    await openAs.getByRole("button", { name: "Terminal" }).click();
+    const openAs = page.getByRole("radiogroup", { name: "Open as" });
+    await expect(openAs.getByRole("radio", { name: "Chat" })).toHaveAttribute("aria-checked", "true");
+    await openAs.getByRole("radio", { name: "Terminal" }).click();
 
     const saved = await app.waitForCall("set_terminal_settings");
     expect((saved.args.terminal as { roleSurface: Record<string, string> }).roleSurface).toEqual({
       role_general: "terminal",
     });
-    await expect(openAs.getByRole("button", { name: "Terminal" })).toHaveAttribute("aria-pressed", "true");
-    await expect(openAs.getByRole("button", { name: "Chat" })).toHaveAttribute("aria-pressed", "false");
-    const startTerminal = startRow(page).getByRole("button", { name: "Start terminal" });
+    await expect(openAs.getByRole("radio", { name: "Terminal" })).toHaveAttribute("aria-checked", "true");
+    await expect(openAs.getByRole("radio", { name: "Chat" })).toHaveAttribute("aria-checked", "false");
+    const startTerminal = startRow(page).getByRole("button", { name: "Start General terminal" });
     await expect(startTerminal).toBeVisible();
 
     // Other roles keep Chat.
-    await roleGroup(page).getByRole("button", { name: "Developer" }).click();
-    await expect(openAs.getByRole("button", { name: "Chat" })).toHaveAttribute("aria-pressed", "true");
+    await roleGroup(page).getByRole("radio", { name: "Developer" }).click();
+    await expect(openAs.getByRole("radio", { name: "Chat" })).toHaveAttribute("aria-checked", "true");
     await expect(startRow(page).getByRole("button", { name: "Start", exact: true })).toBeVisible();
-    await roleGroup(page).getByRole("button", { name: "General" }).click();
+    await roleGroup(page).getByRole("radio", { name: "General" }).click();
 
     await startTerminal.click();
     const call = await app.waitForCall("role_terminal_start");
@@ -596,7 +599,7 @@ test.describe("validate and start", () => {
     await expect(page.locator(".field-errors li")).toHaveText(["_session: claude was not found on PATH"]);
 
     // Back to Chat: Start opens a chat again.
-    await openAs.getByRole("button", { name: "Chat" }).click();
+    await openAs.getByRole("radio", { name: "Chat" }).click();
     await app.start("tab-1");
     expect((await app.waitForCall("role_session_start")).args).toMatchObject({ roleId: "role_general" });
   });
@@ -614,21 +617,21 @@ test.describe("drafts", () => {
     await page.getByRole("textbox", { name: "Current Behavior *" }).fill("It crashes");
 
     await page.getByRole("tab", { name: "Notes" }).click();
-    await expect(roleGroup(page).getByRole("button", { name: "General" })).toHaveAttribute("aria-pressed", "true");
+    await expect(roleGroup(page).getByRole("radio", { name: "General" })).toHaveAttribute("aria-checked", "true");
     const title = page.getByRole("textbox", { name: "Title", exact: true });
     await expect(title).toHaveValue("");
     await title.fill("Release checklist");
-    await roleGroup(page).getByRole("button", { name: "Developer" }).click();
-    await expect(roleGroup(page).getByRole("button", { name: "Developer" })).toHaveAttribute("aria-pressed", "true");
+    await roleGroup(page).getByRole("radio", { name: "Developer" }).click();
+    await expect(roleGroup(page).getByRole("radio", { name: "Developer" })).toHaveAttribute("aria-checked", "true");
 
     await page.getByRole("tab", { name: "Planner" }).click();
-    await expect(roleGroup(page).getByRole("button", { name: "Planner" })).toHaveAttribute("aria-pressed", "true");
+    await expect(roleGroup(page).getByRole("radio", { name: "Planner" })).toHaveAttribute("aria-checked", "true");
     await expect(page.getByRole("combobox", { name: "Task Type *" })).toHaveValue("Bug");
     await expect(page.getByRole("textbox", { name: "Title *" })).toHaveValue("Crash on save");
     await expect(page.getByRole("textbox", { name: "Current Behavior *" })).toHaveValue("It crashes");
 
     await page.getByRole("tab", { name: "Notes" }).click();
-    await expect(roleGroup(page).getByRole("button", { name: "Developer" })).toHaveAttribute("aria-pressed", "true");
+    await expect(roleGroup(page).getByRole("radio", { name: "Developer" })).toHaveAttribute("aria-checked", "true");
     await expect(page.getByRole("textbox", { name: "Title", exact: true })).toHaveValue("Release checklist");
   });
 
@@ -671,7 +674,7 @@ test.describe("drafts", () => {
       .poll(() => page.evaluate(() => window.__E2E.listenerCount("acp/session-update")))
       .toBeGreaterThan(0);
 
-    await expect(roleGroup(page).getByRole("button", { name: "Planner" })).toHaveAttribute("aria-pressed", "true");
+    await expect(roleGroup(page).getByRole("radio", { name: "Planner" })).toHaveAttribute("aria-checked", "true");
     await expect(page.getByRole("combobox", { name: "Task Type *" })).toHaveValue("Feature");
     await expect(page.getByRole("textbox", { name: "Title *" })).toHaveValue("Effort controls");
     await expect(page.getByRole("textbox", { name: "Request / Problem *" })).toHaveValue("Let users pick effort");

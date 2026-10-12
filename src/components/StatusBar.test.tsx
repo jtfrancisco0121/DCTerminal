@@ -109,4 +109,17 @@ describe("StatusBar (U3)", () => {
     expect(item.getAttribute("title")).toContain("/Users/jt/.claude-account2");
     expect(item.getAttribute("title")).toContain("jt@example.com");
   });
+
+  it("announces status and notices politely, with the tone in text", () => {
+    render(
+      <StatusBar
+        status={{ tone: "ok", text: "Ready" }}
+        messages={[{ id: "m", text: "Save failed", tone: "error" }]}
+      />,
+    );
+    const live = screen.getAllByRole("status");
+    expect(live.map((el) => el.getAttribute("aria-live"))).toEqual(["polite", "polite"]);
+    expect(live[0].textContent).toBe("Ready");
+    expect(live[1].textContent).toContain("Error: Save failed");
+  });
 });

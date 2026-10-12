@@ -3,7 +3,9 @@ import { splitChainSteps, type ChainCursor } from "../scratch/pad";
 import { useSlashAutocomplete } from "../composer/SlashCommandMenu";
 import { blockedSlashCommandIn, type SlashCommand } from "../composer/slashCommands";
 import type { ChatImagesProps } from "../attachments/useChatImages";
+import { localShortcutLabel, shortcutLabel, type Platform } from "../keymap";
 import { AttachmentChips, imageInputHandlers } from "./AttachmentChips";
+import { useImageFileDrop } from "../attachments/useImageFileDrop";
 
 type Props = {
   content: string;
@@ -14,6 +16,8 @@ type Props = {
   /** Terminal tabs send into the PTY. Chat tabs transfer and chain. */
   mode?: "chat" | "terminal";
   modLabel?: string;
+  /** Platform for the shortcut hints; defaults to this window's. */
+  platform?: Platform;
   collapsed?: boolean;
   onChange: (value: string) => void;
   onTransfer: () => void;
@@ -61,6 +65,7 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
     disabled,
     mode = "chat",
     modLabel = "Ctrl",
+    platform,
     collapsed = false,
     onChange,
     onTransfer,
@@ -118,6 +123,7 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
     onHeightCommit?.(next);
   };
   const terminal = mode === "terminal";
+  useImageFileDrop(editorRef, terminal ? null : images);
   const chained = !terminal && content.split(/\r?\n/).some((line) => /^\s*-{3,}\s*$/.test(line));
   const running = !terminal && (chain?.phase === "inFlight" || chain?.phase === "paused");
   const slash = useSlashAutocomplete({
@@ -163,8 +169,8 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
         <span className="scratch-pad-title">Scratch pad</span>
         <span className="hint scratch-pad-hint">
           {terminal
-            ? `${modLabel}+Shift+. send · ${modLabel}+J focus · Esc terminal`
-            : `Ctrl+. transfer · Ctrl+Enter send to chat${
+            ? `${modLabel}+Shift+. send · ${(platform ? shortcutLabel("focusPad", platform) : localShortcutLabel("focusPad")) ?? `${modLabel}+J`} focus · Esc terminal`
+            : `${localShortcutLabel("transferPad")} transfer · ${localShortcutLabel("send")} send to chat${
                 chained ? " · --- starts the next step after the turn ends" : ""
               }`}
         </span>

@@ -31,10 +31,10 @@ test("role editor: a new role is saved with its hand-off targets and shows in th
   // The start screen's role picker lists the custom role.
   await page.getByRole("button", { name: "Close", exact: true }).click();
   const picker = page.getByRole("group", { name: "Role" });
-  await expect(picker.getByRole("button", { name: "Release Notes" })).toBeVisible();
-  await picker.getByRole("button", { name: "Release Notes" }).click();
-  await expect(picker.getByRole("button", { name: "Release Notes" })).toHaveAttribute(
-    "aria-pressed",
+  await expect(picker.getByRole("radio", { name: "Release Notes" })).toBeVisible();
+  await picker.getByRole("radio", { name: "Release Notes" }).click();
+  await expect(picker.getByRole("radio", { name: "Release Notes" })).toHaveAttribute(
+    "aria-checked",
     "true",
   );
 

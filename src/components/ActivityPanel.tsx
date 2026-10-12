@@ -22,6 +22,7 @@ import {
 import { Dialog } from "./Dialog";
 import { InlineNotice, errorText } from "./InlineNotice";
 import { useConfirm } from "./confirm";
+import { PanelHeader } from "./PanelHeader";
 
 type Props = {
   tabId: string;
@@ -182,30 +183,34 @@ export function ActivityPanel({ tabId, tabLabel, busy, terminal, onCount, onClos
 
   return (
     <Dialog title={`Activity in ${tabLabel}`} className="activity-panel" onClose={onClose}>
-        <div className="changes-bar">
+        <PanelHeader
+          actions={
+            <>
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={loading}
+                onClick={() => void load()}
+              >
+                {loading ? "Loading…" : "Refresh"}
+              </button>
+              {!fromLog && (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={!entries || entries.length === 0}
+                  onClick={() => void clear()}
+                >
+                  Clear…
+                </button>
+              )}
+            </>
+          }
+        >
           <span className="activity-counts" data-testid="activity-counts">
             {summaryLine(counts)}
           </span>
-          <span className="changes-bar-spacer" />
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={loading}
-            onClick={() => void load()}
-          >
-            {loading ? "Loading…" : "Refresh"}
-          </button>
-          {!fromLog && (
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={!entries || entries.length === 0}
-              onClick={() => void clear()}
-            >
-              Clear…
-            </button>
-          )}
-        </div>
+        </PanelHeader>
         <div className="activity-chips" role="group" aria-label="Filter by kind">
           <button
             type="button"

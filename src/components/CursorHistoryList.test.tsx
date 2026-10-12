@@ -53,3 +53,20 @@ describe("Cursor CLI history list", () => {
     expect(screen.queryByRole("button", { name: "Resume" })).toBeNull();
   });
 });
+
+describe("Cursor CLI history list loading", () => {
+  it("says it is loading instead of claiming there are no sessions", () => {
+    render(
+      <CursorHistoryList
+        entries={[]}
+        error={null}
+        loading
+        busy={false}
+        onResume={() => {}}
+        onOpenCli={() => {}}
+      />,
+    );
+    expect(screen.getByText("Loading sessions…")).toBeTruthy();
+    expect(screen.queryByText("No saved sessions for this folder.")).toBeNull();
+  });
+});

@@ -3,10 +3,14 @@ import type { ModelSettings, UiSettings } from "../../src/bridge";
 import { CLAUDE_EFFORT_LEVELS } from "../../src/models";
 import { expect, test } from "./fixtures/tauri";
 
+/** The start card names what it is starting: "Start a session", "New Planner session", "New terminal". */
+const START_HEADING = /^(Start a session|New .+ session|New terminal)$/;
+
 const CATEGORIES = [
   "Roles",
   "Providers",
   "Models",
+  "Appearance",
   "Terminal",
   "Permissions",
   "Usage",
@@ -54,7 +58,7 @@ test.describe("settings page", () => {
 
     await page.getByRole("button", { name: "Close", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Settings", level: 2 })).toBeHidden();
-    await expect(page.getByRole("heading", { name: "Start a session" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: START_HEADING })).toBeVisible();
   });
 });
 
@@ -193,9 +197,9 @@ test.describe("Terminal and theme", () => {
     await expect(page.locator("html")).toHaveAttribute("data-theme", "github-dark");
     expect(await token(page, "--attention")).toBe("#f0c14b");
 
-    const terminal = await openSettings(page, "Terminal");
+    const terminal = await openSettings(page, "Appearance");
     const theme = terminal.getByRole("combobox", { name: "Theme" });
-    await expect(theme.locator("option")).toHaveText(["GitHub Dark", "GitHub Light"]);
+    await expect(theme.locator("option")).toHaveText(["Match system", "GitHub Dark", "GitHub Light"]);
     await expect(theme).toHaveValue("github-dark");
 
     await theme.selectOption({ label: "GitHub Light" });
@@ -224,7 +228,7 @@ test.describe("Terminal and theme", () => {
       },
     });
     await expect(page.locator("html")).toHaveAttribute("data-theme", "github-dark");
-    const terminal = await openSettings(page, "Terminal");
+    const terminal = await openSettings(page, "Appearance");
     await expect(terminal.getByRole("combobox", { name: "Theme" })).toHaveValue("github-dark");
   });
 
@@ -586,8 +590,10 @@ test.describe("persistence", () => {
       },
     });
 
-    const terminal = await openSettings(page, "Terminal");
-    await terminal.getByRole("combobox", { name: "Theme" }).selectOption("github-light");
+    const appearance = await openSettings(page, "Appearance");
+    await appearance.getByRole("combobox", { name: "Theme" }).selectOption("github-light");
+    await nav(page).getByRole("button", { name: "Terminal" }).click();
+    const terminal = page.getByRole("region", { name: "Terminal", exact: true });
     await terminal.getByRole("spinbutton", { name: "Font size" }).fill("18");
     await nav(page).getByRole("button", { name: "Models" }).click();
     const models = page.getByRole("region", { name: "Models", exact: true });
@@ -610,8 +616,10 @@ test.describe("persistence", () => {
       .toBeGreaterThan(0);
 
     await expect(page.locator("html")).toHaveAttribute("data-theme", "github-light");
-    const after = await openSettings(page, "Terminal");
-    await expect(after.getByRole("combobox", { name: "Theme" })).toHaveValue("github-light");
+    const afterLook = await openSettings(page, "Appearance");
+    await expect(afterLook.getByRole("combobox", { name: "Theme" })).toHaveValue("github-light");
+    await nav(page).getByRole("button", { name: "Terminal" }).click();
+    const after = page.getByRole("region", { name: "Terminal", exact: true });
     await expect(after.getByRole("spinbutton", { name: "Font size" })).toHaveValue("18");
     await nav(page).getByRole("button", { name: "Models" }).click();
     const modelsAfter = page.getByRole("region", { name: "Models", exact: true });
@@ -652,7 +660,7 @@ test.describe("keyboard", () => {
     await openSettings(page, "Data");
     await page.keyboard.press("Escape");
     await expect(page.getByRole("heading", { name: "Settings", level: 2 })).toBeHidden();
-    await expect(page.getByRole("heading", { name: "Start a session" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: START_HEADING })).toBeVisible();
 
     await page.keyboard.press("ControlOrMeta+Comma");
     await expect(page.getByRole("heading", { name: "Settings", level: 2 })).toBeVisible();

@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MutableRefObject,
+} from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import {
   filesList,
@@ -12,6 +19,15 @@ import { highlightCode } from "../files/highlight";
 import { formatSize, isSaveChord, joinRoot } from "../files/paths";
 import type { Platform } from "../keymap";
 import { useConfirm } from "./confirm";
+import { PanelHeader } from "./PanelHeader";
+
+/** What the parent asks before it closes or swaps the panel away. */
+export type FileDiscardGuard = {
+  /** True while the open file has edits that are not saved. */
+  dirty: () => boolean;
+  /** Ask in the panel; resolves true once the user agrees to drop the edits. */
+  confirm: () => Promise<boolean>;
+};
 
 type Props = {
   tabId: string;
@@ -22,6 +38,8 @@ type Props = {
   focusFile?: { path: string; nonce: number } | null;
   onInsertReference: (path: string) => void;
   onClose: () => void;
+  /** Filled while mounted so the parent can guard closing, tab switch and Settings. */
+  discardGuardRef?: MutableRefObject<FileDiscardGuard | null>;
 };
 
 type DirState = {
@@ -32,12 +50,21 @@ type DirState = {
 };
 
 const CONFLICT = "CONFLICT:";
+const DISCARD_MESSAGE = "Discard your unsaved edits to this file?";
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export function FilePanel({ tabId, cwd, platform, focusFile, onInsertReference, onClose }: Props) {
+export function FilePanel({
+  tabId,
+  cwd,
+  platform,
+  focusFile,
+  onInsertReference,
+  onClose,
+  discardGuardRef,
+}: Props) {
   const confirm = useConfirm();
   const [dirs, setDirs] = useState<Record<string, DirState>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set([""]));
@@ -85,28 +112,90 @@ export function FilePanel({ tabId, cwd, platform, focusFile, onInsertReference, 
     [tabId],
   );
 
+  // Ask before unsaved edits are dropped. Only the newest question can go
+  // ahead: an answer to an older one that a newer one superseded counts as
+  // "keep editing", and an open question resolves false if the panel unmounts.
+  const askSeqRef = useRef(0);
+  const cancelAsksRef = useRef(new Set<() => void>());
   useEffect(() => {
-    setDirs({});
-    setExpanded(new Set([""]));
-    setSelected(null);
-    setFile(null);
-    setEditing(false);
-    setConflict(false);
-    setNotice(null);
-    if (cwd) void loadDir("");
-  }, [cwd, loadDir, tabId]);
+    const cancels = cancelAsksRef.current;
+    return () => {
+      for (const cancel of cancels) cancel();
+      cancels.clear();
+    };
+  }, []);
+  const askDiscard = useCallback(
+    async (message: string, cancelLabel = "Keep editing"): Promise<boolean> => {
+      const seq = ++askSeqRef.current;
+      const ok = await new Promise<boolean>((resolve) => {
+        const cancels = cancelAsksRef.current;
+        const cancel = () => resolve(false);
+        cancels.add(cancel);
+        confirm({
+          title: "Discard unsaved edits",
+          message,
+          confirmLabel: "Discard edits",
+          cancelLabel,
+          danger: true,
+        })
+          .then(resolve, () => resolve(false))
+          .finally(() => cancels.delete(cancel));
+      });
+      return ok && seq === askSeqRef.current;
+    },
+    [confirm],
+  );
 
-  const confirmDiscard = async () =>
-    !dirtyRef.current ||
-    (await confirm({
-      title: "Discard unsaved edits",
-      message: "Discard your unsaved edits to this file?",
-      confirmLabel: "Discard edits",
-      danger: true,
-    }));
+  // Run `run` now, or after the user agrees to drop unsaved edits.
+  const guardDiscard = async (
+    run: () => void | Promise<void>,
+    message = DISCARD_MESSAGE,
+  ): Promise<void> => {
+    if (dirtyRef.current && !(await askDiscard(message))) return;
+    await run();
+  };
 
-  const openFile = async (path: string) => {
-    if (!(await confirmDiscard())) return;
+  useEffect(() => {
+    if (!discardGuardRef) return;
+    discardGuardRef.current = {
+      dirty: () => dirtyRef.current,
+      confirm: async () => !dirtyRef.current || (await askDiscard(DISCARD_MESSAGE)),
+    };
+    return () => {
+      discardGuardRef.current = null;
+    };
+  }, [discardGuardRef, askDiscard]);
+
+  // A new working folder resets the panel. With unsaved edits it waits for
+  // the user, who can keep the text to copy it out first.
+  const shownCwdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const reset = () => {
+      shownCwdRef.current = cwd;
+      setDirs({});
+      setExpanded(new Set([""]));
+      setSelected(null);
+      setFile(null);
+      setEditing(false);
+      setConflict(false);
+      setNotice(null);
+      if (cwd) void loadDir("");
+    };
+    if (shownCwdRef.current !== null && shownCwdRef.current !== cwd && dirtyRef.current) {
+      void askDiscard(
+        "The working folder changed. Discard your unsaved edits to this file?",
+        "Keep my edits",
+      ).then((ok) => {
+        if (ok) reset();
+      });
+      return;
+    }
+    reset();
+  }, [cwd, loadDir, tabId, askDiscard]);
+
+  const openFile = (path: string) => guardDiscard(() => doOpenFile(path));
+
+  const doOpenFile = async (path: string) => {
     setSelected({ path, isDir: false });
     setEditing(false);
     setConflict(false);
@@ -193,19 +282,13 @@ export function FilePanel({ tabId, cwd, platform, focusFile, onInsertReference, 
     }
   };
 
-  const reload = async () => {
+  const reload = () => {
     if (!file) return;
-    if (
-      dirty &&
-      !(await confirm({
-        title: "Reload from disk",
-        message: "Reload from disk and drop your edits?",
-        confirmLabel: "Reload",
-        danger: true,
-      }))
-    ) {
-      return;
-    }
+    void guardDiscard(() => doReload(), "Reload from disk and drop your edits?");
+  };
+
+  const doReload = async () => {
+    if (!file) return;
     try {
       const content = await filesRead(tabId, file.path);
       setFile(content);
@@ -319,10 +402,11 @@ export function FilePanel({ tabId, cwd, platform, focusFile, onInsertReference, 
             aria-pressed={editing}
             onClick={async () => {
               if (editing) {
-                if (!(await confirmDiscard())) return;
-                setDraft(file.text ?? "");
-                setEditing(false);
-                setConflict(false);
+                void guardDiscard(() => {
+                  setDraft(file.text ?? "");
+                  setEditing(false);
+                  setConflict(false);
+                });
               } else {
                 setEditing(true);
                 window.setTimeout(() => editorRef.current?.focus(), 0);
@@ -393,28 +477,29 @@ export function FilePanel({ tabId, cwd, platform, focusFile, onInsertReference, 
 
   return (
     <aside className="file-panel" aria-label="Files" ref={panelRef} tabIndex={-1}>
-      <div className="file-panel-bar">
-        <strong>Files</strong>
-        <span className="hint file-panel-root" title={root || cwd}>
-          {(root || cwd).split(/[\\/]/).filter(Boolean).pop() ?? ""}
-        </span>
-        <button
-          type="button"
-          className="secondary-button"
-          disabled={!cwd}
-          onClick={async () => {
-            if (!(await confirmDiscard())) return;
-            setDirs({});
-            setExpanded(new Set([""]));
-            void loadDir("");
-          }}
-        >
-          Refresh
-        </button>
-        <button type="button" className="secondary-button" aria-label="Close file panel" onClick={onClose}>
-          ×
-        </button>
-      </div>
+      <PanelHeader
+        title="Files"
+        subtitle={(root || cwd).split(/[\\/]/).filter(Boolean).pop() ?? ""}
+        subtitleTitle={root || cwd}
+        closeLabel="Close file panel"
+        onClose={() => void guardDiscard(onClose)}
+        actions={
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={!cwd}
+            onClick={() =>
+              void guardDiscard(() => {
+                setDirs({});
+                setExpanded(new Set([""]));
+                void loadDir("");
+              })
+            }
+          >
+            Refresh
+          </button>
+        }
+      />
       {!cwd ? (
         <p className="hint file-panel-empty">Choose a working folder first.</p>
       ) : (

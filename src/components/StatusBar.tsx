@@ -76,7 +76,11 @@ export function StatusBar({
       : FULL_PERMISSIONS_TITLE;
   return (
     <footer className="status-bar" aria-label="Status bar">
-      <span className={`status-bar-item status-bar-status status-tone-${status.tone}`}>
+      <span
+        className={`status-bar-item status-bar-status status-tone-${status.tone}`}
+        role="status"
+        aria-live="polite"
+      >
         <span className="status-bar-dot" aria-hidden />
         {status.text}
       </span>
@@ -124,12 +128,16 @@ export function StatusBar({
           {usage.text}
         </span>
       )}
+      <span className="status-bar-messages" role="status" aria-live="polite">
       {messages.map((message) => (
         <span
           key={message.id}
           className={`status-bar-message status-bar-message-${message.tone}`}
           title={message.text}
         >
+          {message.tone !== "info" && (
+            <span className="sr-only">{message.tone === "error" ? "Error: " : "Warning: "}</span>
+          )}
           <span className="status-bar-message-text">{message.text}</span>
           {message.onDismiss && (
             <button
@@ -143,6 +151,7 @@ export function StatusBar({
           )}
         </span>
       ))}
+      </span>
       <span className="status-bar-spacer" />
       {trailing}
     </footer>

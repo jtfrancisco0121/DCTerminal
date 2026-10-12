@@ -57,6 +57,10 @@ pub fn cursor_terminal_args(req: &TerminalLaunch) -> Result<Vec<String>, String>
             }
             args
         }
+        // Resume-after-crash is a Claude feature; Cursor roles relaunch fresh.
+        TerminalKind::RoleResume {
+            role_id, run_mode, ..
+        } => with_model(model, role_terminal_flags(role_id, *run_mode)),
     })
 }
 

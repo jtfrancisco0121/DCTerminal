@@ -23,6 +23,15 @@ export function terminalLaunchOf(tab: TabSummary): TerminalLaunch {
   }
 }
 
+/** A Claude Code terminal (role or plain tile) whose exit can offer a resume. */
+export function isClaudeTerminal(tab: TabSummary): boolean {
+  return (
+    tab.kind === "terminal" &&
+    tab.provider === "claude" &&
+    (tab.terminalLaunch === "role" || tab.terminalLaunch === "claude-cli")
+  );
+}
+
 export type CliLaunch = "cursor-cli" | "claude-cli";
 export const CLI_LABEL: Record<CliLaunch, string> = {
   "cursor-cli": "Cursor CLI",

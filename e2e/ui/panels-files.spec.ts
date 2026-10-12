@@ -94,7 +94,7 @@ test("Mod+B toggles the file panel and the choice is saved with the layout", asy
   await app.waitForCall("set_layout", (args: any) => args.layout.filePanelOpen === true);
   const listed = await app.waitForCall("files_list");
   expect(listed.args).toEqual({ tabId: "tab-1", path: "" });
-  await expect(panel.locator(".file-panel-root")).toHaveText("demo");
+  await expect(panel.locator(".panel-header-subtitle")).toHaveText("demo");
   await expect(panel.getByRole("tree").getByRole("treeitem")).toHaveCount(5);
 
   await panel.getByRole("button", { name: "Close file panel" }).click();

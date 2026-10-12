@@ -151,6 +151,21 @@ pub fn claude_terminal_args(req: &TerminalLaunch) -> Result<Vec<String>, String>
             args.push("--resume".to_string());
             args.push(id.to_string());
         }
+        // Same flags as the original launch, on the old conversation.
+        TerminalKind::RoleResume {
+            role_id,
+            session_id,
+            ..
+        } => {
+            let id = session_id.trim();
+            if !valid_session_id(id) {
+                return Err(format!("not a Claude session id: {id}"));
+            }
+            args.push("--resume".to_string());
+            args.push(id.to_string());
+            args.push("--permission-mode".to_string());
+            args.push(claude_terminal_role_mode(role_id).to_string());
+        }
         TerminalKind::Role {
             role_id, prompt, ..
         } => {
@@ -513,6 +528,41 @@ mod tests {
             assert_eq!(args, vec!["--permission-mode", mode], "{role_id}");
             assert!(!args.iter().any(|a| a == "bypassPermissions"), "{role_id}");
         }
+    }
+
+    #[test]
+    fn a_resumed_role_terminal_keeps_its_permission_mode() {
+        const ID: &str = "11111111-2222-4333-8444-555555555555";
+        let resume = |role_id: &str, model: Option<&str>| TerminalLaunch {
+            kind: TerminalKind::RoleResume {
+                role_id: role_id.to_string(),
+                run_mode: RunMode::Default,
+                session_id: ID.to_string(),
+            },
+            model: model.map(str::to_string),
+            session_id: None,
+        };
+        assert_eq!(
+            claude_terminal_args(&resume("role_planner", None)).unwrap(),
+            vec!["--resume", ID, "--permission-mode", "plan"]
+        );
+        assert_eq!(
+            claude_terminal_args(&resume("role_implementer", None)).unwrap(),
+            vec!["--resume", ID, "--permission-mode", "auto"]
+        );
+        // No new session id and no startup prompt on a resume.
+        let args = claude_terminal_args(&resume("role_implementer", None)).unwrap();
+        assert!(!args.iter().any(|a| a == "--session-id"));
+        let bad = TerminalLaunch {
+            kind: TerminalKind::RoleResume {
+                role_id: "role_implementer".to_string(),
+                run_mode: RunMode::Default,
+                session_id: "../etc".to_string(),
+            },
+            model: None,
+            session_id: None,
+        };
+        assert!(claude_terminal_args(&bad).is_err());
     }
 
     #[test]
