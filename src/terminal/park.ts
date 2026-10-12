@@ -27,6 +27,13 @@ const refitters = new Map<string, () => void>();
 
 let currentTheme = terminalTheme(cachedTheme());
 
+let linkOpenError: ((message: string) => void) | null = null;
+
+/** Where a failed link open (a click on a URL in the terminal) is reported. */
+export function setLinkOpenErrorHandler(handler: ((message: string) => void) | null): void {
+  linkOpenError = handler;
+}
+
 /** U8: repaint every terminal (and future ones) in the app theme. */
 export function setTerminalTheme(id: string): void {
   currentTheme = terminalTheme(id);
@@ -82,7 +89,12 @@ export function ensureParkedTerminal(id: string, fontSize: number): ParkedTermin
         message: `Open this link?\n${uri}`,
         confirmLabel: "Open",
       }).then((open) => {
-        if (open) void openUrl(uri).catch((err: unknown) => console.warn("Could not open link", err));
+        if (open) {
+          void openUrl(uri).catch((err: unknown) => {
+            console.warn("Could not open link", err);
+            linkOpenError?.(err instanceof Error ? err.message : String(err));
+          });
+        }
       });
     }),
   );

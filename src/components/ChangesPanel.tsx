@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { DisabledReason } from "./DisabledReason";
 import {
   changesFileDiff,
   changesList,
@@ -406,6 +407,9 @@ export function ChangesPanel({
           >
             Revert all…
           </button>
+          {!busy && !reverting && pending.length === 0 && (
+            <DisabledReason>Nothing to revert.</DisabledReason>
+          )}
         </div>
         {set?.state === "ok" && set.baselineAt && (
           <p className="hint changes-since">

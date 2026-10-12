@@ -96,8 +96,10 @@ export function useScratchPads(activeTabId: string | null) {
         );
         setFile(merged);
       })
-      .catch(() => {
-        if (!cancelled && local) setFile(local);
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        if (local) setFile(local);
+        setPersistError(`Drafts on disk could not be read: ${err instanceof Error ? err.message : String(err)}`);
       });
     const onHide = () => {
       if (timer.current) clearTimeout(timer.current);

@@ -288,6 +288,7 @@ import {
   pasteTerminalText,
   refitTerminal,
   requestTerminalSearch,
+  setLinkOpenErrorHandler,
   terminalBracketedPaste,
   terminalScrollbackText,
   terminalSelection,
@@ -600,6 +601,7 @@ export function StartupForm({
         const count = set.state === "ok" ? set.files.length : 0;
         setChangeCounts((prev) => (prev[tabId] === count ? prev : { ...prev, [tabId]: count }));
       })
+      // intentionally silent: a polled badge count; the Changes panel shows its own errors.
       .catch(() => {});
   }, []);
   const [split, setSplit] = useState<SplitState>(emptySplit());
@@ -844,6 +846,19 @@ export function StartupForm({
   }, []);
   const dismissTabToasts = agentNotifications.dismissTab;
   const showNotice = agentNotifications.notice;
+  const showNoticeRef = useRef(showNotice);
+  showNoticeRef.current = showNotice;
+  useEffect(() => {
+    setLinkOpenErrorHandler((message) => showNoticeRef.current("Could not open link", message, "failed"));
+    return () => setLinkOpenErrorHandler(null);
+  }, []);
+  const reportedRef = useRef(new Set<string>());
+  /** A background load or poll that failed: say so once per `key`, not per retry. */
+  const reportOnce = useCallback((key: string, title: string, err: unknown) => {
+    if (reportedRef.current.has(key)) return;
+    reportedRef.current.add(key);
+    showNoticeRef.current(title, errorText(err), "failed");
+  }, []);
   const confirm = useConfirm();
   const settingsDirtyRef = useRef(false);
   const onSettingsUnsaved = useCallback((dirty: boolean) => {
@@ -983,7 +998,9 @@ export function StartupForm({
     // draft stays in memory only.
     if (tabWasStarted(savedTabsRef.current, leaving)) return;
     const payload = answersForRole({ ...snap.values, cwd }, fieldsForForm(role));
-    void syncActiveTabForm(leaving, snap.roleId, cwd, payload).catch(() => {});
+    void syncActiveTabForm(leaving, snap.roleId, cwd, payload).catch((err: unknown) =>
+      reportOnce("tabFormSync", "Tab form not saved", err),
+    );
   }, [captureDraft, role]);
 
   const loadTabIntoForm = useCallback((tab: {
@@ -1014,6 +1031,7 @@ export function StartupForm({
         for (const running of snap.tabs) {
           if (running.phase !== "running" || running.kind === "terminal") continue;
           if (running.kind === "pipeline_overview") continue;
+          // intentionally silent: a failed probe just means the tab is not reattached.
           const live = await devSessionLive(running.id).catch(() => null);
           if (!live) continue;
           const { roleId: _role, promptInFlight: inFlight, exited, ...info } = live;
@@ -1204,11 +1222,11 @@ export function StartupForm({
   useEffect(() => {
     getTerminalSettings()
       .then(setTerminalSettingsState)
-      .catch(() => {});
+      .catch((err: unknown) => reportOnce("settingsLoad", "Settings did not load", err));
     getNotificationSettings()
       .then(setNotificationSettingsState)
-      .catch(() => {});
-  }, []);
+      .catch((err: unknown) => reportOnce("settingsLoad", "Settings did not load", err));
+  }, [reportOnce]);
 
   // A tab's toasts are stale once it is on screen in a focused window.
   useEffect(() => {
@@ -1414,6 +1432,7 @@ export function StartupForm({
         if (!sessionLogDue(entry.poll, busy, now)) continue;
         reading.add(id);
         void terminalSessionLog(id)
+          // intentionally silent: a polled status read; the next tick retries.
           .catch(() => null)
           .then((log) => {
             reading.delete(id);
@@ -1501,7 +1520,7 @@ export function StartupForm({
     return out;
   }, [runtimes, savedTabs, tabMarks, terminalBusy, terminalStates]);
 
-  const uiSettings = useUiSettings();
+  const uiSettings = useUiSettings((title, message) => showNotice(title, message, "failed"));
   // U2: one pad size for chat and terminal tabs; saved when a drag ends.
   const [padHeight, setPadHeight] = useState<number | null>(null);
   const savedPadHeight = uiSettings.ui.padHeight;
@@ -1542,7 +1561,7 @@ export function StartupForm({
         setFilePanelOpen(layout.filePanelOpen);
         setFilePanelWidth(layout.filePanelWidth);
       })
-      .catch(() => {})
+      .catch((err: unknown) => reportOnce("layoutLoad", "Layout did not load", err))
       .finally(() => {
         if (!cancelled) layoutLoadedRef.current = true;
       });
@@ -1550,17 +1569,17 @@ export function StartupForm({
       .then((value) => {
         if (!cancelled) setModelSettingsState(value);
       })
-      .catch(() => {});
+      .catch((err: unknown) => reportOnce("modelsLoad", "Model settings did not load", err));
     listModels("cursor", false)
       .then((list) => {
         if (!cancelled) setModelList(list);
       })
-      .catch(() => {});
+      .catch((err: unknown) => reportOnce("modelsLoad", "Model settings did not load", err));
     listModels("claude", false)
       .then((list) => {
         if (!cancelled) setClaudeModelList(list);
       })
-      .catch(() => {});
+      .catch((err: unknown) => reportOnce("modelsLoad", "Model settings did not load", err));
     return () => {
       cancelled = true;
     };
@@ -1579,6 +1598,7 @@ export function StartupForm({
         primarySize: clampSplitSize(split.primarySize),
         filePanelOpen,
         filePanelWidth,
+        // intentionally silent: the layout is saved again on the next change.
       }).catch(() => {});
     }, 300);
     return () => window.clearTimeout(timer);
@@ -1630,8 +1650,10 @@ export function StartupForm({
           }
         }
       })
-      .catch(() => {
-        if (!cancelled) setRole(null);
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setRole(null);
+        reportOnce("roleLoad", "The role did not load", err);
       });
     return () => {
       cancelled = true;
@@ -1667,6 +1689,7 @@ export function StartupForm({
           return next;
         });
       })
+      // intentionally silent: recalling the last folder is a convenience.
       .catch(() => {});
   }, [roleId, session]);
 
@@ -1802,7 +1825,7 @@ export function StartupForm({
         .then(() => {
           if (activeTabIdRef.current === tabId) void refreshTabs();
         })
-        .catch(() => {});
+        .catch((err: unknown) => reportOnce("tabFormSync", "Tab form not saved", err));
     }, 800);
     return () => {
       if (draftTimerRef.current) clearTimeout(draftTimerRef.current);
@@ -2565,6 +2588,7 @@ export function StartupForm({
       if (trimmed && !fromHandoff) {
         // Saved with the tab's pad (scratch.json), so Up-arrow history survives a restart.
         scratch.remember(tabId, trimmed);
+        // intentionally silent: the recent-sends record is best effort.
         void promptRecordSend(trimmed, "chat").catch(() => {});
       }
       patchRuntime(tabId, (rt) => ({
@@ -2721,7 +2745,7 @@ export function StartupForm({
       .then((status) => {
         if (!cancelled && status?.needed) setFirstRunOpen(true);
       })
-      .catch(() => {});
+      .catch((err: unknown) => reportOnce("firstRunStatus", "Setup check failed", err));
     return () => {
       cancelled = true;
     };
@@ -3314,12 +3338,14 @@ export function StartupForm({
         await ptyWrite(target, payload);
         setTerminalError(null);
         // Sent to the shell: it leaves the pad and joins Recent sends.
+        // intentionally silent: the recent-sends record is best effort.
         void promptRecordSend(text.trim(), "terminal").catch(() => {});
         if (padTextRef.current[tabId] === padBefore) {
           scratch.setContent(tabId, padAfterSend(padBefore, sent));
         }
         return;
       } catch {
+        // The PTY may not be attached yet: retry; the loop ends in a visible error below.
         await new Promise((resolve) => window.setTimeout(resolve, 50));
       }
     }
@@ -3387,7 +3413,7 @@ export function StartupForm({
   useEffect(() => {
     handoffList()
       .then(setHandoffs)
-      .catch(() => {});
+      .catch((err: unknown) => reportOnce("handoffList", "Hand-offs did not load", err));
   }, []);
 
   useEffect(() => {
@@ -3396,7 +3422,7 @@ export function StartupForm({
         setDiagnostics(status);
         setCaptureOn(status.capturePermissionPayloads);
       })
-      .catch(() => {});
+      .catch((err: unknown) => reportOnce("diagnosticsStatus", "Diagnostics status did not load", err));
   }, []);
 
   useEffect(() => {
@@ -3413,7 +3439,7 @@ export function StartupForm({
             showNotice(alert.title, alert.body, alert.reached ? "failed" : "question");
           }
         })
-        .catch(() => {});
+        .catch((err: unknown) => reportOnce("usageLimits", "Usage limits did not load", err));
     };
     load();
     const timer = window.setInterval(load, 20_000);
@@ -3426,8 +3452,8 @@ export function StartupForm({
   const refreshApprovalMode = useCallback(() => {
     cursorApprovalMode()
       .then(setApprovalMode)
-      .catch(() => {});
-  }, []);
+      .catch((err: unknown) => reportOnce("approvalMode", "Approval mode did not load", err));
+  }, [reportOnce]);
 
   useEffect(() => {
     refreshApprovalMode();
@@ -3490,6 +3516,7 @@ export function StartupForm({
       if (!fresh) return;
       const readAt = Date.now();
       void terminalSessionLog(tab.id)
+        // intentionally silent: a polled status read; the next tick retries.
         .catch(() => null)
         .then((log) => {
           storeSessionLog(tab.id, log, readAt);
@@ -3590,6 +3617,7 @@ export function StartupForm({
                 setChatPlanFile({ tabId, text: file.text, name: file.name });
               }
             })
+            // intentionally silent: the plan file preview is best effort.
             .catch(() => {});
         }
       }
@@ -3792,6 +3820,7 @@ export function StartupForm({
             handoffSource.sourceTabId,
             pendingPlan.jsonRpcId,
             "cancelled",
+            // intentionally silent: the request may already be gone; the hand-off goes ahead.
           ).catch(() => {});
           patchRuntime(handoffSource.sourceTabId, (rt) => ({ ...rt, plan: null }));
         }
@@ -3864,6 +3893,7 @@ export function StartupForm({
         const fresh = await terminalPlanFile(0, source.sourceTabId, {
           mentioned: [planFile.name],
           claimed: [],
+          // intentionally silent: falls back to the plan text captured earlier.
         }).catch(() => null);
         if (fresh?.path === planFile.path && fresh.text.trim()) {
           source = { ...source, planFileText: fresh.text };
@@ -3871,6 +3901,7 @@ export function StartupForm({
       }
       if (source.sourceRoleId === "role_implementer") {
         const chainId = savedTabs.find((tab) => tab.id === source.sourceTabId)?.chain?.chainId;
+        // intentionally silent: each lookup only enriches the hand-off; it works without them.
         const [changes, repo, run] = await Promise.all([
           changesList(source.sourceTabId, "tab").catch(() => null),
           gitRepoInfo(source.cwd).catch(() => null),
@@ -3893,6 +3924,7 @@ export function StartupForm({
         };
       }
       // Settings can stay open over the dialog: map onto the role as saved now.
+      // intentionally silent: falls back to the role fields loaded with the dialog.
       const saved = await getRole(handoffTarget).catch(() => null);
       const fields = saved ? handoffFieldsOf(saved) : (handoffFields ?? []);
       const templateText = saved ? saved.templateText : handoffTemplate;
@@ -3914,6 +3946,7 @@ export function StartupForm({
             : null);
         if (nextChain && needsChainTaskType(mapped, target)) {
           // Plan Reviewer has no task type; the chain's Planner form does.
+          // intentionally silent: without it the task type is simply not carried over.
           const view = await getPipelineRun(nextChain.chainId).catch(() => null);
           mapped = carryChainTaskType(mapped, target, view?.taskType);
         }
@@ -3927,6 +3960,7 @@ export function StartupForm({
             targetName,
           );
           if (!problem) {
+            // intentionally silent: the backend validates again when the terminal starts.
             const check = await validateAndPreview(handoffTarget, {
               ...terminalHandoffInput(mapped).values,
               cwd: handoffSource.cwd,
@@ -4181,8 +4215,14 @@ export function StartupForm({
           setLogBusy(true);
           try {
             const [agent, app] = await Promise.all([
-              sessionAgentLogs(tabId).catch(() => ({ stderr: "" })),
-              diagnosticsReadLog().catch(() => ({ text: "", path: "" })),
+              sessionAgentLogs(tabId).catch((err: unknown) => {
+                showNotice("Agent log not read", errorText(err), "failed");
+                return { stderr: "" };
+              }),
+              diagnosticsReadLog().catch((err: unknown) => {
+                showNotice("App log not read", errorText(err), "failed");
+                return { text: "", path: "" };
+              }),
             ]);
             setLogDrawer({
               stderr: agent.stderr,
@@ -4645,7 +4685,9 @@ export function StartupForm({
   /** F8: setup finished: put the role and folder on the active draft tab, then Start. */
   const finishFirstRun = (choice: FirstRunFinish) => {
     setFirstRunOpen(false);
-    void firstRunComplete().catch(() => {});
+    void firstRunComplete().catch((err: unknown) =>
+      showNotice("Setup state not saved", errorText(err), "failed"),
+    );
     chooseRole(choice.roleId);
     setField("cwd", choice.folder);
     setPendingStart(choice);
@@ -4654,7 +4696,9 @@ export function StartupForm({
 
   const skipFirstRun = () => {
     setFirstRunOpen(false);
-    void firstRunComplete().catch(() => {});
+    void firstRunComplete().catch((err: unknown) =>
+      showNotice("Setup state not saved", errorText(err), "failed"),
+    );
   };
 
   /** F7: open the workspaces dialog (and push the active form to state.json). */
@@ -4698,7 +4742,7 @@ export function StartupForm({
         const rt = runtimes[t.id];
         if (rt && rt.segments.length > 0) {
           await transcriptSave(t.id, segmentsToPlainText(rt.segments), rt.session?.cwd ?? t.cwd).catch(
-            () => {},
+            (err: unknown) => reportOnce("transcriptSave", "Transcript not saved", err),
           );
         }
       }
@@ -4754,7 +4798,7 @@ export function StartupForm({
         setFilePanelOpen(layout.filePanelOpen);
         setFilePanelWidth(layout.filePanelWidth);
       })
-      .catch(() => {});
+      .catch((err: unknown) => reportOnce("layoutLoad", "Layout did not load", err));
   };
 
   /** The active tab's pad editor (chat pad or terminal pad), if mounted. */
@@ -4810,6 +4854,7 @@ export function StartupForm({
     if (promptId) {
       void promptMarkUsed(promptId)
         .then(setPromptLibrary)
+        // intentionally silent: the "last used" counter is cosmetic.
         .catch(() => {});
     }
     const terminal = savedTabs.find((tab) => tab.id === tabId)?.kind === "terminal";
@@ -4838,7 +4883,10 @@ export function StartupForm({
         });
         return;
       }
-      const file = await transcriptLoad(hit.tabId).catch(() => null);
+      const file = await transcriptLoad(hit.tabId).catch((err: unknown) => {
+        showNotice("Transcript not loaded", errorText(err), "failed");
+        return null;
+      });
       if (hit.source === "closed") {
         stashActiveTab();
         const { tab } = await reopenClosedTab(hit.tabId);
@@ -5768,7 +5816,9 @@ export function StartupForm({
               notePadSelection();
               scratch.flush();
             }}
+            // intentionally silent: the recent-sends record is best effort.
             onSent={(text) => void promptRecordSend(text, "terminal").catch(() => {})}
+            onError={(message) => showNotice("Not sent to the terminal", message, "failed")}
             beforeSubmit={snapshotTerminalTurn}
             onOpenLibrary={() => openPromptLibrary(false)}
             write={ptyWrite}

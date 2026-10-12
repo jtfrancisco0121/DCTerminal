@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { CliDetectResult, LoginStatus, ProviderReport, RoleSummary } from "../bridge";
 
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn(async () => {}) }));
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 vi.mock("./FolderPicker", () => ({
   FolderPicker: ({ value, onChange }: { value: string; onChange: (path: string) => void }) => (
@@ -138,6 +139,16 @@ describe("FirstRunSetup", () => {
     expect(await screen.findByText("Claude Code found.")).toBeTruthy();
     expect(next().disabled).toBe(false);
     expect(claudeStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("says why Next is off, and shows an error when the install link cannot open", async () => {
+    const claudeStatus = vi.fn().mockResolvedValue(claudeReport(false, status("noCli")));
+    renderSetup({ cli: missing, claudeStatus });
+    await screen.findByText("Claude Code (claude) was not found.");
+    expect(screen.getByRole("note").textContent).toContain("Install Claude Code or the Cursor CLI");
+    vi.mocked(openUrl).mockRejectedValueOnce(new Error("no browser"));
+    fireEvent.click(screen.getByRole("link", { name: /Install Claude Code/ }));
+    expect((await screen.findByText(/no browser/)).textContent).toContain("no browser");
   });
 
   it("shows the claude2 login hint when the folder is not signed in", async () => {
