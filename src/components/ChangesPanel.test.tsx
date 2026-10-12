@@ -86,9 +86,27 @@ describe("ChangesPanel", () => {
     expect(split.getAttribute("data-view")).toBe("split");
     const row = within(split).getByText("old line").closest("tr")!;
     expect(row.textContent).toContain("new line");
+    // +/- markers, so the diff is not colour-only.
+    expect(Array.from(row.querySelectorAll(".diff-marker")).map((m) => m.textContent)).toEqual(["−", "+"]);
 
     fireEvent.click(screen.getByRole("radio", { name: "Whole tab" }));
     await waitFor(() => expect(vi.mocked(changesList)).toHaveBeenLastCalledWith("t1", "tab"));
+  });
+
+  it("moves through the changed files with the arrow keys", async () => {
+    render(<Harness />);
+    const list = await screen.findByRole("listbox", { name: "Changed files" });
+    const options = within(list).getAllByRole("option");
+    expect(options[0].getAttribute("tabindex")).toBe("0");
+    expect(options[1].getAttribute("tabindex")).toBe("-1");
+    options[0].focus();
+    fireEvent.keyDown(options[0], { key: "ArrowDown" });
+    expect(options[1].getAttribute("aria-selected")).toBe("true");
+    expect(document.activeElement).toBe(options[1]);
+    fireEvent.keyDown(options[1], { key: "End" });
+    expect(within(list).getAllByRole("option")[2].getAttribute("aria-selected")).toBe("true");
+    fireEvent.keyDown(options[2], { key: "Home" });
+    expect(within(list).getAllByRole("option")[0].getAttribute("aria-selected")).toBe("true");
   });
 
   it("reverts one file only after confirming, and reports skipped files", async () => {
@@ -165,6 +183,10 @@ describe("ChangesPanel", () => {
     vi.mocked(changesList).mockResolvedValueOnce({ ...okSet([]), state: "noRepo" });
     const { unmount } = render(<Harness />);
     expect(await screen.findByText(/not in a git repository/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "New snapshot" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Revert all/ })).toBeNull();
+    expect(screen.queryByRole("radiogroup", { name: "Changes since" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeTruthy();
     unmount();
 
     vi.mocked(changesList).mockResolvedValueOnce({ ...okSet([]), state: "noBaseline" });

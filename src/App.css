@@ -2359,23 +2359,6 @@ kbd {
   font-size: var(--text-sm);
 }
 
-.file-panel-bar {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-  padding: 0.3rem 0.4rem;
-  border-bottom: 1px solid var(--border);
-}
-
-.file-panel-root {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  margin: 0;
-}
-
 .file-panel-body {
   flex: 1;
   min-height: 0;
@@ -2929,21 +2912,6 @@ kbd {
   flex-direction: column;
   gap: 0.5rem;
   overflow: hidden;
-}
-
-.changes-bar {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.changes-bar h3 {
-  margin: 0;
-}
-
-.changes-bar-spacer {
-  flex: 1;
 }
 
 .segmented {
@@ -5302,4 +5270,44 @@ button.chain-label {
 .disabled-reason-inline {
   margin-right: 0;
   align-self: center;
+}
+
+/* Shared side-panel header (Activity, Changes, Files) */
+.panel-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-header-title {
+  margin: 0;
+  font-size: var(--text-md);
+}
+
+.panel-header-subtitle {
+  min-width: 0;
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin: 0;
+}
+
+.panel-header-spacer {
+  flex: 1;
+}
+
+.diff-marker {
+  display: inline-block;
+  width: 1ch;
+  margin-right: var(--space-1);
+  color: var(--fg-subtle);
+  user-select: none;
+}
+
+.file-panel-resizer:focus-visible {
+  background: color-mix(in srgb, var(--accent-fg) 33%, transparent);
 }

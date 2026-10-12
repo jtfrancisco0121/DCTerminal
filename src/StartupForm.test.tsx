@@ -301,6 +301,7 @@ import {
   terminalSessionLog,
 } from "./bridge";
 import { StartupForm } from "./StartupForm";
+import { ConfirmHost } from "./components/confirm";
 
 const developer = {
   id: "role_developer",
@@ -582,8 +583,11 @@ describe("blank tab card", () => {
         showDevTools={false}
       />,
     );
-    const start = await screen.findByRole("button", { name: "Start" });
-    expect((start as HTMLButtonElement).disabled).toBe(true);
+    // The first render can show Start before the saved tab (no folder) loads.
+    await waitFor(() =>
+      expect((screen.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(true),
+    );
+    const start = screen.getByRole("button", { name: "Start" });
     expect(start.getAttribute("aria-describedby")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Start a session" })).toBeTruthy();
   });
@@ -1328,6 +1332,60 @@ describe("changes (diff) panel", () => {
       expect(panel.contains(document.activeElement)).toBe(true),
     );
     expect(changesRevert).not.toHaveBeenCalled();
+  });
+
+  it("asks before ⌘B or a tab switch drops unsaved edits", async () => {
+    const second = { ...terminalTab, id: "tab_b", label: "Second" };
+    vi.mocked(getAppState).mockResolvedValue({
+      activeTabId: "tab_a",
+      tabs: [terminalTab, second],
+      closedTabs: [],
+    });
+    vi.mocked(selectActiveTab).mockResolvedValue({ tab: second } as never);
+    render(
+      <>
+        <StartupForm
+          roles={[{ id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 }]}
+          cli={{ found: true, path: "agent", version: "test", error: null }}
+          cliError={null}
+          cliFound
+          showDevTools={false}
+        />
+        <ConfirmHost />
+      </>,
+    );
+    await screen.findByRole("tab", { name: /Second/ });
+    const toggle = () =>
+      fireEvent.keyDown(window, { key: "b", code: "KeyB", ctrlKey: true, metaKey: true });
+    toggle();
+    const panel = await screen.findByRole("complementary", { name: "Files" });
+    fireEvent.click(await within(panel).findByText("src"));
+    fireEvent.click(await within(panel).findByText("app.ts"));
+    fireEvent.click(await within(panel).findByRole("button", { name: "Edit" }));
+    fireEvent.change(within(panel).getByLabelText("Edit src/app.ts"), {
+      target: { value: "draft\n" },
+    });
+    vi.mocked(selectActiveTab).mockClear();
+
+    fireEvent.click(screen.getByRole("tab", { name: /Second/ }));
+    await screen.findByRole("alertdialog");
+    expect(selectActiveTab).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(selectActiveTab).not.toHaveBeenCalled();
+
+    toggle();
+    await screen.findByRole("alertdialog");
+    fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(screen.getByRole("complementary", { name: "Files" })).toBe(panel);
+    expect((within(panel).getByLabelText("Edit src/app.ts") as HTMLTextAreaElement).value).toBe(
+      "draft\n",
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: /Second/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Discard edits" }));
+    await waitFor(() => expect(selectActiveTab).toHaveBeenCalledWith("tab_b"));
   });
 
   it("opens the activity log next to Changes", async () => {
