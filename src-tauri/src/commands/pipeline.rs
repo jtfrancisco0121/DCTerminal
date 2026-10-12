@@ -347,9 +347,44 @@ pub fn pipeline_fan_out(
     Ok(())
 }
 
+/// Mark a lane `waiting`, `active` (its Implementer started) or `approved`.
+pub fn set_lane_status(store: &mut StateStore, run_id: &str, lane: &str, status: &str) -> Result<(), String> {
+    if !matches!(status, "waiting" | "active" | "approved") {
+        return Err(format!("not a lane status: {status}"));
+    }
+    let run = store
+        .pipeline_run_by_id_mut(run_id)
+        .ok_or_else(|| format!("unknown pipeline run: {run_id}"))?;
+    let title = {
+        let l = run.lane_mut(lane).ok_or_else(|| format!("unknown lane: {lane}"))?;
+        if l.status == status {
+            return Ok(());
+        }
+        l.status = status.to_string();
+        l.title.clone()
+    };
+    run.log("note", None, None, format!("{title}: {status}"), None);
+    store.save()
+}
+
+#[tauri::command]
+pub fn pipeline_lane_status(
+    app: tauri::AppHandle,
+    run_id: String,
+    lane: String,
+    status: String,
+    store: State<Mutex<StateStore>>,
+) -> Result<(), String> {
+    let run_id = run_id.trim().to_string();
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    set_lane_status(&mut store, &run_id, lane.trim(), status.trim())?;
+    app.chain_run_updated(&run_id);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{fan_out, LaneInput};
+    use super::{fan_out, set_lane_status, LaneInput};
     use crate::roles::Role;
     use crate::store::{AppStateFile, ChainRef, StateStore, MAIN_WINDOW_ID};
 
@@ -422,6 +457,13 @@ mod tests {
         assert_eq!(lane.stage, "pr_reviewer");
         assert!(!run.tab_ids.contains_key("role_implementer"), "lane tabs stay in the lane");
         assert!(run.events.last().unwrap().summary.starts_with("PR1 — API: Handed to PR Reviewer"));
+        let impl2 = store.create_draft_tab(&role("role_implementer"), "/tmp/wt2", true, None).unwrap();
+        store.set_tab_chain(&impl2, Some(chain(3, Some("pr2"))), Some("plan for PR2")).unwrap();
+        let run = store.pipeline_run_by_id("ee_f").unwrap();
+        assert_eq!(run.lane("pr2").unwrap().status, "waiting", "tagging does not start a lane");
+        set_lane_status(&mut store, "ee_f", "pr2", "active").unwrap();
+        assert_eq!(store.pipeline_run_by_id("ee_f").unwrap().lane("pr2").unwrap().status, "active");
+        assert!(set_lane_status(&mut store, "ee_f", "pr2", "done").is_err());
 
         let chain = store
             .chain_loop_back_in("ee_f", Some("pr1"), "role_pr_reviewer", &impl1, Some("REQUEST CHANGES"), Some("fix"))

@@ -317,6 +317,23 @@ export type PipelineRun = {
   gates?: Record<string, { round: number; at: string; results: GateResult[] }>;
   /** Opt-in autopilot; missing or off means manual. */
   autopilot?: RunAutopilot | null;
+  /** One lane per pull request once the run fanned out. */
+  lanes?: RunLane[];
+  /** The stage where the lanes start (the Implementer's). */
+  fanOutStage?: string | null;
+};
+
+export type RunLane = {
+  id: string;
+  title: string;
+  dependsOn?: string[];
+  /** `waiting` (for its dependencies), `active`, `approved`. */
+  status: string;
+  stage: string;
+  round: number;
+  tabIds: Record<string, string>;
+  handoffs?: Record<string, { text: string; at: string }>;
+  verdicts?: { roleId: string; round: number; verdict?: string | null; at: string }[];
 };
 
 export type RunEvent = {
@@ -449,8 +466,12 @@ export async function chainLoopBack(input: {
   tabId: string;
   verdict: string | null;
   handoffText: string | null;
+  /** The fanned-out pull request whose round goes back. */
+  lane?: string | null;
 }): Promise<import("./handoff/chains").ChainRef> {
-  return invoke("chain_loop_back", input);
+  // `lane` only when there is one: a missing key reads as no lane.
+  const { lane, ...rest } = input;
+  return invoke("chain_loop_back", lane ? { ...rest, lane } : rest);
 }
 
 /** Shows (or opens) the overview tab of an Eagle-Eye chain. Starts nothing. */
@@ -948,8 +969,26 @@ export async function pipelineRunGates(
   stageId: string,
   cwd: string | null,
   prUrls: string[],
+  lane: string | null = null,
 ): Promise<GateResult[]> {
-  return invoke("pipeline_run_gates", { runId, stageId, cwd, prUrls });
+  return invoke("pipeline_run_gates", { runId, stageId, lane, cwd, prUrls });
+}
+
+/** Splits a run into one lane per pull request at `stageId` (the Implementer's). */
+export async function pipelineFanOut(
+  runId: string,
+  stageId: string,
+  lanes: { id: string; title: string; dependsOn: string[] }[],
+): Promise<void> {
+  return invoke("pipeline_fan_out", { runId, stageId, lanes });
+}
+
+export async function pipelineLaneStatus(
+  runId: string,
+  lane: string,
+  status: "waiting" | "active" | "approved",
+): Promise<void> {
+  return invoke("pipeline_lane_status", { runId, lane, status });
 }
 
 export async function pipelineSetAutopilot(runId: string, enabled: boolean): Promise<void> {
@@ -965,15 +1004,19 @@ export type TurnReport = {
   missingSections: string[];
   usagePercent: number | null;
   chat: boolean;
+  lane: string | null;
 };
 
 export type AutopilotDecision = {
-  action: "advance" | "loopBack" | "retry" | "reask" | "stop" | "complete";
+  action: "advance" | "loopBack" | "retry" | "reask" | "stop" | "complete" | "laneDone";
   stageId?: string;
   roleId?: string;
   reason: string;
   message?: string;
   followUps?: string[];
+  lane?: string;
+  /** `laneDone`: waiting lanes that can start now. */
+  unblocked?: string[];
 };
 
 export async function pipelineDecide(runId: string, report: TurnReport): Promise<AutopilotDecision> {
@@ -1150,7 +1193,12 @@ export async function handoffAttach(input: {
   id: string;
   tabId: string;
   chain: import("./handoff/chains").ChainRef | null;
-  loopBack: { chainId: string; reviewerRoleId: string; verdict: string | null } | null;
+  loopBack: {
+    chainId: string;
+    reviewerRoleId: string;
+    verdict: string | null;
+    lane?: string | null;
+  } | null;
   handoffText: string | null;
 }): Promise<{ record: HandoffRecord; chain: import("./handoff/chains").ChainRef | null }> {
   return invoke("handoff_attach", { input });

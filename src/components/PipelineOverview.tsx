@@ -14,6 +14,7 @@ import {
 import { maxRounds, pipelineDef, pipelineStages } from "../pipeline/defs";
 import { eventLabel, eventTime, followUps, formatRunReport, stageTitle } from "../pipeline/runReport";
 import { githubPrUrls } from "../handoff/map";
+import { lanesFromReply } from "../pipeline/prPlan";
 import { errorText } from "./InlineNotice";
 import {
   coalescedReload,
@@ -49,6 +50,10 @@ type Props = {
   terminalStates?: Record<string, TerminalState>;
   /** Claude session logs by tab id: verdicts and plans of Claude terminals come from here. */
   sessionLogs?: SessionLogs;
+  /** Fan the run out into one lane per pull request (ADR-014 phase 3). */
+  onFanOut?: (runId: string) => Promise<void>;
+  /** Start a waiting lane's Implementer. */
+  onStartLane?: (runId: string, laneId: string) => Promise<void>;
 };
 
 function overviewTitle(run: PipelineRun, kind: PipelineKind): string {
@@ -107,6 +112,8 @@ export function PipelineOverview({
   terminalReader = liveTerminalReader,
   terminalStates,
   sessionLogs,
+  onFanOut,
+  onStartLane,
 }: Props) {
   const [run, setRun] = useState<PipelineRun | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -176,6 +183,33 @@ export function PipelineOverview({
       onNotice("Checks did not run", errorText(err));
     } finally {
       setChecking((prev) => ({ ...prev, [stageId]: false }));
+    }
+  };
+
+  const fanOut = async () => {
+    if (!run || !onFanOut) return;
+    setBusy(true);
+    try {
+      await onFanOut(run.id);
+      await reload();
+    } catch (err: unknown) {
+      onNotice("Did not fan out", errorText(err));
+      await reload();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const startLaneNow = async (laneId: string) => {
+    if (!run || !onStartLane) return;
+    setBusy(true);
+    try {
+      await onStartLane(run.id, laneId);
+      await reload();
+    } catch (err: unknown) {
+      onNotice("Lane did not start", errorText(err));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -264,6 +298,21 @@ export function PipelineOverview({
   const autopilotOn = !!run.autopilot?.enabled;
   const later = followUps(run);
   const events = [...(run.events ?? [])].reverse();
+  const lanes = run.lanes ?? [];
+  // Fan-out reads the pull-request list in the reply of the stage before the Implementer.
+  const fanStage = stageDefs.find((s) => s.roleId === "role_implementer") ?? null;
+  const planStage = fanStage ? stageDefs[stageDefs.indexOf(fanStage) - 1] ?? null : null;
+  const planTab = planStage ? tabs.find((t) => t.id === run.tabIds[planStage.roleId]) : undefined;
+  const plannedPrs =
+    run.chainId && !lanes.length && planTab && fanStage
+      ? lanesFromReply(stageReply(planTab, runtimes[planTab.id], terminalReader, sessionLogs))
+      : [];
+  const implementerStarted = !!fanStage && !!tabs.find(
+    (t) => t.id === run.tabIds[fanStage.roleId] && t.phase !== "draft",
+  );
+  const laneTab = (id: string | undefined) => (id ? tabs.find((t) => t.id === id) : undefined);
+  const laneBlocked = (deps: string[] = []) =>
+    deps.filter((dep) => lanes.find((l) => l.id === dep)?.status !== "approved");
 
   return (
     <section className="pipeline-overview" aria-label="Pipeline overview">
@@ -404,6 +453,80 @@ export function PipelineOverview({
           );
         })}
       </div>
+
+      {plannedPrs.length >= 2 && onFanOut && !implementerStarted && (
+        <section className="pipeline-fan-out" aria-label="Fan out">
+          <h3>Fan out by pull request</h3>
+          <p className="hint">
+            The plan ships as {plannedPrs.length} pull requests. Fan out gives each one its own
+            Implementer in its own git worktree, then its own PR Reviewer. Pull requests that build
+            on another wait until that one is approved.
+          </p>
+          <ul>
+            {plannedPrs.map((pr) => (
+              <li key={pr.id}>
+                {pr.title}
+                {pr.dependsOn.length > 0 && (
+                  <span className="hint"> · after {pr.dependsOn.map((d) => d.toUpperCase()).join(", ")}</span>
+                )}
+              </li>
+            ))}
+          </ul>
+          <button type="button" className="primary-button" disabled={busy} onClick={() => void fanOut()}>
+            Fan out into {plannedPrs.length} Implementers
+          </button>
+        </section>
+      )}
+
+      {lanes.length > 0 && (
+        <section className="pipeline-pr-lanes" aria-label="Pull requests">
+          <h3>Pull requests</h3>
+          <ul className="pipeline-pr-lane-list">
+            {lanes.map((lane) => {
+              const blocked = laneBlocked(lane.dependsOn);
+              const lastVerdict = lane.verdicts?.[lane.verdicts.length - 1]?.verdict;
+              const tabsOfLane = Object.entries(lane.tabIds)
+                .map(([roleId, id]) => ({ roleId, tab: laneTab(id) }))
+                .filter((entry) => !!entry.tab);
+              return (
+                <li key={lane.id} className={`pipeline-pr-lane pipeline-pr-lane-${lane.status}`} aria-label={lane.title}>
+                  <div className="pipeline-lane-head">
+                    <strong>{lane.title}</strong>
+                    <span className={`pipeline-lane-status pipeline-pr-lane-status`}>{lane.status}</span>
+                  </div>
+                  <p className="hint">
+                    {stageTitle(run, lane.stage)} · round {Math.max(1, lane.round)}
+                    {lastVerdict ? ` · last verdict ${lastVerdict}` : ""}
+                    {lane.dependsOn?.length ? ` · after ${lane.dependsOn.map((d) => d.toUpperCase()).join(", ")}` : ""}
+                  </p>
+                  <div className="button-row">
+                    {tabsOfLane.map(({ roleId, tab }) => (
+                      <button key={roleId} type="button" className="secondary-button" onClick={() => onJump(tab!.id)}>
+                        {tab!.label}
+                      </button>
+                    ))}
+                    {lane.status === "waiting" && onStartLane && (
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={busy}
+                        title={
+                          blocked.length
+                            ? `Still waiting on ${blocked.map((d) => d.toUpperCase()).join(", ")}; start anyway if you know it is ready.`
+                            : undefined
+                        }
+                        onClick={() => void startLaneNow(lane.id)}
+                      >
+                        {blocked.length ? "Start anyway" : "Start"}
+                      </button>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
 
       {later.length > 0 && (
         <section className="pipeline-followups" aria-label="Follow-ups">

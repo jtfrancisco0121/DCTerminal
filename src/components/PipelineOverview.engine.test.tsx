@@ -175,4 +175,73 @@ describe("PipelineOverview: autopilot, checks and timeline", () => {
       "Reviewer",
     ]);
   });
+
+  it("offers a fan-out when the plan ships as several pull requests, and lists the lanes after", async () => {
+    const review = {
+      ...emptyRuntime(),
+      segments: [
+        {
+          id: "s1",
+          kind: "agent",
+          text: "## HANDOFF: Verdict\nAPPROVED\n\n## HANDOFF: Pull requests\n* `PR1 — API`: Depends on: none\n* `PR2 — UI`: Depends on: PR1",
+        } as TabRuntime["segments"][number],
+      ],
+    };
+    const onFanOut = vi.fn(async () => {});
+    vi.mocked(getPipelineRun).mockResolvedValue({
+      run: run({ stage: "plan_reviewer", tabIds: { role_plan_reviewer: "rev" } }),
+    });
+    const { unmount } = render(
+      <PipelineOverview
+        runId="ee_1"
+        cwd="/p"
+        tabs={[{ ...tab("rev", "role_plan_reviewer") }]}
+        runtimes={{ rev: review }}
+        onJump={() => {}}
+        onWatch={() => {}}
+        onRefreshTabs={async () => {}}
+        onNotice={() => {}}
+        terminalReader={noTerminal}
+        onFanOut={onFanOut}
+        onStartLane={async () => {}}
+      />,
+    );
+    const panel = await screen.findByRole("region", { name: "Fan out" });
+    expect(panel.textContent).toContain("PR2 — UI · after PR1");
+    fireEvent.click(within(panel).getByRole("button", { name: "Fan out into 2 Implementers" }));
+    await waitFor(() => expect(onFanOut).toHaveBeenCalledWith("ee_1"));
+    unmount();
+
+    const onStartLane = vi.fn(async () => {});
+    vi.mocked(getPipelineRun).mockResolvedValue({
+      run: run({
+        lanes: [
+          { id: "pr1", title: "PR1 — API", status: "active", stage: "implementer", round: 1, tabIds: { role_implementer: "impl" } },
+          { id: "pr2", title: "PR2 — UI", status: "waiting", dependsOn: ["pr1"], stage: "implementer", round: 1, tabIds: {} },
+        ],
+      }),
+    });
+    render(
+      <PipelineOverview
+        runId="ee_1"
+        cwd="/p"
+        tabs={[tab("impl", "role_implementer")]}
+        runtimes={{}}
+        onJump={() => {}}
+        onWatch={() => {}}
+        onRefreshTabs={async () => {}}
+        onNotice={() => {}}
+        terminalReader={noTerminal}
+        onFanOut={onFanOut}
+        onStartLane={onStartLane}
+      />,
+    );
+    const lanes = await screen.findByRole("region", { name: "Pull requests" });
+    expect(screen.queryByRole("region", { name: "Fan out" })).toBeNull();
+    const pr2 = within(lanes).getByRole("listitem", { name: "PR2 — UI" });
+    expect(pr2.textContent).toContain("waiting");
+    fireEvent.click(within(pr2).getByRole("button", { name: "Start anyway" }));
+    await waitFor(() => expect(onStartLane).toHaveBeenCalledWith("ee_1", "pr2"));
+  });
 });
+

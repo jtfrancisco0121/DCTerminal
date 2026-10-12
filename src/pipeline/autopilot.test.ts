@@ -79,6 +79,7 @@ describe("autopilot helpers", () => {
       missingSections: [],
       usagePercent: 42,
       chat: false,
+      lane: null,
     });
     const bare = turnReport({ stage, reply: "## HANDOFF: Verdict\nAPPROVED", chat: false, usage: null });
     expect(bare.findingsKnown).toBe(false);

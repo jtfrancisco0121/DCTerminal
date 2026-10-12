@@ -4951,6 +4951,48 @@ mark.search-hit-current {
   margin-bottom: 1rem;
 }
 
+.pipeline-fan-out,
+.pipeline-pr-lanes {
+  margin-bottom: 1rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elev);
+}
+
+.pipeline-fan-out h3,
+.pipeline-pr-lanes h3 {
+  margin: 0 0 0.35rem;
+  font-size: var(--text-lg);
+}
+
+.pipeline-pr-lane-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pipeline-pr-lane {
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.pipeline-pr-lane:last-child {
+  border-bottom: 0;
+}
+
+.pipeline-pr-lane .hint {
+  margin: 0.2rem 0 0.35rem;
+}
+
+.pipeline-pr-lane-approved .pipeline-pr-lane-status {
+  color: var(--success);
+}
+
+.pipeline-pr-lane-waiting .pipeline-pr-lane-status {
+  color: var(--fg-subtle);
+}
+
 .pipeline-followups h3,
 .pipeline-ledger h3 {
   margin: 0 0 0.35rem;

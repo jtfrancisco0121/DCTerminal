@@ -152,6 +152,16 @@ Each chain run can turn on **Autopilot** in its overview (ADR-014). It drives te
 
 It also stops when Claude needs you (a permission, a question, a plan), when usage reaches 90%, or when a stage is a chat tab. It never merges. Every decision is in the overview's **Timeline**, and **Export run report** saves it as Markdown.
 
+## Fan out by pull request
+
+When the reviewed plan's `HANDOFF: Pull requests` lists two or more pull requests (manual steps don't count), the chain overview offers **Fan out into N Implementers** before the Implementer starts. Each pull request becomes a lane:
+
+- Its own Implementer terminal, in its own git worktree (`<repo>-worktrees/<run>-pr<n>`). Its form says to build only that pull request.
+- Its own PR Reviewer and its own rounds. One lane's send-backs don't touch the others.
+- A pull request that `Depends on` another waits as a filled-in draft. Autopilot starts it when the one it builds on is approved. Without autopilot, press **Start** in the overview's **Pull requests** list.
+
+The run is complete when every lane is approved. Fan-out needs the run's folder to be a git repository. Worktrees stay after the run; remove them from the tab menu once their pull requests are merged.
+
 ## Common mistakes
 
 - **Sending with open questions.** The next role guesses or asks again. Answer them in the Planner first, or write "defer" for each one.

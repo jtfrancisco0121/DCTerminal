@@ -14,3 +14,5 @@ Built-in pipeline definitions ([ADR-014](../adr/014-pipeline-engine-opt-in-autop
 | `stages[].gates[]` | Checks the app runs after the stage's turn, before handing on: `{ "kind": "command", "run": "npm run check" }` (`"auto"` picks `npm run check`, `cargo test`, or `npm test` from the folder), `{ "kind": "pullRequest" }` (every pull request the stage reported exists on GitHub). The HANDOFF contract is always checked. |
 | `stages[].checkpoint` | Autopilot stops before starting this stage and waits for you. |
 | `autopilot.pauseAtUsagePercent` | Autopilot pauses when the Claude 5-hour or 7-day usage reaches this percent (default 90). |
+
+A pipeline with a `role_implementer` stage can **fan out** at that stage: the stage before it (its plan) lists several pull requests, and each gets its own lane of the remaining stages in its own git worktree. See `docs/PIPELINE-REPLY-GUIDE.md`.

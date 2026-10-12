@@ -251,7 +251,12 @@ export async function attachHandoff(
     tabId,
     chain: loopBack ? null : nextChain,
     loopBack: loopBack
-      ? { chainId: loopBack.chainId, reviewerRoleId: source.sourceRoleId, verdict }
+      ? {
+          chainId: loopBack.chainId,
+          reviewerRoleId: source.sourceRoleId,
+          verdict,
+          lane: loopBack.next.lane ?? null,
+        }
       : null,
     handoffText: loopBack || nextChain ? mapped.planText : null,
   });

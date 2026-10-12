@@ -471,6 +471,25 @@ export function installTauriMock(config: MockConfig): void {
       return results;
     },
     pipeline_decide: () => ({ action: "stop", reason: "e2e mock: no autopilot decision" }),
+    pipeline_fan_out: (a) => {
+      const run = findRun(a.runId);
+      if (!run) throw new Error(`unknown pipeline run: ${a.runId}`);
+      run.lanes = a.lanes.map((lane: Json) => ({
+        ...lane,
+        status: lane.dependsOn.length ? "waiting" : "active",
+        stage: a.stageId,
+        round: 1,
+        tabIds: {},
+      }));
+      run.fanOutStage = a.stageId;
+      return null;
+    },
+    pipeline_lane_status: (a) => {
+      const lane = findRun(a.runId)?.lanes?.find((l: Json) => l.id === a.lane);
+      if (!lane) throw new Error(`unknown lane: ${a.lane}`);
+      lane.status = a.status;
+      return null;
+    },
     pipeline_note: (a) => {
       const run = findRun(a.runId);
       if (run) {

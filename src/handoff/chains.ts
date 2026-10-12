@@ -19,6 +19,8 @@ export type ChainRef = {
   total: number;
   /** Review round; missing means 1. Each loop-back adds one. */
   round?: number;
+  /** Lane id (`pr1`) once the run fanned out by pull request. */
+  lane?: string | null;
 };
 
 /** Role id per step of a pipeline, or null for an unknown pipeline. */
@@ -29,7 +31,8 @@ export function chainSteps(kind: string): readonly string[] | null {
 export function chainLabel(chain: ChainRef): string {
   const name = pipelineDef(chain.kind)?.name ?? "Pipeline";
   const round = chainRound(chain);
-  return `${name} · step ${chain.step} of ${chain.total}${round > 1 ? ` · round ${round}` : ""}`;
+  const lane = chain.lane ? ` · ${chain.lane.toUpperCase()}` : "";
+  return `${name}${lane} · step ${chain.step} of ${chain.total}${round > 1 ? ` · round ${round}` : ""}`;
 }
 
 export function chainRound(chain: Pick<ChainRef, "round">): number {
@@ -94,7 +97,10 @@ export function chainTabFor<T extends { id: string; chain?: ChainRef | null }>(
   prefer?: (tab: T) => boolean,
 ): T | null {
   const tagged = tabs.filter(
-    (tab) => tab.chain?.chainId === chain.chainId && tab.chain.step === step,
+    (tab) =>
+      tab.chain?.chainId === chain.chainId &&
+      tab.chain.step === step &&
+      (tab.chain.lane ?? null) === (chain.lane ?? null),
   );
   const preferred = prefer ? tagged.filter(prefer) : [];
   return preferred[preferred.length - 1] ?? tagged[tagged.length - 1] ?? null;

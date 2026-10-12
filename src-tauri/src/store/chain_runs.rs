@@ -129,9 +129,8 @@ impl StateStore {
             if current.is_none_or(|at| index >= at) {
                 lane.stage = stage_id.to_string();
             }
-            if lane.status == "waiting" {
-                lane.status = "active".to_string();
-            }
+            // A waiting lane's tab is tagged at fan-out; it turns active only
+            // when its terminal starts (`pipeline_lane_status`).
             if let Some(text) = text {
                 lane.handoffs.insert(
                     role_id.to_string(),

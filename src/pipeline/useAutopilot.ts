@@ -12,6 +12,8 @@ import {
   getClaudeUsage,
   getPipelineRun,
   getTab,
+  type PipelineRun,
+  type RunLane,
   pipelineDecide,
   pipelineNote,
   pipelineRunGates,
@@ -55,6 +57,8 @@ export type AutopilotDeps = {
   /** Tells you autopilot stopped on `tabId` (toast and system notification). */
   notifyStop: (tabId: string, reason: string) => void;
   notice: (title: string, body: string) => void;
+  /** Starts a waiting lane's Implementer (fanOut.startLane). */
+  startLane: (run: PipelineRun, lane: RunLane) => Promise<void>;
 };
 
 type Job = { tab: TabSummary; chain: ChainRef; log: TerminalSessionLog; awaitingPlan: boolean };
@@ -138,6 +142,21 @@ export function useAutopilot(deps: AutopilotDeps) {
         case "complete":
           d.notice("Run complete", decision.reason);
           return;
+        case "laneDone": {
+          const ids = decision.unblocked ?? [];
+          if (!ids.length) return;
+          const view = await getPipelineRun(runId);
+          for (const id of ids) {
+            const lane = view.run.lanes?.find((l) => l.id === id);
+            if (!lane) continue;
+            try {
+              await d.startLane(view.run, lane);
+            } catch (err: unknown) {
+              await fail(`start ${lane.title}: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
+          return;
+        }
         case "reask":
         case "retry": {
           const text = decision.action === "reask" ? ASK_FOR_HANDOFF_SECTIONS : (decision.message ?? "");
@@ -195,6 +214,7 @@ export function useAutopilot(deps: AutopilotDeps) {
               tabId: target.id,
               verdict,
               handoffText: text,
+              lane: chain.lane ?? null,
             });
             await d.refreshTabs();
             return;
@@ -250,8 +270,9 @@ export function useAutopilot(deps: AutopilotDeps) {
           const view = await getPipelineRun(runId).catch(() => null);
           if (!view?.run.autopilot?.enabled) return;
           const reply = (turn.awaitingPlan ? log.plan : log.lastReply)?.trim() ?? "";
+          const lane = tab.chain!.lane ?? null;
           if (placed.stage.gates?.length) {
-            await pipelineRunGates(runId, placed.stage.id, tab.cwd, githubPrUrls(log.lastReply));
+            await pipelineRunGates(runId, placed.stage.id, tab.cwd, githubPrUrls(log.lastReply), lane);
           }
           // intentionally silent: without usage data autopilot simply does not pause for it.
           const usage = usagePercent(await getClaudeUsage().catch(() => null));
@@ -261,6 +282,7 @@ export function useAutopilot(deps: AutopilotDeps) {
             chat: false,
             usage,
             awaitingPlan: turn.awaitingPlan,
+            lane,
           });
           const decision = await pipelineDecide(runId, report);
           await carryOut(job, runId, decision, reply, report.verdict);

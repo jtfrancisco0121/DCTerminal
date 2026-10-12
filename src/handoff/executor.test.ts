@@ -210,6 +210,7 @@ describe("hand-off executor", () => {
           chainId: "ee_1",
           reviewerRoleId: "role_plan_reviewer",
           verdict: "REQUIRES REVISION",
+          lane: null,
         },
       }),
     );

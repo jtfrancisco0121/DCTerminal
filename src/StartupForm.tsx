@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   acpSetModel,
+  getPipelineRun,
+  type PipelineRun,
+  type RunLane,
   closeTab,
   devSessionCancel,
   getLayout,
@@ -201,8 +204,10 @@ import {
 } from "./handoff/chains";
 import { handoffRoute, loopBackMessage } from "./handoff/routing";
 import { attachHandoff, handoffFieldsOf, prepareHandoff, saveHandoff } from "./handoff/executor";
-import { pipelineDef } from "./pipeline/defs";
+import { pipelineDef, pipelineStages } from "./pipeline/defs";
 import { useAutopilot } from "./pipeline/useAutopilot";
+import { terminalStageSource } from "./pipeline/autopilot";
+import { fanOutRun, planStageFor, stageTab, startLane } from "./pipeline/fanOut";
 import {
   isReviewerRole,
   parseReviewVerdict,
@@ -2126,6 +2131,91 @@ export function StartupForm({
     [activeTabId, formValues, refreshTabs, roleId],
   );
 
+  /** Starts a lane's role terminal in its own (worktree) draft tab, without taking focus. */
+  const laneStartTerminal = useCallback(
+    (tabId: string, laneRoleId: string, laneValues: Record<string, string>, plan: string | null) =>
+      startRoleTerminal({ roleId: laneRoleId, values: laneValues, tabId, handoffPlan: plan, quiet: true }),
+    [startRoleTerminal],
+  );
+  const startLaneOf = useCallback(
+    async (run: PipelineRun, lane: RunLane) => {
+      const laneRole =
+        pipelineStages(run.kind).find((stage) => stage.id === run.fanOutStage)?.roleId ??
+        "role_implementer";
+      await startLane(run, lane, laneRole, { startTerminal: laneStartTerminal, refreshTabs });
+    },
+    [laneStartTerminal, refreshTabs],
+  );
+  /** A stage tab's hand-off source outside the dialog: a Claude terminal's log, or a chat's reply. */
+  const stageSourceOf = useCallback(
+    async (tab: TabSummary): Promise<HandoffSource> => {
+      const answers = await getTab(tab.id)
+        .then(({ tab: record }) => ({ ...record.answers }))
+        .catch(() => ({ cwd: tab.cwd }));
+      if (tab.kind === "terminal") {
+        const log =
+          sessionLogsRef.current[tab.id] ?? (await terminalSessionLog(tab.id).catch(() => null));
+        return terminalStageSource({
+          tab,
+          log,
+          answers,
+          tail: terminalTailText(tab.id),
+          roles,
+          awaitingPlan: false,
+        });
+      }
+      const segments = runtimesRef.current[tab.id]?.segments ?? [];
+      return {
+        sourceRoleId: tab.roleId,
+        sourceTabId: tab.id,
+        sourceLabel: tab.label || roleDisplayName(tab.roleId, roles),
+        cwd: tab.cwd,
+        answers,
+        latestMessage:
+          tab.roleId === "role_implementer" ? latestAgentMessage(segments) : latestReplyText(segments),
+        plan: [],
+        todos: [],
+        selection: "",
+        turnInFlight: !!runtimesRef.current[tab.id]?.promptInFlight,
+        transcriptText: segments.map((segment) => segment.text).join("\n"),
+      };
+    },
+    [roles],
+  );
+  /** Overview › Fan out: one Implementer per pull request in the plan stage's reply. */
+  const fanOutRunOf = useCallback(
+    async (runId: string) => {
+      const { run } = await getPipelineRun(runId);
+      const def = pipelineDef(run.kind);
+      const fanStage = def?.stages.find((stage) => stage.roleId === "role_implementer");
+      const planStage = def && fanStage ? planStageFor(def, fanStage) : null;
+      const planTab = planStage ? stageTab(run, planStage, savedTabsRef.current) : null;
+      if (!fanStage || !planTab?.chain) {
+        throw new Error("Fan out needs this run's plan stage tab (the stage before the Implementer) to be open.");
+      }
+      const source = await stageSourceOf(planTab);
+      const result = await fanOutRun(
+        { run, stage: fanStage, source, sourceChain: planTab.chain },
+        { startTerminal: laneStartTerminal, syncForm: syncActiveTabForm, refreshTabs, roles },
+      );
+      showNotice(
+        "Fanned out",
+        `Started ${result.started.length} pull request${result.started.length === 1 ? "" : "s"}` +
+          (result.waiting.length ? `; ${result.waiting.length} wait for the ones they build on.` : "."),
+      );
+    },
+    [laneStartTerminal, refreshTabs, roles, showNotice, stageSourceOf],
+  );
+  const startLaneById = useCallback(
+    async (runId: string, laneId: string) => {
+      const { run } = await getPipelineRun(runId);
+      const lane = run.lanes?.find((item) => item.id === laneId);
+      if (!lane) throw new Error(`No lane ${laneId} on this run.`);
+      await startLaneOf(run, lane);
+    },
+    [startLaneOf],
+  );
+
   const autopilot = useAutopilot({
     tabs: () => savedTabsRef.current,
     roles: () => roles,
@@ -2135,6 +2225,7 @@ export function StartupForm({
     refreshTabs,
     notifyStop: (tabId, reason) => notifyAgent(tabId, { kind: "question", detail: `Autopilot: ${reason}` }),
     notice: (title, body) => showNotice(title, body),
+    startLane: startLaneOf,
   });
   autopilotLogRef.current = autopilot.onTerminalLog;
 
@@ -5482,6 +5573,8 @@ export function StartupForm({
           }}
           onRefreshTabs={refreshTabs}
           onNotice={(title, body) => showNotice(title, body)}
+          onFanOut={fanOutRunOf}
+          onStartLane={startLaneById}
         />
       </section>,
     );

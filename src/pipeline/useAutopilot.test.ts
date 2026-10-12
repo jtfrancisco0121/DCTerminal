@@ -126,6 +126,7 @@ function setup(tabs: TabSummary[], states: Record<string, TerminalState> = {}) {
     refreshTabs: vi.fn(async () => {}),
     notifyStop: vi.fn(),
     notice: vi.fn(),
+    startLane: vi.fn(async () => {}),
   };
   const { result } = renderHook(() => useAutopilot(deps));
   return { deps, onLog: result.current.onTerminalLog };
@@ -148,9 +149,13 @@ describe("useAutopilot", () => {
     const { deps, onLog } = setup([tab("impl", "role_implementer", 3)]);
     onLog("impl", log(IMPLEMENTED));
     await waitFor(() => expect(handoffAttach).toHaveBeenCalled());
-    expect(pipelineRunGates).toHaveBeenCalledWith("ee_1", "implementer", "/repo", [
-      "https://github.com/jt/app/pull/7",
-    ]);
+    expect(pipelineRunGates).toHaveBeenCalledWith(
+      "ee_1",
+      "implementer",
+      "/repo",
+      ["https://github.com/jt/app/pull/7"],
+      null,
+    );
     expect(vi.mocked(pipelineDecide).mock.calls[0][1]).toMatchObject({
       stageId: "implementer",
       verdict: null,
@@ -226,5 +231,26 @@ describe("useAutopilot", () => {
     await waitFor(() => expect(deps.notifyStop).toHaveBeenCalled());
     expect(ptyWrite).not.toHaveBeenCalled();
     expect(vi.mocked(deps.notifyStop).mock.calls[0][1]).toContain("waiting for you");
+  });
+
+  it("a lane done starts the lanes it unblocked", async () => {
+    const lanes = [
+      { id: "pr1", title: "PR1", status: "approved", stage: "pr_reviewer", round: 1, tabIds: {} },
+      { id: "pr2", title: "PR2", status: "waiting", dependsOn: ["pr1"], stage: "implementer", round: 1, tabIds: {} },
+    ];
+    vi.mocked(getPipelineRun).mockResolvedValue({ run: { ...run(true).run, lanes } });
+    vi.mocked(pipelineDecide).mockResolvedValue({
+      action: "laneDone",
+      lane: "pr1",
+      unblocked: ["pr2"],
+      reason: "PR1 is approved. Starting pr2.",
+    });
+    const reviewer = { ...tab("pr", "role_pr_reviewer", 4), chain: { chainId: "ee_1", kind: "eagle1", step: 4, total: 4, lane: "pr1" } };
+    const { deps, onLog } = setup([reviewer as TabSummary]);
+    onLog("pr", log("## HANDOFF: Verdict\nAPPROVED\n\n## HANDOFF: Findings for the Implementer\nNone."));
+    await waitFor(() => expect(deps.startLane).toHaveBeenCalled());
+    expect(vi.mocked(deps.startLane).mock.calls[0][1].id).toBe("pr2");
+    expect(vi.mocked(pipelineDecide).mock.calls[0][1].lane).toBe("pr1");
+    expect(vi.mocked(pipelineRunGates)).not.toHaveBeenCalled();
   });
 });

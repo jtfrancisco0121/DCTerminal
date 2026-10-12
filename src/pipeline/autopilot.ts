@@ -42,8 +42,10 @@ export function turnReport(args: {
   usage: number | null;
   /** A Planner waiting on its plan dialog: its plan is the result, sections are not checked. */
   awaitingPlan?: boolean;
+  /** The tab's lane, when the run fanned out. */
+  lane?: string | null;
 }): TurnReport {
-  const { stage, reply, chat, usage, awaitingPlan = false } = args;
+  const { stage, reply, chat, usage, awaitingPlan = false, lane = null } = args;
   const result = contractResult(reply);
   const reviewer = !!stage.loopBack;
   return {
@@ -56,6 +58,7 @@ export function turnReport(args: {
     missingSections: awaitingPlan ? [] : missingHandoffSections(stage.roleId, reply),
     usagePercent: usage,
     chat,
+    lane,
   };
 }
 
