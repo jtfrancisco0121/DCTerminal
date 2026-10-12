@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { DisabledReason } from "./DisabledReason";
 import type { PipelineRun, TabSummary } from "../bridge";
 import {
   getPipelineRun,
@@ -87,6 +88,7 @@ export function PipelineOverview({
         if (disposed) stop();
         else unlisten = stop;
       })
+      // intentionally silent: without the live event the overview still polls on a timer.
       .catch(() => {});
     refresh.request();
     const timer = window.setInterval(() => refresh.request(), OVERVIEW_FALLBACK_POLL_MS);
@@ -299,6 +301,11 @@ export function PipelineOverview({
             >
               Save candidate plan
             </button>
+            {!busy && !candidateDraft.trim() && (
+              <DisabledReason className="disabled-reason-inline">
+                Paste or pull the plan text to save it.
+              </DisabledReason>
+            )}
           </div>
         </section>
       )}
@@ -353,6 +360,13 @@ export function PipelineOverview({
           >
             {kind === "execute" ? "Send to Implementer" : "Approve for implementation"}
           </button>
+          {!busy && (!approvedDraft.trim() || !canPromote) && (
+            <DisabledReason className="disabled-reason-inline">
+              {!canPromote
+                ? "The Implementer tab already started. Use Hand off on the Plan Reviewer tab."
+                : "Paste or pull the plan text first."}
+            </DisabledReason>
+          )}
         </div>
       </section>
     </section>

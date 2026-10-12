@@ -25,6 +25,7 @@ export function ActivityButton({ tabId, busy, terminal, refreshKey, onOpen }: Pr
         .then(({ entries }) => {
           if (!cancelled) setCount(entries.length);
         })
+        // intentionally silent: a polled badge count; the Activity panel shows its own errors.
         .catch(() => {});
     };
     refresh();

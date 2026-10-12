@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { DisabledReason } from "./DisabledReason";
 import {
   composePlanText,
   defaultScope,
@@ -151,11 +152,7 @@ export function HandoffDialog({
       dismissible={!busy}
       footer={
         <>
-          {!canConfirm && disabledReason && (
-            <span className="dialog-footer-note" role="note">
-              {disabledReason}
-            </span>
-          )}
+          {!canConfirm && <DisabledReason>{disabledReason}</DisabledReason>}
           <button type="button" className="secondary-button" onClick={onClose} disabled={busy}>
             Cancel
           </button>
