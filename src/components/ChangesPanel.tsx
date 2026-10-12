@@ -405,7 +405,7 @@ export function ChangesPanel({
           </button>
           <button
             type="button"
-            className="secondary-button danger-button"
+            className="danger-button"
             disabled={busy || reverting || pending.length === 0}
             onClick={() => void revert(pending, (set?.files.length ?? 0) - pending.length)}
           >

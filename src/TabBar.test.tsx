@@ -61,6 +61,23 @@ describe("TabBar", () => {
     expect(screen.getByLabelText("Role terminal")).toBeTruthy();
     expect(screen.queryByText("Terminal")).toBeNull();
   });
+
+  it("sizes every tab-bar icon button with the shared icon-button class", () => {
+    const { container } = render(
+      <TabBar
+        tabs={[tab({})]}
+        activeTabId="tab_1"
+        onSelect={() => {}}
+        onClose={() => {}}
+        onNew={() => {}}
+        onToggleGrid={() => {}}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Grid view" }).classList).toContain("icon-button");
+    for (const button of container.querySelectorAll(".tab-bar-icon, .tab-new")) {
+      expect(button.classList).toContain("icon-button");
+    }
+  });
 });
 
 describe("TabBar density (U1/U4)", () => {
