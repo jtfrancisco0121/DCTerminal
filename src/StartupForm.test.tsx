@@ -584,11 +584,12 @@ describe("blank tab card", () => {
       />,
     );
     // The first render can show Start before the saved tab (no folder) loads.
-    await waitFor(() =>
-      expect((screen.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(true),
-    );
-    const start = screen.getByRole("button", { name: "Start" });
-    expect(start.getAttribute("aria-describedby")).toBeTruthy();
+    // Start is also disabled while busy loading; wait for the reason itself.
+    await waitFor(() => {
+      const button = screen.getByRole("button", { name: "Start" }) as HTMLButtonElement;
+      expect(button.disabled).toBe(true);
+      expect(button.getAttribute("aria-describedby")).toBeTruthy();
+    });
     expect(screen.getByRole("heading", { name: "Start a session" })).toBeTruthy();
   });
 
