@@ -85,7 +85,7 @@ pub(crate) fn validate_handoff_input(input: &HandoffSaveInput) -> Result<(), Str
         }
     }
     if let Some(chain) = &input.chain {
-        let kind_ok = matches!(chain.kind.as_str(), "eagle1" | "eagle2");
+        let kind_ok = crate::pipelines::find(&chain.kind).is_some();
         if !valid_token(&chain.chain_id)
             || !kind_ok
             || chain.step == 0

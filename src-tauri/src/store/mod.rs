@@ -5,6 +5,7 @@ mod forms_store;
 mod forms_types;
 mod handoff_store;
 mod json_io;
+mod pipelines_store;
 mod projects_store;
 #[cfg(test)]
 mod provider_tests;
@@ -24,6 +25,7 @@ pub use forms_store::FormsStore;
 pub use forms_types::FormSnapshot;
 pub use handoff_store::{HandoffRecord, HandoffStore, NewHandoff};
 pub use json_io::{read_json, read_json_or_recover, write_json_atomic};
+pub use pipelines_store::{PipelineStore, PIPELINES_FILE};
 pub use projects_store::{ListedProject, ProjectsStore};
 pub use prompt_store::{PromptStore, RecentSend, SavedPrompt};
 pub use roles_store::{add_missing_builtin_roles, docs_roles_dir, seed_output_path, write_seed_file, RolesStore};
@@ -41,7 +43,7 @@ pub(crate) use state_store::{
 pub use claude_migration::{backup_pre_claude_first, migrate_state, CLAUDE_MIGRATION_NOTICE};
 pub use state_types::{
     window_matches, AppStateFile, ChainRef, LayoutState, Migrations, PipelineRun, RoleSnapshot,
-    StageHandoff,
+    RunAutopilot, RunEvent, StageGates, StageHandoff,
     TabRecord, TabSessionRef, WindowRecord, MAIN_WINDOW_ID,
 };
 pub use transcript_store::{TranscriptFile, TranscriptStore};

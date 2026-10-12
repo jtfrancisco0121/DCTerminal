@@ -983,6 +983,9 @@ impl StateStore {
             updated_at: None,
             round: 1,
             verdicts: Vec::new(),
+            events: Vec::new(),
+            gates: HashMap::new(),
+            autopilot: None,
         };
         self.data.pipeline_runs.push(run);
         self.save()?;

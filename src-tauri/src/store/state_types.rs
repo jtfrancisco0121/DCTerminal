@@ -128,6 +128,100 @@ pub struct PipelineRun {
     /// Reviewer verdicts recorded when a round was sent back, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub verdicts: Vec<StageVerdict>,
+    /// The run ledger: what happened, oldest first (ADR-014). Capped.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<RunEvent>,
+    /// Latest gate results per stage id.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub gates: HashMap<String, StageGates>,
+    /// Opt-in autopilot for this run. `None` (or off) means manual.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autopilot: Option<RunAutopilot>,
+}
+
+/// Most ledger events a run keeps; older ones are dropped first.
+pub const MAX_RUN_EVENTS: usize = 300;
+/// Longest event detail kept (gate output, findings).
+pub const MAX_EVENT_DETAIL_CHARS: usize = 8_000;
+
+/// One line of the run ledger.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RunEvent {
+    pub at: String,
+    /// `handoff`, `loopBack`, `gate`, `autopilot`, `stop`, `complete`, `note`.
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_id: Option<String>,
+    pub round: u32,
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// A stage's latest gate results.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StageGates {
+    pub round: u32,
+    pub at: String,
+    pub results: Vec<crate::pipelines::GateResult>,
+}
+
+/// Autopilot state of one run.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RunAutopilot {
+    pub enabled: bool,
+    /// Why autopilot last stopped and is waiting for you, if it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<String>,
+    /// Checkpoint stages you have already passed (sent into yourself).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub passed_checkpoints: Vec<String>,
+    /// `stage@round` keys already re-asked for missing HANDOFF sections.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasked: Vec<String>,
+    /// Failed-gate retries per stage in the current round.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub gate_retries: HashMap<String, u32>,
+}
+
+impl PipelineRun {
+    /// Append to the ledger (detail capped, oldest events dropped past the cap).
+    pub fn log(
+        &mut self,
+        kind: &str,
+        stage_id: Option<&str>,
+        role_id: Option<&str>,
+        summary: impl Into<String>,
+        detail: Option<String>,
+    ) {
+        let detail = detail.map(|text| {
+            let chars = text.chars().count();
+            if chars > MAX_EVENT_DETAIL_CHARS {
+                let kept: String = text.chars().take(MAX_EVENT_DETAIL_CHARS).collect();
+                format!("{kept}\n… ({} more characters)", chars - MAX_EVENT_DETAIL_CHARS)
+            } else {
+                text
+            }
+        });
+        self.events.push(RunEvent {
+            at: chrono::Utc::now().to_rfc3339(),
+            kind: kind.to_string(),
+            stage_id: stage_id.map(str::to_string),
+            role_id: role_id.map(str::to_string),
+            round: self.round.max(1),
+            summary: summary.into(),
+            detail: detail.filter(|text| !text.trim().is_empty()),
+        });
+        if self.events.len() > MAX_RUN_EVENTS {
+            let drop = self.events.len() - MAX_RUN_EVENTS;
+            self.events.drain(..drop);
+        }
+    }
 }
 
 /// A reviewer's verdict at the end of one round.
@@ -150,35 +244,17 @@ pub struct StageHandoff {
     pub at: String,
 }
 
-/// `(stage id, role id)` for each stage of a run kind, PR Reviewer last.
-pub const FULL_PIPELINE_STAGES: [(&str, &str); 4] = [
-    ("planner", "role_planner"),
-    ("plan_reviewer", "role_plan_reviewer"),
-    ("implementer", "role_implementer"),
-    ("pr_reviewer", "role_pr_reviewer"),
-];
-
-pub const EXECUTE_PIPELINE_STAGES: [(&str, &str); 2] = [
-    ("implementer", "role_implementer"),
-    ("pr_reviewer", "role_pr_reviewer"),
-];
-
-/// Stages of a `full` or `execute` run. Unknown kinds read as `full`.
-pub fn pipeline_stages(kind: &str) -> &'static [(&'static str, &'static str)] {
-    if kind == "execute" {
-        &EXECUTE_PIPELINE_STAGES
-    } else {
-        &FULL_PIPELINE_STAGES
-    }
+/// `(stage id, role id)` for each stage of a run kind or chain kind, from
+/// the pipeline definitions (`crate::pipelines`). Unknown kinds read as
+/// Eagle-Eye 1 (`full`).
+pub fn pipeline_stages(kind: &str) -> Vec<(String, String)> {
+    crate::pipelines::stages(kind)
 }
 
-/// Run kind of an Eagle-Eye chain: `eagle1` → `full`, `eagle2` → `execute`.
-pub fn run_kind_for_chain(chain_kind: &str) -> Option<&'static str> {
-    match chain_kind {
-        "eagle1" => Some("full"),
-        "eagle2" => Some("execute"),
-        _ => None,
-    }
+/// Run kind of a chain: `eagle1` → `full`, `eagle2` → `execute`, a user
+/// pipeline → its id. None for an unknown pipeline.
+pub fn run_kind_for_chain(chain_kind: &str) -> Option<String> {
+    crate::pipelines::run_kind_for_chain(chain_kind)
 }
 
 /// Split view and file panel. Restored on relaunch.

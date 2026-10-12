@@ -39,6 +39,23 @@ fn recency(run: &PipelineRun) -> i64 {
 }
 
 impl StateStore {
+    /// `ee_<ms>`, bumped past any chain id a run or tab already uses.
+    pub fn new_chain_id(&self, now_ms: i64) -> String {
+        let taken = |id: &str| {
+            self.chain_run_id(id).is_some()
+                || self
+                    .data
+                    .tabs
+                    .iter()
+                    .any(|tab| tab.chain.as_ref().is_some_and(|c| c.chain_id == id))
+        };
+        let mut ms = now_ms;
+        while taken(&format!("ee_{ms}")) {
+            ms += 1;
+        }
+        format!("ee_{ms}")
+    }
+
     /// The run for a chain, if one was recorded.
     pub fn chain_run_id(&self, chain_id: &str) -> Option<String> {
         self.data
@@ -60,11 +77,11 @@ impl StateStore {
         let Some(kind) = run_kind_for_chain(&chain.kind) else {
             return;
         };
-        let stages = pipeline_stages(kind);
+        let stages = pipeline_stages(&kind);
         let Some(index) = (chain.step as usize).checked_sub(1) else {
             return;
         };
-        let Some(&(stage_id, role_id)) = stages.get(index) else {
+        let Some((stage_id, role_id)) = stages.get(index).cloned() else {
             return;
         };
         let cwd = self
@@ -91,6 +108,9 @@ impl StateStore {
                     updated_at: None,
                     round: chain.round.max(1),
                     verdicts: Vec::new(),
+                    events: Vec::new(),
+                    gates: HashMap::new(),
+                    autopilot: None,
                 });
                 chain.chain_id.clone()
             }
@@ -111,6 +131,24 @@ impl StateStore {
                     at: now.clone(),
                 },
             );
+            let title = crate::pipelines::find(&kind)
+                .and_then(|def| def.stage(&stage_id).map(|stage| stage.title.clone()))
+                .unwrap_or_else(|| stage_id.clone());
+            run.log(
+                "handoff",
+                Some(&stage_id),
+                Some(&role_id),
+                format!("Handed to {title}"),
+                Some(text.to_string()),
+            );
+            // Sending into a checkpoint stage yourself passes it; autopilot
+            // carries on from the next turn.
+            if let Some(autopilot) = run.autopilot.as_mut() {
+                autopilot.waiting = None;
+                if !autopilot.passed_checkpoints.contains(&stage_id) {
+                    autopilot.passed_checkpoints.push(stage_id.clone());
+                }
+            }
         }
         run.updated_at = Some(now);
         if run.original_request.is_none() {
@@ -142,7 +180,7 @@ impl StateStore {
             .pipeline_run_by_id_mut(&run_id)
             .ok_or_else(|| format!("unknown pipeline run: {run_id}"))?;
         let stages = pipeline_stages(&run.kind);
-        let position = |role: &str| stages.iter().position(|(_, id)| *id == role);
+        let position = |role: &str| stages.iter().position(|(_, id)| id == role);
         let (Some(target), Some(reviewer)) = (position(&target_role), position(reviewer_role_id))
         else {
             return Err("That hand-off is not a loop-back on this chain.".to_string());
@@ -158,18 +196,24 @@ impl StateStore {
             verdict: verdict.map(str::trim).filter(|v| !v.is_empty()).map(str::to_string),
             at: now,
         });
+        let verdict_text = verdict.map(str::trim).filter(|v| !v.is_empty()).unwrap_or("no verdict");
+        run.log(
+            "loopBack",
+            Some(&stages[target].0),
+            Some(reviewer_role_id),
+            format!("Round {ending} sent back ({verdict_text})"),
+            None,
+        );
         run.round = ending + 1;
-        run.stage = stages[target].0.to_string();
-        let (kind, total) = if run.kind == "execute" {
-            ("eagle2", 2)
-        } else {
-            ("eagle1", 4)
-        };
+        run.stage = stages[target].0.clone();
+        if let Some(autopilot) = run.autopilot.as_mut() {
+            autopilot.gate_retries.clear();
+        }
         let chain = ChainRef {
             chain_id: chain_id.to_string(),
-            kind: kind.to_string(),
+            kind: crate::pipelines::chain_kind_for_run(&run.kind),
             step: target as u32 + 1,
-            total,
+            total: stages.len() as u32,
             round: run.round,
         };
         for tab in self.data.tabs.iter_mut() {
@@ -206,8 +250,8 @@ impl StateStore {
     /// Form answers of the run's step-1 tab (open or closed tab).
     fn chain_first_answers(&self, run_id: &str) -> Option<&HashMap<String, String>> {
         let run = self.pipeline_run_by_id(run_id)?;
-        let (_, first_role) = pipeline_stages(&run.kind).first()?;
-        let tab_id = run.tab_ids.get(*first_role)?;
+        let (_, first_role) = pipeline_stages(&run.kind).into_iter().next()?;
+        let tab_id = run.tab_ids.get(&first_role)?;
         self.tab_by_id(tab_id).map(|tab| &tab.answers).or_else(|| {
             self.data
                 .closed_tabs
@@ -426,6 +470,9 @@ mod tests {
             updated_at: None,
             round: 1,
             verdicts: Vec::new(),
+            events: Vec::new(),
+            gates: HashMap::new(),
+            autopilot: None,
         }
     }
 
@@ -571,6 +618,66 @@ mod tests {
         assert_eq!(loaded.pipeline_run_by_id("ee_5").unwrap().verdicts.len(), 2);
         let json = serde_json::to_string(&chain("ee_5", "eagle1", 1)).unwrap();
         assert!(!json.contains("round"));
+    }
+
+    #[test]
+    fn the_ledger_records_hand_offs_and_loop_backs_and_a_hand_off_passes_a_checkpoint() {
+        let mut store = store("ledger");
+        let planner = store
+            .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&planner, Some(chain("ee_l", "eagle1", 1)), None)
+            .unwrap();
+        store.pipeline_run_by_id_mut("ee_l").unwrap().autopilot =
+            Some(crate::store::RunAutopilot {
+                enabled: true,
+                waiting: Some("Checkpoint".into()),
+                ..Default::default()
+            });
+        let reviewer = store
+            .create_draft_tab(&role("role_plan_reviewer"), "/tmp/p", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&reviewer, Some(chain("ee_l", "eagle1", 2)), Some("the plan"))
+            .unwrap();
+        let run = store.pipeline_run_by_id("ee_l").unwrap();
+        let last = run.events.last().unwrap();
+        assert_eq!((last.kind.as_str(), last.summary.as_str()), ("handoff", "Handed to Plan Reviewer"));
+        assert_eq!(last.detail.as_deref(), Some("the plan"));
+        let autopilot = run.autopilot.as_ref().unwrap();
+        assert!(autopilot.waiting.is_none(), "acting yourself clears the wait");
+        assert!(autopilot.passed_checkpoints.contains(&"plan_reviewer".to_string()));
+
+        let again = store
+            .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
+            .unwrap();
+        store
+            .chain_loop_back("ee_l", "role_plan_reviewer", &again, Some("REQUIRES REVISION"), Some("fix it"))
+            .unwrap();
+        let kinds: Vec<&str> = store
+            .pipeline_run_by_id("ee_l")
+            .unwrap()
+            .events
+            .iter()
+            .map(|e| e.kind.as_str())
+            .collect();
+        assert_eq!(kinds, ["handoff", "loopBack", "handoff"]);
+        let back = &store.pipeline_run_by_id("ee_l").unwrap().events[1];
+        assert_eq!(back.summary, "Round 1 sent back (REQUIRES REVISION)");
+        assert_eq!(back.round, 1);
+    }
+
+    #[test]
+    fn new_chain_ids_skip_ids_already_in_use() {
+        let mut store = store("chain_ids");
+        assert_eq!(store.new_chain_id(5), "ee_5");
+        let tab = store
+            .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
+            .unwrap();
+        store.set_tab_chain(&tab, Some(chain("ee_5", "eagle1", 1)), None).unwrap();
+        store.data.pipeline_runs.push(old_run("ee_6", "gone", 1));
+        assert_eq!(store.new_chain_id(5), "ee_7");
     }
 
     #[test]

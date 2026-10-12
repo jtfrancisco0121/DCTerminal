@@ -1,0 +1,28 @@
+{
+  "id": "eagle1",
+  "name": "Eagle-Eye 1",
+  "description": "Plan, review the plan, implement it as draft pull requests, review the pull requests.",
+  "runKind": "full",
+  "stages": [
+    { "id": "planner", "roleId": "role_planner", "title": "Planner" },
+    {
+      "id": "plan_reviewer",
+      "roleId": "role_plan_reviewer",
+      "title": "Plan Reviewer",
+      "loopBack": { "to": "planner", "maxRounds": 3, "minSeverity": "MEDIUM" }
+    },
+    {
+      "id": "implementer",
+      "roleId": "role_implementer",
+      "title": "Implementer",
+      "checkpoint": true,
+      "gates": [{ "kind": "command", "run": "auto" }, { "kind": "pullRequest" }]
+    },
+    {
+      "id": "pr_reviewer",
+      "roleId": "role_pr_reviewer",
+      "title": "PR Reviewer",
+      "loopBack": { "to": "implementer", "maxRounds": 3, "minSeverity": "MEDIUM" }
+    }
+  ]
+}

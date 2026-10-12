@@ -1,0 +1,20 @@
+{
+  "id": "eagle2",
+  "name": "Eagle-Eye 2",
+  "description": "Implement a plan you already have as draft pull requests, then review them.",
+  "runKind": "execute",
+  "stages": [
+    {
+      "id": "implementer",
+      "roleId": "role_implementer",
+      "title": "Implementer",
+      "gates": [{ "kind": "command", "run": "auto" }, { "kind": "pullRequest" }]
+    },
+    {
+      "id": "pr_reviewer",
+      "roleId": "role_pr_reviewer",
+      "title": "PR Reviewer",
+      "loopBack": { "to": "implementer", "maxRounds": 3, "minSeverity": "MEDIUM" }
+    }
+  ]
+}
