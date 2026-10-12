@@ -2070,6 +2070,8 @@ export function StartupForm({
     [terminalSettings, updateTerminalSettings],
   );
 
+  /** Terminals whose startup prompt was too long to pass inline and went through a file. */
+  const [promptFileTabs, setPromptFileTabs] = useState<string[]>([]);
   const startRoleTerminal = useCallback(
     async (options?: {
       roleId: string;
@@ -2107,6 +2109,10 @@ export function StartupForm({
           return null;
         }
         if (result.tabId !== pendingId) rekeyLivePty(pendingId, result.tabId);
+        if (result.usedPromptFile) {
+          const fileTab = result.tabId;
+          setPromptFileTabs((prev) => (prev.includes(fileTab) ? prev : [...prev, fileTab]));
+        }
         setActiveTabId(result.tabId);
         setPreview(null);
         if (
@@ -3685,12 +3691,31 @@ export function StartupForm({
     [loadHandoffFields, openTerminalHandoff, savedTabs, roles],
   );
 
+  /** The hand-off source terminal's session log: live while the dialog is open. */
+  const captureLog = terminalCapture
+    ? (sessionLogs[terminalCapture.tabId] ?? terminalCapture.log)
+    : null;
+  const captureTabId = terminalCapture?.tabId ?? null;
+  const captureKind = captureTabId ? terminalStates[captureTabId]?.kind : undefined;
+  // The source's state changed (a turn ended, a prompt opened): re-read its
+  // screen so the tail and scrollback match the live log.
+  useEffect(() => {
+    if (!captureTabId || !captureKind) return;
+    const { tail, scrollback } = readTerminalHandoff(captureTabId);
+    setTerminalCapture((capture) =>
+      capture?.tabId === captureTabId && (capture.tail !== tail || capture.scrollback !== scrollback)
+        ? { ...capture, tail, scrollback }
+        : capture,
+    );
+  }, [captureKind, captureTabId]);
+
   const handoffSource = useMemo((): HandoffSource => {
     const captureTab = terminalCapture
       ? savedTabs.find((tab) => tab.id === terminalCapture.tabId)
       : undefined;
     if (terminalCapture && captureTab) {
       const file = terminalCapture.planFile;
+      const captureState = terminalStates[captureTab.id];
       return {
         sourceRoleId: captureTab.roleId,
         sourceTabId: captureTab.id,
@@ -3698,11 +3723,17 @@ export function StartupForm({
         cwd: captureTab.cwd || values.cwd || "",
         answers: terminalCapture.answers,
         sourceFields: role?.id === captureTab.roleId ? role.fields : undefined,
-        ...terminalLogFields(terminalCapture.log),
+        // The poller keeps the log fresh: a turn that ends while the dialog
+        // is open sends its new reply, not the one read when it opened.
+        ...terminalLogFields(captureLog),
         plan: [],
         todos: [],
         selection: terminalCapture.selection,
-        turnInFlight: false,
+        turnInFlight: captureState?.kind === "working" || captureState?.kind === "needs",
+        terminalWorking: captureState?.kind === "working",
+        terminalWaiting:
+          captureState?.kind === "needs" ? terminalWaitingText(captureState.needs) : null,
+        awaitingPlanApproval: captureState?.kind === "needs" && captureState.needs === "plan",
         fromTerminal: true,
         planFileText: file?.text ?? "",
         planFileName: file ? (file.truncated ? `${file.name}, first 8 MB` : file.name) : "",
@@ -3747,6 +3778,7 @@ export function StartupForm({
   }, [
     activeTabId,
     activeTabSummary,
+    captureLog,
     cardsByTab,
     chatPlanFile,
     handoffSelection,
@@ -3759,6 +3791,7 @@ export function StartupForm({
     session?.cwd,
     streamSegments,
     terminalCapture,
+    terminalStates,
     values,
   ]);
 
@@ -3768,7 +3801,7 @@ export function StartupForm({
     isReviewerRole(handoffSource.sourceRoleId) && !handoffSource.turnInFlight
       ? handoffSource.fromTerminal
         ? terminalLogVerdict(
-            terminalCapture?.log,
+            captureLog,
             handoffSource.selection || (handoffSource.terminalTail ?? ""),
           )
         : parseReviewVerdict(handoffSource.latestMessage)
@@ -4142,8 +4175,29 @@ export function StartupForm({
     [confirmHandoffNow],
   );
 
-  const openSavedHandoff = useCallback((record: HandoffRecord) => {
-    if (savedTabs.some((tab) => tab.id === record.sourceTabId)) {
+  /** "Ask Claude to add them": one paste and one Enter into the source terminal. */
+  const askForHandoffSections = useCallback(
+    async (prompt: string) => {
+      const tabId = terminalCapture?.tabId;
+      if (!tabId) return;
+      try {
+        notePtyInput(tabId);
+        await ptyWrite(
+          tabId,
+          encodeTerminalPaste(prompt, { bracketedPaste: terminalBracketedPaste(tabId), submit: true }),
+        );
+        setTerminalCapture(null);
+        setHandoffTarget(null);
+        window.requestAnimationFrame(focusActiveTerminal);
+      } catch (err: unknown) {
+        setHandoffError(errorText(err));
+      }
+    },
+    [focusActiveTerminal, terminalCapture?.tabId],
+  );
+
+  const openSavedHandoff = useCallback((record: HandoffRecord, showText = false) => {
+    if (!showText && savedTabs.some((tab) => tab.id === record.sourceTabId)) {
       void handleSelectTab(record.sourceTabId);
       return;
     }
@@ -5220,6 +5274,9 @@ export function StartupForm({
           onConfirm={(scope, surface) => {
             void confirmHandoff(scope, surface);
           }}
+          onAskForSections={
+            handoffSource.fromTerminal ? (prompt) => void askForHandoffSections(prompt) : undefined
+          }
           onClose={() => {
             if (!busy) {
               const fromTerminal = !!terminalCapture;
@@ -5751,6 +5808,12 @@ export function StartupForm({
               warning={linked.warning}
               roleNames={roles}
               onOpen={() => openSavedHandoff(linked)}
+              fileNote={
+                promptFileTabs.includes(linked.targetTabId ?? "")
+                  ? "The prompt was too long to pass directly, so Claude Code reads it from a file."
+                  : null
+              }
+              onOpenText={() => openSavedHandoff(linked, true)}
             />
           )}
           {terminalError && <p className="error">{terminalError}</p>}

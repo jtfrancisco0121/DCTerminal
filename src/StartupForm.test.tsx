@@ -297,6 +297,8 @@ import {
   selectActiveTab,
   setTabLabel,
   syncActiveTabForm,
+  terminalPlanFile,
+  terminalSessionLog,
 } from "./bridge";
 import { StartupForm } from "./StartupForm";
 
@@ -2175,5 +2177,109 @@ describe("start form recall", () => {
     await waitFor(() => expect(fieldValue("Title")).toBe("From the planner"));
     expect(fieldValue("Task Type")).toBe("Bug");
     expect(fieldValue("What to work on")).toBe("Plan text");
+  });
+});
+
+describe("terminal hand-off source", () => {
+  const plannerTerminal = {
+    id: "tab_plan",
+    label: "Planner · Login",
+    roleId: "role_planner",
+    cwd: "/Users/jt/Koneksi",
+    phase: "running",
+    mergedPromptChars: 0,
+    startupPromptSent: true,
+    hasTranscript: false,
+    folderStatus: "ok",
+    color: "#58a6ff",
+    kind: "terminal",
+    terminalLaunch: "role",
+    acpSessionId: null,
+  };
+  const sessionLog = (patch: Record<string, unknown>) => ({
+    sessionId: "s1",
+    path: "/tmp/s1.jsonl",
+    turnDone: true,
+    lastReply: "",
+    plan: null,
+    planAt: null,
+    lastPromptAt: "2026-10-12T10:00:00Z",
+    toolCalls: [],
+    openTool: null,
+    pendingTools: [],
+    ...patch,
+  });
+
+  beforeEach(() => {
+    vi.mocked(listCursorCliHistory).mockResolvedValue([]);
+    vi.mocked(getRole).mockResolvedValue(developer);
+    vi.mocked(getAppState).mockResolvedValue({
+      activeTabId: "tab_plan",
+      tabs: [plannerTerminal],
+      closedTabs: [],
+    } as never);
+    vi.mocked(getTab).mockResolvedValue({ tab: { ...tab, id: "tab_plan", answers: {} } } as never);
+    vi.mocked(terminalPlanFile).mockResolvedValue(null as never);
+  });
+
+  afterEach(() => {
+    vi.mocked(terminalSessionLog).mockReset();
+    vi.mocked(terminalSessionLog).mockResolvedValue(null);
+    vi.mocked(getTab).mockReset();
+  });
+
+  const renderPlanner = () =>
+    render(
+      <StartupForm
+        roles={[
+          { id: "role_planner", name: "Planner", defaultMode: "agent", color: "#58a6ff", fieldCount: 0 },
+          { id: "role_plan_reviewer", name: "Plan Reviewer", defaultMode: "agent", color: "#d29922", fieldCount: 0 },
+        ]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+
+  it("sends the reply of a turn that ends while the dialog is open", async () => {
+    let done = false;
+    vi.mocked(terminalSessionLog).mockImplementation(async () =>
+      (done
+        ? sessionLog({ turnDone: true, lastReply: "New plan reply" })
+        : sessionLog({ turnDone: false, lastReply: "Old reply" })) as never,
+    );
+    renderPlanner();
+    fireEvent.click(await screen.findByRole("button", { name: /Send to Plan Reviewer/ }));
+    const dialog = await screen.findByRole("dialog", { name: "Send plan" });
+    await within(dialog).findByText("Wait until the Planner finishes this turn.");
+    expect(within(dialog).getByLabelText("Hand-off text").textContent).toContain("Old reply");
+
+    done = true;
+    // The poller reads the log again; the dialog follows it.
+    await waitFor(
+      () => expect(within(dialog).getByLabelText("Hand-off text").textContent).toContain("New plan reply"),
+      { timeout: 6000 },
+    );
+    expect(within(dialog).queryByText("Wait until the Planner finishes this turn.")).toBeNull();
+  }, 10000);
+
+  it("does not block on the Planner's open plan box", async () => {
+    vi.mocked(terminalSessionLog).mockResolvedValue(
+      sessionLog({
+        turnDone: false,
+        plan: "# The login plan",
+        planAt: "2026-10-12T10:01:00Z",
+        openTool: { id: "t1", name: "ExitPlanMode", title: "Plan" },
+        pendingTools: [{ id: "t1", name: "ExitPlanMode", title: "Plan" }],
+      }) as never,
+    );
+    renderPlanner();
+    fireEvent.click(await screen.findByRole("button", { name: /Send to Plan Reviewer/ }));
+    const dialog = await screen.findByRole("dialog", { name: "Send plan" });
+    await waitFor(() =>
+      expect(within(dialog).getByLabelText("Hand-off text").textContent).toContain("# The login plan"),
+    );
+    expect(within(dialog).queryByText(/waiting for you on a plan/)).toBeNull();
   });
 });
