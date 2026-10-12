@@ -284,6 +284,7 @@ import {
   parkedTerminal,
   pasteTerminalText,
   refitTerminal,
+  setOptionAsMeta,
   requestTerminalSearch,
   terminalBracketedPaste,
   terminalScrollbackText,
@@ -657,6 +658,8 @@ export function StartupForm({
   const [pickedRoleId, setPickedRoleId] = useState<string | null>(null);
   const [launchChoice, setLaunchChoice] = useState<"shell" | CliLaunch | null>(null);
   const [terminalSettings, setTerminalSettingsState] = useState<TerminalSettings | null>(null);
+  const optionAsMeta = terminalSettings?.optionAsMeta ?? true;
+  useEffect(() => setOptionAsMeta(optionAsMeta), [optionAsMeta]);
   const [notificationSettings, setNotificationSettingsState] =
     useState<NotificationSettings | null>(null);
   const [terminalError, setTerminalError] = useState<string | null>(null);
@@ -2002,6 +2005,7 @@ export function StartupForm({
       const current = terminalSettings ?? {
         shell: "",
         fontSize: 14,
+        optionAsMeta: true,
         roleSurface: {},
         roleRunMode: {},
       };

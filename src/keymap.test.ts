@@ -192,11 +192,8 @@ describe("keymap", () => {
     });
     expect(routeKey(event({ code: "KeyC", ctrlKey: true }), term).kind).toBe("shell");
     expect(routeKey(event({ code: "Enter", ctrlKey: true }), term).kind).toBe("shell");
-    expect(routeKey(event({ code: "KeyT", ctrlKey: true }), term)).toEqual({
-      kind: "app",
-      match: { action: "newTab" },
-    });
-    expect(routeKey(event({ code: "KeyW", ctrlKey: true }), term).kind).toBe("app");
+    expect(routeKey(event({ code: "KeyT", ctrlKey: true }), term).kind).toBe("shell");
+    expect(routeKey(event({ code: "KeyW", ctrlKey: true }), term).kind).toBe("shell");
     expect(routeKey(event({ code: "Digit1", ctrlKey: true }), term)).toEqual({
       kind: "app",
       match: { action: "goToTab", tabIndex: 0 },
@@ -205,12 +202,9 @@ describe("keymap", () => {
     expect(
       routeKey(event({ code: "Tab", ctrlKey: true, shiftKey: true }), term),
     ).toEqual({ kind: "app", match: { action: "prevTab" } });
-    expect(routeKey(event({ code: "KeyP", ctrlKey: true }), term).kind).toBe("app");
+    expect(routeKey(event({ code: "KeyP", ctrlKey: true }), term).kind).toBe("shell");
     expect(routeKey(event({ code: "Comma", ctrlKey: true, key: "," }), term).kind).toBe("app");
-    expect(routeKey(event({ code: "KeyK", ctrlKey: true, key: "k" }), term)).toEqual({
-      kind: "app",
-      match: { action: "commandPalette" },
-    });
+    expect(routeKey(event({ code: "KeyK", ctrlKey: true, key: "k" }), term).kind).toBe("shell");
     expect(routeKey(event({ code: "KeyC", ctrlKey: true }), term).kind).toBe("shell");
   });
 
@@ -307,5 +301,74 @@ describe("pane and file panel shortcuts", () => {
       "Search terminal=Ctrl+Shift+F",
     );
     expect(bindingConflicts(defaultBindings())).toEqual([]);
+  });
+
+  it("R21: Windows/Linux terminals keep plain Ctrl globals and offer Ctrl+Shift", () => {
+    for (const platform of ["windows", "linux"] as const) {
+      const term = { platform, surface: "terminal" as const };
+      const chat = { platform, surface: "chat" as const };
+      for (const code of ["KeyJ", "KeyW", "KeyK", "KeyT", "KeyP", "Slash"]) {
+        expect(routeKey(event({ code, key: "x", ctrlKey: true }), term).kind).toBe("shell");
+        // Chat still uses plain Ctrl.
+        expect(routeKey(event({ code, key: "x", ctrlKey: true }), chat).kind).toBe("app");
+      }
+      const alt: Record<string, string> = {
+        KeyT: "newTab",
+        KeyW: "closeTab",
+        KeyK: "commandPalette",
+        KeyP: "tabSwitcher",
+        Slash: "shortcutsHelp",
+        KeyJ: "focusPad",
+      };
+      for (const [code, action] of Object.entries(alt)) {
+        expect(
+          routeKey(event({ code, key: "X", ctrlKey: true, shiftKey: true }), term),
+        ).toEqual({ kind: "app", match: { action } });
+      }
+      // Tab and settings keys a program does not use stay global.
+      expect(routeKey(event({ code: "Tab", ctrlKey: true }), term).kind).toBe("app");
+    }
+  });
+
+  it("R21: macOS terminals still pass every Ctrl key to the program", () => {
+    const term = { platform: "mac" as const, surface: "terminal" as const };
+    for (const code of ["KeyJ", "KeyW", "KeyK", "KeyT", "KeyP", "KeyA", "KeyE"]) {
+      expect(routeKey(event({ code, key: "x", ctrlKey: true }), term).kind).toBe("shell");
+    }
+    expect(routeKey(event({ code: "KeyT", key: "t", metaKey: true }), term)).toEqual({
+      kind: "app",
+      match: { action: "newTab" },
+    });
+    // Option+letter is Meta input for the program.
+    expect(routeKey(event({ code: "KeyP", key: "π", altKey: true }), term).kind).toBe("shell");
+  });
+
+  it("R21: F2 and F6 and Escape reach a focused terminal", () => {
+    for (const platform of ["mac", "windows", "linux"] as const) {
+      const term = { platform, surface: "terminal" as const };
+      const chat = { platform, surface: "chat" as const };
+      expect(routeKey(event({ code: "F2", key: "F2" }), term).kind).toBe("shell");
+      expect(routeKey(event({ code: "F6", key: "F6" }), term).kind).toBe("shell");
+      expect(routeKey(event({ code: "Escape", key: "Escape" }), term).kind).toBe("shell");
+      expect(routeKey(event({ code: "F2", key: "F2" }), chat).kind).toBe("app");
+    }
+  });
+
+  it("R21: AltGr text is not a pane shortcut", () => {
+    const term = { platform: "windows" as const, surface: "terminal" as const };
+    // German AltGr+Q types "@" (code KeyQ); AltGr+S types "ſ"... and AltGr+7 "{".
+    expect(
+      routeKey(event({ code: "KeyO", key: "ø", ctrlKey: true, altKey: true }), term).kind,
+    ).toBe("shell");
+    expect(
+      routeKey(event({ code: "KeyS", key: "$", ctrlKey: true, altKey: true }), term).kind,
+    ).toBe("shell");
+    expect(
+      routeKey(event({ code: "Backslash", key: "#", ctrlKey: true, altKey: true }), term).kind,
+    ).toBe("shell");
+    // A real Ctrl+Alt+O still moves focus between panes.
+    expect(
+      routeKey(event({ code: "KeyO", key: "o", ctrlKey: true, altKey: true }), term).kind,
+    ).toBe("app");
   });
 });

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import "@xterm/xterm/css/xterm.css";
 import { ptyOpen, ptyResize, ptyWrite, type TerminalLaunch } from "../bridge";
 import { detectPlatform, routeKey } from "../keymap";
+import { isShiftEnter, SHIFT_ENTER_SEQUENCE } from "../terminal/keys";
 import { TerminalSearchBar } from "./TerminalSearchBar";
 import {
   beginLivePty,
@@ -96,6 +97,21 @@ export function TerminalView({
   const [failed, setFailed] = useState<string | null>(null);
   const [generation, setGeneration] = useState(0);
 
+  // Escape closes the right-click menu. Capture it so the program in the
+  // terminal does not also see the key.
+  useEffect(() => {
+    if (!menu) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      setMenu(null);
+      focusParkedTerminal(ptyId);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [menu, ptyId]);
+
   useEffect(() => subscribeLivePty(() => setGeneration((value) => value + 1)), []);
 
   useEffect(() => {
@@ -129,6 +145,14 @@ export function TerminalView({
     if (live?.exitCode != null) setExitCode(live.exitCode);
     const platform = detectPlatform(navigator.platform);
     parked.term.attachCustomKeyEventHandler((event) => {
+      if (isShiftEnter(event)) {
+        // Handle keydown only; swallow keypress and keyup so xterm sends no CR.
+        if (event.type === "keydown" && !event.repeat) {
+          notePtyInput(ptyId, SHIFT_ENTER_SEQUENCE);
+          void ptyWrite(ptyId, SHIFT_ENTER_SEQUENCE).catch(() => {});
+        }
+        return false;
+      }
       const routed = routeKey(
         {
           code: event.code,
