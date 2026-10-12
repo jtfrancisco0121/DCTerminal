@@ -19,16 +19,16 @@ export type TerminalState =
       needs: TerminalNeeds;
       toolId: string;
       toolTitle: string;
-      /** A permission dialog's text: tells two prompts for one tool apart. */
-      prompt?: string;
+      /** Which permission prompt this is: stays the same while one dialog is up. */
+      promptKey?: string;
     }
   | { kind: "working" }
   | { kind: "idle" };
 
 type LogView = Pick<TerminalSessionLog, "turnDone" | "openTool" | "pendingTools">;
 export type PendingTool = { id: string; name: string; title: string; hint?: string };
-/** The tool a permission dialog on screen asks about, and that dialog's text. */
-export type DialogTool = PendingTool & { prompt: string };
+/** The tool a permission dialog on screen asks about, and which prompt it is. */
+export type DialogTool = PendingTool & { promptKey: string };
 
 export type TerminalStateInput = {
   log: LogView | null | undefined;
@@ -54,7 +54,7 @@ export function deriveTerminalState(input: TerminalStateInput): TerminalState {
       needs: "permission",
       toolId: dialog.id,
       toolTitle: dialog.title,
-      prompt: dialog.prompt,
+      promptKey: dialog.promptKey,
     };
   }
   const open = log && !log.turnDone ? log.openTool : null;
@@ -77,7 +77,7 @@ export function sameTerminalState(a: TerminalState | undefined, b: TerminalState
       a.needs === b.needs &&
       a.toolId === b.toolId &&
       a.toolTitle === b.toolTitle &&
-      (a.prompt ?? "") === (b.prompt ?? "")
+      (a.promptKey ?? "") === (b.promptKey ?? "")
     );
   }
   return true;
@@ -113,48 +113,66 @@ export function pendingToolsOf(log: LogView | null | undefined): PendingTool[] {
 const OWN_PROMPT = new Set(["ExitPlanMode", "AskUserQuestion"]);
 
 /**
- * The permission dialog on screen. `since`: when it was last drawn in full;
- * `prompt`: its text then. `toolId` and `shownPrompt` are what is shown, set
- * by a log read after the draw. `fresh` means drawn since that read, so the
- * next read decides the tool again (after an answer the next dialog is for
- * another call, or another prompt from the same subagent).
+ * The permission dialog on screen.
+ * - `since`, `context`: when it was last drawn in full, and its text then
+ *   (the question and the lines above, which may include transcript lines).
+ * - `drawNew`: that draw showed a different dialog body than the one before.
+ * - `toolId`: the unanswered call it asks about, set by a log read after the
+ *   draw. `fresh`: drawn since that read, so the next read decides again.
+ * - `promptKey`: which prompt is shown; it changes only for a new prompt, so
+ *   a redraw of the same dialog, or moving it to another call, does not
+ *   notify again.
  */
 export type DialogOwner = {
   since: number;
-  prompt: string;
+  context: string;
+  drawNew: boolean;
   toolId: string | null;
-  shownPrompt: string;
   fresh: boolean;
+  promptKey: number | null;
 };
 
+/** Lines kept as the dialog's body: the question and the lines just above it. */
+const BODY_LINES = 4;
+const dialogBody = (context: string) => context.split("\n").slice(-BODY_LINES).join("\n");
+
 /** A dialog that was just drawn (again), keeping what it showed until the next read. */
-export function dialogDrawn(owner: DialogOwner | undefined, now: number, prompt: string): DialogOwner {
+export function dialogDrawn(owner: DialogOwner | undefined, now: number, context: string): DialogOwner {
+  const changed = !owner || dialogBody(owner.context) !== dialogBody(context);
   return {
     since: now,
-    prompt,
+    context,
+    // A change not yet seen by a read still counts.
+    drawNew: changed || (!!owner?.fresh && owner.drawNew),
     toolId: owner?.toolId ?? null,
-    shownPrompt: owner?.shownPrompt ?? prompt,
     fresh: true,
+    promptKey: owner?.promptKey ?? null,
   };
 }
 
 const squash = (text: string) => text.replace(/\s+/g, "");
 
 /**
- * Which unanswered call the dialog text names: the one whose hint (file
- * name, host, command) it shows, else the oldest. Claude Code asks about
- * parallel calls oldest first, but calls that need no permission (reads,
- * fetches to allowed hosts, subagents) may still be running ahead of it.
+ * Which unanswered call the dialog asks about: the one whose hint (file
+ * name, host, command) appears closest to the question, since lines higher
+ * up can be transcript lines for other calls; else the oldest. Claude Code
+ * asks about parallel calls oldest first, but calls that need no permission
+ * (reads, fetches to allowed hosts, subagents) may still be running ahead.
  */
-function toolForPrompt(log: LogView, prompt: string): PendingTool | undefined {
+function toolForPrompt(log: LogView, context: string): PendingTool | undefined {
   const candidates = pendingToolsOf(log).filter((tool) => !OWN_PROMPT.has(tool.name));
-  const screen = squash(prompt);
-  return (
-    candidates.find((tool) => {
-      const hint = squash(tool.hint ?? "");
-      return hint.length > 0 && screen.includes(hint);
-    }) ?? candidates[0]
-  );
+  const screen = squash(context);
+  let best: PendingTool | undefined;
+  let bestAt = -1;
+  for (const tool of candidates) {
+    const hint = squash(tool.hint ?? "");
+    const at = hint ? screen.lastIndexOf(hint) : -1;
+    if (at > bestAt) {
+      best = tool;
+      bestAt = at;
+    }
+  }
+  return best ?? candidates[0];
 }
 
 /**
@@ -164,7 +182,8 @@ function toolForPrompt(log: LogView, prompt: string): PendingTool | undefined {
  * Another call finishing or appearing, a failed read or a read older than
  * the draw never hide it. If its call left the log without typing here (a
  * parallel call that needed no permission was taken for it), it moves to
- * another unanswered call; with none left, nothing can be asking.
+ * another unanswered call, as the same prompt; with none left, nothing can
+ * be asking.
  */
 export function dialogAfterRead(
   owner: DialogOwner | undefined,
@@ -178,12 +197,23 @@ export function dialogAfterRead(
   const settled = !owner.fresh && owner.toolId !== null;
   if (settled && stillOpen) return { owner, clear: false };
   if (settled && answering) return { owner: undefined, clear: true };
-  const next = toolForPrompt(log, owner.prompt);
+  const next = toolForPrompt(log, owner.context);
   if (!next && settled) return { owner: undefined, clear: true };
   // Not written to the log yet: keep waiting for its call.
   if (!next) return { owner: { ...owner, toolId: stillOpen ? owner.toolId : null }, clear: false };
+  // A new prompt: first one, a different dialog body, or the same body drawn
+  // again for another call (the same command asked twice).
+  const isNew =
+    owner.fresh &&
+    (owner.promptKey === null || owner.drawNew || (owner.toolId !== null && next.id !== owner.toolId));
   return {
-    owner: { since: owner.since, prompt: owner.prompt, toolId: next.id, shownPrompt: owner.prompt, fresh: false },
+    owner: {
+      ...owner,
+      toolId: next.id,
+      fresh: false,
+      drawNew: false,
+      promptKey: isNew || owner.promptKey === null ? owner.since : owner.promptKey,
+    },
     clear: false,
   };
 }
@@ -193,7 +223,7 @@ export function dialogToolFor(
   owner: DialogOwner | undefined,
   log: LogView | null | undefined,
 ): DialogTool | null {
-  if (!owner?.toolId) return null;
+  if (!owner?.toolId || owner.promptKey === null) return null;
   const tool = pendingToolsOf(log).find((item) => item.id === owner.toolId);
-  return tool ? { ...tool, prompt: owner.shownPrompt } : null;
+  return tool ? { ...tool, promptKey: String(owner.promptKey) } : null;
 }

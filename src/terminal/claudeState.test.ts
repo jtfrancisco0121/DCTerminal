@@ -11,7 +11,7 @@ import {
 } from "./claudeState";
 
 const open = (name: string, id = "toolu_1", hint = "") => ({ id, name, title: `${name}: x`, hint });
-const onScreen = (tool: ReturnType<typeof open>, prompt = "Do you want to proceed?") => ({ ...tool, prompt });
+const onScreen = (tool: ReturnType<typeof open>, promptKey = "1") => ({ ...tool, promptKey });
 const base: TerminalStateInput = { log: null, dialogTool: null, ptyBusy: false, exitCode: null };
 const derive = (over: Partial<TerminalStateInput>) => deriveTerminalState({ ...base, ...over });
 
@@ -48,7 +48,7 @@ describe("deriveTerminalState", () => {
       needs: "permission",
       toolId: "toolu_e1",
       toolTitle: "Edit: x",
-      prompt: "Do you want to proceed?",
+      promptKey: "1",
     });
     // A quiet long-running tool: working, never needs you.
     expect(derive({ log, dialogTool: null, ptyBusy: false })).toEqual({ kind: "working" });
@@ -87,7 +87,7 @@ describe("terminal state text", () => {
     const a = { kind: "needs", needs: "permission", toolId: "a", toolTitle: "Bash" } as const;
     expect(sameTerminalState(a, { ...a })).toBe(true);
     expect(sameTerminalState(a, { ...a, toolId: "b" })).toBe(false);
-    expect(sameTerminalState({ ...a, prompt: "rm a" }, { ...a, prompt: "rm b" })).toBe(false);
+    expect(sameTerminalState({ ...a, promptKey: "1" }, { ...a, promptKey: "2" })).toBe(false);
     expect(sameTerminalState(undefined, undefined)).toBe(true);
   });
 
@@ -105,26 +105,24 @@ describe("terminal state text", () => {
 
 describe("dialog owner", () => {
   type Tool = ReturnType<typeof open>;
-  const owner = (
-    toolId: string | null,
-    opts: { since?: number; fresh?: boolean; prompt?: string; shownPrompt?: string } = {},
-  ) => {
-    const prompt = opts.prompt ?? "Do you want to proceed?";
-    return { since: opts.since ?? 100, prompt, toolId, shownPrompt: opts.shownPrompt ?? prompt, fresh: opts.fresh ?? false };
-  };
+  type Owner = Parameters<typeof dialogAfterRead>[0];
+  const ASK = "Do you want to proceed?";
   const log = (pending: (string | Tool)[], turnDone = false) => {
     const tools = pending.map((item) => (typeof item === "string" ? open("Bash", item) : item));
     return { turnDone, openTool: tools[tools.length - 1] ?? null, pendingTools: tools };
   };
-  const read = (o: ReturnType<typeof owner> | undefined, l: ReturnType<typeof log> | null, at = 150, answering = false) =>
+  const read = (o: Owner, l: ReturnType<typeof log> | null, at = 150, answering = false) =>
     dialogAfterRead(o, l, at, answering);
-  const shown = (o: ReturnType<typeof owner> | undefined, l: ReturnType<typeof log>) =>
-    dialogToolFor(o, l)?.id ?? null;
-  const drawn = (prompt = "Do you want to proceed?", prev?: ReturnType<typeof owner>, at = 100) =>
-    dialogDrawn(prev, at, prompt);
+  const drawn = (context = ASK, prev?: Owner, at = 100) => dialogDrawn(prev, at, context);
+  /** Drawn at `at`, then tied by a read to `toolId`. */
+  const tied = (toolId: string, context = ASK, at = 100) =>
+    read(drawn(context, undefined, at), log([toolId]), at + 50).owner;
+  const shown = (o: Owner, l: ReturnType<typeof log>) => dialogToolFor(o, l);
 
   it("adopts the oldest unanswered call from the first read after the draw", () => {
-    expect(read(drawn(), log(["toolu_b"]))).toEqual({ owner: owner("toolu_b"), clear: false });
+    const next = read(drawn(), log(["toolu_b"]));
+    expect(next.clear).toBe(false);
+    expect(shown(next.owner, log(["toolu_b"]))).toMatchObject({ id: "toolu_b", promptKey: "100" });
   });
 
   it("skips calls that show their own prompt", () => {
@@ -137,59 +135,83 @@ describe("dialog owner", () => {
     expect(shown(drawn(), log(["toolu_a"]))).toBe(null);
     const next = read(drawn(), log(["toolu_b"]));
     expect(next.clear).toBe(false);
-    expect(shown(next.owner, log(["toolu_b"]))).toBe("toolu_b");
+    expect(shown(next.owner, log(["toolu_b"]))?.id).toBe("toolu_b");
   });
 
-  it("parallel calls: the dialog is for the call its text names", () => {
-    const w1 = open("WebFetch", "toolu_w1", "docs.example.com");
-    const w2 = open("WebFetch", "toolu_w2", "api.other.dev");
-    const prompt = "Fetch\nhttps://api.other.dev/v1\nDo you want to allow Claude to fetch this content?";
-    expect(read(drawn(prompt), log([w1, w2])).owner?.toolId).toBe("toolu_w2");
+  it("parallel calls: the call named closest to the question, past transcript lines", () => {
+    const w1 = open("WebFetch", "toolu_w1", "allowed.com");
+    const w2 = open("WebFetch", "toolu_w2", "other.org");
+    const context = [
+      "⏺ Fetch(https://allowed.com/a)",
+      "⎿ Fetching…",
+      "⏺ Fetch(https://other.org/b)",
+      "Fetch",
+      "https://other.org/b",
+      "Do you want to allow Claude to fetch this content?",
+    ].join("\n");
+    expect(read(drawn(context), log([w1, w2])).owner?.toolId).toBe("toolu_w2");
     // Nothing named: the oldest, as Claude Code asks oldest first.
     expect(read(drawn(), log(["toolu_e1", "toolu_e2"])).owner?.toolId).toBe("toolu_e1");
   });
 
-  it("an earlier parallel call finishing without input moves the dialog, never hides it", () => {
-    const tied = owner("toolu_a1");
-    expect(read(tied, log(["toolu_a1", "toolu_a2"]), 200).clear).toBe(false);
-    expect(read(tied, log(["toolu_a2"]), 200)).toEqual({ owner: owner("toolu_a2"), clear: false });
+  it("an earlier parallel call finishing without input moves the dialog as the same prompt", () => {
+    const owner = tied("toolu_a1");
+    const both = log(["toolu_a1", "toolu_a2"]);
+    expect(read(owner, both, 200).clear).toBe(false);
+    const moved = read(owner, log(["toolu_a2"]), 200);
+    expect(moved.clear).toBe(false);
+    expect(shown(moved.owner, log(["toolu_a2"]))).toMatchObject({ id: "toolu_a2", promptKey: "100" });
   });
 
   it("its call leaving after the user typed hides it", () => {
-    expect(read(owner("toolu_b"), log([]), 200, true)).toEqual({ owner: undefined, clear: true });
-    expect(read(owner("toolu_b"), log(["toolu_c"]), 200, true).clear).toBe(true);
+    expect(read(tied("toolu_b"), log([]), 200, true)).toEqual({ owner: undefined, clear: true });
+    expect(read(tied("toolu_b"), log(["toolu_c"]), 200, true).clear).toBe(true);
   });
 
   it("its call leaving with nothing else open hides it (answered elsewhere)", () => {
-    expect(read(owner("toolu_b"), log([]), 200)).toEqual({ owner: undefined, clear: true });
+    expect(read(tied("toolu_b"), log([]), 200)).toEqual({ owner: undefined, clear: true });
   });
 
-  it("after an answer, a redrawn dialog keeps what it showed until the next read", () => {
-    const redrawn = drawn("Do you want to make this edit to b.ts?", owner("toolu_a"), 200);
-    expect(dialogToolFor(redrawn, log(["toolu_a"]))).toMatchObject({
-      id: "toolu_a",
-      prompt: "Do you want to proceed?",
+  it("the same dialog redrawn after a key press stays the same prompt", () => {
+    const owner = tied("toolu_a", "⏺ Bash(ls)\nBash command\nnpm test\nRun tests\n" + ASK);
+    // The redraw-only window has no transcript above the box.
+    const redrawn = drawn("Bash command\nnpm test\nRun tests\n" + ASK, owner, 200);
+    expect(shown(redrawn, log(["toolu_a"]))?.promptKey).toBe("100");
+    expect(shown(read(redrawn, log(["toolu_a"]), 250).owner, log(["toolu_a"]))?.promptKey).toBe("100");
+  });
+
+  it("after an answer, the next call's dialog is a new prompt, shown after the next read", () => {
+    const owner = tied("toolu_a", "Bash command\nnpm test\n" + ASK);
+    const redrawn = drawn("Edit file\n+ x\nDo you want to make this edit to b.ts?", owner, 200);
+    expect(shown(redrawn, log(["toolu_a"]))).toMatchObject({ id: "toolu_a", promptKey: "100" });
+    expect(shown(read(redrawn, log(["toolu_b"]), 250).owner, log(["toolu_b"]))).toMatchObject({
+      id: "toolu_b",
+      promptKey: "200",
     });
-    expect(read(redrawn, log(["toolu_b"]), 250).owner).toEqual(
-      owner("toolu_b", { since: 200, prompt: "Do you want to make this edit to b.ts?" }),
-    );
   });
 
-  it("a subagent's next prompt under the same call shows the new text", () => {
-    const first = owner("toolu_agent", { prompt: "rm a" });
-    const redrawn = drawn("rm b", first, 300);
-    const next = read(redrawn, log(["toolu_agent"]), 350).owner;
-    expect(next).toMatchObject({ toolId: "toolu_agent", shownPrompt: "rm b" });
-    expect(dialogToolFor(next, log(["toolu_agent"]))?.prompt).toBe("rm b");
+  it("the same command asked again for a new call is a new prompt", () => {
+    const owner = tied("toolu_a", "Bash command\nnpm test\n" + ASK);
+    const again = drawn("Bash command\nnpm test\n" + ASK, owner, 200);
+    expect(shown(read(again, log(["toolu_b"]), 250).owner, log(["toolu_b"]))?.promptKey).toBe("200");
+  });
+
+  it("a subagent's next prompt under the same call is a new prompt", () => {
+    const owner = tied("toolu_agent", "Bash command\nrm a\n" + ASK);
+    const next = drawn("Bash command\nrm b\n" + ASK, owner, 300);
+    expect(shown(read(next, log(["toolu_agent"]), 350).owner, log(["toolu_agent"]))?.promptKey).toBe("300");
   });
 
   it("waits while the dialog's call is not in the log yet", () => {
-    expect(read(drawn(), log([]))).toEqual({ owner: owner(null, { fresh: true }), clear: false });
+    const next = read(drawn(), log([]));
+    expect(next.clear).toBe(false);
+    expect(next.owner).toMatchObject({ toolId: null, fresh: true });
   });
 
   it("ignores reads that started before the dialog was drawn, and failed reads", () => {
     expect(read(drawn(), log(["toolu_a"]), 90)).toEqual({ owner: drawn(), clear: false });
-    expect(read(owner("toolu_b"), null, 200)).toEqual({ owner: owner("toolu_b"), clear: false });
+    const owner = tied("toolu_b");
+    expect(read(owner, null, 200)).toEqual({ owner, clear: false });
   });
 
   it("the turn ending hides it", () => {

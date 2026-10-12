@@ -544,7 +544,7 @@ export function StartupForm({
     const prev = dialogOwners.current.get(tabId);
     if (owner) dialogOwners.current.set(tabId, owner);
     else dialogOwners.current.delete(tabId);
-    if (prev?.toolId !== owner?.toolId || prev?.shownPrompt !== owner?.shownPrompt) {
+    if (prev?.toolId !== owner?.toolId || prev?.promptKey !== owner?.promptKey) {
       setDialogOwnerVersion((value) => value + 1);
     }
   }, []);
@@ -1446,8 +1446,10 @@ export function StartupForm({
   useEffect(() => {
     for (const [tabId, state] of Object.entries(terminalStates)) {
       if (state.kind !== "needs") continue;
-      // A subagent's prompts share its Agent call: the dialog text tells them apart.
-      const key = `${tabId}\n${state.toolId}\n${state.needs}\n${state.prompt ?? ""}`;
+      // A permission prompt is keyed by the dialog, not the call: a subagent's
+      // prompts share its Agent call, and a dialog may move to another call.
+      const which = state.needs === "permission" ? `prompt ${state.promptKey ?? state.toolId}` : state.toolId;
+      const key = `${tabId}\n${state.needs}\n${which}`;
       if (needsNotified.current.has(key)) continue;
       needsNotified.current.add(key);
       notifyAgent(tabId, { kind: state.needs, detail: terminalNeedsMessage(state) });
