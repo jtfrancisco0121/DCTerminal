@@ -20,7 +20,7 @@ import { blurParkedTerminal, refitTerminal, terminalBracketedPaste } from "../te
 import type { useScratchPads } from "../useScratchPads";
 import type { useUiSettings } from "../useUiSettings";
 import type { HeaderControls } from "./SessionHeaderControls";
-import { terminalLaunchOf, type PadSizeProps } from "./tabHelpers";
+import { isClaudeTerminal, terminalLaunchOf, type PadSizeProps } from "./tabHelpers";
 
 export type TerminalTabViewProps = {
   activeTabId: string | null;
@@ -165,6 +165,7 @@ export function TerminalTabView({
         roleId={activeTabSummary.roleId}
         fontSize={fontSize}
         resumeSessionId={activeTabSummary.resumeSessionId}
+        claudeSession={isClaudeTerminal(activeTabSummary)}
         autoOpen={!livePty(activeTabSummary.id)}
         onMenuOpen={() => readTerminalVerdict(activeTabSummary.id, true)}
         menuActions={

@@ -30,6 +30,9 @@ export type ShortcutAction =
   | "settings"
   | "find"
   | "searchChats"
+  | "zoomIn"
+  | "zoomOut"
+  | "zoomReset"
   | "closeDialog";
 
 export type Platform = "mac" | "windows" | "linux";
@@ -196,6 +199,24 @@ export const SHORTCUTS: ShortcutDef[] = [
     code: "KeyF",
   },
   {
+    action: "zoomIn",
+    label: "Larger terminal text",
+    description: "Increase the terminal font size.",
+    code: "Equal",
+  },
+  {
+    action: "zoomOut",
+    label: "Smaller terminal text",
+    description: "Decrease the terminal font size.",
+    code: "Minus",
+  },
+  {
+    action: "zoomReset",
+    label: "Reset terminal text size",
+    description: "Back to the default terminal font size.",
+    code: "Digit0",
+  },
+  {
     action: "renameTab",
     label: "Rename tab",
     description: "Rename the active tab in place. Double-click a tab also works.",
@@ -223,6 +244,8 @@ export type KeyEventLike = {
   isComposing?: boolean;
   keyCode?: number;
   targetTag?: string;
+  /** `getModifierState("AltGraph")`, when the event could report it. */
+  altGraph?: boolean;
 };
 
 export type MatchContext = {
@@ -396,6 +419,10 @@ export function matchShortcut(
   if (!chord.mod && event.code !== "F2" && event.code !== "F6" && event.code !== "Escape") {
     return null;
   }
+  // Cmd+Plus is Cmd+Shift+= on a US layout; it is zoom, not a terminal chord.
+  if (chord.mod && chord.shift && !chord.alt && chord.code === "Equal") {
+    return { action: "zoomIn" };
+  }
   if (isSystemChord(chord) || isReservedForTerminal(chord)) return null;
   if (isTextEditingChord(chord, targetIsField(event.targetTag))) return null;
   // The other modifier (Ctrl on mac, Cmd on Windows) is not our Mod key.
@@ -418,9 +445,33 @@ export function matchShortcut(
   return null;
 }
 
+/** The character a bare key press of `code` prints, for the codes we bind. */
+function expectedKey(code: string): string | null {
+  if (code.startsWith("Key")) return code.slice(3).toLowerCase();
+  if (code.startsWith("Digit")) return code.slice(5);
+  if (code === "Backslash") return "\\";
+  if (code === "Slash") return "/";
+  if (code === "Comma") return ",";
+  if (code === "Period") return ".";
+  return null;
+}
+
+/**
+ * Ctrl+Alt is AltGr on many Windows and Linux layouts. A non-ASCII character
+ * means the user is typing. A letter or digit is a shortcut: bindings match
+ * by code, so AZERTY's KeyW printing "z" still closes the split. For an ASCII
+ * symbol, trust the AltGraph modifier when the event reports it (German
+ * AltGr+Q is "@"; Ctrl+Alt+Backslash printing "#" is not AltGr). Without it,
+ * a symbol other than the one the code stands for counts as typed text.
+ */
 export function isAltGrText(event: KeyEventLike, platform: Platform): boolean {
   if (platform === "mac" || !event.ctrlKey || !event.altKey) return false;
-  return event.key.length === 1 && !/^[\x20-\x7e]$/.test(event.key);
+  if (event.key.length !== 1) return false;
+  if (!/^[\x20-\x7e]$/.test(event.key)) return true;
+  if (/^[a-z0-9]$/i.test(event.key)) return false;
+  if (event.altGraph !== undefined) return event.altGraph;
+  const expected = expectedKey(event.code);
+  return expected !== null && event.key !== expected;
 }
 
 export function formatChord(chord: Chord, platform: Platform): string {
@@ -437,6 +488,8 @@ function codeLabel(code: string): string {
   if (code.startsWith("Digit")) return code.slice(5);
   if (code === "Period") return ".";
   if (code === "Comma") return ",";
+  if (code === "Equal") return "=";
+  if (code === "Minus") return "-";
   if (code === "Slash") return "/";
   if (code === "Backslash") return "\\";
   if (code === "PageUp") return "PageUp";
@@ -478,6 +531,10 @@ const TERMINAL_GLOBALS = new Set<ShortcutAction>([
   "reopenClosedTab",
   "renameTab",
   "settings",
+  // Cmd on macOS never reaches the shell; elsewhere the zoom chords are the app's.
+  "zoomIn",
+  "zoomOut",
+  "zoomReset",
   // Mod+J must leave the shell and land in the scratch pad.
   "focusPad",
   // Pane chords use Mod+Alt, which shells do not need.
@@ -496,6 +553,41 @@ const TERMINAL_GLOBALS_MAC = new Set<ShortcutAction>(["splitRight", "toggleFileP
 
 function terminalGlobal(action: ShortcutAction, platform: Platform): boolean {
   return TERMINAL_GLOBALS.has(action) || (platform === "mac" && TERMINAL_GLOBALS_MAC.has(action));
+}
+
+/**
+ * On Windows and Linux plain Ctrl letters belong to the program in a focused
+ * terminal (Claude Code uses Ctrl+J for a new line, Ctrl+K, Ctrl+T, Ctrl+W
+ * and Ctrl+P too). These app actions move to Ctrl+Shift there.
+ */
+const PLAIN_CTRL_TO_TERMINAL = new Set<ShortcutAction>([
+  "newTab",
+  "closeTab",
+  "commandPalette",
+  "tabSwitcher",
+  "shortcutsHelp",
+  "focusPad",
+]);
+
+/** Ctrl+Shift alternatives, by key code, for the actions above. */
+const CTRL_SHIFT_ALTERNATIVE: Record<string, ShortcutAction> = {
+  KeyT: "newTab",
+  KeyW: "closeTab",
+  KeyK: "commandPalette",
+  KeyP: "tabSwitcher",
+  Slash: "shortcutsHelp",
+  KeyJ: "focusPad",
+};
+
+/** F2 and F6 are bare keys a program may use, so a terminal keeps them. */
+function isBareFunctionKey(event: KeyEventLike): boolean {
+  return (
+    (event.code === "F2" || event.code === "F6") &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.altKey &&
+    !event.shiftKey
+  );
 }
 
 const TERMINAL_BY_CODE: Record<string, TerminalAction> = {
@@ -533,7 +625,27 @@ export function routeKey(
   };
   const terminalAction = terminalActionFor(chord);
   if (ctx.surface === "terminal") {
+    if (isBareFunctionKey(event)) return { kind: "shell" };
+    if (
+      ctx.platform !== "mac" &&
+      event.ctrlKey &&
+      event.shiftKey &&
+      !event.altKey &&
+      !event.metaKey &&
+      !event.repeat
+    ) {
+      const action = CTRL_SHIFT_ALTERNATIVE[event.code];
+      if (action) return { kind: "app", match: { action } };
+    }
     const match = matchShortcut(event, ctx);
+    if (
+      ctx.platform !== "mac" &&
+      match &&
+      !event.altKey &&
+      PLAIN_CTRL_TO_TERMINAL.has(match.action)
+    ) {
+      return { kind: "shell" };
+    }
     // Cmd+F never reaches a shell on macOS. Ctrl+F (forward-char) does.
     if (match?.action === "find" && ctx.platform === "mac") {
       return { kind: "terminal", action: "search" };
@@ -578,6 +690,15 @@ export function shortcutRows(platform: Platform): ShortcutRow[] {
       keys: formatChord(chord, platform),
     };
   });
+  if (platform !== "mac") {
+    for (const row of rows) {
+      if (!PLAIN_CTRL_TO_TERMINAL.has(row.action)) continue;
+      const code = Object.entries(CTRL_SHIFT_ALTERNATIVE).find(([, a]) => a === row.action)?.[0];
+      if (!code) continue;
+      row.keys = `${row.keys} (Ctrl+Shift+${codeLabel(code)} in a terminal)`;
+      row.description = `${row.description} In a terminal, Ctrl+${codeLabel(code)} stays with the program.`;
+    }
+  }
   const mod = platform === "mac" ? "⌘" : "Ctrl";
   rows.push(
     {

@@ -18,7 +18,7 @@ import { tabStatusLabel, type TabStatus } from "../tabStatus";
 import { livePty } from "../terminal/live";
 import { contextPercent } from "../usage/limits";
 import { SessionHeaderControls, type HeaderControls } from "./SessionHeaderControls";
-import { terminalLaunchOf } from "./tabHelpers";
+import { isClaudeTerminal, terminalLaunchOf } from "./tabHelpers";
 
 /** What the second pane and the grid cells read and change in the workspace. */
 export type PaneDeps = {
@@ -120,6 +120,7 @@ export function createPaneRenderers({
           roleId={tab.roleId}
           fontSize={fontSize}
           resumeSessionId={tab.resumeSessionId}
+          claudeSession={isClaudeTerminal(tab)}
           autoOpen={!livePty(tab.id)}
           autoFocus={false}
           menuActions={
