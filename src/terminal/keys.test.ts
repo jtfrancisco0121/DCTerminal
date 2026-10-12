@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isShiftEnter, SHIFT_ENTER_SEQUENCE } from "./keys";
+import { isShiftEnter, SHIFT_ENTER_SEQUENCE, shiftEnterSendsNewline } from "./keys";
 
 const ev = (over: Partial<Parameters<typeof isShiftEnter>[0]> = {}) => ({
   type: "keydown",
@@ -30,5 +30,12 @@ describe("terminal Shift+Enter", () => {
 
   it("ignores Enter that confirms an IME composition", () => {
     expect(isShiftEnter(ev({ shiftKey: true, isComposing: true }))).toBe(false);
+  });
+
+  it("rewrites Shift+Enter only for Claude Code terminals", () => {
+    expect(shiftEnterSendsNewline("role")).toBe(true);
+    expect(shiftEnterSendsNewline("claude-cli")).toBe(true);
+    expect(shiftEnterSendsNewline("shell")).toBe(false);
+    expect(shiftEnterSendsNewline("cursor-cli")).toBe(false);
   });
 });

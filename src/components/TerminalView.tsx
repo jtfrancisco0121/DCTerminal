@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import "@xterm/xterm/css/xterm.css";
 import { ptyOpen, ptyResize, ptyWrite, type TerminalLaunch } from "../bridge";
 import { detectPlatform, routeKey } from "../keymap";
-import { isShiftEnter, SHIFT_ENTER_SEQUENCE } from "../terminal/keys";
+import { isShiftEnter, SHIFT_ENTER_SEQUENCE, shiftEnterSendsNewline } from "../terminal/keys";
 import { TerminalSearchBar } from "./TerminalSearchBar";
 import {
   beginLivePty,
@@ -144,8 +144,9 @@ export function TerminalView({
     });
     if (live?.exitCode != null) setExitCode(live.exitCode);
     const platform = detectPlatform(navigator.platform);
+    const newlineOnShiftEnter = shiftEnterSendsNewline(launch);
     parked.term.attachCustomKeyEventHandler((event) => {
-      if (isShiftEnter(event)) {
+      if (newlineOnShiftEnter && isShiftEnter(event)) {
         // Handle keydown only; swallow keypress and keyup so xterm sends no CR.
         if (event.type === "keydown" && !event.repeat) {
           notePtyInput(ptyId, SHIFT_ENTER_SEQUENCE);
@@ -162,6 +163,7 @@ export function TerminalView({
           altKey: event.altKey,
           shiftKey: event.shiftKey,
           repeat: event.repeat,
+          altGraph: event.getModifierState?.("AltGraph"),
         },
         { platform, surface: "terminal" },
       );
@@ -210,7 +212,7 @@ export function TerminalView({
         root.appendChild(parked.host);
       }
     };
-  }, [autoFocus, ptyId, fontSize, generation]);
+  }, [autoFocus, ptyId, fontSize, generation, launch]);
 
   useEffect(() => {
     if (!autoOpen || !cwd) return;

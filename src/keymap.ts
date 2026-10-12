@@ -223,6 +223,8 @@ export type KeyEventLike = {
   isComposing?: boolean;
   keyCode?: number;
   targetTag?: string;
+  /** `getModifierState("AltGraph")`, when the event could report it. */
+  altGraph?: boolean;
 };
 
 export type MatchContext = {
@@ -430,16 +432,21 @@ function expectedKey(code: string): string | null {
 }
 
 /**
- * Ctrl+Alt is AltGr on many Windows and Linux layouts. When the key printed
- * a character other than the one its code stands for (AltGr+Q is "@" on a
- * German layout), the user is typing, not using a shortcut.
+ * Ctrl+Alt is AltGr on many Windows and Linux layouts. A non-ASCII character
+ * means the user is typing. A letter or digit is a shortcut: bindings match
+ * by code, so AZERTY's KeyW printing "z" still closes the split. For an ASCII
+ * symbol, trust the AltGraph modifier when the event reports it (German
+ * AltGr+Q is "@"; Ctrl+Alt+Backslash printing "#" is not AltGr). Without it,
+ * a symbol other than the one the code stands for counts as typed text.
  */
 export function isAltGrText(event: KeyEventLike, platform: Platform): boolean {
   if (platform === "mac" || !event.ctrlKey || !event.altKey) return false;
   if (event.key.length !== 1) return false;
   if (!/^[\x20-\x7e]$/.test(event.key)) return true;
+  if (/^[a-z0-9]$/i.test(event.key)) return false;
+  if (event.altGraph !== undefined) return event.altGraph;
   const expected = expectedKey(event.code);
-  return expected !== null && event.key.toLowerCase() !== expected;
+  return expected !== null && event.key !== expected;
 }
 
 export function formatChord(chord: Chord, platform: Platform): string {
