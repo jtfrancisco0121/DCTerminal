@@ -657,3 +657,33 @@ export function shortcutRows(platform: Platform): ShortcutRow[] {
   );
   return rows;
 }
+
+/** Commands whose palette entry opens a dialog or picker (title ends with an ellipsis). */
+const OPENS_DIALOG = new Set<ShortcutAction>(["tabSwitcher", "searchChats"]);
+
+/**
+ * The one name for a shortcut-backed command. SHORTCUTS holds the name; the
+ * palette and the shortcut list both read it.
+ */
+export function commandTitle(action: ShortcutAction): string {
+  // searchChats has no SHORTCUTS entry; its row (shortcutRows) names it.
+  const label =
+    SHORTCUTS.find((def) => def.action === action)?.label ??
+    shortcutRows("windows").find((row) => row.action === action)?.label ??
+    action;
+  return OPENS_DIALOG.has(action) ? `${label}…` : label;
+}
+
+/**
+ * The shortcut text for a command id, e.g. "Ctrl+K" or "⌘+K". Null when the
+ * id is not a shortcut action.
+ */
+export function shortcutLabel(id: string, platform: Platform): string | null {
+  return shortcutRows(platform).find((row) => row.action === id)?.keys ?? null;
+}
+
+/** shortcutLabel for the platform this window runs on. */
+export function localShortcutLabel(id: string): string | null {
+  const platform = detectPlatform(typeof navigator === "undefined" ? "" : navigator.platform);
+  return shortcutLabel(id, platform);
+}

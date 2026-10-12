@@ -7,6 +7,8 @@ import {
   matchShortcut,
   routeKey,
   shortcutRows,
+  shortcutLabel,
+  commandTitle,
   type KeyEventLike,
 } from "./keymap";
 
@@ -307,5 +309,14 @@ describe("pane and file panel shortcuts", () => {
       "Search terminal=Ctrl+Shift+F",
     );
     expect(bindingConflicts(defaultBindings())).toEqual([]);
+  });
+
+  it("derives shortcut labels and command titles from the keymap", () => {
+    expect(shortcutLabel("commandPalette", "mac")).toBe("⌘+K");
+    expect(shortcutLabel("commandPalette", "windows")).toBe("Ctrl+K");
+    expect(shortcutLabel("goToTab", "windows")).toBe("Ctrl+1…9");
+    expect(shortcutLabel("loadWorkspace", "mac")).toBeNull();
+    expect(commandTitle("tabSwitcher")).toBe("Go to tab…");
+    expect(commandTitle("closeTab")).toBe("Close tab");
   });
 });

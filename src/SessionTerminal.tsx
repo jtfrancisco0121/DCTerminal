@@ -1,3 +1,4 @@
+import { localShortcutLabel } from "./keymap";
 import {
   useEffect,
   useLayoutEffect,
@@ -598,7 +599,7 @@ export function SessionTerminal({
           rows={3}
           placeholder={
             canSendFollowUp
-              ? "Follow-up message (Ctrl+Enter to send)"
+              ? `Follow-up message (${localShortcutLabel("send") ?? "Ctrl+Enter"} to send)`
               : "Message"
           }
           value={followUp}

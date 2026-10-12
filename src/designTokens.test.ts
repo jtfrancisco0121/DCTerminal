@@ -90,6 +90,9 @@ describe("chain tab strip (R19)", () => {
     expect(rule(".tab-chain-label")).toMatch(/min-width: 0/);
     expect(rule(".tab-chain-label")).toMatch(/max-width: 8rem/);
     expect(rule(".tab-chip-chain")).toMatch(/min-width: 3\.75rem/);
-    expect(rule(".tab-chip")).toMatch(/flex: 0 1 auto/);
+    // R14: plain chips keep their width and the strip scrolls instead.
+    expect(rule(".tab-chip")).toMatch(/flex: 0 0 auto/);
+    expect(rule(".tab-list")).toMatch(/overflow-x: auto/);
+    expect(rule(".tab-chip-chain")).toMatch(/flex: 0 1 auto/);
   });
 });

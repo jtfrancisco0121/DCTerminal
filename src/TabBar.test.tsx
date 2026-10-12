@@ -384,4 +384,55 @@ describe("TabBar chain tabs (R19)", () => {
     expect(a.textContent).toContain("✓");
     expect(b.textContent).not.toMatch(/[✓●!]/);
   });
+
+  describe("keyboard and non-colour cues (R14)", () => {
+    const two = [tab({ id: "tab_1", label: "A" }), tab({ id: "tab_2", label: "B", phase: "running" })];
+    const bar = () => (
+      <TabBar
+        tabs={two}
+        activeTabId="tab_1"
+        onSelect={() => {}}
+        onClose={() => {}}
+        onNew={() => {}}
+        onColor={() => {}}
+      />
+    );
+
+    it("keeps close and colour controls in the tab order, with named colours", () => {
+      render(bar());
+      const close = screen.getByRole("button", { name: "Stop and close B" });
+      expect(close.hasAttribute("disabled")).toBe(false);
+      const color = screen.getByRole("combobox", { name: "Color for B" });
+      expect(Array.from(color.querySelectorAll("option")).map((o) => o.textContent)).toContain(
+        "Green",
+      );
+    });
+
+    it("moves between tabs with the arrow keys", () => {
+      render(bar());
+      const first = screen.getByRole("tab", { name: /A/ });
+      first.focus();
+      fireEvent.keyDown(first, { key: "ArrowRight" });
+      expect(document.activeElement).toBe(screen.getByRole("tab", { name: /B/ }));
+      fireEvent.keyDown(document.activeElement!, { key: "Home" });
+      expect(document.activeElement).toBe(first);
+    });
+
+    it("names the phase in text for screen readers", () => {
+      render(bar());
+      expect(screen.getByRole("tab", { name: /B/ }).getAttribute("aria-description")).toBe("Running");
+      expect(screen.getByRole("tab", { name: /A/ }).getAttribute("aria-description")).toBe(
+        "Not started",
+      );
+    });
+
+    it("takes the settings shortcut from the keymap", () => {
+      render(
+        <TabBar {...{ tabs: two, activeTabId: "tab_1", onSelect() {}, onClose() {}, onNew() {}, onSettings() {} }} />,
+      );
+      expect(screen.getByRole("button", { name: "Settings" }).getAttribute("title")).toMatch(
+        /^Settings \((Ctrl|⌘)\+,\)$/,
+      );
+    });
+  });
 });

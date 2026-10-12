@@ -4929,6 +4929,7 @@ export function StartupForm({
           canOpenChainOverview={!!activeTabSummary?.chain}
           model={paletteModel}
           initialQuery={palettePrefill.query}
+          platform={platform}
           key={palettePrefill.key}
           onRun={runPalette}
           onClose={() => setPaletteOpen(false)}

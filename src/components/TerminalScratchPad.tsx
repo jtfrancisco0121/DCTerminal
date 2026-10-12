@@ -150,6 +150,7 @@ export const TerminalScratchPad = forwardRef<TerminalPadHandle, Props>(
           ref={fieldRef}
           mode="terminal"
           modLabel={modLabel}
+          platform={platform}
           collapsed={!open}
           content={content}
           truncated={truncated}
