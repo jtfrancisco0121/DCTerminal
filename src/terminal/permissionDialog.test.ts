@@ -237,6 +237,27 @@ describe("dialog detector", () => {
     expect(d.answering("a")).toBe(false);
   });
 
+  it("clear with keepPartial still sees a next dialog half drawn at that moment", () => {
+    const { d, calls } = setup();
+    d.feed("a", bytes(PROCEED));
+    d.input("a", 1000);
+    // B's question has arrived, its options not yet, when A's answer is read.
+    d.feed("a", bytes("Bash command\r\n  rm y\r\nDo you want to proceed?\r\n"));
+    d.clear("a", { keepPartial: true });
+    expect(d.isVisible("a")).toBe(false);
+    d.feed("a", bytes(options("Yes")));
+    expect(d.isVisible("a")).toBe(true);
+    expect(calls).toEqual(["a", "a", "a"]);
+  });
+
+  it("clear with keepPartial never keeps a whole (answered) dialog", () => {
+    const { d } = setup();
+    d.feed("a", bytes(PROCEED));
+    d.clear("a", { keepPartial: true });
+    d.feed("a", bytes("\r\x1b[2K✻ Thinking…"));
+    expect(d.isVisible("a")).toBe(false);
+  });
+
   it("input clears stale text so an old dialog cannot re-match", () => {
     const { d, timers } = setup();
     d.feed("a", bytes("Do you want to proceed?\r\n"));

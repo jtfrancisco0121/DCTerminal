@@ -21,8 +21,12 @@ export type DialogDetector = {
   prompt(id: string): string;
   /** The user typed since the dialog was last drawn (it may be answered). */
   answering(id: string): boolean;
-  /** Explicitly hide (e.g. the log's open tool was answered). */
-  clear(id: string): void;
+  /**
+   * Explicitly hide (e.g. the log's open tool was answered). `keepPartial`
+   * keeps a question whose options have not arrived yet, so the next
+   * dialog, half drawn at that moment, is still seen.
+   */
+  clear(id: string, opts?: { keepPartial?: boolean }): void;
   /** Drop all state for this id (process exited / tab closed). */
   forget(id: string): void;
   /**
@@ -299,9 +303,14 @@ export function createDialogDetector(opts: DetectorOptions = {}): DialogDetector
       return !!s?.visible && s.hideAt !== null;
     },
 
-    clear(id) {
+    clear(id, opts) {
       const s = states.get(id);
-      if (s) hide(id, s);
+      if (!s) return;
+      const at = opts?.keepPartial ? s.window.lastIndexOf("Do you want to") : -1;
+      const partial = at >= 0 ? s.window.slice(at) : "";
+      hide(id, s);
+      // A whole dialog left here is the answered one: never keep that.
+      if (partial && !matchPermissionDialog(partial)) s.window = partial;
     },
 
     forget(id) {

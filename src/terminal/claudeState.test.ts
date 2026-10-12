@@ -196,6 +196,23 @@ describe("dialog owner", () => {
     expect(shown(read(again, log(["toolu_b"]), 250).owner, log(["toolu_b"]))?.promptKey).toBe("200");
   });
 
+  it("parallel calls with the same dialog: the redraw after an answer is the next call's prompt", () => {
+    const b = open("Bash", "toolu_b", "npm test");
+    const b2 = open("Bash", "toolu_b2", "npm test");
+    const body = "Bash command\nnpm test\n" + ASK;
+    const first = read(drawn(body), log([b, b2])).owner;
+    expect(first?.toolId).toBe("toolu_b");
+    const again = read(drawn(body, first, 200), log([b, b2]), 250).owner;
+    expect(shown(again, log([b, b2]))).toMatchObject({ id: "toolu_b2", promptKey: "200" });
+  });
+
+  it("a hint inside another call's hint does not win", () => {
+    const readTool = open("Read", "toolu_r", "auth.ts");
+    const wc = open("Bash", "toolu_wc", "wc -l auth.ts");
+    const context = "Bash command\nwc -l auth.ts\n" + ASK;
+    expect(read(drawn(context), log([readTool, wc])).owner?.toolId).toBe("toolu_wc");
+  });
+
   it("a subagent's next prompt under the same call is a new prompt", () => {
     const owner = tied("toolu_agent", "Bash command\nrm a\n" + ASK);
     const next = drawn("Bash command\nrm b\n" + ASK, owner, 300);

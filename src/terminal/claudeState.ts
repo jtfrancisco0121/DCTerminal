@@ -154,25 +154,39 @@ const squash = (text: string) => text.replace(/\s+/g, "");
 
 /**
  * Which unanswered call the dialog asks about: the one whose hint (file
- * name, host, command) appears closest to the question, since lines higher
- * up can be transcript lines for other calls; else the oldest. Claude Code
- * asks about parallel calls oldest first, but calls that need no permission
- * (reads, fetches to allowed hosts, subagents) may still be running ahead.
+ * name, host, command) ends closest to the question, since lines higher up
+ * can be transcript lines for other calls; on a tie the longer hint, then a
+ * call other than `answered` (a dialog drawn again after an answer is for
+ * the next call); else the oldest. Claude Code asks about parallel calls
+ * oldest first, but calls that need no permission (reads, fetches to allowed
+ * hosts, subagents) may still be running ahead.
  */
-function toolForPrompt(log: LogView, context: string): PendingTool | undefined {
+function toolForPrompt(
+  log: LogView,
+  context: string,
+  answered: string | null,
+): PendingTool | undefined {
   const candidates = pendingToolsOf(log).filter((tool) => !OWN_PROMPT.has(tool.name));
   const screen = squash(context);
-  let best: PendingTool | undefined;
-  let bestAt = -1;
-  for (const tool of candidates) {
+  const score = (tool: PendingTool): [number, number, number] => {
     const hint = squash(tool.hint ?? "");
     const at = hint ? screen.lastIndexOf(hint) : -1;
-    if (at > bestAt) {
+    return [at < 0 ? -1 : at + hint.length, at < 0 ? 0 : hint.length, tool.id === answered ? 0 : 1];
+  };
+  let best: PendingTool | undefined;
+  let bestScore: [number, number, number] = [-1, 0, 0];
+  for (const tool of candidates) {
+    const next = score(tool);
+    if (next[0] < 0) continue;
+    const better = next.findIndex((value, i) => value !== bestScore[i]);
+    if (better >= 0 && next[better] > bestScore[better]) {
       best = tool;
-      bestAt = at;
+      bestScore = next;
     }
   }
-  return best ?? candidates[0];
+  if (best) return best;
+  // Nothing named: the oldest, but not the call just answered.
+  return candidates.find((tool) => tool.id !== answered) ?? candidates[0];
 }
 
 /**
@@ -197,7 +211,8 @@ export function dialogAfterRead(
   const settled = !owner.fresh && owner.toolId !== null;
   if (settled && stillOpen) return { owner, clear: false };
   if (settled && answering) return { owner: undefined, clear: true };
-  const next = toolForPrompt(log, owner.context);
+  // A fresh draw with a call already tied is a redraw after the user typed.
+  const next = toolForPrompt(log, owner.context, owner.fresh ? owner.toolId : null);
   if (!next && settled) return { owner: undefined, clear: true };
   // Not written to the log yet: keep waiting for its call.
   if (!next) return { owner: { ...owner, toolId: stillOpen ? owner.toolId : null }, clear: false };

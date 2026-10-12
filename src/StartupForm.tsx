@@ -1291,7 +1291,8 @@ export function StartupForm({
         dialogDetector.answering(tabId),
       );
       setDialogOwner(tabId, next.owner);
-      if (next.clear) dialogDetector.clear(tabId);
+      // Mid-turn, the next call's dialog may be half drawn already.
+      if (next.clear) dialogDetector.clear(tabId, { keepPartial: !!log && !log.turnDone });
       if (prev !== undefined && sameSessionLog(prev, log)) return;
       sessionLogsRef.current = { ...sessionLogsRef.current, [tabId]: log };
       setSessionLogs(sessionLogsRef.current);
