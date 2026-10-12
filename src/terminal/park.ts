@@ -10,6 +10,8 @@ import { Terminal } from "@xterm/xterm";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { lastLines, TERMINAL_TAIL_LINES } from "./text";
 import { cachedTheme, terminalTheme } from "../theme";
+import { detectPlatform } from "../keymap";
+import { findPathLinks, isLinkModifier } from "./links";
 
 export type ParkedTerminal = {
   host: HTMLDivElement;
@@ -60,6 +62,33 @@ export function setOptionAsMeta(value: boolean): void {
   for (const entry of parked.values()) entry.term.options.macOptionIsMeta = value;
 }
 
+let copyOnSelect = false;
+
+/** Copy a finished selection to the clipboard. Off by default. */
+export function setCopyOnSelect(value: boolean): void {
+  copyOnSelect = value;
+}
+
+type FileOpener = (id: string, path: string, line: number) => void;
+let fileOpener: FileOpener | null = null;
+
+/** The app opens `path:line` links from terminal output in the Files panel. */
+export function setTerminalFileOpener(open: FileOpener | null): void {
+  fileOpener = open;
+}
+
+/** Terminal font size steps for Cmd+= / Cmd+- (the Rust side clamps to 8–32). */
+export const TERMINAL_FONT_MIN = 8;
+export const TERMINAL_FONT_MAX = 32;
+export const TERMINAL_FONT_DEFAULT = 14;
+
+/** The font size after a zoom step, kept inside the supported range. */
+export function zoomedFontSize(current: number, action: "zoomIn" | "zoomOut" | "zoomReset"): number {
+  if (action === "zoomReset") return TERMINAL_FONT_DEFAULT;
+  const step = action === "zoomIn" ? 1 : -1;
+  return Math.min(TERMINAL_FONT_MAX, Math.max(TERMINAL_FONT_MIN, current + step));
+}
+
 export function ensureParkedTerminal(id: string, fontSize: number): ParkedTerminal {
   const existing = parked.get(id);
   if (existing) {
@@ -84,11 +113,43 @@ export function ensureParkedTerminal(id: string, fontSize: number): ParkedTermin
   term.loadAddon(fit);
   term.loadAddon(search);
   term.loadAddon(
-    new WebLinksAddon((_event, uri) => {
-      const open = window.confirm(`Open this link?\n${uri}`);
-      if (open) void openUrl(uri).catch(() => {});
+    // Cmd-click (Ctrl-click elsewhere) opens a URL. A plain click only selects.
+    new WebLinksAddon((event, uri) => {
+      if (!isLinkModifier(event, detectPlatform(navigator.platform))) return;
+      void openUrl(uri).catch(() => {});
     }),
   );
+  term.registerLinkProvider({
+    provideLinks(row, callback) {
+      const line = term.buffer.active.getLine(row - 1);
+      const links = line ? findPathLinks(line.translateToString(true)) : [];
+      callback(
+        links.length === 0
+          ? undefined
+          : links.map((link) => ({
+              text: link.text,
+              range: {
+                start: { x: link.start + 1, y: row },
+                end: { x: link.end, y: row },
+              },
+              activate: (event) => {
+                if (!isLinkModifier(event, detectPlatform(navigator.platform))) return;
+                fileOpener?.(id, link.path, link.line);
+              },
+            })),
+      );
+    },
+  });
+  let copyTimer = 0;
+  term.onSelectionChange(() => {
+    if (!copyOnSelect) return;
+    window.clearTimeout(copyTimer);
+    // Wait for the drag to settle, then copy once.
+    copyTimer = window.setTimeout(() => {
+      if (!term.hasSelection()) return;
+      void navigator.clipboard.writeText(term.getSelection()).catch(() => {});
+    }, 200);
+  });
   term.open(host);
   parkHost().appendChild(host);
   const created = { host, term, fit, search };
@@ -186,6 +247,16 @@ export function terminalScrollbackText(id: string): string {
     else lines.push(text);
   }
   return lines.join("\n");
+}
+
+/** Clear the screen and the scrollback; the current prompt line stays. */
+export function clearTerminalScrollback(id: string): void {
+  parked.get(id)?.term.clear();
+}
+
+/** Paste text as the user's own paste: bracketed when the program asked for it. */
+export function pasteIntoTerminal(id: string, text: string): void {
+  if (text) parked.get(id)?.term.paste(text);
 }
 
 export async function copyTerminalSelection(id: string): Promise<void> {

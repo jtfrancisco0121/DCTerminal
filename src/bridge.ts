@@ -1181,6 +1181,8 @@ export type TerminalSettings = {
   fontSize: number;
   /** macOS: Option acts as Meta in terminals. */
   optionAsMeta: boolean;
+  /** Copy a finished terminal selection to the clipboard. */
+  copyOnSelect: boolean;
   roleSurface: Record<string, string>;
   roleRunMode: Record<string, string>;
 };

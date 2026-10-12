@@ -38,6 +38,9 @@ pub struct TerminalSettings {
     /// like reach Claude Code instead of typing a symbol.
     #[serde(default = "default_option_as_meta")]
     pub option_as_meta: bool,
+    /// Copy a finished selection to the clipboard. Off by default.
+    #[serde(default)]
+    pub copy_on_select: bool,
     #[serde(default)]
     pub role_surface: HashMap<String, String>,
     #[serde(default)]
@@ -50,6 +53,7 @@ impl Default for TerminalSettings {
             shell: String::new(),
             font_size: default_font_size(),
             option_as_meta: default_option_as_meta(),
+            copy_on_select: false,
             role_surface: HashMap::new(),
             role_run_mode: HashMap::new(),
         }
@@ -985,5 +989,6 @@ mod tests {
         assert_eq!(parsed.models.cursor.default_model, "composer-2.5");
         // A file saved before this setting existed keeps Option as Meta on.
         assert!(parsed.terminal.option_as_meta);
+        assert!(!parsed.terminal.copy_on_select);
     }
 }

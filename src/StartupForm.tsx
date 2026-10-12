@@ -139,6 +139,7 @@ import {
 } from "./components/HandoffDialog";
 import { PipelineOverview } from "./components/PipelineOverview";
 import { ChainLabel } from "./components/ChainLabel";
+import { relativeToCwd } from "./terminal/links";
 import { destroyTerminal, TerminalView, readTerminalHandoff } from "./components/TerminalView";
 import {
   handoffBlockReason,
@@ -285,6 +286,11 @@ import {
   pasteTerminalText,
   refitTerminal,
   setOptionAsMeta,
+  setCopyOnSelect,
+  setTerminalFileOpener,
+  clearTerminalScrollback,
+  TERMINAL_FONT_DEFAULT,
+  zoomedFontSize,
   requestTerminalSearch,
   terminalBracketedPaste,
   terminalScrollbackText,
@@ -660,6 +666,8 @@ export function StartupForm({
   const [terminalSettings, setTerminalSettingsState] = useState<TerminalSettings | null>(null);
   const optionAsMeta = terminalSettings?.optionAsMeta ?? true;
   useEffect(() => setOptionAsMeta(optionAsMeta), [optionAsMeta]);
+  const copyOnSelect = terminalSettings?.copyOnSelect ?? false;
+  useEffect(() => setCopyOnSelect(copyOnSelect), [copyOnSelect]);
   const [notificationSettings, setNotificationSettingsState] =
     useState<NotificationSettings | null>(null);
   const [terminalError, setTerminalError] = useState<string | null>(null);
@@ -2006,6 +2014,7 @@ export function StartupForm({
         shell: "",
         fontSize: 14,
         optionAsMeta: true,
+        copyOnSelect: false,
         roleSurface: {},
         roleRunMode: {},
       };
@@ -3192,6 +3201,23 @@ export function StartupForm({
         handleFind();
         return;
       }
+      if (
+        match.action === "zoomIn" ||
+        match.action === "zoomOut" ||
+        match.action === "zoomReset"
+      ) {
+        const current = terminalSettings ?? {
+          shell: "",
+          fontSize: TERMINAL_FONT_DEFAULT,
+          optionAsMeta: true,
+          copyOnSelect: false,
+          roleSurface: {},
+          roleRunMode: {},
+        };
+        const next = zoomedFontSize(current.fontSize, match.action);
+        if (next !== current.fontSize) updateTerminalSettings({ ...current, fontSize: next });
+        return;
+      }
       if (match.action === "searchChats") {
         setChatSearchQuery("");
         return;
@@ -3203,6 +3229,8 @@ export function StartupForm({
     [
       activeTabId,
       handleFind,
+      terminalSettings,
+      updateTerminalSettings,
       cycleTab,
       handleCloseTab,
       handleNewTab,
@@ -3292,6 +3320,26 @@ export function StartupForm({
     },
     [togglePane, transferToTerminalNow],
   );
+
+  // path:line in terminal output opens that file in the Files panel.
+  const openTerminalFileRef = useRef<(id: string, path: string) => void>(() => {});
+  openTerminalFileRef.current = (id, path) => {
+    const tabId = id.replace(/::pane$/, "");
+    const tab = savedTabs.find((item) => item.id === tabId);
+    if (!tab) return;
+    const relative = relativeToCwd(path, tab.cwd);
+    if (!relative) {
+      showNotice("Cannot open file", `${path} is outside this tab's folder.`, "question");
+      return;
+    }
+    if (tabId !== activeTabIdRef.current) void handleSelectTab(tabId);
+    setFilePanelOpen(true);
+    setFileFocus({ path: relative, nonce: Date.now() });
+  };
+  useEffect(() => {
+    setTerminalFileOpener((id, path) => openTerminalFileRef.current(id, path));
+    return () => setTerminalFileOpener(null);
+  }, []);
 
   const getSurface = useCallback(() => {
     const el = document.activeElement;
@@ -4244,6 +4292,12 @@ export function StartupForm({
           setCaptureOn(status.capturePermissionPayloads);
         });
         return;
+      case "clearScrollback": {
+        const summary = savedTabs.find((tab) => tab.id === activeTabId);
+        const id = summary?.kind === "terminal" ? summary.id : focusedTerminalId();
+        if (id) clearTerminalScrollback(id);
+        return;
+      }
       case "firstRunSetup":
         setFirstRunOpen(true);
         return;
@@ -4297,6 +4351,9 @@ export function StartupForm({
       case "toggleFilePanel":
       case "find":
       case "searchChats":
+      case "zoomIn":
+      case "zoomOut":
+      case "zoomReset":
       case "focusPad":
       case "focusInput":
       case "transferPad":

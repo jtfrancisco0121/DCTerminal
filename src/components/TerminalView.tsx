@@ -4,6 +4,9 @@ import { ptyOpen, ptyResize, ptyWrite, type TerminalLaunch } from "../bridge";
 import { detectPlatform, routeKey } from "../keymap";
 import { isShiftEnter, SHIFT_ENTER_SEQUENCE } from "../terminal/keys";
 import { TerminalSearchBar } from "./TerminalSearchBar";
+import { TerminalContextMenu, type ContextMenuItem } from "./TerminalContextMenu";
+import { formatDroppedPaths } from "../terminal/drop";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   beginLivePty,
   clearPtyOpening,
@@ -14,7 +17,9 @@ import {
   subscribeLivePty,
 } from "../terminal/live";
 import {
+  clearTerminalScrollback,
   copyTerminalSelection,
+  pasteIntoTerminal,
   ensureParkedTerminal,
   blurParkedTerminal,
   focusParkedTerminal,
@@ -93,7 +98,10 @@ export function TerminalView({
   const slotRef = useRef<HTMLDivElement>(null);
   const [exitCode, setExitCode] = useState<number | null>(livePty(ptyId)?.exitCode ?? null);
   const [searchOpen, setSearchOpen] = useState(false);
-  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; hasSelection: boolean } | null>(null);
+  const [hint, setHint] = useState<string | null>(null);
+  const [dropOver, setDropOver] = useState(false);
+  const viewRef = useRef<HTMLDivElement>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const [generation, setGeneration] = useState(0);
 
@@ -111,6 +119,72 @@ export function TerminalView({
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [menu, ptyId]);
+
+  // Files dropped from the OS paste their quoted paths, like a paste. Tauri
+  // reports the drop for the whole window, so each view checks the position.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    const over = (position: { x: number; y: number }) => {
+      const scale = window.devicePixelRatio || 1;
+      const target = document.elementFromPoint(position.x / scale, position.y / scale);
+      return !!target && !!viewRef.current?.contains(target);
+    };
+    try {
+      void getCurrentWebview()
+        .onDragDropEvent((event) => {
+          const payload = event.payload;
+          if (payload.type === "leave") {
+            setDropOver(false);
+          } else if (payload.type === "drop") {
+            setDropOver(false);
+            if (!over(payload.position)) return;
+            const text = formatDroppedPaths(payload.paths, detectPlatform(navigator.platform) === "windows");
+            pasteIntoTerminal(ptyId, text);
+            ensureParkedTerminal(ptyId, fontSize).term.focus();
+            focusParkedTerminal(ptyId);
+          } else {
+            setDropOver(over(payload.position));
+          }
+        })
+        .then((fn) => {
+          if (disposed) fn();
+          else unlisten = fn;
+        })
+        .catch(() => {});
+    } catch {
+      // Not running inside Tauri (unit tests, a plain browser).
+    }
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ptyId]);
+
+  // Cmd+V with only an image on the clipboard types nothing; say how to attach it.
+  useEffect(() => {
+    if (detectPlatform(navigator.platform) !== "mac") return;
+    const host = ensureParkedTerminal(ptyId, fontSize).host;
+    let timer = 0;
+    const onPaste = (event: ClipboardEvent) => {
+      const data = event.clipboardData;
+      if (!data || data.getData("text/plain")) return;
+      const hasImage = Array.from(data.items ?? []).some(
+        (item) => item.kind === "file" && item.type.startsWith("image/"),
+      );
+      if (!hasImage) return;
+      setHint("Press Ctrl+V to attach images in Claude Code");
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => setHint(null), 5000);
+    };
+    host.addEventListener("paste", onPaste, true);
+    return () => {
+      window.clearTimeout(timer);
+      host.removeEventListener("paste", onPaste, true);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ptyId]);
 
   useEffect(() => subscribeLivePty(() => setGeneration((value) => value + 1)), []);
 
@@ -258,13 +332,56 @@ export function TerminalView({
     });
   };
 
+  const mac = detectPlatform(navigator.platform) === "mac";
+  const menuItems = (hasSelection: boolean): ContextMenuItem[] => {
+    const close = (run: () => void) => () => {
+      setMenu(null);
+      run();
+    };
+    const items: ContextMenuItem[] = [
+      {
+        id: "copy",
+        label: "Copy",
+        shortcut: mac ? "⌘⇧C" : "Ctrl+Shift+C",
+        disabled: !hasSelection,
+        onSelect: close(() => void copyTerminalSelection(ptyId)),
+      },
+      {
+        id: "paste",
+        label: "Paste",
+        shortcut: mac ? "⌘⇧V" : "Ctrl+Shift+V",
+        onSelect: close(() => void pasteTerminalText(ptyId)),
+      },
+      {
+        id: "clear",
+        label: "Clear scrollback",
+        divider: true,
+        onSelect: close(() => clearTerminalScrollback(ptyId)),
+      },
+    ];
+    menuActions.forEach((action, index) =>
+      items.push({
+        id: action.id,
+        label: action.label,
+        divider: index === 0,
+        onSelect: close(action.onSelect),
+      }),
+    );
+    return items;
+  };
+
   return (
     <div
-      className="terminal-view"
+      ref={viewRef}
+      className={dropOver ? "terminal-view terminal-drop-over" : "terminal-view"}
       onContextMenu={(event) => {
         event.preventDefault();
         onMenuOpen?.();
-        setMenu({ x: event.clientX, y: event.clientY });
+        setMenu({
+          x: event.clientX,
+          y: event.clientY,
+          hasSelection: terminalSelection(ptyId).length > 0,
+        });
       }}
     >
       {searchOpen && (
@@ -291,46 +408,17 @@ export function TerminalView({
           </button>
         </div>
       )}
-      {menu && (
-        <div
-          className="terminal-menu"
-          style={{ left: menu.x, top: menu.y }}
-          role="menu"
-        >
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              setMenu(null);
-              void copyTerminalSelection(ptyId);
-            }}
-          >
-            Copy
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              setMenu(null);
-              void pasteTerminalText(ptyId);
-            }}
-          >
-            Paste
-          </button>
-          {menuActions.map((action) => (
-            <button
-              key={action.id}
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                setMenu(null);
-                action.onSelect();
-              }}
-            >
-              {action.label}
-            </button>
-          ))}
+      {hint && (
+        <div className="terminal-hint" role="status">
+          {hint}
         </div>
+      )}
+      {menu && (
+        <TerminalContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={menuItems(menu.hasSelection)}
+        />
       )}
       {menu && (
         <button
