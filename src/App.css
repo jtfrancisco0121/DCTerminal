@@ -1904,10 +1904,56 @@ kbd {
   padding: 0.35rem 0.5rem;
   font: inherit;
   cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  gap: 1.5rem;
 }
 
-.terminal-menu button:hover {
+.terminal-menu button:hover,
+.terminal-menu button:focus-visible {
   background: var(--accent-subtle);
+}
+
+.terminal-menu button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.terminal-menu button:disabled:hover {
+  background: transparent;
+}
+
+.terminal-menu-divided {
+  margin-top: 0.25rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.5rem;
+}
+
+.terminal-menu-shortcut {
+  color: var(--muted, var(--fg));
+  opacity: 0.7;
+  font-size: 0.85em;
+}
+
+.terminal-view {
+  position: relative;
+}
+
+.terminal-drop-over {
+  outline: 2px dashed var(--accent-fg);
+  outline-offset: -2px;
+}
+
+.terminal-hint {
+  position: absolute;
+  right: 0.75rem;
+  bottom: 0.75rem;
+  z-index: var(--z-dropdown);
+  padding: 0.35rem 0.6rem;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: 0.85em;
 }
 
 .terminal-menu-dismiss {

@@ -52,7 +52,7 @@ describe("SettingsPage", () => {
         captureOn={false}
         showDevTools={false}
         onToggleCapture={() => {}}
-        terminalSettings={{ shell: "", fontSize: 14, optionAsMeta: true, roleSurface: {}, roleRunMode: {} }}
+        terminalSettings={{ shell: "", fontSize: 14, optionAsMeta: true, copyOnSelect: false, roleSurface: {}, roleRunMode: {} }}
         onTerminalSettings={() => {}}
         approvalMode={null}
         onClose={onClose}
@@ -128,7 +128,7 @@ describe("SettingsPage categories (U6)", () => {
     captureOn: false,
     showDevTools: false,
     onToggleCapture: () => {},
-    terminalSettings: { shell: "", fontSize: 14, optionAsMeta: true, roleSurface: {}, roleRunMode: {} },
+    terminalSettings: { shell: "", fontSize: 14, optionAsMeta: true, copyOnSelect: false, roleSurface: {}, roleRunMode: {} },
     onTerminalSettings: () => {},
     approvalMode: null,
     onClose: () => {},
@@ -184,6 +184,18 @@ describe("SettingsPage categories (U6)", () => {
     render(<SettingsPage {...props} platform="windows" />);
     openCategory("Terminal");
     expect(screen.queryByLabelText(/Use Option as Meta/)).toBeNull();
+  });
+
+  it("toggles Copy on select, off by default", () => {
+    const onTerminalSettings = vi.fn();
+    render(<SettingsPage {...props} onTerminalSettings={onTerminalSettings} />);
+    openCategory("Terminal");
+    const box = screen.getByLabelText(/Copy on select/) as HTMLInputElement;
+    expect(box.checked).toBe(false);
+    fireEvent.click(box);
+    expect(onTerminalSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ copyOnSelect: true }),
+    );
   });
 
   it("sets a Claude reasoning effort per role, and default clears it", () => {

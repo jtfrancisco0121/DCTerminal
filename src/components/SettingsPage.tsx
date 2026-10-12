@@ -260,6 +260,26 @@ export function SettingsPage({
                   }}
                 />
               </label>
+              <label className="field-label settings-inline-field">
+                <span>
+                  <input
+                    type="checkbox"
+                    checked={terminalSettings?.copyOnSelect ?? false}
+                    disabled={!terminalSettings}
+                    onChange={(event) => {
+                      if (!terminalSettings) return;
+                      onTerminalSettings({
+                        ...terminalSettings,
+                        copyOnSelect: event.target.checked,
+                      });
+                    }}
+                  />{" "}
+                  Copy on select
+                </span>
+                <span className="hint">
+                  Copy terminal text to the clipboard as soon as you select it.
+                </span>
+              </label>
               {platform === "mac" && (
                 <label className="field-label settings-inline-field">
                   <span>

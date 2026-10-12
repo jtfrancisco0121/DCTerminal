@@ -556,6 +556,13 @@ export async function attachmentAdd(
   return invoke<StagedAttachment>("attachment_add", { tabId, mime, data });
 }
 
+export type DroppedImage = { name: string; mime: string; data: string };
+
+/** Read an image file dropped on the chat (the native drop handler hides the DOM drop). */
+export async function attachmentReadFile(path: string): Promise<DroppedImage> {
+  return invoke<DroppedImage>("attachment_read_file", { path });
+}
+
 export async function attachmentRemove(tabId: string, id: string): Promise<void> {
   return invoke("attachment_remove", { tabId, id });
 }
@@ -1181,6 +1188,8 @@ export type TerminalSettings = {
   fontSize: number;
   /** macOS: Option acts as Meta in terminals. */
   optionAsMeta: boolean;
+  /** Copy a finished terminal selection to the clipboard. */
+  copyOnSelect: boolean;
   roleSurface: Record<string, string>;
   roleRunMode: Record<string, string>;
 };

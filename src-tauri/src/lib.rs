@@ -60,7 +60,7 @@ use commands::{create_role, delete_role, duplicate_role, export_role, import_rol
 use commands::{
     claude_account_logins, get_provider_settings, set_provider_settings, set_tab_provider,
 };
-use commands::{attachment_add, attachment_remove};
+use commands::{attachment_add, attachment_read_file, attachment_remove};
 use commands::{git_repo_info, worktree_tab_check, worktree_tab_new, worktree_tab_remove};
 use commands::{
     prompt_clear_recent, prompt_delete, prompt_library_get, prompt_mark_used, prompt_record_send,
@@ -193,6 +193,7 @@ pub fn run() {
             dev_session_send,
             attachment_add,
             attachment_remove,
+            attachment_read_file,
             dev_session_cancel,
             dev_session_stop,
             dev_session_live,

@@ -30,6 +30,9 @@ export type ShortcutAction =
   | "settings"
   | "find"
   | "searchChats"
+  | "zoomIn"
+  | "zoomOut"
+  | "zoomReset"
   | "closeDialog";
 
 export type Platform = "mac" | "windows" | "linux";
@@ -194,6 +197,24 @@ export const SHORTCUTS: ShortcutDef[] = [
     description:
       "Find text in this chat (jumps to the message) or this terminal's scrollback.",
     code: "KeyF",
+  },
+  {
+    action: "zoomIn",
+    label: "Larger terminal text",
+    description: "Increase the terminal font size.",
+    code: "Equal",
+  },
+  {
+    action: "zoomOut",
+    label: "Smaller terminal text",
+    description: "Decrease the terminal font size.",
+    code: "Minus",
+  },
+  {
+    action: "zoomReset",
+    label: "Reset terminal text size",
+    description: "Back to the default terminal font size.",
+    code: "Digit0",
   },
   {
     action: "renameTab",
@@ -398,6 +419,10 @@ export function matchShortcut(
   if (!chord.mod && event.code !== "F2" && event.code !== "F6" && event.code !== "Escape") {
     return null;
   }
+  // Cmd+Plus is Cmd+Shift+= on a US layout; it is zoom, not a terminal chord.
+  if (chord.mod && chord.shift && !chord.alt && chord.code === "Equal") {
+    return { action: "zoomIn" };
+  }
   if (isSystemChord(chord) || isReservedForTerminal(chord)) return null;
   if (isTextEditingChord(chord, targetIsField(event.targetTag))) return null;
   // The other modifier (Ctrl on mac, Cmd on Windows) is not our Mod key.
@@ -463,6 +488,8 @@ function codeLabel(code: string): string {
   if (code.startsWith("Digit")) return code.slice(5);
   if (code === "Period") return ".";
   if (code === "Comma") return ",";
+  if (code === "Equal") return "=";
+  if (code === "Minus") return "-";
   if (code === "Slash") return "/";
   if (code === "Backslash") return "\\";
   if (code === "PageUp") return "PageUp";
@@ -504,6 +531,10 @@ const TERMINAL_GLOBALS = new Set<ShortcutAction>([
   "reopenClosedTab",
   "renameTab",
   "settings",
+  // Cmd on macOS never reaches the shell; elsewhere the zoom chords are the app's.
+  "zoomIn",
+  "zoomOut",
+  "zoomReset",
   // Mod+J must leave the shell and land in the scratch pad.
   "focusPad",
   // Pane chords use Mod+Alt, which shells do not need.

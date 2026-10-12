@@ -402,3 +402,33 @@ describe("pane and file panel shortcuts", () => {
     expect(isAltGrText(event({ code: "KeyW", key: "z", ctrlKey: true, altKey: true }), "linux")).toBe(false);
   });
 });
+
+describe("terminal zoom", () => {
+  it("binds Mod+=, Mod+- and Mod+0, and Cmd+Plus", () => {
+    const mac = { platform: "mac" as const };
+    expect(matchShortcut(event({ code: "Equal", metaKey: true }), mac)?.action).toBe("zoomIn");
+    expect(matchShortcut(event({ code: "Equal", metaKey: true, shiftKey: true }), mac)?.action).toBe("zoomIn");
+    expect(matchShortcut(event({ code: "Minus", metaKey: true }), mac)?.action).toBe("zoomOut");
+    expect(matchShortcut(event({ code: "Digit0", metaKey: true }), mac)?.action).toBe("zoomReset");
+    expect(matchShortcut(event({ code: "Equal", ctrlKey: true }), { platform: "linux" })?.action).toBe("zoomIn");
+  });
+
+  it("reaches the app from a focused terminal on every platform", () => {
+    for (const [platform, mod] of [
+      ["mac", { metaKey: true }],
+      ["windows", { ctrlKey: true }],
+      ["linux", { ctrlKey: true }],
+    ] as const) {
+      const routed = routeKey(event({ code: "Minus", ...mod }), { platform, surface: "terminal" });
+      expect(routed).toEqual({ kind: "app", match: { action: "zoomOut", tabIndex: undefined } });
+    }
+  });
+
+  it("steps the font inside 8–32 and resets to 14", async () => {
+    const { zoomedFontSize } = await import("./terminal/park");
+    expect(zoomedFontSize(14, "zoomIn")).toBe(15);
+    expect(zoomedFontSize(32, "zoomIn")).toBe(32);
+    expect(zoomedFontSize(8, "zoomOut")).toBe(8);
+    expect(zoomedFontSize(20, "zoomReset")).toBe(14);
+  });
+});

@@ -121,6 +121,7 @@ vi.mock("./bridge", () => {
     shell: "",
     fontSize: 14,
     optionAsMeta: true,
+    copyOnSelect: false,
     roleSurface: Object.fromEntries(
       [
         "role_planner",
@@ -493,6 +494,7 @@ describe("blank tab card", () => {
       shell: "",
       fontSize: 14,
       optionAsMeta: true,
+      copyOnSelect: false,
       roleSurface: {},
       roleRunMode: {},
     });
