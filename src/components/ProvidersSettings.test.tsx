@@ -157,6 +157,14 @@ describe("Settings > Providers", () => {
     );
   });
 
+  it("shows a notice when the folder picker fails", async () => {
+    vi.mocked(open).mockRejectedValue(new Error("dialog unavailable"));
+    render(<Harness />);
+    await screen.findByText(/Signed in as jt@/);
+    fireEvent.click(screen.getByRole("button", { name: "Browse…" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("dialog unavailable");
+  });
+
   it("shows the env override read-only", async () => {
     envValue = "/Users/jt/.claude-account2";
     render(<Harness />);

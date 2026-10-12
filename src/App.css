@@ -4915,3 +4915,9 @@ button.chain-label {
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--success) 50%, transparent);
   }
 }
+
+/* R12: a disabled-reason note inside a button row sits next to its button. */
+.disabled-reason-inline {
+  margin-right: 0;
+  align-self: center;
+}
