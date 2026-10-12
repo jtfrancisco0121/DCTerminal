@@ -336,6 +336,7 @@ import { TerminalTabView } from "./views/TerminalTabView";
 import { ChatSessionView } from "./views/ChatSessionView";
 import { StartScreen } from "./views/StartScreen";
 import { createPaneRenderers } from "./views/workspacePanes";
+import { terminalHeaderFor, type TerminalHeaderDeps } from "./views/terminalHeader";
 import { WorkspaceShell } from "./views/WorkspaceShell";
 import { CLI_LABEL, type CliLaunch, tabHasModel, visibleFields } from "./views/tabHelpers";
 import { useChatImages } from "./attachments/useChatImages";
@@ -4406,6 +4407,11 @@ export function StartupForm({
     return runtimes[tab.id]?.session?.model ?? tab.model ?? inheritedModel(tab);
   };
 
+  /** Tabs whose turn ended: a chain chip shows a check mark. */
+  const doneTabIds = savedTabs
+    .filter((tab) => terminalStates[tab.id]?.kind === "idle" && !!sessionLogs[tab.id]?.turnDone)
+    .map((tab) => tab.id);
+
   const tabBar = (
     <TabBar
       tabs={savedTabs}
@@ -4414,6 +4420,7 @@ export function StartupForm({
       disableSwitch={busy && !session}
       disableNew={busy}
       statuses={tabStatuses}
+      doneTabIds={doneTabIds}
       renamingTabId={renamingTabId}
       onRenameStart={setRenamingTabId}
       onRename={(tabId, label) => {
@@ -5035,6 +5042,26 @@ export function StartupForm({
       ? savedTabs.find((tab) => tab.id === split.secondaryTabId)
       : undefined;
 
+  const headerDeps: TerminalHeaderDeps = {
+    roles,
+    roleColors,
+    controls,
+    terminalStates,
+    tabStatuses,
+    sessionLogs,
+    terminalVerdict,
+    isTerminalSource,
+    busy,
+    openTerminalHandoff,
+    openChainOverviewTab,
+    readTerminalVerdict,
+    // Esc interrupts Claude Code's running turn.
+    stopTerminalTurn: (tabId) => {
+      notePtyInput(tabId);
+      void ptyWrite(tabId, "\x1b").catch(() => {});
+    },
+  };
+
   const panes = createPaneRenderers({
     runtimes,
     roles,
@@ -5065,6 +5092,7 @@ export function StartupForm({
     setFollowUpFor,
     sendFollowUpFor,
     stopSecondarySession,
+    headerDeps,
   });
 
   const activeCwd = activeTabSummary?.cwd ?? "";
@@ -5276,11 +5304,10 @@ export function StartupForm({
         promptFileTabs={promptFileTabs}
         terminalError={terminalError}
         isPlanTerminal={isPlanTerminal}
-        planTerminalTargets={planTerminalTargets}
         terminalRoute={terminalRoute}
-        busy={busy}
         fontSize={fontSize}
-        controls={controls}
+        header={terminalHeaderFor(headerDeps, activeTabSummary)}
+        inGrid={showGrid}
         scratch={scratch}
         platform={platform}
         padOpen={padOpen}
@@ -5288,7 +5315,6 @@ export function StartupForm({
         padSizeProps={padSizeProps}
         terminalPadRef={terminalPadRef}
         openSavedHandoff={openSavedHandoff}
-        openChainOverviewTab={openChainOverviewTab}
         readTerminalVerdict={readTerminalVerdict}
         openTerminalHandoff={openTerminalHandoff}
         notePadSelection={notePadSelection}
