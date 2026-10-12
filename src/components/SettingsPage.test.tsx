@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../bridge", () => ({
   getRole: vi.fn(async (id: string) => ({
@@ -52,7 +52,7 @@ describe("SettingsPage", () => {
         captureOn={false}
         showDevTools={false}
         onToggleCapture={() => {}}
-        terminalSettings={{ shell: "", fontSize: 14, roleSurface: {}, roleRunMode: {} }}
+        terminalSettings={{ shell: "", fontSize: 14, optionAsMeta: true, copyOnSelect: false, roleSurface: {}, roleRunMode: {} }}
         onTerminalSettings={() => {}}
         approvalMode={null}
         onClose={onClose}
@@ -128,7 +128,7 @@ describe("SettingsPage categories (U6)", () => {
     captureOn: false,
     showDevTools: false,
     onToggleCapture: () => {},
-    terminalSettings: { shell: "", fontSize: 14, roleSurface: {}, roleRunMode: {} },
+    terminalSettings: { shell: "", fontSize: 14, optionAsMeta: true, copyOnSelect: false, roleSurface: {}, roleRunMode: {} },
     onTerminalSettings: () => {},
     approvalMode: null,
     onClose: () => {},
@@ -141,6 +141,7 @@ describe("SettingsPage categories (U6)", () => {
       "Roles",
       "Providers",
       "Models",
+      "Appearance",
       "Terminal",
       "Permissions",
       "Usage",
@@ -168,6 +169,34 @@ describe("SettingsPage categories (U6)", () => {
     expect(screen.getByRole("region", { name: "Models" })).toBeTruthy();
     openCategory("Permissions");
     expect(screen.getByLabelText("Record permission payloads")).toBeTruthy();
+  });
+
+  it("toggles Use Option as Meta on macOS only", () => {
+    const onTerminalSettings = vi.fn();
+    const { unmount } = render(<SettingsPage {...props} onTerminalSettings={onTerminalSettings} />);
+    openCategory("Terminal");
+    const box = screen.getByLabelText(/Use Option as Meta/) as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    fireEvent.click(box);
+    expect(onTerminalSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ optionAsMeta: false }),
+    );
+    unmount();
+    render(<SettingsPage {...props} platform="windows" />);
+    openCategory("Terminal");
+    expect(screen.queryByLabelText(/Use Option as Meta/)).toBeNull();
+  });
+
+  it("toggles Copy on select, off by default", () => {
+    const onTerminalSettings = vi.fn();
+    render(<SettingsPage {...props} onTerminalSettings={onTerminalSettings} />);
+    openCategory("Terminal");
+    const box = screen.getByLabelText(/Copy on select/) as HTMLInputElement;
+    expect(box.checked).toBe(false);
+    fireEvent.click(box);
+    expect(onTerminalSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ copyOnSelect: true }),
+    );
   });
 
   it("sets a Claude reasoning effort per role, and default clears it", () => {
@@ -227,12 +256,19 @@ describe("SettingsPage theme (U8)", () => {
         onClose={() => {}}
       />,
     );
-    openCategory("Terminal");
+    openCategory("Appearance");
     const select = screen.getByLabelText("Theme") as HTMLSelectElement;
     expect(select.value).toBe("github-dark");
     expect(select.selectedOptions[0].textContent).toBe("GitHub Dark");
+    expect(Array.from(select.options).map((o) => o.textContent)).toEqual([
+      "Match system",
+      "GitHub Dark",
+      "GitHub Light",
+    ]);
     fireEvent.change(select, { target: { value: "github-light" } });
     expect(onUiSettings).toHaveBeenCalledWith({ theme: "github-light" });
+    fireEvent.change(select, { target: { value: "system" } });
+    expect(onUiSettings).toHaveBeenLastCalledWith({ theme: "system" });
   });
 });
 
@@ -341,5 +377,71 @@ describe("SettingsPage shortcuts (U7)", () => {
     expect(onUiSettings).toHaveBeenCalledWith({ shortcutBar: true });
     fireEvent.click(screen.getByRole("button", { name: "Show tips again" }));
     expect(onUiSettings).toHaveBeenCalledWith({ tipsSeen: [] });
+  });
+});
+
+describe("SettingsPage save model", () => {
+  const baseProps = {
+    roles,
+    cli: null,
+    cliError: null,
+    platform: "mac" as const,
+    diagnostics: null,
+    captureOn: false,
+    showDevTools: false,
+    onToggleCapture: () => {},
+    terminalSettings: { shell: "", fontSize: 14, optionAsMeta: true, copyOnSelect: false, roleSurface: {}, roleRunMode: {} },
+    approvalMode: null,
+    initialCategory: "Terminal" as const,
+    onClose: () => {},
+  };
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("shows Saving then Saved for a setting that saves", async () => {
+    let done: () => void = () => {};
+    const onTerminalSettings = vi.fn(() => new Promise<void>((resolve) => (done = resolve)));
+    render(<SettingsPage {...baseProps} onTerminalSettings={onTerminalSettings} />);
+    fireEvent.change(screen.getByLabelText("Developer run mode"), { target: { value: "plan" } });
+    expect(screen.getByRole("status").textContent).toBe("Saving…");
+    await act(async () => done());
+    expect(screen.getByRole("status").textContent).toBe("Saved");
+  });
+
+  it("shows the error when a save fails", async () => {
+    const onTerminalSettings = vi.fn(() => Promise.reject(new Error("disk full")));
+    render(<SettingsPage {...baseProps} onTerminalSettings={onTerminalSettings} />);
+    fireEvent.change(screen.getByLabelText("Developer run mode"), { target: { value: "plan" } });
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("Not saved: disk full");
+  });
+
+  it("saves the font size once typing pauses, not on every keystroke", () => {
+    vi.useFakeTimers();
+    const onTerminalSettings = vi.fn();
+    render(<SettingsPage {...baseProps} onTerminalSettings={onTerminalSettings} />);
+    const size = screen.getByLabelText("Font size");
+    fireEvent.change(size, { target: { value: "1" } });
+    fireEvent.change(size, { target: { value: "18" } });
+    expect(onTerminalSettings).not.toHaveBeenCalled();
+    act(() => {
+      vi.advanceTimersByTime(700);
+    });
+    expect(onTerminalSettings).toHaveBeenCalledTimes(1);
+    expect(onTerminalSettings).toHaveBeenCalledWith(expect.objectContaining({ fontSize: 18 }));
+  });
+
+  it("saves a pending edit when the field loses focus", async () => {
+    const onTerminalSettings = vi.fn();
+    render(<SettingsPage {...baseProps} onTerminalSettings={onTerminalSettings} />);
+    const shell = screen.getByLabelText("Shell program");
+    fireEvent.change(shell, { target: { value: "/bin/fish" } });
+    expect(onTerminalSettings).not.toHaveBeenCalled();
+    fireEvent.blur(shell);
+    await waitFor(() =>
+      expect(onTerminalSettings).toHaveBeenCalledWith(expect.objectContaining({ shell: "/bin/fish" })),
+    );
   });
 });

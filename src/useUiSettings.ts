@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { DEFAULT_UI_SETTINGS, getUiSettings, setUiSettings, type UiSettings } from "./bridge";
 import { setTerminalTheme } from "./terminal/park";
-import { applyTheme, cachedTheme } from "./theme";
+import { errorText } from "./components/InlineNotice";
+import { applyTheme, cachedTheme, SYSTEM_THEME, watchSystemTheme } from "./theme";
 
 /**
  * U7/U8: theme, shortcut bar, and one-time tips, stored in settings.json in
  * DCTerminal's app data dir. Changes apply at once and are saved behind.
  */
-export function useUiSettings() {
+export function useUiSettings(onError?: (title: string, message: string) => void) {
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
   const [ui, setUi] = useState<UiSettings>(() => ({
     ...DEFAULT_UI_SETTINGS,
     theme: cachedTheme(),
@@ -23,7 +26,9 @@ export function useUiSettings() {
         if (cancelled) return;
         setUi(value);
       })
-      .catch(() => {})
+      .catch((err: unknown) =>
+        onErrorRef.current?.("Display settings did not load", errorText(err)),
+      )
       .finally(() => {
         if (!cancelled) setLoaded(true);
       });
@@ -35,23 +40,39 @@ export function useUiSettings() {
   useEffect(() => {
     const theme = applyTheme(ui.theme);
     setTerminalTheme(theme);
+    // "Match system" follows the OS setting live.
+    if (ui.theme === SYSTEM_THEME) {
+      return watchSystemTheme(() => setTerminalTheme(applyTheme(SYSTEM_THEME)));
+    }
   }, [ui.theme]);
 
-  const save = useCallback((next: UiSettings) => {
+  /** Applies and saves. Rejects when the save fails, so a caller can show it. */
+  const persist = useCallback((next: UiSettings): Promise<void> => {
     uiRef.current = next;
     setUi(next);
     // Apply now so the switch is instant, not one render later.
     setTerminalTheme(applyTheme(next.theme));
-    void setUiSettings(next)
-      .then((saved) => {
-        if (saved) setUi(saved);
-      })
-      .catch(() => {});
+    return Promise.resolve(setUiSettings(next)).then((saved) => {
+      if (saved) setUi(saved);
+    });
   }, []);
+
+  /** Fire and forget: a failed save is shown as a toast. */
+  const save = useCallback((next: UiSettings) => {
+    void persist(next).catch((err: unknown) =>
+      onErrorRef.current?.("Display settings not saved", errorText(err)),
+    );
+  }, [persist]);
 
   const update = useCallback(
     (patch: Partial<UiSettings>) => save({ ...uiRef.current, ...patch }),
     [save],
+  );
+
+  /** Like update, but the returned promise rejects when the save fails. */
+  const updateChecked = useCallback(
+    (patch: Partial<UiSettings>) => persist({ ...uiRef.current, ...patch }),
+    [persist],
   );
 
   const markTipSeen = useCallback(
@@ -63,5 +84,5 @@ export function useUiSettings() {
     [save],
   );
 
-  return { ui, loaded, update, markTipSeen };
+  return { ui, loaded, update, updateChecked, markTipSeen };
 }

@@ -214,6 +214,7 @@ test("Add account and Remove manage a second Claude account", async ({ app, page
   await expect(section.getByRole("textbox", { name: "Config folder for Company" })).toHaveValue("~/.claude");
 
   await section.getByRole("button", { name: "Remove Company" }).click();
+  await page.getByRole("alertdialog", { name: "Remove account" }).getByRole("button", { name: "Remove account" }).click();
   await app.waitForCall("set_provider_settings", (a) => (a.providers as ProvidersSettings).claude.accounts?.length === 1);
   await expect(section.getByRole("textbox", { name: "Account name for Company" })).toHaveCount(0);
 });

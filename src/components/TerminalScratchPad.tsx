@@ -2,6 +2,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "re
 import type { Platform } from "../keymap";
 import { encodeTerminalPaste } from "../terminal/paste";
 import { firstChainStep, padAfterSend, padSelection } from "../scratch/pad";
+import { errorText } from "./InlineNotice";
 import { ScratchPad } from "./ScratchPad";
 
 export type TerminalPadHandle = {
@@ -33,6 +34,8 @@ type Props = {
   onSent?: (text: string) => void;
   /** F6: open the prompt library. */
   onOpenLibrary?: () => void;
+  /** A Send or Paste could not reach the terminal; the text stays in the pad. */
+  onError?: (message: string) => void;
   /** Runs before a Send (submit) writes, e.g. the "This turn" snapshot.
    * Must resolve quickly and never reject; the paste waits for it. */
   beforeSubmit?: (tabId: string) => Promise<void>;
@@ -70,6 +73,7 @@ export const TerminalScratchPad = forwardRef<TerminalPadHandle, Props>(
       onOpenChange,
       onSent,
       onOpenLibrary,
+      onError,
       beforeSubmit,
       open: openProp,
       onOpenToggle,
@@ -100,12 +104,14 @@ export const TerminalScratchPad = forwardRef<TerminalPadHandle, Props>(
       let written: Promise<void>;
       if (submit && beforeSubmit) {
         written = beforeSubmit(tabId)
+          // intentionally silent: the snapshot is best effort; the text is still sent.
           .catch(() => {})
           .then(() => write(ptyId, data));
       } else {
         try {
           written = Promise.resolve(write(ptyId, data));
-        } catch {
+        } catch (err: unknown) {
+          onError?.(errorText(err));
           return;
         }
       }
@@ -116,7 +122,7 @@ export const TerminalScratchPad = forwardRef<TerminalPadHandle, Props>(
           if ((fieldRef.current?.value ?? before) === before) onChange(padAfterSend(before, sent));
           onSent?.(text);
         })
-        .catch(() => {});
+        .catch((err: unknown) => onError?.(errorText(err)));
     };
 
     useImperativeHandle(ref, () => ({
@@ -150,6 +156,7 @@ export const TerminalScratchPad = forwardRef<TerminalPadHandle, Props>(
           ref={fieldRef}
           mode="terminal"
           modLabel={modLabel}
+          platform={platform}
           collapsed={!open}
           content={content}
           truncated={truncated}

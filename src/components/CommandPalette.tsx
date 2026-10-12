@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { Dialog } from "./Dialog";
+import { Fragment, useEffect, useMemo, useState } from "react";
+import { detectPlatform, shortcutLabel, type Platform } from "../keymap";
 import { buildPalette, filterCommands, type PaletteModelOptions } from "../tabChrome";
 
 type Props = {
@@ -20,6 +22,7 @@ type Props = {
   handoffTargets?: readonly { id: string; name: string }[];
   /** Text to start with, e.g. "use model " from Change model…. */
   initialQuery?: string;
+  platform?: Platform;
   onRun: (id: string) => void;
   onClose: () => void;
 };
@@ -39,6 +42,7 @@ export function CommandPalette({
   model = null,
   handoffTargets,
   initialQuery = "",
+  platform = detectPlatform(typeof navigator === "undefined" ? "" : navigator.platform),
   onRun,
   onClose,
 }: Props) {
@@ -87,13 +91,13 @@ export function CommandPalette({
   }, [query]);
 
   return (
-    <div className="overlay-backdrop" role="presentation" onClick={onClose}>
-      <div
-        className="overlay-panel overlay-panel-palette"
-        role="dialog"
-        aria-label="Command palette"
-        onClick={(event) => event.stopPropagation()}
-      >
+    <Dialog
+      title="Command palette"
+      hideTitle
+      placement="top"
+      className="overlay-panel-palette"
+      onClose={onClose}
+    >
         <input
           className="text-input"
           autoFocus
@@ -113,25 +117,37 @@ export function CommandPalette({
             }
           }}
         />
-        <ul className="palette-list" role="listbox">
-          {commands.map((command, i) => (
-            <li key={command.id}>
-              <button
-                type="button"
-                className={i === index ? "palette-item palette-item-active" : "palette-item"}
-                onClick={() => onRun(command.id)}
-              >
-                <span>{command.title}</span>
-                <span className="hint">
-                  {command.hint ? `${command.hint} · ` : ""}
-                  {command.group}
-                </span>
-              </button>
-            </li>
-          ))}
+        <ul className="palette-list" aria-label="Commands">
+          {commands.map((command, i) => {
+            const shortcut = shortcutLabel(command.id, platform);
+            const showGroup = i === 0 || commands[i - 1].group !== command.group;
+            return (
+              <Fragment key={command.id}>
+                {showGroup && (
+                  <li className="palette-group" role="presentation">
+                    {command.group}
+                  </li>
+                )}
+                <li role="presentation">
+                  <button
+                    type="button"
+                    aria-current={i === index ? "true" : undefined}
+                    className={i === index ? "palette-item palette-item-active" : "palette-item"}
+                    onClick={() => onRun(command.id)}
+                  >
+                    <span>{command.title}</span>{" "}
+                    <span className="hint">
+                      {command.hint}
+                      {command.hint && shortcut ? " · " : ""}
+                      {shortcut && <kbd>{shortcut}</kbd>}
+                    </span>
+                  </button>
+                </li>
+              </Fragment>
+            );
+          })}
           {commands.length === 0 && <li className="hint">No matching commands</li>}
         </ul>
-      </div>
-    </div>
+    </Dialog>
   );
 }

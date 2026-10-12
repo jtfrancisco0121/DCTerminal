@@ -184,7 +184,7 @@ test.describe("Changes panel", () => {
     await expect(dialog.getByText("Binary file. No text diff.")).toBeVisible();
     await expect(dialog.getByRole("table")).toHaveCount(0);
 
-    await dialog.getByRole("button", { name: "Close changes" }).click();
+    await dialog.getByRole("button", { name: "Close", exact: true }).click();
     await expect(dialog).toBeHidden();
     await page.getByRole("button", { name: "Changes (2)" }).click();
     // The diff view choice survives closing the panel.
@@ -288,14 +288,11 @@ test.describe("Changes panel", () => {
       .toEqual({ "tab-1": ["src/app.ts\u0000new-app"] });
 
     // Revert all leaves accepted files alone.
-    let confirmText = "";
-    page.once("dialog", (d) => {
-      confirmText = d.message();
-      void d.dismiss();
-    });
     await dialog.getByRole("button", { name: "Revert all…" }).click();
-    await expect.poll(() => confirmText).toContain("Revert assets/logo.png to the snapshot?");
-    expect(confirmText).toContain("1 accepted file is kept.");
+    const revertConfirm = page.getByRole("alertdialog", { name: "Revert file" });
+    await expect(revertConfirm).toContainText("Revert assets/logo.png to the snapshot?");
+    await expect(revertConfirm).toContainText("1 accepted file is kept.");
+    await revertConfirm.getByRole("button", { name: "Cancel" }).click();
     expect(await app.calls("changes_revert")).toHaveLength(0);
 
     await page.reload();
@@ -307,7 +304,7 @@ test.describe("Changes panel", () => {
     dialog = changesDialog(page);
     await expect(files().nth(0)).toContainText("✓ Accepted");
     await expect(dialog.getByRole("button", { name: "Accept", exact: true })).toBeDisabled();
-    await dialog.getByRole("button", { name: "Close changes" }).click();
+    await dialog.getByRole("button", { name: "Close", exact: true }).click();
 
     // The agent edits the file again: new content, so it needs review again.
     await page.evaluate(() => {
@@ -364,16 +361,13 @@ test.describe("Changes panel", () => {
     await page.getByRole("button", { name: "Changes (2)" }).click();
     const dialog = changesDialog(page);
 
-    let confirmText = "";
-    page.once("dialog", (d) => {
-      confirmText = d.message();
-      void d.accept();
-    });
     await dialog.getByRole("button", { name: "Revert file" }).click();
-    await expect(dialog.getByRole("status").filter({ hasText: "Reverted 1 file." })).toBeVisible();
-    expect(confirmText).toBe(
+    const revertConfirm = page.getByRole("alertdialog", { name: "Revert file" });
+    await expect(revertConfirm.locator(".confirm-text")).toHaveText(
       "Revert src/app.ts to the snapshot?\n\nThe current contents of src/app.ts are replaced.",
     );
+    await revertConfirm.getByRole("button", { name: "Revert file" }).click();
+    await expect(dialog.getByRole("status").filter({ hasText: "Reverted 1 file." })).toBeVisible();
     const revert = await app.waitForCall("changes_revert");
     expect(revert.args).toEqual({
       tabId: "tab-1",
@@ -383,7 +377,7 @@ test.describe("Changes panel", () => {
     });
     await expect(dialog.getByRole("option")).toHaveCount(1);
     await expect(dialog.getByRole("option").first()).toContainText("assets/logo.png");
-    await dialog.getByRole("button", { name: "Close changes" }).click();
+    await dialog.getByRole("button", { name: "Close", exact: true }).click();
     // Closing the panel refreshes the count.
     await expect(page.getByRole("button", { name: "Changes (1)" })).toBeVisible();
 
@@ -396,7 +390,7 @@ test.describe("Changes panel", () => {
     await expect(dialog.getByText("The agent is still working in this tab. Revert is off until it finishes.")).toBeVisible();
     await expect(dialog.getByRole("button", { name: "Revert file" })).toBeDisabled();
     await expect(dialog.getByRole("button", { name: "Revert all…" })).toBeDisabled();
-    await dialog.getByRole("button", { name: "Close changes" }).click();
+    await dialog.getByRole("button", { name: "Close", exact: true }).click();
     await turn.reply("Done.");
   });
 
@@ -540,16 +534,18 @@ test.describe("Activity panel (beyond activity.spec.ts)", () => {
     await expect(rows.first()).toContainText("api.example.com");
 
     // Clear asks first; dismissing keeps the log.
-    page.once("dialog", (d) => void d.dismiss());
+    const clearDialog = page.getByRole("alertdialog", { name: "Clear activity log" });
     await panel.getByRole("button", { name: "Clear…" }).click();
+    await clearDialog.getByRole("button", { name: "Cancel" }).click();
+    await expect(clearDialog).toBeHidden();
     expect(await app.calls("activity_clear")).toHaveLength(0);
-    page.once("dialog", (d) => void d.accept());
     await panel.getByRole("button", { name: "Clear…" }).click();
+    await clearDialog.getByRole("button", { name: "Clear log" }).click();
     const cleared = await app.waitForCall("activity_clear");
     expect(cleared.args).toEqual({ tabId: "tab-1" });
     await expect(panel.getByText(/^No tool calls yet\./)).toBeVisible();
     await expect(panel.getByRole("button", { name: "Clear…" })).toBeDisabled();
-    await panel.getByRole("button", { name: "Close activity" }).click();
+    await panel.getByRole("button", { name: "Close", exact: true }).click();
     await expect(page.getByRole("button", { name: "Activity", exact: true })).toBeVisible();
   });
 });

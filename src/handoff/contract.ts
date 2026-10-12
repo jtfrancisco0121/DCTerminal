@@ -115,3 +115,36 @@ export function contractImplementation(text: string): {
     pullRequest: handoffSection(text, "Pull requests", "Pull request", "PR") ?? "",
   };
 }
+
+/** The sections each role's reply must end with (docs/PIPELINE-REPLY-GUIDE.md); alternates are accepted names. */
+const REQUIRED_SECTIONS: Record<string, string[][]> = {
+  role_planner: [["Plan", "Implementation plan"], ["Pull requests", "Pull request plan"], ["Open questions", "Questions"]],
+  role_plan_reviewer: [
+    ["Verdict"],
+    ["Reviewed plan", "Revised plan"],
+    ["Pull requests", "Pull request plan"],
+    ["Review notes", "Notes"],
+  ],
+  role_implementer: [
+    ["Implementation summary", "Summary"],
+    ["Files changed"],
+    ["Tests run", "Tests"],
+    ["Deviations from the plan", "Deviations"],
+    ["Pull requests", "Pull request", "PR"],
+  ],
+  role_pr_reviewer: [["Verdict"], ["Findings for the Implementer", "Findings"]],
+};
+
+/** The role's hand-off sections a reply lacks (by their guide names); empty for roles without a contract. */
+export function missingHandoffSections(roleId: string, text: string): string[] {
+  const required = REQUIRED_SECTIONS[roleId];
+  if (!required || !text.trim()) return [];
+  const have = handoffSections(text);
+  return required
+    .filter((names) => !names.some((name) => have.has(normalize(name))))
+    .map((names) => names[0]);
+}
+
+/** The prompt that asks Claude to repeat its reply with the HANDOFF sections. */
+export const ASK_FOR_HANDOFF_SECTIONS =
+  "Your reply is missing the HANDOFF sections. Repeat your result, complete and self-contained, ending with the HANDOFF sections your instructions list, using those headings exactly. Put nothing after them.";

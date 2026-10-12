@@ -77,3 +77,22 @@ describe("buttons and focus ring (R2)", () => {
     expect(block).not.toContain("var(--accent)");
   });
 });
+
+describe("chain tab strip (R19)", () => {
+  const rule = (selector: string) =>
+    new RegExp(`(?:^|\\n)${selector.replace(/\./g, "\\.")}\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? "";
+
+  it("stays on one row at 820px: no wrapping, and the label and chips may shrink", () => {
+    expect(rule(".tab-bar")).toContain("flex-wrap: nowrap");
+    expect(rule(".tab-list")).toContain("flex-wrap: nowrap");
+    // Four chips and a label share about 600px (820px less the icon buttons):
+    // their minimum widths (60px chips, 0 label) fit, longer text is cut with an ellipsis.
+    expect(rule(".tab-chain-label")).toMatch(/min-width: 0/);
+    expect(rule(".tab-chain-label")).toMatch(/max-width: 8rem/);
+    expect(rule(".tab-chip-chain")).toMatch(/min-width: 3\.75rem/);
+    // R14: plain chips keep their width and the strip scrolls instead.
+    expect(rule(".tab-chip")).toMatch(/flex: 0 0 auto/);
+    expect(rule(".tab-list")).toMatch(/overflow-x: auto/);
+    expect(rule(".tab-chip-chain")).toMatch(/flex: 0 1 auto/);
+  });
+});

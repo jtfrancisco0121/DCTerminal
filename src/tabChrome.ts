@@ -1,3 +1,5 @@
+import { commandTitle } from "./keymap";
+
 export const CLOSED_TAB_LIMIT = 15;
 
 export const TAB_COLOR_CHOICES = [
@@ -272,6 +274,10 @@ export const PALETTE_ACTIONS = [
   "showActivity",
   "find",
   "searchChats",
+  "zoomIn",
+  "zoomOut",
+  "zoomReset",
+  "clearScrollback",
   "chatHistory",
   "sendPlanPlanReviewer",
   "sendPlanImplementer",
@@ -400,28 +406,28 @@ export function buildPalette(opts: {
   handoffTargets?: readonly { id: string; name: string }[];
 }): PaletteCommand[] {
   const commands: PaletteCommand[] = [
-    { id: "newTab", title: "New tab", group: "Tabs" },
+    { id: "newTab", title: commandTitle("newTab"), group: "Tabs" },
     { id: "newWindow", title: "New window", group: "Tabs", keywords: "account claude" },
-    { id: "closeTab", title: "Close tab", group: "Tabs" },
-    { id: "nextTab", title: "Next tab", group: "Tabs" },
-    { id: "prevTab", title: "Previous tab", group: "Tabs" },
-    { id: "renameTab", title: "Rename tab", group: "Tabs" },
-    { id: "tabSwitcher", title: "Go to tab…", group: "Tabs" },
+    { id: "closeTab", title: commandTitle("closeTab"), group: "Tabs" },
+    { id: "nextTab", title: commandTitle("nextTab"), group: "Tabs" },
+    { id: "prevTab", title: commandTitle("prevTab"), group: "Tabs" },
+    { id: "renameTab", title: commandTitle("renameTab"), group: "Tabs" },
+    { id: "tabSwitcher", title: commandTitle("tabSwitcher"), group: "Tabs" },
     {
       id: "newWorktreeTab",
       title: "New tab in worktree…",
       group: "Worktree",
       keywords: "git branch worktree",
     },
-    { id: "splitRight", title: "Split right", group: "Split", keywords: "pane side by side" },
-    { id: "splitDown", title: "Split down", group: "Split", keywords: "pane stacked" },
+    { id: "splitRight", title: commandTitle("splitRight"), group: "Split", keywords: "pane side by side" },
+    { id: "splitDown", title: commandTitle("splitDown"), group: "Split", keywords: "pane stacked" },
     {
       id: "toggleGrid",
       title: opts.gridOpen ? "Close grid view" : "Show tabs in a grid",
       group: "Split",
       keywords: "grid tile monitor all panes terminals chats",
     },
-    { id: "toggleFilePanel", title: "Toggle file panel", group: "Files", keywords: "tree explorer" },
+    { id: "toggleFilePanel", title: commandTitle("toggleFilePanel"), group: "Files", keywords: "tree explorer" },
     {
       id: "showChanges",
       title: "Show changes (diff)…",
@@ -436,13 +442,13 @@ export function buildPalette(opts: {
     },
     {
       id: "find",
-      title: "Find in tab",
+      title: commandTitle("find"),
       group: "Search",
       keywords: "search text chat terminal scrollback",
     },
     {
       id: "searchChats",
-      title: "Search all chats…",
+      title: commandTitle("searchChats"),
       group: "Search",
       keywords: "find history transcript closed saved messages",
     },
@@ -512,11 +518,35 @@ export function buildPalette(opts: {
       group: "Workspaces",
       keywords: "workspace save tabs folders roles layout",
     },
-    { id: "focusPad", title: "Focus scratch pad", group: "Composer" },
-    { id: "focusInput", title: "Focus input", group: "Composer" },
-    { id: "transferPad", title: "Transfer scratch pad", group: "Composer" },
-    { id: "send", title: "Send", group: "Composer" },
+    { id: "focusPad", title: commandTitle("focusPad"), group: "Composer" },
+    { id: "focusInput", title: commandTitle("focusInput"), group: "Composer" },
+    { id: "transferPad", title: commandTitle("transferPad"), group: "Composer" },
+    { id: "send", title: commandTitle("send"), group: "Composer" },
     { id: "toggleTerminal", title: "Toggle terminal pane", group: "Terminal" },
+    {
+      id: "clearScrollback",
+      title: "Clear terminal scrollback",
+      group: "Terminal",
+      keywords: "clear history reset screen buffer",
+    },
+    {
+      id: "zoomIn",
+      title: "Larger terminal text",
+      group: "Terminal",
+      keywords: "zoom font size bigger increase",
+    },
+    {
+      id: "zoomOut",
+      title: "Smaller terminal text",
+      group: "Terminal",
+      keywords: "zoom font size decrease",
+    },
+    {
+      id: "zoomReset",
+      title: "Reset terminal text size",
+      group: "Terminal",
+      keywords: "zoom font size default",
+    },
     {
       id: "transferToTerminal",
       title: "Transfer scratch pad to terminal",
@@ -528,7 +558,7 @@ export function buildPalette(opts: {
       group: "Setup",
       keywords: "setup onboarding welcome cursor cli agent login sign in detect folder role",
     },
-    { id: "shortcutsHelp", title: "Keyboard shortcuts", group: "Help" },
+    { id: "shortcutsHelp", title: commandTitle("shortcutsHelp"), group: "Help" },
     {
       id: "toggleShortcutBar",
       title: "Toggle shortcut bar",
@@ -541,7 +571,7 @@ export function buildPalette(opts: {
       group: "Help",
       keywords: "theme appearance dark light colors github",
     },
-    { id: "settings", title: "Settings", group: "Help" },
+    { id: "settings", title: commandTitle("settings"), group: "Help" },
     {
       id: "toggleCapture",
       title: "Toggle permission payload capture",
@@ -549,7 +579,7 @@ export function buildPalette(opts: {
     },
   ];
   if (opts.canReopen) {
-    commands.push({ id: "reopenClosedTab", title: "Reopen closed tab", group: "Tabs" });
+    commands.push({ id: "reopenClosedTab", title: commandTitle("reopenClosedTab"), group: "Tabs" });
   }
   if (opts.canRemoveWorktree) {
     commands.push({
@@ -569,9 +599,9 @@ export function buildPalette(opts: {
   }
   if (opts.splitOpen && !opts.gridOpen) {
     commands.push(
-      { id: "closeSplit", title: "Close split", group: "Split", keywords: "pane" },
-      { id: "swapPanes", title: "Swap panes", group: "Split" },
-      { id: "focusOtherPane", title: "Focus other pane", group: "Split" },
+      { id: "closeSplit", title: commandTitle("closeSplit"), group: "Split", keywords: "pane" },
+      { id: "swapPanes", title: commandTitle("swapPanes"), group: "Split" },
+      { id: "focusOtherPane", title: commandTitle("focusOtherPane"), group: "Split" },
     );
   }
   if (opts.canSendPlan) {

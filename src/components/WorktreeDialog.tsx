@@ -1,11 +1,14 @@
 import { useEffect, useState } from "react";
+import { DisabledReason } from "./DisabledReason";
 import type { RepoInfo, RoleSummary } from "../bridge";
 import {
   worktreeDestination,
   worktreeFormError,
   type WorktreeMode,
 } from "../worktree/worktreeForm";
+import { Dialog } from "./Dialog";
 import { FolderPicker } from "./FolderPicker";
+import { InlineNotice, errorText } from "./InlineNotice";
 
 export type WorktreeCreateInput = {
   repoPath: string;
@@ -59,7 +62,7 @@ export function WorktreeDialog({
         setExisting("");
       })
       .catch((err: unknown) => {
-        if (!cancelled) setRepoError(err instanceof Error ? err.message : String(err));
+        if (!cancelled) setRepoError(errorText(err));
       });
     return () => {
       cancelled = true;
@@ -84,27 +87,53 @@ export function WorktreeDialog({
         roleId,
       });
     } catch (err: unknown) {
-      setCreateError(err instanceof Error ? err.message : String(err));
+      setCreateError(errorText(err));
     } finally {
       setBusy(false);
     }
   };
 
+  const createReason = busy
+    ? null
+    : !repo.trim()
+      ? "Choose the repository first."
+      : !info
+        ? repoError
+          ? "That folder cannot be used."
+          : "Reading the repository…"
+        : mode === "new" && !branch
+          ? "Enter a name for the new branch."
+          : mode === "existing" && !branch
+            ? "Choose a branch."
+            : formError
+              ? "Fix the problem above first."
+              : !roles.some((r) => r.id === roleId)
+                ? "Choose a role for the new tab."
+                : null;
+
   return (
-    <div className="overlay-backdrop" role="presentation" onClick={onClose}>
-      <div
-        className="overlay-panel worktree-dialog"
-        role="dialog"
-        aria-label="New tab in worktree"
-        onClick={(event) => event.stopPropagation()}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            event.stopPropagation();
-            onClose();
-          }
-        }}
-      >
-        <h3>New tab in worktree</h3>
+    <Dialog
+      title="New tab in worktree"
+      className="worktree-dialog"
+      onClose={onClose}
+      dismissible={!busy}
+      footer={
+        <>
+          {!canCreate && <DisabledReason>{createReason}</DisabledReason>}
+          <button type="button" className="secondary-button" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="primary-button"
+            onClick={() => void create()}
+            disabled={!canCreate}
+          >
+            {busy ? "Creating…" : "Create worktree and open tab"}
+          </button>
+        </>
+      }
+    >
         <p className="hint">
           Runs <code>git worktree add</code> into a folder next to the repository. The
           repository&apos;s own checkout is not changed.
@@ -113,7 +142,7 @@ export function WorktreeDialog({
           Repository
           <FolderPicker value={repo} disabled={busy} onChange={setRepo} />
         </div>
-        {repoError && <p className="error">{repoError}</p>}
+        {repoError && <InlineNotice tone="error">{repoError}</InlineNotice>}
         {info && (
           <>
             <div className="role-choices" role="radiogroup" aria-label="Branch source">
@@ -123,6 +152,7 @@ export function WorktreeDialog({
                   name="worktree-mode"
                   checked={mode === "new"}
                   onChange={() => setMode("new")}
+                  disabled={busy}
                 />
                 New branch
               </label>
@@ -132,7 +162,7 @@ export function WorktreeDialog({
                   name="worktree-mode"
                   checked={mode === "existing"}
                   onChange={() => setMode("existing")}
-                  disabled={free.length === 0}
+                  disabled={free.length === 0 || busy}
                 />
                 Existing branch
               </label>
@@ -146,6 +176,7 @@ export function WorktreeDialog({
                     autoFocus
                     value={newBranch}
                     placeholder="feat/my-change"
+                    disabled={busy}
                     onChange={(event) => setNewBranch(event.target.value)}
                     onKeyDown={(event) => {
                       if (event.key === "Enter") {
@@ -160,6 +191,7 @@ export function WorktreeDialog({
                   <select
                     className="text-input"
                     value={base}
+                    disabled={busy}
                     onChange={(event) => setBase(event.target.value)}
                   >
                     {info.branches.map((name) => (
@@ -176,6 +208,7 @@ export function WorktreeDialog({
                 <select
                   className="text-input"
                   value={existing}
+                    disabled={busy}
                   onChange={(event) => setExisting(event.target.value)}
                 >
                   <option value="">Choose a branch</option>
@@ -192,6 +225,7 @@ export function WorktreeDialog({
               <select
                 className="text-input"
                 value={roleId}
+                    disabled={busy}
                 onChange={(event) => setRoleId(event.target.value)}
               >
                 {roles.map((role) => (
@@ -206,24 +240,10 @@ export function WorktreeDialog({
                 Folder: <code>{worktreeDestination(info.worktreesDir, branch)}</code>
               </p>
             )}
-            {branch && formError && <p className="error">{formError}</p>}
+            {branch && formError && <InlineNotice tone="error">{formError}</InlineNotice>}
           </>
         )}
-        {createError && <p className="error">{createError}</p>}
-        <div className="button-row">
-          <button
-            type="button"
-            className="primary-button"
-            onClick={() => void create()}
-            disabled={!canCreate}
-          >
-            {busy ? "Creating…" : "Create worktree and open tab"}
-          </button>
-          <button type="button" className="secondary-button" onClick={onClose}>
-            Cancel
-          </button>
-        </div>
-      </div>
-    </div>
+        {createError && <InlineNotice tone="error">{createError}</InlineNotice>}
+    </Dialog>
   );
 }

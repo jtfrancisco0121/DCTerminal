@@ -8,6 +8,8 @@ export type ChatImagesProps = {
   error: string | null;
   onAddFiles: (files: File[]) => void;
   onRemove: (id: string) => void;
+  /** Show a problem under the chips (a dropped file that could not be read). */
+  onError?: (message: string) => void;
 };
 
 /**
@@ -58,9 +60,13 @@ export function useChatImages() {
           }
         }
       },
+      fail(tabId: string, message: string) {
+        setError(tabId, message);
+      },
       remove(tabId: string, id: string) {
         setItems(tabId, (itemsRef.current[tabId] ?? []).filter((item) => item.id !== id));
         setError(tabId, null);
+        // intentionally silent: the chip is already gone; Rust deletes leftover files after the turn.
         void attachmentRemove(tabId, id).catch(() => {});
       },
       /** Hand the chips to a send and clear them. Rust deletes the files after the turn. */
@@ -84,6 +90,7 @@ export function useChatImages() {
       error: errors[tabId] ?? null,
       onAddFiles: (files) => void actions.addFiles(tabId, files),
       onRemove: (id) => actions.remove(tabId, id),
+      onError: (message) => actions.fail(tabId, message),
     }),
     [actions, byTab, errors],
   );

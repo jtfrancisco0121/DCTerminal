@@ -14,6 +14,8 @@ import {
 import { runRoleExport, runRoleImport } from "../export/runRoleTransfer";
 import { handoffTargets, roleDisplayName } from "../handoff/transitions";
 import { CHIP_COLORS } from "../TabBar";
+import { InlineNotice, errorText } from "./InlineNotice";
+import { useConfirm } from "./confirm";
 import { rolePermissionSummary } from "../workspaceView";
 
 /** Cursor chat modes a role can start in. Claude modes follow the locked per-role rules. */
@@ -28,6 +30,8 @@ const PREVIEW_DELAY_MS = 300;
 type Props = {
   roles: RoleSummary[];
   onRefreshRoles?: () => Promise<void>;
+  /** True while the draft differs from the saved role (Settings guards leaving). */
+  onDirtyChange?: (dirty: boolean) => void;
 };
 
 type Draft = {
@@ -52,19 +56,30 @@ function sameList(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((id, i) => id === b[i]);
 }
 
-function message(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+const message = errorText;
+
+function draftDirty(role: Role | null, draft: Draft | null): boolean {
+  if (!role || !draft) return false;
+  const saved = draftFrom(role);
+  return (
+    saved.name !== draft.name ||
+    saved.color.toLowerCase() !== draft.color.toLowerCase() ||
+    saved.mode !== draft.mode ||
+    saved.template !== draft.template ||
+    !sameList(saved.targets, draft.targets)
+  );
 }
 
 /** Settings > Roles: pick a role, edit it, and manage custom roles. */
-export function RoleEditor({ roles, onRefreshRoles }: Props) {
+export function RoleEditor({ roles, onRefreshRoles, onDirtyChange }: Props) {
+  const confirm = useConfirm();
   const [selectedId, setSelectedId] = useState(roles[0]?.id ?? "");
   const [detail, setDetail] = useState<Role | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [preview, setPreview] = useState<TemplatePreview | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!selectedId) return;
@@ -75,12 +90,12 @@ export function RoleEditor({ roles, onRefreshRoles }: Props) {
         setDetail(role);
         setDraft(draftFrom(role));
         setPreview(null);
-        setConfirmDelete(false);
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         if (!cancelled) {
           setDetail(null);
           setDraft(null);
+          setError(`Could not load this role: ${message(err)}`);
         }
       });
     return () => {
@@ -99,8 +114,10 @@ export function RoleEditor({ roles, onRefreshRoles }: Props) {
         .then((next) => {
           if (!cancelled) setPreview(next);
         })
-        .catch(() => {
-          if (!cancelled) setPreview(null);
+        .catch((err: unknown) => {
+          if (cancelled) return;
+          setPreview(null);
+          setError(`Could not preview the template: ${message(err)}`);
         });
     }, PREVIEW_DELAY_MS);
     return () => {
@@ -108,6 +125,31 @@ export function RoleEditor({ roles, onRefreshRoles }: Props) {
       clearTimeout(timer);
     };
   }, [detailId, template]);
+
+  const dirty = draftDirty(detail, draft);
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
+
+  /** Switching roles with edits pending asks first. */
+  const select = async (id: string) => {
+    if (id === selectedId) return;
+    if (
+      dirty &&
+      !(await confirm({
+        title: "Discard role edits?",
+        message: `Your changes to ${detail?.name ?? "this role"} are not saved.`,
+        confirmLabel: "Discard edits",
+        danger: true,
+      }))
+    ) {
+      return;
+    }
+    setNotice(null);
+    setError(null);
+    setSelectedId(id);
+  };
 
   const loaded = (role: Role, note: string) => {
     setDetail(role);
@@ -119,10 +161,11 @@ export function RoleEditor({ roles, onRefreshRoles }: Props) {
   const act = async (work: () => Promise<void>) => {
     setBusy(true);
     setNotice(null);
+    setError(null);
     try {
       await work();
     } catch (err: unknown) {
-      setNotice(message(err));
+      setError(message(err));
     } finally {
       setBusy(false);
     }
@@ -145,12 +188,20 @@ export function RoleEditor({ roles, onRefreshRoles }: Props) {
       await onRefreshRoles?.();
     });
 
-  const reset = () =>
-    act(async () => {
-      if (!detail?.isBuiltIn) return;
+  const reset = async () => {
+    if (!detail?.isBuiltIn) return;
+    const ok = await confirm({
+      title: "Reset built-in role",
+      message: `Reset ${detail.name} to the shipped template? Your edits to it are lost.`,
+      confirmLabel: "Reset",
+      danger: true,
+    });
+    if (!ok) return;
+    await act(async () => {
       loaded(await resetBuiltinRole(detail.id), "Reset to built-in template.");
       await onRefreshRoles?.();
     });
+  };
 
   /** Adds a role, refreshes the list, then selects it. */
   const added = async (role: Role, note: string) => {
@@ -171,12 +222,19 @@ export function RoleEditor({ roles, onRefreshRoles }: Props) {
       await added(await createRole("New role"), "New role added. Edit it, then Save.");
     });
 
-  const remove = () =>
-    act(async () => {
-      if (!detail || detail.isBuiltIn) return;
+  const remove = async () => {
+    if (!detail || detail.isBuiltIn) return;
+    const ok = await confirm({
+      title: "Delete role",
+      message: `Delete ${detail.name}? This cannot be undone. Export it first to keep a copy.`,
+      confirmLabel: "Delete role",
+      cancelLabel: "Keep it",
+      danger: true,
+    });
+    if (!ok) return;
+    await act(async () => {
       const name = detail.name;
       await deleteRole(detail.id);
-      setConfirmDelete(false);
       await onRefreshRoles?.();
       const next = roles.find((role) => role.id !== detail.id)?.id ?? "";
       setDetail(null);
@@ -184,19 +242,21 @@ export function RoleEditor({ roles, onRefreshRoles }: Props) {
       setSelectedId(next);
       setNotice(`Deleted ${name}.`);
     });
+  };
 
   const exportOne = () =>
     act(async () => {
       if (!detail) return;
       const result = await runRoleExport(detail);
-      setNotice(result.ok ? `Exported to ${result.path}.` : result.message);
+      if (result.ok) setNotice(`Exported to ${result.path}.`);
+      else setError(result.message);
     });
 
   const importOne = () =>
     act(async () => {
       const result = await runRoleImport();
       if (!result.ok) {
-        setNotice(result.message);
+        setError(result.message);
         return;
       }
       await added(result.role, `Imported ${result.role.name}.`);
@@ -224,10 +284,7 @@ export function RoleEditor({ roles, onRefreshRoles }: Props) {
               className={
                 role.id === selectedId ? "settings-role settings-role-active" : "settings-role"
               }
-              onClick={() => {
-                setNotice(null);
-                setSelectedId(role.id);
-              }}
+              onClick={() => void select(role.id)}
             >
               <span className="role-dot" style={{ background: role.color }} aria-hidden />
               <span>{role.name}</span>
@@ -363,40 +420,21 @@ export function RoleEditor({ roles, onRefreshRoles }: Props) {
             <button type="button" className="secondary-button" disabled={busy} onClick={() => void exportOne()}>
               Export…
             </button>
-            {!detail.isBuiltIn && !confirmDelete && (
+            {!detail.isBuiltIn && (
               <button
                 type="button"
                 className="secondary-button"
                 disabled={busy}
-                onClick={() => setConfirmDelete(true)}
+                onClick={() => void remove()}
               >
                 Delete
               </button>
             )}
           </div>
-          {confirmDelete && !detail.isBuiltIn && (
-            <div className="role-delete-confirm" role="alertdialog" aria-label="Delete role">
-              <p>
-                Delete {detail.name}? This cannot be undone. Export it first to keep a copy.
-              </p>
-              <div className="button-row">
-                <button type="button" className="primary-button" disabled={busy} onClick={() => void remove()}>
-                  Delete role
-                </button>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  disabled={busy}
-                  onClick={() => setConfirmDelete(false)}
-                >
-                  Keep it
-                </button>
-              </div>
-            </div>
-          )}
-          {notice && <p className="hint">{notice}</p>}
         </div>
       )}
+      {notice && <InlineNotice>{notice}</InlineNotice>}
+      {error && <InlineNotice tone="error">{error}</InlineNotice>}
     </section>
   );
 }

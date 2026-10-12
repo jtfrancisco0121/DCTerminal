@@ -90,6 +90,10 @@ export type HandoffSource = {
   awaitingPlanApproval?: boolean;
   /** Set when the source is a terminal-mode role tab. */
   fromTerminal?: boolean;
+  /** The source terminal is mid-turn (deriveTerminalState: working). */
+  terminalWorking?: boolean;
+  /** What the source terminal waits for ("waiting for you on a question"), if it needs you. */
+  terminalWaiting?: string | null;
   /** Body of the newest plan file written after the terminal started. */
   planFileText?: string;
   planFileName?: string;
@@ -405,6 +409,12 @@ export function handoffBlockReason(
   }
   const name = roleDisplayName(roleId, roles);
   if (source.fromTerminal) {
+    // A pending plan box (ExitPlanMode) leaves the plan final, as in chat:
+    // Planner terminals run in plan mode, so their finished plan always waits there.
+    if (source.terminalWaiting && !source.awaitingPlanApproval) {
+      return `The ${name} terminal is ${source.terminalWaiting}. Answer it there, then send.`;
+    }
+    if (source.terminalWorking) return `Wait until the ${name} finishes this turn.`;
     // The Implementer's own form carries the task; the terminal adds a summary.
     if (roleId === "role_implementer" && implementerAnswersReady(source.answers)) return null;
     const hasTerminal =

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { ReactElement } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../bridge", () => ({
@@ -10,6 +11,7 @@ vi.mock("../bridge", () => ({
 }));
 
 import { filesList, filesRead, filesWrite } from "../bridge";
+import { ConfirmHost } from "./confirm";
 import { FilePanel, type FileDiscardGuard } from "./FilePanel";
 
 const listMock = vi.mocked(filesList);
@@ -112,9 +114,19 @@ describe("FilePanel", () => {
     await waitFor(() => expect(document.activeElement).toBe(item));
   });
 
+  // The discard question is the app's shared confirm dialog (useConfirm).
+  const withHost = (ui: ReactElement) => (
+    <>
+      {ui}
+      <ConfirmHost />
+    </>
+  );
+
   it("asks before dropping unsaved edits when opening another file", async () => {
     render(
-      <FilePanel tabId="t1" cwd="/work/app" platform="mac" onInsertReference={() => {}} onClose={() => {}} />,
+      withHost(
+        <FilePanel tabId="t1" cwd="/work/app" platform="mac" onInsertReference={() => {}} onClose={() => {}} />,
+      ),
     );
     fireEvent.click(await screen.findByText("README.md"));
     fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
@@ -122,13 +134,13 @@ describe("FilePanel", () => {
     readMock.mockClear();
     fireEvent.click(screen.getByText("src"));
     fireEvent.click(await screen.findByText("main.ts"));
-    expect(screen.getByRole("alertdialog")).toBeTruthy();
+    expect(await screen.findByRole("alertdialog", { name: "Discard unsaved edits" })).toBeTruthy();
     expect(readMock).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
-    expect(screen.queryByRole("alertdialog")).toBeNull();
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
     expect(readMock).not.toHaveBeenCalled();
     fireEvent.click(screen.getByText("main.ts"));
-    fireEvent.click(screen.getByRole("button", { name: "Discard edits" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Discard edits" }));
     await waitFor(() => expect(readMock).toHaveBeenCalledWith("t1", "src/main.ts"));
   });
 
@@ -141,32 +153,37 @@ describe("FilePanel", () => {
   it("asks before the close button drops unsaved edits", async () => {
     const onClose = vi.fn();
     render(
-      <FilePanel tabId="t1" cwd="/work/app" platform="mac" onInsertReference={() => {}} onClose={onClose} />,
+      withHost(
+        <FilePanel tabId="t1" cwd="/work/app" platform="mac" onInsertReference={() => {}} onClose={onClose} />,
+      ),
     );
     fireEvent.click(await screen.findByRole("button", { name: "Close file panel" }));
-    expect(onClose).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
     await editReadme();
     fireEvent.click(screen.getByRole("button", { name: "Close file panel" }));
-    expect(screen.getByRole("alertdialog")).toBeTruthy();
+    expect(await screen.findByRole("alertdialog")).toBeTruthy();
     expect(onClose).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
     expect(onClose).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("button", { name: "Close file panel" }));
-    fireEvent.click(screen.getByRole("button", { name: "Discard edits" }));
-    expect(onClose).toHaveBeenCalledTimes(2);
+    fireEvent.click(await screen.findByRole("button", { name: "Discard edits" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(2));
   });
 
   it("lets the parent ask before it closes or swaps the panel", async () => {
     const guardRef: { current: FileDiscardGuard | null } = { current: null };
-    const { unmount } = render(
-      <FilePanel
-        tabId="t1"
-        cwd="/work/app"
-        platform="mac"
-        onInsertReference={() => {}}
-        onClose={() => {}}
-        discardGuardRef={guardRef}
-      />,
+    const { rerender } = render(
+      withHost(
+        <FilePanel
+          tabId="t1"
+          cwd="/work/app"
+          platform="mac"
+          onInsertReference={() => {}}
+          onClose={() => {}}
+          discardGuardRef={guardRef}
+        />,
+      ),
     );
     await screen.findByText("README.md");
     expect(guardRef.current?.dirty()).toBe(false);
@@ -181,25 +198,27 @@ describe("FilePanel", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Discard edits" }));
     await expect(dropped).resolves.toBe(true);
 
+    // The panel goes away while it asks: the edits count as kept.
     kept = guardRef.current!.confirm();
-    unmount();
+    rerender(withHost(<></>));
     await expect(kept).resolves.toBe(false);
     expect(guardRef.current).toBeNull();
   });
 
   it("asks before a folder change drops unsaved edits", async () => {
     const props = { tabId: "t1", platform: "mac" as const, onInsertReference: () => {}, onClose: () => {} };
-    const { rerender } = render(<FilePanel {...props} cwd="/work/app" />);
+    const { rerender } = render(withHost(<FilePanel {...props} cwd="/work/app" />));
     await editReadme();
     listMock.mockClear();
-    rerender(<FilePanel {...props} cwd="/work/other" />);
+    rerender(withHost(<FilePanel {...props} cwd="/work/other" />));
     expect(await screen.findByRole("alertdialog")).toBeTruthy();
     expect(listMock).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Keep my edits" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
     expect((screen.getByLabelText("Edit README.md") as HTMLTextAreaElement).value).toBe("changed");
     expect(listMock).not.toHaveBeenCalled();
 
-    rerender(<FilePanel {...props} cwd="/work/third" />);
+    rerender(withHost(<FilePanel {...props} cwd="/work/third" />));
     fireEvent.click(await screen.findByRole("button", { name: "Discard edits" }));
     await waitFor(() => expect(listMock).toHaveBeenCalledWith("t1", ""));
     expect(screen.queryByLabelText("Edit README.md")).toBeNull();

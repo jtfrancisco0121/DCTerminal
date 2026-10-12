@@ -17,15 +17,22 @@ type Props = {
   onClose: () => void;
 };
 
-/** Match highlights. The overview ruler colors are required by the addon. */
-const DECORATIONS = {
-  matchBackground: "#d2992266",
-  matchBorder: "#d29922",
-  matchOverviewRuler: "#d29922",
-  activeMatchBackground: "#f0883e",
-  activeMatchBorder: "#ffa657",
-  activeMatchColorOverviewRuler: "#ffa657",
-};
+/** Match highlights from the theme tokens. The overview ruler colors are required by the addon. */
+function searchDecorations() {
+  const style = getComputedStyle(document.documentElement);
+  const token = (name: string, fallback: string) =>
+    style.getPropertyValue(name).trim() || fallback;
+  const match = token("--search-match-border", "#d29922");
+  const active = token("--search-active-border", "#ffa657");
+  return {
+    matchBackground: token("--search-match", "#d2992266"),
+    matchBorder: match,
+    matchOverviewRuler: match,
+    activeMatchBackground: token("--search-active", "#f0883e"),
+    activeMatchBorder: active,
+    activeMatchColorOverviewRuler: active,
+  };
+}
 
 /**
  * F5 terminal search, after ADE's TerminalSearch: search as you type,
@@ -68,7 +75,7 @@ export function TerminalSearchBar({ search, onClose }: Props) {
         wholeWord,
         regex,
         incremental,
-        decorations: DECORATIONS,
+        decorations: searchDecorations(),
       };
       // addon-search keeps its last options and misses a change on the same
       // query; clearing first makes it recount (e.g. Match case toggled).

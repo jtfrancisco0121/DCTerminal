@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { DisabledReason } from "./DisabledReason";
 import type { PipelineRun, TabSummary } from "../bridge";
 import {
   getPipelineRun,
@@ -18,6 +19,7 @@ import {
   pullPlannerText,
   pullPlanReviewText,
   verdictHistory,
+  type SessionLogs,
 } from "../pipeline/overviewModel";
 import { liveTerminalReader, type TerminalReader } from "../pipeline/terminalText";
 import { verdictTone } from "../handoff/verdict";
@@ -36,6 +38,8 @@ type Props = {
   terminalReader?: TerminalReader;
   /** Claude role terminal states by tab id (Working / Needs you / Exited). */
   terminalStates?: Record<string, TerminalState>;
+  /** Claude session logs by tab id: verdicts and plans of Claude terminals come from here. */
+  sessionLogs?: SessionLogs;
 };
 
 function overviewTitle(run: PipelineRun, kind: PipelineKind): string {
@@ -54,11 +58,15 @@ export function PipelineOverview({
   onNotice,
   terminalReader = liveTerminalReader,
   terminalStates,
+  sessionLogs,
 }: Props) {
   const [run, setRun] = useState<PipelineRun | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [candidateDraft, setCandidateDraft] = useState("");
   const [approvedDraft, setApprovedDraft] = useState("");
+  // The plan boxes stay folded until they hold text or the user opens them.
+  const [candidateOpen, setCandidateOpen] = useState(false);
+  const [approvedOpen, setApprovedOpen] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const reload = useCallback(async () => {
@@ -84,6 +92,7 @@ export function PipelineOverview({
         if (disposed) stop();
         else unlisten = stop;
       })
+      // intentionally silent: without the live event the overview still polls on a timer.
       .catch(() => {});
     refresh.request();
     const timer = window.setInterval(() => refresh.request(), OVERVIEW_FALLBACK_POLL_MS);
@@ -99,14 +108,14 @@ export function PipelineOverview({
 
   const pullFromPlanner = async () => {
     if (!run) return;
-    const pulled = await pullPlannerText(run, tabs, runtimes, terminalReader);
+    const pulled = await pullPlannerText(run, tabs, runtimes, terminalReader, sessionLogs);
     if (pulled.text) setCandidateDraft(pulled.text);
     else onNotice("Nothing to pull", pulled.reason ?? "No Planner reply yet.");
   };
 
   const pullFromPlanReviewer = () => {
     if (!run) return;
-    const pulled = pullPlanReviewText(run, tabs, runtimes, terminalReader);
+    const pulled = pullPlanReviewText(run, tabs, runtimes, terminalReader, sessionLogs);
     if (pulled.text) setApprovedDraft(pulled.text);
     else onNotice("Nothing to pull", pulled.reason ?? "No Plan Reviewer reply yet.");
   };
@@ -161,7 +170,7 @@ export function PipelineOverview({
     );
   }
 
-  const stages = overviewStages(run, tabs, runtimes, terminalReader, terminalStates);
+  const stages = overviewStages(run, tabs, runtimes, terminalReader, terminalStates, sessionLogs);
   const implementerTab = tabs.find((t) => t.id === run.tabIds.role_implementer);
   // A chain's Implementer may already be running; promote only fills a draft form.
   const canPromote = !run.chainId || implementerTab?.phase === "draft";
@@ -260,13 +269,25 @@ export function PipelineOverview({
           <p className="hint">
             Paste or pull the Planner output, save as candidate plan, then run Plan Reviewer.
           </p>
-          <textarea
-            className="text-input prompt-area pipeline-plan-area"
-            rows={8}
-            value={candidateDraft}
-            onChange={(e) => setCandidateDraft(e.target.value)}
-            disabled={busy}
-          />
+          <details
+            className="pipeline-plan-details"
+            open={candidateOpen || candidateDraft.trim().length > 0}
+            onToggle={(e) => setCandidateOpen(e.currentTarget.open)}
+          >
+            <summary>
+              {candidateDraft.trim()
+                ? `Plan text (${candidateDraft.length.toLocaleString()} chars)`
+                : "Paste the plan text"}
+            </summary>
+            <textarea
+              className="text-input prompt-area pipeline-plan-area"
+              aria-label="Plan for review"
+              rows={8}
+              value={candidateDraft}
+              onChange={(e) => setCandidateDraft(e.target.value)}
+              disabled={busy}
+            />
+          </details>
           <div className="button-row">
             <button
               type="button"
@@ -284,6 +305,11 @@ export function PipelineOverview({
             >
               Save candidate plan
             </button>
+            {!busy && !candidateDraft.trim() && (
+              <DisabledReason className="disabled-reason-inline">
+                Paste or pull the plan text to save it.
+              </DisabledReason>
+            )}
           </div>
         </section>
       )}
@@ -295,13 +321,25 @@ export function PipelineOverview({
             ? "Paste your final plan here, then promote to the Implementer tab."
             : "After Plan Reviewer approves, pull or paste the final plan and promote."}
         </p>
-        <textarea
-          className="text-input prompt-area pipeline-plan-area"
-          rows={8}
-          value={approvedDraft}
-          onChange={(e) => setApprovedDraft(e.target.value)}
-          disabled={busy}
-        />
+        <details
+          className="pipeline-plan-details"
+          open={approvedOpen || approvedDraft.trim().length > 0}
+          onToggle={(e) => setApprovedOpen(e.currentTarget.open)}
+        >
+          <summary>
+            {approvedDraft.trim()
+              ? `Plan text (${approvedDraft.length.toLocaleString()} chars)`
+              : "Paste the plan text"}
+          </summary>
+          <textarea
+            className="text-input prompt-area pipeline-plan-area"
+            aria-label={kind === "execute" ? "Approved plan" : "Plan to approve"}
+            rows={8}
+            value={approvedDraft}
+            onChange={(e) => setApprovedDraft(e.target.value)}
+            disabled={busy}
+          />
+        </details>
         <div className="button-row">
           {kind === "full" && (
             <button
@@ -326,6 +364,13 @@ export function PipelineOverview({
           >
             {kind === "execute" ? "Send to Implementer" : "Approve for implementation"}
           </button>
+          {!busy && (!approvedDraft.trim() || !canPromote) && (
+            <DisabledReason className="disabled-reason-inline">
+              {!canPromote
+                ? "The Implementer tab already started. Use Hand off on the Plan Reviewer tab."
+                : "Paste or pull the plan text first."}
+            </DisabledReason>
+          )}
         </div>
       </section>
     </section>

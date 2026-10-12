@@ -1,3 +1,6 @@
+import { Dialog } from "./Dialog";
+import { DisabledReason } from "./DisabledReason";
+import { InlineNotice } from "./InlineNotice";
 import { useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { CliDetectResult, LoginStatus, ProviderReport, RoleSummary } from "../bridge";
@@ -171,10 +174,70 @@ export function FirstRunSetup({
   const dir = claude?.configDir ?? null;
   const claudeAccount = accountLabel(claude?.login);
 
+  const nextReason =
+    step === "claude"
+      ? "Install Claude Code or the Cursor CLI to continue."
+      : step === "folder"
+        ? "Choose a folder to continue."
+        : "Pick a role to continue.";
+
+  const startReason = !roleId
+    ? "Pick a role to start with."
+    : !folder.trim()
+      ? "Choose a folder to start in."
+      : null;
+
+  const footer = (
+    <>
+      <button type="button" className="link-button first-run-skip" disabled={busy} onClick={onSkip}>
+        Skip setup
+      </button>
+      {step === "role" && <DisabledReason>{startReason}</DisabledReason>}
+      {step !== "role" && !canNext && !busy && <DisabledReason>{nextReason}</DisabledReason>}
+      {at > 0 && (
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={busy}
+          onClick={() => setStep(STEPS[at - 1])}
+        >
+          Back
+        </button>
+      )}
+      {step !== "role" ? (
+        <button
+          type="button"
+          className="primary-button"
+          disabled={busy || !canNext}
+          onClick={() => setStep(STEPS[at + 1])}
+        >
+          Next
+        </button>
+      ) : (
+        <button
+          type="button"
+          className="primary-button"
+          disabled={busy || !!startReason}
+          onClick={() => {
+            if (!roleId) return;
+            onFinish({ roleId, folder: folder.trim(), surface });
+          }}
+        >
+          Start
+        </button>
+      )}
+    </>
+  );
+
   return (
-    <div className="overlay-backdrop" role="presentation">
-      <div className="overlay-panel first-run" role="dialog" aria-label="Set up DCTerminal">
-        <h3>Set up DCTerminal</h3>
+    <Dialog
+      title="Set up DCTerminal"
+      className="first-run"
+      hideClose
+      dismissible={false}
+      onClose={onSkip}
+      footer={footer}
+    >
         <ol className="first-run-steps" aria-label="Setup steps">
           {STEPS.map((item, i) => (
             <li
@@ -207,7 +270,7 @@ export function FirstRunSetup({
                     href={CLAUDE_INSTALL_URL}
                     onClick={(event) => {
                       event.preventDefault();
-                      void openUrl(CLAUDE_INSTALL_URL).catch(() => {});
+                      void openUrl(CLAUDE_INSTALL_URL).catch((err: unknown) => setError(errorText(err)));
                     }}
                   >
                     Install Claude Code
@@ -314,7 +377,7 @@ export function FirstRunSetup({
                   href={INSTALL_URL}
                   onClick={(event) => {
                     event.preventDefault();
-                    void openUrl(INSTALL_URL).catch(() => {});
+                    void openUrl(INSTALL_URL).catch((err: unknown) => setError(errorText(err)));
                   }}
                 >
                   install the Cursor CLI
@@ -389,46 +452,7 @@ export function FirstRunSetup({
           </section>
         )}
 
-        {error && <p className="error">{error}</p>}
-
-        <div className="first-run-actions">
-          {at > 0 && (
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={busy}
-              onClick={() => setStep(STEPS[at - 1])}
-            >
-              Back
-            </button>
-          )}
-          {step !== "role" ? (
-            <button
-              type="button"
-              className="primary-button"
-              disabled={busy || !canNext}
-              onClick={() => setStep(STEPS[at + 1])}
-            >
-              Next
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="primary-button"
-              disabled={busy || !roleId || !folder.trim()}
-              onClick={() => {
-                if (!roleId) return;
-                onFinish({ roleId, folder: folder.trim(), surface });
-              }}
-            >
-              Start
-            </button>
-          )}
-          <button type="button" className="link-button" disabled={busy} onClick={onSkip}>
-            Skip setup
-          </button>
-        </div>
-      </div>
-    </div>
+        {error && <InlineNotice tone="error">{error}</InlineNotice>}
+    </Dialog>
   );
 }

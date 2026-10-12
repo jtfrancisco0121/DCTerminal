@@ -23,7 +23,7 @@ const roles: RoleSummary[] = [
 
 function names(group: HTMLElement): string[] {
   return within(group)
-    .getAllByRole("button")
+    .getAllByRole("radio")
     .map((button) => button.textContent ?? "");
 }
 
@@ -61,25 +61,25 @@ describe("RoleTiles", () => {
       />,
     );
     const all = screen.getByRole("group", { name: "Role" });
-    const pipeline = within(all).getByRole("group", { name: "Pipeline" });
+    const pipeline = within(all).getByRole("radiogroup", { name: "Pipeline" });
     expect(names(pipeline)).toEqual(["Planner", "Plan Reviewer", "Implementer", "PR Reviewer"]);
     expect(pipeline.querySelectorAll(".role-tile-arrow")).toHaveLength(3);
-    expect(names(within(all).getByRole("group", { name: "Other roles" }))).toEqual([
+    expect(names(within(all).getByRole("radiogroup", { name: "Other roles" }))).toEqual([
       "Developer",
       "General",
       "Recommendation",
       "Codebase Audit",
       "My Custom",
     ]);
-    const terminals = within(all).getByRole("group", { name: "Terminals" });
+    const terminals = within(all).getByRole("radiogroup", { name: "Terminals" });
     expect(names(terminals)).toEqual(["Terminal", "Claude Code", "Cursor CLI"]);
 
     expect(
-      within(all).getByRole("button", { name: "Planner" }).getAttribute("aria-pressed"),
+      within(all).getByRole("radio", { name: "Planner" }).getAttribute("aria-checked"),
     ).toBe("true");
-    fireEvent.click(within(all).getByRole("button", { name: "Implementer" }));
+    fireEvent.click(within(all).getByRole("radio", { name: "Implementer" }));
     expect(onChooseRole).toHaveBeenCalledWith("role_implementer");
-    fireEvent.click(within(all).getByRole("button", { name: "Claude Code" }));
+    fireEvent.click(within(all).getByRole("radio", { name: "Claude Code" }));
     expect(onLaunchClaudeCli).toHaveBeenCalled();
   });
 
@@ -95,10 +95,44 @@ describe("RoleTiles", () => {
         onLaunchCursorCli={() => {}}
       />,
     );
-    expect(screen.queryByRole("group", { name: "Pipeline" })).toBeNull();
-    expect(names(screen.getByRole("group", { name: "Terminals" }))).toEqual([
+    expect(screen.queryByRole("radiogroup", { name: "Pipeline" })).toBeNull();
+    expect(names(screen.getByRole("radiogroup", { name: "Terminals" }))).toEqual([
       "Terminal",
       "Cursor CLI",
     ]);
+  });
+
+  it("is one tab stop per row and moves the choice with the arrow keys", () => {
+    const onChooseRole = vi.fn();
+    render(
+      <RoleTiles
+        roles={roles}
+        pickedRoleId="role_plan_reviewer"
+        launchChoice={null}
+        busy={false}
+        onChooseRole={onChooseRole}
+        onLaunchShell={() => {}}
+        onLaunchCursorCli={() => {}}
+      />,
+    );
+    const pipeline = screen.getByRole("radiogroup", { name: "Pipeline" });
+    const stops = within(pipeline)
+      .getAllByRole("radio")
+      .map((radio) => radio.getAttribute("tabindex"));
+    expect(stops).toEqual(["-1", "0", "-1", "-1"]);
+    // A row with nothing chosen still has one way in.
+    const terminals = screen.getByRole("radiogroup", { name: "Terminals" });
+    expect(
+      within(terminals)
+        .getAllByRole("radio")
+        .map((radio) => radio.getAttribute("tabindex")),
+    ).toEqual(["0", "-1"]);
+
+    const current = within(pipeline).getByRole("radio", { name: "Plan Reviewer" });
+    current.focus();
+    fireEvent.keyDown(current, { key: "ArrowRight" });
+    expect(onChooseRole).toHaveBeenLastCalledWith("role_implementer");
+    fireEvent.keyDown(current, { key: "ArrowLeft" });
+    expect(onChooseRole).toHaveBeenLastCalledWith("role_plan_reviewer");
   });
 });

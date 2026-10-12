@@ -18,7 +18,7 @@ import {
 import { highlightCode } from "../files/highlight";
 import { formatSize, isSaveChord, joinRoot } from "../files/paths";
 import type { Platform } from "../keymap";
-import { ConfirmBar } from "./ConfirmBar";
+import { useConfirm } from "./confirm";
 import { PanelHeader } from "./PanelHeader";
 
 /** What the parent asks before it closes or swaps the panel away. */
@@ -52,13 +52,6 @@ type DirState = {
 const CONFLICT = "CONFLICT:";
 const DISCARD_MESSAGE = "Discard your unsaved edits to this file?";
 
-type PendingDiscard = {
-  message: string;
-  cancelLabel: string;
-  onConfirm: () => void;
-  onCancel?: () => void;
-};
-
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -72,6 +65,7 @@ export function FilePanel({
   onClose,
   discardGuardRef,
 }: Props) {
+  const confirm = useConfirm();
   const [dirs, setDirs] = useState<Record<string, DirState>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set([""]));
   const [root, setRoot] = useState("");
@@ -118,44 +112,54 @@ export function FilePanel({
     [tabId],
   );
 
-  // Ask in the panel before unsaved edits are dropped. A newer question
-  // replaces an open one, which counts as "keep editing".
-  const [pendingDiscard, setPendingDiscard] = useState<PendingDiscard | null>(null);
-  const pendingRef = useRef<PendingDiscard | null>(null);
-  const askDiscard = useCallback((next: PendingDiscard | null) => {
-    const previous = pendingRef.current;
-    pendingRef.current = next;
-    setPendingDiscard(next);
-    previous?.onCancel?.();
+  // Ask before unsaved edits are dropped. Only the newest question can go
+  // ahead: an answer to an older one that a newer one superseded counts as
+  // "keep editing", and an open question resolves false if the panel unmounts.
+  const askSeqRef = useRef(0);
+  const cancelAsksRef = useRef(new Set<() => void>());
+  useEffect(() => {
+    const cancels = cancelAsksRef.current;
+    return () => {
+      for (const cancel of cancels) cancel();
+      cancels.clear();
+    };
   }, []);
-  useEffect(() => () => pendingRef.current?.onCancel?.(), []);
+  const askDiscard = useCallback(
+    async (message: string, cancelLabel = "Keep editing"): Promise<boolean> => {
+      const seq = ++askSeqRef.current;
+      const ok = await new Promise<boolean>((resolve) => {
+        const cancels = cancelAsksRef.current;
+        const cancel = () => resolve(false);
+        cancels.add(cancel);
+        confirm({
+          title: "Discard unsaved edits",
+          message,
+          confirmLabel: "Discard edits",
+          cancelLabel,
+          danger: true,
+        })
+          .then(resolve, () => resolve(false))
+          .finally(() => cancels.delete(cancel));
+      });
+      return ok && seq === askSeqRef.current;
+    },
+    [confirm],
+  );
 
-  // Run `action` now, or after the user agrees to drop unsaved edits.
-  const guardDiscard = (run: () => void, message = DISCARD_MESSAGE) => {
-    if (!dirtyRef.current) {
-      run();
-      return;
-    }
-    askDiscard({ message, cancelLabel: "Keep editing", onConfirm: run });
+  // Run `run` now, or after the user agrees to drop unsaved edits.
+  const guardDiscard = async (
+    run: () => void | Promise<void>,
+    message = DISCARD_MESSAGE,
+  ): Promise<void> => {
+    if (dirtyRef.current && !(await askDiscard(message))) return;
+    await run();
   };
 
   useEffect(() => {
     if (!discardGuardRef) return;
     discardGuardRef.current = {
       dirty: () => dirtyRef.current,
-      confirm: () =>
-        new Promise<boolean>((resolve) => {
-          if (!dirtyRef.current) {
-            resolve(true);
-            return;
-          }
-          askDiscard({
-            message: DISCARD_MESSAGE,
-            cancelLabel: "Keep editing",
-            onConfirm: () => resolve(true),
-            onCancel: () => resolve(false),
-          });
-        }),
+      confirm: async () => !dirtyRef.current || (await askDiscard(DISCARD_MESSAGE)),
     };
     return () => {
       discardGuardRef.current = null;
@@ -178,17 +182,18 @@ export function FilePanel({
       if (cwd) void loadDir("");
     };
     if (shownCwdRef.current !== null && shownCwdRef.current !== cwd && dirtyRef.current) {
-      askDiscard({
-        message: "The working folder changed. Discard your unsaved edits to this file?",
-        cancelLabel: "Keep my edits",
-        onConfirm: reset,
+      void askDiscard(
+        "The working folder changed. Discard your unsaved edits to this file?",
+        "Keep my edits",
+      ).then((ok) => {
+        if (ok) reset();
       });
       return;
     }
     reset();
   }, [cwd, loadDir, tabId, askDiscard]);
 
-  const openFile = (path: string) => guardDiscard(() => void doOpenFile(path));
+  const openFile = (path: string) => guardDiscard(() => doOpenFile(path));
 
   const doOpenFile = async (path: string) => {
     setSelected({ path, isDir: false });
@@ -279,7 +284,7 @@ export function FilePanel({
 
   const reload = () => {
     if (!file) return;
-    guardDiscard(() => void doReload(), "Reload from disk and drop your edits?");
+    void guardDiscard(() => doReload(), "Reload from disk and drop your edits?");
   };
 
   const doReload = async () => {
@@ -395,9 +400,9 @@ export function FilePanel({
             type="button"
             className="secondary-button"
             aria-pressed={editing}
-            onClick={() => {
+            onClick={async () => {
               if (editing) {
-                guardDiscard(() => {
+                void guardDiscard(() => {
                   setDraft(file.text ?? "");
                   setEditing(false);
                   setConflict(false);
@@ -477,14 +482,14 @@ export function FilePanel({
         subtitle={(root || cwd).split(/[\\/]/).filter(Boolean).pop() ?? ""}
         subtitleTitle={root || cwd}
         closeLabel="Close file panel"
-        onClose={() => guardDiscard(onClose)}
+        onClose={() => void guardDiscard(onClose)}
         actions={
           <button
             type="button"
             className="secondary-button"
             disabled={!cwd}
             onClick={() =>
-              guardDiscard(() => {
+              void guardDiscard(() => {
                 setDirs({});
                 setExpanded(new Set([""]));
                 void loadDir("");
@@ -495,20 +500,6 @@ export function FilePanel({
           </button>
         }
       />
-      {pendingDiscard && (
-        <ConfirmBar
-          message={pendingDiscard.message}
-          confirmLabel="Discard edits"
-          cancelLabel={pendingDiscard.cancelLabel}
-          onCancel={() => askDiscard(null)}
-          onConfirm={() => {
-            const { onConfirm } = pendingDiscard;
-            pendingRef.current = null;
-            setPendingDiscard(null);
-            onConfirm();
-          }}
-        />
-      )}
       {!cwd ? (
         <p className="hint file-panel-empty">Choose a working folder first.</p>
       ) : (

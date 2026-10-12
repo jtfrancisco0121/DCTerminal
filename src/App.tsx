@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { detectCli, listRoles, type CliDetectResult, type RoleSummary } from "./bridge";
 import { StartupForm } from "./StartupForm";
+import { ConfirmHost } from "./components/confirm";
 import "./App.css";
 
 const showDevTools =
@@ -51,6 +52,7 @@ function App() {
           })
         }
       />
+      <ConfirmHost />
     </main>
   );
 }

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { DisabledReason } from "./DisabledReason";
 import {
   composePlanText,
   defaultScope,
@@ -18,7 +19,10 @@ import {
   type HandoffTargetId,
   type RoleName,
 } from "../handoff/map";
+import { ASK_FOR_HANDOFF_SECTIONS, missingHandoffSections } from "../handoff/contract";
 import { loopBackMessage } from "../handoff/routing";
+import { Dialog } from "./Dialog";
+import { InlineNotice } from "./InlineNotice";
 
 /** A chain reviewer sending its round back to an earlier stage. */
 export type LoopBackTarget = {
@@ -52,6 +56,8 @@ type Props = {
   chainFillsTaskType?: boolean;
   onTarget: (id: HandoffTargetId) => void;
   onConfirm: (scope: HandoffScope, surface: HandoffSurface) => void;
+  /** Terminal sources: paste this into the source terminal. Hides the button when absent. */
+  onAskForSections?: (prompt: string) => void;
   onClose: () => void;
 };
 
@@ -69,6 +75,7 @@ export function HandoffDialog({
   chainFillsTaskType = false,
   onTarget,
   onConfirm,
+  onAskForSections,
   onClose,
 }: Props) {
   const targets = handoffTargets(source.sourceRoleId, roleNames).map((id) => ({
@@ -108,7 +115,11 @@ export function HandoffDialog({
     [mapped, targetFields, targetRoleId, targetTemplate],
   );
   const preview = composePlanText(source, scope).text;
-  const previewText = Array.from(preview).slice(0, 500).join("");
+  // A terminal's last reply should end with the role's HANDOFF sections.
+  const missingSections =
+    source.fromTerminal && source.terminalLog && scope === "message"
+      ? missingHandoffSections(source.sourceRoleId, source.latestMessage)
+      : [];
   const targetLabel = roleDisplayName(targetRoleId, roleNames);
   const followUp = loopBack?.live ? loopBack : null;
   const heading = followUp
@@ -132,15 +143,46 @@ export function HandoffDialog({
     ? !busy && !block && !followUp.blocked && preview.trim().length > 0
     : !busy && !block && mapped.planText.length > 0 && targetFields !== null;
 
+  // Why the main button is off, shown beside it.
+  const disabledReason = busy
+    ? null
+    : (block ??
+      followUp?.blocked ??
+      (!followUp && targetFields === null ? "Loading the target role's form…" : null) ??
+      (preview.trim().length === 0 || (!followUp && mapped.planText.length === 0)
+        ? "There is nothing to send yet."
+        : null));
+
   return (
-    <div className="overlay-backdrop" role="presentation" onClick={onClose}>
-      <div
-        className="overlay-panel"
-        role="dialog"
-        aria-label={heading}
-        onClick={(event) => event.stopPropagation()}
-      >
-        <h2>{heading}</h2>
+    <Dialog
+      title={heading}
+      onClose={onClose}
+      dismissible={!busy}
+      footer={
+        <>
+          {!canConfirm && <DisabledReason>{disabledReason}</DisabledReason>}
+          <button type="button" className="secondary-button" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="primary-button"
+            disabled={!canConfirm}
+            onClick={() => onConfirm(scope, surface)}
+          >
+            {busy
+              ? followUp
+                ? "Sending…"
+                : "Opening…"
+              : followUp
+                ? `Send follow-up to ${followUp.tabLabel}`
+                : surface === "terminal"
+                  ? `Start ${targetLabel} terminal`
+                  : `Open ${targetLabel} tab`}
+          </button>
+        </>
+      }
+    >
         {followUp ? (
           <>
             <p className="hint">
@@ -222,9 +264,11 @@ export function HandoffDialog({
             </label>
           ))}
         </fieldset>
-        {!followUp && folderWarning && <p className="error">{folderWarning} You can still open the tab and pick another folder before Start.</p>}
-        {block && <p className="hint">{block}</p>}
-        {followUp?.blocked && <p className="hint">{followUp.blocked}</p>}
+        {!followUp && folderWarning && (
+          <InlineNotice tone="warning">
+            {folderWarning} You can still open the tab and pick another folder before Start.
+          </InlineNotice>
+        )}
         {scopeHint && <p className="hint">{scopeHint}</p>}
         {!followUp && mapped.warning && <p className="hint">{mapped.warning}</p>}
         {!followUp && fill && mapped.planText && (
@@ -268,7 +312,7 @@ export function HandoffDialog({
             )}
           </div>
         )}
-        {error && <p className="error">{error}</p>}
+        {error && <InlineNotice tone="error">{error}</InlineNotice>}
         {followUp && preview.trim() && (
           <pre
             className="mono-snippet handoff-preview handoff-preview-full"
@@ -277,35 +321,34 @@ export function HandoffDialog({
             {message}
           </pre>
         )}
-        {!followUp && previewText && (
-          <pre className="mono-snippet handoff-preview">
-            {previewText}
-            {preview.length > previewText.length ? "…" : ""}
+        {!followUp && missingSections.length > 0 && (
+          <InlineNotice
+            tone="warning"
+            action={
+              onAskForSections ? (
+                <button
+                  type="button"
+                  className="link-button"
+                  disabled={busy || !!block}
+                  onClick={() => onAskForSections(ASK_FOR_HANDOFF_SECTIONS)}
+                >
+                  Ask Claude to add them
+                </button>
+              ) : undefined
+            }
+          >
+            Missing: {missingSections.map((name) => `HANDOFF: ${name}`).join(", ")}
+          </InlineNotice>
+        )}
+        {!followUp && preview.trim() && (
+          <pre
+            className="mono-snippet handoff-preview handoff-preview-full"
+            aria-label="Hand-off text"
+          >
+            {preview}
           </pre>
         )}
-        <div className="button-row">
-          <button type="button" className="secondary-button" onClick={onClose} disabled={busy}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="primary-button"
-            disabled={!canConfirm}
-            onClick={() => onConfirm(scope, surface)}
-          >
-            {busy
-              ? followUp
-                ? "Sending…"
-                : "Opening…"
-              : followUp
-                ? `Send follow-up to ${followUp.tabLabel}`
-                : surface === "terminal"
-                ? `Start ${targetLabel} terminal`
-                : `Open ${targetLabel} tab`}
-          </button>
-        </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }
 
@@ -367,7 +410,13 @@ export function HandoffBanner({
   warning,
   roleNames = null,
   onOpen,
+  fileNote = null,
+  onOpenText,
 }: {
+  /** The prompt was too long to pass inline: Claude Code was told to read a file. */
+  fileNote?: string | null;
+  /** Shows the full hand-off text; the "Open" link beside `fileNote`. */
+  onOpenText?: () => void;
   sourceRoleId: string;
   roleNames?: readonly RoleName[] | null;
   title: string;
@@ -381,6 +430,20 @@ export function HandoffBanner({
         {title}
       </button>
       {warning ? <span className="hint"> {warning}</span> : null}
+      {fileNote ? (
+        <span className="hint">
+          {" "}
+          {fileNote}
+          {onOpenText ? (
+            <>
+              {" "}
+              <button type="button" className="link-button" onClick={onOpenText}>
+                Open
+              </button>
+            </>
+          ) : null}
+        </span>
+      ) : null}
     </p>
   );
 }
@@ -403,28 +466,24 @@ export function SavedPlanDialog({
   onClose: () => void;
 }) {
   return (
-    <div className="overlay-backdrop" role="presentation" onClick={onClose}>
-      <div
-        className="overlay-panel"
-        role="dialog"
-        aria-label="Saved plan"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <h2>{title}</h2>
-        <p className="hint">
-          {createdAt}
-          {cwd ? ` · ${cwd}` : ""}
-        </p>
-        <p className="hint">The Planner tab is closed. This copy is stored in app data.</p>
-        {loading && <p className="hint">Loading the saved plan…</p>}
-        {error && <p className="error">{error}</p>}
-        {!loading && <pre className="mono-snippet handoff-preview handoff-preview-full">{planText}</pre>}
-        <div className="button-row">
-          <button type="button" className="secondary-button" onClick={onClose}>
-            Close
-          </button>
-        </div>
-      </div>
-    </div>
+    <Dialog
+      title="Saved plan"
+      onClose={onClose}
+      footer={
+        <button type="button" className="secondary-button" onClick={onClose}>
+          Close
+        </button>
+      }
+    >
+      <h3 className="dialog-subtitle">{title}</h3>
+      <p className="hint">
+        {createdAt}
+        {cwd ? ` · ${cwd}` : ""}
+      </p>
+      <p className="hint">The Planner tab is closed. This copy is stored in app data.</p>
+      {loading && <p className="hint">Loading the saved plan…</p>}
+      {error && <InlineNotice tone="error">{error}</InlineNotice>}
+      {!loading && <pre className="mono-snippet handoff-preview handoff-preview-full">{planText}</pre>}
+    </Dialog>
   );
 }

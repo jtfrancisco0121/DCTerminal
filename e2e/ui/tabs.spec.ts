@@ -1,6 +1,9 @@
 import { expect, roleTab, test } from "./fixtures/tauri";
 import { chord, expectActive, namedTabs, startReady, tabChip } from "./tabs-helpers";
 
+/** The start card names what it is starting: "Start a session", "New Planner session", "New terminal". */
+const START_HEADING = /^(Start a session|New .+ session|New terminal)$/;
+
 // Tab lifecycle, attention marks, New window and New tab in worktree.
 // Sources: src/TabBar.tsx, src/tabStatus.ts, src/StartupForm.tsx (handleNewTab,
 // handleCloseTab, reopenTab, requestNewWindow, createWorktreeTab).
@@ -15,7 +18,7 @@ test.describe("tab lifecycle", () => {
     // The mock names a new tab after its role; it is the second chip and selected.
     await expect(page.getByRole("tab").nth(1)).toHaveAttribute("aria-selected", "true");
     await expect(tabChip(page, "Planner").first()).toHaveAttribute("aria-selected", "false");
-    await expect(page.getByRole("heading", { name: "Start a session" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: START_HEADING })).toBeVisible();
 
     // Mod+T does the same.
     await chord(page, "KeyT");
@@ -40,18 +43,16 @@ test.describe("tab lifecycle", () => {
     // The chip's close button says what it will do.
     await expect(page.getByRole("button", { name: "Stop and close Alpha" })).toBeVisible();
 
-    const prompts: string[] = [];
-    page.once("dialog", (dialog) => {
-      prompts.push(dialog.message());
-      void dialog.dismiss();
-    });
+    const closeConfirm = page.getByRole("alertdialog", { name: "Close tab" });
     await chord(page, "KeyW");
-    await expect.poll(() => prompts).toEqual(["Stop this tab's agent and close it?"]);
+    await expect(closeConfirm).toContainText("Stop this tab's agent and close it?");
+    await closeConfirm.getByRole("button", { name: "Cancel" }).click();
+    await expect(closeConfirm).toBeHidden();
     expect(await app.calls("close_tab")).toHaveLength(0);
     await expectActive(page, "Alpha");
 
-    page.once("dialog", (dialog) => void dialog.accept());
     await chord(page, "KeyW");
+    await closeConfirm.getByRole("button", { name: "Stop and close" }).click();
     const closed = await app.waitForCall("close_tab");
     expect(closed.args.tabId).toBe("tab-1");
     // The chat is saved before the tab goes away.
@@ -64,15 +65,10 @@ test.describe("tab lifecycle", () => {
 
   test("Mod+W on a draft tab closes it without asking", async ({ app, page }) => {
     await app.open({ tabs: namedTabs(2) });
-    let asked = false;
-    page.on("dialog", (dialog) => {
-      asked = true;
-      void dialog.dismiss();
-    });
     await chord(page, "KeyW");
     await app.waitForCall("close_tab", (args) => args.tabId === "tab-1");
     await expect(tabChip(page, "Alpha")).toHaveCount(0);
-    expect(asked).toBe(false);
+    await expect(page.getByRole("alertdialog")).toHaveCount(0);
   });
 
   test("closing a tab mid-turn drops it; late events for it are ignored", async ({ app, page }) => {
@@ -88,7 +84,7 @@ test.describe("tab lifecycle", () => {
     expect(String(saved.args.text)).toContain("half a thought");
     await expect(tabChip(page, "Alpha")).toHaveCount(0);
     await expectActive(page, "Beta");
-    await expect(page.getByRole("heading", { name: "Start a session" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: START_HEADING })).toBeVisible();
 
     // The agent's last chunks and the finish land after the tab is gone.
     await turn.chunk(" and the rest");

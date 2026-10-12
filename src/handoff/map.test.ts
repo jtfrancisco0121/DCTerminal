@@ -255,6 +255,28 @@ describe("handoff mapping", () => {
     expect(handoffBlockReason(source())).toBeNull();
   });
 
+  it("blocks a terminal source that works or needs you, but not on its pending plan box", () => {
+    const terminal = (patch: Partial<HandoffSource>) =>
+      source({ fromTerminal: true, turnInFlight: true, terminalLog: true, ...patch });
+    expect(handoffBlockReason(terminal({ terminalWorking: true }))).toBe(
+      "Wait until the Planner finishes this turn.",
+    );
+    expect(
+      handoffBlockReason(terminal({ terminalWaiting: "waiting for you on a question" })),
+    ).toBe("The Planner terminal is waiting for you on a question. Answer it there, then send.");
+    expect(
+      handoffBlockReason(terminal({ terminalWaiting: "waiting for you on a permission request" })),
+    ).toMatch(/permission request\. Answer it there/);
+    // Planner terminals run in plan mode: a finished plan leaves ExitPlanMode open.
+    const planBox = terminal({
+      terminalWaiting: "waiting for you on a plan to review",
+      awaitingPlanApproval: true,
+      planMarkdown: "# The plan",
+    });
+    expect(handoffBlockReason(planBox)).toBeNull();
+    expect(composePlanText(planBox, "plan_mode").text).toBe("# The plan");
+  });
+
   it("uses the last agent segment as the plan message", () => {
     expect(
       latestAgentMessage([

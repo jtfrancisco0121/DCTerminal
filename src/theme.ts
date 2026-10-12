@@ -7,18 +7,58 @@
 import type { ITheme } from "@xterm/xterm";
 
 export type ThemeId = "github-dark" | "github-light";
+/** What is saved: a concrete theme, or "system" to follow the OS. */
+export type ThemeChoice = ThemeId | "system";
 
 export const DEFAULT_THEME: ThemeId = "github-dark";
+export const SYSTEM_THEME = "system";
 
 export const THEMES: { id: ThemeId; label: string; scheme: "dark" | "light" }[] = [
   { id: "github-dark", label: "GitHub Dark", scheme: "dark" },
   { id: "github-light", label: "GitHub Light", scheme: "light" },
 ];
 
-const CACHE_KEY = "dcterminal.theme";
+/** The Settings list: "Match system" first, then the concrete themes. */
+export const THEME_CHOICES: { id: ThemeChoice; label: string }[] = [
+  { id: SYSTEM_THEME, label: "Match system" },
+  ...THEMES.map(({ id, label }) => ({ id, label })),
+];
 
-export function normalizeTheme(id: string | null | undefined): ThemeId {
+const CACHE_KEY = "dcterminal.theme";
+const DARK_QUERY = "(prefers-color-scheme: dark)";
+
+/** A saved value as a choice. Unknown or missing values fall back to GitHub Dark. */
+export function normalizeTheme(id: string | null | undefined): ThemeChoice {
+  if (id === SYSTEM_THEME) return SYSTEM_THEME;
   return THEMES.some((theme) => theme.id === id) ? (id as ThemeId) : DEFAULT_THEME;
+}
+
+export function systemPrefersDark(): boolean {
+  try {
+    return window.matchMedia?.(DARK_QUERY).matches ?? true;
+  } catch {
+    return true;
+  }
+}
+
+/** The concrete theme for a saved choice. */
+export function resolveTheme(id: string | null | undefined): ThemeId {
+  const choice = normalizeTheme(id);
+  if (choice !== SYSTEM_THEME) return choice;
+  return systemPrefersDark() ? "github-dark" : "github-light";
+}
+
+/** Calls back when the OS light/dark setting changes. Returns the unsubscribe. */
+export function watchSystemTheme(onChange: () => void): () => void {
+  let query: MediaQueryList | undefined;
+  try {
+    query = window.matchMedia?.(DARK_QUERY);
+  } catch {
+    query = undefined;
+  }
+  if (!query) return () => {};
+  query.addEventListener("change", onChange);
+  return () => query.removeEventListener("change", onChange);
 }
 
 const TERMINAL_THEMES: Record<ThemeId, ITheme> = {
@@ -54,27 +94,27 @@ const TERMINAL_THEMES: Record<ThemeId, ITheme> = {
     black: "#24292f",
     red: "#cf222e",
     green: "#116329",
-    yellow: "#4d2d00",
+    yellow: "#9a6700",
     blue: "#0969da",
     magenta: "#8250df",
     cyan: "#1b7c83",
-    white: "#6e7781",
+    white: "#57606a",
     brightBlack: "#57606a",
     brightRed: "#a40e26",
     brightGreen: "#1a7f37",
-    brightYellow: "#633c01",
-    brightBlue: "#218bff",
-    brightMagenta: "#a475f9",
-    brightCyan: "#3192aa",
-    brightWhite: "#8c959f",
+    brightYellow: "#7d4e00",
+    brightBlue: "#0969da",
+    brightMagenta: "#8250df",
+    brightCyan: "#1b7c83",
+    brightWhite: "#6e7781",
   },
 };
 
 export function terminalTheme(id: string | null | undefined): ITheme {
-  return TERMINAL_THEMES[normalizeTheme(id)];
+  return TERMINAL_THEMES[resolveTheme(id)];
 }
 
-export function cachedTheme(): ThemeId {
+export function cachedTheme(): ThemeChoice {
   try {
     return normalizeTheme(window.localStorage.getItem(CACHE_KEY));
   } catch {
@@ -82,14 +122,19 @@ export function cachedTheme(): ThemeId {
   }
 }
 
-/** Switch the app's CSS variables to a theme and remember it. */
+/**
+ * Switch the app's CSS variables to a theme and remember the choice. For
+ * "system" the OS setting picks the palette; the choice, not the palette, is
+ * cached. Returns the concrete theme applied.
+ */
 export function applyTheme(id: string | null | undefined): ThemeId {
-  const theme = normalizeTheme(id);
+  const choice = normalizeTheme(id);
+  const theme = resolveTheme(choice);
   const root = document.documentElement;
   root.dataset.theme = theme;
   root.style.colorScheme = THEMES.find((item) => item.id === theme)?.scheme ?? "dark";
   try {
-    window.localStorage.setItem(CACHE_KEY, theme);
+    window.localStorage.setItem(CACHE_KEY, choice);
   } catch {
     // Private mode or storage disabled: the setting still lives in settings.json.
   }

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  acpSetEffort,
   acpSetModel,
   closeTab,
   devSessionCancel,
@@ -107,7 +106,6 @@ import {
   type RoleSummary,
   type SessionUpdateEvent,
   type TabSummary,
-  type TerminalLaunch,
   type TerminalSessionLog,
   type TerminalSettings,
   type ValidatePreviewResult,
@@ -124,25 +122,25 @@ import {
   clearLiveSession,
   emptyRuntime,
   folderStatusMessage,
-  folderTabNotice,
   runtimeFor,
   type TabRuntime,
 } from "./liveTabs";
 import { blockedSlashCommand } from "./composer/slashCommands";
 import { CommandPalette } from "./components/CommandPalette";
+import { useConfirm } from "./components/confirm";
+import { Dialog } from "./components/Dialog";
+import { errorText } from "./components/InlineNotice";
 import {
-  HandoffActions,
   HandoffBanner,
   HandoffDialog,
   type LoopBackTarget,
   SavedPlanDialog,
 } from "./components/HandoffDialog";
 import { PipelineOverview } from "./components/PipelineOverview";
-import { ChainLabel } from "./components/ChainLabel";
-import { destroyTerminal, TerminalView, readTerminalHandoff } from "./components/TerminalView";
+import { relativeToCwd } from "./terminal/links";
+import { destroyTerminal, readTerminalHandoff } from "./components/TerminalView";
 import {
   handoffBlockReason,
-  handoffMenuItems,
   handoffTargets,
   isCaptureSource,
   isHandoffSource,
@@ -167,7 +165,6 @@ import {
   type HandoffTargetId,
 } from "./handoff/map";
 import { runTranscriptExport } from "./export/runTranscriptExport";
-import { FolderPicker } from "./components/FolderPicker";
 import { LogDrawer } from "./components/LogDrawer";
 import { SettingsPage } from "./components/SettingsPage";
 import { StatusBar, type StatusMessage, type StatusTone } from "./components/StatusBar";
@@ -179,20 +176,14 @@ import {
   folderToWrite,
   formTextOf,
   mergeTabDraft,
-  showStartupFields,
   tabFormFromRecord,
   tabWasStarted,
   tabSurface,
   toggleSettings,
   type TabDraft,
 } from "./workspaceView";
-import { ScratchPad } from "./components/ScratchPad";
-import { TerminalScratchPad, type TerminalPadHandle } from "./components/TerminalScratchPad";
-import { SessionCards } from "./components/SessionCards";
+import type { TerminalPadHandle } from "./components/TerminalScratchPad";
 import { ShortcutsOverlay } from "./components/ShortcutsOverlay";
-import { SplitPanes } from "./components/SplitPanes";
-import { WorkspaceSplit } from "./components/WorkspaceSplit";
-import { GridSplit } from "./components/GridSplit";
 import {
   addAccepted,
   loadAccepted,
@@ -200,22 +191,18 @@ import {
   type AcceptedChanges,
 } from "./changes/acceptedStore";
 import { FilePanel, type FileDiscardGuard } from "./components/FilePanel";
-import { ModelPicker } from "./components/ModelPicker";
 import { AgentToasts } from "./components/AgentToasts";
 import { WorktreeDialog, type WorktreeCreateInput } from "./components/WorktreeDialog";
 import { ChangesPanel } from "./components/ChangesPanel";
 import { PanelResizer } from "./components/PanelResizer";
 import { ActivityPanel } from "./components/ActivityPanel";
-import { ActivityButton } from "./components/ActivityButton";
 import { ChatSearchDialog, type ChatSearchHit } from "./components/ChatSearchDialog";
-import { TranscriptView } from "./components/TranscriptView";
 import { PromptLibraryDialog } from "./components/PromptLibraryDialog";
 import { WorkspacesDialog } from "./components/WorkspacesDialog";
 import { FirstRunSetup, type FirstRunFinish } from "./components/FirstRunSetup";
 import { insertIntoPad, type PadSelection } from "./prompts/library";
 import {
   advanceChain,
-  chainLabel,
   chainRound,
   chainTabFor,
   loopBackChain,
@@ -228,7 +215,7 @@ import {
   terminalLogVerdict,
   type ReviewVerdict,
 } from "./handoff/verdict";
-import { contextPercent, limitAlerts, statusLimit } from "./usage/limits";
+import { limitAlerts, statusLimit } from "./usage/limits";
 import type { ChatFindRequest } from "./SessionTerminal";
 import { classifyPromptFinished, type NotificationSettings } from "./notify/agentNotify";
 import { showSystemNotification } from "./notify/systemNotify";
@@ -254,6 +241,7 @@ import {
   type TerminalState,
 } from "./terminal/claudeState";
 import { dialogDetector } from "./terminal/permissionDialog";
+import { headerStateOf, trackWorkingSince } from "./terminal/headerState";
 import {
   clearMarks,
   computeTabStatus,
@@ -284,18 +272,24 @@ import {
   focusedTerminalId,
   parkedTerminal,
   pasteTerminalText,
-  refitTerminal,
+  setOptionAsMeta,
+  setCopyOnSelect,
+  setTerminalFileOpener,
+  clearTerminalScrollback,
+  TERMINAL_FONT_DEFAULT,
+  zoomedFontSize,
   requestTerminalSearch,
+  setLinkOpenErrorHandler,
   terminalBracketedPaste,
   terminalScrollbackText,
   terminalSelection,
   terminalTailText,
+  measuredTerminalSize,
 } from "./terminal/park";
 import { encodeTerminalPaste } from "./terminal/paste";
 import { planFileMentions } from "./terminal/text";
 import {
   emptySessionCards,
-  modeLabel,
   reduceSessionCards,
   type SessionCards as Cards,
 } from "./sessionCards";
@@ -315,13 +309,10 @@ import {
   type TurnOutcome,
 } from "./scratch/pad";
 import { createTurnWaiter } from "./scratch/turnWait";
-import { SessionTerminal } from "./SessionTerminal";
 import { answersForRole, fieldsForForm } from "./startupFields";
-import { CursorHistoryList } from "./components/CursorHistoryList";
-import { RoleTiles } from "./components/RoleTiles";
 import { ShortcutBar } from "./components/ShortcutBar";
 import { FIRST_USE_TIP_ID, FirstUseTip, shouldShowTip } from "./components/FirstUseTip";
-import { normalizeTheme, THEMES } from "./theme";
+import { normalizeTheme, THEME_CHOICES } from "./theme";
 import { ChatHistoryDialog } from "./components/ChatHistoryDialog";
 import {
   resumeIdForStart,
@@ -339,7 +330,6 @@ import {
   gridOpen,
   openGrid,
   reconcileSplit,
-  removeFromGrid,
   splitCandidates,
   splitFromLayout,
   splitOpen,
@@ -352,6 +342,14 @@ import {
 } from "./tabChrome";
 import { useAppShortcuts } from "./useAppShortcuts";
 import { useScratchPads } from "./useScratchPads";
+import { headerControls } from "./views/SessionHeaderControls";
+import { TerminalTabView } from "./views/TerminalTabView";
+import { ChatSessionView } from "./views/ChatSessionView";
+import { StartScreen } from "./views/StartScreen";
+import { createPaneRenderers } from "./views/workspacePanes";
+import { terminalHeaderFor, type TerminalHeaderDeps } from "./views/terminalHeader";
+import { WorkspaceShell } from "./views/WorkspaceShell";
+import { CLI_LABEL, type CliLaunch, tabHasModel, visibleFields } from "./views/tabHelpers";
 import { useChatImages } from "./attachments/useChatImages";
 import { withImageMarkers } from "./attachments/chatImages";
 import { promptNeedsSnapshot, snapshotTerminalTurn } from "./changes/turnSnapshot";
@@ -359,12 +357,11 @@ import { useUiSettings } from "./useUiSettings";
 import { useProviders } from "./provider/useProviders";
 import {
   modelsForProvider,
-  PROVIDERS,
   providerIndicator,
   providerTooltipLine,
   tabHasProvider,
 } from "./provider/descriptor";
-import { PROVIDER_IDS, claudeAccounts, providerForRole, type ProviderId } from "./provider/types";
+import { claudeAccounts, providerForRole, type ProviderId } from "./provider/types";
 import {
   acceptNewWindowRequest,
   ensureWindow,
@@ -415,16 +412,6 @@ function finishedDetail(roleId: string, log: TerminalSessionLog): string {
   return lines[lines.length - 1] ?? "Claude finished its turn.";
 }
 
-/** Plain shells have no model; chats, role terminals, and the CLI tiles do. */
-function tabHasModel(tab: TabSummary): boolean {
-  return !(
-    tab.kind === "terminal" &&
-    tab.terminalLaunch !== "role" &&
-    tab.terminalLaunch !== "cursor-cli" &&
-    tab.terminalLaunch !== "claude-cli"
-  );
-}
-
 /**
  * Plan file names a terminal printed (they win), and the names other
  * terminals printed (another Planner's plan, never this tab's).
@@ -440,39 +427,6 @@ function terminalPlanNames(
     .flatMap((tab) => planFileMentions(terminalScrollbackText(tab.id)))
     .filter((name) => !mentioned.includes(name));
   return { mentioned, claimed };
-}
-
-/** PTY launch kind for a terminal tab. */
-function terminalLaunchOf(tab: TabSummary): TerminalLaunch {
-  switch (tab.terminalLaunch) {
-    case "cursor-cli":
-    case "claude-cli":
-    case "role":
-      return tab.terminalLaunch;
-    default:
-      return "shell";
-  }
-}
-
-type CliLaunch = "cursor-cli" | "claude-cli";
-const CLI_LABEL: Record<CliLaunch, string> = {
-  "cursor-cli": "Cursor CLI",
-  "claude-cli": "Claude Code",
-};
-
-function fieldVisible(
-  role: Role,
-  fieldKey: string,
-  values: Record<string, string>,
-): boolean {
-  const field = role.fields.find((f) => f.key === fieldKey);
-  if (!field?.showWhen) return true;
-  const current = (values[field.showWhen.fieldKey] ?? "").trim();
-  return field.showWhen.equals.includes(current);
-}
-
-function visibleFields(role: Role, values: Record<string, string>) {
-  return fieldsForForm(role).filter((field) => fieldVisible(role, field.key, values));
 }
 
 type Props = {
@@ -598,6 +552,7 @@ export function StartupForm({
         const count = set.state === "ok" ? set.files.length : 0;
         setChangeCounts((prev) => (prev[tabId] === count ? prev : { ...prev, [tabId]: count }));
       })
+      // intentionally silent: a polled badge count; the Changes panel shows its own errors.
       .catch(() => {});
   }, []);
   const [split, setSplit] = useState<SplitState>(emptySplit());
@@ -670,6 +625,10 @@ export function StartupForm({
   const [pickedRoleId, setPickedRoleId] = useState<string | null>(null);
   const [launchChoice, setLaunchChoice] = useState<"shell" | CliLaunch | null>(null);
   const [terminalSettings, setTerminalSettingsState] = useState<TerminalSettings | null>(null);
+  const optionAsMeta = terminalSettings?.optionAsMeta ?? true;
+  useEffect(() => setOptionAsMeta(optionAsMeta), [optionAsMeta]);
+  const copyOnSelect = terminalSettings?.copyOnSelect ?? false;
+  useEffect(() => setCopyOnSelect(copyOnSelect), [copyOnSelect]);
   const [notificationSettings, setNotificationSettingsState] =
     useState<NotificationSettings | null>(null);
   const [terminalError, setTerminalError] = useState<string | null>(null);
@@ -704,6 +663,7 @@ export function StartupForm({
   const [historyOverride, setHistoryOverride] = useState<ProviderId | null>(null);
   const [historyReadFrom, setHistoryReadFrom] = useState<string | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [cliLaunchNote, setCliLaunchNote] = useState<string | null>(null);
   const [historyCursor, setHistoryCursor] = useState(-1);
   const [logDrawerOpen, setLogDrawerOpen] = useState(false);
@@ -769,12 +729,9 @@ export function StartupForm({
   const session = activeRuntime.session;
   const startResult = activeRuntime.startResult;
   const promptInFlight = activeRuntime.promptInFlight;
-  const lastPromptResult = activeRuntime.lastResult;
-  const promptError = activeRuntime.promptError;
   const followUp = activeRuntime.followUp;
   const streamSegments = activeRuntime.segments;
   const permissionRequest = activeRuntime.permission;
-  const planRequest = activeRuntime.plan;
   const questionRequest = activeRuntime.question;
   const scratch = useScratchPads(activeTabId);
   const chatImages = useChatImages();
@@ -854,6 +811,24 @@ export function StartupForm({
   }, []);
   const dismissTabToasts = agentNotifications.dismissTab;
   const showNotice = agentNotifications.notice;
+  const showNoticeRef = useRef(showNotice);
+  showNoticeRef.current = showNotice;
+  useEffect(() => {
+    setLinkOpenErrorHandler((message) => showNoticeRef.current("Could not open link", message, "failed"));
+    return () => setLinkOpenErrorHandler(null);
+  }, []);
+  const reportedRef = useRef(new Set<string>());
+  /** A background load or poll that failed: say so once per `key`, not per retry. */
+  const reportOnce = useCallback((key: string, title: string, err: unknown) => {
+    if (reportedRef.current.has(key)) return;
+    reportedRef.current.add(key);
+    showNoticeRef.current(title, errorText(err), "failed");
+  }, []);
+  const confirm = useConfirm();
+  const settingsDirtyRef = useRef(false);
+  const onSettingsUnsaved = useCallback((dirty: boolean) => {
+    settingsDirtyRef.current = dirty;
+  }, []);
   useEffect(() => {
     if (rolesError) showNotice("Roles did not load", rolesError, "question");
   }, [rolesError, showNotice]);
@@ -864,8 +839,8 @@ export function StartupForm({
       void openAccountWindow(accountId).catch((err: unknown) => {
         showNotice(
           "New window",
-          err instanceof Error ? err.message : String(err),
-          "question",
+          errorText(err),
+          "failed",
         );
       });
     },
@@ -931,7 +906,7 @@ export function StartupForm({
           await transcriptSave(tabId, segmentsToPlainText(rt.segments), cwd);
           setTranscriptSaveError(null);
         } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : String(err);
+          const message = errorText(err);
           setTranscriptSaveError(message);
         }
       });
@@ -988,7 +963,9 @@ export function StartupForm({
     // draft stays in memory only.
     if (tabWasStarted(savedTabsRef.current, leaving)) return;
     const payload = answersForRole({ ...snap.values, cwd }, fieldsForForm(role));
-    void syncActiveTabForm(leaving, snap.roleId, cwd, payload).catch(() => {});
+    void syncActiveTabForm(leaving, snap.roleId, cwd, payload).catch((err: unknown) =>
+      reportOnce("tabFormSync", "Tab form not saved", err),
+    );
   }, [captureDraft, role]);
 
   const loadTabIntoForm = useCallback((tab: {
@@ -1019,6 +996,7 @@ export function StartupForm({
         for (const running of snap.tabs) {
           if (running.phase !== "running" || running.kind === "terminal") continue;
           if (running.kind === "pipeline_overview") continue;
+          // intentionally silent: a failed probe just means the tab is not reattached.
           const live = await devSessionLive(running.id).catch(() => null);
           if (!live) continue;
           const { roleId: _role, promptInFlight: inFlight, exited, ...info } = live;
@@ -1058,8 +1036,11 @@ export function StartupForm({
         const { tab } = await selectActiveTab(activeId);
         loadTabIntoForm(tab);
       })
-      .catch(() => setSavedTabs([]));
-  }, [loadTabIntoForm, patchRuntime, refreshTabs, roles]);
+      .catch((err: unknown) => {
+        setSavedTabs([]);
+        showNotice("Tabs did not load", errorText(err), "failed");
+      });
+  }, [loadTabIntoForm, patchRuntime, refreshTabs, roles, showNotice]);
 
   useEffect(() => {
     sessionActiveRef.current = !!session;
@@ -1206,11 +1187,11 @@ export function StartupForm({
   useEffect(() => {
     getTerminalSettings()
       .then(setTerminalSettingsState)
-      .catch(() => {});
+      .catch((err: unknown) => reportOnce("settingsLoad", "Settings did not load", err));
     getNotificationSettings()
       .then(setNotificationSettingsState)
-      .catch(() => {});
-  }, []);
+      .catch((err: unknown) => reportOnce("settingsLoad", "Settings did not load", err));
+  }, [reportOnce]);
 
   // A tab's toasts are stale once it is on screen in a focused window.
   useEffect(() => {
@@ -1380,7 +1361,7 @@ export function StartupForm({
       .filter(
         (tab) =>
           isClaudeRoleTerminal(tab) &&
-          (running(tab.id) || onScreen.has(tab.id) || !!tab.chain),
+          (running(tab.id) || onScreen.has(tab.id) || !!tab.chain || !!tab.pipelineRunId),
       )
       .map((tab) => tab.id)
       .join("\n");
@@ -1416,6 +1397,7 @@ export function StartupForm({
         if (!sessionLogDue(entry.poll, busy, now)) continue;
         reading.add(id);
         void terminalSessionLog(id)
+          // intentionally silent: a polled status read; the next tick retries.
           .catch(() => null)
           .then((log) => {
             reading.delete(id);
@@ -1503,7 +1485,27 @@ export function StartupForm({
     return out;
   }, [runtimes, savedTabs, tabMarks, terminalBusy, terminalStates]);
 
-  const uiSettings = useUiSettings();
+  /** When each terminal's working turn started, for the header's "Working · 12s". */
+  const workingSinceRef = useRef<Record<string, number>>({});
+  const workingSince = useMemo(() => {
+    const tabs = savedTabs
+      .filter((tab) => tab.kind === "terminal")
+      .map((tab) => {
+        const state = terminalStates[tab.id];
+        const lastPromptAt = state ? sessionLogs[tab.id]?.lastPromptAt : null;
+        return {
+          tabId: tab.id,
+          working:
+            headerStateOf({ state, status: tabStatuses[tab.id], turnEnded: false }).tone ===
+            "working",
+          turnStartedAt: lastPromptAt ? Date.parse(lastPromptAt) : null,
+        };
+      });
+    workingSinceRef.current = trackWorkingSince(workingSinceRef.current, tabs, Date.now());
+    return workingSinceRef.current;
+  }, [savedTabs, sessionLogs, tabStatuses, terminalStates]);
+
+  const uiSettings = useUiSettings((title, message) => showNotice(title, message, "failed"));
   // U2: one pad size for chat and terminal tabs; saved when a drag ends.
   const [padHeight, setPadHeight] = useState<number | null>(null);
   const savedPadHeight = uiSettings.ui.padHeight;
@@ -1521,7 +1523,7 @@ export function StartupForm({
 
   const notificationSettingsRef = useRef(notificationSettings);
   notificationSettingsRef.current = notificationSettings;
-  const updateNotificationSettings = useCallback((next: NotificationSettings) => {
+  const updateNotificationSettings = useCallback((next: NotificationSettings): Promise<void> => {
     const prev = notificationSettingsRef.current;
     // Turning system notifications on is a click, so ask the OS now.
     if (next.enabled && next.system && !(prev?.enabled && prev?.system)) {
@@ -1530,9 +1532,7 @@ export function StartupForm({
       });
     }
     setNotificationSettingsState(next);
-    void setNotificationSettings(next)
-      .then(setNotificationSettingsState)
-      .catch(() => {});
+    return setNotificationSettings(next).then(setNotificationSettingsState);
   }, []);
 
   useEffect(() => {
@@ -1544,7 +1544,7 @@ export function StartupForm({
         setFilePanelOpen(layout.filePanelOpen);
         setFilePanelWidth(layout.filePanelWidth);
       })
-      .catch(() => {})
+      .catch((err: unknown) => reportOnce("layoutLoad", "Layout did not load", err))
       .finally(() => {
         if (!cancelled) layoutLoadedRef.current = true;
       });
@@ -1552,17 +1552,17 @@ export function StartupForm({
       .then((value) => {
         if (!cancelled) setModelSettingsState(value);
       })
-      .catch(() => {});
+      .catch((err: unknown) => reportOnce("modelsLoad", "Model settings did not load", err));
     listModels("cursor", false)
       .then((list) => {
         if (!cancelled) setModelList(list);
       })
-      .catch(() => {});
+      .catch((err: unknown) => reportOnce("modelsLoad", "Model settings did not load", err));
     listModels("claude", false)
       .then((list) => {
         if (!cancelled) setClaudeModelList(list);
       })
-      .catch(() => {});
+      .catch((err: unknown) => reportOnce("modelsLoad", "Model settings did not load", err));
     return () => {
       cancelled = true;
     };
@@ -1581,6 +1581,7 @@ export function StartupForm({
         primarySize: clampSplitSize(split.primarySize),
         filePanelOpen,
         filePanelWidth,
+        // intentionally silent: the layout is saved again on the next change.
       }).catch(() => {});
     }, 300);
     return () => window.clearTimeout(timer);
@@ -1632,8 +1633,10 @@ export function StartupForm({
           }
         }
       })
-      .catch(() => {
-        if (!cancelled) setRole(null);
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setRole(null);
+        reportOnce("roleLoad", "The role did not load", err);
       });
     return () => {
       cancelled = true;
@@ -1669,6 +1672,7 @@ export function StartupForm({
           return next;
         });
       })
+      // intentionally silent: recalling the last folder is a convenience.
       .catch(() => {});
   }, [roleId, session]);
 
@@ -1731,11 +1735,14 @@ export function StartupForm({
 
   const historyFolder = folderForTab(values.cwd);
   useEffect(() => {
+    // Rows of the previous folder or provider never show under the new one.
+    setHistoryEntries([]);
+    setHistoryError(null);
     if (session || !historyFolder) {
-      setHistoryEntries([]);
-      setHistoryError(null);
+      setHistoryLoading(false);
       return;
     }
+    setHistoryLoading(true);
     let cancelled = false;
     const load =
       historyProvider === "claude"
@@ -1756,8 +1763,11 @@ export function StartupForm({
       })
       .catch((err: unknown) => {
         if (!cancelled) {
-          setHistoryError(err instanceof Error ? err.message : String(err));
+          setHistoryError(errorText(err));
         }
+      })
+      .finally(() => {
+        if (!cancelled) setHistoryLoading(false);
       });
     return () => {
       cancelled = true;
@@ -1804,7 +1814,7 @@ export function StartupForm({
         .then(() => {
           if (activeTabIdRef.current === tabId) void refreshTabs();
         })
-        .catch(() => {});
+        .catch((err: unknown) => reportOnce("tabFormSync", "Tab form not saved", err));
     }, 800);
     return () => {
       if (draftTimerRef.current) clearTimeout(draftTimerRef.current);
@@ -1832,7 +1842,7 @@ export function StartupForm({
         errors: [
           {
             key: "_form",
-            message: err instanceof Error ? err.message : String(err),
+            message: errorText(err),
           },
         ],
         merged: null,
@@ -1971,7 +1981,7 @@ export function StartupForm({
       }
       await refreshTabs();
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = errorText(err);
       if (tabKey) {
         patchRuntime(tabKey, (rt) => ({
           ...clearLiveSession(rt),
@@ -1993,15 +2003,19 @@ export function StartupForm({
     savedTranscript,
   ]);
 
-  const updateTerminalSettings = useCallback((next: TerminalSettings) => {
+  /** Applies and saves. Rejects when the save fails, so Settings can show it. */
+  const saveTerminalSettings = useCallback((next: TerminalSettings): Promise<void> => {
     setTerminalSettingsState(next);
-    setTerminalSettings(next)
-      .then(setTerminalSettingsState)
-      .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        setTerminalError(message);
-      });
+    return setTerminalSettings(next).then(setTerminalSettingsState);
   }, []);
+  const updateTerminalSettings = useCallback(
+    (next: TerminalSettings) => {
+      void saveTerminalSettings(next).catch((err: unknown) => {
+        setTerminalError(errorText(err));
+      });
+    },
+    [saveTerminalSettings],
+  );
 
   const rememberedSurface = useCallback(
     // Terminal by default (the real Claude Code CLI); Chat only when chosen for the role.
@@ -2015,6 +2029,8 @@ export function StartupForm({
       const current = terminalSettings ?? {
         shell: "",
         fontSize: 14,
+        optionAsMeta: true,
+        copyOnSelect: false,
         roleSurface: {},
         roleRunMode: {},
       };
@@ -2026,6 +2042,8 @@ export function StartupForm({
     [terminalSettings, updateTerminalSettings],
   );
 
+  /** Terminals whose startup prompt was too long to pass inline and went through a file. */
+  const [promptFileTabs, setPromptFileTabs] = useState<string[]>([]);
   const startRoleTerminal = useCallback(
     async (options?: {
       roleId: string;
@@ -2048,8 +2066,7 @@ export function StartupForm({
           values: form,
           tabId: preferred,
           handoffPlan: options?.handoffPlan ?? null,
-          cols: 80,
-          rows: 24,
+          ...measuredTerminalSize(),
           onOutput: live.channel,
         });
         if (result.errors.length > 0 || !result.tabId) {
@@ -2064,6 +2081,10 @@ export function StartupForm({
           return null;
         }
         if (result.tabId !== pendingId) rekeyLivePty(pendingId, result.tabId);
+        if (result.usedPromptFile) {
+          const fileTab = result.tabId;
+          setPromptFileTabs((prev) => (prev.includes(fileTab) ? prev : [...prev, fileTab]));
+        }
         setActiveTabId(result.tabId);
         setPreview(null);
         if (
@@ -2080,7 +2101,7 @@ export function StartupForm({
         return result.tabId;
       } catch (err: unknown) {
         dropLivePty(pendingId);
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorText(err);
         setTerminalError(message);
         return null;
       } finally {
@@ -2109,8 +2130,7 @@ export function StartupForm({
           tabId: activeTabId,
           cwd,
           launch,
-          cols: 80,
-          rows: 24,
+          ...measuredTerminalSize(),
           onOutput: live.channel,
         });
         if (result.errors.length > 0 || !result.tabId) {
@@ -2130,7 +2150,7 @@ export function StartupForm({
         await refreshTabs();
       } catch (err: unknown) {
         dropLivePty(pendingId);
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorText(err);
         setTerminalError(message);
       } finally {
         startLockRef.current = false;
@@ -2154,8 +2174,7 @@ export function StartupForm({
         cwd,
         launch: source === "claude" ? "claude-cli" : "cursor-cli",
         resumeSessionId: sessionId,
-        cols: 80,
-        rows: 24,
+        ...measuredTerminalSize(),
         onOutput: live.channel,
       });
       if (result.errors.length > 0 || !result.tabId) {
@@ -2170,7 +2189,7 @@ export function StartupForm({
       await refreshTabs();
     } catch (err: unknown) {
       dropLivePty(pendingId);
-      setCliLaunchNote(err instanceof Error ? err.message : String(err));
+      setCliLaunchNote(errorText(err));
     } finally {
       startLockRef.current = false;
       setBusy(false);
@@ -2192,7 +2211,7 @@ export function StartupForm({
           cwd: entry.cwd,
         });
       } catch (err: unknown) {
-        setHistoryError(err instanceof Error ? err.message : String(err));
+        setHistoryError(errorText(err));
         setBusy(false);
       }
     },
@@ -2280,7 +2299,7 @@ export function StartupForm({
         setClosedTabs(state.closedTabs ?? []);
         setActiveTabId(tabId);
       } catch (err: unknown) {
-        showNotice("Chain overview", err instanceof Error ? err.message : String(err), "question");
+        showNotice("Chain overview", errorText(err), "failed");
       }
     },
     [showNotice, stashActiveTab],
@@ -2299,7 +2318,7 @@ export function StartupForm({
           const cwd = rt.session?.cwd ?? values.cwd ?? "";
           await transcriptSave(tabId, segmentsToPlainText(rt.segments), cwd).catch(
             (err: unknown) => {
-              const message = err instanceof Error ? err.message : String(err);
+              const message = errorText(err);
               setTranscriptSaveError(message);
             },
           );
@@ -2382,11 +2401,15 @@ export function StartupForm({
           );
           return;
         }
-        const ok = window.confirm(
-          `Remove the worktree for ${branch}?\n\n${check.worktree.path}\n\n` +
+        const ok = await confirm({
+          title: "Remove worktree",
+          message:
+            `Remove the worktree for ${branch}?\n\n${check.worktree.path}\n\n` +
             "This closes the tab, stops its agent or shell, and deletes that folder. " +
             "The branch and its commits are kept.",
-        );
+          confirmLabel: "Remove worktree",
+          danger: true,
+        });
         if (!ok) return;
         if (!(await handleCloseTab(tabId))) return;
         await worktreeTabRemove(tabId, true);
@@ -2394,12 +2417,12 @@ export function StartupForm({
       } catch (err: unknown) {
         showNotice(
           "Worktree not removed",
-          err instanceof Error ? err.message : String(err),
+          errorText(err),
           "failed",
         );
       }
     },
-    [handleCloseTab, showNotice],
+    [confirm, handleCloseTab, showNotice],
   );
 
   const handleNewTab = useCallback(async () => {
@@ -2444,7 +2467,7 @@ export function StartupForm({
         ],
       }));
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = errorText(err);
       patchRuntime(tabId, (rt) => ({ ...rt, promptError: message }));
     } finally {
       setBusy(false);
@@ -2468,7 +2491,7 @@ export function StartupForm({
         }
         patchRuntime(tabId, (rt) => ({ ...rt, permission: null }));
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorText(err);
         patchRuntime(tabId, (rt) => ({ ...rt, promptError: message }));
       } finally {
         setBusy(false);
@@ -2497,7 +2520,7 @@ export function StartupForm({
         await respondPlanRequest(tabId, request.jsonRpcId, outcome);
         patchRuntime(tabId, (rt) => clearPlan(rt));
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorText(err);
         patchRuntime(tabId, (rt) => ({ ...rt, promptError: message }));
       } finally {
         setBusy(false);
@@ -2520,7 +2543,7 @@ export function StartupForm({
         await respondQuestionRequest(tabId, request.jsonRpcId, outcome, choiceId);
         patchRuntime(tabId, (rt) => clearQuestion(rt));
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorText(err);
         patchRuntime(tabId, (rt) => ({ ...rt, promptError: message }));
       } finally {
         setBusy(false);
@@ -2570,6 +2593,7 @@ export function StartupForm({
       if (trimmed && !fromHandoff) {
         // Saved with the tab's pad (scratch.json), so Up-arrow history survives a restart.
         scratch.remember(tabId, trimmed);
+        // intentionally silent: the recent-sends record is best effort.
         void promptRecordSend(trimmed, "chat").catch(() => {});
       }
       patchRuntime(tabId, (rt) => ({
@@ -2589,7 +2613,7 @@ export function StartupForm({
       } catch (err: unknown) {
         waiterRef.current.cancel(tabId);
         chatImages.actions.restore(tabId, images);
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorText(err);
         patchRuntime(tabId, (rt) => ({
           ...rt,
           promptError: message,
@@ -2726,7 +2750,7 @@ export function StartupForm({
       .then((status) => {
         if (!cancelled && status?.needed) setFirstRunOpen(true);
       })
-      .catch(() => {});
+      .catch((err: unknown) => reportOnce("firstRunStatus", "Setup check failed", err));
     return () => {
       cancelled = true;
     };
@@ -2798,7 +2822,7 @@ export function StartupForm({
       await refreshTabs();
       loadTabIntoForm(tab);
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = errorText(err);
       setPreview({ errors: [{ key: "_session", message }], merged: null });
     } finally {
       setBusy(false);
@@ -2865,11 +2889,16 @@ export function StartupForm({
           await setTabModel(tab.id, model);
           const live = livePty(tab.id);
           if (tab.kind === "terminal" && live && live.exitCode == null) {
-            const restart = window.confirm(
-              "The new model applies when the terminal restarts. Stop the running agent now?",
-            );
+            const restart = await confirm({
+              title: "Restart to apply the model",
+              message: "The new model applies when the terminal restarts. Stop the running agent now?",
+              confirmLabel: "Stop the agent",
+              cancelLabel: "Later",
+            });
             if (restart) {
-              await ptyKill(tab.id).catch(() => {});
+              await ptyKill(tab.id).catch((err: unknown) =>
+                showNotice("Could not stop the agent", errorText(err), "failed"),
+              );
               setModelNotice("The agent stopped. Press Restart to use the new model.");
             } else {
               setModelNotice("The new model applies the next time this terminal starts.");
@@ -2878,35 +2907,29 @@ export function StartupForm({
         }
         await refreshTabs();
       } catch (err: unknown) {
-        setModelNotice(err instanceof Error ? err.message : String(err));
+        setModelNotice(errorText(err));
       }
     },
-    [modelSettings, patchRuntime, refreshTabs],
+    [confirm, modelSettings, patchRuntime, refreshTabs, showNotice],
   );
 
-  const changesButton = (tabId: string) => {
-    const count = changeCounts[tabId] ?? 0;
-    return (
-      <button
-        type="button"
-        className="secondary-button changes-button"
-        onClick={() => setChangesTabId(tabId)}
-        title="Files changed since the last turn started: review, accept, or revert"
-      >
-        {count > 0 ? `Changes (${count})` : "Changes"}
-      </button>
-    );
-  };
-
-  const activityButton = (tabId: string) => (
-    <ActivityButton
-      tabId={tabId}
-      busy={!!tabStatuses[tabId]?.busy}
-      terminal={savedTabs.find((tab) => tab.id === tabId)?.kind === "terminal"}
-      refreshKey={activityTabId}
-      onOpen={() => setActivityTabId(tabId)}
-    />
-  );
+  const controls = headerControls({
+    busy,
+    savedTabs,
+    runtimes,
+    cardsByTab,
+    tabStatuses,
+    changeCounts,
+    activityTabId,
+    setChangesTabId,
+    setActivityTabId,
+    providerOf,
+    inheritedModel,
+    modelsForTab,
+    changeTabModel,
+    patchRuntime,
+    showNotice,
+  });
 
   const refreshModelList = useCallback(() => {
     setModelsRefreshing(true);
@@ -2918,76 +2941,6 @@ export function StartupForm({
       })
       .finally(() => setModelsRefreshing(false));
   }, []);
-
-  /** Claude chat: badge with the permission mode the agent last reported. */
-  const modeBadgeFor = (tab: TabSummary | null | undefined, startMode?: string | null) => {
-    if (!tab || providerOf(tab) !== "claude") return null;
-    const mode = cardsByTab[tab.id]?.mode ?? startMode ?? null;
-    if (!mode) return null;
-    return (
-      <span className="mode-badge" title={`Claude permission mode: ${mode}`}>
-        {modeLabel(mode)}
-      </span>
-    );
-  };
-
-  const modelPickerFor = (tab: TabSummary | null | undefined, liveModel?: string | null) => {
-    if (!tab || !tabHasModel(tab)) return null;
-    const inherited = inheritedModel(tab);
-    const models = modelsForTab(tab);
-    return (
-      <ModelPicker
-        compact
-        models={models}
-        value={liveModel && liveModel !== (tab.model ?? inherited) ? liveModel : (tab.model ?? null)}
-        inherited={{ model: inherited, label: "Default" }}
-        ariaLabel={`Model for ${tab.label}`}
-        disabled={busy || !!runtimes[tab.id]?.promptInFlight}
-        onChange={(model) => void changeTabModel(tab, model)}
-      />
-    );
-  };
-
-  /** Claude chats: reasoning effort for this session (the role default applies at start). */
-  const effortPickerFor = (
-    tab: TabSummary | null | undefined,
-    session?: { effort?: string | null; effortOptions?: string[] } | null,
-  ) => {
-    const options = session?.effortOptions ?? [];
-    if (!tab || !session || options.length === 0) return null;
-    const current = session.effort ?? "default";
-    return (
-      <select
-        className="effort-select"
-        aria-label={`Effort for ${tab.label}`}
-        title="Reasoning effort for this session. Set a default per role in Settings > Models."
-        value={current}
-        disabled={busy || !!runtimes[tab.id]?.promptInFlight}
-        onChange={(event) => {
-          const next = event.target.value;
-          void acpSetEffort(tab.id, next)
-            .then((effort) =>
-              patchRuntime(tab.id, (rt) =>
-                rt.session ? { ...rt, session: { ...rt.session, effort } } : rt,
-              ),
-            )
-            .catch((err: unknown) =>
-              showNotice(
-                "Effort not changed",
-                err instanceof Error ? err.message : String(err),
-                "failed",
-              ),
-            );
-        }}
-      >
-        {options.map((level) => (
-          <option key={level} value={level}>
-            {level === "default" ? "Effort: default" : `Effort: ${level}`}
-          </option>
-        ))}
-      </select>
-    );
-  };
 
   /** Move keyboard focus into the main pane or the second pane. */
   const focusPane = useCallback(
@@ -3062,6 +3015,18 @@ export function StartupForm({
   const onShortcut = useCallback(
     (match: ShortcutMatch) => {
       if (match.action === "closeDialog") {
+        // Settings holds unsaved role edits: Escape asks before dropping them.
+        if (settingsOpen && settingsDirtyRef.current) {
+          void confirm({
+            title: "Leave Settings?",
+            message: "Your role edits are not saved. Leaving discards them.",
+            confirmLabel: "Discard and leave",
+            danger: true,
+          }).then((ok) => {
+            if (ok) setSettingsOpen(false);
+          });
+          return;
+        }
         setChangesTabId(null);
         setActivityTabId(null);
         setChatSearchQuery(null);
@@ -3162,8 +3127,21 @@ export function StartupForm({
       }
       if (match.action === "closeTab" && activeTabId) {
         const running = savedTabs.find((tab) => tab.id === activeTabId)?.phase === "running";
-        if (running && !window.confirm("Stop this tab's agent and close it?")) return;
-        void handleCloseTab(activeTabId);
+        const closing = activeTabId;
+        void (async () => {
+          if (
+            running &&
+            !(await confirm({
+              title: "Close tab",
+              message: "Stop this tab's agent and close it?",
+              confirmLabel: "Stop and close",
+              danger: true,
+            }))
+          ) {
+            return;
+          }
+          await handleCloseTab(closing);
+        })();
         return;
       }
       if (match.action === "nextTab") {
@@ -3216,6 +3194,23 @@ export function StartupForm({
         handleFind();
         return;
       }
+      if (
+        match.action === "zoomIn" ||
+        match.action === "zoomOut" ||
+        match.action === "zoomReset"
+      ) {
+        const current = terminalSettings ?? {
+          shell: "",
+          fontSize: TERMINAL_FONT_DEFAULT,
+          optionAsMeta: true,
+          copyOnSelect: false,
+          roleSurface: {},
+          roleRunMode: {},
+        };
+        const next = zoomedFontSize(current.fontSize, match.action);
+        if (next !== current.fontSize) updateTerminalSettings({ ...current, fontSize: next });
+        return;
+      }
       if (match.action === "searchChats") {
         setChatSearchQuery("");
         return;
@@ -3226,7 +3221,11 @@ export function StartupForm({
     },
     [
       activeTabId,
+      confirm,
+      settingsOpen,
       handleFind,
+      terminalSettings,
+      updateTerminalSettings,
       cycleTab,
       handleCloseTab,
       handleNewTab,
@@ -3290,12 +3289,14 @@ export function StartupForm({
         await ptyWrite(target, payload);
         setTerminalError(null);
         // Sent to the shell: it leaves the pad and joins Recent sends.
+        // intentionally silent: the recent-sends record is best effort.
         void promptRecordSend(text.trim(), "terminal").catch(() => {});
         if (padTextRef.current[tabId] === padBefore) {
           scratch.setContent(tabId, padAfterSend(padBefore, sent));
         }
         return;
       } catch {
+        // The PTY may not be attached yet: retry; the loop ends in a visible error below.
         await new Promise((resolve) => window.setTimeout(resolve, 50));
       }
     }
@@ -3317,6 +3318,26 @@ export function StartupForm({
     },
     [togglePane, transferToTerminalNow],
   );
+
+  // path:line in terminal output opens that file in the Files panel.
+  const openTerminalFileRef = useRef<(id: string, path: string) => void>(() => {});
+  openTerminalFileRef.current = (id, path) => {
+    const tabId = id.replace(/::pane$/, "");
+    const tab = savedTabs.find((item) => item.id === tabId);
+    if (!tab) return;
+    const relative = relativeToCwd(path, tab.cwd);
+    if (!relative) {
+      showNotice("Cannot open file", `${path} is outside this tab's folder.`, "question");
+      return;
+    }
+    if (tabId !== activeTabIdRef.current) void handleSelectTab(tabId);
+    setFilePanelOpen(true);
+    setFileFocus({ path: relative, nonce: Date.now() });
+  };
+  useEffect(() => {
+    setTerminalFileOpener((id, path) => openTerminalFileRef.current(id, path));
+    return () => setTerminalFileOpener(null);
+  }, []);
 
   const getSurface = useCallback(() => {
     const el = document.activeElement;
@@ -3363,7 +3384,7 @@ export function StartupForm({
   useEffect(() => {
     handoffList()
       .then(setHandoffs)
-      .catch(() => {});
+      .catch((err: unknown) => reportOnce("handoffList", "Hand-offs did not load", err));
   }, []);
 
   useEffect(() => {
@@ -3372,7 +3393,7 @@ export function StartupForm({
         setDiagnostics(status);
         setCaptureOn(status.capturePermissionPayloads);
       })
-      .catch(() => {});
+      .catch((err: unknown) => reportOnce("diagnosticsStatus", "Diagnostics status did not load", err));
   }, []);
 
   useEffect(() => {
@@ -3389,7 +3410,7 @@ export function StartupForm({
             showNotice(alert.title, alert.body, alert.reached ? "failed" : "question");
           }
         })
-        .catch(() => {});
+        .catch((err: unknown) => reportOnce("usageLimits", "Usage limits did not load", err));
     };
     load();
     const timer = window.setInterval(load, 20_000);
@@ -3402,8 +3423,8 @@ export function StartupForm({
   const refreshApprovalMode = useCallback(() => {
     cursorApprovalMode()
       .then(setApprovalMode)
-      .catch(() => {});
-  }, []);
+      .catch((err: unknown) => reportOnce("approvalMode", "Approval mode did not load", err));
+  }, [reportOnce]);
 
   useEffect(() => {
     refreshApprovalMode();
@@ -3428,7 +3449,7 @@ export function StartupForm({
         setHandoffFields(handoffFieldsOf(loaded));
       })
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorText(err);
         setHandoffError(message);
       });
   }, []);
@@ -3466,6 +3487,7 @@ export function StartupForm({
       if (!fresh) return;
       const readAt = Date.now();
       void terminalSessionLog(tab.id)
+        // intentionally silent: a polled status read; the next tick retries.
         .catch(() => null)
         .then((log) => {
           storeSessionLog(tab.id, log, readAt);
@@ -3517,7 +3539,7 @@ export function StartupForm({
           );
           if (file?.text.trim()) planFile = file;
         } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : String(err);
+          const message = errorText(err);
           setHandoffError(message);
         }
       }
@@ -3566,6 +3588,7 @@ export function StartupForm({
                 setChatPlanFile({ tabId, text: file.text, name: file.name });
               }
             })
+            // intentionally silent: the plan file preview is best effort.
             .catch(() => {});
         }
       }
@@ -3580,12 +3603,31 @@ export function StartupForm({
     [loadHandoffFields, openTerminalHandoff, savedTabs, roles],
   );
 
+  /** The hand-off source terminal's session log: live while the dialog is open. */
+  const captureLog = terminalCapture
+    ? (sessionLogs[terminalCapture.tabId] ?? terminalCapture.log)
+    : null;
+  const captureTabId = terminalCapture?.tabId ?? null;
+  const captureKind = captureTabId ? terminalStates[captureTabId]?.kind : undefined;
+  // The source's state changed (a turn ended, a prompt opened): re-read its
+  // screen so the tail and scrollback match the live log.
+  useEffect(() => {
+    if (!captureTabId || !captureKind) return;
+    const { tail, scrollback } = readTerminalHandoff(captureTabId);
+    setTerminalCapture((capture) =>
+      capture?.tabId === captureTabId && (capture.tail !== tail || capture.scrollback !== scrollback)
+        ? { ...capture, tail, scrollback }
+        : capture,
+    );
+  }, [captureKind, captureTabId]);
+
   const handoffSource = useMemo((): HandoffSource => {
     const captureTab = terminalCapture
       ? savedTabs.find((tab) => tab.id === terminalCapture.tabId)
       : undefined;
     if (terminalCapture && captureTab) {
       const file = terminalCapture.planFile;
+      const captureState = terminalStates[captureTab.id];
       return {
         sourceRoleId: captureTab.roleId,
         sourceTabId: captureTab.id,
@@ -3593,11 +3635,17 @@ export function StartupForm({
         cwd: captureTab.cwd || values.cwd || "",
         answers: terminalCapture.answers,
         sourceFields: role?.id === captureTab.roleId ? role.fields : undefined,
-        ...terminalLogFields(terminalCapture.log),
+        // The poller keeps the log fresh: a turn that ends while the dialog
+        // is open sends its new reply, not the one read when it opened.
+        ...terminalLogFields(captureLog),
         plan: [],
         todos: [],
         selection: terminalCapture.selection,
-        turnInFlight: false,
+        turnInFlight: captureState?.kind === "working" || captureState?.kind === "needs",
+        terminalWorking: captureState?.kind === "working",
+        terminalWaiting:
+          captureState?.kind === "needs" ? terminalWaitingText(captureState.needs) : null,
+        awaitingPlanApproval: captureState?.kind === "needs" && captureState.needs === "plan",
         fromTerminal: true,
         planFileText: file?.text ?? "",
         planFileName: file ? (file.truncated ? `${file.name}, first 8 MB` : file.name) : "",
@@ -3642,6 +3690,7 @@ export function StartupForm({
   }, [
     activeTabId,
     activeTabSummary,
+    captureLog,
     cardsByTab,
     chatPlanFile,
     handoffSelection,
@@ -3654,6 +3703,7 @@ export function StartupForm({
     session?.cwd,
     streamSegments,
     terminalCapture,
+    terminalStates,
     values,
   ]);
 
@@ -3663,7 +3713,7 @@ export function StartupForm({
     isReviewerRole(handoffSource.sourceRoleId) && !handoffSource.turnInFlight
       ? handoffSource.fromTerminal
         ? terminalLogVerdict(
-            terminalCapture?.log,
+            captureLog,
             handoffSource.selection || (handoffSource.terminalTail ?? ""),
           )
         : parseReviewVerdict(handoffSource.latestMessage)
@@ -3763,6 +3813,7 @@ export function StartupForm({
             handoffSource.sourceTabId,
             pendingPlan.jsonRpcId,
             "cancelled",
+            // intentionally silent: the request may already be gone; the hand-off goes ahead.
           ).catch(() => {});
           patchRuntime(handoffSource.sourceTabId, (rt) => ({ ...rt, plan: null }));
         }
@@ -3814,7 +3865,7 @@ export function StartupForm({
           } catch (err: unknown) {
             showNotice(
               "Round not recorded",
-              `The follow-up was sent, but the chain round was not saved: ${err instanceof Error ? err.message : String(err)}`,
+              `The follow-up was sent, but the chain round was not saved: ${errorText(err)}`,
               "question",
             );
           }
@@ -3822,7 +3873,7 @@ export function StartupForm({
           await refreshTabs();
           await handleSelectTab(targetTab.id);
         } catch (err: unknown) {
-          setHandoffError(err instanceof Error ? err.message : String(err));
+          setHandoffError(errorText(err));
         } finally {
           setBusy(false);
         }
@@ -3835,6 +3886,7 @@ export function StartupForm({
         const fresh = await terminalPlanFile(0, source.sourceTabId, {
           mentioned: [planFile.name],
           claimed: [],
+          // intentionally silent: falls back to the plan text captured earlier.
         }).catch(() => null);
         if (fresh?.path === planFile.path && fresh.text.trim()) {
           source = { ...source, planFileText: fresh.text };
@@ -3842,6 +3894,7 @@ export function StartupForm({
       }
       if (source.sourceRoleId === "role_implementer") {
         const chainId = savedTabs.find((tab) => tab.id === source.sourceTabId)?.chain?.chainId;
+        // intentionally silent: each lookup only enriches the hand-off; it works without them.
         const [changes, repo, run] = await Promise.all([
           changesList(source.sourceTabId, "tab").catch(() => null),
           gitRepoInfo(source.cwd).catch(() => null),
@@ -3864,6 +3917,7 @@ export function StartupForm({
         };
       }
       // Settings can stay open over the dialog: map onto the role as saved now.
+      // intentionally silent: falls back to the role fields loaded with the dialog.
       const saved = await getRole(handoffTarget).catch(() => null);
       const fields = saved ? handoffFieldsOf(saved) : (handoffFields ?? []);
       const templateText = saved ? saved.templateText : handoffTemplate;
@@ -3885,6 +3939,7 @@ export function StartupForm({
             : null);
         if (nextChain && needsChainTaskType(mapped, target)) {
           // Plan Reviewer has no task type; the chain's Planner form does.
+          // intentionally silent: without it the task type is simply not carried over.
           const view = await getPipelineRun(nextChain.chainId).catch(() => null);
           mapped = carryChainTaskType(mapped, target, view?.taskType);
         }
@@ -3898,6 +3953,7 @@ export function StartupForm({
             targetName,
           );
           if (!problem) {
+            // intentionally silent: the backend validates again when the terminal starts.
             const check = await validateAndPreview(handoffTarget, {
               ...terminalHandoffInput(mapped).values,
               cwd: handoffSource.cwd,
@@ -3990,7 +4046,7 @@ export function StartupForm({
         setHandoffTarget(null);
         await refreshTabs();
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorText(err);
         setHandoffError(message);
       } finally {
         setBusy(false);
@@ -4031,8 +4087,29 @@ export function StartupForm({
     [confirmHandoffNow],
   );
 
-  const openSavedHandoff = useCallback((record: HandoffRecord) => {
-    if (savedTabs.some((tab) => tab.id === record.sourceTabId)) {
+  /** "Ask Claude to add them": one paste and one Enter into the source terminal. */
+  const askForHandoffSections = useCallback(
+    async (prompt: string) => {
+      const tabId = terminalCapture?.tabId;
+      if (!tabId) return;
+      try {
+        notePtyInput(tabId);
+        await ptyWrite(
+          tabId,
+          encodeTerminalPaste(prompt, { bracketedPaste: terminalBracketedPaste(tabId), submit: true }),
+        );
+        setTerminalCapture(null);
+        setHandoffTarget(null);
+        window.requestAnimationFrame(focusActiveTerminal);
+      } catch (err: unknown) {
+        setHandoffError(errorText(err));
+      }
+    },
+    [focusActiveTerminal, terminalCapture?.tabId],
+  );
+
+  const openSavedHandoff = useCallback((record: HandoffRecord, showText = false) => {
+    if (!showText && savedTabs.some((tab) => tab.id === record.sourceTabId)) {
       void handleSelectTab(record.sourceTabId);
       return;
     }
@@ -4042,7 +4119,7 @@ export function StartupForm({
     handoffGet(record.id)
       .then((full) => setSavedPlan(full))
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorText(err);
         setHandoffError(message);
       })
       .finally(() => setSavedPlanLoading(false));
@@ -4113,8 +4190,8 @@ export function StartupForm({
           .catch((err: unknown) => {
             showNotice(
               "Eagle-Eye",
-              err instanceof Error ? err.message : String(err),
-              "question",
+              errorText(err),
+              "failed",
             );
           })
           .finally(() => setBusy(false));
@@ -4131,8 +4208,14 @@ export function StartupForm({
           setLogBusy(true);
           try {
             const [agent, app] = await Promise.all([
-              sessionAgentLogs(tabId).catch(() => ({ stderr: "" })),
-              diagnosticsReadLog().catch(() => ({ text: "", path: "" })),
+              sessionAgentLogs(tabId).catch((err: unknown) => {
+                showNotice("Agent log not read", errorText(err), "failed");
+                return { stderr: "" };
+              }),
+              diagnosticsReadLog().catch((err: unknown) => {
+                showNotice("App log not read", errorText(err), "failed");
+                return { text: "", path: "" };
+              }),
             ]);
             setLogDrawer({
               stderr: agent.stderr,
@@ -4171,8 +4254,8 @@ export function StartupForm({
           .catch((err: unknown) =>
             showNotice(
               "Could not open pipeline",
-              err instanceof Error ? err.message : String(err),
-              "question",
+              errorText(err),
+              "failed",
             ),
           );
         return;
@@ -4202,8 +4285,8 @@ export function StartupForm({
           .catch((err: unknown) =>
             showNotice(
               "Could not open execution pipeline",
-              err instanceof Error ? err.message : String(err),
-              "question",
+              errorText(err),
+              "failed",
             ),
           );
         return;
@@ -4246,8 +4329,8 @@ export function StartupForm({
           .catch((err: unknown) =>
             showNotice(
               "Could not refresh models",
-              err instanceof Error ? err.message : String(err),
-              "question",
+              errorText(err),
+              "failed",
             ),
           );
         return;
@@ -4269,6 +4352,12 @@ export function StartupForm({
           setCaptureOn(status.capturePermissionPayloads);
         });
         return;
+      case "clearScrollback": {
+        const summary = savedTabs.find((tab) => tab.id === activeTabId);
+        const id = summary?.kind === "terminal" ? summary.id : focusedTerminalId();
+        if (id) clearTerminalScrollback(id);
+        return;
+      }
       case "firstRunSetup":
         setFirstRunOpen(true);
         return;
@@ -4277,8 +4366,8 @@ export function StartupForm({
         return;
       case "switchTheme": {
         const current = normalizeTheme(uiSettings.ui.theme);
-        const index = THEMES.findIndex((theme) => theme.id === current);
-        uiSettings.update({ theme: THEMES[(index + 1) % THEMES.length].id });
+        const index = THEME_CHOICES.findIndex((theme) => theme.id === current);
+        uiSettings.update({ theme: THEME_CHOICES[(index + 1) % THEME_CHOICES.length].id });
         return;
       }
       case "workspaces":
@@ -4322,6 +4411,9 @@ export function StartupForm({
       case "toggleFilePanel":
       case "find":
       case "searchChats":
+      case "zoomIn":
+      case "zoomOut":
+      case "zoomReset":
       case "focusPad":
       case "focusInput":
       case "transferPad":
@@ -4484,7 +4576,7 @@ export function StartupForm({
         if (want !== providerOf(tab)) {
           void setTabProvider(tabId, want)
             .then(() => refreshTabs())
-            .catch(() => {});
+            .catch((err: unknown) => showNotice("Provider not changed", errorText(err), "failed"));
         }
       }
     }
@@ -4495,6 +4587,11 @@ export function StartupForm({
     return runtimes[tab.id]?.session?.model ?? tab.model ?? inheritedModel(tab);
   };
 
+  /** Tabs whose turn ended: a chain chip shows a check mark. */
+  const doneTabIds = savedTabs
+    .filter((tab) => terminalStates[tab.id]?.kind === "idle" && !!sessionLogs[tab.id]?.turnDone)
+    .map((tab) => tab.id);
+
   const tabBar = (
     <TabBar
       tabs={savedTabs}
@@ -4503,12 +4600,13 @@ export function StartupForm({
       disableSwitch={busy && !session}
       disableNew={busy}
       statuses={tabStatuses}
+      doneTabIds={doneTabIds}
       renamingTabId={renamingTabId}
       onRenameStart={setRenamingTabId}
       onRename={(tabId, label) => {
         void setTabLabel(tabId, label)
           .then(() => refreshTabs())
-          .catch(() => {});
+          .catch((err: unknown) => showNotice("Tab not renamed", errorText(err), "failed"));
       }}
       onRenameEnd={() => setRenamingTabId(null)}
       canReopen={closedTabs.length > 0}
@@ -4545,18 +4643,18 @@ export function StartupForm({
       diagnostics={diagnostics}
       captureOn={captureOn}
       showDevTools={showDevTools}
-      onToggleCapture={(enabled) => {
-        void diagnosticsSetCapture(enabled).then((status) => {
+      onToggleCapture={(enabled) =>
+        diagnosticsSetCapture(enabled).then((status) => {
           setDiagnostics(status);
           setCaptureOn(status.capturePermissionPayloads);
-        });
-      }}
+        })
+      }
       terminalSettings={terminalSettings}
-      onTerminalSettings={updateTerminalSettings}
+      onTerminalSettings={saveTerminalSettings}
       notificationSettings={notificationSettings}
       onNotificationSettings={updateNotificationSettings}
       uiSettings={uiSettings.ui}
-      onUiSettings={uiSettings.update}
+      onUiSettings={uiSettings.updateChecked}
       onTestNotification={agentNotifications.sendTest}
       modelList={modelList}
       claudeModelList={claudeModelList}
@@ -4569,19 +4667,20 @@ export function StartupForm({
             ? { ...current, [provider]: next }
             : { cursor: next, claude: next, [provider]: next },
         );
-        void setModelSettings(next, provider)
-          .then((saved) =>
-            setModelSettingsState((current) =>
-              current ? { ...current, [provider]: saved } : { cursor: saved, claude: saved },
-            ),
-          )
-          .catch(() => {});
+        return setModelSettings(next, provider).then((saved) =>
+          setModelSettingsState((current) =>
+            current ? { ...current, [provider]: saved } : { cursor: saved, claude: saved },
+          ),
+        );
       }}
       modelsRefreshing={modelsRefreshing}
       onRefreshModels={() => {
-        void refreshModelList().catch(() => {});
+        void refreshModelList().catch((err: unknown) =>
+          showNotice("Could not refresh the model list", errorText(err), "failed"),
+        );
       }}
       approvalMode={approvalMode}
+      onUnsavedChange={onSettingsUnsaved}
       onClose={() => setSettingsOpen(false)}
     />
   );
@@ -4592,7 +4691,9 @@ export function StartupForm({
   /** F8: setup finished: put the role and folder on the active draft tab, then Start. */
   const finishFirstRun = (choice: FirstRunFinish) => {
     setFirstRunOpen(false);
-    void firstRunComplete().catch(() => {});
+    void firstRunComplete().catch((err: unknown) =>
+      showNotice("Setup state not saved", errorText(err), "failed"),
+    );
     chooseRole(choice.roleId);
     setField("cwd", choice.folder);
     setPendingStart(choice);
@@ -4601,7 +4702,9 @@ export function StartupForm({
 
   const skipFirstRun = () => {
     setFirstRunOpen(false);
-    void firstRunComplete().catch(() => {});
+    void firstRunComplete().catch((err: unknown) =>
+      showNotice("Setup state not saved", errorText(err), "failed"),
+    );
   };
 
   /** F7: open the workspaces dialog (and push the active form to state.json). */
@@ -4612,7 +4715,7 @@ export function StartupForm({
     void workspacesList()
       .then(setWorkspaceList)
       .catch((err: unknown) =>
-        setWorkspaceError(err instanceof Error ? err.message : String(err)),
+        setWorkspaceError(errorText(err)),
       );
   }
 
@@ -4632,11 +4735,14 @@ export function StartupForm({
       );
       if (
         live.length > 0 &&
-        !window.confirm(
-          `Replace the open tabs? ${live.length} running agent or terminal${
+        !(await confirm({
+          title: "Replace the open tabs",
+          message: `Replace the open tabs? ${live.length} running agent or terminal${
             live.length === 1 ? "" : "s"
           } will be stopped. Closed tabs stay in Reopen closed tab.`,
-        )
+          confirmLabel: "Replace",
+          danger: true,
+        }))
       ) {
         return;
       }
@@ -4644,7 +4750,7 @@ export function StartupForm({
         const rt = runtimes[t.id];
         if (rt && rt.segments.length > 0) {
           await transcriptSave(t.id, segmentsToPlainText(rt.segments), rt.session?.cwd ?? t.cwd).catch(
-            () => {},
+            (err: unknown) => reportOnce("transcriptSave", "Transcript not saved", err),
           );
         }
       }
@@ -4700,7 +4806,7 @@ export function StartupForm({
         setFilePanelOpen(layout.filePanelOpen);
         setFilePanelWidth(layout.filePanelWidth);
       })
-      .catch(() => {});
+      .catch((err: unknown) => reportOnce("layoutLoad", "Layout did not load", err));
   };
 
   /** The active tab's pad editor (chat pad or terminal pad), if mounted. */
@@ -4724,7 +4830,7 @@ export function StartupForm({
         setPromptLibraryError(null);
       })
       .catch((err: unknown) =>
-        setPromptLibraryError(err instanceof Error ? err.message : String(err)),
+        setPromptLibraryError(errorText(err)),
       );
 
   /** F6: open the library; `save` starts "Save as prompt" with the pad (or its selection). */
@@ -4756,6 +4862,7 @@ export function StartupForm({
     if (promptId) {
       void promptMarkUsed(promptId)
         .then(setPromptLibrary)
+        // intentionally silent: the "last used" counter is cosmetic.
         .catch(() => {});
     }
     const terminal = savedTabs.find((tab) => tab.id === tabId)?.kind === "terminal";
@@ -4784,7 +4891,10 @@ export function StartupForm({
         });
         return;
       }
-      const file = await transcriptLoad(hit.tabId).catch(() => null);
+      const file = await transcriptLoad(hit.tabId).catch((err: unknown) => {
+        showNotice("Transcript not loaded", errorText(err), "failed");
+        return null;
+      });
       if (hit.source === "closed") {
         stashActiveTab();
         const { tab } = await reopenClosedTab(hit.tabId);
@@ -4801,7 +4911,7 @@ export function StartupForm({
         nonce,
       });
     } catch (err: unknown) {
-      showNotice("Could not open that chat", err instanceof Error ? err.message : String(err), "failed");
+      showNotice("Could not open that chat", errorText(err), "failed");
     }
   };
 
@@ -4916,41 +5026,23 @@ export function StartupForm({
         />
       )}
       {accountPickerOpen && (
-        <div
-          className="overlay-backdrop"
-          role="presentation"
-          onClick={() => setAccountPickerOpen(false)}
-        >
-          <div
-            className="overlay-panel"
-            role="dialog"
-            aria-label="New window"
-            onClick={(event) => event.stopPropagation()}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                event.stopPropagation();
-                setAccountPickerOpen(false);
-              }
-            }}
-          >
-            <h3>New window</h3>
-            <p className="hint">
-              Claude tabs in the new window use the account you pick. Cursor tabs are unchanged.
-            </p>
-            <div className="button-row">
-              {(providers.view ? claudeAccounts(providers.view.settings.claude) : []).map((account) => (
-                <button
-                  key={account.id}
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => launchAccountWindow(account.id)}
-                >
-                  {account.name}
-                </button>
-              ))}
-            </div>
+        <Dialog title="New window" onClose={() => setAccountPickerOpen(false)}>
+          <p className="hint">
+            Claude tabs in the new window use the account you pick. Cursor tabs are unchanged.
+          </p>
+          <div className="button-row">
+            {(providers.view ? claudeAccounts(providers.view.settings.claude) : []).map((account) => (
+              <button
+                key={account.id}
+                type="button"
+                className="secondary-button"
+                onClick={() => launchAccountWindow(account.id)}
+              >
+                {account.name}
+              </button>
+            ))}
           </div>
-        </div>
+        </Dialog>
       )}
       {worktreeDialogOpen && (
         <WorktreeDialog
@@ -4994,7 +5086,7 @@ export function StartupForm({
                   logPath: app.path || null,
                 });
               })
-              .catch(() => {})
+              .catch((err: unknown) => showNotice("Could not read the logs", errorText(err), "failed"))
               .finally(() => setLogBusy(false));
           }}
           onClose={() => setLogDrawerOpen(false)}
@@ -5025,6 +5117,7 @@ export function StartupForm({
           canOpenChainOverview={!!activeTabSummary?.chain}
           model={paletteModel}
           initialQuery={palettePrefill.query}
+          platform={platform}
           key={palettePrefill.key}
           onRun={runPalette}
           onClose={() => setPaletteOpen(false)}
@@ -5100,6 +5193,9 @@ export function StartupForm({
           onConfirm={(scope, surface) => {
             void confirmHandoff(scope, surface);
           }}
+          onAskForSections={
+            handoffSource.fromTerminal ? (prompt) => void askForHandoffSections(prompt) : undefined
+          }
           onClose={() => {
             if (!busy) {
               const fromTerminal = !!terminalCapture;
@@ -5135,245 +5231,59 @@ export function StartupForm({
       ? savedTabs.find((tab) => tab.id === split.secondaryTabId)
       : undefined;
 
-  /**
-   * A live view of a tab that is not the active one: the same terminal
-   * process, or the running chat with its own composer.
-   */
-  const paneBody = (
-    tab: TabSummary,
-    idle: ReactNode,
-    inputRef?: typeof secondaryInputRef,
-  ): ReactNode => {
-    const rt = runtimes[tab.id];
-    let body: ReactNode;
-    if (tab.kind === "terminal") {
-      const tabLaunch = terminalLaunchOf(tab);
-      body = (
-        <TerminalView
-          key={tab.id}
-          ptyId={tab.id}
-          cwd={tab.cwd}
-          launch={tabLaunch}
-          roleId={tab.roleId}
-          fontSize={fontSize}
-          resumeSessionId={tab.resumeSessionId}
-          autoOpen={!livePty(tab.id)}
-          autoFocus={false}
-          menuActions={
-            isTerminalSource(tab)
-              ? handoffMenuItems(tab.roleId, roles).map((item) => ({
-                  id: `send-${item.target}`,
-                  label: item.label,
-                  onSelect: () => {
-                    void openTerminalHandoff(item.target, tab.id);
-                  },
-                }))
-              : []
-          }
-        />
-      );
-    } else if (rt?.session) {
-      const attach = rt.startResult?.injectionStrategy === "attach_to_first_message";
-      body = (
-        <SessionTerminal
-          key={tab.id}
-          title={tab.label}
-          findRequest={findRequest?.tabId === tab.id ? findRequest.req : null}
-          onSearchAllChats={(query) => setChatSearchQuery(query)}
-          branch={tab.worktreeBranch ?? null}
-          chainLabel={tab.chain ? chainLabel(tab.chain) : null}
-          onOpenChain={tab.chain ? () => void openChainOverviewTab(tab.chain!.chainId) : null}
-          contextFill={
-            providerOf(tab) === "claude" ? contextPercent(usageSnap?.contextByTab[tab.id]) : null
-          }
-          cwd={rt.session.cwd}
-          sessionId={rt.session.sessionId}
-          segments={rt.segments}
-          promptInFlight={rt.promptInFlight}
-          followUp={rt.followUp}
-          busy={busy}
-          canSendFollowUp={!attach || !rt.startResult?.startupInjected}
-          promptError={rt.promptError}
-          permissionRequest={rt.permission}
-          onPermissionSelect={(optionId) => void respondPermissionFor(tab.id, optionId)}
-          onPermissionCancel={() => void respondPermissionFor(tab.id, null)}
-          questionRequest={rt.question}
-          onQuestionAnswer={(choiceId) =>
-            void respondQuestionFor(tab.id, "answered", choiceId)
-          }
-          onQuestionSkip={() => void respondQuestionFor(tab.id, "skipped")}
-          onQuestionCancel={() => void respondQuestionFor(tab.id, "cancelled")}
-          onCancelTurn={() => void cancelTurnFor(tab.id)}
-          onFollowUpChange={(value) => setFollowUpFor(tab.id, value)}
-          onSendFollowUp={() => void sendFollowUpFor(tab.id)}
-          onStop={() => void stopSecondarySession(tab.id)}
-          folderWarning={rt.folderWarning}
-          agentExited={rt.agentExited}
-          onRestart={() => void stopSecondarySession(tab.id)}
-          inputRef={inputRef}
-          slashCommands={rt.slashCommands}
-          images={imagesFor(tab.id, rt.session)}
-          headerExtra={
-            <>
-              {modeBadgeFor(tab, rt.session.modeId)}
-              {modelPickerFor(tab, rt.session.model)}
-              {effortPickerFor(tab, rt.session)}
-              {changesButton(tab.id)}
-              {activityButton(tab.id)}
-            </>
-          }
-        />
-      );
-    } else {
-      body = idle;
-    }
-    return body;
+  const headerDeps: TerminalHeaderDeps = {
+    roles,
+    roleColors,
+    controls,
+    terminalStates,
+    tabStatuses,
+    workingSince,
+    sessionLogs,
+    terminalVerdict,
+    isTerminalSource,
+    busy,
+    openTerminalHandoff,
+    openChainOverviewTab,
+    readTerminalVerdict,
+    // Esc interrupts Claude Code's running turn.
+    stopTerminalTurn: (tabId) => {
+      notePtyInput(tabId);
+      void ptyWrite(tabId, "\x1b").catch(() => {});
+    },
   };
 
-  const renderSecondary = (tab: TabSummary) => {
-    const rt = runtimes[tab.id];
-    const liveChat = tab.kind !== "terminal" && !!rt?.session;
-    const body = paneBody(
-      tab,
-      <div className="split-pane-empty">
-        <p className="hint">This tab has no running session.</p>
-        <button type="button" className="secondary-button" onClick={swapPanes}>
-          Open in main pane
-        </button>
-      </div>,
-      secondaryInputRef,
-    );
-    const planWaiting = rt?.plan != null;
-    return (
-      <div
-        className={
-          focusedPane === "secondary" ? "split-pane split-pane-focused" : "split-pane"
-        }
-        data-pane="secondary"
-        aria-label={`Second pane: ${tab.label}`}
-        onFocusCapture={() => setFocusedPane("secondary")}
-        onMouseDown={() => setFocusedPane("secondary")}
-      >
-        <div className="split-pane-bar">
-          <span className="split-pane-title" title={tab.cwd}>
-            {tab.label}
-          </span>
-          {!liveChat && modelPickerFor(tab)}
-          <span className="split-pane-spacer" />
-          <button
-            type="button"
-            className="secondary-button"
-            onClick={swapPanes}
-            title="Swap panes"
-            aria-label="Swap panes"
-          >
-            Swap
-          </button>
-          <button
-            type="button"
-            className="secondary-button"
-            onClick={() => {
-              setSplit((current) => closeSplit(current));
-              setFocusedPane("primary");
-            }}
-            title="Close split"
-            aria-label="Close split"
-          >
-            Close
-          </button>
-        </div>
-        {planWaiting && (
-          <p className="hint split-pane-note">
-            A plan is waiting for review. Swap panes to answer it.
-          </p>
-        )}
-        <div className="split-pane-body">{body}</div>
-      </div>
-    );
-  };
-
-  /**
-   * A grid cell for a tab that is not the active one: a live view plus a
-   * header with its status. Any click (or focus) in it makes it the active
-   * tab, which gives that cell the full controls without moving any cell.
-   */
-  const gridTone = (tab: TabSummary) => {
-    const status = tabStatuses[tab.id];
-    if (status?.exitCode != null) return "error";
-    return status?.needsYou ? "needs" : status?.busy ? "busy" : status?.unseen ? "unseen" : "idle";
-  };
-
-  /** Take a tab out of the grid. Removing the active cell focuses its neighbor. */
-  const removeGridCell = (tabId: string) => {
-    const cells = splitRef.current.gridTabIds ?? [];
-    const index = cells.indexOf(tabId);
-    const neighbor = cells[index + 1] ?? cells[index - 1] ?? null;
-    setSplit((current) => removeFromGrid(current, tabId));
-    if (tabId === activeTabIdRef.current && neighbor) void handleSelectTab(neighbor);
-  };
-
-  const gridCellBar = (tab: TabSummary) => {
-    const status = tabStatuses[tab.id];
-    const tone = gridTone(tab);
-    return (
-      <div className="split-pane-bar">
-        <span className={`grid-cell-dot grid-cell-dot-${tone}`} aria-hidden />
-        <span className="split-pane-title" title={tab.cwd}>
-          {tab.label}
-        </span>
-        {status && tone !== "idle" && (
-          <span className="grid-cell-status">{tabStatusLabel(status)}</span>
-        )}
-        <span className="split-pane-spacer" />
-        <button
-          type="button"
-          className="secondary-button grid-cell-remove"
-          onClick={() => removeGridCell(tab.id)}
-          title="Remove from grid. The tab keeps running."
-          aria-label={`Remove ${tab.label} from grid`}
-        >
-          ×
-        </button>
-      </div>
-    );
-  };
-
-  const renderGridCell = (tab: TabSummary) => {
-    const tone = gridTone(tab);
-    const activate = (event: { target: EventTarget }) => {
-      if (event.target instanceof Element && event.target.closest(".grid-cell-remove")) return;
-      if (tab.id === activeTabIdRef.current) return;
-      gridFocusRef.current =
-        event.target instanceof Element && event.target.closest(".session-terminal-input")
-          ? tab.id
-          : null;
-      void handleSelectTab(tab.id);
-    };
-    return (
-      <div
-        className={`split-pane grid-cell grid-cell-${tone}`}
-        data-pane="grid"
-        aria-label={`Grid cell: ${tab.label}`}
-        onMouseDownCapture={(event) => {
-          // Fields switch tabs on focus instead: switching on mousedown re-renders the
-          // cell before the browser focuses the clicked field, so focus would be lost.
-          if (event.target instanceof Element && event.target.closest("textarea, input, select")) return;
-          activate(event);
-        }}
-        onFocusCapture={activate}
-      >
-        {gridCellBar(tab)}
-        <div className="split-pane-body">
-          {paneBody(
-            tab,
-            <div className="split-pane-empty">
-              <p className="hint">Not started. Click to open it here.</p>
-            </div>,
-          )}
-        </div>
-      </div>
-    );
-  };
+  const panes = createPaneRenderers({
+    runtimes,
+    roles,
+    busy,
+    fontSize,
+    controls,
+    tabStatuses,
+    focusedPane,
+    setFocusedPane,
+    setSplit,
+    splitRef,
+    activeTabIdRef,
+    gridFocusRef,
+    secondaryInputRef,
+    findRequest,
+    usageSnap,
+    providerOf,
+    isTerminalSource,
+    imagesFor,
+    handleSelectTab,
+    swapPanes,
+    setChatSearchQuery,
+    openChainOverviewTab,
+    openTerminalHandoff,
+    respondPermissionFor,
+    respondQuestionFor,
+    cancelTurnFor,
+    setFollowUpFor,
+    sendFollowUpFor,
+    stopSecondarySession,
+    headerDeps,
+  });
 
   const activeCwd = activeTabSummary?.cwd ?? "";
   const filePanel =
@@ -5514,67 +5424,25 @@ export function StartupForm({
     />
   ) : null;
 
-  const shell = (content: ReactNode) => (
-    <section className="workspace-shell">
-      {tabBar}
-      <div className="workspace-body">
-        {filePanel}
-        <div className="workspace-main">
-          {showGrid ? (
-            <GridSplit
-              ids={split.gridTabIds ?? []}
-              renderCell={(tabId) => {
-                if (tabId === activeTabId && activeTabSummary) {
-                  return (
-                    <div
-                      className={`split-pane split-pane-primary split-pane-focused grid-cell grid-cell-active grid-cell-${gridTone(activeTabSummary)}`}
-                      data-pane="primary"
-                    >
-                      {gridCellBar(activeTabSummary)}
-                      <div className="grid-cell-main">{content}</div>
-                    </div>
-                  );
-                }
-                const tab = savedTabs.find((item) => item.id === tabId);
-                return tab ? renderGridCell(tab) : null;
-              }}
-            />
-          ) : (
-          <WorkspaceSplit
-            mode={secondaryTab ? split.mode : "single"}
-            primarySize={clampSplitSize(split.primarySize)}
-            onResize={(size) => {
-              const next = clampSplitSize(size);
-              setSplit((current) =>
-                Math.abs(clampSplitSize(current.primarySize) - next) < 0.5
-                  ? current
-                  : { ...current, primarySize: next },
-              );
-            }}
-            primary={
-              <div
-                className={
-                  secondaryTab && focusedPane === "primary"
-                    ? "split-pane split-pane-primary split-pane-focused"
-                    : "split-pane split-pane-primary"
-                }
-                data-pane="primary"
-                onFocusCapture={() => setFocusedPane("primary")}
-                onMouseDown={() => setFocusedPane("primary")}
-              >
-                {content}
-              </div>
-            }
-            secondary={secondaryTab ? renderSecondary(secondaryTab) : null}
-          />
-          )}
-        </div>
-      </div>
-      {firstUseTip}
-      {statusBar}
-      {overlays}
-    </section>
-  );
+  const shellProps = {
+    tabBar,
+    overlays,
+    filePanel,
+    firstUseTip,
+    statusBar,
+    showGrid,
+    split,
+    setSplit,
+    activeTabId,
+    activeTabSummary,
+    savedTabs,
+    secondaryTab,
+    focusedPane,
+    setFocusedPane,
+    panes,
+  };
+  const shell = (content: ReactNode) => <WorkspaceShell {...shellProps}>{content}</WorkspaceShell>;
+  const settingsShell = () => <WorkspaceShell {...shellProps} settings={settingsPage} />;
   if (
     activeTabSummary?.kind === "pipeline_overview" &&
     !settingsOpen &&
@@ -5588,6 +5456,7 @@ export function StartupForm({
           tabs={savedTabs}
           runtimes={runtimes}
           terminalStates={terminalStates}
+          sessionLogs={sessionLogs}
           onJump={(tabId) => void handleSelectTab(tabId)}
           onWatch={(tabId) => {
             setSplit((current) => ({
@@ -5604,137 +5473,39 @@ export function StartupForm({
   }
 
   if (activeTabSummary?.kind === "terminal" && !settingsOpen) {
-    const linked = handoffs.find((item) => item.targetTabId === activeTabId) ?? null;
-    const launch = terminalLaunchOf(activeTabSummary);
-    const terminalModelPicker = modelPickerFor(activeTabSummary);
     return shell(
-        <section className="status-card status-card-session-full terminal-screen">
-          {linked && (
-            <HandoffBanner
-              sourceRoleId={linked.sourceRoleId}
-              title={linked.title}
-              warning={linked.warning}
-              roleNames={roles}
-              onOpen={() => openSavedHandoff(linked)}
-            />
-          )}
-          {terminalError && <p className="error">{terminalError}</p>}
-          {(isPlanTerminal ||
-            terminalModelPicker ||
-            activeTabSummary.worktreeBranch ||
-            activeTabSummary.chain ||
-            activeTabSummary.cwd) && (
-            <div className="terminal-toolbar">
-              {activeTabSummary.chain && (
-                <ChainLabel
-                  label={chainLabel(activeTabSummary.chain)}
-                  onOpen={() => void openChainOverviewTab(activeTabSummary.chain!.chainId)}
-                />
-              )}
-              {activeTabSummary.worktreeBranch && (
-                <span
-                  className="session-branch"
-                  aria-label="Git branch"
-                  title={activeTabSummary.worktreePath ?? undefined}
-                >
-                  ⎇ {activeTabSummary.worktreeBranch}
-                </span>
-              )}
-              {terminalModelPicker}
-              {activeTabSummary.cwd && changesButton(activeTabSummary.id)}
-              {activeTabSummary.cwd && activityButton(activeTabSummary.id)}
-              {isPlanTerminal && (
-                <span
-                  className="terminal-handoff"
-                  style={{ display: "contents" }}
-                  onPointerOver={() => readTerminalVerdict(activeTabSummary.id)}
-                  onFocus={() => readTerminalVerdict(activeTabSummary.id)}
-                >
-                  <HandoffActions
-                    enabled
-                    reason={null}
-                    busy={busy}
-                    targets={planTerminalTargets}
-                    primaryTarget={terminalRoute?.primaryTarget ?? null}
-                    primaryLabel={terminalRoute?.primaryLabel ?? null}
-                    completeNote={
-                      terminalRoute?.complete
-                        ? activeTabSummary.chain
-                          ? "Chain complete: the PR Reviewer approved."
-                          : "Review approved: nothing left to hand off."
-                        : null
-                    }
-                    roleNames={roles}
-                    onSend={(target) => {
-                      void openTerminalHandoff(target);
-                    }}
-                  />
-                </span>
-              )}
-            </div>
-          )}
-          <TerminalView
-            ptyId={activeTabSummary.id}
-            cwd={activeTabSummary.cwd}
-            launch={launch}
-            roleId={activeTabSummary.roleId}
-            fontSize={fontSize}
-            resumeSessionId={activeTabSummary.resumeSessionId}
-            autoOpen={!livePty(activeTabSummary.id)}
-            onMenuOpen={() => readTerminalVerdict(activeTabSummary.id, true)}
-            menuActions={
-              isPlanTerminal
-                ? handoffMenuItems(activeTabSummary.roleId, roles).map((item) => ({
-                    id: `send-${item.target}`,
-                    label:
-                      item.target === terminalRoute?.primaryTarget && terminalRoute.primaryLabel
-                        ? terminalRoute.primaryLabel
-                        : item.label,
-                    onSelect: () => {
-                      void openTerminalHandoff(item.target);
-                    },
-                  }))
-                : []
-            }
-          />
-          <TerminalScratchPad
-            ref={terminalPadRef}
-            tabId={activeTabSummary.id}
-            ptyId={activeTabSummary.id}
-            content={scratch.content}
-            truncated={scratch.truncated}
-            persistError={scratch.persistError}
-            platform={platform}
-            onChange={(value) => scratch.setContent(activeTabSummary.id, value)}
-            onBlur={() => {
-              notePadSelection();
-              scratch.flush();
-            }}
-            onSent={(text) => void promptRecordSend(text, "terminal").catch(() => {})}
-            beforeSubmit={snapshotTerminalTurn}
-            onOpenLibrary={() => openPromptLibrary(false)}
-            write={ptyWrite}
-            bracketedPaste={() => terminalBracketedPaste(activeTabSummary.id)}
-            onFocusTerminal={focusActiveTerminal}
-            onFocusPad={() => blurParkedTerminal(activeTabSummary.id)}
-            onOpenChange={() => refitTerminal(activeTabSummary.id)}
-            open={padOpen}
-            onOpenToggle={(open) => uiSettings.update({ padHidden: !open })}
-            {...padSizeProps}
-          />
-        </section>,
+      <TerminalTabView
+        activeTabId={activeTabId}
+        activeTabSummary={activeTabSummary}
+        handoffs={handoffs}
+        roles={roles}
+        promptFileTabs={promptFileTabs}
+        terminalError={terminalError}
+        isPlanTerminal={isPlanTerminal}
+        terminalRoute={terminalRoute}
+        fontSize={fontSize}
+        header={terminalHeaderFor(headerDeps, activeTabSummary)}
+        inGrid={showGrid}
+        scratch={scratch}
+        platform={platform}
+        padOpen={padOpen}
+        uiSettings={uiSettings}
+        padSizeProps={padSizeProps}
+        terminalPadRef={terminalPadRef}
+        openSavedHandoff={openSavedHandoff}
+        readTerminalVerdict={readTerminalVerdict}
+        openTerminalHandoff={openTerminalHandoff}
+        notePadSelection={notePadSelection}
+        openPromptLibrary={openPromptLibrary}
+        focusActiveTerminal={focusActiveTerminal}
+        onPadError={(message) => showNotice("Not sent to the terminal", message, "failed")}
+      />,
     );
   }
 
   if (!role) {
     if (settingsOpen) {
-      return (
-        <section className="workspace-shell">
-          {tabBar}
-          {settingsPage}
-          {overlays}
-        </section>
-      );
+      return settingsShell();
     }
     return shell(<p className="hint empty-state">Loading…</p>);
   }
@@ -5750,653 +5521,138 @@ export function StartupForm({
     />
   ) : null;
 
-  const showFields = showStartupFields({ surface, newSessionOpen });
-  const displayedFolder = folderForTab(values.cwd);
-  const folderNotice = folderTabNotice({
-    status: activeTabSummary?.folderStatus ?? "",
-    savedCwd: activeTabSummary?.cwd ?? "",
-    displayedCwd: displayedFolder,
-  });
-
-  const composerFields = (
-    <div className="composer-fields">
-      {showFields && visibleFields(role, formValues).map((field) => (
-        <label
-          key={field.key}
-          className={`field-label${field.type === "multiline" ? " field-label-wide" : ""}`}
-        >
-          {field.label}
-          {field.required ? " *" : ""}
-          {field.type === "multiline" ? (
-            <textarea
-              className="text-input prompt-area"
-              rows={3}
-              data-field-key={field.key}
-              value={values[field.key] ?? ""}
-              onChange={(e) => setField(field.key, e.target.value)}
-              disabled={!!session || busy}
-            />
-          ) : field.type === "select" && field.options ? (
-            <select
-              className="text-input"
-              value={values[field.key] ?? ""}
-              onChange={(e) => setField(field.key, e.target.value)}
-              disabled={!!session || busy}
-            >
-              <option value="">Select…</option>
-              {field.options.map((opt) => (
-                <option key={opt} value={opt}>
-                  {opt}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <input
-              className="text-input"
-              type="text"
-              data-field-key={field.key}
-              value={values[field.key] ?? ""}
-              onChange={(e) => setField(field.key, e.target.value)}
-              disabled={!!session || busy}
-            />
-          )}
-        </label>
-      ))}
-
-      {showFields && errors.length > 0 && (
-        <ul className="field-errors">
-          {errors.map((e) => (
-            <li key={`${e.key}-${e.message}`}>
-              <strong>{e.key}:</strong> {e.message}
-            </li>
-          ))}
-        </ul>
-      )}
-
-      </div>
-  );
-
-  const blankRoleKey =
-    launchChoice === "cursor-cli" || launchChoice === "claude-cli"
-      ? launchChoice
-      : launchChoice === "shell"
-        ? null
-        : roleId || null;
-  const blankProvider: ProviderId =
-    launchChoice === "cursor-cli"
-      ? "cursor"
-      : launchChoice === "claude-cli"
-        ? "claude"
-        : activeProvider;
-  const blankModelPicker =
-    activeTabSummary && blankRoleKey ? (
-      <ModelPicker
-        compact
-        models={modelsForProvider(blankProvider, modelList?.models ?? [], claudeModelList?.models)}
-        value={activeTabSummary.model ?? null}
-        inherited={{
-          model: effectiveModelFor(blankProvider, modelSettings, blankRoleKey, null),
-          label: "Default",
-        }}
-        ariaLabel="Model for this tab"
-        disabled={busy}
-        onChange={(model) => {
-          const tabId = activeTabSummary.id;
-          void setTabModel(tabId, model)
-            .then(() => refreshTabs())
-            .catch((err: unknown) =>
-              setModelNotice(err instanceof Error ? err.message : String(err)),
-            );
-        }}
-      />
-    ) : null;
-
-  const restoreActions = surface === "restore" && (
-    <div className="restore-compact">
-      <div className="button-row">
-        {canContinueSession && (
-          <button
-            type="button"
-            className="primary-button"
-            onClick={() => void startSession(false, { resumeStored: true })}
-            disabled={busy || !cliFound}
-            title="Continues this session in DCTerminal."
-          >
-            Continue session
-          </button>
-        )}
-        <button
-          type="button"
-          className="secondary-button"
-          aria-expanded={newSessionOpen}
-          onClick={openNewSessionForm}
-          disabled={busy}
-        >
-          Start new session
-        </button>
-      </div>
-      {savedTranscript && !activeTabSummary?.acpSessionId && (
-        <p className="hint">
-          This tab has saved text, but it cannot be continued. Start a new session.
-        </p>
-      )}
-      {(savedTranscript || focusedTranscript) && (
-        <details
-          className="startup-form-details"
-          open={focusedTranscript ? true : undefined}
-          key={transcriptFocus?.tabId === activeTabId ? `focus-${transcriptFocus?.nonce}` : "plain"}
-        >
-          <summary>Last session transcript (read-only)</summary>
-          {transcriptFocus && focusedTranscript ? (
-            <TranscriptView
-              text={savedTranscript || focusedTranscript}
-              query={transcriptFocus.query}
-              occurrence={transcriptFocus.occurrence}
-              label="Saved transcript"
-            />
-          ) : (
-            <pre className="mono-snippet transcript-preview">{savedTranscript}</pre>
-          )}
-        </details>
-      )}
-    </div>
-  );
-
-  const previewButton = showFields && (
-    <button
-      type="button"
-      className="secondary-button start-preview-button"
-      onClick={runPreview}
-      disabled={busy || previewBusy}
-      aria-label="Validate & preview"
-      title="Check the fields and show the merged startup prompt"
-    >
-      {previewBusy ? "…" : "Preview"}
-    </button>
-  );
-
-  const chooseProvider = (provider: ProviderId) => {
-    if (!activeTabSummary || provider === activeProvider) return;
-    const tabId = activeTabSummary.id;
-    // A model id from one provider means nothing to the other.
-    const resetModel = activeTabSummary.model ? setTabModel(tabId, null) : Promise.resolve("");
-    void resetModel
-      .then(() => setTabProvider(tabId, provider, pickedRoleId || roleId || null))
-      .then(() => refreshTabs())
-      .then(() => providers.refreshSettings())
-      .catch((err: unknown) => setModelNotice(err instanceof Error ? err.message : String(err)));
-  };
-  const providerChip =
-    activeTabSummary && activeTabSummary.phase === "draft" && showFields ? (
-      <div className="provider-chip-group" role="radiogroup" aria-label="Provider for this tab">
-        {PROVIDER_IDS.map((id) => (
-          <button
-            key={id}
-            type="button"
-            role="radio"
-            className="role-choice"
-            aria-checked={activeProvider === id}
-            aria-pressed={activeProvider === id}
-            disabled={busy}
-            onClick={() => chooseProvider(id)}
-          >
-            {PROVIDERS[id].label}
-          </button>
-        ))}
-      </div>
-    ) : null;
-
-  const eagleToggle =
-    showFields &&
-    activeTabSummary?.phase === "draft" &&
-    !activeTabSummary.chain &&
-    (roleId === "role_planner" || roleId === "role_implementer") ? (
-      <label className="eagle-toggle">
-        <input
-          type="checkbox"
-          checked={eagleOn}
-          onChange={(event) => {
-            eagleOnRef.current = event.target.checked;
-            setEagleOn(event.target.checked);
-          }}
-        />
-        {roleId === "role_planner" ? "Eagle-Eye 1" : "Eagle-Eye 2"}
-      </label>
-    ) : null;
-
-  const roleStartButton = showFields && (
-    <button
-      type="button"
-      className="primary-button"
-      onClick={() => {
-        if (rememberedSurface(roleId) === "terminal") void startRoleTerminal();
-        else void startSession(surface === "restore" && resendStartup);
-      }}
-      disabled={busy || (activeProvider === "cursor" && !cliFound)}
-    >
-      {rememberedSurface(roleId) === "terminal" ? "Start terminal" : "Start"}
-    </button>
-  );
-
-  const previousAnswers = activeTabId ? previousAnswersRef.current[activeTabId] : undefined;
-  const formHasText = Object.keys(formTextOf(values)).length > 0;
-  const undoClear = clearedForm && clearedForm.tabId === activeTabId ? clearedForm : null;
-  const formTools = showFields && (
-    <div className="button-row form-tools" role="group" aria-label="Form tools">
-      {surface === "restore" && newSessionOpen && previousAnswers && (
-        <button
-          type="button"
-          className="link-button"
-          onClick={fillPreviousValues}
-          disabled={busy}
-          title="Fill the fields with what this tab last started with"
-        >
-          Use the previous values
-        </button>
-      )}
-      {undoClear ? (
-        <span className="hint" role="status">
-          Form cleared.{" "}
-          <button type="button" className="link-button" onClick={undoClearForm} disabled={busy}>
-            Undo
-          </button>
-        </span>
-      ) : (
-        <button
-          type="button"
-          className="link-button"
-          onClick={clearForm}
-          disabled={busy || !formHasText}
-          title="Empty the text fields. The folder stays."
-        >
-          Clear form
-        </button>
-      )}
-    </div>
-  );
-
-  const idleActions = showFields && (
-    <>
-      {formTools}
-      {surface === "restore" && (
-        <label className="field-label continue-option">
-          <input
-            type="checkbox"
-            checked={resendStartup}
-            onChange={(e) => {
-              const checked = e.target.checked;
-              setResendStartup(checked);
-              const tabId = activeTabIdRef.current;
-              if (tabId && draftsRef.current[tabId]) {
-                draftsRef.current[tabId] = {
-                  ...draftsRef.current[tabId],
-                  resendStartup: checked,
-                };
-              }
-            }}
-            disabled={busy}
-          />
-          Re-send startup prompt (full restart with merged role template)
-        </label>
-      )}
-      {preview?.merged && preview.merged.text && (
-        <details className="preview-details">
-          <summary>
-            Merged prompt ({preview.merged.chars.toLocaleString()} chars)
-          </summary>
-          <pre className="mono-snippet">{preview.merged.text}</pre>
-        </details>
-      )}
-    </>
-  );
-
   if (session && !settingsOpen) {
-    const attachFirst =
-      startResult?.injectionStrategy === "attach_to_first_message";
     return shell(
-        <section className="status-card status-card-session-full">
-        {handoffBanner}
-        <SessionCards
-          cards={cardsByTab[activeTabId ?? ""] ?? emptySessionCards()}
-          segments={streamSegments}
-          planRequest={planRequest}
-          busy={busy}
-          onAcceptPlan={() => void respondPlanFor(activeTabId, "accepted")}
-          onRejectPlan={() => void respondPlanFor(activeTabId, "cancelled")}
-          handoff={handoffOffer}
-        />
-            <SplitPanes
-              mode={
-                paneByTab[activeTabId ?? ""]?.open
-                  ? paneByTab[activeTabId ?? ""]?.beside
-                    ? "horizontal"
-                    : "vertical"
-                  : "single"
-              }
-              primary={
-            <SessionTerminal
-              title={activeTabSummary?.label ?? "Session"}
-              scrollKey={activeTabId}
-              findRequest={
-                activeTabId && findRequest?.tabId === activeTabId ? findRequest.req : null
-              }
-              onSearchAllChats={(query) => setChatSearchQuery(query)}
-              branch={activeTabSummary?.worktreeBranch ?? null}
-              chainLabel={activeTabSummary?.chain ? chainLabel(activeTabSummary.chain) : null}
-              onOpenChain={
-                activeTabSummary?.chain
-                  ? () => void openChainOverviewTab(activeTabSummary.chain!.chainId)
-                  : null
-              }
-              contextFill={
-                activeProvider === "claude" && activeTabId
-                  ? contextPercent(usageSnap?.contextByTab[activeTabId])
-                  : null
-              }
-              cwd={session.cwd}
-              sessionId={session.sessionId}
-              segments={streamSegments}
-              promptInFlight={promptInFlight}
-              followUp={followUp}
-              busy={busy}
-              canSendFollowUp={!attachFirst || !startResult?.startupInjected}
-              promptError={promptError}
-              permissionRequest={permissionRequest}
-              onPermissionSelect={handlePermissionSelect}
-              onPermissionCancel={handlePermissionCancel}
-              questionRequest={questionRequest}
-              onQuestionAnswer={handleQuestionAnswer}
-              onQuestionSkip={handleQuestionSkip}
-              onQuestionCancel={handleQuestionCancel}
-              onCancelTurn={cancelTurn}
-              onFollowUpChange={setFollowUp}
-              onSendFollowUp={sendFollowUp}
-              onStop={stopSession}
-              folderWarning={activeRuntime.folderWarning}
-              agentExited={activeRuntime.agentExited}
-              onRestart={stopSession}
-              inputRef={inputRef}
-              slashCommands={activeRuntime.slashCommands}
-              history={composerHistory}
-              historyCursor={historyCursor}
-              onHistoryCursor={setHistoryCursor}
-              handoff={handoffOffer}
-              images={imagesFor(activeTabId, session)}
-              statusInBar
-              details={[
-                `Role: ${roleNames[roleId] ?? roleId}`,
-                `Model: ${session.model ?? (activeTabSummary ? modelForTab(activeTabSummary) : "") ?? ""}`,
-              ].join("\n")}
-              headerExtra={
-                <>
-                  {modeBadgeFor(activeTabSummary, session.modeId)}
-                  {modelPickerFor(activeTabSummary, session.model)}
-                  {effortPickerFor(activeTabSummary, session)}
-                  {activeTabSummary && changesButton(activeTabSummary.id)}
-                  {activeTabSummary && activityButton(activeTabSummary.id)}
-                </>
-              }
-            />
-              }
-              secondary={
-                paneByTab[activeTabId ?? ""]?.open && activeTabId ? (
-                  <div className="terminal-pane">
-                    <div className="terminal-pane-bar">
-                      <span>Terminal</span>
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        onClick={() => {
-                          const tabId = activeTabId;
-                          setPaneByTab((prev) => {
-                            const current = prev[tabId] ?? { open: true, beside: false };
-                            return { ...prev, [tabId]: { ...current, beside: !current.beside } };
-                          });
-                        }}
-                      >
-                        {paneByTab[activeTabId]?.beside ? "Below" : "Beside"}
-                      </button>
-                      <button type="button" className="secondary-button" onClick={togglePane}>
-                        Hide
-                      </button>
-                    </div>
-                    <TerminalView
-                      ptyId={`${activeTabId}::pane`}
-                      cwd={session.cwd}
-                      launch="shell"
-                      fontSize={fontSize}
-                      autoOpen
-                      autoFocus={false}
-                    />
-                  </div>
-                ) : null
-              }
-            />
-        <ScratchPad
-          ref={padRef}
-          content={scratch.content}
-          truncated={scratch.truncated}
-          persistError={scratch.persistError}
-          chain={chain}
-          disabled={busy || !!permissionRequest}
-          onChange={(value) => {
-            if (activeTabId) scratch.setContent(activeTabId, value);
-          }}
-          onTransfer={transferPad}
-          slashCommands={activeRuntime.slashCommands}
-          onTransferTerminal={() => void transferToTerminalNow()}
-          onSend={sendFromPad}
-          onBlur={() => {
-            notePadSelection();
-            scratch.flush();
-          }}
-          onOpenLibrary={() => openPromptLibrary(false)}
-          images={imagesFor(activeTabId, session)}
-          collapsed={!padOpen}
-          onToggle={() => uiSettings.update({ padHidden: padOpen })}
-          {...padSizeProps}
-          onStopChain={() => {
-            chainAbortRef.current = true;
-            setChain((current) => (current ? chainStop(current) : current));
-            void cancelTurn();
-          }}
-        />
-        {transcriptSaveError && (
-          <p className="error scratch-pad-status">
-            Could not save the transcript: {transcriptSaveError}
-          </p>
-        )}
-        {lastPromptResult && !promptInFlight && (
-          <p className="hint session-turn-hint">
-            Last turn: {lastPromptResult.stopReason ?? "finished"}
-          </p>
-        )}
-        </section>,
+      <ChatSessionView
+        activeTabId={activeTabId}
+        activeTabSummary={activeTabSummary}
+        activeRuntime={activeRuntime}
+        session={session}
+        handoffBanner={handoffBanner}
+        cardsByTab={cardsByTab}
+        handoffOffer={handoffOffer}
+        paneByTab={paneByTab}
+        setPaneByTab={setPaneByTab}
+        togglePane={togglePane}
+        findRequest={findRequest}
+        setChatSearchQuery={setChatSearchQuery}
+        openChainOverviewTab={openChainOverviewTab}
+        activeProvider={activeProvider}
+        usageSnap={usageSnap}
+        busy={busy}
+        fontSize={fontSize}
+        roleId={roleId}
+        roleNames={roleNames}
+        modelForTab={modelForTab}
+        controls={controls}
+        imagesFor={imagesFor}
+        inputRef={inputRef}
+        padRef={padRef}
+        composerHistory={composerHistory}
+        historyCursor={historyCursor}
+        setHistoryCursor={setHistoryCursor}
+        scratch={scratch}
+        chain={chain}
+        setChain={setChain}
+        chainAbortRef={chainAbortRef}
+        padOpen={padOpen}
+        uiSettings={uiSettings}
+        padSizeProps={padSizeProps}
+        transcriptSaveError={transcriptSaveError}
+        respondPlanFor={respondPlanFor}
+        handlePermissionSelect={handlePermissionSelect}
+        handlePermissionCancel={handlePermissionCancel}
+        handleQuestionAnswer={handleQuestionAnswer}
+        handleQuestionSkip={handleQuestionSkip}
+        handleQuestionCancel={handleQuestionCancel}
+        cancelTurn={cancelTurn}
+        setFollowUp={setFollowUp}
+        sendFollowUp={sendFollowUp}
+        stopSession={stopSession}
+        transferPad={transferPad}
+        transferToTerminalNow={transferToTerminalNow}
+        sendFromPad={sendFromPad}
+        notePadSelection={notePadSelection}
+        openPromptLibrary={openPromptLibrary}
+      />,
     );
   }
 
   if (settingsOpen) {
-    return (
-      <section className="workspace-shell">
-        {tabBar}
-        {settingsPage}
-        {overlays}
-      </section>
-    );
+    return settingsShell();
   }
 
   return shell(
-        <div
-          className="empty-state"
-          ref={emptyStateRef}
-          key={activeTabId ?? "new"}
-          onScroll={(event) => {
-            if (ignoreScrollRef.current) return;
-            const tabId = activeTabIdRef.current;
-            if (tabId) scrollPositions.current[tabId] = event.currentTarget.scrollTop;
-          }}
-        >
-          <div className="empty-state-card start-screen">
-            {handoffBanner}
-            {activeHandoff && !activeHandoff.planField && (
-              <label className="field-label">
-                From {roleDisplayName(activeHandoff.sourceRoleId, roles)}
-                <textarea
-                  className="text-input prompt-area"
-                  rows={8}
-                  value={scratch.content}
-                  onChange={(event) => {
-                    if (activeTabId) scratch.setContent(activeTabId, event.target.value);
-                  }}
-                  disabled={busy}
-                />
-                <span className="hint">
-                  This role has no plan field. The text is in the scratch pad. Start does not
-                  send it. After the session is running, Transfer moves it into the input.
-                </span>
-              </label>
-            )}
-            <div
-              className={`start-body${historyFolder && !launchChoice ? " start-body-with-history" : ""}`}
-            >
-              <div className="start-main start-session-card">
-                <h2 className="start-session-title">Start a session</h2>
-                <div className="start-row" role="group" aria-label="Start a session">
-                  <FolderPicker
-                    compact
-                    value={displayedFolder}
-                    unavailable={folderNotice?.tone === "error"}
-                    disabled={busy}
-                    onChange={(path) => setField("cwd", path)}
-                  />
-                  <span className="start-row-spacer" aria-hidden />
-                  {launchChoice ? (
-                    <>
-                      {launchChoice !== "shell" && blankModelPicker}
-                      <button
-                        type="button"
-                        className="primary-button"
-                        onClick={() => void startBlankTerminal(launchChoice)}
-                        disabled={
-                          busy ||
-                          !displayedFolder ||
-                          (launchChoice === "cursor-cli" && !cliFound) ||
-                          (launchChoice === "claude-cli" && providers.claude?.status.found === false)
-                        }
-                      >
-                        {launchChoice === "shell" ? "Start terminal" : `Start ${CLI_LABEL[launchChoice]}`}
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      {providerChip}
-                      {blankModelPicker}
-                      {eagleToggle}
-                      {roleStartButton}
-                    </>
-                  )}
-                </div>
-                {folderNotice?.tone === "error" && <p className="error">{folderNotice.text}</p>}
-                {activeTabSummary?.worktreeBranch && (
-                  <p className="hint">
-                    Worktree on branch <strong>{activeTabSummary.worktreeBranch}</strong>. Remove it
-                    from the command palette when you are done.
-                  </p>
-                )}
-                <RoleTiles
-                  roles={roles}
-                  pickedRoleId={pickedRoleId}
-                  launchChoice={launchChoice}
-                  busy={busy}
-                  onChooseRole={chooseRole}
-                  onLaunchShell={() => {
-                    setLaunchChoice("shell");
-                    setPickedRoleId(null);
-                  }}
-                  onLaunchCursorCli={() => {
-                    setLaunchChoice("cursor-cli");
-                    setPickedRoleId(null);
-                  }}
-                  onLaunchClaudeCli={() => {
-                    setLaunchChoice("claude-cli");
-                    setPickedRoleId(null);
-                  }}
-                />
-                {pickedRoleId && !launchChoice && (
-                  <div className="start-surface-choices" role="group" aria-label="Open as">
-                    <button
-                      type="button"
-                      className="role-choice"
-                      aria-pressed={rememberedSurface(pickedRoleId) === "chat"}
-                      onClick={() => rememberSurface(pickedRoleId, "chat")}
-                      disabled={busy}
-                      title="Open as chat"
-                    >
-                      Chat
-                    </button>
-                    <button
-                      type="button"
-                      className="role-choice"
-                      aria-pressed={rememberedSurface(pickedRoleId) === "terminal"}
-                      onClick={() => rememberSurface(pickedRoleId, "terminal")}
-                      disabled={busy}
-                      aria-label="Terminal"
-                      title="Open as terminal (agent CLI in a terminal)"
-                    >
-                      <span aria-hidden>›_</span>
-                    </button>
-                  </div>
-                )}
-                {!launchChoice && (
-                  <>
-                    {restoreActions}
-                    {composerFields}
-                    {previewButton}
-                    {idleActions}
-                  </>
-                )}
-                {cliLaunchNote && <p className="hint">{cliLaunchNote}</p>}
-                {terminalError && <p className="error">{terminalError}</p>}
-                {transcriptSaveError && (
-                  <p className="error">Could not save the transcript: {transcriptSaveError}</p>
-                )}
-                {activeProvider === "cursor" && !cliFound && (
-                  <p className="error">Cursor CLI was not found.</p>
-                )}
-              </div>
-              {historyFolder && !launchChoice && (
-                <aside className="start-history">
-                  <div className="history-provider-toggle" role="group" aria-label="History provider">
-                    <button
-                      type="button"
-                      className="role-choice"
-                      aria-pressed={historyProvider === "claude"}
-                      onClick={() => setHistoryOverride("claude")}
-                    >
-                      Claude
-                    </button>
-                    <button
-                      type="button"
-                      className="role-choice"
-                      aria-pressed={historyProvider === "cursor"}
-                      onClick={() => setHistoryOverride("cursor")}
-                    >
-                      Cursor
-                    </button>
-                  </div>
-                  <CursorHistoryList
-                    entries={historyEntries}
-                    error={historyError}
-                    busy={busy}
-                    title={PROVIDERS[historyProvider].historyTitle}
-                    readFrom={historyProvider === "claude" ? historyReadFrom : null}
-                    onResume={(entry) => void resumeHistoryEntry(entry)}
-                    onOpenCli={(entry) => void openCursorCli(entry.id, entry.cwd, entry.source)}
-                  />
-                </aside>
-              )}
-            </div>
-          </div>
-        </div>,
+    <StartScreen
+      role={role}
+      roles={roles}
+      activeTabId={activeTabId}
+      activeTabIdRef={activeTabIdRef}
+      activeTabSummary={activeTabSummary}
+      session={session}
+      busy={busy}
+      cliFound={cliFound}
+      providers={providers}
+      activeProvider={activeProvider}
+      modelList={modelList}
+      claudeModelList={claudeModelList}
+      modelSettings={modelSettings}
+      setModelNotice={setModelNotice}
+      refreshTabs={refreshTabs}
+      values={values}
+      formValues={formValues}
+      setField={setField}
+      errors={errors}
+      surface={surface}
+      newSessionOpen={newSessionOpen}
+      openNewSessionForm={openNewSessionForm}
+      canContinueSession={canContinueSession}
+      savedTranscript={savedTranscript}
+      focusedTranscript={focusedTranscript}
+      transcriptFocus={transcriptFocus}
+      preview={preview}
+      previewBusy={previewBusy}
+      runPreview={runPreview}
+      resendStartup={resendStartup}
+      setResendStartup={setResendStartup}
+      draftsRef={draftsRef}
+      previousAnswersRef={previousAnswersRef}
+      clearedForm={clearedForm}
+      fillPreviousValues={fillPreviousValues}
+      clearForm={clearForm}
+      undoClearForm={undoClearForm}
+      roleId={roleId}
+      pickedRoleId={pickedRoleId}
+      setPickedRoleId={setPickedRoleId}
+      chooseRole={chooseRole}
+      launchChoice={launchChoice}
+      setLaunchChoice={setLaunchChoice}
+      rememberedSurface={rememberedSurface}
+      rememberSurface={rememberSurface}
+      eagleOn={eagleOn}
+      setEagleOn={setEagleOn}
+      eagleOnRef={eagleOnRef}
+      startSession={startSession}
+      startRoleTerminal={startRoleTerminal}
+      startBlankTerminal={startBlankTerminal}
+      activeHandoff={activeHandoff}
+      handoffBanner={handoffBanner}
+      scratch={scratch}
+      historyFolder={historyFolder}
+      historyProvider={historyProvider}
+      setHistoryOverride={setHistoryOverride}
+      historyEntries={historyEntries}
+      historyError={historyError}
+      historyLoading={historyLoading}
+      historyReadFrom={historyReadFrom}
+      resumeHistoryEntry={resumeHistoryEntry}
+      openCursorCli={openCursorCli}
+      cliLaunchNote={cliLaunchNote}
+      terminalError={terminalError}
+      transcriptSaveError={transcriptSaveError}
+      emptyStateRef={emptyStateRef}
+      ignoreScrollRef={ignoreScrollRef}
+      scrollPositions={scrollPositions}
+    />,
   );
 }

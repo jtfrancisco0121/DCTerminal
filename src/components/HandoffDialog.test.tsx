@@ -113,6 +113,62 @@ describe("HandoffDialog", () => {
   });
 });
 
+describe("HandoffDialog from a terminal", () => {
+  const long = `${"x".repeat(700)} THE-END-MARKER`;
+  const terminal: HandoffSource = {
+    ...source,
+    latestMessage: long,
+    plan: [],
+    fromTerminal: true,
+    terminalLog: true,
+  };
+  const props = {
+    targetRoleId: "role_implementer" as const,
+    targetFields: [{ key: "approvedPlan" }],
+    folderWarning: null,
+    busy: false,
+    error: null,
+    preferredSurface: "chat" as const,
+    onTarget: () => {},
+    onConfirm: () => {},
+    onClose: () => {},
+  };
+
+  it("previews the whole text, not the first 500 characters", () => {
+    render(<HandoffDialog {...props} source={terminal} />);
+    expect(screen.getByLabelText("Hand-off text").textContent).toContain("THE-END-MARKER");
+  });
+
+  it("lists missing HANDOFF sections and asks Claude for them", () => {
+    const onAsk = vi.fn();
+    render(
+      <HandoffDialog
+        {...props}
+        source={{ ...terminal, latestMessage: `${long}\n\n## HANDOFF: Plan\nDo it.` }}
+        onAskForSections={onAsk}
+      />,
+    );
+    expect(screen.getByText(/Missing: HANDOFF: Pull requests, HANDOFF: Open questions/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Ask Claude to add them" }));
+    expect(onAsk).toHaveBeenCalledWith(expect.stringMatching(/^Your reply is missing the HANDOFF sections/));
+  });
+
+  it("blocks sending while the terminal is working or needs you", () => {
+    const { rerender } = render(
+      <HandoffDialog {...props} source={{ ...terminal, terminalWorking: true }} />,
+    );
+    expect(screen.getByRole("note").textContent).toMatch(/finishes this turn/);
+    expect(screen.getByRole("button", { name: "Open Implementer tab" }).hasAttribute("disabled")).toBe(true);
+    rerender(
+      <HandoffDialog
+        {...props}
+        source={{ ...terminal, terminalWaiting: "waiting for you on a question" }}
+      />,
+    );
+    expect(screen.getAllByRole("note")[0].textContent).toMatch(/waiting for you on a question/);
+  });
+});
+
 describe("HandoffActions", () => {
   it("shows Send to Plan Reviewer first for a Planner", () => {
     const onSend = vi.fn();
