@@ -218,6 +218,7 @@ fn terminal_settings_are_cleaned_and_run_modes_checked() {
     let next = TerminalSettings {
         shell: "  /bin/zsh  ".into(),
         font_size: 200,
+        option_as_meta: false,
         role_surface: HashMap::from([
             ("a".into(), "terminal".into()),
             ("b".into(), "popup".into()),
@@ -228,6 +229,8 @@ fn terminal_settings_are_cleaned_and_run_modes_checked() {
     let terminal = SettingsStore::open(dir.path()).unwrap().terminal().clone();
     assert_eq!(terminal.shell, "/bin/zsh");
     assert_eq!(terminal.font_size, 32);
+    assert!(!terminal.option_as_meta);
+    assert!(TerminalSettings::default().option_as_meta);
     assert_eq!(terminal.role_surface.len(), 1);
     assert_eq!(store.run_mode_for("a"), "yolo");
     assert_eq!(store.run_mode_for("b"), "default");

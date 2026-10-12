@@ -120,6 +120,7 @@ vi.mock("./bridge", () => {
   getTerminalSettings: vi.fn(async () => ({
     shell: "",
     fontSize: 14,
+    optionAsMeta: true,
     roleSurface: Object.fromEntries(
       [
         "role_planner",
@@ -491,6 +492,7 @@ describe("blank tab card", () => {
     vi.mocked(getTerminalSettings).mockResolvedValueOnce({
       shell: "",
       fontSize: 14,
+      optionAsMeta: true,
       roleSurface: {},
       roleRunMode: {},
     });

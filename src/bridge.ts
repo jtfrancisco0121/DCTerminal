@@ -1179,6 +1179,8 @@ export type PlanFileInfo = {
 export type TerminalSettings = {
   shell: string;
   fontSize: number;
+  /** macOS: Option acts as Meta in terminals. */
+  optionAsMeta: boolean;
   roleSurface: Record<string, string>;
   roleRunMode: Record<string, string>;
 };

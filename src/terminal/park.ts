@@ -52,6 +52,14 @@ export function terminalBracketedPaste(id: string): boolean {
   return parked.get(id)?.term.modes.bracketedPasteMode === true;
 }
 
+let optionAsMeta = true;
+
+/** macOS: Option acts as Meta. Applies live to every open terminal. */
+export function setOptionAsMeta(value: boolean): void {
+  optionAsMeta = value;
+  for (const entry of parked.values()) entry.term.options.macOptionIsMeta = value;
+}
+
 export function ensureParkedTerminal(id: string, fontSize: number): ParkedTerminal {
   const existing = parked.get(id);
   if (existing) {
@@ -66,6 +74,7 @@ export function ensureParkedTerminal(id: string, fontSize: number): ParkedTermin
     scrollback: 10000,
     theme: currentTheme,
     cursorBlink: true,
+    macOptionIsMeta: optionAsMeta,
     rightClickSelectsWord: false,
     // The search addon's match highlights use the decoration API.
     allowProposedApi: true,
