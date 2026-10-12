@@ -32,7 +32,8 @@ import {
   type SessionLogs,
 } from "../pipeline/overviewModel";
 import { liveTerminalReader, type TerminalReader } from "../pipeline/terminalText";
-import { verdictTone } from "../handoff/verdict";
+import { parseReviewVerdict, verdictTone } from "../handoff/verdict";
+import { roleDisplayName } from "../handoff/transitions";
 import type { TerminalState } from "../terminal/claudeState";
 
 type Props = {
@@ -398,6 +399,17 @@ export function PipelineOverview({
                 ))}
               </ol>
             )}
+            {(stageDef?.alsoReviewers ?? []).map((role) => {
+              const other = tabs.find((t) => t.id === run.tabIds[role]);
+              const said = other
+                ? parseReviewVerdict(stageReply(other, runtimes[other.id], terminalReader, sessionLogs))
+                : null;
+              return (
+                <p key={role} className="hint pipeline-also-reviewer">
+                  Also reviewed by {roleDisplayName(role, null)}: {other ? (said ?? "no verdict yet") : "not started"}
+                </p>
+              );
+            })}
             {stageDef?.loopBack && (
               <p className="hint pipeline-round-cap">
                 Round {round} of at most {maxRounds(stageDef)}

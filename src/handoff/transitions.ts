@@ -10,7 +10,7 @@
  * card or finding becomes a Planner request (or a Developer fix).
  */
 
-import { loopBackTarget, nextChainRole, type ChainRef } from "./chains";
+import { loopBackTarget, nextChainRoles, type ChainRef } from "./chains";
 
 export type HandoffTargetId = string;
 
@@ -67,7 +67,7 @@ export function handoffTargets(
     ? own.filter((id) => id !== sourceRoleId)
     : [...(HANDOFF_TRANSITIONS[sourceRoleId] ?? [])];
   if (chain) {
-    for (const id of [nextChainRole(chain, sourceRoleId), loopBackTarget(sourceRoleId, chain.kind)]) {
+    for (const id of [...nextChainRoles(chain, sourceRoleId), loopBackTarget(sourceRoleId, chain.kind)]) {
       if (id && id !== sourceRoleId && !targets.includes(id)) targets.push(id);
     }
   }

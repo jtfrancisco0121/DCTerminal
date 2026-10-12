@@ -2226,6 +2226,7 @@ export function StartupForm({
     notifyStop: (tabId, reason) => notifyAgent(tabId, { kind: "question", detail: `Autopilot: ${reason}` }),
     notice: (title, body) => showNotice(title, body),
     startLane: startLaneOf,
+    sessionLog: (tabId) => sessionLogsRef.current[tabId],
   });
   autopilotLogRef.current = autopilot.onTerminalLog;
 

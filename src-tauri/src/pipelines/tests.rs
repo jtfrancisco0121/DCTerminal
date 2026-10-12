@@ -58,14 +58,14 @@ fn built_in_loop_backs_caps_and_gates() {
 fn user_pipelines_join_the_registry() {
     let id = "bugfix_registry_test";
     assert!(find(id).is_none());
-    set_user_pipelines(vec![user_def(id)]);
+    register_for_test(user_def(id));
     let def = find(id).unwrap();
     assert!(!def.built_in);
     assert_eq!(run_kind_for_chain(id).as_deref(), Some(id));
     assert_eq!(stages(id)[1].1, "role_pr_reviewer");
     let back = def.stage("review").unwrap().loop_back.clone().unwrap();
     assert_eq!(back.max_rounds, DEFAULT_MAX_ROUNDS);
-    set_user_pipelines(Vec::new());
+    unregister_for_test(id);
     assert!(find(id).is_none());
 }
 
@@ -101,4 +101,18 @@ fn severities_order_and_parse() {
     assert_eq!(Severity::parse(" nit "), Some(Severity::Info));
     assert_eq!(Severity::parse("Blocker"), Some(Severity::Critical));
     assert_eq!(Severity::parse("whatever"), None);
+}
+
+#[test]
+fn parallel_reviewers_need_a_loop_back_and_distinct_roles() {
+    let mut def = user_def("pair");
+    def.stages[1].also_reviewers = vec!["role_security".into()];
+    assert_eq!(validate_user_pipelines(&[def.clone()]), Ok(()));
+    assert_eq!(def.stages[1].roles(), vec!["role_pr_reviewer", "role_security"]);
+    let mut twice = def.clone();
+    twice.stages[1].also_reviewers = vec!["role_pr_reviewer".into()];
+    assert!(validate_user_pipelines(&[twice]).unwrap_err().contains("twice"));
+    let mut no_loop = def.clone();
+    no_loop.stages[0].also_reviewers = vec!["role_security".into()];
+    assert!(validate_user_pipelines(&[no_loop]).unwrap_err().contains("loopBack"));
 }

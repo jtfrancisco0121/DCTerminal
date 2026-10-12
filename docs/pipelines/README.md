@@ -13,6 +13,7 @@ Built-in pipeline definitions ([ADR-014](../adr/014-pipeline-engine-opt-in-autop
 | `stages[].loopBack` | A reviewer stage can send its round back to an earlier stage: `to` (stage id), `maxRounds` (default 3), `minSeverity` (default `MEDIUM`; findings below it go to follow-ups instead of another round). |
 | `stages[].gates[]` | Checks the app runs after the stage's turn, before handing on: `{ "kind": "command", "run": "npm run check" }` (`"auto"` picks `npm run check`, `cargo test`, or `npm test` from the folder), `{ "kind": "pullRequest" }` (every pull request the stage reported exists on GitHub). The HANDOFF contract is always checked. |
 | `stages[].checkpoint` | Autopilot stops before starting this stage and waits for you. |
+| `stages[].alsoReviewers` | Specialist reviewers (role ids, for example a custom Security Reviewer) that review the same work in parallel with the stage's role. Needs a `loopBack`. Autopilot opens them together, waits for all of them, and decides on the merged reviews: the worst verdict, every reviewer's findings. |
 | `autopilot.pauseAtUsagePercent` | Autopilot pauses when the Claude 5-hour or 7-day usage reaches this percent (default 90). |
 
 A pipeline with a `role_implementer` stage can **fan out** at that stage: the stage before it (its plan) lists several pull requests, and each gets its own lane of the remaining stages in its own git worktree. See `docs/PIPELINE-REPLY-GUIDE.md`.

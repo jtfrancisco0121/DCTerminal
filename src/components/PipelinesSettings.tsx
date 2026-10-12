@@ -49,6 +49,7 @@ function StageStrip({ def }: { def: PipelineDef }) {
           : null;
         const notes = [
           stage.checkpoint ? "checkpoint before" : null,
+          stage.alsoReviewers?.length ? `with ${stage.alsoReviewers.join(", ")} in parallel` : null,
           stage.gates?.length
             ? `checks: ${stage.gates.map((g) => (g.kind === "command" ? g.run : "pull request")).join(", ")}`
             : null,

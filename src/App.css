@@ -4890,6 +4890,11 @@ mark.search-hit-current {
   color: var(--fg-subtle);
 }
 
+.pipeline-also-reviewer {
+  margin: 0 0 0.35rem;
+  font-size: var(--text-xs);
+}
+
 .pipeline-round-cap {
   margin: 0 0 0.45rem;
   font-size: var(--text-xs);

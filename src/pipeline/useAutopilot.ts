@@ -34,9 +34,12 @@ import { terminalBracketedPaste, terminalTailText } from "../terminal/park";
 import { encodeTerminalPaste } from "../terminal/paste";
 import type { TerminalState } from "../terminal/claudeState";
 import type { ProviderId } from "../provider/types";
+import { pipelineDef, stageRoles } from "./defs";
+import { roleDisplayName } from "../handoff/transitions";
 import {
   finishedTurn,
   loopBackText,
+  mergeReviews,
   stageForTab,
   terminalStageSource,
   turnReport,
@@ -59,6 +62,8 @@ export type AutopilotDeps = {
   notice: (title: string, body: string) => void;
   /** Starts a waiting lane's Implementer (fanOut.startLane). */
   startLane: (run: PipelineRun, lane: RunLane) => Promise<void>;
+  /** The newest session log read for a tab, if any. */
+  sessionLog: (tabId: string) => TerminalSessionLog | null | undefined;
 };
 
 type Job = { tab: TabSummary; chain: ChainRef; log: TerminalSessionLog; awaitingPlan: boolean };
@@ -84,6 +89,11 @@ export function useAutopilot(deps: AutopilotDeps) {
   const handled = useRef(new Map<string, string>());
   /** Tabs whose turn is being handled now. */
   const busy = useRef(new Set<string>());
+  /** Parallel reviewers' turn keys already merged into a decision. */
+  const merged = useRef(new Set<string>());
+  /** Tabs whose log was read at least once since the app started. */
+  const seen = useRef(new Set<string>());
+  const startedAt = useRef(Date.now());
 
   const stop = useCallback(async (runId: string, tabId: string, stageId: string | null, why: string) => {
     // intentionally silent: the toast below still tells you; the ledger line is extra.
@@ -181,7 +191,16 @@ export function useAutopilot(deps: AutopilotDeps) {
             awaitingPlan: job.awaitingPlan,
           });
           const error = await openStage(job, source, decision.roleId, null, null);
-          if (error) await fail(`open ${decision.stageId}: ${error}`);
+          if (error) {
+            await fail(`open ${decision.stageId}: ${error}`);
+            return;
+          }
+          // The next stage's parallel reviewers review the same work.
+          const next = pipelineDef(chain.kind)?.stages.find((s) => s.id === decision.stageId);
+          for (const extra of next?.alsoReviewers ?? []) {
+            const failed = await openStage(job, source, extra, null, null);
+            if (failed) await fail(`open ${roleDisplayName(extra, d.roles())}: ${failed}`);
+          }
           return;
         }
         case "loopBack": {
@@ -194,7 +213,7 @@ export function useAutopilot(deps: AutopilotDeps) {
           const tabs = d.tabs();
           const live = (t: TabSummary) => !!livePty(t.id) && !livePty(t.id)?.exited;
           const target = chainTabFor(tabs, chain, next.step, live);
-          const findings = loopBackText(reply);
+          const findings = loopBackText(reply) || reply.trim();
           const round = Math.max(1, chain.round ?? 1);
           if (target && live(target)) {
             const state = d.terminalState(target.id);
@@ -256,6 +275,15 @@ export function useAutopilot(deps: AutopilotDeps) {
       const tab = d.tabs().find((t) => t.id === tabId);
       if (!tab?.chain || tab.kind !== "terminal" || ptyExitCode(tabId) != null) return;
       const turn = finishedTurn(tab.roleId, log);
+      if (!seen.current.has(tabId)) {
+        seen.current.add(tabId);
+        // Finished before this app session (a restart): never acted on again.
+        const at = Date.parse(log?.lastPromptAt ?? "");
+        if (turn && !(Number.isFinite(at) && at >= startedAt.current - 2000)) {
+          handled.current.set(tabId, turn.key);
+          return;
+        }
+      }
       if (!turn || !log || handled.current.get(tabId) === turn.key || busy.current.has(tabId)) return;
       const placed = stageForTab(tab.chain, tab.roleId);
       if (!placed) return;
@@ -263,16 +291,47 @@ export function useAutopilot(deps: AutopilotDeps) {
       // takes over from the next turn and never replays an old one.
       handled.current.set(tabId, turn.key);
       busy.current.add(tabId);
-      const job: Job = { tab, chain: tab.chain, log, awaitingPlan: turn.awaitingPlan };
+      let job: Job = { tab, chain: tab.chain, log, awaitingPlan: turn.awaitingPlan };
       void (async () => {
         const runId = tab.chain!.chainId;
         try {
           const view = await getPipelineRun(runId).catch(() => null);
           if (!view?.run.autopilot?.enabled) return;
-          const reply = (turn.awaitingPlan ? log.plan : log.lastReply)?.trim() ?? "";
-          const lane = tab.chain!.lane ?? null;
+          let reply = (turn.awaitingPlan ? log.plan : log.lastReply)?.trim() ?? "";
+          const roles = stageRoles(placed.stage);
+          if (roles.length > 1) {
+            // Parallel reviewers: decide once every one of them has finished
+            // a turn not merged yet, on their merged reviews, as the stage's
+            // own reviewer.
+            const laneId = tab.chain!.lane ?? null;
+            const tabIds = laneId
+              ? (view.run.lanes?.find((l) => l.id === laneId)?.tabIds ?? {})
+              : view.run.tabIds;
+            const reviews = roles.map((role) => {
+              const id = tabIds[role];
+              // This tab's log is the one just read; the others' are stored.
+              const own = id === tabId ? log : id ? d.sessionLog(id) : null;
+              const done = id ? finishedTurn(role, own) : null;
+              return { role, id, log: own, key: done ? `${id}|${done.key}` : null };
+            });
+            if (reviews.some((r) => !r.id || !r.key || merged.current.has(r.key))) return;
+            for (const r of reviews) merged.current.add(r.key!);
+            const main = d.tabs().find((t) => t.id === reviews[0].id);
+            if (!main?.chain) return;
+            reply = mergeReviews(
+              reviews.map((r) => ({
+                name: roleDisplayName(r.role, d.roles()),
+                reply: r.log?.lastReply ?? "",
+              })),
+              view.run.kind === "full" && placed.stage.roleId === "role_plan_reviewer"
+                ? "REQUIRES REVISION"
+                : "REQUEST CHANGES",
+            );
+            job = { tab: main, chain: main.chain, log: { ...reviews[0].log!, lastReply: reply }, awaitingPlan: false };
+          }
+          const lane = job.chain.lane ?? null;
           if (placed.stage.gates?.length) {
-            await pipelineRunGates(runId, placed.stage.id, tab.cwd, githubPrUrls(log.lastReply), lane);
+            await pipelineRunGates(runId, placed.stage.id, job.tab.cwd, githubPrUrls(job.log.lastReply), lane);
           }
           // intentionally silent: without usage data autopilot simply does not pause for it.
           const usage = usagePercent(await getClaudeUsage().catch(() => null));

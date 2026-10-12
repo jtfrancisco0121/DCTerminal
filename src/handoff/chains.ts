@@ -7,7 +7,7 @@
  * the chain and starts the next round. Any other hand-off drops the chain
  * label. Only an opt-in autopilot starts anything by itself.
  */
-import { loopBackRole, pipelineDef } from "../pipeline/defs";
+import { loopBackRole, pipelineDef, stageRoles } from "../pipeline/defs";
 
 /** A pipeline id: `eagle1`, `eagle2`, or one of your own. */
 export type ChainKind = string;
@@ -26,6 +26,12 @@ export type ChainRef = {
 /** Role id per step of a pipeline, or null for an unknown pipeline. */
 export function chainSteps(kind: string): readonly string[] | null {
   return pipelineDef(kind)?.stages.map((stage) => stage.roleId) ?? null;
+}
+
+/** Every role at `step` (1-based): the stage's own, then its parallel reviewers. */
+export function stepRoles(kind: string, step: number): readonly string[] {
+  const stage = pipelineDef(kind)?.stages[step - 1];
+  return stage ? stageRoles(stage) : [];
 }
 
 export function chainLabel(chain: ChainRef): string {
@@ -71,7 +77,7 @@ export function loopBackStep(
 ): number | null {
   if (!isLoopBackEdge(sourceRoleId, targetRoleId, chain.kind)) return null;
   const steps = chainSteps(chain.kind);
-  if (!steps || steps[chain.step - 1] !== sourceRoleId) return null;
+  if (!steps || !stepRoles(chain.kind, chain.step).includes(sourceRoleId)) return null;
   const index = steps.indexOf(targetRoleId);
   return index >= 0 && index < chain.step - 1 ? index + 1 : null;
 }
@@ -110,8 +116,13 @@ export function chainTabFor<T extends { id: string; chain?: ChainRef | null }>(
 export function nextChainRole(chain: ChainRef, sourceRoleId: string): string | null {
   const steps = chainSteps(chain.kind);
   if (!steps) return null;
-  if (steps[chain.step - 1] !== sourceRoleId) return null;
+  if (!stepRoles(chain.kind, chain.step).includes(sourceRoleId)) return null;
   return steps[chain.step] ?? null;
+}
+
+/** Every role of the next step (its parallel reviewers too), when this tab is on the chain's edge. */
+export function nextChainRoles(chain: ChainRef, sourceRoleId: string): string[] {
+  return nextChainRole(chain, sourceRoleId) ? [...stepRoles(chain.kind, chain.step + 1)] : [];
 }
 
 /**
@@ -123,8 +134,9 @@ export function advanceChain(
   sourceRoleId: string,
   targetRoleId: string,
 ): ChainRef | null {
-  const next = nextChainRole(chain, sourceRoleId);
-  if (!next || next !== targetRoleId || chain.step >= chain.total) return null;
+  if (chain.step >= chain.total || !nextChainRoles(chain, sourceRoleId).includes(targetRoleId)) {
+    return null;
+  }
   return { ...chain, step: chain.step + 1 };
 }
 

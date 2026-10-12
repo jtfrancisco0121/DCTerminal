@@ -10,7 +10,7 @@ import { contractFindings, contractResult, missingHandoffSections } from "../han
 import { terminalLogFields, type HandoffField, type HandoffSource } from "../handoff/map";
 import { roleDisplayName, type RoleName } from "../handoff/transitions";
 import { parseReviewVerdict } from "../handoff/verdict";
-import { pipelineDef, type PipelineDef, type StageDef } from "./defs";
+import { pipelineDef, stageRoles, type PipelineDef, type StageDef } from "./defs";
 
 /** The stage a chain tab holds on its pipeline, if its role matches that step. */
 export function stageForTab(
@@ -20,7 +20,7 @@ export function stageForTab(
   if (!chain) return null;
   const def = pipelineDef(chain.kind);
   const stage = def?.stages[chain.step - 1];
-  return def && stage && stage.roleId === roleId ? { def, stage } : null;
+  return def && stage && stageRoles(stage).includes(roleId) ? { def, stage } : null;
 }
 
 /** The highest Claude usage window, in percent; null when none is known. */
@@ -67,8 +67,13 @@ export function turnReport(args: {
  * Result findings, else its whole reply.
  */
 export function loopBackText(reply: string): string {
-  const section = contractFindings(reply)?.trim();
-  if (section) return section;
+  const declared = contractFindings(reply);
+  // "None." reads as "" here: the reviewer said there is nothing to fix.
+  if (declared !== null) {
+    if (declared.trim()) return declared.trim();
+    const listed = contractResult(reply)?.findings ?? [];
+    if (!listed.length) return "";
+  }
   const findings = contractResult(reply)?.findings ?? [];
   if (findings.length) {
     return findings
@@ -133,4 +138,51 @@ export function finishedTurn(
     return { key: `${log.sessionId}|${prompt}|plan|${open.id}`, awaitingPlan: true };
   }
   return null;
+}
+
+const VERDICT_ORDER = ["REJECTED", "REQUIRES REVISION", "REQUEST CHANGES", "APPROVED WITH CHANGES", "APPROVED"];
+
+/** The least favourable of several verdicts; a reviewer without one counts as needing changes. */
+export function worstVerdict(verdicts: readonly (string | null)[], revise: string): string {
+  if (verdicts.some((v) => !v)) return revise;
+  const ranked = verdicts.map((v) => VERDICT_ORDER.indexOf(v ?? ""));
+  const worst = Math.min(...ranked.map((rank) => (rank < 0 ? 0 : rank)));
+  const verdict = VERDICT_ORDER[worst];
+  // A plan reviewer's "changes" verdict and a PR reviewer's differ in name only.
+  return verdict === "REQUEST CHANGES" || verdict === "REQUIRES REVISION" || verdict === "REJECTED"
+    ? revise
+    : verdict;
+}
+
+/**
+ * Parallel reviews of one stage as a single reply in the HANDOFF contract:
+ * the worst verdict, each reviewer's findings under its name, and every
+ * Result finding. Autopilot decides and sends back on this one reply.
+ */
+export function mergeReviews(
+  reviews: readonly { name: string; reply: string }[],
+  revise: string,
+): string {
+  const verdicts = reviews.map((r) => parseReviewVerdict(r.reply));
+  const verdict = worstVerdict(verdicts, revise);
+  const findings = reviews
+    .map((r, i) => {
+      const text = loopBackText(r.reply);
+      if (!text) return verdicts[i]?.startsWith("APPROVED") ? "" : `From the ${r.name}:\nNo findings given.`;
+      return `From the ${r.name}:\n${text}`;
+    })
+    .filter(Boolean);
+  const results = reviews.map((r) => contractResult(r.reply));
+  const known = results.every(Boolean);
+  const merged = results.flatMap((result, i) =>
+    (result?.findings ?? []).map((f) => ({ ...f, summary: `${reviews[i].name}: ${f.summary}` })),
+  );
+  const sections = [
+    `## HANDOFF: Verdict\n${verdict}`,
+    `## HANDOFF: Findings for the Implementer\n${findings.length ? findings.join("\n\n") : "None."}`,
+  ];
+  if (known) {
+    sections.push(`## HANDOFF: Result\n\`\`\`json\n${JSON.stringify({ verdict, findings: merged })}\n\`\`\``);
+  }
+  return sections.join("\n\n");
 }

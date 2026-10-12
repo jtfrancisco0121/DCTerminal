@@ -120,6 +120,19 @@ pub struct StageDef {
     /// Autopilot stops before starting this stage.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub checkpoint: bool,
+    /// Specialist reviewers (role ids) that review the same work in
+    /// parallel with this stage's role; their findings merge into one verdict.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub also_reviewers: Vec<String>,
+}
+
+impl StageDef {
+    /// The stage's role, then its parallel reviewers.
+    pub fn roles(&self) -> Vec<String> {
+        std::iter::once(self.role_id.clone())
+            .chain(self.also_reviewers.iter().cloned())
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -203,6 +216,22 @@ pub fn set_user_pipelines(defs: Vec<PipelineDef>) {
                 def
             })
             .collect();
+    }
+}
+
+/// Tests share the registry: add or replace one pipeline without touching others.
+#[cfg(test)]
+pub(crate) fn register_for_test(def: PipelineDef) {
+    if let Ok(mut user) = user_registry().write() {
+        user.retain(|d| d.id != def.id);
+        user.push(def);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn unregister_for_test(id: &str) {
+    if let Ok(mut user) = user_registry().write() {
+        user.retain(|d| d.id != id);
     }
 }
 
@@ -311,6 +340,26 @@ pub fn validate_user_pipelines(defs: &[PipelineDef]) -> Result<(), String> {
             }
             if let Err(msg) = check_text(&format!("stage \"{}\" title", stage.id), &stage.title) {
                 return fail(msg);
+            }
+            if !stage.also_reviewers.is_empty() {
+                if stage.loop_back.is_none() {
+                    return fail(format!(
+                        "stage \"{}\" has alsoReviewers, so it needs a loopBack (reviewers send rounds back).",
+                        stage.id
+                    ));
+                }
+                if stage.also_reviewers.len() > 4 {
+                    return fail(format!("stage \"{}\": at most 4 alsoReviewers.", stage.id));
+                }
+                let mut seen_roles = HashSet::from([stage.role_id.clone()]);
+                for role in &stage.also_reviewers {
+                    if !valid_id(role) || !seen_roles.insert(role.clone()) {
+                        return fail(format!(
+                            "stage \"{}\": alsoReviewers lists \"{role}\" twice or it is not a role id.",
+                            stage.id
+                        ));
+                    }
+                }
             }
             if let Some(back) = &stage.loop_back {
                 let earlier = def.stages[..index].iter().any(|s| s.id == back.to);

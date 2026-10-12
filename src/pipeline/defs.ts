@@ -29,6 +29,8 @@ export type StageDef = {
   gates?: GateDef[];
   /** Autopilot stops before starting this stage. */
   checkpoint?: boolean;
+  /** Specialist reviewers (role ids) reviewing the same work in parallel; findings merge. */
+  alsoReviewers?: string[];
 };
 
 export type PipelineDef = {
@@ -78,9 +80,18 @@ export function pipelineStages(key: string | null | undefined): StageDef[] {
   return (pipelineDef(key) ?? BUILT_IN_PIPELINES[0]).stages;
 }
 
-/** The stage a role holds on a pipeline (its first one). */
+/** The stage's role, then its parallel reviewers. */
+export function stageRoles(stage: StageDef): string[] {
+  return [stage.roleId, ...(stage.alsoReviewers ?? [])];
+}
+
+/** The stage a role holds on a pipeline (its first one), parallel reviewers included. */
 export function stageOfRole(def: PipelineDef, roleId: string): StageDef | null {
-  return def.stages.find((stage) => stage.roleId === roleId) ?? null;
+  return (
+    def.stages.find((stage) => stage.roleId === roleId) ??
+    def.stages.find((stage) => stage.alsoReviewers?.includes(roleId)) ??
+    null
+  );
 }
 
 /** Where a reviewer role on this pipeline sends its round back, as a role id. */

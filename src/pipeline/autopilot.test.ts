@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { TerminalSessionLog } from "../bridge";
+import { parseReviewVerdict as parseReviewVerdictOf } from "../handoff/verdict";
 import {
   finishedTurn,
   loopBackText,
+  mergeReviews,
+  worstVerdict,
   stageForTab,
   turnReport,
   usagePercent,
@@ -116,5 +119,51 @@ describe("autopilot helpers", () => {
         ],
       }),
     ).toBe(92);
+  });
+});
+
+describe("parallel reviews", () => {
+  const pr = (verdict: string, findings: string, result?: string) =>
+    `## HANDOFF: Verdict\n${verdict}\n\n## HANDOFF: Findings for the Implementer\n${findings}${
+      result ? `\n\n## HANDOFF: Result\n${result}` : ""
+    }`;
+
+  it("the worst verdict wins; a reviewer with none counts as changes", () => {
+    expect(worstVerdict(["APPROVED", "APPROVED WITH CHANGES"], "REQUEST CHANGES")).toBe("APPROVED WITH CHANGES");
+    expect(worstVerdict(["APPROVED", "REQUEST CHANGES"], "REQUEST CHANGES")).toBe("REQUEST CHANGES");
+    expect(worstVerdict(["APPROVED", null], "REQUEST CHANGES")).toBe("REQUEST CHANGES");
+    expect(worstVerdict(["APPROVED", "APPROVED"], "REQUEST CHANGES")).toBe("APPROVED");
+  });
+
+  it("merges findings by reviewer and keeps a Result only when every reviewer gave one", () => {
+    const merged = mergeReviews(
+      [
+        { name: "PR Reviewer", reply: pr("APPROVED", "None.", '{"verdict":"APPROVED","findings":[]}') },
+        {
+          name: "Security Reviewer",
+          reply: pr(
+            "REQUEST CHANGES",
+            "1. Escape the token in logs.",
+            '{"verdict":"REQUEST CHANGES","findings":[{"severity":"HIGH","summary":"Token in logs."}]}',
+          ),
+        },
+      ],
+      "REQUEST CHANGES",
+    );
+    expect(parseReviewVerdictOf(merged)).toBe("REQUEST CHANGES");
+    expect(loopBackText(merged)).toBe("From the Security Reviewer:\n1. Escape the token in logs.");
+    const stage = { id: "review", roleId: "role_pr_reviewer", title: "PR Reviewer", loopBack: { to: "build" } };
+    const report = turnReport({ stage, reply: merged, chat: false, usage: null });
+    expect(report.findingsKnown).toBe(true);
+    expect(report.findings).toEqual([{ severity: "HIGH", summary: "Security Reviewer: Token in logs." }]);
+    const partial = mergeReviews(
+      [
+        { name: "PR Reviewer", reply: pr("APPROVED", "None.") },
+        { name: "Security Reviewer", reply: pr("APPROVED", "None.", '{"verdict":"APPROVED","findings":[]}') },
+      ],
+      "REQUEST CHANGES",
+    );
+    expect(partial).not.toContain("HANDOFF: Result");
+    expect(parseReviewVerdictOf(partial)).toBe("APPROVED");
   });
 });

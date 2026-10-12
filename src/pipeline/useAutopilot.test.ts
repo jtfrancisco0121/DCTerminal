@@ -79,7 +79,10 @@ function tab(id: string, roleId: string, step: number): TabSummary {
   } as TabSummary;
 }
 
-function log(reply: string, prompt = "p1"): TerminalSessionLog {
+/** A prompt sent after the hook started, so its turn counts. */
+const NOW = () => new Date(Date.now() + 1000).toISOString();
+
+function log(reply: string, prompt = NOW()): TerminalSessionLog {
   return {
     sessionId: "s",
     path: "/x",
@@ -127,6 +130,7 @@ function setup(tabs: TabSummary[], states: Record<string, TerminalState> = {}) {
     notifyStop: vi.fn(),
     notice: vi.fn(),
     startLane: vi.fn(async () => {}),
+    sessionLog: () => null,
   };
   const { result } = renderHook(() => useAutopilot(deps));
   return { deps, onLog: result.current.onTerminalLog };
@@ -175,10 +179,11 @@ describe("useAutopilot", () => {
   it("a turn seen while autopilot was off is never replayed", async () => {
     vi.mocked(getPipelineRun).mockResolvedValue(run(false));
     const { deps, onLog } = setup([tab("impl", "role_implementer", 3)]);
-    onLog("impl", log(IMPLEMENTED));
+    const finished = log(IMPLEMENTED);
+    onLog("impl", finished);
     await waitFor(() => expect(getPipelineRun).toHaveBeenCalledTimes(1));
     vi.mocked(getPipelineRun).mockResolvedValue(run(true));
-    onLog("impl", log(IMPLEMENTED));
+    onLog("impl", finished);
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(getPipelineRun).toHaveBeenCalledTimes(1);
     expect(pipelineDecide).not.toHaveBeenCalled();
@@ -253,4 +258,66 @@ describe("useAutopilot", () => {
     expect(vi.mocked(pipelineDecide).mock.calls[0][1].lane).toBe("pr1");
     expect(vi.mocked(pipelineRunGates)).not.toHaveBeenCalled();
   });
+
+  it("a turn that finished before the app started is not acted on after a restart", async () => {
+    vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+    const { deps, onLog } = setup([tab("impl", "role_implementer", 3)]);
+    onLog("impl", log(IMPLEMENTED, "2026-01-01T00:00:00Z"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(getPipelineRun).not.toHaveBeenCalled();
+    expect(deps.startTerminal).not.toHaveBeenCalled();
+  });
+
+  it("parallel reviewers: waits for all, then decides once on their merged reviews", async () => {
+    const { setPipelineDefs } = await import("./defs");
+    setPipelineDefs([
+      {
+        id: "pair",
+        name: "Pair",
+        stages: [
+          { id: "build", roleId: "role_implementer", title: "Implementer" },
+          {
+            id: "review",
+            roleId: "role_pr_reviewer",
+            title: "PR Reviewer",
+            loopBack: { to: "build" },
+            alsoReviewers: ["role_security"],
+          },
+        ],
+      },
+    ]);
+    const on = (id: string, roleId: string, step: number) =>
+      ({ ...tab(id, roleId, step), chain: { chainId: "ee_1", kind: "pair", step, total: 2 } }) as TabSummary;
+    vi.mocked(getPipelineRun).mockResolvedValue({
+      run: { ...run(true).run, kind: "pair", tabIds: { role_pr_reviewer: "pr", role_security: "sec" } },
+    });
+    vi.mocked(pipelineDecide).mockResolvedValue({ action: "stop", reason: "test" });
+    const prLog = log("## HANDOFF: Verdict\nAPPROVED\n\n## HANDOFF: Findings for the Implementer\nNone.");
+    const secLog = log("## HANDOFF: Verdict\nREQUEST CHANGES\n\n## HANDOFF: Findings for the Implementer\n1. Token in logs.");
+    const logs: Record<string, TerminalSessionLog> = {};
+    const tabs = [on("impl", "role_implementer", 1), on("pr", "role_pr_reviewer", 2), on("sec", "role_security", 2)];
+    const deps: AutopilotDeps = {
+      tabs: () => tabs,
+      roles: () => null,
+      terminalState: () => undefined,
+      startTerminal: vi.fn(async () => "tab-new"),
+      refreshTabs: vi.fn(async () => {}),
+      notifyStop: vi.fn(),
+      notice: vi.fn(),
+      startLane: vi.fn(async () => {}),
+      sessionLog: (id) => logs[id],
+    };
+    const { result } = renderHook(() => useAutopilot(deps));
+    result.current.onTerminalLog("pr", prLog);
+    logs.pr = prLog;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(pipelineDecide).not.toHaveBeenCalled();
+    result.current.onTerminalLog("sec", secLog);
+    logs.sec = secLog;
+    await waitFor(() => expect(pipelineDecide).toHaveBeenCalledTimes(1));
+    const report = vi.mocked(pipelineDecide).mock.calls[0][1];
+    expect(report).toMatchObject({ stageId: "review", verdict: "REQUEST CHANGES" });
+    setPipelineDefs([]);
+  });
 });
+

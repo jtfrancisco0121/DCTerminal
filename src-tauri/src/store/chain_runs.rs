@@ -81,8 +81,21 @@ impl StateStore {
         let Some(index) = (chain.step as usize).checked_sub(1) else {
             return;
         };
-        let Some((stage_id, role_id)) = stages.get(index).cloned() else {
+        let Some((stage_id, stage_role)) = stages.get(index).cloned() else {
             return;
+        };
+        // A parallel reviewer of this stage is kept under its own role.
+        let tab_role = self.tab_by_id(tab_id).map(|tab| tab.role_id.clone());
+        let role_id = match tab_role {
+            Some(role)
+                if role != stage_role
+                    && crate::pipelines::find(&kind)
+                        .and_then(|def| def.stage(&stage_id).cloned())
+                        .is_some_and(|stage| stage.also_reviewers.contains(&role)) =>
+            {
+                role
+            }
+            _ => stage_role,
         };
         let cwd = self
             .tab_by_id(tab_id)
@@ -739,6 +752,40 @@ mod tests {
         let back = &store.pipeline_run_by_id("ee_l").unwrap().events[1];
         assert_eq!(back.summary, "Round 1 sent back (REQUIRES REVISION)");
         assert_eq!(back.round, 1);
+    }
+
+    #[test]
+    fn a_parallel_reviewer_is_recorded_under_its_own_role() {
+        let def: crate::pipelines::PipelineDef = serde_json::from_value(serde_json::json!({
+            "id": "pair_review_test",
+            "name": "Pair review",
+            "stages": [
+                { "id": "build", "roleId": "role_implementer", "title": "Implementer" },
+                { "id": "review", "roleId": "role_pr_reviewer", "title": "PR Reviewer",
+                  "loopBack": { "to": "build" }, "alsoReviewers": ["role_security"] }
+            ]
+        }))
+        .unwrap();
+        crate::pipelines::register_for_test(def);
+        let mut store = store("parallel");
+        let on = |step| ChainRef {
+            chain_id: "ee_pair".into(),
+            kind: "pair_review_test".into(),
+            step,
+            total: 2,
+            round: 1,
+            lane: None,
+        };
+        let build = store.create_draft_tab(&role("role_implementer"), "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&build, Some(on(1)), None).unwrap();
+        let review = store.create_draft_tab(&role("role_pr_reviewer"), "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&review, Some(on(2)), Some("work")).unwrap();
+        let security = store.create_draft_tab(&role("role_security"), "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&security, Some(on(2)), Some("work")).unwrap();
+        let run = store.pipeline_run_by_id("ee_pair").unwrap();
+        assert_eq!(run.tab_ids.get("role_pr_reviewer"), Some(&review));
+        assert_eq!(run.tab_ids.get("role_security"), Some(&security));
+        crate::pipelines::unregister_for_test("pair_review_test");
     }
 
     #[test]
