@@ -353,6 +353,28 @@ fn cursor_handshake_authenticates_and_switches_model_with_set_model() {
 // ---------- streamed turns ----------
 
 #[test]
+fn agent_text_skips_claude_thinking_and_tool_labels() {
+    // Claude tags each update with `sessionUpdate`. The reply text that
+    // reconciles the transcript must hold only the agent's own words.
+    let agent = fake!(
+        "agent-text-kinds",
+        claude_scenario(json!([[
+            { "update": { "sessionUpdate": "agent_thought_chunk",
+                "content": { "type": "text", "text": "Let me look at the file." } } },
+            { "update": { "sessionUpdate": "tool_call", "toolCallId": "toolu_read",
+                "title": "Read src/main.rs", "kind": "read", "status": "pending" } },
+            { "update": { "sessionUpdate": "tool_call_update", "toolCallId": "toolu_read",
+                "status": "completed" } },
+            { "say": "The file is fine." }
+        ]]))
+    );
+    let client = connect(&agent, ProviderId::Claude, "bypassPermissions");
+    let (client, result, _, _) = start(client, "role_implementer", "check", vec![]).finish();
+    kill(&client);
+    assert_eq!(result.unwrap().agent_text, "The file is fine.");
+}
+
+#[test]
 fn streamed_turn_collects_agent_text_stop_reason_and_usage() {
     // The captured Claude turn, verbatim, minus its final response.
     let messages = claude_fixture_result("prompt-turn.json", "/messages");

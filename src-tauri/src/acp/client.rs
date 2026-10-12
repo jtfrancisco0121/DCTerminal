@@ -404,19 +404,16 @@ impl AcpClient {
 }
 
 fn extract_agent_text(dispatch: &LineDispatch) -> String {
-    use super::text_extract::text_from_session_params;
+    use super::text_extract::{text_from_session_params, update_kind};
     let mut parts = Vec::new();
     for note in &dispatch.notifications {
         if note.get("method").and_then(|m| m.as_str()) != Some("session/update") {
             continue;
         }
         let params = note.get("params").unwrap_or(note);
-        let kind = params
-            .get("update")
-            .and_then(|u| u.get("type"))
-            .or_else(|| params.get("type"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        // Claude names the kind `sessionUpdate`, so reading only `type` let
+        // thinking and tool labels into the reply text.
+        let kind = update_kind(params.get("update").unwrap_or(params));
         let normalized = kind.replace('_', "").to_lowercase();
         if normalized.contains("thought") || normalized.contains("toolcall") {
             continue;
