@@ -284,6 +284,7 @@ import {
   parkedTerminal,
   pasteTerminalText,
   refitTerminal,
+  setOptionAsMeta,
   requestTerminalSearch,
   terminalBracketedPaste,
   terminalScrollbackText,
@@ -452,6 +453,15 @@ function terminalLaunchOf(tab: TabSummary): TerminalLaunch {
     default:
       return "shell";
   }
+}
+
+/** A Claude Code terminal (role or plain tile) whose exit can offer a resume. */
+function isClaudeTerminal(tab: TabSummary): boolean {
+  return (
+    tab.kind === "terminal" &&
+    tab.provider === "claude" &&
+    (tab.terminalLaunch === "role" || tab.terminalLaunch === "claude-cli")
+  );
 }
 
 type CliLaunch = "cursor-cli" | "claude-cli";
@@ -658,6 +668,8 @@ export function StartupForm({
   const [pickedRoleId, setPickedRoleId] = useState<string | null>(null);
   const [launchChoice, setLaunchChoice] = useState<"shell" | CliLaunch | null>(null);
   const [terminalSettings, setTerminalSettingsState] = useState<TerminalSettings | null>(null);
+  const optionAsMeta = terminalSettings?.optionAsMeta ?? true;
+  useEffect(() => setOptionAsMeta(optionAsMeta), [optionAsMeta]);
   const [notificationSettings, setNotificationSettingsState] =
     useState<NotificationSettings | null>(null);
   const [terminalError, setTerminalError] = useState<string | null>(null);
@@ -1368,7 +1380,7 @@ export function StartupForm({
       .filter(
         (tab) =>
           isClaudeRoleTerminal(tab) &&
-          (running(tab.id) || onScreen.has(tab.id) || !!tab.chain),
+          (running(tab.id) || onScreen.has(tab.id) || !!tab.chain || !!tab.pipelineRunId),
       )
       .map((tab) => tab.id)
       .join("\n");
@@ -2003,6 +2015,7 @@ export function StartupForm({
       const current = terminalSettings ?? {
         shell: "",
         fontSize: 14,
+        optionAsMeta: true,
         roleSurface: {},
         roleRunMode: {},
       };
@@ -5124,6 +5137,7 @@ export function StartupForm({
           roleId={tab.roleId}
           fontSize={fontSize}
           resumeSessionId={tab.resumeSessionId}
+          claudeSession={isClaudeTerminal(tab)}
           autoOpen={!livePty(tab.id)}
           autoFocus={false}
           menuActions={
@@ -5568,6 +5582,7 @@ export function StartupForm({
           tabs={savedTabs}
           runtimes={runtimes}
           terminalStates={terminalStates}
+          sessionLogs={sessionLogs}
           onJump={(tabId) => void handleSelectTab(tabId)}
           onWatch={(tabId) => {
             setSplit((current) => ({
@@ -5660,6 +5675,7 @@ export function StartupForm({
             roleId={activeTabSummary.roleId}
             fontSize={fontSize}
             resumeSessionId={activeTabSummary.resumeSessionId}
+            claudeSession={isClaudeTerminal(activeTabSummary)}
             autoOpen={!livePty(activeTabSummary.id)}
             onMenuOpen={() => readTerminalVerdict(activeTabSummary.id, true)}
             menuActions={

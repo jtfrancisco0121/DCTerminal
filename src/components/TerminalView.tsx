@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import "@xterm/xterm/css/xterm.css";
-import { ptyOpen, ptyResize, ptyWrite, type TerminalLaunch } from "../bridge";
+import { ptyOpen, ptyResize, ptyWrite, terminalSessionLog, type TerminalLaunch } from "../bridge";
 import { detectPlatform, routeKey } from "../keymap";
+import { isShiftEnter, SHIFT_ENTER_SEQUENCE, shiftEnterSendsNewline } from "../terminal/keys";
 import { TerminalSearchBar } from "./TerminalSearchBar";
+import { TerminalExitStrip, lastFiftyLines, lastOutputLine } from "./TerminalExitStrip";
 import {
   beginLivePty,
   clearPtyOpening,
@@ -50,6 +52,8 @@ type Props = {
   prompt?: string | null;
   /** When set, the process is `agent --resume <id>`. */
   resumeSessionId?: string | null;
+  /** A Claude Code terminal: an exit offers Resume session instead of Restart. */
+  claudeSession?: boolean;
   menuActions?: TerminalMenuAction[];
   /** Right-click, before the menu shows (e.g. read a reviewer's verdict). */
   onMenuOpen?: () => void;
@@ -110,6 +114,7 @@ export function TerminalView({
   autoFocus = true,
   prompt = null,
   resumeSessionId = null,
+  claudeSession = false,
   menuActions = [],
   onMenuOpen,
 }: Props) {
@@ -119,6 +124,40 @@ export function TerminalView({
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const [generation, setGeneration] = useState(0);
+  const [resumeId, setResumeId] = useState<string | null | undefined>(undefined);
+  const [lastLine, setLastLine] = useState("");
+  const [copied, setCopied] = useState(false);
+
+  // Once a Claude terminal exits: is there a session to resume, and what did
+  // it print last.
+  useEffect(() => {
+    if (!claudeSession || exitCode == null) return;
+    let current = true;
+    setResumeId(undefined);
+    setCopied(false);
+    setLastLine(lastOutputLine(terminalScrollbackText(ptyId)));
+    terminalSessionLog(ptyId)
+      .then((log) => current && setResumeId(log?.sessionId ?? null))
+      .catch(() => current && setResumeId(null));
+    return () => {
+      current = false;
+    };
+  }, [claudeSession, exitCode, ptyId]);
+
+  // Escape closes the right-click menu. Capture it so the program in the
+  // terminal does not also see the key.
+  useEffect(() => {
+    if (!menu) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      setMenu(null);
+      focusParkedTerminal(ptyId);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [menu, ptyId]);
 
   useEffect(() => subscribeLivePty(() => setGeneration((value) => value + 1)), []);
 
@@ -152,7 +191,16 @@ export function TerminalView({
     });
     if (live?.exitCode != null) setExitCode(live.exitCode);
     const platform = detectPlatform(navigator.platform);
+    const newlineOnShiftEnter = shiftEnterSendsNewline(launch);
     parked.term.attachCustomKeyEventHandler((event) => {
+      if (newlineOnShiftEnter && isShiftEnter(event)) {
+        // Handle keydown only; swallow keypress and keyup so xterm sends no CR.
+        if (event.type === "keydown" && !event.repeat) {
+          notePtyInput(ptyId, SHIFT_ENTER_SEQUENCE);
+          void ptyWrite(ptyId, SHIFT_ENTER_SEQUENCE).catch(() => {});
+        }
+        return false;
+      }
       const routed = routeKey(
         {
           code: event.code,
@@ -162,6 +210,7 @@ export function TerminalView({
           altKey: event.altKey,
           shiftKey: event.shiftKey,
           repeat: event.repeat,
+          altGraph: event.getModifierState?.("AltGraph"),
         },
         { platform, surface: "terminal" },
       );
@@ -211,7 +260,7 @@ export function TerminalView({
         root.appendChild(parked.host);
       }
     };
-  }, [autoFocus, ptyId, fontSize, generation]);
+  }, [autoFocus, ptyId, fontSize, generation, launch]);
 
   useEffect(() => {
     if (!autoOpen || !cwd) return;
@@ -236,7 +285,7 @@ export function TerminalView({
     });
   }, [autoOpen, cwd, fontSize, launch, prompt, ptyId, resumeSessionId, roleId]);
 
-  const restart = () => {
+  const restart = (resume?: string | null) => {
     setExitCode(null);
     setFailed(null);
     const parked = ensureParkedTerminal(ptyId, fontSize);
@@ -251,7 +300,8 @@ export function TerminalView({
       launch,
       roleId,
       prompt: null,
-      resumeSessionId,
+      // Start fresh on a Claude terminal drops the conversation on purpose.
+      resumeSessionId: claudeSession ? (resume ?? null) : resumeSessionId,
       cols: openSize(parked).cols,
       rows: openSize(parked).rows,
       onOutput: live.channel,
@@ -269,6 +319,23 @@ export function TerminalView({
         setMenu({ x: event.clientX, y: event.clientY });
       }}
     >
+      {claudeSession && (failed || exitCode != null) && (
+        <TerminalExitStrip
+          exitCode={exitCode}
+          lastLine={lastLine}
+          failed={failed}
+          resumeId={resumeId}
+          copied={copied}
+          onResume={() => restart(resumeId)}
+          onFresh={() => restart(null)}
+          onCopy={() => {
+            void navigator.clipboard
+              .writeText(lastFiftyLines(terminalScrollbackText(ptyId)))
+              .then(() => setCopied(true))
+              .catch(() => {});
+          }}
+        />
+      )}
       {searchOpen && (
         <TerminalSearchBar
           search={ensureParkedTerminal(ptyId, fontSize).search}
@@ -284,11 +351,11 @@ export function TerminalView({
         className="terminal-slot"
         onMouseDown={() => focusParkedTerminal(ptyId)}
       />
-      {(failed || exitCode != null) && (
+      {!claudeSession && (failed || exitCode != null) && (
         <div className="terminal-exit">
           {failed && <p className="error">{failed}</p>}
           {exitCode != null && <p>Process exited ({exitCode}).</p>}
-          <button type="button" className="primary-button" onClick={restart}>
+          <button type="button" className="primary-button" onClick={() => restart()}>
             Restart
           </button>
         </div>

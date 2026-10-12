@@ -20,6 +20,10 @@ fn default_font_size() -> u32 {
     14
 }
 
+fn default_option_as_meta() -> bool {
+    true
+}
+
 /// Shell program, terminal font, and per-role terminal choices.
 /// `role_surface` is `chat` or `terminal`. `role_run_mode` is
 /// `default`, `yolo`, `auto-review`, `plan`, or `ask`.
@@ -30,6 +34,10 @@ pub struct TerminalSettings {
     pub shell: String,
     #[serde(default = "default_font_size")]
     pub font_size: u32,
+    /// macOS: the Option key acts as Meta, so Option+P, Option+B and the
+    /// like reach Claude Code instead of typing a symbol.
+    #[serde(default = "default_option_as_meta")]
+    pub option_as_meta: bool,
     #[serde(default)]
     pub role_surface: HashMap<String, String>,
     #[serde(default)]
@@ -41,6 +49,7 @@ impl Default for TerminalSettings {
         Self {
             shell: String::new(),
             font_size: default_font_size(),
+            option_as_meta: default_option_as_meta(),
             role_surface: HashMap::new(),
             role_run_mode: HashMap::new(),
         }
@@ -974,5 +983,7 @@ mod tests {
         let raw = r#"{"schemaVersion":1,"terminal":{"shell":"","fontSize":14}}"#;
         let parsed: SettingsFile = serde_json::from_str(raw).unwrap();
         assert_eq!(parsed.models.cursor.default_model, "composer-2.5");
+        // A file saved before this setting existed keeps Option as Meta on.
+        assert!(parsed.terminal.option_as_meta);
     }
 }

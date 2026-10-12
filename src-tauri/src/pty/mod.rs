@@ -717,6 +717,30 @@ fn claude_terminal_resume(
     Ok(id)
 }
 
+/// The session a Claude role terminal may resume: only the one saved on the
+/// tab, and only under the config folder it was started with.
+fn role_resume_id(
+    requested: Option<&str>,
+    saved_session: Option<&str>,
+    saved_config: Option<&str>,
+    current_config: &str,
+) -> Result<Option<String>, String> {
+    let Some(id) = requested.map(str::trim).filter(|id| !id.is_empty()) else {
+        return Ok(None);
+    };
+    if saved_session != Some(id) {
+        return Err("This terminal has no saved session with that id. Start fresh instead.".to_string());
+    }
+    if let Some(saved) = saved_config {
+        if !crate::provider::claude::same_config_dir(saved, current_config) {
+            return Err(
+                "This session belongs to another Claude account. Start fresh instead.".to_string(),
+            );
+        }
+    }
+    Ok(Some(id.to_string()))
+}
+
 #[tauri::command]
 pub fn pty_open(
     app: AppHandle,
@@ -828,6 +852,25 @@ pub fn pty_open(
                     .unwrap_or(ProviderId::LEGACY);
                 provider_for_window(&store, settings.providers(), id, Some(&input.id))
             };
+            let resume = if provider.id() == ProviderId::Claude {
+                let state = store.lock().map_err(|err| err.to_string())?;
+                let sessions = state.tab_by_id(&input.id).map(|tab| tab.sessions.clone());
+                role_resume_id(
+                    input.resume_session_id.as_deref(),
+                    sessions
+                        .as_ref()
+                        .and_then(|s| s.claude_terminal_session_id.as_deref()),
+                    sessions
+                        .as_ref()
+                        .and_then(|s| s.claude_config_dir.as_deref()),
+                    &provider
+                        .config_dir()
+                        .map(|info| info.path)
+                        .unwrap_or_default(),
+                )?
+            } else {
+                None
+            };
             if provider.id() == ProviderId::Claude {
                 // A restart may run under another account: plan files follow it.
                 if let Some(dir) = provider.config_dir() {
@@ -844,13 +887,22 @@ pub fn pty_open(
                 &role_id,
                 provider.id(),
             )?;
-            // A restart relaunches the role fresh (as before) under a new pinned id.
-            claude_session = (provider.id() == ProviderId::Claude).then(new_claude_session_id);
+            // A restart relaunches the role fresh under a new pinned id, unless
+            // the user resumes the saved session (same id, same permission mode).
+            claude_session = (provider.id() == ProviderId::Claude)
+                .then(|| resume.clone().unwrap_or_else(new_claude_session_id));
             let role_launch = |prompt: Option<String>| TerminalLaunch {
-                kind: TerminalKind::Role {
-                    role_id: role_id.clone(),
-                    run_mode: mode,
-                    prompt,
+                kind: match &resume {
+                    Some(id) => TerminalKind::RoleResume {
+                        role_id: role_id.clone(),
+                        run_mode: mode,
+                        session_id: id.clone(),
+                    },
+                    None => TerminalKind::Role {
+                        role_id: role_id.clone(),
+                        run_mode: mode,
+                        prompt,
+                    },
                 },
                 model: Some(model.clone()),
                 session_id: claude_session.clone(),
@@ -860,7 +912,8 @@ pub fn pty_open(
                 .prompt
                 .as_deref()
                 .map(str::trim)
-                .filter(|text| !text.is_empty());
+                .filter(|text| !text.is_empty())
+                .filter(|_| resume.is_none());
             let argument = match prompt {
                 Some(text) => Some(store_prompt(&app, &input.id, &program, text)?.argument),
                 None => None,
@@ -1025,6 +1078,22 @@ pub fn kill_tab_pty(registry: &Mutex<PtyRegistry>, tab_id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_role_resume_only_takes_the_saved_session_in_its_own_account() {
+        let id = "11111111-2222-4333-8444-555555555555";
+        assert_eq!(role_resume_id(None, Some(id), None, "/a"), Ok(None));
+        assert_eq!(role_resume_id(Some("  "), Some(id), None, "/a"), Ok(None));
+        assert_eq!(
+            role_resume_id(Some(id), Some(id), Some("/a"), "/a"),
+            Ok(Some(id.to_string()))
+        );
+        // An id the tab never wrote is refused.
+        assert!(role_resume_id(Some(id), None, None, "/a").is_err());
+        assert!(role_resume_id(Some("other"), Some(id), None, "/a").is_err());
+        // Another account cannot see the log.
+        assert!(role_resume_id(Some(id), Some(id), Some("/a"), "/b").is_err());
+    }
 
     #[test]
     fn claude_code_tile_is_its_own_launch() {
