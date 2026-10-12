@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createActivityTracker, isUserInput } from "./activity";
+import { createActivityTracker, isUserInput, ptyInputKind } from "./activity";
 
 describe("terminal activity tracker", () => {
   it("is busy while output keeps streaming after the last keystroke", () => {
@@ -40,6 +40,24 @@ describe("terminal activity tracker", () => {
     t.output("x", 1000);
     t.forget("x");
     expect(t.sweep(1100)).toEqual({ busy: [], settled: [] });
+  });
+});
+
+describe("ptyInputKind", () => {
+  it("treats mouse moves, wheel and releases as pointer noise", () => {
+    expect(ptyInputKind("\x1b[<35;10;5M")).toBe("pointer"); // motion
+    expect(ptyInputKind("\x1b[<35;10;5M\x1b[<35;11;5M")).toBe("pointer");
+    expect(ptyInputKind("\x1b[<64;10;5M")).toBe("pointer"); // wheel
+    expect(ptyInputKind("\x1b[<0;10;5m")).toBe("pointer"); // release
+    expect(ptyInputKind("\x1b[M#*%")).toBe("pointer"); // legacy release
+    expect(ptyInputKind("\x1b[MC*%")).toBe("pointer"); // legacy motion
+  });
+
+  it("sees button presses, answer keys and other keys", () => {
+    expect(ptyInputKind("\x1b[<0;10;5M")).toBe("press");
+    expect(ptyInputKind("\x1b[M *%")).toBe("press");
+    for (const key of ["\r", "\x1b", "1", "3", "fix the login\r"]) expect(ptyInputKind(key)).toBe("answer");
+    for (const key of ["\x1b[A", "\x1b[B", "\t", "a", "hello"]) expect(ptyInputKind(key)).toBe("key");
   });
 });
 

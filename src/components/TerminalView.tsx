@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { isUserInput, terminalActivity } from "../terminal/activity";
 import "@xterm/xterm/css/xterm.css";
 import { ptyOpen, ptyResize, ptyWrite, type TerminalLaunch } from "../bridge";
 import { detectPlatform, routeKey } from "../keymap";
@@ -10,6 +9,7 @@ import {
   isPtyOpening,
   livePty,
   markPtyOpening,
+  notePtyInput,
   subscribeLivePty,
 } from "../terminal/live";
 import {
@@ -119,7 +119,7 @@ export function TerminalView({
     // Subscribe before replaying. ConPTY's first bytes are often a cursor
     // query, and xterm answers that only through onData.
     const onData = parked.term.onData((data) => {
-      if (isUserInput(data)) terminalActivity.input(ptyId);
+      notePtyInput(ptyId, data);
       void ptyWrite(ptyId, data).catch(() => {});
     });
     const detach = live?.buffer.attach({

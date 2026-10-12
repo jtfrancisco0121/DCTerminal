@@ -242,8 +242,21 @@ import {
   type SessionLogPollState,
 } from "./terminal/sessionLogPoll";
 import {
+  deriveTerminalState,
+  dialogAfterRead,
+  dialogDrawn,
+  dialogToolFor,
+  sameTerminalState,
+  terminalNeedsMessage,
+  terminalWaitingText,
+  type DialogOwner,
+  type TerminalState,
+} from "./terminal/claudeState";
+import { dialogDetector } from "./terminal/permissionDialog";
+import {
   clearMarks,
   computeTabStatus,
+  IDLE_STATUS,
   markAfterTurn,
   tabStatusLabel,
   type TabMark,
@@ -253,7 +266,16 @@ import { appendReference } from "./files/paths";
 import { effectiveModelFor, modelChangeNote } from "./models";
 import { TabSwitcher } from "./components/TabSwitcher";
 import { detectPlatform, type ShortcutMatch, type TerminalAction } from "./keymap";
-import { beginLivePty, dropLivePty, livePty, rekeyLivePty } from "./terminal/live";
+import {
+  beginLivePty,
+  dropLivePty,
+  livePty,
+  notePtyInput,
+  ptyExitCode,
+  rekeyLivePty,
+  subscribeLivePty,
+  subscribePtyExit,
+} from "./terminal/live";
 import {
   blurParkedTerminal,
   copyTerminalSelection,
@@ -368,6 +390,30 @@ function handoffFieldsOf(role: Role): HandoffField[] {
   }));
 }
 
+/** A role terminal running Claude Code (not Cursor CLI, not a shell). */
+function isClaudeRoleTerminal(tab: TabSummary): boolean {
+  return tab.kind === "terminal" && tab.terminalLaunch === "role" && tab.provider !== "cursor";
+}
+
+/** The prompt was written after `sinceMs` (a little slack for clock rounding). */
+function promptAfter(promptAt: string | null | undefined, sinceMs: number): boolean {
+  const at = promptAt ? Date.parse(promptAt) : NaN;
+  return Number.isFinite(at) && at >= sinceMs - 2000;
+}
+
+/** A finished terminal turn's toast text: a reviewer's verdict, else its last line. */
+function finishedDetail(roleId: string, log: TerminalSessionLog): string {
+  if (isReviewerRole(roleId)) {
+    const verdict = terminalLogVerdict(log, "");
+    if (verdict) return `Verdict: ${verdict}`;
+  }
+  const lines = log.lastReply
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return lines[lines.length - 1] ?? "Claude finished its turn.";
+}
+
 /** Plain shells have no model; chats, role terminals, and the CLI tiles do. */
 function tabHasModel(tab: TabSummary): boolean {
   return !(
@@ -473,8 +519,37 @@ export function StartupForm({
   const sessionLogsRef = useRef(sessionLogs);
   sessionLogsRef.current = sessionLogs;
   const sessionLogWatch = useRef(
-    new Map<string, { since: number; poll?: SessionLogPollState; seenPromptAt?: string | null }>(),
+    new Map<
+      string,
+      {
+        since: number;
+        poll?: SessionLogPollState;
+        seenPromptAt?: string | null;
+        /** lastPromptAt of the turn already reported as finished. */
+        finishedPromptAt?: string | null;
+        /** Read at the next tick even if a read is in flight now (a dialog appeared). */
+        forceRead?: boolean;
+      }
+    >(),
   );
+  /** Bumped when a PTY starts or exits, so derived terminal state re-reads it. */
+  const [ptyVersion, setPtyVersion] = useState(0);
+  /** Terminals whose PTY output shows Claude Code's permission dialog. */
+  const [dialogTabs, setDialogTabs] = useState<string[]>([]);
+  /** The open tool each visible permission dialog asks about. */
+  const dialogOwners = useRef(new Map<string, DialogOwner>());
+  /** Bumped when a dialog's tool becomes known or it goes away. */
+  const [dialogOwnerVersion, setDialogOwnerVersion] = useState(0);
+  const setDialogOwner = useCallback((tabId: string, owner: DialogOwner | undefined) => {
+    const prev = dialogOwners.current.get(tabId);
+    if (owner) dialogOwners.current.set(tabId, owner);
+    else dialogOwners.current.delete(tabId);
+    if (prev?.toolId !== owner?.toolId || prev?.promptKey !== owner?.promptKey) {
+      setDialogOwnerVersion((value) => value + 1);
+    }
+  }, []);
+  /** Tabs whose PTYs a workspace replace is stopping: their exit is not news. */
+  const replacingTabs = useRef(new Set<string>());
   const [renamingTabId, setRenamingTabId] = useState<string | null>(null);
   const [worktreeDialogOpen, setWorktreeDialogOpen] = useState(false);
   /** F4: the tab whose changes (diff) panel is open. */
@@ -1146,10 +1221,14 @@ export function StartupForm({
       setTerminalBusy((prev) =>
         prev.length === busy.length && prev.every((id, i) => id === busy[i]) ? prev : busy,
       );
-      // A tab with a session log is marked when its turn ends, not when output stops.
-      const quiet = settled.filter(
-        (id) => !(sessionLogWatch.current.has(id) && sessionLogsRef.current[id]),
-      );
+      // A Claude role terminal is marked when its turn ends, not when output
+      // stops; an exited process is reported as exited, never as finished.
+      const quiet = settled.filter((id) => {
+        const tab = savedTabsRef.current.find((item) => item.id === id);
+        if (tab && isClaudeRoleTerminal(tab)) return false;
+        if (ptyExitCode(id) != null) return false;
+        return !(sessionLogWatch.current.has(id) && sessionLogsRef.current[id]);
+      });
       if (quiet.length > 0) {
         for (const id of quiet) {
           if (!isWatchingTab(id)) {
@@ -1168,7 +1247,8 @@ export function StartupForm({
   }, [hasTerminalTabs, isWatchingTab, notifyAgent]);
 
   const storeSessionLog = useCallback(
-    (tabId: string, log: TerminalSessionLog | null) => {
+    /** `readAt`: when the read started, so a read older than a dialog is not used for it. */
+    (tabId: string, log: TerminalSessionLog | null, readAt: number) => {
       const prev = sessionLogsRef.current[tabId];
       const watched = sessionLogWatch.current.get(tabId);
       if (watched && log) {
@@ -1184,39 +1264,116 @@ export function StartupForm({
           void snapshotTerminalTurn(tabId);
         }
         watched.seenPromptAt = log.lastPromptAt;
+        // With no earlier read, a turn whose prompt came after the watch
+        // started is new: a first turn can end before the first read.
         const ended =
-          !!prev && log.turnDone && (!prev.turnDone || prev.lastPromptAt !== log.lastPromptAt);
-        if (ended && !isWatchingTab(tabId)) {
-          notifyAgent(tabId, { kind: "finished", detail: "Claude finished its turn." });
-          setTabMarks((marks) => markAfterTurn(marks, tabId, "finished", false));
+          log.turnDone &&
+          watched.finishedPromptAt !== log.lastPromptAt &&
+          (prev
+            ? !prev.turnDone || prev.lastPromptAt !== log.lastPromptAt
+            : promptAfter(log.lastPromptAt, watched.since));
+        if (ended && ptyExitCode(tabId) == null) {
+          watched.finishedPromptAt = log.lastPromptAt;
+          const watching = isWatchingTab(tabId);
+          if (!watching) {
+            const tab = savedTabsRef.current.find((item) => item.id === tabId);
+            notifyAgent(tabId, { kind: "finished", detail: finishedDetail(tab?.roleId ?? "", log) });
+          }
+          setTabMarks((marks) => markAfterTurn(marks, tabId, "finished", watching));
         }
       }
+      // Hide the dialog once the tool it asked about was answered: a later
+      // tool needs a fresh dialog. An earlier tool finishing is not that.
+      const next = dialogAfterRead(
+        dialogOwners.current.get(tabId),
+        log,
+        readAt,
+        dialogDetector.answering(tabId),
+      );
+      setDialogOwner(tabId, next.owner);
+      // Mid-turn, the next call's dialog may be half drawn already.
+      if (next.clear) dialogDetector.clear(tabId, { keepPartial: !!log && !log.turnDone });
       if (prev !== undefined && sameSessionLog(prev, log)) return;
       sessionLogsRef.current = { ...sessionLogsRef.current, [tabId]: log };
       setSessionLogs(sessionLogsRef.current);
     },
-    [isWatchingTab, notifyAgent],
+    [isWatchingTab, notifyAgent, setDialogOwner],
   );
 
-  // Terminal role tabs on screen or in a chain: read their Claude session log
-  // while the PTY streams output, until the turn ends (see sessionLogPoll.ts).
+  // PTY start and exit change which terminals are live and their state.
+  useEffect(() => {
+    let last = new Map<string, number | null | undefined>();
+    const unsubscribeLive = subscribeLivePty(() => {
+      const now = new Map(
+        savedTabsRef.current.map((tab) => [tab.id, livePty(tab.id) ? ptyExitCode(tab.id) : undefined]),
+      );
+      const changed =
+        now.size !== last.size || [...now].some(([id, code]) => last.get(id) !== code);
+      last = now;
+      if (changed) setPtyVersion((value) => value + 1);
+    });
+    const unsubscribeExit = subscribePtyExit((id, code) => {
+      setPtyVersion((value) => value + 1);
+      if (replacingTabs.current.has(id)) return;
+      const tab = savedTabsRef.current.find((item) => item.id === id);
+      if (!tab || !isClaudeRoleTerminal(tab)) return;
+      const watching = isWatchingTab(id);
+      notifyAgent(id, { kind: "failed", detail: `Claude Code exited (code ${code}).` });
+      setTabMarks((marks) => markAfterTurn(marks, id, "failed", watching));
+    });
+    const unsubscribeDialog = dialogDetector.subscribe((id) => {
+      const visible = dialogDetector.isVisible(id);
+      setDialogTabs((prev) => {
+        if (visible === prev.includes(id)) return prev;
+        return visible ? [...prev, id] : prev.filter((item) => item !== id);
+      });
+      // A new draw belongs to whatever tool the next read finds open.
+      setDialogOwner(
+        id,
+        visible
+          ? dialogDrawn(
+              dialogOwners.current.get(id),
+              Date.now(),
+              dialogDetector.prompt(id),
+              dialogDetector.drawnAfterAnswer(id),
+            )
+          : undefined,
+      );
+      // Read the log now: the open tool decides what the dialog is for.
+      const entry = sessionLogWatch.current.get(id);
+      if (visible && entry) entry.forceRead = true;
+    });
+    return () => {
+      unsubscribeLive();
+      unsubscribeExit();
+      unsubscribeDialog();
+    };
+  }, [isWatchingTab, notifyAgent, setDialogOwner]);
+
+  // Every live Claude role terminal, plus role terminals on screen or in a
+  // chain: read their Claude session log while the PTY streams output, until
+  // the turn ends (see sessionLogPoll.ts).
   const sessionLogTabIds = useMemo(() => {
     const onScreen = new Set([
       activeTabId,
       splitOpen(split) ? split.secondaryTabId : null,
       ...(gridOpen(split) ? (split.gridTabIds ?? []) : []),
     ]);
+    const running = (id: string) => {
+      const pty = livePty(id);
+      return !!pty && !pty.exited;
+    };
     return savedTabs
       .filter(
         (tab) =>
-          tab.kind === "terminal" &&
-          tab.terminalLaunch === "role" &&
-          tab.provider !== "cursor" &&
-          (onScreen.has(tab.id) || !!tab.chain),
+          isClaudeRoleTerminal(tab) &&
+          (running(tab.id) || onScreen.has(tab.id) || !!tab.chain),
       )
       .map((tab) => tab.id)
       .join("\n");
-  }, [activeTabId, savedTabs, split]);
+    // ptyVersion: a PTY started or exited.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTabId, savedTabs, split, ptyVersion]);
   useEffect(() => {
     const ids = sessionLogTabIds ? sessionLogTabIds.split("\n") : [];
     const watch = sessionLogWatch.current;
@@ -1238,6 +1395,10 @@ export function StartupForm({
         const entry = watch.get(id);
         if (!entry || reading.has(id)) continue;
         const busy = terminalActivity.isBusy(id, now);
+        if (entry.forceRead) {
+          entry.forceRead = false;
+          entry.poll = undefined;
+        }
         entry.poll = sessionLogTick(entry.poll, busy);
         if (!sessionLogDue(entry.poll, busy, now)) continue;
         reading.add(id);
@@ -1247,7 +1408,7 @@ export function StartupForm({
             reading.delete(id);
             if (cancelled) return;
             entry.poll = afterSessionLogRead(entry.poll, busy, log, Date.now());
-            storeSessionLog(id, log);
+            storeSessionLog(id, log, now);
           });
       }
     };
@@ -1258,13 +1419,60 @@ export function StartupForm({
       window.clearInterval(timer);
     };
   }, [sessionLogTabIds, storeSessionLog]);
-  /** Idle by the session log's turn when the tab has one, else by PTY output. */
+  /**
+   * Claude role terminals' one state (exited, needs you, working, idle), read
+   * by the chip, status bar, grid, chain overview and hand-off.
+   */
+  const terminalStatesRef = useRef<Record<string, TerminalState>>({});
+  const terminalStates = useMemo(() => {
+    const prev = terminalStatesRef.current;
+    const next: Record<string, TerminalState> = {};
+    let changed = false;
+    for (const tab of savedTabs) {
+      if (!isClaudeRoleTerminal(tab)) continue;
+      const state = deriveTerminalState({
+        log: sessionLogs[tab.id],
+        // Only once a log read tied the dialog to one of the turn's tools.
+        dialogTool: dialogTabs.includes(tab.id)
+          ? dialogToolFor(dialogOwners.current.get(tab.id), sessionLogs[tab.id])
+          : null,
+        ptyBusy: terminalBusy.includes(tab.id),
+        exitCode: ptyExitCode(tab.id),
+      });
+      next[tab.id] = sameTerminalState(prev[tab.id], state) ? prev[tab.id] : state;
+      if (next[tab.id] !== prev[tab.id]) changed = true;
+    }
+    if (!changed && Object.keys(prev).length === Object.keys(next).length) return prev;
+    terminalStatesRef.current = next;
+    return next;
+    // ptyVersion: exit codes, dialogOwnerVersion: dialog owners live outside React state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dialogOwnerVersion, dialogTabs, ptyVersion, savedTabs, sessionLogs, terminalBusy]);
+
+  // One toast and OS notification per prompt that needs the user.
+  const needsNotified = useRef(new Set<string>());
+  useEffect(() => {
+    for (const [tabId, state] of Object.entries(terminalStates)) {
+      if (state.kind !== "needs") continue;
+      // A permission prompt is keyed by the dialog, not the call: a subagent's
+      // prompts share its Agent call, and a dialog may move to another call.
+      const which = state.needs === "permission" ? `prompt ${state.promptKey ?? state.toolId}` : state.toolId;
+      const key = `${tabId}\n${state.needs}\n${which}`;
+      if (needsNotified.current.has(key)) continue;
+      needsNotified.current.add(key);
+      notifyAgent(tabId, { kind: state.needs, detail: terminalNeedsMessage(state) });
+    }
+  }, [notifyAgent, terminalStates]);
+
+  /** Working until its turn ends (a prompt waiting on the user included). */
   const terminalWorking = useCallback(
     (tabId: string) => {
+      const state = terminalStates[tabId];
+      if (state) return state.kind === "working" || state.kind === "needs";
       const log = sessionLogs[tabId];
       return log ? !log.turnDone : terminalBusy.includes(tabId);
     },
-    [sessionLogs, terminalBusy],
+    [sessionLogs, terminalBusy, terminalStates],
   );
 
   const tabStatuses = useMemo(() => {
@@ -1276,10 +1484,11 @@ export function StartupForm({
         planPending: runtimes[tab.id]?.plan != null,
         questionPending: runtimes[tab.id]?.question != null,
         terminalBusy: terminalBusy.includes(tab.id),
+        terminal: terminalStates[tab.id],
       });
     }
     return out;
-  }, [runtimes, savedTabs, tabMarks, terminalBusy]);
+  }, [runtimes, savedTabs, tabMarks, terminalBusy, terminalStates]);
 
   const uiSettings = useUiSettings();
   // U2: one pad size for chat and terminal tabs; saved when a drag ends.
@@ -3048,7 +3257,7 @@ export function StartupForm({
     if (!payload.trim()) return;
     for (let attempt = 0; attempt < 20; attempt += 1) {
       try {
-        terminalActivity.input(target);
+        notePtyInput(target);
         await ptyWrite(target, payload);
         setTerminalError(null);
         // Sent to the shell: it leaves the pad and joins Recent sends.
@@ -3226,10 +3435,11 @@ export function StartupForm({
       };
       apply(sessionLogsRef.current[tab.id]);
       if (!fresh) return;
+      const readAt = Date.now();
       void terminalSessionLog(tab.id)
         .catch(() => null)
         .then((log) => {
-          storeSessionLog(tab.id, log);
+          storeSessionLog(tab.id, log, readAt);
           apply(log);
         });
     },
@@ -3260,6 +3470,7 @@ export function StartupForm({
       const tab = savedTabsRef.current.find((item) => item.id === tabId);
       const sourceRoleId = tab?.roleId ?? "";
       setHandoffError(null);
+      const logReadAt = Date.now();
       const logRead = terminalSessionLog(tabId).catch(() => null);
       const answers = await getTab(tabId)
         .then(({ tab: record }) => ({ ...record.answers }))
@@ -3282,7 +3493,7 @@ export function StartupForm({
         }
       }
       const log = await logRead;
-      storeSessionLog(tabId, log);
+      storeSessionLog(tabId, log, logReadAt);
       readTerminalVerdict(tabId);
       setTerminalCapture({
         tabId,
@@ -3467,7 +3678,7 @@ export function StartupForm({
     // A running PTY takes the follow-up as a paste; an exited one does not.
     const liveTerminal = (tab: TabSummary) => {
       const pty = livePty(tab.id);
-      return tab.kind === "terminal" && !!pty && pty.exitCode == null;
+      return tab.kind === "terminal" && !!pty && !pty.exited;
     };
     const liveTarget = (tab: TabSummary) => liveChat(tab) || liveTerminal(tab);
     const tab = chainTabFor(savedTabs, chain, next.step, liveTarget);
@@ -3475,8 +3686,11 @@ export function StartupForm({
     const terminal = live && tab.kind === "terminal";
     const rt = tab && !terminal ? runtimes[tab.id] : undefined;
     const working = live && (terminal ? terminalWorking(tab.id) : !!rt?.promptInFlight);
+    const termState = terminal ? terminalStates[tab.id] : undefined;
     // A turn held by a card never ends on its own: say what it waits for.
-    const waitingOn = rt?.plan
+    const waitingOn = termState?.kind === "needs"
+      ? null
+      : rt?.plan
       ? "a plan card"
       : rt?.permission
         ? "a permission request"
@@ -3489,7 +3703,9 @@ export function StartupForm({
       live,
       terminal,
       blocked: working
-        ? waitingOn
+        ? termState?.kind === "needs"
+          ? `The ${tab.label} tab is ${terminalWaitingText(termState.needs)}. Answer it in that tab, then send.`
+          : waitingOn
           ? `The ${tab.label} tab is waiting on ${waitingOn}. Answer it in that tab, then send.`
           : `The ${tab.label} tab is still working. Wait for its turn to end.`
         : null,
@@ -3501,6 +3717,7 @@ export function StartupForm({
     handoffTarget,
     runtimes,
     savedTabs,
+    terminalStates,
     terminalWorking,
   ]);
 
@@ -3535,7 +3752,7 @@ export function StartupForm({
         try {
           if (loop.terminal) {
             // One paste and one Enter, like the terminal scratch pad's Send.
-            terminalActivity.input(targetTab.id);
+            notePtyInput(targetTab.id);
             await ptyWrite(
               targetTab.id,
               encodeTerminalPaste(text, {
@@ -4403,7 +4620,15 @@ export function StartupForm({
     }
     scratch.flush();
     stashActiveTab();
-    const result = await workspaceOpen(id, replace);
+    // The backend stops the old PTYs before this returns; that is not a crash.
+    const replacing = replace ? old.map((t) => t.id) : [];
+    for (const tabId of replacing) replacingTabs.current.add(tabId);
+    let result: Awaited<ReturnType<typeof workspaceOpen>>;
+    try {
+      result = await workspaceOpen(id, replace);
+    } finally {
+      for (const tabId of replacing) replacingTabs.current.delete(tabId);
+    }
     if (replace) {
       for (const t of old) {
         delete draftsRef.current[t.id];
@@ -5043,6 +5268,7 @@ export function StartupForm({
    */
   const gridTone = (tab: TabSummary) => {
     const status = tabStatuses[tab.id];
+    if (status?.exitCode != null) return "error";
     return status?.needsYou ? "needs" : status?.busy ? "busy" : status?.unseen ? "unseen" : "idle";
   };
 
@@ -5167,6 +5393,7 @@ export function StartupForm({
     const tab = activeTabSummary;
     const marks = activeTabId ? tabStatuses[activeTabId] : undefined;
     if (!tab) return { tone: "idle", text: "No tab" };
+    if (marks?.exitCode != null) return { tone: "error", text: tabStatusLabel(marks) };
     if (marks?.needsYou) return { tone: "needs", text: tabStatusLabel(marks) };
     if (tab.kind === "pipeline_overview") {
       return { tone: "ok", text: "Pipeline overview" };
@@ -5211,6 +5438,15 @@ export function StartupForm({
     ...(session && activeRuntime.folderWarning
       ? [{ id: "folder", text: activeRuntime.folderWarning, tone: "warn" as const }]
       : []),
+    // Other terminals waiting for the user, named, so a background or
+    // detached tab is not missed.
+    ...savedTabs
+      .filter((tab) => tab.id !== activeTabId && terminalStates[tab.id]?.kind === "needs")
+      .map((tab) => ({
+        id: `needs-${tab.id}`,
+        text: `${tab.label}: ${tabStatusLabel(tabStatuses[tab.id] ?? IDLE_STATUS)}`,
+        tone: "warn" as const,
+      })),
     ...(modelNotice
       ? [{ id: "model", text: modelNotice, tone: "info" as const, onDismiss: () => setModelNotice(null) }]
       : []),
@@ -5228,7 +5464,10 @@ export function StartupForm({
       branch={activeTabSummary?.worktreeBranch ?? null}
       permissions={
         activeTabSummary && tabHasProvider(activeTabSummary)
-          ? { fallback: activeTabSummary.permissionNote ?? null }
+          ? {
+              fallback: activeTabSummary.permissionNote ?? null,
+              mode: activeTabSummary.permissionMode ?? null,
+            }
           : null
       }
       usage={activeTabSummary && providerOf(activeTabSummary) === "claude" ? statusLimit(usageSnap?.windows ?? []) : null}
@@ -5330,6 +5569,7 @@ export function StartupForm({
           cwd={activeTabSummary.cwd}
           tabs={savedTabs}
           runtimes={runtimes}
+          terminalStates={terminalStates}
           onJump={(tabId) => void handleSelectTab(tabId)}
           onWatch={(tabId) => {
             setSplit((current) => ({

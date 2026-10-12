@@ -151,14 +151,16 @@ export function TabBar({
         {tabs.map((t) => {
           const active = t.id === activeTabId;
           const status = statuses[t.id];
-          const needsYou = status?.needsYou ?? null;
-          const busy = !needsYou && !!status?.busy;
-          const unseen = !needsYou && !busy && !!status?.unseen;
+          const exited = typeof status?.exitCode === "number";
+          const needsYou = exited ? null : (status?.needsYou ?? null);
+          const busy = !exited && !needsYou && !!status?.busy;
+          const unseen = !exited && !needsYou && !busy && !!status?.unseen;
           const statusText = status ? tabStatusLabel(status) : "";
           const color = t.color || roleColors[t.roleId] || "#8b949e";
           const chipClass = [
             "tab-chip",
             active ? "tab-chip-active" : "",
+            exited ? "tab-chip-error tab-chip-attention" : "",
             needsYou ? "tab-chip-needs tab-chip-attention" : "",
             busy ? "tab-chip-busy" : "",
             unseen ? "tab-chip-unseen" : "",
@@ -181,7 +183,7 @@ export function TabBar({
               key={t.id}
               className={chipClass}
               style={{ boxShadow: `inset 0 3px 0 ${color}` }}
-              data-status={needsYou ? "needs" : busy ? "busy" : unseen ? "unseen" : "idle"}
+              data-status={exited ? "exited" : needsYou ? "needs" : busy ? "busy" : unseen ? "unseen" : "idle"}
             >
               <button
                 type="button"
@@ -206,6 +208,11 @@ export function TabBar({
                   style={{ background: color }}
                 />
                 <span className="tab-chip-text">{t.label}</span>
+                {exited && (
+                  <span className="tab-needs-flag tab-error-flag" aria-hidden>
+                    ×
+                  </span>
+                )}
                 {needsYou && (
                   <span className="tab-needs-flag" aria-hidden>
                     !

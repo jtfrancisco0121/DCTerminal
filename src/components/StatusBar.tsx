@@ -17,8 +17,12 @@ type Props = {
   provider?: { text: string; title: string } | null;
   folder?: string | null;
   branch?: string | null;
-  /** Set on agent tabs. `fallback` is why Claude could not take the role mode. */
-  permissions?: { fallback?: string | null } | null;
+  /**
+   * Set on agent tabs. `fallback` is why Claude could not take the role mode.
+   * `mode` is the `--permission-mode` a Claude role terminal launched with
+   * (`auto` | `plan`); when set it replaces "Full permissions".
+   */
+  permissions?: { fallback?: string | null; mode?: string | null } | null;
   /** Claude 5h/7d line. Null hides it. */
   usage?: LimitLine | null;
   messages?: StatusMessage[];
@@ -37,7 +41,15 @@ function folderName(path: string): string {
  * indicator, plus short notices that used to be banners.
  */
 export const FULL_PERMISSIONS_TITLE =
-  "All tabs run with full permissions (Claude: bypass / auto / plan per role; Cursor: unrestricted). Answers are allow-once; nothing is written to your repo's settings.";
+  "Chat tabs run with full permissions (Claude chat: bypass / auto / plan per role; Cursor: unrestricted). Claude role terminals use auto or plan mode and ask before risky actions. Answers are allow-once; nothing is written to your repo's settings.";
+
+/** Tooltip for a Claude role terminal's permission mode. */
+export function permissionModeTitle(mode: string): string {
+  const base = `Claude Code launched this role terminal with --permission-mode ${mode}`;
+  return mode === "plan"
+    ? `${base}: it plans without editing files and asks before acting.`
+    : `${base}: it asks you before risky actions.`;
+}
 
 export function StatusBar({
   status,
@@ -50,9 +62,18 @@ export function StatusBar({
   messages = [],
   trailing = null,
 }: Props) {
-  const permissionText = permissions?.fallback
-    ? `Full permissions unavailable for Claude — ${permissions.fallback}`
-    : "Full permissions";
+  const mode = permissions?.mode?.trim() || null;
+  const permissionText = mode
+    ? `Mode: ${mode}`
+    : permissions?.fallback
+      ? `Full permissions unavailable for Claude — ${permissions.fallback}`
+      : "Full permissions";
+  const permissionWarn = !mode && Boolean(permissions?.fallback);
+  const permissionTitle = mode
+    ? permissionModeTitle(mode)
+    : permissionWarn
+      ? permissionText
+      : FULL_PERMISSIONS_TITLE;
   return (
     <footer className="status-bar" aria-label="Status bar">
       <span className={`status-bar-item status-bar-status status-tone-${status.tone}`}>
@@ -87,8 +108,8 @@ export function StatusBar({
       )}
       {permissions && (
         <span
-          className={`status-bar-item${permissions.fallback ? " status-bar-warn" : ""}`}
-          title={permissions.fallback ? permissionText : FULL_PERMISSIONS_TITLE}
+          className={`status-bar-item${permissionWarn ? " status-bar-warn" : ""}`}
+          title={permissionTitle}
           data-testid="status-permissions"
         >
           {permissionText}

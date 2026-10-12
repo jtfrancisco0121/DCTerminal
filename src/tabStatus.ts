@@ -1,11 +1,13 @@
 /**
  * F2: per-tab status for the tab chips. Busy, finished-but-unseen, and
  * needs-you come from exact ACP signals on chat tabs (prompt in flight,
- * request_permission, cursor/create_plan, prompt finished) and from an
- * output-activity heuristic on terminal tabs.
+ * request_permission, cursor/create_plan, prompt finished). Claude Code role
+ * terminals pass their derived `TerminalState`; other terminals fall back to
+ * an output-activity heuristic.
  */
 import type { AgentEventKind } from "./notify/agentNotify";
 import type { TabRuntime } from "./liveTabs";
+import type { TerminalState } from "./terminal/claudeState";
 
 export type NeedsYou = "permission" | "plan" | "question" | "error";
 
@@ -14,6 +16,8 @@ export type TabStatus = {
   /** A turn finished while the user was not looking at this tab. */
   unseen: boolean;
   needsYou: NeedsYou | null;
+  /** Set when the terminal's process exited; wins over everything else. */
+  exitCode?: number | null;
 };
 
 /** What a finished turn left behind until the user looks at the tab. */
@@ -63,8 +67,24 @@ export function computeTabStatus(input: {
   planPending: boolean;
   questionPending?: boolean;
   terminalBusy?: boolean;
+  /** A Claude Code role terminal's derived state. */
+  terminal?: TerminalState;
 }): TabStatus {
   const rt = input.runtime;
+  const term = input.terminal;
+  if (term) {
+    if (term.kind === "exited") {
+      return { busy: false, unseen: false, needsYou: "error", exitCode: term.code };
+    }
+    let needsYou: NeedsYou | null = term.kind === "needs" ? term.needs : null;
+    if (!needsYou && input.mark === "question") needsYou = "question";
+    else if (!needsYou && input.mark === "error") needsYou = "error";
+    return {
+      busy: term.kind === "working",
+      unseen: input.mark === "finished",
+      needsYou,
+    };
+  }
   let needsYou: NeedsYou | null = null;
   if (rt?.permission) needsYou = "permission";
   else if (input.planPending) needsYou = "plan";
@@ -87,6 +107,9 @@ const NEEDS_YOU_TEXT: Record<NeedsYou, string> = {
 
 /** One line for tooltips and screen readers. Empty when idle. */
 export function tabStatusLabel(status: TabStatus): string {
+  if (status.exitCode !== undefined && status.exitCode !== null) {
+    return `Exited · code ${status.exitCode}`;
+  }
   if (status.needsYou) return `Needs you: ${NEEDS_YOU_TEXT[status.needsYou]}`;
   if (status.busy) return "Working";
   if (status.unseen) return "Finished, not viewed yet";

@@ -8,15 +8,26 @@ import { isReviewerRole, parseReviewVerdict, type ReviewVerdict } from "../hando
 import type { TabRuntime } from "../liveTabs";
 import { segmentsToPlainText } from "../transcript";
 import { stagesForKind, type PipelineKind, type PipelineStageDef } from "./stages";
+import type { TerminalNeeds, TerminalState } from "../terminal/claudeState";
 import type { TerminalReader } from "./terminalText";
 
-export type LaneTone = "idle" | "live" | "done";
+export type LaneTone = "idle" | "live" | "done" | "needs" | "error";
+
+const LANE_NEEDS_TEXT: Record<TerminalNeeds, string> = {
+  plan: "Needs you: plan to review",
+  question: "Needs you: question",
+  permission: "Needs you: permission request",
+};
 
 export function laneStatus(
   tab: TabSummary | undefined,
   rt: TabRuntime | undefined,
+  terminal?: TerminalState,
 ): { label: string; tone: LaneTone } {
   if (!tab) return { label: "Missing tab", tone: "idle" };
+  if (terminal?.kind === "exited") return { label: `Exited · code ${terminal.code}`, tone: "error" };
+  if (terminal?.kind === "needs") return { label: LANE_NEEDS_TEXT[terminal.needs], tone: "needs" };
+  if (terminal?.kind === "working") return { label: "Working…", tone: "live" };
   if (rt?.promptInFlight) return { label: "Working…", tone: "live" };
   if (tab.phase === "running" || rt?.session) return { label: "Session open", tone: "live" };
   if (tab.hasTranscript || tab.startupPromptSent) return { label: "Stopped", tone: "done" };
@@ -57,6 +68,7 @@ export function overviewStages(
   tabs: TabSummary[],
   runtimes: Record<string, TabRuntime>,
   reader: TerminalReader,
+  terminalStates?: Record<string, TerminalState>,
 ): StageView[] {
   const byId = new Map(tabs.map((t) => [t.id, t]));
   return stagesForKind((run.kind ?? "full") as PipelineKind).map((def) => {
@@ -70,7 +82,7 @@ export function overviewStages(
       def,
       tabId,
       tab,
-      status: tabId ? laneStatus(tab, rt) : { label: "Not started", tone: "idle" },
+      status: tabId ? laneStatus(tab, rt, terminalStates?.[tabId]) : { label: "Not started", tone: "idle" },
       handedIn: run.handoffs?.[def.roleId]?.text?.trim() || null,
       verdict,
       current: run.stage === def.stageId,

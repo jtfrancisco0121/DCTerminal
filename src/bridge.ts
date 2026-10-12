@@ -284,6 +284,11 @@ export type TabSummary = {
   chain?: import("./handoff/chains").ChainRef | null;
   /** Set when Claude could not take the role's permission mode. */
   permissionNote?: string | null;
+  /**
+   * `--permission-mode` a Claude role terminal launched with ("auto", or
+   * "plan" for the Planner). Missing on chat, Cursor, plain and resume tabs.
+   */
+  permissionMode?: string | null;
 };
 
 export type PipelineRun = {
@@ -1335,6 +1340,15 @@ export type TerminalSessionLog = {
   lastPromptAt: string | null;
   /** Oldest to newest, at most 500. */
   toolCalls: SessionToolCall[];
+  /**
+   * The current turn's unanswered tool (ExitPlanMode, then AskUserQuestion,
+   * then the newest). Absent on older backends.
+   */
+  openTool?: { id: string; name: string; title: string } | null;
+  /** The current turn's unanswered tools, oldest first. Absent on older backends. */
+  pendingTools?: { id: string; name: string; title: string }[];
+  /** `permissionMode` of the latest real prompt. */
+  permissionMode?: string | null;
 };
 
 /** `null` until the tab has a pinned Claude session whose log exists. */

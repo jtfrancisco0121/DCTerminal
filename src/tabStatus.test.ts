@@ -96,3 +96,34 @@ describe("tabStatusLabel", () => {
     expect(tabStatusLabel({ busy: false, unseen: false, needsYou: null })).toBe("");
   });
 });
+
+describe("computeTabStatus with a Claude role terminal state", () => {
+  const status = (terminal: Parameters<typeof computeTabStatus>[0]["terminal"], mark?: TabMark) =>
+    computeTabStatus({ planPending: false, terminal, mark, terminalBusy: true });
+
+  it("puts an exit before everything else", () => {
+    const exited = status({ kind: "exited", code: 1 }, "finished");
+    expect(exited).toEqual({ busy: false, unseen: false, needsYou: "error", exitCode: 1 });
+    expect(tabStatusLabel(exited)).toBe("Exited · code 1");
+    expect(tabStatusLabel(status({ kind: "exited", code: 0 }))).toBe("Exited · code 0");
+  });
+
+  it("shows needs you from the state, not from PTY output", () => {
+    const needs = status({ kind: "needs", needs: "plan", toolId: "t", toolTitle: "ExitPlanMode" });
+    expect(needs.needsYou).toBe("plan");
+    expect(needs.busy).toBe(false);
+    expect(tabStatusLabel(needs)).toBe("Needs you: plan to review");
+    expect(tabStatusLabel(status({ kind: "needs", needs: "permission", toolId: "t", toolTitle: "" }))).toBe(
+      "Needs you: permission request",
+    );
+  });
+
+  it("is working or idle by the state even while the PTY prints", () => {
+    expect(tabStatusLabel(status({ kind: "working" }))).toBe("Working");
+    const idle = status({ kind: "idle" });
+    expect(idle.busy).toBe(false);
+    expect(tabStatusLabel(idle)).toBe("");
+    expect(status({ kind: "idle" }, "finished").unseen).toBe(true);
+    expect(status({ kind: "idle" }, "error").needsYou).toBe("error");
+  });
+});

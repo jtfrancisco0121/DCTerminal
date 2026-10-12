@@ -44,6 +44,32 @@ describe("StatusBar (U3)", () => {
     expect(screen.queryByText(/role permission rules are off/i)).toBeNull();
   });
 
+  it("shows a Claude role terminal's permission mode instead of full permissions", () => {
+    const { rerender } = render(
+      <StatusBar status={{ tone: "busy", text: "Working…" }} permissions={{ mode: "auto" }} />,
+    );
+    let perms = screen.getByTestId("status-permissions");
+    expect(perms.textContent).toBe("Mode: auto");
+    expect(perms.getAttribute("title")).toMatch(/--permission-mode auto/);
+    expect(perms.className).not.toMatch(/status-bar-warn/);
+    rerender(
+      <StatusBar
+        status={{ tone: "needs", text: "Needs you" }}
+        permissions={{ mode: "plan", fallback: "ignored" }}
+      />,
+    );
+    perms = screen.getByTestId("status-permissions");
+    expect(perms.textContent).toBe("Mode: plan");
+    expect(perms.getAttribute("title")).toMatch(/--permission-mode plan/);
+    expect(screen.queryByText(/Full permissions/)).toBeNull();
+  });
+
+  it("colors the status by tone, red for an exited terminal", () => {
+    render(<StatusBar status={{ tone: "error", text: "Exited · code 1" }} />);
+    const status = screen.getByText("Exited · code 1");
+    expect(status.className).toMatch(/status-tone-error/);
+  });
+
   it("leaves out what the tab does not have", () => {
     render(<StatusBar status={{ tone: "idle", text: "Not started" }} />);
     const bar = screen.getByRole("contentinfo", { name: "Status bar" });

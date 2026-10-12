@@ -65,6 +65,15 @@ describe("session log polling", () => {
     expect(sameSessionLog(log, { ...log })).toBe(true);
     expect(sameSessionLog(log, { ...log, turnDone: false })).toBe(false);
     expect(sameSessionLog(log, { ...log, lastReply: "b" })).toBe(false);
+    const open = { ...log, openTool: { id: "toolu_1", name: "Bash" } };
+    expect(sameSessionLog(log, open)).toBe(false);
+    expect(sameSessionLog(open, { ...open, openTool: { id: "toolu_1", name: "Bash" } })).toBe(true);
+    expect(sameSessionLog(open, { ...open, openTool: { id: "toolu_2", name: "Bash" } })).toBe(false);
+    expect(sameSessionLog(log, { ...log, openTool: null })).toBe(true);
+    const parallel = { ...open, pendingTools: [{ id: "toolu_1" }, { id: "toolu_2" }] };
+    expect(sameSessionLog(parallel, { ...parallel, pendingTools: [{ id: "toolu_2" }] })).toBe(false);
+    expect(sameSessionLog(parallel, { ...parallel, pendingTools: [{ id: "toolu_1" }, { id: "toolu_2" }] })).toBe(true);
+    expect(sameSessionLog(log, { ...log, permissionMode: "auto" })).toBe(false);
     expect(sameSessionLog(null, null)).toBe(true);
     expect(sameSessionLog(log, null)).toBe(false);
   });
