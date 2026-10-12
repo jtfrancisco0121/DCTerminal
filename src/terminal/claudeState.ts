@@ -80,10 +80,17 @@ export function terminalNeedsMessage(state: Extract<TerminalState, { kind: "need
 }
 
 /**
- * The permission dialog on screen: when the detector saw it drawn, and the
- * open tool it asks about (null until a log read after `since` names one).
+ * The permission dialog on screen: when the detector last saw it drawn, and
+ * the open tool it asks about. `fresh` means drawn since the last read that
+ * named its tool, so the next read decides the tool again (after an answer
+ * the next dialog may be for a different tool).
  */
-export type DialogOwner = { since: number; toolId: string | null };
+export type DialogOwner = { since: number; toolId: string | null; fresh: boolean };
+
+/** A dialog that was just drawn (again), keeping the tool it showed for. */
+export function dialogDrawn(owner: DialogOwner | undefined, now: number): DialogOwner {
+  return { since: now, toolId: owner?.toolId ?? null, fresh: true };
+}
 
 /**
  * After a session-log read that started at `readAt`: which tool the visible
@@ -99,8 +106,19 @@ export function dialogAfterRead(
   if (!owner || !log || readAt < owner.since) return { owner, clear: false };
   if (log.turnDone) return { owner: undefined, clear: true };
   const openId = log.openTool?.id ?? null;
-  if (owner.toolId === null) {
-    return { owner: openId ? { ...owner, toolId: openId } : owner, clear: false };
+  if (owner.fresh || owner.toolId === null) {
+    // Not flushed to the log yet: keep waiting for its tool.
+    if (!openId) return { owner, clear: false };
+    return { owner: { since: owner.since, toolId: openId, fresh: false }, clear: false };
   }
   return openId === owner.toolId ? { owner, clear: false } : { owner: undefined, clear: true };
+}
+
+/** The dialog counts for the log's open tool only once it is known to ask about it. */
+export function dialogShownFor(
+  owner: DialogOwner | undefined,
+  log: Pick<TerminalSessionLog, "turnDone" | "openTool"> | null | undefined,
+): boolean {
+  const openId = log && !log.turnDone ? log.openTool?.id : undefined;
+  return !!owner && !!openId && owner.toolId === openId;
 }

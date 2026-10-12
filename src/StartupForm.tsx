@@ -244,6 +244,8 @@ import {
 import {
   deriveTerminalState,
   dialogAfterRead,
+  dialogDrawn,
+  dialogShownFor,
   sameTerminalState,
   terminalNeedsMessage,
   terminalWaitingText,
@@ -534,6 +536,14 @@ export function StartupForm({
   const [dialogTabs, setDialogTabs] = useState<string[]>([]);
   /** The open tool each visible permission dialog asks about. */
   const dialogOwners = useRef(new Map<string, DialogOwner>());
+  /** Bumped when a dialog's tool becomes known or it goes away. */
+  const [dialogOwnerVersion, setDialogOwnerVersion] = useState(0);
+  const setDialogOwner = useCallback((tabId: string, owner: DialogOwner | undefined) => {
+    const prev = dialogOwners.current.get(tabId);
+    if (owner) dialogOwners.current.set(tabId, owner);
+    else dialogOwners.current.delete(tabId);
+    if (prev?.toolId !== owner?.toolId) setDialogOwnerVersion((value) => value + 1);
+  }, []);
   /** Tabs whose PTYs a workspace replace is stopping: their exit is not news. */
   const replacingTabs = useRef(new Set<string>());
   const [renamingTabId, setRenamingTabId] = useState<string | null>(null);
@@ -1273,18 +1283,14 @@ export function StartupForm({
       // tool needs a fresh dialog. An earlier tool finishing is not that.
       if (readAt !== undefined) {
         const next = dialogAfterRead(dialogOwners.current.get(tabId), log, readAt);
-        if (next.clear) {
-          dialogOwners.current.delete(tabId);
-          dialogDetector.clear(tabId);
-        } else if (next.owner) {
-          dialogOwners.current.set(tabId, next.owner);
-        }
+        setDialogOwner(tabId, next.owner);
+        if (next.clear) dialogDetector.clear(tabId);
       }
       if (prev !== undefined && sameSessionLog(prev, log)) return;
       sessionLogsRef.current = { ...sessionLogsRef.current, [tabId]: log };
       setSessionLogs(sessionLogsRef.current);
     },
-    [isWatchingTab, notifyAgent],
+    [isWatchingTab, notifyAgent, setDialogOwner],
   );
 
   // PTY start and exit change which terminals are live and their state.
@@ -1315,8 +1321,7 @@ export function StartupForm({
         return visible ? [...prev, id] : prev.filter((item) => item !== id);
       });
       // A new draw belongs to whatever tool the next read finds open.
-      if (visible) dialogOwners.current.set(id, { since: Date.now(), toolId: null });
-      else dialogOwners.current.delete(id);
+      setDialogOwner(id, visible ? dialogDrawn(dialogOwners.current.get(id), Date.now()) : undefined);
       // Read the log now: the open tool decides what the dialog is for.
       const entry = sessionLogWatch.current.get(id);
       if (visible && entry) entry.poll = undefined;
@@ -1326,7 +1331,7 @@ export function StartupForm({
       unsubscribeExit();
       unsubscribeDialog();
     };
-  }, [isWatchingTab, notifyAgent]);
+  }, [isWatchingTab, notifyAgent, setDialogOwner]);
 
   // Every live Claude role terminal, plus role terminals on screen or in a
   // chain: read their Claude session log while the PTY streams output, until
@@ -1406,7 +1411,10 @@ export function StartupForm({
       if (!isClaudeRoleTerminal(tab)) continue;
       const state = deriveTerminalState({
         log: sessionLogs[tab.id],
-        dialogVisible: dialogTabs.includes(tab.id),
+        // Only once a log read tied the dialog to this open tool.
+        dialogVisible:
+          dialogTabs.includes(tab.id) &&
+          dialogShownFor(dialogOwners.current.get(tab.id), sessionLogs[tab.id]),
         ptyBusy: terminalBusy.includes(tab.id),
         exitCode: ptyExitCode(tab.id),
       });
@@ -1416,9 +1424,9 @@ export function StartupForm({
     if (!changed && Object.keys(prev).length === Object.keys(next).length) return prev;
     terminalStatesRef.current = next;
     return next;
-    // ptyVersion: exit codes live outside React state.
+    // ptyVersion: exit codes, dialogOwnerVersion: dialog owners live outside React state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dialogTabs, ptyVersion, savedTabs, sessionLogs, terminalBusy]);
+  }, [dialogOwnerVersion, dialogTabs, ptyVersion, savedTabs, sessionLogs, terminalBusy]);
 
   // One toast and OS notification per prompt that needs the user.
   const needsNotified = useRef(new Set<string>());

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   deriveTerminalState,
   dialogAfterRead,
+  dialogDrawn,
+  dialogShownFor,
   sameTerminalState,
   terminalNeedsMessage,
   terminalWaitingText,
@@ -84,24 +86,42 @@ describe("terminal state text", () => {
   });
 });
 
-describe("dialogAfterRead", () => {
-  const owner = (toolId: string | null, since = 100) => ({ since, toolId });
+describe("dialog owner", () => {
+  const owner = (toolId: string | null, since = 100, fresh = false) => ({ since, toolId, fresh });
   const log = (openId: string | null, turnDone = false) => ({
     turnDone,
     openTool: openId ? open("Bash", openId) : null,
   });
 
   it("adopts the open tool from the first read after the dialog appeared", () => {
-    expect(dialogAfterRead(owner(null), log("toolu_b"), 150)).toEqual({
+    expect(dialogAfterRead(dialogDrawn(undefined, 100), log("toolu_b"), 150)).toEqual({
       owner: owner("toolu_b"),
       clear: false,
     });
   });
 
-  it("does not clear a new dialog because an earlier tool finished", () => {
-    // Tool A was open at the last read; B's dialog was drawn since.
-    expect(dialogAfterRead(owner(null), log("toolu_b"), 150).clear).toBe(false);
-    expect(dialogAfterRead(owner("toolu_b"), log("toolu_b"), 200).clear).toBe(false);
+  it("does not show or clear a new dialog because an earlier tool was still open", () => {
+    // Tool A (no dialog) was open at the last read; B's dialog was drawn since.
+    const drawn = dialogDrawn(undefined, 100);
+    expect(dialogShownFor(drawn, log("toolu_a"))).toBe(false);
+    const read = dialogAfterRead(drawn, log("toolu_b"), 150);
+    expect(read.clear).toBe(false);
+    expect(dialogShownFor(read.owner, log("toolu_b"))).toBe(true);
+  });
+
+  it("after an answer, a redrawn dialog is re-read for the next tool, steady meanwhile", () => {
+    const shown = owner("toolu_a");
+    const redrawn = dialogDrawn(shown, 200);
+    // Until the next read the log still says A: keep showing it (no flicker).
+    expect(dialogShownFor(redrawn, log("toolu_a"))).toBe(true);
+    expect(dialogAfterRead(redrawn, log("toolu_b"), 250)).toEqual({
+      owner: owner("toolu_b", 200),
+      clear: false,
+    });
+  });
+
+  it("waits while the dialog's tool is not in the log yet", () => {
+    expect(dialogAfterRead(owner(null), log(null), 150)).toEqual({ owner: owner(null), clear: false });
   });
 
   it("ignores reads that started before the dialog was drawn", () => {
@@ -126,5 +146,6 @@ describe("dialogAfterRead", () => {
 
   it("does nothing while no dialog is shown", () => {
     expect(dialogAfterRead(undefined, log(null), 200)).toEqual({ owner: undefined, clear: false });
+    expect(dialogShownFor(undefined, log("toolu_a"))).toBe(false);
   });
 });
