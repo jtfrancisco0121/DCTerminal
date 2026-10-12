@@ -8,7 +8,7 @@ use super::agent_requests::{
     claude_permission_route, exit_plan_body, exit_plan_file, permission_response, plan_response,
     read_plan_file, reject_option_id, ClaudeRoute,
 };
-use super::dev_session::{LiveSession, PendingPlan, SessionRegistry};
+use super::dev_session::{agent_logs, LiveSession, PendingPlan, SessionRegistry};
 use super::session_flow_tests::{
     claude_scenario, claude_tool_options, connect, exit_plan_request, is_text, kill,
     permission_request, reply, start,
@@ -20,6 +20,7 @@ use crate::permissions::ToolCallCache;
 use crate::provider::{ClaudeProvider, CursorProvider, Provider, ProviderId};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 macro_rules! fake {
@@ -457,6 +458,49 @@ fn an_agent_that_exits_between_turns_is_seen_as_exited_and_can_be_restarted() {
         .expect("restart allowed");
     assert!(registry.get("tab-exit").is_none());
     registry.finish_start("tab-exit");
+}
+
+#[test]
+fn agent_logs_read_while_a_turn_holds_the_client_lock() {
+    // A turn holds the client lock until it ends, and its callbacks take the
+    // registry lock. The log drawer holds the registry lock, so it must never
+    // wait for the client lock (that was an AB-BA deadlock).
+    let agent = fake!(
+        "logs-mid-turn",
+        claude_scenario(json!([[{ "stderr": "adapter warming up" }, { "say": "hi" }]]))
+    );
+    let client = connect(&agent, ProviderId::Claude, "bypassPermissions");
+    let (client, result, _, _) = start(client, "role_implementer", "go", vec![]).finish();
+    assert_eq!(result.unwrap().agent_text, "hi");
+
+    let registry = Arc::new(Mutex::new(SessionRegistry::new()));
+    registry
+        .lock()
+        .unwrap()
+        .insert(LiveSession::from_client("tab-logs", "role_implementer", client));
+    let client = registry.lock().unwrap().get("tab-logs").unwrap().client.clone();
+    let turn = client.lock().unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    let reader = Arc::clone(&registry);
+    std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let logs = agent_logs(&reader.lock().unwrap(), "tab-logs").map(|l| l.stderr);
+            let done = logs.as_ref().map_or(true, |text| text.contains("adapter warming up"));
+            if done || Instant::now() >= deadline {
+                let _ = tx.send(logs);
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    });
+    let logs = rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("agent logs must not wait for the client lock");
+    assert!(logs.unwrap().contains("adapter warming up"));
+    drop(turn);
+    kill(&client.lock().unwrap());
 }
 
 #[test]

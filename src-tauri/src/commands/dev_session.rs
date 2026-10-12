@@ -1,4 +1,4 @@
-use crate::acp::connection::ClientFollowups;
+use crate::acp::connection::{stderr_text, ClientFollowups, StderrTail};
 use crate::acp::AcpClient;
 use crate::attachments::AttachmentStore;
 use crate::commands::prompt_worker::{spawn_prompt_turn, TurnImages};
@@ -61,6 +61,8 @@ pub struct LiveSession {
     /// Provider the session runs on (kept for restarts).
     pub provider: crate::provider::SharedProvider,
     pub process: SharedProcess,
+    /// Copied from the client so the log drawer can read it mid-turn.
+    pub stderr_tail: StderrTail,
     pub cancel: Arc<AtomicBool>,
     pub outbox: Arc<Mutex<Vec<(u64, Value)>>>,
     pub followups: ClientFollowups,
@@ -79,6 +81,7 @@ pub struct LiveSession {
 impl LiveSession {
     pub fn from_client(tab_id: &str, role_id: &str, client: AcpClient) -> Self {
         let process = client.process_handle();
+        let stderr_tail = client.stderr_handle();
         let cancel = client.cancel_flag();
         let outbox = client.outbox();
         let followups = client.followups();
@@ -94,6 +97,7 @@ impl LiveSession {
             session_id: client.session_id().to_string(),
             client: wrap_client(client),
             process,
+            stderr_tail,
             cancel,
             outbox,
             followups,
@@ -447,15 +451,19 @@ pub fn session_agent_logs(
 ) -> Result<SessionLogs, String> {
     let tab_id = resolve_tab_id(tab_id);
     let guard = state.lock().map_err(|e| e.to_string())?;
-    let session = guard
-        .get(&tab_id)
+    agent_logs(&guard, &tab_id)
+}
+
+/// The tab's agent stderr. Never takes the client lock: a turn holds it
+/// until the turn ends, and the turn's callbacks wait for the registry
+/// lock the caller holds here.
+pub fn agent_logs(registry: &SessionRegistry, tab_id: &str) -> Result<SessionLogs, String> {
+    let session = registry
+        .get(tab_id)
         .ok_or_else(|| "no active session on this tab".to_string())?;
-    let stderr = session
-        .client
-        .lock()
-        .map_err(|e| e.to_string())?
-        .stderr_tail_text();
-    Ok(SessionLogs { stderr })
+    Ok(SessionLogs {
+        stderr: stderr_text(&session.stderr_tail),
+    })
 }
 
 #[tauri::command]

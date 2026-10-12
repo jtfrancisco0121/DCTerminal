@@ -34,6 +34,9 @@ pub type AgentOutbox = Arc<Mutex<Vec<(u64, Value)>>>;
 /// Client requests to send during a turn (method, params). Responses are
 /// ignored unless their id is the turn's own request.
 pub type ClientFollowups = Arc<Mutex<Vec<(String, Value)>>>;
+/// The agent's last stderr lines, shared with the stderr reader thread.
+/// Readable without the client lock, which a turn holds until it ends.
+pub type StderrTail = Arc<Mutex<Vec<String>>>;
 
 enum ReaderMsg {
     Line(String),
@@ -89,7 +92,7 @@ pub struct AcpConnection {
     process: SharedProcess,
     stdin: std::process::ChildStdin,
     lines: Receiver<ReaderMsg>,
-    stderr_tail: Arc<Mutex<Vec<String>>>,
+    stderr_tail: StderrTail,
     /// Sorts agent requests (permission / plan / question / extension).
     provider: SharedProvider,
     /// Agent requests handed to the user and not answered yet.
@@ -209,6 +212,10 @@ impl AcpConnection {
 
     pub fn process_handle(&self) -> SharedProcess {
         self.process.clone()
+    }
+
+    pub fn stderr_handle(&self) -> StderrTail {
+        Arc::clone(&self.stderr_tail)
     }
 
     pub fn request(&mut self, id: u64, method: &str, params: Value) -> Result<(), String> {
@@ -503,13 +510,6 @@ impl AcpConnection {
         self.process.kill_tree();
     }
 
-    pub fn stderr_tail_text(&self) -> String {
-        self.stderr_tail
-            .lock()
-            .map(|buf| buf.join("\n"))
-            .unwrap_or_default()
-    }
-
     fn exit_error(&self, status: Option<String>) -> String {
         let tail = self
             .stderr_tail
@@ -519,6 +519,11 @@ impl AcpConnection {
         let claude = self.provider.id() == crate::provider::ProviderId::Claude;
         exit_error_text(claude, status, &tail)
     }
+}
+
+/// The stderr tail as text, one line per line.
+pub fn stderr_text(tail: &StderrTail) -> String {
+    tail.lock().map(|buf| buf.join("\n")).unwrap_or_default()
 }
 
 /// Why the agent process stopped, worded for the provider that was running.

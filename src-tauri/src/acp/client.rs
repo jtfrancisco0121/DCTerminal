@@ -317,8 +317,8 @@ impl AcpClient {
         self.conn.process_handle()
     }
 
-    pub fn stderr_tail_text(&self) -> String {
-        self.conn.stderr_tail_text()
+    pub fn stderr_handle(&self) -> crate::acp::connection::StderrTail {
+        self.conn.stderr_handle()
     }
 
     pub fn cancel_flag(&self) -> Arc<AtomicBool> {
