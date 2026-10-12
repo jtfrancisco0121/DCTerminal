@@ -583,8 +583,11 @@ describe("blank tab card", () => {
         showDevTools={false}
       />,
     );
-    const start = await screen.findByRole("button", { name: "Start" });
-    expect((start as HTMLButtonElement).disabled).toBe(true);
+    // The first render can show Start before the saved tab (no folder) loads.
+    await waitFor(() =>
+      expect((screen.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(true),
+    );
+    const start = screen.getByRole("button", { name: "Start" });
     expect(start.getAttribute("aria-describedby")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Start a session" })).toBeTruthy();
   });
