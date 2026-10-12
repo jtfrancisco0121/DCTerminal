@@ -66,6 +66,7 @@ test("a built-in role shows Reset but no Delete; Duplicate makes an editable cus
   await expect(roleEntry(page, "Planner")).toHaveClass(/settings-role-active/);
   await expect(detail(page).locator("p").first()).toHaveText("Planner · built-in · plan · 6 fields");
   await expect(roles.getByRole("button", { name: "Reset built-in" })).toBeVisible();
+  await expect(roles.getByRole("button", { name: "Delete", exact: true })).toHaveCount(0);
 
   await roles.getByRole("button", { name: "Duplicate" }).click();
   const call = await app.waitForCall("duplicate_role");
@@ -95,7 +96,6 @@ test("Delete asks first: Keep it cancels, Delete role removes the role", async (
   await roles.getByRole("button", { name: "Delete", exact: true }).click();
   const confirm = page.getByRole("alertdialog", { name: "Delete role" });
   await expect(confirm).toContainText("Delete Triage? This cannot be undone. Export it first to keep a copy.");
-  await expect(roles.getByRole("button", { name: "Delete", exact: true })).toHaveCount(0);
   await confirm.getByRole("button", { name: "Keep it" }).click();
   await expect(confirm).toBeHidden();
   expect(await app.calls("delete_role")).toHaveLength(0);
@@ -247,6 +247,9 @@ test("Reset built-in restores the shipped role", async ({ app, page }) => {
   await expect(roleEntry(page, "My Planner")).toBeVisible();
 
   await roles.getByRole("button", { name: "Reset built-in" }).click();
+  const confirm = page.getByRole("alertdialog", { name: "Reset built-in role" });
+  await expect(confirm).toContainText("Reset My Planner to the shipped template? Your edits to it are lost.");
+  await confirm.getByRole("button", { name: "Reset", exact: true }).click();
   expect((await app.waitForCall("reset_builtin_role")).args).toEqual({ roleId: "role_planner" });
   await expect(roles.getByText("Reset to built-in template.")).toBeVisible();
   await expect(roles.getByLabel("Name", { exact: true })).toHaveValue("Planner");

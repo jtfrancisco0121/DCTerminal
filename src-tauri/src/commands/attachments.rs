@@ -1,6 +1,6 @@
 //! Stage and unstage pasted chat images (app data only; see `crate::attachments`).
 
-use crate::attachments::{AttachmentInfo, AttachmentStore};
+use crate::attachments::{AttachmentInfo, AttachmentStore, DroppedImage};
 use tauri::State;
 
 /// Stage one image for the tab's next send. `data` is base64 without a
@@ -22,4 +22,10 @@ pub fn attachment_remove(
     store: State<AttachmentStore>,
 ) -> Result<(), String> {
     store.remove(&tab_id, &id)
+}
+
+/// Read an image file dropped on the chat composer (see `DroppedImage`).
+#[tauri::command]
+pub async fn attachment_read_file(path: String) -> Result<DroppedImage, String> {
+    crate::attachments::read_image_file(std::path::Path::new(&path))
 }

@@ -1,6 +1,7 @@
 import type { ClipboardEvent, DragEvent } from "react";
 import { imageFilesFrom } from "../attachments/chatImages";
 import type { ChatImagesProps } from "../attachments/useChatImages";
+import { noteDomImageDrop } from "../attachments/useImageFileDrop";
 
 /** Thumbnails of the images going with the next message, each with ×. */
 export function AttachmentChips({ images }: { images: ChatImagesProps }) {
@@ -55,6 +56,7 @@ export function imageInputHandlers(images: ChatImagesProps | null | undefined) {
       const files = imageFilesFrom(event.dataTransfer);
       if (files.length === 0) return;
       event.preventDefault();
+      noteDomImageDrop(event.currentTarget);
       images.onAddFiles(files);
     },
   };

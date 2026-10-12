@@ -142,6 +142,7 @@ import {
 } from "./components/HandoffDialog";
 import { PipelineOverview } from "./components/PipelineOverview";
 import { ChainLabel } from "./components/ChainLabel";
+import { relativeToCwd } from "./terminal/links";
 import { destroyTerminal, TerminalView, readTerminalHandoff } from "./components/TerminalView";
 import {
   handoffBlockReason,
@@ -287,12 +288,19 @@ import {
   parkedTerminal,
   pasteTerminalText,
   refitTerminal,
+  setOptionAsMeta,
+  setCopyOnSelect,
+  setTerminalFileOpener,
+  clearTerminalScrollback,
+  TERMINAL_FONT_DEFAULT,
+  zoomedFontSize,
   requestTerminalSearch,
   setLinkOpenErrorHandler,
   terminalBracketedPaste,
   terminalScrollbackText,
   terminalSelection,
   terminalTailText,
+  measuredTerminalSize,
 } from "./terminal/park";
 import { encodeTerminalPaste } from "./terminal/paste";
 import { planFileMentions } from "./terminal/text";
@@ -455,6 +463,15 @@ function terminalLaunchOf(tab: TabSummary): TerminalLaunch {
     default:
       return "shell";
   }
+}
+
+/** A Claude Code terminal (role or plain tile) whose exit can offer a resume. */
+function isClaudeTerminal(tab: TabSummary): boolean {
+  return (
+    tab.kind === "terminal" &&
+    tab.provider === "claude" &&
+    (tab.terminalLaunch === "role" || tab.terminalLaunch === "claude-cli")
+  );
 }
 
 type CliLaunch = "cursor-cli" | "claude-cli";
@@ -662,6 +679,10 @@ export function StartupForm({
   const [pickedRoleId, setPickedRoleId] = useState<string | null>(null);
   const [launchChoice, setLaunchChoice] = useState<"shell" | CliLaunch | null>(null);
   const [terminalSettings, setTerminalSettingsState] = useState<TerminalSettings | null>(null);
+  const optionAsMeta = terminalSettings?.optionAsMeta ?? true;
+  useEffect(() => setOptionAsMeta(optionAsMeta), [optionAsMeta]);
+  const copyOnSelect = terminalSettings?.copyOnSelect ?? false;
+  useEffect(() => setCopyOnSelect(copyOnSelect), [copyOnSelect]);
   const [notificationSettings, setNotificationSettingsState] =
     useState<NotificationSettings | null>(null);
   const [terminalError, setTerminalError] = useState<string | null>(null);
@@ -1396,7 +1417,7 @@ export function StartupForm({
       .filter(
         (tab) =>
           isClaudeRoleTerminal(tab) &&
-          (running(tab.id) || onScreen.has(tab.id) || !!tab.chain),
+          (running(tab.id) || onScreen.has(tab.id) || !!tab.chain || !!tab.pipelineRunId),
       )
       .map((tab) => tab.id)
       .join("\n");
@@ -2036,6 +2057,8 @@ export function StartupForm({
       const current = terminalSettings ?? {
         shell: "",
         fontSize: 14,
+        optionAsMeta: true,
+        copyOnSelect: false,
         roleSurface: {},
         roleRunMode: {},
       };
@@ -2071,8 +2094,7 @@ export function StartupForm({
           values: form,
           tabId: preferred,
           handoffPlan: options?.handoffPlan ?? null,
-          cols: 80,
-          rows: 24,
+          ...measuredTerminalSize(),
           onOutput: live.channel,
         });
         if (result.errors.length > 0 || !result.tabId) {
@@ -2136,8 +2158,7 @@ export function StartupForm({
           tabId: activeTabId,
           cwd,
           launch,
-          cols: 80,
-          rows: 24,
+          ...measuredTerminalSize(),
           onOutput: live.channel,
         });
         if (result.errors.length > 0 || !result.tabId) {
@@ -2181,8 +2202,7 @@ export function StartupForm({
         cwd,
         launch: source === "claude" ? "claude-cli" : "cursor-cli",
         resumeSessionId: sessionId,
-        cols: 80,
-        rows: 24,
+        ...measuredTerminalSize(),
         onOutput: live.channel,
       });
       if (result.errors.length > 0 || !result.tabId) {
@@ -3263,6 +3283,23 @@ export function StartupForm({
         handleFind();
         return;
       }
+      if (
+        match.action === "zoomIn" ||
+        match.action === "zoomOut" ||
+        match.action === "zoomReset"
+      ) {
+        const current = terminalSettings ?? {
+          shell: "",
+          fontSize: TERMINAL_FONT_DEFAULT,
+          optionAsMeta: true,
+          copyOnSelect: false,
+          roleSurface: {},
+          roleRunMode: {},
+        };
+        const next = zoomedFontSize(current.fontSize, match.action);
+        if (next !== current.fontSize) updateTerminalSettings({ ...current, fontSize: next });
+        return;
+      }
       if (match.action === "searchChats") {
         setChatSearchQuery("");
         return;
@@ -3276,6 +3313,8 @@ export function StartupForm({
       confirm,
       settingsOpen,
       handleFind,
+      terminalSettings,
+      updateTerminalSettings,
       cycleTab,
       handleCloseTab,
       handleNewTab,
@@ -3367,6 +3406,26 @@ export function StartupForm({
     },
     [togglePane, transferToTerminalNow],
   );
+
+  // path:line in terminal output opens that file in the Files panel.
+  const openTerminalFileRef = useRef<(id: string, path: string) => void>(() => {});
+  openTerminalFileRef.current = (id, path) => {
+    const tabId = id.replace(/::pane$/, "");
+    const tab = savedTabs.find((item) => item.id === tabId);
+    if (!tab) return;
+    const relative = relativeToCwd(path, tab.cwd);
+    if (!relative) {
+      showNotice("Cannot open file", `${path} is outside this tab's folder.`, "question");
+      return;
+    }
+    if (tabId !== activeTabIdRef.current) void handleSelectTab(tabId);
+    setFilePanelOpen(true);
+    setFileFocus({ path: relative, nonce: Date.now() });
+  };
+  useEffect(() => {
+    setTerminalFileOpener((id, path) => openTerminalFileRef.current(id, path));
+    return () => setTerminalFileOpener(null);
+  }, []);
 
   const getSurface = useCallback(() => {
     const el = document.activeElement;
@@ -4381,6 +4440,12 @@ export function StartupForm({
           setCaptureOn(status.capturePermissionPayloads);
         });
         return;
+      case "clearScrollback": {
+        const summary = savedTabs.find((tab) => tab.id === activeTabId);
+        const id = summary?.kind === "terminal" ? summary.id : focusedTerminalId();
+        if (id) clearTerminalScrollback(id);
+        return;
+      }
       case "firstRunSetup":
         setFirstRunOpen(true);
         return;
@@ -4434,6 +4499,9 @@ export function StartupForm({
       case "toggleFilePanel":
       case "find":
       case "searchChats":
+      case "zoomIn":
+      case "zoomOut":
+      case "zoomReset":
       case "focusPad":
       case "focusInput":
       case "transferPad":
@@ -5266,6 +5334,7 @@ export function StartupForm({
           roleId={tab.roleId}
           fontSize={fontSize}
           resumeSessionId={tab.resumeSessionId}
+          claudeSession={isClaudeTerminal(tab)}
           autoOpen={!livePty(tab.id)}
           autoFocus={false}
           menuActions={
@@ -5710,6 +5779,7 @@ export function StartupForm({
           tabs={savedTabs}
           runtimes={runtimes}
           terminalStates={terminalStates}
+          sessionLogs={sessionLogs}
           onJump={(tabId) => void handleSelectTab(tabId)}
           onWatch={(tabId) => {
             setSplit((current) => ({
@@ -5808,6 +5878,7 @@ export function StartupForm({
             roleId={activeTabSummary.roleId}
             fontSize={fontSize}
             resumeSessionId={activeTabSummary.resumeSessionId}
+            claudeSession={isClaudeTerminal(activeTabSummary)}
             autoOpen={!livePty(activeTabSummary.id)}
             onMenuOpen={() => readTerminalVerdict(activeTabSummary.id, true)}
             menuActions={
