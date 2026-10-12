@@ -215,6 +215,13 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
         return stop(run, None, format!("Stage \"{}\" is not in {}.", report.stage_id, def.name));
     };
     let stage = def.stages[index].clone();
+    if let Some(lane) = report.lane.as_deref().and_then(|id| run.lane(id)).filter(|l| l.status == "approved") {
+        // Approved already (by hand, or a late turn): nothing to rework, and
+        // nothing to wait for, so no stop is recorded.
+        let mut decision = Decision::new("stop", "That pull request is already approved.").for_stage(&stage);
+        decision.lane = Some(lane.id.clone());
+        return decision;
+    }
     if report.chat {
         return stop(
             run,
@@ -362,12 +369,17 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
         .collect();
     // A plain APPROVED that still lists findings at or above the threshold
     // is not a clean pass: stop and show them. APPROVED WITH CHANGES means
-    // the reviewer applied them already, so it moves on.
-    if verdict == "APPROVED" && report.findings_known && !blocking.is_empty() {
-        let next_step = if index + 1 == def.stages.len() {
-            "Send it back, or mark it approved in the chain overview."
-        } else {
+    // the reviewer applied them already, so it moves on, except at the last
+    // stage, where moving on would complete the work with them unchecked.
+    let last_stage = index + 1 == def.stages.len();
+    let stops_on_findings = verdict == "APPROVED" || (verdict == "APPROVED WITH CHANGES" && last_stage);
+    if stops_on_findings && report.findings_known && !blocking.is_empty() {
+        let next_step = if !last_stage {
             "Check them, then send it on or back yourself."
+        } else if lane.is_some() {
+            "Send it back, or mark it approved in the chain overview's Pull requests list."
+        } else {
+            "Send it back, or press Mark complete in the chain overview."
         };
         let reason = format!(
             "{} said {verdict} but lists {} finding(s) at {} or above. {next_step}",

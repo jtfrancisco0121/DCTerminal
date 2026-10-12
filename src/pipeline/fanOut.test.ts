@@ -5,6 +5,7 @@ vi.mock("../bridge", () => ({
   getTab: vi.fn(),
   handoffGet: vi.fn(),
   handoffList: vi.fn(async () => []),
+  pipelineApprove: vi.fn(async () => ({ complete: false, unblocked: [] })),
   pipelineFanOut: vi.fn(async () => {}),
   pipelineLaneStatus: vi.fn(async () => {}),
   worktreeTabNew: vi.fn(async (input: { branch: string }) => ({
@@ -40,6 +41,7 @@ import {
   handoffSave,
   handoffList,
   getTab,
+  pipelineApprove,
   pipelineFanOut,
   pipelineLaneStatus,
   worktreeTabNew,
@@ -48,6 +50,7 @@ import {
 import type { HandoffSource } from "../handoff/map";
 import { pipelineDef } from "./defs";
 import {
+  approveByHand,
   fanOutRun,
   laneBranch,
   laneNote,
@@ -277,5 +280,26 @@ describe("fan out", () => {
     ).rejects.toThrow("PR4 — Docs (the terminal did not start) did not start");
     expect(pipelineLaneStatus).toHaveBeenCalledWith("ee_1", "pr4", "waiting");
     expect(handoffAttach).toHaveBeenCalledTimes(3);
+  });
+
+  it("approving by hand starts the lanes the approval unblocks and says when the run is complete", async () => {
+    vi.mocked(pipelineApprove).mockResolvedValueOnce({ complete: false, unblocked: ["pr2"] });
+    vi.mocked(getPipelineRun).mockResolvedValue(withLane("waiting"));
+    const start = vi.fn(async () => true);
+    expect(await approveByHand("ee_1", "pr1", start)).toBe(false);
+    expect(pipelineApprove).toHaveBeenCalledWith("ee_1", "pr1");
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({ id: "ee_1" }), expect.objectContaining({ id: "pr2" }));
+
+    // Mark complete on a run without lanes: nothing to start.
+    vi.mocked(pipelineApprove).mockResolvedValueOnce({ complete: true, unblocked: [] });
+    start.mockClear();
+    expect(await approveByHand("ee_1", null, start)).toBe(true);
+    expect(pipelineApprove).toHaveBeenLastCalledWith("ee_1", null);
+    expect(start).not.toHaveBeenCalled();
+
+    vi.mocked(pipelineApprove).mockResolvedValueOnce({ complete: false, unblocked: ["pr2"] });
+    await expect(approveByHand("ee_1", "pr1", async () => { throw new Error("no tab"); })).rejects.toThrow(
+      "Marked approved, but did not start PR2: no tab",
+    );
   });
 });

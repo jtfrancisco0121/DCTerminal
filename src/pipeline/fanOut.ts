@@ -11,6 +11,7 @@ import {
   getTab,
   handoffGet,
   handoffList,
+  pipelineApprove,
   pipelineFanOut,
   pipelineLaneStatus,
   worktreeTabNew,
@@ -216,6 +217,32 @@ export async function startLane(
   } finally {
     claiming.delete(key);
   }
+}
+
+/**
+ * Approves a lane by hand (Mark approved), or with `laneId` null a run
+ * without lanes (Mark complete), then starts the lanes that unblocks.
+ * True when the run is now complete. Throws naming any lane that did not start.
+ */
+export async function approveByHand(
+  runId: string,
+  laneId: string | null,
+  start: (run: PipelineRun, lane: RunLane) => Promise<boolean>,
+): Promise<boolean> {
+  const result = await pipelineApprove(runId, laneId);
+  if (!result.unblocked.length) return result.complete;
+  const { run } = await getPipelineRun(runId);
+  const failed: string[] = [];
+  for (const id of result.unblocked) {
+    const lane = run.lanes?.find((item) => item.id === id);
+    if (!lane) continue;
+    // startLane claims the lane, so one autopilot may have started is skipped.
+    await start(run, lane).catch((err: unknown) => {
+      failed.push(`${lane.title}: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
+  if (failed.length) throw new Error(`Marked approved, but did not start ${failed.join("; ")}`);
+  return result.complete;
 }
 
 /** The stage before the fan-out stage, whose reply holds the plan. */

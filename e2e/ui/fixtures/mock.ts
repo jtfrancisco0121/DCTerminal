@@ -490,6 +490,32 @@ export function installTauriMock(config: MockConfig): void {
       lane.status = a.status;
       return null;
     },
+    pipeline_approve: (a) => {
+      const run = findRun(a.runId);
+      if (!run) throw new Error(`unknown pipeline run: ${a.runId}`);
+      const lanes: Json[] = run.lanes ?? [];
+      const log = (kind: string, summary: string) => {
+        run.events = [...(run.events ?? []), { at: now(), kind, round: run.round ?? 1, summary }];
+      };
+      if (a.lane) {
+        const lane = lanes.find((l) => l.id === a.lane);
+        if (!lane) throw new Error(`unknown lane: ${a.lane}`);
+        if (lane.status === "approved") return { complete: false, unblocked: [] };
+        lane.status = "approved";
+        log("note", `${lane.title}: approved by you`);
+      } else {
+        if (lanes.length) throw new Error("This run has pull requests: mark each one approved instead.");
+        log("note", "Approved by you");
+      }
+      if (run.autopilot) run.autopilot.waiting = null;
+      const approved = (id: string) => lanes.find((l) => l.id === id)?.status === "approved";
+      const complete = lanes.every((l) => l.status === "approved");
+      if (complete) log("complete", "Complete: approved by you.");
+      const unblocked = complete
+        ? []
+        : lanes.filter((l) => l.status === "waiting" && (l.dependsOn ?? []).every(approved)).map((l) => l.id);
+      return { complete, unblocked };
+    },
     pipeline_note: (a) => {
       const run = findRun(a.runId);
       if (run) {

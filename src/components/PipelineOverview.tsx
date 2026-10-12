@@ -57,6 +57,8 @@ type Props = {
   onStartLane?: (runId: string, laneId: string) => Promise<void>;
   /** Marks an active lane approved by hand, then starts the lanes that unblocks. */
   onApproveLane?: (runId: string, laneId: string) => Promise<void>;
+  /** Marks a run without lanes complete by hand (autopilot stopped at its last stage). */
+  onApproveRun?: (runId: string) => Promise<void>;
 };
 
 function overviewTitle(run: PipelineRun, kind: PipelineKind): string {
@@ -118,6 +120,7 @@ export function PipelineOverview({
   onFanOut,
   onStartLane,
   onApproveLane,
+  onApproveRun,
 }: Props) {
   const [run, setRun] = useState<PipelineRun | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -231,6 +234,20 @@ export function PipelineOverview({
     }
   };
 
+  const approveRunNow = async () => {
+    if (!run || !onApproveRun) return;
+    setBusy(true);
+    try {
+      await onApproveRun(run.id);
+      await reload();
+    } catch (err: unknown) {
+      onNotice("Run not marked complete", errorText(err));
+      await reload();
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const exportReport = async () => {
     if (!run) return;
     try {
@@ -317,6 +334,8 @@ export function PipelineOverview({
   const later = followUps(run);
   const events = [...(run.events ?? [])].reverse();
   const lanes = run.lanes ?? [];
+  // From the fan-out stage on, rounds are per lane (shown in Pull requests).
+  const fanOutIndex = run.fanOutStage ? stageDefs.findIndex((s) => s.id === run.fanOutStage) : -1;
   // Fan-out reads the pull-request list in the reply of the stage before the Implementer.
   const fanStage = stageDefs.find((s) => s.roleId === "role_implementer") ?? null;
   const planStage = fanStage ? stageDefs[stageDefs.indexOf(fanStage) - 1] ?? null : null;
@@ -366,6 +385,19 @@ export function PipelineOverview({
             <p className="pipeline-autopilot-waiting" role="status">
               Waiting for you: {run.autopilot.waiting}
             </p>
+          )}
+          {autopilotOn && run.autopilot?.waiting && lanes.length === 0 && onApproveRun && (
+            <div className="button-row">
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={busy}
+                title="Approve the run yourself, for example when its last reviewer approved it but listed findings."
+                onClick={() => void approveRunNow()}
+              >
+                Mark complete
+              </button>
+            </div>
           )}
         </section>
       )}
@@ -427,7 +459,7 @@ export function PipelineOverview({
                 </p>
               );
             })}
-            {stageDef?.loopBack && (
+            {stageDef?.loopBack && !(lanes.length > 0 && fanOutIndex >= 0 && stageDefs.indexOf(stageDef) >= fanOutIndex) && (
               <p className="hint pipeline-round-cap">
                 Round {reviewRound(run, null, stageDef)} of at most {maxRounds(stageDef)}
               </p>
@@ -514,6 +546,7 @@ export function PipelineOverview({
             {lanes.map((lane) => {
               const blocked = laneBlocked(lane.dependsOn);
               const lastVerdict = lane.verdicts?.[lane.verdicts.length - 1]?.verdict;
+              const laneStage = stageDefs.find((s) => s.id === lane.stage);
               const tabsOfLane = Object.entries(lane.tabIds)
                 .map(([roleId, id]) => ({ roleId, tab: laneTab(id) }))
                 .filter((entry) => !!entry.tab);
@@ -524,7 +557,10 @@ export function PipelineOverview({
                     <span className={`pipeline-lane-status pipeline-pr-lane-status`}>{lane.status}</span>
                   </div>
                   <p className="hint">
-                    {stageTitle(run, lane.stage)} · round {Math.max(1, lane.round)}
+                    {stageTitle(run, lane.stage)} ·{" "}
+                    {laneStage?.loopBack
+                      ? `round ${reviewRound(run, lane.id, laneStage)} of at most ${maxRounds(laneStage)}`
+                      : `round ${Math.max(1, lane.round)}`}
                     {lastVerdict ? ` · last verdict ${lastVerdict}` : ""}
                     {lane.dependsOn?.length ? ` · after ${lane.dependsOn.map((d) => d.toUpperCase()).join(", ")}` : ""}
                   </p>

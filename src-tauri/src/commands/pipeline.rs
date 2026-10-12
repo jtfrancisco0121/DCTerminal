@@ -404,9 +404,68 @@ pub fn pipeline_lane_status(
     Ok(())
 }
 
+/// What a manual approval did: the run is complete, or these waiting lanes
+/// can start now.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ApproveResult {
+    pub complete: bool,
+    pub unblocked: Vec<String>,
+}
+
+/// Approve a lane (or, with no lane, the run) by hand, e.g. when its last
+/// reviewer approved it but listed findings. Clears what autopilot was
+/// waiting for and completes the run once every lane is approved.
+pub fn approve(store: &mut StateStore, run_id: &str, lane: Option<&str>) -> Result<ApproveResult, String> {
+    let run = store
+        .pipeline_run_by_id_mut(run_id)
+        .ok_or_else(|| format!("unknown pipeline run: {run_id}"))?;
+    let summary = match lane {
+        Some(lane) => {
+            let l = run.lane_mut(lane).ok_or_else(|| format!("unknown lane: {lane}"))?;
+            if l.status == "approved" {
+                // Already approved (e.g. by autopilot): nothing to log again.
+                return Ok(ApproveResult { complete: false, unblocked: Vec::new() });
+            }
+            l.status = "approved".to_string();
+            format!("{}: approved by you", l.title)
+        }
+        None if !run.lanes.is_empty() => {
+            return Err("This run has pull requests: mark each one approved instead.".into());
+        }
+        None => "Approved by you".to_string(),
+    };
+    if let Some(autopilot) = run.autopilot.as_mut() {
+        autopilot.waiting = None;
+    }
+    run.log("note", None, None, summary, None);
+    let complete = run.lanes.iter().all(|l| l.status == "approved");
+    if complete {
+        run.log("complete", None, None, "Complete: approved by you.", None);
+    }
+    let unblocked = if complete { Vec::new() } else { run.unblocked_lanes() };
+    store.save()?;
+    Ok(ApproveResult { complete, unblocked })
+}
+
+#[tauri::command]
+pub fn pipeline_approve(
+    app: tauri::AppHandle,
+    run_id: String,
+    lane: Option<String>,
+    store: State<Mutex<StateStore>>,
+) -> Result<ApproveResult, String> {
+    let run_id = run_id.trim().to_string();
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    let lane = lane.as_deref().map(str::trim).filter(|l| !l.is_empty());
+    let result = approve(&mut store, &run_id, lane)?;
+    app.chain_run_updated(&run_id);
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{fan_out, set_lane_status, LaneInput};
+    use super::{approve, fan_out, set_lane_status, ApproveResult, LaneInput};
     use crate::roles::Role;
     use crate::store::{AppStateFile, ChainRef, StateStore, MAIN_WINDOW_ID};
 
@@ -525,5 +584,65 @@ mod tests {
         let run = store.pipeline_run_by_id("ee_f").unwrap();
         assert!(run.lanes.is_empty());
         assert!(run.fan_out_stage.is_none());
+    }
+
+    fn waiting_on(store: &mut StateStore, why: &str) {
+        let run = store.pipeline_run_by_id_mut("ee_f").unwrap();
+        run.autopilot = Some(crate::store::RunAutopilot {
+            enabled: true,
+            waiting: Some(why.into()),
+            ..Default::default()
+        });
+    }
+
+    #[test]
+    fn approving_a_lane_by_hand_unblocks_its_dependents_then_completes_the_run() {
+        let (_dir, mut store) = store("approve_lanes");
+        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        fan_out(&mut store, "ee_f", "implementer", lanes()).unwrap();
+        waiting_on(&mut store, "PR Reviewer said APPROVED but lists 1 finding(s)");
+
+        let first = approve(&mut store, "ee_f", Some("pr1")).unwrap();
+        assert_eq!(first, ApproveResult { complete: false, unblocked: vec!["pr2".into()] });
+        let run = store.pipeline_run_by_id("ee_f").unwrap();
+        assert_eq!(run.lane("pr1").unwrap().status, "approved");
+        assert!(run.autopilot.as_ref().unwrap().waiting.is_none(), "no longer waiting");
+        let last = run.events.last().unwrap();
+        assert_eq!((last.kind.as_str(), last.summary.as_str()), ("note", "PR1 — API: approved by you"));
+
+        assert_eq!(
+            approve(&mut store, "ee_f", Some("pr1")).unwrap(),
+            ApproveResult { complete: false, unblocked: vec![] },
+            "approving twice does nothing"
+        );
+        set_lane_status(&mut store, "ee_f", "pr2", "active").unwrap();
+        let done = approve(&mut store, "ee_f", Some("pr2")).unwrap();
+        assert_eq!(done, ApproveResult { complete: true, unblocked: vec![] });
+        let run = store.pipeline_run_by_id("ee_f").unwrap();
+        let last = run.events.last().unwrap();
+        assert_eq!((last.kind.as_str(), last.summary.as_str()), ("complete", "Complete: approved by you."));
+        assert!(approve(&mut store, "ee_f", Some("pr9")).is_err());
+        assert!(approve(&mut store, "ee_f", None).is_err(), "a fanned-out run is approved per lane");
+    }
+
+    #[test]
+    fn approving_a_run_without_lanes_completes_it() {
+        let (_dir, mut store) = store("approve_run");
+        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        waiting_on(&mut store, "Send it back, or press Mark complete in the chain overview.");
+        let done = approve(&mut store, "ee_f", None).unwrap();
+        assert_eq!(done, ApproveResult { complete: true, unblocked: vec![] });
+        let run = store.pipeline_run_by_id("ee_f").unwrap();
+        assert!(run.autopilot.as_ref().unwrap().waiting.is_none());
+        let kinds: Vec<(&str, &str)> = run
+            .events
+            .iter()
+            .rev()
+            .take(2)
+            .map(|e| (e.kind.as_str(), e.summary.as_str()))
+            .collect();
+        assert_eq!(kinds, vec![("complete", "Complete: approved by you."), ("note", "Approved by you")]);
     }
 }

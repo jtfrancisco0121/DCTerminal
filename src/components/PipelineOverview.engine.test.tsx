@@ -253,9 +253,19 @@ describe("PipelineOverview: autopilot, checks and timeline", () => {
     vi.mocked(getPipelineRun).mockResolvedValue({
       run: run({
         lanes: [
-          { id: "pr1", title: "PR1 — API", status: "active", stage: "pr_reviewer", round: 1, tabIds: { role_implementer: "impl" } },
+          {
+            id: "pr1",
+            title: "PR1 — API",
+            status: "active",
+            stage: "pr_reviewer",
+            round: 2,
+            tabIds: { role_implementer: "impl" },
+            verdicts: [{ roleId: "role_pr_reviewer", round: 1, verdict: "REQUEST CHANGES", at: "then" }],
+          },
           { id: "pr2", title: "PR2 — UI", status: "waiting", dependsOn: ["pr1"], stage: "implementer", round: 1, tabIds: {} },
         ],
+        fanOutStage: "implementer",
+        verdicts: [{ roleId: "role_plan_reviewer", round: 1, verdict: "REQUEST CHANGES", at: "then" }],
       }),
     });
     render(
@@ -278,8 +288,69 @@ describe("PipelineOverview: autopilot, checks and timeline", () => {
     // Only an active lane can be marked approved.
     expect(within(pr2).queryByRole("button", { name: "Mark approved" })).toBeNull();
     const pr1 = within(lanes).getByRole("listitem", { name: "PR1 — API" });
+    // Past the fan-out, rounds are per lane: in the lane, not on the stage.
+    expect(pr1.textContent).toContain("PR Reviewer · round 2 of at most 3");
+    expect(pr2.textContent).toContain("Implementer · round 1");
+    const reviewer = screen.getByRole("article", { name: "PR Reviewer" });
+    expect(within(reviewer).queryByText(/of at most/)).toBeNull();
+    const planReviewer = screen.getByRole("article", { name: "Plan Reviewer" });
+    expect(within(planReviewer).getByText("Round 2 of at most 3")).toBeTruthy();
     fireEvent.click(within(pr1).getByRole("button", { name: "Mark approved" }));
     await waitFor(() => expect(onApproveLane).toHaveBeenCalledWith("ee_1", "pr1"));
+  });
+
+  it("marks a run without lanes complete when autopilot waits at its last stage", async () => {
+    const onApproveRun = vi.fn(async () => {});
+    const waiting = run({
+      autopilot: { enabled: true, waiting: "Send it back, or press Mark complete in the chain overview." },
+    });
+    vi.mocked(getPipelineRun).mockResolvedValue({ run: waiting });
+    const { unmount } = render(
+      <PipelineOverview
+        runId="ee_1"
+        cwd="/p"
+        tabs={[tab("impl", "role_implementer")]}
+        runtimes={{}}
+        onJump={() => {}}
+        onWatch={() => {}}
+        onRefreshTabs={async () => {}}
+        onNotice={() => {}}
+        terminalReader={noTerminal}
+        onApproveRun={onApproveRun}
+      />,
+    );
+    const panel = await screen.findByRole("region", { name: "Autopilot" });
+    fireEvent.click(within(panel).getByRole("button", { name: "Mark complete" }));
+    await waitFor(() => expect(onApproveRun).toHaveBeenCalledWith("ee_1"));
+    unmount();
+
+    // Not waiting, or a run with lanes (approved per lane): no run-level button.
+    for (const view of [
+      run({ autopilot: { enabled: true } }),
+      run({
+        autopilot: { enabled: true, waiting: "stopped" },
+        lanes: [{ id: "pr1", title: "PR1", status: "active", stage: "pr_reviewer", round: 1, tabIds: {} }],
+      }),
+    ]) {
+      vi.mocked(getPipelineRun).mockResolvedValue({ run: view });
+      const { unmount: done } = render(
+        <PipelineOverview
+          runId="ee_1"
+          cwd="/p"
+          tabs={[]}
+          runtimes={{}}
+          onJump={() => {}}
+          onWatch={() => {}}
+          onRefreshTabs={async () => {}}
+          onNotice={() => {}}
+          terminalReader={noTerminal}
+          onApproveRun={onApproveRun}
+        />,
+      );
+      await screen.findByRole("region", { name: "Autopilot" });
+      expect(screen.queryByRole("button", { name: "Mark complete" })).toBeNull();
+      done();
+    }
   });
 });
 

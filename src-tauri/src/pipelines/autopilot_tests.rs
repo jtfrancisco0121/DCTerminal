@@ -139,7 +139,7 @@ fn a_plain_approval_with_findings_at_the_threshold_stops_instead_of_advancing() 
     assert_eq!((d.action.as_str(), d.stage_id.as_deref()), ("stop", Some("pr_reviewer")));
     assert!(d.reason.contains("1 finding(s)"), "{}", d.reason);
     // The last stage has nothing to send it on to: say how to get past it.
-    assert!(d.reason.ends_with("Send it back, or mark it approved in the chain overview."), "{}", d.reason);
+    assert!(d.reason.ends_with("Send it back, or press Mark complete in the chain overview."), "{}", d.reason);
     assert!(r.autopilot.as_ref().unwrap().waiting.is_some());
     let logged = r.events.last().unwrap();
     assert_eq!(logged.kind, "stop");
@@ -366,4 +366,45 @@ fn a_lane_counts_its_own_rounds_and_gates() {
     assert_eq!((pr1.action.as_str(), pr1.stage_id.as_deref()), ("advance", Some("pr_reviewer")));
     assert_eq!(pr1.lane.as_deref(), Some("pr1"));
     assert!(r.events.last().unwrap().summary.starts_with("PR1: "));
+}
+
+#[test]
+fn approved_with_changes_at_the_last_stage_stops_on_blocking_findings() {
+    let mut r = run(1);
+    let mut rep = report("pr_reviewer", Some("APPROVED WITH CHANGES"));
+    rep.findings = vec![finding("HIGH", "token leaks to log")];
+    rep.findings_known = true;
+    let d = decide(&eagle1(), &mut r, &rep);
+    assert_eq!((d.action.as_str(), d.stage_id.as_deref()), ("stop", Some("pr_reviewer")), "{}", d.reason);
+    assert!(d.reason.ends_with("Send it back, or press Mark complete in the chain overview."), "{}", d.reason);
+    assert!(r.autopilot.as_ref().unwrap().waiting.is_some());
+    // In a lane, the way past it is that lane's Mark approved.
+    let mut r = run(1);
+    r.lanes = vec![lane("pr1", &[], "active", 1)];
+    let mut rep = in_lane("pr_reviewer", Some("APPROVED WITH CHANGES"), "pr1");
+    rep.findings = vec![finding("MEDIUM", "null token")];
+    rep.findings_known = true;
+    let d = decide(&eagle1(), &mut r, &rep);
+    assert_eq!((d.action.as_str(), d.lane.as_deref()), ("stop", Some("pr1")));
+    assert!(
+        d.reason.ends_with("Send it back, or mark it approved in the chain overview's Pull requests list."),
+        "{}",
+        d.reason
+    );
+    assert_eq!(r.lane("pr1").unwrap().status, "active", "not approved by the stop");
+}
+
+#[test]
+fn a_turn_in_an_approved_lane_changes_nothing() {
+    let mut r = run(1);
+    r.lanes = vec![lane("pr1", &[], "approved", 1), lane("pr2", &[], "active", 1)];
+    let mut rep = in_lane("pr_reviewer", Some("REQUEST CHANGES"), "pr1");
+    rep.findings = vec![finding("HIGH", "late finding")];
+    rep.findings_known = true;
+    let d = decide(&eagle1(), &mut r, &rep);
+    assert_eq!((d.action.as_str(), d.lane.as_deref()), ("stop", Some("pr1")));
+    assert_eq!(d.reason, "That pull request is already approved.");
+    assert!(r.events.is_empty(), "nothing logged");
+    assert!(r.autopilot.as_ref().unwrap().waiting.is_none(), "not waiting");
+    assert_eq!(r.lane("pr1").unwrap().status, "approved");
 }

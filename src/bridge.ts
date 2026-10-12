@@ -991,6 +991,19 @@ export async function pipelineLaneStatus(
   return invoke("pipeline_lane_status", { runId, lane, status });
 }
 
+/** What approving a lane (or a run without lanes) by hand did. */
+export type ApproveResult = {
+  /** Every pull request (or the run) is approved: the run is complete. */
+  complete: boolean;
+  /** Waiting lanes whose dependencies are now all approved. */
+  unblocked: string[];
+};
+
+/** Approve a lane by hand, or with `lane` null a run without lanes. */
+export async function pipelineApprove(runId: string, lane: string | null): Promise<ApproveResult> {
+  return invoke("pipeline_approve", { runId, lane });
+}
+
 export async function pipelineSetAutopilot(runId: string, enabled: boolean): Promise<void> {
   return invoke("pipeline_set_autopilot", { runId, enabled });
 }

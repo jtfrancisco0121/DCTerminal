@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
   acpSetModel,
   getPipelineRun,
-  pipelineLaneStatus,
   type PipelineRun,
   type RunLane,
   closeTab,
@@ -210,7 +209,7 @@ import { attachHandoff, handoffFieldsOf, prepareHandoff, saveHandoff } from "./h
 import { pipelineDef, pipelineStages } from "./pipeline/defs";
 import { useAutopilot } from "./pipeline/useAutopilot";
 import { terminalStageSource } from "./pipeline/autopilot";
-import { fanOutRun, planStageFor, stageTab, startLane } from "./pipeline/fanOut";
+import { approveByHand, fanOutRun, planStageFor, stageTab, startLane } from "./pipeline/fanOut";
 import {
   isReviewerRole,
   parseReviewVerdict,
@@ -2229,26 +2228,15 @@ export function StartupForm({
     },
     [startLaneOf],
   );
-  /** Overview › Mark approved: approve an active lane by hand, then start the lanes it unblocks. */
+  /**
+   * Overview › Mark approved (a lane) or Mark complete (`laneId` null, a run
+   * without lanes): approve it by hand, then start the lanes it unblocks.
+   */
   const approveLaneById = useCallback(
-    async (runId: string, laneId: string) => {
-      await pipelineLaneStatus(runId, laneId, "approved");
-      const { run } = await getPipelineRun(runId);
-      const lanes = run.lanes ?? [];
-      const approved = (id: string) => lanes.find((l) => l.id === id)?.status === "approved";
-      const ready = lanes.filter(
-        (lane) => lane.status === "waiting" && (lane.dependsOn ?? []).every(approved),
-      );
-      const failed: string[] = [];
-      for (const lane of ready) {
-        // startLaneOf claims the lane, so one autopilot may have started is skipped.
-        await startLaneOf(run, lane).catch((err: unknown) => {
-          failed.push(`${lane.title}: ${err instanceof Error ? err.message : String(err)}`);
-        });
-      }
-      if (failed.length) throw new Error(`Marked approved, but did not start ${failed.join("; ")}`);
+    async (runId: string, laneId: string | null) => {
+      if (await approveByHand(runId, laneId, startLaneOf)) showNotice("Run complete", "Approved by you.");
     },
-    [startLaneOf],
+    [showNotice, startLaneOf],
   );
 
   const autopilot = useAutopilot({
@@ -5608,6 +5596,7 @@ export function StartupForm({
           onFanOut={fanOutRunOf}
           onStartLane={startLaneById}
           onApproveLane={approveLaneById}
+          onApproveRun={(runId) => approveLaneById(runId, null)}
         />
       </section>,
     );
