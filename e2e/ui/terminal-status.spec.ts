@@ -461,13 +461,17 @@ test("grid: four Claude terminals in four states", async ({ app, page }) => {
   await app.ptyExit("tab-4", 1);
 
   const cell = (label: string) => page.getByLabel(`Grid cell: ${label}`);
+  // A terminal cell's compact header: its live state, then the ticking time outside the live region.
+  const state = (label: string) => cell(label).locator(".terminal-header-pill").getByRole("status");
+  const pill = (label: string) => cell(label).locator(".terminal-header-pill");
   await expect(page.locator('[data-pane="primary"]')).toHaveClass(/grid-cell-idle/, READ);
   await expect(cell("Bravo")).toHaveClass(/grid-cell-needs/, READ);
-  await expect(cell("Bravo").locator(".grid-cell-status")).toHaveText("Needs you: permission request");
+  await expect(state("Bravo")).toHaveText("Needs you: permission request");
   await expect(cell("Charlie")).toHaveClass(/grid-cell-busy/, READ);
-  await expect(cell("Charlie").locator(".grid-cell-status")).toHaveText("Working");
+  await expect(state("Charlie")).toHaveText("Working");
+  await expect(pill("Charlie")).toHaveText(/^Working · \d+s$/);
   await expect(cell("Delta")).toHaveClass(/grid-cell-error/);
-  await expect(cell("Delta").locator(".grid-cell-status")).toHaveText("Exited · code 1");
+  await expect(state("Delta")).toHaveText("Exited · code 1");
   await expectChip(page, "Alpha", "idle", "");
 });
 
@@ -491,12 +495,14 @@ test("send back is blocked while the chain's Planner terminal waits on its plan"
   await app.ptyOutput("tab-1", "\x1b[?2004hPlanner ready\r\n");
   await page.getByRole("tab", { name: /^Plan Reviewer/ }).click();
   await app.waitForCall("pty_open", (a) => (a.input as { id: string }).id === "tab-2");
-  await expectChip(page, planner, "needs", "Needs you: plan to review");
+  // A chain's chips show the role only.
+  await expectChip(page, "Planner", "needs", "Needs you: plan to review");
 
   await app.ptyOutput("tab-2", "Add a regression test.\r\nVerdict: REQUIRES REVISION\r\n");
   await expect(page.locator(".terminal-screen .xterm-rows")).toContainText("REQUIRES REVISION");
-  await page.locator(".terminal-toolbar .handoff-actions").hover();
-  await page.locator(".terminal-toolbar").getByRole("button", { name: "Send back to Planner" }).click();
+  const header = page.locator(".terminal-screen > .terminal-header");
+  await header.locator(".split-button").hover();
+  await header.getByRole("button", { name: "Send back to Planner" }).click();
   const dialog = page.getByRole("dialog", { name: "Send back to Planner" });
   await expect(
     dialog.getByText(`The ${planner} tab is waiting for you on a plan to review. Answer it in that tab, then send.`),

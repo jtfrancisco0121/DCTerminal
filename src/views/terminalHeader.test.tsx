@@ -31,6 +31,7 @@ const deps = (partial: Partial<TerminalHeaderDeps> = {}): TerminalHeaderDeps => 
   } as unknown as TerminalHeaderDeps["controls"],
   terminalStates: { t1: { kind: "idle" } },
   tabStatuses: {},
+  workingSince: {},
   sessionLogs: { t1: { turnDone: true } as never },
   terminalVerdict: { tabId: "t1", verdict: "APPROVED" },
   isTerminalSource: () => true,
@@ -68,6 +69,39 @@ describe("terminalHeaderFor (grid cells and second pane)", () => {
       </>,
     );
     expect(screen.getByRole("status").textContent).toBe("Exited · code 1");
+  });
+
+  it("counts each tab's working time from its own start, across a tab switch", () => {
+    const now = Date.now();
+    const d = deps({
+      terminalStates: { t1: { kind: "working" }, t2: { kind: "working" } },
+      workingSince: { t1: now - 185_000, t2: now - 5_000 },
+    });
+    // One header element re-rendered for another tab, as the active tab's header is.
+    const { container, rerender } = render(<>{terminalHeaderFor(d, tab())}</>);
+    const pill = () => container.querySelector(".terminal-header-pill")!.textContent;
+    expect(pill()).toBe("Working · 3m 05s");
+    rerender(<>{terminalHeaderFor(d, tab({ id: "t2" }))}</>);
+    expect(pill()).toMatch(/^Working · [5-6]s$/);
+    rerender(<>{terminalHeaderFor(d, tab())}</>);
+    expect(pill()).toMatch(/^Working · 3m 0[5-6]s$/);
+  });
+
+  it("says which kind of prompt needs the user", () => {
+    render(
+      <>
+        {terminalHeaderFor(
+          deps({
+            terminalStates: {
+              t1: { kind: "needs", needs: "permission", toolId: "x", toolTitle: "Bash" },
+            },
+          }),
+          tab(),
+          { compact: true },
+        )}
+      </>,
+    );
+    expect(screen.getByRole("status").textContent).toBe("Needs you: permission request");
   });
 
   it("names a plain shell Terminal and has no hand-off", () => {

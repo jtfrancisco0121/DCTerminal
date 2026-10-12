@@ -3,7 +3,7 @@
  * Done · <verdict>, Exited · code N. One place, so the active tab, the second
  * pane and every grid cell read alike.
  */
-import type { TabStatus } from "../tabStatus";
+import { NEEDS_YOU_TEXT, type TabStatus } from "../tabStatus";
 import type { TerminalState } from "./claudeState";
 
 export type HeaderTone = "working" | "needs" | "done" | "exited" | "idle";
@@ -44,8 +44,10 @@ export function headerStateOf(input: {
   if (!state && typeof status?.exitCode === "number") {
     return { tone: "exited", text: `Exited · code ${status.exitCode}`, timed: false };
   }
-  if (state?.kind === "needs" || (!state && status?.needsYou)) {
-    return { tone: "needs", text: "Needs you", timed: false };
+  const needs = state?.kind === "needs" ? state.needs : !state ? status?.needsYou : null;
+  if (needs) {
+    // Which kind of prompt, worded as the tab chip's tooltip words it.
+    return { tone: "needs", text: `Needs you: ${NEEDS_YOU_TEXT[needs]}`, timed: false };
   }
   if (state?.kind === "working" || (!state && status?.busy)) {
     return { tone: "working", text: "Working", timed: true };
@@ -59,4 +61,31 @@ export function headerStateOf(input: {
 /** The pill's full text with the elapsed time when it is working. */
 export function headerPillText(state: HeaderState, elapsedSeconds: number): string {
   return state.timed ? `${state.text} · ${formatElapsed(elapsedSeconds)}` : state.text;
+}
+
+/**
+ * When each working tab's turn started, in ms. Kept per tab (not per header
+ * instance) so "Working · 12s" stays right across tab switches and remounts.
+ * `turnStartedAt` is the session log's prompt time when there is one;
+ * otherwise the first time the tab was seen working. Tabs that stopped
+ * working drop out. Returns `prev` when nothing changed.
+ */
+export function trackWorkingSince(
+  prev: Record<string, number>,
+  tabs: { tabId: string; working: boolean; turnStartedAt?: number | null }[],
+  now: number,
+): Record<string, number> {
+  const next: Record<string, number> = {};
+  let changed = false;
+  for (const { tabId, working, turnStartedAt } of tabs) {
+    if (!working) continue;
+    const fromLog =
+      typeof turnStartedAt === "number" && Number.isFinite(turnStartedAt)
+        ? Math.min(turnStartedAt, now)
+        : null;
+    next[tabId] = fromLog ?? prev[tabId] ?? now;
+    if (next[tabId] !== prev[tabId]) changed = true;
+  }
+  if (!changed && Object.keys(prev).length === Object.keys(next).length) return prev;
+  return next;
 }

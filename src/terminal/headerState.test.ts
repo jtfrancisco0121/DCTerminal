@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatElapsed, headerPillText, headerStateOf } from "./headerState";
+import { formatElapsed, headerPillText, headerStateOf, trackWorkingSince } from "./headerState";
 
 describe("headerStateOf", () => {
   it("reads exited, needs you, working, done and idle from the terminal state", () => {
@@ -13,7 +13,7 @@ describe("headerStateOf", () => {
         ...base,
         state: { kind: "needs", needs: "plan", toolId: "t", toolTitle: "Plan" },
       }).text,
-    ).toBe("Needs you");
+    ).toBe("Needs you: plan to review");
     expect(headerStateOf({ ...base, state: { kind: "working" } })).toMatchObject({
       tone: "working",
       timed: true,
@@ -42,5 +42,36 @@ describe("headerStateOf", () => {
     expect(formatElapsed(3720)).toBe("1h 02m");
     expect(headerPillText({ tone: "working", text: "Working", timed: true }, 12)).toBe("Working · 12s");
     expect(headerPillText({ tone: "done", text: "Done", timed: false }, 12)).toBe("Done");
+  });
+});
+
+describe("trackWorkingSince", () => {
+  it("keeps each tab's start, prefers the log's prompt time, and drops tabs that stopped", () => {
+    let map = trackWorkingSince({}, [{ tabId: "a", working: true }], 1000);
+    expect(map).toEqual({ a: 1000 });
+    const same = trackWorkingSince(map, [{ tabId: "a", working: true }], 5000);
+    expect(same).toBe(map);
+    map = trackWorkingSince(
+      map,
+      [
+        { tabId: "a", working: true },
+        { tabId: "b", working: true, turnStartedAt: 400 },
+        { tabId: "c", working: false },
+      ],
+      6000,
+    );
+    expect(map).toEqual({ a: 1000, b: 400 });
+    // A prompt time from the future (clock skew) is capped at now.
+    expect(trackWorkingSince({}, [{ tabId: "d", working: true, turnStartedAt: 9000 }], 7000)).toEqual({
+      d: 7000,
+    });
+    // NaN from an unparsable time falls back to the first time seen.
+    expect(trackWorkingSince({}, [{ tabId: "e", working: true, turnStartedAt: NaN }], 7000)).toEqual({
+      e: 7000,
+    });
+    // Stopping and starting again restarts the count.
+    map = trackWorkingSince(map, [{ tabId: "a", working: false }], 8000);
+    expect(map).toEqual({});
+    expect(trackWorkingSince(map, [{ tabId: "a", working: true }], 9000)).toEqual({ a: 9000 });
   });
 });

@@ -239,6 +239,7 @@ import {
   type TerminalState,
 } from "./terminal/claudeState";
 import { dialogDetector } from "./terminal/permissionDialog";
+import { headerStateOf, trackWorkingSince } from "./terminal/headerState";
 import {
   clearMarks,
   computeTabStatus,
@@ -1457,6 +1458,26 @@ export function StartupForm({
     }
     return out;
   }, [runtimes, savedTabs, tabMarks, terminalBusy, terminalStates]);
+
+  /** When each terminal's working turn started, for the header's "Working · 12s". */
+  const workingSinceRef = useRef<Record<string, number>>({});
+  const workingSince = useMemo(() => {
+    const tabs = savedTabs
+      .filter((tab) => tab.kind === "terminal")
+      .map((tab) => {
+        const state = terminalStates[tab.id];
+        const lastPromptAt = state ? sessionLogs[tab.id]?.lastPromptAt : null;
+        return {
+          tabId: tab.id,
+          working:
+            headerStateOf({ state, status: tabStatuses[tab.id], turnEnded: false }).tone ===
+            "working",
+          turnStartedAt: lastPromptAt ? Date.parse(lastPromptAt) : null,
+        };
+      });
+    workingSinceRef.current = trackWorkingSince(workingSinceRef.current, tabs, Date.now());
+    return workingSinceRef.current;
+  }, [savedTabs, sessionLogs, tabStatuses, terminalStates]);
 
   const uiSettings = useUiSettings((title, message) => showNotice(title, message, "failed"));
   // U2: one pad size for chat and terminal tabs; saved when a drag ends.
@@ -5096,6 +5117,7 @@ export function StartupForm({
     controls,
     terminalStates,
     tabStatuses,
+    workingSince,
     sessionLogs,
     terminalVerdict,
     isTerminalSource,

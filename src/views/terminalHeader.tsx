@@ -19,6 +19,8 @@ export type TerminalHeaderDeps = {
   controls: HeaderControls;
   terminalStates: Record<string, TerminalState>;
   tabStatuses: Record<string, TabStatus>;
+  /** When each working terminal's turn started (ms), by tab id. */
+  workingSince: Record<string, number>;
   sessionLogs: Record<string, TerminalSessionLog | null>;
   /** The reviewer verdict read last (for one tab). */
   terminalVerdict: { tabId: string; verdict: ReviewVerdict | null } | null;
@@ -100,6 +102,7 @@ export function terminalHeaderFor(
         tab.label.startsWith(`${roleName} · `) ? tab.label.slice(roleName.length + 3) : tab.label
       }
       state={header}
+      workingSince={deps.workingSince[tab.id] ?? null}
       folder={folderName(tab.cwd)}
       folderTitle={tab.cwd}
       branch={tab.worktreeBranch}
