@@ -46,7 +46,7 @@ Recommendation / Codebase Audit ──► Planner ──► Plan Reviewer ──
   - PR Reviewer changes requested → "Send back to Implementer". Approved → "Chain complete".
 - **Loop-backs stay in the chain:** sending back reuses the chain's own tab with a follow-up message, or opens a new tab tagged on the chain if the original is gone. Each loop-back starts a new round (`src/handoff/routing.ts`, `chain_loop_back`).
 - **Task Type** carries from the Planner to the Implementer.
-- **Hand-offs stay user-triggered:** nothing sends or opens on its own.
+- **Hand-offs stay user-triggered:** nothing sends or opens on its own. Opt-in autopilot per run is planned in [ADR-014](adr/014-pipeline-engine-opt-in-autopilot.md).
 
 ## The Claude adapter: what the app uses now
 

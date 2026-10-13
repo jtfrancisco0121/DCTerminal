@@ -4,6 +4,7 @@ import {
   chainLabel,
   chainTabFor,
   loopBackChain,
+  loopBackRecord,
   loopBackStep,
   newChain,
   nextChainRole,
@@ -78,5 +79,18 @@ describe("Eagle-Eye chains", () => {
     expect(chainTabFor(tabs, eagle1(2), 1, (tab) => tab.id === "a")?.id).toBe("a");
     expect(chainTabFor(tabs, eagle1(2), 1, () => false)?.id).toBe("c");
     expect(chainTabFor(tabs, eagle1(2), 3)).toBeNull();
+  });
+
+  it("a round sent back records the chain's lane, or none", () => {
+    const record = loopBackRecord({ ...eagle1(4), lane: "pr2" }, "role_pr_reviewer", "impl", "REQUEST CHANGES", "fix it");
+    expect(record).toEqual({
+      chainId: "ee_1",
+      reviewerRoleId: "role_pr_reviewer",
+      tabId: "impl",
+      verdict: "REQUEST CHANGES",
+      handoffText: "fix it",
+      lane: "pr2",
+    });
+    expect(loopBackRecord(eagle1(4), "role_pr_reviewer", "impl", null, null).lane).toBeNull();
   });
 });

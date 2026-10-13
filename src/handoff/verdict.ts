@@ -4,7 +4,7 @@
  * nothing sends on a verdict by itself.
  */
 
-import { contractVerdictText } from "./contract";
+import { contractResult, contractVerdictText } from "./contract";
 
 export type ReviewVerdict =
   | "APPROVED"
@@ -126,6 +126,10 @@ export function parseReviewVerdict(text: string): ReviewVerdict | null {
   const declared = contractVerdictText(text);
   const fromContract = declared ? lastMatch(declared) : null;
   if (fromContract) return fromContract;
+  // Then the `HANDOFF: Result` JSON's verdict.
+  const resultVerdict = contractResult(text)?.verdict;
+  const fromResult = resultVerdict ? lastMatch(resultVerdict) : null;
+  if (fromResult) return fromResult;
   const lines = text.split(/\r?\n/);
   return (
     underLabel(lines, VERDICT_LABEL, lastMatch) ??
@@ -143,6 +147,10 @@ export function parseTerminalVerdict(text: string): ReviewVerdict | null {
   const declared = contractVerdictText(text);
   const fromContract = declared ? lastMatch(declared) : null;
   if (fromContract) return fromContract;
+  // Then the `HANDOFF: Result` JSON's verdict.
+  const resultVerdict = contractResult(text)?.verdict;
+  const fromResult = resultVerdict ? lastMatch(resultVerdict) : null;
+  if (fromResult) return fromResult;
   const lines = text.split(/\r?\n/);
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     if (!/\bverdict\b/i.test(lines[i])) continue;

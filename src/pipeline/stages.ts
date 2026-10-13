@@ -1,4 +1,7 @@
-export type PipelineKind = "full" | "execute";
+import { pipelineDef, pipelineStages } from "./defs";
+
+/** A run kind (`full`, `execute`) or a pipeline id of your own. */
+export type PipelineKind = string;
 
 export type PipelineStageDef = {
   stageId: string;
@@ -6,18 +9,16 @@ export type PipelineStageDef = {
   title: string;
 };
 
-export const FULL_PIPELINE_STAGES: PipelineStageDef[] = [
-  { stageId: "planner", roleId: "role_planner", title: "Planner" },
-  { stageId: "plan_reviewer", roleId: "role_plan_reviewer", title: "Plan Reviewer" },
-  { stageId: "implementer", roleId: "role_implementer", title: "Implementer" },
-  { stageId: "pr_reviewer", roleId: "role_pr_reviewer", title: "PR Reviewer" },
-];
-
-export const EXECUTE_PIPELINE_STAGES: PipelineStageDef[] = [
-  { stageId: "implementer", roleId: "role_implementer", title: "Implementer" },
-  { stageId: "pr_reviewer", roleId: "role_pr_reviewer", title: "PR Reviewer" },
-];
-
+/** Stages of a run from its pipeline definition (`src/pipeline/defs.ts`). */
 export function stagesForKind(kind: PipelineKind): PipelineStageDef[] {
-  return kind === "execute" ? EXECUTE_PIPELINE_STAGES : FULL_PIPELINE_STAGES;
+  return pipelineStages(kind).map((stage) => ({
+    stageId: stage.id,
+    roleId: stage.roleId,
+    title: stage.title,
+  }));
+}
+
+/** The pipeline's name for a run kind ("Eagle-Eye 1" for `full`). */
+export function pipelineName(kind: PipelineKind): string {
+  return pipelineDef(kind)?.name ?? "Pipeline";
 }

@@ -58,7 +58,8 @@ fn live_snapshot(
 
 /// Change a running Claude chat's reasoning effort in place. It applies to
 /// this session only; the next start uses the role's effort again.
-#[tauri::command]
+// async: `session/set_config_option` waits for the agent's answer.
+#[tauri::command(async)]
 pub fn acp_set_effort(
     tab_id: String,
     effort: String,
@@ -79,7 +80,8 @@ pub fn acp_set_effort(
     Ok(client.current_effort().unwrap_or(&effort).to_string())
 }
 
-#[tauri::command]
+// async: switching may restart the agent and reload the session.
+#[tauri::command(async)]
 pub fn acp_set_model(
     tab_id: String,
     model: Option<String>,
@@ -150,7 +152,7 @@ pub fn acp_set_model(
     // Stop the old process before the new one opens the same session.
     let (startup_injected, pending_startup) = {
         let mut guard = registry.lock().map_err(|e| e.to_string())?;
-        let mut old = guard.take(&tab_id);
+        let mut old = guard.begin_restart(&tab_id)?;
         let flags = old
             .as_ref()
             .map(|s| (s.startup_injected, s.pending_startup_prompt.clone()))
@@ -160,15 +162,17 @@ pub fn acp_set_model(
         }
         flags
     };
-    let (client, _replay, via) = AcpClient::load_with_model(
+    let loaded = AcpClient::load_with_model(
         live.provider.clone(),
         &live.cwd,
         &live.mode_id,
         &live.session_id,
         Some(&effective),
         true,
-    )
-    .map_err(|err| {
+    );
+    let mut guard = registry.lock().map_err(|e| e.to_string())?;
+    guard.finish_start(&tab_id);
+    let (client, _replay, via) = loaded.map_err(|err| {
         format!(
             "The agent stopped while switching models. Continue the session to reopen it. ({err})"
         )
@@ -176,10 +180,8 @@ pub fn acp_set_model(
     let mut session = LiveSession::from_client(&tab_id, &live.role_id, client);
     session.startup_injected = startup_injected;
     session.pending_startup_prompt = pending_startup;
-    {
-        let mut guard = registry.lock().map_err(|e| e.to_string())?;
-        guard.insert(session);
-    }
+    guard.insert(session);
+    drop(guard);
     Ok(SetModelResult {
         model: effective,
         via: Some(via),

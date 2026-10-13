@@ -48,8 +48,12 @@ pub use dev_session::{
     SessionRegistry,
 };
 pub use forms::{get_form_recall, save_form_draft};
-pub use handoff::{handoff_bind_tab, handoff_get, handoff_list, handoff_save};
-pub use pipeline::{get_pipeline_run, pipeline_promote_plan, pipeline_set_candidate_plan};
+pub use handoff::{handoff_attach, handoff_bind_tab, handoff_get, handoff_list, handoff_save};
+pub use pipeline::{
+    get_pipeline_run, pipeline_decide, pipeline_defs_list, pipeline_defs_save, pipeline_fan_out,
+    pipeline_approve, pipeline_lane_status, pipeline_note,
+    pipeline_promote_plan, pipeline_run_gates, pipeline_set_autopilot, pipeline_set_candidate_plan,
+};
 pub use model_session::{acp_set_effort, acp_set_model};
 pub use usage::get_claude_usage;
 pub use prompts::{

@@ -74,7 +74,7 @@ impl AcpClient {
         let Some(model) = model else {
             return Ok((client, ModelVia::Unchanged));
         };
-        match client.apply_model(model)? {
+        match client.apply_model_or_kill(model)? {
             ModelVia::Unsupported => {
                 client.conn.kill();
                 let mut flagged = Self::spawn_new(&provider, &folder, mode_id, Some(model))?;
@@ -83,6 +83,12 @@ impl AcpClient {
             }
             via => Ok((client, via)),
         }
+    }
+
+    /// `apply_model` during a connect. On an error the client is dropped by
+    /// the caller, so stop its agent first (no kill-on-drop on Unix).
+    fn apply_model_or_kill(&mut self, model: &str) -> Result<ModelVia, String> {
+        self.apply_model(model).inspect_err(|_| self.conn.kill())
     }
 
     fn spawn_new(
@@ -136,7 +142,7 @@ impl AcpClient {
         let Some(model) = model else {
             return Ok((client, replay, ModelVia::Unchanged));
         };
-        match client.apply_model(model)? {
+        match client.apply_model_or_kill(model)? {
             ModelVia::Unsupported => {
                 client.conn.kill();
                 let (mut flagged, replay) =
@@ -317,8 +323,8 @@ impl AcpClient {
         self.conn.process_handle()
     }
 
-    pub fn stderr_tail_text(&self) -> String {
-        self.conn.stderr_tail_text()
+    pub fn stderr_handle(&self) -> crate::acp::connection::StderrTail {
+        self.conn.stderr_handle()
     }
 
     pub fn cancel_flag(&self) -> Arc<AtomicBool> {
@@ -404,19 +410,16 @@ impl AcpClient {
 }
 
 fn extract_agent_text(dispatch: &LineDispatch) -> String {
-    use super::text_extract::text_from_session_params;
+    use super::text_extract::{text_from_session_params, update_kind};
     let mut parts = Vec::new();
     for note in &dispatch.notifications {
         if note.get("method").and_then(|m| m.as_str()) != Some("session/update") {
             continue;
         }
         let params = note.get("params").unwrap_or(note);
-        let kind = params
-            .get("update")
-            .and_then(|u| u.get("type"))
-            .or_else(|| params.get("type"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        // Claude names the kind `sessionUpdate`, so reading only `type` let
+        // thinking and tool labels into the reply text.
+        let kind = update_kind(params.get("update").unwrap_or(params));
         let normalized = kind.replace('_', "").to_lowercase();
         if normalized.contains("thought") || normalized.contains("toolcall") {
             continue;

@@ -1,4 +1,4 @@
-use crate::acp::connection::ClientFollowups;
+use crate::acp::connection::{stderr_text, ClientFollowups, StderrTail};
 use crate::acp::AcpClient;
 use crate::attachments::AttachmentStore;
 use crate::commands::prompt_worker::{spawn_prompt_turn, TurnImages};
@@ -61,6 +61,8 @@ pub struct LiveSession {
     /// Provider the session runs on (kept for restarts).
     pub provider: crate::provider::SharedProvider,
     pub process: SharedProcess,
+    /// Copied from the client so the log drawer can read it mid-turn.
+    pub stderr_tail: StderrTail,
     pub cancel: Arc<AtomicBool>,
     pub outbox: Arc<Mutex<Vec<(u64, Value)>>>,
     pub followups: ClientFollowups,
@@ -79,6 +81,7 @@ pub struct LiveSession {
 impl LiveSession {
     pub fn from_client(tab_id: &str, role_id: &str, client: AcpClient) -> Self {
         let process = client.process_handle();
+        let stderr_tail = client.stderr_handle();
         let cancel = client.cancel_flag();
         let outbox = client.outbox();
         let followups = client.followups();
@@ -94,6 +97,7 @@ impl LiveSession {
             session_id: client.session_id().to_string(),
             client: wrap_client(client),
             process,
+            stderr_tail,
             cancel,
             outbox,
             followups,
@@ -178,8 +182,30 @@ impl SessionRegistry {
         self.starting.remove(tab_key);
     }
 
+    /// Add `session`. A different session it displaces is shut down, so its
+    /// agent process is never left running without an owner.
     pub fn insert(&mut self, session: LiveSession) {
-        self.sessions.insert(session.tab_id.clone(), session);
+        let client = Arc::clone(&session.client);
+        if let Some(mut old) = self.sessions.insert(session.tab_id.clone(), session) {
+            if !Arc::ptr_eq(&old.client, &client) {
+                old.shutdown();
+            }
+        }
+    }
+
+    /// Take the tab's session for a restart and mark the tab as starting,
+    /// so no other start runs until `finish_start`. Refused while a start
+    /// is already in progress.
+    pub fn begin_restart(&mut self, tab_key: &str) -> Result<Option<LiveSession>, String> {
+        if self.starting.contains(tab_key) {
+            return Err(
+                "Start already in progress for this tab — wait for the first click to finish"
+                    .to_string(),
+            );
+        }
+        let old = self.sessions.remove(tab_key);
+        self.starting.insert(tab_key.to_string());
+        Ok(old)
     }
 
     pub fn get(&self, tab_id: &str) -> Option<&LiveSession> {
@@ -196,11 +222,6 @@ impl SessionRegistry {
             .filter(|session| session.tab_id != tab_id && !session.exited)
             .map(|session| (session.cwd.clone(), session.mode_id.clone()))
             .collect()
-    }
-
-    /// Remove a session without shutting it down. The caller owns it.
-    pub fn take(&mut self, tab_id: &str) -> Option<LiveSession> {
-        self.sessions.remove(tab_id)
     }
 
     pub fn shutdown_tab(&mut self, tab_id: &str) {
@@ -298,7 +319,8 @@ fn resolve_tab_id(tab_id: Option<String>) -> String {
     tab_id.unwrap_or_else(|| DEV_TAB_ID.to_string())
 }
 
-#[tauri::command]
+// async: the spawn and handshake block, so keep them off the main thread.
+#[tauri::command(async)]
 pub fn dev_session_start(
     cwd: String,
     mode_id: Option<String>,
@@ -447,15 +469,19 @@ pub fn session_agent_logs(
 ) -> Result<SessionLogs, String> {
     let tab_id = resolve_tab_id(tab_id);
     let guard = state.lock().map_err(|e| e.to_string())?;
-    let session = guard
-        .get(&tab_id)
+    agent_logs(&guard, &tab_id)
+}
+
+/// The tab's agent stderr. Never takes the client lock: a turn holds it
+/// until the turn ends, and the turn's callbacks wait for the registry
+/// lock the caller holds here.
+pub fn agent_logs(registry: &SessionRegistry, tab_id: &str) -> Result<SessionLogs, String> {
+    let session = registry
+        .get(tab_id)
         .ok_or_else(|| "no active session on this tab".to_string())?;
-    let stderr = session
-        .client
-        .lock()
-        .map_err(|e| e.to_string())?
-        .stderr_tail_text();
-    Ok(SessionLogs { stderr })
+    Ok(SessionLogs {
+        stderr: stderr_text(&session.stderr_tail),
+    })
 }
 
 #[tauri::command]

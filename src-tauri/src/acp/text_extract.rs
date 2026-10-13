@@ -19,7 +19,8 @@ pub fn text_from_update_value(update: &Value) -> Option<String> {
     extract_text_from_value(update).filter(|s| !s.is_empty())
 }
 
-fn update_kind(update: &Value) -> String {
+/// `type`, `updateType` or (Claude, current ACP) `sessionUpdate`.
+pub fn update_kind(update: &Value) -> String {
     update
         .get("type")
         .or_else(|| update.get("updateType"))

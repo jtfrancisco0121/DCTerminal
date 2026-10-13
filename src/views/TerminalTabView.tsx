@@ -111,7 +111,7 @@ export function TerminalTabView({
         onMenuOpen={() => readTerminalVerdict(activeTabSummary.id, true)}
         menuActions={
           isPlanTerminal
-            ? handoffMenuItems(activeTabSummary.roleId, roles).map((item) => ({
+            ? handoffMenuItems(activeTabSummary.roleId, roles, activeTabSummary.chain ?? null).map((item) => ({
                 id: `send-${item.target}`,
                 label:
                   item.target === terminalRoute?.primaryTarget && terminalRoute.primaryLabel

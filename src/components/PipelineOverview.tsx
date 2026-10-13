@@ -1,28 +1,39 @@
 import { useCallback, useEffect, useState } from "react";
+import { save } from "@tauri-apps/plugin-dialog";
 import { DisabledReason } from "./DisabledReason";
-import type { PipelineRun, TabSummary } from "../bridge";
+import type { GateResult, PipelineRun, TabSummary } from "../bridge";
 import {
+  exportTextFile,
   getPipelineRun,
   listenChainRunUpdated,
   pipelinePromotePlan,
+  pipelineRunGates,
+  pipelineSetAutopilot,
   pipelineSetCandidatePlan,
 } from "../bridge";
+import { maxRounds, pipelineDef, pipelineStages } from "../pipeline/defs";
+import { eventLabel, eventTime, followUps, formatRunReport, reviewRound, stageTitle } from "../pipeline/runReport";
+import { githubPrUrls } from "../handoff/map";
+import { lanesFromReply } from "../pipeline/prPlan";
+import { errorText } from "./InlineNotice";
 import {
   coalescedReload,
   isForRun,
   OVERVIEW_FALLBACK_POLL_MS,
 } from "../pipeline/overviewRefresh";
 import type { TabRuntime } from "../liveTabs";
-import type { PipelineKind } from "../pipeline/stages";
+import { pipelineName, type PipelineKind } from "../pipeline/stages";
 import {
   overviewStages,
   pullPlannerText,
   pullPlanReviewText,
+  stageReply,
   verdictHistory,
   type SessionLogs,
 } from "../pipeline/overviewModel";
 import { liveTerminalReader, type TerminalReader } from "../pipeline/terminalText";
-import { verdictTone } from "../handoff/verdict";
+import { parseReviewVerdict, verdictTone } from "../handoff/verdict";
+import { roleDisplayName } from "../handoff/transitions";
 import type { TerminalState } from "../terminal/claudeState";
 
 type Props = {
@@ -40,11 +51,58 @@ type Props = {
   terminalStates?: Record<string, TerminalState>;
   /** Claude session logs by tab id: verdicts and plans of Claude terminals come from here. */
   sessionLogs?: SessionLogs;
+  /** Fan the run out into one lane per pull request (ADR-014 phase 3). */
+  onFanOut?: (runId: string) => Promise<void>;
+  /** Start a waiting lane's Implementer. */
+  onStartLane?: (runId: string, laneId: string) => Promise<void>;
+  /** Marks an active lane approved by hand, then starts the lanes that unblocks. */
+  onApproveLane?: (runId: string, laneId: string) => Promise<void>;
+  /** Marks a run without lanes complete by hand (autopilot stopped at its last stage). */
+  onApproveRun?: (runId: string) => Promise<void>;
 };
 
 function overviewTitle(run: PipelineRun, kind: PipelineKind): string {
   if (!run.chainId) return "Pipeline overview";
-  return kind === "execute" ? "Eagle-Eye 2 overview" : "Eagle-Eye 1 overview";
+  return `${pipelineName(kind)} overview`;
+}
+
+function overviewMeta(kind: PipelineKind): string {
+  if (kind === "execute") return "Implement → PR review";
+  if (kind === "full") return "Plan → review → implement → PR";
+  return pipelineStages(kind)
+    .map((stage) => stage.title)
+    .join(" → ");
+}
+
+function GateList({ results, label }: { results: GateResult[]; label: string }) {
+  return (
+    <ul className="pipeline-gates" aria-label={label}>
+      {results.map((result, i) => (
+        <li key={`${result.kind}-${i}`} className={`pipeline-gate pipeline-gate-${result.status}`}>
+          <span className="pipeline-gate-status">{result.status}</span> <code>{result.label}</code>{" "}
+          {result.summary}
+          {result.output?.trim() && (
+            <details>
+              <summary>Output</summary>
+              <pre className="plan-markdown">{result.output}</pre>
+            </details>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Saves the run report (`formatRunReport`) where the user picks. */
+async function exportRunReport(run: PipelineRun): Promise<string | null> {
+  const path = await save({
+    defaultPath: `${pipelineName(run.kind).replace(/[^\w-]+/g, "-")}-${run.id}.md`,
+    filters: [{ name: "Markdown", extensions: ["md"] }],
+    title: "Export run report",
+  });
+  if (!path) return null;
+  await exportTextFile(path, formatRunReport(run));
+  return path;
 }
 
 export function PipelineOverview({
@@ -59,6 +117,10 @@ export function PipelineOverview({
   terminalReader = liveTerminalReader,
   terminalStates,
   sessionLogs,
+  onFanOut,
+  onStartLane,
+  onApproveLane,
+  onApproveRun,
 }: Props) {
   const [run, setRun] = useState<PipelineRun | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -68,6 +130,7 @@ export function PipelineOverview({
   const [candidateOpen, setCandidateOpen] = useState(false);
   const [approvedOpen, setApprovedOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [checking, setChecking] = useState<Record<string, boolean>>({});
 
   const reload = useCallback(async () => {
     try {
@@ -105,6 +168,95 @@ export function PipelineOverview({
   }, [reload, runId]);
 
   const kind = (run?.kind ?? "full") as PipelineKind;
+
+  const setAutopilot = async (enabled: boolean) => {
+    if (!run) return;
+    try {
+      await pipelineSetAutopilot(run.id, enabled);
+      await reload();
+    } catch (err: unknown) {
+      onNotice("Autopilot not changed", errorText(err));
+    }
+  };
+
+  /** Runs a stage's checks now, against its tab's folder and the PRs its reply names. */
+  const runChecks = async (stageId: string, tab: TabSummary | undefined, reply: string) => {
+    if (!run) return;
+    setChecking((prev) => ({ ...prev, [stageId]: true }));
+    try {
+      await pipelineRunGates(run.id, stageId, tab?.cwd ?? null, githubPrUrls(reply));
+      await reload();
+    } catch (err: unknown) {
+      onNotice("Checks did not run", errorText(err));
+    } finally {
+      setChecking((prev) => ({ ...prev, [stageId]: false }));
+    }
+  };
+
+  const fanOut = async () => {
+    if (!run || !onFanOut) return;
+    setBusy(true);
+    try {
+      await onFanOut(run.id);
+      await reload();
+    } catch (err: unknown) {
+      onNotice("Did not fan out", errorText(err));
+      await reload();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const startLaneNow = async (laneId: string) => {
+    if (!run || !onStartLane) return;
+    setBusy(true);
+    try {
+      await onStartLane(run.id, laneId);
+      await reload();
+    } catch (err: unknown) {
+      onNotice("Lane did not start", errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const approveLaneNow = async (laneId: string) => {
+    if (!run || !onApproveLane) return;
+    setBusy(true);
+    try {
+      await onApproveLane(run.id, laneId);
+      await reload();
+    } catch (err: unknown) {
+      onNotice("Lane not marked approved", errorText(err));
+      await reload();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const approveRunNow = async () => {
+    if (!run || !onApproveRun) return;
+    setBusy(true);
+    try {
+      await onApproveRun(run.id);
+      await reload();
+    } catch (err: unknown) {
+      onNotice("Run not marked complete", errorText(err));
+      await reload();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const exportReport = async () => {
+    if (!run) return;
+    try {
+      const path = await exportRunReport(run);
+      if (path) onNotice("Run report saved", path);
+    } catch (err: unknown) {
+      onNotice("Run report not saved", errorText(err));
+    }
+  };
 
   const pullFromPlanner = async () => {
     if (!run) return;
@@ -176,6 +328,30 @@ export function PipelineOverview({
   const canPromote = !run.chainId || implementerTab?.phase === "draft";
   const originalRequest = run.originalRequest?.trim() ?? "";
   const round = Math.max(1, run.round ?? 1);
+  const def = pipelineDef(run.kind);
+  const stageDefs = pipelineStages(run.kind);
+  const autopilotOn = !!run.autopilot?.enabled;
+  // Mark complete is only for a run that reached its last stage.
+  const atLastStage = stageDefs.length > 0 && run.stage === stageDefs[stageDefs.length - 1].id;
+  const later = followUps(run);
+  const events = [...(run.events ?? [])].reverse();
+  const lanes = run.lanes ?? [];
+  // From the fan-out stage on, rounds are per lane (shown in Pull requests).
+  const fanOutIndex = run.fanOutStage ? stageDefs.findIndex((s) => s.id === run.fanOutStage) : -1;
+  // Fan-out reads the pull-request list in the reply of the stage before the Implementer.
+  const fanStage = stageDefs.find((s) => s.roleId === "role_implementer") ?? null;
+  const planStage = fanStage ? stageDefs[stageDefs.indexOf(fanStage) - 1] ?? null : null;
+  const planTab = planStage ? tabs.find((t) => t.id === run.tabIds[planStage.roleId]) : undefined;
+  const plannedPrs =
+    run.chainId && !lanes.length && planTab && fanStage
+      ? lanesFromReply(stageReply(planTab, runtimes[planTab.id], terminalReader, sessionLogs))
+      : [];
+  const implementerStarted = !!fanStage && !!tabs.find(
+    (t) => t.id === run.tabIds[fanStage.roleId] && t.phase !== "draft",
+  );
+  const laneTab = (id: string | undefined) => (id ? tabs.find((t) => t.id === id) : undefined);
+  const laneBlocked = (deps: string[] = []) =>
+    deps.filter((dep) => lanes.find((l) => l.id === dep)?.status !== "approved");
 
   return (
     <section className="pipeline-overview" aria-label="Pipeline overview">
@@ -183,8 +359,7 @@ export function PipelineOverview({
         <div>
           <h2 className="pipeline-overview-title">{overviewTitle(run, kind)}</h2>
           <p className="hint pipeline-overview-meta">
-            {kind === "execute" ? "Implement → PR review" : "Plan → review → implement → PR"} ·{" "}
-            <span className="pipeline-overview-cwd">{cwd || run.cwd}</span>
+            {overviewMeta(kind)} · <span className="pipeline-overview-cwd">{cwd || run.cwd}</span>
           </p>
         </div>
         <p className="hint">
@@ -192,6 +367,42 @@ export function PipelineOverview({
           {round > 1 && <span className="pipeline-round"> · round {round}</span>}
         </p>
       </header>
+
+      {run.chainId && def && (
+        <section className="pipeline-autopilot" aria-label="Autopilot">
+          <label className="pipeline-autopilot-toggle">
+            <input
+              type="checkbox"
+              checked={autopilotOn}
+              onChange={(e) => void setAutopilot(e.currentTarget.checked)}
+            />{" "}
+            <strong>Autopilot</strong>
+          </label>
+          <p className="hint">
+            {autopilotOn
+              ? "After each terminal stage's turn, the checks run and the run moves on, sends a round back, or stops for you. It stops before a checkpoint, at the round cap, when Claude needs you, and near your usage limit. It never merges."
+              : "Off: every hand-off waits for you. Turn it on to let terminal stages hand on by themselves."}
+          </p>
+          {autopilotOn && run.autopilot?.waiting && (
+            <p className="pipeline-autopilot-waiting" role="status">
+              Waiting for you: {run.autopilot.waiting}
+            </p>
+          )}
+          {autopilotOn && run.autopilot?.waiting && lanes.length === 0 && atLastStage && onApproveRun && (
+            <div className="button-row">
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={busy}
+                title="Approve the run yourself, for example when its last reviewer approved it but listed findings."
+                onClick={() => void approveRunNow()}
+              >
+                Mark complete
+              </button>
+            </div>
+          )}
+        </section>
+      )}
 
       <section className="pipeline-request" aria-label="Original request">
         <h3>Original request</h3>
@@ -203,7 +414,11 @@ export function PipelineOverview({
       </section>
 
       <div className="pipeline-lanes">
-        {stages.map((stage) => (
+        {stages.map((stage) => {
+          const stageDef = stageDefs.find((s) => s.id === stage.def.stageId);
+          const gates = run.gates?.[stage.def.stageId];
+          const hasGates = (stageDef?.gates?.length ?? 0) > 0;
+          return (
           <article
             key={stage.def.roleId}
             className={`pipeline-lane${stage.current ? " pipeline-lane-current" : ""}`}
@@ -235,6 +450,28 @@ export function PipelineOverview({
                 ))}
               </ol>
             )}
+            {(stageDef?.alsoReviewers ?? []).map((role) => {
+              const other = tabs.find((t) => t.id === run.tabIds[role]);
+              const said = other
+                ? parseReviewVerdict(stageReply(other, runtimes[other.id], terminalReader, sessionLogs))
+                : null;
+              return (
+                <p key={role} className="hint pipeline-also-reviewer">
+                  Also reviewed by {roleDisplayName(role, null)}: {other ? (said ?? "no verdict yet") : "not started"}
+                </p>
+              );
+            })}
+            {stageDef?.loopBack && !(lanes.length > 0 && fanOutIndex >= 0 && stageDefs.indexOf(stageDef) >= fanOutIndex) && (
+              <p className="hint pipeline-round-cap">
+                Round {reviewRound(run, null, stageDef)} of at most {maxRounds(stageDef)}
+              </p>
+            )}
+            {gates && (
+              <GateList
+                results={gates.results}
+                label={`${stage.def.title} checks, round ${gates.round}`}
+              />
+            )}
             {stage.handedIn && (
               <details className="pipeline-handed-in">
                 <summary>Handed in ({stage.handedIn.length.toLocaleString()} chars)</summary>
@@ -257,11 +494,129 @@ export function PipelineOverview({
                 >
                   Watch in split
                 </button>
+                {hasGates && (
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={!!checking[stage.def.stageId]}
+                    onClick={() =>
+                      void runChecks(
+                        stage.def.stageId,
+                        stage.tab,
+                        stageReply(stage.tab, runtimes[stage.tabId!], terminalReader, sessionLogs),
+                      )
+                    }
+                  >
+                    {checking[stage.def.stageId] ? "Checking…" : "Run checks"}
+                  </button>
+                )}
               </div>
             )}
           </article>
-        ))}
+          );
+        })}
       </div>
+
+      {plannedPrs.length >= 2 && onFanOut && !implementerStarted && (
+        <section className="pipeline-fan-out" aria-label="Fan out">
+          <h3>Fan out by pull request</h3>
+          <p className="hint">
+            The plan ships as {plannedPrs.length} pull requests. Fan out gives each one its own
+            Implementer in its own git worktree, then its own PR Reviewer. Pull requests that build
+            on another wait until that one is approved.
+          </p>
+          <ul>
+            {plannedPrs.map((pr) => (
+              <li key={pr.id}>
+                {pr.title}
+                {pr.dependsOn.length > 0 && (
+                  <span className="hint"> · after {pr.dependsOn.map((d) => d.toUpperCase()).join(", ")}</span>
+                )}
+              </li>
+            ))}
+          </ul>
+          <button type="button" className="primary-button" disabled={busy} onClick={() => void fanOut()}>
+            Fan out into {plannedPrs.length} Implementers
+          </button>
+        </section>
+      )}
+
+      {lanes.length > 0 && (
+        <section className="pipeline-pr-lanes" aria-label="Pull requests">
+          <h3>Pull requests</h3>
+          <ul className="pipeline-pr-lane-list">
+            {lanes.map((lane) => {
+              const blocked = laneBlocked(lane.dependsOn);
+              const lastVerdict = lane.verdicts?.[lane.verdicts.length - 1]?.verdict;
+              const laneStage = stageDefs.find((s) => s.id === lane.stage);
+              const tabsOfLane = Object.entries(lane.tabIds)
+                .map(([roleId, id]) => ({ roleId, tab: laneTab(id) }))
+                .filter((entry) => !!entry.tab);
+              return (
+                <li key={lane.id} className={`pipeline-pr-lane pipeline-pr-lane-${lane.status}`} aria-label={lane.title}>
+                  <div className="pipeline-lane-head">
+                    <strong>{lane.title}</strong>
+                    <span className={`pipeline-lane-status pipeline-pr-lane-status`}>{lane.status}</span>
+                  </div>
+                  <p className="hint">
+                    {stageTitle(run, lane.stage)} ·{" "}
+                    {laneStage?.loopBack
+                      ? `round ${reviewRound(run, lane.id, laneStage)} of at most ${maxRounds(laneStage)}`
+                      : `round ${Math.max(1, lane.round)}`}
+                    {lastVerdict ? ` · last verdict ${lastVerdict}` : ""}
+                    {lane.dependsOn?.length ? ` · after ${lane.dependsOn.map((d) => d.toUpperCase()).join(", ")}` : ""}
+                  </p>
+                  <div className="button-row">
+                    {tabsOfLane.map(({ roleId, tab }) => (
+                      <button key={roleId} type="button" className="secondary-button" onClick={() => onJump(tab!.id)}>
+                        {tab!.label}
+                      </button>
+                    ))}
+                    {lane.status === "waiting" && onStartLane && (
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={busy}
+                        title={
+                          blocked.length
+                            ? `Still waiting on ${blocked.map((d) => d.toUpperCase()).join(", ")}; start anyway if you know it is ready.`
+                            : undefined
+                        }
+                        onClick={() => void startLaneNow(lane.id)}
+                      >
+                        {blocked.length ? "Start anyway" : "Start"}
+                      </button>
+                    )}
+                    {lane.status === "active" && onApproveLane && (
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={busy}
+                        title="Approve this pull request yourself, for example when its reviewer approved it but listed findings."
+                        onClick={() => void approveLaneNow(lane.id)}
+                      >
+                        Mark approved
+                      </button>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
+
+      {later.length > 0 && (
+        <section className="pipeline-followups" aria-label="Follow-ups">
+          <h3>Follow-ups</h3>
+          <p className="hint">Findings below the round's threshold, kept for later instead of another round.</p>
+          <ul>
+            {later.map((line, i) => (
+              <li key={i}>{line}</li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {kind === "full" && (
         <section className="pipeline-plan-panel">
@@ -372,6 +727,36 @@ export function PipelineOverview({
             </DisabledReason>
           )}
         </div>
+      </section>
+
+      <section className="pipeline-ledger" aria-label="Timeline">
+        <div className="pipeline-ledger-head">
+          <h3>Timeline</h3>
+          <button type="button" className="secondary-button" onClick={() => void exportReport()}>
+            Export run report
+          </button>
+        </div>
+        {events.length === 0 ? (
+          <p className="hint">Hand-offs, checks and autopilot decisions show up here.</p>
+        ) : (
+          <ol className="pipeline-ledger-list">
+            {events.map((event, i) => (
+              <li key={`${event.at}-${i}`} className={`pipeline-event pipeline-event-${event.kind}`}>
+                <span className="pipeline-event-when">{eventTime(event.at)}</span>{" "}
+                <span className="pipeline-event-kind">{eventLabel(event.kind)}</span>
+                {event.stageId && <span className="hint"> · {stageTitle(run, event.stageId)}</span>}
+                <span className="hint"> · round {event.round}</span>
+                <div>{event.summary}</div>
+                {event.detail?.trim() && (
+                  <details>
+                    <summary>Details</summary>
+                    <pre className="plan-markdown">{event.detail}</pre>
+                  </details>
+                )}
+              </li>
+            ))}
+          </ol>
+        )}
       </section>
     </section>
   );

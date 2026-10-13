@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  contractResult,
+  normalizeSeverity,
   contractFindings,
   contractImplementation,
   contractPlan,
@@ -239,5 +241,47 @@ describe("missingHandoffSections", () => {
       ),
     ).toEqual([]);
     expect(missingHandoffSections("role_general", "anything")).toEqual([]);
+  });
+});
+
+describe("HANDOFF: Result", () => {
+  const reply = (body: string) =>
+    `Review done.\n\n## HANDOFF: Verdict\nREQUEST CHANGES\n\n## HANDOFF: Findings for the Implementer\n1. Fix it.\n\n## HANDOFF: Result\n${body}\n`;
+
+  it("reads the verdict and findings with canonical severities", () => {
+    const result = contractResult(
+      reply(
+        '```json\n{"verdict": "request changes", "findings": [' +
+          '{"severity": "high", "pr": "PR1", "file": "src/a.ts:4", "summary": "Null token."},' +
+          '{"severity": "Nit", "summary": "Typo."},' +
+          '{"severity": "LOW"},' +
+          '{"summary": "No severity given."}' +
+          "]}\n```",
+      ),
+    );
+    expect(result).toEqual({
+      verdict: "REQUEST CHANGES",
+      findings: [
+        { severity: "HIGH", pr: "PR1", file: "src/a.ts:4", summary: "Null token." },
+        { severity: "INFO", summary: "Typo." },
+        { severity: "", summary: "No severity given." },
+      ],
+    });
+  });
+
+  it("accepts a bare JSON object and returns null for anything else", () => {
+    expect(contractResult(reply('{"verdict": "APPROVED", "findings": []}'))).toEqual({
+      verdict: "APPROVED",
+      findings: [],
+    });
+    expect(contractResult(reply("not json"))).toBeNull();
+    expect(contractResult(reply("```json\n{broken\n```"))).toBeNull();
+    expect(contractResult("## HANDOFF: Verdict\nAPPROVED")).toBeNull();
+  });
+
+  it("normalizes severity words", () => {
+    expect(normalizeSeverity(" blocker ")).toBe("CRITICAL");
+    expect(normalizeSeverity("Moderate")).toBe("MEDIUM");
+    expect(normalizeSeverity("someday")).toBe("SOMEDAY");
   });
 });

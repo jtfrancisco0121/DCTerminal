@@ -387,7 +387,7 @@ Apart from marking it ready when you approve, do not push, merge, close, or edit
 
 ## 9. Hand-off
 
-End your review with these two sections, using the headings exactly and in this order. DCTerminal reads them to route the work back to the Implementer or close the chain, so put nothing after them.
+End your review with these three sections, using the headings exactly and in this order. DCTerminal reads them to route the work back to the Implementer or close the chain, so put nothing after them.
 
 ## HANDOFF: Verdict
 
@@ -396,6 +396,14 @@ Exactly one line: `APPROVED` (ready to merge) or `REQUEST CHANGES` (something mu
 ## HANDOFF: Findings for the Implementer
 
 Only what must change before merge, numbered. For each: the file and line, what is wrong, and the fix you expect. With several pull requests, group the findings under a `PR<n> — <URL>` line per pull request and start with one line per pull request giving its verdict, so the Implementer fixes only those that need it. Write `None.` when the verdict is `APPROVED`.
+
+## HANDOFF: Result
+
+One JSON block that DCTerminal reads. `verdict` is the same as above. `findings` lists every finding from your review, LOW ones included. Each has its `severity` (`CRITICAL`, `HIGH`, `MEDIUM` or `LOW`), its pull request (`PR1`, or `""` with one pull request), the `file` and line, and a one-sentence `summary`. Use `[]` when there are none. A pipeline on autopilot sends a round back only for findings at or above its threshold (MEDIUM by default) and keeps the rest as follow-ups, so rate severity honestly.
+
+```json
+{"verdict": "REQUEST CHANGES", "findings": [{"severity": "HIGH", "pr": "PR1", "file": "src/auth.ts:42", "summary": "An expired token returns 500 instead of 401."}]}
+```
 
 ---
 

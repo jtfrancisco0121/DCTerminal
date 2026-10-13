@@ -12,6 +12,7 @@ mod history_search;
 mod models;
 mod orchestrator;
 mod paths;
+mod pipelines;
 mod permissions;
 mod process_tree;
 pub mod provider;
@@ -35,12 +36,15 @@ use cli_detect::{cli_login_status, detect_cli};
 use commands::history_search;
 use commands::{
     acp_set_effort, acp_set_model, get_claude_usage, check_working_folder, close_tab, create_execution_pipeline_tabs,
-    create_pipeline_tabs, cursor_approval_mode, get_pipeline_run, pipeline_promote_plan,
+    create_pipeline_tabs, cursor_approval_mode, get_pipeline_run, pipeline_decide,
+    pipeline_approve, pipeline_defs_list, pipeline_defs_save, pipeline_fan_out, pipeline_lane_status, pipeline_note,
+    pipeline_run_gates,
+    pipeline_set_autopilot, pipeline_promote_plan,
     pipeline_set_candidate_plan,
     dev_session_cancel, dev_session_live, dev_session_send, dev_session_start, dev_session_stop,
     diagnostics_read_log, diagnostics_set_capture, diagnostics_status, get_app_state,
     get_form_recall, get_layout, get_role, get_tab,
-    handoff_bind_tab, handoff_get, handoff_list, handoff_save, list_claude_history,
+    handoff_attach, handoff_bind_tab, handoff_get, handoff_list, handoff_save, list_claude_history,
     list_cursor_cli_history, list_roles,
     new_draft_tab, ack_provider_notice, chain_loop_back, open_chain_overview, set_tab_chain, start_eagle_eye,
     open_in_cursor_cli, projects_list, projects_remember, projects_remove,
@@ -109,6 +113,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
+            // User pipelines join the registry before any chain run is read.
+            let pipeline_store =
+                store::PipelineStore::open(&data_dir::app_data_dir(app.handle()).path)?;
             let store = RolesStore::load_or_seed(app.handle())?;
             let mut state_store = StateStore::load_or_default(app.handle())?;
             state_store.reconcile_stale_running_tabs()?;
@@ -141,6 +148,7 @@ pub fn run() {
             app.manage(Mutex::new(handoff_store));
             app.manage(Mutex::new(prompt_store));
             app.manage(Mutex::new(workspace_store));
+            app.manage(Mutex::new(pipeline_store));
             app.manage(Mutex::new(crate::usage::UsageStore::open(&data_dir)));
             app.manage(Mutex::new(SessionRegistry::new()));
             app.manage(Mutex::new(PtyRegistry::new()));
@@ -184,6 +192,15 @@ pub fn run() {
             create_pipeline_tabs,
             create_execution_pipeline_tabs,
             get_pipeline_run,
+            pipeline_defs_list,
+            pipeline_defs_save,
+            pipeline_run_gates,
+            pipeline_set_autopilot,
+            pipeline_decide,
+            pipeline_note,
+            pipeline_fan_out,
+            pipeline_lane_status,
+            pipeline_approve,
             pipeline_promote_plan,
             pipeline_set_candidate_plan,
             sync_active_tab_form,
@@ -227,6 +244,7 @@ pub fn run() {
             export_text_file,
             handoff_save,
             handoff_bind_tab,
+            handoff_attach,
             handoff_list,
             handoff_get,
             diagnostics_status,

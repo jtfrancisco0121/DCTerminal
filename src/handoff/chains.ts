@@ -1,13 +1,16 @@
 /**
- * Eagle-Eye chains. EE1 is Planner → Plan Reviewer → Implementer → PR Reviewer.
- * EE2 is Implementer → PR Reviewer. A hand-off along the next edge advances
- * the step. A reviewer sending its round back (Plan Reviewer → Planner,
- * PR Reviewer → Implementer) is a loop-back: it stays on the chain and starts
- * the next round. Any other hand-off drops the chain label. Nothing starts by
- * itself.
+ * Chains along a pipeline (`src/pipeline/defs.ts`). EE1 is Planner → Plan
+ * Reviewer → Implementer → PR Reviewer; EE2 is Implementer → PR Reviewer;
+ * your own pipelines work the same way. A hand-off along the next edge
+ * advances the step. A reviewer sending its round back along its stage's
+ * `loopBack` (Plan Reviewer → Planner, PR Reviewer → Implementer) stays on
+ * the chain and starts the next round. Any other hand-off drops the chain
+ * label. Only an opt-in autopilot starts anything by itself.
  */
+import { loopBackRole, pipelineDef, stageRoles } from "../pipeline/defs";
 
-export type ChainKind = "eagle1" | "eagle2";
+/** A pipeline id: `eagle1`, `eagle2`, or one of your own. */
+export type ChainKind = string;
 
 export type ChainRef = {
   chainId: string;
@@ -16,41 +19,51 @@ export type ChainRef = {
   total: number;
   /** Review round; missing means 1. Each loop-back adds one. */
   round?: number;
+  /** Lane id (`pr1`) once the run fanned out by pull request. */
+  lane?: string | null;
 };
 
-const EAGLE1 = [
-  "role_planner",
-  "role_plan_reviewer",
-  "role_implementer",
-  "role_pr_reviewer",
-] as const;
-
-const EAGLE2 = ["role_implementer", "role_pr_reviewer"] as const;
-
+/** Role id per step of a pipeline, or null for an unknown pipeline. */
 export function chainSteps(kind: string): readonly string[] | null {
-  if (kind === "eagle1") return EAGLE1;
-  if (kind === "eagle2") return EAGLE2;
-  return null;
+  return pipelineDef(kind)?.stages.map((stage) => stage.roleId) ?? null;
+}
+
+/** Every role at `step` (1-based): the stage's own, then its parallel reviewers. */
+export function stepRoles(kind: string, step: number): readonly string[] {
+  const stage = pipelineDef(kind)?.stages[step - 1];
+  return stage ? stageRoles(stage) : [];
 }
 
 export function chainLabel(chain: ChainRef): string {
-  const name = chain.kind === "eagle2" ? "Eagle-Eye 2" : "Eagle-Eye 1";
+  const name = pipelineDef(chain.kind)?.name ?? "Pipeline";
   const round = chainRound(chain);
-  return `${name} · step ${chain.step} of ${chain.total}${round > 1 ? ` · round ${round}` : ""}`;
+  const lane = chain.lane ? ` · ${chain.lane.toUpperCase()}` : "";
+  return `${name}${lane} · step ${chain.step} of ${chain.total}${round > 1 ? ` · round ${round}` : ""}`;
 }
 
 export function chainRound(chain: Pick<ChainRef, "round">): number {
   return Math.max(1, chain.round ?? 1);
 }
 
-/** Reviewer → earlier stage edges that send a round back. */
+/** Reviewer → earlier stage edges of the built-in chains, for tabs off any chain. */
 const LOOP_BACKS: Readonly<Record<string, string>> = {
   role_plan_reviewer: "role_planner",
   role_pr_reviewer: "role_implementer",
 };
 
-export function isLoopBackEdge(sourceRoleId: string, targetRoleId: string): boolean {
-  return LOOP_BACKS[sourceRoleId] === targetRoleId;
+/** The role `sourceRoleId` sends its round back to: on `kind`'s pipeline, else the built-in edge. */
+export function loopBackTarget(sourceRoleId: string, kind?: string | null): string | null {
+  const def = kind ? pipelineDef(kind) : null;
+  if (def) return loopBackRole(def, sourceRoleId);
+  return LOOP_BACKS[sourceRoleId] ?? null;
+}
+
+export function isLoopBackEdge(
+  sourceRoleId: string,
+  targetRoleId: string,
+  kind?: string | null,
+): boolean {
+  return loopBackTarget(sourceRoleId, kind) === targetRoleId;
 }
 
 /**
@@ -62,9 +75,9 @@ export function loopBackStep(
   sourceRoleId: string,
   targetRoleId: string,
 ): number | null {
-  if (!isLoopBackEdge(sourceRoleId, targetRoleId)) return null;
+  if (!isLoopBackEdge(sourceRoleId, targetRoleId, chain.kind)) return null;
   const steps = chainSteps(chain.kind);
-  if (!steps || steps[chain.step - 1] !== sourceRoleId) return null;
+  if (!steps || !stepRoles(chain.kind, chain.step).includes(sourceRoleId)) return null;
   const index = steps.indexOf(targetRoleId);
   return index >= 0 && index < chain.step - 1 ? index + 1 : null;
 }
@@ -80,6 +93,27 @@ export function loopBackChain(
 }
 
 /**
+ * What `chainLoopBack` records for a round sent back to a live tab. A
+ * fanned-out chain carries its lane, so the lane's round moves, not the run's.
+ */
+export function loopBackRecord(
+  chain: ChainRef,
+  reviewerRoleId: string,
+  tabId: string,
+  verdict: string | null,
+  handoffText: string | null,
+): {
+  chainId: string;
+  reviewerRoleId: string;
+  tabId: string;
+  verdict: string | null;
+  handoffText: string | null;
+  lane: string | null;
+} {
+  return { chainId: chain.chainId, reviewerRoleId, tabId, verdict, handoffText, lane: chain.lane ?? null };
+}
+
+/**
  * The chain's open tab for `step`: the newest tagged tab that `prefer`
  * accepts (a live session), else the newest tagged tab.
  */
@@ -90,7 +124,10 @@ export function chainTabFor<T extends { id: string; chain?: ChainRef | null }>(
   prefer?: (tab: T) => boolean,
 ): T | null {
   const tagged = tabs.filter(
-    (tab) => tab.chain?.chainId === chain.chainId && tab.chain.step === step,
+    (tab) =>
+      tab.chain?.chainId === chain.chainId &&
+      tab.chain.step === step &&
+      (tab.chain.lane ?? null) === (chain.lane ?? null),
   );
   const preferred = prefer ? tagged.filter(prefer) : [];
   return preferred[preferred.length - 1] ?? tagged[tagged.length - 1] ?? null;
@@ -100,8 +137,13 @@ export function chainTabFor<T extends { id: string; chain?: ChainRef | null }>(
 export function nextChainRole(chain: ChainRef, sourceRoleId: string): string | null {
   const steps = chainSteps(chain.kind);
   if (!steps) return null;
-  if (steps[chain.step - 1] !== sourceRoleId) return null;
+  if (!stepRoles(chain.kind, chain.step).includes(sourceRoleId)) return null;
   return steps[chain.step] ?? null;
+}
+
+/** Every role of the next step (its parallel reviewers too), when this tab is on the chain's edge. */
+export function nextChainRoles(chain: ChainRef, sourceRoleId: string): string[] {
+  return nextChainRole(chain, sourceRoleId) ? [...stepRoles(chain.kind, chain.step + 1)] : [];
 }
 
 /**
@@ -113,8 +155,9 @@ export function advanceChain(
   sourceRoleId: string,
   targetRoleId: string,
 ): ChainRef | null {
-  const next = nextChainRole(chain, sourceRoleId);
-  if (!next || next !== targetRoleId || chain.step >= chain.total) return null;
+  if (chain.step >= chain.total || !nextChainRoles(chain, sourceRoleId).includes(targetRoleId)) {
+    return null;
+  }
   return { ...chain, step: chain.step + 1 };
 }
 
@@ -124,6 +167,6 @@ export function newChain(kind: ChainKind, now = Date.now()): ChainRef {
     chainId: `ee_${now}`,
     kind,
     step: 1,
-    total: kind === "eagle1" ? 4 : 2,
+    total: chainSteps(kind)?.length ?? 1,
   };
 }

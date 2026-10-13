@@ -80,12 +80,12 @@ pub fn probe_initialize() -> AcpProbeResult {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn probe_acp_handshake() -> AcpHandshakeProbeResult {
     probe_handshake(None)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn probe_acp() -> AcpProbeResult {
     probe_initialize()
 }

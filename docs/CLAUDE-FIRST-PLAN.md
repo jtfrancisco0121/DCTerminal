@@ -19,7 +19,7 @@
 - Main device is JT's Mac; Mac `npm run check` + install before asking him to smoke (`PATH=/opt/homebrew/bin:$PATH`).
 - No cloud agents (Cursor or Claude `--cloud` / `--bg`). DCTerminal never launches `claude --cloud`, `--bg`, or `ultrareview`.
 - Merge only after JT approves.
-- Hand-offs are always user-triggered. Nothing auto-starts the next step.
+- Hand-offs are always user-triggered. Nothing auto-starts the next step. *(Superseded by [ADR-014](adr/014-pipeline-engine-opt-in-autopilot.md): manual stays the default; autopilot is opt-in per run.)*
 - DCTerminal never runs `claude auth login`, `/login`, or any login flow for JT, and never reads or stores Claude credentials. It only reads `claude auth status --json` output (run with `CLAUDE_CONFIG_DIR=<configDir>`) to show "logged in / not logged in" and which account.
 - **Every Claude process gets `CLAUDE_CONFIG_DIR=<configDir>`** (adapter spawn, every terminal `claude`, `claude auth status`, `claude --version`). A GUI app does not see JT's `claude2` shell alias, so without this it would use the default `~/.claude` login — the wrong account.
 - Personal-use only (see Risks: subscription login through the Agent SDK).

@@ -1,5 +1,12 @@
 import { useEffect, useState } from "react";
-import { detectCli, listRoles, type CliDetectResult, type RoleSummary } from "./bridge";
+import {
+  detectCli,
+  listRoles,
+  pipelineDefsList,
+  type CliDetectResult,
+  type RoleSummary,
+} from "./bridge";
+import { setPipelineDefs } from "./pipeline/defs";
 import { StartupForm } from "./StartupForm";
 import { ConfirmHost } from "./components/confirm";
 import "./App.css";
@@ -13,6 +20,8 @@ function App() {
   const [cliError, setCliError] = useState<string | null>(null);
   const [roles, setRoles] = useState<RoleSummary[]>([]);
   const [rolesError, setRolesError] = useState<string | null>(null);
+  // Bumped when your own pipelines load, so chain labels re-render.
+  const [, setPipelinesLoaded] = useState(0);
 
   useEffect(() => {
     detectCli()
@@ -26,6 +35,13 @@ function App() {
         setRoles([]);
         setRolesError(err instanceof Error ? err.message : String(err));
       });
+    pipelineDefsList()
+      .then((defs) => {
+        setPipelineDefs(defs ?? []);
+        setPipelinesLoaded((n) => n + 1);
+      })
+      // intentionally silent: the built-in pipelines are bundled and still work.
+      .catch(() => {});
   }, []);
 
   const redetectCli = async () => {
@@ -45,6 +61,7 @@ function App() {
         cliFound={!!cli?.found}
         showDevTools={showDevTools}
         onRedetectCli={redetectCli}
+        onPipelinesChanged={() => setPipelinesLoaded((n) => n + 1)}
         onRefreshRoles={() =>
           listRoles().then((next) => {
             setRoles(next);

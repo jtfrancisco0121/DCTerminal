@@ -212,7 +212,7 @@ State one:
 
 ### Hand-off
 
-End your reply with these four sections, using the headings exactly and in this order. Put nothing after them.
+End your reply with these five sections, using the headings exactly and in this order. Put nothing after them.
 
 ## HANDOFF: Verdict
 
@@ -233,6 +233,14 @@ How the work ships, as the Implementer should follow it. Repeat the Planner's li
 ## HANDOFF: Review notes
 
 A short list of the blocking issues, risks, and missing tests you found, and anything the Implementer must watch for. The Implementer receives this as additional context. Write `None.` if there are none.
+
+## HANDOFF: Result
+
+One JSON block that DCTerminal reads. `verdict` is the same as above. `findings` lists the issues you found in the plan, each with its `severity` (`CRITICAL`, `HIGH`, `MEDIUM` or `LOW`), the plan step or `file` it concerns, and a one-sentence `summary`. Use `[]` when there are none. A pipeline on autopilot sends the plan back only for findings at or above its threshold (MEDIUM by default), so rate severity honestly.
+
+```json
+{"verdict": "REQUIRES REVISION", "findings": [{"severity": "MEDIUM", "file": "Step 3", "summary": "The migration has no rollback."}]}
+```
 
 ---
 

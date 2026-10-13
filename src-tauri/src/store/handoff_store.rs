@@ -192,6 +192,10 @@ impl HandoffStore {
         id
     }
 
+    pub fn contains(&self, id: &str) -> bool {
+        self.data.handoffs.iter().any(|item| item.id == id)
+    }
+
     pub fn bind_target(&mut self, id: &str, tab_id: &str) -> Result<HandoffRecord, String> {
         let record = self
             .data

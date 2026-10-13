@@ -10,6 +10,8 @@
  * card or finding becomes a Planner request (or a Developer fix).
  */
 
+import { loopBackTarget, nextChainRoles, type ChainRef } from "./chains";
+
 export type HandoffTargetId = string;
 
 export const HANDOFF_TRANSITIONS: Readonly<Record<string, readonly HandoffTargetId[]>> = {
@@ -51,19 +53,33 @@ export type RoleName = { id: string; name: string; handoffTargets?: readonly str
 
 /**
  * Where a role may hand off: the loaded role's own `handoffTargets` when it
- * has them, else the built-in table. Unknown roles have no targets.
+ * has them, else the built-in table. Unknown roles have no targets. On a
+ * chain, the chain's next role and the role's loop-back target are added,
+ * so a pipeline of your own can use edges the table does not list.
  */
 export function handoffTargets(
   sourceRoleId: string,
   roles?: readonly RoleName[] | null,
+  chain?: ChainRef | null,
 ): HandoffTargetId[] {
   const own = roles?.find((role) => role.id === sourceRoleId)?.handoffTargets;
-  if (own) return own.filter((id) => id !== sourceRoleId);
-  return [...(HANDOFF_TRANSITIONS[sourceRoleId] ?? [])];
+  const targets = own
+    ? own.filter((id) => id !== sourceRoleId)
+    : [...(HANDOFF_TRANSITIONS[sourceRoleId] ?? [])];
+  if (chain) {
+    for (const id of [...nextChainRoles(chain, sourceRoleId), loopBackTarget(sourceRoleId, chain.kind)]) {
+      if (id && id !== sourceRoleId && !targets.includes(id)) targets.push(id);
+    }
+  }
+  return targets;
 }
 
-export function isHandoffSource(sourceRoleId: string, roles?: readonly RoleName[] | null): boolean {
-  return handoffTargets(sourceRoleId, roles).length > 0;
+export function isHandoffSource(
+  sourceRoleId: string,
+  roles?: readonly RoleName[] | null,
+  chain?: ChainRef | null,
+): boolean {
+  return handoffTargets(sourceRoleId, roles, chain).length > 0;
 }
 
 export function isPlanSource(roleId: string): boolean {
@@ -98,8 +114,9 @@ export function roleDisplayName(roleId: string, roles?: readonly RoleName[] | nu
 export function handoffMenuItems(
   sourceRoleId: string,
   roles?: readonly RoleName[] | null,
+  chain?: ChainRef | null,
 ): { target: HandoffTargetId; label: string }[] {
-  return handoffTargets(sourceRoleId, roles).map((target) => ({
+  return handoffTargets(sourceRoleId, roles, chain).map((target) => ({
     target,
     label: `Send to ${roleDisplayName(target, roles)}`,
   }));

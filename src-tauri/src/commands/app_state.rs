@@ -214,18 +214,21 @@ pub fn set_tab_chain(
 /// just opened). Bumps the chain's round and records the verdict. Starts
 /// nothing; the caller sends the follow-up.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri injects each managed state as its own argument.
 pub fn chain_loop_back(
     chain_id: String,
     reviewer_role_id: String,
     tab_id: String,
     verdict: Option<String>,
     handoff_text: Option<String>,
+    lane: Option<String>,
     app: tauri::AppHandle,
     store: State<Mutex<StateStore>>,
 ) -> Result<crate::store::ChainRef, String> {
     let mut store = store.lock().map_err(|e| e.to_string())?;
-    let chain = store.chain_loop_back(
+    let chain = store.chain_loop_back_in(
         chain_id.trim(),
+        lane.as_deref(),
         &reviewer_role_id,
         &tab_id,
         verdict.as_deref(),
@@ -260,7 +263,9 @@ pub fn open_chain_overview(
     })
 }
 
-/// Open a Planner (Eagle-Eye 1) or Implementer (Eagle-Eye 2) draft at step 1.
+/// Open a draft of a pipeline's first stage, tagged as step 1 of a new
+/// chain: Planner for Eagle-Eye 1, Implementer for Eagle-Eye 2, or the first
+/// stage of one of your own pipelines.
 #[tauri::command]
 pub fn start_eagle_eye(
     app: tauri::AppHandle,
@@ -270,26 +275,23 @@ pub fn start_eagle_eye(
     roles: State<Mutex<RolesStore>>,
     store: State<Mutex<StateStore>>,
 ) -> Result<TabDetail, String> {
-    let kind = kind.trim().to_ascii_lowercase();
-    let (role_id, total) = match kind.as_str() {
-        "eagle1" => ("role_planner", 4u32),
-        "eagle2" => ("role_implementer", 2u32),
-        _ => return Err("Eagle-Eye kind must be eagle1 or eagle2.".to_string()),
-    };
+    let def = crate::pipelines::find(kind.trim())
+        .filter(|def| def.id == kind.trim())
+        .ok_or_else(|| format!("unknown pipeline: {}", kind.trim()))?;
+    let kind = def.id.clone();
+    let total = def.stages.len() as u32;
+    let role_id = def.stages[0].role_id.clone();
     let role = {
         let roles = roles.lock().map_err(|e| e.to_string())?;
         roles
-            .role_by_id(role_id)
+            .role_by_id(&role_id)
             .cloned()
             .ok_or_else(|| format!("unknown role: {role_id}"))
     }?;
     let mut store = store.lock().map_err(|e| e.to_string())?;
     store.bind_window(window_id.as_deref());
     let tab_id = store.create_draft_tab(&role, cwd.trim(), true, None)?;
-    let chain_id = format!(
-        "ee_{}",
-        chrono::Utc::now().timestamp_millis()
-    );
+    let chain_id = store.new_chain_id(chrono::Utc::now().timestamp_millis());
     crate::commands::chain_events::set_tab_chain_and_notify(
         &app,
         &mut store,
@@ -300,6 +302,7 @@ pub fn start_eagle_eye(
             step: 1,
             total,
             round: 1,
+            lane: None,
         }),
         None,
     )?;

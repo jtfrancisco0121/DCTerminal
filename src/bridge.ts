@@ -311,6 +311,60 @@ export type PipelineRun = {
   round?: number;
   /** Reviewer verdicts recorded as each round was sent back, oldest first. */
   verdicts?: { roleId: string; round: number; verdict?: string | null; at: string }[];
+  /** The run ledger, oldest first (ADR-014). */
+  events?: RunEvent[];
+  /** Latest gate results per stage id. */
+  gates?: Record<string, { round: number; at: string; results: GateResult[] }>;
+  /** Opt-in autopilot; missing or off means manual. */
+  autopilot?: RunAutopilot | null;
+  /** One lane per pull request once the run fanned out. */
+  lanes?: RunLane[];
+  /** The stage where the lanes start (the Implementer's). */
+  fanOutStage?: string | null;
+};
+
+export type RunLane = {
+  id: string;
+  title: string;
+  dependsOn?: string[];
+  /** `waiting` (for its dependencies), `active`, `approved`. */
+  status: string;
+  stage: string;
+  round: number;
+  tabIds: Record<string, string>;
+  handoffs?: Record<string, { text: string; at: string }>;
+  verdicts?: { roleId: string; round: number; verdict?: string | null; at: string }[];
+};
+
+export type RunEvent = {
+  at: string;
+  /** `handoff`, `loopBack`, `gate`, `autopilot`, `stop`, `complete`, `note`. */
+  kind: string;
+  stageId?: string | null;
+  roleId?: string | null;
+  round: number;
+  summary: string;
+  detail?: string | null;
+};
+
+export type GateResult = {
+  /** `command`, `pullRequest` or `contract`. */
+  kind: string;
+  label: string;
+  /** `passed`, `failed` or `skipped`. */
+  status: string;
+  summary: string;
+  output?: string;
+  durationMs: number;
+};
+
+export type RunAutopilot = {
+  enabled: boolean;
+  /** Why autopilot is waiting for you, if it is. */
+  waiting?: string | null;
+  passedCheckpoints?: string[];
+  reasked?: string[];
+  gateRetries?: Record<string, number>;
 };
 
 export type ClosedTabSummary = {
@@ -412,8 +466,12 @@ export async function chainLoopBack(input: {
   tabId: string;
   verdict: string | null;
   handoffText: string | null;
+  /** The fanned-out pull request whose round goes back. */
+  lane?: string | null;
 }): Promise<import("./handoff/chains").ChainRef> {
-  return invoke("chain_loop_back", input);
+  // `lane` only when there is one: a missing key reads as no lane.
+  const { lane, ...rest } = input;
+  return invoke("chain_loop_back", lane ? { ...rest, lane } : rest);
 }
 
 /** Shows (or opens) the overview tab of an Eagle-Eye chain. Starts nothing. */
@@ -423,9 +481,9 @@ export async function openChainOverview(
   return invoke("open_chain_overview", { chainId, windowId: await windowId() });
 }
 
-/** Opens a Planner (eagle1) or Implementer (eagle2) draft at step 1. */
+/** Opens a draft of the pipeline's first stage (Planner for eagle1), tagged step 1. */
 export async function startEagleEye(
-  kind: "eagle1" | "eagle2",
+  kind: string,
   cwd: string,
 ): Promise<{ tab: TabRecord }> {
   return invoke("start_eagle_eye", { kind, cwd, windowId: await windowId() });
@@ -893,6 +951,105 @@ export function listenChainRunUpdated(
   });
 }
 
+/** Built-in pipelines, then your own (`docs/pipelines`, Settings › Pipelines). */
+export async function pipelineDefsList(): Promise<import("./pipeline/defs").PipelineDef[]> {
+  return invoke("pipeline_defs_list");
+}
+
+/** Replaces your own pipelines. Returns every pipeline. */
+export async function pipelineDefsSave(
+  pipelines: import("./pipeline/defs").PipelineDef[],
+): Promise<import("./pipeline/defs").PipelineDef[]> {
+  return invoke("pipeline_defs_save", { pipelines });
+}
+
+/** Runs a stage's gates in `cwd` (else the run's folder) and keeps the results on the run. */
+export async function pipelineRunGates(
+  runId: string,
+  stageId: string,
+  cwd: string | null,
+  prUrls: string[],
+  lane: string | null = null,
+): Promise<GateResult[]> {
+  return invoke("pipeline_run_gates", { runId, stageId, lane, cwd, prUrls });
+}
+
+/** Splits a run into one lane per pull request at `stageId` (the Implementer's). */
+export async function pipelineFanOut(
+  runId: string,
+  stageId: string,
+  lanes: { id: string; title: string; dependsOn: string[] }[],
+): Promise<void> {
+  return invoke("pipeline_fan_out", { runId, stageId, lanes });
+}
+
+export async function pipelineLaneStatus(
+  runId: string,
+  lane: string,
+  status: "waiting" | "active" | "approved",
+): Promise<void> {
+  return invoke("pipeline_lane_status", { runId, lane, status });
+}
+
+/** What approving a lane (or a run without lanes) by hand did. */
+export type ApproveResult = {
+  /** Every pull request (or the run) is approved: the run is complete. */
+  complete: boolean;
+  /** Waiting lanes whose dependencies are now all approved. */
+  unblocked: string[];
+};
+
+/** Approve a lane by hand, or with `lane` null a run without lanes. */
+export async function pipelineApprove(runId: string, lane: string | null): Promise<ApproveResult> {
+  return invoke("pipeline_approve", { runId, lane });
+}
+
+export async function pipelineSetAutopilot(runId: string, enabled: boolean): Promise<void> {
+  return invoke("pipeline_set_autopilot", { runId, enabled });
+}
+
+/** What a stage's finished turn reported, for the autopilot decision. */
+export type TurnReport = {
+  stageId: string;
+  verdict: string | null;
+  findings: { severity: string; summary: string }[];
+  findingsKnown: boolean;
+  missingSections: string[];
+  usagePercent: number | null;
+  chat: boolean;
+  lane: string | null;
+};
+
+export type AutopilotDecision = {
+  action: "advance" | "loopBack" | "retry" | "reask" | "stop" | "complete" | "laneDone" | "ignore";
+  stageId?: string;
+  roleId?: string;
+  reason: string;
+  message?: string;
+  followUps?: string[];
+  lane?: string;
+  /** `laneDone`: waiting lanes that can start now. */
+  unblocked?: string[];
+};
+
+export async function pipelineDecide(runId: string, report: TurnReport): Promise<AutopilotDecision> {
+  return invoke("pipeline_decide", { runId, report });
+}
+
+/** Adds a line to the run ledger; `stop` also marks autopilot as waiting for you. */
+export async function pipelineNote(
+  runId: string,
+  note: { stageId?: string | null; summary: string; detail?: string | null; stop: boolean },
+): Promise<void> {
+  return invoke("pipeline_note", {
+    runId,
+    stageId: note.stageId ?? null,
+    summary: note.summary,
+    detail: note.detail ?? null,
+    stop: note.stop,
+  });
+}
+
 export async function pipelinePromotePlan(
   runId: string,
   approvedPlan: string,
@@ -1041,8 +1198,23 @@ export async function handoffSave(input: HandoffSaveInput): Promise<HandoffRecor
   return invoke<HandoffRecord>("handoff_save", { input });
 }
 
-export async function handoffBindTab(id: string, tabId: string): Promise<HandoffRecord> {
-  return invoke<HandoffRecord>("handoff_bind_tab", { id, tabId });
+/**
+ * Binds a saved hand-off to the tab it opened and records that tab's chain
+ * step, or the reviewer's loop-back round, in one backend call.
+ */
+export async function handoffAttach(input: {
+  id: string;
+  tabId: string;
+  chain: import("./handoff/chains").ChainRef | null;
+  loopBack: {
+    chainId: string;
+    reviewerRoleId: string;
+    verdict: string | null;
+    lane?: string | null;
+  } | null;
+  handoffText: string | null;
+}): Promise<{ record: HandoffRecord; chain: import("./handoff/chains").ChainRef | null }> {
+  return invoke("handoff_attach", { input });
 }
 
 /** F7: one tab of a saved workspace (no live session). */

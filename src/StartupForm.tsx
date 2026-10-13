@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   acpSetModel,
+  getPipelineRun,
+  type PipelineRun,
+  type RunLane,
   closeTab,
   devSessionCancel,
   getLayout,
@@ -56,7 +59,6 @@ import {
   getAppState,
   getTab,
   getFormRecall,
-  getPipelineRun,
   getRole,
   listenPromptFinished,
   listenSessionUpdates,
@@ -82,10 +84,8 @@ import {
   worktreeTabCheck,
   worktreeTabNew,
   worktreeTabRemove,
-  handoffBindTab,
   handoffGet,
   handoffList,
-  handoffSave,
   ptyWrite,
   roleTerminalStart,
   scratchSave,
@@ -149,15 +149,9 @@ import {
   latestReplyText,
   composePlanText,
   roleDisplayName,
-  mapHandoff,
-  carryChainTaskType,
-  handoffFillSummary,
-  handoffStartProblem,
-  needsChainTaskType,
   selectionInside,
   terminalHandoffInput,
   terminalLogFields,
-  terminalStartMessage,
   type HandoffField,
   type HandoffScope,
   type HandoffSource,
@@ -202,14 +196,20 @@ import { PromptLibraryDialog } from "./components/PromptLibraryDialog";
 import { WorkspacesDialog } from "./components/WorkspacesDialog";
 import { FirstRunSetup, type FirstRunFinish } from "./components/FirstRunSetup";
 import { insertIntoPad, type PadSelection } from "./prompts/library";
+import { startQueue } from "./terminal/startQueue";
 import {
-  advanceChain,
   chainRound,
   chainTabFor,
   loopBackChain,
+  loopBackRecord,
   newChain,
 } from "./handoff/chains";
-import { handoffRoute, loopBackFindings, loopBackMessage } from "./handoff/routing";
+import { handoffRoute, loopBackMessage } from "./handoff/routing";
+import { attachHandoff, handoffFieldsOf, prepareHandoff, saveHandoff } from "./handoff/executor";
+import { pipelineDef, pipelineStages } from "./pipeline/defs";
+import { useAutopilot } from "./pipeline/useAutopilot";
+import { terminalStageSource } from "./pipeline/autopilot";
+import { approveByHand, fanOutRun, planStageFor, stageTab, startLane } from "./pipeline/fanOut";
 import {
   isReviewerRole,
   parseReviewVerdict,
@@ -378,17 +378,6 @@ import {
   segmentsToPlainText,
 } from "./transcript";
 
-function handoffFieldsOf(role: Role): HandoffField[] {
-  return role.fields.map((field) => ({
-    key: field.key,
-    label: field.label,
-    type: field.type,
-    options: field.options,
-    required: field.required,
-    showWhen: field.showWhen ?? null,
-  }));
-}
-
 /** A role terminal running Claude Code (not Cursor CLI, not a shell). */
 function isClaudeRoleTerminal(tab: TabSummary): boolean {
   return tab.kind === "terminal" && tab.terminalLaunch === "role" && tab.provider !== "cursor";
@@ -441,6 +430,8 @@ type Props = {
   /** F8: re-run CLI detection (App keeps the result). */
   onRedetectCli?: () => Promise<CliDetectResult>;
   onRefreshRoles?: () => Promise<void>;
+  /** Your own pipelines were saved (Settings › Pipelines). */
+  onPipelinesChanged?: () => void;
 };
 
 export function StartupForm({
@@ -452,6 +443,7 @@ export function StartupForm({
   showDevTools,
   onRedetectCli,
   onRefreshRoles,
+  onPipelinesChanged,
 }: Props) {
   const [roleId, setRoleId] = useState("role_implementer");
   const [role, setRole] = useState<Role | null>(null);
@@ -1246,6 +1238,10 @@ export function StartupForm({
     return () => window.clearInterval(timer);
   }, [hasTerminalTabs, isWatchingTab, notifyAgent]);
 
+  /** Autopilot sees every fresh session log (set once the hook exists). */
+  const autopilotLogRef = useRef<((tabId: string, log: TerminalSessionLog | null) => void) | null>(
+    null,
+  );
   const storeSessionLog = useCallback(
     /** `readAt`: when the read started, so a read older than a dialog is not used for it. */
     (tabId: string, log: TerminalSessionLog | null, readAt: number) => {
@@ -1293,6 +1289,7 @@ export function StartupForm({
       setDialogOwner(tabId, next.owner);
       // Mid-turn, the next call's dialog may be half drawn already.
       if (next.clear) dialogDetector.clear(tabId, { keepPartial: !!log && !log.turnDone });
+      autopilotLogRef.current?.(tabId, log);
       if (prev !== undefined && sameSessionLog(prev, log)) return;
       sessionLogsRef.current = { ...sessionLogsRef.current, [tabId]: log };
       setSessionLogs(sessionLogsRef.current);
@@ -2060,17 +2057,29 @@ export function StartupForm({
 
   /** Terminals whose startup prompt was too long to pass inline and went through a file. */
   const [promptFileTabs, setPromptFileTabs] = useState<string[]>([]);
-  const startRoleTerminal = useCallback(
+  /** Quiet starts wait their turn here instead of failing on a start in progress. */
+  const quietStarts = useMemo(() => startQueue(() => startLockRef.current), []);
+  const startRoleTerminalNow = useCallback(
     async (options?: {
       roleId: string;
       values: Record<string, string>;
       tabId?: string | null;
       handoffPlan?: string | null;
+      /** Autopilot: keep the current tab on screen and throw errors instead of showing them. */
+      quiet?: boolean;
     }) => {
-      if (startLockRef.current) return null;
+      const quiet = !!options?.quiet;
+      if (startLockRef.current) {
+        // Unreachable for quiet starts: startQueue waits for the lock.
+        if (quiet) throw new Error("Another tab is starting. Try again when it has started.");
+        setTerminalError("Another tab is starting. Try again in a moment.");
+        return null;
+      }
       startLockRef.current = true;
-      setBusy(true);
-      setTerminalError(null);
+      if (!quiet) {
+        setBusy(true);
+        setTerminalError(null);
+      }
       const roleToStart = options?.roleId ?? roleId;
       const form = options?.values ?? formValues;
       const preferred = options && "tabId" in options ? options.tabId : activeTabId;
@@ -2087,13 +2096,12 @@ export function StartupForm({
         });
         if (result.errors.length > 0 || !result.tabId) {
           dropLivePty(pendingId);
-          setPreview({
-            errors:
-              result.errors.length > 0
-                ? result.errors
-                : [{ key: "_session", message: "Terminal did not start" }],
-            merged: null,
-          });
+          const errors =
+            result.errors.length > 0
+              ? result.errors
+              : [{ key: "_session", message: "Terminal did not start" }];
+          if (quiet) throw new Error(errors.map((err) => err.message).join(" "));
+          setPreview({ errors, merged: null });
           return null;
         }
         if (result.tabId !== pendingId) rekeyLivePty(pendingId, result.tabId);
@@ -2101,8 +2109,10 @@ export function StartupForm({
           const fileTab = result.tabId;
           setPromptFileTabs((prev) => (prev.includes(fileTab) ? prev : [...prev, fileTab]));
         }
-        setActiveTabId(result.tabId);
-        setPreview(null);
+        if (!quiet) {
+          setActiveTabId(result.tabId);
+          setPreview(null);
+        }
         if (
           !options &&
           eagleOnRef.current &&
@@ -2117,16 +2127,131 @@ export function StartupForm({
         return result.tabId;
       } catch (err: unknown) {
         dropLivePty(pendingId);
+        if (quiet) throw err;
         const message = errorText(err);
         setTerminalError(message);
         return null;
       } finally {
         startLockRef.current = false;
-        setBusy(false);
+        if (!quiet) setBusy(false);
       }
     },
     [activeTabId, formValues, refreshTabs, roleId],
   );
+  const startRoleTerminal = useCallback(
+    (options?: Parameters<typeof startRoleTerminalNow>[0]) =>
+      options?.quiet ? quietStarts(() => startRoleTerminalNow(options)) : startRoleTerminalNow(options),
+    [quietStarts, startRoleTerminalNow],
+  );
+
+  /** Starts a lane's role terminal in its own (worktree) draft tab, without taking focus. */
+  const laneStartTerminal = useCallback(
+    (tabId: string, laneRoleId: string, laneValues: Record<string, string>, plan: string | null) =>
+      startRoleTerminal({ roleId: laneRoleId, values: laneValues, tabId, handoffPlan: plan, quiet: true }),
+    [startRoleTerminal],
+  );
+  const startLaneOf = useCallback(
+    async (run: PipelineRun, lane: RunLane) => {
+      const laneRole =
+        pipelineStages(run.kind).find((stage) => stage.id === run.fanOutStage)?.roleId ??
+        "role_implementer";
+      return startLane(run, lane, laneRole, { startTerminal: laneStartTerminal, refreshTabs });
+    },
+    [laneStartTerminal, refreshTabs],
+  );
+  /** A stage tab's hand-off source outside the dialog: a Claude terminal's log, or a chat's reply. */
+  const stageSourceOf = useCallback(
+    async (tab: TabSummary): Promise<HandoffSource> => {
+      const answers = await getTab(tab.id)
+        .then(({ tab: record }) => ({ ...record.answers }))
+        .catch(() => ({ cwd: tab.cwd }));
+      if (tab.kind === "terminal") {
+        const log =
+          sessionLogsRef.current[tab.id] ?? (await terminalSessionLog(tab.id).catch(() => null));
+        return terminalStageSource({
+          tab,
+          log,
+          answers,
+          tail: terminalTailText(tab.id),
+          roles,
+          awaitingPlan: false,
+        });
+      }
+      const segments = runtimesRef.current[tab.id]?.segments ?? [];
+      return {
+        sourceRoleId: tab.roleId,
+        sourceTabId: tab.id,
+        sourceLabel: tab.label || roleDisplayName(tab.roleId, roles),
+        cwd: tab.cwd,
+        answers,
+        latestMessage:
+          tab.roleId === "role_implementer" ? latestAgentMessage(segments) : latestReplyText(segments),
+        plan: [],
+        todos: [],
+        selection: "",
+        turnInFlight: !!runtimesRef.current[tab.id]?.promptInFlight,
+        transcriptText: segments.map((segment) => segment.text).join("\n"),
+      };
+    },
+    [roles],
+  );
+  /** Overview › Fan out: one Implementer per pull request in the plan stage's reply. */
+  const fanOutRunOf = useCallback(
+    async (runId: string) => {
+      const { run } = await getPipelineRun(runId);
+      const def = pipelineDef(run.kind);
+      const fanStage = def?.stages.find((stage) => stage.roleId === "role_implementer");
+      const planStage = def && fanStage ? planStageFor(def, fanStage) : null;
+      const planTab = planStage ? stageTab(run, planStage, savedTabsRef.current) : null;
+      if (!fanStage || !planTab?.chain) {
+        throw new Error("Fan out needs this run's plan stage tab (the stage before the Implementer) to be open.");
+      }
+      const source = await stageSourceOf(planTab);
+      const result = await fanOutRun(
+        { run, stage: fanStage, source, sourceChain: planTab.chain },
+        { startTerminal: laneStartTerminal, syncForm: syncActiveTabForm, refreshTabs, roles },
+      );
+      showNotice(
+        "Fanned out",
+        `Started ${result.started.length} pull request${result.started.length === 1 ? "" : "s"}` +
+          (result.waiting.length ? `; ${result.waiting.length} wait for the ones they build on.` : "."),
+      );
+    },
+    [laneStartTerminal, refreshTabs, roles, showNotice, stageSourceOf],
+  );
+  const startLaneById = useCallback(
+    async (runId: string, laneId: string) => {
+      const { run } = await getPipelineRun(runId);
+      const lane = run.lanes?.find((item) => item.id === laneId);
+      if (!lane) throw new Error(`No lane ${laneId} on this run.`);
+      if (!(await startLaneOf(run, lane))) throw new Error(`${lane.title} is not waiting to start.`);
+    },
+    [startLaneOf],
+  );
+  /**
+   * Overview › Mark approved (a lane) or Mark complete (`laneId` null, a run
+   * without lanes): approve it by hand, then start the lanes it unblocks.
+   */
+  const approveLaneById = useCallback(
+    async (runId: string, laneId: string | null) => {
+      if (await approveByHand(runId, laneId, startLaneOf)) showNotice("Run complete", "Approved by you.");
+    },
+    [showNotice, startLaneOf],
+  );
+
+  const autopilot = useAutopilot({
+    tabs: () => savedTabsRef.current,
+    roles: () => roles,
+    terminalState: (tabId) => terminalStatesRef.current[tabId],
+    startTerminal: (options) =>
+      startRoleTerminal({ ...options, tabId: null, quiet: true }),
+    refreshTabs,
+    notifyStop: (tabId, reason) => notifyAgent(tabId, { kind: "question", detail: `Autopilot: ${reason}` }),
+    notice: (title, body) => showNotice(title, body),
+    startLane: startLaneOf,
+    sessionLog: (tabId) => sessionLogsRef.current[tabId],
+  });
+  autopilotLogRef.current = autopilot.onTerminalLog;
 
   const startBlankTerminal = useCallback(
     async (launch: "shell" | CliLaunch) => {
@@ -3531,10 +3656,14 @@ export function StartupForm({
 
   /** Role terminal that can hand off: a plan, a report, a review, or finished work (selection or tail). */
   const isTerminalSource = (tab: TabSummary | null | undefined): boolean =>
-    tab?.kind === "terminal" && tab.terminalLaunch === "role" && isHandoffSource(tab.roleId, roles);
+    tab?.kind === "terminal" &&
+    tab.terminalLaunch === "role" &&
+    isHandoffSource(tab.roleId, roles, tab.chain ?? null);
   const isPlanTerminal = isTerminalSource(activeTabSummary);
   const planTerminalTargets: HandoffTargetId[] =
-    isPlanTerminal && activeTabSummary ? handoffTargets(activeTabSummary.roleId, roles) : [];
+    isPlanTerminal && activeTabSummary
+      ? handoffTargets(activeTabSummary.roleId, roles, activeTabSummary.chain ?? null)
+      : [];
 
   /**
    * Reads a reviewer terminal's verdict: the session log's last reply, else
@@ -3788,7 +3917,7 @@ export function StartupForm({
           )
         : parseReviewVerdict(handoffSource.latestMessage)
       : null;
-  const offerTargets = handoffTargets(roleId, roles);
+  const offerTargets = handoffTargets(roleId, roles, activeTabSummary?.chain ?? null);
   const offerRoute = handoffRoute({
     sourceRoleId: roleId,
     targets: offerTargets,
@@ -3797,7 +3926,7 @@ export function StartupForm({
     roles,
   });
   const handoffOffer =
-    session && isHandoffSource(roleId, roles)
+    session && isHandoffSource(roleId, roles, activeTabSummary?.chain ?? null)
       ? {
           enabled: handoffBlock === null,
           reason: handoffBlock,
@@ -3925,13 +4054,9 @@ export function StartupForm({
           setTerminalCapture(null);
           setHandoffTarget(null);
           try {
-            await chainLoopBack({
-              chainId: loop.chain.chainId,
-              reviewerRoleId: handoffSource.sourceRoleId,
-              tabId: targetTab.id,
-              verdict: sourceVerdict,
-              handoffText: text,
-            });
+            await chainLoopBack(
+              loopBackRecord(loop.chain, handoffSource.sourceRoleId, targetTab.id, sourceVerdict, text),
+            );
           } catch (err: unknown) {
             showNotice(
               "Round not recorded",
@@ -3949,122 +4074,37 @@ export function StartupForm({
         }
         return;
       }
-      let source = handoffSource;
-      const planFile = terminalCapture?.planFile;
-      if (source.fromTerminal && scope === "plan_file" && planFile) {
-        // The plan may have been edited since the dialog opened.
-        const fresh = await terminalPlanFile(0, source.sourceTabId, {
-          mentioned: [planFile.name],
-          claimed: [],
-          // intentionally silent: falls back to the plan text captured earlier.
-        }).catch(() => null);
-        if (fresh?.path === planFile.path && fresh.text.trim()) {
-          source = { ...source, planFileText: fresh.text };
-        }
-      }
-      if (source.sourceRoleId === "role_implementer") {
-        const chainId = savedTabs.find((tab) => tab.id === source.sourceTabId)?.chain?.chainId;
-        // intentionally silent: each lookup only enriches the hand-off; it works without them.
-        const [changes, repo, run] = await Promise.all([
-          changesList(source.sourceTabId, "tab").catch(() => null),
-          gitRepoInfo(source.cwd).catch(() => null),
-          chainId ? getPipelineRun(chainId).catch(() => null) : Promise.resolve(null),
-        ]);
-        // A send-back from the PR Reviewer: the next review checks those findings.
-        const sentBack = loopBackFindings(run?.run.handoffs?.role_implementer?.text ?? "");
-        source = {
-          ...source,
-          changes:
-            changes?.state === "ok"
-              ? changes.files.map((file) => ({
-                  path: file.path,
-                  additions: file.additions,
-                  deletions: file.deletions,
-                }))
-              : source.changes,
-          branch: repo?.currentBranch ?? source.branch ?? null,
-          previousReview: sentBack ? { round: sentBack.round, findings: sentBack.findings } : null,
-        };
-      }
-      // Settings can stay open over the dialog: map onto the role as saved now.
-      // intentionally silent: falls back to the role fields loaded with the dialog.
-      const saved = await getRole(handoffTarget).catch(() => null);
-      const fields = saved ? handoffFieldsOf(saved) : (handoffFields ?? []);
-      const templateText = saved ? saved.templateText : handoffTemplate;
-      const target = { roleId: handoffTarget, fields };
-      let mapped = mapHandoff(source, scope, target);
-      if (!mapped.planText) {
-        setHandoffError(mapped.warning ?? "That choice has no content.");
-        return;
-      }
       setBusy(true);
       setHandoffError(null);
       try {
         const sourceTab = savedTabs.find((tab) => tab.id === handoffSource.sourceTabId);
-        // A loop-back whose tab is gone or not live opens a new tab on the chain.
-        const nextChain =
-          loop?.next ??
-          (sourceTab?.chain
-            ? advanceChain(sourceTab.chain, handoffSource.sourceRoleId, handoffTarget)
-            : null);
-        if (nextChain && needsChainTaskType(mapped, target)) {
-          // Plan Reviewer has no task type; the chain's Planner form does.
-          // intentionally silent: without it the task type is simply not carried over.
-          const view = await getPipelineRun(nextChain.chainId).catch(() => null);
-          mapped = carryChainTaskType(mapped, target, view?.taskType);
-        }
-        if (surface === "terminal") {
-          // A terminal starts the CLI at once, so its prompt must be complete:
-          // the form summary names what the hand-off left empty, then the
-          // backend validates exactly what will be sent.
-          const targetName = roleDisplayName(handoffTarget, roles);
-          let problem = handoffStartProblem(
-            handoffFillSummary(mapped, { ...target, templateText }),
-            targetName,
-          );
-          if (!problem) {
-            // intentionally silent: the backend validates again when the terminal starts.
-            const check = await validateAndPreview(handoffTarget, {
-              ...terminalHandoffInput(mapped).values,
-              cwd: handoffSource.cwd,
-            }).catch(() => null);
-            problem = terminalStartMessage(
-              targetName,
-              (check?.errors ?? []).filter((err) => err.key !== "cwd").map((err) => err.message),
-            );
-          }
-          if (problem) {
-            setHandoffError(problem);
-            return;
-          }
-        }
-        const tagChain = async (tabId: string) => {
-          if (loop) {
-            await chainLoopBack({
-              chainId: loop.chain.chainId,
-              reviewerRoleId: handoffSource.sourceRoleId,
-              tabId,
-              verdict: sourceVerdict,
-              handoffText: mapped.planText,
-            });
-          } else if (nextChain) {
-            await setTabChain(tabId, nextChain, mapped.planText);
-          }
-        };
-        const saved = await handoffSave({
-          sourceTabId: handoffSource.sourceTabId,
-          sourceRoleId: handoffSource.sourceRoleId,
-          sourceLabel: handoffSource.sourceLabel,
-          targetRoleId: handoffTarget,
-          title: mapped.title,
-          cwd: handoffSource.cwd,
+        const loopStep = loop ? { chainId: loop.chain.chainId, next: loop.next } : null;
+        const prepared = await prepareHandoff({
+          source: handoffSource,
           scope,
-          planText: mapped.planText,
-          truncated: mapped.truncated,
-          warning: mapped.warning,
-          planField: mapped.planField,
-          chain: nextChain,
+          surface,
+          targetRoleId: handoffTarget,
+          sourceChain: sourceTab?.chain ?? null,
+          loopBack: loopStep,
+          planFile: terminalCapture?.planFile ?? null,
+          fallbackFields: handoffFields,
+          fallbackTemplate: handoffTemplate,
+          roles,
         });
+        if (!prepared.ok) {
+          setHandoffError(prepared.error);
+          return;
+        }
+        const { mapped } = prepared.value;
+        const saved = await saveHandoff(prepared.value, scope);
+        const attach = (tabId: string) =>
+          attachHandoff({
+            record: saved,
+            tabId,
+            prepared: prepared.value,
+            loopBack: loopStep,
+            verdict: sourceVerdict,
+          });
         await cancelPendingPlan();
         const nextValues = { ...mapped.answers, cwd: handoffSource.cwd };
         const sourceProvider = providerOf(sourceTab ?? null);
@@ -4082,8 +4122,7 @@ export function StartupForm({
             return;
           }
           await setTabProvider(tabId, sourceProvider);
-          await tagChain(tabId);
-          const bound = await handoffBindTab(saved.id, tabId);
+          const bound = await attach(tabId);
           if (mapped.usesScratchPad) {
             scratch.setContent(tabId, mapped.inlinePlan);
             await scratchSave(tabId, mapped.inlinePlan, []);
@@ -4096,9 +4135,8 @@ export function StartupForm({
         stashActiveTab();
         const { tab } = await newDraftTab(handoffTarget, handoffSource.cwd);
         await setTabProvider(tab.id, sourceProvider);
-        await tagChain(tab.id);
+        const bound = await attach(tab.id);
         await syncActiveTabForm(tab.id, handoffTarget, handoffSource.cwd, nextValues);
-        const bound = await handoffBindTab(saved.id, tab.id);
         if (mapped.usesScratchPad) {
           scratch.setContent(tab.id, mapped.inlinePlan);
           await scratchSave(tab.id, mapped.inlinePlan, []);
@@ -4244,29 +4282,9 @@ export function StartupForm({
         openHandoffDialog("role_pr_reviewer");
         return;
       case "startEagleEye1":
-      case "startEagleEye2": {
-        const kind = id === "startEagleEye1" ? "eagle1" : "eagle2";
-        const cwd = activeTabSummary?.cwd || values.cwd || "";
-        if (!cwd.trim()) {
-          showNotice("Pick a folder first", "Eagle-Eye starts in the current tab's folder.", "question");
-          return;
-        }
-        setBusy(true);
-        startEagleEye(kind, cwd)
-          .then(async ({ tab }) => {
-            setActiveTabId(tab.id);
-            await refreshTabs();
-          })
-          .catch((err: unknown) => {
-            showNotice(
-              "Eagle-Eye",
-              errorText(err),
-              "failed",
-            );
-          })
-          .finally(() => setBusy(false));
+      case "startEagleEye2":
+        startPipeline(id === "startEagleEye1" ? "eagle1" : "eagle2");
         return;
-      }
       case "openChainOverview":
         if (activeTabSummary?.chain) void openChainOverviewTab(activeTabSummary.chain.chainId);
         return;
@@ -4498,6 +4516,26 @@ export function StartupForm({
     }
   };
 
+  /** A draft of the pipeline's first stage, tagged step 1, in the current tab's folder. */
+  const startPipeline = (kind: string) => {
+    const cwd = activeTabSummary?.cwd || values.cwd || "";
+    const name = pipelineDef(kind)?.name ?? "The pipeline";
+    if (!cwd.trim()) {
+      showNotice("Pick a folder first", `${name} starts in the current tab's folder.`, "question");
+      return;
+    }
+    setBusy(true);
+    startEagleEye(kind, cwd)
+      .then(async ({ tab }) => {
+        setActiveTabId(tab.id);
+        await refreshTabs();
+      })
+      .catch((err: unknown) => {
+        showNotice(name, errorText(err), "failed");
+      })
+      .finally(() => setBusy(false));
+  };
+
   const runPalette = (id: string) => {
     setPaletteOpen(false);
     const route = parsePaletteId(id);
@@ -4512,6 +4550,10 @@ export function StartupForm({
     }
     if (route.kind === "handoff") {
       openHandoffDialog(route.roleId);
+      return;
+    }
+    if (route.kind === "pipeline") {
+      startPipeline(route.pipelineId);
       return;
     }
     runPaletteAction(route.id);
@@ -4731,6 +4773,7 @@ export function StartupForm({
       modelSettings={modelSettings}
       providers={providers}
       onRefreshRoles={onRefreshRoles}
+      onPipelinesChanged={onPipelinesChanged}
       onModelSettings={(provider, next) => {
         setModelSettingsState((current) =>
           current
@@ -5170,7 +5213,11 @@ export function StartupForm({
           gridOpen={gridOpen(split)}
           canAddToGrid={gridCandidates.length > 0 && (!gridOpen(split) || (split.gridTabIds?.length ?? 0) < GRID_MAX_TABS)}
           canSendPlan={(isCaptureSource(roleId) && !!session) || !!isPlanTerminal}
-          sendPlanTargets={isPlanTerminal ? planTerminalTargets : handoffTargets(roleId, roles)}
+          sendPlanTargets={
+            isPlanTerminal
+              ? planTerminalTargets
+              : handoffTargets(roleId, roles, activeTabSummary?.chain ?? null)
+          }
           handoffTargets={(isPlanTerminal ? planTerminalTargets : (handoffOffer?.targets ?? [])).map(
             (id) => ({ id, name: roleDisplayName(id, roles) }),
           )}
@@ -5250,6 +5297,7 @@ export function StartupForm({
           busy={busy}
           error={handoffError}
           loopBack={handoffLoopBack?.target ?? null}
+          chain={savedTabs.find((tab) => tab.id === handoffSource.sourceTabId)?.chain ?? null}
           chainFillsTaskType={
             !!savedTabs.find((tab) => tab.id === handoffSource.sourceTabId)?.chain
           }
@@ -5545,6 +5593,10 @@ export function StartupForm({
           }}
           onRefreshTabs={refreshTabs}
           onNotice={(title, body) => showNotice(title, body)}
+          onFanOut={fanOutRunOf}
+          onStartLane={startLaneById}
+          onApproveLane={approveLaneById}
+          onApproveRun={(runId) => approveLaneById(runId, null)}
         />
       </section>,
     );

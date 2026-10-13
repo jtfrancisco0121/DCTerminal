@@ -451,6 +451,87 @@ export function installTauriMock(config: MockConfig): void {
       return null;
     },
 
+    // Pipelines (commands/pipeline.rs). Built-ins are bundled in the UI.
+    pipeline_defs_list: () => clone(state.pipelineDefs ?? []),
+    pipeline_defs_save: (a) => {
+      state.pipelineDefs = clone(a.pipelines);
+      return clone(state.pipelineDefs);
+    },
+    pipeline_set_autopilot: (a) => {
+      const run = findRun(a.runId);
+      if (!run) throw new Error(`unknown pipeline run: ${a.runId}`);
+      run.autopilot = { ...(run.autopilot ?? {}), enabled: a.enabled, waiting: null };
+      return null;
+    },
+    pipeline_run_gates: (a) => {
+      const run = findRun(a.runId);
+      if (!run) throw new Error(`unknown pipeline run: ${a.runId}`);
+      const results = clone(state.gateResults?.[a.stageId] ?? []);
+      run.gates = { ...(run.gates ?? {}), [a.stageId]: { round: run.round ?? 1, at: now(), results } };
+      return results;
+    },
+    pipeline_decide: () => ({ action: "stop", reason: "e2e mock: no autopilot decision" }),
+    pipeline_fan_out: (a) => {
+      const run = findRun(a.runId);
+      if (!run) throw new Error(`unknown pipeline run: ${a.runId}`);
+      run.lanes = a.lanes.map((lane: Json) => ({
+        ...lane,
+        status: lane.dependsOn.length ? "waiting" : "active",
+        stage: a.stageId,
+        round: 1,
+        tabIds: {},
+      }));
+      run.fanOutStage = a.stageId;
+      return null;
+    },
+    pipeline_lane_status: (a) => {
+      const lane = findRun(a.runId)?.lanes?.find((l: Json) => l.id === a.lane);
+      if (!lane) throw new Error(`unknown lane: ${a.lane}`);
+      lane.status = a.status;
+      return null;
+    },
+    pipeline_approve: (a) => {
+      const run = findRun(a.runId);
+      if (!run) throw new Error(`unknown pipeline run: ${a.runId}`);
+      const lanes: Json[] = run.lanes ?? [];
+      const log = (kind: string, summary: string) => {
+        run.events = [...(run.events ?? []), { at: now(), kind, round: run.round ?? 1, summary }];
+      };
+      if (a.lane) {
+        const lane = lanes.find((l) => l.id === a.lane);
+        if (!lane) throw new Error(`unknown lane: ${a.lane}`);
+        if (lane.status === "approved") return { complete: false, unblocked: [] };
+        lane.status = "approved";
+        log("note", `${lane.title}: approved by you`);
+      } else {
+        if (lanes.length) throw new Error("This run has pull requests: mark each one approved instead.");
+        const stages = PIPELINE_STAGES[run.kind];
+        const last = stages?.[stages.length - 1]?.[0];
+        if (stages && run.stage !== last) {
+          throw new Error(`Mark complete is for the last stage; this run is at ${run.stage}.`);
+        }
+        log("note", "Approved by you");
+      }
+      if (run.autopilot) run.autopilot.waiting = null;
+      const approved = (id: string) => lanes.find((l) => l.id === id)?.status === "approved";
+      const complete = lanes.every((l) => l.status === "approved");
+      if (complete) log("complete", "Complete: approved by you.");
+      const unblocked = complete
+        ? []
+        : lanes.filter((l) => l.status === "waiting" && (l.dependsOn ?? []).every(approved)).map((l) => l.id);
+      return { complete, unblocked };
+    },
+    pipeline_note: (a) => {
+      const run = findRun(a.runId);
+      if (run) {
+        run.events = [
+          ...(run.events ?? []),
+          { at: now(), kind: a.stop ? "stop" : "note", stageId: a.stageId, round: run.round ?? 1, summary: a.summary },
+        ];
+      }
+      return null;
+    },
+
     handoff_list: () => clone(state.handoffs),
     handoff_save: (a) => {
       const rec = {
@@ -748,6 +829,39 @@ export function installTauriMock(config: MockConfig): void {
   afterCall("dev_session_stop", (a) => {
     if (a.tabId) chainRunUpdated(overviewRunForTab(a.tabId));
   });
+  // commands/handoff.rs handoff_attach: the chain step (or loop-back) and the
+  // hand-off binding in one call. It records each step under the command the
+  // app used to call for it, so specs keep asserting the same data.
+  defaults.handoff_attach = (a, s) => {
+    const input = a.input as Json;
+    if (!state.handoffs.some((h: Json) => h.id === input.id)) {
+      throw new Error(`unknown hand-off: ${input.id}`);
+    }
+    if (!findTab(input.tabId)) throw new Error(`unknown tab: ${input.tabId}`);
+    const step = (cmd: string, args: Json) => {
+      calls.push({ cmd, args: clone(args) });
+      return defaults[cmd](args, s);
+    };
+    let chain: Json = null;
+    if (input.loopBack) {
+      chain = step("chain_loop_back", {
+        chainId: input.loopBack.chainId,
+        reviewerRoleId: input.loopBack.reviewerRoleId,
+        tabId: input.tabId,
+        verdict: input.loopBack.verdict ?? null,
+        handoffText: input.handoffText ?? null,
+      });
+    } else if (input.chain) {
+      step("set_tab_chain", {
+        tabId: input.tabId,
+        chain: input.chain,
+        handoffText: input.handoffText ?? null,
+      });
+      chain = clone(input.chain);
+    }
+    const record = step("handoff_bind_tab", { id: input.id, tabId: input.tabId });
+    return { record, chain };
+  };
   afterCall("get_pipeline_run", (_a, out) => {
     const first = PIPELINE_STAGES[out.run.kind]?.[0]?.[1];
     const tabId = first ? out.run.tabIds[first] : null;
