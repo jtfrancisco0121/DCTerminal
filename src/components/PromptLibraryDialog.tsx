@@ -1,15 +1,30 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { PromptLibrary } from "../bridge";
 import { defaultPromptName, filterPrompts } from "../prompts/library";
+import {
+  REPLY_TEMPLATES,
+  REPLY_TEMPLATE_ROLE_LABELS,
+  replyTemplateRoleOrder,
+  whenParts,
+  type ReplyTemplateRole,
+} from "../prompts/replyTemplates";
 import { Dialog } from "./Dialog";
 import { InlineNotice, errorText } from "./InlineNotice";
 import { useConfirm } from "./confirm";
 
-type View = "saved" | "recent";
+export type PromptLibraryView = "saved" | "recent" | "templates";
 
 type Form = { id: string | null; name: string; body: string };
 
-type Item = { key: string; title: string; body: string; promptId: string | null; meta: string };
+type Item = {
+  key: string;
+  title: string;
+  body: string;
+  promptId: string | null;
+  meta: string;
+  /** Set on built-in reply templates (read-only). */
+  template?: { roleId: ReplyTemplateRole; when: string };
+};
 
 type Props = {
   /** null while the library is loading. */
@@ -19,6 +34,10 @@ type Props = {
   canInsert: boolean;
   /** Open straight into "Save as prompt" with this text (the scratch pad). */
   saveDraft?: string | null;
+  /** Starting list; Saved unless a caller asks for another (e.g. "Reply templates…"). */
+  initialView?: PromptLibraryView;
+  /** The active tab's role: its reply templates are listed first. */
+  roleId?: string | null;
   onInsert: (text: string, promptId: string | null) => void;
   /** Rejects with a message the dialog shows (e.g. duplicate name). */
   onSave: (id: string | null, name: string, body: string) => Promise<void>;
@@ -40,12 +59,25 @@ function when(iso: string): string {
 
 const message = errorText;
 
-/** F6: saved named prompts and recent sends; insert into the scratch pad. */
+/** A "use when" line, with its backtick spans shown as inline code. */
+function WhenLine({ when }: { when: string }) {
+  return (
+    <span className="hint prompt-library-when">
+      {whenParts(when).map((part, i) =>
+        part.code ? <code key={i}>{part.text}</code> : <span key={i}>{part.text}</span>,
+      )}
+    </span>
+  );
+}
+
+/** F6: saved prompts, recent sends and built-in reply templates; insert into the scratch pad. */
 export function PromptLibraryDialog({
   library,
   loadError = null,
   canInsert,
   saveDraft = null,
+  initialView = "saved",
+  roleId = null,
   onInsert,
   onSave,
   onDelete,
@@ -53,7 +85,7 @@ export function PromptLibraryDialog({
   onClose,
 }: Props) {
   const confirm = useConfirm();
-  const [view, setView] = useState<View>("saved");
+  const [view, setView] = useState<PromptLibraryView>(initialView);
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
   const [form, setForm] = useState<Form | null>(() =>
@@ -64,7 +96,27 @@ export function PromptLibraryDialog({
   const filterRef = useRef<HTMLInputElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
 
+  const roleOrder = useMemo(() => replyTemplateRoleOrder(roleId), [roleId]);
+
   const items: Item[] = useMemo(() => {
+    if (view === "templates") {
+      const matches = filterPrompts(
+        REPLY_TEMPLATES.map((t) => ({ ...t, name: t.title })),
+        query,
+      );
+      return roleOrder.flatMap((role) =>
+        matches
+          .filter((t) => t.roleId === role)
+          .map((t) => ({
+            key: t.id,
+            title: t.title,
+            body: t.body,
+            promptId: null,
+            meta: "",
+            template: { roleId: t.roleId, when: t.when },
+          })),
+      );
+    }
     if (!library) return [];
     if (view === "saved") {
       return filterPrompts(library.prompts, query).map((p) => ({
@@ -82,7 +134,7 @@ export function PromptLibraryDialog({
       promptId: null,
       meta: `${r.source === "terminal" ? "terminal" : "chat"} · ${when(r.sentAt)}`,
     }));
-  }, [library, query, view]);
+  }, [library, query, view, roleOrder]);
 
   const current = items[Math.min(index, items.length - 1)] ?? null;
 
@@ -151,7 +203,50 @@ export function PromptLibraryDialog({
 
   const savedCount = library?.prompts.length ?? 0;
   const recentCount = library?.recent.length ?? 0;
-  const listLabel = view === "saved" ? "Saved prompts" : "Recent sends";
+  const listLabel =
+    view === "saved" ? "Saved prompts" : view === "recent" ? "Recent sends" : "Reply templates";
+  const placeholder =
+    view === "saved"
+      ? "Filter saved prompts"
+      : view === "recent"
+        ? "Filter recent sends"
+        : "Filter reply templates";
+
+  const renderItem = (item: Item, i: number) => (
+    <li
+      key={item.key}
+      role="option"
+      aria-selected={item === current}
+      className={item === current ? "prompt-library-item active" : "prompt-library-item"}
+      onClick={() => setIndex(i)}
+      onDoubleClick={() => insert(item)}
+    >
+      <span className="prompt-library-name">{item.title}</span>
+      {item.template ? (
+        <WhenLine when={item.template.when} />
+      ) : (
+        item.meta && <span className="hint">{item.meta}</span>
+      )}
+    </li>
+  );
+
+  /** Templates render under role headings; `items` is already in that order. */
+  const renderTemplateGroups = () =>
+    roleOrder.map((role) => {
+      const inGroup = items
+        .map((item, i) => ({ item, i }))
+        .filter(({ item }) => item.template?.roleId === role);
+      if (inGroup.length === 0) return null;
+      const label = REPLY_TEMPLATE_ROLE_LABELS[role];
+      return (
+        <li key={role} role="group" aria-label={label} className="prompt-library-group">
+          <span className="prompt-library-group-name" aria-hidden="true">
+            {label}
+          </span>
+          <ul role="none">{inGroup.map(({ item, i }) => renderItem(item, i))}</ul>
+        </li>
+      );
+    });
 
   return (
     <Dialog title="Prompt library" className="prompt-library" onClose={onClose}>
@@ -174,6 +269,15 @@ export function PromptLibraryDialog({
               onClick={() => setView("recent")}
             >
               Recent sends ({recentCount})
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={view === "templates"}
+              className={view === "templates" ? "prompt-library-tab active" : "prompt-library-tab"}
+              onClick={() => setView("templates")}
+            >
+              Reply templates ({REPLY_TEMPLATES.length})
             </button>
           </div>
           <button
@@ -241,7 +345,7 @@ export function PromptLibraryDialog({
               type="search"
               className="text-input"
               aria-label="Filter prompts"
-              placeholder={view === "saved" ? "Filter saved prompts" : "Filter recent sends"}
+              placeholder={placeholder}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               onKeyDown={onFilterKey}
@@ -249,7 +353,7 @@ export function PromptLibraryDialog({
             {loadError && <InlineNotice tone="error">{loadError}</InlineNotice>}
             {error && <InlineNotice tone="error">{error}</InlineNotice>}
             <div className="prompt-library-body-grid">
-              {!library && !loadError ? (
+              {view !== "templates" && !library && !loadError ? (
                 <p className="hint">Loading…</p>
               ) : items.length === 0 ? (
                 <p className="hint prompt-library-empty">
@@ -261,21 +365,7 @@ export function PromptLibraryDialog({
                 </p>
               ) : (
                 <ul className="prompt-library-list" role="listbox" aria-label={listLabel}>
-                  {items.map((item, i) => (
-                    <li
-                      key={item.key}
-                      role="option"
-                      aria-selected={item === current}
-                      className={
-                        item === current ? "prompt-library-item active" : "prompt-library-item"
-                      }
-                      onClick={() => setIndex(i)}
-                      onDoubleClick={() => insert(item)}
-                    >
-                      <span className="prompt-library-name">{item.title}</span>
-                      {item.meta && <span className="hint">{item.meta}</span>}
-                    </li>
-                  ))}
+                  {view === "templates" ? renderTemplateGroups() : items.map(renderItem)}
                 </ul>
               )}
               {current && (
@@ -324,6 +414,18 @@ export function PromptLibraryDialog({
                           Delete
                         </button>
                       </>
+                    ) : current.template ? (
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        title="Templates are read-only; save your own editable copy"
+                        onClick={() => {
+                          setError(null);
+                          setForm({ id: null, name: current.title, body: current.body });
+                        }}
+                      >
+                        Save a copy…
+                      </button>
                     ) : (
                       <button
                         type="button"

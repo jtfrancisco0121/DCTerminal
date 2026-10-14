@@ -296,6 +296,7 @@ export const PALETTE_ACTIONS = [
   "changeModel",
   "refreshModels",
   "promptLibrary",
+  "replyTemplates",
   "savePrompt",
   "workspaces",
   "saveWorkspace",
@@ -483,6 +484,13 @@ export function buildPalette(opts: {
       title: "Prompt library…",
       group: "Prompts",
       keywords: "saved prompts snippets templates recent sends history insert scratch pad",
+    },
+    {
+      id: "replyTemplates",
+      title: "Reply templates…",
+      group: "Prompts",
+      keywords:
+        "pipeline reply guide role planner reviewer implementer prompts insert scratch pad",
     },
     {
       id: "savePrompt",

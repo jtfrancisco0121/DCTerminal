@@ -192,7 +192,7 @@ import { ChangesPanel } from "./components/ChangesPanel";
 import { PanelResizer } from "./components/PanelResizer";
 import { ActivityPanel } from "./components/ActivityPanel";
 import { ChatSearchDialog, type ChatSearchHit } from "./components/ChatSearchDialog";
-import { PromptLibraryDialog } from "./components/PromptLibraryDialog";
+import { PromptLibraryDialog, type PromptLibraryView } from "./components/PromptLibraryDialog";
 import { WorkspacesDialog } from "./components/WorkspacesDialog";
 import { FirstRunSetup, type FirstRunFinish } from "./components/FirstRunSetup";
 import { insertIntoPad, type PadSelection } from "./prompts/library";
@@ -517,10 +517,11 @@ export function StartupForm({
   const [workspacesOpen, setWorkspacesOpen] = useState<{ focusSave: boolean } | null>(null);
   const [workspaceList, setWorkspaceList] = useState<WorkspaceList | null>(null);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
-  /** F6: prompt library dialog; saveDraft opens it on "Save as prompt". */
-  const [promptLibraryOpen, setPromptLibraryOpen] = useState<{ saveDraft: string | null } | null>(
-    null,
-  );
+  /** F6: prompt library dialog; saveDraft opens it on "Save as prompt", view picks the list. */
+  const [promptLibraryOpen, setPromptLibraryOpen] = useState<{
+    saveDraft: string | null;
+    view: PromptLibraryView;
+  } | null>(null);
   const [promptLibrary, setPromptLibrary] = useState<PromptLibrary | null>(null);
   const [promptLibraryError, setPromptLibraryError] = useState<string | null>(null);
   /** Last cursor/selection in a tab's pad, so a library insert lands there. */
@@ -4465,6 +4466,9 @@ export function StartupForm({
       case "promptLibrary":
         openPromptLibrary(false);
         return;
+      case "replyTemplates":
+        openPromptLibrary(false, "templates");
+        return;
       case "savePrompt":
         openPromptLibrary(true);
         return;
@@ -4947,7 +4951,7 @@ export function StartupForm({
       );
 
   /** F6: open the library; `save` starts "Save as prompt" with the pad (or its selection). */
-  function openPromptLibrary(save: boolean) {
+  function openPromptLibrary(save: boolean, view: PromptLibraryView = "saved") {
     const field = activePadField();
     if (field && document.activeElement === field) notePadSelection();
     let saveDraft: string | null = null;
@@ -4960,7 +4964,7 @@ export function StartupForm({
           : "";
       saveDraft = picked.trim() ? picked : content;
     }
-    setPromptLibraryOpen({ saveDraft });
+    setPromptLibraryOpen({ saveDraft, view });
     void reloadPromptLibrary();
   }
 
@@ -5091,6 +5095,8 @@ export function StartupForm({
           loadError={promptLibraryError}
           canInsert={!!activeTabId}
           saveDraft={promptLibraryOpen.saveDraft}
+          initialView={promptLibraryOpen.view}
+          roleId={activeTabSummary?.roleId ?? null}
           onInsert={insertLibraryPrompt}
           onSave={async (id, name, body) => setPromptLibrary(await promptSave(id, name, body))}
           onDelete={async (id) => setPromptLibrary(await promptDelete(id))}
