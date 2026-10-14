@@ -192,6 +192,16 @@ describe("tab chrome", () => {
     expect(filterCommands(commands, "snippet").map((c) => c.id)).toContain("promptLibrary");
   });
 
+  it("opens the reply templates", () => {
+    const commands = buildPalette({ tabs: [], canReopen: false, splitOpen: false });
+    const entry = commands.find((c) => c.id === "replyTemplates");
+    expect(entry?.title).toBe("Reply templates…");
+    expect(entry?.group).toBe("Prompts");
+    expect(parsePaletteId("replyTemplates")).toEqual({ kind: "action", id: "replyTemplates" });
+    expect(filterCommands(commands, "reply templates")[0]?.id).toBe("replyTemplates");
+    expect(filterCommands(commands, "reply guide planner").map((c) => c.id)).toContain("replyTemplates");
+  });
+
   it("offers find in tab and search all chats", () => {
     const commands = buildPalette({ tabs: [], canReopen: false, splitOpen: false });
     expect(filterCommands(commands, "find").map((c) => c.id)).toEqual(
@@ -309,6 +319,7 @@ describe("tab chrome", () => {
       expect(groupOf("searchChats")).toBe("Search");
       expect(groupOf("find")).toBe("Search");
       expect(groupOf("promptLibrary")).toBe("Prompts");
+      expect(groupOf("replyTemplates")).toBe("Prompts");
       expect(groupOf("workspaces")).toBe("Workspaces");
       for (const group of [
         "Hand-off",

@@ -33,15 +33,18 @@ export function defaultPromptName(body: string): string {
   return line.length > NAME_MAX ? `${line.slice(0, NAME_MAX - 1)}…` : line;
 }
 
-/** Keep items whose name or body contains every word of `query`. */
-export function filterPrompts<T extends { name?: string; body?: string; text?: string }>(
+/** Keep items whose name, body or "use when" line contains every word of `query`. */
+export function filterPrompts<
+  T extends { name?: string; body?: string; text?: string; when?: string },
+>(
   items: T[],
   query: string,
 ): T[] {
   const words = query.toLowerCase().split(/\s+/).filter(Boolean);
   if (words.length === 0) return items;
   return items.filter((item) => {
-    const hay = `${item.name ?? ""}\n${item.body ?? ""}\n${item.text ?? ""}`.toLowerCase();
+    const hay =
+      `${item.name ?? ""}\n${item.body ?? ""}\n${item.text ?? ""}\n${item.when ?? ""}`.toLowerCase();
     return words.every((w) => hay.includes(w));
   });
 }
