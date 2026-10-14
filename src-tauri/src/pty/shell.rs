@@ -1,16 +1,22 @@
 //! Which program a plain Terminal tab runs.
 //!
 //! Windows prefers `pwsh` when it is on PATH, otherwise `powershell.exe`.
-//! Other platforms use `$SHELL`, then `/bin/sh`. A Settings value replaces
-//! that program and is not parsed as a shell command line.
+//! Other platforms use `$SHELL`, then `/bin/sh`. On macOS a known shell
+//! starts as a login shell (`-l`), like Terminal.app, so `~/.zprofile` runs.
+//! A Settings value replaces that program and is not parsed as a shell
+//! command line.
 
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostOs {
     Windows,
+    MacOs,
     Unix,
 }
+
+/// Shells that take `-l` to start as a login shell.
+const LOGIN_SHELLS: [&str; 5] = ["zsh", "bash", "fish", "sh", "ksh"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellQuery<'a> {
@@ -48,15 +54,24 @@ pub fn resolve_shell(query: ShellQuery<'_>) -> ProgramArgs {
                 }
             }
         }
-        HostOs::Unix => {
+        HostOs::MacOs | HostOs::Unix => {
             let program = query
                 .env_shell
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .unwrap_or("/bin/sh");
+            let name = Path::new(program)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default();
+            let login = query.os == HostOs::MacOs && LOGIN_SHELLS.contains(&name);
             ProgramArgs {
                 program: program.to_string(),
-                args: Vec::new(),
+                args: if login {
+                    vec!["-l".to_string()]
+                } else {
+                    Vec::new()
+                },
             }
         }
     }
@@ -67,6 +82,8 @@ pub fn resolve_shell_for_host(configured: &str) -> ProgramArgs {
     resolve_shell(ShellQuery {
         os: if cfg!(windows) {
             HostOs::Windows
+        } else if cfg!(target_os = "macos") {
+            HostOs::MacOs
         } else {
             HostOs::Unix
         },
@@ -143,6 +160,52 @@ mod tests {
             pwsh_on_path: true,
         });
         assert_eq!(fallback.program, "/bin/sh");
+        assert!(fallback.args.is_empty());
+    }
+
+    #[test]
+    fn macos_starts_known_shells_as_login_shells() {
+        for shell in [
+            "/bin/zsh",
+            "/bin/bash",
+            "/opt/homebrew/bin/fish",
+            "/bin/ksh",
+        ] {
+            let command = resolve_shell(ShellQuery {
+                os: HostOs::MacOs,
+                configured: "",
+                env_shell: Some(shell),
+                pwsh_on_path: false,
+            });
+            assert_eq!(command.program, shell);
+            assert_eq!(command.args, vec!["-l".to_string()], "{shell}");
+        }
+        let fallback = resolve_shell(ShellQuery {
+            os: HostOs::MacOs,
+            configured: "",
+            env_shell: None,
+            pwsh_on_path: false,
+        });
+        assert_eq!(fallback.program, "/bin/sh");
+        assert_eq!(fallback.args, vec!["-l".to_string()]);
+    }
+
+    #[test]
+    fn macos_leaves_unknown_shells_and_configured_programs_without_args() {
+        let nu = resolve_shell(ShellQuery {
+            os: HostOs::MacOs,
+            configured: "",
+            env_shell: Some("/opt/homebrew/bin/nu"),
+            pwsh_on_path: false,
+        });
+        assert!(nu.args.is_empty());
+        let configured = resolve_shell(ShellQuery {
+            os: HostOs::MacOs,
+            configured: "/bin/zsh",
+            env_shell: Some("/bin/zsh"),
+            pwsh_on_path: false,
+        });
+        assert!(configured.args.is_empty());
     }
 
     #[test]

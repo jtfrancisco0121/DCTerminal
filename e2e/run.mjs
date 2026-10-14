@@ -121,6 +121,8 @@ function isolatedEnv() {
   if (process.env.DCT_E2E_LIVE !== "1") env.DCT_AGENT_PATH = agent;
   env.DCT_DATA_DIR = data;
   env.DCT_CURSOR_HOME = home;
+  // Keep the launcher's PATH; skip the login-shell lookup at startup.
+  env.DCT_SKIP_SHELL_ENV = "1";
   env.WEBVIEW2_USER_DATA_FOLDER = webview;
   // Do not override USERPROFILE. Tauri's Windows path resolver treats a fake
   // profile as "unknown path" and the setup hook then panics.

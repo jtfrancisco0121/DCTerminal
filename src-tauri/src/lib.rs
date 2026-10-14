@@ -19,6 +19,7 @@ pub mod provider;
 mod pty;
 pub mod roles;
 mod session_id;
+mod shell_env;
 pub mod store;
 pub mod supervisor;
 pub mod template;
@@ -107,6 +108,9 @@ fn isolate_webview_data_dir() {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Before anything else: both set process env, which is only sound while
+    // the main thread is the only thread.
+    shell_env::apply_login_path();
     isolate_webview_data_dir();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
