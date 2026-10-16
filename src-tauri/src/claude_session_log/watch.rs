@@ -16,7 +16,9 @@ use super::chat::ChatEntriesUpdate;
 use super::reader::SessionLogReaders;
 use notify::{EventKind, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -32,10 +34,15 @@ pub(crate) enum Wake {
 /// A running watch; dropping it does not stop the thread, `stop` does.
 pub(crate) struct WatchHandle {
     wake: Sender<Wake>,
+    /// Set by `stop`. The thread checks it under the readers' map lock before
+    /// it keeps a reader, so a read already under way when the tab is
+    /// forgotten does not put the reader back.
+    stopped: Arc<AtomicBool>,
 }
 
 impl WatchHandle {
     pub(crate) fn stop(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
         let _ = self.wake.send(Wake::Stop);
     }
 }
@@ -56,11 +63,18 @@ where
 {
     let (wake, wakes) = channel::<Wake>();
     let events = wake.clone();
+    let stopped = Arc::new(AtomicBool::new(false));
+    let thread_stopped = stopped.clone();
     thread::spawn(move || {
+        let stopped = thread_stopped;
         let mut since = since;
         let mut watched: Option<(PathBuf, notify::RecommendedWatcher)> = None;
         loop {
-            let reader = target().and_then(|(dir, id)| readers.tab_reader(&tab_id, &dir, &id));
+            if stopped.load(Ordering::SeqCst) {
+                break;
+            }
+            let reader =
+                target().and_then(|(dir, id)| readers.watch_reader(&tab_id, &dir, &id, &stopped));
             if let Some(reader) = reader {
                 let (update, path) = match reader.lock() {
                     Ok(guard) => (guard.chat_since(since), guard.path().to_path_buf()),
@@ -93,7 +107,7 @@ where
             }
         }
     });
-    WatchHandle { wake }
+    WatchHandle { wake, stopped }
 }
 
 /// Watch `path`'s folder and wake on events that name `path`. `None` when the
@@ -196,5 +210,35 @@ mod tests {
         assert!(rx.recv_timeout(Duration::from_millis(2500)).is_err());
         readers.forget("watch-tab");
         assert_eq!(readers.reader_count(), 0);
+    }
+
+    #[test]
+    fn a_read_under_way_when_the_tab_is_forgotten_does_not_keep_its_reader() {
+        let dir = TempDir::new("watch_forget");
+        let folder = dir.join("projects").join("-tmp-project");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(
+            folder.join(format!("{SID}.jsonl")),
+            line("user", "hello", "t1"),
+        )
+        .unwrap();
+        let readers = SessionLogReaders::new();
+        // A watch whose thread never finds a log of its own.
+        let handle = spawn_watch(readers.clone(), "gone-tab".into(), None, || None, |_| true);
+        let stopped = handle.stopped.clone();
+        readers.set_watch("gone-tab", handle);
+        readers.forget("gone-tab");
+        assert!(stopped.load(Ordering::SeqCst));
+        // The thread was mid-iteration: its read finishes after the forget.
+        assert!(readers
+            .watch_reader("gone-tab", dir.path(), SID, &stopped)
+            .is_none());
+        assert_eq!(readers.reader_count(), 0);
+        // A live watch still keeps its reader.
+        let live = AtomicBool::new(false);
+        assert!(readers
+            .watch_reader("gone-tab", dir.path(), SID, &live)
+            .is_some());
+        assert_eq!(readers.reader_count(), 1);
     }
 }

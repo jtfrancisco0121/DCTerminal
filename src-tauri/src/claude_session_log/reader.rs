@@ -19,6 +19,7 @@ use crate::claude_history::parse_jsonl_line;
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Tells a replaced file from one that only grew.
@@ -215,6 +216,30 @@ impl SessionLogReaders {
         config_dir: &Path,
         session_id: &str,
     ) -> Option<Arc<Mutex<SessionLogReader>>> {
+        self.reader_unless_stopped(tab_id, config_dir, session_id, None)
+    }
+
+    /// `tab_reader` for a watch thread: `None`, and nothing kept, once its
+    /// watch was stopped (`forget`, `stop_watch`, a replacing watch). Checked
+    /// under the map lock, which `forget` holds while it stops the watch.
+    pub(crate) fn watch_reader(
+        &self,
+        tab_id: &str,
+        config_dir: &Path,
+        session_id: &str,
+        stopped: &AtomicBool,
+    ) -> Option<Arc<Mutex<SessionLogReader>>> {
+        self.reader_unless_stopped(tab_id, config_dir, session_id, Some(stopped))
+    }
+
+    fn reader_unless_stopped(
+        &self,
+        tab_id: &str,
+        config_dir: &Path,
+        session_id: &str,
+        stopped: Option<&AtomicBool>,
+    ) -> Option<Arc<Mutex<SessionLogReader>>> {
+        let is_stopped = || stopped.is_some_and(|flag| flag.load(Ordering::SeqCst));
         let known = self
             .inner
             .lock()
@@ -233,9 +258,11 @@ impl SessionLogReaders {
             &path,
             session_id.trim(),
         )?));
-        if let Ok(mut inner) = self.inner.lock() {
-            inner.readers.insert(tab_id.to_string(), reader.clone());
+        let mut inner = self.inner.lock().ok()?;
+        if is_stopped() {
+            return None;
         }
+        inner.readers.insert(tab_id.to_string(), reader.clone());
         Some(reader)
     }
 
