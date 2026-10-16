@@ -504,6 +504,40 @@ describe("blank tab card", () => {
     );
   });
 
+  it("a zoom before the settings load keeps the stored settings", async () => {
+    vi.mocked(setTerminalSettings).mockClear();
+    const original = vi.mocked(getTerminalSettings).getMockImplementation()!;
+    let finishLoad: (() => void) | null = null;
+    // The first read (the initial load) waits; later reads answer at once.
+    vi.mocked(getTerminalSettings).mockImplementationOnce(
+      () => new Promise((resolve) => (finishLoad = () => resolve(original()))),
+    );
+    render(
+      <StartupForm
+        roles={[
+          { id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 },
+        ]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+    await screen.findByLabelText("Title");
+    fireEvent.keyDown(window, { key: "+", code: "Equal", shiftKey: true, ctrlKey: true, metaKey: true });
+    await waitFor(() =>
+      expect(setTerminalSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          fontSize: 15,
+          newTabOpens: "start",
+          roleSurface: expect.objectContaining({ role_developer: "chat" }),
+        }),
+      ),
+    );
+    expect(setTerminalSettings).toHaveBeenCalledTimes(1);
+    await act(async () => finishLoad?.());
+  });
+
   it("opens a role as Terminal when no surface was chosen for it", async () => {
     vi.mocked(getTerminalSettings).mockResolvedValueOnce({
       shell: "",
@@ -1896,6 +1930,32 @@ describe("first-run setup (F8)", () => {
       fireEvent.click(within(dialog).getByRole("button", { name: "Skip setup" }));
       expect(await screen.findByRole("dialog", { name: "New tab" })).toBeTruthy();
       expect(shellTerminalStart).not.toHaveBeenCalled();
+    } finally {
+      vi.mocked(getTerminalSettings).mockImplementation(original!);
+    }
+  });
+
+  it("asks for the setup status once, so a failed check cannot open the picker over setup", async () => {
+    const original = vi.mocked(getTerminalSettings).getMockImplementation();
+    vi.mocked(getTerminalSettings).mockImplementation(async () => ({
+      shell: "",
+      fontSize: 14,
+      optionAsMeta: true,
+      copyOnSelect: false,
+      roleSurface: {},
+      roleRunMode: {},
+      newTabOpens: "ask",
+    }));
+    vi.mocked(firstRunStatus).mockClear();
+    vi.mocked(firstRunStatus)
+      .mockRejectedValueOnce(new Error("status broke"))
+      .mockResolvedValue({ needed: true, completed: false });
+    try {
+      renderFresh();
+      expect(await screen.findByRole("dialog", { name: "New tab" })).toBeTruthy();
+      await act(async () => {});
+      expect(firstRunStatus).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole("dialog", { name: "Set up DCTerminal" })).toBeNull();
     } finally {
       vi.mocked(getTerminalSettings).mockImplementation(original!);
     }

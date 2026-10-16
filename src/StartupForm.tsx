@@ -78,7 +78,6 @@ import {
   selectActiveTab,
   syncActiveTabForm,
   getTerminalSettings,
-  DEFAULT_TERMINAL_SETTINGS,
   getNotificationSettings,
   setNotificationSettings,
   gitRepoInfo,
@@ -285,7 +284,6 @@ import {
   setCopyOnSelect,
   setTerminalFileOpener,
   clearTerminalScrollback,
-  TERMINAL_FONT_DEFAULT,
   zoomedFontSize,
   requestTerminalSearch,
   setLinkOpenErrorHandler,
@@ -560,6 +558,9 @@ export function StartupForm({
   const [fileFocus, setFileFocus] = useState<{ path: string; nonce: number } | null>(null);
   /** F8: first-run setup is showing. */
   const [firstRunOpen, setFirstRunOpen] = useState(false);
+  // One setup check per mount: the launch and the setup dialog must agree.
+  const firstRunCheckRef = useRef<ReturnType<typeof firstRunStatus> | null>(null);
+  const firstRunCheck = () => (firstRunCheckRef.current ??= firstRunStatus());
   /** F8: after setup, start this role once the form has it and the folder. */
   const [pendingStart, setPendingStart] = useState<FirstRunFinish | null>(null);
   /** F7: workspaces dialog; focusSave starts on the name field. */
@@ -1069,7 +1070,7 @@ export function StartupForm({
           loadTabIntoForm(tab);
           // A fresh profile shows first-run setup over this draft; the setting
           // applies only once setup is skipped (finishing it starts a role here).
-          const setupNeeded = await firstRunStatus().then((s) => !!s?.needed, () => false);
+          const setupNeeded = await firstRunCheck().then((s) => !!s?.needed, () => false);
           if (setupNeeded) {
             firstRunLaunchRef.current = tab.id;
             return;
@@ -2075,16 +2076,32 @@ export function StartupForm({
     savedTranscript,
   ]);
 
+  // The latest settings, also ahead of a render, so back-to-back patches stack.
+  const terminalSettingsRef = useRef(terminalSettings);
+  terminalSettingsRef.current = terminalSettings;
   /** Applies and saves. Rejects when the save fails, so Settings can show it. */
   const saveTerminalSettings = useCallback((next: TerminalSettings): Promise<void> => {
+    terminalSettingsRef.current = next;
     setTerminalSettingsState(next);
     return setTerminalSettings(next).then(setTerminalSettingsState);
   }, []);
-  const updateTerminalSettings = useCallback(
-    (next: TerminalSettings) => {
-      void saveTerminalSettings(next).catch((err: unknown) => {
-        setTerminalError(errorText(err));
-      });
+  const terminalPatchesRef = useRef<Promise<void>>(Promise.resolve());
+  /**
+   * Changes one part of the settings and saves. Before the settings load it
+   * patches a fresh read, so the save cannot overwrite stored fields with
+   * defaults. Patches run in order; returning `current` saves nothing.
+   */
+  const patchTerminalSettings = useCallback(
+    (patch: (current: TerminalSettings) => TerminalSettings) => {
+      terminalPatchesRef.current = terminalPatchesRef.current
+        .then(async () => {
+          const current = terminalSettingsRef.current ?? (await getTerminalSettings());
+          const next = patch(current);
+          if (next !== current) await saveTerminalSettings(next);
+        })
+        .catch((err: unknown) => {
+          setTerminalError(errorText(err));
+        });
     },
     [saveTerminalSettings],
   );
@@ -2097,14 +2114,12 @@ export function StartupForm({
   );
 
   const rememberSurface = useCallback(
-    (id: string, surface: HandoffSurface) => {
-      const current = terminalSettings ?? DEFAULT_TERMINAL_SETTINGS;
-      updateTerminalSettings({
+    (id: string, surface: HandoffSurface) =>
+      patchTerminalSettings((current) => ({
         ...current,
         roleSurface: { ...current.roleSurface, [id]: surface },
-      });
-    },
-    [terminalSettings, updateTerminalSettings],
+      })),
+    [patchTerminalSettings],
   );
 
   /** Terminals whose startup prompt was too long to pass inline and went through a file. */
@@ -2735,8 +2750,7 @@ export function StartupForm({
     activeCwd: () => activeTabFolder(savedTabsRef.current, activeTabIdRef.current),
     openStartScreen: openStartScreenTab,
     openTerminal: openTerminalTab,
-    saveMode: (mode) =>
-      updateTerminalSettings({ ...(terminalSettings ?? DEFAULT_TERMINAL_SETTINGS), newTabOpens: mode }),
+    saveMode: (mode) => patchTerminalSettings((current) => ({ ...current, newTabOpens: mode })),
   });
   newTabLaunchRef.current = newTab.launch;
   const requestNewTab = newTab.request;
@@ -3039,7 +3053,7 @@ export function StartupForm({
   // F8: show first-run setup on a fresh profile only.
   useEffect(() => {
     let cancelled = false;
-    firstRunStatus()
+    firstRunCheck()
       .then((status) => {
         if (!cancelled && status?.needed) setFirstRunOpen(true);
       })
@@ -3519,12 +3533,11 @@ export function StartupForm({
         match.action === "zoomOut" ||
         match.action === "zoomReset"
       ) {
-        const current = terminalSettings ?? {
-          ...DEFAULT_TERMINAL_SETTINGS,
-          fontSize: TERMINAL_FONT_DEFAULT,
-        };
-        const next = zoomedFontSize(current.fontSize, match.action);
-        if (next !== current.fontSize) updateTerminalSettings({ ...current, fontSize: next });
+        const action = match.action;
+        patchTerminalSettings((current) => {
+          const next = zoomedFontSize(current.fontSize, action);
+          return next === current.fontSize ? current : { ...current, fontSize: next };
+        });
         return;
       }
       if (match.action === "searchChats") {
@@ -3541,7 +3554,7 @@ export function StartupForm({
       settingsOpen,
       handleFind,
       terminalSettings,
-      updateTerminalSettings,
+      patchTerminalSettings,
       cycleTab,
       handleCloseTab,
       handleNewTab,
