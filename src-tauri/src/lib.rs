@@ -57,7 +57,10 @@ use commands::{
     transcript_save,
     validate_and_preview, SessionRegistry,
 };
-use commands::{activity_clear, activity_list, terminal_session_log};
+use commands::{
+    activity_clear, activity_list, terminal_chat_entries, terminal_chat_unwatch,
+    terminal_chat_watch, terminal_session_log,
+};
 use commands::{changes_file_diff, changes_list, changes_revert, changes_snapshot, ChangesRoot};
 use commands::{first_run_complete, first_run_status, provider_status};
 use commands::{storage_cleanup, storage_status};
@@ -156,6 +159,7 @@ pub fn run() {
             app.manage(Mutex::new(crate::usage::UsageStore::open(&data_dir)));
             app.manage(Mutex::new(SessionRegistry::new()));
             app.manage(Mutex::new(PtyRegistry::new()));
+            app.manage(claude_session_log::reader::SessionLogReaders::new());
             windows::install_macos_menu(app)?;
             windows::restore_saved_windows(app.handle());
             Ok(())
@@ -271,6 +275,9 @@ pub fn run() {
             set_terminal_settings,
             terminal_plan_file,
             terminal_session_log,
+            terminal_chat_entries,
+            terminal_chat_watch,
+            terminal_chat_unwatch,
             list_models,
             get_model_settings,
             set_model_settings,

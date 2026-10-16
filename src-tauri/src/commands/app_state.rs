@@ -138,12 +138,14 @@ pub fn close_tab(
     store: State<Mutex<StateStore>>,
     session: State<Mutex<SessionRegistry>>,
     terminals: State<Mutex<crate::pty::PtyRegistry>>,
+    readers: State<crate::claude_session_log::reader::SessionLogReaders>,
 ) -> Result<AppStateSnapshot, String> {
     {
         let mut session = session.lock().map_err(|e| e.to_string())?;
         session.shutdown_tab(&tab_id);
     }
     crate::pty::kill_tab_pty(&terminals, &tab_id);
+    readers.forget(&tab_id);
     let mut store = store.lock().map_err(|e| e.to_string())?;
     store.bind_window(window_id.as_deref());
     store.close_tab(&tab_id)?;

@@ -13,8 +13,16 @@
 //! the user answers its permission prompt, so an unanswered one in the current
 //! turn is `openTool`.
 //! Nothing under the config folder is created or written.
+//!
+//! `read_session_log` parses the file's tail in one go. The app reads through
+//! `reader::SessionLogReader`, which keeps the parse and only reads the bytes
+//! appended since the last read; `chat` turns the same records into ordered
+//! chat entries and `watch` streams them to a view.
 
-use crate::claude_history::parse_jsonl_line;
+pub mod chat;
+pub mod reader;
+pub mod watch;
+
 use crate::permissions::redact_summary;
 use serde::Serialize;
 use serde_json::Value;
@@ -24,6 +32,9 @@ use std::path::{Path, PathBuf};
 
 const MAX_TAIL_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_TOOL_CALLS: usize = 500;
+/// A long-lived parse drops its oldest tool calls past this many; the
+/// summary only ever shows the newest `MAX_TOOL_CALLS`.
+const KEEP_TOOL_CALLS: usize = 2 * MAX_TOOL_CALLS;
 const TITLE_CHARS: usize = 200;
 const COMMAND_CHARS: usize = 4000;
 const URL_CHARS: usize = 2000;
@@ -128,39 +139,53 @@ pub fn find_session_log(config_dir: &Path, session_id: &str) -> Option<PathBuf> 
 }
 
 /// Look up and parse a session's log. `None` when it does not exist yet.
+/// The app reads through `reader::SessionLogReaders`; this is the test reference.
+#[cfg(test)]
 pub fn load_session_log(config_dir: &Path, session_id: &str) -> Option<TerminalSessionLog> {
     let path = find_session_log(config_dir, session_id)?;
     read_session_log(&path, session_id.trim())
 }
 
 /// The last `MAX_TAIL_BYTES` of the file, starting at a whole line.
+#[cfg(test)]
 fn read_tail(path: &Path, max: u64) -> Option<Vec<u8>> {
+    read_tail_at(path, max).map(|(_, bytes)| bytes)
+}
+
+/// `read_tail`, plus the file offset its first byte came from.
+pub(crate) fn read_tail_at(path: &Path, max: u64) -> Option<(u64, Vec<u8>)> {
     let mut file = std::fs::File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
-    let start = len.saturating_sub(max);
+    let mut start = len.saturating_sub(max);
     file.seek(SeekFrom::Start(start)).ok()?;
     let mut bytes = Vec::with_capacity((len - start) as usize);
     file.read_to_end(&mut bytes).ok()?;
     if start > 0 {
         let cut = bytes.iter().position(|b| *b == b'\n').map(|i| i + 1)?;
         bytes.drain(..cut);
+        start += cut as u64;
     }
-    Some(bytes)
+    Some((start, bytes))
 }
 
+/// One full parse of the file's tail. The reference the incremental reader
+/// is tested against.
+#[cfg(test)]
 pub fn read_session_log(path: &Path, session_id: &str) -> Option<TerminalSessionLog> {
-    let bytes = read_tail(path, MAX_TAIL_BYTES)?;
+    let (_, bytes) = read_tail_at(path, MAX_TAIL_BYTES)?;
     let mut parser = Parser::default();
     for line in bytes.split(|b| *b == b'\n') {
-        if let Some(value) = parse_jsonl_line(line) {
+        if let Some(value) = crate::claude_history::parse_jsonl_line(line) {
             parser.record(&value);
         }
     }
-    Some(parser.finish(session_id, path))
+    Some(parser.summary(session_id, path))
 }
 
+/// The summary's running state. Fed one record at a time, so a reader can
+/// keep it between reads.
 #[derive(Default)]
-struct Parser {
+pub(crate) struct Parser {
     reply: Vec<String>,
     last_prompt_at: Option<String>,
     permission_mode: Option<String>,
@@ -174,7 +199,7 @@ struct Parser {
 }
 
 impl Parser {
-    fn record(&mut self, value: &Value) {
+    pub(crate) fn record(&mut self, value: &Value) {
         if value.get("isSidechain").and_then(Value::as_bool) == Some(true) {
             return;
         }
@@ -257,6 +282,16 @@ impl Parser {
             self.turn_tools.push(id);
         }
         self.tools.push(call);
+        if self.tools.len() > KEEP_TOOL_CALLS {
+            self.tools.drain(..self.tools.len() - MAX_TOOL_CALLS);
+            self.by_id = self
+                .tools
+                .iter()
+                .enumerate()
+                .filter(|(_, call)| !call.id.is_empty())
+                .map(|(index, call)| (call.id.clone(), index))
+                .collect();
+        }
     }
 
     fn user(&mut self, value: &Value, at: Option<String>) {
@@ -279,41 +314,26 @@ impl Parser {
                 }
             }
         }
-        if results || is_flag(value, "isMeta") || is_flag(value, "isCompactSummary") {
+        if results {
             return;
         }
-        let text = match content {
-            Some(Value::String(text)) => text.clone(),
-            Some(Value::Array(blocks)) => blocks
-                .iter()
-                .filter_map(|b| b.get("text").and_then(Value::as_str))
-                .collect::<Vec<_>>()
-                .join("\n"),
-            _ => return,
-        };
-        let text = text.trim_start();
-        if text.starts_with("[Request interrupted") {
-            self.ended = true;
-            return;
-        }
-        // Local slash commands (`/model`, `/cost`, …) and their output are not turns.
-        if ["<command-name>", "<command-message>", "<local-command-"]
-            .iter()
-            .any(|tag| text.starts_with(tag))
-        {
-            return;
-        }
-        self.reply.clear();
-        self.turn_tools.clear();
-        self.last_stop = None;
-        self.ended = false;
-        self.last_prompt_at = at;
-        if let Some(mode) = value.get("permissionMode").and_then(Value::as_str) {
-            self.permission_mode = Some(mode.to_string());
+        match user_turn(value) {
+            UserTurn::Interrupted => self.ended = true,
+            UserTurn::Prompt(_) => {
+                self.reply.clear();
+                self.turn_tools.clear();
+                self.last_stop = None;
+                self.ended = false;
+                self.last_prompt_at = at;
+                if let Some(mode) = value.get("permissionMode").and_then(Value::as_str) {
+                    self.permission_mode = Some(mode.to_string());
+                }
+            }
+            UserTurn::Other => {}
         }
     }
 
-    fn finish(mut self, session_id: &str, path: &Path) -> TerminalSessionLog {
+    pub(crate) fn summary(&self, session_id: &str, path: &Path) -> TerminalSessionLog {
         let pending: Vec<&SessionToolCall> = self
             .turn_tools
             .iter()
@@ -345,27 +365,62 @@ impl Parser {
         } else {
             pending.iter().map(|call| as_open(call)).collect()
         };
-        if self.tools.len() > MAX_TOOL_CALLS {
-            let extra = self.tools.len() - MAX_TOOL_CALLS;
-            self.tools.drain(..extra);
-        }
+        let skip = self.tools.len().saturating_sub(MAX_TOOL_CALLS);
         TerminalSessionLog {
             session_id: session_id.to_string(),
             path: path.display().to_string(),
             turn_done,
             last_reply: self.reply.join("\n\n"),
-            plan: self.plan,
-            plan_at: self.plan_at,
-            last_prompt_at: self.last_prompt_at,
-            tool_calls: self.tools,
+            plan: self.plan.clone(),
+            plan_at: self.plan_at.clone(),
+            last_prompt_at: self.last_prompt_at.clone(),
+            tool_calls: self.tools[skip..].to_vec(),
             open_tool,
             pending_tools,
-            permission_mode: self.permission_mode,
+            permission_mode: self.permission_mode.clone(),
         }
     }
 }
 
-fn is_flag(value: &Value, key: &str) -> bool {
+/// What a main-chain `user` record that carries no tool result is.
+pub(crate) enum UserTurn {
+    /// A real prompt; its text, trimmed at the start.
+    Prompt(String),
+    /// `[Request interrupted …]`: the turn ended.
+    Interrupted,
+    /// Meta reminders, compact summaries, local slash commands and their output.
+    Other,
+}
+
+pub(crate) fn user_turn(value: &Value) -> UserTurn {
+    if is_flag(value, "isMeta") || is_flag(value, "isCompactSummary") {
+        return UserTurn::Other;
+    }
+    let content = value.get("message").and_then(|m| m.get("content"));
+    let text = match content {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(blocks)) => blocks
+            .iter()
+            .filter_map(|b| b.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => return UserTurn::Other,
+    };
+    let text = text.trim_start();
+    if text.starts_with("[Request interrupted") {
+        return UserTurn::Interrupted;
+    }
+    // Local slash commands (`/model`, `/cost`, …) and their output are not turns.
+    if ["<command-name>", "<command-message>", "<local-command-"]
+        .iter()
+        .any(|tag| text.starts_with(tag))
+    {
+        return UserTurn::Other;
+    }
+    UserTurn::Prompt(text.to_string())
+}
+
+pub(crate) fn is_flag(value: &Value, key: &str) -> bool {
     value.get(key).and_then(Value::as_bool) == Some(true)
 }
 
@@ -386,7 +441,7 @@ fn input_str<'a>(input: &'a Value, keys: &[&str]) -> Option<&'a str> {
         .find(|text| !text.is_empty())
 }
 
-fn describe_tool(id: String, name: String, input: &Value, at: Option<String>) -> SessionToolCall {
+pub(crate) fn describe_tool(id: String, name: String, input: &Value, at: Option<String>) -> SessionToolCall {
     let kind = tool_kind(&name);
     let path = input_str(input, &["file_path", "notebook_path"]).map(str::to_string);
     let command = (kind == ToolCallKind::Execute)
@@ -421,6 +476,7 @@ fn describe_tool(id: String, name: String, input: &Value, at: Option<String>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::claude_history::parse_jsonl_line;
     use crate::test_support::TempDir;
     use serde_json::json;
 
