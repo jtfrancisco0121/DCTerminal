@@ -73,6 +73,33 @@ describe("planOfRun", () => {
     expect(planHeading(plan)).toBe("Plan · handed to the Implementer in round 3");
   });
 
+  it("a fanned-out lane's tab shows its own Implementer hand-off first", () => {
+    const fanned = run({
+      handoffs: { role_implementer: { text: "Whole plan", at: "2026-10-16T09:50:00Z" } },
+      lanes: [
+        {
+          id: "pr2",
+          title: "PR2 — UI",
+          status: "active",
+          stage: "implementer",
+          round: 2,
+          tabIds: { role_implementer: "t2" },
+          handoffs: { role_implementer: { text: " PR2 plan ", at: "2026-10-16T09:55:00Z" } },
+        },
+        { id: "pr3", title: "PR3", status: "waiting", stage: "implementer", round: 1, tabIds: {} },
+      ],
+    });
+    expect(planOfRun(fanned, "pr2")).toEqual({
+      text: "PR2 plan",
+      source: "handoff",
+      round: 2,
+      updatedAt: "2026-10-16T09:55:00Z",
+    });
+    // A lane without its own hand-off yet, or no lane: the run's.
+    expect(planOfRun(fanned, "pr3")?.text).toBe("Whole plan");
+    expect(planOfRun(fanned)?.text).toBe("Whole plan");
+  });
+
   it("has nothing to show before any plan exists", () => {
     expect(planOfRun(run())).toBeNull();
     expect(planHeading(null)).toBe("Plan");

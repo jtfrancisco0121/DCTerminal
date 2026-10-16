@@ -13,7 +13,7 @@ import { planPaneOpen, setPlanPaneOpen, usePlanPaneOpen } from "./planPaneState"
  * The docked plan pane of a pipeline tab: the run's approved plan (or its
  * candidate while none is approved), refetched whenever the run changes.
  */
-export function PlanPane({ tabId, runId }: { tabId: string; runId: string }) {
+export function PlanPane({ tabId, runId, lane = null }: { tabId: string; runId: string; lane?: string | null }) {
   const [run, setRun] = useState<PipelineRun | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [live, setLive] = useState(false);
@@ -56,7 +56,7 @@ export function PlanPane({ tabId, runId }: { tabId: string; runId: string }) {
     };
   }, [reload, runId]);
 
-  const plan = run ? planOfRun(run) : null;
+  const plan = run ? planOfRun(run, lane) : null;
   const source = useMemo(() => (plan ? highlightCode(plan.text, "plan.md") : null), [plan?.text]);
 
   return (

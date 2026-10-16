@@ -31,7 +31,11 @@ function lastEvent(run: PipelineRun, match: (kind: string, outcome: string, role
   return null;
 }
 
-export function planOfRun(run: PipelineRun): RunPlan | null {
+/**
+ * `lane`: the fanned-out pull request the tab works on, if any; its own
+ * Implementer hand-off comes before the run's.
+ */
+export function planOfRun(run: PipelineRun, lane: string | null = null): RunPlan | null {
   const approved = run.approvedPlan?.trim();
   if (approved) {
     const event = lastEvent(run, (kind, outcome) => kind === "note" && outcome === "planApproved");
@@ -45,6 +49,17 @@ export function planOfRun(run: PipelineRun): RunPlan | null {
   const candidate = run.candidatePlan?.trim();
   if (candidate) {
     return { text: candidate, source: "candidate", round: null, updatedAt: run.updatedAt ?? null };
+  }
+  const own = lane ? run.lanes?.find((l) => l.id === lane) : undefined;
+  const laneHandoff = own?.handoffs?.role_implementer;
+  if (own && laneHandoff?.text.trim()) {
+    // A lane's latest Implementer hand-off opens its current round.
+    return {
+      text: laneHandoff.text.trim(),
+      source: "handoff",
+      round: own.round || null,
+      updatedAt: laneHandoff.at || null,
+    };
   }
   const handoff = run.handoffs?.role_implementer;
   if (handoff?.text.trim()) {

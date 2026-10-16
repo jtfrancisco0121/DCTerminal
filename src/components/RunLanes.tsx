@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { PipelineRun, TabSummary } from "../bridge";
 import { pipelineStages } from "../pipeline/defs";
 import {
@@ -54,29 +54,69 @@ function barClass(bar: TurnBar | WaitBar): string {
   return `run-lane-bar ${bar.open ? "run-lane-bar-working" : "run-lane-bar-done"}`;
 }
 
+/** A Claude terminal of a stage: the run's own, or a fanned-out lane's. */
+type StageTab = { tab: TabSummary; lane: string | null };
+/** A sub-agent bar and the lane title of the tab that ran it. */
+type LaneSubAgentBar = SubAgentBar & { lane: string | null };
+
+/** Reads one tab's sub-agents and reports them; draws nothing. */
+function TabSubAgents({
+  tabId,
+  model,
+  onBars,
+}: {
+  tabId: string;
+  model: RunLanesModel;
+  onBars: (tabId: string, bars: SubAgentBar[]) => void;
+}) {
+  const { entries } = useChatEntries(tabId, true);
+  const bars = useMemo(() => subAgentBars(entries, model), [entries, model]);
+  useEffect(() => onBars(tabId, bars), [onBars, tabId, bars]);
+  return null;
+}
+
 function StageRow({
   row,
   model,
-  tab,
+  tabs,
   onSubAgents,
 }: {
   row: LaneRow;
   model: RunLanesModel;
-  tab: TabSummary | undefined;
-  onSubAgents: (stageId: string, bars: SubAgentBar[]) => void;
+  tabs: StageTab[];
+  onSubAgents: (stageId: string, bars: LaneSubAgentBar[]) => void;
 }) {
   const place = placeOf(model);
-  const claude = !!tab && isClaudeTerminal(tab);
-  const { entries } = useChatEntries(claude ? tab!.id : null, claude);
-  const subAgents = useMemo(
-    () => (claude ? subAgentBars(entries, model) : []),
-    [claude, entries, model],
+  const sources = tabs.filter((s) => isClaudeTerminal(s.tab));
+  const [byTab, setByTab] = useState<Record<string, SubAgentBar[]>>({});
+  const onBars = useCallback(
+    (tabId: string, bars: SubAgentBar[]) =>
+      setByTab((prev) => (sameBars(prev[tabId], bars) ? prev : { ...prev, [tabId]: bars })),
+    [],
   );
-  const placedSubs = useMemo(() => assignTracks(subAgents), [subAgents]);
+  // Each tab (the run's own, then each lane's) on its own tracks. Keyed by
+  // value: the tab list is rebuilt on every render.
+  const sourceKey = JSON.stringify(sources.map((s) => [s.tab.id, s.lane]));
+  const placedSubs = useMemo(() => {
+    const bars: (LaneSubAgentBar & { track: number })[] = [];
+    let tracks = 0;
+    for (const [tabId, lane] of JSON.parse(sourceKey) as [string, string | null][]) {
+      const own = byTab[tabId] ?? [];
+      if (!own.length) continue;
+      const placed = assignTracks(own.map((bar) => ({ ...bar, lane })));
+      for (const bar of placed.bars) bars.push({ ...bar, track: bar.track + tracks });
+      tracks += placed.tracks;
+    }
+    return { bars, tracks };
+  }, [sourceKey, byTab]);
+  const subAgents = useMemo(() => placedSubs.bars.map(({ track: _track, ...bar }) => bar), [placedSubs]);
   useEffect(() => onSubAgents(row.stageId, subAgents), [onSubAgents, row.stageId, subAgents]);
 
   return (
     <>
+      {sources.map((source) => (
+        <TabSubAgents key={source.tab.id} tabId={source.tab.id} model={model} onBars={onBars} />
+      ))}
       <div className="run-lanes-label" title={row.title}>
         {row.title}
       </div>
@@ -118,7 +158,7 @@ function StageRow({
                 key={`s${i}`}
                 className={`run-lane-bar run-lane-bar-sub${bar.open ? " run-lane-bar-sub-open" : ""}`}
                 style={{ ...place(bar), top: bar.track * TRACK }}
-                title={bar.label}
+                title={bar.lane ? `${bar.lane}: ${bar.label}` : bar.label}
               />
             ))}
             <NowLine model={model} />
@@ -130,7 +170,7 @@ function StageRow({
 }
 
 /** Same text list: no state update (and no render loop) for an equal list. */
-function sameBars(a: SubAgentBar[] | undefined, b: SubAgentBar[]): boolean {
+function sameBars<T extends SubAgentBar>(a: T[] | undefined, b: T[]): boolean {
   const left = a ?? [];
   return left.length === b.length && left.every((bar, i) => bar.label === b[i].label);
 }
@@ -153,14 +193,24 @@ export function RunLanes({ run, tabs, now: fixedNow }: { run: PipelineRun; tabs:
   const complete = (run.events ?? []).some((e) => e.kind === "complete");
   const now = useNow(!complete, fixedNow);
   const model = useMemo(() => runLanes(run, stages, now), [run, stages, now]);
-  const [subs, setSubs] = useState<Record<string, SubAgentBar[]>>({});
+  const [subs, setSubs] = useState<Record<string, LaneSubAgentBar[]>>({});
   const onSubAgents = useMemo(
-    () => (stageId: string, bars: SubAgentBar[]) =>
+    () => (stageId: string, bars: LaneSubAgentBar[]) =>
       setSubs((prev) => (sameBars(prev[stageId], bars) ? prev : { ...prev, [stageId]: bars })),
     [],
   );
   const span = Math.max(1, model.end - model.start);
-  const tabOf = (roleId: string) => tabs.find((t) => t.id === run.tabIds[roleId]);
+  // A stage's tabs: the run's own, then each fanned-out lane's (by its title).
+  const tabsOf = (roleId: string): StageTab[] => {
+    const out: StageTab[] = [];
+    const own = tabs.find((t) => t.id === run.tabIds[roleId]);
+    if (own) out.push({ tab: own, lane: null });
+    for (const lane of run.lanes ?? []) {
+      const tab = tabs.find((t) => t.id === lane.tabIds?.[roleId]);
+      if (tab && !out.some((s) => s.tab.id === tab.id)) out.push({ tab, lane: lane.title || lane.id });
+    }
+    return out;
+  };
 
   return (
     <section className="run-lanes" aria-label="Run lanes">
@@ -181,7 +231,7 @@ export function RunLanes({ run, tabs, now: fixedNow }: { run: PipelineRun; tabs:
             key={row.stageId}
             row={row}
             model={model}
-            tab={tabOf(stages.find((s) => s.id === row.stageId)?.roleId ?? "")}
+            tabs={tabsOf(stages.find((s) => s.id === row.stageId)?.roleId ?? "")}
             onSubAgents={onSubAgents}
           />
         ))}
@@ -201,7 +251,8 @@ export function RunLanes({ run, tabs, now: fixedNow }: { run: PipelineRun; tabs:
           ...row.gates.map((gate, i) => <li key={`${row.stageId}-g${i}`}>{gate.label}</li>),
           ...(subs[row.stageId] ?? []).map((bar, i) => (
             <li key={`${row.stageId}-s${i}`}>
-              {row.title}: {bar.label}
+              {row.title}
+              {bar.lane ? ` (${bar.lane})` : ""}: {bar.label}
             </li>
           )),
         ])}
