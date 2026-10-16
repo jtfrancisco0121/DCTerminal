@@ -2041,6 +2041,15 @@ export async function filesRead(tabId: string, path: string): Promise<FileConten
   return invoke<FileContent>("files_read", { tabId, path });
 }
 
+/**
+ * An image a rendered Markdown file shows (`src` relative to `docPath`, or
+ * to the folder when it starts with `/`), as a `data:` URL. Same rules as
+ * the Files panel; image files up to 5 MB only.
+ */
+export async function filesMarkdownImage(tabId: string, docPath: string, src: string): Promise<string> {
+  return invoke<string>("files_markdown_image", { tabId, docPath, src });
+}
+
 export async function filesWrite(
   tabId: string,
   path: string,
