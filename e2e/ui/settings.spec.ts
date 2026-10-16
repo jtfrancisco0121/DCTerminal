@@ -285,6 +285,7 @@ test.describe("Permissions and Usage", () => {
           appDataDir: "/tmp/dct-e2e",
           transcriptsDir: "/tmp/dct-e2e/transcripts",
           logPath: "/tmp/dct-e2e/app.log",
+          crashLogPath: "/tmp/dct-e2e/logs/crash.log",
           lastError: null,
         }),
       },

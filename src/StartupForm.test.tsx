@@ -40,6 +40,7 @@ vi.mock("./bridge", () => {
     appDataDir: "",
     transcriptsDir: "",
     logPath: "",
+    crashLogPath: "",
     lastError: null,
   })),
   diagnosticsReadLog: vi.fn(async () => ({ text: "", path: "" })),

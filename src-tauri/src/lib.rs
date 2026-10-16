@@ -5,6 +5,7 @@ mod claude_session_log;
 mod cli_detect;
 mod cli_launch;
 mod commands;
+mod crash_log;
 mod cursor_history;
 mod data_dir;
 mod files;
@@ -117,6 +118,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
+            // First, so a panic anywhere below lands in logs/crash.log.
+            crash_log::install(&data_dir::app_data_dir(app.handle()).path);
             // User pipelines join the registry before any chain run is read.
             let pipeline_store =
                 store::PipelineStore::open(&data_dir::app_data_dir(app.handle()).path)?;

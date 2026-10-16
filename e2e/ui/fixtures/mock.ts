@@ -276,6 +276,7 @@ export function installTauriMock(config: MockConfig): void {
       appDataDir: "/tmp/dct-e2e",
       transcriptsDir: "/tmp/dct-e2e/transcripts",
       logPath: "/tmp/dct-e2e/app.log",
+      crashLogPath: "/tmp/dct-e2e/logs/crash.log",
       lastError: null,
     }),
     get_claude_usage: () => ({ configDir: configDir.path, windows: [], contextByTab: {} }),

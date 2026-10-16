@@ -610,6 +610,8 @@ export function SettingsPage({
                 <dd>{diagnostics?.transcriptsDir || "transcripts"}</dd>
                 <dt>Permission log</dt>
                 <dd>{diagnostics?.logPath || "logs/permission-payloads.jsonl"}</dd>
+                <dt>Crash log</dt>
+                <dd>{diagnostics?.crashLogPath || "logs/crash.log"}</dd>
               </dl>
               <StorageRow />
               <div className="settings-subsection">
