@@ -950,3 +950,58 @@ fn a_core_limit_still_stops_everything() {
         "nothing is polled before the core reset"
     );
 }
+
+#[test]
+fn more_than_600_events_across_repos_are_all_kept_for_filtering() {
+    // 7 watched repos x 100 events, newest repo first, plus a personal repo.
+    let events_for = |repo: &str, day: u32| -> String {
+        let rows: Vec<String> = (0..100)
+            .map(|n| {
+                format!(
+                    r#"{{"id":"{repo}-{n}","type":"WatchEvent","actor":{{"login":"a"}},"repo":{{"name":"{repo}"}},
+                    "created_at":"2026-10-{day:02}T{:02}:{:02}:00Z","payload":{{}}}}"#,
+                    n / 60,
+                    n % 60
+                )
+            })
+            .collect();
+        format!("[{}]", rows.join(","))
+    };
+    let api = Fake::new(move |endpoint, _| {
+        if let Some(rest) = endpoint.strip_prefix("repos/") {
+            if let Some((repo, _)) = rest.split_once("/events") {
+                // Older days for later repos, so a global cut would drop them.
+                let day =
+                    20 - (repo.len() % 7) as u32 - if repo.starts_with("jtfr") { 15 } else { 0 };
+                return Ok(reply(200, &events_for(repo, day.max(1)), "\"e\""));
+            }
+        }
+        if endpoint.starts_with("user/repos") {
+            return Ok(reply(200, PERSONAL, "\"p\""));
+        }
+        if endpoint.starts_with("search") {
+            return Ok(reply(200, r#"{"items":[]}"#, "\"s\""));
+        }
+        Ok(reply(200, "[]", "\"x\""))
+    });
+    let mut cache = CacheFile::default();
+    let out = run_cycle(&api, &config(), &mut cache, NOW);
+    let items = &out.response.items;
+    assert!(items.len() > 600, "{} rows", items.len());
+    // Every repo keeps its full 100 rows, so a repo filter and the Mine chip
+    // see all of them, and each repo's reach is its own oldest event.
+    for repo in out
+        .response
+        .repos
+        .iter()
+        .filter(|r| r.reachable == Some(true))
+    {
+        let rows = items.iter().filter(|i| i.repo == repo.repo).count();
+        assert_eq!(rows, 100, "{}", repo.repo);
+    }
+    assert!(items.iter().any(|i| i.source == "personal"));
+    assert!(
+        items.windows(2).all(|w| w[0].at >= w[1].at),
+        "still newest first"
+    );
+}

@@ -46,6 +46,20 @@ describe("filters", () => {
     expect(out.shown.map((i) => i.id)).toEqual(["r"]);
   });
 
+  it("filters over more than 600 rows across repos see every row of the repo", () => {
+    const many = Array.from({ length: 705 }, (_, i) =>
+      item({
+        id: `r${i}`,
+        repo: `koneksi-tech/repo-${i % 7}`,
+        source: i % 7 === 6 ? "personal" : "koneksi-tech",
+        at: new Date(Date.UTC(2026, 9, 15) - i * 60_000).toISOString(),
+      }),
+    );
+    const one = applyFilters(many, { ...DEFAULT_FILTERS, repo: "koneksi-tech/repo-3" });
+    expect(one.shown).toHaveLength(100);
+    expect(applyFilters(many, { ...DEFAULT_FILTERS, chip: "mine" }).shown).toHaveLength(100);
+  });
+
   it("event type toggles hide a group", () => {
     const out = applyFilters(all, { ...DEFAULT_FILTERS, hiddenTypes: ["push", "merge"] });
     expect(out.shown.map((i) => i.id)).toEqual(["r"]);

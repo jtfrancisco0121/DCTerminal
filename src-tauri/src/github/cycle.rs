@@ -44,7 +44,10 @@ const MAX_COMMENT_LOOKUPS: usize = 10;
 const MAX_PULL_LOOKUPS: usize = 25;
 /// A PR is re-checked (with its ETag, so a 304 is free) this often.
 const PULL_REVALIDATE: i64 = 6 * 60 * 60;
-const MAX_FEED_ITEMS: usize = 600;
+/// Newest rows kept per repo (an events reply is at most 100 anyway). The
+/// feed is never cut as a whole: the repo filter, the Mine chip and the reach
+/// note need every repo's rows.
+const MAX_ITEMS_PER_REPO: usize = 100;
 const MAX_NEEDS_YOU: usize = 40;
 const DEFAULT_POLL: u64 = 60;
 
@@ -637,7 +640,7 @@ fn build_response(
         repos.push(repo_status(cache, owner, name, source));
         let entry = cache.endpoints.get(&events_key(owner, name));
         if let Some(entry) = entry.filter(|e| e.has_data()) {
-            for item in &entry.items {
+            for item in entry.items.iter().take(MAX_ITEMS_PER_REPO) {
                 if scope.source_of(&item.repo).is_some() && seen_ids.insert(item.id.clone()) {
                     let mut item = item.clone();
                     if needs_pull_info(&item) {
@@ -653,7 +656,6 @@ fn build_response(
         }
     }
     sorted_newest(&mut items);
-    items.truncate(MAX_FEED_ITEMS);
 
     let queries = build_queries(scope, "1970-01-01");
     let mut needs: Vec<FeedItem> = Vec::new();
