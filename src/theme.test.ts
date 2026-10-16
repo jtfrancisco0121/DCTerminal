@@ -1,8 +1,11 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  applyCustomColors,
   applyTheme,
+  cachedCustomColors,
   cachedTheme,
+  normalizeCustomColors,
   DEFAULT_THEME,
   normalizeTheme,
   terminalTheme,
@@ -17,9 +20,17 @@ describe("themes (U8)", () => {
     document.documentElement.removeAttribute("data-theme");
   });
 
-  it("defaults to GitHub Dark and offers one alternative", () => {
+  it("defaults to GitHub Dark and offers the light theme and four dark presets", () => {
     expect(DEFAULT_THEME).toBe("github-dark");
-    expect(THEMES.map((t) => t.id)).toEqual(["github-dark", "github-light"]);
+    expect(THEMES.map((t) => t.id)).toEqual([
+      "github-dark",
+      "github-light",
+      "dracula",
+      "nord",
+      "tokyo-night",
+      "catppuccin-mocha",
+    ]);
+    expect(normalizeTheme("nord")).toBe("nord");
     expect(THEMES[0].label).toBe("GitHub Dark");
     expect(normalizeTheme("github-light")).toBe("github-light");
     expect(normalizeTheme("solarized")).toBe("github-dark");
@@ -69,6 +80,54 @@ describe("themes (U8)", () => {
     expect(terminalTheme("github-dark").background).toBe("#0d1117");
     expect(terminalTheme("github-light").background).toBe("#ffffff");
     expect(terminalTheme("github-light").foreground).toBe("#1f2328");
+    expect(terminalTheme("dracula").background).toBe("#282a36");
+  });
+});
+
+describe("custom colours", () => {
+  afterEach(() => {
+    localStorage.clear();
+    document.documentElement.removeAttribute("style");
+  });
+
+  it("keeps only #rrggbb values for known keys", () => {
+    expect(
+      normalizeCustomColors({ background: "#AABBCC", text: "red", done: "#123", other: "#000000" }),
+    ).toEqual({ background: "#aabbcc" });
+    expect(normalizeCustomColors(null)).toEqual({});
+    expect(normalizeCustomColors("x")).toEqual({});
+  });
+
+  it("sets the variables on the root, caches them, and removes them on reset", () => {
+    const style = document.documentElement.style;
+    applyCustomColors({ background: "#101010", working: "#00ff00", needsYou: "#ffff00" });
+    expect(style.getPropertyValue("--bg")).toBe("#101010");
+    expect(style.getPropertyValue("--accent")).toBe("#00ff00");
+    expect(style.getPropertyValue("--attention")).toBe("#ffff00");
+    expect(style.getPropertyValue("--fg")).toBe("");
+    expect(cachedCustomColors()).toEqual({
+      background: "#101010",
+      working: "#00ff00",
+      needsYou: "#ffff00",
+    });
+    applyCustomColors({});
+    expect(style.getPropertyValue("--bg")).toBe("");
+    expect(style.getPropertyValue("--accent")).toBe("");
+    expect(cachedCustomColors()).toEqual({});
+  });
+
+  it("reads a broken cache as no colours", () => {
+    localStorage.setItem("dcterminal.customColors", "{not json");
+    expect(cachedCustomColors()).toEqual({});
+  });
+
+  it("puts the custom background and text on the terminal palette", () => {
+    const theme = terminalTheme("nord", { background: "#000000", text: "#ffffff" });
+    expect(theme.background).toBe("#000000");
+    expect(theme.cursorAccent).toBe("#000000");
+    expect(theme.foreground).toBe("#ffffff");
+    expect(theme.red).toBe("#bf616a");
+    expect(terminalTheme("nord", { accent: "#123456" })).toBe(terminalTheme("nord"));
   });
 });
 

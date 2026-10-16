@@ -244,6 +244,7 @@ export function installTauriMock(config: MockConfig): void {
       tipsSeen: ["welcome", "first-use"],
       padHeight: 0,
       padHidden: false,
+      customColors: {},
     }),
     set_ui_settings: (a) => a.ui,
     get_model_settings: () => ({

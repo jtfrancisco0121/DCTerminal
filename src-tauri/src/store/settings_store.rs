@@ -409,9 +409,59 @@ pub struct UiSettings {
     /// U2: scratch pad hidden (shared by chat and terminal tabs).
     #[serde(default)]
     pub pad_hidden: bool,
+    /// `#rrggbb` overrides on top of the theme (Settings > Appearance).
+    #[serde(default)]
+    pub custom_colors: CustomColors,
 }
 
-pub const UI_THEMES: &[&str] = &["github-dark", "github-light", "system"];
+/// Custom colours. Each one is a `#rrggbb` value or unset (the preset's own).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomColors {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub needs_you: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done: Option<String>,
+}
+
+/// Keeps a `#rrggbb` value (lower-cased); anything else is dropped.
+fn clean_hex_color(value: Option<String>) -> Option<String> {
+    let value = value?;
+    let digits = value.strip_prefix('#')?;
+    (digits.len() == 6 && digits.chars().all(|c| c.is_ascii_hexdigit()))
+        .then(|| value.to_ascii_lowercase())
+}
+
+impl CustomColors {
+    fn cleaned(self) -> Self {
+        Self {
+            background: clean_hex_color(self.background),
+            text: clean_hex_color(self.text),
+            accent: clean_hex_color(self.accent),
+            working: clean_hex_color(self.working),
+            needs_you: clean_hex_color(self.needs_you),
+            done: clean_hex_color(self.done),
+        }
+    }
+}
+
+pub const UI_THEMES: &[&str] = &[
+    "github-dark",
+    "github-light",
+    "dracula",
+    "nord",
+    "tokyo-night",
+    "catppuccin-mocha",
+    "system",
+];
 const TIPS_SEEN_LIMIT: usize = 50;
 const PAD_MIN_HEIGHT: u32 = 40;
 const PAD_MAX_HEIGHT: u32 = 600;
@@ -428,6 +478,7 @@ impl Default for UiSettings {
             tips_seen: Vec::new(),
             pad_height: 0,
             pad_hidden: false,
+            custom_colors: CustomColors::default(),
         }
     }
 }
@@ -689,7 +740,7 @@ impl SettingsStore {
     }
 
     /// Unknown themes fall back to GitHub Dark; tip ids are trimmed,
-    /// de-duplicated, and capped.
+    /// de-duplicated, and capped; custom colours that are not `#rrggbb` are dropped.
     pub fn set_ui(&mut self, next: UiSettings) -> Result<(), String> {
         let theme = if UI_THEMES.contains(&next.theme.as_str()) {
             next.theme
@@ -714,6 +765,7 @@ impl SettingsStore {
             tips_seen,
             pad_height,
             pad_hidden: next.pad_hidden,
+            custom_colors: next.custom_colors.cleaned(),
         };
         self.save()
     }
@@ -799,9 +851,22 @@ mod tests {
                 tips_seen: vec!["palette".into(), "palette".into(), " ".into(), "pad".into()],
                 pad_height: 5000,
                 pad_hidden: true,
+                custom_colors: CustomColors {
+                    background: Some("#1A2B3C".into()),
+                    text: Some("red".into()),
+                    done: Some("#12345".into()),
+                    ..CustomColors::default()
+                },
             })
             .unwrap();
         assert_eq!(store.ui().theme, "github-dark");
+        assert_eq!(
+            store.ui().custom_colors,
+            CustomColors {
+                background: Some("#1a2b3c".into()),
+                ..CustomColors::default()
+            }
+        );
         assert_eq!(store.ui().tips_seen, vec!["palette", "pad"]);
         assert_eq!(store.ui().pad_height, 600);
         assert!(store.ui().pad_hidden);
@@ -813,6 +878,7 @@ mod tests {
             .unwrap();
         let again = SettingsStore::open(&dir).unwrap();
         assert_eq!(again.ui().theme, "github-light");
+        assert_eq!(again.ui().custom_colors.background.as_deref(), Some("#1a2b3c"));
         assert!(again.ui().shortcut_bar);
         let old: SettingsFile =
             serde_json::from_value(serde_json::json!({ "schemaVersion": 1 })).unwrap();

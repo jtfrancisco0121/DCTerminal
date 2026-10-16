@@ -10,7 +10,14 @@ import { Terminal } from "@xterm/xterm";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { lastLines, TERMINAL_TAIL_LINES } from "./text";
 import { ptySetScheme } from "../bridge";
-import { cachedTheme, terminalTheme, THEMES, normalizeTheme } from "../theme";
+import {
+  cachedCustomColors,
+  cachedTheme,
+  terminalTheme,
+  THEMES,
+  normalizeTheme,
+  type CustomColors,
+} from "../theme";
 import { detectPlatform } from "../keymap";
 import { findPathLinks, isLinkModifier } from "./links";
 
@@ -27,7 +34,7 @@ let focusedId = "";
 const searchOpeners = new Map<string, () => void>();
 const refitters = new Map<string, () => void>();
 
-let currentTheme = terminalTheme(cachedTheme());
+let currentTheme = terminalTheme(cachedTheme(), cachedCustomColors());
 
 let linkOpenError: ((message: string) => void) | null = null;
 
@@ -36,9 +43,9 @@ export function setLinkOpenErrorHandler(handler: ((message: string) => void) | n
   linkOpenError = handler;
 }
 
-/** U8: repaint every terminal (and future ones) in the app theme. */
-export function setTerminalTheme(id: string): void {
-  currentTheme = terminalTheme(id);
+/** U8: repaint every terminal (and future ones) in the app theme and custom colours. */
+export function setTerminalTheme(id: string, custom?: CustomColors | null): void {
+  currentTheme = terminalTheme(id, custom);
   const light = THEMES.find((item) => item.id === normalizeTheme(id))?.scheme === "light";
   try {
     void ptySetScheme(light).catch(() => {});
@@ -48,12 +55,41 @@ export function setTerminalTheme(id: string): void {
   for (const entry of parked.values()) entry.term.options.theme = currentTheme;
 }
 
+/** Bundled with the app (@fontsource-variable/jetbrains-mono, loaded in main.tsx). */
+const BUNDLED_FONT = '"JetBrains Mono Variable", ';
 const MAC_FONTS = '"SF Mono", SFMono-Regular, Menlo, ';
 const FONTS = '"Cascadia Code", "Cascadia Mono", Consolas, ui-monospace, monospace';
 
-/** SF Mono and Menlo first on macOS; the Windows stack elsewhere. */
+/** The bundled JetBrains Mono first; then SF Mono and Menlo on macOS, the Windows stack elsewhere. */
 export function terminalFontFamily(platform: string): string {
-  return /mac/i.test(platform) ? MAC_FONTS + FONTS : FONTS;
+  return BUNDLED_FONT + (/mac/i.test(platform) ? MAC_FONTS + FONTS : FONTS);
+}
+
+let fontWatchStarted = false;
+
+/**
+ * xterm measures the cell size when it opens. A terminal opened before the
+ * bundled font finished loading measured a fallback font, so once the font
+ * is ready every open terminal re-measures and refits.
+ */
+function watchBundledFont(): void {
+  if (fontWatchStarted) return;
+  fontWatchStarted = true;
+  try {
+    void document.fonts
+      ?.load('14px "JetBrains Mono Variable"')
+      .then(() => {
+        for (const [id, entry] of parked) {
+          const family = entry.term.options.fontFamily ?? terminalFontFamily(navigator.platform);
+          entry.term.options.fontFamily = "monospace";
+          entry.term.options.fontFamily = family;
+          refitters.get(id)?.();
+        }
+      })
+      .catch(() => {});
+  } catch {
+    // No font loading API (unit tests): fallbacks are measured as usual.
+  }
 }
 
 function prefersReducedMotion(): boolean {
@@ -137,6 +173,7 @@ export function ensureParkedTerminal(id: string, fontSize: number): ParkedTermin
     existing.term.options.fontSize = fontSize;
     return existing;
   }
+  watchBundledFont();
   const host = document.createElement("div");
   host.className = "xterm-host";
   const term = new Terminal({

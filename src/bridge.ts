@@ -6,6 +6,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ensureWindow } from "./windowScope";
 import type { NotificationSettings } from "./notify/agentNotify";
+import type { CustomColors } from "./theme";
 import type {
   ProviderId,
   ProviderReport,
@@ -1637,6 +1638,8 @@ export type UiSettings = {
   padHeight: number;
   /** U2: scratch pad hidden in chat and terminal tabs. */
   padHidden: boolean;
+  /** #rrggbb overrides on top of the theme (Settings > Appearance). */
+  customColors?: CustomColors;
 };
 
 export const DEFAULT_UI_SETTINGS: UiSettings = {

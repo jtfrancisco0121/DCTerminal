@@ -22,7 +22,7 @@ describe("useUiSettings (U7/U8)", () => {
   it("applies the saved theme to the app and terminals, then saves changes", async () => {
     const { result } = renderHook(() => useUiSettings());
     await waitFor(() => expect(document.documentElement.dataset.theme).toBe("github-light"));
-    expect(setTerminalTheme).toHaveBeenCalledWith("github-light");
+    expect(setTerminalTheme).toHaveBeenCalledWith("github-light", {});
     act(() => result.current.update({ theme: "github-dark", shortcutBar: true }));
     expect(document.documentElement.dataset.theme).toBe("github-dark");
     expect(result.current.ui.shortcutBar).toBe(true);
@@ -63,7 +63,7 @@ describe("useUiSettings (U7/U8)", () => {
       dark = true;
       act(() => listeners.forEach((fn) => fn()));
       expect(document.documentElement.dataset.theme).toBe("github-dark");
-      expect(setTerminalTheme).toHaveBeenLastCalledWith("github-dark");
+      expect(setTerminalTheme).toHaveBeenLastCalledWith("github-dark", {});
       // An old saved theme stops following the OS.
       act(() => result.current.update({ theme: "github-light" }));
       expect(listeners.size).toBe(0);
