@@ -22,6 +22,7 @@ import { terminalHeaderFor, terminalHeaderState, type TerminalHeaderDeps } from 
 import { roleDisplayName } from "../handoff/transitions";
 import { headerStateOf } from "../terminal/headerState";
 import { PaneStrip } from "./PaneStrip";
+import { PreviewSlot } from "../preview/PreviewLayer";
 import { isClaudeTerminal, terminalLaunchOf } from "./tabHelpers";
 
 /** What the second pane and the grid cells read and change in the workspace. */
@@ -144,7 +145,10 @@ export function createPaneRenderers({
   ): ReactNode => {
     const rt = runtimes[tab.id];
     let body: ReactNode;
-    if (tab.kind === "terminal") {
+    if (tab.kind === "preview") {
+      // The page itself stays loaded in the PreviewLayer and is laid over this.
+      body = <PreviewSlot tabId={tab.id} />;
+    } else if (tab.kind === "terminal") {
       const tabLaunch = terminalLaunchOf(tab);
       body = (
         <TerminalView

@@ -2,6 +2,7 @@ import type { Dispatch, ReactNode, SetStateAction } from "react";
 import type { TabSummary } from "../bridge";
 import { GridSplit } from "../components/GridSplit";
 import { WorkspaceSplit } from "../components/WorkspaceSplit";
+import { PreviewLayer, PreviewSlotProvider, usePreviewSlots } from "../preview/PreviewLayer";
 import { clampSplitSize, type SplitState } from "../tabChrome";
 import type { PaneRenderers } from "./workspacePanes";
 
@@ -29,6 +30,8 @@ export type WorkspaceShellProps = {
     PaneRenderers,
     "gridTone" | "gridCellBar" | "renderGridCell" | "renderSecondary" | "paneStrip"
   >;
+  /** A preview tab's page; it stays mounted while the tab exists (see PreviewLayer). */
+  renderPreview: (tabId: string) => ReactNode;
   /** The active tab's view. */
   children?: ReactNode;
 };
@@ -55,81 +58,98 @@ export function WorkspaceShell({
   focusedPane,
   setFocusedPane,
   panes,
+  renderPreview,
   children,
 }: WorkspaceShellProps) {
   const { gridTone, gridCellBar, renderGridCell, renderSecondary, paneStrip } = panes;
+  const { slots, register } = usePreviewSlots();
+  // Keyed, so it is the same layer (and the same iframes) with or without Settings.
+  const previews = (
+    <PreviewLayer
+      key="preview-layer"
+      tabIds={savedTabs.filter((tab) => tab.kind === "preview").map((tab) => tab.id)}
+      slots={slots}
+      render={renderPreview}
+    />
+  );
   if (settings !== undefined) {
     return (
-      <section className="workspace-shell">
-        {tabBar}
-        {settings}
-        {overlays}
-      </section>
+      <PreviewSlotProvider register={register}>
+        <section className="workspace-shell">
+          {tabBar}
+          {settings}
+          {overlays}
+          {previews}
+        </section>
+      </PreviewSlotProvider>
     );
   }
   return (
-    <section className="workspace-shell">
-      {tabBar}
-      <div className="workspace-body">
-        {filePanel}
-        <div className="workspace-main">
-          {showGrid ? (
-            <GridSplit
-              ids={split.gridTabIds ?? []}
-              renderCell={(tabId) => {
-                if (tabId === activeTabId && activeTabSummary) {
-                  return (
-                    <div
-                      className={`split-pane split-pane-primary split-pane-focused grid-cell grid-cell-active grid-cell-${gridTone(activeTabSummary)}`}
-                      data-pane="primary"
-                    >
-                      {gridCellBar(activeTabSummary)}
-                      <div className="grid-cell-main">{children}</div>
-                    </div>
-                  );
-                }
-                const tab = savedTabs.find((item) => item.id === tabId);
-                return tab ? renderGridCell(tab) : null;
-              }}
-            />
-          ) : (
-            <WorkspaceSplit
-              mode={secondaryTab ? split.mode : "single"}
-              primarySize={clampSplitSize(split.primarySize)}
-              onResize={(size) => {
-                const next = clampSplitSize(size);
-                setSplit((current) =>
-                  Math.abs(clampSplitSize(current.primarySize) - next) < 0.5
-                    ? current
-                    : { ...current, primarySize: next },
-                );
-              }}
-              primary={
-                <div
-                  className={
-                    !secondaryTab
-                      ? "split-pane split-pane-primary"
-                      : focusedPane === "primary"
-                        ? "split-pane split-pane-primary split-pane-focused"
-                        : "split-pane split-pane-primary split-pane-dim"
+    <PreviewSlotProvider register={register}>
+      <section className="workspace-shell">
+        {tabBar}
+        <div className="workspace-body">
+          {filePanel}
+          <div className="workspace-main">
+            {showGrid ? (
+              <GridSplit
+                ids={split.gridTabIds ?? []}
+                renderCell={(tabId) => {
+                  if (tabId === activeTabId && activeTabSummary) {
+                    return (
+                      <div
+                        className={`split-pane split-pane-primary split-pane-focused grid-cell grid-cell-active grid-cell-${gridTone(activeTabSummary)}`}
+                        data-pane="primary"
+                      >
+                        {gridCellBar(activeTabSummary)}
+                        <div className="grid-cell-main">{children}</div>
+                      </div>
+                    );
                   }
-                  data-pane="primary"
-                  onFocusCapture={() => setFocusedPane("primary")}
-                  onMouseDown={() => setFocusedPane("primary")}
-                >
-                  {/* Pane 1's strip shows only while a second pane is open. */}
-                  {secondaryTab && activeTabSummary && paneStrip(activeTabSummary, 1, focusedPane === "primary")}
-                  {children}
-                </div>
-              }
-              secondary={secondaryTab ? renderSecondary(secondaryTab) : null}
-            />
-          )}
+                  const tab = savedTabs.find((item) => item.id === tabId);
+                  return tab ? renderGridCell(tab) : null;
+                }}
+              />
+            ) : (
+              <WorkspaceSplit
+                mode={secondaryTab ? split.mode : "single"}
+                primarySize={clampSplitSize(split.primarySize)}
+                onResize={(size) => {
+                  const next = clampSplitSize(size);
+                  setSplit((current) =>
+                    Math.abs(clampSplitSize(current.primarySize) - next) < 0.5
+                      ? current
+                      : { ...current, primarySize: next },
+                  );
+                }}
+                primary={
+                  <div
+                    className={
+                      !secondaryTab
+                        ? "split-pane split-pane-primary"
+                        : focusedPane === "primary"
+                          ? "split-pane split-pane-primary split-pane-focused"
+                          : "split-pane split-pane-primary split-pane-dim"
+                    }
+                    data-pane="primary"
+                    onFocusCapture={() => setFocusedPane("primary")}
+                    onMouseDown={() => setFocusedPane("primary")}
+                  >
+                    {/* Pane 1's strip shows only while a second pane is open. */}
+                    {secondaryTab && activeTabSummary && paneStrip(activeTabSummary, 1, focusedPane === "primary")}
+                    {children}
+                  </div>
+                }
+                secondary={secondaryTab ? renderSecondary(secondaryTab) : null}
+              />
+            )}
+          </div>
         </div>
-      </div>
-      {firstUseTip}
-      {statusBar}
-      {overlays}
-    </section>
+        {firstUseTip}
+        {statusBar}
+        {overlays}
+        {previews}
+      </section>
+    </PreviewSlotProvider>
   );
 }

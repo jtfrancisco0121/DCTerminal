@@ -4979,6 +4979,22 @@ mark.search-hit-current {
   height: 100%;
 }
 
+/* A preview's page lives in .preview-layer-frame (kept loaded) and is laid
+   over the .preview-slot of the pane that shows it. */
+.preview-slot {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+
+.preview-layer-frame {
+  position: fixed;
+  z-index: var(--z-sticky);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
 .preview-toolbar {
   display: flex;
   align-items: center;

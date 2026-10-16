@@ -139,6 +139,7 @@ import {
 } from "./components/HandoffDialog";
 import { PipelineOverview } from "./components/PipelineOverview";
 import { PreviewTab } from "./components/PreviewTab";
+import { PreviewSlot } from "./preview/PreviewLayer";
 import { DEFAULT_PREVIEW_URL } from "./preview/previewUrl";
 import { relativeToCwd } from "./terminal/links";
 import { destroyTerminal, readTerminalHandoff } from "./components/TerminalView";
@@ -5785,6 +5786,14 @@ export function StartupForm({
     focusedPane,
     setFocusedPane,
     panes,
+    renderPreview: (tabId: string) => (
+      <PreviewTab
+        tabId={tabId}
+        url={savedTabs.find((tab) => tab.id === tabId)?.previewUrl}
+        onNotice={(title, body) => showNotice(title, body, "failed")}
+        onSaved={() => void refreshTabs()}
+      />
+    ),
   };
   const shell = (content: ReactNode) => <WorkspaceShell {...shellProps}>{content}</WorkspaceShell>;
   const settingsShell = () => <WorkspaceShell {...shellProps} settings={settingsPage} />;
@@ -5824,12 +5833,7 @@ export function StartupForm({
   if (activeTabSummary?.kind === "preview" && !settingsOpen) {
     return shell(
       <div className="status-card status-card-session-full">
-        <PreviewTab
-          tabId={activeTabSummary.id}
-          url={activeTabSummary.previewUrl}
-          onNotice={(title, body) => showNotice(title, body, "failed")}
-          onSaved={() => void refreshTabs()}
-        />
+        <PreviewSlot tabId={activeTabSummary.id} />
       </div>,
     );
   }
