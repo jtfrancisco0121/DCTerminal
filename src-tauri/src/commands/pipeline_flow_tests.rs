@@ -374,7 +374,7 @@ fn an_answer_queued_after_a_turn_ended_is_not_sent_into_the_next_turn() {
     let (client, result, _, _) = start(client, "role_implementer", "first", vec![]).finish();
     result.unwrap();
     client.outbox().lock().unwrap().push((
-        99,
+        99.into(),
         json!({ "outcome": { "outcome": "selected", "optionId": "allow_always" } }),
     ));
     let run = start(client, "role_implementer", "right after", vec![]);

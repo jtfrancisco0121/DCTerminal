@@ -199,8 +199,8 @@ impl Running {
         }
     }
 
-    pub(super) fn answer(&self, id: u64, result: Value) {
-        self.outbox.lock().unwrap().push((id, result));
+    pub(super) fn answer(&self, id: impl Into<crate::acp::RequestId>, result: Value) {
+        self.outbox.lock().unwrap().push((id.into(), result));
     }
 
     pub(super) fn finish(
@@ -564,7 +564,7 @@ fn a_turn_waiting_on_a_card_outlives_the_idle_limit_and_resumes_from_the_outbox(
             outbox
                 .lock()
                 .unwrap()
-                .push((70, cancelled_permission_result()));
+                .push((70.into(), cancelled_permission_result()));
         })
     };
     let cancel = AtomicBool::new(false);
@@ -940,7 +940,7 @@ fn activity_log_records_tool_calls_and_permission_decisions() {
             let enriched = cache.enrich_params(&request["params"]);
             let patch = patch_for_permission(
                 "tab1",
-                120,
+                &120.into(),
                 &enriched,
                 Some("auto_allow"),
                 "2026-10-10T00:00:01Z",

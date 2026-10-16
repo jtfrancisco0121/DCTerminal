@@ -1,5 +1,5 @@
-use crate::acp::connection::{stderr_text, ClientFollowups, StderrTail};
-use crate::acp::AcpClient;
+use crate::acp::connection::{stderr_text, AgentOutbox, ClientFollowups, StderrTail};
+use crate::acp::{AcpClient, RequestId};
 use crate::attachments::AttachmentStore;
 use crate::commands::prompt_worker::{spawn_prompt_turn, TurnImages};
 use crate::paths::validate_working_folder;
@@ -64,11 +64,11 @@ pub struct LiveSession {
     /// Copied from the client so the log drawer can read it mid-turn.
     pub stderr_tail: StderrTail,
     pub cancel: Arc<AtomicBool>,
-    pub outbox: Arc<Mutex<Vec<(u64, Value)>>>,
+    pub outbox: AgentOutbox,
     pub followups: ClientFollowups,
-    pub pending_permissions: HashMap<u64, PendingPermission>,
-    pub pending_plans: HashMap<u64, PendingPlan>,
-    pub pending_questions: HashMap<u64, ()>,
+    pub pending_permissions: HashMap<RequestId, PendingPermission>,
+    pub pending_plans: HashMap<RequestId, PendingPlan>,
+    pub pending_questions: HashMap<RequestId, ()>,
     pub tool_call_cache: ToolCallCache,
     pub pending_startup_prompt: Option<String>,
     pub startup_injected: bool,
@@ -119,9 +119,9 @@ impl LiveSession {
     }
 
     pub fn shutdown(&mut self) {
-        let pending: Vec<u64> = self.pending_permissions.drain().map(|(id, _)| id).collect();
-        let plans: Vec<(u64, PendingPlan)> = self.pending_plans.drain().collect();
-        let questions: Vec<u64> = self.pending_questions.drain().map(|(id, _)| id).collect();
+        let pending: Vec<RequestId> = self.pending_permissions.drain().map(|(id, _)| id).collect();
+        let plans: Vec<(RequestId, PendingPlan)> = self.pending_plans.drain().collect();
+        let questions: Vec<RequestId> = self.pending_questions.drain().map(|(id, _)| id).collect();
         if let Ok(mut outbox) = self.outbox.lock() {
             for id in pending {
                 outbox.push((id, cancelled_permission_result()));
@@ -426,9 +426,9 @@ pub fn dev_session_cancel(
     let session = guard
         .get_mut(&tab_id)
         .ok_or_else(|| "no active session".to_string())?;
-    let pending: Vec<(u64, PendingPermission)> = session.pending_permissions.drain().collect();
-    let plans: Vec<(u64, PendingPlan)> = session.pending_plans.drain().collect();
-    let questions: Vec<u64> = session.pending_questions.drain().map(|(id, _)| id).collect();
+    let pending: Vec<(RequestId, PendingPermission)> = session.pending_permissions.drain().collect();
+    let plans: Vec<(RequestId, PendingPlan)> = session.pending_plans.drain().collect();
+    let questions: Vec<RequestId> = session.pending_questions.drain().map(|(id, _)| id).collect();
     let outbox = Arc::clone(&session.outbox);
     let cancel = Arc::clone(&session.cancel);
     drop(guard);
