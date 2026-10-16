@@ -562,6 +562,24 @@ export function installTauriMock(config: MockConfig): void {
         : lanes.filter((l) => l.status === "waiting" && (l.dependsOn ?? []).every(approved)).map((l) => l.id);
       return { complete, unblocked };
     },
+    pipeline_turn_finished: (a) => {
+      const run = findRun(a.runId);
+      if (run) {
+        run.events = [
+          ...(run.events ?? []),
+          {
+            at: now(),
+            kind: "turn",
+            stageId: a.stageId,
+            roleId: a.roleId,
+            round: run.round ?? 1,
+            summary: "Turn finished",
+            outcome: a.verdict ?? null,
+          },
+        ];
+      }
+      return null;
+    },
     pipeline_note: (a) => {
       const run = findRun(a.runId);
       if (run) {

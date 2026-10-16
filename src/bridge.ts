@@ -341,13 +341,18 @@ export type RunLane = {
 
 export type RunEvent = {
   at: string;
-  /** `handoff`, `loopBack`, `gate`, `autopilot`, `stop`, `complete`, `note`. */
+  /** `handoff`, `loopBack`, `gate`, `autopilot`, `stop`, `complete`, `note`, `turn`. */
   kind: string;
   stageId?: string | null;
   roleId?: string | null;
   round: number;
   summary: string;
   detail?: string | null;
+  /**
+   * A gate's `passed`/`failed`/`skipped`, an autopilot decision's action,
+   * a turn's verdict, `planApproved` on a promoted plan. Missing on older events.
+   */
+  outcome?: string | null;
 };
 
 export type GateResult = {
@@ -1064,6 +1069,20 @@ export async function pipelineNote(
     summary: note.summary,
     detail: note.detail ?? null,
     stop: note.stop,
+  });
+}
+
+/** A stage's terminal finished a turn: one `turn` line in the run's ledger (run lanes). */
+export async function pipelineTurnFinished(
+  runId: string,
+  turn: { stageId: string; roleId: string; lane?: string | null; verdict?: string | null },
+): Promise<void> {
+  return invoke("pipeline_turn_finished", {
+    runId,
+    stageId: turn.stageId,
+    roleId: turn.roleId,
+    lane: turn.lane ?? null,
+    verdict: turn.verdict ?? null,
   });
 }
 

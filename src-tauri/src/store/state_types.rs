@@ -212,7 +212,8 @@ pub const MAX_EVENT_DETAIL_CHARS: usize = 8_000;
 #[serde(rename_all = "camelCase")]
 pub struct RunEvent {
     pub at: String,
-    /// `handoff`, `loopBack`, `gate`, `autopilot`, `stop`, `complete`, `note`.
+    /// `handoff`, `loopBack`, `gate`, `autopilot`, `stop`, `complete`,
+    /// `note`, `turn` (a stage's terminal finished a turn).
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stage_id: Option<String>,
@@ -222,6 +223,11 @@ pub struct RunEvent {
     pub summary: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// Machine-readable result, for the run lanes: a gate's `passed` /
+    /// `failed` / `skipped`, an autopilot decision's action, a turn's
+    /// verdict. Missing on older events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
 }
 
 /// A stage's latest gate results.
@@ -262,6 +268,19 @@ impl PipelineRun {
         summary: impl Into<String>,
         detail: Option<String>,
     ) {
+        self.log_outcome(kind, stage_id, role_id, summary, detail, None);
+    }
+
+    /// `log` with a machine-readable `outcome` (see `RunEvent::outcome`).
+    pub fn log_outcome(
+        &mut self,
+        kind: &str,
+        stage_id: Option<&str>,
+        role_id: Option<&str>,
+        summary: impl Into<String>,
+        detail: Option<String>,
+        outcome: Option<String>,
+    ) {
         let detail = detail.map(|text| {
             let chars = text.chars().count();
             if chars > MAX_EVENT_DETAIL_CHARS {
@@ -279,6 +298,7 @@ impl PipelineRun {
             round: self.round.max(1),
             summary: summary.into(),
             detail: detail.filter(|text| !text.trim().is_empty()),
+            outcome: outcome.filter(|text| !text.trim().is_empty()),
         });
         if self.events.len() > MAX_RUN_EVENTS {
             let drop = self.events.len() - MAX_RUN_EVENTS;

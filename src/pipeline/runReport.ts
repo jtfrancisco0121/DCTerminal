@@ -14,6 +14,7 @@ const EVENT_LABEL: Record<string, string> = {
   stop: "Waiting for you",
   complete: "Complete",
   note: "Note",
+  turn: "Turn finished",
 };
 
 export function eventLabel(kind: string): string {

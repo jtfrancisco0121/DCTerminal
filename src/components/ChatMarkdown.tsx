@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { highlightCode } from "../files/highlight";
+import { MermaidDiagram } from "./MermaidDiagram";
 
 /** Plain text of rendered markdown children (a code block's source). */
 function textOf(node: ReactNode): string {
@@ -39,12 +40,22 @@ export function CopyButton({ text, label = "Copy" }: { text: string; label?: str
   );
 }
 
-/** A fenced code block: highlighted when the language is known, with a copy button. */
+/**
+ * A fenced code block: highlighted when the language is known, with a copy
+ * button. A ```mermaid fence draws as a diagram.
+ */
 export function CodeBlock({ children }: { children?: ReactNode }) {
   const text = textOf(children).replace(/\n$/, "");
   const className =
     (children as { props?: { className?: string } } | undefined)?.props?.className ?? "";
   const lang = /language-([\w+-]+)/.exec(className)?.[1] ?? "";
+  if (lang.toLowerCase() === "mermaid") {
+    return <MermaidDiagram source={text} fallback={<HighlightedBlock text={text} lang="" />} />;
+  }
+  return <HighlightedBlock text={text} lang={lang} />;
+}
+
+function HighlightedBlock({ text, lang }: { text: string; lang: string }) {
   const html = useMemo(
     () => (lang ? highlightCode(text, `code.${lang.toLowerCase()}`) : null),
     [lang, text],

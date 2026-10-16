@@ -25,7 +25,10 @@ export type WorkspaceShellProps = {
   secondaryTab: TabSummary | undefined;
   focusedPane: "primary" | "secondary";
   setFocusedPane: (pane: "primary" | "secondary") => void;
-  panes: Pick<PaneRenderers, "gridTone" | "gridCellBar" | "renderGridCell" | "renderSecondary">;
+  panes: Pick<
+    PaneRenderers,
+    "gridTone" | "gridCellBar" | "renderGridCell" | "renderSecondary" | "paneStrip"
+  >;
   /** The active tab's view. */
   children?: ReactNode;
 };
@@ -54,7 +57,7 @@ export function WorkspaceShell({
   panes,
   children,
 }: WorkspaceShellProps) {
-  const { gridTone, gridCellBar, renderGridCell, renderSecondary } = panes;
+  const { gridTone, gridCellBar, renderGridCell, renderSecondary, paneStrip } = panes;
   if (settings !== undefined) {
     return (
       <section className="workspace-shell">
@@ -104,14 +107,18 @@ export function WorkspaceShell({
               primary={
                 <div
                   className={
-                    secondaryTab && focusedPane === "primary"
-                      ? "split-pane split-pane-primary split-pane-focused"
-                      : "split-pane split-pane-primary"
+                    !secondaryTab
+                      ? "split-pane split-pane-primary"
+                      : focusedPane === "primary"
+                        ? "split-pane split-pane-primary split-pane-focused"
+                        : "split-pane split-pane-primary split-pane-dim"
                   }
                   data-pane="primary"
                   onFocusCapture={() => setFocusedPane("primary")}
                   onMouseDown={() => setFocusedPane("primary")}
                 >
+                  {/* Pane 1's strip shows only while a second pane is open. */}
+                  {secondaryTab && activeTabSummary && paneStrip(activeTabSummary, 1, focusedPane === "primary")}
                   {children}
                 </div>
               }

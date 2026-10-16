@@ -6195,3 +6195,363 @@ button.chain-label {
   margin: 0.25rem 0;
   font-size: var(--text-sm);
 }
+
+/* See the run: Mermaid diagrams, rendered markdown files, the plan pane, run
+   lanes and split/grid pane headers. */
+.mermaid-diagram {
+  margin: 0.5rem 0;
+  overflow-x: auto;
+}
+
+.mermaid-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.mermaid-error {
+  margin: 0.25rem 0;
+}
+
+.file-markdown {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.4rem 0.75rem;
+}
+
+.plan-split {
+  flex: 1;
+  min-height: 0;
+}
+
+.plan-split-main,
+.plan-split-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.plan-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  background: var(--bg-elev);
+}
+
+.plan-pane-live {
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  background: var(--success-subtle);
+  color: var(--success);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+
+.plan-pane-updated {
+  margin: var(--space-1) var(--space-2) 0;
+  font-size: var(--text-xs);
+}
+
+.plan-pane-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-2) var(--space-3);
+}
+
+.plan-pane-source {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.plan-pane-toggle[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
+
+.run-lanes {
+  margin: var(--space-4) 0;
+}
+
+.run-lanes-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.run-lanes-head h3 {
+  margin: 0 0 var(--space-2);
+}
+
+.run-lanes-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+}
+
+.run-lanes-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.run-lanes-swatch {
+  position: relative;
+  display: inline-block;
+  width: 14px;
+  height: 8px;
+}
+
+.run-lanes-chart {
+  display: grid;
+  grid-template-columns: minmax(5rem, 9rem) 1fr;
+  row-gap: 2px;
+  column-gap: var(--space-2);
+  align-items: start;
+}
+
+.run-lanes-label {
+  font-size: var(--text-xs);
+  color: var(--fg-soft);
+  line-height: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-lanes-label-sub {
+  padding-left: var(--space-3);
+  color: var(--fg-subtle);
+}
+
+.run-lanes-track {
+  position: relative;
+  min-width: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.run-lanes-track-sub {
+  border-bottom-style: dashed;
+}
+
+.run-lane-bar {
+  position: absolute;
+  height: 14px;
+  box-sizing: border-box;
+  border-radius: var(--radius-sm);
+}
+
+.run-lane-bar-done {
+  background: var(--done);
+}
+
+.run-lane-bar-working {
+  background: var(--accent);
+}
+
+.run-lane-bar-wait {
+  border: 1px solid var(--attention);
+  background: repeating-linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--attention) 60%, transparent) 0 3px,
+    transparent 3px 6px
+  );
+}
+
+.run-lane-bar-sub {
+  height: 8px;
+  margin-top: 3px;
+  background: var(--fg-subtle);
+}
+
+.run-lane-bar-sub-open {
+  opacity: 0.7;
+}
+
+.run-lanes-swatch.run-lane-bar-sub {
+  margin-top: 0;
+}
+
+.run-lane-gate {
+  position: absolute;
+  height: 4px;
+  border-radius: var(--radius-sm);
+}
+
+.run-lane-gate-passed {
+  background: var(--success);
+}
+
+.run-lane-gate-failed {
+  background: var(--danger);
+}
+
+.run-lane-gate-skipped,
+.run-lane-gate-unknown {
+  background: var(--fg-subtle);
+}
+
+.run-lane-verdict {
+  position: absolute;
+  left: 100%;
+  top: 0;
+  margin-left: 3px;
+  padding: 0 3px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  line-height: 14px;
+  white-space: nowrap;
+  background: var(--bg);
+}
+
+.run-lane-verdict-changes {
+  color: var(--attention);
+  border: 1px solid var(--attention);
+}
+
+.run-lane-verdict-approved {
+  color: var(--success);
+  border: 1px solid var(--success);
+}
+
+.run-lanes-now {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1px dashed var(--accent-fg);
+  pointer-events: none;
+}
+
+.run-lanes-axis {
+  position: relative;
+  height: 1.25rem;
+  font-size: var(--text-2xs);
+  color: var(--fg-muted);
+}
+
+.run-lanes-tick,
+.run-lanes-now-label {
+  position: absolute;
+  top: 2px;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.run-lanes-tick:first-child {
+  transform: none;
+}
+
+.run-lanes-now-label {
+  top: 0.65rem;
+  color: var(--accent-fg);
+}
+
+.pane-strip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 1.25rem;
+  padding: 0 var(--space-2);
+  border-top: 2px solid transparent;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev);
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.pane-strip-focused {
+  border-top-color: var(--accent);
+  color: var(--fg-soft);
+}
+
+.pane-strip-number {
+  flex-shrink: 0;
+  min-width: 1rem;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  background: var(--bg-muted);
+  color: var(--fg);
+  font-weight: 600;
+  text-align: center;
+}
+
+.pane-strip-focused .pane-strip-number {
+  background: var(--accent-emphasis);
+  color: var(--fg-on-emphasis);
+}
+
+.pane-strip-role {
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.pane-strip-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pane-strip-branch {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.pane-strip-spacer {
+  flex: 1;
+}
+
+/* The terminal header's state pill, smaller (same tones). */
+.pane-strip-pill {
+  flex-shrink: 0;
+  padding: 0 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--fg-muted);
+  font-size: var(--text-2xs);
+  line-height: 1rem;
+}
+
+.pane-strip-pill-working {
+  border-color: var(--accent);
+  color: var(--accent-bright);
+}
+
+.pane-strip-pill-needs {
+  border-color: var(--warning);
+  color: var(--warning);
+}
+
+.pane-strip-pill-done {
+  border-color: var(--success);
+  color: var(--success);
+}
+
+.pane-strip-pill-exited {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+/* Unfocused panes of a split or grid step back a little. */
+.split-pane-dim > :not(.pane-strip) {
+  opacity: 0.82;
+  transition: opacity 0.12s ease;
+}
+
+.split-pane-dim:hover > :not(.pane-strip),
+.split-pane-dim:focus-within > :not(.pane-strip) {
+  opacity: 1;
+}

@@ -18,7 +18,9 @@ import {
 import { highlightCode } from "../files/highlight";
 import { formatSize, isSaveChord, joinRoot } from "../files/paths";
 import type { Platform } from "../keymap";
+import { ChatMarkdown } from "./ChatMarkdown";
 import { useConfirm } from "./confirm";
+import { isMarkdownPath, MarkdownViewSwitch, type MarkdownView } from "./MarkdownViewSwitch";
 import { PanelHeader } from "./PanelHeader";
 
 /** What the parent asks before it closes or swaps the panel away. */
@@ -76,6 +78,7 @@ export function FilePanel({
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const [conflict, setConflict] = useState(false);
+  const [markdownView, setMarkdownView] = useState<MarkdownView>("rendered");
   const [notice, setNotice] = useState<string | null>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const panelRef = useRef<HTMLElement>(null);
@@ -387,6 +390,9 @@ export function FilePanel({
     </div>
   );
 
+  const showMarkdownSwitch =
+    !!file && file.kind === "text" && !editing && isMarkdownPath(file.path);
+
   const preview = file && (
     <div className="file-preview">
       <div className="file-preview-bar">
@@ -395,6 +401,13 @@ export function FilePanel({
           {dirty ? " •" : ""}
         </span>
         <span className="hint">{formatSize(file.size)}</span>
+        {showMarkdownSwitch && (
+          <MarkdownViewSwitch
+            name={`file-markdown-view-${tabId}`}
+            view={markdownView}
+            onChange={setMarkdownView}
+          />
+        )}
         {file.kind === "text" && (
           <button
             type="button"
@@ -464,6 +477,10 @@ export function FilePanel({
               }
             }}
           />
+        ) : showMarkdownSwitch && markdownView === "rendered" ? (
+          <div className="file-markdown session-stream-agent">
+            <ChatMarkdown>{file.text ?? ""}</ChatMarkdown>
+          </div>
         ) : (
           <pre className="file-code hljs">
             <code

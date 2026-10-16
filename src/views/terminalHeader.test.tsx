@@ -118,4 +118,18 @@ describe("terminalHeaderFor (grid cells and second pane)", () => {
     expect(screen.queryByRole("button", { name: /Send to/ })).toBeNull();
     expect(folderName("C:\\Projects\\app\\")).toBe("app");
   });
+
+  it("offers the Plan pane toggle in a pipeline tab's own header only", () => {
+    const chain = { chainId: "ee_1", kind: "eagle1", step: 2, total: 4 } as TabSummary["chain"];
+    const { unmount } = render(<>{terminalHeaderFor(deps(), tab({ chain }), { viewSwitch: true })}</>);
+    expect(screen.getByRole("button", { name: "Plan" }).getAttribute("aria-pressed")).toBe("false");
+    unmount();
+    render(<>{terminalHeaderFor(deps(), tab({ chain }), { compact: true })}</>);
+    expect(screen.queryByRole("button", { name: "Plan" })).toBeNull();
+  });
+
+  it("has no Plan pane toggle off a pipeline", () => {
+    render(<>{terminalHeaderFor(deps(), tab(), { viewSwitch: true })}</>);
+    expect(screen.queryByRole("button", { name: "Plan" })).toBeNull();
+  });
 });
