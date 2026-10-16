@@ -337,6 +337,43 @@ export function installTauriMock(config: MockConfig): void {
     },
 
     get_app_state: () => snapshot(),
+    // Localhost preview tabs (src-tauri/src/store/preview_tabs.rs).
+    open_preview_tab: (a) => {
+      const url = String(a.url ?? "").trim();
+      if (!/^http:\/\/(localhost|127\.0\.0\.1)(:\d{1,5})?([/?#]|$)/i.test(url)) {
+        throw new Error("Preview tabs open http://localhost and http://127.0.0.1 addresses only.");
+      }
+      state.tabCounter += 1;
+      const tab = {
+        id: `tab-${state.tabCounter}`,
+        label: `Preview · ${url.replace(/^http:\/\//i, "").split(/[/?#]/)[0]}`,
+        roleId: "",
+        cwd: "",
+        phase: "draft",
+        mergedPromptChars: 0,
+        startupPromptSent: false,
+        hasTranscript: false,
+        folderStatus: "empty",
+        color: "",
+        kind: "preview",
+        terminalLaunch: "",
+        acpSessionId: null,
+        model: null,
+        provider: "claude",
+        chain: null,
+        previewUrl: url,
+      };
+      state.tabs.push(tab);
+      state.activeTabId = tab.id;
+      return snapshot();
+    },
+    set_preview_url: (a) => {
+      const tab = findTab(String(a.tabId));
+      if (!tab || tab.kind !== "preview") throw new Error(`unknown preview tab: ${a.tabId}`);
+      tab.previewUrl = String(a.url);
+      tab.label = `Preview · ${tab.previewUrl.replace(/^http:\/\//i, "").split(/[/?#]/)[0]}`;
+      return null;
+    },
     get_tab: (a) => record(findTab(a.tabId)),
     select_active_tab: (a) => {
       state.activeTabId = a.tabId;

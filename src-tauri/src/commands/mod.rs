@@ -39,6 +39,7 @@ pub use app_state::{
     chain_loop_back, open_chain_overview, set_layout, set_tab_chain, set_tab_color, set_tab_label,
     start_eagle_eye,
     sync_active_tab_form,
+    open_preview_tab, set_preview_url,
 };
 pub use changes::{changes_file_diff, changes_list, changes_revert, changes_snapshot, ChangesRoot};
 pub use cursor_cli::{list_claude_history, list_cursor_cli_history, open_in_cursor_cli};

@@ -6,6 +6,7 @@ mod forms_types;
 mod handoff_store;
 mod json_io;
 mod pipelines_store;
+pub(crate) mod preview_tabs;
 mod projects_store;
 #[cfg(test)]
 mod provider_tests;

@@ -4970,6 +4970,56 @@ mark.search-hit-current {
   font-size: var(--text-sm);
 }
 
+/* Localhost preview tab. */
+.preview-tab {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+.preview-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev);
+}
+
+.preview-toolbar .preview-address {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-top: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.preview-frame {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  /* Most dev pages assume a white canvas. */
+  background: #ffffff;
+}
+
+.preview-elsewhere {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-5);
+  text-align: center;
+}
+
+.preview-elsewhere p {
+  margin: 0;
+}
+
 .theme-custom-field input[type="color"] {
   width: 1.4rem;
   height: 1.4rem;

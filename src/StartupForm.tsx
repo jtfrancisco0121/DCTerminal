@@ -23,6 +23,7 @@ import {
   cursorApprovalMode,
   createExecutionPipelineTabs,
   createPipelineTabs,
+  openPreviewTab,
   diagnosticsReadLog,
   diagnosticsSetCapture,
   diagnosticsStatus,
@@ -137,6 +138,8 @@ import {
   SavedPlanDialog,
 } from "./components/HandoffDialog";
 import { PipelineOverview } from "./components/PipelineOverview";
+import { PreviewTab } from "./components/PreviewTab";
+import { DEFAULT_PREVIEW_URL } from "./preview/previewUrl";
 import { relativeToCwd } from "./terminal/links";
 import { destroyTerminal, readTerminalHandoff } from "./components/TerminalView";
 import {
@@ -1027,6 +1030,7 @@ export function StartupForm({
         if (
           summary.kind === "terminal" ||
           summary.kind === "pipeline_overview" ||
+          summary.kind === "preview" ||
           summary.phase === "running"
         ) {
           setActiveTabId(activeId);
@@ -2453,7 +2457,11 @@ export function StartupForm({
       if (tabId === activeTabIdRef.current) return;
       stashActiveTab();
       const summary = savedTabs.find((tab) => tab.id === tabId);
-      if (summary?.kind === "terminal" || summary?.kind === "pipeline_overview") {
+      if (
+        summary?.kind === "terminal" ||
+        summary?.kind === "pipeline_overview" ||
+        summary?.kind === "preview"
+      ) {
         setActiveTabId(tabId);
         setBusy(true);
         try {
@@ -4317,6 +4325,18 @@ export function StartupForm({
         })();
         return;
       }
+      case "openPreview":
+        stashActiveTab();
+        void openPreviewTab(DEFAULT_PREVIEW_URL)
+          .then((snap) => {
+            setSavedTabs(snap.tabs);
+            setClosedTabs(snap.closedTabs ?? []);
+            if (snap.activeTabId) setActiveTabId(snap.activeTabId);
+          })
+          .catch((err: unknown) =>
+            showNotice("Could not open the preview", errorText(err), "failed"),
+          );
+        return;
       case "pipelineWorkspace":
         void createPipelineTabs()
           .then(async (snap) => {
@@ -5451,6 +5471,7 @@ export function StartupForm({
     if (tab.kind === "pipeline_overview") {
       return { tone: "ok", text: "Pipeline overview" };
     }
+    if (tab.kind === "preview") return { tone: "ok", text: "Localhost preview" };
     if (tab.kind === "terminal") {
       const kind =
         tab.terminalLaunch === "cursor-cli" || tab.terminalLaunch === "claude-cli"
@@ -5605,6 +5626,19 @@ export function StartupForm({
           onApproveRun={(runId) => approveLaneById(runId, null)}
         />
       </section>,
+    );
+  }
+
+  if (activeTabSummary?.kind === "preview" && !settingsOpen) {
+    return shell(
+      <div className="status-card status-card-session-full">
+        <PreviewTab
+          tabId={activeTabSummary.id}
+          url={activeTabSummary.previewUrl}
+          onNotice={(title, body) => showNotice(title, body, "failed")}
+          onSaved={() => void refreshTabs()}
+        />
+      </div>,
     );
   }
 
