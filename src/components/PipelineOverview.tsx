@@ -16,6 +16,7 @@ import { eventLabel, eventTime, followUps, formatRunReport, reviewRound, stageTi
 import { githubPrUrls } from "../handoff/map";
 import { lanesFromReply } from "../pipeline/prPlan";
 import { errorText } from "./InlineNotice";
+import { RunLanes } from "./RunLanes";
 import {
   coalescedReload,
   isForRun,
@@ -728,6 +729,8 @@ export function PipelineOverview({
           )}
         </div>
       </section>
+
+      <RunLanes run={run} tabs={tabs} />
 
       <section className="pipeline-ledger" aria-label="Timeline">
         <div className="pipeline-ledger-head">
