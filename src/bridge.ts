@@ -1260,7 +1260,7 @@ export type WorkspaceTab = {
   roleId: string;
   roleSnapshot: { name: string; templateVersion: number; mode: string; injection: string };
   cwd: string;
-  /** "role" (chat) | "terminal" */
+  /** "role" (chat) | "terminal" | "preview" (its address in answers.url) */
   kind: string;
   terminalLaunch: string;
   color: string | null;

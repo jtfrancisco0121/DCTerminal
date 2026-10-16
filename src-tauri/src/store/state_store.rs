@@ -1154,9 +1154,15 @@ impl StateStore {
         for item in &workspace.tabs {
             let tab_id = new_tab_id();
             let is_terminal = item.kind == "terminal";
-            let mut answers = item.answers.clone();
-            answers.insert("cwd".to_string(), item.cwd.clone());
-            answers.remove("resumeSessionId");
+            let is_preview = item.kind == crate::store::preview_tabs::PREVIEW_TAB_KIND;
+            let answers = if is_preview {
+                crate::store::preview_tabs::reopened_preview_answers(&item.answers)
+            } else {
+                let mut answers = item.answers.clone();
+                answers.insert("cwd".to_string(), item.cwd.clone());
+                answers.remove("resumeSessionId");
+                answers
+            };
             let record = TabRecord {
                 id: tab_id.clone(),
                 label: item.label.clone(),
@@ -1173,8 +1179,8 @@ impl StateStore {
                 transcript: None,
                 startup_prompt_sent: false,
                 color: item.color.clone(),
-                kind: if is_terminal {
-                    "terminal".to_string()
+                kind: if is_terminal || is_preview {
+                    item.kind.clone()
                 } else {
                     crate::store::state_types::default_tab_kind()
                 },
@@ -1184,8 +1190,9 @@ impl StateStore {
                     (true, launch) => launch.to_string(),
                 },
                 model: item.model.clone(),
-                // Keep the saved title even when the form changes later.
-                custom_label: true,
+                // Keep the saved title even when the form changes later. A
+                // preview's title follows its address unless it was renamed.
+                custom_label: !is_preview || item.custom_label,
                 worktree: item.worktree.clone(),
                 pipeline_run_id: None,
                 provider: item.provider,

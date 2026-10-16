@@ -53,6 +53,16 @@ pub fn preview_url_of(tab: &TabRecord) -> Option<String> {
     })
 }
 
+/// A preview tab's answers when it is reopened from a workspace: only its
+/// address, checked again (the default when it is missing or not localhost).
+pub fn reopened_preview_answers(saved: &HashMap<String, String>) -> HashMap<String, String> {
+    let url = saved
+        .get(URL_KEY)
+        .and_then(|url| local_preview_url(url))
+        .unwrap_or_else(|| DEFAULT_PREVIEW_URL.to_string());
+    HashMap::from([(URL_KEY.to_string(), url)])
+}
+
 fn preview_label(url: &str) -> String {
     let host = url
         .split_once("://")
@@ -202,6 +212,69 @@ mod tests {
             Some("http://127.0.0.1:3000/docs")
         );
         assert!(store.set_preview_url(&id, "http://evil.com").is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_workspace_saves_and_reopens_a_preview_tab_with_its_address() {
+        use crate::store::{WorkspaceStore, WorkspaceTab};
+        let dir = crate::test_support::test_root().join(format!(
+            "dcterminal_preview_ws_{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut store = StateStore {
+            path: dir.join("state.json"),
+            data: AppStateFile::default(),
+            new_tab_provider: crate::provider::ProviderId::DEFAULT,
+            draft_window: crate::store::MAIN_WINDOW_ID.to_string(),
+        };
+        let id = store.create_preview_tab("http://localhost:3000").unwrap();
+        store
+            .set_preview_url(&id, "http://127.0.0.1:4000/app")
+            .unwrap();
+        let tabs = vec![WorkspaceTab::from_record(store.tab_by_id(&id).unwrap())];
+
+        let mut workspaces = WorkspaceStore::open(&dir).unwrap();
+        workspaces
+            .save_workspace("Web", tabs, Some(0), None, false, "2026-10-16T00:00:00Z")
+            .unwrap();
+        workspaces.save().unwrap();
+        let saved = WorkspaceStore::open(&dir).unwrap().data.workspaces[0].clone();
+        assert_eq!(saved.tabs[0].kind, PREVIEW_TAB_KIND);
+
+        // No role is needed: the tab is not skipped as "role no longer exists".
+        let (usable, skipped) = saved.with_current_roles(|_| None);
+        assert!(skipped.is_empty(), "{skipped:?}");
+        assert_eq!(usable.tabs.len(), 1);
+
+        let opened = store.open_workspace(&usable, true).unwrap();
+        let tab = store.tab_by_id(&opened[0]).unwrap();
+        assert_eq!(tab.kind, PREVIEW_TAB_KIND);
+        assert_eq!(tab.phase, "draft");
+        assert_eq!(tab.label, "Preview · 127.0.0.1:4000");
+        assert_eq!(
+            preview_url_of(tab).as_deref(),
+            Some("http://127.0.0.1:4000/app")
+        );
+        assert_eq!(tab.answers.len(), 1);
+        // Not renamed: a new address still relabels it.
+        assert!(!tab.custom_label);
+        assert_eq!(
+            store.data.active_tab_id.as_deref(),
+            Some(opened[0].as_str())
+        );
+
+        // A hand-edited address that is not localhost comes back as the default.
+        let mut tampered = usable.clone();
+        tampered.tabs[0]
+            .answers
+            .insert(URL_KEY.to_string(), "http://evil.com".to_string());
+        let opened = store.open_workspace(&tampered, false).unwrap();
+        assert_eq!(
+            preview_url_of(store.tab_by_id(&opened[0]).unwrap()).as_deref(),
+            Some(DEFAULT_PREVIEW_URL)
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }

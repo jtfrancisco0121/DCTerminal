@@ -188,7 +188,9 @@ export function WorkspacesDialog({
                           ? `Terminal${t.terminalLaunch === "role" ? ` · ${t.roleSnapshot.name}` : ""}`
                           : t.roleSnapshot.name}
                       </span>
-                      <code className="workspaces-folder">{t.cwd || "(no folder)"}</code>
+                      <code className="workspaces-folder">
+                        {t.kind === "preview" ? t.answers?.url : t.cwd || "(no folder)"}
+                      </code>
                     </li>
                   ))}
                 </ol>
