@@ -5,6 +5,7 @@ import {
   isAltGrText,
   isImeEvent,
   isReservedForTerminal,
+  keySurface,
   matchShortcut,
   routeKey,
   shortcutRows,
@@ -445,5 +446,68 @@ describe("terminal zoom", () => {
     expect(zoomedFontSize(32, "zoomIn")).toBe(32);
     expect(zoomedFontSize(8, "zoomOut")).toBe(8);
     expect(zoomedFontSize(20, "zoomReset")).toBe(14);
+  });
+});
+
+describe("one engine: chat / terminal view and the role launcher", () => {
+  const mods = [
+    ["mac", { metaKey: true }],
+    ["windows", { ctrlKey: true }],
+    ["linux", { ctrlKey: true }],
+  ] as const;
+
+  it("binds Mod+Alt+C and Mod+Alt+R with no conflicts", () => {
+    expect(bindingConflicts(defaultBindings())).toEqual([]);
+    for (const [platform, mod] of mods) {
+      const ctx = { platform };
+      expect(matchShortcut(event({ code: "KeyC", key: "c", altKey: true, ...mod }), ctx)?.action).toBe(
+        "toggleTerminalView",
+      );
+      expect(matchShortcut(event({ code: "KeyR", key: "r", altKey: true, ...mod }), ctx)?.action).toBe(
+        "roleLauncher",
+      );
+    }
+    expect(shortcutLabel("toggleTerminalView", "mac")).toBe("⌘+⌥+C");
+    expect(shortcutLabel("roleLauncher", "windows")).toBe("Ctrl+Alt+R");
+    expect(commandTitle("roleLauncher")).toBe("New tab with role…");
+    expect(commandTitle("toggleTerminalView")).toBe("Switch chat / terminal view");
+  });
+
+  it("both leave a focused terminal for the app", () => {
+    for (const [platform, mod] of mods) {
+      const ctx = { platform, surface: "terminal" as const };
+      expect(routeKey(event({ code: "KeyC", key: "c", altKey: true, ...mod }), ctx)).toEqual({
+        kind: "app",
+        match: { action: "toggleTerminalView", tabIndex: undefined },
+      });
+      expect(routeKey(event({ code: "KeyR", key: "r", altKey: true, ...mod }), ctx).kind).toBe("app");
+    }
+  });
+
+  it("the visible view decides the routing", () => {
+    // Chat view: chat routing, even if the hidden xterm kept focus.
+    expect(keySurface({ view: "chat", focus: "terminal" })).toBe("chat");
+    expect(keySurface({ view: "chat", focus: "other" })).toBe("chat");
+    // Terminal view (or any other tab): a focused terminal routes as a terminal.
+    expect(keySurface({ view: "terminal", focus: "terminal" })).toBe("terminal");
+    expect(keySurface({ view: null, focus: "terminal" })).toBe("terminal");
+    expect(keySurface({ view: "terminal", focus: "pad" })).toBe("chat");
+
+    // So on Windows, Ctrl+K opens the palette from the chat view but stays
+    // with Claude Code in the terminal view; Ctrl+Enter sends the composer.
+    const ctrlK = event({ code: "KeyK", key: "k", ctrlKey: true });
+    const chat = keySurface({ view: "chat", focus: "terminal" });
+    expect(routeKey(ctrlK, { platform: "windows", surface: chat })).toEqual({
+      kind: "app",
+      match: { action: "commandPalette", tabIndex: undefined },
+    });
+    const term = keySurface({ view: "terminal", focus: "terminal" });
+    expect(routeKey(ctrlK, { platform: "windows", surface: term })).toEqual({ kind: "shell" });
+    expect(
+      routeKey(event({ code: "Enter", ctrlKey: true, targetTag: "TEXTAREA" }), {
+        platform: "windows",
+        surface: chat,
+      }),
+    ).toEqual({ kind: "app", match: { action: "send", tabIndex: undefined } });
   });
 });

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { ChatEntry } from "../bridge";
 import { EMPTY_CHAT, type ChatEntriesState } from "../terminal/chatEntries";
@@ -57,9 +57,22 @@ describe("TerminalChatView", () => {
     state = { sessionId: "s1", revision: 7, entries };
     const onShowTerminal = vi.fn();
     render(<TerminalChatView tabId="t1" needsYou onShowTerminal={onShowTerminal} />);
-    expect(screen.getByRole("alert").textContent).toContain("Claude is waiting for you in the terminal");
-    fireEvent.click(screen.getByRole("button", { name: "Show terminal" }));
+    const banner = screen.getByRole("alert");
+    expect(banner.textContent).toContain("Claude is waiting for you in the terminal");
+    fireEvent.click(within(banner).getByRole("button", { name: "Show terminal" }));
     expect(onShowTerminal).toHaveBeenCalled();
+  });
+
+  it("shows an open plan read-only, answered in the terminal", () => {
+    state = { sessionId: "s1", revision: 7, entries };
+    const onShowTerminal = vi.fn();
+    render(<TerminalChatView tabId="t1" needsYou={false} onShowTerminal={onShowTerminal} />);
+    const plan = screen.getByRole("region", { name: "Plan" });
+    expect(plan.textContent).toContain("Answer in the terminal.");
+    fireEvent.click(within(plan).getByRole("button", { name: "Show terminal" }));
+    expect(onShowTerminal).toHaveBeenCalled();
+    // The question was answered: no button on it.
+    expect(within(screen.getByRole("region", { name: "Question" })).queryByRole("button")).toBeNull();
   });
 
   it("says so when there is no conversation yet", () => {

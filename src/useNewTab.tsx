@@ -15,7 +15,7 @@ type Options = {
   /** The active tab's folder, for "here". */
   activeCwd: () => string | null;
   /** The start screen in a new tab (today's ⌘T). */
-  openStartScreen: () => Promise<void>;
+  openStartScreen: () => Promise<unknown>;
   /** Open a terminal tab; `reuseTabId` is an untouched draft to turn into it. */
   openTerminal: (launch: NewTerminalLaunch, cwd: string, reuseTabId: string | null) => Promise<void>;
   /** Save a new value for the setting ("Don't ask again"). */

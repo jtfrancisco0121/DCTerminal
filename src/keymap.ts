@@ -33,6 +33,8 @@ export type ShortcutAction =
   | "zoomIn"
   | "zoomOut"
   | "zoomReset"
+  | "toggleTerminalView"
+  | "roleLauncher"
   | "closeDialog";
 
 export type Platform = "mac" | "windows" | "linux";
@@ -222,6 +224,20 @@ export const SHORTCUTS: ShortcutDef[] = [
     description: "Rename the active tab in place. Double-click a tab also works.",
     code: "F2",
     mod: false,
+  },
+  {
+    action: "toggleTerminalView",
+    label: "Switch chat / terminal view",
+    description: "Show a Claude terminal tab as chat or as the terminal. Claude keeps running.",
+    code: "KeyC",
+    alt: true,
+  },
+  {
+    action: "roleLauncher",
+    label: "New tab with role",
+    description: "Pick a role, provider and Terminal or Chat, then fill in its start form.",
+    code: "KeyR",
+    alt: true,
   },
 ];
 
@@ -543,6 +559,9 @@ const TERMINAL_GLOBALS = new Set<ShortcutAction>([
   "focusOtherPane",
   "closeSplit",
   "toggleGrid",
+  // Mod+Alt too: the view switch has to leave the terminal it hides.
+  "toggleTerminalView",
+  "roleLauncher",
 ]);
 
 /**
@@ -601,6 +620,21 @@ const TERMINAL_BY_CODE: Record<string, TerminalAction> = {
 function terminalActionFor(chord: Chord): TerminalAction | null {
   if (!chord.mod || !chord.shift || chord.alt) return null;
   return TERMINAL_BY_CODE[chord.code] ?? null;
+}
+
+/**
+ * Which routing a key gets. The visible view decides: a Claude terminal tab
+ * shown as Chat routes like chat (plain Mod shortcuts, the composer), even
+ * if its hidden xterm still holds focus. Otherwise a focused terminal
+ * routes like a terminal and anything else like chat.
+ */
+export function keySurface(input: {
+  /** The active terminal tab's view; null for other tabs. */
+  view: "terminal" | "chat" | null;
+  focus: "terminal" | "pad" | "other";
+}): KeySurface {
+  if (input.view === "chat") return "chat";
+  return input.focus === "terminal" ? "terminal" : "chat";
 }
 
 /**
@@ -783,7 +817,7 @@ export function shortcutRows(
 }
 
 /** Commands whose palette entry opens a dialog or picker (title ends with an ellipsis). */
-const OPENS_DIALOG = new Set<ShortcutAction>(["tabSwitcher", "searchChats"]);
+const OPENS_DIALOG = new Set<ShortcutAction>(["tabSwitcher", "searchChats", "roleLauncher"]);
 
 /**
  * The one name for a shortcut-backed command. SHORTCUTS holds the name; the

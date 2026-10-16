@@ -21,6 +21,7 @@ import type { useUiSettings } from "../useUiSettings";
 import type { TerminalViewMode } from "../terminal/chatEntries";
 import { isClaudeTerminal, terminalLaunchOf, type PadSizeProps } from "./tabHelpers";
 import { TerminalChatView } from "./TerminalChatView";
+import type { TerminalComposerHandle } from "./TerminalChatControls";
 import { runIdOfTab } from "../pipeline/planPane";
 import { PlanPane } from "./PlanPane";
 import { usePlanPaneOpen } from "./planPaneState";
@@ -56,13 +57,18 @@ export type TerminalTabViewProps = {
   focusActiveTerminal: () => void;
   onPadError: (message: string) => void;
   /**
-   * Chat: a Claude terminal tab shows its read-only chat view. The terminal
-   * unmounts like on a tab switch; its xterm stays parked and the PTY runs on.
+   * Chat: a Claude terminal tab shows its chat view. The terminal unmounts
+   * like on a tab switch; its xterm stays parked and the PTY runs on.
    */
   view?: TerminalViewMode;
   /** The tab's state is Needs you (the chat view's banner). */
   needsYou?: boolean;
+  /** The tab's state is Working (the composer queues). */
+  working?: boolean;
+  /** Claude Code exited. */
+  exited?: boolean;
   onShowTerminal?: () => void;
+  composerRef?: RefObject<TerminalComposerHandle | null>;
 };
 
 /** The active terminal tab: hand-off banner, toolbar, terminal and scratch pad. */
@@ -93,11 +99,16 @@ export function TerminalTabView({
   onPadError,
   view = "terminal",
   needsYou = false,
+  working = false,
+  exited = false,
   onShowTerminal,
+  composerRef,
 }: TerminalTabViewProps) {
   const linked = handoffs.find((item) => item.targetTabId === activeTabId) ?? null;
   const launch = terminalLaunchOf(activeTabSummary);
-  const chat = view === "chat" && !inGrid && isClaudeTerminal(activeTabSummary);
+  // The terminal opens the PTY: a tab restored as Chat shows it until Claude Code runs.
+  const chat =
+    view === "chat" && !inGrid && isClaudeTerminal(activeTabSummary) && !!livePty(activeTabSummary.id);
   // A pipeline tab can dock its run's plan on the right (not in a grid cell).
   const runId = inGrid ? null : runIdOfTab(activeTabSummary);
   const planOpen = usePlanPaneOpen(activeTabSummary.id) && !!runId;
@@ -107,7 +118,18 @@ export function TerminalTabView({
         <TerminalChatView
           tabId={activeTabSummary.id}
           needsYou={needsYou}
+          working={working}
+          exited={exited}
+          platform={platform}
+          history={scratch.history}
+          beforeSend={snapshotTerminalTurn}
+          onSent={(text) => {
+            scratch.remember(activeTabSummary.id, text);
+            // intentionally silent: the recent-sends record is best effort.
+            void promptRecordSend(text, "terminal").catch(() => {});
+          }}
           onShowTerminal={() => onShowTerminal?.()}
+          composerRef={composerRef}
         />
       )}
       {!chat && (

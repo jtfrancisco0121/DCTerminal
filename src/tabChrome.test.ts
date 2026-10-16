@@ -167,6 +167,18 @@ describe("tab chrome", () => {
     ]);
   });
 
+  it("opens the role launcher always and the view switch only on a Claude terminal tab", () => {
+    const plain = buildPalette({ tabs: [], canReopen: false, splitOpen: false });
+    const launcher = plain.find((c) => c.id === "roleLauncher");
+    expect(launcher?.title).toBe("New tab with role…");
+    expect(launcher?.group).toBe("Tabs");
+    expect(plain.some((c) => c.id === "toggleTerminalView")).toBe(false);
+    const claude = buildPalette({ tabs: [], canReopen: false, splitOpen: false, canSwitchTerminalView: true });
+    expect(filterCommands(claude, "chat view").map((c) => c.id)).toContain("toggleTerminalView");
+    expect(parsePaletteId("roleLauncher")).toEqual({ kind: "action", id: "roleLauncher" });
+    expect(parsePaletteId("toggleTerminalView")).toEqual({ kind: "action", id: "toggleTerminalView" });
+  });
+
   it("can run first-run setup again", () => {
     const commands = buildPalette({ tabs: [], canReopen: false, splitOpen: false });
     expect(filterCommands(commands, "setup").map((c) => c.id)).toContain("firstRunSetup");

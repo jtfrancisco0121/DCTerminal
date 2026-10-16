@@ -259,10 +259,11 @@ import {
 import { appendReference } from "./files/paths";
 import { effectiveModelFor, modelChangeNote } from "./models";
 import { TabSwitcher } from "./components/TabSwitcher";
+import { launchProviders, RoleLauncher, type RoleLaunch } from "./components/RoleLauncher";
 import { useNewTab } from "./useNewTab";
 import { activeTabFolder } from "./newTab";
 import { startTerminalTab, type NewTerminalLaunch } from "./terminal/openTerminalTab";
-import { detectPlatform, type ShortcutMatch, type TerminalAction } from "./keymap";
+import { detectPlatform, keySurface, type ShortcutMatch, type TerminalAction } from "./keymap";
 import {
   beginLivePty,
   dropLivePty,
@@ -295,7 +296,10 @@ import {
   measuredTerminalSize,
 } from "./terminal/park";
 import { encodeTerminalPaste } from "./terminal/paste";
-import { terminalViewOf, type TerminalViewMode } from "./terminal/chatEntries";
+import { terminalViewOf } from "./terminal/chatEntries";
+import { stopTurn } from "./terminal/ptyAnswers";
+import { toggledView, useTerminalViews } from "./terminal/terminalViews";
+import type { TerminalComposerHandle } from "./views/TerminalChatControls";
 import { planFileMentions } from "./terminal/text";
 import {
   emptySessionCards,
@@ -358,7 +362,13 @@ import { StartScreen } from "./views/StartScreen";
 import { createPaneRenderers } from "./views/workspacePanes";
 import { terminalHeaderFor, terminalHeaderState, type TerminalHeaderDeps } from "./views/terminalHeader";
 import { WorkspaceShell } from "./views/WorkspaceShell";
-import { CLI_LABEL, type CliLaunch, tabHasModel, visibleFields } from "./views/tabHelpers";
+import {
+  CLI_LABEL,
+  type CliLaunch,
+  isClaudeTerminal,
+  tabHasModel,
+  visibleFields,
+} from "./views/tabHelpers";
 import { useChatImages } from "./attachments/useChatImages";
 import { withImageMarkers } from "./attachments/chatImages";
 import { promptNeedsSnapshot, snapshotTerminalTurn } from "./changes/turnSnapshot";
@@ -481,8 +491,26 @@ export function StartupForm({
   // F2: finished/question/error left on a tab the user was not watching.
   const [tabMarks, setTabMarks] = useState<Record<string, TabMark>>({});
   const [terminalBusy, setTerminalBusy] = useState<string[]>([]);
-  /** Terminal or Chat per Claude terminal tab, for this run of the app. */
-  const [terminalViews, setTerminalViews] = useState<Record<string, TerminalViewMode>>({});
+  /** Terminal or Chat per Claude terminal tab, kept across restarts. */
+  const { views: terminalViews, setView: setTerminalView } = useTerminalViews(
+    savedTabs.map((tab) => tab.id),
+  );
+  const terminalViewsRef = useRef(terminalViews);
+  terminalViewsRef.current = terminalViews;
+  const terminalComposerRef = useRef<TerminalComposerHandle>(null);
+  /** The active tab shows its chat view now (set each render). */
+  const chatViewShownRef = useRef(false);
+  const showGridRef = useRef(false);
+  /** The role launcher is open (palette "New tab with role…" or its shortcut). */
+  const [roleLauncherOpen, setRoleLauncherOpen] = useState(false);
+  /** The role launcher's entry point (palette, shortcut, and later the new-tab picker). */
+  const openRoleLauncher = useCallback(() => {
+    setPaletteOpen(false);
+    setSwitcherOpen(false);
+    setRoleLauncherOpen(true);
+  }, []);
+  /** A launcher pick and the draft tab opened for it: its start form then preselects it. */
+  const [pendingLaunch, setPendingLaunch] = useState<(RoleLaunch & { tabId: string }) | null>(null);
   /** Claude session logs of terminal role tabs on screen or in a chain (null: none). */
   const [sessionLogs, setSessionLogs] = useState<Record<string, TerminalSessionLog | null>>({});
   const sessionLogsRef = useRef(sessionLogs);
@@ -2673,7 +2701,8 @@ export function StartupForm({
     [confirm, handleCloseTab, showNotice],
   );
 
-  const openStartScreenTab = useCallback(async () => {
+  /** Opens a draft tab on the start screen; resolves to its id (null when none opened). */
+  const openStartScreenTab = useCallback(async (): Promise<string | null> => {
     setBusy(true);
     try {
       stashActiveTab();
@@ -2685,7 +2714,7 @@ export function StartupForm({
       setSavedTabs(snap.tabs);
       setClosedTabs(snap.closedTabs ?? []);
       const newActive = snap.activeTabId;
-      if (!newActive) return;
+      if (!newActive) return null;
       const { tab } = await getTab(newActive);
       applyDraft(tab.id, {
         roleId: tab.roleId,
@@ -2695,6 +2724,7 @@ export function StartupForm({
         newSessionOpen: false,
         resendStartup: false,
       });
+      return tab.id;
     } finally {
       setBusy(false);
     }
@@ -3299,6 +3329,7 @@ export function StartupForm({
         setWorktreeDialogOpen(false);
         setPaletteOpen(false);
         setSwitcherOpen(false);
+        setRoleLauncherOpen(false);
         setShortcutsOpen(false);
         setSettingsOpen(false);
         setSplitPicker(null);
@@ -3338,6 +3369,32 @@ export function StartupForm({
       }
       if (match.action === "focusInput" && inSecondary && secondaryId) {
         focusPane("secondary");
+        return;
+      }
+      // A Claude terminal tab shown as Chat: the composer is its input.
+      const chatViewTab = chatViewShownRef.current;
+      if (match.action === "toggleTerminalView") {
+        const tab = savedTabs.find((item) => item.id === activeTabIdRef.current);
+        if (!tab || showGridRef.current || !isClaudeTerminal(tab)) return;
+        const next = toggledView(terminalViewOf(terminalViewsRef.current, tab.id));
+        setTerminalView(tab.id, next);
+        // The terminal takes focus when it mounts; the composer focuses itself.
+        return;
+      }
+      if (match.action === "roleLauncher") {
+        openRoleLauncher();
+        return;
+      }
+      if (
+        chatViewTab &&
+        (match.action === "send" || match.action === "focusInput" || match.action === "focusPad")
+      ) {
+        if (match.action === "send") {
+          const inComposer = document.activeElement?.closest(".terminal-chat-composer");
+          if (inComposer) terminalComposerRef.current?.send();
+        } else {
+          terminalComposerRef.current?.focus();
+        }
         return;
       }
       if (match.action === "send") {
@@ -3503,6 +3560,8 @@ export function StartupForm({
       padHiddenNow,
       updateUi,
       guardFileEdits,
+      setTerminalView,
+      openRoleLauncher,
     ],
   );
 
@@ -3600,10 +3659,17 @@ export function StartupForm({
 
   const getSurface = useCallback(() => {
     const el = document.activeElement;
-    // The pad is not the PTY. Keys typed there must stay in the textarea.
-    if (el?.closest(".scratch-pad")) return "chat" as const;
-    if (el?.closest(".terminal-slot, .xterm")) return "terminal" as const;
-    return "chat" as const;
+    // The visible view decides (keySurface): a chat view routes like chat
+    // even while its parked xterm still holds focus. The pad is not the PTY.
+    return keySurface({
+      // The second pane is another tab with its own view.
+      view: chatViewShownRef.current && !el?.closest("[data-pane='secondary']") ? "chat" : null,
+      focus: el?.closest(".scratch-pad")
+        ? "pad"
+        : el?.closest(".terminal-slot, .xterm")
+          ? "terminal"
+          : "other",
+    });
   }, []);
 
   const focusActiveTerminal = useCallback(() => {
@@ -4586,6 +4652,8 @@ export function StartupForm({
       case "transferPad":
       case "send":
       case "shortcutsHelp":
+      case "toggleTerminalView":
+      case "roleLauncher":
         onShortcut({ action: id });
         return;
       default: {
@@ -4743,7 +4811,8 @@ export function StartupForm({
     folder: folderForTab(values.cwd),
   });
 
-  const chooseRole = (id: string) => {
+  /** `provider`: the role launcher's pick, remembered for the role like the Start card chip. */
+  const chooseRole = (id: string, provider?: ProviderId) => {
     setLaunchChoice(null);
     const tabId = activeTabIdRef.current;
     const existing = tabId ? draftsRef.current[tabId] : null;
@@ -4762,16 +4831,44 @@ export function StartupForm({
       };
       // Start card chip: the role's remembered provider (else the default).
       const tab = savedTabs.find((t) => t.id === tabId);
-      if (tab && tab.phase === "draft" && providers.view) {
-        const want = providerForRole(providers.view.settings, id);
-        if (want !== providerOf(tab)) {
-          void setTabProvider(tabId, want)
+      if (tab && tab.phase === "draft" && (provider || providers.view)) {
+        const want = provider ?? providerForRole(providers.view?.settings ?? null, id);
+        if (want !== providerOf(tab) || provider) {
+          void setTabProvider(tabId, want, provider ? id : undefined)
             .then(() => refreshTabs())
+            .then(() => (provider ? providers.refreshSettings() : undefined))
             .catch((err: unknown) => showNotice("Provider not changed", errorText(err), "failed"));
         }
       }
     }
   };
+
+  /** A new draft tab, then the start screen's own role choice: role, provider, Open as. */
+  const launchRole = (launch: RoleLaunch) => {
+    setRoleLauncherOpen(false);
+    // The launcher already chose the role, so it opens the start screen directly
+    // instead of following the "New tab opens" setting.
+    const openRoleTab = async (): Promise<string | null> => {
+      const fileGuard = fileDiscardGuardRef.current;
+      if (fileGuard?.dirty() && !(await fileGuard.confirm())) return null;
+      return openStartScreenTab();
+    };
+    void openRoleTab()
+      .then((tabId) => {
+        if (tabId) setPendingLaunch({ ...launch, tabId });
+      })
+      .catch((err: unknown) => showNotice("Tab not opened", errorText(err), "failed"));
+  };
+
+  useEffect(() => {
+    if (!pendingLaunch || activeTabId !== pendingLaunch.tabId) return;
+    if (!savedTabs.some((tab) => tab.id === pendingLaunch.tabId && tab.phase === "draft")) return;
+    setPendingLaunch(null);
+    chooseRole(pendingLaunch.roleId, pendingLaunch.provider);
+    rememberSurface(pendingLaunch.roleId, pendingLaunch.surface);
+    // chooseRole and rememberSurface read this render's state; the launch runs once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingLaunch, activeTabId, savedTabs]);
 
   const modelForTab = (tab: TabSummary): string | null => {
     if (!tabHasModel(tab)) return null;
@@ -5319,12 +5416,24 @@ export function StartupForm({
           }
           canRemoveWorktree={!!activeTabSummary?.worktreePath}
           canOpenChainOverview={!!activeTabSummary?.chain}
+          canSwitchTerminalView={
+            !!activeTabSummary && activeTabSummary.kind === "terminal" && isClaudeTerminal(activeTabSummary)
+          }
           model={paletteModel}
           initialQuery={palettePrefill.query}
           platform={platform}
           key={palettePrefill.key}
           onRun={runPalette}
           onClose={() => setPaletteOpen(false)}
+        />
+      )}
+      {roleLauncherOpen && (
+        <RoleLauncher
+          roles={roles}
+          providers={launchProviders(providers)}
+          defaultProvider={providers.view?.settings.default ?? "claude"}
+          onLaunch={launchRole}
+          onClose={() => setRoleLauncherOpen(false)}
         />
       )}
       {switcherOpen && (
@@ -5430,6 +5539,15 @@ export function StartupForm({
   // The active tab always has a cell, so its full controls are never hidden.
   const showGrid =
     !settingsOpen && gridOpen(split) && !!activeTabId && (split.gridTabIds ?? []).includes(activeTabId);
+  showGridRef.current = showGrid;
+  // TerminalTabView shows the chat view on these same terms.
+  chatViewShownRef.current =
+    !settingsOpen &&
+    !showGrid &&
+    activeTabSummary?.kind === "terminal" &&
+    isClaudeTerminal(activeTabSummary) &&
+    terminalViewOf(terminalViews, activeTabSummary.id) === "chat" &&
+    !!livePty(activeTabSummary.id);
 
   const secondaryTab =
     !settingsOpen && splitOpen(split) && split.secondaryTabId !== activeTabId
@@ -5451,12 +5569,10 @@ export function StartupForm({
     openChainOverviewTab,
     readTerminalVerdict,
     // Esc interrupts Claude Code's running turn.
-    stopTerminalTurn: (tabId) => {
-      notePtyInput(tabId);
-      void ptyWrite(tabId, "\x1b").catch(() => {});
-    },
+    // intentionally silent: a dead PTY has no turn to stop.
+    stopTerminalTurn: (tabId) => void stopTurn(tabId).catch(() => {}),
     terminalViews,
-    setTerminalView: (tabId, view) => setTerminalViews((prev) => ({ ...prev, [tabId]: view })),
+    setTerminalView,
   };
 
   const panes = createPaneRenderers({
@@ -5720,7 +5836,10 @@ export function StartupForm({
         header={terminalHeaderFor(headerDeps, activeTabSummary, { viewSwitch: true })}
         view={terminalViewOf(terminalViews, activeTabSummary.id)}
         needsYou={terminalHeaderState(headerDeps, activeTabSummary).header.tone === "needs"}
+        working={terminalHeaderState(headerDeps, activeTabSummary).header.tone === "working"}
+        exited={ptyExitCode(activeTabSummary.id) != null}
         onShowTerminal={() => headerDeps.setTerminalView?.(activeTabSummary.id, "terminal")}
+        composerRef={terminalComposerRef}
         inGrid={showGrid}
         scratch={scratch}
         platform={platform}

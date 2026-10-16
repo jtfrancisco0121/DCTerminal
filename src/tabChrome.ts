@@ -254,6 +254,7 @@ export type PaletteGroup = (typeof PALETTE_GROUPS)[number];
 /** Every fixed palette action. StartupForm's runPalette must handle each one. */
 export const PALETTE_ACTIONS = [
   "newTab",
+  "roleLauncher",
   "newWindow",
   "closeTab",
   "reopenClosedTab",
@@ -306,6 +307,7 @@ export const PALETTE_ACTIONS = [
   "transferPad",
   "send",
   "toggleTerminal",
+  "toggleTerminalView",
   "transferToTerminal",
   "firstRunSetup",
   "shortcutsHelp",
@@ -414,9 +416,17 @@ export function buildPalette(opts: {
   handoffTargets?: readonly { id: string; name: string }[];
   /** Your own pipelines: each gets "Start <name>…". Default: the registry's. */
   pipelines?: readonly { id: string; name: string }[];
+  /** The active tab is a Claude terminal tab, which can show as chat. */
+  canSwitchTerminalView?: boolean;
 }): PaletteCommand[] {
   const commands: PaletteCommand[] = [
     { id: "newTab", title: commandTitle("newTab"), group: "Tabs" },
+    {
+      id: "roleLauncher",
+      title: commandTitle("roleLauncher"),
+      group: "Tabs",
+      keywords: "role launcher planner implementer reviewer claude cursor terminal chat start",
+    },
     { id: "newWindow", title: "New window", group: "Tabs", keywords: "account claude" },
     { id: "closeTab", title: commandTitle("closeTab"), group: "Tabs" },
     { id: "nextTab", title: commandTitle("nextTab"), group: "Tabs" },
@@ -603,6 +613,14 @@ export function buildPalette(opts: {
   ];
   if (opts.canReopen) {
     commands.push({ id: "reopenClosedTab", title: commandTitle("reopenClosedTab"), group: "Tabs" });
+  }
+  if (opts.canSwitchTerminalView) {
+    commands.push({
+      id: "toggleTerminalView",
+      title: commandTitle("toggleTerminalView"),
+      group: "Terminal",
+      keywords: "chat view terminal view conversation composer",
+    });
   }
   if (opts.canRemoveWorktree) {
     commands.push({

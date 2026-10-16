@@ -8,6 +8,9 @@
 // `CR ESC[1B` or `CR CR LF`, indents use `ESC[nC`, and the bold file name in
 // an edit question is wrapped in SGR. See fixtures/claude-2.1.287-*.bin.
 
+/** One numbered choice of the dialog: pressing `key` picks it. */
+export type DialogOption = { key: string; label: string };
+
 export type DialogDetector = {
   /** Feed raw PTY bytes. */
   feed(id: string, bytes: Uint8Array, now?: number): void;
@@ -24,6 +27,11 @@ export type DialogDetector = {
    * command, file). Tells one prompt from the next. "" when none is shown.
    */
   prompt(id: string): string;
+  /**
+   * The visible dialog's numbered options, "1. Yes" through "N. No", as
+   * drawn. Empty when none is shown or the list did not read cleanly.
+   */
+  options(id: string): DialogOption[];
   /** The user typed or clicked since the dialog was last drawn (it may be answered). */
   answering(id: string): boolean;
   /** The last full draw came after an answer key or click: maybe the next call's dialog. */
@@ -62,6 +70,7 @@ const OPTION_LINES = 12;
 const QUESTION_RE = /Do you want to/;
 const YES_RE = /^\s*([❯›>]\s*)?1\.\s*Yes/;
 const NO_RE = /^\s*([❯›>]\s*)?\d+\.\s*No\b/;
+const OPTION_RE = /^\s*(?:[❯›>]\s*)?(\d)\.\s*(.+)$/;
 
 /** Normalize raw terminal text (escape codes, cursor moves, frames) to plain lines. */
 export function normalizeTerminalText(raw: string): string {
@@ -133,16 +142,51 @@ function optionsFrom(lines: string[], from: number, limit: number): boolean {
 /** Lines above the question kept as the prompt's text (tool, command, file). */
 const PROMPT_LINES = 10;
 
-/** The newest permission dialog in this normalized text: its question and the lines above. */
-export function findPermissionDialog(text: string): string | null {
+/**
+ * "1. Yes" … "N. No" from line `from`: each numbered line in order, other
+ * lines (a wrapped label) skipped. Empty unless the numbers run 1, 2, 3….
+ */
+function optionList(lines: string[], from: number): DialogOption[] {
+  const end = Math.min(lines.length, from + OPTION_LINES);
+  for (let j = from; j < end; j++) {
+    if (!YES_RE.test(lines[j])) continue;
+    const out: DialogOption[] = [];
+    const stop = Math.min(lines.length, j + 1 + OPTION_LINES);
+    for (let k = j; k < stop; k++) {
+      const match = OPTION_RE.exec(lines[k]);
+      if (!match) continue;
+      if (Number(match[1]) !== out.length + 1) return [];
+      out.push({ key: match[1], label: match[2].trim() });
+      if (NO_RE.test(lines[k])) return out;
+    }
+    return [];
+  }
+  return [];
+}
+
+/** The newest permission dialog in this normalized text: question, lines above, options. */
+function locateDialog(text: string): { prompt: string; options: DialogOption[] } | null {
   if (!QUESTION_RE.test(text)) return null;
   const lines = plainLines(text);
   for (let i = lines.length - 1; i >= 0; i--) {
     if (QUESTION_RE.test(lines[i]) && optionsFrom(lines, i + 1, OPTION_LINES)) {
-      return lines.slice(Math.max(0, i - PROMPT_LINES), i + 1).join("\n");
+      return {
+        prompt: lines.slice(Math.max(0, i - PROMPT_LINES), i + 1).join("\n"),
+        options: optionList(lines, i + 1),
+      };
     }
   }
   return null;
+}
+
+/** The newest permission dialog in this normalized text: its question and the lines above. */
+export function findPermissionDialog(text: string): string | null {
+  return locateDialog(text)?.prompt ?? null;
+}
+
+/** The numbered options of the newest permission dialog in this normalized text. */
+export function findPermissionOptions(text: string): DialogOption[] {
+  return locateDialog(text)?.options ?? [];
 }
 
 /** Does this normalized text contain the permission dialog? */
@@ -202,6 +246,8 @@ type TermState = {
   visible: boolean;
   /** Text of the dialog last drawn in full. */
   prompt: string;
+  /** Its numbered options. */
+  options: DialogOption[];
   /** A click since the last full draw (no hide timer for those). */
   pressed: boolean;
   /** An answer key or click since the last full draw. */
@@ -245,6 +291,7 @@ export function createDialogDetector(opts: DetectorOptions = {}): DialogDetector
         window: "",
         visible: false,
         prompt: "",
+        options: [],
         pressed: false,
         answered: false,
         drawAfterAnswer: false,
@@ -268,6 +315,7 @@ export function createDialogDetector(opts: DetectorOptions = {}): DialogDetector
     cancelHide(s);
     s.window = "";
     s.prompt = "";
+    s.options = [];
     s.pressed = false;
     s.answered = false;
     s.drawAfterAnswer = false;
@@ -287,13 +335,15 @@ export function createDialogDetector(opts: DetectorOptions = {}): DialogDetector
       if (!complete) return;
       s.window += normalizeTerminalText(complete);
       if (s.window.length > windowChars) s.window = s.window.slice(-windowChars);
-      const found = findPermissionDialog(s.window);
+      const located = locateDialog(s.window);
+      const found = located?.prompt ?? null;
       const full = found !== null;
       if (!full && !(s.visible && matchOptionList(s.window))) return;
       // A whole question drawn after input may be the next tool's dialog.
       const redrawn = full && s.visible && (s.hideAt !== null || s.pressed);
-      if (found !== null) {
-        s.prompt = found;
+      if (located) {
+        s.prompt = located.prompt;
+        s.options = located.options;
         if (redrawn || !s.visible) s.drawAfterAnswer = s.answered;
         s.answered = false;
         s.pressed = false;
@@ -331,6 +381,7 @@ export function createDialogDetector(opts: DetectorOptions = {}): DialogDetector
         if (s.visible) {
           s.visible = false;
           s.prompt = "";
+          s.options = [];
           s.pressed = false;
           s.answered = false;
           notify(id);
@@ -348,6 +399,11 @@ export function createDialogDetector(opts: DetectorOptions = {}): DialogDetector
     prompt(id) {
       const s = states.get(id);
       return s?.visible ? s.prompt : "";
+    },
+
+    options(id) {
+      const s = states.get(id);
+      return s?.visible ? s.options : [];
     },
 
     answering(id) {

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import {
   createDialogDetector,
+  findPermissionOptions,
   matchPermissionDialog,
   normalizeTerminalText,
 } from "./permissionDialog";
@@ -369,4 +370,39 @@ describe("real Claude Code 2.1.287 PTY captures", () => {
     d.feed("t", prefix);
     expect(d.isVisible("t")).toBe(false);
   });
+});
+
+describe("dialog options", () => {
+  it("reads the numbered options of the visible dialog, in order", () => {
+    const { d } = setup();
+    d.feed("a", bytes(PROCEED));
+    expect(d.options("a")).toEqual([
+      { key: "1", label: "Yes" },
+      { key: "2", label: "Yes, and don't ask again for touch commands in /tmp/x" },
+      { key: "3", label: "No, and tell Claude what to do differently (esc)" },
+    ]);
+    expect(findPermissionOptions(normalizeTerminalText(PROCEED))).toHaveLength(3);
+  });
+
+  it("has none once the dialog is hidden, and none for a list that skips a number", () => {
+    const { d } = setup();
+    d.feed("a", bytes(PROCEED));
+    d.clear("a");
+    expect(d.options("a")).toEqual([]);
+    const skipped = "Do you want to proceed?\r\n❯ 1. Yes\r\n  3. No\r\n";
+    expect(findPermissionOptions(normalizeTerminalText(skipped))).toEqual([]);
+  });
+
+  it.each(["claude-2.1.287-proceed.bin", "claude-2.1.287-create-file.bin"])(
+    "%s yields options from 1. Yes to N. No",
+    (name) => {
+      const { d } = setup();
+      feedInRandomChunks(d, "t", fixture(name), 7);
+      const options = d.options("t");
+      expect(options.length).toBeGreaterThanOrEqual(2);
+      expect(options[0]).toEqual({ key: "1", label: "Yes" });
+      expect(options.map((option) => option.key)).toEqual(options.map((_, i) => String(i + 1)));
+      expect(options[options.length - 1].label).toMatch(/^No\b/);
+    },
+  );
 });
