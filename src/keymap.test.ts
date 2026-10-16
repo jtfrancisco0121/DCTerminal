@@ -473,14 +473,25 @@ describe("one engine: chat / terminal view and the role launcher", () => {
     expect(commandTitle("toggleTerminalView")).toBe("Switch chat / terminal view");
   });
 
-  it("both leave a focused terminal for the app", () => {
-    for (const [platform, mod] of mods) {
+  it("both leave a focused terminal for the app on macOS only", () => {
+    const mac = { platform: "mac" as const, surface: "terminal" as const };
+    expect(routeKey(event({ code: "KeyC", key: "c", altKey: true, metaKey: true }), mac)).toEqual({
+      kind: "app",
+      match: { action: "toggleTerminalView", tabIndex: undefined },
+    });
+    expect(routeKey(event({ code: "KeyR", key: "r", altKey: true, metaKey: true }), mac).kind).toBe("app");
+    // Ctrl+Alt+R is readline's revert-line: a focused terminal keeps both chords.
+    for (const platform of ["windows", "linux"] as const) {
       const ctx = { platform, surface: "terminal" as const };
-      expect(routeKey(event({ code: "KeyC", key: "c", altKey: true, ...mod }), ctx)).toEqual({
+      expect(routeKey(event({ code: "KeyC", key: "c", altKey: true, ctrlKey: true }), ctx)).toEqual({ kind: "shell" });
+      expect(routeKey(event({ code: "KeyR", key: "r", altKey: true, ctrlKey: true }), ctx)).toEqual({ kind: "shell" });
+      // Outside a focused terminal they are the app's.
+      const chat = { platform, surface: "chat" as const };
+      expect(routeKey(event({ code: "KeyC", key: "c", altKey: true, ctrlKey: true }), chat)).toEqual({
         kind: "app",
         match: { action: "toggleTerminalView", tabIndex: undefined },
       });
-      expect(routeKey(event({ code: "KeyR", key: "r", altKey: true, ...mod }), ctx).kind).toBe("app");
+      expect(routeKey(event({ code: "KeyR", key: "r", altKey: true, ctrlKey: true }), chat).kind).toBe("app");
     }
   });
 

@@ -559,16 +559,21 @@ const TERMINAL_GLOBALS = new Set<ShortcutAction>([
   "focusOtherPane",
   "closeSplit",
   "toggleGrid",
-  // Mod+Alt too: the view switch has to leave the terminal it hides.
-  "toggleTerminalView",
-  "roleLauncher",
 ]);
 
 /**
  * Ctrl+\ is SIGQUIT and Ctrl+B is a common tmux prefix, so on Windows and
- * Linux a focused terminal keeps them. Cmd on macOS never reaches the shell.
+ * Linux a focused terminal keeps them. Ctrl+Alt+C and Ctrl+Alt+R too
+ * (readline's revert-line is Ctrl+Alt+R): there the view switch and the role
+ * launcher work outside a focused terminal and from the palette. Cmd on
+ * macOS never reaches the shell.
  */
-const TERMINAL_GLOBALS_MAC = new Set<ShortcutAction>(["splitRight", "toggleFilePanel"]);
+const TERMINAL_GLOBALS_MAC = new Set<ShortcutAction>([
+  "splitRight",
+  "toggleFilePanel",
+  "toggleTerminalView",
+  "roleLauncher",
+]);
 
 function terminalGlobal(action: ShortcutAction, platform: Platform): boolean {
   return TERMINAL_GLOBALS.has(action) || (platform === "mac" && TERMINAL_GLOBALS_MAC.has(action));
