@@ -144,7 +144,15 @@ function splitTopLevel(text: string, lang: Lang): string[] {
   return parts.map((part) => part.trim()).filter(Boolean);
 }
 
-type RustCommand = { file: string; args: Set<string> };
+type RustCommand = {
+  file: string;
+  args: Set<string>;
+  /** Caller-supplied parameters that are not `Option<…>`: a call must send them. */
+  required: Set<string>;
+};
+
+/** `Option<…>` (any path to it): Tauri reads a missing key as `None`. */
+const OPTION_TYPE = /^(?:(?:std|core)::option::)?Option\s*</;
 
 /** Every `#[tauri::command]` fn: name -> definitions (file, camelCase keys). */
 function parseRustCommands(): Map<string, RustCommand[]> {
@@ -160,6 +168,7 @@ function parseRustCommands(): Map<string, RustCommand[]> {
       const close = closeOf(source, open, RUST);
       const params = splitTopLevel(source.slice(open + 1, close - 1), RUST);
       const args = new Set<string>();
+      const required = new Set<string>();
       for (const param of params) {
         const colon = param.indexOf(":");
         if (colon < 0) continue;
@@ -167,9 +176,10 @@ function parseRustCommands(): Map<string, RustCommand[]> {
         const type = param.slice(colon + 1).trim();
         if (INJECTED_TYPE.test(type)) continue;
         args.add(toCamel(name));
+        if (!OPTION_TYPE.test(type)) required.add(toCamel(name));
       }
       const list = commands.get(m[1]) ?? [];
-      list.push({ file, args });
+      list.push({ file, args, required });
       commands.set(m[1], list);
     }
   }
@@ -285,6 +295,9 @@ describe("IPC contract between bridge.ts and the Rust commands", () => {
     // A Channel is caller-supplied, so it stays a parameter.
     const ptyOpen = rustCommands.get("pty_open")?.[0].args;
     expect(ptyOpen?.has("onOutput")).toBe(true);
+    // `Option<…>` parameters may be left out; the rest are required.
+    const write = rustCommands.get("files_write")?.[0];
+    expect([...(write?.required ?? [])].sort()).toEqual(["path", "tabId", "text"]);
   });
 
   it("starts the app through the library's run()", () => {
@@ -319,6 +332,23 @@ describe("IPC contract between bridge.ts and the Rust commands", () => {
           def.args.has(key),
           `${call.file}:${call.line} passes "${key}" to "${call.command}", which takes ` +
             `{${[...def.args].join(", ")}}. Tauri binds by name, so the call fails at run time.`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it("sends every parameter the Rust command requires", () => {
+    for (const call of calls) {
+      // Non-literal and spread calls are on the allowlist, checked by hand.
+      if (call.args === null || call.spread) continue;
+      const path = registered.find((entry) => entry.split("::").pop() === call.command);
+      const def = path ? definitionFor(path) : undefined;
+      if (!def) continue; // reported by the registration test
+      for (const key of def.required) {
+        expect(
+          call.args.includes(key),
+          `${call.file}:${call.line} calls "${call.command}" without "${key}", which is not an Option<…>. ` +
+            "Tauri refuses the call at run time.",
         ).toBe(true);
       }
     }
