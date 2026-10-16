@@ -5583,3 +5583,132 @@ button.chain-label {
 .file-panel-resizer:focus-visible {
   background: color-mix(in srgb, var(--accent-fg) 33%, transparent);
 }
+
+/* ---- Chat view of a Claude terminal tab (TerminalChatView) ---- */
+
+.terminal-view-switch {
+  flex-shrink: 0;
+}
+
+.terminal-header-subagents {
+  flex-shrink: 0;
+  padding: 0 0.45rem;
+  border: 1px solid var(--done);
+  border-radius: var(--radius-pill);
+  color: var(--done-bright);
+  font-size: var(--text-2xs);
+  line-height: 1.3rem;
+  white-space: nowrap;
+}
+
+.terminal-chat {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.terminal-chat-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--warning);
+  background: var(--warning-subtle);
+  color: var(--fg);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.terminal-chat-screen {
+  min-height: 0;
+}
+
+.terminal-chat-prompt {
+  white-space: pre-wrap;
+}
+
+.terminal-chat-took {
+  flex-shrink: 0;
+  color: var(--fg-subtle);
+  font-size: var(--text-2xs);
+}
+
+.session-tool-status-stopped {
+  color: var(--fg-muted);
+  background: var(--bg-muted);
+}
+
+.terminal-chat-tools {
+  margin: 0 0 0.5rem 0.15rem;
+  font-size: var(--text-sm);
+}
+
+.terminal-chat-tools > summary {
+  cursor: pointer;
+  color: var(--fg-muted);
+  font-family: ui-monospace, Consolas, monospace;
+}
+
+.terminal-chat-subagent {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin: 0.25rem 0 0.5rem;
+  padding: 0.35rem 0.55rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--done);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  background: var(--bg);
+  font-size: var(--text-sm);
+}
+
+.terminal-chat-subagent-running {
+  border-left-color: var(--accent);
+}
+
+.terminal-chat-subagent-label {
+  flex-shrink: 0;
+  color: var(--done-bright);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.terminal-chat-subagent-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-chat-subagent-type {
+  color: var(--fg-muted);
+}
+
+.terminal-chat-card {
+  margin: 0.25rem 0 0.75rem;
+}
+
+.terminal-chat-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.terminal-chat-plan {
+  max-height: 24rem;
+  overflow: auto;
+}
+
+.terminal-chat-question-text {
+  margin: 0.25rem 0;
+  font-size: var(--text-sm);
+}

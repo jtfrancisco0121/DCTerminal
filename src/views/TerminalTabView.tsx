@@ -17,7 +17,9 @@ import { livePty } from "../terminal/live";
 import { blurParkedTerminal, refitTerminal, terminalBracketedPaste } from "../terminal/park";
 import type { useScratchPads } from "../useScratchPads";
 import type { useUiSettings } from "../useUiSettings";
+import type { TerminalViewMode } from "../terminal/chatEntries";
 import { isClaudeTerminal, terminalLaunchOf, type PadSizeProps } from "./tabHelpers";
+import { TerminalChatView } from "./TerminalChatView";
 
 export type TerminalTabViewProps = {
   activeTabId: string | null;
@@ -49,6 +51,14 @@ export type TerminalTabViewProps = {
   openPromptLibrary: (save: boolean) => void;
   focusActiveTerminal: () => void;
   onPadError: (message: string) => void;
+  /**
+   * Chat: a Claude terminal tab shows its read-only chat view. The terminal
+   * unmounts like on a tab switch; its xterm stays parked and the PTY runs on.
+   */
+  view?: TerminalViewMode;
+  /** The tab's state is Needs you (the chat view's banner). */
+  needsYou?: boolean;
+  onShowTerminal?: () => void;
 };
 
 /** The active terminal tab: hand-off banner, toolbar, terminal and scratch pad. */
@@ -77,9 +87,13 @@ export function TerminalTabView({
   openPromptLibrary,
   focusActiveTerminal,
   onPadError,
+  view = "terminal",
+  needsYou = false,
+  onShowTerminal,
 }: TerminalTabViewProps) {
   const linked = handoffs.find((item) => item.targetTabId === activeTabId) ?? null;
   const launch = terminalLaunchOf(activeTabSummary);
+  const chat = view === "chat" && !inGrid && isClaudeTerminal(activeTabSummary);
   return (
     <section className="status-card status-card-session-full terminal-screen">
       {linked && (
@@ -99,32 +113,41 @@ export function TerminalTabView({
       )}
       {terminalError && <p className="error">{terminalError}</p>}
       {!inGrid && header}
-      <TerminalView
-        ptyId={activeTabSummary.id}
-        cwd={activeTabSummary.cwd}
-        launch={launch}
-        roleId={activeTabSummary.roleId}
-        fontSize={fontSize}
-        resumeSessionId={activeTabSummary.resumeSessionId}
-        claudeSession={isClaudeTerminal(activeTabSummary)}
-        autoOpen={!livePty(activeTabSummary.id)}
-        onMenuOpen={() => readTerminalVerdict(activeTabSummary.id, true)}
-        menuActions={
-          isPlanTerminal
-            ? handoffMenuItems(activeTabSummary.roleId, roles, activeTabSummary.chain ?? null).map((item) => ({
-                id: `send-${item.target}`,
-                label:
-                  item.target === terminalRoute?.primaryTarget && terminalRoute.primaryLabel
-                    ? terminalRoute.primaryLabel
-                    : item.label,
-                onSelect: () => {
-                  void openTerminalHandoff(item.target);
-                },
-              }))
-            : []
-        }
-      />
-      {!inGrid && (
+      {chat && (
+        <TerminalChatView
+          tabId={activeTabSummary.id}
+          needsYou={needsYou}
+          onShowTerminal={() => onShowTerminal?.()}
+        />
+      )}
+      {!chat && (
+        <TerminalView
+          ptyId={activeTabSummary.id}
+          cwd={activeTabSummary.cwd}
+          launch={launch}
+          roleId={activeTabSummary.roleId}
+          fontSize={fontSize}
+          resumeSessionId={activeTabSummary.resumeSessionId}
+          claudeSession={isClaudeTerminal(activeTabSummary)}
+          autoOpen={!livePty(activeTabSummary.id)}
+          onMenuOpen={() => readTerminalVerdict(activeTabSummary.id, true)}
+          menuActions={
+            isPlanTerminal
+              ? handoffMenuItems(activeTabSummary.roleId, roles, activeTabSummary.chain ?? null).map((item) => ({
+                  id: `send-${item.target}`,
+                  label:
+                    item.target === terminalRoute?.primaryTarget && terminalRoute.primaryLabel
+                      ? terminalRoute.primaryLabel
+                      : item.label,
+                  onSelect: () => {
+                    void openTerminalHandoff(item.target);
+                  },
+                }))
+              : []
+          }
+        />
+      )}
+      {!inGrid && !chat && (
         <TerminalScratchPad
           ref={terminalPadRef}
           tabId={activeTabSummary.id}

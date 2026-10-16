@@ -29,6 +29,10 @@ export type TerminalHeaderProps = {
   branchTitle?: string;
   /** The chain label button. */
   chain?: ReactNode;
+  /** Beside the state pill, e.g. "2 sub-agents running". */
+  badges?: ReactNode;
+  /** First on the right: the Terminal · Chat switch of a Claude terminal tab. */
+  viewSwitch?: ReactNode;
   /** Right side: model, Changes, Activity. */
   right?: ReactNode;
   next?: NextStep | null;
@@ -165,6 +169,8 @@ export function TerminalHeader({
   branch,
   branchTitle,
   chain,
+  badges,
+  viewSwitch,
   right,
   next,
   turnEnded,
@@ -194,6 +200,7 @@ export function TerminalHeader({
           <span role="status">{state.text}</span>
           {elapsed !== null && <span aria-hidden> · {formatElapsed(elapsed)}</span>}
         </span>
+        {badges}
         {chain}
         {folder && (
           <span className="terminal-header-meta" title={folderTitle}>
@@ -207,6 +214,7 @@ export function TerminalHeader({
         )}
       </div>
       <div className="terminal-header-right">
+        {viewSwitch}
         {right}
         {onStop && state.tone === "working" && (
           <button

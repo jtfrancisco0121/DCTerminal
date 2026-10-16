@@ -288,6 +288,7 @@ import {
   measuredTerminalSize,
 } from "./terminal/park";
 import { encodeTerminalPaste } from "./terminal/paste";
+import { terminalViewOf, type TerminalViewMode } from "./terminal/chatEntries";
 import { planFileMentions } from "./terminal/text";
 import {
   emptySessionCards,
@@ -348,7 +349,7 @@ import { TerminalTabView } from "./views/TerminalTabView";
 import { ChatSessionView } from "./views/ChatSessionView";
 import { StartScreen } from "./views/StartScreen";
 import { createPaneRenderers } from "./views/workspacePanes";
-import { terminalHeaderFor, type TerminalHeaderDeps } from "./views/terminalHeader";
+import { terminalHeaderFor, terminalHeaderState, type TerminalHeaderDeps } from "./views/terminalHeader";
 import { WorkspaceShell } from "./views/WorkspaceShell";
 import { CLI_LABEL, type CliLaunch, tabHasModel, visibleFields } from "./views/tabHelpers";
 import { useChatImages } from "./attachments/useChatImages";
@@ -462,6 +463,8 @@ export function StartupForm({
   // F2: finished/question/error left on a tab the user was not watching.
   const [tabMarks, setTabMarks] = useState<Record<string, TabMark>>({});
   const [terminalBusy, setTerminalBusy] = useState<string[]>([]);
+  /** Terminal or Chat per Claude terminal tab, for this run of the app. */
+  const [terminalViews, setTerminalViews] = useState<Record<string, TerminalViewMode>>({});
   /** Claude session logs of terminal role tabs on screen or in a chain (null: none). */
   const [sessionLogs, setSessionLogs] = useState<Record<string, TerminalSessionLog | null>>({});
   const sessionLogsRef = useRef(sessionLogs);
@@ -5374,6 +5377,8 @@ export function StartupForm({
       notePtyInput(tabId);
       void ptyWrite(tabId, "\x1b").catch(() => {});
     },
+    terminalViews,
+    setTerminalView: (tabId, view) => setTerminalViews((prev) => ({ ...prev, [tabId]: view })),
   };
 
   const panes = createPaneRenderers({
@@ -5620,7 +5625,10 @@ export function StartupForm({
         isPlanTerminal={isPlanTerminal}
         terminalRoute={terminalRoute}
         fontSize={fontSize}
-        header={terminalHeaderFor(headerDeps, activeTabSummary)}
+        header={terminalHeaderFor(headerDeps, activeTabSummary, { viewSwitch: true })}
+        view={terminalViewOf(terminalViews, activeTabSummary.id)}
+        needsYou={terminalHeaderState(headerDeps, activeTabSummary).header.tone === "needs"}
+        onShowTerminal={() => headerDeps.setTerminalView?.(activeTabSummary.id, "terminal")}
         inGrid={showGrid}
         scratch={scratch}
         platform={platform}

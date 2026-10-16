@@ -1544,6 +1544,106 @@ export async function terminalSessionLog(tabId: string): Promise<TerminalSession
   return invoke<TerminalSessionLog | null>("terminal_session_log", { tabId });
 }
 
+/**
+ * A chat entry's tool status. `running`: no result yet (a plan or question
+ * is waiting for the user). `error`: failed, denied or rejected. `stopped`:
+ * a later prompt started before any result came back.
+ */
+export type ChatEntryStatus = "running" | "done" | "error" | "stopped";
+
+export type ChatQuestion = {
+  header: string;
+  question: string;
+  /** Option labels. */
+  options: string[];
+  multiSelect: boolean;
+};
+
+/** Fields every chat entry has (src-tauri/src/claude_session_log/chat.rs). */
+type ChatEntryBase = {
+  /** Position in the session, ascending in file order. Stable across updates. */
+  seq: number;
+  /** Bumped whenever this entry is added or changed. */
+  rev: number;
+  /** The record's ISO timestamp; for a tool, when it was called. */
+  at: string | null;
+};
+
+type ChatToolFields = {
+  /** The `tool_use` id. */
+  toolId: string;
+  status: ChatEntryStatus;
+  /** When its `tool_result` came back (or null). */
+  endedAt: string | null;
+};
+
+/**
+ * One entry of a Claude terminal tab's conversation, from its session log.
+ * Thinking blocks and a sub-agent's own steps (sidechain records) are left out.
+ */
+export type ChatEntry = ChatEntryBase &
+  (
+    | { kind: "user"; text: string }
+    | { kind: "assistant"; text: string }
+    | (ChatToolFields & {
+        kind: "tool";
+        name: string;
+        /** Redacted one-liner, e.g. "Bash: Run tests". */
+        title: string;
+        toolKind: SessionToolCallKind;
+      })
+    | (ChatToolFields & {
+        /** A `tool_use` named Agent (older: Task): starts at `at`, ends at `endedAt`. */
+        kind: "subAgent";
+        description: string;
+        agentType: string | null;
+        /** Launched in the background: its result only says it started. */
+        background: boolean;
+      })
+    | (ChatToolFields & { kind: "plan"; plan: string })
+    | (ChatToolFields & { kind: "question"; questions: ChatQuestion[] })
+  );
+
+export type ChatEntriesUpdate = {
+  sessionId: string;
+  /** Pass back as `since` to get only later changes. */
+  revision: number;
+  /** True: `entries` is the whole list (replace). False: only new or changed entries (merge by `seq`). */
+  reset: boolean;
+  /** Entries below this `seq` were dropped (the backend keeps the newest 2000). */
+  firstSeq: number;
+  /** Ascending `seq`. */
+  entries: ChatEntry[];
+};
+
+/** Entries changed after `since` (all, with `reset`, when omitted). `null` until the log exists. */
+export async function terminalChatEntries(
+  tabId: string,
+  since?: number | null,
+): Promise<ChatEntriesUpdate | null> {
+  return invoke<ChatEntriesUpdate | null>("terminal_chat_entries", { tabId, since: since ?? null });
+}
+
+/**
+ * Streams the tab's chat entries: what changed after `since` first, then each
+ * change, until `terminalChatUnwatch`, the tab closes, or its PTY is killed.
+ * One watch per tab; a new call replaces the old one. Prefer
+ * `subscribeChatEntries` (src/terminal/chatEntriesStore.ts), which shares it.
+ */
+export async function terminalChatWatch(
+  tabId: string,
+  since: number | null,
+  onUpdate: (update: ChatEntriesUpdate) => void,
+): Promise<void> {
+  const channel = new Channel<ChatEntriesUpdate>();
+  channel.onmessage = onUpdate;
+  return invoke("terminal_chat_watch", { tabId, since, onUpdate: channel });
+}
+
+export async function terminalChatUnwatch(tabId: string): Promise<void> {
+  return invoke("terminal_chat_unwatch", { tabId });
+}
+
 export type ModelEntry = {
   id: string;
   label: string;

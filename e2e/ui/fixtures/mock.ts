@@ -778,6 +778,47 @@ export function installTauriMock(config: MockConfig): void {
   };
   // ---- end Terminal tabs ------------------------------------------------
 
+  // ---- Terminal chat view (e2e/ui/terminal-chat-view.spec.ts) -----------
+  // Mirrors commands/session_log.rs: terminal_chat_entries answers from
+  // state.chatLogs[tabId] (null until set); terminal_chat_watch keeps the
+  // Channel passed as `onUpdate` and sends the whole list at once when there
+  // is one. __E2E.chatSet replaces a tab's entries and sends a reset update.
+  state.chatLogs = {} as Record<string, Json[]>;
+  state.chatRevision = 0;
+  const chatChannels: Record<string, number> = {};
+  const chatUpdate = (tabId: string) => ({
+    sessionId: `claude-${tabId}`,
+    revision: state.chatRevision,
+    reset: true,
+    firstSeq: state.chatLogs[tabId]?.[0]?.seq ?? 0,
+    entries: clone(state.chatLogs[tabId] ?? []),
+  });
+  const chatSend = (tabId: string): boolean => {
+    const channel = chatChannels[tabId];
+    const entry = channel === undefined ? undefined : callbacks.get(channel);
+    if (!entry) return false;
+    const index = channelIndex[channel] ?? 0;
+    channelIndex[channel] = index + 1;
+    entry.fn({ index, message: chatUpdate(tabId) });
+    return true;
+  };
+  defaults.terminal_chat_entries = (a) => (state.chatLogs[a.tabId] ? chatUpdate(a.tabId) : null);
+  defaults.terminal_chat_watch = (a) => {
+    if (a.onUpdate && typeof a.onUpdate.id === "number") chatChannels[a.tabId] = a.onUpdate.id;
+    if (state.chatLogs[a.tabId]) queueMicrotask(() => chatSend(a.tabId));
+    return null;
+  };
+  defaults.terminal_chat_unwatch = (a) => {
+    delete chatChannels[a.tabId];
+    return null;
+  };
+  const chatSet = (tabId: string, entries: Json[]): boolean => {
+    state.chatRevision += 1;
+    state.chatLogs[tabId] = clone(entries);
+    return chatSend(tabId);
+  };
+  // ---- end Terminal chat view -------------------------------------------
+
   // ---- Pipeline terminal (e2e/ui/pipeline-terminal.spec.ts) -------------
   // state_store.rs apply_terminal_draft keeps a reused tab's chain tag.
   const roleTerminalStartDefault = defaults.role_terminal_start;
@@ -994,5 +1035,7 @@ export function installTauriMock(config: MockConfig): void {
     },
     // Terminal tabs: one PtyPacket to the channel of PTY `ptyId`.
     ptySend,
+    // Terminal chat view: replace a tab's chat entries and send them to its watch.
+    chatSet,
   };
 }

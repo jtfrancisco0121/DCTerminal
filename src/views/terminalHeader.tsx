@@ -8,9 +8,12 @@ import { handoffRoute } from "../handoff/routing";
 import { roleDisplayName } from "../handoff/transitions";
 import type { ReviewVerdict } from "../handoff/verdict";
 import type { TerminalState } from "../terminal/claudeState";
-import { headerStateOf } from "../terminal/headerState";
+import type { TerminalViewMode } from "../terminal/chatEntries";
+import { headerStateOf, type HeaderState } from "../terminal/headerState";
 import type { TabStatus } from "../tabStatus";
 import type { HeaderControls } from "./SessionHeaderControls";
+import { isClaudeTerminal } from "./tabHelpers";
+import { SubAgentIndicator, TerminalViewSwitch } from "./TerminalChatView";
 
 /** What a terminal header reads from the workspace. */
 export type TerminalHeaderDeps = {
@@ -31,6 +34,9 @@ export type TerminalHeaderDeps = {
   readTerminalVerdict: (tabId: string | null | undefined, fresh?: boolean) => void;
   /** Interrupt a terminal's running turn. */
   stopTerminalTurn: (tabId: string) => void;
+  /** Terminal or Chat, per Claude terminal tab (absent: Terminal). */
+  terminalViews?: Record<string, TerminalViewMode>;
+  setTerminalView?: (tabId: string, view: TerminalViewMode) => void;
 };
 
 export type TerminalHeaderOptions = {
@@ -38,6 +44,8 @@ export type TerminalHeaderOptions = {
   /** Model, Changes and Activity beside the state (the active tab). */
   controls?: boolean;
   actions?: ReactNode;
+  /** The Terminal · Chat switch (the tab's own header, not a grid cell). */
+  viewSwitch?: boolean;
 };
 
 export function folderName(cwd: string | undefined | null): string | null {
@@ -45,14 +53,12 @@ export function folderName(cwd: string | undefined | null): string | null {
   return parts.length ? parts[parts.length - 1] : null;
 }
 
-/** The R16 header of one terminal tab, for the tab itself, the second pane or a grid cell. */
-export function terminalHeaderFor(
-  deps: TerminalHeaderDeps,
+/** The tab's state pill; the chat view reads its Needs you from here too. */
+export function terminalHeaderState(
+  deps: Pick<TerminalHeaderDeps, "terminalVerdict" | "sessionLogs" | "terminalStates" | "tabStatuses">,
   tab: TabSummary,
-  { compact = false, controls = true, actions }: TerminalHeaderOptions = {},
-): ReactNode {
+): { header: HeaderState; turnEnded: boolean } {
   const isRole = tab.terminalLaunch === "role";
-  const roleName = isRole ? roleDisplayName(tab.roleId, deps.roles) : "Terminal";
   const verdict = deps.terminalVerdict?.tabId === tab.id ? deps.terminalVerdict.verdict : null;
   const log = deps.sessionLogs[tab.id];
   const state = deps.terminalStates[tab.id];
@@ -63,6 +69,21 @@ export function terminalHeaderFor(
     turnEnded,
     verdict,
   });
+  return { header, turnEnded };
+}
+
+/** The R16 header of one terminal tab, for the tab itself, the second pane or a grid cell. */
+export function terminalHeaderFor(
+  deps: TerminalHeaderDeps,
+  tab: TabSummary,
+  { compact = false, controls = true, actions, viewSwitch = false }: TerminalHeaderOptions = {},
+): ReactNode {
+  const isRole = tab.terminalLaunch === "role";
+  const roleName = isRole ? roleDisplayName(tab.roleId, deps.roles) : "Terminal";
+  const verdict = deps.terminalVerdict?.tabId === tab.id ? deps.terminalVerdict.verdict : null;
+  const { header, turnEnded } = terminalHeaderState(deps, tab);
+  const claude = isClaudeTerminal(tab);
+  const setView = deps.setTerminalView;
 
   let next: NextStep | null = null;
   if (deps.isTerminalSource(tab)) {
@@ -107,6 +128,16 @@ export function terminalHeaderFor(
       folderTitle={tab.cwd}
       branch={tab.worktreeBranch}
       branchTitle={tab.worktreePath ?? undefined}
+      badges={claude ? <SubAgentIndicator tabId={tab.id} /> : null}
+      viewSwitch={
+        claude && viewSwitch && setView ? (
+          <TerminalViewSwitch
+            tabId={tab.id}
+            view={deps.terminalViews?.[tab.id] ?? "terminal"}
+            onChange={(view) => setView(tab.id, view)}
+          />
+        ) : null
+      }
       chain={
         tab.chain ? (
           <ChainLabel
