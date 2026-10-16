@@ -14,6 +14,8 @@ import type { TabStatus } from "../tabStatus";
 import type { HeaderControls } from "./SessionHeaderControls";
 import { isClaudeTerminal } from "./tabHelpers";
 import { SubAgentIndicator, TerminalViewSwitch } from "./TerminalChatView";
+import { runIdOfTab } from "../pipeline/planPane";
+import { PlanPaneToggle } from "./PlanPane";
 
 /** What a terminal header reads from the workspace. */
 export type TerminalHeaderDeps = {
@@ -44,7 +46,10 @@ export type TerminalHeaderOptions = {
   /** Model, Changes and Activity beside the state (the active tab). */
   controls?: boolean;
   actions?: ReactNode;
-  /** The Terminal · Chat switch (the tab's own header, not a grid cell). */
+  /**
+   * The Terminal · Chat switch and, on a pipeline tab, the Plan pane toggle
+   * (the tab's own header, not a grid cell).
+   */
   viewSwitch?: boolean;
 };
 
@@ -84,6 +89,15 @@ export function terminalHeaderFor(
   const { header, turnEnded } = terminalHeaderState(deps, tab);
   const claude = isClaudeTerminal(tab);
   const setView = deps.setTerminalView;
+  const terminalChatSwitch =
+    claude && viewSwitch && setView ? (
+      <TerminalViewSwitch
+        tabId={tab.id}
+        view={deps.terminalViews?.[tab.id] ?? "terminal"}
+        onChange={(view) => setView(tab.id, view)}
+      />
+    ) : null;
+  const planToggle = viewSwitch && runIdOfTab(tab) ? <PlanPaneToggle tabId={tab.id} /> : null;
 
   let next: NextStep | null = null;
   if (deps.isTerminalSource(tab)) {
@@ -130,12 +144,11 @@ export function terminalHeaderFor(
       branchTitle={tab.worktreePath ?? undefined}
       badges={claude ? <SubAgentIndicator tabId={tab.id} /> : null}
       viewSwitch={
-        claude && viewSwitch && setView ? (
-          <TerminalViewSwitch
-            tabId={tab.id}
-            view={deps.terminalViews?.[tab.id] ?? "terminal"}
-            onChange={(view) => setView(tab.id, view)}
-          />
+        terminalChatSwitch || planToggle ? (
+          <>
+            {terminalChatSwitch}
+            {planToggle}
+          </>
         ) : null
       }
       chain={
