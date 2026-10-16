@@ -225,6 +225,7 @@ fn terminal_settings_are_cleaned_and_run_modes_checked() {
             ("b".into(), "popup".into()),
         ]),
         role_run_mode: HashMap::from([("a".into(), "yolo".into()), ("b".into(), "rm -rf".into())]),
+        new_tab_opens: "shell".into(),
     };
     store.set_terminal(next).unwrap();
     let terminal = SettingsStore::open(dir.path()).unwrap().terminal().clone();

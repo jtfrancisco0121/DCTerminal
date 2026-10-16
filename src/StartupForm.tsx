@@ -77,6 +77,7 @@ import {
   selectActiveTab,
   syncActiveTabForm,
   getTerminalSettings,
+  DEFAULT_TERMINAL_SETTINGS,
   getNotificationSettings,
   setNotificationSettings,
   gitRepoInfo,
@@ -255,6 +256,9 @@ import {
 import { appendReference } from "./files/paths";
 import { effectiveModelFor, modelChangeNote } from "./models";
 import { TabSwitcher } from "./components/TabSwitcher";
+import { useNewTab } from "./useNewTab";
+import { activeTabFolder } from "./newTab";
+import { startTerminalTab, type NewTerminalLaunch } from "./terminal/openTerminalTab";
 import { detectPlatform, type ShortcutMatch, type TerminalAction } from "./keymap";
 import {
   beginLivePty,
@@ -456,6 +460,10 @@ export function StartupForm({
   const [savedTabs, setSavedTabs] = useState<TabSummary[]>([]);
   const savedTabsRef = useRef(savedTabs);
   savedTabsRef.current = savedTabs;
+  /** Set once useNewTab exists; the tab bootstrap calls it on a first launch. */
+  const newTabLaunchRef = useRef<(draftTabId: string, mode: string) => Promise<void>>(
+    async () => {},
+  );
   const [closedTabs, setClosedTabs] = useState<ClosedTabSummary[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [cardsByTab, setCardsByTab] = useState<Record<string, Cards>>({});
@@ -1018,6 +1026,9 @@ export function StartupForm({
           const { tab } = await newDraftTab(seedRoleId, "");
           await refreshTabs();
           loadTabIntoForm(tab);
+          // The "New tab opens" setting decides what replaces this start screen.
+          const mode = await getTerminalSettings().then((t) => t.newTabOpens, () => "start");
+          await newTabLaunchRef.current(tab.id, mode);
           return;
         }
         const activeId = snap.activeTabId ?? snap.tabs[snap.tabs.length - 1]?.id;
@@ -2040,14 +2051,7 @@ export function StartupForm({
 
   const rememberSurface = useCallback(
     (id: string, surface: HandoffSurface) => {
-      const current = terminalSettings ?? {
-        shell: "",
-        fontSize: 14,
-        optionAsMeta: true,
-        copyOnSelect: false,
-        roleSurface: {},
-        roleRunMode: {},
-      };
+      const current = terminalSettings ?? DEFAULT_TERMINAL_SETTINGS;
       updateTerminalSettings({
         ...current,
         roleSurface: { ...current.roleSurface, [id]: surface },
@@ -2338,6 +2342,31 @@ export function StartupForm({
     }
   }, [refreshTabs]);
 
+  /** A new Claude Code or shell terminal tab in `cwd` (⌘T, the new-tab picker). */
+  const openTerminalTab = useCallback(
+    async (launch: NewTerminalLaunch, cwd: string, reuseTabId: string | null = null) => {
+      if (startLockRef.current) return;
+      startLockRef.current = true;
+      setBusy(true);
+      // Only an untouched draft (a fresh start screen) turns into the terminal.
+      const reusable = savedTabsRef.current.some(
+        (tab) => tab.id === reuseTabId && tab.phase === "draft" && tab.kind !== "terminal",
+      );
+      try {
+        if (!reusable) stashActiveTab();
+        const tabId = await startTerminalTab(launch, cwd, reusable ? reuseTabId : null);
+        setActiveTabId(tabId);
+        await refreshTabs();
+      } catch (err: unknown) {
+        showNotice("Terminal did not start", errorText(err), "failed");
+      } finally {
+        startLockRef.current = false;
+        setBusy(false);
+      }
+    },
+    [refreshTabs, showNotice, stashActiveTab],
+  );
+
   const resumeHistoryEntry = useCallback(
     async (entry: CursorHistoryEntry) => {
       if (startLockRef.current) return;
@@ -2621,9 +2650,7 @@ export function StartupForm({
     [confirm, handleCloseTab, showNotice],
   );
 
-  const handleNewTab = useCallback(async () => {
-    const fileGuard = fileDiscardGuardRef.current;
-    if (fileGuard?.dirty() && !(await fileGuard.confirm())) return;
+  const openStartScreenTab = useCallback(async () => {
     setBusy(true);
     try {
       stashActiveTab();
@@ -2649,6 +2676,23 @@ export function StartupForm({
       setBusy(false);
     }
   }, [applyDraft, roleId, roles, stashActiveTab]);
+
+  const newTab = useNewTab({
+    mode: () => terminalSettings?.newTabOpens,
+    activeCwd: () => activeTabFolder(savedTabsRef.current, activeTabIdRef.current),
+    openStartScreen: openStartScreenTab,
+    openTerminal: openTerminalTab,
+    saveMode: (mode) =>
+      updateTerminalSettings({ ...(terminalSettings ?? DEFAULT_TERMINAL_SETTINGS), newTabOpens: mode }),
+  });
+  newTabLaunchRef.current = newTab.launch;
+  const requestNewTab = newTab.request;
+
+  const handleNewTab = useCallback(async () => {
+    const fileGuard = fileDiscardGuardRef.current;
+    if (fileGuard?.dirty() && !(await fileGuard.confirm())) return;
+    await requestNewTab();
+  }, [requestNewTab]);
 
   const cancelTurnFor = useCallback(async (tabId: string | null) => {
     if (!tabId) return;
@@ -3396,12 +3440,8 @@ export function StartupForm({
         match.action === "zoomReset"
       ) {
         const current = terminalSettings ?? {
-          shell: "",
+          ...DEFAULT_TERMINAL_SETTINGS,
           fontSize: TERMINAL_FONT_DEFAULT,
-          optionAsMeta: true,
-          copyOnSelect: false,
-          roleSurface: {},
-          roleRunMode: {},
         };
         const next = zoomedFontSize(current.fontSize, match.action);
         if (next !== current.fontSize) updateTerminalSettings({ ...current, fontSize: next });
@@ -5163,6 +5203,7 @@ export function StartupForm({
           </div>
         </Dialog>
       )}
+      {newTab.picker}
       {worktreeDialogOpen && (
         <WorktreeDialog
           initialRepo={activeTabSummary?.cwd || values.cwd || ""}

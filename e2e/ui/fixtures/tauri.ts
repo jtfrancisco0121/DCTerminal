@@ -31,6 +31,8 @@ export type OpenOptions = {
    * drive the chat surface; pass `{}` to see the app's own default.
    */
   roleSurface?: Record<string, string>;
+  /** What Mod+T opens (`get_terminal_settings` → `newTabOpens`). Defaults to `start`. */
+  newTabOpens?: MockConfig["newTabOpens"];
 };
 
 /** Every role remembered as Chat (the fixture default, see OpenOptions.roleSurface). */
@@ -58,6 +60,7 @@ export class TauriApp {
       ),
       strict: options.strict,
       roleSurface: options.roleSurface ?? allChat(roles),
+      newTabOpens: options.newTabOpens,
     };
     await this.page.addInitScript(installTauriMock, config);
     await this.page.goto("/");

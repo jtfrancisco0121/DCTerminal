@@ -1364,6 +1364,21 @@ export type TerminalSettings = {
   copyOnSelect: boolean;
   roleSurface: Record<string, string>;
   roleRunMode: Record<string, string>;
+  /** What ⌘/Ctrl+T (and a launch with no saved tabs) opens. */
+  newTabOpens: NewTabOpens;
+};
+
+/** `ask` shows the new-tab picker; `start` shows the start screen. */
+export type NewTabOpens = "ask" | "claude" | "shell" | "start";
+
+export const DEFAULT_TERMINAL_SETTINGS: TerminalSettings = {
+  shell: "",
+  fontSize: 14,
+  optionAsMeta: true,
+  copyOnSelect: false,
+  roleSurface: {},
+  roleRunMode: {},
+  newTabOpens: "ask",
 };
 
 export type TerminalLaunch = "shell" | "cursor-cli" | "claude-cli" | "role";
@@ -1874,6 +1889,14 @@ export type FileWriteResult = {
 /** Paths are relative to the tab's working folder. */
 export async function filesList(tabId: string, path = ""): Promise<DirListing> {
   return invoke<DirListing>("files_list", { tabId, path });
+}
+
+/**
+ * The subset of `paths` that name existing files inside the tab's folder.
+ * Relative paths resolve against the folder; absolute ones must lie inside it.
+ */
+export async function filesResolve(tabId: string, paths: string[]): Promise<string[]> {
+  return invoke<string[]>("files_resolve", { tabId, paths });
 }
 
 export async function filesRead(tabId: string, path: string): Promise<FileContent> {

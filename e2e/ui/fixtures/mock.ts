@@ -234,6 +234,8 @@ export function installTauriMock(config: MockConfig): void {
       fontSize: 13,
       roleSurface: clone(config.roleSurface),
       roleRunMode: {},
+      // "start" keeps Ctrl+T on the start screen for the older specs.
+      newTabOpens: config.newTabOpens ?? "start",
     }),
     set_terminal_settings: (a) => a.terminal,
     get_notification_settings: () => ({ enabled: true, system: false, toastWhenFocused: false }),
@@ -646,6 +648,8 @@ export function installTauriMock(config: MockConfig): void {
       recent: [{ path: state.cwd, available: true, favorite: false }],
     }),
     projects_remember: () => null,
+    // Terminal file links: every asked path "exists" unless a spec overrides it.
+    files_resolve: (a) => (Array.isArray(a.paths) ? a.paths : []),
     check_working_folder: (a) => a.path,
     workspaces_list: () => ({ workspaces: [], path: "/tmp/dct-e2e/workspaces.json" }),
     transcript_load: () => ({ text: "", cwd: state.cwd, readOnly: false, recoveredFromCorrupt: false }),
@@ -959,6 +963,8 @@ export function installTauriMock(config: MockConfig): void {
         throw err instanceof Error ? err.message : String(err);
       }
     }
+    // homeDir() from @tauri-apps/api/path (the new-tab folder fallback).
+    if (cmd === "plugin:path|resolve_directory") return "/tmp/dct-e2e/home";
     if (cmd.startsWith("plugin:")) return null;
     if (config.strict) throw `e2e mock: no handler for ${cmd}`;
     return null;

@@ -5583,3 +5583,106 @@ button.chain-label {
 .file-panel-resizer:focus-visible {
   background: color-mix(in srgb, var(--accent-fg) 33%, transparent);
 }
+
+/* ---------------------------------------------------------------------
+   Terminal by default: the new-tab picker, shortcut hints on buttons,
+   and the scratch pad's compact-paste offer.
+   --------------------------------------------------------------------- */
+
+.overlay-panel-new-tab {
+  width: min(30rem, 92vw);
+}
+
+.new-tab-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.new-tab-list:focus-visible {
+  box-shadow: none;
+}
+
+.new-tab-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.new-tab-row-active {
+  background: color-mix(in srgb, var(--accent-emphasis) 20%, transparent);
+}
+
+.new-tab-list:focus-visible .new-tab-row-active {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.new-tab-row[aria-disabled="true"] {
+  cursor: default;
+  color: var(--fg-subtle);
+}
+
+.new-tab-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.new-tab-title {
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+.new-tab-detail {
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.new-tab-heading {
+  margin: var(--space-2) var(--space-3) var(--space-1);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-subtle);
+}
+
+.new-tab-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  font-size: var(--text-sm);
+}
+
+.new-tab-hint {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-xs);
+}
+
+.kbd-hint {
+  margin-left: var(--space-1);
+  padding: 0 var(--space-1);
+  font-size: var(--text-2xs);
+  background: transparent;
+  border-color: color-mix(in srgb, currentColor 35%, transparent);
+  opacity: 0.8;
+}
+
+.compact-offer .link-button {
+  font-size: inherit;
+}
+
+.surface-hint {
+  margin-left: var(--space-1);
+  font-size: var(--text-2xs);
+  font-weight: normal;
+  color: var(--fg-subtle);
+}

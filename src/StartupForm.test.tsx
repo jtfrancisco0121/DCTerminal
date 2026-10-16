@@ -116,6 +116,15 @@ vi.mock("./bridge", () => {
   saveFormDraft: vi.fn(async () => {}),
   selectActiveTab: vi.fn(),
   syncActiveTabForm: vi.fn(async () => {}),
+  DEFAULT_TERMINAL_SETTINGS: {
+    shell: "",
+    fontSize: 14,
+    optionAsMeta: true,
+    copyOnSelect: false,
+    roleSurface: {},
+    roleRunMode: {},
+    newTabOpens: "ask",
+  },
   // These tests exercise chat tabs; with no saved choice a role opens as Terminal.
   getTerminalSettings: vi.fn(async () => ({
     shell: "",
@@ -135,6 +144,7 @@ vi.mock("./bridge", () => {
       ].map((id) => [id, "chat"]),
     ),
     roleRunMode: {},
+    newTabOpens: "start" as const,
   })),
   handoffAttach: vi.fn(),
   getPipelineRun: vi.fn(async () => null),
@@ -501,6 +511,7 @@ describe("blank tab card", () => {
       copyOnSelect: false,
       roleSurface: {},
       roleRunMode: {},
+      newTabOpens: "start",
     });
     render(
       <StartupForm
@@ -530,6 +541,7 @@ describe("blank tab card", () => {
       copyOnSelect: false,
       roleSurface: { role_developer: "terminal" },
       roleRunMode: {},
+      newTabOpens: "start",
     });
     render(
       <StartupForm
@@ -868,7 +880,7 @@ describe("terminal tab scratch pad", () => {
       expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
       expect(screen.queryByRole("button", { name: "Transfer" })).toBeNull();
       expect(screen.queryByRole("button", { name: "To terminal" })).toBeNull();
-      expect(screen.queryByText(/---/)).toBeNull();
+      expect(screen.queryByText(/--- starts the next step/)).toBeNull();
       const editor = screen.getByLabelText("Scratch pad editor");
       expect(editor.closest(".terminal-slot, .xterm")).toBeNull();
       expect(editor.closest(".terminal-screen")).toBeTruthy();
