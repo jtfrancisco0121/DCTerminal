@@ -1,7 +1,8 @@
 /**
  * ⌘/Ctrl+T and a launch with no saved tabs follow the "New tab opens"
  * setting: ask (the picker), Claude or a shell in the resolved folder, or the
- * start screen. StartupForm supplies the actions; this hook decides.
+ * start screen. The picker's Role… row opens the role launcher. StartupForm
+ * supplies the actions; this hook decides.
  */
 import { useCallback, useRef, useState, type ReactNode } from "react";
 import type { NewTabOpens } from "./bridge";
@@ -16,6 +17,11 @@ type Options = {
   activeCwd: () => string | null;
   /** The start screen in a new tab (today's ⌘T). */
   openStartScreen: () => Promise<unknown>;
+  /**
+   * The role launcher (the picker's Role…); `reuseTabId` is an untouched
+   * draft the picked role fills instead of a new tab.
+   */
+  openRoleLauncher: (reuseTabId: string | null) => void;
   /** Open a terminal tab; `reuseTabId` is an untouched draft to turn into it. */
   openTerminal: (launch: NewTerminalLaunch, cwd: string, reuseTabId: string | null) => Promise<void>;
   /** Save a new value for the setting ("Don't ask again"). */
@@ -87,7 +93,7 @@ export function useNewTab(options: Options): {
       }}
       onRole={() => {
         close();
-        if (!reuse) void latest.current.openStartScreen();
+        latest.current.openRoleLauncher(reuse);
       }}
       onDontAskAgain={(checked) => latest.current.saveMode(checked ? "claude" : "ask")}
     />

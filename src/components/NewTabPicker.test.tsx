@@ -37,7 +37,7 @@ describe("NewTabPicker", () => {
     expect(options.map((o) => o.textContent)).toEqual([
       "Claude here~/code/appC / Enter",
       "Shell here~/code/appS",
-      "Role…Pick a role on the start screenR",
+      "Role…Pick a role, provider and Terminal or ChatR",
       "api~/code/api1",
       "web~/code/web2",
       "Open folder…Choose a folder, then open Claude thereO",
@@ -53,7 +53,7 @@ describe("NewTabPicker", () => {
     expect(props.onClaude).toHaveBeenCalledTimes(2);
   });
 
-  it("opens a shell on S and the start screen on R", () => {
+  it("opens a shell on S and the role launcher on R", () => {
     const { props, list } = setup();
     fireEvent.keyDown(list, { key: "s" });
     expect(props.onShell).toHaveBeenCalledWith("/Users/me/code/app");

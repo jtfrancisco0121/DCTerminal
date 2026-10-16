@@ -38,11 +38,16 @@ test("S opens a shell; arrows and Enter pick a row; Esc closes", async ({ app, p
   expect(start.args).toMatchObject({ input: { launch: "shell", cwd: CWD } });
 });
 
-test("R opens the start screen in a new tab", async ({ app, page }) => {
+test("R opens the role launcher, whose pick opens a draft tab", async ({ app, page }) => {
   await app.open({ newTabOpens: "ask" });
   await chord(page, "KeyT");
   await page.keyboard.press("r");
   await expect(picker(page)).toHaveCount(0);
+  const launcher = page.getByRole("dialog", { name: "New tab with role" });
+  await expect(launcher).toBeVisible();
+  expect(await app.calls("new_draft_tab")).toHaveLength(0);
+  await page.keyboard.press("Enter");
+  await expect(launcher).toHaveCount(0);
   await app.waitForCall("new_draft_tab");
   expect(await app.calls("shell_terminal_start")).toHaveLength(0);
 });

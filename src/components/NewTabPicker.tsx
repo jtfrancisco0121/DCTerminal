@@ -24,7 +24,7 @@ type Props = {
   context: NewTabContext | null;
   onClaude: (cwd: string) => void;
   onShell: (cwd: string) => void;
-  /** The start screen in a new tab (pick a role). */
+  /** The role launcher (pick a role, provider and Terminal or Chat). */
   onRole: () => void;
   /** The "Don't ask again" box: true sets the setting to `claude`. */
   onDontAskAgain: (checked: boolean) => void;
@@ -120,7 +120,7 @@ export function NewTabPicker({
   const label = (row: Row) => {
     if (row.id === "claude") return { title: "Claude here", detail: here };
     if (row.id === "shell") return { title: "Shell here", detail: here };
-    if (row.id === "role") return { title: "Role…", detail: "Pick a role on the start screen" };
+    if (row.id === "role") return { title: "Role…", detail: "Pick a role, provider and Terminal or Chat" };
     if (row.id === "recent") return { title: folderName(row.path), detail: tildePath(row.path, home) };
     return { title: "Open folder…", detail: "Choose a folder, then open Claude there" };
   };

@@ -16,6 +16,7 @@ function setup(mode: string | undefined) {
     mode: () => mode,
     activeCwd: () => "/w/app",
     openStartScreen: vi.fn(async () => {}),
+    openRoleLauncher: vi.fn(),
     openTerminal: vi.fn(async () => {}),
     saveMode: vi.fn(),
   };
@@ -65,6 +66,21 @@ describe("useNewTab", () => {
     expect(actions.openStartScreen).not.toHaveBeenCalled();
     expect(actions.openTerminal).not.toHaveBeenCalled();
     expect(hook.result.current.picker).toBeNull();
+  });
+
+  it("opens the role launcher from Role…, filling a launch draft", async () => {
+    const { actions, hook } = setup("ask");
+    await act(() => hook.result.current.request());
+    const first = render(<>{hook.result.current.picker}</>);
+    fireEvent.keyDown(screen.getByRole("listbox"), { key: "r" });
+    expect(actions.openRoleLauncher).toHaveBeenCalledWith(null);
+    expect(actions.openStartScreen).not.toHaveBeenCalled();
+    first.unmount();
+
+    await act(() => hook.result.current.launch("draft-1", "ask"));
+    render(<>{hook.result.current.picker}</>);
+    fireEvent.keyDown(screen.getByRole("listbox"), { key: "r" });
+    expect(actions.openRoleLauncher).toHaveBeenLastCalledWith("draft-1");
   });
 
   it("saves Don't ask again as claude", async () => {

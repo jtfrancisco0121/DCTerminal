@@ -299,7 +299,7 @@ import { encodeTerminalPaste } from "./terminal/paste";
 import { terminalViewOf } from "./terminal/chatEntries";
 import { stopTurn } from "./terminal/ptyAnswers";
 import { toggledView, useTerminalViews } from "./terminal/terminalViews";
-import type { TerminalComposerHandle } from "./views/TerminalChatControls";
+import { forgetComposerDraft, type TerminalComposerHandle } from "./views/TerminalChatControls";
 import { planFileMentions } from "./terminal/text";
 import {
   emptySessionCards,
@@ -503,8 +503,11 @@ export function StartupForm({
   const showGridRef = useRef(false);
   /** The role launcher is open (palette "New tab with role…" or its shortcut). */
   const [roleLauncherOpen, setRoleLauncherOpen] = useState(false);
-  /** The role launcher's entry point (palette, shortcut, and later the new-tab picker). */
-  const openRoleLauncher = useCallback(() => {
+  /** An untouched draft the launcher's pick fills instead of a new tab (a first launch). */
+  const roleLauncherReuseRef = useRef<string | null>(null);
+  /** The role launcher's entry point (palette, shortcut, the new-tab picker's Role…). */
+  const openRoleLauncher = useCallback((reuseTabId: string | null = null) => {
+    roleLauncherReuseRef.current = reuseTabId;
     setPaletteOpen(false);
     setSwitcherOpen(false);
     setRoleLauncherOpen(true);
@@ -2604,6 +2607,7 @@ export function StartupForm({
         delete draftsRef.current[tabId];
         delete knownFoldersRef.current[tabId];
         delete scrollPositions.current[tabId];
+        forgetComposerDraft(tabId);
         dropLivePty(tabId);
         const snap = await closeTab(tabId);
         setRuntimes((prev) => {
@@ -2734,6 +2738,7 @@ export function StartupForm({
     mode: () => terminalSettings?.newTabOpens,
     activeCwd: () => activeTabFolder(savedTabsRef.current, activeTabIdRef.current),
     openStartScreen: openStartScreenTab,
+    openRoleLauncher,
     openTerminal: openTerminalTab,
     saveMode: (mode) =>
       updateTerminalSettings({ ...(terminalSettings ?? DEFAULT_TERMINAL_SETTINGS), newTabOpens: mode }),
@@ -4849,6 +4854,15 @@ export function StartupForm({
     // The launcher already chose the role, so it opens the start screen directly
     // instead of following the "New tab opens" setting.
     const openRoleTab = async (): Promise<string | null> => {
+      const reuse = roleLauncherReuseRef.current;
+      roleLauncherReuseRef.current = null;
+      if (
+        reuse &&
+        reuse === activeTabIdRef.current &&
+        savedTabsRef.current.some((tab) => tab.id === reuse && tab.phase === "draft")
+      ) {
+        return reuse;
+      }
       const fileGuard = fileDiscardGuardRef.current;
       if (fileGuard?.dirty() && !(await fileGuard.confirm())) return null;
       return openStartScreenTab();
@@ -5065,6 +5079,7 @@ export function StartupForm({
         delete draftsRef.current[t.id];
         delete knownFoldersRef.current[t.id];
         delete scrollPositions.current[t.id];
+        forgetComposerDraft(t.id);
         dropLivePty(t.id);
         destroyTerminal(t.id);
       }
