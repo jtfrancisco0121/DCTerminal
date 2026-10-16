@@ -103,6 +103,88 @@ fn requested_reviewer(pr: &Value, payload: &Value, me: &str) -> bool {
     listed || text(payload, &["requested_reviewer", "login"]).eq_ignore_ascii_case(me)
 }
 
+/// The parts of a pull request the events leave out.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PullInfo {
+    pub title: String,
+    pub author: String,
+    pub author_is_bot: bool,
+    pub reviewers: Vec<String>,
+    pub mentions_me: bool,
+    /// Merged (a "closed" event does not say so).
+    pub merged: bool,
+    pub etag: Option<String>,
+    /// Unix seconds of the last lookup.
+    pub fetched_at: i64,
+    /// The lookup said 404 or 403: shown with a plain title.
+    pub missing: bool,
+}
+
+/// Reads the body of `repos/{repo}/pulls/{n}`.
+pub fn parse_pull(body: &str, me: &str) -> Option<PullInfo> {
+    let pr: Value = serde_json::from_str(body).ok()?;
+    let title = text(&pr, &["title"]);
+    if title.is_empty() {
+        return None;
+    }
+    let author = text(&pr, &["user", "login"]);
+    Some(PullInfo {
+        title: title.to_string(),
+        author: author.to_string(),
+        author_is_bot: is_bot(author, pr["user"]["type"].as_str()),
+        reviewers: pr["requested_reviewers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|r| r["login"].as_str().map(str::to_string))
+            .collect(),
+        mentions_me: mentions(text(&pr, &["body"]), me),
+        merged: pr["merged"] == true || pr["merged_at"].as_str().is_some(),
+        ..PullInfo::default()
+    })
+}
+
+/// True for rows whose PR title and author still have to come from a lookup.
+pub fn needs_pull_info(item: &FeedItem) -> bool {
+    item.number.is_some()
+        && item.pr_author.is_none()
+        && item.title.is_empty()
+        && matches!(
+            item.kind.as_str(),
+            "pr_opened"
+                | "pr_merged"
+                | "pr_closed"
+                | "pr_reopened"
+                | "review_requested"
+                | "review"
+                | "comment"
+        )
+}
+
+/// Fills a row from its PR lookup (or a plain title when there is none).
+pub fn apply_pull_info(item: &mut FeedItem, info: Option<&PullInfo>, me: &str) {
+    let Some(number) = item.number else { return };
+    match info.filter(|i| !i.missing) {
+        Some(info) => {
+            item.title = info.title.clone();
+            if !info.author.is_empty() {
+                item.involves_me |= info.author.eq_ignore_ascii_case(me);
+                item.pr_author = Some(info.author.clone());
+            }
+            item.involves_me |= info.mentions_me;
+            // A trimmed "closed" event does not say whether the PR merged.
+            if item.kind == "pr_closed" && info.merged {
+                item.kind = "pr_merged".to_string();
+            }
+            if item.kind == "review_requested" || item.kind == "pr_opened" {
+                item.involves_me |= info.reviewers.iter().any(|r| r.eq_ignore_ascii_case(me));
+            }
+        }
+        None => item.title = format!("Pull request #{number}"),
+    }
+}
+
 /// Normalizes the JSON body of `repos/{owner}/{repo}/events`.
 /// `repo_full` is `owner/repo`; events that name another repo are dropped.
 pub fn normalize_events(
@@ -342,10 +424,19 @@ fn event_item(event: &Value, mut item: FeedItem, repo: &str, me: &str) -> Option
     Some(item)
 }
 
+/// Live events carry only `url, id, number, head, base` for the PR, so the
+/// title and author may be empty here; the cycle fills them from a cached
+/// `repos/{repo}/pulls/{n}` lookup (see `PullInfo`). The link never depends
+/// on that: it is built from the repo and number.
 fn fill_pull_request(item: &mut FeedItem, pr: &Value, number: Option<u64>, me: &str) {
     item.number = number.or_else(|| pr["number"].as_u64());
     item.title = text(pr, &["title"]).to_string();
     item.url = safe_url(text(pr, &["html_url"]));
+    if item.url.is_empty() {
+        if let Some(n) = item.number {
+            item.url = safe_url(&format!("{GITHUB_PREFIX}{}/pull/{n}", item.repo));
+        }
+    }
     let author = text(pr, &["user", "login"]);
     if !author.is_empty() {
         item.involves_me |= author.eq_ignore_ascii_case(me);
@@ -381,10 +472,49 @@ mod tests {
         assert_eq!(kind(&n, "1001").kind, "pr_merged", "action merged");
         assert_eq!(
             kind(&n, "1002").kind,
-            "pr_merged",
-            "closed with merged=true"
+            "pr_closed",
+            "trimmed: the lookup says merged"
         );
         assert_eq!(kind(&n, "1003").kind, "pr_closed", "closed unmerged");
+    }
+
+    #[test]
+    fn a_full_pull_request_payload_still_reads_closed_and_merged_as_a_merge() {
+        let body = r#"[{"id":"9","type":"PullRequestEvent","actor":{"login":"a"},
+          "repo":{"name":"koneksi-tech/koneksi-desktop"},"created_at":"2026-10-15T01:00:00Z",
+          "payload":{"action":"closed","number":7,"pull_request":{"number":7,"title":"T","merged":true,
+          "html_url":"https://github.com/koneksi-tech/koneksi-desktop/pull/7","user":{"login":"alvin-reyes"}}}}]"#;
+        let n = run(body);
+        assert_eq!(n.items[0].kind, "pr_merged");
+        assert_eq!(n.items[0].title, "T");
+        assert_eq!(n.items[0].pr_author.as_deref(), Some("alvin-reyes"));
+    }
+
+    #[test]
+    fn trimmed_pr_events_get_a_link_from_the_repo_and_number() {
+        let n = fixture();
+        for id in ["1000", "1001", "1002", "1021", "1040", "1042"] {
+            let it = kind(&n, id);
+            assert!(
+                it.url
+                    .starts_with("https://github.com/koneksi-tech/koneksi-desktop/pull/"),
+                "{id}: {}",
+                it.url
+            );
+            assert!(it.number.is_some(), "{id}");
+        }
+        assert_eq!(
+            kind(&n, "1000").url,
+            "https://github.com/koneksi-tech/koneksi-desktop/pull/41"
+        );
+        assert!(
+            super::needs_pull_info(kind(&n, "1000")),
+            "title and author come from a lookup"
+        );
+        assert!(
+            !super::needs_pull_info(kind(&n, "1043")),
+            "issue comments carry their own"
+        );
     }
 
     #[test]
@@ -393,8 +523,9 @@ mod tests {
         let opened = kind(&n, "1000");
         assert_eq!(opened.kind, "pr_opened");
         assert_eq!(opened.number, Some(41));
-        assert_eq!(opened.title, "Add upload retry");
-        assert_eq!(opened.pr_author.as_deref(), Some("alvin-reyes"));
+        // Live events carry no title or author: they come from a lookup.
+        assert_eq!(opened.title, "");
+        assert_eq!(opened.pr_author, None);
         assert_eq!(
             opened.url,
             "https://github.com/koneksi-tech/koneksi-desktop/pull/41"
@@ -431,7 +562,6 @@ mod tests {
     fn involves_me_covers_actor_author_reviewer_and_mention() {
         let n = fixture();
         assert!(kind(&n, "1020").involves_me, "I am the actor");
-        assert!(kind(&n, "1021").involves_me, "my PR");
         assert!(kind(&n, "1022").involves_me, "requested reviewer");
         assert!(kind(&n, "1023").involves_me, "mentioned in a comment");
         assert!(

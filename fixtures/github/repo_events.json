@@ -18,16 +18,17 @@
    "action": "opened",
    "number": 41,
    "pull_request": {
+    "url": "https://api.github.com/repos/koneksi-tech/koneksi-desktop/pulls/41",
+    "id": 1041,
     "number": 41,
-    "title": "Add upload retry",
-    "body": "",
-    "html_url": "https://github.com/koneksi-tech/koneksi-desktop/pull/41",
-    "merged": false,
-    "user": {
-     "login": "alvin-reyes",
-     "type": "User"
+    "head": {
+     "ref": "feat/x",
+     "sha": "dddddddddddddddddddddddddddddddddddddddd"
     },
-    "requested_reviewers": []
+    "base": {
+     "ref": "staging",
+     "sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    }
    }
   },
   "public": false,
@@ -52,16 +53,17 @@
    "action": "merged",
    "number": 42,
    "pull_request": {
+    "url": "https://api.github.com/repos/koneksi-tech/koneksi-desktop/pulls/42",
+    "id": 1042,
     "number": 42,
-    "title": "Fix sync crash",
-    "body": "",
-    "html_url": "https://github.com/koneksi-tech/koneksi-desktop/pull/42",
-    "merged": false,
-    "user": {
-     "login": "alvin-reyes",
-     "type": "User"
+    "head": {
+     "ref": "feat/x",
+     "sha": "dddddddddddddddddddddddddddddddddddddddd"
     },
-    "requested_reviewers": []
+    "base": {
+     "ref": "staging",
+     "sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    }
    }
   },
   "public": false,
@@ -86,16 +88,17 @@
    "action": "closed",
    "number": 43,
    "pull_request": {
+    "url": "https://api.github.com/repos/koneksi-tech/koneksi-desktop/pulls/43",
+    "id": 1043,
     "number": 43,
-    "title": "Bump deps",
-    "body": "",
-    "html_url": "https://github.com/koneksi-tech/koneksi-desktop/pull/43",
-    "merged": true,
-    "user": {
-     "login": "alvin-reyes",
-     "type": "User"
+    "head": {
+     "ref": "feat/x",
+     "sha": "dddddddddddddddddddddddddddddddddddddddd"
     },
-    "requested_reviewers": []
+    "base": {
+     "ref": "staging",
+     "sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    }
    }
   },
   "public": false,
@@ -120,16 +123,17 @@
    "action": "closed",
    "number": 44,
    "pull_request": {
+    "url": "https://api.github.com/repos/koneksi-tech/koneksi-desktop/pulls/44",
+    "id": 1044,
     "number": 44,
-    "title": "Try a thing",
-    "body": "",
-    "html_url": "https://github.com/koneksi-tech/koneksi-desktop/pull/44",
-    "merged": false,
-    "user": {
-     "login": "alvin-reyes",
-     "type": "User"
+    "head": {
+     "ref": "feat/x",
+     "sha": "dddddddddddddddddddddddddddddddddddddddd"
     },
-    "requested_reviewers": []
+    "base": {
+     "ref": "staging",
+     "sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    }
    }
   },
   "public": false,
@@ -238,16 +242,17 @@
    "action": "merged",
    "number": 45,
    "pull_request": {
+    "url": "https://api.github.com/repos/koneksi-tech/koneksi-desktop/pulls/45",
+    "id": 1045,
     "number": 45,
-    "title": "My change",
-    "body": "",
-    "html_url": "https://github.com/koneksi-tech/koneksi-desktop/pull/45",
-    "merged": false,
-    "user": {
-     "login": "jtfrancisco0121",
-     "type": "User"
+    "head": {
+     "ref": "feat/x",
+     "sha": "dddddddddddddddddddddddddddddddddddddddd"
     },
-    "requested_reviewers": []
+    "base": {
+     "ref": "staging",
+     "sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    }
    }
   },
   "public": false,
@@ -275,20 +280,17 @@
     "login": "jtfrancisco0121"
    },
    "pull_request": {
+    "url": "https://api.github.com/repos/koneksi-tech/koneksi-desktop/pulls/46",
+    "id": 1046,
     "number": 46,
-    "title": "Needs eyes",
-    "body": "",
-    "html_url": "https://github.com/koneksi-tech/koneksi-desktop/pull/46",
-    "merged": false,
-    "user": {
-     "login": "alvin-reyes",
-     "type": "User"
+    "head": {
+     "ref": "feat/x",
+     "sha": "dddddddddddddddddddddddddddddddddddddddd"
     },
-    "requested_reviewers": [
-     {
-      "login": "jtfrancisco0121"
-     }
-    ]
+    "base": {
+     "ref": "staging",
+     "sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    }
    }
   },
   "public": false,
@@ -414,16 +416,17 @@
   "payload": {
    "action": "created",
    "pull_request": {
+    "url": "https://api.github.com/repos/koneksi-tech/koneksi-desktop/pulls/49",
+    "id": 1049,
     "number": 49,
-    "title": "Reviewed",
-    "body": "",
-    "html_url": "https://github.com/koneksi-tech/koneksi-desktop/pull/49",
-    "merged": false,
-    "user": {
-     "login": "jtfrancisco0121",
-     "type": "User"
+    "head": {
+     "ref": "feat/x",
+     "sha": "dddddddddddddddddddddddddddddddddddddddd"
     },
-    "requested_reviewers": []
+    "base": {
+     "ref": "staging",
+     "sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    }
    },
    "review": {
     "state": "approved",
@@ -452,16 +455,17 @@
   "payload": {
    "action": "created",
    "pull_request": {
+    "url": "https://api.github.com/repos/koneksi-tech/koneksi-desktop/pulls/49",
+    "id": 1049,
     "number": 49,
-    "title": "Reviewed",
-    "body": "",
-    "html_url": "https://github.com/koneksi-tech/koneksi-desktop/pull/49",
-    "merged": false,
-    "user": {
-     "login": "jtfrancisco0121",
-     "type": "User"
+    "head": {
+     "ref": "feat/x",
+     "sha": "dddddddddddddddddddddddddddddddddddddddd"
     },
-    "requested_reviewers": []
+    "base": {
+     "ref": "staging",
+     "sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    }
    },
    "review": {
     "state": "changes_requested",
@@ -490,16 +494,17 @@
   "payload": {
    "action": "created",
    "pull_request": {
+    "url": "https://api.github.com/repos/koneksi-tech/koneksi-desktop/pulls/49",
+    "id": 1049,
     "number": 49,
-    "title": "Reviewed",
-    "body": "",
-    "html_url": "https://github.com/koneksi-tech/koneksi-desktop/pull/49",
-    "merged": false,
-    "user": {
-     "login": "alvin-reyes",
-     "type": "User"
+    "head": {
+     "ref": "feat/x",
+     "sha": "dddddddddddddddddddddddddddddddddddddddd"
     },
-    "requested_reviewers": []
+    "base": {
+     "ref": "staging",
+     "sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    }
    },
    "comment": {
     "html_url": "https://github.com/koneksi-tech/koneksi-desktop/pull/49#discussion_r1",
@@ -653,16 +658,17 @@
    "action": "labeled",
    "number": 41,
    "pull_request": {
+    "url": "https://api.github.com/repos/koneksi-tech/koneksi-desktop/pulls/41",
+    "id": 1041,
     "number": 41,
-    "title": "Add upload retry",
-    "body": "",
-    "html_url": "https://github.com/koneksi-tech/koneksi-desktop/pull/41",
-    "merged": false,
-    "user": {
-     "login": "alvin-reyes",
-     "type": "User"
+    "head": {
+     "ref": "feat/x",
+     "sha": "dddddddddddddddddddddddddddddddddddddddd"
     },
-    "requested_reviewers": []
+    "base": {
+     "ref": "staging",
+     "sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    }
    }
   },
   "public": false,
@@ -686,16 +692,17 @@
   "payload": {
    "action": "dismissed",
    "pull_request": {
+    "url": "https://api.github.com/repos/koneksi-tech/koneksi-desktop/pulls/49",
+    "id": 1049,
     "number": 49,
-    "title": "Reviewed",
-    "body": "",
-    "html_url": "https://github.com/koneksi-tech/koneksi-desktop/pull/49",
-    "merged": false,
-    "user": {
-     "login": "jtfrancisco0121",
-     "type": "User"
+    "head": {
+     "ref": "feat/x",
+     "sha": "dddddddddddddddddddddddddddddddddddddddd"
     },
-    "requested_reviewers": []
+    "base": {
+     "ref": "staging",
+     "sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    }
    },
    "review": {
     "state": "dismissed"
@@ -729,7 +736,7 @@
  },
  {
   "id": "1070",
-  "type": "PullRequestEvent",
+  "type": "IssuesEvent",
   "actor": {
    "id": 1,
    "login": "alvin-reyes",
@@ -744,18 +751,13 @@
   },
   "payload": {
    "action": "opened",
-   "number": 52,
-   "pull_request": {
+   "issue": {
     "number": 52,
     "title": "Odd link",
-    "body": "",
-    "html_url": "https://evil.example/pull/52",
-    "merged": false,
+    "html_url": "https://evil.example/issues/52",
     "user": {
-     "login": "alvin-reyes",
-     "type": "User"
-    },
-    "requested_reviewers": []
+     "login": "alvin-reyes"
+    }
    }
   },
   "public": false,

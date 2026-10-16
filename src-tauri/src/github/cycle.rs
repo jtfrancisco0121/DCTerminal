@@ -2,7 +2,9 @@
 //! and a rate-limit guard. Nothing here holds a lock while `gh` runs: the
 //! cycle works on a copy of the cache and the caller commits the result.
 
-use super::normalize::{normalize_events, parse_time};
+use super::normalize::{
+    apply_pull_info, needs_pull_info, normalize_events, parse_pull, parse_time, PullInfo,
+};
 use super::runner::{is_signed_out_message, GhApi, GhResponse};
 use super::search::{
     build_queries, comment_item, normalize_notifications, normalize_search, parse_comment,
@@ -36,6 +38,10 @@ const LOW_RATE: u32 = 200;
 /// Below this, nothing is polled until the limit resets.
 const CRITICAL_RATE: u32 = 40;
 const MAX_COMMENT_LOOKUPS: usize = 10;
+/// PR lookups per cycle (a cold start fills in over a few cycles).
+const MAX_PULL_LOOKUPS: usize = 25;
+/// A PR is re-checked (with its ETag, so a 304 is free) this often.
+const PULL_REVALIDATE: i64 = 6 * 60 * 60;
 const MAX_FEED_ITEMS: usize = 600;
 const MAX_NEEDS_YOU: usize = 40;
 const DEFAULT_POLL: u64 = 60;
@@ -390,6 +396,105 @@ fn resolve_comments(api: &dyn GhApi, cache: &mut CacheFile, run: &mut Run) {
     }
 }
 
+fn pull_key(repo: &str, number: u64) -> String {
+    format!("{repo}#{number}")
+}
+
+/// Every PR the current event rows need a lookup for, newest first.
+fn wanted_pulls(cache: &CacheFile, scope: &Scope) -> Vec<(String, String, u64)> {
+    let mut rows: Vec<&FeedItem> = cache
+        .endpoints
+        .iter()
+        .filter(|(key, entry)| key.starts_with("events:") && entry.has_data())
+        .flat_map(|(_, entry)| entry.items.iter())
+        .filter(|item| needs_pull_info(item) && scope.source_of(&item.repo).is_some())
+        .collect();
+    rows.sort_by(|a, b| b.at.cmp(&a.at));
+    let mut seen = HashSet::new();
+    rows.into_iter()
+        .filter_map(|item| {
+            let number = item.number?;
+            let key = pull_key(&item.repo, number);
+            seen.insert(key.clone())
+                .then(|| (key, item.repo.clone(), number))
+        })
+        .collect()
+}
+
+/// Looks up the title and author of the PRs the event rows mention, once
+/// each (re-checked with an ETag after a while), a few per cycle.
+fn resolve_pulls(api: &dyn GhApi, cache: &mut CacheFile, scope: &Scope, now: i64, run: &mut Run) {
+    let todo: Vec<(String, String, u64)> = wanted_pulls(cache, scope)
+        .into_iter()
+        .filter(|(key, _, _)| {
+            cache
+                .pulls
+                .get(key)
+                .is_none_or(|info| now - info.fetched_at >= PULL_REVALIDATE)
+        })
+        .take(MAX_PULL_LOOKUPS)
+        .collect();
+    let shared: &CacheFile = cache;
+    let looked = run_parallel(todo, PARALLEL, |(key, repo, number)| {
+        let etag = shared
+            .pulls
+            .get(&key)
+            .and_then(|i| i.etag.clone())
+            .filter(|_| shared.pulls.get(&key).is_some_and(|i| !i.missing));
+        let reply = api.get(&format!("repos/{repo}/pulls/{number}"), etag.as_deref());
+        (key, reply)
+    });
+    for (key, reply) in looked {
+        let response = match reply {
+            Ok(response) => response,
+            Err(message) => {
+                note_failure(run, &message);
+                continue;
+            }
+        };
+        note_headers(cache, run, &response);
+        match response.status {
+            200 => {
+                if let Some(mut info) = parse_pull(&response.body, &scope.login) {
+                    info.etag = response.etag;
+                    info.fetched_at = now;
+                    cache.pulls.insert(key, info);
+                    run.dirty = true;
+                }
+            }
+            304 => {
+                if let Some(info) = cache.pulls.get_mut(&key) {
+                    info.fetched_at = now;
+                }
+            }
+            403 | 404 | 410 if !is_rate_limited(&response) => {
+                cache.pulls.insert(
+                    key,
+                    PullInfo {
+                        missing: true,
+                        fetched_at: now,
+                        ..PullInfo::default()
+                    },
+                );
+                run.dirty = true;
+            }
+            401 => run.auth_failed = true,
+            _ if is_rate_limited(&response) => run.rate_limited = true,
+            _ => {}
+        }
+    }
+    // Forget PRs no event row mentions any more.
+    let live: HashSet<String> = wanted_pulls(cache, scope)
+        .into_iter()
+        .map(|(key, _, _)| key)
+        .collect();
+    let before = cache.pulls.len();
+    cache.pulls.retain(|key, _| live.contains(key));
+    if cache.pulls.len() != before {
+        run.dirty = true;
+    }
+}
+
 fn plan(
     cache: &CacheFile,
     scope: &Scope,
@@ -500,7 +605,15 @@ fn build_response(
         if let Some(entry) = entry.filter(|e| e.has_data()) {
             for item in &entry.items {
                 if scope.source_of(&item.repo).is_some() && seen_ids.insert(item.id.clone()) {
-                    items.push(item.clone());
+                    let mut item = item.clone();
+                    if needs_pull_info(&item) {
+                        let info = item
+                            .number
+                            .and_then(|n| cache.pulls.get(&pull_key(&item.repo, n)));
+                        // Not looked up yet: leave the title empty-free, plain.
+                        apply_pull_info(&mut item, info, &scope.login);
+                    }
+                    items.push(item);
                 }
             }
         }
@@ -645,6 +758,7 @@ pub fn run_cycle(
             apply(&task, reply, cache, &scope, now, &mut run);
         }
         if !run.rate_limited && !run.auth_failed {
+            resolve_pulls(api, cache, &scope, now, &mut run);
             resolve_comments(api, cache, &mut run);
         }
         if let Some((left, reset)) = run.rate {

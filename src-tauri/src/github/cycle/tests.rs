@@ -133,6 +133,21 @@ fn github() -> Fake {
                 String::new()
             };
             format!(r#"{{"total_count":0,"items":[{items}]}}"#)
+        } else if let Some(n) = endpoint.split("/pulls/").nth(1) {
+            let n: u32 = n.parse().unwrap();
+            if n == 46 {
+                return Ok(reply(404, "{}", ""));
+            }
+            let author = if n == 45 {
+                "jtfrancisco0121"
+            } else {
+                "alvin-reyes"
+            };
+            format!(
+                r#"{{"number":{n},"title":"PR {n} title","body":"","user":{{"login":"{author}","type":"User"}},
+                "merged":{},"requested_reviewers":[]}}"#,
+                n == 43
+            )
         } else if endpoint.contains("issues/comments/700") {
             COMMENT.to_string()
         } else {
@@ -729,4 +744,115 @@ fn a_second_caller_waits_for_the_cycle_in_flight_and_shares_its_result() {
         })
     });
     assert_eq!(later.unwrap().fetched_at, 3);
+}
+
+fn row<'a>(out: &'a CycleOutcome, id: &str) -> &'a FeedItem {
+    out.response
+        .items
+        .iter()
+        .find(|i| i.id == id)
+        .unwrap_or_else(|| panic!("no row {id}"))
+}
+
+#[test]
+fn trimmed_pr_events_get_a_title_a_link_and_an_author_from_a_cached_lookup() {
+    let api = github();
+    let (out, mut cache, cfg) = first_cycle(&api);
+    let opened = row(&out, "1000");
+    assert_eq!(opened.title, "PR 41 title");
+    assert_eq!(opened.pr_author.as_deref(), Some("alvin-reyes"));
+    assert_eq!(
+        opened.url,
+        "https://github.com/koneksi-tech/koneksi-desktop/pull/41"
+    );
+    // Reviews and review comments are filled the same way.
+    assert_eq!(row(&out, "1040").title, "PR 49 title");
+    assert_eq!(row(&out, "1042").pr_author.as_deref(), Some("alvin-reyes"));
+    // Issue comments already carry their own title.
+    assert_eq!(row(&out, "1043").title, "Plain");
+    // The author is me: the row involves me although I did nothing.
+    assert!(row(&out, "1021").involves_me);
+    assert!(!row(&out, "1000").involves_me);
+    // A trimmed "closed" event is a merge when the PR says so.
+    assert_eq!(row(&out, "1002").kind, "pr_merged");
+    assert_eq!(row(&out, "1003").kind, "pr_closed");
+    // A PR that cannot be read still gets a plain title and a link.
+    let gone = row(&out, "1022");
+    assert_eq!(gone.title, "Pull request #46");
+    assert!(gone.url.ends_with("/pull/46"));
+
+    // Looked up once: the next cycle asks nothing, and nothing is written.
+    api.take();
+    let again = run_cycle(&api, &cfg, &mut cache, NOW + 61);
+    assert!(!api.take().iter().any(|(e, _)| e.contains("/pulls/")));
+    assert!(!again.cache_dirty);
+    assert_eq!(row(&again, "1000").title, "PR 41 title");
+}
+
+#[test]
+fn pr_lookups_are_capped_per_cycle_and_the_rest_follow() {
+    let events: Vec<String> = (1..=40)
+        .map(|n| {
+            format!(
+                r#"{{"id":"{n}","type":"PullRequestEvent","actor":{{"login":"a"}},"repo":{{"name":"koneksi-tech/koneksi-web"}},
+                "created_at":"2026-10-14T{:02}:{:02}:00Z","payload":{{"action":"opened","number":{n},"pull_request":{{"number":{n}}}}}}}"#,
+                n / 60,
+                n % 60
+            )
+        })
+        .collect();
+    let body = format!("[{}]", events.join(","));
+    let api = Fake::new(move |endpoint, _| {
+        if endpoint.contains("koneksi-web/events") {
+            Ok(reply(200, &body, "\"e\""))
+        } else if endpoint.contains("/pulls/") {
+            let n: u32 = endpoint.rsplit('/').next().unwrap().parse().unwrap();
+            Ok(reply(
+                200,
+                &format!(r#"{{"title":"T{n}","user":{{"login":"x"}}}}"#),
+                "\"p\"",
+            ))
+        } else if endpoint.starts_with("user/repos") {
+            Ok(reply(200, "[]", "\"u\""))
+        } else if endpoint.starts_with("search") {
+            Ok(reply(200, r#"{"items":[]}"#, "\"s\""))
+        } else {
+            Ok(reply(200, "[]", "\"x\""))
+        }
+    });
+    let mut cache = CacheFile::default();
+    let cfg = config();
+    run_cycle(&api, &cfg, &mut cache, NOW);
+    let first = api
+        .take()
+        .iter()
+        .filter(|(e, _)| e.contains("/pulls/"))
+        .count();
+    assert_eq!(first, 25);
+    let out = run_cycle(&api, &cfg, &mut cache, NOW + 61);
+    let second = api
+        .take()
+        .iter()
+        .filter(|(e, _)| e.contains("/pulls/"))
+        .count();
+    assert_eq!(second, 15, "the rest follow on the next cycle");
+    assert!(out.response.items.iter().all(|i| i.title.starts_with('T')));
+}
+
+#[test]
+fn a_pr_is_rechecked_with_its_etag_after_a_while() {
+    let api = github();
+    let (_, mut cache, cfg) = first_cycle(&api);
+    api.take();
+    run_cycle(&api, &cfg, &mut cache, NOW + 7 * 60 * 60);
+    let pulls: Vec<_> = api
+        .take()
+        .into_iter()
+        .filter(|(e, _)| e.contains("/pulls/"))
+        .collect();
+    assert!(!pulls.is_empty());
+    assert!(pulls
+        .iter()
+        .filter(|(e, _)| !e.ends_with("/46"))
+        .all(|(_, etag)| etag.is_some()));
 }

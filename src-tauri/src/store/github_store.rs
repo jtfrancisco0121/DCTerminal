@@ -9,6 +9,7 @@
 //!
 //! No token is ever stored here.
 
+use crate::github::normalize::PullInfo;
 use crate::github::search::{CommentInfo, Thread};
 use crate::github::{FeedItem, PersonalRepo, DEFAULT_LOGIN, DEFAULT_ORG, DEFAULT_WATCHED};
 use crate::store::json_io::{read_json_or_recover, write_json_atomic};
@@ -201,6 +202,8 @@ pub struct CacheFile {
     pub endpoints: HashMap<String, EndpointCache>,
     /// Comment lookups, by API path.
     pub comments: HashMap<String, CommentInfo>,
+    /// PR title and author, by `owner/repo#number`: live events leave them out.
+    pub pulls: HashMap<String, PullInfo>,
     /// Latest `X-OAuth-Scopes` seen (None for tokens without the header).
     pub scopes: Option<Vec<String>>,
     /// Rate limit left, in memory only.
@@ -216,6 +219,7 @@ impl Default for CacheFile {
             schema_version: CACHE_SCHEMA_VERSION,
             endpoints: HashMap::new(),
             comments: HashMap::new(),
+            pulls: HashMap::new(),
             scopes: None,
             rate_remaining: None,
             rate_reset: None,
