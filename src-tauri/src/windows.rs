@@ -186,6 +186,7 @@ fn on_window_destroyed(app: &AppHandle, label: &str) {
     if let Some(terminals) = app.try_state::<Mutex<crate::pty::PtyRegistry>>() {
         for id in &tab_ids {
             crate::pty::kill_tab_pty(&terminals, id);
+            crate::commands::forget_tab_session_log(app, id);
         }
     }
     let Some(state) = app.try_state::<Mutex<StateStore>>() else {

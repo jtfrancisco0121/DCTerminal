@@ -994,9 +994,17 @@ pub fn pty_resize(
 }
 
 #[tauri::command]
-pub fn pty_kill(id: String, registry: State<Mutex<PtyRegistry>>) -> Result<(), String> {
-    let mut registry = registry.lock().map_err(|err| err.to_string())?;
-    registry.kill(&id);
+pub fn pty_kill(
+    id: String,
+    registry: State<Mutex<PtyRegistry>>,
+    readers: State<crate::claude_session_log::reader::SessionLogReaders>,
+) -> Result<(), String> {
+    {
+        let mut registry = registry.lock().map_err(|err| err.to_string())?;
+        registry.kill(&id);
+    }
+    // The chat view watches again once the tab has a new PTY.
+    readers.stop_watch(&id);
     Ok(())
 }
 

@@ -96,6 +96,7 @@ pub fn workspace_open(
     state: State<Mutex<StateStore>>,
     session: State<Mutex<SessionRegistry>>,
     terminals: State<Mutex<crate::pty::PtyRegistry>>,
+    readers: State<crate::claude_session_log::reader::SessionLogReaders>,
 ) -> Result<WorkspaceOpened, String> {
     let workspace = {
         let store = store.lock().map_err(|e| e.to_string())?;
@@ -134,6 +135,7 @@ pub fn workspace_open(
                 session.shutdown_tab(tab_id);
             }
             crate::pty::kill_tab_pty(&terminals, tab_id);
+            readers.forget(tab_id);
         }
     }
     let mut state = state.lock().map_err(|e| e.to_string())?;

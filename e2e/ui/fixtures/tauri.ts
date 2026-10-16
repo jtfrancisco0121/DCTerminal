@@ -134,6 +134,19 @@ export class TauriApp {
   }
   // ---- end Terminal tabs ----
 
+  /**
+   * Terminal chat view: replaces tab `tabId`'s chat entries (ChatEntry[]) and
+   * sends them to its `terminal_chat_watch` channel. Returns false when the
+   * tab has no watch yet (they are still answered by terminal_chat_entries and
+   * sent when the next watch starts).
+   */
+  async chatSet(tabId: string, entries: unknown[]): Promise<boolean> {
+    return this.page.evaluate(([id, list]) => window.__E2E.chatSet(id as string, list as unknown[]), [
+      tabId,
+      entries,
+    ] as const);
+  }
+
   async nextFrame(): Promise<void> {
     await this.page.evaluate(
       () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))),
@@ -368,6 +381,8 @@ declare global {
       handle: (cmd: string, source: string) => void;
       /** Terminal tabs: delivers one PtyPacket; false when PTY `ptyId` has no channel. */
       ptySend: (ptyId: string, packet: unknown) => boolean;
+      /** Terminal chat view: sets a tab's chat entries; false when the tab has no watch. */
+      chatSet: (tabId: string, entries: unknown[]) => boolean;
     };
   }
 }
