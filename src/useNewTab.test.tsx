@@ -17,6 +17,7 @@ function setup(mode: string | undefined) {
     activeCwd: () => "/w/app",
     openStartScreen: vi.fn(async () => {}),
     openRoleLauncher: vi.fn(),
+    openGithub: vi.fn(),
     openTerminal: vi.fn(async () => {}),
     saveMode: vi.fn(),
   };
@@ -81,6 +82,16 @@ describe("useNewTab", () => {
     render(<>{hook.result.current.picker}</>);
     fireEvent.keyDown(screen.getByRole("listbox"), { key: "r" });
     expect(actions.openRoleLauncher).toHaveBeenLastCalledWith("draft-1");
+  });
+
+  it("opens the GitHub tab from the picker's GitHub row", async () => {
+    const { actions, hook } = setup("ask");
+    await act(() => hook.result.current.request());
+    render(<>{hook.result.current.picker}</>);
+    fireEvent.keyDown(screen.getByRole("listbox"), { key: "g" });
+    expect(actions.openGithub).toHaveBeenCalledTimes(1);
+    expect(actions.openTerminal).not.toHaveBeenCalled();
+    expect(hook.result.current.picker).toBeNull();
   });
 
   it("saves Don't ask again as claude", async () => {

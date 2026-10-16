@@ -409,6 +409,18 @@ pub fn open_preview_tab(
     Ok(snapshot_from_store(&store))
 }
 
+/// Opens the window's GitHub tab, or focuses it when it already has one.
+#[tauri::command]
+pub fn open_github_tab(
+    window_id: Option<String>,
+    store: State<Mutex<StateStore>>,
+) -> Result<AppStateSnapshot, String> {
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    store.bind_window(window_id.as_deref());
+    store.open_github_tab()?;
+    Ok(snapshot_from_store(&store))
+}
+
 /// Saves the address a preview tab shows.
 #[tauri::command]
 pub fn set_preview_url(

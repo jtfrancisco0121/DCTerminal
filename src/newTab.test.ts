@@ -87,6 +87,8 @@ describe("new tab helpers", () => {
     expect(pickerKeyAction("c", 0)).toEqual({ kind: "claude" });
     expect(pickerKeyAction("S", 0)).toEqual({ kind: "shell" });
     expect(pickerKeyAction("r", 0)).toEqual({ kind: "role" });
+    expect(pickerKeyAction("g", 0)).toEqual({ kind: "github" });
+    expect(pickerKeyAction("G", 9)).toEqual({ kind: "github" });
     expect(pickerKeyAction("o", 0)).toEqual({ kind: "open" });
     expect(pickerKeyAction("2", 3)).toEqual({ kind: "recent", index: 1 });
     expect(pickerKeyAction("4", 3)).toBeNull();

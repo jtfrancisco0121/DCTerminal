@@ -8,6 +8,7 @@ pub(crate) mod changes;
 mod cursor_cli;
 mod dev_session;
 mod forms;
+mod github;
 mod handoff;
 mod pipeline;
 mod model_session;
@@ -39,7 +40,7 @@ pub use app_state::{
     chain_loop_back, open_chain_overview, set_layout, set_tab_chain, set_tab_color, set_tab_label,
     start_eagle_eye,
     sync_active_tab_form,
-    open_preview_tab, set_preview_url,
+    open_github_tab, open_preview_tab, set_preview_url,
 };
 pub use changes::{changes_file_diff, changes_list, changes_revert, changes_snapshot, ChangesRoot};
 pub use cursor_cli::{list_claude_history, list_cursor_cli_history, open_in_cursor_cli};
@@ -49,6 +50,10 @@ pub use dev_session::{
     SessionRegistry,
 };
 pub use forms::{get_form_recall, save_form_draft};
+pub use github::{
+    github_claim_notifications, github_feed, github_push_commits, github_save_filters,
+    github_status,
+};
 pub use handoff::{handoff_attach, handoff_bind_tab, handoff_get, handoff_list, handoff_save};
 pub use pipeline::{
     get_pipeline_run, pipeline_decide, pipeline_defs_list, pipeline_defs_save, pipeline_fan_out,

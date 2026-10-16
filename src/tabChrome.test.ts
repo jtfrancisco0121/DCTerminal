@@ -179,6 +179,15 @@ describe("tab chrome", () => {
     expect(parsePaletteId("toggleTerminalView")).toEqual({ kind: "action", id: "toggleTerminalView" });
   });
 
+  it("opens the GitHub tab from the palette", () => {
+    const commands = buildPalette({ tabs: [], canReopen: false, splitOpen: false });
+    const github = commands.find((c) => c.id === "openGithub");
+    expect(github?.title).toBe("Open GitHub");
+    expect(github?.group).toBe("Tabs");
+    expect(filterCommands(commands, "pull requests").map((c) => c.id)).toContain("openGithub");
+    expect(parsePaletteId("openGithub")).toEqual({ kind: "action", id: "openGithub" });
+  });
+
   it("can run first-run setup again", () => {
     const commands = buildPalette({ tabs: [], canReopen: false, splitOpen: false });
     expect(filterCommands(commands, "setup").map((c) => c.id)).toContain("firstRunSetup");

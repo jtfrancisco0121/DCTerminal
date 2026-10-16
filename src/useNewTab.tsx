@@ -22,6 +22,8 @@ type Options = {
    * draft the picked role fills instead of a new tab.
    */
   openRoleLauncher: (reuseTabId: string | null) => void;
+  /** The window's GitHub tab (the picker's GitHub row). */
+  openGithub: () => void;
   /** Open a terminal tab; `reuseTabId` is an untouched draft to turn into it. */
   openTerminal: (launch: NewTerminalLaunch, cwd: string, reuseTabId: string | null) => Promise<void>;
   /** Save a new value for the setting ("Don't ask again"). */
@@ -94,6 +96,10 @@ export function useNewTab(options: Options): {
       onRole={() => {
         close();
         latest.current.openRoleLauncher(reuse);
+      }}
+      onGithub={() => {
+        close();
+        latest.current.openGithub();
       }}
       onDontAskAgain={() => latest.current.saveMode("claude")}
     />

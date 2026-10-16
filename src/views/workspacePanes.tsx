@@ -23,6 +23,7 @@ import { roleDisplayName } from "../handoff/transitions";
 import { headerStateOf } from "../terminal/headerState";
 import { PaneStrip } from "./PaneStrip";
 import { PreviewSlot } from "../preview/PreviewLayer";
+import { GitHubTab } from "../components/GitHubTab";
 import { isClaudeTerminal, terminalLaunchOf } from "./tabHelpers";
 
 /** What the second pane and the grid cells read and change in the workspace. */
@@ -66,6 +67,8 @@ export type PaneDeps = {
   restartSecondarySession: (tabId: string) => Promise<void>;
   /** What the terminal header reads (R16). */
   headerDeps: TerminalHeaderDeps;
+  /** A short message for the user (a link that would not open). */
+  onNotice: (title: string, body: string) => void;
 };
 
 export type PaneRenderers = ReturnType<typeof createPaneRenderers>;
@@ -107,6 +110,7 @@ export function createPaneRenderers({
   requestStopSecondarySession,
   restartSecondarySession,
   headerDeps,
+  onNotice,
 }: PaneDeps) {
   /**
    * The thin strip on top of a pane: number, role, folder and branch, and
@@ -148,6 +152,8 @@ export function createPaneRenderers({
     if (tab.kind === "preview") {
       // The page itself stays loaded in the PreviewLayer and is laid over this.
       body = <PreviewSlot tabId={tab.id} />;
+    } else if (tab.kind === "github") {
+      body = <GitHubTab onNotice={onNotice} />;
     } else if (tab.kind === "terminal") {
       const tabLaunch = terminalLaunchOf(tab);
       body = (

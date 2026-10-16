@@ -39,7 +39,8 @@ Plan, review, implement and review the PR in a chain of tabs, with hand-offs tha
 | **Files, Changes, Activity** | Browse and edit files, with Markdown and Mermaid diagrams rendered. File paths in terminal output are links. Review the git diff, and see every command and file write an agent made. |
 | **Themes** | GitHub Dark and Light, Dracula, Nord, Tokyo Night and Catppuccin Mocha, plus your own colours. Inter and JetBrains Mono are bundled, so the app looks the same everywhere. |
 | **Localhost preview** | Watch your dev server in a tab next to the agent working on it. Only `localhost` pages load inside the app. |
-| **Your data stays local** | Transcripts, roles and settings live in the app data folder. DCTerminal never handles your credentials and makes no network calls of its own. |
+| **GitHub monitor** | A tab that shows pushes, PRs, merges, reviews, comments, branches and releases in the repos you watch, with a "Needs you" list. Read-only, and read through your `gh` login. |
+| **Your data stays local** | Transcripts, roles and settings live in the app data folder. GitHub is read through your own `gh` login, so DCTerminal never sees the token. Nothing else leaves your machine. |
 
 ## How it works
 
@@ -124,6 +125,7 @@ npm install -g --omit=optional @agentclientprotocol/claude-agent-acp@0.88.0
 │ ▸ C  Claude here       ~/code/acme-api   ↵    │
 │   S  Shell here        ~/code/acme-api        │
 │   R  Role…             Planner, Implementer…  │
+│   G  GitHub            Pushes, PRs and reviews│
 │ ── Recent projects ────────────────────────── │
 │   1  acme-web          ~/code/acme-web        │
 │   2  DCTerminal        ~/Documents/Projects/… │
@@ -140,6 +142,23 @@ npm install -g --omit=optional @agentclientprotocol/claude-agent-acp@0.88.0
 | **Start screen** | Shows the full start form |
 
 **Role…** (or **Ctrl+Alt+R** anywhere) opens the role launcher. Search for a role, pick Claude or Cursor, then **Terminal** (the default) or Chat. Autopilot needs Terminal.
+
+## The GitHub tab
+
+**G** in the picker, or **Open GitHub** in the command palette, opens the GitHub tab. A window has at most one: opening it again switches to it. It works in split view and the grid beside an agent terminal, and it is saved with workspaces.
+
+It is a monitor. It reads GitHub and never writes to it: no merging, approving, commenting or marking notifications read.
+
+- **Needs you** lists PRs where your review is requested, your PRs that were merged or closed, and new comments on your PRs.
+- **Activity** is a feed, newest first, of pushes, PRs opened, merged and closed, reviews, comments, branches and releases. Click a row to open it on GitHub. A push row expands to load its commits.
+- **Filters**: All, koneksi-tech or Mine; one repo; event types; **Involves me**; and **Show bots**, which is off by default, so Dependabot and similar accounts stay out of the way.
+- **Notifications** (under your existing notification setting) fire once, across all windows, for a review request, your merged or closed PR, or a new comment on your PR. Bot activity never notifies, and the first sync only notes what was already there.
+
+**Setup.** The tab runs the `gh` CLI, so install it and run `gh auth login`. The token needs the `repo` scope. If `gh` is missing, signed out or short on scope, the tab says how to fix it. A repo that can no longer be reached gets a notice and the rest keeps updating.
+
+**What is watched.** The seven repos listed under `watched` in `github.json` (in the app data folder) in the `koneksi-tech` org, plus every repo your `gh` account owns. Edit `watched` to change the list; there is no UI for it yet. Other orgs and the activity of people you follow are never shown. Per-repo feeds reach back as far as GitHub keeps them (up to 300 events per repo), and the tab says how far.
+
+**Polling.** Only while the window has a GitHub tab: every minute while the tab is visible, every five minutes otherwise, and no faster than GitHub's `X-Poll-Interval`. Unchanged replies (HTTP 304) cost no rate limit. It pauses when the rate limit is nearly used up.
 
 ## The role pipeline
 

@@ -103,6 +103,7 @@ export type PickerKeyAction =
   | { kind: "claude" }
   | { kind: "shell" }
   | { kind: "role" }
+  | { kind: "github" }
   | { kind: "open" }
   | { kind: "recent"; index: number };
 
@@ -115,6 +116,7 @@ export function pickerKeyAction(
   if (lower === "c") return { kind: "claude" };
   if (lower === "s") return { kind: "shell" };
   if (lower === "r") return { kind: "role" };
+  if (lower === "g") return { kind: "github" };
   if (lower === "o") return { kind: "open" };
   if (/^[1-9]$/.test(key)) {
     const index = Number(key) - 1;
