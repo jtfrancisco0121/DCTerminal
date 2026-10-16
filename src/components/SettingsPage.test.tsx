@@ -324,6 +324,7 @@ describe("SettingsPage theme (U8)", () => {
     const background = screen.getByLabelText("Background") as HTMLInputElement;
     expect(background.value).toBe("#2e3440");
     fireEvent.change(screen.getByLabelText("Needs you"), { target: { value: "#ff00ff" } });
+    fireEvent.blur(screen.getByLabelText("Needs you"));
     expect(onUiSettings).toHaveBeenLastCalledWith({ customColors: { needsYou: "#ff00ff" } });
     rerender(
       <SettingsPage {...props} uiSettings={{ ...ui, customColors: { needsYou: "#ff00ff" } }} />,

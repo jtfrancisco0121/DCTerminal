@@ -26,7 +26,7 @@ pub struct WorkspaceTab {
     pub role_id: String,
     pub role_snapshot: RoleSnapshot,
     pub cwd: String,
-    /// `role` (chat) or `terminal`.
+    /// `role` (chat), `terminal`, or `preview` (its address in `answers["url"]`).
     pub kind: String,
     /// `shell`, `cursor-cli`, or `role` on terminal tabs.
     #[serde(default)]
@@ -85,7 +85,7 @@ pub struct Workspace {
 
 impl Workspace {
     /// Tabs whose role still exists, with a fresh role snapshot. Chat tabs and
-    /// role terminals need their role; shells and Cursor CLI tabs do not.
+    /// role terminals need their role; shells, Cursor CLI and preview tabs do not.
     /// Returns the usable workspace and the labels of tabs that were left out.
     pub fn with_current_roles(
         &self,
@@ -95,7 +95,11 @@ impl Workspace {
         let mut skipped = Vec::new();
         let mut active_index = None;
         for (i, tab) in self.tabs.iter().enumerate() {
-            let needs_role = tab.kind != "terminal" || tab.terminal_launch == "role";
+            let needs_role = match tab.kind.as_str() {
+                "terminal" => tab.terminal_launch == "role",
+                crate::store::preview_tabs::PREVIEW_TAB_KIND => false,
+                _ => true,
+            };
             let mut tab = tab.clone();
             match role_for(&tab.role_id) {
                 Some(snapshot) => tab.role_snapshot = snapshot,

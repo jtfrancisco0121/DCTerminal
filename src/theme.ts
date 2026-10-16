@@ -51,7 +51,7 @@ export const THEMES: {
     id: "nord",
     label: "Nord",
     scheme: "dark",
-    swatch: ["#2e3440", "#88c0d0", "#a3be8c", "#ebcb8b", "#b48ead"],
+    swatch: ["#2e3440", "#88c0d0", "#a3be8c", "#ebcb8b", "#b793b0"],
   },
   {
     id: "tokyo-night",

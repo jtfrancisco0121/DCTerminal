@@ -504,6 +504,40 @@ describe("blank tab card", () => {
     );
   });
 
+  it("a zoom before the settings load keeps the stored settings", async () => {
+    vi.mocked(setTerminalSettings).mockClear();
+    const original = vi.mocked(getTerminalSettings).getMockImplementation()!;
+    let finishLoad: (() => void) | null = null;
+    // The first read (the initial load) waits; later reads answer at once.
+    vi.mocked(getTerminalSettings).mockImplementationOnce(
+      () => new Promise((resolve) => (finishLoad = () => resolve(original()))),
+    );
+    render(
+      <StartupForm
+        roles={[
+          { id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 },
+        ]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+    await screen.findByLabelText("Title");
+    fireEvent.keyDown(window, { key: "+", code: "Equal", shiftKey: true, ctrlKey: true, metaKey: true });
+    await waitFor(() =>
+      expect(setTerminalSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          fontSize: 15,
+          newTabOpens: "start",
+          roleSurface: expect.objectContaining({ role_developer: "chat" }),
+        }),
+      ),
+    );
+    expect(setTerminalSettings).toHaveBeenCalledTimes(1);
+    await act(async () => finishLoad?.());
+  });
+
   it("opens a role as Terminal when no surface was chosen for it", async () => {
     vi.mocked(getTerminalSettings).mockResolvedValueOnce({
       shell: "",
@@ -946,6 +980,74 @@ describe("live split view", () => {
         ),
       { timeout: 2000 },
     );
+  });
+
+  it("keeps a preview tab's page loaded across tab switches and shows it in the second pane", async () => {
+    const previewTab = {
+      ...terminalTab("tab_p", "localhost:5555", ""),
+      phase: "draft",
+      kind: "preview",
+      previewUrl: "http://localhost:5555",
+    };
+    vi.mocked(getAppState).mockResolvedValue({
+      activeTabId: "tab_p",
+      tabs: [previewTab, terminalTab("tab_b", "Other terminal", "shell")],
+      closedTabs: [],
+    } as never);
+    render(
+      <StartupForm
+        roles={[{ id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 }]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+    const page = await screen.findByTitle("Preview of http://localhost:5555");
+    const frame = page.closest(".preview-layer-frame") as HTMLElement;
+    await waitFor(() => expect(frame.style.visibility).toBe("visible"));
+    fireEvent.click(screen.getByRole("tab", { name: /Other terminal/ }));
+    await waitFor(() => expect(frame.style.visibility).toBe("hidden"));
+    expect(frame.hasAttribute("inert")).toBe(true);
+    expect(screen.getByTitle("Preview of http://localhost:5555")).toBe(page);
+    fireEvent.click(screen.getByRole("tab", { name: /localhost:5555/ }));
+    await waitFor(() => expect(frame.style.visibility).toBe("visible"));
+    expect(screen.getByTitle("Preview of http://localhost:5555")).toBe(page);
+  });
+
+  it("shows a preview tab in the second pane instead of the no-session note", async () => {
+    const previewTab = {
+      ...terminalTab("tab_p", "localhost:5555", ""),
+      phase: "draft",
+      kind: "preview",
+      previewUrl: "http://localhost:5555",
+    };
+    vi.mocked(getAppState).mockResolvedValue({
+      activeTabId: "tab_b",
+      tabs: [previewTab, terminalTab("tab_b", "Other terminal", "shell")],
+      closedTabs: [],
+    } as never);
+    vi.mocked(getLayout).mockResolvedValueOnce({
+      splitMode: "horizontal",
+      secondaryTabId: "tab_p",
+      primarySize: 60,
+      filePanelOpen: false,
+      filePanelWidth: 280,
+    });
+    render(
+      <StartupForm
+        roles={[{ id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 }]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+    const pane = await screen.findByLabelText("Second pane: localhost:5555");
+    expect(pane.querySelector('[data-preview-slot="tab_p"]')).toBeTruthy();
+    expect(within(pane).queryByText("This tab has no running session.")).toBeNull();
+    const frame = screen.getByTitle("Preview of http://localhost:5555").closest(".preview-layer-frame") as HTMLElement;
+    await waitFor(() => expect(frame.style.visibility).toBe("visible"));
   });
 });
 
@@ -1896,6 +1998,32 @@ describe("first-run setup (F8)", () => {
       fireEvent.click(within(dialog).getByRole("button", { name: "Skip setup" }));
       expect(await screen.findByRole("dialog", { name: "New tab" })).toBeTruthy();
       expect(shellTerminalStart).not.toHaveBeenCalled();
+    } finally {
+      vi.mocked(getTerminalSettings).mockImplementation(original!);
+    }
+  });
+
+  it("asks for the setup status once, so a failed check cannot open the picker over setup", async () => {
+    const original = vi.mocked(getTerminalSettings).getMockImplementation();
+    vi.mocked(getTerminalSettings).mockImplementation(async () => ({
+      shell: "",
+      fontSize: 14,
+      optionAsMeta: true,
+      copyOnSelect: false,
+      roleSurface: {},
+      roleRunMode: {},
+      newTabOpens: "ask",
+    }));
+    vi.mocked(firstRunStatus).mockClear();
+    vi.mocked(firstRunStatus)
+      .mockRejectedValueOnce(new Error("status broke"))
+      .mockResolvedValue({ needed: true, completed: false });
+    try {
+      renderFresh();
+      expect(await screen.findByRole("dialog", { name: "New tab" })).toBeTruthy();
+      await act(async () => {});
+      expect(firstRunStatus).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole("dialog", { name: "Set up DCTerminal" })).toBeNull();
     } finally {
       vi.mocked(getTerminalSettings).mockImplementation(original!);
     }

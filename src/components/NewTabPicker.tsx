@@ -6,8 +6,8 @@
  * MIT License, (c) 2025-2026 Alvin Reyes.
  */
 import { open } from "@tauri-apps/plugin-dialog";
-import { useId, useState, type KeyboardEvent } from "react";
-import { folderName, pickerKeyAction, tildePath, type NewTabContext } from "../newTab";
+import { useEffect, useId, useState, type KeyboardEvent } from "react";
+import { folderName, pickerKeyAction, tildePath, type NewTabContext, type PickerKeyAction } from "../newTab";
 import { nativeDialogPath } from "../projectsView";
 import { Dialog } from "./Dialog";
 import { errorText } from "./InlineNotice";
@@ -26,8 +26,11 @@ type Props = {
   onShell: (cwd: string) => void;
   /** The role launcher (pick a role, provider and Terminal or Chat). */
   onRole: () => void;
-  /** The "Don't ask again" box: true sets the setting to `claude`. */
-  onDontAskAgain: (checked: boolean) => void;
+  /**
+   * The "Don't ask again" box was ticked and Claude is opening from the
+   * picker: set the setting to `claude`. Not called for Esc, Shell or Role.
+   */
+  onDontAskAgain: () => void;
   onClose: () => void;
   /** Directory picker; the native dialog by default. Null when cancelled. */
   chooseFolder?: () => Promise<string | null>;
@@ -51,6 +54,8 @@ export function NewTabPicker({
   const [cursor, setCursor] = useState(0);
   const [dontAsk, setDontAsk] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A key pressed before the context loads (fast ⌘T then C) waits for it.
+  const [pending, setPending] = useState<PickerKeyAction | null>(null);
   const folder = context?.folder ?? null;
   const recents = context?.recents ?? [];
   const home = context?.home ?? null;
@@ -65,29 +70,55 @@ export function NewTabPicker({
   const active = Math.min(cursor, rows.length - 1);
   const rowId = (i: number) => `${listId}-row-${i}`;
 
+  const openClaude = (cwd: string) => {
+    if (dontAsk) onDontAskAgain();
+    onClaude(cwd);
+  };
+
   const browse = async () => {
     setError(null);
     try {
       const picked = await chooseFolder();
-      if (picked) onClaude(picked);
+      if (picked) openClaude(picked);
     } catch (err: unknown) {
       setError(errorText(err));
     }
   };
 
   const choose = (row: Row) => {
+    if (!context && (row.id === "claude" || row.id === "shell" || row.id === "recent")) {
+      setPending(row.id === "recent" ? { kind: "recent", index: row.index } : { kind: row.id });
+      return;
+    }
     if (row.id === "claude") {
-      if (folder) onClaude(folder);
+      if (folder) openClaude(folder);
     } else if (row.id === "shell") {
       if (folder) onShell(folder);
     } else if (row.id === "role") {
       onRole();
     } else if (row.id === "recent") {
-      onClaude(row.path);
+      openClaude(row.path);
     } else {
       void browse();
     }
   };
+
+  const chooseAction = (action: PickerKeyAction) => {
+    if (action.kind === "recent") {
+      const path = recents[action.index];
+      if (path) choose({ id: "recent", key: String(action.index + 1), path, index: action.index });
+      else if (!context) setPending(action);
+    } else {
+      choose(rows.find((row) => row.id === action.kind) ?? rows[0]);
+    }
+  };
+
+  // Run the queued key once the context arrives; closing the picker drops it.
+  useEffect(() => {
+    if (!context || !pending) return;
+    setPending(null);
+    chooseAction(pending);
+  }, [context, pending]);
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.metaKey || event.ctrlKey || event.altKey || event.nativeEvent.isComposing) return;
@@ -109,11 +140,11 @@ export function NewTabPicker({
       choose(rows[active]);
       return;
     }
-    const action = pickerKeyAction(event.key, recents.length);
+    // Before the context loads any of 1–9 may turn out to be a recent project.
+    const action = pickerKeyAction(event.key, context ? recents.length : 9);
     if (!action) return;
     event.preventDefault();
-    if (action.kind === "recent") choose(rows[3 + action.index]);
-    else choose(rows.find((row) => row.id === action.kind) ?? rows[0]);
+    chooseAction(action);
   };
 
   const here = folder ? tildePath(folder, home) : context ? "No folder yet" : "Finding the folder…";
@@ -176,10 +207,7 @@ export function NewTabPicker({
           <input
             type="checkbox"
             checked={dontAsk}
-            onChange={(event) => {
-              setDontAsk(event.target.checked);
-              onDontAskAgain(event.target.checked);
-            }}
+            onChange={(event) => setDontAsk(event.target.checked)}
           />
           Don't ask again: always open Claude here
         </label>

@@ -105,10 +105,70 @@ describe("NewTabPicker", () => {
     expect(props.onShell).not.toHaveBeenCalled();
   });
 
-  it("saves Don't ask again", () => {
-    const { props } = setup();
-    fireEvent.click(screen.getByRole("checkbox", { name: /Don't ask again: always open Claude here/ }));
-    expect(props.onDontAskAgain).toHaveBeenCalledWith(true);
+  it("saves Don't ask again only when Claude opens", () => {
+    const { props, list } = setup();
+    const box = screen.getByRole("checkbox", { name: /Don't ask again: always open Claude here/ });
+    fireEvent.click(box);
+    expect(props.onDontAskAgain).not.toHaveBeenCalled();
+    fireEvent.keyDown(list, { key: "s" });
+    fireEvent.keyDown(list, { key: "Escape" });
+    expect(props.onDontAskAgain).not.toHaveBeenCalled();
+    fireEvent.keyDown(list, { key: "1" });
+    expect(props.onDontAskAgain).toHaveBeenCalledTimes(1);
+    expect(props.onClaude).toHaveBeenCalledWith("/Users/me/code/api");
+  });
+
+  it("saves Don't ask again when Claude opens in a chosen folder", async () => {
+    const { props, list } = setup();
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.keyDown(list, { key: "o" });
+    await waitFor(() => expect(props.onClaude).toHaveBeenCalledWith("/Users/me/picked"));
+    expect(props.onDontAskAgain).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not save Don't ask again when unticked before opening", () => {
+    const { props, list } = setup();
+    const box = screen.getByRole("checkbox");
+    fireEvent.click(box);
+    fireEvent.click(box);
+    fireEvent.keyDown(list, { key: "c" });
+    expect(props.onClaude).toHaveBeenCalled();
+    expect(props.onDontAskAgain).not.toHaveBeenCalled();
+  });
+
+  it("runs a key pressed before the folder loads once it arrives", () => {
+    const props = {
+      onClaude: vi.fn(),
+      onShell: vi.fn(),
+      onRole: vi.fn(),
+      onDontAskAgain: vi.fn(),
+      onClose: vi.fn(),
+    };
+    const view = render(<NewTabPicker context={null} {...props} />);
+    fireEvent.keyDown(screen.getByRole("listbox"), { key: "c" });
+    expect(props.onClaude).not.toHaveBeenCalled();
+    view.rerender(<NewTabPicker context={context} {...props} />);
+    expect(props.onClaude).toHaveBeenCalledTimes(1);
+    expect(props.onClaude).toHaveBeenCalledWith("/Users/me/code/app");
+  });
+
+  it("queues a recent project number and drops it if there is no such project", () => {
+    const props = {
+      onClaude: vi.fn(),
+      onShell: vi.fn(),
+      onRole: vi.fn(),
+      onDontAskAgain: vi.fn(),
+      onClose: vi.fn(),
+    };
+    const view = render(<NewTabPicker context={null} {...props} />);
+    fireEvent.keyDown(screen.getByRole("listbox"), { key: "2" });
+    view.rerender(<NewTabPicker context={context} {...props} />);
+    expect(props.onClaude).toHaveBeenCalledWith("/Users/me/code/web");
+    view.unmount();
+    const other = render(<NewTabPicker context={null} {...props} />);
+    fireEvent.keyDown(screen.getByRole("listbox"), { key: "5" });
+    other.rerender(<NewTabPicker context={context} {...props} />);
+    expect(props.onClaude).toHaveBeenCalledTimes(1);
   });
 
   it("closes on Escape", () => {

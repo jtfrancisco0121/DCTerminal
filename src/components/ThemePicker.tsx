@@ -5,8 +5,11 @@
  * The swatch-card grid follows the Themes tab of Agentic IDE's
  * SettingsPanel (better-agentic-ide, MIT License, © Alvin Reyes).
  */
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { UiSettings } from "../bridge";
+import { setTerminalTheme } from "../terminal/park";
 import {
+  applyCustomColors,
   CUSTOM_COLOR_FIELDS,
   normalizeCustomColors,
   normalizeTheme,
@@ -26,6 +29,9 @@ type Props = {
 };
 
 const SWATCH_NAMES = ["Background", "Accent", "Success", "Attention", "Done"];
+
+/** A dragged colour input fires on every move; it is saved once it settles. */
+export const CUSTOM_COLOR_SAVE_DELAY_MS = 300;
 
 /** The preset's own colour for a custom-colour field (what the input shows when unset). */
 function presetColor(theme: ThemeId, key: CustomColorKey): string {
@@ -49,13 +55,43 @@ function presetColor(theme: ThemeId, key: CustomColorKey): string {
 export function ThemePicker({ uiSettings, onUiSettings }: Props) {
   const current = normalizeTheme(uiSettings?.theme);
   const shown = resolveTheme(current);
-  const custom = normalizeCustomColors(uiSettings?.customColors);
+  const saved = normalizeCustomColors(uiSettings?.customColors);
+  // Colours picked but not saved yet: shown and applied live, saved after a pause.
+  const [draft, setDraft] = useState<CustomColors | null>(null);
+  const custom = draft ?? saved;
   const hasCustom = Object.keys(custom).length > 0;
   const disabled = !onUiSettings;
 
+  const onUiSettingsRef = useRef(onUiSettings);
+  onUiSettingsRef.current = onUiSettings;
+  const pendingRef = useRef<CustomColors | null>(null);
+  const timerRef = useRef<number | null>(null);
+  const cancelSave = () => {
+    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    timerRef.current = null;
+    pendingRef.current = null;
+  };
+  const flush = useCallback(() => {
+    const next = pendingRef.current;
+    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    timerRef.current = null;
+    pendingRef.current = null;
+    if (!next) return;
+    void onUiSettingsRef.current?.({ customColors: next });
+    setDraft(null);
+  }, []);
+  // Closing Settings mid-drag still saves the last colour.
+  useEffect(() => flush, [flush]);
+
   const setCustom = (key: CustomColorKey, value: string) => {
     const next: CustomColors = { ...custom, [key]: value };
-    void onUiSettings?.({ customColors: next });
+    pendingRef.current = next;
+    setDraft(next);
+    applyCustomColors(next);
+    // Only the background and text colours reach the terminal palette.
+    if (key === "background" || key === "text") setTerminalTheme(shown, next);
+    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(flush, CUSTOM_COLOR_SAVE_DELAY_MS);
   };
 
   return (
@@ -75,7 +111,9 @@ export function ThemePicker({ uiSettings, onUiSettings }: Props) {
               className={`theme-card${checked ? " theme-card-current" : ""}`}
               disabled={disabled}
               onClick={() => {
-                if (!checked) void onUiSettings?.({ theme: choice.id });
+                if (checked) return;
+                flush();
+                void onUiSettings?.({ theme: choice.id });
               }}
               {...radioProps(checked, isTabStop(checked, true, index))}
             >
@@ -110,7 +148,11 @@ export function ThemePicker({ uiSettings, onUiSettings }: Props) {
           type="button"
           className="secondary-button"
           disabled={disabled || !hasCustom}
-          onClick={() => void onUiSettings?.({ customColors: {} })}
+          onClick={() => {
+            cancelSave();
+            setDraft(null);
+            void onUiSettings?.({ customColors: {} });
+          }}
         >
           Reset
         </button>
@@ -124,6 +166,7 @@ export function ThemePicker({ uiSettings, onUiSettings }: Props) {
               value={custom[field.key] ?? presetColor(shown, field.key)}
               disabled={disabled}
               onChange={(event) => setCustom(field.key, event.target.value)}
+              onBlur={flush}
             />
             {field.label}
           </label>

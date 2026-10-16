@@ -95,7 +95,7 @@ export function useNewTab(options: Options): {
         close();
         latest.current.openRoleLauncher(reuse);
       }}
-      onDontAskAgain={(checked) => latest.current.saveMode(checked ? "claude" : "ask")}
+      onDontAskAgain={() => latest.current.saveMode("claude")}
     />
   ) : null;
 
