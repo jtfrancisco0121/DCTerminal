@@ -647,6 +647,9 @@ export async function devSessionCancel(tabId?: string | null): Promise<void> {
   return invoke("dev_session_cancel", { tabId: tabId ?? null });
 }
 
+/** An agent request's JSON-RPC id, a number or a string, echoed back as sent. */
+export type JsonRpcId = number | string;
+
 export type PermissionOption = {
   id: string;
   label: string;
@@ -655,7 +658,7 @@ export type PermissionOption = {
 export type PermissionRequestEvent = {
   tabId: string;
   sessionId: string;
-  jsonRpcId: number;
+  jsonRpcId: JsonRpcId;
   title: string;
   message: string;
   toolClass: string;
@@ -668,7 +671,7 @@ export type PermissionRequestEvent = {
 export type PermissionAutoEvent = {
   tabId: string;
   sessionId: string;
-  jsonRpcId: number;
+  jsonRpcId: JsonRpcId;
   title: string;
   toolClass: string;
   displayKind: string;
@@ -701,7 +704,7 @@ export function listenPermissionRequests(
 
 export async function respondPermissionRequest(
   tabId: string,
-  jsonRpcId: number,
+  jsonRpcId: JsonRpcId,
   outcome: "selected" | "cancelled",
   optionId?: string,
 ): Promise<void> {
@@ -818,6 +821,7 @@ export type DiagnosticsStatus = {
   appDataDir: string;
   transcriptsDir: string;
   logPath: string;
+  crashLogPath: string;
   lastError: string | null;
 };
 
@@ -1103,7 +1107,7 @@ export async function setTabColor(tabId: string, color: string): Promise<void> {
 export type PlanRequestEvent = {
   tabId: string;
   sessionId: string;
-  jsonRpcId: number;
+  jsonRpcId: JsonRpcId;
   title: string;
   entries: { content: string; status: string; priority?: string }[];
   /** Claude ExitPlanMode body. Absent on a Cursor plan card. */
@@ -1124,7 +1128,7 @@ export function listenPlanRequests(
 
 export async function respondPlanRequest(
   tabId: string,
-  jsonRpcId: number,
+  jsonRpcId: JsonRpcId,
   outcome: "accepted" | "cancelled",
 ): Promise<void> {
   return invoke("respond_plan_request", { tabId, jsonRpcId, outcome });
@@ -1133,7 +1137,7 @@ export async function respondPlanRequest(
 export type QuestionRequestEvent = {
   tabId: string;
   sessionId: string;
-  jsonRpcId: number;
+  jsonRpcId: JsonRpcId;
   title: string;
   prompt: string;
   choices: { id: string; label: string }[];
@@ -1149,7 +1153,7 @@ export function listenQuestionRequests(
 
 export async function respondQuestionRequest(
   tabId: string,
-  jsonRpcId: number,
+  jsonRpcId: JsonRpcId,
   outcome: "answered" | "skipped" | "cancelled",
   choiceId?: string,
 ): Promise<void> {

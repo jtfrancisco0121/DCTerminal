@@ -1,6 +1,23 @@
 use serde_json::Value;
 
 /// Pull displayable text from an ACP `session/update` payload (params or inner `update`).
+/// The reply text one notification adds to a prompt turn's answer: agent
+/// message text from a `session/update`, never thinking or tool labels.
+/// Claude names the kind `sessionUpdate`, so reading only `type` let
+/// thinking and tool labels into the reply text.
+pub fn agent_reply_text(note: &Value) -> Option<String> {
+    if note.get("method").and_then(|m| m.as_str()) != Some("session/update") {
+        return None;
+    }
+    let params = note.get("params").unwrap_or(note);
+    let kind = update_kind(params.get("update").unwrap_or(params));
+    let normalized = kind.replace('_', "").to_lowercase();
+    if normalized.contains("thought") || normalized.contains("toolcall") {
+        return None;
+    }
+    text_from_session_params(params)
+}
+
 pub fn text_from_session_params(params: &Value) -> Option<String> {
     if let Some(update) = params.get("update") {
         return text_from_update_value(update);
