@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ChatEntry, PipelineRun, RunEvent } from "../bridge";
 import { pipelineStages } from "./defs";
-import { axisTicks, formatSpan, runLanes, subAgentBars, verdictTag, type TurnBar, type WaitBar } from "./runLanes";
+import { axisTicks, formatSpan, MAX_RUN_EVENTS, runLanes, subAgentBars, verdictTag, type TurnBar, type WaitBar } from "./runLanes";
 
 const T0 = Date.parse("2026-10-16T10:00:00Z");
 const MIN = 60_000;
@@ -207,6 +207,43 @@ describe("runLanes", () => {
     expect(impl[0].label).toBe("Implementer (PR1 — API) round 1: worked 5m");
     const [review] = turnsOf(model, "pr_reviewer");
     expect([review.lane, review.verdict, ...span(review)]).toEqual(["pr1", "CHANGES", 11, 15]);
+  });
+
+  it("a coalesced turn (one event at the last reply) draws the same span as one event per reply", () => {
+    const head = [ev(2, "handoff", { stageId: "plan_reviewer" })];
+    const perReply = runLanes(
+      run([
+        ...head,
+        ev(4, "turn", { stageId: "plan_reviewer", outcome: "REQUEST CHANGES" }),
+        ev(6, "turn", { stageId: "plan_reviewer" }),
+        ev(9, "turn", { stageId: "plan_reviewer" }),
+      ]),
+      stages,
+      T0 + 20 * MIN,
+    );
+    const coalesced = runLanes(
+      run([...head, ev(9, "turn", { stageId: "plan_reviewer", outcome: "REQUEST CHANGES" })]),
+      stages,
+      T0 + 20 * MIN,
+    );
+    for (const model of [perReply, coalesced]) {
+      const [bar] = turnsOf(model, "plan_reviewer");
+      expect([...span(bar), bar.verdict, bar.open]).toEqual([2, 9, "CHANGES", false]);
+    }
+  });
+
+  it("a ledger at its cap starts at its first kept event, not when the run was made", () => {
+    const events = Array.from({ length: MAX_RUN_EVENTS }, (_, i) =>
+      ev(100 + i, "note", { summary: `note ${i}` }),
+    );
+    events[1] = ev(101, "handoff", { stageId: "implementer" });
+    const model = runLanes(run(events, { stage: "implementer" }), stages, T0 + 500 * MIN);
+    expect(model.start).toBe(T0 + 100 * MIN);
+    expect(turnsOf(model, "planner")).toEqual([]);
+    expect(span(turnsOf(model, "implementer")[0])[0]).toBe(101);
+    // Below the cap the first stage still starts when the run was made.
+    const whole = runLanes(run(events.slice(0, 10)), stages, T0 + 500 * MIN);
+    expect(span(turnsOf(whole, "planner")[0])).toEqual([0, 101]);
   });
 
   it("ignores events on stages the pipeline does not have", () => {

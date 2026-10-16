@@ -274,7 +274,8 @@ export function useAutopilot(deps: AutopilotDeps) {
 
   /**
    * Call with each fresh session log of a terminal tab. Handles a finished
-   * turn once, and only for a chain run with autopilot on.
+   * turn once: on every chain terminal it records where the turn ended (run
+   * lanes), and only on a chain run with autopilot on does it act on it.
    */
   const onTerminalLog = useCallback(
     (tabId: string, log: TerminalSessionLog | null) => {

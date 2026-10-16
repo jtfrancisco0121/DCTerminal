@@ -12,7 +12,11 @@
  * - `stop` events are waits for you, until the next thing happens;
  * - `gate` events are checks, drawn over their run time.
  * Runs recorded before `turn` events existed still draw: their turns just
- * end when the next stage starts.
+ * end when the next stage starts. A turn's back-and-forth is one `turn`
+ * event moved to its latest end (older runs have one per reply; either
+ * way the bar ends at the last). A ledger at its cap has lost its oldest
+ * events: the axis then starts at the first one kept, and the first stage
+ * is not stretched back to when the run was made.
  */
 import type { ChatEntry, GateResult, PipelineRun, RunEvent } from "../bridge";
 import type { StageDef } from "./defs";
@@ -62,6 +66,9 @@ export type RunLanesModel = {
   rows: LaneRow[];
   ticks: Tick[];
 };
+
+/** Events a run's ledger keeps (`MAX_RUN_EVENTS` in Rust); older ones are dropped. */
+export const MAX_RUN_EVENTS = 300;
 
 const CHANGES = new Set(["REQUIRES REVISION", "REQUEST CHANGES", "REJECTED", "CHANGES"]);
 
@@ -120,7 +127,8 @@ export function runLanes(run: PipelineRun, stages: readonly StageDef[], now: num
   const created = time(run.createdAt);
   const events = (run.events ?? []).filter((e) => time(e.at) !== null);
   const first = time(events[0]?.at);
-  const start = Math.min(created ?? first ?? now, first ?? created ?? now);
+  const trimmed = (run.events?.length ?? 0) >= MAX_RUN_EVENTS;
+  const start = trimmed && first !== null ? first : Math.min(created ?? first ?? now, first ?? created ?? now);
   const index = new Map(stages.map((s, i) => [s.id, i]));
 
   const turns: Omit<TurnBar, "track">[] = [];
@@ -204,7 +212,7 @@ export function runLanes(run: PipelineRun, stages: readonly StageDef[], now: num
     wait = null;
   };
 
-  if (stages[0]) begin(stages[0].id, null, 1, start);
+  if (stages[0] && !trimmed) begin(stages[0].id, null, 1, start);
 
   for (const event of events) {
     const at = time(event.at)!;
