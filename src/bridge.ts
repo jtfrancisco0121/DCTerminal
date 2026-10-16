@@ -8,6 +8,12 @@ import { ensureWindow } from "./windowScope";
 import type { NotificationSettings } from "./notify/agentNotify";
 import type { CustomColors } from "./theme";
 import type {
+  GithubFeed,
+  GithubFilters,
+  GithubStatus,
+  PushCommits,
+} from "./github/githubTypes";
+import type {
   ProviderId,
   ProviderReport,
   ProviderSettingsView,
@@ -945,6 +951,37 @@ export async function createExecutionPipelineTabs(): Promise<AppStateSnapshot> {
 /** Opens a localhost preview tab and makes it active. */
 export async function openPreviewTab(url: string): Promise<AppStateSnapshot> {
   return invoke("open_preview_tab", { windowId: await windowId(), url });
+}
+
+/** Whether gh is installed and signed in, and the saved GitHub filters. */
+export function githubStatus(): Promise<GithubStatus> {
+  return invoke("github_status");
+}
+
+/** Polls whatever is due and returns the GitHub feed. Read-only. */
+export function githubFeed(): Promise<GithubFeed> {
+  return invoke("github_feed");
+}
+
+/** The commits of one push, loaded when its row is expanded. */
+export function githubPushCommits(
+  repo: string,
+  before: string,
+  head: string,
+): Promise<PushCommits> {
+  return invoke("github_push_commits", { repo, before, head });
+}
+
+/**
+ * Of `ids`, the ones nobody was told about yet; all are marked seen. The first
+ * call only sets the baseline and returns nothing.
+ */
+export function githubClaimNotifications(ids: string[]): Promise<string[]> {
+  return invoke("github_claim_notifications", { ids });
+}
+
+export function githubSaveFilters(filters: GithubFilters): Promise<GithubFilters> {
+  return invoke("github_save_filters", { filters });
 }
 
 /** Saves the address a preview tab shows. */

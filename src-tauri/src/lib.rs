@@ -9,6 +9,7 @@ mod crash_log;
 mod cursor_history;
 mod data_dir;
 mod files;
+mod github;
 mod history_search;
 mod models;
 mod orchestrator;
@@ -62,6 +63,10 @@ use commands::{
 use commands::{
     activity_clear, activity_list, terminal_chat_entries, terminal_chat_unwatch,
     terminal_chat_watch, terminal_session_log,
+};
+use commands::{
+    github_claim_notifications, github_feed, github_push_commits, github_save_filters,
+    github_status,
 };
 use commands::{changes_file_diff, changes_list, changes_revert, changes_snapshot, ChangesRoot};
 use commands::{first_run_complete, first_run_status, provider_status};
@@ -143,6 +148,8 @@ pub fn run() {
             let handoff_store = HandoffStore::open(&data_dir)?;
             let prompt_store = PromptStore::open(&data_dir)?;
             let workspace_store = WorkspaceStore::open(&data_dir)?;
+            let github_store = store::github_store::GithubStore::open(&data_dir)?;
+            let github_cache = store::github_store::GithubCache::open(&data_dir)?;
             state_store.new_tab_provider = settings_store.default_provider();
             let known_tabs = commands::storage::known_tab_ids(&state_store);
             commands::storage::run_sweep(&data_dir, &mut scratch_store, &known_tabs);
@@ -160,6 +167,9 @@ pub fn run() {
             app.manage(Mutex::new(prompt_store));
             app.manage(Mutex::new(workspace_store));
             app.manage(Mutex::new(pipeline_store));
+            app.manage(Mutex::new(github_store));
+            app.manage(Mutex::new(github_cache));
+            app.manage(github::GithubSync::new());
             app.manage(Mutex::new(crate::usage::UsageStore::open(&data_dir)));
             app.manage(Mutex::new(SessionRegistry::new()));
             app.manage(Mutex::new(PtyRegistry::new()));
@@ -204,6 +214,11 @@ pub fn run() {
             create_pipeline_tabs,
             create_execution_pipeline_tabs,
             open_preview_tab,
+            github_status,
+            github_feed,
+            github_push_commits,
+            github_claim_notifications,
+            github_save_filters,
             set_preview_url,
             get_pipeline_run,
             pipeline_defs_list,

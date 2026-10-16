@@ -10,6 +10,7 @@ mod chain_runs;
 mod claude_migration;
 mod forms_store;
 mod forms_types;
+pub(crate) mod github_store;
 mod handoff_store;
 mod json_io;
 mod pipelines_store;

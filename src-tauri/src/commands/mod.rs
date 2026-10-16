@@ -8,6 +8,7 @@ pub(crate) mod changes;
 mod cursor_cli;
 mod dev_session;
 mod forms;
+mod github;
 mod handoff;
 mod pipeline;
 mod model_session;
@@ -49,6 +50,10 @@ pub use dev_session::{
     SessionRegistry,
 };
 pub use forms::{get_form_recall, save_form_draft};
+pub use github::{
+    github_claim_notifications, github_feed, github_push_commits, github_save_filters,
+    github_status,
+};
 pub use handoff::{handoff_attach, handoff_bind_tab, handoff_get, handoff_list, handoff_save};
 pub use pipeline::{
     get_pipeline_run, pipeline_decide, pipeline_defs_list, pipeline_defs_save, pipeline_fan_out,
