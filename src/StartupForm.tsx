@@ -464,6 +464,13 @@ export function StartupForm({
   const newTabLaunchRef = useRef<(draftTabId: string, mode: string) => Promise<void>>(
     async () => {},
   );
+  /** The launch draft waiting for first-run setup to close (Skip runs the launch step). */
+  const firstRunLaunchRef = useRef<string | null>(null);
+  /** The "New tab opens" setting decides what replaces a launch draft's start screen. */
+  const runNewTabLaunch = async (draftTabId: string) => {
+    const mode = await getTerminalSettings().then((t) => t.newTabOpens, () => "start");
+    await newTabLaunchRef.current(draftTabId, mode);
+  };
   const [closedTabs, setClosedTabs] = useState<ClosedTabSummary[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [cardsByTab, setCardsByTab] = useState<Record<string, Cards>>({});
@@ -1026,9 +1033,14 @@ export function StartupForm({
           const { tab } = await newDraftTab(seedRoleId, "");
           await refreshTabs();
           loadTabIntoForm(tab);
-          // The "New tab opens" setting decides what replaces this start screen.
-          const mode = await getTerminalSettings().then((t) => t.newTabOpens, () => "start");
-          await newTabLaunchRef.current(tab.id, mode);
+          // A fresh profile shows first-run setup over this draft; the setting
+          // applies only once setup is skipped (finishing it starts a role here).
+          const setupNeeded = await firstRunStatus().then((s) => !!s?.needed, () => false);
+          if (setupNeeded) {
+            firstRunLaunchRef.current = tab.id;
+            return;
+          }
+          await runNewTabLaunch(tab.id);
           return;
         }
         const activeId = snap.activeTabId ?? snap.tabs[snap.tabs.length - 1]?.id;
@@ -4848,6 +4860,8 @@ export function StartupForm({
   /** F8: setup finished: put the role and folder on the active draft tab, then Start. */
   const finishFirstRun = (choice: FirstRunFinish) => {
     setFirstRunOpen(false);
+    // Setup starts its role in the launch draft; no new-tab step on top.
+    firstRunLaunchRef.current = null;
     void firstRunComplete().catch((err: unknown) =>
       showNotice("Setup state not saved", errorText(err), "failed"),
     );
@@ -4859,6 +4873,9 @@ export function StartupForm({
 
   const skipFirstRun = () => {
     setFirstRunOpen(false);
+    const draft = firstRunLaunchRef.current;
+    firstRunLaunchRef.current = null;
+    if (draft) void runNewTabLaunch(draft);
     void firstRunComplete().catch((err: unknown) =>
       showNotice("Setup state not saved", errorText(err), "failed"),
     );

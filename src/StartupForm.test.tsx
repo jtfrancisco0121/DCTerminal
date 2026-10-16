@@ -1870,6 +1870,36 @@ describe("first-run setup (F8)", () => {
     expect(roleSessionStart).not.toHaveBeenCalled();
   });
 
+  it("holds the new-tab picker until setup closes, then Skip shows it over the untouched draft", async () => {
+    const original = vi.mocked(getTerminalSettings).getMockImplementation();
+    vi.mocked(getTerminalSettings).mockImplementation(async () => ({
+      shell: "",
+      fontSize: 14,
+      optionAsMeta: true,
+      copyOnSelect: false,
+      roleSurface: {},
+      roleRunMode: {},
+      newTabOpens: "ask",
+    }));
+    vi.mocked(shellTerminalStart).mockReset();
+    vi.mocked(firstRunStatus).mockResolvedValue({ needed: true, completed: false });
+    try {
+      renderFresh();
+      const dialog = await screen.findByRole("dialog", { name: "Set up DCTerminal" });
+      await screen.findByRole("tab", { name: /New · Developer/ });
+      await act(async () => {});
+      expect(screen.queryByRole("dialog", { name: "New tab" })).toBeNull();
+      expect(shellTerminalStart).not.toHaveBeenCalled();
+      expect(roleSessionStart).not.toHaveBeenCalled();
+
+      fireEvent.click(within(dialog).getByRole("button", { name: "Skip setup" }));
+      expect(await screen.findByRole("dialog", { name: "New tab" })).toBeTruthy();
+      expect(shellTerminalStart).not.toHaveBeenCalled();
+    } finally {
+      vi.mocked(getTerminalSettings).mockImplementation(original!);
+    }
+  });
+
   it("does not appear for an existing profile, and Skip setup remembers the choice", async () => {
     vi.mocked(firstRunStatus).mockClear();
     renderFresh();

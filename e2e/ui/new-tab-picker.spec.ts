@@ -29,6 +29,8 @@ test("S opens a shell; arrows and Enter pick a row; Esc closes", async ({ app, p
   expect(await app.calls("shell_terminal_start")).toHaveLength(0);
 
   await chord(page, "KeyT");
+  // Wait for the folder, so the rows act on a loaded picker.
+  await expect(picker(page).getByRole("option", { name: /Shell here/ })).toContainText("demo");
   await page.keyboard.press("ArrowDown");
   await expect(picker(page).getByRole("option", { name: /Shell here/ })).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("Enter");
