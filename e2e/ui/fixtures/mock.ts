@@ -707,6 +707,8 @@ export function installTauriMock(config: MockConfig): void {
     projects_remember: () => null,
     // Terminal file links: every asked path "exists" unless a spec overrides it.
     files_resolve: (a) => (Array.isArray(a.paths) ? a.paths : []),
+    // Rendered Markdown images: a 1×1 transparent GIF for any image path.
+    files_markdown_image: () => "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==",
     check_working_folder: (a) => a.path,
     workspaces_list: () => ({ workspaces: [], path: "/tmp/dct-e2e/workspaces.json" }),
     transcript_load: () => ({ text: "", cwd: state.cwd, readOnly: false, recoveredFromCorrupt: false }),

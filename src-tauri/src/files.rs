@@ -384,6 +384,94 @@ pub fn files_write(
     )
 }
 
+/// Largest image a rendered Markdown file loads inline.
+pub const MAX_MARKDOWN_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
+
+/// `src` of an image in the Markdown file `doc` (both relative to `root`) as
+/// a path relative to `root`: against the file's folder, or the root when it
+/// starts with `/`. `..` may climb only as far as the root. A `?query` or
+/// `#fragment` is dropped and `%XX` escapes are decoded.
+pub fn markdown_image_rel(doc: &str, src: &str) -> Result<String, String> {
+    let src = src.trim();
+    let src = src.split(['?', '#']).next().unwrap_or_default();
+    if src.is_empty() || src.contains("://") || src.starts_with("//") {
+        return Err("only images inside the tab's folder load here".to_string());
+    }
+    let src = percent_decode(src);
+    if src.contains('\0') || src.contains('\\') || src.contains(':') {
+        return Err("the path must be inside the tab's folder".to_string());
+    }
+    let mut parts: Vec<String> = if src.starts_with('/') {
+        Vec::new()
+    } else {
+        let mut dir = relative_parts(doc)?;
+        dir.pop();
+        dir
+    };
+    for part in src.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                if parts.pop().is_none() {
+                    return Err("that path leads outside the tab's folder".to_string());
+                }
+            }
+            part => parts.push(part.to_string()),
+        }
+    }
+    Ok(parts.join("/"))
+}
+
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16);
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                out.push((hi * 16 + lo) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// An image a Markdown file shows, as a `data:` URL. The Files panel rules
+/// apply (inside the root after symlinks, no hidden build folders), and only
+/// image files up to `MAX_MARKDOWN_IMAGE_BYTES` load.
+pub fn markdown_image(root: &Path, doc: &str, src: &str) -> Result<String, String> {
+    let rel = markdown_image_rel(doc, src)?;
+    let path = resolve_inside(root, &rel)?;
+    let mime = image_mime(&path).ok_or_else(|| format!("{rel} is not an image"))?;
+    let meta = std::fs::metadata(&path).map_err(|err| err.to_string())?;
+    if !meta.is_file() {
+        return Err(format!("{rel} is not a file"));
+    }
+    if meta.len() > MAX_MARKDOWN_IMAGE_BYTES {
+        return Err(format!("{rel} is too large to show"));
+    }
+    let bytes = std::fs::read(&path).map_err(|err| err.to_string())?;
+    let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Ok(format!("data:{mime};base64,{data}"))
+}
+
+/// An image in the rendered Markdown file `doc_path`, as a `data:` URL.
+#[tauri::command]
+pub fn files_markdown_image(
+    tab_id: String,
+    doc_path: String,
+    src: String,
+    store: State<Mutex<StateStore>>,
+) -> Result<String, String> {
+    let root = tab_root(&store, &tab_id)?;
+    markdown_image(&root, &doc_path, &src)
+}
+
 /// At most this many paths are checked per call; the rest are ignored.
 pub const MAX_RESOLVE_PATHS: usize = 128;
 
@@ -649,6 +737,48 @@ mod tests {
             .count();
         assert_eq!(leftovers, 0);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn markdown_image_paths_resolve_against_the_file_and_stay_in_the_root() {
+        assert_eq!(markdown_image_rel("docs/a.md", "img/x.png").unwrap(), "docs/img/x.png");
+        assert_eq!(markdown_image_rel("docs/a.md", "./x.png?raw=1#top").unwrap(), "docs/x.png");
+        assert_eq!(markdown_image_rel("docs/a.md", "../shot%20one.png").unwrap(), "shot one.png");
+        assert_eq!(markdown_image_rel("docs/a.md", "/assets/x.png").unwrap(), "assets/x.png");
+        assert_eq!(markdown_image_rel("README.md", "x.png").unwrap(), "x.png");
+        for bad in ["../x.png", "../../etc/x.png", "%2e%2e/x.png", "https://e.com/x.png", "//e.com/x.png", "C:/x.png", r"..\x.png", ""] {
+            assert!(markdown_image_rel("README.md", bad).is_err(), "{bad}");
+        }
+        assert!(markdown_image_rel("../a.md", "x.png").is_err());
+    }
+
+    #[test]
+    fn markdown_images_load_as_data_urls_with_the_panel_rules() {
+        let root = temp_root("md_image");
+        let outside = temp_root("md_image_outside");
+        std::fs::create_dir_all(root.join("docs/img")).unwrap();
+        std::fs::write(root.join("docs/img/x.png"), [0x89, b'P', b'N', b'G']).unwrap();
+        std::fs::write(root.join("docs/notes.txt"), "text").unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join(".git/x.png"), "x").unwrap();
+        std::fs::write(outside.join("secret.png"), "x").unwrap();
+        let url = markdown_image(&root, "docs/a.md", "img/x.png").unwrap();
+        assert_eq!(url, "data:image/png;base64,iVBORw==");
+        assert!(markdown_image(&root, "docs/a.md", "notes.txt").unwrap_err().contains("not an image"));
+        assert!(markdown_image(&root, "docs/a.md", "missing.png").is_err());
+        assert!(markdown_image(&root, "docs/a.md", "../.git/x.png").is_err());
+        let big = std::fs::File::create(root.join("big.png")).unwrap();
+        big.set_len(MAX_MARKDOWN_IMAGE_BYTES + 1).unwrap();
+        assert!(markdown_image(&root, "a.md", "big.png").unwrap_err().contains("too large"));
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(outside.join("secret.png"), root.join("escape.png")).unwrap();
+            std::os::unix::fs::symlink(&outside, root.join("out")).unwrap();
+            assert!(markdown_image(&root, "a.md", "escape.png").is_err());
+            assert!(markdown_image(&root, "a.md", "out/secret.png").is_err());
+        }
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(outside);
     }
 
     #[test]

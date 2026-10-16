@@ -271,6 +271,12 @@ pub fn pipeline_note(
 /// draw where each turn ended. `verdict` is a reviewer's verdict, if its
 /// reply had one. Unknown stages are refused; a lane that is not on the run
 /// is ignored.
+///
+/// Back-and-forth in one turn coalesces: when the newest event is already
+/// this stage's (and role's, and lane's) `turn` of this round, it moves to
+/// now, keeping its verdict unless a new one came, instead of adding a line.
+/// Returns whether the ledger changed (and was saved); a repeat within a
+/// second that changes nothing else is dropped.
 pub fn turn_finished(
     store: &mut StateStore,
     run_id: &str,
@@ -278,31 +284,61 @@ pub fn turn_finished(
     role_id: &str,
     lane: Option<&str>,
     verdict: Option<&str>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let run = store
         .pipeline_run_by_id_mut(run_id)
         .ok_or_else(|| format!("unknown pipeline run: {run_id}"))?;
     let title = crate::pipelines::find(&run.kind)
         .and_then(|def| def.stage(stage_id).map(|stage| stage.title.clone()))
         .ok_or_else(|| format!("unknown stage: {stage_id}"))?;
+    let lane = lane.filter(|id| run.lane(id).is_some());
     let lane_tag = lane
         .and_then(|id| run.lane(id))
         .map(|l| format!("{}: ", l.title))
         .unwrap_or_default();
-    let verdict = verdict.map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
-    let summary = match &verdict {
+    let summary_for = |verdict: Option<&str>| match verdict {
         Some(verdict) => format!("{lane_tag}{title} finished its turn ({verdict})"),
         None => format!("{lane_tag}{title} finished its turn"),
     };
-    run.log_outcome(
-        "turn",
-        Some(stage_id),
-        Some(role_id),
-        summary,
-        None,
-        verdict,
-    );
-    store.save()
+    let verdict = verdict.map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
+    let round = run.round.max(1);
+    let same_turn = run.events.last().is_some_and(|last| {
+        last.kind == "turn"
+            && last.stage_id.as_deref() == Some(stage_id)
+            && last.role_id.as_deref() == Some(role_id)
+            && last.round == round
+            && event_lane(run, &last.summary) == lane
+    });
+    if !same_turn {
+        let summary = summary_for(verdict.as_deref());
+        run.log_outcome("turn", Some(stage_id), Some(role_id), summary, None, verdict);
+        store.save()?;
+        return Ok(true);
+    }
+    let now = chrono::Utc::now();
+    let last = run.events.last_mut().expect("checked above");
+    let outcome = verdict.or_else(|| last.outcome.clone());
+    let summary = summary_for(outcome.as_deref());
+    let recent = last
+        .at
+        .parse::<chrono::DateTime<chrono::Utc>>()
+        .is_ok_and(|at| (now - at).num_milliseconds() < 1_000);
+    if recent && last.outcome == outcome && last.summary == summary {
+        return Ok(false);
+    }
+    last.at = now.to_rfc3339();
+    last.outcome = outcome;
+    last.summary = summary;
+    store.save()?;
+    Ok(true)
+}
+
+/// The lane an event's summary names by its "PR title: " prefix.
+fn event_lane<'a>(run: &'a PipelineRun, summary: &str) -> Option<&'a str> {
+    run.lanes
+        .iter()
+        .find(|l| !l.title.is_empty() && summary.starts_with(&format!("{}: ", l.title)))
+        .map(|l| l.id.as_str())
 }
 
 #[tauri::command]
@@ -317,7 +353,7 @@ pub fn pipeline_turn_finished(
 ) -> Result<(), String> {
     let run_id = run_id.trim().to_string();
     let mut store = store.lock().map_err(|e| e.to_string())?;
-    turn_finished(
+    let changed = turn_finished(
         &mut store,
         &run_id,
         stage_id.trim(),
@@ -325,7 +361,9 @@ pub fn pipeline_turn_finished(
         lane.as_deref(),
         verdict.as_deref(),
     )?;
-    app.chain_run_updated(&run_id);
+    if changed {
+        app.chain_run_updated(&run_id);
+    }
     Ok(())
 }
 
@@ -783,6 +821,48 @@ mod tests {
         turn_finished(&mut store, "ee_f", "implementer", "role_implementer", Some("pr9"), None).unwrap();
         let last = store.pipeline_run_by_id("ee_f").unwrap().events.last().cloned().unwrap();
         assert!(last.summary.starts_with("Implementer"), "{}", last.summary);
+    }
+
+    #[test]
+    fn back_and_forth_in_one_turn_updates_its_turn_line_in_place() {
+        let (_dir, mut store) = store("turn_coalesce");
+        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        let turns = |store: &StateStore| -> Vec<crate::store::RunEvent> {
+            let run = store.pipeline_run_by_id("ee_f").unwrap();
+            run.events.iter().filter(|e| e.kind == "turn").cloned().collect()
+        };
+        assert!(turn_finished(&mut store, "ee_f", "plan_reviewer", "role_plan_reviewer", None, Some("REQUEST CHANGES")).unwrap());
+        let first_at = "2000-01-01T00:00:00+00:00";
+        store.pipeline_run_by_id_mut("ee_f").unwrap().events.last_mut().unwrap().at = first_at.into();
+        // Another reply in the same turn, without a verdict: moved, verdict kept.
+        assert!(turn_finished(&mut store, "ee_f", "plan_reviewer", "role_plan_reviewer", None, None).unwrap());
+        let now = turns(&store);
+        assert_eq!(now.len(), 1);
+        assert_ne!(now[0].at, first_at);
+        assert_eq!(now[0].outcome.as_deref(), Some("REQUEST CHANGES"));
+        assert!(now[0].summary.ends_with("(REQUEST CHANGES)"), "{}", now[0].summary);
+        // A repeat right away changes nothing: not saved, not emitted.
+        assert!(!turn_finished(&mut store, "ee_f", "plan_reviewer", "role_plan_reviewer", None, None).unwrap());
+        // A new verdict replaces the old one.
+        assert!(turn_finished(&mut store, "ee_f", "plan_reviewer", "role_plan_reviewer", None, Some("APPROVED")).unwrap());
+        assert_eq!(turns(&store).len(), 1);
+        assert_eq!(turns(&store)[0].outcome.as_deref(), Some("APPROVED"));
+        // Another stage, another round or any event in between: a new line.
+        turn_finished(&mut store, "ee_f", "planner", "role_planner", None, None).unwrap();
+        assert_eq!(turns(&store).len(), 2);
+        store.pipeline_run_by_id_mut("ee_f").unwrap().round = 2;
+        turn_finished(&mut store, "ee_f", "planner", "role_planner", None, None).unwrap();
+        assert_eq!(turns(&store).len(), 3);
+        store.pipeline_run_by_id_mut("ee_f").unwrap().log("note", None, None, "hi", None);
+        turn_finished(&mut store, "ee_f", "planner", "role_planner", None, None).unwrap();
+        assert_eq!(turns(&store).len(), 4);
+        // Lanes keep their own lines.
+        fan_out(&mut store, "ee_f", "implementer", lanes()).unwrap();
+        turn_finished(&mut store, "ee_f", "implementer", "role_implementer", Some("pr1"), None).unwrap();
+        turn_finished(&mut store, "ee_f", "implementer", "role_implementer", Some("pr2"), None).unwrap();
+        turn_finished(&mut store, "ee_f", "implementer", "role_implementer", Some("pr2"), None).unwrap();
+        assert_eq!(turns(&store).len(), 6);
     }
 
     #[test]

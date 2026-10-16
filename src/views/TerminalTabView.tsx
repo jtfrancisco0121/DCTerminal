@@ -192,7 +192,7 @@ export function TerminalTabView({
             <>
               <PanelResizeHandle className="split-handle" />
               <Panel id="plan-split-pane" order={2} minSize={18} defaultSize={38} className="plan-split-pane">
-                <PlanPane tabId={activeTabSummary.id} runId={runId} />
+                <PlanPane tabId={activeTabSummary.id} runId={runId} lane={activeTabSummary.chain?.lane ?? null} />
               </Panel>
             </>
           )}

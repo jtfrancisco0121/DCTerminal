@@ -18,7 +18,7 @@ import {
 import { highlightCode } from "../files/highlight";
 import { formatSize, isSaveChord, joinRoot } from "../files/paths";
 import type { Platform } from "../keymap";
-import { ChatMarkdown } from "./ChatMarkdown";
+import { FileMarkdown } from "./FileMarkdown";
 import { useConfirm } from "./confirm";
 import { isMarkdownPath, MarkdownViewSwitch, type MarkdownView } from "./MarkdownViewSwitch";
 import { PanelHeader } from "./PanelHeader";
@@ -479,7 +479,7 @@ export function FilePanel({
           />
         ) : showMarkdownSwitch && markdownView === "rendered" ? (
           <div className="file-markdown session-stream-agent">
-            <ChatMarkdown>{file.text ?? ""}</ChatMarkdown>
+            <FileMarkdown tabId={tabId} path={file.path}>{file.text ?? ""}</FileMarkdown>
           </div>
         ) : (
           <pre className="file-code hljs">

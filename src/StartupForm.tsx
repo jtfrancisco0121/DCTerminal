@@ -299,6 +299,7 @@ import { terminalViewOf } from "./terminal/chatEntries";
 import { stopTurn } from "./terminal/ptyAnswers";
 import { toggledView, useTerminalViews } from "./terminal/terminalViews";
 import { forgetComposerDraft, type TerminalComposerHandle } from "./views/TerminalChatControls";
+import { usePrunePlanPanes } from "./views/planPaneState";
 import { planFileMentions } from "./terminal/text";
 import {
   emptySessionCards,
@@ -494,6 +495,7 @@ export function StartupForm({
   const { views: terminalViews, setView: setTerminalView } = useTerminalViews(
     savedTabs.map((tab) => tab.id),
   );
+  usePrunePlanPanes(savedTabs.map((tab) => tab.id));
   const terminalViewsRef = useRef(terminalViews);
   terminalViewsRef.current = terminalViews;
   const terminalComposerRef = useRef<TerminalComposerHandle>(null);

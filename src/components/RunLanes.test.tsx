@@ -90,6 +90,30 @@ describe("RunLanes", () => {
     expect(screen.getByText("now")).toBeTruthy();
   });
 
+  it("fanned-out lane tabs show their sub-agents too, each lane on its own track", () => {
+    const fanned = run({
+      tabIds: {},
+      lanes: [
+        { id: "pr1", title: "PR1 — API", status: "active", stage: "implementer", round: 1, tabIds: { role_implementer: "tab-impl" } },
+        { id: "pr2", title: "PR2 — UI", status: "active", stage: "implementer", round: 1, tabIds: { role_implementer: "tab-impl-2" } },
+      ],
+    });
+    entries["tab-impl-2"] = [{ ...(entries["tab-impl"][0] as Extract<ChatEntry, { kind: "subAgent" }>), toolId: "b", description: "Draw the UI" }];
+    render(
+      <RunLanes
+        run={fanned}
+        tabs={[tab("tab-impl", "role_implementer"), tab("tab-impl-2", "role_implementer")]}
+        now={T0 + 20 * 60_000}
+      />,
+    );
+    const list = within(screen.getByRole("list", { name: "Run lanes as a list" }));
+    expect(list.getByText("Implementer (PR1 — API): Sub-agent (Explore): Search the API, took 2m")).toBeTruthy();
+    expect(list.getByText("Implementer (PR2 — UI): Sub-agent (Explore): Draw the UI, took 2m")).toBeTruthy();
+    const subs = [...document.querySelectorAll<HTMLElement>(".run-lanes-track-sub .run-lane-bar-sub")];
+    expect(subs.map((el) => el.style.top)).toEqual(["0px", "18px"]);
+    delete entries["tab-impl-2"];
+  });
+
   it("a complete run has no now line", () => {
     const done = run();
     done.events = [...(done.events ?? []), { at: at(19), kind: "complete", round: 1, summary: "" }];

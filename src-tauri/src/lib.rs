@@ -77,7 +77,7 @@ use commands::{
     prompt_save,
 };
 use commands::{workspace_delete, workspace_open, workspace_save, workspaces_list};
-use files::{files_list, files_read, files_resolve, files_reveal, files_write};
+use files::{files_list, files_markdown_image, files_read, files_resolve, files_reveal, files_write};
 use models::{get_model_settings, list_models, set_model_settings, set_tab_model};
 use pty::{
     get_terminal_settings, pty_kill, pty_open, pty_resize, pty_set_scheme, pty_write, role_terminal_start,
@@ -314,6 +314,7 @@ pub fn run() {
             files_write,
             files_resolve,
             files_reveal,
+            files_markdown_image,
             windows::window_context,
             windows::open_account_window,
         ])
