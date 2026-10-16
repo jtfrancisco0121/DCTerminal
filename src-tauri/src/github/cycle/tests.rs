@@ -856,3 +856,97 @@ fn a_pr_is_rechecked_with_its_etag_after_a_while() {
         .filter(|(e, _)| !e.ends_with("/46"))
         .all(|(_, etag)| etag.is_some()));
 }
+
+/// GitHub where the search quota is spent but the core quota is fine.
+fn search_exhausted(status: u16) -> Fake {
+    let ok = github();
+    Fake::new(move |endpoint, etag| {
+        if endpoint.starts_with("search/issues") {
+            let mut r = reply(status, r#"{"message":"API rate limit exceeded"}"#, "");
+            r.rate_remaining = Some(0);
+            r.rate_resource = Some("search".into());
+            r.rate_reset = Some(NOW + 120);
+            return Ok(r);
+        }
+        ok.get(endpoint, etag)
+    })
+}
+
+#[test]
+fn running_out_of_search_quota_does_not_stop_events_or_notifications() {
+    for status in [403, 429] {
+        let api = search_exhausted(status);
+        let (out, mut cache, cfg) = first_cycle(&api);
+        assert!(!out.response.rate_limited, "{status}: core polling goes on");
+        assert_ne!(cache.rate_remaining, Some(0), "{status}");
+        assert!(!out.response.items.is_empty(), "{status}: events loaded");
+        assert!(out.response.repos.iter().any(|r| r.reachable == Some(true)));
+        assert!(
+            api.endpoints()
+                .iter()
+                .any(|e| e.starts_with("notifications")),
+            "{status}: notifications polled"
+        );
+        assert!(
+            out.response.errors.keys().any(|k| k.starts_with("search:")),
+            "{status}"
+        );
+        assert!(
+            !out.response.needs_you_ready,
+            "{status}: Needs you is not complete"
+        );
+
+        // Until the search reset only the search endpoints wait.
+        api.take();
+        let later = run_cycle(&api, &cfg, &mut cache, NOW + 61);
+        let calls = api.take();
+        assert!(!later.response.rate_limited);
+        assert!(
+            !calls.iter().any(|(e, _)| e.starts_with("search/issues")),
+            "{status}: search waits"
+        );
+        assert!(
+            calls.iter().any(|(e, _)| e.contains("notes/events")),
+            "{status}: events still poll"
+        );
+        assert!(
+            calls.iter().any(|(e, _)| e.starts_with("notifications")),
+            "{status}"
+        );
+
+        // After the reset search is tried again.
+        run_cycle(&api, &cfg, &mut cache, NOW + 130);
+        assert!(
+            api.take()
+                .iter()
+                .any(|(e, _)| e.starts_with("search/issues")),
+            "{status}"
+        );
+    }
+}
+
+#[test]
+fn a_core_limit_still_stops_everything() {
+    let api = Fake::new(|endpoint, _| {
+        if endpoint.starts_with("user/repos") {
+            return Ok(reply(200, "[]", "\"p\""));
+        }
+        let mut r = reply(403, "{}", "");
+        r.rate_remaining = Some(0);
+        r.rate_resource = Some("core".into());
+        r.rate_reset = Some(NOW + 500);
+        Ok(r)
+    });
+    let mut cache = CacheFile::default();
+    let cfg = config();
+    let out = run_cycle(&api, &cfg, &mut cache, NOW);
+    assert!(out.response.rate_limited);
+    assert_eq!(cache.rate_remaining, Some(0));
+    assert_eq!(cache.rate_reset, Some(NOW + 500));
+    api.take();
+    run_cycle(&api, &cfg, &mut cache, NOW + 61);
+    assert!(
+        api.take().is_empty(),
+        "nothing is polled before the core reset"
+    );
+}

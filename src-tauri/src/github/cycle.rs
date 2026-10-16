@@ -37,6 +37,8 @@ const CLOSED_LOOKBACK_DAYS: i64 = 3;
 const LOW_RATE: u32 = 200;
 /// Below this, nothing is polled until the limit resets.
 const CRITICAL_RATE: u32 = 40;
+/// Search endpoints wait this long (seconds) when the reply gives no reset.
+const SEARCH_BLOCK: i64 = 60;
 const MAX_COMMENT_LOOKUPS: usize = 10;
 /// PR lookups per cycle (a cold start fills in over a few cycles).
 const MAX_PULL_LOOKUPS: usize = 25;
@@ -80,6 +82,7 @@ struct Run {
     dirty: bool,
     auth_failed: bool,
     rate_limited: bool,
+    limit_reset: Option<i64>,
     offline: Option<String>,
     rate: Option<(u32, Option<i64>)>,
 }
@@ -186,6 +189,20 @@ fn note_headers(cache: &mut CacheFile, run: &mut Run, response: &GhResponse) {
     }
 }
 
+/// The reply counts against the core limit (or does not say which).
+fn is_core(response: &GhResponse) -> bool {
+    response
+        .rate_resource
+        .as_deref()
+        .is_none_or(|r| r == "core")
+}
+
+/// Out of core quota: every endpoint waits for the core reset. Search has
+/// its own, much smaller limit and only delays the search endpoints.
+fn core_limited(response: &GhResponse) -> bool {
+    is_rate_limited(response) && is_core(response)
+}
+
 fn is_rate_limited(response: &GhResponse) -> bool {
     response.status == 429 || (response.status == 403 && response.rate_remaining == Some(0))
 }
@@ -250,7 +267,8 @@ fn fetch_personal(
             run.auth_failed = true;
             Err("HTTP 401".to_string())
         }
-        _ if is_rate_limited(&response) => {
+        _ if core_limited(&response) => {
+            run.limit_reset = response.rate_reset;
             run.rate_limited = true;
             Err("rate limited".to_string())
         }
@@ -287,8 +305,20 @@ fn apply(
     };
     note_headers(cache, run, &response);
     if is_rate_limited(&response) {
-        run.rate_limited = true;
-        cache.endpoints.entry(task.key.clone()).or_default().error = Some("rate limited".into());
+        let entry = cache.endpoints.entry(task.key.clone()).or_default();
+        if matches!(task.job, Job::Search(_)) || !is_core(&response) {
+            // Search quota only: the other endpoints keep polling.
+            let until = response
+                .rate_reset
+                .unwrap_or(now + SEARCH_BLOCK)
+                .max(now + 10);
+            cache.search_blocked_until = Some(cache.search_blocked_until.unwrap_or(0).max(until));
+            fail_entry(entry, now, "search rate limit reached".into(), false);
+        } else {
+            run.limit_reset = response.rate_reset;
+            run.rate_limited = true;
+            entry.error = Some("rate limited".into());
+        }
         return;
     }
     let entry = cache.endpoints.entry(task.key.clone()).or_default();
@@ -387,7 +417,7 @@ fn resolve_comments(api: &dyn GhApi, cache: &mut CacheFile, run: &mut Run) {
                         run.dirty = true;
                     }
                     401 => run.auth_failed = true,
-                    _ if is_rate_limited(&response) => run.rate_limited = true,
+                    _ if core_limited(&response) => run.rate_limited = true,
                     _ => {}
                 }
             }
@@ -479,7 +509,7 @@ fn resolve_pulls(api: &dyn GhApi, cache: &mut CacheFile, scope: &Scope, now: i64
                 run.dirty = true;
             }
             401 => run.auth_failed = true,
-            _ if is_rate_limited(&response) => run.rate_limited = true,
+            _ if core_limited(&response) => run.rate_limited = true,
             _ => {}
         }
     }
@@ -542,6 +572,7 @@ fn plan(
         });
     }
     let since = date_of(now - CLOSED_LOOKBACK_DAYS * DAY);
+    let search_blocked = cache.search_blocked_until.is_some_and(|until| until > now);
     for SearchQuery {
         key,
         kind,
@@ -549,6 +580,9 @@ fn plan(
         ..
     } in build_queries(scope, &since)
     {
+        if search_blocked {
+            break;
+        }
         if due(cache.endpoints.get(&key), now, SEARCH_EVERY) {
             tasks.push(Task {
                 key,
@@ -767,6 +801,9 @@ pub fn run_cycle(
         }
         if run.rate_limited {
             cache.rate_remaining = Some(0);
+            if run.limit_reset.is_some() {
+                cache.rate_reset = run.limit_reset;
+            }
         }
     }
 

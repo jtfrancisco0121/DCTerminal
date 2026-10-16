@@ -211,6 +211,9 @@ pub struct CacheFile {
     pub rate_remaining: Option<u32>,
     #[serde(skip)]
     pub rate_reset: Option<i64>,
+    /// Search quota used up: search endpoints wait until then (unix seconds).
+    #[serde(skip)]
+    pub search_blocked_until: Option<i64>,
 }
 
 impl Default for CacheFile {
@@ -223,6 +226,7 @@ impl Default for CacheFile {
             scopes: None,
             rate_remaining: None,
             rate_reset: None,
+            search_blocked_until: None,
         }
     }
 }
