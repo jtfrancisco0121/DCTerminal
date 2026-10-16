@@ -10,9 +10,17 @@ import { Terminal } from "@xterm/xterm";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { lastLines, TERMINAL_TAIL_LINES } from "./text";
 import { ptySetScheme } from "../bridge";
-import { cachedTheme, terminalTheme, THEMES, normalizeTheme } from "../theme";
+import {
+  cachedCustomColors,
+  cachedTheme,
+  terminalTheme,
+  THEMES,
+  normalizeTheme,
+  type CustomColors,
+} from "../theme";
 import { detectPlatform } from "../keymap";
-import { findPathLinks, isLinkModifier } from "./links";
+import { findBarePaths, findPathLinks, isLinkModifier } from "./links";
+import { existingPaths } from "./fileLinks";
 
 export type ParkedTerminal = {
   host: HTMLDivElement;
@@ -27,7 +35,7 @@ let focusedId = "";
 const searchOpeners = new Map<string, () => void>();
 const refitters = new Map<string, () => void>();
 
-let currentTheme = terminalTheme(cachedTheme());
+let currentTheme = terminalTheme(cachedTheme(), cachedCustomColors());
 
 let linkOpenError: ((message: string) => void) | null = null;
 
@@ -36,9 +44,9 @@ export function setLinkOpenErrorHandler(handler: ((message: string) => void) | n
   linkOpenError = handler;
 }
 
-/** U8: repaint every terminal (and future ones) in the app theme. */
-export function setTerminalTheme(id: string): void {
-  currentTheme = terminalTheme(id);
+/** U8: repaint every terminal (and future ones) in the app theme and custom colours. */
+export function setTerminalTheme(id: string, custom?: CustomColors | null): void {
+  currentTheme = terminalTheme(id, custom);
   const light = THEMES.find((item) => item.id === normalizeTheme(id))?.scheme === "light";
   try {
     void ptySetScheme(light).catch(() => {});
@@ -48,12 +56,41 @@ export function setTerminalTheme(id: string): void {
   for (const entry of parked.values()) entry.term.options.theme = currentTheme;
 }
 
+/** Bundled with the app (@fontsource-variable/jetbrains-mono, loaded in main.tsx). */
+const BUNDLED_FONT = '"JetBrains Mono Variable", ';
 const MAC_FONTS = '"SF Mono", SFMono-Regular, Menlo, ';
 const FONTS = '"Cascadia Code", "Cascadia Mono", Consolas, ui-monospace, monospace';
 
-/** SF Mono and Menlo first on macOS; the Windows stack elsewhere. */
+/** The bundled JetBrains Mono first; then SF Mono and Menlo on macOS, the Windows stack elsewhere. */
 export function terminalFontFamily(platform: string): string {
-  return /mac/i.test(platform) ? MAC_FONTS + FONTS : FONTS;
+  return BUNDLED_FONT + (/mac/i.test(platform) ? MAC_FONTS + FONTS : FONTS);
+}
+
+let fontWatchStarted = false;
+
+/**
+ * xterm measures the cell size when it opens. A terminal opened before the
+ * bundled font finished loading measured a fallback font, so once the font
+ * is ready every open terminal re-measures and refits.
+ */
+function watchBundledFont(): void {
+  if (fontWatchStarted) return;
+  fontWatchStarted = true;
+  try {
+    void document.fonts
+      ?.load('14px "JetBrains Mono Variable"')
+      .then(() => {
+        for (const [id, entry] of parked) {
+          const family = entry.term.options.fontFamily ?? terminalFontFamily(navigator.platform);
+          entry.term.options.fontFamily = "monospace";
+          entry.term.options.fontFamily = family;
+          refitters.get(id)?.();
+        }
+      })
+      .catch(() => {});
+  } catch {
+    // No font loading API (unit tests): fallbacks are measured as usual.
+  }
 }
 
 function prefersReducedMotion(): boolean {
@@ -114,7 +151,10 @@ export function setCopyOnSelect(value: boolean): void {
 type FileOpener = (id: string, path: string, line: number) => void;
 let fileOpener: FileOpener | null = null;
 
-/** The app opens `path:line` links from terminal output in the Files panel. */
+/**
+ * The app opens `path:line` links, and bare paths that exist, from terminal
+ * output in the Files panel. A bare path opens at line 1.
+ */
 export function setTerminalFileOpener(open: FileOpener | null): void {
   fileOpener = open;
 }
@@ -137,6 +177,7 @@ export function ensureParkedTerminal(id: string, fontSize: number): ParkedTermin
     existing.term.options.fontSize = fontSize;
     return existing;
   }
+  watchBundledFont();
   const host = document.createElement("div");
   host.className = "xterm-host";
   const term = new Terminal({
@@ -166,25 +207,40 @@ export function ensureParkedTerminal(id: string, fontSize: number): ParkedTermin
       });
     }),
   );
+  const fileLink = (text: string, path: string, line: number, start: number, end: number, row: number) => ({
+    text,
+    range: {
+      start: { x: start + 1, y: row },
+      end: { x: end, y: row },
+    },
+    activate: (event: MouseEvent) => {
+      if (!isLinkModifier(event, detectPlatform(navigator.platform))) return;
+      fileOpener?.(id, path, line);
+    },
+  });
   term.registerLinkProvider({
     provideLinks(row, callback) {
       const line = term.buffer.active.getLine(row - 1);
-      const links = line ? findPathLinks(line.translateToString(true)) : [];
-      callback(
-        links.length === 0
-          ? undefined
-          : links.map((link) => ({
-              text: link.text,
-              range: {
-                start: { x: link.start + 1, y: row },
-                end: { x: link.end, y: row },
-              },
-              activate: (event) => {
-                if (!isLinkModifier(event, detectPlatform(navigator.platform))) return;
-                fileOpener?.(id, link.path, link.line);
-              },
-            })),
+      const text = line ? line.translateToString(true) : "";
+      const links = findPathLinks(text).map((link) =>
+        fileLink(link.text, link.path, link.line, link.start, link.end, row),
       );
+      const bare = findBarePaths(text);
+      if (bare.length === 0) {
+        callback(links.length === 0 ? undefined : links);
+        return;
+      }
+      // Bare paths link only when the file exists (one batched, cached check).
+      // A split pane's id ends in `::pane`; the tab is the part before it.
+      void existingPaths(id.replace(/::pane$/, ""), bare.map((item) => item.path)).then((found) => {
+        const all = [
+          ...links,
+          ...bare
+            .filter((item) => found.has(item.path))
+            .map((item) => fileLink(item.path, item.path, 1, item.start, item.end, row)),
+        ];
+        callback(all.length === 0 ? undefined : all);
+      });
     },
   });
   let copyTimer = 0;

@@ -199,11 +199,19 @@ test.describe("Terminal and theme", () => {
     expect(await token(page, "--attention")).toBe("#f0c14b");
 
     const terminal = await openSettings(page, "Appearance");
-    const theme = terminal.getByRole("combobox", { name: "Theme" });
-    await expect(theme.locator("option")).toHaveText(["Match system", "GitHub Dark", "GitHub Light"]);
-    await expect(theme).toHaveValue("github-dark");
+    const theme = terminal.getByRole("radiogroup", { name: "Theme" });
+    await expect(theme.getByRole("radio")).toHaveText([
+      "Match system",
+      "GitHub Dark",
+      "GitHub Light",
+      "Dracula",
+      "Nord",
+      "Tokyo Night",
+      "Catppuccin Mocha",
+    ]);
+    await expect(theme.getByRole("radio", { name: "GitHub Dark" })).toHaveAttribute("aria-checked", "true");
 
-    await theme.selectOption({ label: "GitHub Light" });
+    await theme.getByRole("radio", { name: "GitHub Light" }).click();
     await expect(page.locator("html")).toHaveAttribute("data-theme", "github-light");
     expect(await token(page, "--attention")).toBe("#9a6700");
     expect(await token(page, "--fg-on-emphasis")).toBe("#ffffff");
@@ -214,7 +222,7 @@ test.describe("Terminal and theme", () => {
     expect((saved.args.ui as UiSettings).theme).toBe("github-light");
     expect(await page.evaluate(() => localStorage.getItem("dcterminal.theme"))).toBe("github-light");
 
-    await theme.selectOption("github-dark");
+    await theme.getByRole("radio", { name: "GitHub Dark" }).click();
     await expect(page.locator("html")).toHaveAttribute("data-theme", "github-dark");
     expect(await token(page, "--attention")).toBe("#f0c14b");
     expect(await page.evaluate(() => document.documentElement.style.colorScheme)).toBe("dark");
@@ -230,7 +238,27 @@ test.describe("Terminal and theme", () => {
     });
     await expect(page.locator("html")).toHaveAttribute("data-theme", "github-dark");
     const terminal = await openSettings(page, "Appearance");
-    await expect(terminal.getByRole("combobox", { name: "Theme" })).toHaveValue("github-dark");
+    await expect(
+      terminal.getByRole("radiogroup", { name: "Theme" }).getByRole("radio", { name: "GitHub Dark" }),
+    ).toHaveAttribute("aria-checked", "true");
+  });
+
+  test("a dark preset and a custom colour repaint the app and are saved", async ({ app, page }) => {
+    await app.open();
+    const section = await openSettings(page, "Appearance");
+    await section.getByRole("radio", { name: "Dracula" }).click();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "dracula");
+    expect(await token(page, "--bg")).toBe("#282a36");
+    await app.waitForCall("set_ui_settings", (a) => (a.ui as UiSettings).theme === "dracula");
+
+    await section.getByLabel("Done").fill("#00ff00");
+    expect(await token(page, "--done")).toBe("#00ff00");
+    await app.waitForCall(
+      "set_ui_settings",
+      (a) => (a.ui as UiSettings).customColors?.done === "#00ff00",
+    );
+    await section.getByRole("button", { name: "Reset" }).click();
+    expect(await token(page, "--done")).toBe("#8be9fd");
   });
 
   test("shell, font size and per-role run mode are saved", async ({ app, page }) => {
@@ -285,6 +313,7 @@ test.describe("Permissions and Usage", () => {
           appDataDir: "/tmp/dct-e2e",
           transcriptsDir: "/tmp/dct-e2e/transcripts",
           logPath: "/tmp/dct-e2e/app.log",
+          crashLogPath: "/tmp/dct-e2e/logs/crash.log",
           lastError: null,
         }),
       },

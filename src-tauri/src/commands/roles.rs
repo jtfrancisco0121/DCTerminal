@@ -3,7 +3,7 @@ use crate::roles::editor::{
     validate_role_template, MAX_IMPORT_BYTES,
 };
 use crate::roles::{Role, RoleField, RolesFile};
-use crate::store::{read_json, seed_output_path, RolesStore, StateStore};
+use crate::store::{bundled_seed, RolesStore, StateStore};
 use crate::template::{merge_role_prompt, template_hash, FieldError, MergedPreview};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -304,7 +304,7 @@ pub fn reset_builtin_role(
     role_id: String,
     store: State<Mutex<RolesStore>>,
 ) -> Result<Role, String> {
-    let seed: RolesFile = read_json(&seed_output_path()).map_err(|e| e.to_string())?;
+    let seed: RolesFile = bundled_seed()?;
     let seeded = seed
         .roles
         .iter()

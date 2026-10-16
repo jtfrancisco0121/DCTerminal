@@ -43,7 +43,7 @@ pub fn write_line(app: &AppHandle, patch: Option<ActivityPatch>) {
 pub fn record_permission(
     app: &AppHandle,
     tab_id: &str,
-    json_rpc_id: u64,
+    json_rpc_id: &crate::acp::RequestId,
     enriched_params: &Value,
     decision: Option<&str>,
 ) {

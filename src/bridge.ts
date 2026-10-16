@@ -6,6 +6,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ensureWindow } from "./windowScope";
 import type { NotificationSettings } from "./notify/agentNotify";
+import type { CustomColors } from "./theme";
 import type {
   ProviderId,
   ProviderReport,
@@ -289,6 +290,8 @@ export type TabSummary = {
    * "plan" for the Planner). Missing on chat, Cursor, plain and resume tabs.
    */
   permissionMode?: string | null;
+  /** Address a localhost preview tab (kind "preview") shows. */
+  previewUrl?: string | null;
 };
 
 export type PipelineRun = {
@@ -647,6 +650,9 @@ export async function devSessionCancel(tabId?: string | null): Promise<void> {
   return invoke("dev_session_cancel", { tabId: tabId ?? null });
 }
 
+/** An agent request's JSON-RPC id, a number or a string, echoed back as sent. */
+export type JsonRpcId = number | string;
+
 export type PermissionOption = {
   id: string;
   label: string;
@@ -655,7 +661,7 @@ export type PermissionOption = {
 export type PermissionRequestEvent = {
   tabId: string;
   sessionId: string;
-  jsonRpcId: number;
+  jsonRpcId: JsonRpcId;
   title: string;
   message: string;
   toolClass: string;
@@ -668,7 +674,7 @@ export type PermissionRequestEvent = {
 export type PermissionAutoEvent = {
   tabId: string;
   sessionId: string;
-  jsonRpcId: number;
+  jsonRpcId: JsonRpcId;
   title: string;
   toolClass: string;
   displayKind: string;
@@ -701,7 +707,7 @@ export function listenPermissionRequests(
 
 export async function respondPermissionRequest(
   tabId: string,
-  jsonRpcId: number,
+  jsonRpcId: JsonRpcId,
   outcome: "selected" | "cancelled",
   optionId?: string,
 ): Promise<void> {
@@ -818,6 +824,7 @@ export type DiagnosticsStatus = {
   appDataDir: string;
   transcriptsDir: string;
   logPath: string;
+  crashLogPath: string;
   lastError: string | null;
 };
 
@@ -928,6 +935,16 @@ export async function createPipelineTabs(): Promise<AppStateSnapshot> {
 
 export async function createExecutionPipelineTabs(): Promise<AppStateSnapshot> {
   return invoke("create_execution_pipeline_tabs", { windowId: await windowId() });
+}
+
+/** Opens a localhost preview tab and makes it active. */
+export async function openPreviewTab(url: string): Promise<AppStateSnapshot> {
+  return invoke("open_preview_tab", { windowId: await windowId(), url });
+}
+
+/** Saves the address a preview tab shows. */
+export async function setPreviewUrl(tabId: string, url: string): Promise<void> {
+  return invoke("set_preview_url", { tabId, url });
 }
 
 export type PipelineRunView = {
@@ -1103,7 +1120,7 @@ export async function setTabColor(tabId: string, color: string): Promise<void> {
 export type PlanRequestEvent = {
   tabId: string;
   sessionId: string;
-  jsonRpcId: number;
+  jsonRpcId: JsonRpcId;
   title: string;
   entries: { content: string; status: string; priority?: string }[];
   /** Claude ExitPlanMode body. Absent on a Cursor plan card. */
@@ -1124,7 +1141,7 @@ export function listenPlanRequests(
 
 export async function respondPlanRequest(
   tabId: string,
-  jsonRpcId: number,
+  jsonRpcId: JsonRpcId,
   outcome: "accepted" | "cancelled",
 ): Promise<void> {
   return invoke("respond_plan_request", { tabId, jsonRpcId, outcome });
@@ -1133,7 +1150,7 @@ export async function respondPlanRequest(
 export type QuestionRequestEvent = {
   tabId: string;
   sessionId: string;
-  jsonRpcId: number;
+  jsonRpcId: JsonRpcId;
   title: string;
   prompt: string;
   choices: { id: string; label: string }[];
@@ -1149,7 +1166,7 @@ export function listenQuestionRequests(
 
 export async function respondQuestionRequest(
   tabId: string,
-  jsonRpcId: number,
+  jsonRpcId: JsonRpcId,
   outcome: "answered" | "skipped" | "cancelled",
   choiceId?: string,
 ): Promise<void> {
@@ -1364,6 +1381,21 @@ export type TerminalSettings = {
   copyOnSelect: boolean;
   roleSurface: Record<string, string>;
   roleRunMode: Record<string, string>;
+  /** What ⌘/Ctrl+T (and a launch with no saved tabs) opens. */
+  newTabOpens: NewTabOpens;
+};
+
+/** `ask` shows the new-tab picker; `start` shows the start screen. */
+export type NewTabOpens = "ask" | "claude" | "shell" | "start";
+
+export const DEFAULT_TERMINAL_SETTINGS: TerminalSettings = {
+  shell: "",
+  fontSize: 14,
+  optionAsMeta: true,
+  copyOnSelect: false,
+  roleSurface: {},
+  roleRunMode: {},
+  newTabOpens: "ask",
 };
 
 export type TerminalLaunch = "shell" | "cursor-cli" | "claude-cli" | "role";
@@ -1737,6 +1769,8 @@ export type UiSettings = {
   padHeight: number;
   /** U2: scratch pad hidden in chat and terminal tabs. */
   padHidden: boolean;
+  /** #rrggbb overrides on top of the theme (Settings > Appearance). */
+  customColors?: CustomColors;
 };
 
 export const DEFAULT_UI_SETTINGS: UiSettings = {
@@ -1974,6 +2008,14 @@ export type FileWriteResult = {
 /** Paths are relative to the tab's working folder. */
 export async function filesList(tabId: string, path = ""): Promise<DirListing> {
   return invoke<DirListing>("files_list", { tabId, path });
+}
+
+/**
+ * The subset of `paths` that name existing files inside the tab's folder.
+ * Relative paths resolve against the folder; absolute ones must lie inside it.
+ */
+export async function filesResolve(tabId: string, paths: string[]): Promise<string[]> {
+  return invoke<string[]>("files_resolve", { tabId, paths });
 }
 
 export async function filesRead(tabId: string, path: string): Promise<FileContent> {

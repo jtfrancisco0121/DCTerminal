@@ -3,6 +3,7 @@ use super::ndjson::{
     ParsedLine, MAX_ACP_LINE_BYTES,
 };
 use super::request_handler::response_for_agent_request;
+use super::request_id::RequestId;
 use crate::process_tree::{prepare_command, SharedProcess};
 use crate::provider::{AgentRequestKind, CursorProvider, ProgramArgs, SharedProvider};
 use serde_json::{json, Value};
@@ -30,7 +31,8 @@ const SETTLE_WAIT: Duration = Duration::from_secs(4);
 
 pub type AgentRequestHandler = Box<dyn FnMut(&Value) -> Result<Option<Value>, String>>;
 pub type NotificationHandler = Box<dyn FnMut(&Value)>;
-pub type AgentOutbox = Arc<Mutex<Vec<(u64, Value)>>>;
+/// Answers to agent requests the user decided on, keyed by the agent's own id.
+pub type AgentOutbox = Arc<Mutex<Vec<(RequestId, Value)>>>;
 /// Client requests to send during a turn (method, params). Responses are
 /// ignored unless their id is the turn's own request.
 pub type ClientFollowups = Arc<Mutex<Vec<(String, Value)>>>;
@@ -51,19 +53,56 @@ pub struct TurnControl<'a> {
     pub followups: Option<ClientFollowups>,
 }
 
+/// Most notifications a [`LineDispatch`] keeps. A `session/load` replay
+/// only shows its first 2,000 updates (500 KB), so this leaves room for
+/// updates the replay skips while still bounding a long call's memory.
+pub const MAX_KEPT_NOTIFICATIONS: usize = 5_000;
+/// Most line bytes of kept notifications (one line may be up to 8 MB).
+pub const MAX_KEPT_NOTIFICATION_BYTES: usize = 64 * 1024 * 1024;
+
 pub struct LineDispatch {
+    /// The first notifications of the call, up to `keep_limit`.
     pub notifications: Vec<Value>,
+    /// Every notification seen, kept or not.
+    pub notification_count: usize,
+    /// Notifications not kept because `notifications` was full.
+    pub dropped_notifications: usize,
+    keep_limit: usize,
+    kept_bytes: usize,
+    /// Reply text gathered as updates arrive (see [`Self::collect_agent_text`]).
+    agent_text: Option<String>,
     on_notification: Option<NotificationHandler>,
     pub on_agent_request: Option<AgentRequestHandler>,
 }
 
 impl LineDispatch {
     pub fn new() -> Self {
+        Self::with_keep_limit(MAX_KEPT_NOTIFICATIONS)
+    }
+
+    /// Keeps at most `keep_limit` notifications; later ones are counted only.
+    pub fn with_keep_limit(keep_limit: usize) -> Self {
         Self {
             notifications: Vec::new(),
+            notification_count: 0,
+            dropped_notifications: 0,
+            keep_limit,
+            kept_bytes: 0,
+            agent_text: None,
             on_notification: None,
             on_agent_request: None,
         }
+    }
+
+    /// Gathers the agent's reply text while the call runs, so a prompt turn
+    /// needs no kept notifications to read it.
+    pub fn collect_agent_text(&mut self) {
+        self.agent_text.get_or_insert_with(String::new);
+    }
+
+    /// The reply text gathered so far (empty unless collecting).
+    pub fn agent_text(&self) -> &str {
+        self.agent_text.as_deref().unwrap_or("")
     }
 
     pub fn set_on_agent_request(&mut self, handler: AgentRequestHandler) {
@@ -74,8 +113,21 @@ impl LineDispatch {
         self.on_notification = Some(handler);
     }
 
-    fn record_notification(&mut self, value: &Value) {
-        self.notifications.push(value.clone());
+    /// `line_bytes` is the size of the line the notification came on.
+    fn record_notification(&mut self, value: &Value, line_bytes: usize) {
+        self.notification_count += 1;
+        let fits = self.kept_bytes.saturating_add(line_bytes) <= MAX_KEPT_NOTIFICATION_BYTES;
+        if self.notifications.len() < self.keep_limit && fits {
+            self.kept_bytes += line_bytes;
+            self.notifications.push(value.clone());
+        } else {
+            self.dropped_notifications += 1;
+        }
+        if let Some(text) = &mut self.agent_text {
+            if let Some(part) = super::text_extract::agent_reply_text(value) {
+                text.push_str(&part);
+            }
+        }
         if let Some(handler) = &mut self.on_notification {
             handler(value);
         }
@@ -96,7 +148,7 @@ pub struct AcpConnection {
     /// Sorts agent requests (permission / plan / question / extension).
     provider: SharedProvider,
     /// Agent requests handed to the user and not answered yet.
-    awaiting_user: HashSet<u64>,
+    awaiting_user: HashSet<RequestId>,
     /// A prompt whose cancel grace ran out before the agent answered it.
     /// Its late updates and answer must not land in the next turn.
     abandoned_prompt: Option<u64>,
@@ -239,31 +291,31 @@ impl AcpConnection {
         Ok(())
     }
 
-    fn respond_result(&mut self, id: u64, result: Value) -> Result<(), String> {
+    fn respond_result(&mut self, id: &RequestId, result: Value) -> Result<(), String> {
         self.write_line(&json!({
             "jsonrpc": "2.0",
-            "id": id,
+            "id": id.to_value(),
             "result": result,
         }))
     }
 
-    fn respond_error(&mut self, id: u64, code: i32, message: &str) -> Result<(), String> {
+    fn respond_error(&mut self, id: &RequestId, code: i32, message: &str) -> Result<(), String> {
         self.write_line(&json!({
             "jsonrpc": "2.0",
-            "id": id,
+            "id": id.to_value(),
             "error": { "code": code, "message": message },
         }))
     }
 
     fn flush_agent_response_outbox(&mut self, outbox: &AgentOutbox) -> Result<(), String> {
-        let pending: Vec<(u64, Value)> = outbox
+        let pending: Vec<(RequestId, Value)> = outbox
             .lock()
             .map_err(|e| e.to_string())?
             .drain(..)
             .collect();
         for (id, result) in pending {
             self.awaiting_user.remove(&id);
-            self.respond_result(id, result)?;
+            self.respond_result(&id, result)?;
         }
         Ok(())
     }
@@ -271,13 +323,15 @@ impl AcpConnection {
     fn handle_incoming_line(
         &mut self,
         value: &Value,
+        line_bytes: usize,
         dispatch: &mut LineDispatch,
     ) -> Result<(), String> {
         let method = value.get("method").and_then(|m| m.as_str());
         if let Some(method) = method {
-            if let Some(req_id) = value.get("id").and_then(|v| v.as_u64()) {
+            // A number or a string: either way the answer echoes it back.
+            if let Some(req_id) = RequestId::from_message(value) {
                 if method == "session/update" {
-                    dispatch.record_notification(value);
+                    dispatch.record_notification(value, line_bytes);
                     return Ok(());
                 }
                 let params = value.get("params").unwrap_or(&Value::Null);
@@ -290,27 +344,27 @@ impl AcpConnection {
                 ) {
                     if let Some(handler) = &mut dispatch.on_agent_request {
                         match handler(value)? {
-                            Some(result) => self.respond_result(req_id, result)?,
+                            Some(result) => self.respond_result(&req_id, result)?,
                             None => {
                                 self.awaiting_user.insert(req_id);
                             }
                         }
                     } else {
                         let result = response_for_agent_request(value);
-                        self.respond_result(req_id, result)?;
+                        self.respond_result(&req_id, result)?;
                     }
                 } else if kind == AgentRequestKind::UnknownExtension {
                     let result = response_for_agent_request(value);
-                    self.respond_result(req_id, result)?;
+                    self.respond_result(&req_id, result)?;
                 } else if let Some(handler) = &mut dispatch.on_agent_request {
                     if let Some(result) = handler(value)? {
-                        self.respond_result(req_id, result)?;
+                        self.respond_result(&req_id, result)?;
                     }
                 } else {
-                    self.respond_error(req_id, -32601, "Method not found")?;
+                    self.respond_error(&req_id, -32601, "Method not found")?;
                 }
             } else {
-                dispatch.record_notification(value);
+                dispatch.record_notification(value, line_bytes);
             }
             return Ok(());
         }
@@ -429,7 +483,7 @@ impl AcpConnection {
                         ParsedLine::Value(value) => {
                             consecutive_bad = 0;
                             if value.get("method").is_some() {
-                                self.handle_incoming_line(&value, dispatch)?;
+                                self.handle_incoming_line(&value, line.len(), dispatch)?;
                                 continue;
                             }
                             if value.get("id").and_then(|v| v.as_u64()) == Some(id) {
@@ -480,7 +534,7 @@ impl AcpConnection {
                         continue;
                     };
                     if value.get("method").is_some() {
-                        self.handle_incoming_line(&value, &mut dispatch)?;
+                        self.handle_incoming_line(&value, line.len(), &mut dispatch)?;
                         dispatch.notifications.clear();
                     } else if value.get("id").and_then(Value::as_u64) == Some(id) {
                         return Ok(());
@@ -659,5 +713,122 @@ mod turn_timeout_tests {
         let script = format!("sleep 2\n{DONE}\nsleep 5");
         let result = run_turn(&script, Duration::from_millis(400), &mut LineDispatch::new());
         assert!(result.unwrap_err().contains("timeout waiting for response id=7"));
+    }
+
+    /// Runs a turn whose agent asks a permission with `ask_id` (raw JSON),
+    /// then waits for an answer line carrying that same id before ending.
+    fn answered_turn(ask_id: &str, wait_for: &str, answer_with: crate::acp::RequestId) -> Result<serde_json::Value, String> {
+        use std::sync::{Arc, Mutex};
+        let ask = format!(
+            r#"echo '{{"jsonrpc":"2.0","id":{ask_id},"method":"session/request_permission","params":{{"sessionId":"s1","toolCall":{{}},"options":[]}}}}'"#
+        );
+        let script = format!(
+            "{ask}\nwhile read line; do case \"$line\" in *'{wait_for}'*) {DONE}; break;; esac; done\nsleep 5"
+        );
+        let args = ["-c".to_string(), script];
+        let mut conn = AcpConnection::spawn_with_args(Path::new("/bin/sh"), None, &args).unwrap();
+        let outbox: super::AgentOutbox = Arc::new(Mutex::new(Vec::new()));
+        let answer = {
+            let outbox = Arc::clone(&outbox);
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(300));
+                outbox
+                    .lock()
+                    .unwrap()
+                    .push((answer_with, serde_json::json!({ "outcome": { "outcome": "cancelled" } })));
+            })
+        };
+        let cancel = AtomicBool::new(false);
+        let mut next_id = 100;
+        let mut turn = TurnControl {
+            cancel: &cancel,
+            session_id: "s1",
+            next_id: &mut next_id,
+            outbox: Some(outbox),
+            followups: None,
+        };
+        let mut dispatch = LineDispatch::new();
+        dispatch.set_on_agent_request(Box::new(|_| Ok(None)));
+        let result = conn.call_with_dispatch(
+            7,
+            "session/prompt",
+            serde_json::json!({}),
+            Duration::from_secs(3),
+            &mut dispatch,
+            Some(&mut turn),
+        );
+        answer.join().unwrap();
+        conn.kill();
+        result
+    }
+
+    #[test]
+    fn a_string_request_id_is_answered_with_the_same_string() {
+        let result = answered_turn(r#""perm-1""#, r#""id":"perm-1""#, "perm-1".into());
+        assert_eq!(result.unwrap()["stopReason"], "end_turn");
+    }
+
+    #[test]
+    fn a_numeric_request_id_is_still_answered_as_a_number() {
+        let result = answered_turn("50", r#""id":50,"#, 50.into());
+        assert_eq!(result.unwrap()["stopReason"], "end_turn");
+    }
+
+    #[test]
+    fn an_unknown_method_with_a_string_id_gets_method_not_found() {
+        let ask = r#"echo '{"jsonrpc":"2.0","id":"x-9","method":"weird/thing","params":{}}'"#;
+        let script = format!(
+            "{ask}\nwhile read line; do case \"$line\" in *'\"id\":\"x-9\"'*'-32601'*|*'-32601'*'\"id\":\"x-9\"'*) {DONE}; break;; esac; done\nsleep 5"
+        );
+        let result = run_turn(&script, Duration::from_secs(3), &mut LineDispatch::new());
+        assert_eq!(result.unwrap()["stopReason"], "end_turn");
+    }
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::LineDispatch;
+    use serde_json::json;
+
+    fn update(text: &str) -> serde_json::Value {
+        json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": { "update": { "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": text } } }
+        })
+    }
+
+    #[test]
+    fn kept_notifications_stop_at_the_cap_and_the_rest_are_counted() {
+        let mut dispatch = LineDispatch::with_keep_limit(3);
+        for i in 0..5 {
+            dispatch.record_notification(&update(&i.to_string()), 10);
+        }
+        assert_eq!(dispatch.notifications.len(), 3);
+        assert_eq!(dispatch.notification_count, 5);
+        assert_eq!(dispatch.dropped_notifications, 2);
+        // The first ones are the ones kept.
+        assert_eq!(dispatch.notifications[0], update("0"));
+    }
+
+    #[test]
+    fn a_turn_keeps_nothing_but_still_collects_the_reply() {
+        let mut dispatch = LineDispatch::with_keep_limit(0);
+        dispatch.collect_agent_text();
+        dispatch.record_notification(&update("Hello "), 10);
+        dispatch.record_notification(&update("there"), 10);
+        assert!(dispatch.notifications.is_empty());
+        assert_eq!(dispatch.notification_count, 2);
+        assert_eq!(dispatch.agent_text(), "Hello there");
+    }
+
+    #[test]
+    fn kept_notifications_stop_at_the_byte_budget() {
+        let mut dispatch = LineDispatch::new();
+        dispatch.record_notification(&update("a"), super::MAX_KEPT_NOTIFICATION_BYTES - 5);
+        dispatch.record_notification(&update("b"), 10);
+        dispatch.record_notification(&update("c"), 5);
+        assert_eq!(dispatch.notifications.len(), 2);
+        assert_eq!(dispatch.dropped_notifications, 1);
     }
 }

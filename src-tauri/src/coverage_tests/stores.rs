@@ -225,6 +225,7 @@ fn terminal_settings_are_cleaned_and_run_modes_checked() {
             ("b".into(), "popup".into()),
         ]),
         role_run_mode: HashMap::from([("a".into(), "yolo".into()), ("b".into(), "rm -rf".into())]),
+        new_tab_opens: "shell".into(),
     };
     store.set_terminal(next).unwrap();
     let terminal = SettingsStore::open(dir.path()).unwrap().terminal().clone();
@@ -259,6 +260,15 @@ fn ui_settings_keep_the_match_system_theme() {
         })
         .unwrap();
     assert_eq!(store.ui().theme, "system");
+    for preset in ["dracula", "nord", "tokyo-night", "catppuccin-mocha"] {
+        store
+            .set_ui(UiSettings {
+                theme: preset.into(),
+                ..UiSettings::default()
+            })
+            .unwrap();
+        assert_eq!(store.ui().theme, preset);
+    }
 }
 
 #[test]

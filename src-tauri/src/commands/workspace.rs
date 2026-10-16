@@ -58,6 +58,8 @@ pub struct DiagnosticsStatus {
     pub app_data_dir: String,
     pub transcripts_dir: String,
     pub log_path: String,
+    /// `logs/crash.log`: panics, with a backtrace.
+    pub crash_log_path: String,
     pub last_error: Option<String>,
 }
 
@@ -266,6 +268,7 @@ pub fn diagnostics_status(
         app_data_dir: paths.0,
         transcripts_dir: paths.1,
         log_path: paths.2,
+        crash_log_path: paths.3,
         last_error: settings.last_capture_error.clone(),
     })
 }
@@ -284,11 +287,12 @@ pub fn diagnostics_set_capture(
         app_data_dir: paths.0,
         transcripts_dir: paths.1,
         log_path: paths.2,
+        crash_log_path: paths.3,
         last_error: settings.last_capture_error.clone(),
     })
 }
 
-fn diagnostic_paths(app: &tauri::AppHandle) -> (String, String, String) {
+fn diagnostic_paths(app: &tauri::AppHandle) -> (String, String, String, String) {
     let dir = crate::data_dir::app_data_dir(app).path;
     (
         dir.display().to_string(),
@@ -297,6 +301,7 @@ fn diagnostic_paths(app: &tauri::AppHandle) -> (String, String, String) {
             .join("permission-payloads.jsonl")
             .display()
             .to_string(),
+        crate::crash_log::crash_log_path(&dir).display().to_string(),
     )
 }
 

@@ -8,6 +8,7 @@
 use super::policy::{evaluate_permission, ToolClass};
 use super::redact::redact_summary;
 use super::tool_cache::ToolCallCache;
+use crate::acp::RequestId;
 use crate::store::ActivityPatch;
 use serde_json::{json, Value};
 
@@ -272,7 +273,7 @@ pub fn patch_for_update(
 /// the cache). `decision` is `None` while the card waits for JT.
 pub fn patch_for_permission(
     tab_id: &str,
-    json_rpc_id: u64,
+    json_rpc_id: &RequestId,
     params: &Value,
     decision: Option<&str>,
     now: &str,
@@ -296,12 +297,12 @@ pub fn patch_for_permission(
     }
 }
 
-pub fn permission_fallback_id(json_rpc_id: u64) -> String {
+pub fn permission_fallback_id(json_rpc_id: &RequestId) -> String {
     format!("permission-{json_rpc_id}")
 }
 
 /// The tool call id a permission request is about (for a later decision).
-pub fn permission_tool_call_id(params: &Value, json_rpc_id: u64) -> String {
+pub fn permission_tool_call_id(params: &Value, json_rpc_id: &RequestId) -> String {
     let tool = params
         .get("toolCall")
         .or_else(|| params.get("tool_call"))
@@ -366,10 +367,10 @@ mod tests {
             }
         }
         let params = cache.enrich_params(&raw["request"]["params"]);
-        let id = raw["request"]["id"].as_u64().unwrap();
+        let id = RequestId::from_value(&raw["request"]["id"]).unwrap();
         lines.push(patch_for_permission(
             "tab_a",
-            id,
+            &id,
             &params,
             Some(decision),
             NOW,
@@ -505,7 +506,7 @@ mod tests {
         assert_eq!(patch.decision.as_deref(), Some("cancelled"));
         assert!(patch.kind.is_none());
         assert_eq!(
-            permission_tool_call_id(&json!({ "toolCall": {} }), 7),
+            permission_tool_call_id(&json!({ "toolCall": {} }), &7.into()),
             "permission-7"
         );
     }

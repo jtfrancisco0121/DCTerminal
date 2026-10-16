@@ -72,20 +72,21 @@ describe("terminal scratch pad", () => {
   it("renders under a terminal tab and hides chat-only actions", () => {
     renderPad();
     expect(screen.getByRole("region", { name: "Scratch pad" })).toBeTruthy();
-    expect(screen.getByText(/⌘\+Shift\+\. send/)).toBeTruthy();
+    expect(screen.getByText("--- splits steps · ⌘+J focus pad · Esc back to terminal")).toBeTruthy();
+    expect(screen.getByText("⌘+Enter")).toBeTruthy();
     expect(screen.getByText(/⌘\+J focus/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Paste to terminal" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Transfer" })).toBeNull();
     expect(screen.queryByRole("button", { name: "To terminal" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Send steps" })).toBeNull();
-    expect(screen.queryByText(/---/)).toBeNull();
     expect(editor().closest(".terminal-slot, .xterm")).toBeNull();
   });
 
   it("uses Ctrl in the hint off macOS", () => {
     renderPad({ platform: "windows" });
-    expect(screen.getByText(/Ctrl\+Shift\+\. send/)).toBeTruthy();
+    expect(screen.getByText(/Ctrl\+J focus pad/)).toBeTruthy();
+    expect(screen.getByText("Ctrl+Enter")).toBeTruthy();
     expect(screen.queryByText(/⌘/)).toBeNull();
   });
 
