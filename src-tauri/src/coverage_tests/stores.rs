@@ -260,6 +260,15 @@ fn ui_settings_keep_the_match_system_theme() {
         })
         .unwrap();
     assert_eq!(store.ui().theme, "system");
+    for preset in ["dracula", "nord", "tokyo-night", "catppuccin-mocha"] {
+        store
+            .set_ui(UiSettings {
+                theme: preset.into(),
+                ..UiSettings::default()
+            })
+            .unwrap();
+        assert_eq!(store.ui().theme, preset);
+    }
 }
 
 #[test]

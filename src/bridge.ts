@@ -6,6 +6,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ensureWindow } from "./windowScope";
 import type { NotificationSettings } from "./notify/agentNotify";
+import type { CustomColors } from "./theme";
 import type {
   ProviderId,
   ProviderReport,
@@ -289,6 +290,8 @@ export type TabSummary = {
    * "plan" for the Planner). Missing on chat, Cursor, plain and resume tabs.
    */
   permissionMode?: string | null;
+  /** Address a localhost preview tab (kind "preview") shows. */
+  previewUrl?: string | null;
 };
 
 export type PipelineRun = {
@@ -932,6 +935,16 @@ export async function createPipelineTabs(): Promise<AppStateSnapshot> {
 
 export async function createExecutionPipelineTabs(): Promise<AppStateSnapshot> {
   return invoke("create_execution_pipeline_tabs", { windowId: await windowId() });
+}
+
+/** Opens a localhost preview tab and makes it active. */
+export async function openPreviewTab(url: string): Promise<AppStateSnapshot> {
+  return invoke("open_preview_tab", { windowId: await windowId(), url });
+}
+
+/** Saves the address a preview tab shows. */
+export async function setPreviewUrl(tabId: string, url: string): Promise<void> {
+  return invoke("set_preview_url", { tabId, url });
 }
 
 export type PipelineRunView = {
@@ -1656,6 +1669,8 @@ export type UiSettings = {
   padHeight: number;
   /** U2: scratch pad hidden in chat and terminal tabs. */
   padHidden: boolean;
+  /** #rrggbb overrides on top of the theme (Settings > Appearance). */
+  customColors?: CustomColors;
 };
 
 export const DEFAULT_UI_SETTINGS: UiSettings = {

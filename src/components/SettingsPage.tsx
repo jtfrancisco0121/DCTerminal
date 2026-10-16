@@ -13,7 +13,7 @@ import {
   type TerminalSettings,
   type UiSettings,
 } from "../bridge";
-import { normalizeTheme, THEME_CHOICES } from "../theme";
+import { ThemePicker } from "./ThemePicker";
 import { DevToolsPanel } from "../DevToolsPanel";
 import { shortcutLabel, shortcutRows, type Platform } from "../keymap";
 import { CLAUDE_DEFAULT_MODEL_ID, CLAUDE_EFFORT_LEVELS, DEFAULT_MODEL_ID } from "../models";
@@ -296,25 +296,7 @@ export function SettingsPage({
           {category === "Appearance" && (
             <section className="settings-section" aria-label="Appearance">
               <h3>Appearance</h3>
-              <label className="field-label settings-inline-field">
-                Theme
-                <select
-                  className="text-input"
-                  value={normalizeTheme(uiSettings?.theme)}
-                  disabled={!onUiSettings}
-                  onChange={(event) => onUiSettings?.({ theme: event.target.value })}
-                >
-                  {THEME_CHOICES.map((theme) => (
-                    <option key={theme.id} value={theme.id}>
-                      {theme.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <p className="hint">
-                Match system follows your operating system&apos;s light or dark setting and
-                changes with it.
-              </p>
+              <ThemePicker uiSettings={uiSettings} onUiSettings={onUiSettings} />
             </section>
           )}
           {category === "Terminal" && (

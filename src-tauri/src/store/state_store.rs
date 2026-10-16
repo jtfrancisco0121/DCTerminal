@@ -120,7 +120,7 @@ impl StateStore {
         None
     }
 
-    fn remember_active(&mut self, window_id: &str, tab_id: Option<String>) {
+    pub(super) fn remember_active(&mut self, window_id: &str, tab_id: Option<String>) {
         if let Some(window) = self
             .data
             .windows
@@ -429,7 +429,11 @@ impl StateStore {
             .iter_mut()
             .find(|t| t.id == tab_id)
             .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
-        if tab.phase == "running" || tab.kind == "terminal" || tab.phase == "terminal" {
+        if tab.phase == "running"
+            || tab.kind == "terminal"
+            || tab.phase == "terminal"
+            || tab.kind == super::preview_tabs::PREVIEW_TAB_KIND
+        {
             return Ok(());
         }
         if !tab.custom_label {
@@ -1354,7 +1358,7 @@ pub(crate) fn normalize_provider_sessions(data: &mut AppStateFile) {
 
 /// Millisecond ids, bumped so two tabs made in the same millisecond still get
 /// distinct ids.
-fn new_tab_id() -> String {
+pub(super) fn new_tab_id() -> String {
     use std::sync::atomic::{AtomicI64, Ordering};
     static LAST: AtomicI64 = AtomicI64::new(0);
     let now = Utc::now().timestamp_millis();
@@ -1368,7 +1372,7 @@ fn new_tab_id() -> String {
     }
 }
 
-fn next_tab_order(data: &AppStateFile) -> u32 {
+pub(super) fn next_tab_order(data: &AppStateFile) -> u32 {
     data.tabs.iter().map(|t| t.order).max().unwrap_or(0) + 1
 }
 

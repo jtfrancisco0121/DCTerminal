@@ -38,7 +38,7 @@ use cli_detect::{cli_login_status, detect_cli};
 use commands::history_search;
 use commands::{
     acp_set_effort, acp_set_model, get_claude_usage, check_working_folder, close_tab, create_execution_pipeline_tabs,
-    create_pipeline_tabs, cursor_approval_mode, get_pipeline_run, pipeline_decide,
+    create_pipeline_tabs, open_preview_tab, set_preview_url, cursor_approval_mode, get_pipeline_run, pipeline_decide,
     pipeline_approve, pipeline_defs_list, pipeline_defs_save, pipeline_fan_out, pipeline_lane_status, pipeline_note,
     pipeline_run_gates,
     pipeline_set_autopilot, pipeline_promote_plan,
@@ -198,6 +198,8 @@ pub fn run() {
             start_eagle_eye,
             create_pipeline_tabs,
             create_execution_pipeline_tabs,
+            open_preview_tab,
+            set_preview_url,
             get_pipeline_run,
             pipeline_defs_list,
             pipeline_defs_save,
