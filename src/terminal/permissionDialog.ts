@@ -37,6 +37,11 @@ export type DialogDetector = {
   /** The last full draw came after an answer key or click: maybe the next call's dialog. */
   drawnAfterAnswer(id: string): boolean;
   /**
+   * The dialog went only because the hide timer ran out, with no PTY output
+   * since the answer: Claude Code may have ignored the key.
+   */
+  hiddenUnconfirmed(id: string, now?: number): boolean;
+  /**
    * Explicitly hide (e.g. the log's open tool was answered). `keepPartial`
    * keeps a question whose options have not arrived yet, so the next
    * dialog, half drawn at that moment, is still seen.
@@ -254,6 +259,10 @@ type TermState = {
   answered: boolean;
   /** The last full draw followed an answer key or click. */
   drawAfterAnswer: boolean;
+  /** Any PTY output since the last input. */
+  outputSinceInput: boolean;
+  /** The hide timer hid the dialog with no output since the answer. */
+  silentHide: boolean;
   /** When the hide debounce expires (set by input while visible). */
   hideAt: number | null;
   timer: unknown;
@@ -295,6 +304,8 @@ export function createDialogDetector(opts: DetectorOptions = {}): DialogDetector
         pressed: false,
         answered: false,
         drawAfterAnswer: false,
+        outputSinceInput: false,
+        silentHide: false,
         hideAt: null,
         timer: undefined,
         hasTimer: false,
@@ -319,6 +330,7 @@ export function createDialogDetector(opts: DetectorOptions = {}): DialogDetector
     s.pressed = false;
     s.answered = false;
     s.drawAfterAnswer = false;
+    s.silentHide = false;
     if (s.visible) {
       s.visible = false;
       notify(id);
@@ -329,6 +341,10 @@ export function createDialogDetector(opts: DetectorOptions = {}): DialogDetector
     feed(id, bytes) {
       if (ignored(id)) return;
       const s = state(id);
+      if (bytes.length > 0) {
+        s.outputSinceInput = true;
+        s.silentHide = false;
+      }
       const decoded = s.pending + s.decoder.decode(bytes, { stream: true });
       const [complete, rest] = splitIncompleteEscape(decoded);
       s.pending = rest;
@@ -364,6 +380,8 @@ export function createDialogDetector(opts: DetectorOptions = {}): DialogDetector
       if (!s) return;
       // Stale dialog text from before the answer must not re-match.
       s.window = "";
+      s.outputSinceInput = false;
+      s.silentHide = false;
       if (!s.visible) return;
       if (kind !== "key") s.answered = true;
       if (kind === "press") {
@@ -380,6 +398,7 @@ export function createDialogDetector(opts: DetectorOptions = {}): DialogDetector
         s.hideAt = null;
         if (s.visible) {
           s.visible = false;
+          s.silentHide = !s.outputSinceInput;
           s.prompt = "";
           s.options = [];
           s.pressed = false;
@@ -414,6 +433,14 @@ export function createDialogDetector(opts: DetectorOptions = {}): DialogDetector
     drawnAfterAnswer(id) {
       const s = states.get(id);
       return !!s?.visible && s.drawAfterAnswer;
+    },
+
+    hiddenUnconfirmed(id, now) {
+      const s = states.get(id);
+      if (!s) return false;
+      // The timer is due but has not run yet: the same as having run.
+      const due = s.visible && s.hideAt !== null && (now ?? Date.now()) >= s.hideAt;
+      return s.silentHide || (due && !s.outputSinceInput);
     },
 
     clear(id, opts) {

@@ -142,7 +142,9 @@ export function terminalHeaderFor(
       folderTitle={tab.cwd}
       branch={tab.worktreeBranch}
       branchTitle={tab.worktreePath ?? undefined}
-      badges={claude ? <SubAgentIndicator tabId={tab.id} /> : null}
+      // Not in a compact header (grid cell, second pane): each indicator keeps
+      // a session-log watch of its own, and only the tab's own header needs one.
+      badges={claude && !compact ? <SubAgentIndicator tabId={tab.id} /> : null}
       viewSwitch={
         terminalChatSwitch || planToggle ? (
           <>

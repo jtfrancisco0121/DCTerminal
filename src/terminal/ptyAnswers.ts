@@ -13,7 +13,7 @@ export type PtyAnswerDeps = {
   write: (tabId: string, data: string) => Promise<void>;
   /** Note user input; `data` as the terminal would (absent: a paste ending in Enter). */
   note: (tabId: string, data?: string) => void;
-  detector: Pick<DialogDetector, "isVisible" | "prompt" | "subscribe">;
+  detector: Pick<DialogDetector, "isVisible" | "prompt" | "subscribe" | "hiddenUnconfirmed">;
   setTimer: (fn: () => void, ms: number) => unknown;
   clearTimer: (handle: unknown) => void;
 };
@@ -74,12 +74,14 @@ export function permissionKey(option: DialogOption): string | null {
  */
 export const ANSWER_CONFIRM_MS = 3500;
 
-export type AnswerResult = "closed" | "stuck";
+export type AnswerResult = "closed" | "stuck" | "unconfirmed";
 
 /**
  * Presses `option`'s digit, then watches the detector: "closed" once the
  * dialog is gone (or another dialog replaced it), "stuck" when the same
- * dialog is still up after `ANSWER_CONFIRM_MS`. Rejects when the write fails.
+ * dialog is still up after `ANSWER_CONFIRM_MS`, "unconfirmed" when it went
+ * only by the detector's timer with no PTY output since the key (Claude Code
+ * may have ignored it and drawn nothing). Rejects when the write fails.
  */
 export async function answerPermission(
   tabId: string,
@@ -93,7 +95,9 @@ export async function answerPermission(
   deps.note(tabId, key);
   await deps.write(tabId, key);
   const gone = () => !deps.detector.isVisible(tabId) || deps.detector.prompt(tabId) !== before;
-  if (gone()) return "closed";
+  const outcome = (): AnswerResult =>
+    !deps.detector.isVisible(tabId) && deps.detector.hiddenUnconfirmed(tabId) ? "unconfirmed" : "closed";
+  if (gone()) return outcome();
   return new Promise<AnswerResult>((resolve) => {
     let settled = false;
     const finish = (result: AnswerResult) => {
@@ -104,8 +108,8 @@ export async function answerPermission(
       resolve(result);
     };
     const unsubscribe = deps.detector.subscribe((id) => {
-      if (id === tabId && gone()) finish("closed");
+      if (id === tabId && gone()) finish(outcome());
     });
-    const timer = deps.setTimer(() => finish(gone() ? "closed" : "stuck"), confirmMs);
+    const timer = deps.setTimer(() => finish(gone() ? outcome() : "stuck"), confirmMs);
   });
 }

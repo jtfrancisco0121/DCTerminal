@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatEntry } from "../bridge";
 import { EMPTY_CHAT, type ChatEntriesState } from "../terminal/chatEntries";
@@ -7,6 +7,8 @@ import { EMPTY_CHAT, type ChatEntriesState } from "../terminal/chatEntries";
 const writes: [string, string][] = [];
 vi.mock("../bridge", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../bridge")>()),
+  // No Tauri bridge: a channel that never delivers.
+  createPtyChannel: () => ({ onmessage: () => {} }),
   ptyWrite: vi.fn(async (id: string, data: string) => {
     writes.push([id, data]);
   }),
@@ -15,6 +17,7 @@ let chat: ChatEntriesState = EMPTY_CHAT;
 vi.mock("../terminal/chatEntriesStore", () => ({ useChatEntries: () => chat }));
 
 const { dialogDetector } = await import("../terminal/permissionDialog");
+const { beginLivePty, dropLivePty } = await import("../terminal/live");
 const { TerminalComposer, composerDraft, forgetComposerDraft } = await import("./TerminalChatControls");
 const { TerminalChatView } = await import("./TerminalChatView");
 
@@ -168,6 +171,18 @@ describe("composer while Claude waits on a dialog", () => {
     await expectSends();
   });
 
+  it("does not hold for a plan an earlier Claude Code left open (crash, then --continue)", async () => {
+    // The PTY (re)started after the plan was asked: that process is gone.
+    beginLivePty("p1").startedAt = Date.parse(AT) + 60_000;
+    chat = { sessionId: "s", revision: 1, entries: [plan("running")] };
+    render(view(false));
+    const field = screen.getByRole("textbox", { name: "Message Claude" });
+    fireEvent.change(field, { target: { value: "no, change step 2 first" } });
+    expect(screen.queryByRole("button", { name: "Show terminal" })).toBeNull();
+    await expectSends();
+    dropLivePty("p1");
+  });
+
   it("holds while a question is open", async () => {
     chat = { sessionId: "s", revision: 1, entries: [question("running")] };
     const { rerender } = render(view(false));
@@ -211,6 +226,43 @@ describe("permission card", () => {
     expect(screen.getByRole("alert").textContent).toContain("Didn't go through");
     fireEvent.click(screen.getAllByRole("button", { name: "Show terminal" })[0]);
     expect(onShowTerminal).toHaveBeenCalled();
+  });
+
+  it("says it couldn't confirm when the dialog went by the timer and the PTY drew nothing", async () => {
+    vi.useFakeTimers();
+    dialogDetector.feed("p1", new TextEncoder().encode(PROCEED));
+    const onShowTerminal = vi.fn();
+    render(<TerminalChatView tabId="p1" needsYou={false} onShowTerminal={onShowTerminal} platform="mac" />);
+    fireEvent.click(screen.getByRole("button", { name: "Yes" }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    // Claude Code ignored the digit: no output, and the detector's hide timer runs out.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4000);
+    });
+    expect(screen.queryByRole("region", { name: "Permission" })).toBeNull();
+    const note = screen.getByRole("alert");
+    expect(note.textContent).toContain("Couldn't confirm — check the terminal.");
+    fireEvent.click(within(note).getByRole("button", { name: "Show terminal" }));
+    expect(onShowTerminal).toHaveBeenCalled();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("shows no note when Claude Code drew after the answer", async () => {
+    vi.useFakeTimers();
+    dialogDetector.feed("p1", new TextEncoder().encode(PROCEED));
+    render(<TerminalChatView tabId="p1" needsYou={false} onShowTerminal={() => {}} platform="mac" />);
+    fireEvent.click(screen.getByRole("button", { name: "Yes" }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    dialogDetector.feed("p1", new TextEncoder().encode("⏺ Bash(touch x)\r\n"));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4000);
+    });
+    expect(screen.queryByRole("region", { name: "Permission" })).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("falls back to the banner when no dialog is seen", () => {

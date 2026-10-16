@@ -24,9 +24,17 @@ const sessions = new Map<string, LivePty>();
 const opening = new Set<string>();
 const listeners = new Set<() => void>();
 const exitListeners = new Set<(id: string, code: number) => void>();
+/** Bumped on every change listeners hear about (a snapshot for React). */
+let version = 0;
 
 function notify(): void {
+  version += 1;
   for (const listener of listeners) listener();
+}
+
+/** Changes whenever a PTY starts, is rekeyed or exits. */
+export function livePtyVersion(): number {
+  return version;
 }
 
 export function subscribeLivePty(listener: () => void): () => void {

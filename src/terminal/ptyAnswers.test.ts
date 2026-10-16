@@ -86,9 +86,22 @@ describe("permission answers", () => {
     await Promise.resolve();
     expect(h.writes).toEqual([["t1", "2"]]);
     expect(h.notes).toEqual([["t1", "2"]]);
-    // The detector's hide timer fires: no redraw came after the answer.
+    // Claude Code takes the key and draws the tool running, not the dialog again.
+    h.detector.feed("t1", enc.encode("⏺ Bash(touch x)\r\n"));
+    // The detector's hide timer fires: no redraw of the dialog came after the answer.
     h.runTimers();
     await expect(result).resolves.toBe("closed");
+  });
+
+  it("reports unconfirmed when only the timer hid the dialog and the PTY stayed silent", async () => {
+    const h = harness();
+    h.detector.feed("t1", enc.encode(PROCEED));
+    const result = answerPermission("t1", { key: "1", label: "Yes" }, h.deps);
+    await Promise.resolve();
+    // Claude Code ignored the digit and drew nothing; the hide timer still runs out.
+    h.runTimers();
+    expect(h.detector.isVisible("t1")).toBe(false);
+    await expect(result).resolves.toBe("unconfirmed");
   });
 
   it("reports closed at once when another dialog replaced it", async () => {

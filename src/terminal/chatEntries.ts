@@ -39,11 +39,42 @@ export function applyChatUpdate(state: ChatEntriesState, update: ChatEntriesUpda
 
 export type SubAgentEntry = Extract<ChatEntry, { kind: "subAgent" }>;
 
-/** Sub-agents with no result yet, oldest first. */
-export function runningSubAgents(entries: readonly ChatEntry[]): SubAgentEntry[] {
+/**
+ * The entry came from the Claude Code process started at `ptyStart` (ms), or
+ * later: an entry left "running" by an earlier process (it crashed, then
+ * `--continue` reopened the same log) never gets its result. Null
+ * `ptyStart` (no start known) and an entry without a time both count.
+ */
+export function fromCurrentRun(entry: ChatEntry, ptyStart: number | null): boolean {
+  if (ptyStart === null || !entry.at) return true;
+  const at = Date.parse(entry.at);
+  return Number.isNaN(at) || at >= ptyStart;
+}
+
+/** Sub-agents with no result yet from the current run (see `fromCurrentRun`), oldest first. */
+export function runningSubAgents(entries: readonly ChatEntry[], ptyStart: number | null = null): SubAgentEntry[] {
   return entries.filter(
-    (entry): entry is SubAgentEntry => entry.kind === "subAgent" && entry.status === "running",
+    (entry): entry is SubAgentEntry =>
+      entry.kind === "subAgent" && entry.status === "running" && fromCurrentRun(entry, ptyStart),
   );
+}
+
+export type DecisionEntry = Extract<ChatEntry, { kind: "plan" | "question" }>;
+
+/**
+ * The plan or question Claude Code waits on: the newest one with no result,
+ * after the latest prompt and asked by the current run (see
+ * `fromCurrentRun`). Null when none is open.
+ */
+export function openDecision(entries: readonly ChatEntry[], ptyStart: number | null): DecisionEntry | null {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    // A prompt came after it: Claude Code is no longer asking.
+    if (entry.kind === "user") return null;
+    if (entry.kind !== "plan" && entry.kind !== "question") continue;
+    if (entry.status === "running" && fromCurrentRun(entry, ptyStart)) return entry;
+  }
+  return null;
 }
 
 /** "1 sub-agent running", "2 sub-agents running"; null for none. */

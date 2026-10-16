@@ -4,6 +4,7 @@ import { PROVIDERS } from "../provider/descriptor";
 import { PROVIDER_IDS, type ProviderId } from "../provider/types";
 import type { ProvidersState } from "../provider/useProviders";
 import { Dialog } from "./Dialog";
+import { Kbd } from "./Kbd";
 import { RadioGroup, radioProps } from "./RadioGroup";
 
 export type LaunchSurface = "terminal" | "chat";
@@ -213,7 +214,8 @@ export function RoleLauncher({
       </ul>
       <footer className="role-launcher-footer hint">
         <span>
-          <kbd>↑↓</kbd> choose · <kbd>↵</kbd> open form · <kbd>Tab</kbd> Chat/Terminal · <kbd>Esc</kbd> close
+          <Kbd keys="↑↓" /> choose · <Kbd keys="↵" /> open form · <Kbd keys="Tab" /> Chat/Terminal ·{" "}
+          <Kbd keys="Esc" /> close
         </span>
         <span>
           {roles.length} {roles.length === 1 ? "role" : "roles"} · {PROVIDERS[provider].label}

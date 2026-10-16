@@ -8,7 +8,8 @@ import {
   type KeyboardEvent,
 } from "react";
 import { errorText } from "../components/InlineNotice";
-import { shortcutLabel, type Platform } from "../keymap";
+import { Kbd } from "../components/Kbd";
+import type { Platform } from "../keymap";
 import { historyNavigate } from "../scratch/pad";
 import { dialogDetector, type DialogOption } from "../terminal/permissionDialog";
 import { answerPermission, sendComposerText, stopTurn } from "../terminal/ptyAnswers";
@@ -130,7 +131,6 @@ export const TerminalComposer = forwardRef<TerminalComposerHandle, TerminalCompo
       }
     };
 
-    const sendKeys = shortcutLabel("send", platform);
     return (
       <div className="terminal-chat-composer">
         {error && (
@@ -167,7 +167,8 @@ export const TerminalComposer = forwardRef<TerminalComposerHandle, TerminalCompo
                 </span>
               ) : (
                 <span className="hint terminal-chat-composer-hint">
-                  {sendKeys && <kbd>{sendKeys}</kbd>} to {working ? "queue" : "send"} · Enter adds a line
+                  <Kbd action="send" platform={platform} /> to {working ? "queue" : "send"} · Enter adds a
+                  line
                 </span>
               )}
               {working && (
@@ -220,10 +221,16 @@ export function PermissionCard({
   tabId,
   dialog,
   onShowTerminal,
+  onUnconfirmed,
 }: {
   tabId: string;
   dialog: PermissionDialogView;
   onShowTerminal: () => void;
+  /**
+   * The dialog went only by the detector's timer, with no PTY output since
+   * the key: maybe ignored. The card is gone by then, so the view says so.
+   */
+  onUnconfirmed?: () => void;
 }) {
   const [state, setState] = useState<AnswerState>({ kind: "idle" });
   const live = useRef(true);
@@ -240,6 +247,7 @@ export function PermissionCard({
     setState({ kind: "sending", key: option.key });
     answerPermission(tabId, option)
       .then((result) => {
+        if (result === "unconfirmed") onUnconfirmed?.();
         if (live.current) setState(result === "stuck" ? { kind: "stuck" } : { kind: "idle" });
       })
       .catch((err: unknown) => {

@@ -7,6 +7,7 @@ import {
   durationMs,
   EMPTY_CHAT,
   formatDuration,
+  openDecision,
   runningSubAgents,
   subAgentText,
   terminalViewOf,
@@ -94,6 +95,35 @@ describe("sub-agents", () => {
     expect(subAgentText(2)).toBe("2 sub-agents running");
     expect(subAgentText(1)).toBe("1 sub-agent running");
     expect(subAgentText(0)).toBeNull();
+  });
+
+  it("leaves out the ones an earlier PTY run left running", () => {
+    const entries = [agent(0, "running"), { ...agent(1, "running"), at: "2026-10-16T10:05:00.000Z" }];
+    const restartedAt = Date.parse("2026-10-16T10:01:00.000Z");
+    expect(runningSubAgents(entries, restartedAt).map((a) => a.seq)).toEqual([1]);
+    expect(runningSubAgents(entries, null).map((a) => a.seq)).toEqual([0, 1]);
+  });
+});
+
+describe("open decisions", () => {
+  const AT = "2026-10-16T10:00:00.000Z";
+  const plan = (seq: number, status: "running" | "done", at: string | null = AT): ChatEntry => ({
+    seq, rev: seq + 1, at, kind: "plan", toolId: `p${seq}`, plan: "# Plan", status, endedAt: null,
+  });
+
+  it("is the newest unanswered plan or question", () => {
+    expect(openDecision([plan(0, "running"), user(1), plan(2, "done")], null)).toBeNull();
+    expect(openDecision([plan(0, "done"), plan(1, "running")], Date.parse(AT))?.seq).toBe(1);
+  });
+
+  it("ignores one asked before this PTY started: Claude crashed, then --continue reopened the log", () => {
+    const restartedAt = Date.parse("2026-10-16T10:01:00.000Z");
+    expect(openDecision([plan(0, "running")], restartedAt)).toBeNull();
+    // The new process asks again: that one is open.
+    const again = plan(1, "running", "2026-10-16T10:02:00.000Z");
+    expect(openDecision([plan(0, "running"), again], restartedAt)?.seq).toBe(1);
+    // No time on the entry: still counted.
+    expect(openDecision([plan(0, "running", null)], restartedAt)?.seq).toBe(0);
   });
 });
 

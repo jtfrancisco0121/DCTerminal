@@ -14,7 +14,7 @@ import { TerminalView } from "../components/TerminalView";
 import { handoffMenuItems, type HandoffTargetId } from "../handoff/map";
 import type { HandoffRoute } from "../handoff/routing";
 import type { Platform } from "../keymap";
-import { livePty } from "../terminal/live";
+import { useLivePty } from "../terminal/useLivePty";
 import { blurParkedTerminal, refitTerminal, terminalBracketedPaste } from "../terminal/park";
 import type { useScratchPads } from "../useScratchPads";
 import type { useUiSettings } from "../useUiSettings";
@@ -106,9 +106,10 @@ export function TerminalTabView({
 }: TerminalTabViewProps) {
   const linked = handoffs.find((item) => item.targetTabId === activeTabId) ?? null;
   const launch = terminalLaunchOf(activeTabSummary);
-  // The terminal opens the PTY: a tab restored as Chat shows it until Claude Code runs.
-  const chat =
-    view === "chat" && !inGrid && isClaudeTerminal(activeTabSummary) && !!livePty(activeTabSummary.id);
+  // The terminal opens the PTY: a tab restored as Chat shows it until Claude Code
+  // runs, then switches as soon as the PTY starts.
+  const live = useLivePty(activeTabSummary.id);
+  const chat = view === "chat" && !inGrid && isClaudeTerminal(activeTabSummary) && !!live;
   // A pipeline tab can dock its run's plan on the right (not in a grid cell).
   const runId = inGrid ? null : runIdOfTab(activeTabSummary);
   const planOpen = usePlanPaneOpen(activeTabSummary.id) && !!runId;
@@ -141,7 +142,7 @@ export function TerminalTabView({
           fontSize={fontSize}
           resumeSessionId={activeTabSummary.resumeSessionId}
           claudeSession={isClaudeTerminal(activeTabSummary)}
-          autoOpen={!livePty(activeTabSummary.id)}
+          autoOpen={!live}
           onMenuOpen={() => readTerminalVerdict(activeTabSummary.id, true)}
           menuActions={
             isPlanTerminal

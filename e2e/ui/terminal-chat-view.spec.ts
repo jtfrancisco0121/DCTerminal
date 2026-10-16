@@ -12,7 +12,9 @@ test.describe.configure({ timeout: 45_000 });
 const READ = { timeout: 10_000 };
 
 const IMPL = "Implementer · Login 500";
-const AT = "2026-10-16T10:00:00.000Z";
+// After any PTY start: an entry older than the PTY came from an earlier
+// process, so the chat view would not count it as running.
+const AT = "2099-10-16T10:00:00.000Z";
 
 const claudeTerminal = (id: string, label: string, extra = {}) =>
   roleTab(id, "role_implementer", label, {
@@ -35,7 +37,7 @@ const subAgent = (seq: number, description: string, status: "running" | "done"):
   agentType: "Explore",
   background: false,
   status,
-  endedAt: status === "done" ? "2026-10-16T10:00:42.000Z" : null,
+  endedAt: status === "done" ? "2099-10-16T10:00:42.000Z" : null,
 });
 
 const CONVERSATION: ChatEntry[] = [

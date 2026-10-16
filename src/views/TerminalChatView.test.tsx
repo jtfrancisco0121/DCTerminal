@@ -8,6 +8,12 @@ let state: ChatEntriesState = EMPTY_CHAT;
 vi.mock("../terminal/chatEntriesStore", () => ({
   useChatEntries: () => state,
 }));
+/** The tab's PTY: started before every entry, running. */
+let pty: { startedAt: number; exited: boolean } | undefined = { startedAt: 0, exited: false };
+vi.mock("../terminal/useLivePty", () => ({
+  useLivePty: () => pty,
+  useLivePtyStart: () => (pty && !pty.exited ? pty.startedAt : null),
+}));
 
 const { SubAgentIndicator, TerminalChatView, TerminalViewSwitch } = await import("./TerminalChatView");
 
@@ -90,6 +96,20 @@ describe("header pieces", () => {
     state = { sessionId: "s1", revision: 8, entries: entries.slice(0, 3) };
     rerender(<SubAgentIndicator tabId="t2" />);
     expect(container.textContent).toBe("");
+  });
+
+  it("counts none once the PTY exited mid sub-agent, or for one an earlier run left", () => {
+    state = { sessionId: "s1", revision: 7, entries };
+    pty = { startedAt: 0, exited: true };
+    const { container, rerender } = render(<SubAgentIndicator tabId="t1" />);
+    expect(container.textContent).toBe("");
+    // Restarted after the sub-agent was launched: it died with the old process.
+    pty = { startedAt: Date.parse(AT) + 1000, exited: false };
+    rerender(<SubAgentIndicator tabId="t1" />);
+    expect(container.textContent).toBe("");
+    pty = { startedAt: 0, exited: false };
+    rerender(<SubAgentIndicator tabId="t1" />);
+    expect(container.textContent).toBe("1 sub-agent running");
   });
 
   it("switches between Terminal and Chat", () => {

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, type Ref } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type Ref } from "react";
 import type { ChatEntry, ChatEntryStatus } from "../bridge";
 import { ChatMarkdown } from "../components/ChatMarkdown";
 import { detectPlatform, type Platform } from "../keymap";
@@ -7,6 +7,7 @@ import {
   decisionText,
   durationMs,
   formatDuration,
+  openDecision,
   runningSubAgents,
   STATUS_TEXT,
   subAgentText,
@@ -15,6 +16,7 @@ import {
   type ToolEntry,
 } from "../terminal/chatEntries";
 import { useChatEntries } from "../terminal/chatEntriesStore";
+import { useLivePty, useLivePtyStart } from "../terminal/useLivePty";
 import {
   PermissionCard,
   TerminalComposer,
@@ -69,7 +71,16 @@ function AnswerInTerminal({ onShowTerminal }: { onShowTerminal: () => void }) {
   );
 }
 
-function EntryView({ entry, onShowTerminal }: { entry: ChatEntry; onShowTerminal: () => void }) {
+function EntryView({
+  entry,
+  open,
+  onShowTerminal,
+}: {
+  entry: ChatEntry;
+  /** The plan or question Claude Code waits on (see `openDecision`). */
+  open: boolean;
+  onShowTerminal: () => void;
+}) {
   switch (entry.kind) {
     case "user":
       return (
@@ -122,7 +133,7 @@ function EntryView({ entry, onShowTerminal }: { entry: ChatEntry; onShowTerminal
           <div className="session-stream-agent terminal-chat-plan">
             <ChatMarkdown>{entry.plan || "_The plan is empty._"}</ChatMarkdown>
           </div>
-          {entry.status === "running" && <AnswerInTerminal onShowTerminal={onShowTerminal} />}
+          {open && <AnswerInTerminal onShowTerminal={onShowTerminal} />}
         </section>
       );
     case "question":
@@ -147,7 +158,7 @@ function EntryView({ entry, onShowTerminal }: { entry: ChatEntry; onShowTerminal
               )}
             </div>
           ))}
-          {entry.status === "running" && <AnswerInTerminal onShowTerminal={onShowTerminal} />}
+          {open && <AnswerInTerminal onShowTerminal={onShowTerminal} />}
         </section>
       );
   }
@@ -189,11 +200,14 @@ export function TerminalChatView({
 }: TerminalChatViewProps) {
   const { entries } = useChatEntries(tabId);
   const dialog = usePermissionDialog(tabId);
+  // Only what this tab's current Claude Code asked: one an earlier process
+  // left open (it crashed, `--continue` reopened the log) gets no result.
+  const ptyStart = useLivePty(tabId)?.startedAt ?? null;
+  const decision = useMemo(() => openDecision(entries, ptyStart), [entries, ptyStart]);
   // Claude Code waits on a dialog: Enter there picks an option, so the composer holds.
-  const openDecision = entries.some(
-    (entry) => (entry.kind === "plan" || entry.kind === "question") && entry.status === "running",
-  );
-  const blocked = needsYou || !!dialog || openDecision;
+  const blocked = needsYou || !!dialog || !!decision;
+  // A permission answer whose dialog went only by the detector's timer.
+  const [unconfirmed, setUnconfirmed] = useState(false);
   const rows = useMemo(() => chatRows(entries), [entries]);
   const screenRef = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
@@ -205,7 +219,18 @@ export function TerminalChatView({
 
   useEffect(() => {
     pinned.current = true;
+    setUnconfirmed(false);
   }, [tabId]);
+
+  // A new dialog replaces the note.
+  useEffect(() => {
+    if (dialog) setUnconfirmed(false);
+  }, [dialog]);
+
+  const showTerminal = () => {
+    setUnconfirmed(false);
+    onShowTerminal();
+  };
 
   return (
     <div className="terminal-chat" data-testid="terminal-chat-view">
@@ -245,11 +270,31 @@ export function TerminalChatView({
               ))}
             </details>
           ) : (
-            <EntryView key={row.key} entry={row.entry} onShowTerminal={onShowTerminal} />
+            <EntryView
+              key={row.key}
+              entry={row.entry}
+              open={row.entry.seq === decision?.seq}
+              onShowTerminal={onShowTerminal}
+            />
           ),
         )}
       </div>
-      {dialog && <PermissionCard tabId={tabId} dialog={dialog} onShowTerminal={onShowTerminal} />}
+      {dialog && (
+        <PermissionCard
+          tabId={tabId}
+          dialog={dialog}
+          onShowTerminal={onShowTerminal}
+          onUnconfirmed={() => setUnconfirmed(true)}
+        />
+      )}
+      {!dialog && unconfirmed && (
+        <div className="terminal-chat-answer-failed" role="alert">
+          <span>Couldn't confirm — check the terminal.</span>
+          <button type="button" className="secondary-button" onClick={showTerminal}>
+            Show terminal
+          </button>
+        </div>
+      )}
       <TerminalComposer
         ref={composerRef}
         tabId={tabId}
@@ -259,7 +304,10 @@ export function TerminalChatView({
         blocked={blocked}
         history={history}
         beforeSend={beforeSend}
-        onSent={onSent}
+        onSent={(text) => {
+          setUnconfirmed(false);
+          onSent?.(text);
+        }}
         onShowTerminal={onShowTerminal}
       />
     </div>
@@ -293,10 +341,15 @@ export function TerminalViewSwitch({
   );
 }
 
-/** "2 sub-agents running" in a Claude terminal tab's header; nothing when none are. */
+/**
+ * "2 sub-agents running" in a Claude terminal tab's header; nothing when none
+ * are. None once the PTY exited (a sub-agent dies with Claude Code) or for
+ * one an earlier process left running.
+ */
 export function SubAgentIndicator({ tabId }: { tabId: string }) {
   const { entries } = useChatEntries(tabId);
-  const running = runningSubAgents(entries);
+  const ptyStart = useLivePtyStart(tabId);
+  const running = ptyStart === null ? [] : runningSubAgents(entries, ptyStart);
   const text = subAgentText(running.length);
   if (!text) return null;
   return (
