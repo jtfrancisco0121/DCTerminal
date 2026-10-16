@@ -637,7 +637,7 @@ export function StartScreen({
                   Open as
                 </span>
                 <RadioGroup label="Open as" className="start-surface-group">
-                  {(["chat", "terminal"] as const).map((choice) => {
+                  {(["terminal", "chat"] as const).map((choice) => {
                     const checked = rememberedSurface(pickedRoleId) === choice;
                     return (
                       <button
@@ -649,12 +649,17 @@ export function StartScreen({
                         disabled={busy}
                         title={
                           choice === "chat"
-                            ? "Open as chat"
+                            ? "Open as chat. Autopilot needs Terminal."
                             : "Open as terminal (agent CLI in a terminal)"
                         }
                       >
                         {choice === "chat" ? (
-                          "Chat"
+                          <>
+                            Chat{" "}
+                            <span className="surface-hint" aria-hidden>
+                              Autopilot needs Terminal
+                            </span>
+                          </>
                         ) : (
                           <>
                             <span aria-hidden>›_</span>&nbsp;Terminal

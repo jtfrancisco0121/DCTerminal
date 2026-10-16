@@ -85,7 +85,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   {
     action: "newTab",
     label: "New tab",
-    description: "Open a new role tab. Other sessions keep running.",
+    description: "Open a new tab. Other sessions keep running.",
     code: "KeyT",
   },
   {

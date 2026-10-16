@@ -24,6 +24,33 @@ fn default_option_as_meta() -> bool {
     true
 }
 
+/// What a new tab (⌘T, or launch with no saved tabs) opens: `ask` shows the
+/// picker, `claude` / `shell` open a terminal tab straight away, `start`
+/// shows the start screen.
+pub const NEW_TAB_OPENS: [&str; 4] = ["ask", "claude", "shell", "start"];
+
+fn default_new_tab_opens() -> String {
+    "ask".to_string()
+}
+
+/// Keeps a known `new_tab_opens` value; anything else becomes `ask`.
+pub fn clean_new_tab_opens(value: &str) -> String {
+    if NEW_TAB_OPENS.contains(&value) {
+        value.to_string()
+    } else {
+        default_new_tab_opens()
+    }
+}
+
+fn deserialize_new_tab_opens<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<String, D::Error> {
+    // A wrong type (number, null) reads as the default too, so one bad
+    // field never resets the whole settings file.
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(clean_new_tab_opens(value.as_str().unwrap_or_default()))
+}
+
 /// Shell program, terminal font, and per-role terminal choices.
 /// `role_surface` is `chat` or `terminal`. `role_run_mode` is
 /// `default`, `yolo`, `auto-review`, `plan`, or `ask`.
@@ -45,6 +72,12 @@ pub struct TerminalSettings {
     pub role_surface: HashMap<String, String>,
     #[serde(default)]
     pub role_run_mode: HashMap<String, String>,
+    /// `ask`, `claude`, `shell` or `start`. Unknown values read as `ask`.
+    #[serde(
+        default = "default_new_tab_opens",
+        deserialize_with = "deserialize_new_tab_opens"
+    )]
+    pub new_tab_opens: String,
 }
 
 impl Default for TerminalSettings {
@@ -56,6 +89,7 @@ impl Default for TerminalSettings {
             copy_on_select: false,
             role_surface: HashMap::new(),
             role_run_mode: HashMap::new(),
+            new_tab_opens: default_new_tab_opens(),
         }
     }
 }
@@ -541,6 +575,7 @@ impl SettingsStore {
         next.role_surface
             .retain(|_, value| value == "chat" || value == "terminal");
         next.role_run_mode.retain(|_, value| is_run_mode(value));
+        next.new_tab_opens = clean_new_tab_opens(&next.new_tab_opens);
         self.data.terminal = next;
         self.save()
     }
@@ -817,6 +852,62 @@ mod tests {
         let old: SettingsFile =
             serde_json::from_value(serde_json::json!({ "schemaVersion": 1 })).unwrap();
         assert_eq!(old.ui, UiSettings::default());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn new_tab_opens_defaults_to_ask() {
+        assert_eq!(TerminalSettings::default().new_tab_opens, "ask");
+        let old: TerminalSettings = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(old.new_tab_opens, "ask");
+    }
+
+    #[test]
+    fn new_tab_opens_round_trips() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = crate::test_support::test_root().join(format!("dcterminal_newtab_{nanos}"));
+        let mut store = SettingsStore::open(&dir).unwrap();
+        for value in ["claude", "shell", "start", "ask"] {
+            store
+                .set_terminal(TerminalSettings {
+                    new_tab_opens: value.into(),
+                    ..TerminalSettings::default()
+                })
+                .unwrap();
+            let again = SettingsStore::open(&dir).unwrap();
+            assert_eq!(again.terminal().new_tab_opens, value);
+        }
+        let json = serde_json::to_value(TerminalSettings::default()).unwrap();
+        assert_eq!(json["newTabOpens"], "ask");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unknown_new_tab_opens_reads_as_ask() {
+        for raw in [
+            serde_json::json!({ "newTabOpens": "rocket" }),
+            serde_json::json!({ "newTabOpens": 7 }),
+            serde_json::json!({ "newTabOpens": null }),
+        ] {
+            let parsed: TerminalSettings = serde_json::from_value(raw).unwrap();
+            assert_eq!(parsed.new_tab_opens, "ask");
+        }
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = crate::test_support::test_root().join(format!("dcterminal_newtab_bad_{nanos}"));
+        let mut store = SettingsStore::open(&dir).unwrap();
+        store
+            .set_terminal(TerminalSettings {
+                new_tab_opens: "explode".into(),
+                ..TerminalSettings::default()
+            })
+            .unwrap();
+        assert_eq!(store.terminal().new_tab_opens, "ask");
         let _ = std::fs::remove_dir_all(dir);
     }
 

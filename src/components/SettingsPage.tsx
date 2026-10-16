@@ -7,6 +7,7 @@ import {
   type DiagnosticsStatus,
   type ModelList,
   type ModelSettings,
+  type NewTabOpens,
   type ProviderModelSettings,
   type RoleSummary,
   type TerminalSettings,
@@ -14,7 +15,7 @@ import {
 } from "../bridge";
 import { normalizeTheme, THEME_CHOICES } from "../theme";
 import { DevToolsPanel } from "../DevToolsPanel";
-import { shortcutRows, type Platform } from "../keymap";
+import { shortcutLabel, shortcutRows, type Platform } from "../keymap";
 import { CLAUDE_DEFAULT_MODEL_ID, CLAUDE_EFFORT_LEVELS, DEFAULT_MODEL_ID } from "../models";
 import type { ProviderId } from "../provider/types";
 import { ModelPicker } from "./ModelPicker";
@@ -81,6 +82,13 @@ export const SETTINGS_CATEGORIES = [
 ] as const;
 
 export type SettingsCategory = (typeof SETTINGS_CATEGORIES)[number];
+
+const NEW_TAB_CHOICES: { id: NewTabOpens; label: string }[] = [
+  { id: "ask", label: "Ask" },
+  { id: "claude", label: "Claude" },
+  { id: "shell", label: "Shell" },
+  { id: "start", label: "Start screen" },
+];
 
 const RUN_MODES: { id: string; label: string }[] = [
   { id: "default", label: "Default" },
@@ -166,6 +174,7 @@ export function SettingsPage({
   const [usage, setUsage] = useState<UsageSnapshot | null>(null);
   const [usageError, setUsageError] = useState<string | null>(null);
   const rows = shortcutRows(platform);
+  const newTabShortcut = shortcutLabel("newTab", platform);
 
   useEffect(() => {
     if (category !== "Usage") return;
@@ -311,6 +320,31 @@ export function SettingsPage({
           {category === "Terminal" && (
             <section className="settings-section" aria-label="Terminal">
               <h3>Terminal</h3>
+              <div className="field-label settings-inline-field">
+                <span id="new-tab-opens-label">New tab opens</span>
+                <div className="segmented" role="radiogroup" aria-labelledby="new-tab-opens-label">
+                  {NEW_TAB_CHOICES.map((choice) => (
+                    <label key={choice.id} className="segmented-option">
+                      <input
+                        type="radio"
+                        name="new-tab-opens"
+                        checked={(terminalSettings?.newTabOpens ?? "ask") === choice.id}
+                        disabled={!terminalSettings}
+                        onChange={() => {
+                          if (terminalSettings) {
+                            onTerminalSettings({ ...terminalSettings, newTabOpens: choice.id });
+                          }
+                        }}
+                      />
+                      {choice.label}
+                    </label>
+                  ))}
+                </div>
+                <span className="hint">
+                  What {newTabShortcut ?? "the new-tab shortcut"} opens. Claude and Shell start in
+                  the active tab&apos;s folder, else your latest project, else your home folder.
+                </span>
+              </div>
               <label className="field-label settings-inline-field">
                 Shell program
                 <DebouncedInput

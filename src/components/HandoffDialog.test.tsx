@@ -47,6 +47,35 @@ describe("HandoffDialog", () => {
     expect(surface).toBe("terminal");
   });
 
+  it("lists Terminal first, notes Autopilot on Chat, and starts on Mod+Enter", () => {
+    const onConfirm = vi.fn();
+    render(
+      <HandoffDialog
+        source={source}
+        targetRoleId="role_implementer"
+        targetFields={[]}
+        folderWarning={null}
+        busy={false}
+        error={null}
+        preferredSurface="terminal"
+        onTarget={() => {}}
+        onConfirm={onConfirm}
+        onClose={() => {}}
+      />,
+    );
+    const radios = screen.getAllByRole("radio").filter((radio) => radio.getAttribute("name") === "handoff-surface");
+    expect(radios.map((radio) => radio.parentElement?.textContent?.trim())).toEqual([
+      "Terminal",
+      "Chat Autopilot needs Terminal",
+    ]);
+    expect(screen.getByRole("radio", { name: "Chat" })).toBeTruthy();
+    const start = screen.getByRole("button", { name: /^Start .* terminal$/ });
+    expect(start.querySelector("kbd")?.textContent).toMatch(/Enter$/);
+    const mac = /mac/i.test(navigator.platform);
+    fireEvent.keyDown(window, { key: "Enter", metaKey: mac, ctrlKey: !mac });
+    expect(onConfirm).toHaveBeenCalledWith(expect.anything(), "terminal");
+  });
+
   it("does not send while a turn is still running", () => {
     render(
       <HandoffDialog

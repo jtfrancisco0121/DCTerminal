@@ -12,7 +12,8 @@ import { lastLines, TERMINAL_TAIL_LINES } from "./text";
 import { ptySetScheme } from "../bridge";
 import { cachedTheme, terminalTheme, THEMES, normalizeTheme } from "../theme";
 import { detectPlatform } from "../keymap";
-import { findPathLinks, isLinkModifier } from "./links";
+import { findBarePaths, findPathLinks, isLinkModifier } from "./links";
+import { existingPaths } from "./fileLinks";
 
 export type ParkedTerminal = {
   host: HTMLDivElement;
@@ -114,7 +115,10 @@ export function setCopyOnSelect(value: boolean): void {
 type FileOpener = (id: string, path: string, line: number) => void;
 let fileOpener: FileOpener | null = null;
 
-/** The app opens `path:line` links from terminal output in the Files panel. */
+/**
+ * The app opens `path:line` links, and bare paths that exist, from terminal
+ * output in the Files panel. A bare path opens at line 1.
+ */
 export function setTerminalFileOpener(open: FileOpener | null): void {
   fileOpener = open;
 }
@@ -166,25 +170,40 @@ export function ensureParkedTerminal(id: string, fontSize: number): ParkedTermin
       });
     }),
   );
+  const fileLink = (text: string, path: string, line: number, start: number, end: number, row: number) => ({
+    text,
+    range: {
+      start: { x: start + 1, y: row },
+      end: { x: end, y: row },
+    },
+    activate: (event: MouseEvent) => {
+      if (!isLinkModifier(event, detectPlatform(navigator.platform))) return;
+      fileOpener?.(id, path, line);
+    },
+  });
   term.registerLinkProvider({
     provideLinks(row, callback) {
       const line = term.buffer.active.getLine(row - 1);
-      const links = line ? findPathLinks(line.translateToString(true)) : [];
-      callback(
-        links.length === 0
-          ? undefined
-          : links.map((link) => ({
-              text: link.text,
-              range: {
-                start: { x: link.start + 1, y: row },
-                end: { x: link.end, y: row },
-              },
-              activate: (event) => {
-                if (!isLinkModifier(event, detectPlatform(navigator.platform))) return;
-                fileOpener?.(id, link.path, link.line);
-              },
-            })),
+      const text = line ? line.translateToString(true) : "";
+      const links = findPathLinks(text).map((link) =>
+        fileLink(link.text, link.path, link.line, link.start, link.end, row),
       );
+      const bare = findBarePaths(text);
+      if (bare.length === 0) {
+        callback(links.length === 0 ? undefined : links);
+        return;
+      }
+      // Bare paths link only when the file exists (one batched, cached check).
+      // A split pane's id ends in `::pane`; the tab is the part before it.
+      void existingPaths(id.replace(/::pane$/, ""), bare.map((item) => item.path)).then((found) => {
+        const all = [
+          ...links,
+          ...bare
+            .filter((item) => found.has(item.path))
+            .map((item) => fileLink(item.path, item.path, 1, item.start, item.end, row)),
+        ];
+        callback(all.length === 0 ? undefined : all);
+      });
     },
   });
   let copyTimer = 0;

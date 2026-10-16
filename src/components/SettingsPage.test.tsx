@@ -54,7 +54,7 @@ describe("SettingsPage", () => {
         captureOn={false}
         showDevTools={false}
         onToggleCapture={() => {}}
-        terminalSettings={{ shell: "", fontSize: 14, optionAsMeta: true, copyOnSelect: false, roleSurface: {}, roleRunMode: {} }}
+        terminalSettings={{ shell: "", fontSize: 14, optionAsMeta: true, copyOnSelect: false, roleSurface: {}, roleRunMode: {}, newTabOpens: "ask" as const }}
         onTerminalSettings={() => {}}
         approvalMode={null}
         onClose={onClose}
@@ -130,7 +130,7 @@ describe("SettingsPage categories (U6)", () => {
     captureOn: false,
     showDevTools: false,
     onToggleCapture: () => {},
-    terminalSettings: { shell: "", fontSize: 14, optionAsMeta: true, copyOnSelect: false, roleSurface: {}, roleRunMode: {} },
+    terminalSettings: { shell: "", fontSize: 14, optionAsMeta: true, copyOnSelect: false, roleSurface: {}, roleRunMode: {}, newTabOpens: "ask" as const },
     onTerminalSettings: () => {},
     approvalMode: null,
     onClose: () => {},
@@ -188,6 +188,23 @@ describe("SettingsPage categories (U6)", () => {
     render(<SettingsPage {...props} platform="windows" />);
     openCategory("Terminal");
     expect(screen.queryByLabelText(/Use Option as Meta/)).toBeNull();
+  });
+
+  it("chooses what a new tab opens", () => {
+    const onTerminalSettings = vi.fn();
+    render(<SettingsPage {...props} onTerminalSettings={onTerminalSettings} />);
+    openCategory("Terminal");
+    const group = screen.getByRole("radiogroup", { name: "New tab opens" });
+    expect(within(group).getAllByRole("radio").map((radio) => radio.parentElement?.textContent)).toEqual([
+      "Ask",
+      "Claude",
+      "Shell",
+      "Start screen",
+    ]);
+    expect((within(group).getByRole("radio", { name: "Ask" }) as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByText(/What ⌘\+T opens/)).toBeTruthy();
+    fireEvent.click(within(group).getByRole("radio", { name: "Shell" }));
+    expect(onTerminalSettings).toHaveBeenCalledWith(expect.objectContaining({ newTabOpens: "shell" }));
   });
 
   it("toggles Copy on select, off by default", () => {
@@ -393,7 +410,7 @@ describe("SettingsPage save model", () => {
     captureOn: false,
     showDevTools: false,
     onToggleCapture: () => {},
-    terminalSettings: { shell: "", fontSize: 14, optionAsMeta: true, copyOnSelect: false, roleSurface: {}, roleRunMode: {} },
+    terminalSettings: { shell: "", fontSize: 14, optionAsMeta: true, copyOnSelect: false, roleSurface: {}, roleRunMode: {}, newTabOpens: "ask" as const },
     approvalMode: null,
     initialCategory: "Terminal" as const,
     onClose: () => {},
