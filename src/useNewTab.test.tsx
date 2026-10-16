@@ -72,6 +72,18 @@ describe("useNewTab", () => {
     await act(() => hook.result.current.request());
     render(<>{hook.result.current.picker}</>);
     fireEvent.click(screen.getByRole("checkbox"));
+    expect(actions.saveMode).not.toHaveBeenCalled();
+    fireEvent.keyDown(screen.getByRole("listbox"), { key: "c" });
     expect(actions.saveMode).toHaveBeenCalledWith("claude");
+    expect(actions.openTerminal).toHaveBeenCalledWith("claude-cli", "/w/app", null);
+  });
+
+  it("does not save Don't ask again when the picker is closed with Escape", async () => {
+    const { actions, hook } = setup("ask");
+    await act(() => hook.result.current.request());
+    render(<>{hook.result.current.picker}</>);
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.keyDown(screen.getByRole("listbox"), { key: "Escape" });
+    expect(actions.saveMode).not.toHaveBeenCalled();
   });
 });
