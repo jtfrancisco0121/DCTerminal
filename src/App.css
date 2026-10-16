@@ -5975,3 +5975,100 @@ button.chain-label {
   top: 0.65rem;
   color: var(--accent-fg);
 }
+
+.pane-strip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 1.25rem;
+  padding: 0 var(--space-2);
+  border-top: 2px solid transparent;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev);
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.pane-strip-focused {
+  border-top-color: var(--accent);
+  color: var(--fg-soft);
+}
+
+.pane-strip-number {
+  flex-shrink: 0;
+  min-width: 1rem;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  background: var(--bg-muted);
+  color: var(--fg);
+  font-weight: 600;
+  text-align: center;
+}
+
+.pane-strip-focused .pane-strip-number {
+  background: var(--accent-emphasis);
+  color: var(--fg-on-emphasis);
+}
+
+.pane-strip-role {
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.pane-strip-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pane-strip-branch {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.pane-strip-spacer {
+  flex: 1;
+}
+
+/* The terminal header's state pill, smaller (same tones). */
+.pane-strip-pill {
+  flex-shrink: 0;
+  padding: 0 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--fg-muted);
+  font-size: var(--text-2xs);
+  line-height: 1rem;
+}
+
+.pane-strip-pill-working {
+  border-color: var(--accent);
+  color: var(--accent-bright);
+}
+
+.pane-strip-pill-needs {
+  border-color: var(--warning);
+  color: var(--warning);
+}
+
+.pane-strip-pill-done {
+  border-color: var(--success);
+  color: var(--success);
+}
+
+.pane-strip-pill-exited {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+/* Unfocused panes of a split or grid step back a little. */
+.split-pane-dim > :not(.pane-strip) {
+  opacity: 0.82;
+  transition: opacity 0.12s ease;
+}
+
+.split-pane-dim:hover > :not(.pane-strip),
+.split-pane-dim:focus-within > :not(.pane-strip) {
+  opacity: 1;
+}
