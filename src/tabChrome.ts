@@ -291,6 +291,7 @@ export const PALETTE_ACTIONS = [
   "pipelineWorkspace",
   "executionPipelineWorkspace",
   "openPreview",
+  "openGithub",
   "startEagleEye1",
   "startEagleEye2",
   "openChainOverview",
@@ -532,6 +533,12 @@ export function buildPalette(opts: {
       title: "New execution pipeline (eagle-eye + 2 roles)",
       group: "Workspaces",
       keywords: "implementer reviewer execute approved plan pipeline preset tabs",
+    },
+    {
+      id: "openGithub",
+      title: "Open GitHub",
+      group: "Tabs",
+      keywords: "github pull requests prs reviews merges pushes activity monitor repos gh",
     },
     {
       id: "openPreview",

@@ -23,6 +23,7 @@ import {
   cursorApprovalMode,
   createExecutionPipelineTabs,
   createPipelineTabs,
+  openGithubTab,
   openPreviewTab,
   diagnosticsReadLog,
   diagnosticsSetCapture,
@@ -139,6 +140,8 @@ import {
 } from "./components/HandoffDialog";
 import { PipelineOverview } from "./components/PipelineOverview";
 import { PreviewTab } from "./components/PreviewTab";
+import { GitHubTab } from "./components/GitHubTab";
+import { useGithubPoller } from "./github/useGithubPoller";
 import { PreviewSlot } from "./preview/PreviewLayer";
 import { DEFAULT_PREVIEW_URL } from "./preview/previewUrl";
 import { relativeToCwd } from "./terminal/links";
@@ -1092,6 +1095,7 @@ export function StartupForm({
           summary.kind === "terminal" ||
           summary.kind === "pipeline_overview" ||
           summary.kind === "preview" ||
+          summary.kind === "github" ||
           summary.phase === "running"
         ) {
           setActiveTabId(activeId);
@@ -2553,7 +2557,8 @@ export function StartupForm({
       if (
         summary?.kind === "terminal" ||
         summary?.kind === "pipeline_overview" ||
-        summary?.kind === "preview"
+        summary?.kind === "preview" ||
+        summary?.kind === "github"
       ) {
         setActiveTabId(tabId);
         setBusy(true);
@@ -2752,16 +2757,49 @@ export function StartupForm({
     }
   }, [applyDraft, roleId, roles, stashActiveTab]);
 
+  /** The window's GitHub tab: opened, or switched to when it already exists. */
+  const openGithub = useCallback(() => {
+    stashActiveTab();
+    void openGithubTab()
+      .then((snap) => {
+        setSavedTabs(snap.tabs);
+        setClosedTabs(snap.closedTabs ?? []);
+        if (snap.activeTabId) setActiveTabId(snap.activeTabId);
+      })
+      .catch((err: unknown) => showNotice("Could not open GitHub", errorText(err), "failed"));
+  }, [stashActiveTab, showNotice]);
+
   const newTab = useNewTab({
     mode: () => terminalSettings?.newTabOpens,
     activeCwd: () => activeTabFolder(savedTabsRef.current, activeTabIdRef.current),
     openStartScreen: openStartScreenTab,
     openRoleLauncher,
+    openGithub,
     openTerminal: openTerminalTab,
     saveMode: (mode) => patchTerminalSettings((current) => ({ ...current, newTabOpens: mode })),
   });
   newTabLaunchRef.current = newTab.launch;
   const requestNewTab = newTab.request;
+
+  // The GitHub monitor polls for the window while it has a GitHub tab, on
+  // screen or not, and announces what needs the user.
+  const githubTabId = savedTabs.find((tab) => tab.kind === "github")?.id ?? null;
+  const githubVisible =
+    !!githubTabId &&
+    !settingsOpen &&
+    (activeTabId === githubTabId ||
+      (splitOpen(split) && split.secondaryTabId === githubTabId) ||
+      (gridOpen(split) && (split.gridTabIds ?? []).includes(githubTabId)));
+  useGithubPoller({
+    tabId: githubTabId,
+    visible: githubVisible,
+    visibleTabIds: () => {
+      const current = splitRef.current;
+      return [activeTabIdRef.current, splitOpen(current) ? current.secondaryTabId : null];
+    },
+    settings: notificationSettings,
+    toast: (tabId, title, body) => showNotice(title, body, "finished", tabId),
+  });
 
   const handleNewTab = useCallback(async () => {
     const fileGuard = fileDiscardGuardRef.current;
@@ -4467,6 +4505,9 @@ export function StartupForm({
         })();
         return;
       }
+      case "openGithub":
+        openGithub();
+        return;
       case "openPreview":
         stashActiveTab();
         void openPreviewTab(DEFAULT_PREVIEW_URL)
@@ -5607,6 +5648,7 @@ export function StartupForm({
   };
 
   const panes = createPaneRenderers({
+    onNotice: (title, body) => showNotice(title, body),
     runtimes,
     roles,
     busy,
@@ -5682,6 +5724,7 @@ export function StartupForm({
       return { tone: "ok", text: "Pipeline overview" };
     }
     if (tab.kind === "preview") return { tone: "ok", text: "Localhost preview" };
+    if (tab.kind === "github") return { tone: "ok", text: "GitHub" };
     if (tab.kind === "terminal") {
       const kind =
         tab.terminalLaunch === "cursor-cli" || tab.terminalLaunch === "claude-cli"
@@ -5844,6 +5887,14 @@ export function StartupForm({
           onApproveRun={(runId) => approveLaneById(runId, null)}
         />
       </section>,
+    );
+  }
+
+  if (activeTabSummary?.kind === "github" && !settingsOpen) {
+    return shell(
+      <div className="status-card status-card-session-full">
+        <GitHubTab onNotice={(title, body) => showNotice(title, body)} />
+      </div>,
     );
   }
 

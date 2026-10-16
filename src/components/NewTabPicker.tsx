@@ -16,6 +16,7 @@ type Row =
   | { id: "claude"; key: "C" }
   | { id: "shell"; key: "S" }
   | { id: "role"; key: "R" }
+  | { id: "github"; key: "G" }
   | { id: "recent"; key: string; path: string; index: number }
   | { id: "open"; key: "O" };
 
@@ -26,6 +27,8 @@ type Props = {
   onShell: (cwd: string) => void;
   /** The role launcher (pick a role, provider and Terminal or Chat). */
   onRole: () => void;
+  /** The window's GitHub tab (opened, or switched to if it already exists). */
+  onGithub: () => void;
   /**
    * The "Don't ask again" box was ticked and Claude is opening from the
    * picker: set the setting to `claude`. Not called for Esc, Shell or Role.
@@ -46,6 +49,7 @@ export function NewTabPicker({
   onClaude,
   onShell,
   onRole,
+  onGithub,
   onDontAskAgain,
   onClose,
   chooseFolder = nativeChooseFolder,
@@ -64,6 +68,7 @@ export function NewTabPicker({
     { id: "claude", key: "C" },
     { id: "shell", key: "S" },
     { id: "role", key: "R" },
+    { id: "github", key: "G" },
     ...recents.map((path, index) => ({ id: "recent" as const, key: String(index + 1), path, index })),
     { id: "open", key: "O" },
   ];
@@ -96,6 +101,8 @@ export function NewTabPicker({
       if (folder) onShell(folder);
     } else if (row.id === "role") {
       onRole();
+    } else if (row.id === "github") {
+      onGithub();
     } else if (row.id === "recent") {
       openClaude(row.path);
     } else {
@@ -152,6 +159,7 @@ export function NewTabPicker({
     if (row.id === "claude") return { title: "Claude here", detail: here };
     if (row.id === "shell") return { title: "Shell here", detail: here };
     if (row.id === "role") return { title: "Role…", detail: "Pick a role, provider and Terminal or Chat" };
+    if (row.id === "github") return { title: "GitHub", detail: "Pushes, PRs and reviews in your repos" };
     if (row.id === "recent") return { title: folderName(row.path), detail: tildePath(row.path, home) };
     return { title: "Open folder…", detail: "Choose a folder, then open Claude there" };
   };
@@ -173,7 +181,7 @@ export function NewTabPicker({
             const text = label(row);
             return (
               <li key={`${row.id}-${row.key}`} role="presentation">
-                {i === 3 && recents.length > 0 && (
+                {row.id === "recent" && row.index === 0 && (
                   <div className="new-tab-heading" aria-hidden="true">
                     Recent projects
                   </div>

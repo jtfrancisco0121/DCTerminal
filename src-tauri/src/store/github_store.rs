@@ -157,7 +157,10 @@ impl GithubStore {
             let drop = self.data.seen.len() - SEEN_LIMIT;
             self.data.seen.drain(..drop);
         }
-        self.save()?;
+        // Nothing new to remember: no write.
+        if first || !fresh.is_empty() {
+            self.save()?;
+        }
         Ok(if first { Vec::new() } else { fresh })
     }
 }

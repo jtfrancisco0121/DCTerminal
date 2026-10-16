@@ -271,7 +271,7 @@ export type TabSummary = {
   hasTranscript: boolean;
   folderStatus: string;
   color: string;
-  /** "role" or "terminal". Missing on older snapshots means a role tab. */
+  /** "role", "terminal", "preview" or "github". Missing on older snapshots means a role tab. */
   kind?: string;
   /** "" | "shell" | "cursor-cli" | "claude-cli" | "role" */
   terminalLaunch?: string;
@@ -984,6 +984,11 @@ export function githubSaveFilters(filters: GithubFilters): Promise<GithubFilters
   return invoke("github_save_filters", { filters });
 }
 
+/** Opens the window's GitHub tab, or focuses it when one is already open. */
+export async function openGithubTab(): Promise<AppStateSnapshot> {
+  return invoke("open_github_tab", { windowId: await windowId() });
+}
+
 /** Saves the address a preview tab shows. */
 export async function setPreviewUrl(tabId: string, url: string): Promise<void> {
   return invoke("set_preview_url", { tabId, url });
@@ -1297,7 +1302,7 @@ export type WorkspaceTab = {
   roleId: string;
   roleSnapshot: { name: string; templateVersion: number; mode: string; injection: string };
   cwd: string;
-  /** "role" (chat) | "terminal" | "preview" (its address in answers.url) */
+  /** "role" (chat) | "terminal" | "preview" (its address in answers.url) | "github" */
   kind: string;
   terminalLaunch: string;
   color: string | null;

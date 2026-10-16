@@ -433,6 +433,7 @@ impl StateStore {
             || tab.kind == "terminal"
             || tab.phase == "terminal"
             || tab.kind == super::preview_tabs::PREVIEW_TAB_KIND
+            || tab.kind == super::github_tabs::GITHUB_TAB_KIND
         {
             return Ok(());
         }
@@ -636,6 +637,18 @@ impl StateStore {
         let closed = self.data.closed_tabs.remove(index);
         if self.data.tabs.iter().any(|t| t.id == closed.id) {
             return Err("that tab is already open".to_string());
+        }
+        // One GitHub tab per window: the one already open is focused instead,
+        // and the closed record is dropped.
+        if closed.kind == super::github_tabs::GITHUB_TAB_KIND {
+            if let Some(existing) = self.github_tab_in_window(&focus).map(|t| t.id.clone()) {
+                self.remember_active(&focus, Some(existing.clone()));
+                self.save()?;
+                return self
+                    .tab_by_id(&existing)
+                    .cloned()
+                    .ok_or_else(|| "GitHub tab missing".to_string());
+            }
         }
         let has_history = closed.startup_prompt_sent
             || transcript
@@ -1151,8 +1164,26 @@ impl StateStore {
             Vec::new()
         };
         let mut ids = Vec::with_capacity(workspace.tabs.len());
+        // One GitHub tab per window. Without `replace` the window's own is
+        // kept; with it the old tab is closed below and the workspace's
+        // comes in. Either way a second one in the workspace maps to the first.
+        let mut github_tab: Option<String> = if replace {
+            None
+        } else {
+            self.github_tab_in_window(&focus).map(|tab| tab.id.clone())
+        };
         for item in &workspace.tabs {
+            let is_github = item.kind == super::github_tabs::GITHUB_TAB_KIND;
+            if is_github {
+                if let Some(kept) = &github_tab {
+                    ids.push(kept.clone());
+                    continue;
+                }
+            }
             let tab_id = new_tab_id();
+            if is_github {
+                github_tab = Some(tab_id.clone());
+            }
             let is_terminal = item.kind == "terminal";
             let is_preview = item.kind == crate::store::preview_tabs::PREVIEW_TAB_KIND;
             let answers = if is_preview {
@@ -1179,7 +1210,7 @@ impl StateStore {
                 transcript: None,
                 startup_prompt_sent: false,
                 color: item.color.clone(),
-                kind: if is_terminal || is_preview {
+                kind: if is_terminal || is_preview || is_github {
                     item.kind.clone()
                 } else {
                     crate::store::state_types::default_tab_kind()

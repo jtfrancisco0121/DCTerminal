@@ -19,6 +19,7 @@ function setup(overrides: Partial<Parameters<typeof NewTabPicker>[0]> = {}) {
     onClaude: vi.fn(),
     onShell: vi.fn(),
     onRole: vi.fn(),
+    onGithub: vi.fn(),
     onDontAskAgain: vi.fn(),
     onClose: vi.fn(),
     chooseFolder: vi.fn(async () => "/Users/me/picked"),
@@ -38,6 +39,7 @@ describe("NewTabPicker", () => {
       "Claude here~/code/appC / Enter",
       "Shell here~/code/appS",
       "Role…Pick a role, provider and Terminal or ChatR",
+      "GitHubPushes, PRs and reviews in your reposG",
       "api~/code/api1",
       "web~/code/web2",
       "Open folder…Choose a folder, then open Claude thereO",
@@ -61,6 +63,13 @@ describe("NewTabPicker", () => {
     expect(props.onRole).toHaveBeenCalled();
   });
 
+  it("opens the GitHub tab on G, even before the folder is known", () => {
+    const { props, list } = setup({ context: null });
+    fireEvent.keyDown(list, { key: "g" });
+    expect(props.onGithub).toHaveBeenCalledTimes(1);
+    expect(props.onClaude).not.toHaveBeenCalled();
+  });
+
   it("opens Claude in a recent project by number", () => {
     const { props, list } = setup();
     fireEvent.keyDown(list, { key: "2" });
@@ -77,7 +86,7 @@ describe("NewTabPicker", () => {
     expect(props.onShell).toHaveBeenCalledWith("/Users/me/code/app");
     fireEvent.keyDown(list, { key: "ArrowUp" });
     fireEvent.keyDown(list, { key: "ArrowUp" });
-    expect(screen.getAllByRole("option")[5].getAttribute("aria-selected")).toBe("true");
+    expect(screen.getAllByRole("option")[6].getAttribute("aria-selected")).toBe("true");
   });
 
   it("opens Claude in a chosen folder on O", async () => {
@@ -141,6 +150,7 @@ describe("NewTabPicker", () => {
       onClaude: vi.fn(),
       onShell: vi.fn(),
       onRole: vi.fn(),
+      onGithub: vi.fn(),
       onDontAskAgain: vi.fn(),
       onClose: vi.fn(),
     };
@@ -157,6 +167,7 @@ describe("NewTabPicker", () => {
       onClaude: vi.fn(),
       onShell: vi.fn(),
       onRole: vi.fn(),
+      onGithub: vi.fn(),
       onDontAskAgain: vi.fn(),
       onClose: vi.fn(),
     };

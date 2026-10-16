@@ -189,7 +189,11 @@ export function WorkspacesDialog({
                           : t.roleSnapshot.name}
                       </span>
                       <code className="workspaces-folder">
-                        {t.kind === "preview" ? t.answers?.url : t.cwd || "(no folder)"}
+                        {t.kind === "preview"
+                          ? t.answers?.url
+                          : t.kind === "github"
+                            ? "GitHub activity"
+                            : t.cwd || "(no folder)"}
                       </code>
                     </li>
                   ))}

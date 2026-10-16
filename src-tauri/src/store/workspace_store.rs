@@ -97,7 +97,8 @@ impl Workspace {
         for (i, tab) in self.tabs.iter().enumerate() {
             let needs_role = match tab.kind.as_str() {
                 "terminal" => tab.terminal_launch == "role",
-                crate::store::preview_tabs::PREVIEW_TAB_KIND => false,
+                crate::store::preview_tabs::PREVIEW_TAB_KIND
+                | crate::store::github_tabs::GITHUB_TAB_KIND => false,
                 _ => true,
             };
             let mut tab = tab.clone();

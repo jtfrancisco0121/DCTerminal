@@ -79,11 +79,12 @@ export function useAgentNotifications(options: Options) {
   }, []);
 
   /** App message (not an agent event): always a toast, never an OS notification. */
-  const notice = useCallback((title: string, body: string, kind: AgentEventKind = "finished") => {
-    setToasts((prev) =>
-      pushToast(prev, { id: nextToastId(), tabId: "__notice__", kind, title, body }),
-    );
-  }, []);
+  const notice = useCallback(
+    (title: string, body: string, kind: AgentEventKind = "finished", tabId = "__notice__") => {
+      setToasts((prev) => pushToast(prev, { id: nextToastId(), tabId, kind, title, body }));
+    },
+    [],
+  );
 
   return { toasts, notify, dismiss, dismissTab, sendTest, notice };
 }
