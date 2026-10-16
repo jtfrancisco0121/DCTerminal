@@ -20,3 +20,31 @@ describe("ChatMarkdown code blocks", () => {
     expect(screen.getByRole("button", { name: "Copy code" })).toBeTruthy();
   });
 });
+
+const mermaidMock = vi.hoisted(() => ({
+  initialize: vi.fn(),
+  render: vi.fn(),
+}));
+vi.mock("mermaid", () => ({ default: mermaidMock }));
+
+describe("ChatMarkdown mermaid fences", () => {
+  it("draws a mermaid fence as a sanitized diagram", async () => {
+    mermaidMock.render.mockResolvedValueOnce({
+      svg: '<svg onload="alert(1)"><rect/></svg>',
+    });
+    render(<ChatMarkdown>{"```mermaid\ngraph TD; A-->B\n```"}</ChatMarkdown>);
+    const figure = await screen.findByRole("img", { name: "Diagram" });
+    expect(figure.querySelector("rect")).toBeTruthy();
+    expect(figure.innerHTML).not.toContain("onload");
+    expect(mermaidMock.render).toHaveBeenCalledWith(expect.any(String), "graph TD; A-->B");
+  });
+
+  it("falls back to the code block with a note when the diagram does not parse", async () => {
+    mermaidMock.render.mockRejectedValueOnce(new Error("Parse error on line 1:\n...more"));
+    render(<ChatMarkdown>{"```mermaid\nnot a diagram\n```"}</ChatMarkdown>);
+    expect(
+      await screen.findByText("Couldn’t draw this diagram: Parse error on line 1:"),
+    ).toBeTruthy();
+    expect(document.querySelector("code")!.textContent).toBe("not a diagram");
+  });
+});

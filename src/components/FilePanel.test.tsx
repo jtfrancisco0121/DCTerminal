@@ -231,4 +231,40 @@ describe("FilePanel", () => {
     expect(await screen.findByRole("heading", { name: "Files" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Close file panel" })).toBeTruthy();
   });
+
+  it("shows a markdown file rendered, with a switch to its highlighted source", async () => {
+    render(
+      <FilePanel tabId="t1" cwd="/work/app" platform="mac" onInsertReference={() => {}} onClose={() => {}} />,
+    );
+    fireEvent.click(await screen.findByText("README.md"));
+    expect(await screen.findByRole("heading", { name: "Hello" })).toBeTruthy();
+    const rendered = screen.getByRole("radio", { name: "Rendered" }) as HTMLInputElement;
+    expect(rendered.checked).toBe(true);
+    fireEvent.click(screen.getByRole("radio", { name: "Source" }));
+    expect(screen.queryByRole("heading", { name: "Hello" })).toBeNull();
+    expect(document.querySelector("pre.file-code")!.textContent).toContain("# Hello");
+    // Editing always shows the raw text, so the switch steps aside.
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    expect(screen.queryByRole("radiogroup", { name: "Show markdown as" })).toBeNull();
+  });
+
+  it("offers no markdown switch for other text files", async () => {
+    readMock.mockResolvedValue({
+      path: "src/main.ts",
+      absPath: "/work/app/src/main.ts",
+      size: 20,
+      mtimeMs: 5,
+      kind: "text",
+      text: "export {};\n",
+      dataBase64: null,
+      mime: null,
+    });
+    render(
+      <FilePanel tabId="t1" cwd="/work/app" platform="mac" onInsertReference={() => {}} onClose={() => {}} />,
+    );
+    fireEvent.click(await screen.findByText("src"));
+    fireEvent.click(await screen.findByText("main.ts"));
+    await screen.findByRole("button", { name: "Edit" });
+    expect(screen.queryByRole("radiogroup", { name: "Show markdown as" })).toBeNull();
+  });
 });

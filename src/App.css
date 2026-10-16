@@ -5712,3 +5712,26 @@ button.chain-label {
   margin: 0.25rem 0;
   font-size: var(--text-sm);
 }
+
+/* See the run: Mermaid diagrams, rendered markdown files, the plan pane, run
+   lanes and split/grid pane headers. */
+.mermaid-diagram {
+  margin: 0.5rem 0;
+  overflow-x: auto;
+}
+
+.mermaid-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.mermaid-error {
+  margin: 0.25rem 0;
+}
+
+.file-markdown {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.4rem 0.75rem;
+}
