@@ -151,8 +151,8 @@ describe("theme presets", () => {
     }
   });
 
-  it("keeps the status colours distinct and readable on every dark preset", () => {
-    for (const theme of THEMES.filter((t) => t.scheme === "dark")) {
+  it("keeps the status colours distinct and readable as small text on every preset", () => {
+    for (const theme of THEMES) {
       const block = blockFor(theme.id);
       const bg = block.get("--bg") as string;
       // Working, Needs you, Done, Exited.
@@ -161,8 +161,26 @@ describe("theme presets", () => {
       );
       expect(new Set(status).size, theme.id).toBe(4);
       for (const color of status) {
-        expect(contrast(color, bg), `${theme.id} ${color}`).toBeGreaterThanOrEqual(3);
+        // WCAG AA for normal text: the pills and labels are small.
+        expect(contrast(color, bg), `${theme.id} ${color}`).toBeGreaterThanOrEqual(4.5);
       }
     }
+  });
+});
+
+describe("needs-you surfaces", () => {
+  /** Declarations of every top-level rule whose selector matches. */
+  const rulesFor = (pattern: RegExp): string[] => {
+    const text = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    return [...text.matchAll(/(^|\n)([^{}\n][^{}]*)\{([^{}]*)\}/g)]
+      .filter((m) => pattern.test(m[2].trim()))
+      .map((m) => `${m[2].trim()} { ${m[3].trim()} }`);
+  };
+
+  it("use the Needs you colour (--attention), so a custom one reaches them", () => {
+    const rules = rulesFor(/-needs\b|^\.permission-card$|^\.terminal-chat-permission$/);
+    expect(rules.length).toBeGreaterThan(8);
+    for (const rule of rules) expect(rule).not.toMatch(/var\(--warning/);
+    expect(rules.filter((rule) => rule.includes("var(--attention")).length).toBeGreaterThan(8);
   });
 });

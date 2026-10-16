@@ -234,11 +234,11 @@ body,
   --warning-subtle: #433f37;
   --attention: #ebcb8b;
   --attention-emphasis: #c9a86a;
-  --danger: #bf616a;
-  --danger-bright: #d0727b;
+  --danger: #d08b91;
+  --danger-bright: #dc9fa4;
   --danger-soft: #d4878f;
   --danger-subtle: #43363c;
-  --done: #b48ead;
+  --done: #b793b0;
   --done-bright: #c8a8c4;
   --orange: #d08770;
   --orange-bright: #dfa08a;
@@ -1229,7 +1229,7 @@ body,
 .permission-card {
   margin: 0 0.75rem;
   padding: 0.75rem 1rem;
-  border: 1px solid var(--warning);
+  border: 1px solid var(--attention);
   border-radius: var(--radius-lg);
   background: var(--bg-hover);
 }
@@ -2420,7 +2420,7 @@ kbd {
 }
 
 .grid-cell-needs {
-  border-color: color-mix(in srgb, var(--warning) 60%, var(--border));
+  border-color: color-mix(in srgb, var(--attention) 60%, var(--border));
 }
 
 .grid-cell-error {
@@ -2456,7 +2456,7 @@ kbd {
 }
 
 .grid-cell-dot-needs {
-  background: var(--warning);
+  background: var(--attention);
 }
 
 .grid-cell-dot-error {
@@ -2472,7 +2472,7 @@ kbd {
 }
 
 .grid-cell-needs .grid-cell-status {
-  color: var(--warning);
+  color: var(--attention);
 }
 
 .grid-cell-error .grid-cell-status {
@@ -2997,7 +2997,7 @@ kbd {
 }
 
 .tab-chip-needs {
-  border-color: var(--warning);
+  border-color: var(--attention);
 }
 
 .tab-chip-needs .tab-phase {
@@ -5734,8 +5734,8 @@ button.chain-label {
 }
 
 .terminal-header-pill-needs {
-  border-color: var(--warning);
-  color: var(--warning);
+  border-color: var(--attention);
+  color: var(--attention);
 }
 
 .terminal-header-pill-done {
@@ -5869,7 +5869,7 @@ button.chain-label {
 }
 
 .tab-chain-badge-needs {
-  color: var(--warning);
+  color: var(--attention);
 }
 
 .tab-chain-badge-busy {
@@ -6531,8 +6531,8 @@ button.chain-label {
 }
 
 .pane-strip-pill-needs {
-  border-color: var(--warning);
-  color: var(--warning);
+  border-color: var(--attention);
+  color: var(--attention);
 }
 
 .pane-strip-pill-done {
@@ -6578,7 +6578,7 @@ button.chain-label {
   margin: 0;
   border-width: 1px 0 0;
   border-radius: 0;
-  border-color: var(--warning);
+  border-color: var(--attention);
   padding: var(--space-2) var(--space-3);
 }
 
