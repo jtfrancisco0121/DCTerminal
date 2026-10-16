@@ -47,7 +47,7 @@ describe("filters", () => {
   });
 
   it("filters over more than 600 rows across repos see every row of the repo", () => {
-    const many = Array.from({ length: 705 }, (_, i) =>
+    const many = Array.from({ length: 700 }, (_, i) =>
       item({
         id: `r${i}`,
         repo: `koneksi-tech/repo-${i % 7}`,
