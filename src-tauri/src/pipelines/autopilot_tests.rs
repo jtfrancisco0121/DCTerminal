@@ -77,7 +77,9 @@ fn a_planner_turn_advances_to_the_plan_reviewer() {
     let mut r = run(1);
     let d = decide(&eagle1(), &mut r, &report("planner", None));
     assert_eq!((d.action.as_str(), d.stage_id.as_deref()), ("advance", Some("plan_reviewer")));
-    assert_eq!(r.events.last().unwrap().kind, "autopilot");
+    let logged = r.events.last().unwrap();
+    assert_eq!(logged.kind, "autopilot");
+    assert_eq!(logged.outcome.as_deref(), Some("advance"), "the lanes read the action");
 }
 
 #[test]

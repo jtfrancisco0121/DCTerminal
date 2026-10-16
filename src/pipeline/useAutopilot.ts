@@ -17,6 +17,7 @@ import {
   pipelineDecide,
   pipelineNote,
   pipelineRunGates,
+  pipelineTurnFinished,
   ptyWrite,
   setTabProvider,
   type AutopilotDecision,
@@ -36,6 +37,7 @@ import type { TerminalState } from "../terminal/claudeState";
 import type { ProviderId } from "../provider/types";
 import { pipelineDef, stageOfRole, stageRoles } from "./defs";
 import { reviewRound } from "./runReport";
+import { parseReviewVerdict } from "../handoff/verdict";
 import { roleDisplayName } from "../handoff/transitions";
 import {
   finishedTurn,
@@ -295,6 +297,14 @@ export function useAutopilot(deps: AutopilotDeps) {
       // Marked on first sight, autopilot on or off: turning it on later
       // takes over from the next turn and never replays an old one.
       handled.current.set(tabId, turn.key);
+      // Every chain run's ledger notes where each turn ended (run lanes),
+      // autopilot on or off. intentionally silent: the lanes only lose a bar end.
+      void pipelineTurnFinished(tab.chain.chainId, {
+        stageId: placed.stage.id,
+        roleId: tab.roleId,
+        lane: tab.chain.lane ?? null,
+        verdict: placed.stage.loopBack && !turn.awaitingPlan ? parseReviewVerdict(log.lastReply ?? "") : null,
+      }).catch(() => {});
       busy.current.add(tabId);
       let job: Job = { tab, chain: tab.chain, log, awaitingPlan: turn.awaitingPlan };
       void (async () => {

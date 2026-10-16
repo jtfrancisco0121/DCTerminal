@@ -1020,6 +1020,15 @@ impl StateStore {
                 .ok_or_else(|| format!("unknown pipeline run: {run_id}"))?;
             run.approved_plan = Some(plan.to_string());
             run.stage = "implementer".to_string();
+            // The plan pane reads the round of approval from this line.
+            run.log_outcome(
+                "note",
+                None,
+                None,
+                "Plan approved for implementation",
+                None,
+                Some("planApproved".to_string()),
+            );
         }
         let tab = self
             .data
