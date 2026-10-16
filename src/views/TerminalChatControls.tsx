@@ -37,6 +37,12 @@ export type TerminalComposerProps = {
   working: boolean;
   /** Claude Code exited: nothing can be sent until the terminal restarts it. */
   exited: boolean;
+  /**
+   * Claude waits on a dialog (Needs you, a permission prompt, an open plan or
+   * question). Enter would pick its highlighted option, so nothing is sent
+   * until it clears; the draft stays.
+   */
+  blocked?: boolean;
   /** Earlier sends of this tab, newest first (ArrowUp walks them). */
   history?: string[];
   /** Runs before the write, e.g. the "This turn" snapshot. Must not reject. */
@@ -49,7 +55,7 @@ export type TerminalComposerProps = {
 /** The chat view's composer: one bracketed paste and Enter into the tab's PTY. */
 export const TerminalComposer = forwardRef<TerminalComposerHandle, TerminalComposerProps>(
   function TerminalComposer(
-    { tabId, platform, working, exited, history = [], beforeSend, onSent, onShowTerminal },
+    { tabId, platform, working, exited, blocked = false, history = [], beforeSend, onSent, onShowTerminal },
     ref,
   ) {
     const fieldRef = useRef<HTMLTextAreaElement>(null);
@@ -76,7 +82,7 @@ export const TerminalComposer = forwardRef<TerminalComposerHandle, TerminalCompo
     };
 
     const send = () => {
-      if (exited || sending || !text.trim()) return;
+      if (exited || blocked || sending || !text.trim()) return;
       const sent = text;
       setSending(true);
       setError(null);
@@ -155,9 +161,15 @@ export const TerminalComposer = forwardRef<TerminalComposerHandle, TerminalCompo
               onKeyDown={onKeyDown}
             />
             <div className="terminal-chat-composer-bar">
-              <span className="hint terminal-chat-composer-hint">
-                {sendKeys && <kbd>{sendKeys}</kbd>} to {working ? "queue" : "send"} · Enter adds a line
-              </span>
+              {blocked ? (
+                <span className="hint terminal-chat-composer-hint" role="status">
+                  Answer the question above, or in the terminal, first.
+                </span>
+              ) : (
+                <span className="hint terminal-chat-composer-hint">
+                  {sendKeys && <kbd>{sendKeys}</kbd>} to {working ? "queue" : "send"} · Enter adds a line
+                </span>
+              )}
               {working && (
                 <button type="button" className="secondary-button" onClick={stop} title="Sends Esc to Claude Code">
                   Stop
@@ -166,7 +178,7 @@ export const TerminalComposer = forwardRef<TerminalComposerHandle, TerminalCompo
               <button
                 type="button"
                 className="primary-button"
-                disabled={sending || !text.trim()}
+                disabled={blocked || sending || !text.trim()}
                 onClick={send}
                 title={working ? "Claude Code runs it after the current turn" : undefined}
               >

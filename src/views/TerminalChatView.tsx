@@ -189,6 +189,11 @@ export function TerminalChatView({
 }: TerminalChatViewProps) {
   const { entries } = useChatEntries(tabId);
   const dialog = usePermissionDialog(tabId);
+  // Claude Code waits on a dialog: Enter there picks an option, so the composer holds.
+  const openDecision = entries.some(
+    (entry) => (entry.kind === "plan" || entry.kind === "question") && entry.status === "running",
+  );
+  const blocked = needsYou || !!dialog || openDecision;
   const rows = useMemo(() => chatRows(entries), [entries]);
   const screenRef = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
@@ -251,6 +256,7 @@ export function TerminalChatView({
         platform={platform}
         working={working}
         exited={exited}
+        blocked={blocked}
         history={history}
         beforeSend={beforeSend}
         onSent={onSent}

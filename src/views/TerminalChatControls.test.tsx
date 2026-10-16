@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { EMPTY_CHAT } from "../terminal/chatEntries";
+import type { ChatEntry } from "../bridge";
+import { EMPTY_CHAT, type ChatEntriesState } from "../terminal/chatEntries";
 
 const writes: [string, string][] = [];
 vi.mock("../bridge", async (importOriginal) => ({
@@ -10,7 +11,8 @@ vi.mock("../bridge", async (importOriginal) => ({
     writes.push([id, data]);
   }),
 }));
-vi.mock("../terminal/chatEntriesStore", () => ({ useChatEntries: () => EMPTY_CHAT }));
+let chat: ChatEntriesState = EMPTY_CHAT;
+vi.mock("../terminal/chatEntriesStore", () => ({ useChatEntries: () => chat }));
 
 const { dialogDetector } = await import("../terminal/permissionDialog");
 const { TerminalComposer, composerDraft, forgetComposerDraft } = await import("./TerminalChatControls");
@@ -36,7 +38,9 @@ const flush = () => act(async () => {});
 
 beforeEach(() => {
   writes.length = 0;
+  chat = EMPTY_CHAT;
   forgetComposerDraft("c1");
+  forgetComposerDraft("p1");
 });
 
 afterEach(() => {
@@ -103,6 +107,74 @@ describe("chat view composer", () => {
     expect(screen.queryByRole("textbox")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Show terminal" }));
     expect(onShowTerminal).toHaveBeenCalled();
+  });
+});
+
+describe("composer while Claude waits on a dialog", () => {
+  const AT = "2026-10-16T10:00:00.000Z";
+  const plan = (status: "running" | "done"): ChatEntry => ({
+    seq: 0, rev: 1, at: AT, kind: "plan", toolId: "p", plan: "# Plan", status, endedAt: status === "done" ? AT : null,
+  });
+  const question = (status: "running" | "done"): ChatEntry => ({
+    seq: 0, rev: 1, at: AT, kind: "question", toolId: "q", status, endedAt: status === "done" ? AT : null,
+    questions: [{ header: "DB", question: "Which DB?", options: ["Postgres"], multiSelect: false }],
+  });
+  const view = (needsYou: boolean) => (
+    <TerminalChatView tabId="p1" needsYou={needsYou} onShowTerminal={() => {}} platform="windows" />
+  );
+
+  /** Types a reply and tries Ctrl+Enter and the button: nothing may reach the PTY. */
+  async function expectBlocked() {
+    const field = screen.getByRole("textbox", { name: "Message Claude" }) as HTMLTextAreaElement;
+    fireEvent.change(field, { target: { value: "no, change step 2 first" } });
+    fireEvent.keyDown(field, { key: "Enter", ctrlKey: true });
+    const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
+    expect(send.disabled).toBe(true);
+    fireEvent.click(send);
+    await flush();
+    expect(writes).toEqual([]);
+    expect(screen.getByText("Answer the question above, or in the terminal, first.")).toBeTruthy();
+    expect(field.value).toBe("no, change step 2 first");
+  }
+
+  async function expectSends() {
+    expect(screen.queryByText("Answer the question above, or in the terminal, first.")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await flush();
+    expect(writes).toEqual([["p1", "\x1b[200~no, change step 2 first\x1b[201~\r"]]);
+  }
+
+  it("holds while the tab is Needs you, and sends once it clears", async () => {
+    const { rerender } = render(view(true));
+    await expectBlocked();
+    rerender(view(false));
+    await expectSends();
+  });
+
+  it("holds while a permission dialog is seen", async () => {
+    dialogDetector.feed("p1", new TextEncoder().encode(PROCEED));
+    render(view(false));
+    await expectBlocked();
+    act(() => dialogDetector.clear("p1"));
+    await expectSends();
+  });
+
+  it("holds while a plan approval is open", async () => {
+    chat = { sessionId: "s", revision: 1, entries: [plan("running")] };
+    const { rerender } = render(view(false));
+    await expectBlocked();
+    chat = { sessionId: "s", revision: 2, entries: [plan("done")] };
+    rerender(view(false));
+    await expectSends();
+  });
+
+  it("holds while a question is open", async () => {
+    chat = { sessionId: "s", revision: 1, entries: [question("running")] };
+    const { rerender } = render(view(false));
+    await expectBlocked();
+    chat = { sessionId: "s", revision: 2, entries: [question("done")] };
+    rerender(view(false));
+    await expectSends();
   });
 });
 
