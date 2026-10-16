@@ -114,13 +114,14 @@ pub fn set_provider_settings(
     settings: State<Mutex<SettingsStore>>,
     state: State<Mutex<StateStore>>,
 ) -> Result<ProviderSettingsView, String> {
+    // Lock order: StateStore before SettingsStore (see store/mod.rs).
+    let mut state = state.lock().map_err(|e| e.to_string())?;
     let mut settings = settings.lock().map_err(|e| e.to_string())?;
     settings.set_providers(providers)?;
-    let mut state = state.lock().map_err(|e| e.to_string())?;
     state.new_tab_provider = settings.default_provider();
-    drop(state);
     let view = view(&settings);
     drop(settings);
+    drop(state);
     crate::windows::retitle_open_windows(&app);
     Ok(view)
 }

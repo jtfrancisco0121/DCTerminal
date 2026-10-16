@@ -15,6 +15,8 @@ export type MockConfig = {
   strict?: boolean;
   /** Saved "Open as" choice per role id (`get_terminal_settings` → `roleSurface`). */
   roleSurface: Record<string, string>;
+  /** `get_terminal_settings` → `newTabOpens`. Defaults to `start`. */
+  newTabOpens?: "ask" | "claude" | "shell" | "start";
 };
 
 export type InvokeCall = { cmd: string; args: Record<string, unknown> };

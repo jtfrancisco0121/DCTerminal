@@ -48,6 +48,9 @@ pub struct TabSummary {
     /// Computed, not saved; None for chat, Cursor, plain and resume terminals.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<String>,
+    /// Address a localhost preview tab shows. None for other tabs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_url: Option<String>,
 }
 
 /// Permission mode shown for a tab: only Claude role terminals have one.
@@ -393,6 +396,30 @@ pub fn create_execution_pipeline_tabs(
     Ok(snapshot_from_store(&store))
 }
 
+/// Opens a localhost preview tab (an iframe of a dev server on this machine).
+#[tauri::command]
+pub fn open_preview_tab(
+    window_id: Option<String>,
+    url: String,
+    store: State<Mutex<StateStore>>,
+) -> Result<AppStateSnapshot, String> {
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    store.bind_window(window_id.as_deref());
+    store.create_preview_tab(&url)?;
+    Ok(snapshot_from_store(&store))
+}
+
+/// Saves the address a preview tab shows.
+#[tauri::command]
+pub fn set_preview_url(
+    tab_id: String,
+    url: String,
+    store: State<Mutex<StateStore>>,
+) -> Result<(), String> {
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    store.set_preview_url(&tab_id, &url)
+}
+
 #[tauri::command]
 pub fn sync_active_tab_form(
     app: tauri::AppHandle,
@@ -483,6 +510,7 @@ pub(crate) fn snapshot_from_store(store: &StateStore) -> AppStateSnapshot {
                     &t.terminal_launch,
                     &t.role_id,
                 ),
+                preview_url: crate::store::preview_tabs::preview_url_of(t),
             })
             .collect(),
         closed_tabs: store

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { fireEvent, render, screen } from "@testing-library/react";
+import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { PAD_MAX_HEIGHT, PAD_MIN_HEIGHT, ScratchPad } from "./ScratchPad";
 
@@ -96,5 +97,40 @@ describe("ScratchPad Send (one composer)", () => {
   it("a terminal pad keeps its Send button", () => {
     render(<ScratchPad {...base} mode="terminal" content="ls" />);
     expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
+  });
+});
+
+describe("ScratchPad compact paste", () => {
+  const log = Array.from({ length: 200 }, (_, i) => `  fetched chunk ${i} of 200`).join("\n");
+
+  function Controlled() {
+    const [content, setContent] = useState("");
+    return <ScratchPad {...base} content={content} onChange={setContent} />;
+  }
+
+  it("offers to compact a large paste, never applies it silently, and undoes", async () => {
+    render(<Controlled />);
+    fireEvent.paste(editor(), { clipboardData: { getData: () => log } });
+    fireEvent.change(editor(), { target: { value: log } });
+    const compact = await screen.findByRole("button", { name: "Compact this paste" });
+    expect(editor().value).toBe(log);
+    fireEvent.click(compact);
+    expect(editor().value).toBe("  fetched chunk 199 of 200 [×200]");
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(editor().value).toBe(log);
+    expect(screen.queryByRole("button", { name: "Compact this paste" })).toBeNull();
+  });
+
+  it("offers nothing for a short paste", async () => {
+    render(<Controlled />);
+    fireEvent.paste(editor(), { clipboardData: { getData: () => "short" } });
+    fireEvent.change(editor(), { target: { value: "short" } });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(screen.queryByRole("button", { name: "Compact this paste" })).toBeNull();
+  });
+
+  it("shows the send shortcut on the Send button", () => {
+    render(<ScratchPad {...base} mode="terminal" platform="mac" content="hi" />);
+    expect(screen.getByRole("button", { name: "Send" }).textContent).toContain("⌘+Enter");
   });
 });

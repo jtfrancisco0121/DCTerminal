@@ -20,6 +20,7 @@ import { lastAgentSegmentId } from "./sessionCards";
 import type { StreamSegment, ToolStatus } from "./transcript";
 import { ChatMarkdown, CopyButton } from "./components/ChatMarkdown";
 import { InlineNotice } from "./components/InlineNotice";
+import { Kbd } from "./components/Kbd";
 import { ChainLabel } from "./components/ChainLabel";
 import { ChatFindBar } from "./components/ChatFindBar";
 import { findAll, searchSegments } from "./search/textSearch";
@@ -626,7 +627,7 @@ export function SessionTerminal({
           onClick={onSendFollowUp}
           disabled={busy || agentExited || (!followUp.trim() && !hasImages) || !!blockedWarning}
         >
-          Send
+          Send <Kbd action="send" />
         </button>
       </div>
     </div>

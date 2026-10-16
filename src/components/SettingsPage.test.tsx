@@ -54,7 +54,7 @@ describe("SettingsPage", () => {
         captureOn={false}
         showDevTools={false}
         onToggleCapture={() => {}}
-        terminalSettings={{ shell: "", fontSize: 14, optionAsMeta: true, copyOnSelect: false, roleSurface: {}, roleRunMode: {} }}
+        terminalSettings={{ shell: "", fontSize: 14, optionAsMeta: true, copyOnSelect: false, roleSurface: {}, roleRunMode: {}, newTabOpens: "ask" as const }}
         onTerminalSettings={() => {}}
         approvalMode={null}
         onClose={onClose}
@@ -130,7 +130,7 @@ describe("SettingsPage categories (U6)", () => {
     captureOn: false,
     showDevTools: false,
     onToggleCapture: () => {},
-    terminalSettings: { shell: "", fontSize: 14, optionAsMeta: true, copyOnSelect: false, roleSurface: {}, roleRunMode: {} },
+    terminalSettings: { shell: "", fontSize: 14, optionAsMeta: true, copyOnSelect: false, roleSurface: {}, roleRunMode: {}, newTabOpens: "ask" as const },
     onTerminalSettings: () => {},
     approvalMode: null,
     onClose: () => {},
@@ -188,6 +188,23 @@ describe("SettingsPage categories (U6)", () => {
     render(<SettingsPage {...props} platform="windows" />);
     openCategory("Terminal");
     expect(screen.queryByLabelText(/Use Option as Meta/)).toBeNull();
+  });
+
+  it("chooses what a new tab opens", () => {
+    const onTerminalSettings = vi.fn();
+    render(<SettingsPage {...props} onTerminalSettings={onTerminalSettings} />);
+    openCategory("Terminal");
+    const group = screen.getByRole("radiogroup", { name: "New tab opens" });
+    expect(within(group).getAllByRole("radio").map((radio) => radio.parentElement?.textContent)).toEqual([
+      "Ask",
+      "Claude",
+      "Shell",
+      "Start screen",
+    ]);
+    expect((within(group).getByRole("radio", { name: "Ask" }) as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByText(/What ⌘\+T opens/)).toBeTruthy();
+    fireEvent.click(within(group).getByRole("radio", { name: "Shell" }));
+    expect(onTerminalSettings).toHaveBeenCalledWith(expect.objectContaining({ newTabOpens: "shell" }));
   });
 
   it("toggles Copy on select, off by default", () => {
@@ -260,18 +277,60 @@ describe("SettingsPage theme (U8)", () => {
       />,
     );
     openCategory("Appearance");
-    const select = screen.getByLabelText("Theme") as HTMLSelectElement;
-    expect(select.value).toBe("github-dark");
-    expect(select.selectedOptions[0].textContent).toBe("GitHub Dark");
-    expect(Array.from(select.options).map((o) => o.textContent)).toEqual([
+    const group = screen.getByRole("radiogroup", { name: "Theme" });
+    const cards = Array.from(group.querySelectorAll('[role="radio"]'));
+    expect(cards.map((card) => card.textContent)).toEqual([
       "Match system",
       "GitHub Dark",
       "GitHub Light",
+      "Dracula",
+      "Nord",
+      "Tokyo Night",
+      "Catppuccin Mocha",
     ]);
-    fireEvent.change(select, { target: { value: "github-light" } });
+    const checked = cards.filter((card) => card.getAttribute("aria-checked") === "true");
+    expect(checked.map((card) => card.textContent)).toEqual(["GitHub Dark"]);
+    expect(checked[0].querySelectorAll(".theme-card-dot")).toHaveLength(5);
+    fireEvent.click(screen.getByRole("radio", { name: "GitHub Light" }));
     expect(onUiSettings).toHaveBeenCalledWith({ theme: "github-light" });
-    fireEvent.change(select, { target: { value: "system" } });
+    fireEvent.click(screen.getByRole("radio", { name: "Match system" }));
     expect(onUiSettings).toHaveBeenLastCalledWith({ theme: "system" });
+    const preview = screen.getByRole("group", { name: "Status colours" });
+    expect(preview.textContent).toBe("WorkingNeeds youDoneExited");
+  });
+
+  it("saves a custom colour and resets them all", () => {
+    const onUiSettings = vi.fn();
+    const props = {
+      roles,
+      cli: null,
+      cliError: null,
+      platform: "mac" as const,
+      diagnostics: null,
+      captureOn: false,
+      showDevTools: false,
+      onToggleCapture: () => {},
+      terminalSettings: null,
+      onTerminalSettings: () => {},
+      approvalMode: null,
+      onUiSettings,
+      onClose: () => {},
+    };
+    const ui = { theme: "nord", shortcutBar: false, tipsSeen: [], padHeight: 0, padHidden: false };
+    const { rerender } = render(<SettingsPage {...props} uiSettings={ui} />);
+    openCategory("Appearance");
+    const reset = screen.getByRole("button", { name: "Reset" }) as HTMLButtonElement;
+    expect(reset.disabled).toBe(true);
+    const background = screen.getByLabelText("Background") as HTMLInputElement;
+    expect(background.value).toBe("#2e3440");
+    fireEvent.change(screen.getByLabelText("Needs you"), { target: { value: "#ff00ff" } });
+    expect(onUiSettings).toHaveBeenLastCalledWith({ customColors: { needsYou: "#ff00ff" } });
+    rerender(
+      <SettingsPage {...props} uiSettings={{ ...ui, customColors: { needsYou: "#ff00ff" } }} />,
+    );
+    expect((screen.getByLabelText("Needs you") as HTMLInputElement).value).toBe("#ff00ff");
+    fireEvent.click(screen.getByRole("button", { name: "Reset" }));
+    expect(onUiSettings).toHaveBeenLastCalledWith({ customColors: {} });
   });
 });
 
@@ -393,7 +452,7 @@ describe("SettingsPage save model", () => {
     captureOn: false,
     showDevTools: false,
     onToggleCapture: () => {},
-    terminalSettings: { shell: "", fontSize: 14, optionAsMeta: true, copyOnSelect: false, roleSurface: {}, roleRunMode: {} },
+    terminalSettings: { shell: "", fontSize: 14, optionAsMeta: true, copyOnSelect: false, roleSurface: {}, roleRunMode: {}, newTabOpens: "ask" as const },
     approvalMode: null,
     initialCategory: "Terminal" as const,
     onClose: () => {},

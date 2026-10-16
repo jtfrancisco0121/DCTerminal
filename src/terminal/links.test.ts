@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findPathLinks, isLinkModifier, relativeToCwd } from "./links";
+import { findBarePaths, findPathLinks, isLinkModifier, MAX_BARE_PER_LINE, relativeToCwd } from "./links";
 
 describe("findPathLinks", () => {
   it("finds path:line and path:line:col with offsets", () => {
@@ -25,6 +25,39 @@ describe("findPathLinks", () => {
     expect(findPathLinks("version 1.2:3")).toEqual([]);
     expect(findPathLinks("file.ts without a line")).toEqual([]);
     expect(findPathLinks("src/a.ts:0")).toEqual([]);
+  });
+});
+
+describe("findBarePaths", () => {
+  const paths = (text: string) => findBarePaths(text).map((item) => item.path);
+
+  it("finds paths inside tool calls, quotes and sentences", () => {
+    expect(paths("Write(docs/plan.md)")).toEqual(["docs/plan.md"]);
+    expect(paths("Saved report to ./out/report.pdf.")).toEqual(["./out/report.pdf"]);
+    expect(paths("edit `README.md`, then src/lib")).toEqual(["README.md", "src/lib"]);
+    expect(paths("/work/app/src/main.rs is new")).toEqual(["/work/app/src/main.rs"]);
+  });
+
+  it("gives offsets that cover only the path", () => {
+    const text = "Write(docs/plan.md)";
+    const [item] = findBarePaths(text);
+    expect(text.slice(item.start, item.end)).toBe("docs/plan.md");
+  });
+
+  it("leaves path:line to findPathLinks", () => {
+    expect(paths("error in src/app.ts:12:5 and lib/x.rs")).toEqual(["lib/x.rs"]);
+  });
+
+  it("skips URLs, flags, versions, home paths and plain words", () => {
+    expect(paths("see https://example.com/a.html")).toEqual([]);
+    expect(paths("--out=dist/x.js -v @scope/pkg")).toEqual([]);
+    expect(paths("version 1.2.3 and v2.0")).toEqual([]);
+    expect(paths("~/notes.md hello world .. ./")).toEqual([]);
+  });
+
+  it("caps the candidates per line", () => {
+    const line = Array.from({ length: 40 }, (_, i) => `f${i}.ts`).join(" ");
+    expect(findBarePaths(line)).toHaveLength(MAX_BARE_PER_LINE);
   });
 });
 

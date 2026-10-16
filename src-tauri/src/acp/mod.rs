@@ -7,6 +7,8 @@ mod ndjson;
 pub(crate) use ndjson::acp_launch_args;
 mod probe;
 pub(crate) mod request_handler;
+mod request_id;
+pub use request_id::RequestId;
 pub(crate) mod session_connect;
 mod session_update;
 pub(crate) mod text_extract;

@@ -5,6 +5,7 @@ mod claude_session_log;
 mod cli_detect;
 mod cli_launch;
 mod commands;
+mod crash_log;
 mod cursor_history;
 mod data_dir;
 mod files;
@@ -37,7 +38,7 @@ use cli_detect::{cli_login_status, detect_cli};
 use commands::history_search;
 use commands::{
     acp_set_effort, acp_set_model, get_claude_usage, check_working_folder, close_tab, create_execution_pipeline_tabs,
-    create_pipeline_tabs, cursor_approval_mode, get_pipeline_run, pipeline_decide,
+    create_pipeline_tabs, open_preview_tab, set_preview_url, cursor_approval_mode, get_pipeline_run, pipeline_decide,
     pipeline_approve, pipeline_defs_list, pipeline_defs_save, pipeline_fan_out, pipeline_lane_status, pipeline_note,
     pipeline_turn_finished,
     pipeline_run_gates,
@@ -76,7 +77,7 @@ use commands::{
     prompt_save,
 };
 use commands::{workspace_delete, workspace_open, workspace_save, workspaces_list};
-use files::{files_list, files_read, files_reveal, files_write};
+use files::{files_list, files_read, files_resolve, files_reveal, files_write};
 use models::{get_model_settings, list_models, set_model_settings, set_tab_model};
 use pty::{
     get_terminal_settings, pty_kill, pty_open, pty_resize, pty_set_scheme, pty_write, role_terminal_start,
@@ -121,6 +122,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
+            // First, so a panic anywhere below lands in logs/crash.log.
+            crash_log::install(&data_dir::app_data_dir(app.handle()).path);
             // User pipelines join the registry before any chain run is read.
             let pipeline_store =
                 store::PipelineStore::open(&data_dir::app_data_dir(app.handle()).path)?;
@@ -200,6 +203,8 @@ pub fn run() {
             start_eagle_eye,
             create_pipeline_tabs,
             create_execution_pipeline_tabs,
+            open_preview_tab,
+            set_preview_url,
             get_pipeline_run,
             pipeline_defs_list,
             pipeline_defs_save,
@@ -307,6 +312,7 @@ pub fn run() {
             files_list,
             files_read,
             files_write,
+            files_resolve,
             files_reveal,
             windows::window_context,
             windows::open_account_window,

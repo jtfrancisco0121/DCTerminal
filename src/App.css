@@ -16,8 +16,8 @@ body,
   box-shadow: none;
 }
 
-/* U8: theme variables. GitHub Dark is the default (:root); GitHub Light
-   overrides them under [data-theme="github-light"]. */
+/* U8: theme variables. GitHub Dark is the default (:root); GitHub Light and
+   the dark presets override them under [data-theme="…"]. */
 :root {
   color-scheme: dark;
   --bg: #0d1117;
@@ -96,7 +96,10 @@ body,
   --search-match-border: #d29922;
   --search-active: #f0883e;
   --search-active-border: #ffa657;
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  /* Bundled fonts (src/main.tsx), with the system stacks as fallbacks. */
+  --font-ui: "Inter Variable", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-ui);
   line-height: 1.5;
   color: var(--fg);
   background-color: var(--bg);
@@ -150,6 +153,209 @@ body,
   --shadow: rgba(140, 149, 159, 0.3);
   --backdrop: rgba(27, 31, 36, 0.4);
   --fg-on-emphasis: #ffffff;
+}
+
+/* Dark presets. Each block sets every colour token :root sets (designTokens
+   test). Status colours stay apart: Working = accent, Needs you = attention,
+   Done = done, Exited = danger. Neutrals not in a palette are derived from it. */
+/* Dracula: https://draculatheme.com/contribute */
+:root[data-theme="dracula"] {
+  color-scheme: dark;
+  --bg: #282a36;
+  --bg-elev: #21222c;
+  --bg-inset: #191a21;
+  --bg-muted: #343746;
+  --bg-hover: #2f3241;
+  --border: #44475a;
+  --fg: #f8f8f2;
+  --fg-soft: #e2e2dc;
+  --fg-muted: #a6accd;
+  --fg-subtle: #6272a4;
+  --accent: #bd93f9;
+  --accent-fg: #bd93f9;
+  --accent-bright: #d6acff;
+  --accent-emphasis: #bd93f9;
+  --accent-subtle: #3a3354;
+  --success: #50fa7b;
+  --success-emphasis: #50fa7b;
+  --success-subtle: #243a2e;
+  --warning: #f1fa8c;
+  --warning-bright: #ffffa5;
+  --warning-subtle: #3a3b2c;
+  --attention: #f1fa8c;
+  --attention-emphasis: #d8e06a;
+  --danger: #ff5555;
+  --danger-bright: #ff6e6e;
+  --danger-soft: #ff9580;
+  --danger-subtle: #3d2229;
+  --done: #8be9fd;
+  --done-bright: #a4ffff;
+  --orange: #ffb86c;
+  --orange-bright: #ffca8f;
+  --syn-keyword: #ff79c6;
+  --syn-string: #f1fa8c;
+  --syn-number: #bd93f9;
+  --syn-title: #50fa7b;
+  --syn-attr: #50fa7b;
+  --syn-builtin: #8be9fd;
+  --syn-deletion: #ff5555;
+  --shadow: rgba(0, 0, 0, 0.6);
+  --backdrop: rgba(0, 0, 0, 0.55);
+  --fg-on-emphasis: #282a36;
+  --search-match: #f1fa8c55;
+  --search-match-border: #f1fa8c;
+  --search-active: #ffb86c;
+  --search-active-border: #ffca8f;
+}
+
+/* Nord: https://www.nordtheme.com/docs/colors-and-palettes */
+:root[data-theme="nord"] {
+  color-scheme: dark;
+  --bg: #2e3440;
+  --bg-elev: #3b4252;
+  --bg-inset: #272c36;
+  --bg-muted: #434c5e;
+  --bg-hover: #383e4c;
+  --border: #4c566a;
+  --fg: #eceff4;
+  --fg-soft: #e5e9f0;
+  --fg-muted: #a8b1c2;
+  --fg-subtle: #7b88a1;
+  --accent: #88c0d0;
+  --accent-fg: #88c0d0;
+  --accent-bright: #8fbcbb;
+  --accent-emphasis: #5e81ac;
+  --accent-subtle: #34404e;
+  --success: #a3be8c;
+  --success-emphasis: #a3be8c;
+  --success-subtle: #3a4239;
+  --warning: #ebcb8b;
+  --warning-bright: #ebcb8b;
+  --warning-subtle: #433f37;
+  --attention: #ebcb8b;
+  --attention-emphasis: #c9a86a;
+  --danger: #bf616a;
+  --danger-bright: #d0727b;
+  --danger-soft: #d4878f;
+  --danger-subtle: #43363c;
+  --done: #b48ead;
+  --done-bright: #c8a8c4;
+  --orange: #d08770;
+  --orange-bright: #dfa08a;
+  --syn-keyword: #81a1c1;
+  --syn-string: #a3be8c;
+  --syn-number: #b48ead;
+  --syn-title: #88c0d0;
+  --syn-attr: #8fbcbb;
+  --syn-builtin: #d08770;
+  --syn-deletion: #bf616a;
+  --shadow: rgba(0, 0, 0, 0.45);
+  --backdrop: rgba(0, 0, 0, 0.5);
+  --fg-on-emphasis: #2e3440;
+  --search-match: #ebcb8b55;
+  --search-match-border: #ebcb8b;
+  --search-active: #d08770;
+  --search-active-border: #dfa08a;
+}
+
+/* Tokyo Night ("night" style): https://github.com/folke/tokyonight.nvim */
+:root[data-theme="tokyo-night"] {
+  color-scheme: dark;
+  --bg: #1a1b26;
+  --bg-elev: #1f2335;
+  --bg-inset: #16161e;
+  --bg-muted: #292e42;
+  --bg-hover: #24283b;
+  --border: #3b4261;
+  --fg: #c0caf5;
+  --fg-soft: #a9b1d6;
+  --fg-muted: #9aa5ce;
+  --fg-subtle: #737aa2;
+  --accent: #7aa2f7;
+  --accent-fg: #7aa2f7;
+  --accent-bright: #7dcfff;
+  --accent-emphasis: #3d59a1;
+  --accent-subtle: #24304f;
+  --success: #9ece6a;
+  --success-emphasis: #9ece6a;
+  --success-subtle: #26332a;
+  --warning: #e0af68;
+  --warning-bright: #e0af68;
+  --warning-subtle: #33302a;
+  --attention: #e0af68;
+  --attention-emphasis: #c8954c;
+  --danger: #f7768e;
+  --danger-bright: #ff8fa3;
+  --danger-soft: #ffa3b4;
+  --danger-subtle: #3a2430;
+  --done: #bb9af7;
+  --done-bright: #c9aefa;
+  --orange: #ff9e64;
+  --orange-bright: #ffb38a;
+  --syn-keyword: #bb9af7;
+  --syn-string: #9ece6a;
+  --syn-number: #ff9e64;
+  --syn-title: #7aa2f7;
+  --syn-attr: #73daca;
+  --syn-builtin: #2ac3de;
+  --syn-deletion: #f7768e;
+  --shadow: rgba(0, 0, 0, 0.6);
+  --backdrop: rgba(0, 0, 0, 0.55);
+  --fg-on-emphasis: #1a1b26;
+  --search-match: #e0af6855;
+  --search-match-border: #e0af68;
+  --search-active: #ff9e64;
+  --search-active-border: #ffb38a;
+}
+
+/* Catppuccin Mocha: https://catppuccin.com/palette */
+:root[data-theme="catppuccin-mocha"] {
+  color-scheme: dark;
+  --bg: #1e1e2e;
+  --bg-elev: #181825;
+  --bg-inset: #11111b;
+  --bg-muted: #313244;
+  --bg-hover: #292a3c;
+  --border: #45475a;
+  --fg: #cdd6f4;
+  --fg-soft: #bac2de;
+  --fg-muted: #a6adc8;
+  --fg-subtle: #7f849c;
+  --accent: #89b4fa;
+  --accent-fg: #89b4fa;
+  --accent-bright: #b4befe;
+  --accent-emphasis: #74c7ec;
+  --accent-subtle: #263046;
+  --success: #a6e3a1;
+  --success-emphasis: #a6e3a1;
+  --success-subtle: #253429;
+  --warning: #f9e2af;
+  --warning-bright: #f9e2af;
+  --warning-subtle: #36332e;
+  --attention: #f9e2af;
+  --attention-emphasis: #fab387;
+  --danger: #f38ba8;
+  --danger-bright: #f38ba8;
+  --danger-soft: #eba0ac;
+  --danger-subtle: #3b2635;
+  --done: #cba6f7;
+  --done-bright: #cba6f7;
+  --orange: #fab387;
+  --orange-bright: #fab387;
+  --syn-keyword: #cba6f7;
+  --syn-string: #a6e3a1;
+  --syn-number: #fab387;
+  --syn-title: #89b4fa;
+  --syn-attr: #f9e2af;
+  --syn-builtin: #94e2d5;
+  --syn-deletion: #f38ba8;
+  --shadow: rgba(17, 17, 27, 0.7);
+  --backdrop: rgba(17, 17, 27, 0.6);
+  --fg-on-emphasis: #11111b;
+  --search-match: #f9e2af55;
+  --search-match-border: #f9e2af;
+  --search-active: #fab387;
+  --search-active-border: #f5e0dc;
 }
 
 .container {
@@ -364,7 +570,7 @@ body,
 .prompt-area {
   resize: vertical;
   min-height: 4rem;
-  font-family: ui-monospace, monospace;
+  font-family: var(--font-mono);
   font-size: var(--text-sm);
 }
 
@@ -745,7 +951,7 @@ body,
 .session-terminal-placeholder {
   margin: 0;
   color: var(--fg-muted);
-  font-family: ui-monospace, Consolas, monospace;
+  font-family: var(--font-mono);
 }
 
 .session-stream {
@@ -754,7 +960,7 @@ body,
 
 .session-stream-agent,
 .session-stream-user {
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--font-ui);
 }
 
 .session-user-turn {
@@ -772,7 +978,7 @@ body,
   letter-spacing: 0.04em;
   color: var(--success);
   margin-bottom: 0.35rem;
-  font-family: ui-monospace, Consolas, monospace;
+  font-family: var(--font-mono);
 }
 
 .session-user-body {
@@ -839,7 +1045,7 @@ body,
 
 .session-stream-agent code,
 .session-stream-user code {
-  font-family: ui-monospace, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 0.85em;
   background: var(--bg-elev);
   padding: 0.1em 0.35em;
@@ -854,7 +1060,7 @@ body,
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  font-family: ui-monospace, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: var(--text-sm);
 }
 
@@ -884,7 +1090,7 @@ body,
   display: flex;
   align-items: baseline;
   gap: 0.5rem;
-  font-family: ui-monospace, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: var(--text-sm);
   color: var(--fg-soft);
   padding: 0.2rem 0;
@@ -955,13 +1161,13 @@ body,
   max-height: 12rem;
   overflow: auto;
   white-space: pre-wrap;
-  font-family: ui-monospace, Consolas, monospace;
+  font-family: var(--font-mono);
 }
 
 .session-stream-system {
   font-size: var(--text-sm);
   color: var(--accent-fg);
-  font-family: ui-monospace, Consolas, monospace;
+  font-family: var(--font-mono);
 }
 
 .session-markdown-table-wrap {
@@ -1073,7 +1279,7 @@ body,
 
 .session-terminal-prompt {
   color: var(--success);
-  font-family: ui-monospace, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: var(--text-xl);
   line-height: 1.5;
   padding-bottom: 0.35rem;
@@ -1089,7 +1295,7 @@ body,
   border-radius: var(--radius-md);
   background: var(--bg);
   color: var(--fg);
-  font-family: ui-monospace, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: var(--text-sm);
 }
 
@@ -1133,7 +1339,7 @@ body,
 
 .slash-menu-name {
   color: var(--fg);
-  font-family: ui-monospace, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: var(--text-sm);
 }
 
@@ -1192,7 +1398,7 @@ body,
   max-height: none;
   resize: none;
   margin-top: 0.2rem;
-  font-family: ui-monospace, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: var(--text-sm);
   background: var(--bg);
   color: var(--fg);
@@ -1237,7 +1443,7 @@ body,
   color: var(--fg);
   border: none;
   cursor: pointer;
-  font-family: ui-monospace, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: var(--text-xs);
 }
 
@@ -1260,7 +1466,7 @@ body,
 }
 
 .folder-picker-full {
-  font-family: ui-monospace, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: var(--text-xs);
   word-break: break-all;
 }
@@ -1488,7 +1694,7 @@ body,
 }
 
 kbd {
-  font-family: ui-monospace, Consolas, monospace;
+  font-family: var(--font-mono);
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -1909,7 +2115,7 @@ kbd {
 }
 
 .settings-shortcuts kbd {
-  font-family: ui-monospace, monospace;
+  font-family: var(--font-mono);
   font-size: var(--text-xs);
   padding: 0.1rem 0.35rem;
   border: 1px solid var(--border);
@@ -2468,7 +2674,7 @@ kbd {
   margin: 0;
   overflow: auto;
   padding: 0.4rem;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: var(--text-sm);
   line-height: 1.45;
   white-space: pre;
@@ -2631,7 +2837,7 @@ kbd {
   white-space: nowrap;
   font-size: var(--text-xs);
   color: var(--fg-muted);
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-family: var(--font-mono);
 }
 
 .model-option-meta {
@@ -3010,7 +3216,7 @@ kbd {
 .changes-status {
   width: 1.1rem;
   text-align: center;
-  font-family: ui-monospace, monospace;
+  font-family: var(--font-mono);
   font-weight: 600;
 }
 
@@ -3030,7 +3236,7 @@ kbd {
 .changes-counts {
   display: inline-flex;
   gap: 0.3rem;
-  font-family: ui-monospace, monospace;
+  font-family: var(--font-mono);
   font-size: var(--text-xs);
 }
 
@@ -3073,7 +3279,7 @@ kbd {
 }
 
 .activity-counts {
-  font-family: ui-monospace, monospace;
+  font-family: var(--font-mono);
   font-size: var(--text-xs);
   color: var(--fg-muted);
 }
@@ -3154,7 +3360,7 @@ kbd {
 }
 
 .activity-time {
-  font-family: ui-monospace, monospace;
+  font-family: var(--font-mono);
 }
 
 .activity-kind {
@@ -3162,7 +3368,7 @@ kbd {
   min-width: 3.4rem;
   padding: 0 0.4rem;
   border-radius: var(--radius-sm);
-  font-family: ui-monospace, monospace;
+  font-family: var(--font-mono);
   font-size: var(--text-xs);
   text-align: center;
   border: 1px solid var(--border);
@@ -3188,7 +3394,7 @@ kbd {
 }
 
 .activity-summary code {
-  font-family: ui-monospace, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: var(--text-xs);
   color: var(--fg);
 }
@@ -3214,7 +3420,7 @@ kbd {
 .diff-table {
   width: 100%;
   border-collapse: collapse;
-  font-family: ui-monospace, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: var(--text-xs);
   line-height: 1.4;
   table-layout: fixed;
@@ -3403,7 +3609,7 @@ mark.search-hit-current {
 }
 
 .chat-search-snippet {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: var(--text-xs);
   color: var(--fg-soft);
   white-space: pre-wrap;
@@ -3572,7 +3778,7 @@ mark.search-hit-current {
 }
 
 .prompt-library-body {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   resize: vertical;
 }
 
@@ -4650,6 +4856,180 @@ mark.search-hit-current {
   padding: 0.25rem 0.45rem;
 }
 
+/* Settings > Appearance: theme cards, status preview, custom colours. */
+.theme-picker {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+  max-width: 32rem;
+}
+
+.theme-card {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elev);
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--text-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.theme-card:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.theme-card-current {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  background: var(--accent-subtle);
+}
+
+.theme-card-dots {
+  display: flex;
+  flex-shrink: 0;
+  gap: 3px;
+}
+
+.theme-card-dot {
+  width: 0.75rem;
+  height: 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--fg) 20%, transparent);
+  border-radius: 50%;
+}
+
+.theme-card-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.theme-status-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 var(--space-4);
+}
+
+.theme-pill {
+  padding: 0 0.55rem;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-pill);
+  font-size: var(--text-xs);
+  line-height: 1.5rem;
+  white-space: nowrap;
+}
+
+.theme-pill-working {
+  color: var(--accent);
+}
+
+.theme-pill-needs {
+  color: var(--attention);
+}
+
+.theme-pill-done {
+  color: var(--done);
+}
+
+.theme-pill-exited {
+  color: var(--danger);
+}
+
+.theme-custom-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 32rem;
+}
+
+.theme-custom-head h4 {
+  margin: var(--space-2) 0;
+  font-size: var(--text-md);
+}
+
+.theme-custom-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-2);
+  max-width: 32rem;
+}
+
+.theme-custom-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0.25rem 0.5rem;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+  font-size: var(--text-sm);
+}
+
+/* Localhost preview tab. */
+.preview-tab {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+.preview-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev);
+}
+
+.preview-toolbar .preview-address {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-top: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.preview-frame {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  /* Most dev pages assume a white canvas. */
+  background: #ffffff;
+}
+
+.preview-elsewhere {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-5);
+  text-align: center;
+}
+
+.preview-elsewhere p {
+  margin: 0;
+}
+
+.theme-custom-field input[type="color"] {
+  width: 1.4rem;
+  height: 1.4rem;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: pointer;
+}
+
 .save-marker {
   margin-right: auto;
   margin-left: 0.75rem;
@@ -4711,7 +5091,7 @@ mark.search-hit-current {
 
 .shortcut-bar kbd,
 .first-use-tip kbd {
-  font-family: ui-monospace, monospace;
+  font-family: var(--font-mono);
   font-size: var(--text-2xs);
   padding: 0 0.25rem;
   border: 1px solid var(--border);
@@ -4783,7 +5163,7 @@ mark.search-hit-current {
 }
 
 .pipeline-overview-cwd {
-  font-family: var(--font-mono, ui-monospace, monospace);
+  font-family: var(--font-mono);
   font-size: 0.85em;
 }
 
@@ -5103,7 +5483,7 @@ mark.search-hit-current {
 
 .pipeline-json {
   width: 100%;
-  font-family: var(--font-mono, ui-monospace, monospace);
+  font-family: var(--font-mono);
   font-size: var(--text-sm);
 }
 
@@ -5521,7 +5901,7 @@ button.chain-label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: var(--font-mono, monospace);
+  font-family: var(--font-mono);
   opacity: 0.8;
 }
 
@@ -5582,6 +5962,109 @@ button.chain-label {
 
 .file-panel-resizer:focus-visible {
   background: color-mix(in srgb, var(--accent-fg) 33%, transparent);
+}
+
+/* ---------------------------------------------------------------------
+   Terminal by default: the new-tab picker, shortcut hints on buttons,
+   and the scratch pad's compact-paste offer.
+   --------------------------------------------------------------------- */
+
+.overlay-panel-new-tab {
+  width: min(30rem, 92vw);
+}
+
+.new-tab-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.new-tab-list:focus-visible {
+  box-shadow: none;
+}
+
+.new-tab-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.new-tab-row-active {
+  background: color-mix(in srgb, var(--accent-emphasis) 20%, transparent);
+}
+
+.new-tab-list:focus-visible .new-tab-row-active {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.new-tab-row[aria-disabled="true"] {
+  cursor: default;
+  color: var(--fg-subtle);
+}
+
+.new-tab-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.new-tab-title {
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+.new-tab-detail {
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.new-tab-heading {
+  margin: var(--space-2) var(--space-3) var(--space-1);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-subtle);
+}
+
+.new-tab-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  font-size: var(--text-sm);
+}
+
+.new-tab-hint {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-xs);
+}
+
+.kbd-hint {
+  margin-left: var(--space-1);
+  padding: 0 var(--space-1);
+  font-size: var(--text-2xs);
+  background: transparent;
+  border-color: color-mix(in srgb, currentColor 35%, transparent);
+  opacity: 0.8;
+}
+
+.compact-offer .link-button {
+  font-size: inherit;
+}
+
+.surface-hint {
+  margin-left: var(--space-1);
+  font-size: var(--text-2xs);
+  font-weight: normal;
+  color: var(--fg-subtle);
 }
 
 /* ---- Chat view of a Claude terminal tab (TerminalChatView) ---- */
