@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { pipelineDefsList, pipelineDefsSave } from "../bridge";
 import {
   BUILT_IN_PIPELINES,
-  DEFAULT_MAX_ROUNDS,
+  maxRounds,
+  roundLimitText,
   setPipelineDefs,
   type PipelineDef,
 } from "../pipeline/defs";
@@ -24,7 +25,8 @@ const EXAMPLE: PipelineDef = {
       id: "review",
       roleId: "role_pr_reviewer",
       title: "PR Reviewer",
-      loopBack: { to: "fix", maxRounds: 2, minSeverity: "MEDIUM" },
+      // No maxRounds: rounds go back until the reviewer approves.
+      loopBack: { to: "fix", minSeverity: "MEDIUM" },
     },
   ],
 };
@@ -54,7 +56,7 @@ function StageStrip({ def }: { def: PipelineDef }) {
             ? `checks: ${stage.gates.map((g) => (g.kind === "command" ? g.run : "pull request")).join(", ")}`
             : null,
           back
-            ? `loops back to ${back} · ≤ ${stage.loopBack?.maxRounds ?? DEFAULT_MAX_ROUNDS} rounds`
+            ? `loops back to ${back} · ${roundLimitText(maxRounds(stage))}`
             : null,
         ].filter(Boolean);
         return (
@@ -156,8 +158,9 @@ export function PipelinesSettings({
       <h3>Pipelines</h3>
       <p className="hint">
         A pipeline is a chain of role tabs. Start one from the command palette (Start …). Each
-        stage hands its HANDOFF sections to the next. A reviewer stage can send its round back,
-        up to its round cap. Checks run after a stage's turn when you press Run checks or when
+        stage hands its HANDOFF sections to the next. A reviewer stage sends its round back until
+        it approves; set <code>maxRounds</code> (1 to 20) on its loop-back for a round cap, or leave it
+        out for no limit (the default). Checks run after a stage's turn when you press Run checks or when
         autopilot is on.
       </p>
       <h4>Built in</h4>

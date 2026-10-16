@@ -9,6 +9,7 @@ vi.mock("../bridge", () => ({
   getTab: vi.fn(async () => ({ tab: { answers: { cwd: "/repo", title: "Login 500" } } })),
   pipelineDecide: vi.fn(),
   pipelineNote: vi.fn(async () => {}),
+  pipelineReleaseHandoff: vi.fn(async () => {}),
   pipelineRunGates: vi.fn(async () => []),
   pipelineTurnFinished: vi.fn(async () => {}),
   ptyWrite: vi.fn(async () => {}),
@@ -51,6 +52,8 @@ import {
   getPipelineRun,
   handoffAttach,
   pipelineDecide,
+  pipelineNote,
+  pipelineReleaseHandoff,
   pipelineRunGates,
   pipelineTurnFinished,
   ptyWrite,
@@ -161,12 +164,16 @@ describe("useAutopilot", () => {
       "/repo",
       ["https://github.com/jt/app/pull/7"],
       null,
+      1,
     );
     expect(vi.mocked(pipelineDecide).mock.calls[0][1]).toMatchObject({
       stageId: "implementer",
       verdict: null,
       missingSections: [],
       chat: false,
+      // The round the turn ends, and the turn itself: stale or repeated turns are refused.
+      round: 1,
+      turn: expect.stringMatching(/^impl\|s\|/),
     });
     expect(deps.startTerminal).toHaveBeenCalledWith(
       expect.objectContaining({ roleId: "role_pr_reviewer" }),
@@ -484,6 +491,70 @@ describe("useAutopilot", () => {
     onLog("impl", log(IMPLEMENTED, "2026-01-01T00:00:00Z"));
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(getPipelineRun).not.toHaveBeenCalled();
+  });
+
+  it("a turn you interrupted is not a finished turn", async () => {
+    // 08:40:16: the Implementer's turn ended with "[Request interrupted by user]".
+    vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+    const { deps, onLog } = setup([tab("impl", "role_implementer", 3)]);
+    onLog("impl", { ...log("Checking the fix is still on the branch."), interrupted: true });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(pipelineTurnFinished).not.toHaveBeenCalled();
+    expect(pipelineRunGates).not.toHaveBeenCalled();
+    expect(pipelineDecide).not.toHaveBeenCalled();
+    expect(deps.startTerminal).not.toHaveBeenCalled();
+  });
+
+  it("a turn whose tab got a newer prompt while its checks ran is not decided on", async () => {
+    // The checks ran 27 s; a round was sent back into the tab meanwhile.
+    vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+    const finished = log(IMPLEMENTED);
+    const { deps, onLog } = setup([tab("impl", "role_implementer", 3)]);
+    const newer = { ...finished, turnDone: false, lastPromptAt: new Date(Date.now() + 5000).toISOString() };
+    deps.sessionLog = (id) => (id === "impl" ? newer : null);
+    onLog("impl", finished);
+    await waitFor(() => expect(pipelineNote).toHaveBeenCalled());
+    expect(vi.mocked(pipelineNote).mock.calls[0][1]).toMatchObject({
+      stageId: "implementer",
+      summary: "Skipped Implementer's turn: Tab impl got a newer prompt while its checks ran.",
+      stop: false,
+    });
+    expect(pipelineDecide).not.toHaveBeenCalled();
+    expect(deps.startTerminal).not.toHaveBeenCalled();
+  });
+
+  it("a hand-off made already is skipped: no second terminal, no notice", async () => {
+    // 08:42:41 you handed the turn on; 08:42:44 autopilot's checks finished.
+    vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+    vi.mocked(pipelineDecide).mockResolvedValue({
+      action: "skip",
+      stageId: "implementer",
+      roleId: "role_implementer",
+      reason: "Implementer finished: already handed on by you.",
+    });
+    const { deps, onLog } = setup([tab("impl", "role_implementer", 3)]);
+    onLog("impl", log(IMPLEMENTED));
+    await waitFor(() => expect(pipelineDecide).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(deps.startTerminal).not.toHaveBeenCalled();
+    expect(deps.notifyStop).not.toHaveBeenCalled();
+    expect(deps.notice).not.toHaveBeenCalled();
+  });
+
+  it("a hand-off that could not be made gives its claim back", async () => {
+    vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+    vi.mocked(pipelineDecide).mockResolvedValue({
+      action: "advance",
+      stageId: "pr_reviewer",
+      roleId: "role_pr_reviewer",
+      reason: "on to PR Reviewer",
+      claim: "advance:implementer#1",
+    });
+    const { deps, onLog } = setup([tab("impl", "role_implementer", 3)]);
+    vi.mocked(deps.startTerminal).mockResolvedValue(null);
+    onLog("impl", log(IMPLEMENTED));
+    await waitFor(() => expect(deps.notifyStop).toHaveBeenCalled());
+    expect(pipelineReleaseHandoff).toHaveBeenCalledWith("ee_1", "advance:implementer#1");
   });
 });
 

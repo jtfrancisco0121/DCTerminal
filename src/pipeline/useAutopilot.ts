@@ -16,6 +16,7 @@ import {
   type RunLane,
   pipelineDecide,
   pipelineNote,
+  pipelineReleaseHandoff,
   pipelineRunGates,
   pipelineTurnFinished,
   ptyWrite,
@@ -45,6 +46,7 @@ import {
   mergeReviews,
   stageForTab,
   terminalStageSource,
+  turnId,
   turnReport,
   usagePercent,
 } from "./autopilot";
@@ -78,6 +80,12 @@ async function pasteInto(tabId: string, text: string): Promise<void> {
     tabId,
     encodeTerminalPaste(text, { bracketedPaste: terminalBracketedPaste(tabId), submit: true }),
   );
+}
+
+/** The round a run (or its lane) is on now. */
+function currentRound(run: PipelineRun, lane: string | null): number {
+  const laneRound = lane ? run.lanes?.find((l) => l.id === lane)?.round : undefined;
+  return Math.max(1, laneRound ?? run.round ?? 1);
 }
 
 function liveIdleTerminal(tab: TabSummary, state: TerminalState | undefined): boolean {
@@ -146,11 +154,21 @@ export function useAutopilot(deps: AutopilotDeps) {
     async (job: Job, runId: string, decision: AutopilotDecision, reply: string, verdict: string | null) => {
       const d = depsRef.current;
       const { tab, chain } = job;
-      const fail = (what: string) =>
-        stop(runId, tab.id, decision.stageId ?? null, `Autopilot could not ${what}`);
+      // The hand-off did not happen: give its claim back, so a hand-off you
+      // make next is not taken for a duplicate of it.
+      // intentionally silent: a claim left behind only adds a warning to your own hand-off.
+      const release = () =>
+        decision.claim ? pipelineReleaseHandoff(runId, decision.claim).catch(() => {}) : Promise.resolve();
+      const fail = async (what: string) => {
+        await release();
+        await stop(runId, tab.id, decision.stageId ?? null, `Autopilot could not ${what}`);
+      };
       switch (decision.action) {
         case "ignore":
-          // A late turn in an already-approved lane: nothing to do or tell.
+          // A late turn in an already-approved lane, or one decided on already.
+          return;
+        case "skip":
+          // A stale turn, or a hand-off made already: the ledger says which.
           return;
         case "stop":
           depsRef.current.notifyStop(tab.id, decision.reason);
@@ -206,7 +224,15 @@ export function useAutopilot(deps: AutopilotDeps) {
           const next = pipelineDef(chain.kind)?.stages.find((s) => s.id === decision.stageId);
           for (const extra of next?.alsoReviewers ?? []) {
             const failed = await openStage(job, source, extra, null, null);
-            if (failed) await fail(`open ${roleDisplayName(extra, d.roles())}: ${failed}`);
+            // The stage itself opened, so its claim stays.
+            if (failed) {
+              await stop(
+                runId,
+                tab.id,
+                decision.stageId ?? null,
+                `Autopilot could not open ${roleDisplayName(extra, d.roles())}: ${failed}`,
+              );
+            }
           }
           return;
         }
@@ -228,6 +254,7 @@ export function useAutopilot(deps: AutopilotDeps) {
                 state?.kind === "needs"
                   ? `${target.label} is waiting for you (${state.needs}). Answer it there, then send the findings back yourself.`
                   : `${target.label} is still working. Send the findings back when its turn ends.`;
+              await release();
               await stop(runId, tab.id, decision.stageId ?? null, why);
               return;
             }
@@ -310,6 +337,8 @@ export function useAutopilot(deps: AutopilotDeps) {
       let job: Job = { tab, chain: tab.chain, log, awaitingPlan: turn.awaitingPlan };
       void (async () => {
         const runId = tab.chain!.chainId;
+        /** The decision's hand-off claim until it is carried out. */
+        let claimed: string | undefined;
         try {
           const view = await getPipelineRun(runId).catch(() => null);
           if (!view?.run.autopilot?.enabled) return;
@@ -351,8 +380,31 @@ export function useAutopilot(deps: AutopilotDeps) {
             job = { tab: main, chain: main.chain, log: first.log!, awaitingPlan: false };
           }
           const lane = job.chain.lane ?? null;
+          // The round this turn ends: a round sent back while its checks run makes it stale.
+          const round = currentRound(view.run, lane);
+          const turnKey = turnId(job.tab.id, job.log);
           if (placed.stage.gates?.length) {
-            await pipelineRunGates(runId, placed.stage.id, job.tab.cwd, githubPrUrls(job.log.lastReply), lane);
+            await pipelineRunGates(
+              runId,
+              placed.stage.id,
+              job.tab.cwd,
+              githubPrUrls(job.log.lastReply),
+              lane,
+              round,
+            );
+          }
+          // The checks take a while: a newer prompt in the tab since (a round
+          // sent back, your own message) means this turn's reply is not the
+          // stage's result any more.
+          const latest = d.sessionLog(job.tab.id);
+          if (latest?.lastPromptAt && latest.lastPromptAt !== job.log.lastPromptAt) {
+            // intentionally silent: the ledger line is extra; nothing else happens either way.
+            await pipelineNote(runId, {
+              stageId: placed.stage.id,
+              summary: `Skipped ${placed.stage.title}'s turn: ${job.tab.label} got a newer prompt while its checks ran.`,
+              stop: false,
+            }).catch(() => {});
+            return;
           }
           // intentionally silent: without usage data autopilot simply does not pause for it.
           const usage = usagePercent(await getClaudeUsage().catch(() => null));
@@ -365,10 +417,14 @@ export function useAutopilot(deps: AutopilotDeps) {
             lane,
             ownReply,
           });
-          const decision = await pipelineDecide(runId, report);
+          const decision = await pipelineDecide(runId, { ...report, round, turn: turnKey });
+          claimed = decision.claim;
           await carryOut(job, runId, decision, reply, report.verdict);
+          claimed = undefined;
         } catch (err: unknown) {
           const message = err instanceof Error ? err.message : String(err);
+          // intentionally silent: a claim left behind only adds a warning to your own hand-off.
+          if (claimed) await pipelineReleaseHandoff(runId, claimed).catch(() => {});
           await stop(runId, tabId, placed.stage.id, `Autopilot stopped: ${message}`);
         } finally {
           busy.current.delete(tabId);

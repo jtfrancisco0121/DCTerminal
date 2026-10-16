@@ -21,7 +21,6 @@ use std::sync::{OnceLock, RwLock};
 const EAGLE1_JSON: &str = include_str!("../../../docs/pipelines/eagle1.json");
 const EAGLE2_JSON: &str = include_str!("../../../docs/pipelines/eagle2.json");
 
-pub const DEFAULT_MAX_ROUNDS: u32 = 3;
 pub const DEFAULT_PAUSE_AT_USAGE_PERCENT: u8 = 90;
 const MAX_PIPELINES: usize = 50;
 const MAX_STAGES: usize = 12;
@@ -68,10 +67,6 @@ impl Severity {
     }
 }
 
-fn default_max_rounds() -> u32 {
-    DEFAULT_MAX_ROUNDS
-}
-
 fn default_min_severity() -> Severity {
     Severity::Medium
 }
@@ -85,8 +80,10 @@ fn default_pause_percent() -> u8 {
 pub struct LoopBackDef {
     /// Stage id of an earlier stage.
     pub to: String,
-    #[serde(default = "default_max_rounds")]
-    pub max_rounds: u32,
+    /// Most rounds this edge sends back before autopilot stops. `None`
+    /// (the default): no limit, rounds go back until the reviewer approves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_rounds: Option<u32>,
     /// Findings below this go to follow-ups instead of another round.
     #[serde(default = "default_min_severity")]
     pub min_severity: Severity,
@@ -381,8 +378,11 @@ pub fn validate_user_pipelines(defs: &[PipelineDef]) -> Result<(), String> {
                         stage.id, back.to
                     ));
                 }
-                if back.max_rounds == 0 || back.max_rounds > 20 {
-                    return fail(format!("stage \"{}\": maxRounds is 1 to 20.", stage.id));
+                if back.max_rounds.is_some_and(|max| max == 0 || max > 20) {
+                    return fail(format!(
+                        "stage \"{}\": maxRounds is 1 to 20, or left out for no limit.",
+                        stage.id
+                    ));
                 }
             }
             for gate in &stage.gates {

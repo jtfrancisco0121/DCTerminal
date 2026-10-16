@@ -1005,6 +1005,7 @@ impl StateStore {
             autopilot: None,
             lanes: Vec::new(),
             fan_out_stage: None,
+            claims: Vec::new(),
         };
         self.data.pipeline_runs.push(run);
         self.save()?;

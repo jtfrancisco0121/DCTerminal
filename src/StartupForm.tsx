@@ -212,10 +212,16 @@ import {
   newChain,
 } from "./handoff/chains";
 import { handoffRoute, loopBackMessage } from "./handoff/routing";
-import { attachHandoff, handoffFieldsOf, prepareHandoff, saveHandoff } from "./handoff/executor";
+import {
+  attachHandoff,
+  claimManualHandoff,
+  handoffFieldsOf,
+  prepareHandoff,
+  saveHandoff,
+} from "./handoff/executor";
 import { pipelineDef, pipelineStages } from "./pipeline/defs";
 import { useAutopilot } from "./pipeline/useAutopilot";
-import { terminalStageSource } from "./pipeline/autopilot";
+import { terminalStageSource, turnId } from "./pipeline/autopilot";
 import { approveByHand, fanOutRun, planStageFor, stageTab, startLane } from "./pipeline/fanOut";
 import {
   isReviewerRole,
@@ -747,6 +753,8 @@ export function StartupForm({
   const startLockRef = useRef(false);
   /** One hand-off confirm at a time: a double click must not open two tabs. */
   const handoffLockRef = useRef(false);
+  /** The hand-off autopilot made already that you were warned about; Send again makes it anyway. */
+  const confirmedClaimRef = useRef<string | null>(null);
   const activeTabIdRef = useRef(activeTabId);
   activeTabIdRef.current = activeTabId;
   // A grid cell clicked in its composer: the active cell renders a new one, so focus it.
@@ -3909,6 +3917,7 @@ export function StartupForm({
       const tab = savedTabsRef.current.find((item) => item.id === tabId);
       const sourceRoleId = tab?.roleId ?? "";
       setHandoffError(null);
+      confirmedClaimRef.current = null;
       const logReadAt = Date.now();
       const logRead = terminalSessionLog(tabId).catch(() => null);
       const answers = await getTab(tabId)
@@ -3985,6 +3994,7 @@ export function StartupForm({
         document.querySelector("[data-session-screen]");
       setHandoffSelection(selectionInside(screen instanceof HTMLElement ? screen : null));
       setHandoffError(null);
+      confirmedClaimRef.current = null;
       setHandoffTarget(target);
       loadHandoffFields(target);
     },
@@ -4206,6 +4216,27 @@ export function StartupForm({
           patchRuntime(handoffSource.sourceTabId, (rt) => ({ ...rt, plan: null }));
         }
       };
+      // The source terminal's turn, so a reply autopilot already sent on is recognised.
+      const sourceTurn =
+        terminalCapture?.tabId === handoffSource.sourceTabId
+          ? turnId(handoffSource.sourceTabId, captureLog)
+          : null;
+      /** Claims this chain hand-off; null (with the warning shown) when autopilot made it already. */
+      const claimHandoff = async (kind: "advance" | "back") => {
+        const claim = await claimManualHandoff({
+          sourceTabId: handoffSource.sourceTabId,
+          kind,
+          turn: sourceTurn,
+          confirmedKey: confirmedClaimRef.current,
+        });
+        if (!claim.ok) {
+          confirmedClaimRef.current = claim.key;
+          setHandoffError(claim.warning);
+          return null;
+        }
+        confirmedClaimRef.current = null;
+        return claim;
+      };
       if (loop?.tab) {
         // The chain's tab is live: the findings go in as a follow-up there.
         const targetTab = loop.tab;
@@ -4217,7 +4248,11 @@ export function StartupForm({
         const text = loopBackMessage(handoffSource.sourceRoleId, findings, loop.target.round, roles);
         setBusy(true);
         setHandoffError(null);
+        let claim: Awaited<ReturnType<typeof claimHandoff>> = null;
+        let sent = false;
         try {
+          claim = await claimHandoff("back");
+          if (!claim) return;
           if (loop.terminal) {
             // One paste and one Enter, like the terminal scratch pad's Send.
             notePtyInput(targetTab.id);
@@ -4230,14 +4265,15 @@ export function StartupForm({
             );
           } else {
             // fromHandoff: keeps the target's draft and images, and stays out of history.
-            const sent = await dispatchText(targetTab.id, text, undefined, true);
-            if (sent === "error") {
+            const result = await dispatchText(targetTab.id, text, undefined, true);
+            if (result === "error") {
               setHandoffError(
                 runtimesRef.current[targetTab.id]?.promptError ?? "The follow-up was not sent.",
               );
               return;
             }
           }
+          sent = true;
           // The follow-up is out: close the dialog first, so a failure below
           // cannot invite a second send of the same findings.
           setTerminalCapture(null);
@@ -4259,12 +4295,15 @@ export function StartupForm({
         } catch (err: unknown) {
           setHandoffError(errorText(err));
         } finally {
+          if (claim && !sent) await claim.release();
           setBusy(false);
         }
         return;
       }
       setBusy(true);
       setHandoffError(null);
+      let claim: Awaited<ReturnType<typeof claimHandoff>> = null;
+      let opened = false;
       try {
         const sourceTab = savedTabs.find((tab) => tab.id === handoffSource.sourceTabId);
         const loopStep = loop ? { chainId: loop.chain.chainId, next: loop.next } : null;
@@ -4283,6 +4322,11 @@ export function StartupForm({
         if (!prepared.ok) {
           setHandoffError(prepared.error);
           return;
+        }
+        // The next stage on the chain, or a round sent back: made once.
+        if (loopStep || prepared.value.nextChain) {
+          claim = await claimHandoff(loopStep ? "back" : "advance");
+          if (!claim) return;
         }
         const { mapped } = prepared.value;
         const saved = await saveHandoff(prepared.value, scope);
@@ -4310,6 +4354,7 @@ export function StartupForm({
             setHandoffError("Terminal did not start.");
             return;
           }
+          opened = true;
           await setTabProvider(tabId, sourceProvider);
           const bound = await attach(tabId);
           if (mapped.usesScratchPad) {
@@ -4323,6 +4368,7 @@ export function StartupForm({
         }
         stashActiveTab();
         const { tab } = await newDraftTab(handoffTarget, handoffSource.cwd);
+        opened = true;
         await setTabProvider(tab.id, sourceProvider);
         const bound = await attach(tab.id);
         await syncActiveTabForm(tab.id, handoffTarget, handoffSource.cwd, nextValues);
@@ -4346,11 +4392,13 @@ export function StartupForm({
         const message = errorText(err);
         setHandoffError(message);
       } finally {
+        if (claim && !opened) await claim.release();
         setBusy(false);
       }
     },
     [
       applyDraft,
+      captureLog,
       dispatchText,
       handleSelectTab,
       handoffFields,

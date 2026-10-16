@@ -15,11 +15,15 @@ import {
   gitRepoInfo,
   handoffAttach,
   handoffSave,
+  pipelineClaimHandoff,
+  pipelineReleaseHandoff,
   terminalPlanFile,
   validateAndPreview,
+  type ClaimOutcome,
   type HandoffRecord,
   type Role,
 } from "../bridge";
+import { eventTime } from "../pipeline/runReport";
 import { advanceChain, type ChainRef } from "./chains";
 import {
   carryChainTaskType,
@@ -227,6 +231,64 @@ export function saveHandoff(
     planField: mapped.planField,
     chain: nextChain,
   });
+}
+
+/** The backend calls a hand-off claim makes. Defaults to the real bridge. */
+export type ClaimIo = {
+  claim: typeof pipelineClaimHandoff;
+  release: typeof pipelineReleaseHandoff;
+};
+
+// Async wrappers: a call that throws at once still lands in the callers' catch.
+export const bridgeClaimIo: ClaimIo = {
+  claim: async (args) => pipelineClaimHandoff(args),
+  release: async (runId, key) => pipelineReleaseHandoff(runId, key),
+};
+
+export type ClaimCheck =
+  | { ok: true; release: () => Promise<void> }
+  | { ok: false; key: string; warning: string };
+
+/**
+ * Before you hand a chain tab's turn on, or send its round back: claims the
+ * hand-off, so autopilot does not make it a second time. When autopilot made
+ * it already, it warns instead, once: pressing Send again with the same
+ * claim (`confirmedKey`) makes it anyway. A hand-off you made before goes
+ * ahead (you chose to send it again). `release` gives the claim back when
+ * the hand-off does not happen. Without a run (or when the backend cannot
+ * be asked) nothing is claimed and the hand-off goes ahead as before.
+ */
+export async function claimManualHandoff(
+  args: {
+    sourceTabId: string;
+    kind: "advance" | "back";
+    /** The source tab's turn (`turnId`), when it is a terminal with a session log. */
+    turn: string | null;
+    /** The claim you were warned about and pressed Send again for. */
+    confirmedKey: string | null;
+  },
+  io: ClaimIo = bridgeClaimIo,
+): Promise<ClaimCheck> {
+  const ask = (force: boolean) =>
+    // intentionally silent: without a claim the hand-off goes ahead as it always did.
+    io.claim({ sourceTabId: args.sourceTabId, kind: args.kind, turn: args.turn, force }).catch(() => null);
+  const held = (outcome: ClaimOutcome | null): ClaimCheck => ({
+    ok: true,
+    release: async () => {
+      // intentionally silent: a claim left behind only adds a warning to a later hand-off.
+      if (outcome?.claimed) await io.release(outcome.runId, outcome.key).catch(() => {});
+    },
+  });
+  const outcome = await ask(false);
+  if (!outcome || outcome.claimed || outcome.existing?.by !== "autopilot") return held(outcome);
+  if (args.confirmedKey === outcome.key) return held(await ask(true));
+  const what = args.kind === "back" ? "sent this round back" : "handed this turn on";
+  const again = args.kind === "back" ? "send it back" : "hand it on";
+  return {
+    ok: false,
+    key: outcome.key,
+    warning: `Autopilot already ${what} (${eventTime(outcome.existing.at)}): see the run's timeline. Press Send again to ${again} anyway.`,
+  };
 }
 
 /**

@@ -1,6 +1,6 @@
 use super::*;
 use crate::pipelines::{find, GateResult};
-use crate::store::{PipelineRun, RunAutopilot, StageGates};
+use crate::store::{claim_key, PipelineRun, RunAutopilot, StageGates};
 use std::collections::HashMap;
 
 fn run(round: u32) -> PipelineRun {
@@ -28,6 +28,7 @@ fn run(round: u32) -> PipelineRun {
         }),
         lanes: Vec::new(),
         fan_out_stage: None,
+        claims: Vec::new(),
     }
 }
 
@@ -63,6 +64,15 @@ fn eagle1() -> crate::pipelines::PipelineDef {
     find("eagle1").unwrap()
 }
 
+/// Eagle-Eye 1 with a round cap on every loop-back, as set in Settings › Pipelines.
+fn eagle1_capped(cap: u32) -> crate::pipelines::PipelineDef {
+    let mut def = eagle1();
+    for back in def.stages.iter_mut().filter_map(|stage| stage.loop_back.as_mut()) {
+        back.max_rounds = Some(cap);
+    }
+    def
+}
+
 #[test]
 fn off_means_no_decision_and_nothing_logged() {
     let mut r = run(1);
@@ -96,7 +106,7 @@ fn an_approved_plan_stops_at_the_implementer_checkpoint_until_passed() {
 }
 
 #[test]
-fn changes_with_a_medium_finding_loop_back_until_the_round_cap() {
+fn changes_with_a_medium_finding_loop_back_until_a_set_round_cap() {
     let mut r = run(1);
     let mut rep = report("pr_reviewer", Some("REQUEST CHANGES"));
     rep.findings = vec![finding("MEDIUM", "null token"), finding("LOW", "typo")];
@@ -106,7 +116,7 @@ fn changes_with_a_medium_finding_loop_back_until_the_round_cap() {
     // Two earlier PR Reviewer send-backs: this is its third round on the edge.
     let mut capped = run(3);
     capped.verdicts = sent_back(&["role_pr_reviewer", "role_pr_reviewer"]);
-    let d = decide(&eagle1(), &mut capped, &rep);
+    let d = decide(&eagle1_capped(3), &mut capped, &rep);
     assert_eq!(d.action, "stop");
     assert!(d.reason.starts_with("Round cap reached (3 of 3)"), "{}", d.reason);
 }
@@ -126,7 +136,7 @@ fn the_round_cap_counts_each_loop_back_edge_on_its_own() {
     // Two PR Reviewer send-backs of its own: the third hits the cap.
     let mut capped = run(3);
     capped.verdicts = sent_back(&["role_plan_reviewer", "role_pr_reviewer", "role_pr_reviewer"]);
-    let d = decide(&eagle1(), &mut capped, &rep);
+    let d = decide(&eagle1_capped(3), &mut capped, &rep);
     assert_eq!(d.action, "stop");
     assert!(d.reason.contains("3 of 3"), "{}", d.reason);
 }
@@ -173,7 +183,7 @@ fn approved_with_changes_advances_and_logs_the_applied_findings() {
 
 #[test]
 fn a_specialist_send_back_counts_toward_its_stage_round() {
-    let mut def = eagle1();
+    let mut def = eagle1_capped(3);
     let pr = def.stage_index("pr_reviewer").unwrap();
     def.stages[pr].also_reviewers = vec!["role_security".into()];
     // One send-back by the PR Reviewer, one (manual) by the specialist.
@@ -342,10 +352,10 @@ fn a_lane_counts_its_own_rounds_and_gates() {
     r.lane_mut("pr1").unwrap().verdicts = sent_back(&["role_pr_reviewer", "role_pr_reviewer"]);
     r.verdicts = sent_back(&["role_pr_reviewer", "role_pr_reviewer"]);
     let rep = in_lane("pr_reviewer", Some("REQUEST CHANGES"), "pr1");
-    let capped = decide(&eagle1(), &mut r, &rep);
+    let capped = decide(&eagle1_capped(3), &mut r, &rep);
     assert_eq!(capped.action, "stop");
     assert!(capped.reason.contains("3 of 3"), "{}", capped.reason);
-    let other = decide(&eagle1(), &mut r, &in_lane("pr_reviewer", Some("REQUEST CHANGES"), "pr2"));
+    let other = decide(&eagle1_capped(3), &mut r, &in_lane("pr_reviewer", Some("REQUEST CHANGES"), "pr2"));
     assert_eq!((other.action.as_str(), other.lane.as_deref()), ("loopBack", Some("pr2")));
     // A failed check on one lane does not hold up the other.
     r.gates.insert(
@@ -409,4 +419,142 @@ fn a_turn_in_an_approved_lane_changes_nothing() {
     assert!(r.events.is_empty(), "nothing logged");
     assert!(r.autopilot.as_ref().unwrap().waiting.is_none(), "not waiting");
     assert_eq!(r.lane("pr1").unwrap().status, "approved");
+}
+
+/// A PR Reviewer turn asking for changes with one MEDIUM finding.
+fn changes_asked() -> TurnReport {
+    let mut rep = report("pr_reviewer", Some("REQUEST CHANGES"));
+    rep.findings = vec![finding("MEDIUM", "null token")];
+    rep.findings_known = true;
+    rep
+}
+
+#[test]
+fn with_no_round_cap_rounds_go_back_until_the_reviewer_approves() {
+    // Five PR Reviewer send-backs already: built-ins have no cap, so the
+    // sixth round goes back too.
+    let mut r = run(6);
+    r.verdicts = sent_back(&["role_pr_reviewer"; 5]);
+    let d = decide(&eagle1(), &mut r, &changes_asked());
+    assert_eq!((d.action.as_str(), d.stage_id.as_deref()), ("loopBack", Some("implementer")), "{}", d.reason);
+    assert!(d.reason.contains("round 6"), "{}", d.reason);
+    // Approved, or only LOW findings left: the run completes.
+    let mut r = run(7);
+    r.verdicts = sent_back(&["role_pr_reviewer"; 6]);
+    let d = decide(&eagle1(), &mut r, &report("pr_reviewer", Some("APPROVED")));
+    assert_eq!(d.action, "complete");
+    let mut r = run(7);
+    r.verdicts = sent_back(&["role_pr_reviewer"; 6]);
+    let mut low = changes_asked();
+    low.findings = vec![finding("LOW", "typo")];
+    let d = decide(&eagle1(), &mut r, &low);
+    assert_eq!(d.action, "complete");
+    assert_eq!(d.follow_ups, vec!["[LOW] typo"]);
+}
+
+#[test]
+fn a_set_round_cap_still_stops_and_never_starts_the_next_round() {
+    let def = eagle1_capped(3);
+    let mut r = run(3);
+    r.verdicts = sent_back(&["role_pr_reviewer"; 2]);
+    let d = decide(&def, &mut r, &changes_asked());
+    assert_eq!(d.action, "stop");
+    assert!(d.reason.starts_with("Round cap reached (3 of 3)"), "{}", d.reason);
+    assert!(r.claims.is_empty(), "no send-back was claimed");
+    // You sent round 3 back yourself anyway: round 4's verdict stops again.
+    let mut r = run(4);
+    r.verdicts = sent_back(&["role_pr_reviewer"; 3]);
+    let d = decide(&def, &mut r, &changes_asked());
+    assert_eq!(d.action, "stop");
+    assert!(d.reason.contains("4 of 3"), "{}", d.reason);
+}
+
+#[test]
+fn a_hand_off_you_made_is_not_made_again_by_autopilot() {
+    // 08:42:41 you sent the Implementer's round-5 turn to the PR Reviewer;
+    // 08:42:44 autopilot's checks for that turn finished.
+    let mut r = run(5);
+    r.autopilot.as_mut().unwrap().passed_checkpoints.push("implementer".into());
+    r.add_claim(claim_key("advance", "implementer", 5, None), Some("impl|s|t5".into()), "you");
+    let mut rep = report("implementer", None);
+    rep.turn = Some("impl|s|t5".into());
+    rep.round = Some(5);
+    let d = decide(&eagle1(), &mut r, &rep);
+    assert_eq!(d.action, "skip", "{}", d.reason);
+    assert_eq!(d.reason, "Implementer finished: already handed on by you.");
+    let logged = r.events.last().unwrap();
+    assert_eq!((logged.kind.as_str(), logged.outcome.as_deref()), ("autopilot", Some("skip")));
+    assert_eq!(r.claims.len(), 1, "no second claim");
+    // Matched by stage and round alone too (a chat source has no turn).
+    let mut r2 = run(5);
+    r2.add_claim(claim_key("advance", "implementer", 5, None), None, "you");
+    assert_eq!(decide(&eagle1(), &mut r2, &report("implementer", None)).action, "skip");
+}
+
+#[test]
+fn autopilot_hands_a_stage_on_once_per_round() {
+    // The Planner's turn went to the Plan Reviewer; a later turn of the same
+    // round (a background task reporting in) does not open a second one.
+    let mut r = run(1);
+    let mut first = report("planner", None);
+    first.turn = Some("planner|s|t1".into());
+    let d = decide(&eagle1(), &mut r, &first);
+    assert_eq!(d.action, "advance");
+    assert_eq!(d.claim.as_deref(), Some("advance:planner#1"));
+    assert_eq!(r.claims[0].by, "autopilot");
+    let mut second = report("planner", None);
+    second.turn = Some("planner|s|t2".into());
+    let d = decide(&eagle1(), &mut r, &second);
+    assert_eq!(d.action, "skip");
+    assert_eq!(d.reason, "Planner finished: already handed on by autopilot.");
+    // A round sent back starts a fresh claim.
+    let mut r = run(2);
+    r.add_claim("advance:planner#1".into(), None, "autopilot");
+    assert_eq!(decide(&eagle1(), &mut r, &report("planner", None)).action, "advance");
+}
+
+#[test]
+fn a_send_back_is_claimed_once() {
+    let mut r = run(1);
+    let mut rep = changes_asked();
+    rep.turn = Some("rev|s|t1".into());
+    let d = decide(&eagle1(), &mut r, &rep);
+    assert_eq!(d.action, "loopBack");
+    assert_eq!(d.claim.as_deref(), Some("back:pr_reviewer#1"));
+    // You already sent this round back: autopilot does not send it again.
+    let mut r = run(1);
+    r.add_claim("back:pr_reviewer#1".into(), None, "you");
+    let d = decide(&eagle1(), &mut r, &changes_asked());
+    assert_eq!((d.action.as_str(), d.reason.as_str()), ("skip", "PR Reviewer finished: already sent back by you."));
+}
+
+#[test]
+fn a_turn_is_decided_once() {
+    let mut r = run(1);
+    let mut rep = report("planner", None);
+    rep.turn = Some("planner|s|t1".into());
+    assert_eq!(decide(&eagle1(), &mut r, &rep).action, "advance");
+    let events = r.events.len();
+    let d = decide(&eagle1(), &mut r, &rep);
+    assert_eq!(d.action, "ignore");
+    assert_eq!(r.events.len(), events, "nothing logged");
+}
+
+#[test]
+fn a_turn_from_a_round_that_ended_is_skipped() {
+    // 08:40:16 the Implementer's round-4 turn was read; its checks ran until
+    // 08:40:44, after round 5 was sent in at 08:40:22. Its missing sections
+    // must not be asked for in the middle of round 5's turn.
+    let mut r = run(5);
+    let mut rep = report("implementer", None);
+    rep.round = Some(4);
+    rep.missing_sections = vec!["Pull requests".into()];
+    let d = decide(&eagle1(), &mut r, &rep);
+    assert_eq!(d.action, "skip");
+    assert_eq!(d.reason, "Skipped Implementer's turn from round 4: the run is on round 5 now.");
+    assert!(r.autopilot.as_ref().unwrap().reasked.is_empty(), "no re-ask");
+    assert!(r.claims.is_empty());
+    // A turn of the current round is decided as usual.
+    rep.round = Some(5);
+    assert_eq!(decide(&eagle1(), &mut r, &rep).action, "reask");
 }

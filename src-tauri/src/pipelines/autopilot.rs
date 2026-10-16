@@ -5,7 +5,7 @@
 //! decided in the run's ledger and autopilot state; the caller saves.
 
 use super::{PipelineDef, Severity, StageDef};
-use crate::store::{PipelineRun, RunAutopilot};
+use crate::store::{claim_key, PipelineRun, RunAutopilot, MAX_DECIDED_TURNS};
 use serde::{Deserialize, Serialize};
 
 /// Failed-gate retries per stage and round before autopilot stops.
@@ -43,6 +43,13 @@ pub struct TurnReport {
     /// The fanned-out pull request this stage belongs to, if any.
     #[serde(default)]
     pub lane: Option<String>,
+    /// The run's round (or the lane's) when the turn was read. A turn from a
+    /// round that has ended since is skipped.
+    #[serde(default)]
+    pub round: Option<u32>,
+    /// The turn (`tab|session|prompt`): each one is decided on once.
+    #[serde(default)]
+    pub turn: Option<String>,
 }
 
 /// Key of per-stage state (gate results, retries): `stage` or `stage@lane`.
@@ -57,7 +64,9 @@ pub fn stage_key(stage_id: &str, lane: Option<&str>) -> String {
 #[serde(rename_all = "camelCase")]
 pub struct Decision {
     /// `advance`, `loopBack`, `retry`, `reask`, `stop`, `complete`, `laneDone`,
-    /// `ignore` (a late turn in an approved lane: nothing to do or tell).
+    /// `ignore` (a late turn in an approved lane, or a turn already decided
+    /// on: nothing to do or tell), `skip` (a stale turn, or a hand-off made
+    /// already: the ledger says so, nothing else happens).
     pub action: String,
     /// Stage to send into (`advance`, `loopBack`, `retry`).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -77,6 +86,10 @@ pub struct Decision {
     /// `laneDone`: waiting lanes whose dependencies are now all approved.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unblocked: Vec<String>,
+    /// `advance`, `loopBack`: the hand-off claim made for it. The caller
+    /// releases it when it cannot carry the decision out.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claim: Option<String>,
 }
 
 impl Decision {
@@ -90,6 +103,7 @@ impl Decision {
             follow_ups: Vec::new(),
             lane: None,
             unblocked: Vec::new(),
+            claim: None,
         }
     }
 
@@ -144,9 +158,50 @@ fn go(run: &mut PipelineRun, decision: Decision, detail: Option<String>) -> Deci
     decision
 }
 
+/// A ledger line for a turn autopilot leaves alone, and the `skip` decision.
+fn skip(run: &mut PipelineRun, stage: &StageDef, lane: Option<&str>, reason: String) -> Decision {
+    let tag = lane
+        .and_then(|id| run.lane(id))
+        .map(|l| format!("{}: ", l.title))
+        .unwrap_or_default();
+    run.log_outcome(
+        "autopilot",
+        Some(&stage.id),
+        Some(&stage.role_id),
+        format!("{tag}{reason}"),
+        None,
+        Some("skip".to_string()),
+    );
+    let mut decision = Decision::new("skip", reason).for_stage(stage);
+    decision.lane = lane.map(str::to_string);
+    decision
+}
+
+/// Claims the hand-off on (`advance`) or send-back (`back`) from `stage` in
+/// this round for autopilot. When you or autopilot made it already, the
+/// `skip` decision that says so instead.
+fn claim(
+    run: &mut PipelineRun,
+    kind: &str,
+    stage: &StageDef,
+    lane: Option<&str>,
+    turn: Option<&str>,
+) -> Result<String, Box<Decision>> {
+    let key = claim_key(kind, &stage.id, run.round_for(lane), lane);
+    if let Some(made) = run.claim_for(&key, turn) {
+        let who = if made.by == "you" { "you" } else { "autopilot" };
+        let what = if kind == "back" { "sent back" } else { "handed on" };
+        let reason = format!("{} finished: already {what} by {who}.", stage.title);
+        return Err(Box::new(skip(run, stage, lane, reason)));
+    }
+    run.add_claim(key.clone(), turn.map(str::to_string), "autopilot");
+    Ok(key)
+}
+
 /// Next stage after `index`, or completion. Stops at a checkpoint not yet passed.
 /// `applied` are findings the reviewer already applied; they go in the
 /// event detail only, never in the follow-ups.
+#[allow(clippy::too_many_arguments)]
 fn advance(
     def: &PipelineDef,
     run: &mut PipelineRun,
@@ -155,6 +210,7 @@ fn advance(
     follow_ups: Vec<String>,
     applied: Vec<String>,
     lane: Option<&str>,
+    turn: Option<&str>,
 ) -> Decision {
     let lines: Vec<String> = applied
         .iter()
@@ -202,9 +258,14 @@ fn advance(
         );
         return stop(run, Some(next), reason);
     }
+    let key = match claim(run, "advance", &def.stages[index], lane, turn) {
+        Ok(key) => key,
+        Err(skipped) => return *skipped,
+    };
     let mut decision = Decision::new("advance", format!("{why}: on to {}.", next.title)).for_stage(next);
     decision.follow_ups = follow_ups;
     decision.lane = lane.map(str::to_string);
+    decision.claim = Some(key);
     go(run, decision, detail)
 }
 
@@ -224,6 +285,34 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
         decision.lane = Some(lane.id.clone());
         return decision;
     }
+    let lane = report.lane.as_deref().filter(|id| run.lane(id).is_some());
+    let key_of_stage = stage_key(&stage.id, lane);
+    let round = run.round_for(lane);
+    let turn = report.turn.as_deref().map(str::trim).filter(|t| !t.is_empty());
+    if let Some(turn) = turn {
+        // A reply is acted on once, even when it is read again.
+        let decided = &mut autopilot(run).decided;
+        if decided.iter().any(|seen| seen == turn) {
+            return Decision::new("ignore", "That turn was already decided on.").for_stage(&stage);
+        }
+        decided.push(turn.to_string());
+        if decided.len() > MAX_DECIDED_TURNS {
+            let drop = decided.len() - MAX_DECIDED_TURNS;
+            decided.drain(..drop);
+        }
+    }
+    if let Some(read_in) = report.round.filter(|read_in| *read_in != round) {
+        // A round sent back while this turn's checks ran: the turn is stale.
+        return skip(
+            run,
+            &stage,
+            lane,
+            format!(
+                "Skipped {}'s turn from round {read_in}: the run is on round {round} now.",
+                stage.title
+            ),
+        );
+    }
     if report.chat {
         return stop(
             run,
@@ -239,9 +328,6 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             format!("Paused: Claude usage is at {used}% (autopilot pauses at {pause}%)."),
         );
     }
-    let lane = report.lane.as_deref().filter(|id| run.lane(id).is_some());
-    let key_of_stage = stage_key(&stage.id, lane);
-    let round = run.round_for(lane);
     if !report.missing_sections.is_empty() {
         let key = format!("{key_of_stage}#{round}");
         let missing = report.missing_sections.join(", ");
@@ -294,7 +380,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
         if stage.loop_back.is_some() {
             return stop(run, Some(&stage), format!("No verdict could be read from {}'s reply.", stage.title));
         }
-        return advance(def, run, index, &format!("{} finished", stage.title), Vec::new(), Vec::new(), lane);
+        return advance(def, run, index, &format!("{} finished", stage.title), Vec::new(), Vec::new(), lane, turn);
     };
     let threshold = stage
         .loop_back
@@ -332,20 +418,22 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
                 follow_ups,
                 Vec::new(),
                 lane,
+                turn,
             );
         }
         let Some(back) = stage.loop_back.clone() else {
             return stop(run, Some(&stage), format!("{} asked for changes, but this stage has no loop-back.", stage.title));
         };
-        // Rounds per loop-back edge: this reviewer's own rounds so far.
+        // Rounds per loop-back edge: this reviewer's own rounds so far. With
+        // no cap, rounds go back until the reviewer approves.
         let edge_round = review_round(run, lane, &stage);
-        if edge_round >= back.max_rounds {
+        if let Some(cap) = back.max_rounds.filter(|cap| edge_round >= *cap) {
             return stop(
                 run,
                 Some(&stage),
                 format!(
-                    "Round cap reached ({edge_round} of {}): {} still asks for changes.",
-                    back.max_rounds, stage.title
+                    "Round cap reached ({edge_round} of {cap}): {} still asks for changes.",
+                    stage.title
                 ),
             );
         }
@@ -362,6 +450,10 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
         )
         .for_stage(&target);
         decision.lane = lane.map(str::to_string);
+        decision.claim = match claim(run, "back", &stage, lane, turn) {
+            Ok(key) => Some(key),
+            Err(skipped) => return *skipped,
+        };
         return go(run, decision, None);
     }
     let blocking: Vec<String> = severities
@@ -396,7 +488,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
         return decision;
     }
     let applied = if report.findings_known { blocking } else { Vec::new() };
-    advance(def, run, index, verdict, follow_ups, applied, lane)
+    advance(def, run, index, verdict, follow_ups, applied, lane, turn)
 }
 
 /// The round a reviewer stage is on along its loop-back edge: the recorded

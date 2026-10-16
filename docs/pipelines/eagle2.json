@@ -14,7 +14,7 @@
       "id": "pr_reviewer",
       "roleId": "role_pr_reviewer",
       "title": "PR Reviewer",
-      "loopBack": { "to": "implementer", "maxRounds": 3, "minSeverity": "MEDIUM" }
+      "loopBack": { "to": "implementer", "minSeverity": "MEDIUM" }
     }
   ]
 }

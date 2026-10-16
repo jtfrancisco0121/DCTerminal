@@ -330,6 +330,8 @@ export type PipelineRun = {
   lanes?: RunLane[];
   /** The stage where the lanes start (the Implementer's). */
   fanOutStage?: string | null;
+  /** Hand-offs on and send-backs made, so none is made twice. */
+  claims?: HandoffClaim[];
 };
 
 export type RunLane = {
@@ -379,6 +381,8 @@ export type RunAutopilot = {
   passedCheckpoints?: string[];
   reasked?: string[];
   gateRetries?: Record<string, number>;
+  /** Turns already decided on. */
+  decided?: string[];
 };
 
 export type ClosedTabSummary = {
@@ -1034,8 +1038,10 @@ export async function pipelineRunGates(
   cwd: string | null,
   prUrls: string[],
   lane: string | null = null,
+  /** The round the checks are for: results that arrive in a later round are not kept. */
+  round: number | null = null,
 ): Promise<GateResult[]> {
-  return invoke("pipeline_run_gates", { runId, stageId, lane, cwd, prUrls });
+  return invoke("pipeline_run_gates", { runId, stageId, lane, cwd, prUrls, round });
 }
 
 /** Splits a run into one lane per pull request at `stageId` (the Implementer's). */
@@ -1082,10 +1088,24 @@ export type TurnReport = {
   usagePercent: number | null;
   chat: boolean;
   lane: string | null;
+  /** The run's (or lane's) round when the turn was read; a turn from an ended round is skipped. */
+  round?: number | null;
+  /** The turn (`tab|session|prompt`); each one is decided on once. */
+  turn?: string | null;
 };
 
 export type AutopilotDecision = {
-  action: "advance" | "loopBack" | "retry" | "reask" | "stop" | "complete" | "laneDone" | "ignore";
+  /** `skip`: a stale turn, or a hand-off you or autopilot made already (the ledger says which). */
+  action:
+    | "advance"
+    | "loopBack"
+    | "retry"
+    | "reask"
+    | "stop"
+    | "complete"
+    | "laneDone"
+    | "ignore"
+    | "skip";
   stageId?: string;
   roleId?: string;
   reason: string;
@@ -1094,7 +1114,44 @@ export type AutopilotDecision = {
   lane?: string;
   /** `laneDone`: waiting lanes that can start now. */
   unblocked?: string[];
+  /** `advance`, `loopBack`: the hand-off claim; release it when the hand-off fails. */
+  claim?: string;
 };
+
+/** A hand-off made once per stage and round (or source turn), by you or autopilot. */
+export type HandoffClaim = { key: string; turn?: string | null; by: "you" | "autopilot" | string; at: string };
+
+export type ClaimOutcome = {
+  runId: string;
+  key: string;
+  /** Claimed now: release it when the hand-off does not happen. */
+  claimed: boolean;
+  /** The hand-off made already for this stage and round, or this turn. */
+  existing?: HandoffClaim | null;
+};
+
+/**
+ * Before you hand a chain tab's turn on (`advance`) or send it back
+ * (`back`): claims it, or returns the one made already. Null off a chain run.
+ */
+export async function pipelineClaimHandoff(args: {
+  sourceTabId: string;
+  kind: "advance" | "back";
+  turn: string | null;
+  force: boolean;
+}): Promise<ClaimOutcome | null> {
+  return invoke("pipeline_claim_handoff", {
+    sourceTabId: args.sourceTabId,
+    kind: args.kind,
+    turn: args.turn,
+    force: args.force,
+  });
+}
+
+/** Gives back a claim whose hand-off did not happen. */
+export async function pipelineReleaseHandoff(runId: string, key: string): Promise<void> {
+  return invoke("pipeline_release_handoff", { runId, key });
+}
 
 export async function pipelineDecide(runId: string, report: TurnReport): Promise<AutopilotDecision> {
   return invoke("pipeline_decide", { runId, report });
@@ -1619,6 +1676,8 @@ export type TerminalSessionLog = {
   plan: string | null;
   planAt: string | null;
   lastPromptAt: string | null;
+  /** The turn ended because you interrupted it, not because Claude finished. Absent on older backends. */
+  interrupted?: boolean;
   /** Oldest to newest, at most 500. */
   toolCalls: SessionToolCall[];
   /**

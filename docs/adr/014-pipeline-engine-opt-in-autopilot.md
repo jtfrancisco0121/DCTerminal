@@ -55,6 +55,11 @@ Each phase ships on its own. Autopilot does not start before Phase 1 is merged.
 | Keep the engine in the UI | Runs would stop when the window closes or reloads, and the logic stays inside a 5,700-line component. |
 | Parallel Implementers first | Running more agents at once multiplies every reliability bug, including the Phase 0 ones. |
 
+## Amendments
+
+- **2026-10-16: no round cap by default.** Guardrail 2's "at most 3 rounds per loop-back edge" no longer applies to the built-in pipelines. A loop-back's `maxRounds` is optional: left out, autopilot sends rounds back until the reviewer approves, or only findings below the threshold remain. A pipeline may still set a cap (1 to 20) in Settings › Pipelines, and reaching it stops the run as before. Every other stop stays: Needs you, the checkpoint, usage near the limit, missing HANDOFF sections after one re-ask, a missing verdict, repeated check failures, and never merging.
+- **2026-10-16: each hand-off once.** A hand-off on (or a send-back) is made at most once per run, stage, round and lane, or per source turn, whether you or autopilot makes it. The run keeps these claims; `decide` takes one atomically and skips (with a Timeline line) when one exists. A manual Send warns once when autopilot made it already. Autopilot also skips a turn you interrupted, and a turn whose round ended while its checks ran.
+
 ## Consequences
 
 - Docs that say hand-offs are always user-triggered now point here.

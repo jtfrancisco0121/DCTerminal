@@ -185,8 +185,31 @@ export function githubPrUrls(text: string): string[] {
   return [...new Set(text.match(new RegExp(GITHUB_PR_URL.source, "g")) ?? [])];
 }
 
-/** Implementer → PR Reviewer extra context. Paths and counts, never a diff. */
-export function implementationContext(source: HandoffSource): string {
+/**
+ * The pull request(s) the Implementer reported, as the PR Reviewer reads
+ * them ("Pull request: <url>", or the whole list); "" when there is none.
+ */
+export function pullRequestContext(source: HandoffSource): string {
+  const declared = contractImplementation(source.latestMessage);
+  const declaredPrs = githubPrUrls(declared?.pullRequest ?? "");
+  // Several pull requests: pass the Implementer's whole list (branches, bases, manual steps).
+  if (declared && (declaredPrs.length > 1 || /manual step/i.test(declared.pullRequest))) {
+    return `Pull requests:\n${takeChars(declared.pullRequest, 4_000)}`;
+  }
+  const pr =
+    declaredPrs[0] ?? firstGithubPrUrl(`${source.transcriptText ?? ""}\n${source.latestMessage}`);
+  return pr ? `Pull request: ${pr}` : "";
+}
+
+/**
+ * Implementer → PR Reviewer extra context. Paths and counts, never a diff.
+ * `withPullRequest: false` leaves out `pullRequestContext`, for a caller
+ * that places it itself.
+ */
+export function implementationContext(
+  source: HandoffSource,
+  { withPullRequest = true }: { withPullRequest?: boolean } = {},
+): string {
   const parts: string[] = [];
   const declared = contractImplementation(source.latestMessage);
   if (declared) {
@@ -215,15 +238,8 @@ export function implementationContext(source: HandoffSource): string {
       `Findings from the previous review (round ${previous.round}). Check each one is resolved and say which in your review:\n${takeChars(previous.findings.trim(), 4_000)}`,
     );
   }
-  const declaredPrs = githubPrUrls(declared?.pullRequest ?? "");
-  // Several pull requests: pass the Implementer's whole list (branches, bases, manual steps).
-  if (declared && (declaredPrs.length > 1 || /manual step/i.test(declared.pullRequest))) {
-    parts.push(`Pull requests:\n${takeChars(declared.pullRequest, 4_000)}`);
-  } else {
-    const pr =
-      declaredPrs[0] ?? firstGithubPrUrl(`${source.transcriptText ?? ""}\n${source.latestMessage}`);
-    if (pr) parts.push(`Pull request: ${pr}`);
-  }
+  const prs = withPullRequest ? pullRequestContext(source) : "";
+  if (prs) parts.push(prs);
   return parts.join("\n\n");
 }
 
@@ -1107,7 +1123,13 @@ export function mapImplementerToReviewer(
       : limited.inlinePlan;
   }
   if (slots.plan && planText) answers[slots.plan] = limited.inlinePlan;
-  const context = [answer(source.answers, "additionalContext"), implementationContext(source)]
+  // The pull request goes first: a long context is cut at its end, and the
+  // reviewer posts its review on that pull request.
+  const context = [
+    pullRequestContext(source),
+    answer(source.answers, "additionalContext"),
+    implementationContext(source, { withPullRequest: false }),
+  ]
     .filter((part) => part.trim().length > 0)
     .join("\n\n");
   if (slots.context && context) {

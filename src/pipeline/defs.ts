@@ -12,7 +12,8 @@ export type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
 export type LoopBackDef = {
   /** Stage id of an earlier stage. */
   to: string;
-  maxRounds?: number;
+  /** Round cap; left out (or null): no limit, rounds go back until the reviewer approves. */
+  maxRounds?: number | null;
   /** Findings below this go to follow-ups instead of another round. */
   minSeverity?: Severity;
 };
@@ -44,7 +45,6 @@ export type PipelineDef = {
   builtIn?: boolean;
 };
 
-export const DEFAULT_MAX_ROUNDS = 3;
 export const DEFAULT_PAUSE_AT_USAGE_PERCENT = 90;
 
 export const BUILT_IN_PIPELINES: readonly PipelineDef[] = [
@@ -101,6 +101,12 @@ export function loopBackRole(def: PipelineDef, sourceRoleId: string): string | n
   return to ? (def.stages.find((s) => s.id === to)?.roleId ?? null) : null;
 }
 
-export function maxRounds(stage: StageDef | null | undefined): number {
-  return stage?.loopBack?.maxRounds ?? DEFAULT_MAX_ROUNDS;
+/** A loop-back's round cap, or null for none (rounds go back until the reviewer approves). */
+export function maxRounds(stage: StageDef | null | undefined): number | null {
+  return stage?.loopBack?.maxRounds ?? null;
+}
+
+/** "no round limit", or "at most 3 rounds". */
+export function roundLimitText(max: number | null): string {
+  return max == null ? "no round limit" : `at most ${max} rounds`;
 }

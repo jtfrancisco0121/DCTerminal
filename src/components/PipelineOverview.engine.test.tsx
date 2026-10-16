@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../bridge", () => ({
@@ -125,14 +125,70 @@ describe("PipelineOverview: autopilot, checks and timeline", () => {
     expect(checks.textContent).toContain("failed");
     expect(checks.textContent).toContain("npm run check");
     const reviewer = screen.getByRole("article", { name: "PR Reviewer" });
-    expect(within(reviewer).getByText("Round 1 of at most 3")).toBeTruthy();
+    expect(within(reviewer).getByText("Round 1")).toBeTruthy();
     const planReviewer = screen.getByRole("article", { name: "Plan Reviewer" });
-    expect(within(planReviewer).getByText("Round 2 of at most 3")).toBeTruthy();
+    expect(within(planReviewer).getByText("Round 2")).toBeTruthy();
     fireEvent.click(within(lane).getByRole("button", { name: "Run checks" }));
     await waitFor(() =>
       expect(pipelineRunGates).toHaveBeenCalledWith("ee_1", "implementer", "/worktree", [
         "https://github.com/jt/app/pull/7",
       ]),
+    );
+  });
+
+  it("shows a round cap only when the pipeline sets one, and never a round above it as within it", async () => {
+    setPipelineDefs([
+      {
+        id: "capped",
+        name: "Capped",
+        stages: [
+          { id: "fix", roleId: "role_implementer", title: "Implementer" },
+          {
+            id: "review",
+            roleId: "role_pr_reviewer",
+            title: "PR Reviewer",
+            loopBack: { to: "fix", maxRounds: 3 },
+          },
+        ],
+      },
+    ]);
+    show(
+      run({
+        kind: "capped",
+        stage: "fix",
+        round: 3,
+        verdicts: [
+          { roleId: "role_pr_reviewer", round: 1, verdict: "REQUEST CHANGES", at: "then" },
+          { roleId: "role_pr_reviewer", round: 2, verdict: "REQUEST CHANGES", at: "then" },
+        ],
+      }),
+    );
+    const reviewer = await screen.findByRole("article", { name: "PR Reviewer" });
+    expect(within(reviewer).getByText("Round 3 of at most 3")).toBeTruthy();
+    // Built-ins have no cap: the hint says rounds go on until approved.
+    cleanup();
+    show(run({ autopilot: { enabled: true } }));
+    const panel = await screen.findByRole("region", { name: "Autopilot" });
+    expect(panel.textContent).toContain("Rounds go back until the reviewer approves");
+    expect(panel.textContent).not.toContain("at the round cap");
+  });
+
+  it("says why the plan cannot be promoted: no Implementer tab yet, or it already started", async () => {
+    // Autopilot waits at the checkpoint before the Implementer: no tab exists.
+    show(run({ stage: "plan_reviewer", tabIds: {}, autopilot: { enabled: true, waiting: "Checkpoint before Implementer" } }));
+    await waitFor(() =>
+      expect(document.body.textContent).toContain(
+        "There is no Implementer tab yet. Use Hand off on the Plan Reviewer tab to start it.",
+      ),
+    );
+    expect(document.body.textContent).not.toContain("already started");
+    cleanup();
+    // The chain's Implementer runs already.
+    show(run());
+    await waitFor(() =>
+      expect(document.body.textContent).toContain(
+        "The Implementer tab already started. Use Hand off on the Plan Reviewer tab.",
+      ),
     );
   });
 
@@ -289,12 +345,12 @@ describe("PipelineOverview: autopilot, checks and timeline", () => {
     expect(within(pr2).queryByRole("button", { name: "Mark approved" })).toBeNull();
     const pr1 = within(lanes).getByRole("listitem", { name: "PR1 — API" });
     // Past the fan-out, rounds are per lane: in the lane, not on the stage.
-    expect(pr1.textContent).toContain("PR Reviewer · round 2 of at most 3");
+    expect(pr1.textContent).toContain("PR Reviewer · round 2 · last verdict");
     expect(pr2.textContent).toContain("Implementer · round 1");
     const reviewer = screen.getByRole("article", { name: "PR Reviewer" });
-    expect(within(reviewer).queryByText(/of at most/)).toBeNull();
+    expect(within(reviewer).queryByText(/^Round \d/)).toBeNull();
     const planReviewer = screen.getByRole("article", { name: "Plan Reviewer" });
-    expect(within(planReviewer).getByText("Round 2 of at most 3")).toBeTruthy();
+    expect(within(planReviewer).getByText("Round 2")).toBeTruthy();
     fireEvent.click(within(pr1).getByRole("button", { name: "Mark approved" }));
     await waitFor(() => expect(onApproveLane).toHaveBeenCalledWith("ee_1", "pr1"));
   });

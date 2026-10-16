@@ -580,6 +580,9 @@ export function installTauriMock(config: MockConfig): void {
       }
       return null;
     },
+    // No run state for claims here: every hand-off is a first one.
+    pipeline_claim_handoff: () => null,
+    pipeline_release_handoff: () => null,
     pipeline_note: (a) => {
       const run = findRun(a.runId);
       if (run) {

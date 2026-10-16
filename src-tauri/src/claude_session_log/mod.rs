@@ -49,6 +49,9 @@ pub struct TerminalSessionLog {
     pub plan: Option<String>,
     pub plan_at: Option<String>,
     pub last_prompt_at: Option<String>,
+    /// The turn ended because you interrupted it (`[Request interrupted …]`),
+    /// not because Claude finished. Autopilot leaves such a turn to you.
+    pub interrupted: bool,
     pub tool_calls: Vec<SessionToolCall>,
     /// The current turn's unanswered tool: ExitPlanMode, then
     /// AskUserQuestion, then the newest. `None` once the turn is done.
@@ -191,6 +194,7 @@ pub(crate) struct Parser {
     permission_mode: Option<String>,
     last_stop: Option<String>,
     ended: bool,
+    interrupted: bool,
     turn_tools: Vec<String>,
     plan: Option<String>,
     plan_at: Option<String>,
@@ -224,6 +228,7 @@ impl Parser {
             return;
         };
         self.ended = false;
+        self.interrupted = false;
         self.last_stop = message
             .get("stop_reason")
             .and_then(Value::as_str)
@@ -318,12 +323,16 @@ impl Parser {
             return;
         }
         match user_turn(value) {
-            UserTurn::Interrupted => self.ended = true,
+            UserTurn::Interrupted => {
+                self.ended = true;
+                self.interrupted = true;
+            }
             UserTurn::Prompt(_) => {
                 self.reply.clear();
                 self.turn_tools.clear();
                 self.last_stop = None;
                 self.ended = false;
+                self.interrupted = false;
                 self.last_prompt_at = at;
                 if let Some(mode) = value.get("permissionMode").and_then(Value::as_str) {
                     self.permission_mode = Some(mode.to_string());
@@ -374,6 +383,7 @@ impl Parser {
             plan: self.plan.clone(),
             plan_at: self.plan_at.clone(),
             last_prompt_at: self.last_prompt_at.clone(),
+            interrupted: turn_done && self.interrupted,
             tool_calls: self.tools[skip..].to_vec(),
             open_tool,
             pending_tools,
@@ -678,7 +688,17 @@ mod tests {
             prompt("[Request interrupted by user]", "t3"),
         ]);
         assert!(log.turn_done);
+        assert!(log.interrupted, "autopilot must not read it as a finished turn");
         assert_eq!(log.last_reply, "Starting");
+        assert_eq!(log.last_prompt_at.as_deref(), Some("t1"));
+        // The next prompt starts a new turn; finishing it is not an interrupt.
+        let next = parse(&[
+            prompt("go", "t1"),
+            prompt("[Request interrupted by user]", "t3"),
+            prompt("again", "t4"),
+            text("Done", Some("end_turn"), "t5"),
+        ]);
+        assert!(next.turn_done && !next.interrupted);
     }
 
     #[test]

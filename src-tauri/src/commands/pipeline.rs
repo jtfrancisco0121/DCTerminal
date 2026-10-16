@@ -108,7 +108,9 @@ fn stage_gates(
 /// Run a stage's gates now (Run checks, or autopilot after the stage's
 /// turn) and keep the results on the run. `cwd` is the stage tab's folder
 /// (a worktree), else the run's. `pr_urls` are the pull requests the stage
-/// reported. No store lock is held while the commands run.
+/// reported. No store lock is held while the commands run. `round` is the
+/// round the checks are for (autopilot): when another round started while
+/// they ran, the results are returned but not kept.
 #[tauri::command]
 pub async fn pipeline_run_gates(
     app: tauri::AppHandle,
@@ -117,6 +119,7 @@ pub async fn pipeline_run_gates(
     lane: Option<String>,
     cwd: Option<String>,
     pr_urls: Vec<String>,
+    round: Option<u32>,
 ) -> Result<Vec<GateResult>, String> {
     use tauri::Manager;
     let run_id = run_id.trim().to_string();
@@ -147,6 +150,9 @@ pub async fn pipeline_run_gates(
         .pipeline_run_by_id_mut(&run_id)
         .ok_or_else(|| format!("unknown pipeline run: {run_id}"))?;
     let lane = lane.filter(|id| run.lane(id).is_some());
+    if round.is_some_and(|asked| asked != run.round_for(lane.as_deref())) {
+        return Ok(results);
+    }
     let lane_tag = lane
         .as_deref()
         .and_then(|id| run.lane(id))
@@ -229,6 +235,33 @@ pub fn pipeline_decide(
     store.save()?;
     app.chain_run_updated(&run_id);
     Ok(decision)
+}
+
+/// Before you hand a chain tab's turn on (`advance`) or send it back
+/// (`back`): claim it, so autopilot does not make the same hand-off, and
+/// hear about one autopilot (or you) made already. `turn` is the source
+/// tab's turn (`tab|session|prompt`). `None` off a chain run.
+#[tauri::command]
+pub fn pipeline_claim_handoff(
+    source_tab_id: String,
+    kind: String,
+    turn: Option<String>,
+    force: bool,
+    store: State<Mutex<StateStore>>,
+) -> Result<Option<crate::store::ClaimOutcome>, String> {
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    store.claim_handoff(source_tab_id.trim(), kind.trim(), turn.as_deref(), "you", force)
+}
+
+/// Drop a claim whose hand-off did not happen (it failed, or was cancelled).
+#[tauri::command]
+pub fn pipeline_release_handoff(
+    run_id: String,
+    key: String,
+    store: State<Mutex<StateStore>>,
+) -> Result<(), String> {
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    store.release_handoff_claim(run_id.trim(), key.trim())
 }
 
 /// A line the frontend adds to the ledger, e.g. why autopilot could not

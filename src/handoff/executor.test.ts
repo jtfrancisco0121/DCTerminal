@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import type { HandoffRecord, PipelineRunView, Role } from "../bridge";
+import type { ClaimOutcome, HandoffRecord, PipelineRunView, Role } from "../bridge";
 import type { ChainRef } from "./chains";
 import {
   attachHandoff,
+  claimManualHandoff,
   prepareHandoff,
   saveHandoff,
+  type ClaimIo,
   type HandoffIo,
   type PrepareRequest,
 } from "./executor";
@@ -214,5 +216,68 @@ describe("hand-off executor", () => {
         },
       }),
     );
+  });
+});
+
+describe("claiming a hand-off you make", () => {
+  const KEY = "advance:implementer#5";
+  const outcome = (over: Partial<ClaimOutcome>): ClaimOutcome => ({
+    runId: "ee_1",
+    key: KEY,
+    claimed: false,
+    ...over,
+  });
+  const byAutopilot = { key: KEY, by: "autopilot", at: "2026-10-16T08:42:44Z" };
+  const claimIo = (...answers: (ClaimOutcome | null)[]): ClaimIo => {
+    const claim = vi.fn();
+    for (const answer of answers) claim.mockResolvedValueOnce(answer);
+    return { claim, release: vi.fn(async () => {}) };
+  };
+  const args = (confirmedKey: string | null = null) => ({
+    sourceTabId: "tab_impl",
+    kind: "advance" as const,
+    turn: "tab_impl|s|t5",
+    confirmedKey,
+  });
+
+  it("claims a first hand-off, and gives it back when it does not happen", async () => {
+    const fake = claimIo(outcome({ claimed: true }));
+    const check = await claimManualHandoff(args(), fake);
+    expect(fake.claim).toHaveBeenCalledWith({ sourceTabId: "tab_impl", kind: "advance", turn: "tab_impl|s|t5", force: false });
+    expect(check.ok).toBe(true);
+    if (!check.ok) return;
+    await check.release();
+    expect(fake.release).toHaveBeenCalledWith("ee_1", KEY);
+  });
+
+  it("warns once when autopilot handed the turn on already; Send again makes it anyway", async () => {
+    const fake = claimIo(outcome({ existing: byAutopilot }));
+    const first = await claimManualHandoff(args(), fake);
+    expect(first.ok).toBe(false);
+    if (first.ok) return;
+    expect(first.key).toBe(KEY);
+    expect(first.warning).toMatch(/^Autopilot already handed this turn on \(.+\): see the run's timeline\. Press Send again to hand it on anyway\.$/);
+    const forced = claimIo(outcome({ existing: byAutopilot }), outcome({ claimed: true, existing: byAutopilot }));
+    const again = await claimManualHandoff(args(KEY), forced);
+    expect(again.ok).toBe(true);
+    expect(forced.claim).toHaveBeenLastCalledWith(expect.objectContaining({ force: true }));
+  });
+
+  it("a send-back autopilot made already is named as one", async () => {
+    const fake = claimIo(outcome({ key: "back:pr_reviewer#3", existing: { ...byAutopilot, key: "back:pr_reviewer#3" } }));
+    const check = await claimManualHandoff({ ...args(), kind: "back" }, fake);
+    expect(!check.ok && check.warning).toContain("Autopilot already sent this round back");
+  });
+
+  it("a hand-off you made before, or no run at all, goes ahead without a claim to give back", async () => {
+    const mine = claimIo(outcome({ existing: { key: KEY, by: "you", at: "then" } }));
+    const check = await claimManualHandoff(args(), mine);
+    expect(check.ok).toBe(true);
+    if (check.ok) await check.release();
+    expect(mine.release).not.toHaveBeenCalled();
+    const offChain = await claimManualHandoff(args(), claimIo(null));
+    expect(offChain.ok).toBe(true);
+    const failing: ClaimIo = { claim: vi.fn(async () => Promise.reject(new Error("no backend"))), release: vi.fn() };
+    expect((await claimManualHandoff(args(), failing)).ok).toBe(true);
   });
 });

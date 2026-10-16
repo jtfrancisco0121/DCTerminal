@@ -128,8 +128,8 @@ export function terminalStageSource(args: {
 /**
  * The turn a log shows as finished, for autopilot: a turn that ended, or a
  * Planner turn waiting on its plan. Null while the turn is still working or
- * waits on anything else. The key changes once per turn, so each turn is
- * handled once.
+ * waits on anything else. A turn you interrupted is not finished work, so
+ * it is null too. The key changes once per turn, so each turn is handled once.
  */
 export function finishedTurn(
   roleId: string,
@@ -137,12 +137,25 @@ export function finishedTurn(
 ): { key: string; awaitingPlan: boolean } | null {
   if (!log) return null;
   const prompt = log.lastPromptAt ?? "";
-  if (log.turnDone) return { key: `${log.sessionId}|${prompt}|done`, awaitingPlan: false };
+  if (log.turnDone) {
+    return log.interrupted ? null : { key: `${log.sessionId}|${prompt}|done`, awaitingPlan: false };
+  }
   const open = log.openTool;
   if (roleId === "role_planner" && open?.name === "ExitPlanMode" && (log.plan ?? "").trim()) {
     return { key: `${log.sessionId}|${prompt}|plan|${open.id}`, awaitingPlan: true };
   }
   return null;
+}
+
+/**
+ * A terminal tab's current turn, `tab|session|prompt`: the prompt that
+ * started it names it, so a reply read again (or the next turn's log read
+ * before its prompt lands) is the same turn. Hand-off claims and autopilot
+ * decisions are keyed on it. Null without a session log.
+ */
+export function turnId(tabId: string, log: TerminalSessionLog | null | undefined): string | null {
+  if (!log?.sessionId) return null;
+  return `${tabId}|${log.sessionId}|${log.lastPromptAt ?? ""}`;
 }
 
 const VERDICT_ORDER = ["REJECTED", "REQUIRES REVISION", "REQUEST CHANGES", "APPROVED WITH CHANGES", "APPROVED"];

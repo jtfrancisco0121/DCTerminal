@@ -11,7 +11,7 @@ import {
   pipelineSetAutopilot,
   pipelineSetCandidatePlan,
 } from "../bridge";
-import { maxRounds, pipelineDef, pipelineStages } from "../pipeline/defs";
+import { maxRounds, pipelineDef, pipelineStages, type StageDef } from "../pipeline/defs";
 import { eventLabel, eventTime, followUps, formatRunReport, reviewRound, stageTitle } from "../pipeline/runReport";
 import { githubPrUrls } from "../handoff/map";
 import { lanesFromReply } from "../pipeline/prPlan";
@@ -61,6 +61,12 @@ type Props = {
   /** Marks a run without lanes complete by hand (autopilot stopped at its last stage). */
   onApproveRun?: (runId: string) => Promise<void>;
 };
+
+/** "Round 4", or "Round 2 of at most 3" when the loop-back has a round cap. */
+function roundText(round: number, stage: StageDef): string {
+  const cap = maxRounds(stage);
+  return cap == null ? `Round ${round}` : `Round ${round} of at most ${cap}`;
+}
 
 function overviewTitle(run: PipelineRun, kind: PipelineKind): string {
   if (!run.chainId) return "Pipeline overview";
@@ -327,6 +333,15 @@ export function PipelineOverview({
   const implementerTab = tabs.find((t) => t.id === run.tabIds.role_implementer);
   // A chain's Implementer may already be running; promote only fills a draft form.
   const canPromote = !run.chainId || implementerTab?.phase === "draft";
+  // Why promote is off: the Implementer runs already, or there is none yet
+  // (autopilot waiting at the checkpoint, say), and Hand off starts it.
+  const promoteBlocked = !run.chainId
+    ? null
+    : implementerTab
+      ? "The Implementer tab already started. Use Hand off on the Plan Reviewer tab."
+      : run.tabIds.role_implementer
+        ? "The Implementer tab is closed. Use Hand off on the Plan Reviewer tab to start a new one."
+        : "There is no Implementer tab yet. Use Hand off on the Plan Reviewer tab to start it.";
   const originalRequest = run.originalRequest?.trim() ?? "";
   const round = Math.max(1, run.round ?? 1);
   const def = pipelineDef(run.kind);
@@ -381,7 +396,7 @@ export function PipelineOverview({
           </label>
           <p className="hint">
             {autopilotOn
-              ? "After each terminal stage's turn, the checks run and the run moves on, sends a round back, or stops for you. It stops before a checkpoint, at the round cap, when Claude needs you, and near your usage limit. It never merges."
+              ? "After each terminal stage's turn, the checks run and the run moves on, sends a round back, or stops for you. Rounds go back until the reviewer approves (or up to a round cap, if the pipeline sets one). It stops before a checkpoint, when Claude needs you, and near your usage limit. It never merges."
               : "Off: every hand-off waits for you. Turn it on to let terminal stages hand on by themselves."}
           </p>
           {autopilotOn && run.autopilot?.waiting && (
@@ -464,7 +479,7 @@ export function PipelineOverview({
             })}
             {stageDef?.loopBack && !(lanes.length > 0 && fanOutIndex >= 0 && stageDefs.indexOf(stageDef) >= fanOutIndex) && (
               <p className="hint pipeline-round-cap">
-                Round {reviewRound(run, null, stageDef)} of at most {maxRounds(stageDef)}
+                {roundText(reviewRound(run, null, stageDef), stageDef)}
               </p>
             )}
             {gates && (
@@ -562,7 +577,7 @@ export function PipelineOverview({
                   <p className="hint">
                     {stageTitle(run, lane.stage)} ·{" "}
                     {laneStage?.loopBack
-                      ? `round ${reviewRound(run, lane.id, laneStage)} of at most ${maxRounds(laneStage)}`
+                      ? roundText(reviewRound(run, lane.id, laneStage), laneStage).toLowerCase()
                       : `round ${Math.max(1, lane.round)}`}
                     {lastVerdict ? ` · last verdict ${lastVerdict}` : ""}
                     {lane.dependsOn?.length ? ` · after ${lane.dependsOn.map((d) => d.toUpperCase()).join(", ")}` : ""}
@@ -714,7 +729,7 @@ export function PipelineOverview({
             title={
               canPromote
                 ? undefined
-                : "Use Hand off on the Plan Reviewer tab. Promote only fills a draft Implementer form."
+                : `${promoteBlocked ?? ""} Promote only fills a draft Implementer form.`
             }
             onClick={() => void promote()}
           >
@@ -722,9 +737,7 @@ export function PipelineOverview({
           </button>
           {!busy && (!approvedDraft.trim() || !canPromote) && (
             <DisabledReason className="disabled-reason-inline">
-              {!canPromote
-                ? "The Implementer tab already started. Use Hand off on the Plan Reviewer tab."
-                : "Paste or pull the plan text first."}
+              {!canPromote ? promoteBlocked : "Paste or pull the plan text first."}
             </DisabledReason>
           )}
         </div>

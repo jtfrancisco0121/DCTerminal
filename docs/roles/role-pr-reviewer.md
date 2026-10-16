@@ -371,7 +371,7 @@ Only ask questions where the answer could materially affect whether the implemen
 
 ## 8. Post the review on the pull request
 
-When there is a pull request URL, post your review there so it stays with the code:
+Post your review on the pull request so it stays with the code. When Additional Context gives no pull request URL, use the current branch's pull request (`gh pr view --json url`).
 
 1. Write the review to a temporary file outside the repository (for example `/tmp/pr-review.md`): the verdict first, then the summary and the findings with file and line.
 2. Post it with GitHub CLI:
@@ -383,7 +383,7 @@ When there is a pull request URL, post your review there so it stays with the co
 
 With several pull requests, do this for each one, with its own verdict: approve and mark ready the ones that pass, and request changes on the others.
 
-Apart from marking it ready when you approve, do not push, merge, close, or edit the pull request or its branch. If there is no pull request URL, or `gh` is not available or not signed in, skip posting and say so in the summary.
+Apart from marking it ready when you approve, do not push, merge, close, or edit the pull request or its branch. If there is no pull request, or `gh` is not available or not signed in, skip posting and say so in the summary.
 
 ## 9. Hand-off
 

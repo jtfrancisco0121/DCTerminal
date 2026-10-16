@@ -145,12 +145,14 @@ Each chain run can turn on **Autopilot** in its overview (ADR-014). It drives te
 | --- | --- |
 | The stage has checks (Implementer: the project's check command, and the PRs exist) and one failed | Sends the output back to the same tab. After the third failure it stops. |
 | HANDOFF sections are missing | Asks once (the paste above), then stops. |
-| Verdict needs changes, with a finding at or above the threshold | Sends the round back, up to the round cap (3), then stops. |
+| Verdict needs changes, with a finding at or above the threshold | Sends the round back, as many rounds as it takes. A pipeline can set a round cap (`maxRounds`); then it stops at the cap. Eagle-Eye 1 and 2 have none. |
 | Verdict needs changes, but only LOW findings | Moves on and lists them under **Follow-ups**. |
 | Approved | Moves on, or finishes the run on the last stage. |
 | The next stage is a checkpoint (Implementer, by default) | Stops. Send it yourself; autopilot carries on after that. |
 
 It also stops when Claude needs you (a permission, a question, a plan), when usage reaches 90%, or when a stage is a chat tab. It never merges. Every decision is in the overview's **Timeline**, and **Export run report** saves it as Markdown.
+
+Each hand-off on, and each send-back, happens once per stage and round. When you hand a turn on (or send a round back) yourself, autopilot skips that turn and the Timeline says "already handed on by you". When autopilot made the hand-off first, your **Send** warns you once; press it again to send anyway. A turn you interrupt (Esc) is not a finished turn: autopilot leaves it to you. A turn whose round was sent back while its checks ran is skipped.
 
 ## Fan out by pull request
 

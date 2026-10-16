@@ -37,11 +37,18 @@ fn built_ins_match_the_stages_runs_have_always_used() {
 }
 
 #[test]
-fn built_in_loop_backs_caps_and_gates() {
+fn built_in_loop_backs_have_no_round_cap_and_keep_their_gates() {
     let eagle1 = find("eagle1").unwrap();
     let review = eagle1.stage("pr_reviewer").unwrap();
     let back = review.loop_back.as_ref().unwrap();
-    assert_eq!((back.to.as_str(), back.max_rounds, back.min_severity), ("implementer", 3, Severity::Medium));
+    assert_eq!((back.to.as_str(), back.max_rounds, back.min_severity), ("implementer", None, Severity::Medium));
+    // Every built-in loop-back goes on until its reviewer approves.
+    let caps: Vec<Option<u32>> = builtins()
+        .iter()
+        .flat_map(|def| def.stages.iter().filter_map(|stage| stage.loop_back.as_ref()))
+        .map(|back| back.max_rounds)
+        .collect();
+    assert_eq!(caps, vec![None, None, None]);
     let implementer = eagle1.stage("implementer").unwrap();
     assert!(implementer.checkpoint);
     assert_eq!(
@@ -64,7 +71,7 @@ fn user_pipelines_join_the_registry() {
     assert_eq!(run_kind_for_chain(id).as_deref(), Some(id));
     assert_eq!(stages(id)[1].1, "role_pr_reviewer");
     let back = def.stage("review").unwrap().loop_back.clone().unwrap();
-    assert_eq!(back.max_rounds, DEFAULT_MAX_ROUNDS);
+    assert_eq!(back.max_rounds, None, "no maxRounds means no limit");
     unregister_for_test(id);
     assert!(find(id).is_none());
 }
@@ -79,10 +86,18 @@ fn validation_names_the_problem() {
     let mut forward = user_def("fwd");
     forward.stages[0].loop_back = Some(LoopBackDef {
         to: "review".into(),
-        max_rounds: 3,
+        max_rounds: Some(3),
         min_severity: Severity::Medium,
     });
     assert!(err(forward).contains("not an earlier stage"));
+    // A cap you set stays as set; 0 or more than 20 is refused.
+    let mut capped = user_def("capped");
+    capped.stages[1].loop_back.as_mut().unwrap().max_rounds = Some(3);
+    assert_eq!(validate_user_pipelines(&[capped.clone()]), Ok(()));
+    let json = serde_json::to_value(&capped).unwrap();
+    assert_eq!(json["stages"][1]["loopBack"]["maxRounds"], 3);
+    capped.stages[1].loop_back.as_mut().unwrap().max_rounds = Some(0);
+    assert!(err(capped).contains("left out for no limit"));
     let mut empty = user_def("empty");
     empty.stages.clear();
     assert!(err(empty).contains("1 to"));

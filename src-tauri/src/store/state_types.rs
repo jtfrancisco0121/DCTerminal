@@ -146,6 +146,36 @@ pub struct PipelineRun {
     /// The stage where the lanes start (the Implementer's).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fan_out_stage: Option<String>,
+    /// Hand-offs on and send-backs already made, newest last, so the same
+    /// one is never made twice, by you or by autopilot. Capped.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub claims: Vec<HandoffClaim>,
+}
+
+/// Most hand-off claims a run keeps; older ones are dropped first.
+pub const MAX_RUN_CLAIMS: usize = 200;
+
+/// One hand-off on (`advance`) or send-back (`back`) from a stage in one
+/// round (and lane), and the turn whose reply it carried.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HandoffClaim {
+    /// `advance:<stage>#<round>` or `back:<stage>#<round>`, plus `@<lane>`.
+    pub key: String,
+    /// The source tab's turn (`tab|session|prompt`), when it is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<String>,
+    /// `you` or `autopilot`.
+    pub by: String,
+    pub at: String,
+}
+
+/// Key of a hand-off claim: `kind` from `stage_id` in `round`, in `lane`.
+pub fn claim_key(kind: &str, stage_id: &str, round: u32, lane: Option<&str>) -> String {
+    match lane {
+        Some(lane) => format!("{kind}:{stage_id}#{round}@{lane}"),
+        None => format!("{kind}:{stage_id}#{round}"),
+    }
 }
 
 /// One pull request's own Implementer → PR Reviewer track after a fan-out.
@@ -184,6 +214,28 @@ impl PipelineRun {
     }
 
     /// The round a stage is on: its lane's, else the run's.
+    /// The claim already made for `key`, or for the same source `turn`.
+    pub fn claim_for(&self, key: &str, turn: Option<&str>) -> Option<&HandoffClaim> {
+        self.claims.iter().rev().find(|claim| {
+            claim.key == key || turn.is_some_and(|turn| claim.turn.as_deref() == Some(turn))
+        })
+    }
+
+    /// Record a claim (replacing one with the same key), dropping the oldest past the cap.
+    pub fn add_claim(&mut self, key: String, turn: Option<String>, by: &str) {
+        self.claims.retain(|claim| claim.key != key);
+        self.claims.push(HandoffClaim {
+            key,
+            turn,
+            by: by.to_string(),
+            at: chrono::Utc::now().to_rfc3339(),
+        });
+        if self.claims.len() > MAX_RUN_CLAIMS {
+            let drop = self.claims.len() - MAX_RUN_CLAIMS;
+            self.claims.drain(..drop);
+        }
+    }
+
     pub fn round_for(&self, lane: Option<&str>) -> u32 {
         lane.and_then(|id| self.lane(id))
             .map(|lane| lane.round)
@@ -256,7 +308,14 @@ pub struct RunAutopilot {
     /// Failed-gate retries per stage in the current round.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub gate_retries: HashMap<String, u32>,
+    /// Turns (`tab|session|prompt`) already decided on, newest last, so a
+    /// reply is acted on once even when it is read again. Capped.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decided: Vec<String>,
 }
+
+/// Most decided turns autopilot remembers per run.
+pub const MAX_DECIDED_TURNS: usize = 100;
 
 impl PipelineRun {
     /// Append to the ledger (detail capped, oldest events dropped past the cap).

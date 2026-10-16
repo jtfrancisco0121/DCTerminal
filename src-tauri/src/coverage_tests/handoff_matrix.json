@@ -1581,7 +1581,7 @@
    "values": {
     "originalTask": "Title: Login 500\n\nTask type: Bug Fix\n\nRequest:\nExpired tokens return 500 instead of 401.",
     "approvedPlan": "1. Catch TokenExpired\n2. Return 401\n3. Test (approved end)",
-    "additionalContext": "Auth lives in src/auth/middleware.ts.\n\nImplementation summary:\nDone. Patched the middleware and added a test. PR: https://github.com/a/b/pull/7\n\nChanged files:\n- src/auth/middleware.ts +12 -3\n\nBranch: fix/login-500\n\nPull request: https://github.com/a/b/pull/7"
+    "additionalContext": "Pull request: https://github.com/a/b/pull/7\n\nAuth lives in src/auth/middleware.ts.\n\nImplementation summary:\nDone. Patched the middleware and added a test. PR: https://github.com/a/b/pull/7\n\nChanged files:\n- src/auth/middleware.ts +12 -3\n\nBranch: fix/login-500"
    },
    "handoffPlan": null,
    "errors": [],
@@ -1594,7 +1594,7 @@
    "values": {
     "originalTask": "Title: Login 500\n\nTask type: Bug Fix\n\nRequest:\nExpired tokens return 500 instead of 401.",
     "approvedPlan": "1. Catch TokenExpired\n2. Return 401\n3. Test (approved end)",
-    "additionalContext": "Auth lives in src/auth/middleware.ts.\n\nImplementation summary:\nDone. Patched the middleware and added a test. PR: https://github.com/a/b/pull/7\n\nChanged files:\n- src/auth/middleware.ts +12 -3\n\nBranch: fix/login-500\n\nPull request: https://github.com/a/b/pull/7"
+    "additionalContext": "Pull request: https://github.com/a/b/pull/7\n\nAuth lives in src/auth/middleware.ts.\n\nImplementation summary:\nDone. Patched the middleware and added a test. PR: https://github.com/a/b/pull/7\n\nChanged files:\n- src/auth/middleware.ts +12 -3\n\nBranch: fix/login-500"
    },
    "handoffPlan": "1. Catch TokenExpired\n2. Return 401\n3. Test (approved end)",
    "errors": [],
@@ -1607,7 +1607,7 @@
    "values": {
     "originalTask": "Title: Login 500\n\nTask type: Bug Fix\n\nRequest:\nExpired tokens return 500 instead of 401.",
     "approvedPlan": "1. Catch TokenExpired\n2. Return 401\n3. Test (approved end)",
-    "additionalContext": "Auth lives in src/auth/middleware.ts.\n\nImplementation summary:\nDone. Patched the middleware and added a test. PR: https://github.com/a/b/pull/7\n\nChanged files:\n- src/auth/middleware.ts +12 -3\n\nBranch: fix/login-500\n\nPull request: https://github.com/a/b/pull/7"
+    "additionalContext": "Pull request: https://github.com/a/b/pull/7\n\nAuth lives in src/auth/middleware.ts.\n\nImplementation summary:\nDone. Patched the middleware and added a test. PR: https://github.com/a/b/pull/7\n\nChanged files:\n- src/auth/middleware.ts +12 -3\n\nBranch: fix/login-500"
    },
    "handoffPlan": null,
    "errors": [],
@@ -1620,7 +1620,7 @@
    "values": {
     "originalTask": "Title: Login 500\n\nTask type: Bug Fix\n\nRequest:\nExpired tokens return 500 instead of 401.",
     "approvedPlan": "1. Catch TokenExpired\n2. Return 401\n3. Test (approved end)",
-    "additionalContext": "Auth lives in src/auth/middleware.ts.\n\nImplementation summary:\nDone. Patched the middleware and added a test. PR: https://github.com/a/b/pull/7\n\nChanged files:\n- src/auth/middleware.ts +12 -3\n\nBranch: fix/login-500\n\nPull request: https://github.com/a/b/pull/7"
+    "additionalContext": "Pull request: https://github.com/a/b/pull/7\n\nAuth lives in src/auth/middleware.ts.\n\nImplementation summary:\nDone. Patched the middleware and added a test. PR: https://github.com/a/b/pull/7\n\nChanged files:\n- src/auth/middleware.ts +12 -3\n\nBranch: fix/login-500"
    },
    "handoffPlan": "1. Catch TokenExpired\n2. Return 401\n3. Test (approved end)",
    "errors": [],

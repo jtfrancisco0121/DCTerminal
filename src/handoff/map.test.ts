@@ -915,6 +915,21 @@ describe("terminal Implementer → PR Reviewer", () => {
     expect(picked.answers.additionalContext).toContain("Implementation summary:\nOnly this part");
   });
 
+  it("keeps the pull request when a long context is cut", () => {
+    // The Plan Reviewer's notes filled the Implementer's context; the reviewer
+    // still gets the pull request to post its review on.
+    const notes = `Review notes:\n${"- a checked change\n".repeat(600)}`;
+    const mapped = mapHandoff(
+      terminal({ answers: { ...terminal().answers, additionalContext: notes } }),
+      "terminal_tail",
+      { roleId: "role_pr_reviewer", fields: REVIEWER_FIELDS },
+    );
+    const context = mapped.answers.additionalContext;
+    expect(mapped.warning).toContain("shortened to 8,000 characters");
+    expect(context.startsWith("Pull request: https://github.com/acme/app/pull/42\n\nReview notes:")).toBe(true);
+    expect(context.split("Pull request:").length).toBe(2);
+  });
+
   it("offers no plan file, and needs only the Implementer form to send", () => {
     const empty = terminal({ terminalTail: "" });
     expect(scopeChoices(empty).map((c) => c.id)).toEqual(["selection", "terminal_tail"]);

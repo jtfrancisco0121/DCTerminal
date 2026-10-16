@@ -180,7 +180,7 @@ flowchart LR
 3. Repeat down the chain. When a reviewer asks for changes, **Send back to …** returns the findings to the earlier tab as a new round. Each loop stops after 3 rounds.
 4. Use **Open chain overview…** to see every stage on a time axis, with its status, verdict and checks.
 
-**Autopilot** is off by default. Turn it on for one run in the chain overview, and the run moves on by itself after each turn. It stops when Claude needs you, at the checkpoint before the Implementer, when a check keeps failing, when a loop reaches its round cap, or when your Claude usage limit is near. It never merges a pull request. Autopilot drives terminal tabs only.
+**Autopilot** is off by default. Turn it on for one run in the chain overview, and the run moves on by itself after each turn. It stops when Claude needs you, at the checkpoint before the Implementer, when a check keeps failing, or when your Claude usage limit is near. Review rounds go back until the reviewer approves, unless a pipeline sets a round cap. It never merges a pull request. Autopilot drives terminal tabs only.
 
 Terminal roles launch Claude Code in `plan` mode (Planner) or `auto` mode (the others), so Claude still asks before risky actions. Those questions show up as **Needs you**, and in Chat view as buttons.
 
