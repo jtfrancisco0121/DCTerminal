@@ -384,6 +384,62 @@ pub fn files_write(
     )
 }
 
+/// At most this many paths are checked per call; the rest are ignored.
+pub const MAX_RESOLVE_PATHS: usize = 128;
+
+/// Whether `path` (as printed in a terminal) names an existing file inside
+/// `root`. Relative paths resolve against `root`; an absolute path counts only
+/// when it lies inside `root`. The same rules as the Files panel apply: no
+/// `..`, no hidden build folders, and no symlink that leads outside.
+pub fn resolves_inside(root: &Path, path: &str) -> bool {
+    let trimmed = path.trim();
+    if trimmed.is_empty() || trimmed.len() > 1024 || trimmed.contains('\0') {
+        return false;
+    }
+    let target = if Path::new(trimmed).is_absolute() {
+        let Ok(resolved) = Path::new(trimmed).canonicalize() else {
+            return false;
+        };
+        if !resolved.starts_with(root) {
+            return false;
+        }
+        // Re-check what lies under the root, so `.git/…` stays hidden.
+        let rel = rel_string(root, &resolved);
+        if rel.is_empty() || relative_parts(&rel).is_err() {
+            return false;
+        }
+        resolved
+    } else {
+        match resolve_inside(root, trimmed) {
+            Ok(resolved) => resolved,
+            Err(_) => return false,
+        }
+    };
+    target.is_file()
+}
+
+/// The paths from `paths` that name existing files, in their original order
+/// and spelling.
+pub fn resolve_existing(root: &Path, paths: &[String]) -> Vec<String> {
+    paths
+        .iter()
+        .take(MAX_RESOLVE_PATHS)
+        .filter(|path| resolves_inside(root, path))
+        .cloned()
+        .collect()
+}
+
+/// Batched existence check for file links in terminal output.
+#[tauri::command]
+pub fn files_resolve(
+    tab_id: String,
+    paths: Vec<String>,
+    store: State<Mutex<StateStore>>,
+) -> Result<Vec<String>, String> {
+    let root = tab_root(&store, &tab_id)?;
+    Ok(resolve_existing(&root, &paths))
+}
+
 /// Reveal in Finder (Explorer on Windows, the file manager on Linux).
 #[tauri::command]
 pub fn files_reveal(
@@ -487,6 +543,62 @@ mod tests {
             read_file(&root, "alias").unwrap().text.as_deref(),
             Some("ok")
         );
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(outside);
+    }
+
+    #[test]
+    fn resolve_keeps_existing_files_inside_the_root() {
+        let root = temp_root("resolve");
+        let outside = temp_root("resolve_outside");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join("src").join("main.rs"), "fn main() {}").unwrap();
+        std::fs::write(root.join(".git").join("config"), "x").unwrap();
+        std::fs::write(outside.join("secret.txt"), "x").unwrap();
+        let abs_inside = root.join("src").join("main.rs").display().to_string();
+        let abs_outside = outside.join("secret.txt").display().to_string();
+        let asked: Vec<String> = vec![
+            "src/main.rs".into(),
+            "./src/main.rs".into(),
+            "src/missing.rs".into(),
+            "src".into(),
+            "../x".into(),
+            ".git/config".into(),
+            abs_inside.clone(),
+            abs_outside,
+            root.join(".git").join("config").display().to_string(),
+            String::new(),
+        ];
+        assert_eq!(
+            resolve_existing(&root, &asked),
+            vec!["src/main.rs".to_string(), "./src/main.rs".into(), abs_inside]
+        );
+        let many: Vec<String> = (0..MAX_RESOLVE_PATHS + 5)
+            .map(|_| "src/main.rs".to_string())
+            .collect();
+        assert_eq!(resolve_existing(&root, &many).len(), MAX_RESOLVE_PATHS);
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_rejects_symlinks_that_escape() {
+        let root = temp_root("resolve_link");
+        let outside = temp_root("resolve_link_out");
+        std::fs::write(outside.join("passwd"), "secret").unwrap();
+        std::os::unix::fs::symlink(outside.join("passwd"), root.join("escape")).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("escape_dir")).unwrap();
+        std::fs::write(root.join("inside.txt"), "ok").unwrap();
+        std::os::unix::fs::symlink(root.join("inside.txt"), root.join("alias")).unwrap();
+        let asked: Vec<String> = vec![
+            "escape".into(),
+            "escape_dir/passwd".into(),
+            root.join("escape").display().to_string(),
+            "alias".into(),
+        ];
+        assert_eq!(resolve_existing(&root, &asked), vec!["alias".to_string()]);
         let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_dir_all(outside);
     }
