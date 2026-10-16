@@ -1,3 +1,10 @@
+//! Persistent stores behind `tauri::State<Mutex<..>>`.
+//!
+//! Lock order: when one code path holds more than one store lock, take
+//! `StateStore` before `SettingsStore`, or drop one before taking the other.
+//! Usage updates on the chat turn thread lock State then Settings, so the
+//! reverse order anywhere else can deadlock.
+
 mod activity_store;
 mod chain_runs;
 mod claude_migration;
@@ -28,7 +35,10 @@ pub use json_io::{read_json, read_json_or_recover, write_json_atomic};
 pub use pipelines_store::{PipelineStore, PIPELINES_FILE};
 pub use projects_store::{ListedProject, ProjectsStore};
 pub use prompt_store::{PromptStore, RecentSend, SavedPrompt};
-pub use roles_store::{add_missing_builtin_roles, docs_roles_dir, seed_output_path, write_seed_file, RolesStore};
+pub use roles_store::{
+    add_missing_builtin_roles, bundled_seed, docs_roles_dir, seed_output_path, write_seed_file,
+    RolesStore,
+};
 pub use scratch_store::ScratchStore;
 pub use settings_store::{
     first_run_needed, get_notification_settings, get_ui_settings, set_notification_settings,
