@@ -2,7 +2,8 @@ import type { Page } from "@playwright/test";
 import type { ChatEntry, TerminalSessionLog } from "../../src/bridge";
 import { expect, roleTab, test, type TauriApp } from "./fixtures/tauri";
 
-// Read-only chat view of a Claude terminal tab (src/views/TerminalChatView.tsx).
+// Chat view of a Claude terminal tab (src/views/TerminalChatView.tsx); its
+// composer and permission buttons write to the PTY (src/terminal/ptyAnswers.ts).
 // The entries come from the tab's session log over `terminal_chat_watch`
 // (src/terminal/chatEntriesStore.ts); `app.chatSet` plays the backend's part.
 // The PTY keeps running while the chat view is shown.
@@ -103,8 +104,8 @@ test("Chat shows the terminal's conversation; switching back keeps the same PTY"
   const plan = log.getByRole("region", { name: "Plan" });
   await expect(plan).toContainText("Return 401 on a missing token");
   await expect(plan).toContainText("Approved");
-  // Read-only: no composer, no scratch pad, no buttons that answer Claude.
-  await expect(chatView(page).getByRole("textbox")).toHaveCount(0);
+  // The composer replaces the scratch pad.
+  await expect(chatView(page).getByRole("textbox", { name: "Message Claude" })).toBeVisible();
   await expect(page.locator(".terminal-scratch")).toHaveCount(0);
 
   // Output that arrived while the chat view was up is in the terminal when it comes back.
@@ -205,4 +206,43 @@ test("plain terminals have no Chat switch", async ({ app, page }) => {
   await app.waitForCall("pty_open");
   await expect(page.getByRole("radiogroup", { name: "Show as" })).toHaveCount(0);
   expect(await app.calls("terminal_chat_watch")).toHaveLength(0);
+});
+
+test("the composer types into the same PTY: one paste and Enter", async ({ app, page }) => {
+  await openTerminal(app, page);
+  await showChat(app, page);
+  const field = chatView(page).getByRole("textbox", { name: "Message Claude" });
+  await field.fill("Fix the login 500\nand add a test");
+  await field.press("ControlOrMeta+Enter");
+  const write = await app.waitForCall("pty_write", (a) => String(a.data).includes("add a test"));
+  expect(write.args.id).toBe("tab-1");
+  expect(write.args.data).toBe("\x1b[200~Fix the login 500\nand add a test\x1b[201~\r");
+  await expect(field).toHaveValue("");
+});
+
+test("a permission dialog is answered with buttons from the chat view", async ({ app, page }) => {
+  await openTerminal(app, page);
+  await showChat(app, page);
+  await app.ptyOutput(
+    "tab-1",
+    "Bash command\r\n  touch x\r\nDo you want to proceed?\r\n❯ 1. Yes\r\n  2. Yes, and don't ask again\r\n  3. No\r\n",
+  );
+  const card = chatView(page).getByRole("region", { name: "Permission" });
+  await expect(card).toContainText("Do you want to proceed?", READ);
+  await card.getByRole("button", { name: "Yes", exact: true }).click();
+  await app.waitForCall("pty_write", (a) => a.id === "tab-1" && a.data === "1");
+});
+
+test("New tab with role… opens a draft tab with the role and surface picked", async ({ app, page }) => {
+  await openTerminal(app, page);
+  await page.keyboard.press("ControlOrMeta+Alt+KeyR");
+  const launcher = page.getByRole("dialog", { name: "New tab with role" });
+  await expect(launcher).toBeVisible();
+  await launcher.getByRole("textbox", { name: "Search roles" }).fill("planner");
+  await page.keyboard.press("Tab");
+  await expect(launcher.getByRole("radio", { name: "Chat" })).toHaveAttribute("aria-checked", "true");
+  await expect(launcher).toContainText("Autopilot needs Terminal");
+  await page.keyboard.press("Enter");
+  await expect(launcher).toHaveCount(0);
+  await app.waitForCall("new_draft_tab");
 });

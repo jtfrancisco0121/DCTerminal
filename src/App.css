@@ -5712,3 +5712,141 @@ button.chain-label {
   margin: 0.25rem 0;
   font-size: var(--text-sm);
 }
+
+.terminal-chat-answer-here,
+.terminal-chat-answer-failed,
+.terminal-chat-composer-exited {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.terminal-chat-answer-failed {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-md);
+  background: var(--warning-subtle);
+}
+
+.terminal-chat-permission {
+  margin: 0;
+  border-width: 1px 0 0;
+  border-radius: 0;
+  border-color: var(--warning);
+  padding: var(--space-2) var(--space-3);
+}
+
+.terminal-chat-permission-detail {
+  max-height: 8rem;
+  overflow: auto;
+  margin: var(--space-1) 0;
+  white-space: pre-wrap;
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+}
+
+.terminal-chat-permission-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.terminal-chat-option-key {
+  font-family: ui-monospace, Consolas, monospace;
+  opacity: 0.75;
+}
+
+.terminal-chat-composer {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--border);
+  background: var(--bg-muted);
+}
+
+.terminal-chat-composer-input {
+  width: 100%;
+  min-height: 3.5rem;
+  max-height: 40vh;
+  resize: vertical;
+  font: inherit;
+}
+
+.terminal-chat-composer-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.terminal-chat-composer-hint {
+  flex: 1;
+  min-width: 0;
+}
+
+.terminal-chat-composer-error {
+  margin: 0;
+}
+
+.role-launcher-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}
+
+.role-launcher-chip-group {
+  display: inline-flex;
+  gap: var(--space-1);
+}
+
+.role-launcher-row {
+  align-items: center;
+  justify-content: flex-start;
+  padding: 0.4rem 0.5rem;
+  cursor: pointer;
+}
+
+.role-launcher-dot {
+  flex-shrink: 0;
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: var(--radius-pill);
+}
+
+.role-launcher-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.role-launcher-name {
+  font-weight: 600;
+}
+
+.role-launcher-blurb {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+}
+
+.role-launcher-mode {
+  flex-shrink: 0;
+}
+
+.role-launcher-footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  font-size: var(--text-xs);
+}

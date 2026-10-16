@@ -16,6 +16,8 @@ type Props = {
   canRemoveWorktree?: boolean;
   /** The active tab is on an Eagle-Eye chain. */
   canOpenChainOverview?: boolean;
+  /** The active tab is a Claude terminal tab (adds the chat / terminal view switch). */
+  canSwitchTerminalView?: boolean;
   /** The active tab's model choices; absent when it has no model. */
   model?: PaletteModelOptions | null;
   /** The active role's hand-off targets (adds "Hand off to <name>…" for unlisted ones). */
@@ -39,6 +41,7 @@ export function CommandPalette({
   canSendImplementerToReviewer = false,
   canRemoveWorktree = false,
   canOpenChainOverview = false,
+  canSwitchTerminalView = false,
   model = null,
   handoffTargets,
   initialQuery = "",
@@ -63,6 +66,7 @@ export function CommandPalette({
           canSendImplementerToReviewer,
           canRemoveWorktree,
           canOpenChainOverview,
+          canSwitchTerminalView,
           model,
           handoffTargets,
         }),
@@ -80,6 +84,7 @@ export function CommandPalette({
       canSendImplementerToReviewer,
       canRemoveWorktree,
       canOpenChainOverview,
+      canSwitchTerminalView,
       model,
       handoffTargets,
       query,

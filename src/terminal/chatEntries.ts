@@ -125,7 +125,7 @@ export function toolGroupText(tools: readonly ToolEntry[]): string {
   return parts.join(" · ");
 }
 
-/** The view a Claude terminal tab shows. Not kept across restarts. */
+/** The view a Claude terminal tab shows (kept across restarts: ./terminalViews.ts). */
 export type TerminalViewMode = "terminal" | "chat";
 
 export function terminalViewOf(

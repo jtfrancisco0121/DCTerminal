@@ -1,6 +1,7 @@
-import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, type Ref } from "react";
 import type { ChatEntry, ChatEntryStatus } from "../bridge";
 import { ChatMarkdown } from "../components/ChatMarkdown";
+import { detectPlatform, type Platform } from "../keymap";
 import {
   chatRows,
   decisionText,
@@ -14,6 +15,12 @@ import {
   type ToolEntry,
 } from "../terminal/chatEntries";
 import { useChatEntries } from "../terminal/chatEntriesStore";
+import {
+  PermissionCard,
+  TerminalComposer,
+  usePermissionDialog,
+  type TerminalComposerHandle,
+} from "./TerminalChatControls";
 
 /** Status classes shared with the chat tab's tool rows (App.css). */
 const STATUS_CLASS: Record<ChatEntryStatus, string> = {
@@ -47,7 +54,22 @@ function ToolRow({ tool }: { tool: ToolEntry }) {
   );
 }
 
-function EntryView({ entry }: { entry: ChatEntry }) {
+/**
+ * A plan or question still open. Claude Code asks it as a terminal dialog
+ * whose keys the app cannot read reliably, so it is answered there.
+ */
+function AnswerInTerminal({ onShowTerminal }: { onShowTerminal: () => void }) {
+  return (
+    <div className="terminal-chat-answer-here">
+      <span>Answer in the terminal.</span>
+      <button type="button" className="secondary-button" onClick={onShowTerminal}>
+        Show terminal
+      </button>
+    </div>
+  );
+}
+
+function EntryView({ entry, onShowTerminal }: { entry: ChatEntry; onShowTerminal: () => void }) {
   switch (entry.kind) {
     case "user":
       return (
@@ -100,6 +122,7 @@ function EntryView({ entry }: { entry: ChatEntry }) {
           <div className="session-stream-agent terminal-chat-plan">
             <ChatMarkdown>{entry.plan || "_The plan is empty._"}</ChatMarkdown>
           </div>
+          {entry.status === "running" && <AnswerInTerminal onShowTerminal={onShowTerminal} />}
         </section>
       );
     case "question":
@@ -124,6 +147,7 @@ function EntryView({ entry }: { entry: ChatEntry }) {
               )}
             </div>
           ))}
+          {entry.status === "running" && <AnswerInTerminal onShowTerminal={onShowTerminal} />}
         </section>
       );
   }
@@ -134,14 +158,37 @@ export type TerminalChatViewProps = {
   /** The tab's state is Needs you. */
   needsYou: boolean;
   onShowTerminal: () => void;
+  /** The tab's state is Working: the composer queues and offers Stop. */
+  working?: boolean;
+  /** Claude Code exited. */
+  exited?: boolean;
+  platform?: Platform;
+  /** Earlier sends of this tab, newest first. */
+  history?: string[];
+  beforeSend?: (tabId: string) => Promise<void>;
+  onSent?: (text: string) => void;
+  composerRef?: Ref<TerminalComposerHandle>;
 };
 
 /**
- * Read-only chat view of a Claude terminal tab, from its session log. The
- * PTY keeps running underneath; answering happens in the terminal.
+ * Chat view of a Claude terminal tab: its session log as a conversation, a
+ * composer that types into the same PTY, and the permission dialog as
+ * buttons. The PTY keeps running underneath; the terminal is one switch away.
  */
-export function TerminalChatView({ tabId, needsYou, onShowTerminal }: TerminalChatViewProps) {
+export function TerminalChatView({
+  tabId,
+  needsYou,
+  onShowTerminal,
+  working = false,
+  exited = false,
+  platform = detectPlatform(typeof navigator === "undefined" ? "" : navigator.platform),
+  history,
+  beforeSend,
+  onSent,
+  composerRef,
+}: TerminalChatViewProps) {
   const { entries } = useChatEntries(tabId);
+  const dialog = usePermissionDialog(tabId);
   const rows = useMemo(() => chatRows(entries), [entries]);
   const screenRef = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
@@ -157,7 +204,7 @@ export function TerminalChatView({ tabId, needsYou, onShowTerminal }: TerminalCh
 
   return (
     <div className="terminal-chat" data-testid="terminal-chat-view">
-      {needsYou && (
+      {needsYou && !dialog && (
         <div className="terminal-chat-banner" role="alert">
           <span>Claude is waiting for you in the terminal.</span>
           <button type="button" className="primary-button" onClick={onShowTerminal}>
@@ -193,10 +240,22 @@ export function TerminalChatView({ tabId, needsYou, onShowTerminal }: TerminalCh
               ))}
             </details>
           ) : (
-            <EntryView key={row.key} entry={row.entry} />
+            <EntryView key={row.key} entry={row.entry} onShowTerminal={onShowTerminal} />
           ),
         )}
       </div>
+      {dialog && <PermissionCard tabId={tabId} dialog={dialog} onShowTerminal={onShowTerminal} />}
+      <TerminalComposer
+        ref={composerRef}
+        tabId={tabId}
+        platform={platform}
+        working={working}
+        exited={exited}
+        history={history}
+        beforeSend={beforeSend}
+        onSent={onSent}
+        onShowTerminal={onShowTerminal}
+      />
     </div>
   );
 }
