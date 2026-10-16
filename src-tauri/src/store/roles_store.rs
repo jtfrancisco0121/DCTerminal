@@ -13,26 +13,18 @@ impl RolesStore {
         let dir = crate::data_dir::app_data_dir(app).path;
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join("roles.json");
+        let seed = bundled_seed()?;
         if !path.exists() {
-            let seed_path = seed_output_path();
-            let seed: RolesFile = read_json(&seed_path).map_err(|e| {
-                format!(
-                    "roles seed missing at {} (run `cargo run --bin build_roles_seed`): {e}",
-                    seed_path.display()
-                )
-            })?;
             write_json_atomic(&path, &seed)?;
         }
         let mut data: RolesFile = read_json(&path)?;
         // Built-in roles added in a later release (for example Plan Reviewer)
         // are appended to an existing roles.json. Roles already there, edited
         // or not, are left alone.
-        if let Ok(seed) = read_json::<RolesFile>(&seed_output_path()) {
-            let added = add_missing_builtin_roles(&mut data, &seed);
-            let upgraded = upgrade_unedited_builtin_roles(&mut data, &seed, SHIPPED_TEMPLATE_HASHES);
-            if !added.is_empty() || !upgraded.is_empty() {
-                write_json_atomic(&path, &data)?;
-            }
+        let added = add_missing_builtin_roles(&mut data, &seed);
+        let upgraded = upgrade_unedited_builtin_roles(&mut data, &seed, SHIPPED_TEMPLATE_HASHES);
+        if !added.is_empty() || !upgraded.is_empty() {
+            write_json_atomic(&path, &data)?;
         }
         Ok(Self { path, data })
     }
@@ -121,6 +113,17 @@ pub fn docs_roles_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../docs/roles")
 }
 
+/// The roles seed compiled into the binary, so an installed app never needs
+/// the source tree. Regenerate with `cargo run --bin build_roles_seed`.
+const BUNDLED_SEED: &str = include_str!("../../../seed/roles.seed.json");
+
+/// The built-in roles this build ships, parsed from the bundled seed.
+pub fn bundled_seed() -> Result<RolesFile, String> {
+    serde_json::from_str(BUNDLED_SEED).map_err(|e| format!("bundled roles seed is invalid: {e}"))
+}
+
+/// Where `build_roles_seed` writes the seed in the source tree. Only the seed
+/// builder and tests read this path; the app itself uses [`bundled_seed`].
 pub fn seed_output_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../seed/roles.seed.json")
 }
@@ -146,6 +149,15 @@ mod upgrade_tests {
         role.name = "My Planner".to_string();
         role.color = "#123456".to_string();
         file
+    }
+
+    #[test]
+    fn the_bundled_seed_matches_the_seed_file() {
+        let on_disk: serde_json::Value = read_json(&seed_output_path()).expect("seed file");
+        let bundled = serde_json::to_value(bundled_seed().expect("bundled seed")).unwrap();
+        let raw: serde_json::Value = serde_json::from_str(BUNDLED_SEED).unwrap();
+        assert_eq!(raw, on_disk);
+        assert_eq!(bundled, on_disk);
     }
 
     #[test]

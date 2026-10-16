@@ -77,6 +77,27 @@ test.describe("command palette", () => {
     expect(selected.args.tabId).toBe("tab-2");
   });
 
+  test("Open localhost preview opens a preview tab that frames localhost only", async ({ app, page }) => {
+    await app.open({ tabs: namedTabs(1) });
+    await openPalette(page, "localhost preview");
+    await entry(page, "Open localhost preview").click();
+    const opened = await app.waitForCall("open_preview_tab");
+    expect(opened.args.url).toBe("http://localhost:5173");
+    const preview = page.getByRole("region", { name: "Localhost preview" });
+    await expect(preview.locator("iframe")).toHaveAttribute("src", "http://localhost:5173");
+
+    await preview.getByRole("textbox", { name: "Address" }).fill("https://example.com");
+    await preview.getByRole("button", { name: "Go" }).click();
+    await expect(preview.getByText("This address opens in your browser.")).toBeVisible();
+    await expect(preview.locator("iframe")).toHaveCount(0);
+
+    await preview.getByRole("textbox", { name: "Address" }).fill("127.0.0.1:3000");
+    await preview.getByRole("button", { name: "Go" }).click();
+    await expect(preview.locator("iframe")).toHaveAttribute("src", "http://127.0.0.1:3000");
+    const saved = await app.waitForCall("set_preview_url");
+    expect(saved.args.url).toBe("http://127.0.0.1:3000");
+  });
+
   test("toggleGrid and addToGrid run from the palette", async ({ app, page }) => {
     await app.open({ tabs: namedTabs(4) });
     await openPalette(page, "add tab to grid");

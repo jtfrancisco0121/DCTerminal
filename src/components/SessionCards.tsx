@@ -8,7 +8,7 @@ import { HandoffActions } from "./HandoffDialog";
 import type { HandoffTargetId, RoleName } from "../handoff/map";
 
 type PlanRequest = {
-  jsonRpcId: number;
+  jsonRpcId: number | string;
   title: string;
   entries: PlanEntry[];
   markdown?: string | null;

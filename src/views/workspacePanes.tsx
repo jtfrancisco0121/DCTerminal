@@ -18,7 +18,10 @@ import { tabStatusLabel, type TabStatus } from "../tabStatus";
 import { livePty } from "../terminal/live";
 import { contextPercent } from "../usage/limits";
 import { SessionHeaderControls, type HeaderControls } from "./SessionHeaderControls";
-import { terminalHeaderFor, type TerminalHeaderDeps } from "./terminalHeader";
+import { terminalHeaderFor, terminalHeaderState, type TerminalHeaderDeps } from "./terminalHeader";
+import { roleDisplayName } from "../handoff/transitions";
+import { headerStateOf } from "../terminal/headerState";
+import { PaneStrip } from "./PaneStrip";
 import { isClaudeTerminal, terminalLaunchOf } from "./tabHelpers";
 
 /** What the second pane and the grid cells read and change in the workspace. */
@@ -104,6 +107,32 @@ export function createPaneRenderers({
   restartSecondarySession,
   headerDeps,
 }: PaneDeps) {
+  /**
+   * The thin strip on top of a pane: number, role, folder and branch, and
+   * the same state pill as the tab's terminal header (chats read the tab
+   * chip's status the same way).
+   */
+  const paneStrip = (tab: TabSummary, number: number, focused: boolean): ReactNode => {
+    const plainTerminal = tab.kind === "terminal" && tab.terminalLaunch !== "role";
+    const state =
+      tab.kind === "terminal"
+        ? terminalHeaderState(headerDeps, tab).header
+        : headerStateOf({ status: tabStatuses[tab.id], turnEnded: false });
+    return (
+      <PaneStrip
+        number={number}
+        roleName={plainTerminal ? "Terminal" : roleDisplayName(tab.roleId, roles)}
+        cwd={tab.cwd}
+        branch={tab.worktreeBranch}
+        state={state}
+        focused={focused}
+      />
+    );
+  };
+
+  /** 1-based place of a tab in the grid. */
+  const gridNumber = (tabId: string) => (splitRef.current.gridTabIds ?? []).indexOf(tabId) + 1;
+
   /**
    * A live view of a tab that is not the active one: the same terminal
    * process, or the running chat with its own composer.
@@ -231,12 +260,15 @@ export function createPaneRenderers({
     );
     return (
       <div
-        className={focusedPane === "secondary" ? "split-pane split-pane-focused" : "split-pane"}
+        className={
+          focusedPane === "secondary" ? "split-pane split-pane-focused" : "split-pane split-pane-dim"
+        }
         data-pane="secondary"
         aria-label={`Second pane: ${tab.label}`}
         onFocusCapture={() => setFocusedPane("secondary")}
         onMouseDown={() => setFocusedPane("secondary")}
       >
+        {paneStrip(tab, 2, focusedPane === "secondary")}
         {tab.kind === "terminal" ? (
           terminalHeaderFor(headerDeps, tab, {
             compact: true,
@@ -297,26 +329,35 @@ export function createPaneRenderers({
         ×
       </button>
     );
+    const strip = paneStrip(tab, gridNumber(tab.id), tab.id === activeTabIdRef.current);
     // R25: a terminal cell gets the compact terminal header with its state and next step.
     if (tab.kind === "terminal") {
-      return terminalHeaderFor(headerDeps, tab, {
-        compact: true,
-        controls: tab.id === activeTabIdRef.current,
-        actions: removeButton,
-      });
+      return (
+        <>
+          {strip}
+          {terminalHeaderFor(headerDeps, tab, {
+            compact: true,
+            controls: tab.id === activeTabIdRef.current,
+            actions: removeButton,
+          })}
+        </>
+      );
     }
     return (
-      <div className="split-pane-bar">
-        <span className={`grid-cell-dot grid-cell-dot-${tone}`} aria-hidden />
-        <span className="split-pane-title" title={tab.cwd}>
-          {tab.label}
-        </span>
-        {status && tone !== "idle" && (
-          <span className="grid-cell-status">{tabStatusLabel(status)}</span>
-        )}
-        <span className="split-pane-spacer" />
-        {removeButton}
-      </div>
+      <>
+        {strip}
+        <div className="split-pane-bar">
+          <span className={`grid-cell-dot grid-cell-dot-${tone}`} aria-hidden />
+          <span className="split-pane-title" title={tab.cwd}>
+            {tab.label}
+          </span>
+          {status && tone !== "idle" && (
+            <span className="grid-cell-status">{tabStatusLabel(status)}</span>
+          )}
+          <span className="split-pane-spacer" />
+          {removeButton}
+        </div>
+      </>
     );
   };
 
@@ -337,7 +378,7 @@ export function createPaneRenderers({
     };
     return (
       <div
-        className={`split-pane grid-cell grid-cell-${tone}`}
+        className={`split-pane split-pane-dim grid-cell grid-cell-${tone}`}
         data-pane="grid"
         aria-label={`Grid cell: ${tab.label}`}
         onMouseDownCapture={(event) => {
@@ -362,5 +403,5 @@ export function createPaneRenderers({
     );
   };
 
-  return { paneBody, renderSecondary, gridTone, gridCellBar, renderGridCell };
+  return { paneBody, paneStrip, renderSecondary, gridTone, gridCellBar, renderGridCell };
 }

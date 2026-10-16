@@ -290,6 +290,7 @@ export const PALETTE_ACTIONS = [
   "showLogs",
   "pipelineWorkspace",
   "executionPipelineWorkspace",
+  "openPreview",
   "startEagleEye1",
   "startEagleEye2",
   "openChainOverview",
@@ -531,6 +532,12 @@ export function buildPalette(opts: {
       title: "New execution pipeline (eagle-eye + 2 roles)",
       group: "Workspaces",
       keywords: "implementer reviewer execute approved plan pipeline preset tabs",
+    },
+    {
+      id: "openPreview",
+      title: "Open localhost preview",
+      group: "Tabs",
+      keywords: "browser preview localhost dev server web page iframe",
     },
     {
       id: "workspaces",

@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it } from "vitest";
+import { DEFAULT_THEME, TERMINAL_THEMES, THEMES, type ThemeId } from "./theme";
 
 let css = "";
 beforeAll(async () => {
@@ -94,5 +95,74 @@ describe("chain tab strip (R19)", () => {
     expect(rule(".tab-chip")).toMatch(/flex: 0 0 auto/);
     expect(rule(".tab-list")).toMatch(/overflow-x: auto/);
     expect(rule(".tab-chip-chain")).toMatch(/flex: 0 1 auto/);
+  });
+});
+
+describe("theme presets", () => {
+  /** `--name: value` pairs of the top-level rule with exactly this selector. */
+  const tokens = (selector: string): Map<string, string> => {
+    const text = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    const at = text.search(new RegExp(`(?:^|\\n)${selector.replace(/[[\]().:"]/g, "\\$&")}\\s*\\{`));
+    const body = at < 0 ? "" : text.slice(text.indexOf("{", at) + 1, text.indexOf("}", at));
+    return new Map([...body.matchAll(/(--[\w-]+):\s*([^;]+);/g)].map((m) => [m[1], m[2].trim()]));
+  };
+  const blockFor = (id: ThemeId) =>
+    id === DEFAULT_THEME ? tokens(":root") : tokens(`:root[data-theme="${id}"]`);
+  /** Colour tokens on :root: the ones each theme must set (the scale tokens are shared). */
+  const colourTokens = () =>
+    [...tokens(":root")].filter(([, value]) => /^(#|rgba?\()/.test(value)).map(([name]) => name);
+
+  const channel = (value: number) => {
+    const c = value / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  const luminance = (hex: string) => {
+    const n = parseInt(hex.slice(1, 7), 16);
+    return (
+      0.2126 * channel((n >> 16) & 255) +
+      0.7152 * channel((n >> 8) & 255) +
+      0.0722 * channel(n & 255)
+    );
+  };
+  const contrast = (a: string, b: string) => {
+    const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+
+  it("every preset sets every colour token :root sets", () => {
+    const required = colourTokens();
+    expect(required.length).toBeGreaterThan(40);
+    for (const theme of THEMES) {
+      const block = blockFor(theme.id);
+      const missing = required.filter((name) => !block.has(name));
+      expect(missing, theme.id).toEqual([]);
+    }
+  });
+
+  it("every theme has a terminal palette, and its swatch matches the CSS", () => {
+    for (const theme of THEMES) {
+      expect(TERMINAL_THEMES[theme.id], theme.id).toBeDefined();
+      const block = blockFor(theme.id);
+      expect(
+        ["--bg", "--accent", "--success", "--attention", "--done"].map((name) => block.get(name)),
+        theme.id,
+      ).toEqual(theme.swatch);
+      expect(TERMINAL_THEMES[theme.id].background, theme.id).toBe(theme.swatch[0]);
+    }
+  });
+
+  it("keeps the status colours distinct and readable on every dark preset", () => {
+    for (const theme of THEMES.filter((t) => t.scheme === "dark")) {
+      const block = blockFor(theme.id);
+      const bg = block.get("--bg") as string;
+      // Working, Needs you, Done, Exited.
+      const status = ["--accent", "--attention", "--done", "--danger"].map(
+        (name) => block.get(name) as string,
+      );
+      expect(new Set(status).size, theme.id).toBe(4);
+      for (const color of status) {
+        expect(contrast(color, bg), `${theme.id} ${color}`).toBeGreaterThanOrEqual(3);
+      }
+    }
   });
 });

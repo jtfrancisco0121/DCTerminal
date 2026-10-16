@@ -133,12 +133,13 @@ fn go(run: &mut PipelineRun, decision: Decision, detail: Option<String>) -> Deci
         }
         _ => decision.reason.clone(),
     };
-    run.log(
+    run.log_outcome(
         kind,
         decision.stage_id.as_deref(),
         decision.role_id.as_deref(),
         summary,
         detail,
+        Some(decision.action.clone()),
     );
     decision
 }

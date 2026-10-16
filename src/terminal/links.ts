@@ -44,6 +44,49 @@ export function findPathLinks(text: string): PathLink[] {
   return links;
 }
 
+/** A bare path in terminal output (no `:line`), before the existence check. */
+export type BarePath = {
+  path: string;
+  /** Zero-based start offset in the line, and exclusive end offset. */
+  start: number;
+  end: number;
+};
+
+// Tokenising after ADE (better-agentic-ide) src/lib/terminalFileLinks.ts,
+// MIT License, (c) 2025-2026 Alvin Reyes. Brackets, quotes and commas end a
+// path, so "Write(docs/plan.md)" and "`a.md`," yield just the path.
+const BARE_TOKEN = /[^\s`'"()<>[\]{}|,;]+/g;
+const TRAILING = /[.:!?]+$/;
+const LINE_COL = /(:\d+){1,2}$/;
+const HAS_EXT = /\.[A-Za-z0-9]{1,10}$/;
+/** At most this many candidates per line go to the existence check. */
+export const MAX_BARE_PER_LINE = 20;
+
+/**
+ * Path-like tokens that `findPathLinks` does not already cover: anything with
+ * a folder separator or a file extension. Most are not files ("e.g", "3.14"
+ * is skipped here); the caller keeps only the ones that exist.
+ */
+export function findBarePaths(text: string): BarePath[] {
+  const taken = findPathLinks(text);
+  const out: BarePath[] = [];
+  BARE_TOKEN.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = BARE_TOKEN.exec(text)) !== null && out.length < MAX_BARE_PER_LINE) {
+    const start = match.index;
+    const raw = match[0];
+    if (raw.includes("://") || raw.startsWith("-") || raw.startsWith("@")) continue;
+    const token = raw.replace(TRAILING, "").replace(LINE_COL, "").replace(TRAILING, "");
+    if (token.length < 3 || token.startsWith("~")) continue;
+    if (!token.includes("/") && !token.includes("\\") && !HAS_EXT.test(token)) continue;
+    if (/^v?[\d.]+$/.test(token) || /^\.+[\\/]*$/.test(token)) continue;
+    const end = start + token.length;
+    if (taken.some((link) => start < link.end && end > link.start)) continue;
+    out.push({ path: token, start, end });
+  }
+  return out;
+}
+
 function segments(value: string): string[] {
   return value.split("/").filter((part) => part && part !== ".");
 }

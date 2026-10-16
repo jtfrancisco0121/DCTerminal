@@ -153,12 +153,13 @@ pub async fn pipeline_run_gates(
         .map(|l| format!("{}: ", l.title))
         .unwrap_or_default();
     for result in &results {
-        run.log(
+        run.log_outcome(
             "gate",
             Some(&stage_id),
             None,
             format!("{lane_tag}{}: {}", result.label, result.summary),
             (!result.output.is_empty()).then(|| result.output.clone()),
+            Some(result.status.clone()),
         );
     }
     // The round as it is now: a loop-back may have started while the checks ran.
@@ -262,6 +263,68 @@ pub fn pipeline_note(
         detail,
     );
     store.save()?;
+    app.chain_run_updated(&run_id);
+    Ok(())
+}
+
+/// Records that a stage's terminal finished a turn, so the run lanes can
+/// draw where each turn ended. `verdict` is a reviewer's verdict, if its
+/// reply had one. Unknown stages are refused; a lane that is not on the run
+/// is ignored.
+pub fn turn_finished(
+    store: &mut StateStore,
+    run_id: &str,
+    stage_id: &str,
+    role_id: &str,
+    lane: Option<&str>,
+    verdict: Option<&str>,
+) -> Result<(), String> {
+    let run = store
+        .pipeline_run_by_id_mut(run_id)
+        .ok_or_else(|| format!("unknown pipeline run: {run_id}"))?;
+    let title = crate::pipelines::find(&run.kind)
+        .and_then(|def| def.stage(stage_id).map(|stage| stage.title.clone()))
+        .ok_or_else(|| format!("unknown stage: {stage_id}"))?;
+    let lane_tag = lane
+        .and_then(|id| run.lane(id))
+        .map(|l| format!("{}: ", l.title))
+        .unwrap_or_default();
+    let verdict = verdict.map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
+    let summary = match &verdict {
+        Some(verdict) => format!("{lane_tag}{title} finished its turn ({verdict})"),
+        None => format!("{lane_tag}{title} finished its turn"),
+    };
+    run.log_outcome(
+        "turn",
+        Some(stage_id),
+        Some(role_id),
+        summary,
+        None,
+        verdict,
+    );
+    store.save()
+}
+
+#[tauri::command]
+pub fn pipeline_turn_finished(
+    app: tauri::AppHandle,
+    run_id: String,
+    stage_id: String,
+    role_id: String,
+    lane: Option<String>,
+    verdict: Option<String>,
+    store: State<Mutex<StateStore>>,
+) -> Result<(), String> {
+    let run_id = run_id.trim().to_string();
+    let mut store = store.lock().map_err(|e| e.to_string())?;
+    turn_finished(
+        &mut store,
+        &run_id,
+        stage_id.trim(),
+        role_id.trim(),
+        lane.as_deref(),
+        verdict.as_deref(),
+    )?;
     app.chain_run_updated(&run_id);
     Ok(())
 }
@@ -478,7 +541,7 @@ pub fn pipeline_approve(
 
 #[cfg(test)]
 mod tests {
-    use super::{approve, fan_out, set_lane_status, ApproveResult, LaneInput};
+    use super::{approve, fan_out, set_lane_status, turn_finished, ApproveResult, LaneInput};
     use crate::roles::Role;
     use crate::store::{AppStateFile, ChainRef, StateStore, MAIN_WINDOW_ID};
 
@@ -693,5 +756,61 @@ mod tests {
             .map(|e| (e.kind.as_str(), e.summary.as_str()))
             .collect();
         assert_eq!(kinds, vec![("complete", "Complete: approved by you."), ("note", "Approved by you")]);
+    }
+
+    #[test]
+    fn a_finished_turn_is_recorded_with_its_verdict_and_lane() {
+        let (_dir, mut store) = store("turn_finished");
+        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        turn_finished(&mut store, "ee_f", "planner", "role_planner", None, None).unwrap();
+        turn_finished(&mut store, "ee_f", "plan_reviewer", "role_plan_reviewer", None, Some(" APPROVED ")).unwrap();
+        let run = store.pipeline_run_by_id("ee_f").unwrap();
+        let events: Vec<_> = run.events.iter().filter(|e| e.kind == "turn").collect();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].stage_id.as_deref(), Some("planner"));
+        assert_eq!(events[0].outcome, None);
+        assert_eq!(events[0].summary, "Planner finished its turn");
+        assert_eq!(events[1].role_id.as_deref(), Some("role_plan_reviewer"));
+        assert_eq!(events[1].outcome.as_deref(), Some("APPROVED"));
+        assert!(events[1].summary.ends_with("finished its turn (APPROVED)"));
+
+        fan_out(&mut store, "ee_f", "implementer", lanes()).unwrap();
+        turn_finished(&mut store, "ee_f", "implementer", "role_implementer", Some("pr1"), None).unwrap();
+        let last = store.pipeline_run_by_id("ee_f").unwrap().events.last().cloned().unwrap();
+        assert!(last.summary.starts_with("PR1 — API: "), "{}", last.summary);
+        // A lane the run does not have only loses its tag.
+        turn_finished(&mut store, "ee_f", "implementer", "role_implementer", Some("pr9"), None).unwrap();
+        let last = store.pipeline_run_by_id("ee_f").unwrap().events.last().cloned().unwrap();
+        assert!(last.summary.starts_with("Implementer"), "{}", last.summary);
+    }
+
+    #[test]
+    fn a_finished_turn_on_an_unknown_run_or_stage_is_refused() {
+        let (_dir, mut store) = store("turn_finished_bad");
+        assert!(turn_finished(&mut store, "nope", "planner", "role_planner", None, None).is_err());
+        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        let before = store.pipeline_run_by_id("ee_f").unwrap().events.len();
+        assert!(turn_finished(&mut store, "ee_f", "nowhere", "role_planner", None, None)
+            .unwrap_err()
+            .contains("unknown stage"));
+        assert_eq!(store.pipeline_run_by_id("ee_f").unwrap().events.len(), before);
+    }
+
+    #[test]
+    fn promoting_a_plan_records_the_round_it_was_approved_in() {
+        let (_dir, mut store) = store("promote_round");
+        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        let implementer = store.create_draft_tab(&role("role_implementer"), "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&implementer, Some(chain(3, None)), Some("plan")).unwrap();
+        store.pipeline_run_by_id_mut("ee_f").unwrap().round = 2;
+        store.pipeline_promote_plan("ee_f", "the plan").unwrap();
+        let run = store.pipeline_run_by_id("ee_f").unwrap();
+        let approved = run.events.last().unwrap();
+        assert_eq!(approved.outcome.as_deref(), Some("planApproved"));
+        assert_eq!(approved.round, 2);
+        assert_eq!(run.approved_plan.as_deref(), Some("the plan"));
     }
 }

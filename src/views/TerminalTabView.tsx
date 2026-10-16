@@ -1,4 +1,5 @@
 import type { ReactNode, RefObject } from "react";
+import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import {
   promptRecordSend,
   ptyWrite,
@@ -21,6 +22,9 @@ import type { TerminalViewMode } from "../terminal/chatEntries";
 import { isClaudeTerminal, terminalLaunchOf, type PadSizeProps } from "./tabHelpers";
 import { TerminalChatView } from "./TerminalChatView";
 import type { TerminalComposerHandle } from "./TerminalChatControls";
+import { runIdOfTab } from "../pipeline/planPane";
+import { PlanPane } from "./PlanPane";
+import { usePlanPaneOpen } from "./planPaneState";
 
 export type TerminalTabViewProps = {
   activeTabId: string | null;
@@ -105,25 +109,11 @@ export function TerminalTabView({
   // The terminal opens the PTY: a tab restored as Chat shows it until Claude Code runs.
   const chat =
     view === "chat" && !inGrid && isClaudeTerminal(activeTabSummary) && !!livePty(activeTabSummary.id);
-  return (
-    <section className="status-card status-card-session-full terminal-screen">
-      {linked && (
-        <HandoffBanner
-          sourceRoleId={linked.sourceRoleId}
-          title={linked.title}
-          warning={linked.warning}
-          roleNames={roles}
-          onOpen={() => openSavedHandoff(linked)}
-          fileNote={
-            promptFileTabs.includes(linked.targetTabId ?? "")
-              ? "The prompt was too long to pass directly, so Claude Code reads it from a file."
-              : null
-          }
-          onOpenText={() => openSavedHandoff(linked, true)}
-        />
-      )}
-      {terminalError && <p className="error">{terminalError}</p>}
-      {!inGrid && header}
+  // A pipeline tab can dock its run's plan on the right (not in a grid cell).
+  const runId = inGrid ? null : runIdOfTab(activeTabSummary);
+  const planOpen = usePlanPaneOpen(activeTabSummary.id) && !!runId;
+  const body = (
+    <>
       {chat && (
         <TerminalChatView
           tabId={activeTabSummary.id}
@@ -168,6 +158,46 @@ export function TerminalTabView({
               : []
           }
         />
+      )}
+    </>
+  );
+  return (
+    <section className="status-card status-card-session-full terminal-screen">
+      {linked && (
+        <HandoffBanner
+          sourceRoleId={linked.sourceRoleId}
+          title={linked.title}
+          warning={linked.warning}
+          roleNames={roles}
+          onOpen={() => openSavedHandoff(linked)}
+          fileNote={
+            promptFileTabs.includes(linked.targetTabId ?? "")
+              ? "The prompt was too long to pass directly, so Claude Code reads it from a file."
+              : null
+          }
+          onOpenText={() => openSavedHandoff(linked, true)}
+        />
+      )}
+      {terminalError && <p className="error">{terminalError}</p>}
+      {!inGrid && header}
+      {runId ? (
+        // The group stays mounted while the pane opens and closes, so the
+        // terminal is not remounted (like WorkspaceSplit).
+        <PanelGroup direction="horizontal" className="plan-split">
+          <Panel id="plan-split-main" order={1} minSize={30} defaultSize={planOpen ? 62 : 100} className="plan-split-main">
+            {body}
+          </Panel>
+          {planOpen && (
+            <>
+              <PanelResizeHandle className="split-handle" />
+              <Panel id="plan-split-pane" order={2} minSize={18} defaultSize={38} className="plan-split-pane">
+                <PlanPane tabId={activeTabSummary.id} runId={runId} />
+              </Panel>
+            </>
+          )}
+        </PanelGroup>
+      ) : (
+        body
       )}
       {!inGrid && !chat && (
         <TerminalScratchPad

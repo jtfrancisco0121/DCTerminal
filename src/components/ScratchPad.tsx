@@ -1,4 +1,12 @@
-import { forwardRef, useRef, type KeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
+import {
+  forwardRef,
+  useEffect,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type KeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 import { splitChainSteps, type ChainCursor } from "../scratch/pad";
 import { useSlashAutocomplete } from "../composer/SlashCommandMenu";
 import { blockedSlashCommandIn, type SlashCommand } from "../composer/slashCommands";
@@ -6,6 +14,14 @@ import type { ChatImagesProps } from "../attachments/useChatImages";
 import { localShortcutLabel, shortcutLabel, type Platform } from "../keymap";
 import { AttachmentChips, imageInputHandlers } from "./AttachmentChips";
 import { useImageFileDrop } from "../attachments/useImageFileDrop";
+import {
+  applyCompact,
+  compactOfferFor,
+  offerStillValid,
+  undoCompact,
+  type PasteOffer,
+} from "../scratch/compactPaste";
+import { Kbd } from "./Kbd";
 
 type Props = {
   content: string;
@@ -134,6 +150,34 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
   });
   const blockedWarning = terminal ? null : blockedSlashCommandIn(splitChainSteps(content));
 
+  // A large or noisy paste gets an offer to compact it. Nothing changes until
+  // the user picks it, and Undo puts the original back.
+  const [pasteOffer, setPasteOffer] = useState<PasteOffer | null>(null);
+  useEffect(() => {
+    if (pasteOffer && !offerStillValid(content, pasteOffer)) setPasteOffer(null);
+  }, [content, pasteOffer]);
+  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const data = event.clipboardData;
+    const pasted = typeof data?.getData === "function" ? data.getData("text/plain") : "";
+    const offer = compactOfferFor(pasted, event.currentTarget.selectionStart);
+    // Offer once the browser has inserted the paste and onChange has run.
+    if (offer) window.setTimeout(() => setPasteOffer(offer), 0);
+  };
+  const compactPaste = () => {
+    if (!pasteOffer) return;
+    const next = applyCompact(content, pasteOffer);
+    if (next === null) return setPasteOffer(null);
+    onChange(next);
+    setPasteOffer({ ...pasteOffer, applied: true });
+  };
+  const undoCompactPaste = () => {
+    if (!pasteOffer) return;
+    const next = undoCompact(content, pasteOffer);
+    if (next !== null) onChange(next);
+    setPasteOffer(null);
+  };
+  const imageHandlers = imageInputHandlers(terminal ? null : images);
+
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (slash.onKeyDown(event)) return;
     if (event.key === "Escape" && terminal && !event.ctrlKey && !event.metaKey && !event.altKey) {
@@ -169,7 +213,7 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
         <span className="scratch-pad-title">Scratch pad</span>
         <span className="hint scratch-pad-hint">
           {terminal
-            ? `${modLabel}+Shift+. send · ${(platform ? shortcutLabel("focusPad", platform) : localShortcutLabel("focusPad")) ?? `${modLabel}+J`} focus · Esc terminal`
+            ? `--- splits steps · ${(platform ? shortcutLabel("focusPad", platform) : localShortcutLabel("focusPad")) ?? `${modLabel}+J`} focus pad · Esc back to terminal`
             : `${localShortcutLabel("transferPad")} transfer · ${localShortcutLabel("send")} send to chat${
                 chained ? " · --- starts the next step after the turn ends" : ""
               }`}
@@ -198,7 +242,7 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
           )}
           {!terminal && (
             <button type="button" className="secondary-button" onClick={onTransfer} disabled={disabled}>
-              Transfer
+              Transfer <Kbd action="transferPad" platform={platform} />
             </button>
           )}
           {!terminal && onTransferTerminal && (
@@ -234,7 +278,7 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
               onClick={onSend}
               disabled={disabled || (terminal && !content.trim()) || !!blockedWarning}
             >
-              {chained ? "Send steps" : "Send"}
+              {chained ? "Send steps" : "Send"} <Kbd action="send" platform={platform} />
             </button>
           )}
           {running && (
@@ -270,6 +314,29 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
       {blockedWarning && !collapsed && (
         <p className="error scratch-pad-status" role="alert">{blockedWarning}</p>
       )}
+      {pasteOffer && !collapsed && (
+        <p className="hint scratch-pad-status compact-offer" role="status">
+          {pasteOffer.applied ? (
+            <>
+              Paste compacted ({pasteOffer.original.length.toLocaleString()} →{" "}
+              {pasteOffer.compacted.length.toLocaleString()} characters).{" "}
+              <button type="button" className="link-button" onClick={undoCompactPaste}>
+                Undo
+              </button>
+            </>
+          ) : (
+            <>
+              <button type="button" className="link-button" onClick={compactPaste}>
+                Compact this paste
+              </button>{" "}
+              (strip colours, fold repeated lines) ·{" "}
+              <button type="button" className="link-button" onClick={() => setPasteOffer(null)}>
+                Keep as is
+              </button>
+            </>
+          )}
+        </p>
+      )}
       {!collapsed && slash.menu}
       {!terminal && images && showImageChips && !collapsed && <AttachmentChips images={images} />}
       <textarea
@@ -295,7 +362,11 @@ export const ScratchPad = forwardRef<HTMLTextAreaElement, Props>(function Scratc
         aria-label="Scratch pad editor"
         hidden={collapsed}
         {...slash.inputProps}
-        {...imageInputHandlers(terminal ? null : images)}
+        {...imageHandlers}
+        onPaste={(event) => {
+          (imageHandlers as { onPaste?: (e: typeof event) => void }).onPaste?.(event);
+          if (!event.defaultPrevented) onPaste(event);
+        }}
       />
     </section>
   );

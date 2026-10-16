@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { DisabledReason } from "./DisabledReason";
 import {
   composePlanText,
@@ -24,6 +24,8 @@ import { loopBackMessage } from "../handoff/routing";
 import type { ChainRef } from "../handoff/chains";
 import { Dialog } from "./Dialog";
 import { InlineNotice } from "./InlineNotice";
+import { Kbd } from "./Kbd";
+import { detectPlatform } from "../keymap";
 
 /** A chain reviewer sending its round back to an earlier stage. */
 export type LoopBackTarget = {
@@ -157,6 +159,22 @@ export function HandoffDialog({
         ? "There is nothing to send yet."
         : null));
 
+  const chatHintId = useId();
+  // ⌘/Ctrl+Enter is the main button, as in the composer.
+  const confirmRef = useRef<(() => void) | null>(null);
+  confirmRef.current = canConfirm ? () => onConfirm(scope, surface) : null;
+  useEffect(() => {
+    const mac = detectPlatform(navigator.platform) === "mac";
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Enter" || event.shiftKey || event.altKey || event.isComposing) return;
+      if (!(mac ? event.metaKey : event.ctrlKey) || !confirmRef.current) return;
+      event.preventDefault();
+      confirmRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   return (
     <Dialog
       title={heading}
@@ -183,6 +201,7 @@ export function HandoffDialog({
                 : surface === "terminal"
                   ? `Start ${targetLabel} terminal`
                   : `Open ${targetLabel} tab`}
+            {!busy && <Kbd action="send" />}
           </button>
         </>
       }
@@ -235,21 +254,27 @@ export function HandoffDialog({
             <input
               type="radio"
               name="handoff-surface"
-              checked={surface === "chat"}
-              onChange={() => setSurface("chat")}
-              disabled={busy}
-            />
-            <span>Chat</span>
-          </label>
-          <label className="handoff-choice">
-            <input
-              type="radio"
-              name="handoff-surface"
               checked={surface === "terminal"}
               onChange={() => setSurface("terminal")}
               disabled={busy}
             />
             <span>Terminal</span>
+          </label>
+          <label className="handoff-choice">
+            <input
+              type="radio"
+              name="handoff-surface"
+              checked={surface === "chat"}
+              onChange={() => setSurface("chat")}
+              disabled={busy}
+              aria-describedby={chatHintId}
+            />
+            <span>
+              Chat{" "}
+              <span id={chatHintId} className="surface-hint" aria-hidden="true">
+                Autopilot needs Terminal
+              </span>
+            </span>
           </label>
         </fieldset>
         )}

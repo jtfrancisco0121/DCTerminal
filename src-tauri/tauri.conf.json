@@ -19,7 +19,9 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost; worker-src 'self' blob:; frame-src http://localhost:* http://127.0.0.1:*; object-src 'none'; base-uri 'self'; form-action 'none'",
+      "devCsp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:1420 ws://127.0.0.1:1420 ws://127.0.0.1:1421; worker-src 'self' blob:; frame-src http://localhost:* http://127.0.0.1:*; object-src 'none'; base-uri 'self'; form-action 'none'",
+      "dangerousDisableAssetCspModification": ["style-src"]
     }
   },
   "bundle": {

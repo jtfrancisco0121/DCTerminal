@@ -39,6 +39,7 @@ pub use app_state::{
     chain_loop_back, open_chain_overview, set_layout, set_tab_chain, set_tab_color, set_tab_label,
     start_eagle_eye,
     sync_active_tab_form,
+    open_preview_tab, set_preview_url,
 };
 pub use changes::{changes_file_diff, changes_list, changes_revert, changes_snapshot, ChangesRoot};
 pub use cursor_cli::{list_claude_history, list_cursor_cli_history, open_in_cursor_cli};
@@ -51,7 +52,7 @@ pub use forms::{get_form_recall, save_form_draft};
 pub use handoff::{handoff_attach, handoff_bind_tab, handoff_get, handoff_list, handoff_save};
 pub use pipeline::{
     get_pipeline_run, pipeline_decide, pipeline_defs_list, pipeline_defs_save, pipeline_fan_out,
-    pipeline_approve, pipeline_lane_status, pipeline_note,
+    pipeline_approve, pipeline_lane_status, pipeline_note, pipeline_turn_finished,
     pipeline_promote_plan, pipeline_run_gates, pipeline_set_autopilot, pipeline_set_candidate_plan,
 };
 pub use model_session::{acp_set_effort, acp_set_model};

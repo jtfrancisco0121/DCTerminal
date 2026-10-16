@@ -1,5 +1,5 @@
 use super::connection::default_io_timeout;
-use super::connection::{AcpConnection, ClientFollowups, LineDispatch, TurnControl};
+use super::connection::{AcpConnection, AgentOutbox, ClientFollowups, LineDispatch, TurnControl};
 use super::ndjson::session_prompt_params;
 use super::session_connect::{
     handshake, handshake_load, model_requests, parse_session_models, SessionModels,
@@ -23,7 +23,7 @@ pub struct AcpClient {
     cwd: PathBuf,
     next_id: u64,
     cancel: Arc<AtomicBool>,
-    outbox: Arc<Mutex<Vec<(u64, Value)>>>,
+    outbox: AgentOutbox,
     followups: ClientFollowups,
     models: SessionModels,
     provider: SharedProvider,
@@ -331,7 +331,7 @@ impl AcpClient {
         Arc::clone(&self.cancel)
     }
 
-    pub fn outbox(&self) -> Arc<Mutex<Vec<(u64, Value)>>> {
+    pub fn outbox(&self) -> AgentOutbox {
         Arc::clone(&self.outbox)
     }
 
@@ -371,7 +371,10 @@ impl AcpClient {
         self.cancel.store(false, Ordering::SeqCst);
         let id = self.next_id;
         self.next_id += 1;
-        let mut dispatch = LineDispatch::default();
+        // The turn reads only the reply text and the update count, so it
+        // keeps no notifications: a long turn's updates stream through.
+        let mut dispatch = LineDispatch::with_keep_limit(0);
+        dispatch.collect_agent_text();
         if let Some(handler) = on_notification {
             dispatch.set_on_notification(handler);
         }
@@ -400,33 +403,10 @@ impl AcpClient {
             .get("stopReason")
             .and_then(|v| v.as_str())
             .map(String::from);
-        let agent_text = extract_agent_text(&dispatch);
         Ok(PromptResult {
             stop_reason,
-            agent_text,
-            update_count: dispatch.notifications.len(),
+            agent_text: dispatch.agent_text().to_string(),
+            update_count: dispatch.notification_count,
         })
     }
-}
-
-fn extract_agent_text(dispatch: &LineDispatch) -> String {
-    use super::text_extract::{text_from_session_params, update_kind};
-    let mut parts = Vec::new();
-    for note in &dispatch.notifications {
-        if note.get("method").and_then(|m| m.as_str()) != Some("session/update") {
-            continue;
-        }
-        let params = note.get("params").unwrap_or(note);
-        // Claude names the kind `sessionUpdate`, so reading only `type` let
-        // thinking and tool labels into the reply text.
-        let kind = update_kind(params.get("update").unwrap_or(params));
-        let normalized = kind.replace('_', "").to_lowercase();
-        if normalized.contains("thought") || normalized.contains("toolcall") {
-            continue;
-        }
-        if let Some(text) = text_from_session_params(params) {
-            parts.push(text);
-        }
-    }
-    parts.join("")
 }

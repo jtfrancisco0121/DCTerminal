@@ -10,6 +10,7 @@ vi.mock("../bridge", () => ({
   pipelineDecide: vi.fn(),
   pipelineNote: vi.fn(async () => {}),
   pipelineRunGates: vi.fn(async () => []),
+  pipelineTurnFinished: vi.fn(async () => {}),
   ptyWrite: vi.fn(async () => {}),
   setTabProvider: vi.fn(async () => {}),
   // HandoffIo (handoff/executor)
@@ -51,6 +52,7 @@ import {
   handoffAttach,
   pipelineDecide,
   pipelineRunGates,
+  pipelineTurnFinished,
   ptyWrite,
   type PipelineRun,
   type TabSummary,
@@ -188,6 +190,28 @@ describe("useAutopilot", () => {
     expect(getPipelineRun).toHaveBeenCalledTimes(1);
     expect(pipelineDecide).not.toHaveBeenCalled();
     expect(deps.startTerminal).not.toHaveBeenCalled();
+  });
+
+  it("notes each finished turn in the ledger once, autopilot on or off, with a reviewer's verdict", async () => {
+    vi.mocked(getPipelineRun).mockResolvedValue(run(false));
+    const { onLog } = setup([tab("impl", "role_implementer", 3), tab("rev", "role_pr_reviewer", 4)]);
+    const finished = log(IMPLEMENTED);
+    onLog("impl", finished);
+    onLog("impl", finished);
+    onLog("rev", log("## HANDOFF: Verdict\nREQUEST CHANGES"));
+    await waitFor(() => expect(pipelineTurnFinished).toHaveBeenCalledTimes(2));
+    expect(pipelineTurnFinished).toHaveBeenNthCalledWith(1, "ee_1", {
+      stageId: "implementer",
+      roleId: "role_implementer",
+      lane: null,
+      verdict: null,
+    });
+    expect(pipelineTurnFinished).toHaveBeenNthCalledWith(2, "ee_1", {
+      stageId: "pr_reviewer",
+      roleId: "role_pr_reviewer",
+      lane: null,
+      verdict: "REQUEST CHANGES",
+    });
   });
 
   it("sends a round back into the earlier stage's idle terminal", async () => {

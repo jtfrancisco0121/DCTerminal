@@ -1,3 +1,4 @@
+use crate::acp::RequestId;
 use crate::commands::activity::{record_decision, record_permission};
 use crate::commands::dev_session::{PendingPermission, PendingPlan, SessionRegistry};
 use crate::permissions::{
@@ -20,7 +21,7 @@ pub const QUESTION_REQUEST_EVENT: &str = "acp/question-request";
 pub struct PermissionRequestEvent {
     pub tab_id: String,
     pub session_id: String,
-    pub json_rpc_id: u64,
+    pub json_rpc_id: RequestId,
     pub title: String,
     pub message: String,
     pub tool_class: String,
@@ -42,7 +43,7 @@ pub struct PermissionOption {
 pub struct PermissionAutoEvent {
     pub tab_id: String,
     pub session_id: String,
-    pub json_rpc_id: u64,
+    pub json_rpc_id: RequestId,
     pub title: String,
     pub tool_class: String,
     pub display_kind: String,
@@ -135,9 +136,9 @@ pub fn stage_claude_permission_request(
         ClaudeRoute::AutoAllow { result, exit_plan } => (result, exit_plan),
     };
     capture_permission_payload(app, tab_id, &role_id, request, None);
-    let json_rpc_id = request.get("id").and_then(Value::as_u64).unwrap_or(0);
+    let json_rpc_id = RequestId::from_message(request).unwrap_or(RequestId::Number(0));
     let enriched = enrich_from_cache(state, tab_id, &params)?;
-    record_permission(app, tab_id, json_rpc_id, &enriched, Some("auto_allow"));
+    record_permission(app, tab_id, &json_rpc_id, &enriched, Some("auto_allow"));
     let title = params
         .get("toolCall")
         .and_then(|call| call.get("title"))
@@ -310,9 +311,7 @@ fn stage_exit_plan_request(
     request: &Value,
     state: &Mutex<SessionRegistry>,
 ) -> Result<Option<Value>, String> {
-    let json_rpc_id = request
-        .get("id")
-        .and_then(Value::as_u64)
+    let json_rpc_id = RequestId::from_message(request)
         .ok_or_else(|| "plan request missing id".to_string())?;
     let params = request.get("params").cloned().unwrap_or(Value::Null);
     let reject = reject_option_id(&params);
@@ -322,7 +321,7 @@ fn stage_exit_plan_request(
             return Ok(Some(cancelled_permission_result()));
         };
         session.pending_plans.insert(
-            json_rpc_id,
+            json_rpc_id.clone(),
             PendingPlan::ClaudeExit {
                 reject_option_id: reject.clone(),
             },
@@ -370,9 +369,7 @@ pub fn stage_permission_request(
     request: &Value,
     state: &Mutex<SessionRegistry>,
 ) -> Result<Option<Value>, String> {
-    let json_rpc_id = request
-        .get("id")
-        .and_then(|v| v.as_u64())
+    let json_rpc_id = RequestId::from_message(request)
         .ok_or_else(|| "permission request missing id".to_string())?;
     let params = request.get("params").cloned().unwrap_or(Value::Null);
 
@@ -402,12 +399,12 @@ pub fn stage_permission_request(
         PolicyDecision::Reject => Some("auto_reject"),
         PolicyDecision::Ask => None,
     };
-    record_permission(app, tab_id, json_rpc_id, &enriched, logged_decision);
+    record_permission(app, tab_id, &json_rpc_id, &enriched, logged_decision);
     if outcome.decision != PolicyDecision::Ask {
         if let Some(line) = outcome.transcript_line.clone() {
             let _ = app.emit(
                 PERMISSION_AUTO_EVENT,
-                auto_event(tab_id, session_id, json_rpc_id, &outcome, &line),
+                auto_event(tab_id, session_id, json_rpc_id.clone(), &outcome, &line),
             );
         }
         return Ok(outcome.auto_result);
@@ -419,11 +416,11 @@ pub fn stage_permission_request(
             return Ok(Some(cancelled_permission_result()));
         };
         session.pending_permissions.insert(
-            json_rpc_id,
+            json_rpc_id.clone(),
             PendingPermission {
                 tool_call_id: crate::permissions::activity::permission_tool_call_id(
                     &enriched,
-                    json_rpc_id,
+                    &json_rpc_id,
                 ),
                 options: outcome
                     .options
@@ -434,12 +431,7 @@ pub fn stage_permission_request(
         );
     }
 
-    let raw = params.to_string();
-    let raw_params = if raw.len() > 8_000 {
-        format!("{}…", &raw[..8_000])
-    } else {
-        raw
-    };
+    let raw_params = clip_raw_params(params.to_string());
     let payload = PermissionRequestEvent {
         tab_id: tab_id.to_string(),
         session_id: session_id.to_string(),
@@ -480,7 +472,7 @@ fn enrich_from_cache(
 fn auto_event(
     tab_id: &str,
     session_id: &str,
-    json_rpc_id: u64,
+    json_rpc_id: RequestId,
     outcome: &DecisionOutcome,
     line: &str,
 ) -> PermissionAutoEvent {
@@ -528,7 +520,7 @@ pub(crate) fn permission_response(
 pub fn respond_permission_request(
     app: AppHandle,
     tab_id: String,
-    json_rpc_id: u64,
+    json_rpc_id: RequestId,
     outcome: String,
     option_id: Option<String>,
     state: State<Mutex<SessionRegistry>>,
@@ -568,7 +560,7 @@ pub struct PlanEntryDto {
 pub struct PlanRequestEvent {
     pub tab_id: String,
     pub session_id: String,
-    pub json_rpc_id: u64,
+    pub json_rpc_id: RequestId,
     pub title: String,
     pub entries: Vec<PlanEntryDto>,
     /// Claude ExitPlanMode body. Empty for a Cursor plan card.
@@ -590,9 +582,7 @@ pub fn stage_plan_request(
     request: &Value,
     state: &Mutex<SessionRegistry>,
 ) -> Result<Option<Value>, String> {
-    let json_rpc_id = request
-        .get("id")
-        .and_then(|v| v.as_u64())
+    let json_rpc_id = RequestId::from_message(request)
         .ok_or_else(|| "plan request missing id".to_string())?;
     let params = request.get("params").cloned().unwrap_or(Value::Null);
     {
@@ -602,7 +592,7 @@ pub fn stage_plan_request(
         };
         session
             .pending_plans
-            .insert(json_rpc_id, PendingPlan::Cursor);
+            .insert(json_rpc_id.clone(), PendingPlan::Cursor);
     }
     let entries = plan_entries(&params);
     let title = params
@@ -651,7 +641,7 @@ pub(crate) fn plan_response(pending: &PendingPlan, outcome: &str) -> Value {
 #[tauri::command]
 pub fn respond_plan_request(
     tab_id: String,
-    json_rpc_id: u64,
+    json_rpc_id: RequestId,
     outcome: String,
     state: State<Mutex<SessionRegistry>>,
 ) -> Result<(), String> {
@@ -684,7 +674,7 @@ pub struct QuestionChoiceDto {
 pub struct QuestionRequestEvent {
     pub tab_id: String,
     pub session_id: String,
-    pub json_rpc_id: u64,
+    pub json_rpc_id: RequestId,
     pub title: String,
     pub prompt: String,
     pub choices: Vec<QuestionChoiceDto>,
@@ -697,9 +687,7 @@ pub fn stage_question_request(
     request: &Value,
     state: &Mutex<SessionRegistry>,
 ) -> Result<Option<Value>, String> {
-    let json_rpc_id = request
-        .get("id")
-        .and_then(|v| v.as_u64())
+    let json_rpc_id = RequestId::from_message(request)
         .ok_or_else(|| "question request missing id".to_string())?;
     let params = request.get("params").cloned().unwrap_or(Value::Null);
     {
@@ -707,7 +695,7 @@ pub fn stage_question_request(
         let Some(session) = guard.get_mut(tab_id) else {
             return Ok(Some(json!({ "outcome": "cancelled" })));
         };
-        session.pending_questions.insert(json_rpc_id, ());
+        session.pending_questions.insert(json_rpc_id.clone(), ());
     }
     let title = params
         .get("title")
@@ -740,7 +728,7 @@ pub fn stage_question_request(
 #[tauri::command]
 pub fn respond_question_request(
     tab_id: String,
-    json_rpc_id: u64,
+    json_rpc_id: RequestId,
     outcome: String,
     choice_id: Option<String>,
     state: State<Mutex<SessionRegistry>>,
@@ -898,9 +886,37 @@ fn note_capture_error(app: &AppHandle, err: &str) {
     }
 }
 
+/// Most bytes of raw request JSON sent to the UI with a permission prompt.
+const RAW_PARAMS_LIMIT: usize = 8_000;
+
+/// Cuts raw request JSON to [`RAW_PARAMS_LIMIT`] bytes, backing off to a
+/// character boundary so a multibyte character at the cut cannot panic.
+fn clip_raw_params(raw: String) -> String {
+    if raw.len() <= RAW_PARAMS_LIMIT {
+        return raw;
+    }
+    let mut cut = RAW_PARAMS_LIMIT;
+    while !raw.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}…", &raw[..cut])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clip_raw_params_backs_off_to_a_character_boundary() {
+        // "é" is two bytes; it spans the 8,000-byte cut.
+        let raw = "a".repeat(7_999) + "é";
+        let clipped = clip_raw_params(raw);
+        assert_eq!(clipped, "a".repeat(7_999) + "…");
+        let short = "{\"ok\":true}".to_string();
+        assert_eq!(clip_raw_params(short.clone()), short);
+        let exact = "b".repeat(RAW_PARAMS_LIMIT);
+        assert_eq!(clip_raw_params(exact.clone()), exact);
+    }
 
     #[test]
     fn claude_auto_answer_picks_allow_once_never_always() {
