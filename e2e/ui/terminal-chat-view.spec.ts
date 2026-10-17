@@ -72,6 +72,13 @@ function sessionLog(over: Partial<TerminalSessionLog> = {}): TerminalSessionLog 
 
 const header = (page: Page) => page.getByRole("group", { name: "Implementer terminal" });
 const viewSwitch = (page: Page) => header(page).getByRole("radiogroup", { name: "Show as" });
+// The radio inputs are visually hidden (pointer-events: none); the user clicks
+// the option's label, as in every `.segmented` control.
+const pickView = (page: Page, name: "Terminal" | "Chat") =>
+  viewSwitch(page)
+    .locator("label")
+    .filter({ has: page.getByRole("radio", { name, exact: true }) })
+    .click();
 const chatView = (page: Page) => page.getByTestId("terminal-chat-view");
 const xterm = (page: Page) => page.locator(".terminal-screen .xterm-rows");
 
@@ -82,7 +89,7 @@ async function openTerminal(app: TauriApp, page: Page, handlers = {}) {
 }
 
 async function showChat(app: TauriApp, page: Page) {
-  await viewSwitch(page).getByRole("radio", { name: "Chat" }).click();
+  await pickView(page, "Chat");
   await app.waitForCall("terminal_chat_watch", (a) => a.tabId === "tab-1");
   await expect(chatView(page)).toBeVisible();
 }
@@ -112,7 +119,7 @@ test("Chat shows the terminal's conversation; switching back keeps the same PTY"
 
   // Output that arrived while the chat view was up is in the terminal when it comes back.
   await app.ptyOutput("tab-1", "while chat was shown\r\n");
-  await viewSwitch(page).getByRole("radio", { name: "Terminal" }).click();
+  await pickView(page, "Terminal");
   await expect(xterm(page)).toContainText("before the switch");
   await expect(xterm(page)).toContainText("while chat was shown");
   expect(await app.calls("pty_open")).toHaveLength(1);

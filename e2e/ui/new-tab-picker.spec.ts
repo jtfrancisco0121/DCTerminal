@@ -5,7 +5,7 @@ import { chord, expectActive } from "./tabs-helpers";
 // Mod+T follows Settings › Terminal › "New tab opens". With "Ask" (the app's
 // default) it shows the new-tab picker; the fixture default is "start".
 
-const picker = (page: import("@playwright/test").Page) => page.getByRole("dialog", { name: "New tab" });
+const picker = (page: import("@playwright/test").Page) => page.getByRole("dialog", { name: "New tab", exact: true });
 
 test("Mod+T asks, and C opens Claude in the active tab's folder", async ({ app, page }) => {
   await app.open({ newTabOpens: "ask" });
@@ -75,9 +75,24 @@ test("a number opens Claude in that recent project", async ({ app, page }) => {
 test("Don't ask again saves Claude as the new-tab choice", async ({ app, page }) => {
   await app.open({ newTabOpens: "ask" });
   await chord(page, "KeyT");
+  await expect(picker(page).getByRole("option", { name: /Claude here/ })).toContainText("demo");
   await picker(page).getByRole("checkbox", { name: /Don't ask again/ }).check();
+  // Ticking the box alone saves nothing; it is saved when Claude opens.
+  expect(await app.calls("set_terminal_settings")).toHaveLength(0);
+  await picker(page).getByRole("option", { name: /Claude here/ }).click();
   const saved = await app.waitForCall("set_terminal_settings");
   expect(saved.args).toMatchObject({ terminal: { newTabOpens: "claude" } });
+  const start = await app.waitForCall("shell_terminal_start");
+  expect(start.args).toMatchObject({ input: { launch: "claude-cli", cwd: CWD } });
+});
+
+test("Don't ask again is not saved when the picker closes without opening Claude", async ({ app, page }) => {
+  await app.open({ newTabOpens: "ask" });
+  await chord(page, "KeyT");
+  await picker(page).getByRole("checkbox", { name: /Don't ask again/ }).check();
+  await page.keyboard.press("Escape");
+  await expect(picker(page)).toHaveCount(0);
+  expect(await app.calls("set_terminal_settings")).toHaveLength(0);
 });
 
 test("with Claude chosen, Mod+T opens Claude straight away", async ({ app, page }) => {
