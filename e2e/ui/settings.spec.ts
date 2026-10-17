@@ -290,6 +290,7 @@ test.describe("Terminal and theme", () => {
       fontSize: 16,
       roleSurface: {},
       roleRunMode: { role_planner: "yolo" },
+      newTabOpens: "start",
     });
     await expect(runMode).toHaveValue("yolo");
   });
@@ -505,8 +506,13 @@ test.describe("Data", () => {
     await app.open({ responses: { storage_status: { appDataDir: "/tmp/dct-e2e", bytes: 5 * 1024 * 1024 } } });
     const data = await openSettings(page, "Data");
     const paths = data.locator("dl.settings-paths");
-    await expect(paths.locator("dt")).toHaveText(["App data", "Transcripts", "Permission log"]);
-    await expect(paths.locator("dd")).toHaveText(["/tmp/dct-e2e", "/tmp/dct-e2e/transcripts", "/tmp/dct-e2e/app.log"]);
+    await expect(paths.locator("dt")).toHaveText(["App data", "Transcripts", "Permission log", "Crash log"]);
+    await expect(paths.locator("dd")).toHaveText([
+      "/tmp/dct-e2e",
+      "/tmp/dct-e2e/transcripts",
+      "/tmp/dct-e2e/app.log",
+      "/tmp/dct-e2e/logs/crash.log",
+    ]);
     await expect(data.getByText("App data folder: 5.0 MB")).toBeVisible();
     await expect(data.getByText(/^DCTerminal \d+\.\d+\.\d+ · Cursor CLI 2026\.10\.01$/)).toBeVisible();
     await expect(data.getByText("Cursor CLI was not found.", { exact: false })).toHaveCount(0);
@@ -621,7 +627,7 @@ test.describe("persistence", () => {
     });
 
     const appearance = await openSettings(page, "Appearance");
-    await appearance.getByRole("combobox", { name: "Theme" }).selectOption("github-light");
+    await appearance.getByRole("radiogroup", { name: "Theme" }).getByRole("radio", { name: "GitHub Light" }).click();
     await nav(page).getByRole("button", { name: "Terminal" }).click();
     const terminal = page.getByRole("region", { name: "Terminal", exact: true });
     await terminal.getByRole("spinbutton", { name: "Font size" }).fill("18");
@@ -647,7 +653,9 @@ test.describe("persistence", () => {
 
     await expect(page.locator("html")).toHaveAttribute("data-theme", "github-light");
     const afterLook = await openSettings(page, "Appearance");
-    await expect(afterLook.getByRole("combobox", { name: "Theme" })).toHaveValue("github-light");
+    await expect(
+      afterLook.getByRole("radiogroup", { name: "Theme" }).getByRole("radio", { name: "GitHub Light" }),
+    ).toHaveAttribute("aria-checked", "true");
     await nav(page).getByRole("button", { name: "Terminal" }).click();
     const after = page.getByRole("region", { name: "Terminal", exact: true });
     await expect(after.getByRole("spinbutton", { name: "Font size" })).toHaveValue("18");
