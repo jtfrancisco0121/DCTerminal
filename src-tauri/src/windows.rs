@@ -9,12 +9,14 @@
 //! account, for File > Reopen Closed Window. Quit (a programmatic exit,
 //! including the macOS Quit item) does not drop windows that are still open.
 
+use crate::process_tree::STOP_GRACE;
 use crate::provider::claude_config::ConfigDirInfo;
 use crate::store::settings_store::{account_display_name, resolved_account_config};
 use crate::store::{SettingsStore, StateStore};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 pub const MAIN_WINDOW: &str = "main";
@@ -173,13 +175,41 @@ pub fn handle_run_event(app: &AppHandle, event: tauri::RunEvent) {
     }
 }
 
+/// App exit: SIGTERM every agent and terminal at once, wait for all of them
+/// together for at most [`STOP_GRACE`] (no registry lock held), then kill
+/// what is left. Claude gets the same chance to finish its session log as
+/// on Stop. Windows has no SIGTERM, so nothing waits there.
 fn shutdown_processes(app: &AppHandle) {
-    if let Some(state) = app.try_state::<Mutex<crate::commands::SessionRegistry>>() {
-        if let Ok(mut guard) = state.lock() {
-            guard.shutdown_all();
+    let sessions = app.try_state::<Mutex<crate::commands::SessionRegistry>>();
+    let terminals = app.try_state::<Mutex<crate::pty::PtyRegistry>>();
+    let agents = sessions
+        .as_ref()
+        .and_then(|state| state.lock().ok().map(|guard| guard.terminate_all()))
+        .unwrap_or_default();
+    let ptys = terminals
+        .as_ref()
+        .and_then(|state| state.lock().ok().map(|guard| guard.terminate_all()))
+        .unwrap_or_default();
+    if cfg!(unix) {
+        let deadline = Instant::now() + STOP_GRACE;
+        while Instant::now() < deadline
+            && (agents
+                .iter()
+                .any(|agent| matches!(agent.try_wait(), Ok(None)))
+                || ptys.iter().any(crate::process_tree::PtyGroup::running))
+        {
+            std::thread::sleep(Duration::from_millis(50));
         }
     }
-    if let Some(state) = app.try_state::<Mutex<crate::pty::PtyRegistry>>() {
+    if let Some(state) = sessions {
+        if let Ok(mut guard) = state.lock() {
+            guard.kill_all();
+        }
+    }
+    for group in ptys {
+        group.kill();
+    }
+    if let Some(state) = terminals {
         if let Ok(mut guard) = state.lock() {
             guard.shutdown_all();
         }

@@ -4,7 +4,7 @@ use crate::attachments::AttachmentStore;
 use crate::commands::prompt_worker::{spawn_prompt_turn, TurnImages};
 use crate::paths::validate_working_folder;
 use crate::permissions::{cancelled_permission_result, ToolCallCache};
-use crate::process_tree::SharedProcess;
+use crate::process_tree::{SharedProcess, STOP_GRACE};
 use crate::store::StateStore;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -118,7 +118,22 @@ impl LiveSession {
         self.exited || matches!(self.process.try_wait(), Ok(Some(_)))
     }
 
-    pub fn shutdown(&mut self) {
+    /// Stop the agent: SIGTERM now, SIGKILL after [`STOP_GRACE`] on a
+    /// background thread, so Claude can finish its session log. Returns at
+    /// once; callers may hold the registry lock. Join the returned thread
+    /// (never under that lock) to wait until the agent is gone.
+    pub fn shutdown(&mut self) -> Option<std::thread::JoinHandle<()>> {
+        self.release_pending();
+        self.process.stop_gracefully(STOP_GRACE)
+    }
+
+    /// Stop at once (app exit, after the shared grace already ran).
+    pub fn kill(&mut self) {
+        self.release_pending();
+        self.process.kill_tree();
+    }
+
+    fn release_pending(&mut self) {
         let pending: Vec<RequestId> = self.pending_permissions.drain().map(|(id, _)| id).collect();
         let plans: Vec<(RequestId, PendingPlan)> = self.pending_plans.drain().collect();
         let questions: Vec<RequestId> = self.pending_questions.drain().map(|(id, _)| id).collect();
@@ -134,7 +149,6 @@ impl LiveSession {
             }
         }
         self.cancel.store(true, Ordering::SeqCst);
-        self.process.kill_tree();
         self.exited = true;
         self.prompt_in_flight = false;
     }
@@ -234,6 +248,25 @@ impl SessionRegistry {
         let ids: Vec<String> = self.sessions.keys().cloned().collect();
         for id in ids {
             self.shutdown_tab(&id);
+        }
+    }
+
+    /// App exit, step 1: SIGTERM every live agent and return their
+    /// processes, so the caller can wait without holding this lock.
+    pub fn terminate_all(&self) -> Vec<SharedProcess> {
+        self.sessions
+            .values()
+            .map(|session| {
+                session.process.terminate();
+                session.process.clone()
+            })
+            .collect()
+    }
+
+    /// App exit, last step: kill whatever is left, without a grace.
+    pub fn kill_all(&mut self) {
+        for (_, mut session) in self.sessions.drain() {
+            session.kill();
         }
     }
 }

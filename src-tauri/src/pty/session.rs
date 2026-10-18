@@ -3,7 +3,9 @@
 //! Output is delivered on a channel. The master stays on a control thread so
 //! resize and write do not race the reader.
 
-use crate::process_tree::PidGuard;
+use crate::process_tree::{PidGuard, PtyGroup};
+#[cfg(unix)]
+use crate::process_tree::STOP_GRACE;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -68,6 +70,7 @@ pub struct PtySession {
     ctrl: Sender<Ctrl>,
     output: Option<Receiver<PtyOutput>>,
     pid: u32,
+    group: PtyGroup,
 }
 
 impl PtySession {
@@ -105,6 +108,7 @@ impl PtySession {
             .map_err(|err| io::Error::other(err.to_string()))?;
         let pid = child.process_id().unwrap_or(0);
         let guard = PidGuard::adopt(pid);
+        let group = guard.group();
         let reader = pair
             .master
             .try_clone_reader()
@@ -132,6 +136,7 @@ impl PtySession {
             ctrl: ctrl_tx,
             output: Some(out_rx),
             pid,
+            group,
         })
     }
 
@@ -141,6 +146,12 @@ impl PtySession {
 
     pub fn pid(&self) -> u32 {
         self.pid
+    }
+
+    /// The process group, for app exit. Never signalled once the control
+    /// thread is done with the child.
+    pub fn group(&self) -> PtyGroup {
+        self.group.clone()
     }
 
     pub fn write(&self, data: &[u8]) -> io::Result<()> {
@@ -193,6 +204,7 @@ impl PtySession {
             ctrl: ctrl_tx,
             output: None,
             pid: 0,
+            group: PidGuard::adopt(0).group(),
         };
         (session, size_rx)
     }
@@ -337,6 +349,7 @@ fn control_loop(
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 if let Ok(Some(status)) = child.try_wait() {
+                    guard.mark_reaped();
                     if !exited {
                         let _ = output.send(PtyOutput::Exit {
                             code: Some(status.exit_code() as i32),
@@ -351,19 +364,43 @@ fn control_loop(
     drop(master);
 }
 
+/// Runs on the control thread, never the UI thread. Unix: SIGTERM to the
+/// group, then up to [`STOP_GRACE`] for it to exit (Claude finishes its
+/// session log), then SIGKILL. An interactive shell ignores SIGTERM and
+/// waits the full grace; the tab is already gone by then.
 fn finish(
     guard: &PidGuard,
     child: &mut dyn portable_pty::Child,
     output: &Sender<PtyOutput>,
     exited: &mut bool,
 ) {
+    #[allow(unused_mut)]
+    let mut status = None;
+    #[cfg(unix)]
+    {
+        guard.terminate();
+        let deadline = std::time::Instant::now() + STOP_GRACE;
+        loop {
+            if status.is_none() {
+                if let Ok(Some(done)) = child.try_wait() {
+                    guard.mark_reaped();
+                    status = Some(done);
+                }
+            }
+            if (status.is_some() && !guard.group_alive())
+                || std::time::Instant::now() >= deadline
+            {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
     guard.kill();
-    let _ = child.kill();
-    let code = child
-        .try_wait()
-        .ok()
-        .flatten()
-        .map(|status| status.exit_code() as i32);
+    if status.is_none() {
+        let _ = child.kill();
+        status = child.try_wait().ok().flatten();
+    }
+    let code = status.map(|status| status.exit_code() as i32);
     if !*exited {
         *exited = true;
         let _ = output.send(PtyOutput::Exit { code });
@@ -605,6 +642,42 @@ mod tests {
             }
             assert!(gone, "shell {pid} was still alive after kill");
         }
+    }
+
+    // Regression: closing a terminal tab sent SIGKILL only, so a Claude
+    // running in it lost the end of its session log.
+    #[cfg(unix)]
+    #[test]
+    fn kill_gives_the_program_a_chance_to_handle_sigterm() {
+        let dir = crate::test_support::TempDir::new("pty_term");
+        let handled = dir.join("handled");
+        let script = format!(
+            "trap \"touch '{}'; exit 0\" TERM\nprintf 'pty_%s\\n' ready\nwhile :; do sleep 0.05; done",
+            handled.display()
+        );
+        let session = PtySession::spawn(SpawnSpec {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), script],
+            env: Vec::new(),
+            cwd: dir.path().to_path_buf(),
+            cols: 80,
+            rows: 24,
+        })
+        .expect("spawn sh");
+        assert!(wait_for_output(&session, "pty_ready"), "script ready");
+        session.kill();
+        let mut saw_exit = false;
+        for _ in 0..80 {
+            if matches!(
+                session.recv_timeout(Duration::from_millis(50)),
+                Ok(Some(PtyOutput::Exit { .. }))
+            ) {
+                saw_exit = true;
+                break;
+            }
+        }
+        assert!(handled.exists(), "the TERM trap ran");
+        assert!(saw_exit, "kill reported an exit");
     }
 
     #[cfg(unix)]

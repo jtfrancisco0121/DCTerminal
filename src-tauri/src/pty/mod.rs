@@ -6,6 +6,7 @@ mod session;
 mod shell;
 
 use crate::paths::validate_working_folder;
+use crate::process_tree::STOP_GRACE;
 use crate::provider::{
     new_claude_session_id, provider_for_account, CursorProvider, Provider, ProviderId,
     TerminalKind, TerminalLaunch,
@@ -31,7 +32,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, UNIX_EPOCH};
 use tauri::ipc::Channel;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -64,6 +65,13 @@ pub struct PtyRegistry {
     sessions: HashMap<String, PtySession>,
     /// Claude session id per live PTY (the `<id>.jsonl` it writes).
     claude_sessions: HashMap<String, String>,
+    /// The latest open per id. A `kill` meanwhile cancels it; a newer open
+    /// of the same id supersedes it.
+    opening: HashMap<String, u64>,
+    next_open: u64,
+    /// A replaced program that may still be stopping, so every open of that
+    /// id waits for it, not only the one that replaced it.
+    stopping: HashMap<String, crate::process_tree::PtyGroup>,
 }
 
 impl PtyRegistry {
@@ -71,12 +79,19 @@ impl PtyRegistry {
         Self {
             sessions: HashMap::new(),
             claude_sessions: HashMap::new(),
+            opening: HashMap::new(),
+            next_open: 0,
+            stopping: HashMap::new(),
         }
     }
 
+    /// Close the terminal `id`. A replaced program it was still stopping
+    /// is forgotten too; its control thread kills it within the grace.
     pub fn kill(&mut self, id: &str) {
         self.sessions.remove(id);
         self.claude_sessions.remove(id);
+        self.opening.remove(id);
+        self.stopping.remove(id);
     }
 
     pub fn kill_tab(&mut self, tab_id: &str) {
@@ -88,6 +103,23 @@ impl PtyRegistry {
     pub fn shutdown_all(&mut self) {
         self.sessions.clear();
         self.claude_sessions.clear();
+        self.opening.clear();
+        self.stopping.clear();
+    }
+
+    /// App exit, step 1: SIGTERM every terminal's process group and return
+    /// those groups, so the caller can wait without holding this lock. A
+    /// terminal whose program already exited and was reaped is skipped: its
+    /// pid may now lead an unrelated group. A replaced program that is still
+    /// stopping (a reopen is waiting on it) is included.
+    pub fn terminate_all(&self) -> Vec<crate::process_tree::PtyGroup> {
+        self.sessions
+            .values()
+            .map(PtySession::group)
+            .chain(self.stopping.values().cloned())
+            .filter(|group| group.running())
+            .inspect(|group| group.terminate())
+            .collect()
     }
 
     pub fn claude_session(&self, id: &str) -> Option<&str> {
@@ -162,13 +194,53 @@ pub fn pty_set_scheme(light: bool) {
     LIGHT_SCHEME.store(light, Ordering::Relaxed);
 }
 
+/// Start the terminal `id`, replacing the one running under that id.
+///
+/// Blocking: runs on a `spawn_blocking` thread, never the UI thread or a
+/// Tokio worker. A replaced program is stopped first, and the new one
+/// starts only once its group has exited (at most [`STOP_GRACE`] plus a
+/// margin), so a Claude resumed with the same session id never writes
+/// `<id>.jsonl` alongside the old one. The registry lock is not held during
+/// that wait. Closing the terminal meanwhile cancels the open (an error); a
+/// newer open of the same id supersedes it (`Ok(None)`, nothing started).
 fn open_session(
-    registry: &mut PtyRegistry,
+    registry: &Mutex<PtyRegistry>,
     id: &str,
     spec: SpawnSpec,
+    claude_session: Option<String>,
     on_output: Channel<PtyPacket>,
-) -> Result<u32, String> {
-    registry.kill(id);
+) -> Result<Option<u32>, String> {
+    let (token, stopping) = {
+        let mut registry = registry.lock().map_err(|err| err.to_string())?;
+        registry.claude_sessions.remove(id);
+        registry.next_open += 1;
+        let token = registry.next_open;
+        registry.opening.insert(id.to_string(), token);
+        let stopping = match registry.sessions.remove(id) {
+            Some(old) => {
+                let group = old.group();
+                // Dropping the session asks its control thread to stop the program.
+                drop(old);
+                registry.stopping.insert(id.to_string(), group.clone());
+                Some(group)
+            }
+            None => registry.stopping.get(id).cloned(),
+        };
+        (token, stopping)
+    };
+    if let Some(group) = stopping {
+        wait_until_stopped(&group);
+    }
+    let mut registry = registry.lock().map_err(|err| err.to_string())?;
+    match registry.opening.get(id) {
+        Some(latest) if *latest == token => {}
+        // A newer open of this id took over (it may have finished already).
+        Some(_) => return Ok(None),
+        None if registry.sessions.contains_key(id) => return Ok(None),
+        None => return Err("The terminal was closed while it was starting.".to_string()),
+    }
+    registry.opening.remove(id);
+    registry.stopping.remove(id);
     let mut session = PtySession::spawn(spec).map_err(|err| err.to_string())?;
     let pid = session.pid();
     if let Some(rx) = session.take_output() {
@@ -178,7 +250,17 @@ fn open_session(
             .map_err(|err| err.to_string())?;
     }
     registry.sessions.insert(id.to_string(), session);
-    Ok(pid)
+    registry.pin_claude_session(id, claude_session);
+    Ok(Some(pid))
+}
+
+/// Wait until a replaced terminal's program group has exited. Its control
+/// thread kills it after [`STOP_GRACE`]; the margin covers that last step.
+fn wait_until_stopped(group: &crate::process_tree::PtyGroup) {
+    let deadline = std::time::Instant::now() + STOP_GRACE + Duration::from_millis(500);
+    while group.running() && std::time::Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
 }
 
 fn store_prompt(
@@ -295,8 +377,29 @@ fn remember_folder(projects: &State<Mutex<crate::store::ProjectsStore>>, folder:
     }
 }
 
+/// Async with the work on a blocking thread: replacing a running terminal
+/// waits for its program to exit (see `open_session`).
 #[tauri::command]
-pub fn shell_terminal_start(
+pub async fn shell_terminal_start(
+    app: AppHandle,
+    input: ShellTerminalInput,
+    on_output: Channel<PtyPacket>,
+) -> Result<TerminalStartResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        shell_terminal_start_blocking(
+            input,
+            on_output,
+            app.state(),
+            app.state(),
+            app.state(),
+            app.state(),
+        )
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+fn shell_terminal_start_blocking(
     input: ShellTerminalInput,
     on_output: Channel<PtyPacket>,
     settings: State<Mutex<SettingsStore>>,
@@ -488,9 +591,8 @@ pub fn shell_terminal_start(
             state.remember_claude_terminal_session(&tab_id, id)?;
         }
     }
-    let mut registry = registry.lock().map_err(|err| err.to_string())?;
     let pid = open_session(
-        &mut registry,
+        &registry,
         &tab_id,
         SpawnSpec {
             program: command.program,
@@ -500,14 +602,14 @@ pub fn shell_terminal_start(
             cols: input.cols,
             rows: input.rows,
         },
+        claude_session,
         on_output,
     )?;
-    registry.pin_claude_session(&tab_id, claude_session);
     remember_folder(&projects, &recent_folder);
     Ok(TerminalStartResult {
         errors: Vec::new(),
         tab_id: Some(tab_id),
-        pid: Some(pid),
+        pid,
         used_prompt_file: false,
     })
 }
@@ -526,9 +628,31 @@ pub struct RoleTerminalInput {
     pub window_id: Option<String>,
 }
 
+/// Async with the work on a blocking thread, like [`shell_terminal_start`].
 #[tauri::command]
+pub async fn role_terminal_start(
+    app: AppHandle,
+    input: RoleTerminalInput,
+    on_output: Channel<PtyPacket>,
+) -> Result<TerminalStartResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        role_terminal_start_blocking(
+            app.clone(),
+            input,
+            on_output,
+            app.state(),
+            app.state(),
+            app.state(),
+            app.state(),
+            app.state(),
+        )
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
 #[allow(clippy::too_many_arguments)]
-pub fn role_terminal_start(
+fn role_terminal_start_blocking(
     app: AppHandle,
     input: RoleTerminalInput,
     on_output: Channel<PtyPacket>,
@@ -656,9 +780,8 @@ pub fn role_terminal_start(
     if provider.id() == ProviderId::Claude {
         command.env.push(claude_scheme_env());
     }
-    let mut registry = registry.lock().map_err(|err| err.to_string())?;
     let pid = open_session(
-        &mut registry,
+        &registry,
         &tab_id,
         SpawnSpec {
             program: command.program,
@@ -668,14 +791,14 @@ pub fn role_terminal_start(
             cols: input.cols,
             rows: input.rows,
         },
+        claude_session,
         on_output,
     )?;
-    registry.pin_claude_session(&tab_id, claude_session);
     remember_folder(&projects, &recent_folder);
     Ok(TerminalStartResult {
         errors: Vec::new(),
         tab_id: Some(tab_id),
-        pid: Some(pid),
+        pid,
         used_prompt_file: delivery.stored_body.is_some(),
     })
 }
@@ -741,8 +864,28 @@ fn role_resume_id(
     Ok(Some(id.to_string()))
 }
 
+/// Async with the work on a blocking thread, like [`shell_terminal_start`].
 #[tauri::command]
-pub fn pty_open(
+pub async fn pty_open(
+    app: AppHandle,
+    input: PtyOpenInput,
+    on_output: Channel<PtyPacket>,
+) -> Result<u32, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        pty_open_blocking(
+            app.clone(),
+            input,
+            on_output,
+            app.state(),
+            app.state(),
+            app.state(),
+        )
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+fn pty_open_blocking(
     app: AppHandle,
     input: PtyOpenInput,
     on_output: Channel<PtyPacket>,
@@ -944,9 +1087,8 @@ pub fn pty_open(
             args.push(text.to_string());
         }
     }
-    let mut registry = registry.lock().map_err(|err| err.to_string())?;
     let pid = open_session(
-        &mut registry,
+        &registry,
         &input.id,
         SpawnSpec {
             program,
@@ -956,10 +1098,11 @@ pub fn pty_open(
             cols: input.cols,
             rows: input.rows,
         },
+        claude_session,
         on_output,
     )?;
-    registry.pin_claude_session(&input.id, claude_session);
-    Ok(pid)
+    // The frontend does not use the pid; 0 means a newer open replaced this one.
+    Ok(pid.unwrap_or(0))
 }
 
 #[tauri::command]
@@ -1127,6 +1270,245 @@ mod tests {
         assert_eq!(role_id, "cursor-cli");
         assert_eq!(snapshot.name, "Cursor CLI");
         assert_eq!(shell_snapshot("shell").0, "terminal");
+    }
+
+    // Review: Quit SIGTERMed (and then waited on and SIGKILLed) the pid of a
+    // terminal whose program had already exited and been reaped. That pid
+    // may since lead an unrelated process group.
+    #[cfg(unix)]
+    #[test]
+    fn quitting_skips_a_terminal_whose_program_already_exited() {
+        let dir = crate::test_support::TempDir::new("pty_exited");
+        let session = PtySession::spawn(SpawnSpec {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "exit 0".into()],
+            env: Vec::new(),
+            cwd: dir.path().to_path_buf(),
+            cols: 80,
+            rows: 24,
+        })
+        .expect("spawn sh");
+        let mut exited = false;
+        for _ in 0..100 {
+            if matches!(
+                session.recv_timeout(std::time::Duration::from_millis(50)),
+                Ok(Some(session::PtyOutput::Exit { .. }))
+            ) {
+                exited = true;
+                break;
+            }
+        }
+        assert!(exited, "the program exited on its own");
+        let mut registry = PtyRegistry::new();
+        registry.sessions.insert("done".into(), session);
+        // The control thread finishes with the group right after reporting
+        // the exit; give it a moment.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut left = registry.terminate_all();
+        while !left.is_empty() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            left = registry.terminate_all();
+        }
+        assert!(left.is_empty(), "an exited, reaped terminal is not signalled or waited on");
+    }
+
+    /// `sh -c script` in a PTY under `dir`.
+    #[cfg(unix)]
+    fn sh_spec(dir: &std::path::Path, script: &str) -> SpawnSpec {
+        SpawnSpec {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), script.into()],
+            env: Vec::new(),
+            cwd: dir.to_path_buf(),
+            cols: 80,
+            rows: 24,
+        }
+    }
+
+    /// Open a terminal whose program takes 0.4 s to exit on SIGTERM (like
+    /// Claude finishing its session log); returns its group once the trap
+    /// is set.
+    #[cfg(unix)]
+    fn open_slow_stopper(
+        registry: &Mutex<PtyRegistry>,
+        dir: &std::path::Path,
+        id: &str,
+    ) -> crate::process_tree::PtyGroup {
+        let ready = dir.join(format!("{id}.ready"));
+        let script = format!(
+            "trap 'sleep 0.4; exit 0' TERM\ntouch '{}'\nwhile :; do sleep 0.05; done",
+            ready.display()
+        );
+        open_session(registry, id, sh_spec(dir, &script), None, Channel::new(|_| Ok(())))
+            .expect("open old terminal");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !ready.exists() {
+            assert!(std::time::Instant::now() < deadline, "old terminal ready");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        registry.lock().unwrap().sessions[id].group()
+    }
+
+    // Review: restarting a Claude terminal stopped the old one in the
+    // background and at once spawned `claude --resume <same id>`, so both
+    // could append to <id>.jsonl while the old one finished on SIGTERM.
+    #[cfg(unix)]
+    #[test]
+    fn reopening_a_terminal_waits_until_the_old_program_has_exited() {
+        let dir = crate::test_support::TempDir::new("pty_reopen");
+        let registry = Mutex::new(PtyRegistry::new());
+        let old = open_slow_stopper(&registry, dir.path(), "t");
+        open_session(
+            &registry,
+            "t",
+            sh_spec(dir.path(), "sleep 5"),
+            None,
+            Channel::new(|_| Ok(())),
+        )
+        .expect("reopen");
+        assert!(!old.running(), "the old program exited before the new one started");
+        assert!(registry.lock().unwrap().sessions.contains_key("t"));
+        registry.lock().unwrap().shutdown_all();
+    }
+
+    // The wait above holds no lock, so the tab can be closed during it; the
+    // open must then not leave a terminal running for a closed tab.
+    #[cfg(unix)]
+    #[test]
+    fn closing_a_terminal_while_it_reopens_cancels_the_open() {
+        let dir = crate::test_support::TempDir::new("pty_reopen_closed");
+        let registry = Mutex::new(PtyRegistry::new());
+        open_slow_stopper(&registry, dir.path(), "t");
+        let started = dir.join("started");
+        std::thread::scope(|scope| {
+            let reopen = scope.spawn(|| {
+                open_session(
+                    &registry,
+                    "t",
+                    sh_spec(dir.path(), &format!("touch '{}'; sleep 5", started.display())),
+                    None,
+                    Channel::new(|_| Ok(())),
+                )
+            });
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            registry.lock().unwrap().kill("t");
+            assert!(reopen.join().unwrap().is_err(), "the open was cancelled");
+        });
+        assert!(!registry.lock().unwrap().sessions.contains_key("t"));
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(!started.exists(), "the new program never started");
+    }
+
+    // Review: two opens of the same id. The first stopped the old program
+    // and waited; the second saw no old session and spawned while the old
+    // program still ran, and the first then failed as "closed".
+    #[cfg(unix)]
+    #[test]
+    fn a_second_open_of_the_same_terminal_also_waits_and_the_first_yields() {
+        let dir = crate::test_support::TempDir::new("pty_reopen_twice");
+        let registry = Mutex::new(PtyRegistry::new());
+        let old = open_slow_stopper(&registry, dir.path(), "t");
+        let (first, second) = std::thread::scope(|scope| {
+            let first = scope.spawn(|| {
+                open_session(
+                    &registry,
+                    "t",
+                    sh_spec(dir.path(), "sleep 5"),
+                    None,
+                    Channel::new(|_| Ok(())),
+                )
+            });
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let second = scope.spawn(|| {
+                let opened = open_session(
+                    &registry,
+                    "t",
+                    sh_spec(dir.path(), "sleep 5"),
+                    None,
+                    Channel::new(|_| Ok(())),
+                );
+                (opened, old.running())
+            });
+            (first.join().unwrap(), second.join().unwrap())
+        });
+        let (second, old_running) = second;
+        assert!(!old_running, "the second open also waited for the old program");
+        assert!(matches!(second, Ok(Some(_))), "the newer open runs: {second:?}");
+        assert_eq!(first, Ok(None), "the older open yields quietly");
+        let registry = registry.lock().unwrap();
+        assert_eq!(
+            registry.sessions["t"].pid(),
+            second.unwrap().unwrap(),
+            "the newer open's terminal is the one kept"
+        );
+    }
+
+    // Review: an open left its `opening` entry behind, and a kill left the
+    // replaced program in `stopping`.
+    #[cfg(unix)]
+    #[test]
+    fn opens_and_kills_leave_no_bookkeeping_behind() {
+        let dir = crate::test_support::TempDir::new("pty_bookkeeping");
+        let registry = Mutex::new(PtyRegistry::new());
+        let empty = |registry: &Mutex<PtyRegistry>| {
+            let registry = registry.lock().unwrap();
+            registry.opening.is_empty() && registry.stopping.is_empty()
+        };
+        open_slow_stopper(&registry, dir.path(), "t");
+        assert!(empty(&registry), "nothing left after an open");
+        std::thread::scope(|scope| {
+            let reopen = scope.spawn(|| {
+                open_session(
+                    &registry,
+                    "t",
+                    sh_spec(dir.path(), "sleep 5"),
+                    None,
+                    Channel::new(|_| Ok(())),
+                )
+            });
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            assert!(!registry.lock().unwrap().stopping.is_empty(), "old program is stopping");
+            registry.lock().unwrap().kill_tab("t");
+            assert!(empty(&registry), "nothing left after a kill");
+            assert!(reopen.join().unwrap().is_err());
+        });
+        open_slow_stopper(&registry, dir.path(), "u");
+        open_session(
+            &registry,
+            "u",
+            sh_spec(dir.path(), "sleep 5"),
+            None,
+            Channel::new(|_| Ok(())),
+        )
+        .expect("reopen");
+        assert!(empty(&registry), "nothing left after a reopen");
+    }
+
+    // Review: quit walked only live sessions, so a replaced program still
+    // stopping was neither waited on nor killed.
+    #[cfg(unix)]
+    #[test]
+    fn quitting_also_stops_a_replaced_program_that_is_still_stopping() {
+        let dir = crate::test_support::TempDir::new("pty_quit_stopping");
+        let registry = Mutex::new(PtyRegistry::new());
+        let old = open_slow_stopper(&registry, dir.path(), "t");
+        std::thread::scope(|scope| {
+            let reopen = scope.spawn(|| {
+                open_session(
+                    &registry,
+                    "t",
+                    sh_spec(dir.path(), "sleep 5"),
+                    None,
+                    Channel::new(|_| Ok(())),
+                )
+            });
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            assert!(old.running(), "the old program is still finishing");
+            let groups = registry.lock().unwrap().terminate_all();
+            assert_eq!(groups.len(), 1, "quit waits on the stopping program");
+            registry.lock().unwrap().kill("t");
+            let _ = reopen.join();
+        });
     }
 
     // Regression: a resize waited up to 2 s for a busy terminal's ack while

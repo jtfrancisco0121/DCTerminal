@@ -17,6 +17,8 @@ Scenario keys (all optional):
   strict_permission true: a malformed `session/request_permission` answer
                     fails the turn with a JSON-RPC error (like the adapter's
                     schema check would)
+  term_delay        seconds the agent takes to exit on SIGTERM, like Claude
+                    finishing its session log (default: exits at once)
 
 Steps:
   {"update": {...}}            session/update notification (sessionUpdate ...)
@@ -44,6 +46,7 @@ it, otherwise "end_turn".
 import copy
 import json
 import os
+import signal
 import sys
 import time
 
@@ -64,6 +67,13 @@ DEFAULT_INIT = {
 }
 session_result = copy.deepcopy(scenario.get("session_new", {}))
 session_result["sessionId"] = session_id
+
+if "term_delay" in scenario:
+    def finish_on_term(_signum, _frame):
+        time.sleep(scenario["term_delay"])
+        os._exit(0)
+
+    signal.signal(signal.SIGTERM, finish_on_term)
 
 
 def send(obj):
