@@ -68,6 +68,86 @@ pub fn apply_login_path() {
     }
 }
 
+/// Any of these means we were started inside a Claude Code session.
+const SESSION_MARKERS: [&str; 4] = [
+    "CLAUDECODE",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_ENTRYPOINT",
+];
+
+/// `CLAUDE*` settings that belong to the user, not to the parent session.
+const KEEP_CLAUDE_VARS: [&str; 2] = ["CLAUDE_CONFIG_DIR", "CLAUDE_CODE_GIT_BASH_PATH"];
+
+/// Whether the parent Claude Code session set this variable for its own
+/// tools: any `CLAUDE*` name the user does not own, `AI_AGENT`, and
+/// `GIT_EDITOR=true` (it makes a plain `git commit` abort). Any other
+/// `GIT_EDITOR` is the user's own editor and stays.
+fn set_by_parent_session(name: &str, value: &str) -> bool {
+    match name {
+        "AI_AGENT" => true,
+        "GIT_EDITOR" => value == "true",
+        _ => name.starts_with("CLAUDE") && !KEEP_CLAUDE_VARS.contains(&name),
+    }
+}
+
+/// Names of the variables a parent Claude Code session put in our env.
+///
+/// Started from a Claude Code terminal (`npm run dev:app` run by Claude),
+/// DCTerminal inherits that session's `CLAUDECODE`, `CLAUDE_CODE_*`,
+/// `AI_AGENT`, `GIT_EDITOR=true` and friends, and every child gets them. A
+/// `claude` started under them takes itself for a nested session and writes
+/// no session log, and `git commit` in a shell tab aborts. Takes
+/// `(name, value)` pairs. Returns nothing unless a marker shows we really are
+/// inside a session, and never `CLAUDE_CONFIG_DIR` (the user's account
+/// choice), `CLAUDE_CODE_GIT_BASH_PATH` (install setup), a `GIT_EDITOR` other
+/// than exactly `true`, or any `ANTHROPIC_*`.
+pub(crate) fn parent_claude_session_vars<'a>(
+    vars: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Vec<String> {
+    let vars: Vec<(&str, &str)> = vars.into_iter().collect();
+    if !vars.iter().any(|(name, _)| SESSION_MARKERS.contains(name)) {
+        return Vec::new();
+    }
+    vars.into_iter()
+        .filter(|(name, value)| set_by_parent_session(name, value))
+        .map(|(name, _)| name.to_string())
+        .collect()
+}
+
+/// Remove the parent Claude Code session's variables from this process, so
+/// no child (PTY shell, ACP agent, CLI probe) inherits them. Logs the count,
+/// never the values: some are secrets.
+///
+/// Must run on the main thread before any other thread exists, like
+/// [`apply_login_path`].
+pub fn scrub_parent_claude_session() {
+    let vars: Vec<(String, String)> = std::env::vars_os()
+        .filter_map(|(name, value)| {
+            let name = name.into_string().ok()?;
+            Some((name, value.to_string_lossy().into_owned()))
+        })
+        .collect();
+    let scrubbed = parent_claude_session_vars(
+        vars.iter()
+            .map(|(name, value)| (name.as_str(), value.as_str())),
+    );
+    if scrubbed.is_empty() {
+        return;
+    }
+    remove_vars(&scrubbed);
+    eprintln!(
+        "DCTerminal: removed {} variables inherited from a parent Claude Code session",
+        scrubbed.len()
+    );
+}
+
+fn remove_vars(names: &[String]) {
+    for name in names {
+        std::env::remove_var(name);
+    }
+}
+
 #[cfg(unix)]
 fn skip_requested(value: Option<&OsStr>) -> bool {
     value.is_some_and(|value| {
@@ -363,6 +443,42 @@ mod tests {
     }
 
     #[test]
+    fn a_scrubbed_name_does_not_reach_the_child() {
+        use std::process::Command;
+
+        // The parent env is built here, not read from or written to this
+        // process, so parallel tests and a surrounding Claude session see
+        // nothing. Values are never printed.
+        const PROBE: &str = "CLAUDE_DCT_SCRUB_TEST_PROBE";
+        let parent = [
+            ("PATH", "/usr/bin:/bin"),
+            ("CLAUDECODE", "1"),
+            (PROBE, "from the parent session"),
+            ("CLAUDE_CONFIG_DIR", "/tmp/claude-config"),
+            ("AI_AGENT", "claude-code"),
+            ("GIT_EDITOR", "true"),
+        ];
+        let mut command = Command::new("/bin/sh");
+        command.env_clear().envs(parent);
+        for name in parent_claude_session_vars(parent) {
+            command.env_remove(name);
+        }
+        let output = command
+            .args([
+                "-c",
+                &format!(
+                    "printf '%s|%s|%s|%s|%s' \"${{{PROBE}-unset}}\" \"${{CLAUDECODE-unset}}\" \"${{AI_AGENT-unset}}\" \"${{GIT_EDITOR-unset}}\" \"${{CLAUDE_CONFIG_DIR-unset}}\""
+                ),
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "unset|unset|unset|unset|/tmp/claude-config"
+        );
+    }
+
+    #[test]
     fn opt_out_values() {
         assert!(!skip_requested(None));
         assert!(!skip_requested(Some(OsStr::new(""))));
@@ -370,5 +486,92 @@ mod tests {
         assert!(!skip_requested(Some(OsStr::new("false"))));
         assert!(skip_requested(Some(OsStr::new("1"))));
         assert!(skip_requested(Some(OsStr::new("yes"))));
+    }
+}
+
+#[cfg(test)]
+mod scrub_tests {
+    use super::parent_claude_session_vars;
+
+    fn listed(vars: &[(&str, &str)]) -> Vec<String> {
+        let mut listed = parent_claude_session_vars(vars.iter().copied());
+        listed.sort();
+        listed
+    }
+
+    #[test]
+    fn parent_session_vars_are_listed_only_inside_a_claude_session() {
+        let outside = [
+            ("CLAUDE_CONFIG_DIR", "/me/.claude"),
+            ("CLAUDE_EFFORT", "high"),
+            ("AI_AGENT", "claude-code"),
+            ("GIT_EDITOR", "true"),
+            ("PATH", "/usr/bin"),
+            ("HOME", "/me"),
+        ];
+        assert!(listed(&outside).is_empty());
+
+        for marker in [
+            "CLAUDECODE",
+            "CLAUDE_CODE_CHILD_SESSION",
+            "CLAUDE_CODE_SESSION_ID",
+            "CLAUDE_CODE_ENTRYPOINT",
+        ] {
+            assert_eq!(
+                listed(&[(marker, "1"), ("PATH", "/usr/bin")]),
+                vec![marker.to_string()],
+                "marker {marker}"
+            );
+        }
+
+        let inside = [
+            ("PATH", "/usr/bin"),
+            ("CLAUDECODE", "1"),
+            ("CLAUDE_CODE_CHILD_SESSION", "1"),
+            ("CLAUDE_CODE_SESSION_ID", "id"),
+            ("CLAUDE_CODE_ENTRYPOINT", "cli"),
+            ("CLAUDE_CODE_EXECPATH", "/bin/claude"),
+            ("CLAUDE_CODE_MESSAGING_SOCKET", "/tmp/sock"),
+            ("CLAUDE_CODE_MESSAGING_TOKEN", "secret"),
+            ("CLAUDE_CODE_SESSION_ATTENDED", "1"),
+            ("CLAUDE_EFFORT", "high"),
+            ("CLAUDE_PID", "1"),
+            ("CLAUDE_CONFIG_DIR", "/me/.claude"),
+            ("CLAUDE_CODE_GIT_BASH_PATH", "C:/git/bash.exe"),
+            ("ANTHROPIC_API_KEY", "key"),
+            ("ANTHROPIC_BASE_URL", "https://example.test"),
+            ("AI_AGENT", "claude-code"),
+            ("GIT_EDITOR", "true"),
+            ("NoDefaultCurrentDirectoryInExePath", "1"),
+            ("HOME", "/me"),
+        ];
+        assert_eq!(
+            listed(&inside),
+            [
+                "AI_AGENT",
+                "CLAUDECODE",
+                "CLAUDE_CODE_CHILD_SESSION",
+                "CLAUDE_CODE_ENTRYPOINT",
+                "CLAUDE_CODE_EXECPATH",
+                "CLAUDE_CODE_MESSAGING_SOCKET",
+                "CLAUDE_CODE_MESSAGING_TOKEN",
+                "CLAUDE_CODE_SESSION_ATTENDED",
+                "CLAUDE_CODE_SESSION_ID",
+                "CLAUDE_EFFORT",
+                "CLAUDE_PID",
+                "GIT_EDITOR",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_real_git_editor_is_kept_inside_a_claude_session() {
+        for editor in ["vim", "code --wait", "TRUE", " true", "true "] {
+            assert_eq!(
+                listed(&[("CLAUDECODE", "1"), ("GIT_EDITOR", editor)]),
+                ["CLAUDECODE"],
+                "GIT_EDITOR {editor:?}"
+            );
+        }
     }
 }

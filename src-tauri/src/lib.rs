@@ -118,9 +118,14 @@ fn isolate_webview_data_dir() {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Before anything else: both set process env, which is only sound while
-    // the main thread is the only thread.
+    // Before anything else: all three change process env, which is only
+    // sound while the main thread is the only thread. The scrub drops a
+    // parent Claude Code session's variables, so Claude tabs (and a `claude`
+    // typed in a shell tab) don't take themselves for nested sessions and
+    // skip their session log. The per-command `CLAUDE_CONFIG_DIR` and
+    // `CLAUDE_CODE_EXECUTABLE` are applied later and are untouched.
     shell_env::apply_login_path();
+    shell_env::scrub_parent_claude_session();
     isolate_webview_data_dir();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
