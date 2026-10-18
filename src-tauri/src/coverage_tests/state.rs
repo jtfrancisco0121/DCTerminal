@@ -365,3 +365,67 @@ fn reopening_a_closed_window_restores_its_tabs_and_account() {
     assert_eq!(saved.tabs.len(), 3);
     assert!(store.reopen_archived_window(|_| None).unwrap().is_none());
 }
+
+// Regression: closing main while another window stayed open archived it as
+// "main". After a relaunch Tauri opens a new main, so the archived tabs showed
+// in its Reopen Closed Tab list, and Reopen Closed Window put the old record
+// (and its account) onto the live main under its running sessions.
+#[test]
+fn an_archived_main_window_reopens_as_its_own_window_after_a_relaunch() {
+    let dir = TempDir::new("state_reopen_main");
+    let mut store = store_at(&dir);
+    store.ensure_window("main", "work").unwrap();
+    store.ensure_window("win-2", "default").unwrap();
+    let ids = tabs_in(&mut store, "main", 2);
+    store.bind_window(Some("win-2"));
+    store.archive_window("main").unwrap();
+
+    let mut store = store_at(&dir);
+    store.ensure_window("main", "default").unwrap();
+    assert_eq!(
+        closed_in(&store, "main"),
+        0,
+        "the new main has none of the old main's closed tabs"
+    );
+    assert!(store.has_archived_windows(), "the old main is still kept");
+
+    let reopened = store
+        .reopen_archived_window(|_| None)
+        .unwrap()
+        .expect("an archived window");
+    assert_ne!(reopened.id, "main", "never the live main's label");
+    assert_eq!(reopened.account_id, "work");
+    assert_eq!(store.account_for_window("main"), "default", "unchanged");
+    assert!(store.tabs_in_window("main").is_empty());
+    let open: Vec<String> = store
+        .tabs_in_window(&reopened.id)
+        .into_iter()
+        .map(|t| t.id.clone())
+        .collect();
+    assert_eq!(open, ids, "the tabs are in the reopened window");
+    assert_eq!(store.account_for_tab(Some(&ids[0])), "work");
+    assert!(!store.has_archived_windows());
+}
+
+// Regression: a reopen that failed partway had already moved the window back
+// to the open list and dropped its archive entry, with only some tabs back.
+#[test]
+fn a_failed_window_reopen_changes_nothing() {
+    let dir = TempDir::new("state_reopen_fails");
+    let mut store = store_at(&dir);
+    store.ensure_window("win-2", "work").unwrap();
+    let ids = tabs_in(&mut store, "win-2", 2);
+    store.archive_window("win-2").unwrap();
+    // The second tab is somehow open again, so reopening it fails.
+    tabs_in(&mut store, "main", 1);
+    store.data.tabs[0].id = ids[1].clone();
+    store.save().unwrap();
+    let before = store.data.clone();
+
+    assert!(store.reopen_archived_window(|_| None).is_err());
+    let after = serde_json::to_value(&store.data).unwrap();
+    assert_eq!(after, serde_json::to_value(&before).unwrap(), "in memory");
+    let saved: serde_json::Value = read_json(&dir.join("state.json")).unwrap();
+    assert_eq!(saved, after, "on disk");
+    assert_eq!(store.focus_window(), "main");
+}

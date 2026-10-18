@@ -211,19 +211,36 @@ impl StateStore {
             }
         }
         self.data.windows.retain(|window| window.id != window_id);
-        let has_closed = self.data.closed_tabs.iter().any(|tab| {
-            crate::store::state_types::window_matches(&tab.window_id, window_id)
-        });
+        // Tauri opens a new main at every launch, so an archived main would
+        // share its label: its closed tabs would show in the new main's list
+        // and reopening it would land on that window. Main is kept under a
+        // fresh label instead.
+        let label = if crate::store::state_types::window_matches(
+            window_id,
+            crate::store::state_types::MAIN_WINDOW_ID,
+        ) {
+            self.next_window_label()
+        } else {
+            window_id.to_string()
+        };
+        let mut has_closed = false;
+        for tab in &mut self.data.closed_tabs {
+            if crate::store::state_types::window_matches(&tab.window_id, window_id) {
+                tab.window_id = label.clone();
+                has_closed = true;
+            }
+        }
         if has_closed {
-            let window = record.unwrap_or_else(|| crate::store::WindowRecord {
+            let mut window = record.unwrap_or_else(|| crate::store::WindowRecord {
                 id: window_id.to_string(),
                 account_id: "default".to_string(),
                 active_tab_id: None,
                 layout: crate::store::LayoutState::default(),
             });
+            window.id = label.clone();
             self.data
                 .archived_windows
-                .retain(|archived| archived.window.id != window_id);
+                .retain(|archived| archived.window.id != label);
             self.data.archived_windows.insert(
                 0,
                 crate::store::ArchivedWindow {
@@ -315,6 +332,8 @@ impl StateStore {
         if self.data.archived_windows.is_empty() {
             return Ok(None);
         }
+        // A failure partway puts everything back as it was.
+        let before = self.data.clone();
         let archived = self.data.archived_windows.remove(0);
         let window = archived.window;
         let label = window.id.clone();
@@ -344,8 +363,13 @@ impl StateStore {
             reopened = self.set_layout(window.layout.clone());
         }
         self.draft_window = caller;
+        if let Err(err) = reopened {
+            self.data = before;
+            self.save()?;
+            return Err(err);
+        }
         self.save()?;
-        reopened.map(|()| Some(window))
+        Ok(Some(window))
     }
 
     pub fn tabs_in_window(&self, window_id: &str) -> Vec<&TabRecord> {
