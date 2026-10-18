@@ -113,6 +113,7 @@ vi.mock("./bridge", () => {
   startEagleEye: vi.fn(async () => ({ tab: { id: "ee" } })),
   newDraftTab: vi.fn(),
   openAccountWindow: vi.fn(async () => "win-2"),
+  onWindowCloseRequested: vi.fn(async () => () => {}),
   listenNewWindow: vi.fn(async () => () => {}),
   roleSessionStart: vi.fn(),
   saveFormDraft: vi.fn(async () => {}),

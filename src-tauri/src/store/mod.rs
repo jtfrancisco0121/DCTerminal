@@ -60,7 +60,7 @@ pub use claude_migration::{backup_pre_claude_first, migrate_state, CLAUDE_MIGRAT
 pub use state_types::{
     window_matches, AppStateFile, ChainRef, LayoutState, Migrations, PipelineRun, RoleSnapshot,
     claim_key, HandoffClaim, RunAutopilot, RunEvent, RunLane, StageGates, StageHandoff,
-    TabRecord, TabSessionRef, WindowRecord, MAIN_WINDOW_ID, MAX_DECIDED_TURNS,
+    ArchivedWindow, TabRecord, TabSessionRef, WindowRecord, MAIN_WINDOW_ID, MAX_DECIDED_TURNS,
 };
 pub use chain_runs::ClaimOutcome;
 pub use transcript_store::{TranscriptFile, TranscriptStore};

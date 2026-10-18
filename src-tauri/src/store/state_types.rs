@@ -41,6 +41,10 @@ pub struct AppStateFile {
     /// Windows and the Claude account each one uses. Missing on old files.
     #[serde(default)]
     pub windows: Vec<WindowRecord>,
+    /// Windows closed while another stayed open, newest first. Their tabs
+    /// wait in `closed_tabs` for File > Reopen Closed Window.
+    #[serde(default)]
+    pub archived_windows: Vec<ArchivedWindow>,
 }
 
 /// One top-level window bound to a Claude account.
@@ -54,6 +58,19 @@ pub struct WindowRecord {
     pub active_tab_id: Option<String>,
     #[serde(default)]
     pub layout: LayoutState,
+}
+
+/// A window closed while another stayed open, kept with its account so it
+/// can be reopened as it was.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchivedWindow {
+    #[serde(flatten)]
+    pub window: WindowRecord,
+    /// The tabs open when it closed, in tab order.
+    #[serde(default)]
+    pub tab_ids: Vec<String>,
+    pub closed_at: String,
 }
 
 /// Eagle-Eye position on a tab or a hand-off (Phase 9).
@@ -508,6 +525,7 @@ impl Default for AppStateFile {
                 active_tab_id: None,
                 layout: LayoutState::default(),
             }],
+            archived_windows: Vec::new(),
         }
     }
 }

@@ -249,3 +249,119 @@ fn window_migration_runs_once_and_keeps_an_existing_main_window() {
     StateStore::open_path(path).unwrap();
     assert!(!dir.join("state.pre-windows.json").exists());
 }
+
+/// `count` draft tabs in `window`, in creation order.
+fn tabs_in(store: &mut StateStore, window: &str, count: usize) -> Vec<String> {
+    let dev = role("role_dev", "Developer");
+    store.bind_window(Some(window));
+    (0..count)
+        .map(|i| {
+            let id = store
+                .create_draft_tab(&dev, &format!("/tmp/{window}/{i}"), true, None)
+                .unwrap();
+            store
+                .data
+                .tabs
+                .iter_mut()
+                .find(|t| t.id == id)
+                .unwrap()
+                .window_id = window.into();
+            id
+        })
+        .collect()
+}
+
+fn closed_in(store: &StateStore, window: &str) -> usize {
+    store
+        .data
+        .closed_tabs
+        .iter()
+        .filter(|t| crate::store::window_matches(&t.window_id, window))
+        .count()
+}
+
+// Regression: archiving a window closed its tabs one by one into a global
+// list capped at 15, so a window with 20 tabs lost 5 of them.
+#[test]
+fn archiving_a_window_keeps_all_its_tabs_past_fifteen() {
+    let dir = TempDir::new("state_archive_20");
+    let mut store = store_at(&dir);
+    store.ensure_window("win-2", "work").unwrap();
+    tabs_in(&mut store, "win-2", 20);
+    store.archive_window("win-2").unwrap();
+    assert!(store.data.tabs.is_empty());
+    assert_eq!(closed_in(&store, "win-2"), 20);
+    assert_eq!(closed_in(&store_at(&dir), "win-2"), 20, "saved too");
+}
+
+// Regression: the 15 cap was global, so closing tabs in one window pushed
+// another window's closed tabs out of the list.
+#[test]
+fn closing_tabs_in_one_window_does_not_evict_another_windows_closed_tabs() {
+    let dir = TempDir::new("state_closed_cap");
+    let mut store = store_at(&dir);
+    for id in tabs_in(&mut store, "main", 3) {
+        store.close_tab(&id).unwrap();
+    }
+    store.ensure_window("win-2", "default").unwrap();
+    for id in tabs_in(&mut store, "win-2", 16) {
+        store.close_tab(&id).unwrap();
+    }
+    assert_eq!(closed_in(&store, "main"), 3);
+    assert_eq!(
+        closed_in(&store, "win-2"),
+        15,
+        "each window keeps its newest 15"
+    );
+}
+
+// Regression: a freed label was reused, so a new window (maybe on another
+// account) inherited an archived window's closed tabs.
+#[test]
+fn a_new_window_label_does_not_reuse_an_archived_window() {
+    let dir = TempDir::new("state_label_reuse");
+    let mut store = store_at(&dir);
+    store.ensure_window("win-2", "work").unwrap();
+    tabs_in(&mut store, "win-2", 2);
+    store.archive_window("win-2").unwrap();
+    assert_eq!(store.next_window_label(), "win-3");
+}
+
+#[test]
+fn reopening_a_closed_window_restores_its_tabs_and_account() {
+    let dir = TempDir::new("state_reopen_window");
+    let mut store = store_at(&dir);
+    store.ensure_window("win-2", "work").unwrap();
+    let ids = tabs_in(&mut store, "win-2", 3);
+    store.bind_window(Some("main"));
+    store.archive_window("win-2").unwrap();
+    assert!(store.data.windows.iter().all(|w| w.id != "win-2"));
+
+    let reopened = store
+        .reopen_archived_window(|id| Some(format!("chat of {id}")))
+        .unwrap()
+        .expect("an archived window");
+    assert_eq!(reopened.id, "win-2");
+    assert_eq!(reopened.account_id, "work");
+    assert_eq!(store.account_for_window("win-2"), "work");
+    let open: Vec<String> = store
+        .tabs_in_window("win-2")
+        .into_iter()
+        .map(|t| t.id.clone())
+        .collect();
+    assert_eq!(open, ids, "same tabs, same order");
+    assert_eq!(
+        store.tab_by_id(&ids[0]).unwrap().transcript.as_deref(),
+        Some(format!("chat of {}", ids[0]).as_str())
+    );
+    assert_eq!(closed_in(&store, "win-2"), 0);
+    assert_eq!(
+        store.focus_window(),
+        "main",
+        "the caller's window binding is kept"
+    );
+    let saved: AppStateFile = read_json(&dir.join("state.json")).unwrap();
+    assert!(saved.archived_windows.is_empty());
+    assert_eq!(saved.tabs.len(), 3);
+    assert!(store.reopen_archived_window(|_| None).unwrap().is_none());
+}

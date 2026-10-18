@@ -5,8 +5,9 @@
 //! other platforms the last window quits the process. Either way the last
 //! window's tabs and account stay in `state.json`, so relaunch or the Dock
 //! brings them back. Closing a window while another is still open drops that
-//! window from the restore list. Quit (a programmatic exit, including the
-//! macOS Quit item) does not drop windows that are still open.
+//! window from the restore list and keeps it, with all its tabs and its
+//! account, for File > Reopen Closed Window. Quit (a programmatic exit,
+//! including the macOS Quit item) does not drop windows that are still open.
 
 use crate::provider::claude_config::ConfigDirInfo;
 use crate::store::settings_store::{account_display_name, resolved_account_config};
@@ -21,6 +22,13 @@ pub const MAIN_WINDOW: &str = "main";
 pub const NEW_WINDOW_ACCELERATOR: &str = "CmdOrCtrl+Shift+N";
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const NEW_WINDOW_EVENT: &str = "new-window";
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const REOPEN_WINDOW_ITEM: &str = "reopen-closed-window";
+
+/// File > Reopen Closed Window, kept to enable it only when a closed window
+/// is there to reopen.
+#[cfg(target_os = "macos")]
+struct ReopenWindowItem(tauri::menu::MenuItem<tauri::Wry>);
 
 /// Set while a real quit is in progress so closing windows does not archive them.
 static QUITTING: AtomicBool = AtomicBool::new(false);
@@ -71,7 +79,16 @@ pub fn install_macos_menu(app: &tauri::App) -> tauri::Result<()> {
             true,
             Some(NEW_WINDOW_ACCELERATOR),
         )?;
-        let file = Submenu::with_items(app, "File", true, &[&new_window])?;
+        // No shortcut of its own; enabled while a closed window is kept.
+        let reopen_window = MenuItem::with_id(
+            app,
+            REOPEN_WINDOW_ITEM,
+            "Reopen Closed Window",
+            has_archived_windows(app.handle()),
+            None::<&str>,
+        )?;
+        let file = Submenu::with_items(app, "File", true, &[&new_window, &reopen_window])?;
+        app.manage(ReopenWindowItem(reopen_window));
         let quit = PredefinedMenuItem::quit(app, None)?;
         let app_menu = Submenu::with_items(app, "DCTerminal", true, &[&quit])?;
         // Without these, Cmd+C/V/X/A/Z never reach text fields on macOS.
@@ -91,10 +108,14 @@ pub fn install_macos_menu(app: &tauri::App) -> tauri::Result<()> {
         )?;
         let menu = Menu::with_items(app, &[&app_menu, &file, &edit])?;
         app.set_menu(menu)?;
-        app.on_menu_event(|app, event| {
-            if event.id().as_ref() == "new-window" {
-                request_new_window(app);
+        app.on_menu_event(|app, event| match event.id().as_ref() {
+            "new-window" => request_new_window(app),
+            REOPEN_WINDOW_ITEM => {
+                if let Err(err) = reopen_last_closed_window(app) {
+                    eprintln!("DCTerminal: reopen closed window failed: {err}");
+                }
             }
+            _ => {}
         });
     }
     let _ = app;
@@ -208,6 +229,66 @@ fn on_window_destroyed(app: &AppHandle, label: &str) {
         return;
     }
     let _ = state.archive_window(label);
+    drop(state);
+    refresh_reopen_window_item(app);
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn has_archived_windows(app: &AppHandle) -> bool {
+    let Some(state) = app.try_state::<Mutex<StateStore>>() else {
+        return false;
+    };
+    let archived = state.lock().map(|state| state.has_archived_windows());
+    archived.unwrap_or(false)
+}
+
+/// Enable File > Reopen Closed Window only while a closed window is kept.
+/// Takes the state lock: never call it while holding that lock.
+fn refresh_reopen_window_item(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    if let Some(item) = app.try_state::<ReopenWindowItem>() {
+        let _ = item.0.set_enabled(has_archived_windows(app));
+    }
+    let _ = app;
+}
+
+/// Build the most recently closed window again, with its tabs and account.
+/// `None` when no closed window is kept.
+pub fn reopen_last_closed_window(app: &AppHandle) -> Result<Option<String>, String> {
+    let reopened = {
+        let state = app
+            .try_state::<Mutex<StateStore>>()
+            .ok_or_else(|| "state is not ready".to_string())?;
+        let transcripts = app
+            .try_state::<Mutex<crate::store::TranscriptStore>>()
+            .ok_or_else(|| "transcripts are not ready".to_string())?;
+        // Lock order: state, then transcripts.
+        let mut state = state.lock().map_err(|err| err.to_string())?;
+        let transcripts = transcripts.lock().map_err(|err| err.to_string())?;
+        state.reopen_archived_window(|id| {
+            transcripts
+                .load(id)
+                .ok()
+                .flatten()
+                .map(|loaded| loaded.text)
+                .filter(|text| !text.trim().is_empty())
+        })?
+    };
+    refresh_reopen_window_item(app);
+    let Some(window) = reopened else {
+        return Ok(None);
+    };
+    let title = title_for(app, &window.id);
+    build_window(app, &window.id, &title)?;
+    Ok(Some(window.id))
+}
+
+/// File > Reopen Closed Window from the page. Returns the reopened label.
+#[tauri::command]
+pub async fn reopen_closed_window(app: AppHandle) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || reopen_last_closed_window(&app))
+        .await
+        .map_err(|err| err.to_string())?
 }
 
 /// Recreate saved windows other than the one Tauri already opened, and title them.
@@ -335,20 +416,6 @@ fn build_window(app: &AppHandle, label: &str, title: &str) -> Result<(), String>
     Ok(())
 }
 
-fn next_window_label(state: &StateStore) -> String {
-    let mut n = 2u32;
-    loop {
-        let label = format!("win-{n}");
-        if !state.data.windows.iter().any(|window| window.id == label) {
-            return label;
-        }
-        n += 1;
-        if n > 10_000 {
-            return format!("win-{}", chrono::Utc::now().timestamp_millis());
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WindowContext {
@@ -424,7 +491,7 @@ pub async fn open_account_window(app: AppHandle, account_id: String) -> Result<S
             .try_state::<Mutex<StateStore>>()
             .ok_or_else(|| "state is not ready".to_string())?;
         let mut state = state.lock().map_err(|err| err.to_string())?;
-        let label = next_window_label(&state);
+        let label = state.next_window_label();
         state.ensure_window(&label, &account_id)?;
         (label, title)
     };

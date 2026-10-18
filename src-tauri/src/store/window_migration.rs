@@ -100,6 +100,7 @@ mod tests {
                 windows: false,
             },
             windows: Vec::new(),
+            archived_windows: Vec::new(),
         };
         // An old file has no window id. Serde default fills "main" on load;
         // a blank id is still moved onto main.

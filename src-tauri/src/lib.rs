@@ -336,6 +336,7 @@ pub fn run() {
             files_markdown_image,
             windows::window_context,
             windows::open_account_window,
+            windows::reopen_closed_window,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
