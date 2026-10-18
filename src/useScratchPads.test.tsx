@@ -112,6 +112,36 @@ describe("useScratchPads across windows (S1 PR2)", () => {
     expect(result.current.persistError).toBeNull();
   });
 
+  it("a mirror-only pad with a corrupt stamp is saved on the next flush", async () => {
+    window.localStorage.setItem(
+      "dcterminal.scratch.v1",
+      JSON.stringify({
+        pads: {
+          "tab-a": { content: "corrupt a", updatedAt: 1e20, history: [] },
+          "tab-c": { content: "mirror only", updatedAt: 1e20, history: [] },
+        },
+      }),
+    );
+    vi.mocked(scratchLoad).mockResolvedValueOnce({
+      pads: [diskPad("tab-a", "saved a")],
+      knownTabIds: ["tab-a", "tab-c"],
+    });
+    const { result } = renderHook(() => useScratchPads("tab-c"));
+    await waitFor(() => expect(result.current.content).toBe("mirror only"));
+    const before = Date.now();
+    act(() => result.current.flush());
+    await waitFor(() => expect(scratchSave).toHaveBeenCalled());
+    // tab-a has a disk copy, so the disk copy wins and is not overwritten.
+    expect(vi.mocked(scratchSave).mock.calls.map((c) => [c[0], c[1]])).toEqual([["tab-c", "mirror only"]]);
+    expect(Date.parse(vi.mocked(scratchSave).mock.calls[0][3] ?? "")).toBeGreaterThanOrEqual(before);
+
+    // Restamped in memory too, so a second flush has nothing new to write.
+    vi.mocked(scratchSave).mockClear();
+    act(() => result.current.flush());
+    await Promise.resolve();
+    expect(scratchSave).not.toHaveBeenCalled();
+  });
+
   it("an edit typed before the load resolves is kept", async () => {
     let resolveLoad: (snap: { pads: ScratchPadEntry[]; knownTabIds: string[] }) => void = () => {};
     vi.mocked(scratchLoad).mockImplementationOnce(

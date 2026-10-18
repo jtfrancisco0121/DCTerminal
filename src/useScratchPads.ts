@@ -57,8 +57,34 @@ export function useScratchPads(activeTabId: string | null) {
   // knows. Only pads edited since then are saved, so a window never writes
   // its stale copy of a pad another window is editing.
   const savedAt = useRef<Record<string, number>>({});
+  // True once the disk copy loaded, so `savedAt` says which pads are on disk.
+  const diskLoaded = useRef(false);
 
-  const writeThrough = useCallback(async (next: DraftFile) => {
+  const writeThrough = useCallback(async (given: DraftFile) => {
+    // A pad only in the local mirror whose stamp was repaired to 0 would never
+    // count as edited: stamp it now so it reaches disk. A pad with a disk
+    // copy keeps its 0 stamp, so the disk copy wins.
+    const now = Date.now();
+    const restamped = Object.keys(given.pads).filter((tabId) => {
+      const time = new Date(given.pads[tabId].updatedAt).getTime();
+      return diskLoaded.current && savedAt.current[tabId] === undefined && !(time > 0);
+    });
+    let next = given;
+    if (restamped.length > 0) {
+      const pads = { ...given.pads };
+      for (const tabId of restamped) pads[tabId] = { ...pads[tabId], updatedAt: now };
+      next = { pads };
+      setFile((prev) => {
+        const fixed = { ...prev.pads };
+        for (const tabId of restamped) {
+          const current = fixed[tabId];
+          if (current && !(new Date(current.updatedAt).getTime() > 0)) {
+            fixed[tabId] = { ...current, updatedAt: now };
+          }
+        }
+        return { pads: fixed };
+      });
+    }
     const local = saveLocalDrafts(browserStorage(), next);
     if (!local.ok) {
       setPersistError(local.error ?? "could not save scratch draft");
@@ -121,6 +147,7 @@ export function useScratchPads(activeTabId: string | null) {
         for (const [tabId, pad] of Object.entries(disk.pads)) {
           savedAt.current[tabId] = pad.updatedAt;
         }
+        diskLoaded.current = true;
         pruneLocalDrafts(browserStorage(), snap.knownTabIds);
         const merged = mergeDraftFiles(dropUnknownLocalPads(local, snap.knownTabIds), disk);
         // Keep edits typed before the load resolved (newer `updatedAt` wins).
