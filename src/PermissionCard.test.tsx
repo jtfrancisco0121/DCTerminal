@@ -104,4 +104,16 @@ describe("PermissionCard", () => {
     expect(onSelect).not.toHaveBeenCalled();
     expect(onCancel).not.toHaveBeenCalled();
   });
+  it("gives each card its own title id, so two panes' cards keep their own names", () => {
+    render(
+      <>
+        <PermissionCard request={{ ...request, title: "Alpha wants rm" }} busy={false} onSelect={() => {}} onCancel={() => {}} keysActive={false} />
+        <PermissionCard request={{ ...request, tabId: "t2", title: "Beta wants rm" }} busy={false} onSelect={() => {}} onCancel={() => {}} keysActive={false} />
+      </>,
+    );
+    expect(screen.getByRole("dialog", { name: "Alpha wants rm" })).toBeTruthy();
+    expect(screen.getByRole("dialog", { name: "Beta wants rm" })).toBeTruthy();
+    const ids = screen.getAllByRole("dialog").map((card) => card.getAttribute("aria-labelledby"));
+    expect(new Set(ids).size).toBe(2);
+  });
 });

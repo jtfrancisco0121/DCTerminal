@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useId } from "react";
 import type { PermissionRequestEvent } from "./bridge";
 import { openDialogCount } from "./components/Dialog";
 
@@ -38,6 +38,8 @@ function firstRejectOption(request: PermissionRequestEvent): string | null {
 }
 
 export function PermissionCard({ request, busy, onSelect, onCancel, keysActive = true }: Props) {
+  // Per card: two panes can each show a card, and a shared id would mislabel one of them.
+  const titleId = useId();
   useEffect(() => {
     if (!keysActive) return;
     const onKey = (event: KeyboardEvent) => {
@@ -75,8 +77,8 @@ export function PermissionCard({ request, busy, onSelect, onCancel, keysActive =
   }, [busy, keysActive, onCancel, onSelect, request]);
 
   return (
-    <div className="permission-card" role="dialog" aria-labelledby="perm-title">
-      <p id="perm-title" className="permission-card-title">
+    <div className="permission-card" role="dialog" aria-labelledby={titleId}>
+      <p id={titleId} className="permission-card-title">
         {request.title}
       </p>
       <p className="permission-card-meta">

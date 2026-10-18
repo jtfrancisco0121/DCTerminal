@@ -69,4 +69,23 @@ describe("useAppShortcuts", () => {
     expect(onPermissionEscape).toHaveBeenCalledTimes(1);
     expect(onCancelTurn).toHaveBeenCalledTimes(1);
   });
+  it("a held Escape's auto-repeat neither cancels the turn nor a permission", () => {
+    const onCancelTurn = vi.fn();
+    const onPermissionEscape = vi.fn(() => false);
+    renderHook(() =>
+      useAppShortcuts({
+        platform: "mac",
+        dialogOpen: false,
+        promptInFlight: true,
+        onAction: () => {},
+        onCancelTurn,
+        onPermissionEscape,
+      }),
+    );
+    // The first press answered the permission; the repeats that follow must not cancel the turn.
+    fireEvent.keyDown(document.body, { key: "Escape", repeat: true });
+    fireEvent.keyDown(document.body, { key: "Escape", repeat: true });
+    expect(onPermissionEscape).not.toHaveBeenCalled();
+    expect(onCancelTurn).not.toHaveBeenCalled();
+  });
 });

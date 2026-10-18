@@ -114,6 +114,8 @@ export function useAppShortcuts({
         !event.altKey &&
         promptInFlight
       ) {
+        // A held Escape: the first press answered; its auto-repeats must not cancel the turn.
+        if (event.repeat) return;
         event.preventDefault();
         if (onPermissionEscape?.(target)) {
           event.stopPropagation();

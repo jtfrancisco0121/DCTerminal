@@ -71,9 +71,8 @@ test("permission keys: modifiers never approve, only the focused pane answers, E
 
   await app.turn("tab-1").permission("Alpha wants rm", 11);
   await app.turn("tab-2").permission("Beta wants rm", 12);
-  // Located by pane: both cards share the id `perm-title`, so their accessible names collide.
-  const alphaCard = page.getByLabel("Second pane: Alpha").locator(".permission-card");
-  const betaCard = page.locator("[data-pane='primary'] .permission-card");
+  const alphaCard = page.getByRole("dialog", { name: "Alpha wants rm" });
+  const betaCard = page.getByRole("dialog", { name: "Beta wants rm" });
   await expect(alphaCard).toBeVisible();
   await expect(betaCard).toBeVisible();
   // Focus the main pane (Beta) on something that is not a text field.
