@@ -429,3 +429,75 @@ fn a_failed_window_reopen_changes_nothing() {
     assert_eq!(saved, after, "on disk");
     assert_eq!(store.focus_window(), "main");
 }
+
+// Regression: when the window could not be built after its store reopen,
+// its record and tabs stayed open in the store with no window on screen.
+#[test]
+fn a_window_that_fails_to_build_goes_back_to_reopen_closed_window() {
+    let dir = TempDir::new("state_reopen_build_fails");
+    let mut store = store_at(&dir);
+    store.ensure_window("win-2", "work").unwrap();
+    let ids = tabs_in(&mut store, "win-2", 2);
+    store.bind_window(Some("main"));
+    store.archive_window("win-2").unwrap();
+    let state = std::sync::Mutex::new(store);
+
+    let err = crate::windows::reopen_archived_window_with(
+        &state,
+        |_| None,
+        |_| Err("no window".to_string()),
+    )
+    .unwrap_err();
+    assert_eq!(err, "no window");
+    let store = state.lock().unwrap();
+    assert!(store.data.windows.iter().all(|w| w.id != "win-2"));
+    assert!(store.tabs_in_window("win-2").is_empty());
+    assert_eq!(closed_in(&store, "win-2"), 2);
+    let archived = &store.data.archived_windows[0];
+    assert_eq!(archived.window.id, "win-2");
+    assert_eq!(archived.window.account_id, "work");
+    assert_eq!(archived.tab_ids, ids);
+    let saved: AppStateFile = read_json(&dir.join("state.json")).unwrap();
+    assert_eq!(saved.archived_windows.len(), 1, "on disk");
+    drop(store);
+
+    let reopened =
+        crate::windows::reopen_archived_window_with(&state, |_| None, |_| Ok(())).unwrap();
+    assert_eq!(
+        reopened.as_deref(),
+        Some("win-2"),
+        "it can still be reopened"
+    );
+}
+
+// Regression: transcripts loaded with the state lock held, so every other
+// window's state command waited on the disk reads.
+#[test]
+fn reopening_a_window_loads_transcripts_without_holding_the_state_lock() {
+    let dir = TempDir::new("state_reopen_unlocked");
+    let mut store = store_at(&dir);
+    store.ensure_window("win-2", "work").unwrap();
+    let ids = tabs_in(&mut store, "win-2", 2);
+    store.bind_window(Some("main"));
+    store.archive_window("win-2").unwrap();
+    let state = std::sync::Mutex::new(store);
+
+    let reopened = crate::windows::reopen_archived_window_with(
+        &state,
+        |id| {
+            assert!(
+                state.try_lock().is_ok(),
+                "state is locked while loading {id}"
+            );
+            Some(format!("chat of {id}"))
+        },
+        |_| Ok(()),
+    )
+    .unwrap();
+    assert_eq!(reopened.as_deref(), Some("win-2"));
+    let store = state.lock().unwrap();
+    assert_eq!(
+        store.tab_by_id(&ids[1]).unwrap().transcript.as_deref(),
+        Some(format!("chat of {}", ids[1]).as_str())
+    );
+}

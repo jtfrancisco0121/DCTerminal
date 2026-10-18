@@ -111,9 +111,14 @@ pub fn install_macos_menu(app: &tauri::App) -> tauri::Result<()> {
         app.on_menu_event(|app, event| match event.id().as_ref() {
             "new-window" => request_new_window(app),
             REOPEN_WINDOW_ITEM => {
-                if let Err(err) = reopen_last_closed_window(app) {
-                    eprintln!("DCTerminal: reopen closed window failed: {err}");
-                }
+                // Off the main thread: transcripts load from disk, and the
+                // window build hands itself to the main thread and waits.
+                let app = app.clone();
+                std::thread::spawn(move || {
+                    if let Err(err) = reopen_last_closed_window(&app) {
+                        eprintln!("DCTerminal: reopen closed window failed: {err}");
+                    }
+                });
             }
             _ => {}
         });
@@ -255,31 +260,69 @@ fn refresh_reopen_window_item(app: &AppHandle) {
 /// Build the most recently closed window again, with its tabs and account.
 /// `None` when no closed window is kept.
 pub fn reopen_last_closed_window(app: &AppHandle) -> Result<Option<String>, String> {
-    let reopened = {
-        let state = app
-            .try_state::<Mutex<StateStore>>()
-            .ok_or_else(|| "state is not ready".to_string())?;
-        let transcripts = app
-            .try_state::<Mutex<crate::store::TranscriptStore>>()
-            .ok_or_else(|| "transcripts are not ready".to_string())?;
-        // Lock order: state, then transcripts.
-        let mut state = state.lock().map_err(|err| err.to_string())?;
-        let transcripts = transcripts.lock().map_err(|err| err.to_string())?;
-        state.reopen_archived_window(|id| {
+    let state = app
+        .try_state::<Mutex<StateStore>>()
+        .ok_or_else(|| "state is not ready".to_string())?;
+    let transcripts = app
+        .try_state::<Mutex<crate::store::TranscriptStore>>()
+        .ok_or_else(|| "transcripts are not ready".to_string())?;
+    let result = reopen_archived_window_with(
+        &state,
+        |id| {
+            let transcripts = transcripts.lock().ok()?;
             transcripts
                 .load(id)
                 .ok()
                 .flatten()
                 .map(|loaded| loaded.text)
                 .filter(|text| !text.trim().is_empty())
-        })?
-    };
+        },
+        |window| {
+            let title = title_for(app, &window.id);
+            build_window(app, &window.id, &title)
+        },
+    );
     refresh_reopen_window_item(app);
+    result
+}
+
+/// The store side of [`reopen_last_closed_window`]: `transcript` loads a
+/// tab's saved chat and `build` opens the window. Transcripts load before
+/// the state lock is taken. If the window cannot be built it is archived
+/// again, so it stays in File > Reopen Closed Window.
+pub(crate) fn reopen_archived_window_with(
+    state: &Mutex<StateStore>,
+    transcript: impl Fn(&str) -> Option<String>,
+    build: impl FnOnce(&crate::store::WindowRecord) -> Result<(), String>,
+) -> Result<Option<String>, String> {
+    let tab_ids = {
+        let state = state.lock().map_err(|err| err.to_string())?;
+        match state.data.archived_windows.first() {
+            Some(archived) => archived.tab_ids.clone(),
+            None => return Ok(None),
+        }
+    };
+    let mut loaded: std::collections::HashMap<String, Option<String>> = tab_ids
+        .into_iter()
+        .map(|id| {
+            let text = transcript(&id);
+            (id, text)
+        })
+        .collect();
+    let reopened = {
+        let mut state = state.lock().map_err(|err| err.to_string())?;
+        // Another window may have been archived meanwhile: a tab not loaded
+        // above loads here (lock order: state, then transcripts).
+        state.reopen_archived_window(|id| loaded.remove(id).unwrap_or_else(|| transcript(id)))?
+    };
     let Some(window) = reopened else {
         return Ok(None);
     };
-    let title = title_for(app, &window.id);
-    build_window(app, &window.id, &title)?;
+    if let Err(err) = build(&window) {
+        let mut state = state.lock().map_err(|err| err.to_string())?;
+        state.archive_window(&window.id)?;
+        return Err(err);
+    }
     Ok(Some(window.id))
 }
 
