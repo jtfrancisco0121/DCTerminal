@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
-import { fireEvent, render } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { Dialog } from "./components/Dialog";
 import { PermissionCard } from "./PermissionCard";
 import type { PermissionRequestEvent } from "./bridge";
 
@@ -48,5 +49,59 @@ describe("PermissionCard", () => {
     );
     fireEvent.keyDown(container, { key: "a" });
     expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("ignores Cmd/Ctrl/Alt+A", () => {
+    const onSelect = vi.fn();
+    const { container } = render(
+      <PermissionCard request={request} busy={false} onSelect={onSelect} onCancel={() => {}} />,
+    );
+    fireEvent.keyDown(container, { key: "a", metaKey: true });
+    fireEvent.keyDown(container, { key: "a", ctrlKey: true });
+    fireEvent.keyDown(container, { key: "a", altKey: true });
+    fireEvent.keyDown(container, { key: "r", metaKey: true });
+    expect(onSelect).not.toHaveBeenCalled();
+    // Shift stays allowed: Shift+A still approves.
+    fireEvent.keyDown(container, { key: "A", shiftKey: true });
+    expect(onSelect).toHaveBeenCalledWith("allow-once");
+  });
+
+  it("stands down while a Dialog is open, so Escape closes the dialog", () => {
+    const onSelect = vi.fn();
+    const onCancel = vi.fn();
+    const onClose = vi.fn();
+    render(
+      <>
+        <PermissionCard request={request} busy={false} onSelect={onSelect} onCancel={onCancel} />
+        <Dialog title="Shortcuts" onClose={onClose}>
+          <button type="button">inside</button>
+        </Dialog>
+      </>,
+    );
+    const inside = screen.getByRole("button", { name: "inside" });
+    fireEvent.keyDown(inside, { key: "a" });
+    fireEvent.keyDown(inside, { key: "Escape" });
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("keysActive=false ignores a/r/Escape", () => {
+    const onSelect = vi.fn();
+    const onCancel = vi.fn();
+    const { container } = render(
+      <PermissionCard
+        request={request}
+        busy={false}
+        keysActive={false}
+        onSelect={onSelect}
+        onCancel={onCancel}
+      />,
+    );
+    fireEvent.keyDown(container, { key: "a" });
+    fireEvent.keyDown(container, { key: "r" });
+    fireEvent.keyDown(container, { key: "Escape" });
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(onCancel).not.toHaveBeenCalled();
   });
 });

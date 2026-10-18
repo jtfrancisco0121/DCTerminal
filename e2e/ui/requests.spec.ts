@@ -1,4 +1,5 @@
 import { expect, test } from "./fixtures/tauri";
+import { chord, namedTabs, startReady, tabChip } from "./tabs-helpers";
 
 test("permission request: the card answers with the chosen option", async ({ app, page }) => {
   await app.open();
@@ -53,4 +54,52 @@ test("a send the backend rejects shows its error", async ({ app, page }) => {
   await page.getByRole("button", { name: "Send", exact: true }).first().click();
   await expect(page.getByText("no active agent session")).toBeVisible();
   await expect(page.locator(".status-bar-status")).not.toHaveText("Agent working…");
+});
+
+test("permission keys: modifiers never approve, only the focused pane answers, Escape closes a dialog first", async ({
+  app,
+  page,
+}) => {
+  await app.open({ tabs: namedTabs(2) });
+  await startReady(app, page, "tab-1", "alpha ready");
+  await tabChip(page, "Beta").click();
+  await startReady(app, page, "tab-2", "beta ready");
+  await chord(page, "Backslash");
+  const picker = page.getByRole("dialog", { name: "Split right with tab" });
+  await picker.getByRole("option", { name: /^Alpha/ }).click();
+  await expect(picker).toHaveCount(0);
+
+  await app.turn("tab-1").permission("Alpha wants rm", 11);
+  await app.turn("tab-2").permission("Beta wants rm", 12);
+  // Located by pane: both cards share the id `perm-title`, so their accessible names collide.
+  const alphaCard = page.getByLabel("Second pane: Alpha").locator(".permission-card");
+  const betaCard = page.locator("[data-pane='primary'] .permission-card");
+  await expect(alphaCard).toBeVisible();
+  await expect(betaCard).toBeVisible();
+  // Focus the main pane (Beta) on something that is not a text field.
+  await page.locator("[data-pane='primary']").getByRole("log").click();
+  await expect(page.locator("[data-pane='primary']")).toHaveClass(/split-pane-focused/);
+
+  // Cmd+A / Ctrl+A select text; they never answer a permission.
+  await page.keyboard.press("Meta+a");
+  await page.keyboard.press("Control+a");
+
+  // Mod+/ opens a dialog; Escape closes it and leaves both permissions pending.
+  await chord(page, "Slash");
+  const help = page.getByRole("dialog", { name: "Keyboard shortcuts" });
+  await expect(help).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(help).toBeHidden();
+  expect(await app.calls("respond_permission_request")).toHaveLength(0);
+  expect(await app.calls("dev_session_cancel")).toHaveLength(0);
+  await expect(alphaCard).toBeVisible();
+  await expect(betaCard).toBeVisible();
+
+  // A bare `a` answers only the focused pane's card.
+  await page.keyboard.press("a");
+  const answer = await app.waitForCall("respond_permission_request");
+  expect(answer.args).toMatchObject({ tabId: "tab-2", outcome: "selected", optionId: "allow-once" });
+  await expect(betaCard).toBeHidden();
+  await expect(alphaCard).toBeVisible();
+  expect(await app.calls("respond_permission_request")).toHaveLength(1);
 });

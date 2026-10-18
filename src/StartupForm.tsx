@@ -6022,6 +6022,7 @@ export function StartupForm({
         paneByTab={paneByTab}
         setPaneByTab={setPaneByTab}
         togglePane={togglePane}
+        focusedPane={focusedPane}
         findRequest={findRequest}
         setChatSearchQuery={setChatSearchQuery}
         openChainOverviewTab={openChainOverviewTab}

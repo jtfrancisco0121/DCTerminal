@@ -98,8 +98,10 @@ export function useAppShortcuts({
         event.stopPropagation();
         return;
       }
+      // A permission card that answered this Escape marks it handled.
       if (
         !dialogOpen &&
+        !event.defaultPrevented &&
         event.key === "Escape" &&
         !event.ctrlKey &&
         !event.metaKey &&
