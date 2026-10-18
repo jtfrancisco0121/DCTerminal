@@ -44,6 +44,13 @@ pub fn run_sweep(data_dir: &Path, scratch: &mut ScratchStore, known_tabs: &[Stri
     sweep_files(data_dir, std::time::SystemTime::now());
 }
 
+/// Data files moved aside at startup (damaged, or written by another
+/// version), one line each. Drained, so only the first window shows them.
+#[tauri::command]
+pub fn startup_notices() -> Vec<String> {
+    crate::store::take_recovery_notes()
+}
+
 #[tauri::command]
 pub fn storage_status(app: tauri::AppHandle) -> Result<StorageStatus, String> {
     let dir = crate::data_dir::app_data_dir(&app).path;

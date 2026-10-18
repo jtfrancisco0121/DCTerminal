@@ -742,6 +742,7 @@ export function installTauriMock(config: MockConfig): void {
     },
     session_agent_logs: () => ({ stderr: "" }),
     storage_status: () => ({ appDataDir: "/tmp/dct-e2e", bytes: 0 }),
+    startup_notices: () => [],
   };
 
   // ---- Terminal tabs (e2e/ui/terminal*.spec.ts) -------------------------

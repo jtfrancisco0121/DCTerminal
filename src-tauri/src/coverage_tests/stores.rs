@@ -6,9 +6,20 @@ use crate::store::{
     ModelSettings, ProjectsStore, ScratchStore, SettingsStore, TerminalSettings, UiSettings,
     WorkspaceStore,
 };
-use crate::test_support::{names_in, TempDir};
+use crate::test_support::{names_in, write_aged, TempDir, DAY};
 use chrono::{DateTime, Utc};
 use std::collections::{HashMap, HashSet};
+
+/// The text of the one `<file>.from-v<version>-*` file set aside in `dir`.
+fn set_aside(dir: &TempDir, file: &str, version: u32) -> String {
+    let prefix = format!("{file}.from-v{version}-");
+    let found: Vec<String> = names_in(dir.path())
+        .into_iter()
+        .filter(|name| name.starts_with(&prefix))
+        .collect();
+    assert_eq!(found.len(), 1, "{found:?} in {:?}", names_in(dir.path()));
+    std::fs::read_to_string(dir.join(&found[0])).unwrap()
+}
 
 // ---------- scratch ----------
 
@@ -39,7 +50,7 @@ fn a_newer_scratch_schema_is_set_aside_not_overwritten() {
     .unwrap();
     let store = ScratchStore::open(dir.path()).unwrap();
     assert!(store.data.pads.is_empty());
-    assert!(names_in(dir.path()).contains(&"scratch.json.corrupt-schema-9".to_string()));
+    assert!(set_aside(&dir, "scratch.json", 9).contains("future"));
 }
 
 #[test]
@@ -146,13 +157,15 @@ fn a_corrupt_settings_file_opens_with_defaults() {
 #[test]
 fn a_newer_settings_schema_opens_with_defaults() {
     let dir = TempDir::new("settings_newer");
-    std::fs::write(
-        dir.join("settings.json"),
-        r#"{"schemaVersion": 7, "ui": {"theme": "github-light"}}"#,
-    )
-    .unwrap();
+    let original = r#"{"schemaVersion": 7, "ui": {"theme": "github-light"}}"#;
+    std::fs::write(dir.join("settings.json"), original).unwrap();
     let store = SettingsStore::open(dir.path()).unwrap();
     assert_eq!(store.ui().theme, "github-dark");
+    // Regression: the newer file was overwritten by the next two saves.
+    assert_eq!(set_aside(&dir, "settings.json", 7), original);
+    store.save().unwrap();
+    store.save().unwrap();
+    assert_eq!(set_aside(&dir, "settings.json", 7), original);
 }
 
 // Regression: one bad account in settings.json must not stop startup; only it is dropped.
@@ -387,13 +400,66 @@ fn remembering_a_favorite_refreshes_it_and_list_hides_the_duplicate() {
 #[test]
 fn a_newer_projects_schema_starts_empty() {
     let dir = TempDir::new("projects_schema");
-    std::fs::write(
-        dir.join("projects.json"),
-        r#"{"schemaVersion": 4, "recent": [{"path": "/x", "lastUsedAt": "t"}]}"#,
-    )
-    .unwrap();
+    let original = r#"{"schemaVersion": 4, "recent": [{"path": "/x", "lastUsedAt": "t"}]}"#;
+    std::fs::write(dir.join("projects.json"), original).unwrap();
     let store = ProjectsStore::open(dir.path()).unwrap();
     assert!(store.data.recent.is_empty());
+    assert_eq!(set_aside(&dir, "projects.json", 4), original);
+    store.save().unwrap();
+    store.save().unwrap();
+    assert_eq!(set_aside(&dir, "projects.json", 4), original);
+}
+
+// ---------- github cache, pipelines ----------
+
+#[test]
+fn a_newer_github_cache_schema_is_set_aside() {
+    use crate::store::github_store::{GithubCache, CACHE_FILE};
+    let dir = TempDir::new("gh_cache_schema");
+    let original = r#"{"schemaVersion": 5, "scopes": ["repo"]}"#;
+    std::fs::write(dir.join(CACHE_FILE), original).unwrap();
+    let cache = GithubCache::open(dir.path()).unwrap();
+    assert_eq!(cache.data.scopes, None);
+    cache.save().unwrap();
+    cache.save().unwrap();
+    assert_eq!(set_aside(&dir, CACHE_FILE, 5), original);
+}
+
+#[test]
+fn a_newer_pipelines_schema_is_set_aside() {
+    use crate::store::{PipelineStore, PIPELINES_FILE};
+    let dir = TempDir::new("pipelines_schema");
+    let original = r#"{"schemaVersion": 3, "pipelines": []}"#;
+    std::fs::write(dir.join(PIPELINES_FILE), original).unwrap();
+    // `load`, not `open`: open would publish to the registry other tests share.
+    let data = PipelineStore::load(&dir.join(PIPELINES_FILE)).unwrap();
+    assert!(data.pipelines.is_empty());
+    assert_eq!(data.schema_version, 1);
+    assert_eq!(set_aside(&dir, PIPELINES_FILE, 3), original);
+}
+
+// ---------- startup sweep ----------
+
+// Regression: `fs::rename` keeps the old mtime, so the startup sweep could
+// delete a month-old file on the very launch that moved it aside.
+#[test]
+fn a_set_aside_file_survives_the_startup_sweep() {
+    let dir = TempDir::new("set_aside_sweep");
+    let newer = r#"{"schemaVersion": 7, "ui": {"theme": "github-light"}}"#;
+    write_aged(&dir.join("settings.json"), newer.as_bytes(), 40 * DAY);
+    write_aged(&dir.join("projects.json"), b"{damaged", 40 * DAY);
+    SettingsStore::open(dir.path()).unwrap();
+    ProjectsStore::open(dir.path()).unwrap();
+    let mut scratch = ScratchStore::open(dir.path()).unwrap();
+    crate::commands::storage::run_sweep(dir.path(), &mut scratch, &[]);
+    assert_eq!(set_aside(&dir, "settings.json", 7), newer);
+    assert!(
+        names_in(dir.path())
+            .iter()
+            .any(|name| name.starts_with("projects.json.corrupt-")),
+        "{:?}",
+        names_in(dir.path())
+    );
 }
 
 // ---------- workspaces ----------

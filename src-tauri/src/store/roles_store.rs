@@ -1,5 +1,5 @@
 use crate::roles::{Role, RolesFile};
-use crate::store::json_io::{read_json, write_json_atomic};
+use crate::store::json_io::{read_json_or_recover_with, write_json_atomic};
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 
@@ -10,14 +10,22 @@ pub struct RolesStore {
 
 impl RolesStore {
     pub fn load_or_seed(app: &AppHandle) -> Result<Self, String> {
-        let dir = crate::data_dir::app_data_dir(app).path;
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        Self::open(&crate::data_dir::app_data_dir(app).path)
+    }
+
+    pub fn open(dir: &Path) -> Result<Self, String> {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         let path = dir.join("roles.json");
         let seed = bundled_seed()?;
-        if !path.exists() {
+        // Look at roles.json, then an intact .tmp or .bak, before seeding, so
+        // custom roles survive a damaged or missing file.
+        let nothing_saved = ["json", "json.tmp", "json.bak"]
+            .iter()
+            .all(|ext| !path.with_extension(ext).exists());
+        let mut data: RolesFile = read_json_or_recover_with(&path, || seed.clone())?;
+        if nothing_saved {
             write_json_atomic(&path, &seed)?;
         }
-        let mut data: RolesFile = read_json(&path)?;
         // Built-in roles added in a later release (for example Plan Reviewer)
         // are appended to an existing roles.json. Roles already there, edited
         // or not, are left alone.
@@ -136,6 +144,7 @@ pub fn write_seed_file(path: &Path, file: &RolesFile) -> Result<(), String> {
 #[cfg(test)]
 mod upgrade_tests {
     use super::*;
+    use crate::store::read_json;
 
     fn seed() -> RolesFile {
         read_json(&seed_output_path()).expect("seed file")
@@ -208,5 +217,59 @@ mod upgrade_tests {
             let current = seed.roles.iter().find(|r| r.id == *id).unwrap();
             assert_ne!(&current.template_hash, hash, "{id}");
         }
+    }
+}
+
+#[cfg(test)]
+mod open_tests {
+    use super::*;
+    use crate::test_support::{names_in, role, TempDir};
+
+    fn has_role(store: &RolesStore, id: &str) -> bool {
+        store.role_by_id(id).is_some()
+    }
+
+    /// roles.json and roles.json.bak both holding the seed plus one custom role.
+    fn saved_with_custom(dir: &TempDir) {
+        let mut store = RolesStore::open(dir.path()).unwrap();
+        store.data.roles.push(role("role_custom_1", "Mine"));
+        store.save().unwrap();
+        store.save().unwrap();
+    }
+
+    // Regression: a damaged roles.json used to stop the app from opening.
+    #[test]
+    fn a_damaged_roles_file_falls_back_to_the_backup() {
+        let dir = TempDir::new("roles_damaged");
+        saved_with_custom(&dir);
+        std::fs::write(dir.join("roles.json"), b"{oops").unwrap();
+        let store = RolesStore::open(dir.path()).expect("opens");
+        assert!(has_role(&store, "role_custom_1"));
+        assert!(has_role(&store, "role_planner"));
+        assert!(names_in(dir.path())
+            .iter()
+            .any(|name| name.starts_with("roles.json.corrupt-")));
+    }
+
+    #[test]
+    fn a_damaged_roles_file_with_no_backup_reseeds() {
+        let dir = TempDir::new("roles_damaged_no_bak");
+        std::fs::write(dir.join("roles.json"), b"{oops").unwrap();
+        let store = RolesStore::open(dir.path()).expect("opens");
+        assert_eq!(store.data.roles.len(), bundled_seed().unwrap().roles.len());
+        assert!(names_in(dir.path())
+            .iter()
+            .any(|name| name.starts_with("roles.json.corrupt-")));
+    }
+
+    // Regression: the seed was written over a missing roles.json before the
+    // intact .bak was looked at, so custom roles silently disappeared.
+    #[test]
+    fn a_missing_roles_file_with_an_intact_backup_keeps_custom_roles() {
+        let dir = TempDir::new("roles_missing");
+        saved_with_custom(&dir);
+        std::fs::remove_file(dir.join("roles.json")).unwrap();
+        let store = RolesStore::open(dir.path()).expect("opens");
+        assert!(has_role(&store, "role_custom_1"));
     }
 }

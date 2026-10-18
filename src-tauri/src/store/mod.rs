@@ -34,7 +34,10 @@ pub use activity_store::{merge_patches, ActivityEntry, ActivityPatch, ActivitySt
 pub use forms_store::FormsStore;
 pub use forms_types::FormSnapshot;
 pub use handoff_store::{HandoffRecord, HandoffStore, NewHandoff};
-pub use json_io::{read_json, read_json_or_recover, write_json_atomic};
+pub use json_io::{
+    note_recovery, read_json, read_json_or_recover, read_json_or_recover_with,
+    set_aside_other_version, take_recovery_notes, write_json_atomic,
+};
 pub use pipelines_store::{PipelineStore, PIPELINES_FILE};
 pub use projects_store::{ListedProject, ProjectsStore};
 pub use prompt_store::{PromptStore, RecentSend, SavedPrompt};

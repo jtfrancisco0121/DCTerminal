@@ -78,7 +78,7 @@ pub use session_log::{
 pub use roles::{get_role, list_roles, reset_builtin_role, save_role, validate_and_preview};
 pub use roles::{create_role, delete_role, duplicate_role, export_role, import_role, preview_role_template};
 pub use setup::{first_run_complete, first_run_status, provider_status};
-pub use storage::{storage_cleanup, storage_status};
+pub use storage::{startup_notices, storage_cleanup, storage_status};
 pub use workspace::{
     check_working_folder, cursor_approval_mode, diagnostics_read_log, diagnostics_set_capture,
     diagnostics_status, history_search, projects_list, projects_remember, projects_remove,

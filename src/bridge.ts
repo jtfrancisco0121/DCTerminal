@@ -870,6 +870,11 @@ export type StorageCleanup = {
   bytes: number;
 };
 
+/** One line per data file moved aside at startup; only the first call gets them. */
+export async function startupNotices(): Promise<string[]> {
+  return invoke("startup_notices");
+}
+
 /** Size of DCTerminal's own app data folder (Settings > Data). */
 export async function storageStatus(): Promise<StorageStatus> {
   return invoke("storage_status");

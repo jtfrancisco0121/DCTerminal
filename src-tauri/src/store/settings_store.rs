@@ -2,7 +2,7 @@
 //! lives here and defaults to off.
 
 use crate::provider::ProviderId;
-use crate::store::json_io::{read_json_or_recover, write_json_atomic};
+use crate::store::json_io::{read_json_or_recover, set_aside_other_version, write_json_atomic};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -574,6 +574,8 @@ impl SettingsStore {
         let path = dir.join("settings.json");
         let mut data = read_json_or_recover::<SettingsFile>(&path)?;
         if data.schema_version > SETTINGS_SCHEMA_VERSION {
+            // Moved aside, so no save here can overwrite a newer build's file.
+            set_aside_other_version(&path, data.schema_version);
             data = SettingsFile::default();
         }
         data.schema_version = SETTINGS_SCHEMA_VERSION;

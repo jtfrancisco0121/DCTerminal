@@ -1,6 +1,9 @@
 //! `write_json_atomic`, `read_json` and `read_json_or_recover`.
 
-use crate::store::{read_json, read_json_or_recover, write_json_atomic};
+use crate::store::{
+    note_recovery, read_json, read_json_or_recover, read_json_or_recover_with,
+    take_recovery_notes, write_json_atomic,
+};
 use crate::test_support::{names_in, TempDir};
 use serde::{Deserialize, Serialize};
 
@@ -125,4 +128,30 @@ fn recover_with_a_corrupt_backup_too_is_default() {
         dir.join("doc.json.bak").exists(),
         "backup is left for the user"
     );
+}
+
+#[test]
+fn recover_with_uses_the_given_fallback() {
+    let dir = TempDir::new("io_fallback");
+    let path = dir.join("doc.json");
+    assert_eq!(read_json_or_recover_with(&path, || doc(7)).unwrap(), doc(7));
+    std::fs::write(&path, b"{damaged").unwrap();
+    assert_eq!(read_json_or_recover_with(&path, || doc(8)).unwrap(), doc(8));
+    write_json_atomic(&path, &doc(2)).unwrap();
+    assert_eq!(read_json_or_recover_with(&path, || doc(9)).unwrap(), doc(2));
+}
+
+// The only test that drains the notes, so parallel tests cannot steal them.
+#[test]
+fn notes_are_drained_once() {
+    let dir = TempDir::new("io_notes");
+    let path = dir.join("noted.json");
+    std::fs::write(&path, b"{damaged").unwrap();
+    let _: Doc = read_json_or_recover(&path).unwrap();
+    note_recovery("io_notes test note".to_string());
+    let notes = take_recovery_notes();
+    assert!(notes.iter().any(|note| note == "io_notes test note"), "{notes:?}");
+    assert!(notes.iter().any(|note| note.contains("noted.json")), "{notes:?}");
+    let again = take_recovery_notes();
+    assert!(!again.iter().any(|note| note.contains("io_notes") || note.contains("noted.json")));
 }

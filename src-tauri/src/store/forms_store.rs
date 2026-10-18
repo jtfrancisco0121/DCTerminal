@@ -6,10 +6,10 @@
 //! folder (`lastUsed.cwd`) is still used.
 
 use crate::store::forms_types::{FormSnapshot, FormsFile, FORMS_SCHEMA_VERSION};
-use crate::store::json_io::{read_json, write_json_atomic};
+use crate::store::json_io::{read_json_or_recover_with, set_aside_other_version, write_json_atomic};
 use chrono::Utc;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 
 pub struct FormsStore {
@@ -19,21 +19,19 @@ pub struct FormsStore {
 
 impl FormsStore {
     pub fn load_or_default(app: &AppHandle) -> Result<Self, String> {
-        let dir = crate::data_dir::app_data_dir(app).path;
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        Self::open(&crate::data_dir::app_data_dir(app).path)
+    }
+
+    pub fn open(dir: &Path) -> Result<Self, String> {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         let path = dir.join("forms.json");
-        let data = if path.exists() {
-            let loaded: FormsFile = read_json(&path)?;
-            if loaded.schema_version != FORMS_SCHEMA_VERSION {
-                return Err(format!(
-                    "unsupported forms.json schemaVersion {} (expected {})",
-                    loaded.schema_version, FORMS_SCHEMA_VERSION
-                ));
-            }
-            loaded
-        } else {
-            FormsFile::new_empty()
-        };
+        // A damaged file or one from another build must not stop the app
+        // from opening: it is moved aside and an empty file is used.
+        let mut data = read_json_or_recover_with(&path, FormsFile::new_empty)?;
+        if data.schema_version != FORMS_SCHEMA_VERSION {
+            set_aside_other_version(&path, data.schema_version);
+            data = FormsFile::new_empty();
+        }
         Ok(Self { path, data })
     }
 
@@ -155,5 +153,32 @@ mod tests {
         assert!(entry.last_used.as_ref().unwrap().values.is_empty());
         assert_eq!(entry.recent["originalTask"][0].value, "Old task");
         assert_eq!(store.recall_cwd_for_role("role_planner"), "/work/next");
+    }
+
+    // Regression: a damaged forms.json used to stop the app from opening.
+    #[test]
+    fn a_damaged_forms_file_does_not_block_open() {
+        let dir = TempDir::new("forms_damaged");
+        std::fs::write(dir.join("forms.json"), b"{oops").unwrap();
+        let store = FormsStore::open(dir.path()).expect("opens");
+        assert!(store.data.by_role.is_empty());
+        assert_eq!(store.data.schema_version, FORMS_SCHEMA_VERSION);
+        assert!(crate::test_support::names_in(dir.path())
+            .iter()
+            .any(|name| name.starts_with("forms.json.corrupt-")));
+    }
+
+    #[test]
+    fn a_forms_file_from_another_version_is_set_aside() {
+        let dir = TempDir::new("forms_version");
+        let original = r#"{"schemaVersion": 3, "byRole": {}}"#;
+        std::fs::write(dir.join("forms.json"), original).unwrap();
+        let store = FormsStore::open(dir.path()).expect("opens");
+        assert_eq!(store.data.schema_version, FORMS_SCHEMA_VERSION);
+        let kept = crate::test_support::names_in(dir.path())
+            .into_iter()
+            .find(|name| name.starts_with("forms.json.from-v3-"))
+            .expect("set-aside file");
+        assert_eq!(std::fs::read_to_string(dir.join(kept)).unwrap(), original);
     }
 }

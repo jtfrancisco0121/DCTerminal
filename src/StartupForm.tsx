@@ -75,6 +75,7 @@ import {
   chainLoopBack,
   setTabChain,
   startEagleEye,
+  startupNotices,
   roleSessionStart,
   selectActiveTab,
   syncActiveTabForm,
@@ -3786,6 +3787,15 @@ export function StartupForm({
         setCaptureOn(status.capturePermissionPayloads);
       })
       .catch((err: unknown) => reportOnce("diagnosticsStatus", "Diagnostics status did not load", err));
+  }, []);
+
+  useEffect(() => {
+    // A data file moved aside at startup (damaged, or from another version).
+    startupNotices()
+      .then((notes) => {
+        for (const note of notes ?? []) showNoticeRef.current("Data recovered", note, "failed");
+      })
+      .catch((err: unknown) => reportOnce("startupNotices", "Startup notices did not load", err));
   }, []);
 
   useEffect(() => {

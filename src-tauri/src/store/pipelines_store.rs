@@ -2,7 +2,7 @@
 //! Built-ins are bundled (`crate::pipelines`) and never written here.
 
 use crate::pipelines::{set_user_pipelines, validate_user_pipelines, PipelineDef};
-use crate::store::json_io::{read_json_or_recover, write_json_atomic};
+use crate::store::json_io::{read_json_or_recover, set_aside_other_version, write_json_atomic};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -37,9 +37,20 @@ impl PipelineStore {
     /// shows the problem on the next save.
     pub fn open(dir: &Path) -> Result<Self, String> {
         let path = dir.join(PIPELINES_FILE);
-        let data: PipelinesFile = read_json_or_recover(&path)?;
+        let data = Self::load(&path)?;
         set_user_pipelines(data.pipelines.clone());
         Ok(Self { path, data })
+    }
+
+    /// Read the file without publishing it to the registry.
+    pub fn load(path: &Path) -> Result<PipelinesFile, String> {
+        let mut data: PipelinesFile = read_json_or_recover(path)?;
+        if data.schema_version > PIPELINES_SCHEMA_VERSION {
+            // Moved aside, so no save here can overwrite a newer build's file.
+            set_aside_other_version(path, data.schema_version);
+            data = PipelinesFile::default();
+        }
+        Ok(data)
     }
 
     pub fn list(&self) -> Vec<PipelineDef> {

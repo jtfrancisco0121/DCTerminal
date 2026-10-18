@@ -35,6 +35,7 @@ vi.mock("./bridge", () => {
   attachmentRemove: vi.fn(async () => {}),
   devSessionStop: vi.fn(),
   diagnosticsSetCapture: vi.fn(),
+  startupNotices: vi.fn(async () => []),
   diagnosticsStatus: vi.fn(async () => ({
     capturePermissionPayloads: false,
     appDataDir: "",

@@ -2,7 +2,7 @@
 //! user's repo or `~/.cursor`. A plan that is too large for the JSON file
 //! is attached beside it as `handoff-plans/<id>.txt`.
 
-use crate::store::json_io::{read_json_or_recover, write_json_atomic};
+use crate::store::json_io::{read_json_or_recover, set_aside_other_version, write_json_atomic};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -99,10 +99,7 @@ impl HandoffStore {
         let path = dir.join("handoffs.json");
         let mut data = read_json_or_recover::<HandoffFile>(&path)?;
         if data.schema_version > HANDOFF_SCHEMA_VERSION {
-            let _ = std::fs::rename(
-                &path,
-                path.with_extension(format!("json.corrupt-schema-{}", data.schema_version)),
-            );
+            set_aside_other_version(&path, data.schema_version);
             data = HandoffFile::default();
         }
         data.schema_version = HANDOFF_SCHEMA_VERSION;
