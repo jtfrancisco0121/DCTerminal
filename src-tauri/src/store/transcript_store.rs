@@ -5,6 +5,7 @@
 use crate::store::json_io::{read_json, write_json_atomic};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 pub const TRANSCRIPT_SCHEMA_VERSION: u32 = 1;
 pub const MAX_TRANSCRIPT_CHARS: usize = 500_000;
@@ -50,6 +51,21 @@ impl TranscriptStore {
         now: &str,
         keep_ids: &[String],
     ) -> Result<(), String> {
+        self.save_since(tab_id, text, cwd, now, keep_ids, None)
+    }
+
+    /// `save`, but rotation also spares every file modified at or after
+    /// `cutoff`: a tab that saved after the caller read `keep_ids` is newer
+    /// than that list and must not be rotated away by it.
+    pub fn save_since(
+        &self,
+        tab_id: &str,
+        text: &str,
+        cwd: &str,
+        now: &str,
+        keep_ids: &[String],
+        cutoff: Option<SystemTime>,
+    ) -> Result<(), String> {
         if !safe_tab_id(tab_id) {
             return Err(format!("refusing transcript name: {tab_id}"));
         }
@@ -64,7 +80,7 @@ impl TranscriptStore {
         };
         let path = self.path_for(tab_id);
         write_json_atomic(&path, &file)?;
-        self.rotate(keep_ids)?;
+        self.rotate(keep_ids, cutoff)?;
         Ok(())
     }
 
@@ -120,7 +136,7 @@ impl TranscriptStore {
         self.dir.join(format!("{tab_id}.json"))
     }
 
-    fn rotate(&self, keep_ids: &[String]) -> Result<(), String> {
+    fn rotate(&self, keep_ids: &[String], cutoff: Option<SystemTime>) -> Result<(), String> {
         let mut files = Vec::new();
         for entry in std::fs::read_dir(&self.dir).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
@@ -131,7 +147,7 @@ impl TranscriptStore {
             let modified = entry
                 .metadata()
                 .and_then(|m| m.modified())
-                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                .unwrap_or(SystemTime::UNIX_EPOCH);
             files.push((modified, entry.path(), name));
         }
         if files.len() <= MAX_TRANSCRIPT_FILES {
@@ -140,12 +156,15 @@ impl TranscriptStore {
         files.sort_by_key(|(modified, _, _)| *modified);
         let overflow = files.len() - MAX_TRANSCRIPT_FILES;
         let mut removed = 0;
-        for (_, path, name) in files {
+        for (modified, path, name) in files {
             if removed >= overflow {
                 break;
             }
             let id = name.trim_end_matches(".json");
             if keep_ids.iter().any(|keep| keep == id) {
+                continue;
+            }
+            if cutoff.is_some_and(|cutoff| modified >= cutoff) {
                 continue;
             }
             let _ = std::fs::remove_file(path);
