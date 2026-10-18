@@ -38,14 +38,30 @@ enum Ctrl {
     Write(Vec<u8>),
     /// A cursor-position report we generated. Does not mean the frontend is listening.
     Reply(Vec<u8>),
-    Resize {
-        cols: u16,
-        rows: u16,
-        ack: Sender<io::Result<()>>,
-    },
+    /// Not acknowledged: the control thread may be blocked in `write_all`.
+    Resize { cols: u16, rows: u16 },
     #[cfg(test)]
     Size(Sender<io::Result<(u16, u16)>>),
     Kill,
+}
+
+/// Sends to a session's control thread without the registry lock held.
+#[derive(Clone)]
+pub(crate) struct PtyHandle {
+    ctrl: Sender<Ctrl>,
+}
+
+impl PtyHandle {
+    /// Queues the resize and returns at once; the control thread applies it
+    /// in order with writes and logs a failure.
+    pub(crate) fn resize(&self, cols: u16, rows: u16) -> io::Result<()> {
+        self.ctrl
+            .send(Ctrl::Resize {
+                cols: cols.max(1),
+                rows: rows.max(1),
+            })
+            .map_err(|err| io::Error::other(err.to_string()))
+    }
 }
 
 pub struct PtySession {
@@ -133,18 +149,15 @@ impl PtySession {
             .map_err(|err| io::Error::other(err.to_string()))
     }
 
+    pub(crate) fn handle(&self) -> PtyHandle {
+        PtyHandle {
+            ctrl: self.ctrl.clone(),
+        }
+    }
+
+    #[cfg(test)]
     pub fn resize(&self, cols: u16, rows: u16) -> io::Result<()> {
-        let (ack_tx, ack_rx) = mpsc::channel();
-        self.ctrl
-            .send(Ctrl::Resize {
-                cols: cols.max(1),
-                rows: rows.max(1),
-                ack: ack_tx,
-            })
-            .map_err(|err| io::Error::other(err.to_string()))?;
-        ack_rx
-            .recv_timeout(Duration::from_secs(2))
-            .map_err(|err| io::Error::other(err.to_string()))?
+        self.handle().resize(cols, rows)
     }
 
     #[cfg(test)]
@@ -160,6 +173,28 @@ impl PtySession {
 
     pub fn kill(&self) {
         let _ = self.ctrl.send(Ctrl::Kill);
+    }
+
+    /// A session whose control thread never answers, like one blocked in
+    /// `write_all` on a terminal that stopped reading. The receiver gets the
+    /// size of each resize sent to it.
+    #[cfg(test)]
+    pub fn stalled_for_test() -> (Self, Receiver<(u16, u16)>) {
+        let (ctrl_tx, ctrl_rx) = mpsc::channel();
+        let (size_tx, size_rx) = mpsc::channel();
+        thread::spawn(move || {
+            while let Ok(msg) = ctrl_rx.recv() {
+                if let Ctrl::Resize { cols, rows } = msg {
+                    let _ = size_tx.send((cols, rows));
+                }
+            }
+        });
+        let session = Self {
+            ctrl: ctrl_tx,
+            output: None,
+            pid: 0,
+        };
+        (session, size_rx)
     }
 
     #[cfg(test)]
@@ -277,17 +312,16 @@ fn control_loop(
                 let _ = writer.write_all(&data);
                 let _ = writer.flush();
             }
-            Ok(Ctrl::Resize { cols, rows, ack }) => {
+            Ok(Ctrl::Resize { cols, rows }) => {
                 attached.store(true, Ordering::Relaxed);
-                let result = master
-                    .resize(PtySize {
-                        rows,
-                        cols,
-                        pixel_width: 0,
-                        pixel_height: 0,
-                    })
-                    .map_err(|err| io::Error::other(err.to_string()));
-                let _ = ack.send(result);
+                if let Err(err) = master.resize(PtySize {
+                    rows,
+                    cols,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                }) {
+                    eprintln!("DCTerminal: terminal resize to {cols}x{rows} failed: {err}");
+                }
             }
             #[cfg(test)]
             Ok(Ctrl::Size(ack)) => {

@@ -978,6 +978,8 @@ pub fn pty_write(
         .map_err(|err| err.to_string())
 }
 
+/// Stays sync: async commands run on a pool and could apply resizes out of
+/// order. It only queues the resize, so it never waits on the terminal.
 #[tauri::command]
 pub fn pty_resize(
     id: String,
@@ -985,12 +987,25 @@ pub fn pty_resize(
     rows: u16,
     registry: State<Mutex<PtyRegistry>>,
 ) -> Result<(), String> {
-    let registry = registry.lock().map_err(|err| err.to_string())?;
-    let session = registry
+    resize_terminal(&registry, &id, cols, rows)
+}
+
+fn resize_terminal(
+    registry: &Mutex<PtyRegistry>,
+    id: &str,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    // Clone the handle and drop the lock before sending, so a busy terminal
+    // never holds up another terminal's input or resize.
+    let handle = registry
+        .lock()
+        .map_err(|err| err.to_string())?
         .sessions
-        .get(&id)
+        .get(id)
+        .map(PtySession::handle)
         .ok_or_else(|| format!("no terminal: {id}"))?;
-    session.resize(cols, rows).map_err(|err| err.to_string())
+    handle.resize(cols, rows).map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -1112,5 +1127,29 @@ mod tests {
         assert_eq!(role_id, "cursor-cli");
         assert_eq!(snapshot.name, "Cursor CLI");
         assert_eq!(shell_snapshot("shell").0, "terminal");
+    }
+
+    // Regression: a resize waited up to 2 s for a busy terminal's ack while
+    // holding the registry lock, so every other terminal's input and resize
+    // (and pty_open, pty_kill) waited too.
+    #[test]
+    fn a_resize_on_a_stuck_terminal_does_not_hold_the_registry() {
+        let registry = Mutex::new(PtyRegistry::new());
+        let (stuck, resizes) = PtySession::stalled_for_test();
+        registry.lock().unwrap().sessions.insert("stuck".into(), stuck);
+        std::thread::scope(|scope| {
+            let resize = scope.spawn(|| {
+                let start = std::time::Instant::now();
+                let result = resize_terminal(&registry, "stuck", 100, 30);
+                (result, start.elapsed())
+            });
+            let arrived = resizes.recv_timeout(std::time::Duration::from_secs(1));
+            assert_eq!(arrived, Ok((100, 30)), "the resize reached the terminal");
+            let free = registry.try_lock().is_ok();
+            let (result, took) = resize.join().unwrap();
+            assert!(free, "registry is free while the terminal is busy");
+            assert_eq!(result, Ok(()));
+            assert!(took < std::time::Duration::from_millis(200), "resize took {took:?}");
+        });
     }
 }
