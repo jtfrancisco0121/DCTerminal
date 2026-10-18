@@ -50,13 +50,15 @@ pub fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, Strin
 /// A corrupt transcript or scratch file must not stop the app from opening.
 pub fn read_json_or_recover<T>(path: &Path) -> Result<T, String>
 where
-    T: serde::de::DeserializeOwned + Default,
+    T: serde::de::DeserializeOwned + Serialize + Default,
 {
     read_json_or_recover_with(path, T::default)
 }
 
 /// [`read_json_or_recover`] with `fallback()` in place of `T::default()`.
-pub fn read_json_or_recover_with<T: serde::de::DeserializeOwned>(
+/// A file that does not parse but names a newer `schemaVersion` than
+/// `fallback()` does is from a newer build: it is set aside, not called damaged.
+pub fn read_json_or_recover_with<T: serde::de::DeserializeOwned + Serialize>(
     path: &Path,
     fallback: impl FnOnce() -> T,
 ) -> Result<T, String> {
@@ -75,6 +77,15 @@ pub fn read_json_or_recover_with<T: serde::de::DeserializeOwned>(
     match read_json::<T>(path) {
         Ok(value) => Ok(value),
         Err(_) => {
+            let fallback_value = fallback();
+            if let (Some(found), Some(current)) = (
+                schema_version_of(path),
+                serde_json::to_value(&fallback_value).ok().as_ref().and_then(schema_version_in),
+            ) {
+                if found > current && set_aside_other_version(path, found).is_some() {
+                    return Ok(fallback_value);
+                }
+            }
             let corrupt = path.with_extension(format!("json.corrupt-{}", stamp()));
             let moved = fs::rename(path, &corrupt).is_ok();
             if moved {
@@ -97,28 +108,29 @@ pub fn read_json_or_recover_with<T: serde::de::DeserializeOwned>(
                     }
                 ));
             }
-            Ok(restored.unwrap_or_else(fallback))
+            Ok(restored.unwrap_or(fallback_value))
         }
     }
 }
 
 /// Move a file written by a different DCTerminal version to
 /// `<name>.json.from-v{found}-<stamp>`, so no later save or sweep removes it.
-/// When `path` is gone, its `.bak` is moved instead. A `.bak` of the same
-/// other version goes aside too (one identical to `path` is only removed).
-/// Never loses data. Returns the kept file.
+/// When `path` is gone, its `.bak` is moved instead. The `.bak` beside a
+/// moved `path` goes aside too, as `from-v<its version>` (one identical to
+/// `path` is only removed). Never loses data. Returns the kept file.
 pub fn set_aside_other_version(path: &Path, found: u32) -> Option<PathBuf> {
     let bak = path.with_extension("json.bak");
+    let mut kept_bak = None;
     let target = if path.exists() {
         let target = move_aside(path, path, found)?;
-        // A `.bak` from the same other version would be restored on the next
-        // launch and set aside again, with another notice: keep it aside now.
-        if schema_version_of(&bak) == Some(found) {
-            if fs::read(&bak).ok() == fs::read(&target).ok() {
+        // A `.bak` left behind would be restored without a notice on the next
+        // launch (or swept as an orphan): keep it aside now, whatever version.
+        match schema_version_of(&bak) {
+            Some(version) if version == found && fs::read(&bak).ok() == fs::read(&target).ok() => {
                 let _ = fs::remove_file(&bak);
-            } else {
-                move_aside(&bak, path, found);
             }
+            Some(version) => kept_bak = move_aside(&bak, path, version),
+            None => {}
         }
         target
     } else if bak.exists() {
@@ -127,9 +139,12 @@ pub fn set_aside_other_version(path: &Path, found: u32) -> Option<PathBuf> {
         return None;
     };
     note_recovery(format!(
-        "{} was written by a different DCTerminal version (v{found}); kept as {}. Defaults are in use.",
+        "{} was written by a different DCTerminal version (v{found}); kept as {}.{} Defaults are in use.",
         file_name(path),
-        file_name(&target)
+        file_name(&target),
+        kept_bak
+            .map(|kept| format!(" Its backup was kept as {}.", file_name(&kept)))
+            .unwrap_or_default()
     ));
     Some(target)
 }
@@ -156,8 +171,13 @@ fn move_aside(source: &Path, path: &Path, found: u32) -> Option<PathBuf> {
 
 /// The `schemaVersion` in the JSON file at `path`, if it has one.
 fn schema_version_of(path: &Path) -> Option<u32> {
-    let value: serde_json::Value = read_json(path).ok()?;
-    u32::try_from(value.get("schemaVersion")?.as_u64()?).ok()
+    schema_version_in(&read_json::<serde_json::Value>(path).ok()?)
+}
+
+/// `schemaVersion` (or `schema_version`, as roles.json spells it) in `value`.
+fn schema_version_in(value: &serde_json::Value) -> Option<u32> {
+    let version = value.get("schemaVersion").or_else(|| value.get("schema_version"))?;
+    u32::try_from(version.as_u64()?).ok()
 }
 
 /// Put recovered data back as the main file, so it survives the sweep of an
@@ -165,10 +185,14 @@ fn schema_version_of(path: &Path) -> Option<u32> {
 /// from another version is still recognised (and set aside) by its store.
 fn restore(source: &Path, path: &Path) {
     let tmp = path.with_extension("json.tmp");
-    if source != tmp && fs::copy(source, &tmp).is_err() {
+    let copied = source != tmp;
+    if copied && fs::copy(source, &tmp).is_err() {
         return;
     }
-    let _ = fs::rename(&tmp, path);
+    // Remove only our own copy: a `.tmp` source is the data itself.
+    if fs::rename(&tmp, path).is_err() && copied {
+        let _ = fs::remove_file(&tmp);
+    }
 }
 
 pub fn note_recovery(msg: String) {
@@ -211,4 +235,23 @@ fn intact_copy<T: serde::de::DeserializeOwned>(path: &Path) -> Option<(T, PathBu
         .into_iter()
         .filter(|candidate| candidate.exists())
         .find_map(|candidate| read_json::<T>(&candidate).ok().map(|value| (value, candidate)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{names_in, TempDir};
+
+    #[test]
+    fn a_failed_restore_leaves_no_temp_copy() {
+        let dir = TempDir::new("io_restore_fails");
+        let source = dir.join("doc.json.bak");
+        fs::write(&source, b"{}").unwrap();
+        // A non-empty directory in the way makes the rename fail.
+        let path = dir.join("doc.json");
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("inside"), b"x").unwrap();
+        restore(&source, &path);
+        assert_eq!(names_in(dir.path()), vec!["doc.json", "doc.json.bak"]);
+    }
 }

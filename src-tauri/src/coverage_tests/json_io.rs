@@ -168,6 +168,40 @@ fn recovered_data_is_written_back_as_the_main_file() {
     assert!(!dir.join("doc.json.tmp").exists());
 }
 
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Versioned {
+    schema_version: u32,
+    n: u32,
+}
+
+impl Default for Versioned {
+    fn default() -> Self {
+        Self { schema_version: 2, n: 0 }
+    }
+}
+
+// Regression: a newer file this build cannot parse went to .corrupt-* and
+// was swept after 30 days; it is from another version, so it is kept.
+#[test]
+fn a_newer_file_that_does_not_parse_is_set_aside_not_called_corrupt() {
+    let dir = TempDir::new("io_newer_unparsed");
+    let path = dir.join("doc.json");
+    let newer = r#"{"schemaVersion": 3, "n": "now a string"}"#;
+    std::fs::write(&path, newer).unwrap();
+    assert_eq!(read_json_or_recover::<Versioned>(&path).unwrap(), Versioned::default());
+    let names = names_in(dir.path());
+    assert!(!names.iter().any(|n| n.contains(".corrupt-")), "{names:?}");
+    let kept: Vec<_> = names.iter().filter(|n| n.starts_with("doc.json.from-v3-")).collect();
+    assert_eq!(kept.len(), 1, "{names:?}");
+    assert_eq!(std::fs::read_to_string(dir.join(kept[0])).unwrap(), newer);
+
+    // The same version in a wrong shape is still damaged.
+    std::fs::write(&path, r#"{"schemaVersion": 2, "n": "x"}"#).unwrap();
+    assert_eq!(read_json_or_recover::<Versioned>(&path).unwrap(), Versioned::default());
+    assert!(names_in(dir.path()).iter().any(|n| n.starts_with("doc.json.corrupt-")));
+}
+
 // The only test that drains the notes, so parallel tests cannot steal them.
 #[test]
 fn notes_are_drained_once() {

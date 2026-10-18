@@ -3793,10 +3793,12 @@ export function StartupForm({
     // A data file moved aside at startup (damaged, or from another version).
     startupNotices()
       .then((notes) => {
-        // Own toast slot per note: notices share one slot and replace each other.
-        (notes ?? []).forEach((note, i) =>
-          showNoticeRef.current("Data recovered", note, "failed", `__data-recovered-${i}__`),
-        );
+        // One toast for all notes: the toast list keeps only the newest few,
+        // so a toast per note would drop the oldest when many files were kept.
+        if (!notes?.length) return;
+        const body =
+          notes.length === 1 ? notes[0] : `${notes.length} files were kept aside. ${notes.join(" ")}`;
+        showNoticeRef.current("Data recovered", body, "failed", "__data-recovered__");
       })
       .catch((err: unknown) => reportOnce("startupNotices", "Startup notices did not load", err));
   }, []);

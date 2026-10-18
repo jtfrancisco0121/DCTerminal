@@ -168,6 +168,24 @@ fn a_newer_settings_schema_opens_with_defaults() {
     assert_eq!(set_aside(&dir, "settings.json", 7), original);
 }
 
+// Regression: the current-version .bak beside a newer file was left behind,
+// then restored without a notice on the next launch (or swept).
+#[test]
+fn a_newer_settings_file_and_its_backup_are_both_kept_aside_on_every_launch() {
+    let dir = TempDir::new("settings_newer_bak");
+    let newer = r#"{"schemaVersion": 7, "ui": {"theme": "github-light"}}"#;
+    let backup = r#"{"schemaVersion": 1, "ui": {"theme": "github-light"}}"#;
+    std::fs::write(dir.join("settings.json"), newer).unwrap();
+    std::fs::write(dir.join("settings.json.bak"), backup).unwrap();
+    for launch in 1..=2 {
+        let store = SettingsStore::open(dir.path()).unwrap();
+        assert_eq!(store.ui().theme, "github-dark", "launch {launch}");
+        assert_eq!(set_aside(&dir, "settings.json", 7), newer, "launch {launch}");
+        assert_eq!(set_aside(&dir, "settings.json", 1), backup, "launch {launch}");
+        assert!(!dir.join("settings.json.bak").exists(), "launch {launch}");
+    }
+}
+
 // Regression: one bad account in settings.json must not stop startup; only it is dropped.
 #[test]
 fn invalid_claude_accounts_on_disk_do_not_block_open() {
