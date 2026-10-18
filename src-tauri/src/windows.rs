@@ -319,9 +319,17 @@ pub(crate) fn reopen_archived_window_with(
         return Ok(None);
     };
     if let Err(err) = build(&window) {
-        let mut state = state.lock().map_err(|err| err.to_string())?;
-        state.archive_window(&window.id)?;
-        return Err(err);
+        // The build error is the cause; a failed put-back is only added to it.
+        let archived = state
+            .lock()
+            .map_err(|err| err.to_string())
+            .and_then(|mut state| state.archive_window(&window.id));
+        return Err(match archived {
+            Ok(()) => err,
+            Err(archive_err) => {
+                format!("{err} (and it could not be kept for Reopen Closed Window: {archive_err})")
+            }
+        });
     }
     Ok(Some(window.id))
 }

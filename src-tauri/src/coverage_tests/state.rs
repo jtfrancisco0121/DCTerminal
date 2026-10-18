@@ -501,3 +501,32 @@ fn reopening_a_window_loads_transcripts_without_holding_the_state_lock() {
         Some(format!("chat of {}", ids[1]).as_str())
     );
 }
+
+// Regression: when putting the window back in the archive failed too, that
+// save error replaced the build error, so the real cause was lost.
+#[cfg(unix)]
+#[test]
+fn a_failed_build_reports_the_build_error_even_when_the_archive_save_fails() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = TempDir::new("state_reopen_build_and_save_fail");
+    let mut store = store_at(&dir);
+    store.ensure_window("win-2", "work").unwrap();
+    tabs_in(&mut store, "win-2", 1);
+    store.bind_window(Some("main"));
+    store.archive_window("win-2").unwrap();
+    let state = std::sync::Mutex::new(store);
+    let data_dir = dir.join("state.json").parent().unwrap().to_path_buf();
+
+    let err = crate::windows::reopen_archived_window_with(
+        &state,
+        |_| None,
+        |_| {
+            // The data folder turns read-only, so the archive save fails.
+            std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+            Err("no window".to_string())
+        },
+    )
+    .unwrap_err();
+    std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(err.contains("no window"), "build error kept: {err}");
+}
