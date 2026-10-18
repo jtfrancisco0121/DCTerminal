@@ -94,6 +94,8 @@ type Props = {
   permissionRequest: PermissionRequestEvent | null;
   onPermissionSelect: (optionId: string) => void;
   onPermissionCancel: () => void;
+  /** False when another pane has focus, so its a/r/Escape keys don't answer this card. */
+  permissionKeys?: boolean;
   questionRequest?: QuestionRequestEvent | null;
   onQuestionAnswer?: (choiceId: string) => void;
   onQuestionSkip?: () => void;
@@ -161,6 +163,7 @@ export function SessionTerminal({
   permissionRequest,
   onPermissionSelect,
   onPermissionCancel,
+  permissionKeys = true,
   questionRequest = null,
   onQuestionAnswer,
   onQuestionSkip,
@@ -453,6 +456,7 @@ export function SessionTerminal({
             busy={busy}
             onSelect={onPermissionSelect}
             onCancel={onPermissionCancel}
+            keysActive={permissionKeys}
           />
         </div>
       )}

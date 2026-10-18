@@ -39,6 +39,8 @@ export type ChatSessionViewProps = {
   paneByTab: Record<string, { open: boolean; beside: boolean }>;
   setPaneByTab: Dispatch<SetStateAction<Record<string, { open: boolean; beside: boolean }>>>;
   togglePane: () => void;
+  /** Which split pane has focus; this view is the primary one. */
+  focusedPane: "primary" | "secondary";
   findRequest: { tabId: string; req: ChatFindRequest } | null;
   setChatSearchQuery: (query: string | null) => void;
   openChainOverviewTab: (chainId: string) => Promise<void>;
@@ -97,6 +99,7 @@ export function ChatSessionView({
   paneByTab,
   setPaneByTab,
   togglePane,
+  focusedPane,
   findRequest,
   setChatSearchQuery,
   openChainOverviewTab,
@@ -201,6 +204,7 @@ export function ChatSessionView({
             permissionRequest={permissionRequest}
             onPermissionSelect={handlePermissionSelect}
             onPermissionCancel={handlePermissionCancel}
+            permissionKeys={focusedPane === "primary"}
             questionRequest={questionRequest}
             onQuestionAnswer={handleQuestionAnswer}
             onQuestionSkip={handleQuestionSkip}

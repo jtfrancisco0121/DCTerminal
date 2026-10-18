@@ -20,6 +20,11 @@ type Options = {
   onCancelTurn: () => void;
   /** Return true when Escape in the pad should move focus instead of cancelling. */
   onPadEscape?: () => boolean;
+  /**
+   * Return true when Escape answered a pending permission card, so the turn keeps running.
+   * Checked here rather than left to the card: this listener runs before the card's.
+   */
+  onPermissionEscape?: (target: HTMLElement | null) => boolean;
 };
 
 export function useAppShortcuts({
@@ -31,6 +36,7 @@ export function useAppShortcuts({
   onTerminal,
   onCancelTurn,
   onPadEscape,
+  onPermissionEscape,
 }: Options) {
   useEffect(() => {
     const host = platform ?? detectPlatform(
@@ -98,15 +104,23 @@ export function useAppShortcuts({
         event.stopPropagation();
         return;
       }
+      // A permission card that answered this Escape marks it handled.
       if (
         !dialogOpen &&
+        !event.defaultPrevented &&
         event.key === "Escape" &&
         !event.ctrlKey &&
         !event.metaKey &&
         !event.altKey &&
         promptInFlight
       ) {
+        // A held Escape: the first press answered; its auto-repeats must not cancel the turn.
+        if (event.repeat) return;
         event.preventDefault();
+        if (onPermissionEscape?.(target)) {
+          event.stopPropagation();
+          return;
+        }
         onCancelTurn();
       }
     };
@@ -121,5 +135,6 @@ export function useAppShortcuts({
     onTerminal,
     onCancelTurn,
     onPadEscape,
+    onPermissionEscape,
   ]);
 }

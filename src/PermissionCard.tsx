@@ -1,12 +1,25 @@
-import { useEffect } from "react";
+import { useEffect, useId } from "react";
 import type { PermissionRequestEvent } from "./bridge";
+import { openDialogCount } from "./components/Dialog";
 
 type Props = {
   request: PermissionRequestEvent;
   busy: boolean;
   onSelect: (optionId: string) => void;
   onCancel: () => void;
+  /** False when another pane has focus: only the focused pane's card answers keys. */
+  keysActive?: boolean;
 };
+
+const EDITABLE = "input, textarea, select, [contenteditable]:not([contenteditable='false'])";
+
+/** True for a text field, where a/r/Escape are typing, not answers to the card. */
+export function isEditableTarget(target: EventTarget | null): boolean {
+  return (
+    target instanceof Element &&
+    ((target instanceof HTMLElement && target.isContentEditable) || !!target.closest(EDITABLE))
+  );
+}
 
 function firstAllowOption(request: PermissionRequestEvent): string | null {
   const allow = request.options.find(
@@ -24,17 +37,18 @@ function firstRejectOption(request: PermissionRequestEvent): string | null {
   return reject?.id ?? null;
 }
 
-export function PermissionCard({ request, busy, onSelect, onCancel }: Props) {
+export function PermissionCard({ request, busy, onSelect, onCancel, keysActive = true }: Props) {
+  // Per card: two panes can each show a card, and a shared id would mislabel one of them.
+  const titleId = useId();
   useEffect(() => {
+    if (!keysActive) return;
     const onKey = (event: KeyboardEvent) => {
-      const target = event.target;
-      if (
-        target instanceof Element &&
-        target.closest("input, textarea, select, [contenteditable='true']")
-      ) {
-        return;
-      }
-      if (busy) return;
+      if (busy || event.defaultPrevented || event.isComposing || event.repeat) return;
+      // Cmd+A selects text; only bare keys (Shift allowed) answer the card.
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      // An open Dialog owns the keyboard. The card is itself role="dialog", so count, don't query.
+      if (openDialogCount() > 0) return;
+      if (isEditableTarget(event.target)) return;
       const key = event.key.toLowerCase();
       if (key === "a") {
         const id = firstAllowOption(request);
@@ -60,11 +74,11 @@ export function PermissionCard({ request, busy, onSelect, onCancel }: Props) {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [busy, onCancel, onSelect, request]);
+  }, [busy, keysActive, onCancel, onSelect, request]);
 
   return (
-    <div className="permission-card" role="dialog" aria-labelledby="perm-title">
-      <p id="perm-title" className="permission-card-title">
+    <div className="permission-card" role="dialog" aria-labelledby={titleId}>
+      <p id={titleId} className="permission-card-title">
         {request.title}
       </p>
       <p className="permission-card-meta">

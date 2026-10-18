@@ -146,6 +146,7 @@ export function createPaneRenderers({
     tab: TabSummary,
     idle: ReactNode,
     inputRef?: typeof secondaryInputRef,
+    permissionKeys = false,
   ): ReactNode => {
     const rt = runtimes[tab.id];
     let body: ReactNode;
@@ -206,6 +207,7 @@ export function createPaneRenderers({
           permissionRequest={rt.permission}
           onPermissionSelect={(optionId) => void respondPermissionFor(tab.id, optionId)}
           onPermissionCancel={() => void respondPermissionFor(tab.id, null)}
+          permissionKeys={permissionKeys}
           questionRequest={rt.question}
           onQuestionAnswer={(choiceId) => void respondQuestionFor(tab.id, "answered", choiceId)}
           onQuestionSkip={() => void respondQuestionFor(tab.id, "skipped")}
@@ -241,6 +243,7 @@ export function createPaneRenderers({
         </button>
       </div>,
       secondaryInputRef,
+      focusedPane === "secondary",
     );
     const planWaiting = rt?.plan != null;
     const paneButtons = (
