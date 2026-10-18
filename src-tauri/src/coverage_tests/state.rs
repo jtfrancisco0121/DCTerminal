@@ -249,3 +249,284 @@ fn window_migration_runs_once_and_keeps_an_existing_main_window() {
     StateStore::open_path(path).unwrap();
     assert!(!dir.join("state.pre-windows.json").exists());
 }
+
+/// `count` draft tabs in `window`, in creation order.
+fn tabs_in(store: &mut StateStore, window: &str, count: usize) -> Vec<String> {
+    let dev = role("role_dev", "Developer");
+    store.bind_window(Some(window));
+    (0..count)
+        .map(|i| {
+            let id = store
+                .create_draft_tab(&dev, &format!("/tmp/{window}/{i}"), true, None)
+                .unwrap();
+            store
+                .data
+                .tabs
+                .iter_mut()
+                .find(|t| t.id == id)
+                .unwrap()
+                .window_id = window.into();
+            id
+        })
+        .collect()
+}
+
+fn closed_in(store: &StateStore, window: &str) -> usize {
+    store
+        .data
+        .closed_tabs
+        .iter()
+        .filter(|t| crate::store::window_matches(&t.window_id, window))
+        .count()
+}
+
+// Regression: archiving a window closed its tabs one by one into a global
+// list capped at 15, so a window with 20 tabs lost 5 of them.
+#[test]
+fn archiving_a_window_keeps_all_its_tabs_past_fifteen() {
+    let dir = TempDir::new("state_archive_20");
+    let mut store = store_at(&dir);
+    store.ensure_window("win-2", "work").unwrap();
+    tabs_in(&mut store, "win-2", 20);
+    store.archive_window("win-2").unwrap();
+    assert!(store.data.tabs.is_empty());
+    assert_eq!(closed_in(&store, "win-2"), 20);
+    assert_eq!(closed_in(&store_at(&dir), "win-2"), 20, "saved too");
+}
+
+// Regression: the 15 cap was global, so closing tabs in one window pushed
+// another window's closed tabs out of the list.
+#[test]
+fn closing_tabs_in_one_window_does_not_evict_another_windows_closed_tabs() {
+    let dir = TempDir::new("state_closed_cap");
+    let mut store = store_at(&dir);
+    for id in tabs_in(&mut store, "main", 3) {
+        store.close_tab(&id).unwrap();
+    }
+    store.ensure_window("win-2", "default").unwrap();
+    for id in tabs_in(&mut store, "win-2", 16) {
+        store.close_tab(&id).unwrap();
+    }
+    assert_eq!(closed_in(&store, "main"), 3);
+    assert_eq!(
+        closed_in(&store, "win-2"),
+        15,
+        "each window keeps its newest 15"
+    );
+}
+
+// Regression: a freed label was reused, so a new window (maybe on another
+// account) inherited an archived window's closed tabs.
+#[test]
+fn a_new_window_label_does_not_reuse_an_archived_window() {
+    let dir = TempDir::new("state_label_reuse");
+    let mut store = store_at(&dir);
+    store.ensure_window("win-2", "work").unwrap();
+    tabs_in(&mut store, "win-2", 2);
+    store.archive_window("win-2").unwrap();
+    assert_eq!(store.next_window_label(), "win-3");
+}
+
+#[test]
+fn reopening_a_closed_window_restores_its_tabs_and_account() {
+    let dir = TempDir::new("state_reopen_window");
+    let mut store = store_at(&dir);
+    store.ensure_window("win-2", "work").unwrap();
+    let ids = tabs_in(&mut store, "win-2", 3);
+    store.bind_window(Some("main"));
+    store.archive_window("win-2").unwrap();
+    assert!(store.data.windows.iter().all(|w| w.id != "win-2"));
+
+    let reopened = store
+        .reopen_archived_window(|id| Some(format!("chat of {id}")))
+        .unwrap()
+        .expect("an archived window");
+    assert_eq!(reopened.id, "win-2");
+    assert_eq!(reopened.account_id, "work");
+    assert_eq!(store.account_for_window("win-2"), "work");
+    let open: Vec<String> = store
+        .tabs_in_window("win-2")
+        .into_iter()
+        .map(|t| t.id.clone())
+        .collect();
+    assert_eq!(open, ids, "same tabs, same order");
+    assert_eq!(
+        store.tab_by_id(&ids[0]).unwrap().transcript.as_deref(),
+        Some(format!("chat of {}", ids[0]).as_str())
+    );
+    assert_eq!(closed_in(&store, "win-2"), 0);
+    assert_eq!(
+        store.focus_window(),
+        "main",
+        "the caller's window binding is kept"
+    );
+    let saved: AppStateFile = read_json(&dir.join("state.json")).unwrap();
+    assert!(saved.archived_windows.is_empty());
+    assert_eq!(saved.tabs.len(), 3);
+    assert!(store.reopen_archived_window(|_| None).unwrap().is_none());
+}
+
+// Regression: closing main while another window stayed open archived it as
+// "main". After a relaunch Tauri opens a new main, so the archived tabs showed
+// in its Reopen Closed Tab list, and Reopen Closed Window put the old record
+// (and its account) onto the live main under its running sessions.
+#[test]
+fn an_archived_main_window_reopens_as_its_own_window_after_a_relaunch() {
+    let dir = TempDir::new("state_reopen_main");
+    let mut store = store_at(&dir);
+    store.ensure_window("main", "work").unwrap();
+    store.ensure_window("win-2", "default").unwrap();
+    let ids = tabs_in(&mut store, "main", 2);
+    store.bind_window(Some("win-2"));
+    store.archive_window("main").unwrap();
+
+    let mut store = store_at(&dir);
+    store.ensure_window("main", "default").unwrap();
+    assert_eq!(
+        closed_in(&store, "main"),
+        0,
+        "the new main has none of the old main's closed tabs"
+    );
+    assert!(store.has_archived_windows(), "the old main is still kept");
+
+    let reopened = store
+        .reopen_archived_window(|_| None)
+        .unwrap()
+        .expect("an archived window");
+    assert_ne!(reopened.id, "main", "never the live main's label");
+    assert_eq!(reopened.account_id, "work");
+    assert_eq!(store.account_for_window("main"), "default", "unchanged");
+    assert!(store.tabs_in_window("main").is_empty());
+    let open: Vec<String> = store
+        .tabs_in_window(&reopened.id)
+        .into_iter()
+        .map(|t| t.id.clone())
+        .collect();
+    assert_eq!(open, ids, "the tabs are in the reopened window");
+    assert_eq!(store.account_for_tab(Some(&ids[0])), "work");
+    assert!(!store.has_archived_windows());
+}
+
+// Regression: a reopen that failed partway had already moved the window back
+// to the open list and dropped its archive entry, with only some tabs back.
+#[test]
+fn a_failed_window_reopen_changes_nothing() {
+    let dir = TempDir::new("state_reopen_fails");
+    let mut store = store_at(&dir);
+    store.ensure_window("win-2", "work").unwrap();
+    let ids = tabs_in(&mut store, "win-2", 2);
+    store.archive_window("win-2").unwrap();
+    // The second tab is somehow open again, so reopening it fails.
+    tabs_in(&mut store, "main", 1);
+    store.data.tabs[0].id = ids[1].clone();
+    store.save().unwrap();
+    let before = store.data.clone();
+
+    assert!(store.reopen_archived_window(|_| None).is_err());
+    let after = serde_json::to_value(&store.data).unwrap();
+    assert_eq!(after, serde_json::to_value(&before).unwrap(), "in memory");
+    let saved: serde_json::Value = read_json(&dir.join("state.json")).unwrap();
+    assert_eq!(saved, after, "on disk");
+    assert_eq!(store.focus_window(), "main");
+}
+
+// Regression: when the window could not be built after its store reopen,
+// its record and tabs stayed open in the store with no window on screen.
+#[test]
+fn a_window_that_fails_to_build_goes_back_to_reopen_closed_window() {
+    let dir = TempDir::new("state_reopen_build_fails");
+    let mut store = store_at(&dir);
+    store.ensure_window("win-2", "work").unwrap();
+    let ids = tabs_in(&mut store, "win-2", 2);
+    store.bind_window(Some("main"));
+    store.archive_window("win-2").unwrap();
+    let state = std::sync::Mutex::new(store);
+
+    let err = crate::windows::reopen_archived_window_with(
+        &state,
+        |_| None,
+        |_| Err("no window".to_string()),
+    )
+    .unwrap_err();
+    assert_eq!(err, "no window");
+    let store = state.lock().unwrap();
+    assert!(store.data.windows.iter().all(|w| w.id != "win-2"));
+    assert!(store.tabs_in_window("win-2").is_empty());
+    assert_eq!(closed_in(&store, "win-2"), 2);
+    let archived = &store.data.archived_windows[0];
+    assert_eq!(archived.window.id, "win-2");
+    assert_eq!(archived.window.account_id, "work");
+    assert_eq!(archived.tab_ids, ids);
+    let saved: AppStateFile = read_json(&dir.join("state.json")).unwrap();
+    assert_eq!(saved.archived_windows.len(), 1, "on disk");
+    drop(store);
+
+    let reopened =
+        crate::windows::reopen_archived_window_with(&state, |_| None, |_| Ok(())).unwrap();
+    assert_eq!(
+        reopened.as_deref(),
+        Some("win-2"),
+        "it can still be reopened"
+    );
+}
+
+// Regression: transcripts loaded with the state lock held, so every other
+// window's state command waited on the disk reads.
+#[test]
+fn reopening_a_window_loads_transcripts_without_holding_the_state_lock() {
+    let dir = TempDir::new("state_reopen_unlocked");
+    let mut store = store_at(&dir);
+    store.ensure_window("win-2", "work").unwrap();
+    let ids = tabs_in(&mut store, "win-2", 2);
+    store.bind_window(Some("main"));
+    store.archive_window("win-2").unwrap();
+    let state = std::sync::Mutex::new(store);
+
+    let reopened = crate::windows::reopen_archived_window_with(
+        &state,
+        |id| {
+            assert!(
+                state.try_lock().is_ok(),
+                "state is locked while loading {id}"
+            );
+            Some(format!("chat of {id}"))
+        },
+        |_| Ok(()),
+    )
+    .unwrap();
+    assert_eq!(reopened.as_deref(), Some("win-2"));
+    let store = state.lock().unwrap();
+    assert_eq!(
+        store.tab_by_id(&ids[1]).unwrap().transcript.as_deref(),
+        Some(format!("chat of {}", ids[1]).as_str())
+    );
+}
+
+// Regression: when putting the window back in the archive failed too, that
+// save error replaced the build error, so the real cause was lost.
+#[cfg(unix)]
+#[test]
+fn a_failed_build_reports_the_build_error_even_when_the_archive_save_fails() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = TempDir::new("state_reopen_build_and_save_fail");
+    let mut store = store_at(&dir);
+    store.ensure_window("win-2", "work").unwrap();
+    tabs_in(&mut store, "win-2", 1);
+    store.bind_window(Some("main"));
+    store.archive_window("win-2").unwrap();
+    let state = std::sync::Mutex::new(store);
+    let data_dir = dir.join("state.json").parent().unwrap().to_path_buf();
+
+    let err = crate::windows::reopen_archived_window_with(
+        &state,
+        |_| None,
+        |_| {
+            // The data folder turns read-only, so the archive save fails.
+            std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+            Err("no window".to_string())
+        },
+    )
+    .unwrap_err();
+    std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(err.contains("no window"), "build error kept: {err}");
+}

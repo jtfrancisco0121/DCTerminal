@@ -4,6 +4,7 @@
  */
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow, type CloseRequestedEvent } from "@tauri-apps/api/window";
 import { ensureWindow } from "./windowScope";
 import type { NotificationSettings } from "./notify/agentNotify";
 import type { CustomColors } from "./theme";
@@ -53,6 +54,20 @@ export async function claudeAccountLogins(): Promise<ClaudeAccountLogin[]> {
 /** Open a window bound to one Claude account. */
 export async function openAccountWindow(accountId: string): Promise<string> {
   return invoke<string>("open_account_window", { accountId });
+}
+
+/** File > Reopen Closed Window: rebuilds the newest closed window with its
+ * tabs and account. Resolves its label, or null when none is kept. */
+export async function reopenClosedWindow(): Promise<string | null> {
+  return invoke<string | null>("reopen_closed_window");
+}
+
+/** This window's close button. The window closes after `handler` resolves
+ * unless it called `event.preventDefault()`. */
+export function onWindowCloseRequested(
+  handler: (event: CloseRequestedEvent) => Promise<void>,
+): Promise<UnlistenFn> {
+  return getCurrentWindow().onCloseRequested(handler);
 }
 
 /** macOS File > New Window (and its shortcut) asks this webview to open one. */

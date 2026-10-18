@@ -76,6 +76,7 @@ import {
   setTabChain,
   startEagleEye,
   startupNotices,
+  onWindowCloseRequested,
   roleSessionStart,
   selectActiveTab,
   syncActiveTabForm,
@@ -272,6 +273,7 @@ import { TabSwitcher } from "./components/TabSwitcher";
 import { launchProviders, RoleLauncher, type RoleLaunch } from "./components/RoleLauncher";
 import { useNewTab } from "./useNewTab";
 import { activeTabFolder } from "./newTab";
+import { liveTabs } from "./liveWork";
 import { startTerminalTab, type NewTerminalLaunch } from "./terminal/openTerminalTab";
 import { detectPlatform, keySurface, type ShortcutMatch, type TerminalAction } from "./keymap";
 import {
@@ -3815,6 +3817,58 @@ export function StartupForm({
       .catch((err: unknown) => reportOnce("startupNotices", "Startup notices did not load", err));
   }, []);
 
+  // Closing the window stops its agents and terminals, so ask first. A second
+  // close request while the question is open is ignored.
+  const closeAskingRef = useRef(false);
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let disposed = false;
+    onWindowCloseRequested(async (event) => {
+      if (closeAskingRef.current) {
+        event.preventDefault();
+        return;
+      }
+      const live = liveTabs(savedTabsRef.current);
+      if (live.length === 0) return;
+      closeAskingRef.current = true;
+      try {
+        const ok = await confirm({
+          title: "Close window?",
+          message:
+            live.length === 1
+              ? "1 running agent or terminal in this window will be stopped."
+              : `${live.length} running agents or terminals in this window will be stopped.`,
+          confirmLabel: "Close window",
+          danger: true,
+        });
+        if (!ok) {
+          event.preventDefault();
+          return;
+        }
+        // The chat so far, as when the workspace is replaced.
+        for (const t of live) {
+          const rt = runtimesRef.current[t.id];
+          if (t.kind !== "terminal" && rt && rt.segments.length > 0) {
+            await transcriptSave(t.id, segmentsToPlainText(rt.segments), rt.session?.cwd ?? t.cwd).catch(
+              (err: unknown) => reportOnce("transcriptSave", "Transcript not saved", err),
+            );
+          }
+        }
+      } finally {
+        closeAskingRef.current = false;
+      }
+    })
+      .then((stop) => {
+        if (disposed) stop();
+        else unlisten = stop;
+      })
+      .catch((err: unknown) => reportOnce("closeRequested", "Close confirmation is off", err));
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [confirm, reportOnce]);
+
   useEffect(() => {
     let cancelled = false;
     const load = () => {
@@ -5170,9 +5224,7 @@ export function StartupForm({
     if (fileGuard?.dirty() && !(await fileGuard.confirm())) return;
     const old = savedTabs;
     if (replace) {
-      const live = old.filter(
-        (t) => t.phase === "running" || (t.kind === "terminal" && livePty(t.id)),
-      );
+      const live = liveTabs(old);
       if (
         live.length > 0 &&
         !(await confirm({

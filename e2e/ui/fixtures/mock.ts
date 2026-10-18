@@ -196,6 +196,7 @@ export function installTauriMock(config: MockConfig): void {
   };
 
   const defaults: Record<string, Handler> = {
+    reopen_closed_window: () => null,
     window_context: () => ({
       id: "main",
       accountId: "default",

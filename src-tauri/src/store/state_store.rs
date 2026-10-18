@@ -11,6 +11,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tauri::AppHandle;
 
+/// Closed tabs kept per open window for Reopen closed tab.
+const CLOSED_TABS_PER_WINDOW: usize = 15;
+/// Closed windows kept for Reopen Closed Window; older ones are dropped
+/// with their tabs.
+const ARCHIVED_WINDOWS_KEPT: usize = 5;
+
 pub struct StateStore {
     pub path: PathBuf,
     pub data: AppStateFile,
@@ -137,6 +143,10 @@ impl StateStore {
     }
 
     pub fn ensure_window(&mut self, window_id: &str, account_id: &str) -> Result<(), String> {
+        // A live window owns its label; its closed tabs show in its own list.
+        self.data
+            .archived_windows
+            .retain(|archived| archived.window.id != window_id);
         if let Some(window) = self
             .data
             .windows
@@ -179,20 +189,187 @@ impl StateStore {
         Ok(())
     }
 
-    /// Drop a window that was closed while another stayed open.
+    /// Drop a window that was closed while another stayed open. Its tabs
+    /// all move to the closed list (one save, none trimmed), and the window
+    /// is kept with its account for Reopen Closed Window.
     pub fn archive_window(&mut self, window_id: &str) -> Result<(), String> {
-        let ids: Vec<String> = self
-            .data
-            .tabs
-            .iter()
-            .filter(|tab| crate::store::state_types::window_matches(&tab.window_id, window_id))
+        let tab_ids: Vec<String> = self
+            .tabs_in_window(window_id)
+            .into_iter()
             .map(|tab| tab.id.clone())
             .collect();
-        for id in ids {
-            self.close_tab(&id)?;
+        let record = self
+            .data
+            .windows
+            .iter()
+            .find(|window| window.id == window_id)
+            .cloned();
+        for id in &tab_ids {
+            if let Some(idx) = self.data.tabs.iter().position(|tab| &tab.id == id) {
+                let closed = self.close_tab_record(idx);
+                self.push_closed(closed);
+            }
         }
         self.data.windows.retain(|window| window.id != window_id);
+        // Tauri opens a new main at every launch, so an archived main would
+        // share its label: its closed tabs would show in the new main's list
+        // and reopening it would land on that window. Main is kept under a
+        // fresh label instead.
+        let label = if crate::store::state_types::window_matches(
+            window_id,
+            crate::store::state_types::MAIN_WINDOW_ID,
+        ) {
+            self.next_window_label()
+        } else {
+            window_id.to_string()
+        };
+        let mut has_closed = false;
+        for tab in &mut self.data.closed_tabs {
+            if crate::store::state_types::window_matches(&tab.window_id, window_id) {
+                tab.window_id = label.clone();
+                has_closed = true;
+            }
+        }
+        if has_closed {
+            let mut window = record.unwrap_or_else(|| crate::store::WindowRecord {
+                id: window_id.to_string(),
+                account_id: "default".to_string(),
+                active_tab_id: None,
+                layout: crate::store::LayoutState::default(),
+            });
+            window.id = label.clone();
+            self.data
+                .archived_windows
+                .retain(|archived| archived.window.id != label);
+            self.data.archived_windows.insert(
+                0,
+                crate::store::ArchivedWindow {
+                    window,
+                    tab_ids,
+                    closed_at: Utc::now().to_rfc3339(),
+                },
+            );
+            if self.data.archived_windows.len() > ARCHIVED_WINDOWS_KEPT {
+                let dropped = self.data.archived_windows.split_off(ARCHIVED_WINDOWS_KEPT);
+                self.data.closed_tabs.retain(|tab| {
+                    !dropped.iter().any(|archived| {
+                        crate::store::state_types::window_matches(
+                            &tab.window_id,
+                            &archived.window.id,
+                        )
+                    })
+                });
+            }
+        }
+        self.trim_closed_tabs();
         self.save()
+    }
+
+    /// Keep each open window's newest closed tabs. Tabs of archived windows
+    /// are all kept until their window is reopened or dropped.
+    pub fn trim_closed_tabs(&mut self) {
+        let archived: Vec<String> = self
+            .data
+            .archived_windows
+            .iter()
+            .map(|archived| archived.window.id.clone())
+            .collect();
+        let mut kept: HashMap<String, usize> = HashMap::new();
+        self.data.closed_tabs.retain(|tab| {
+            if archived
+                .iter()
+                .any(|id| crate::store::state_types::window_matches(&tab.window_id, id))
+            {
+                return true;
+            }
+            let window = if tab.window_id.trim().is_empty() {
+                crate::store::state_types::MAIN_WINDOW_ID
+            } else {
+                tab.window_id.as_str()
+            };
+            let count = kept.entry(window.to_string()).or_insert(0);
+            *count += 1;
+            *count <= CLOSED_TABS_PER_WINDOW
+        });
+    }
+
+    /// A free `win-N` label for a new window. Labels of archived windows
+    /// and of closed tabs are taken too, so a new window never inherits them.
+    pub fn next_window_label(&self) -> String {
+        let taken = |label: &str| {
+            self.data.windows.iter().any(|window| window.id == label)
+                || self
+                    .data
+                    .archived_windows
+                    .iter()
+                    .any(|archived| archived.window.id == label)
+                || self.data.closed_tabs.iter().any(|tab| tab.window_id == label)
+        };
+        let mut n = 2u32;
+        loop {
+            let label = format!("win-{n}");
+            if !taken(&label) {
+                return label;
+            }
+            n += 1;
+            if n > 10_000 {
+                return format!("win-{}", Utc::now().timestamp_millis());
+            }
+        }
+    }
+
+    pub fn has_archived_windows(&self) -> bool {
+        !self.data.archived_windows.is_empty()
+    }
+
+    /// Reopen the most recently archived window: its record comes back with
+    /// its account and layout, and the tabs it had open are reopened in their
+    /// order. `transcript` loads a tab's saved chat. `None` when there is none.
+    pub fn reopen_archived_window(
+        &mut self,
+        mut transcript: impl FnMut(&str) -> Option<String>,
+    ) -> Result<Option<crate::store::WindowRecord>, String> {
+        if self.data.archived_windows.is_empty() {
+            return Ok(None);
+        }
+        // A failure partway puts everything back as it was.
+        let before = self.data.clone();
+        let archived = self.data.archived_windows.remove(0);
+        let window = archived.window;
+        let label = window.id.clone();
+        self.data.windows.retain(|open| open.id != label);
+        self.data.windows.push(window.clone());
+        let caller = std::mem::replace(&mut self.draft_window, label.clone());
+        let mut reopened = Ok(());
+        for id in &archived.tab_ids {
+            if !self.data.closed_tabs.iter().any(|tab| &tab.id == id) {
+                continue;
+            }
+            let text = transcript(id);
+            if let Err(err) = self.reopen_closed_id(Some(id), text) {
+                reopened = Err(err);
+                break;
+            }
+        }
+        if reopened.is_ok() {
+            if let Some(active) = window
+                .active_tab_id
+                .clone()
+                .filter(|id| self.tab_by_id(id).is_some())
+            {
+                self.remember_active(&label, Some(active));
+            }
+            // Drops cells for any tab that did not come back.
+            reopened = self.set_layout(window.layout.clone());
+        }
+        self.draft_window = caller;
+        if let Err(err) = reopened {
+            self.data = before;
+            self.save()?;
+            return Err(err);
+        }
+        self.save()?;
+        Ok(Some(window))
     }
 
     pub fn tabs_in_window(&self, window_id: &str) -> Vec<&TabRecord> {
@@ -520,42 +697,54 @@ impl StateStore {
             .iter()
             .position(|t| t.id == tab_id)
             .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
+        let closed = self.close_tab_record(idx);
+        self.push_closed(closed);
+        self.trim_closed_tabs();
+        self.save()
+    }
+
+    fn push_closed(&mut self, closed: crate::store::state_types::ClosedTabRecord) {
+        self.data.closed_tabs.retain(|tab| tab.id != closed.id);
+        self.data.closed_tabs.insert(0, closed);
+    }
+
+    /// Remove the tab at `idx` from the open tabs and its window's layout and
+    /// return its closed record. No save and no trim: callers do both.
+    pub fn close_tab_record(
+        &mut self,
+        idx: usize,
+    ) -> crate::store::state_types::ClosedTabRecord {
         let tab = self.data.tabs.remove(idx);
-        self.data.closed_tabs.retain(|closed| closed.id != tab.id);
-        self.data.closed_tabs.insert(
-            0,
-            crate::store::state_types::ClosedTabRecord {
-                id: tab.id.clone(),
-                label: tab.label.clone(),
-                role_id: tab.role_id.clone(),
-                role_snapshot: tab.role_snapshot.clone(),
-                cwd: tab.cwd.clone(),
-                answers: tab.answers.clone(),
-                color: tab.color.clone(),
-                merged_prompt: tab.merged_prompt.clone(),
-                merged_prompt_hash: tab.merged_prompt_hash.clone(),
-                startup_prompt_sent: tab.startup_prompt_sent,
-                closed_at: Utc::now().to_rfc3339(),
-                kind: tab.kind.clone(),
-                terminal_launch: tab.terminal_launch.clone(),
-                acp_session_id: tab
-                    .session
-                    .as_ref()
-                    .map(|session| session.acp_session_id.clone()),
-                mode_id: tab.session.as_ref().map(|session| session.mode_id.clone()),
-                model: tab.model.clone(),
-                custom_label: tab.custom_label,
-                worktree: tab.worktree.clone(),
-                provider: tab.provider,
-                sessions: tab.sessions.clone(),
-                provider_notice: tab.provider_notice.clone(),
-                chain: tab.chain.clone(),
-                permission_note: tab.permission_note.clone(),
-                window_id: tab.window_id.clone(),
-                pipeline_run_id: tab.pipeline_run_id.clone(),
-            },
-        );
-        self.data.closed_tabs.truncate(15);
+        let closed = crate::store::state_types::ClosedTabRecord {
+            id: tab.id.clone(),
+            label: tab.label.clone(),
+            role_id: tab.role_id.clone(),
+            role_snapshot: tab.role_snapshot.clone(),
+            cwd: tab.cwd.clone(),
+            answers: tab.answers.clone(),
+            color: tab.color.clone(),
+            merged_prompt: tab.merged_prompt.clone(),
+            merged_prompt_hash: tab.merged_prompt_hash.clone(),
+            startup_prompt_sent: tab.startup_prompt_sent,
+            closed_at: Utc::now().to_rfc3339(),
+            kind: tab.kind.clone(),
+            terminal_launch: tab.terminal_launch.clone(),
+            acp_session_id: tab
+                .session
+                .as_ref()
+                .map(|session| session.acp_session_id.clone()),
+            mode_id: tab.session.as_ref().map(|session| session.mode_id.clone()),
+            model: tab.model.clone(),
+            custom_label: tab.custom_label,
+            worktree: tab.worktree.clone(),
+            provider: tab.provider,
+            sessions: tab.sessions.clone(),
+            provider_notice: tab.provider_notice.clone(),
+            chain: tab.chain.clone(),
+            permission_note: tab.permission_note.clone(),
+            window_id: tab.window_id.clone(),
+            pipeline_run_id: tab.pipeline_run_id.clone(),
+        };
         let window_id = tab.window_id.clone();
         let closed_id = tab.id.clone();
         if self.data.layout.secondary_tab_id.as_deref() == Some(closed_id.as_str()) {
@@ -593,7 +782,7 @@ impl StateStore {
                 .map(|candidate| candidate.id.clone());
             self.remember_active(&window_id, next);
         }
-        self.save()
+        closed
     }
 
     /// Put the most recently closed tab back. The agent is not restarted.
