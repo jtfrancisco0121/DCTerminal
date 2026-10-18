@@ -82,6 +82,33 @@ impl ScratchStore {
         );
     }
 
+    /// Save a pad unless the stored copy is strictly newer, so a window
+    /// holding a stale copy cannot overwrite another window's edit. An equal
+    /// stamp is accepted (a retry), and so is any stored stamp that does not
+    /// parse. A stamp from a clock ahead of ours is clamped to now.
+    pub fn upsert_if_newer(
+        &mut self,
+        tab_id: &str,
+        content: &str,
+        history: &[String],
+        updated_at: &str,
+    ) -> bool {
+        let now = Utc::now();
+        let incoming = DateTime::parse_from_rfc3339(updated_at)
+            .map(|t| t.with_timezone(&Utc).min(now))
+            .unwrap_or(now);
+        let stored = self
+            .data
+            .pads
+            .get(tab_id)
+            .and_then(|pad| DateTime::parse_from_rfc3339(&pad.updated_at).ok());
+        if stored.is_some_and(|stored| incoming < stored) {
+            return false;
+        }
+        self.upsert(tab_id, content, history, &incoming.to_rfc3339());
+        true
+    }
+
     /// Drop pads for tabs that are gone and have not been edited in 30 days.
     /// Returns how many pads were dropped.
     pub fn prune_orphans(&mut self, keep: &HashSet<String>, now: DateTime<Utc>) -> usize {
@@ -151,6 +178,30 @@ mod tests {
         };
         let err = store.save().unwrap_err();
         assert!(!err.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stale_write_is_ignored_and_newer_wins() {
+        let dir = dir();
+        let mut store = ScratchStore::open(&dir).unwrap();
+        assert!(store.upsert_if_newer("t", "edited in A", &[], "2026-10-06T00:00:10Z"));
+        // Window B still holds the copy it loaded at 00:00:05.
+        assert!(!store.upsert_if_newer("t", "stale copy in B", &[], "2026-10-06T00:00:05Z"));
+        assert_eq!(store.data.pads["t"].content, "edited in A");
+        // The same instant in another offset is the same write: accepted.
+        assert!(store.upsert_if_newer("t", "same instant", &[], "2026-10-06T08:00:10+08:00"));
+        assert_eq!(store.data.pads["t"].content, "same instant");
+        assert!(store.upsert_if_newer("t", "newer", &[], "2026-10-06T00:00:11Z"));
+        assert_eq!(store.data.pads["t"].content, "newer");
+        // A clock far ahead is clamped to now, so it cannot win every later merge.
+        assert!(store.upsert_if_newer("t", "from the future", &[], "2999-01-01T00:00:00Z"));
+        let stored = DateTime::parse_from_rfc3339(&store.data.pads["t"].updated_at).unwrap();
+        assert!(stored.with_timezone(&Utc) <= Utc::now());
+        // A stored stamp that does not parse never blocks a write.
+        store.upsert("u", "unknown age", &[], "yesterday");
+        assert!(store.upsert_if_newer("u", "fresh", &[], "2020-01-01T00:00:00Z"));
+        assert_eq!(store.data.pads["u"].content, "fresh");
         let _ = std::fs::remove_dir_all(dir);
     }
 

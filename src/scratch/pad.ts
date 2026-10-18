@@ -247,12 +247,30 @@ export function emptyDraftFile(): DraftFile {
   return { pads: {} };
 }
 
+/** The local mirror can be hand-edited or half-written: drop entries without
+ * text, and give a stamp Date cannot hold `0` so the disk copy wins. */
 export function readDraftBlob(raw: string | null): DraftFile | null {
   if (!raw || !raw.trim()) return null;
   try {
-    const parsed = JSON.parse(raw) as DraftFile;
-    if (!parsed || typeof parsed !== "object" || !parsed.pads) return null;
-    return parsed;
+    const parsed = JSON.parse(raw) as { pads?: unknown } | null;
+    if (!parsed || typeof parsed !== "object") return null;
+    const rawPads = parsed.pads;
+    if (!rawPads || typeof rawPads !== "object" || Array.isArray(rawPads)) return null;
+    const pads: Record<string, PadRecord> = {};
+    for (const [id, value] of Object.entries(rawPads as Record<string, unknown>)) {
+      if (!value || typeof value !== "object") continue;
+      const pad = value as Partial<Record<keyof PadRecord, unknown>>;
+      if (typeof pad.content !== "string") continue;
+      const updatedAt =
+        typeof pad.updatedAt === "number" && !Number.isNaN(new Date(pad.updatedAt).getTime())
+          ? pad.updatedAt
+          : 0;
+      const history = Array.isArray(pad.history)
+        ? pad.history.filter((item): item is string => typeof item === "string")
+        : [];
+      pads[id] = { content: pad.content, updatedAt, history };
+    }
+    return { pads };
   } catch {
     return null;
   }
@@ -311,16 +329,36 @@ export function loadLocalDrafts(storage: DraftStorage): DraftFile | null {
   }
 }
 
+/** Every window shares one mirror key, so merge per pad (newer `updatedAt`
+ * wins) instead of replacing another window's newer edits. */
 export function saveLocalDrafts(
   storage: DraftStorage,
   file: DraftFile,
 ): { ok: boolean; error?: string } {
   try {
-    storage.write(LOCAL_DRAFT_KEY, JSON.stringify(file));
+    const merged = mergeDraftFiles(file, loadLocalDrafts(storage));
+    storage.write(LOCAL_DRAFT_KEY, JSON.stringify(merged));
     return { ok: true };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { ok: false, error: message || "could not write scratch draft" };
+  }
+}
+
+/** Drop pads of deleted tabs from the shared mirror itself. `saveLocalDrafts`
+ * merges with what is stored, so dropping them only in memory would let the
+ * next save bring them back. `null` known ids keeps everything. */
+export function pruneLocalDrafts(
+  storage: DraftStorage,
+  knownTabIds: readonly string[] | null | undefined,
+): void {
+  const stored = loadLocalDrafts(storage);
+  const kept = dropUnknownLocalPads(stored, knownTabIds);
+  if (!stored || !kept || Object.keys(kept.pads).length === Object.keys(stored.pads).length) return;
+  try {
+    storage.write(LOCAL_DRAFT_KEY, JSON.stringify(kept));
+  } catch {
+    // The next save reports storage errors.
   }
 }
 

@@ -309,9 +309,9 @@ describe("terminal scratch pad", () => {
     fireEvent.change(editor(), { target: { value: "edited a" } });
     fireEvent.blur(editor());
     await waitFor(() => {
-      expect(scratchSave).toHaveBeenCalledWith("tab-a", "edited a", []);
+      expect(scratchSave).toHaveBeenCalledWith("tab-a", "edited a", [], expect.any(String));
     });
-    expect(scratchSave).toHaveBeenCalledWith("tab-b", "edited b", []);
+    expect(scratchSave).toHaveBeenCalledWith("tab-b", "edited b", [], expect.any(String));
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     expect(write).toHaveBeenCalledWith(
       "tab-a",

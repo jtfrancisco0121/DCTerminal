@@ -17,6 +17,7 @@ import {
   MAX_PAD_CHARS,
   mergeDraftFiles,
   mergePads,
+  pruneLocalDrafts,
   pushHistory,
   readDraftBlob,
   rememberPrompt,
@@ -200,6 +201,26 @@ describe("scratch pad persistence", () => {
     expect(readDraftBlob(null)).toBeNull();
   });
 
+  it("repairs or drops malformed pads in the local draft", () => {
+    const file = readDraftBlob(
+      JSON.stringify({
+        pads: {
+          good: { content: "g", updatedAt: 5, history: ["h"] },
+          hugeStamp: { content: "x", updatedAt: 1e20, history: [] },
+          nullStamp: { content: "y", updatedAt: null, history: "nope" },
+          noContent: { updatedAt: 5, history: [] },
+          notAPad: "text",
+        },
+      }),
+    );
+    expect(file?.pads).toEqual({
+      good: { content: "g", updatedAt: 5, history: ["h"] },
+      hugeStamp: { content: "x", updatedAt: 0, history: [] },
+      nullStamp: { content: "y", updatedAt: 0, history: [] },
+    });
+    expect(readDraftBlob(JSON.stringify({ pads: [] }))).toBeNull();
+  });
+
   it("reports a storage write failure", () => {
     const storage: DraftStorage = {
       read: () => null,
@@ -211,6 +232,53 @@ describe("scratch pad persistence", () => {
     expect(result.ok).toBe(false);
     expect(result.error).toContain("disk full");
     expect(loadLocalDrafts({ read: () => "{", write: () => {} })).toBeNull();
+  });
+
+  it("saveLocalDrafts keeps a newer pad another window mirrored", () => {
+    let blob: string | null = JSON.stringify({
+      pads: {
+        shared: { content: "typed in window A", updatedAt: 20, history: [] },
+        onlyA: { content: "A's own tab", updatedAt: 5, history: [] },
+      },
+    });
+    const storage: DraftStorage = {
+      read: () => blob,
+      write: (_key, value) => {
+        blob = value;
+      },
+    };
+    // Window B holds an older copy of "shared" and a newer edit of its own tab.
+    const result = saveLocalDrafts(storage, {
+      pads: {
+        shared: { content: "stale copy in B", updatedAt: 10, history: [] },
+        onlyB: { content: "B's edit", updatedAt: 30, history: [] },
+      },
+    });
+    expect(result.ok).toBe(true);
+    const mirrored = loadLocalDrafts(storage);
+    expect(mirrored?.pads.shared.content).toBe("typed in window A");
+    expect(mirrored?.pads.onlyA.content).toBe("A's own tab");
+    expect(mirrored?.pads.onlyB.content).toBe("B's edit");
+  });
+
+  it("prunes a deleted tab's pad from the shared mirror so a later save cannot bring it back", () => {
+    let blob: string | null = JSON.stringify({
+      pads: {
+        open: { content: "o", updatedAt: 1, history: [] },
+        deleted: { content: "ghost", updatedAt: 9, history: [] },
+      },
+    });
+    const storage: DraftStorage = {
+      read: () => blob,
+      write: (_key, value) => {
+        blob = value;
+      },
+    };
+    pruneLocalDrafts(storage, undefined);
+    expect(Object.keys(loadLocalDrafts(storage)?.pads ?? {}).sort()).toEqual(["deleted", "open"]);
+    pruneLocalDrafts(storage, ["open"]);
+    saveLocalDrafts(storage, { pads: { open: { content: "o2", updatedAt: 2, history: [] } } });
+    expect(Object.keys(loadLocalDrafts(storage)?.pads ?? {})).toEqual(["open"]);
   });
 
   it("stores a prompt on the tab that sent it", () => {

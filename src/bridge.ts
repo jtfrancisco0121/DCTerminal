@@ -775,12 +775,22 @@ export async function scratchLoad(): Promise<{
   return invoke("scratch_load");
 }
 
+export type ScratchSaveOutcome = {
+  /** False when the stored pad is newer; adopt `pad` instead. */
+  applied: boolean;
+  /** The pad as stored after the call. */
+  pad: ScratchPadEntry;
+};
+
+/** `updatedAt` (ISO) is when this copy was edited; omitted means now.
+ * Resolves null from mocks and older backends: treat that as applied. */
 export async function scratchSave(
   tabId: string,
   content: string,
   history: string[],
-): Promise<void> {
-  return invoke("scratch_save", { tabId, content, history });
+  updatedAt?: string,
+): Promise<ScratchSaveOutcome | null> {
+  return invoke("scratch_save", { tabId, content, history, updatedAt });
 }
 
 export type ListedProject = {
