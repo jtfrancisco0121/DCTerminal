@@ -49,6 +49,18 @@ describe("useScratchPads across windows (S1 PR2)", () => {
     expect(scratchSave).not.toHaveBeenCalled();
   });
 
+  it("flush and pagehide write the local mirror straight away", async () => {
+    const { result } = await loaded([diskPad("tab-a", "saved a")]);
+    act(() => result.current.setContent("tab-a", "flushed edit"));
+    act(() => result.current.flush());
+    expect(window.localStorage.getItem("dcterminal.scratch.v1")).toContain("flushed edit");
+    act(() => result.current.setContent("tab-a", "hidden edit"));
+    act(() => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    expect(window.localStorage.getItem("dcterminal.scratch.v1")).toContain("hidden edit");
+  });
+
   it("pagehide with no edits saves nothing", async () => {
     await loaded([diskPad("tab-a", "saved a"), diskPad("tab-b", "saved b")]);
     act(() => {
@@ -75,6 +87,29 @@ describe("useScratchPads across windows (S1 PR2)", () => {
     act(() => result.current.flush());
     await Promise.resolve();
     expect(scratchSave).not.toHaveBeenCalled();
+  });
+
+  it("a mirrored pad with a broken timestamp does not stop the other pads saving", async () => {
+    const later = Date.parse(DISK_TIME) + 60_000;
+    window.localStorage.setItem(
+      "dcterminal.scratch.v1",
+      JSON.stringify({
+        pads: {
+          "tab-a": { content: "corrupt stamp", updatedAt: 1e20, history: [] },
+          "tab-b": { content: "newer b", updatedAt: later, history: [] },
+        },
+      }),
+    );
+    vi.mocked(scratchLoad).mockResolvedValueOnce({
+      pads: [diskPad("tab-a", "saved a"), diskPad("tab-b", "saved b")],
+      knownTabIds: ["tab-a", "tab-b"],
+    });
+    const { result } = renderHook(() => useScratchPads("tab-b"));
+    await waitFor(() => expect(result.current.content).toBe("newer b"));
+    act(() => result.current.flush());
+    await waitFor(() => expect(scratchSave).toHaveBeenCalled());
+    expect(vi.mocked(scratchSave).mock.calls.map((c) => [c[0], c[1]])).toEqual([["tab-b", "newer b"]]);
+    expect(result.current.persistError).toBeNull();
   });
 
   it("an edit typed before the load resolves is kept", async () => {

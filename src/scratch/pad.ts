@@ -247,12 +247,30 @@ export function emptyDraftFile(): DraftFile {
   return { pads: {} };
 }
 
+/** The local mirror can be hand-edited or half-written: drop entries without
+ * text, and give a stamp Date cannot hold `0` so the disk copy wins. */
 export function readDraftBlob(raw: string | null): DraftFile | null {
   if (!raw || !raw.trim()) return null;
   try {
-    const parsed = JSON.parse(raw) as DraftFile;
-    if (!parsed || typeof parsed !== "object" || !parsed.pads) return null;
-    return parsed;
+    const parsed = JSON.parse(raw) as { pads?: unknown } | null;
+    if (!parsed || typeof parsed !== "object") return null;
+    const rawPads = parsed.pads;
+    if (!rawPads || typeof rawPads !== "object" || Array.isArray(rawPads)) return null;
+    const pads: Record<string, PadRecord> = {};
+    for (const [id, value] of Object.entries(rawPads as Record<string, unknown>)) {
+      if (!value || typeof value !== "object") continue;
+      const pad = value as Partial<Record<keyof PadRecord, unknown>>;
+      if (typeof pad.content !== "string") continue;
+      const updatedAt =
+        typeof pad.updatedAt === "number" && !Number.isNaN(new Date(pad.updatedAt).getTime())
+          ? pad.updatedAt
+          : 0;
+      const history = Array.isArray(pad.history)
+        ? pad.history.filter((item): item is string => typeof item === "string")
+        : [];
+      pads[id] = { content: pad.content, updatedAt, history };
+    }
+    return { pads };
   } catch {
     return null;
   }

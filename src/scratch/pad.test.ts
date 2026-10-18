@@ -201,6 +201,26 @@ describe("scratch pad persistence", () => {
     expect(readDraftBlob(null)).toBeNull();
   });
 
+  it("repairs or drops malformed pads in the local draft", () => {
+    const file = readDraftBlob(
+      JSON.stringify({
+        pads: {
+          good: { content: "g", updatedAt: 5, history: ["h"] },
+          hugeStamp: { content: "x", updatedAt: 1e20, history: [] },
+          nullStamp: { content: "y", updatedAt: null, history: "nope" },
+          noContent: { updatedAt: 5, history: [] },
+          notAPad: "text",
+        },
+      }),
+    );
+    expect(file?.pads).toEqual({
+      good: { content: "g", updatedAt: 5, history: ["h"] },
+      hugeStamp: { content: "x", updatedAt: 0, history: [] },
+      nullStamp: { content: "y", updatedAt: 0, history: [] },
+    });
+    expect(readDraftBlob(JSON.stringify({ pads: [] }))).toBeNull();
+  });
+
   it("reports a storage write failure", () => {
     const storage: DraftStorage = {
       read: () => null,

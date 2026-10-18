@@ -65,6 +65,9 @@ export function useScratchPads(activeTabId: string | null) {
     }
     const jobs = Object.entries(next.pads)
       .filter(([tabId, pad]) => pad.updatedAt > (savedAt.current[tabId] ?? 0))
+      // A stamp Date cannot hold would throw in toISOString and stop every
+      // other pad saving; skip just that pad.
+      .filter(([, pad]) => !Number.isNaN(new Date(pad.updatedAt).getTime()))
       .map(([tabId, pad]) =>
         scratchSave(tabId, pad.content, pad.history, new Date(pad.updatedAt).toISOString())
           .then((outcome) => {
@@ -101,10 +104,10 @@ export function useScratchPads(activeTabId: string | null) {
     [writeThrough],
   );
 
+  // writeThrough mirrors to local storage synchronously before its first
+  // await, so flush and pagehide need no separate mirror write.
   const flush = useCallback(() => {
     if (timer.current) clearTimeout(timer.current);
-    const local = saveLocalDrafts(browserStorage(), fileRef.current);
-    if (!local.ok) setPersistError(local.error ?? "could not save scratch draft");
     void writeThrough(fileRef.current);
   }, [writeThrough]);
 
@@ -130,10 +133,6 @@ export function useScratchPads(activeTabId: string | null) {
       });
     const onHide = () => {
       if (timer.current) clearTimeout(timer.current);
-      const localResult = saveLocalDrafts(browserStorage(), fileRef.current);
-      if (!localResult.ok) {
-        setPersistError(localResult.error ?? "could not save scratch draft");
-      }
       void writeThrough(fileRef.current);
     };
     window.addEventListener("pagehide", onHide);
