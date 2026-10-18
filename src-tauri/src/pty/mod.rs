@@ -85,10 +85,13 @@ impl PtyRegistry {
         }
     }
 
+    /// Close the terminal `id`. A replaced program it was still stopping
+    /// is forgotten too; its control thread kills it within the grace.
     pub fn kill(&mut self, id: &str) {
         self.sessions.remove(id);
         self.claude_sessions.remove(id);
         self.opening.remove(id);
+        self.stopping.remove(id);
     }
 
     pub fn kill_tab(&mut self, tab_id: &str) {
@@ -107,11 +110,13 @@ impl PtyRegistry {
     /// App exit, step 1: SIGTERM every terminal's process group and return
     /// those groups, so the caller can wait without holding this lock. A
     /// terminal whose program already exited and was reaped is skipped: its
-    /// pid may now lead an unrelated group.
+    /// pid may now lead an unrelated group. A replaced program that is still
+    /// stopping (a reopen is waiting on it) is included.
     pub fn terminate_all(&self) -> Vec<crate::process_tree::PtyGroup> {
         self.sessions
             .values()
             .map(PtySession::group)
+            .chain(self.stopping.values().cloned())
             .filter(|group| group.running())
             .inspect(|group| group.terminate())
             .collect()
@@ -228,10 +233,13 @@ fn open_session(
     }
     let mut registry = registry.lock().map_err(|err| err.to_string())?;
     match registry.opening.get(id) {
+        Some(latest) if *latest == token => {}
+        // A newer open of this id took over (it may have finished already).
+        Some(_) => return Ok(None),
+        None if registry.sessions.contains_key(id) => return Ok(None),
         None => return Err("The terminal was closed while it was starting.".to_string()),
-        Some(latest) if *latest != token => return Ok(None),
-        Some(_) => {}
     }
+    registry.opening.remove(id);
     registry.stopping.remove(id);
     let mut session = PtySession::spawn(spec).map_err(|err| err.to_string())?;
     let pid = session.pid();
@@ -1433,6 +1441,74 @@ mod tests {
             second.unwrap().unwrap(),
             "the newer open's terminal is the one kept"
         );
+    }
+
+    // Review: an open left its `opening` entry behind, and a kill left the
+    // replaced program in `stopping`.
+    #[cfg(unix)]
+    #[test]
+    fn opens_and_kills_leave_no_bookkeeping_behind() {
+        let dir = crate::test_support::TempDir::new("pty_bookkeeping");
+        let registry = Mutex::new(PtyRegistry::new());
+        let empty = |registry: &Mutex<PtyRegistry>| {
+            let registry = registry.lock().unwrap();
+            registry.opening.is_empty() && registry.stopping.is_empty()
+        };
+        open_slow_stopper(&registry, dir.path(), "t");
+        assert!(empty(&registry), "nothing left after an open");
+        std::thread::scope(|scope| {
+            let reopen = scope.spawn(|| {
+                open_session(
+                    &registry,
+                    "t",
+                    sh_spec(dir.path(), "sleep 5"),
+                    None,
+                    Channel::new(|_| Ok(())),
+                )
+            });
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            assert!(!registry.lock().unwrap().stopping.is_empty(), "old program is stopping");
+            registry.lock().unwrap().kill_tab("t");
+            assert!(empty(&registry), "nothing left after a kill");
+            assert!(reopen.join().unwrap().is_err());
+        });
+        open_slow_stopper(&registry, dir.path(), "u");
+        open_session(
+            &registry,
+            "u",
+            sh_spec(dir.path(), "sleep 5"),
+            None,
+            Channel::new(|_| Ok(())),
+        )
+        .expect("reopen");
+        assert!(empty(&registry), "nothing left after a reopen");
+    }
+
+    // Review: quit walked only live sessions, so a replaced program still
+    // stopping was neither waited on nor killed.
+    #[cfg(unix)]
+    #[test]
+    fn quitting_also_stops_a_replaced_program_that_is_still_stopping() {
+        let dir = crate::test_support::TempDir::new("pty_quit_stopping");
+        let registry = Mutex::new(PtyRegistry::new());
+        let old = open_slow_stopper(&registry, dir.path(), "t");
+        std::thread::scope(|scope| {
+            let reopen = scope.spawn(|| {
+                open_session(
+                    &registry,
+                    "t",
+                    sh_spec(dir.path(), "sleep 5"),
+                    None,
+                    Channel::new(|_| Ok(())),
+                )
+            });
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            assert!(old.running(), "the old program is still finishing");
+            let groups = registry.lock().unwrap().terminate_all();
+            assert_eq!(groups.len(), 1, "quit waits on the stopping program");
+            registry.lock().unwrap().kill("t");
+            let _ = reopen.join();
+        });
     }
 
     // Regression: a resize waited up to 2 s for a busy terminal's ack while
