@@ -506,18 +506,20 @@ pub fn dev_session_stop(
                 .map(|tab| tab.cwd.clone())
                 .unwrap_or_default()
         };
-        let mut store = state_store.lock().map_err(|e| e.to_string())?;
-        store.mark_tab_awaiting_input(&tab_id, transcript.clone())?;
-        crate::commands::chain_events::notify_tab(&app, &store, &tab_id);
+        {
+            let mut store = state_store.lock().map_err(|e| e.to_string())?;
+            store.mark_tab_awaiting_input(&tab_id, transcript.clone())?;
+            crate::commands::chain_events::notify_tab(&app, &store, &tab_id);
+        }
         if let Some(text) = transcript.as_ref().filter(|text| !text.trim().is_empty()) {
-            let keep = store
-                .data
-                .tabs
-                .iter()
-                .map(|tab| tab.id.clone())
-                .collect::<Vec<_>>();
-            let transcripts = transcripts.lock().map_err(|e| e.to_string())?;
-            transcripts.save(&tab_id, text, &cwd, &chrono::Utc::now().to_rfc3339(), &keep)?;
+            crate::commands::workspace::save_tab_transcript(
+                &state_store,
+                &transcripts,
+                &tab_id,
+                text,
+                &cwd,
+                &chrono::Utc::now().to_rfc3339(),
+            )?;
         }
     }
     Ok(())
