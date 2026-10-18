@@ -159,8 +159,6 @@ pub fn transcript_save(
     transcripts: State<Mutex<TranscriptStore>>,
     state: State<Mutex<StateStore>>,
 ) -> Result<(), String> {
-    let state = state.lock().map_err(|e| e.to_string())?;
-    let transcripts = transcripts.lock().map_err(|e| e.to_string())?;
     save_tab_transcript(
         &state,
         &transcripts,
@@ -173,16 +171,22 @@ pub fn transcript_save(
 
 /// Saves one tab's transcript. Rotation never drops the file of an open or
 /// closed tab, so a tab reopened from the closed list gets its chat back.
-/// Callers lock the state store before the transcript store.
+/// The state lock is released before the transcript lock is taken, so the
+/// file write and rotation scan never block state readers. Callers must
+/// not hold either lock.
 pub(crate) fn save_tab_transcript(
-    state: &StateStore,
-    transcripts: &TranscriptStore,
+    state: &Mutex<StateStore>,
+    transcripts: &Mutex<TranscriptStore>,
     tab_id: &str,
     text: &str,
     cwd: &str,
     now: &str,
 ) -> Result<(), String> {
-    let keep = crate::commands::storage::known_tab_ids(state);
+    let keep = {
+        let state = state.lock().map_err(|e| e.to_string())?;
+        crate::commands::storage::known_tab_ids(&state)
+    };
+    let transcripts = transcripts.lock().map_err(|e| e.to_string())?;
     transcripts.save(tab_id, text, cwd, now, &keep)
 }
 
