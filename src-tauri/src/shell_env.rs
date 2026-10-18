@@ -68,6 +68,67 @@ pub fn apply_login_path() {
     }
 }
 
+/// Any of these means we were started inside a Claude Code session.
+const SESSION_MARKERS: [&str; 4] = [
+    "CLAUDECODE",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_ENTRYPOINT",
+];
+
+/// `CLAUDE*` settings that belong to the user, not to the parent session.
+const KEEP_CLAUDE_VARS: [&str; 2] = ["CLAUDE_CONFIG_DIR", "CLAUDE_CODE_GIT_BASH_PATH"];
+
+/// Names of the variables a parent Claude Code session put in our env.
+///
+/// Started from a Claude Code terminal (`npm run dev:app` run by Claude),
+/// DCTerminal inherits that session's `CLAUDECODE`, `CLAUDE_CODE_*` and
+/// friends, and every child gets them. A `claude` started under them takes
+/// itself for a nested session and writes no session log. Returns nothing
+/// unless a marker shows we really are inside a session, and never
+/// `CLAUDE_CONFIG_DIR` (the user's account choice) or
+/// `CLAUDE_CODE_GIT_BASH_PATH` (install setup), or any `ANTHROPIC_*`.
+pub(crate) fn parent_claude_session_vars<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+) -> Vec<String> {
+    let names: Vec<&str> = names.into_iter().collect();
+    if !names.iter().any(|name| SESSION_MARKERS.contains(name)) {
+        return Vec::new();
+    }
+    names
+        .into_iter()
+        .filter(|name| name.starts_with("CLAUDE") && !KEEP_CLAUDE_VARS.contains(name))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Remove the parent Claude Code session's variables from this process, so
+/// no child (PTY shell, ACP agent, CLI probe) inherits them. Logs the count,
+/// never the values: some are secrets.
+///
+/// Must run on the main thread before any other thread exists, like
+/// [`apply_login_path`].
+pub fn scrub_parent_claude_session() {
+    let names: Vec<String> = std::env::vars_os()
+        .filter_map(|(name, _)| name.into_string().ok())
+        .collect();
+    let scrubbed = parent_claude_session_vars(names.iter().map(String::as_str));
+    if scrubbed.is_empty() {
+        return;
+    }
+    remove_vars(&scrubbed);
+    eprintln!(
+        "DCTerminal: removed {} variables inherited from a parent Claude Code session",
+        scrubbed.len()
+    );
+}
+
+fn remove_vars(names: &[String]) {
+    for name in names {
+        std::env::remove_var(name);
+    }
+}
+
 #[cfg(unix)]
 fn skip_requested(value: Option<&OsStr>) -> bool {
     value.is_some_and(|value| {
@@ -360,6 +421,99 @@ mod tests {
         );
         assert_eq!(resolved.source, Source::Inherited);
         assert!(resolved.path.starts_with("/usr/bin:/bin"));
+    }
+
+    #[test]
+    fn parent_session_vars_are_listed_only_inside_a_claude_session() {
+        let outside = ["CLAUDE_CONFIG_DIR", "CLAUDE_EFFORT", "PATH", "HOME"];
+        assert!(parent_claude_session_vars(outside).is_empty());
+
+        for marker in [
+            "CLAUDECODE",
+            "CLAUDE_CODE_CHILD_SESSION",
+            "CLAUDE_CODE_SESSION_ID",
+            "CLAUDE_CODE_ENTRYPOINT",
+        ] {
+            let listed = parent_claude_session_vars([marker, "PATH"]);
+            assert_eq!(listed, vec![marker.to_string()], "marker {marker}");
+        }
+
+        let inside = [
+            "PATH",
+            "CLAUDECODE",
+            "CLAUDE_CODE_CHILD_SESSION",
+            "CLAUDE_CODE_SESSION_ID",
+            "CLAUDE_CODE_ENTRYPOINT",
+            "CLAUDE_CODE_EXECPATH",
+            "CLAUDE_CODE_MESSAGING_SOCKET",
+            "CLAUDE_CODE_MESSAGING_TOKEN",
+            "CLAUDE_CODE_SESSION_ATTENDED",
+            "CLAUDE_EFFORT",
+            "CLAUDE_PID",
+            "CLAUDE_CONFIG_DIR",
+            "CLAUDE_CODE_GIT_BASH_PATH",
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_BASE_URL",
+            "HOME",
+        ];
+        let mut listed = parent_claude_session_vars(inside);
+        listed.sort();
+        assert_eq!(
+            listed,
+            [
+                "CLAUDECODE",
+                "CLAUDE_CODE_CHILD_SESSION",
+                "CLAUDE_CODE_ENTRYPOINT",
+                "CLAUDE_CODE_EXECPATH",
+                "CLAUDE_CODE_MESSAGING_SOCKET",
+                "CLAUDE_CODE_MESSAGING_TOKEN",
+                "CLAUDE_CODE_SESSION_ATTENDED",
+                "CLAUDE_CODE_SESSION_ID",
+                "CLAUDE_EFFORT",
+                "CLAUDE_PID",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_scrubbed_name_does_not_reach_the_child() {
+        use std::process::Command;
+
+        const PROBE: &str = "CLAUDE_DCT_SCRUB_TEST_PROBE";
+        let dir = TempDir::new("shell_env_scrub");
+        let config = dir.join("claude-config");
+        let names = ["CLAUDECODE", PROBE, "CLAUDE_CONFIG_DIR"];
+        // Put back whatever this test touches; cargo may itself run inside
+        // a Claude session. Values are never printed.
+        let saved: Vec<_> = names
+            .iter()
+            .map(|name| (*name, std::env::var_os(name)))
+            .collect();
+        std::env::set_var("CLAUDECODE", "1");
+        std::env::set_var(PROBE, "from the parent session");
+        std::env::set_var("CLAUDE_CONFIG_DIR", &config);
+
+        remove_vars(&parent_claude_session_vars(names));
+        let output = Command::new("/bin/sh")
+            .args([
+                "-c",
+                &format!(
+                    "printf '%s|%s|%s' \"${{{PROBE}-unset}}\" \"${{CLAUDECODE-unset}}\" \"${{CLAUDE_CONFIG_DIR-unset}}\""
+                ),
+            ])
+            .output()
+            .unwrap();
+
+        for (name, value) in saved {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("unset|unset|{}", config.display())
+        );
     }
 
     #[test]
