@@ -24,14 +24,10 @@ describe("useAppShortcuts", () => {
     expect(onCancelTurn).toHaveBeenCalledTimes(1);
   });
 
-  it("Escape answered by a permission card does not cancel the turn", () => {
-    // A permission card's window listener answers Escape first and marks it handled.
-    const card = (event: KeyboardEvent) => {
-      if (event.key === "Escape") event.preventDefault();
-    };
-    window.addEventListener("keydown", card, true);
-    cleanups.push(() => window.removeEventListener("keydown", card, true));
+  it("Escape with a pending permission cancels the permission, not the turn", () => {
     const onCancelTurn = vi.fn();
+    const onPermissionEscape = vi.fn(() => true);
+    // The app registers this hook before any permission card mounts, so it sees keys first.
     renderHook(() =>
       useAppShortcuts({
         platform: "mac",
@@ -39,9 +35,38 @@ describe("useAppShortcuts", () => {
         promptInFlight: true,
         onAction: () => {},
         onCancelTurn,
+        onPermissionEscape,
+      }),
+    );
+    // A permission card's own window listener runs afterwards and skips handled keys.
+    const cardCancel = vi.fn();
+    const card = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !event.defaultPrevented) cardCancel();
+    };
+    window.addEventListener("keydown", card, true);
+    cleanups.push(() => window.removeEventListener("keydown", card, true));
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(onPermissionEscape).toHaveBeenCalledTimes(1);
+    expect(onPermissionEscape).toHaveBeenCalledWith(document.body);
+    expect(cardCancel).not.toHaveBeenCalled();
+    expect(onCancelTurn).not.toHaveBeenCalled();
+  });
+
+  it("Escape cancels the turn when no permission takes it", () => {
+    const onCancelTurn = vi.fn();
+    const onPermissionEscape = vi.fn(() => false);
+    renderHook(() =>
+      useAppShortcuts({
+        platform: "mac",
+        dialogOpen: false,
+        promptInFlight: true,
+        onAction: () => {},
+        onCancelTurn,
+        onPermissionEscape,
       }),
     );
     fireEvent.keyDown(document.body, { key: "Escape" });
-    expect(onCancelTurn).not.toHaveBeenCalled();
+    expect(onPermissionEscape).toHaveBeenCalledTimes(1);
+    expect(onCancelTurn).toHaveBeenCalledTimes(1);
   });
 });

@@ -13,6 +13,14 @@ type Props = {
 
 const EDITABLE = "input, textarea, select, [contenteditable]:not([contenteditable='false'])";
 
+/** True for a text field, where a/r/Escape are typing, not answers to the card. */
+export function isEditableTarget(target: EventTarget | null): boolean {
+  return (
+    target instanceof Element &&
+    ((target instanceof HTMLElement && target.isContentEditable) || !!target.closest(EDITABLE))
+  );
+}
+
 function firstAllowOption(request: PermissionRequestEvent): string | null {
   const allow = request.options.find(
     (opt) =>
@@ -38,13 +46,7 @@ export function PermissionCard({ request, busy, onSelect, onCancel, keysActive =
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       // An open Dialog owns the keyboard. The card is itself role="dialog", so count, don't query.
       if (openDialogCount() > 0) return;
-      const target = event.target;
-      if (
-        target instanceof Element &&
-        ((target instanceof HTMLElement && target.isContentEditable) || target.closest(EDITABLE))
-      ) {
-        return;
-      }
+      if (isEditableTarget(event.target)) return;
       const key = event.key.toLowerCase();
       if (key === "a") {
         const id = firstAllowOption(request);

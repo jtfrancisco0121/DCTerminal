@@ -103,3 +103,20 @@ test("permission keys: modifiers never approve, only the focused pane answers, E
   await expect(alphaCard).toBeVisible();
   expect(await app.calls("respond_permission_request")).toHaveLength(1);
 });
+
+test("permission keys: during a turn, Escape cancels the pending permission, not the turn", async ({ app, page }) => {
+  await app.open();
+  const turn = await app.start("tab-1");
+  await turn.permission("Run rm -rf build");
+  const card = page.getByRole("dialog", { name: "Run rm -rf build" });
+  await expect(card).toBeVisible();
+  // The startup turn is still in flight, so a bare Escape would otherwise cancel it.
+  // Focus on the page body, not a text field.
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await page.keyboard.press("Escape");
+  const answer = await app.waitForCall("respond_permission_request");
+  expect(answer.args).toMatchObject({ tabId: "tab-1", jsonRpcId: 9, outcome: "cancelled" });
+  await expect(card).toBeHidden();
+  expect(await app.calls("respond_permission_request")).toHaveLength(1);
+  expect(await app.calls("dev_session_cancel")).toHaveLength(0);
+});

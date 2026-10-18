@@ -363,6 +363,7 @@ import {
   type PaletteModelOptions,
 } from "./tabChrome";
 import { useAppShortcuts } from "./useAppShortcuts";
+import { isEditableTarget } from "./PermissionCard";
 import { useScratchPads } from "./useScratchPads";
 import { headerControls } from "./views/SessionHeaderControls";
 import { TerminalTabView } from "./views/TerminalTabView";
@@ -3764,6 +3765,15 @@ export function StartupForm({
         return;
       }
       if (promptInFlight) void cancelTurn();
+    },
+    onPermissionEscape: (target) => {
+      // The focused pane's permission card takes a bare Escape, as its own key listener would.
+      if (isEditableTarget(target)) return false;
+      const tabId =
+        focusedPane === "secondary" && splitOpen(split) ? split.secondaryTabId : activeTabId;
+      if (!tabId || !runtimesRef.current[tabId]?.permission) return false;
+      if (!busy) void respondPermissionFor(tabId, null);
+      return true;
     },
     onPadEscape: () => {
       const summary = savedTabs.find((tab) => tab.id === activeTabIdRef.current);
