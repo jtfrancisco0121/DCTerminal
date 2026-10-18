@@ -8,7 +8,10 @@ const THREE_STEPS = "Plan the change\n---\nWrite the code\n---\nRun the tests";
 test("each step waits for the previous turn; the pad clears when the chain is done", async ({ app, page }) => {
   const { turn, editor, pad, padSend, status } = await quietChat(app, page);
   await editor.fill(THREE_STEPS);
-  await expect(padSend).toHaveText("Send steps");
+  // The visible label also carries the send shortcut (an aria-hidden <kbd>), so
+  // the name is checked exactly and the text only by prefix.
+  await expect(padSend).toHaveAccessibleName("Send steps");
+  await expect(padSend).toHaveText(/^Send steps\b/);
   await expect(pad).toContainText("--- starts the next step after the turn ends");
   await padSend.click();
 
