@@ -1,7 +1,7 @@
 //! F6 prompt library (`prompts.json` in DCTerminal's app data): named
 //! prompts and the most recent sends. Never written to a repo or `~/.cursor`.
 
-use crate::store::json_io::{read_json_or_recover, write_json_atomic};
+use crate::store::json_io::{read_json_or_recover, set_aside_other_version, write_json_atomic};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -66,10 +66,7 @@ impl PromptStore {
         let path = dir.join(PROMPTS_FILE);
         let mut data = read_json_or_recover::<PromptsFile>(&path)?;
         if data.schema_version > PROMPTS_SCHEMA_VERSION {
-            let _ = std::fs::rename(
-                &path,
-                path.with_extension(format!("json.corrupt-schema-{}", data.schema_version)),
-            );
+            set_aside_other_version(&path, data.schema_version);
             data = PromptsFile::default();
         }
         data.schema_version = PROMPTS_SCHEMA_VERSION;
@@ -336,7 +333,14 @@ mod tests {
         std::fs::write(&path, br#"{"schemaVersion":99,"prompts":[],"recent":[]}"#).unwrap();
         let store = PromptStore::open(&dir).unwrap();
         assert_eq!(store.data.schema_version, PROMPTS_SCHEMA_VERSION);
-        assert!(dir.join("prompts.json.corrupt-schema-99").exists());
+        // A second newer file set aside does not replace the first.
+        std::fs::write(&path, br#"{"schemaVersion":99,"prompts":[],"recent":[]}"#).unwrap();
+        PromptStore::open(&dir).unwrap();
+        let kept = crate::test_support::names_in(&dir)
+            .into_iter()
+            .filter(|name| name.starts_with("prompts.json.from-v99-"))
+            .count();
+        assert_eq!(kept, 2);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

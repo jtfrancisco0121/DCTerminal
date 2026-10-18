@@ -12,7 +12,7 @@
 use crate::github::normalize::PullInfo;
 use crate::github::search::{CommentInfo, Thread};
 use crate::github::{FeedItem, PersonalRepo, DEFAULT_LOGIN, DEFAULT_ORG, DEFAULT_WATCHED};
-use crate::store::json_io::{read_json_or_recover, write_json_atomic};
+use crate::store::json_io::{read_json_or_recover, set_aside_other_version, write_json_atomic};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -116,6 +116,8 @@ impl GithubStore {
         let path = dir.join(GITHUB_FILE);
         let mut data = read_json_or_recover::<GithubFile>(&path)?;
         if data.schema_version > GITHUB_SCHEMA_VERSION {
+            // Moved aside, so no save here can overwrite a newer build's file.
+            set_aside_other_version(&path, data.schema_version);
             data = GithubFile::default();
         }
         data.schema_version = GITHUB_SCHEMA_VERSION;
@@ -242,6 +244,8 @@ impl GithubCache {
         let path = dir.join(CACHE_FILE);
         let mut data = read_json_or_recover::<CacheFile>(&path)?;
         if data.schema_version > CACHE_SCHEMA_VERSION {
+            // Moved aside, so no save here can overwrite a newer build's file.
+            set_aside_other_version(&path, data.schema_version);
             data = CacheFile::default();
         }
         data.schema_version = CACHE_SCHEMA_VERSION;
@@ -327,13 +331,22 @@ mod tests {
     #[test]
     fn a_file_from_a_newer_schema_is_reset() {
         let dir = temp_path("gh_future");
-        std::fs::write(
-            dir.join(GITHUB_FILE),
-            r#"{"schemaVersion":99,"watched":["x"]}"#,
-        )
-        .unwrap();
+        let original = r#"{"schemaVersion":99,"watched":["x"]}"#;
+        std::fs::write(dir.join(GITHUB_FILE), original).unwrap();
         let store = GithubStore::open(&dir).unwrap();
         assert_eq!(store.data.watched.len(), 7);
+        // Regression: the newer file was overwritten by the next two saves.
+        let kept = || {
+            let name = crate::test_support::names_in(&dir)
+                .into_iter()
+                .find(|name| name.starts_with("github.json.from-v99-"))
+                .expect("set-aside file");
+            std::fs::read_to_string(dir.join(name)).unwrap()
+        };
+        assert_eq!(kept(), original);
+        store.save().unwrap();
+        store.save().unwrap();
+        assert_eq!(kept(), original);
     }
 
     #[test]

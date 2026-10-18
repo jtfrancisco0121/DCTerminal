@@ -1,7 +1,7 @@
 //! Per-tab scratch pads (`scratch.json`). Drafts are also mirrored in the
 //! WebView so a crash between disk flushes loses at most the debounce window.
 
-use crate::store::json_io::{read_json_or_recover, write_json_atomic};
+use crate::store::json_io::{read_json_or_recover, set_aside_other_version, write_json_atomic};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -49,10 +49,7 @@ impl ScratchStore {
         let path = dir.join("scratch.json");
         let mut data = read_json_or_recover::<ScratchFile>(&path)?;
         if data.schema_version > SCRATCH_SCHEMA_VERSION {
-            let _ = std::fs::rename(
-                &path,
-                path.with_extension(format!("json.corrupt-schema-{}", data.schema_version)),
-            );
+            set_aside_other_version(&path, data.schema_version);
             data = ScratchFile::default();
         }
         data.schema_version = SCRATCH_SCHEMA_VERSION;

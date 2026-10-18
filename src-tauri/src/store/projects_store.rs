@@ -2,7 +2,7 @@
 //! (case-insensitive for Windows and UNC paths).
 
 use crate::paths::{folder_key, validate_working_folder};
-use crate::store::json_io::{read_json_or_recover, write_json_atomic};
+use crate::store::json_io::{read_json_or_recover, set_aside_other_version, write_json_atomic};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -56,6 +56,8 @@ impl ProjectsStore {
         let path = dir.join("projects.json");
         let mut data = read_json_or_recover::<ProjectsFile>(&path)?;
         if data.schema_version > PROJECTS_SCHEMA_VERSION {
+            // Moved aside, so no save here can overwrite a newer build's file.
+            set_aside_other_version(&path, data.schema_version);
             data = ProjectsFile::default();
         }
         data.schema_version = PROJECTS_SCHEMA_VERSION;

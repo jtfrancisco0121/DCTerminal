@@ -75,6 +75,7 @@ import {
   chainLoopBack,
   setTabChain,
   startEagleEye,
+  startupNotices,
   roleSessionStart,
   selectActiveTab,
   syncActiveTabForm,
@@ -231,7 +232,7 @@ import {
 } from "./handoff/verdict";
 import { limitAlerts, statusLimit } from "./usage/limits";
 import type { ChatFindRequest } from "./SessionTerminal";
-import { classifyPromptFinished, type NotificationSettings } from "./notify/agentNotify";
+import { classifyPromptFinished, DATA_RECOVERED_SLOT, type NotificationSettings } from "./notify/agentNotify";
 import { showSystemNotification } from "./notify/systemNotify";
 import { useAgentNotifications } from "./notify/useAgentNotifications";
 import { isWindowFocused, useWindowFocused } from "./notify/windowFocus";
@@ -3786,6 +3787,22 @@ export function StartupForm({
         setCaptureOn(status.capturePermissionPayloads);
       })
       .catch((err: unknown) => reportOnce("diagnosticsStatus", "Diagnostics status did not load", err));
+  }, []);
+
+  useEffect(() => {
+    // A data file moved aside at startup (damaged, or from another version).
+    startupNotices()
+      .then((notes) => {
+        // One toast for all notes: the toast list keeps only the newest few,
+        // so a toast per note would drop the oldest when many files were kept.
+        if (!notes?.length) return;
+        const body =
+          notes.length === 1
+            ? notes[0]
+            : [`${notes.length} data files needed recovery.`, ...notes].join("\n");
+        showNoticeRef.current("Data recovered", body, "failed", DATA_RECOVERED_SLOT);
+      })
+      .catch((err: unknown) => reportOnce("startupNotices", "Startup notices did not load", err));
   }, []);
 
   useEffect(() => {

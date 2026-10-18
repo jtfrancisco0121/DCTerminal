@@ -2,7 +2,7 @@
 //! tabs (title, folder, role, kind). Adapted from ADE's workspace presets.
 //! Never written to a repo or `~/.cursor`.
 
-use crate::store::json_io::{read_json_or_recover, write_json_atomic};
+use crate::store::json_io::{read_json_or_recover, set_aside_other_version, write_json_atomic};
 use crate::store::state_types::{LayoutState, RoleSnapshot, TabRecord};
 use crate::worktree::WorktreeRef;
 use serde::{Deserialize, Serialize};
@@ -159,10 +159,7 @@ impl WorkspaceStore {
         let path = dir.join(WORKSPACES_FILE);
         let mut data = read_json_or_recover::<WorkspacesFile>(&path)?;
         if data.schema_version > WORKSPACES_SCHEMA_VERSION {
-            let _ = std::fs::rename(
-                &path,
-                path.with_extension(format!("json.corrupt-schema-{}", data.schema_version)),
-            );
+            set_aside_other_version(&path, data.schema_version);
             data = WorkspacesFile::default();
         }
         data.schema_version = WORKSPACES_SCHEMA_VERSION;
@@ -424,7 +421,9 @@ mod tests {
         .unwrap();
         let store = WorkspaceStore::open(&dir).unwrap();
         assert_eq!(store.data.schema_version, WORKSPACES_SCHEMA_VERSION);
-        assert!(dir.join("workspaces.json.corrupt-schema-7").exists());
+        assert!(crate::test_support::names_in(&dir)
+            .iter()
+            .any(|name| name.starts_with("workspaces.json.from-v7-")));
         let _ = std::fs::remove_dir_all(dir);
     }
 

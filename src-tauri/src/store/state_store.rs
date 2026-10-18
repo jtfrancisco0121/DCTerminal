@@ -1,6 +1,6 @@
 use crate::orchestrator::TabPhase;
 use crate::roles::Role;
-use crate::store::json_io::{read_json_or_recover, write_json_atomic};
+use crate::store::json_io::{read_json_or_recover, set_aside_other_version, write_json_atomic};
 use crate::store::state_types::{
     AppStateFile, PipelineRun, RoleSnapshot, TabRecord, TabSessionRef, STATE_SCHEMA_VERSION,
 };
@@ -35,10 +35,9 @@ impl StateStore {
         // state.json.bak instead of blocking startup or starting empty.
         let mut data: AppStateFile = read_json_or_recover(&path)?;
         if data.schema_version != STATE_SCHEMA_VERSION {
-            return Err(format!(
-                "unsupported state.json schemaVersion {} (expected {})",
-                data.schema_version, STATE_SCHEMA_VERSION
-            ));
+            // Another build's file is kept aside, never read or overwritten.
+            set_aside_other_version(&path, data.schema_version);
+            data = AppStateFile::default();
         }
         normalize_provider_sessions(&mut data);
         let claude_migrated = crate::store::claude_migration::migrate_state(&mut data);

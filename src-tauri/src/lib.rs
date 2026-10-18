@@ -70,7 +70,7 @@ use commands::{
 };
 use commands::{changes_file_diff, changes_list, changes_revert, changes_snapshot, ChangesRoot};
 use commands::{first_run_complete, first_run_status, provider_status};
-use commands::{storage_cleanup, storage_status};
+use commands::{startup_notices, storage_cleanup, storage_status};
 use commands::{create_role, delete_role, duplicate_role, export_role, import_role, preview_role_template};
 use commands::{
     claude_account_logins, get_provider_settings, set_provider_settings, set_tab_provider,
@@ -285,6 +285,7 @@ pub fn run() {
             diagnostics_read_log,
             storage_status,
             storage_cleanup,
+            startup_notices,
             session_agent_logs,
             reopen_closed_tab,
             set_tab_label,

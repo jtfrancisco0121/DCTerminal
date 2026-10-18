@@ -2947,6 +2947,13 @@ kbd {
   overflow-wrap: anywhere;
 }
 
+/* Many lines (the startup recovery notes): scroll, so × stays on screen. */
+.agent-toast-long .agent-toast-text {
+  white-space: pre-line;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
 .agent-toast-close {
   background: transparent;
   border: 0;

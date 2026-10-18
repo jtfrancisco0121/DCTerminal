@@ -2,7 +2,7 @@
 //! per-window layouts, tab name/color checks, and the window migration.
 
 use crate::store::{read_json, AppStateFile, LayoutState, StateStore, WindowRecord};
-use crate::test_support::{role, TempDir};
+use crate::test_support::{names_in, role, TempDir};
 
 fn store_at(dir: &TempDir) -> StateStore {
     StateStore::open_path(dir.join("state.json")).unwrap()
@@ -19,17 +19,21 @@ fn a_missing_state_file_opens_empty_on_the_main_window() {
     assert_eq!(store.account_for_window("win-9"), "default");
 }
 
+// Regression: a state.json from another build used to stop the app from
+// opening on every launch. It is now moved aside and the app opens empty.
 #[test]
-fn an_unknown_state_schema_is_refused_and_left_on_disk() {
+fn a_state_file_from_another_version_is_set_aside_and_the_app_opens_empty() {
     let dir = TempDir::new("state_schema");
     let path = dir.join("state.json");
-    std::fs::write(&path, r#"{"schemaVersion": 2, "tabs": []}"#).unwrap();
-    let err = StateStore::open_path(path.clone()).err().expect("refused");
-    assert!(err.contains("schemaVersion 2"), "{err}");
-    assert_eq!(
-        std::fs::read_to_string(&path).unwrap(),
-        r#"{"schemaVersion": 2, "tabs": []}"#
-    );
+    let original = r#"{"schemaVersion": 2, "tabs": []}"#;
+    std::fs::write(&path, original).unwrap();
+    let store = StateStore::open_path(path.clone()).expect("opens");
+    assert!(store.data.tabs.is_empty());
+    let kept = names_in(dir.path())
+        .into_iter()
+        .find(|name| name.starts_with("state.json.from-v2-"))
+        .expect("set-aside file");
+    assert_eq!(std::fs::read_to_string(dir.join(kept)).unwrap(), original);
 }
 
 // Regression: a damaged state.json falls back to state.json.bak instead of blocking startup.

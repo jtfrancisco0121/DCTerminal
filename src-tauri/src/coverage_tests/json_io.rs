@@ -1,6 +1,9 @@
 //! `write_json_atomic`, `read_json` and `read_json_or_recover`.
 
-use crate::store::{read_json, read_json_or_recover, write_json_atomic};
+use crate::store::{
+    note_recovery, read_json, read_json_or_recover, read_json_or_recover_with,
+    take_recovery_notes, write_json_atomic,
+};
 use crate::test_support::{names_in, TempDir};
 use serde::{Deserialize, Serialize};
 
@@ -84,7 +87,7 @@ fn recover_moves_a_corrupt_file_aside_and_uses_the_backup() {
 
     let value: Doc = read_json_or_recover(&path).unwrap();
     assert_eq!(value, doc(1), "falls back to the last good copy");
-    assert!(!path.exists());
+    assert_eq!(read_json::<Doc>(&path).unwrap(), doc(1), "and puts it back");
     let names = names_in(dir.path());
     let corrupt: Vec<_> = names
         .iter()
@@ -125,4 +128,91 @@ fn recover_with_a_corrupt_backup_too_is_default() {
         dir.join("doc.json.bak").exists(),
         "backup is left for the user"
     );
+}
+
+#[test]
+fn recover_with_uses_the_given_fallback() {
+    let dir = TempDir::new("io_fallback");
+    let path = dir.join("doc.json");
+    assert_eq!(read_json_or_recover_with(&path, || doc(7)).unwrap(), doc(7));
+    std::fs::write(&path, b"{damaged").unwrap();
+    assert_eq!(read_json_or_recover_with(&path, || doc(8)).unwrap(), doc(8));
+    write_json_atomic(&path, &doc(2)).unwrap();
+    assert_eq!(read_json_or_recover_with(&path, || doc(9)).unwrap(), doc(2));
+}
+
+// Regression: recovered data lived only in memory, so a sweep of the orphan
+// .bak (or a crash before the next save) lost it on the next launch.
+#[test]
+fn recovered_data_is_written_back_as_the_main_file() {
+    let dir = TempDir::new("io_write_back");
+    let path = dir.join("doc.json");
+    write_json_atomic(&path, &doc(1)).unwrap();
+    write_json_atomic(&path, &doc(2)).unwrap();
+    let bak = std::fs::read(dir.join("doc.json.bak")).unwrap();
+
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(read_json_or_recover::<Doc>(&path).unwrap(), doc(1));
+    assert_eq!(std::fs::read(&path).unwrap(), bak, "missing main restored");
+
+    std::fs::write(&path, b"{damaged").unwrap();
+    assert_eq!(read_json_or_recover::<Doc>(&path).unwrap(), doc(1));
+    assert_eq!(std::fs::read(&path).unwrap(), bak, "damaged main restored");
+    assert!(!dir.join("doc.json.tmp").exists());
+
+    // An interrupted save's finished .tmp is renamed in.
+    std::fs::remove_file(&path).unwrap();
+    std::fs::write(dir.join("doc.json.tmp"), br#"{"n": 3}"#).unwrap();
+    assert_eq!(read_json_or_recover::<Doc>(&path).unwrap().n, 3);
+    assert_eq!(std::fs::read(&path).unwrap(), br#"{"n": 3}"#);
+    assert!(!dir.join("doc.json.tmp").exists());
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Versioned {
+    schema_version: u32,
+    n: u32,
+}
+
+impl Default for Versioned {
+    fn default() -> Self {
+        Self { schema_version: 2, n: 0 }
+    }
+}
+
+// Regression: a newer file this build cannot parse went to .corrupt-* and
+// was swept after 30 days; it is from another version, so it is kept.
+#[test]
+fn a_newer_file_that_does_not_parse_is_set_aside_not_called_corrupt() {
+    let dir = TempDir::new("io_newer_unparsed");
+    let path = dir.join("doc.json");
+    let newer = r#"{"schemaVersion": 3, "n": "now a string"}"#;
+    std::fs::write(&path, newer).unwrap();
+    assert_eq!(read_json_or_recover::<Versioned>(&path).unwrap(), Versioned::default());
+    let names = names_in(dir.path());
+    assert!(!names.iter().any(|n| n.contains(".corrupt-")), "{names:?}");
+    let kept: Vec<_> = names.iter().filter(|n| n.starts_with("doc.json.from-v3-")).collect();
+    assert_eq!(kept.len(), 1, "{names:?}");
+    assert_eq!(std::fs::read_to_string(dir.join(kept[0])).unwrap(), newer);
+
+    // The same version in a wrong shape is still damaged.
+    std::fs::write(&path, r#"{"schemaVersion": 2, "n": "x"}"#).unwrap();
+    assert_eq!(read_json_or_recover::<Versioned>(&path).unwrap(), Versioned::default());
+    assert!(names_in(dir.path()).iter().any(|n| n.starts_with("doc.json.corrupt-")));
+}
+
+// The only test that drains the notes, so parallel tests cannot steal them.
+#[test]
+fn notes_are_drained_once() {
+    let dir = TempDir::new("io_notes");
+    let path = dir.join("noted.json");
+    std::fs::write(&path, b"{damaged").unwrap();
+    let _: Doc = read_json_or_recover(&path).unwrap();
+    note_recovery("io_notes test note".to_string());
+    let notes = take_recovery_notes();
+    assert!(notes.iter().any(|note| note == "io_notes test note"), "{notes:?}");
+    assert!(notes.iter().any(|note| note.contains("noted.json")), "{notes:?}");
+    let again = take_recovery_notes();
+    assert!(!again.iter().any(|note| note.contains("io_notes") || note.contains("noted.json")));
 }

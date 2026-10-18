@@ -35,6 +35,7 @@ vi.mock("./bridge", () => {
   attachmentRemove: vi.fn(async () => {}),
   devSessionStop: vi.fn(),
   diagnosticsSetCapture: vi.fn(),
+  startupNotices: vi.fn(async () => []),
   diagnosticsStatus: vi.fn(async () => ({
     capturePermissionPayloads: false,
     appDataDir: "",
@@ -306,6 +307,7 @@ import {
   setTabModel,
   setTabProvider,
   shellTerminalStart,
+  startupNotices,
   selectActiveTab,
   setTabLabel,
   syncActiveTabForm,
@@ -857,6 +859,56 @@ describe("blank tab card", () => {
     const values = calls[calls.length - 1]?.[3];
     expect(values?.taskType).toBeUndefined();
     expect(values?.cwd).toContain("Encryptor");
+  });
+
+  // Regression: every notice shared one toast slot, so only the last showed.
+  it("shows every data file recovered at startup", async () => {
+    vi.mocked(startupNotices).mockResolvedValueOnce([
+      "roles.json was damaged; kept as roles.json.corrupt-1. Restored from the backup.",
+      "settings.json was written by a different DCTerminal version (v7); kept as settings.json.from-v7-1. Defaults are in use.",
+    ]);
+    render(
+      <StartupForm
+        roles={[
+          { id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 },
+        ]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+    expect(await screen.findByRole("button", { name: /roles\.json was damaged/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /settings\.json was written by a different/ })).toBeTruthy();
+  });
+
+  // Regression: the toast list keeps 4, so a fifth recovery note was lost.
+  it("keeps every recovery note visible when many files were recovered", async () => {
+    const notes = ["a", "b", "c", "d", "e"].map(
+      (name) => `${name}.json was damaged; kept as ${name}.json.corrupt-1. Defaults are in use.`,
+    );
+    vi.mocked(startupNotices).mockResolvedValueOnce(notes);
+    render(
+      <StartupForm
+        roles={[
+          { id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 },
+        ]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+    expect(await screen.findByRole("button", { name: /e\.json was damaged/ })).toBeTruthy();
+    for (const name of ["a", "b", "c", "d"]) {
+      expect(screen.getByRole("button", { name: new RegExp(`${name}\\.json was damaged`) })).toBeTruthy();
+    }
+    // One note per line, in a toast whose text scrolls instead of growing off-screen.
+    const toast = screen.getByRole("button", { name: /e\.json was damaged/ });
+    expect(toast.querySelector(".agent-toast-text")?.textContent).toBe(
+      ["5 data files needed recovery.", ...notes].join("\n"),
+    );
+    expect(toast.closest(".agent-toast")?.classList.contains("agent-toast-long")).toBe(true);
   });
 });
 
