@@ -5,6 +5,7 @@ import {
   loadLocalDrafts,
   LOCAL_DRAFT_KEY,
   mergeDraftFiles,
+  pruneLocalDrafts,
   rememberPrompt,
   saveLocalDrafts,
   SCRATCH_DEBOUNCE_MS,
@@ -52,18 +53,41 @@ export function useScratchPads(activeTabId: string | null) {
   const fileRef = useRef(file);
   fileRef.current = file;
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Per pad: the `updatedAt` of the copy on disk, as far as this window
+  // knows. Only pads edited since then are saved, so a window never writes
+  // its stale copy of a pad another window is editing.
+  const savedAt = useRef<Record<string, number>>({});
 
   const writeThrough = useCallback(async (next: DraftFile) => {
     const local = saveLocalDrafts(browserStorage(), next);
     if (!local.ok) {
       setPersistError(local.error ?? "could not save scratch draft");
     }
-    const jobs = Object.entries(next.pads).map(([tabId, pad]) =>
-      scratchSave(tabId, pad.content, pad.history).catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        setPersistError(message);
-      }),
-    );
+    const jobs = Object.entries(next.pads)
+      .filter(([tabId, pad]) => pad.updatedAt > (savedAt.current[tabId] ?? 0))
+      .map(([tabId, pad]) =>
+        scratchSave(tabId, pad.content, pad.history, new Date(pad.updatedAt).toISOString())
+          .then((outcome) => {
+            // Null: a mock or an older backend, which always applies.
+            if (!outcome || outcome.applied) {
+              savedAt.current[tabId] = Math.max(savedAt.current[tabId] ?? 0, pad.updatedAt);
+              return;
+            }
+            // Another window saved a newer copy: adopt it, unless this
+            // window has typed again since.
+            const stored = diskFile([outcome.pad]).pads[tabId];
+            savedAt.current[tabId] = stored.updatedAt;
+            setFile((prev) => {
+              const current = prev.pads[tabId];
+              if (current && current.updatedAt > stored.updatedAt) return prev;
+              return { pads: { ...prev.pads, [tabId]: stored } };
+            });
+          })
+          .catch((err: unknown) => {
+            const message = err instanceof Error ? err.message : String(err);
+            setPersistError(message);
+          }),
+      );
     await Promise.all(jobs);
   }, []);
 
@@ -90,11 +114,14 @@ export function useScratchPads(activeTabId: string | null) {
     scratchLoad()
       .then((snap) => {
         if (cancelled) return;
-        const merged = mergeDraftFiles(
-          dropUnknownLocalPads(local, snap.knownTabIds),
-          diskFile(snap.pads),
-        );
-        setFile(merged);
+        const disk = diskFile(snap.pads);
+        for (const [tabId, pad] of Object.entries(disk.pads)) {
+          savedAt.current[tabId] = pad.updatedAt;
+        }
+        pruneLocalDrafts(browserStorage(), snap.knownTabIds);
+        const merged = mergeDraftFiles(dropUnknownLocalPads(local, snap.knownTabIds), disk);
+        // Keep edits typed before the load resolved (newer `updatedAt` wins).
+        setFile((prev) => mergeDraftFiles(prev, merged));
       })
       .catch((err: unknown) => {
         if (cancelled) return;

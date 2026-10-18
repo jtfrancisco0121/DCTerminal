@@ -91,17 +91,42 @@ pub fn scratch_load(
     })
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScratchSaveOutcome {
+    /// False when the stored pad is newer (another window edited it); the
+    /// caller should adopt `pad` instead of its own copy.
+    pub applied: bool,
+    /// The pad as stored after this call.
+    pub pad: ScratchPadEntry,
+}
+
+/// `updated_at` is when the caller's copy was edited (RFC3339). `None`
+/// means now, for callers that write a fresh pad.
 #[tauri::command]
 pub fn scratch_save(
     tab_id: String,
     content: String,
     history: Vec<String>,
+    updated_at: Option<String>,
     store: State<Mutex<ScratchStore>>,
-) -> Result<(), String> {
+) -> Result<ScratchSaveOutcome, String> {
     let mut store = store.lock().map_err(|e| e.to_string())?;
-    let now = chrono::Utc::now().to_rfc3339();
-    store.upsert(&tab_id, &content, &history, &now);
-    store.save()
+    let updated_at = updated_at.unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+    let applied = store.upsert_if_newer(&tab_id, &content, &history, &updated_at);
+    if applied {
+        store.save()?;
+    }
+    let pad = &store.data.pads[&tab_id];
+    Ok(ScratchSaveOutcome {
+        applied,
+        pad: ScratchPadEntry {
+            tab_id,
+            content: pad.content.clone(),
+            updated_at: pad.updated_at.clone(),
+            history: pad.history.clone(),
+        },
+    })
 }
 
 #[tauri::command]

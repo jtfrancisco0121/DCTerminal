@@ -483,8 +483,9 @@ export function installTauriMock(config: MockConfig): void {
     scratch_load: () => ({ pads: clone(state.pads), knownTabIds: state.tabs.map((t: Json) => t.id) }),
     scratch_save: (a) => {
       state.pads = state.pads.filter((p: Json) => p.tabId !== a.tabId);
-      state.pads.push({ tabId: a.tabId, content: a.content, history: a.history, updatedAt: now() });
-      return null;
+      const pad = { tabId: a.tabId, content: a.content, history: a.history, updatedAt: a.updatedAt ?? now() };
+      state.pads.push(pad);
+      return { applied: true, pad: clone(pad) };
     },
     prompt_library_get: () => ({ prompts: [], recent: clone(state.recent), path: "/tmp/dct-e2e/prompts.json" }),
     prompt_record_send: (a) => {

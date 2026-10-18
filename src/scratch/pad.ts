@@ -311,16 +311,36 @@ export function loadLocalDrafts(storage: DraftStorage): DraftFile | null {
   }
 }
 
+/** Every window shares one mirror key, so merge per pad (newer `updatedAt`
+ * wins) instead of replacing another window's newer edits. */
 export function saveLocalDrafts(
   storage: DraftStorage,
   file: DraftFile,
 ): { ok: boolean; error?: string } {
   try {
-    storage.write(LOCAL_DRAFT_KEY, JSON.stringify(file));
+    const merged = mergeDraftFiles(file, loadLocalDrafts(storage));
+    storage.write(LOCAL_DRAFT_KEY, JSON.stringify(merged));
     return { ok: true };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { ok: false, error: message || "could not write scratch draft" };
+  }
+}
+
+/** Drop pads of deleted tabs from the shared mirror itself. `saveLocalDrafts`
+ * merges with what is stored, so dropping them only in memory would let the
+ * next save bring them back. `null` known ids keeps everything. */
+export function pruneLocalDrafts(
+  storage: DraftStorage,
+  knownTabIds: readonly string[] | null | undefined,
+): void {
+  const stored = loadLocalDrafts(storage);
+  const kept = dropUnknownLocalPads(stored, knownTabIds);
+  if (!stored || !kept || Object.keys(kept.pads).length === Object.keys(stored.pads).length) return;
+  try {
+    storage.write(LOCAL_DRAFT_KEY, JSON.stringify(kept));
+  } catch {
+    // The next save reports storage errors.
   }
 }
 
