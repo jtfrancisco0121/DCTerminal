@@ -4,14 +4,29 @@
 //! assigned to a job, then resumed, so `node` cannot start outside the job.
 //! `KILL_ON_JOB_CLOSE` plus `taskkill /T` covers the tree. On Unix the child
 //! is its own process group; killing the group reaps grandchildren.
+//!
+//! Stopping on Unix sends SIGTERM to the group first, so Claude can finish
+//! its session log, and SIGKILL only after [`STOP_GRACE`]. A group is never
+//! signalled blind after its leader was reaped: once the leader is gone its
+//! pgid could belong to a new process, so it is only signalled while the
+//! group still has members.
 
 use std::io;
 use std::process::{Child, Command, ExitStatus};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
+/// How long a stopped agent or terminal gets to exit on SIGTERM (finishing
+/// its session log) before the group is killed.
+pub const STOP_GRACE: Duration = Duration::from_millis(1500);
 
 pub struct ProcessTree {
     child: Child,
     killed: bool,
+    /// `try_wait` collected the leader's exit, so its pid may be reused.
+    reaped: bool,
     #[cfg(windows)]
     resumed: bool,
     #[cfg(windows)]
@@ -35,6 +50,7 @@ impl ProcessTree {
             Ok(Self {
                 child,
                 killed: false,
+                reaped: false,
                 resumed: false,
                 job,
             })
@@ -44,12 +60,17 @@ impl ProcessTree {
             Ok(Self {
                 child,
                 killed: false,
+                reaped: false,
             })
         }
     }
 
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
-        self.child.try_wait()
+        let status = self.child.try_wait()?;
+        if status.is_some() {
+            self.reaped = true;
+        }
+        Ok(status)
     }
 
     /// On Windows, start the process after it has been placed in its job.
@@ -66,6 +87,34 @@ impl ProcessTree {
         Ok(())
     }
 
+    /// Ask the group to exit (SIGTERM). Windows has no equivalent; there
+    /// [`kill_tree`](Self::kill_tree) is the only stop.
+    pub fn terminate(&mut self) {
+        if self.killed {
+            return;
+        }
+        #[cfg(unix)]
+        {
+            self.signal_tree(SIGTERM);
+        }
+    }
+
+    /// Whether anything of the tree may still be running.
+    #[cfg(unix)]
+    fn tree_alive(&mut self) -> bool {
+        !matches!(self.try_wait(), Ok(Some(_))) || group_alive(self.child.id())
+    }
+
+    #[cfg(unix)]
+    fn signal_tree(&self, sig: i32) {
+        let pid = self.child.id();
+        // An unreaped leader holds its pgid; a reaped one only while the
+        // group still has members.
+        if !self.reaped || group_alive(pid) {
+            signal_group(pid, sig);
+        }
+    }
+
     pub fn kill_tree(&mut self) {
         if self.killed {
             return;
@@ -73,7 +122,8 @@ impl ProcessTree {
         self.killed = true;
         #[cfg(unix)]
         {
-            kill_process_group(self.child.id());
+            // Before `wait` reaps the leader, so the pgid is still ours.
+            self.signal_tree(SIGKILL);
         }
         #[cfg(windows)]
         {
@@ -111,6 +161,71 @@ impl SharedProcess {
     pub fn kill_tree(&self) {
         if let Ok(mut tree) = self.inner.lock() {
             tree.kill_tree();
+        }
+    }
+
+    /// SIGTERM to the group now; a `proc-stop` thread kills it if anything
+    /// is still running after `grace`. Returns at once, without waiting on
+    /// the process. Windows: kills at once, as before.
+    pub fn stop_gracefully(&self, grace: Duration) -> Option<JoinHandle<()>> {
+        #[cfg(unix)]
+        {
+            match self.inner.lock() {
+                Ok(mut tree) if !tree.killed => tree.terminate(),
+                _ => return None,
+            }
+            let shared = self.clone();
+            let deadline = Instant::now() + grace;
+            match std::thread::Builder::new()
+                .name("proc-stop".into())
+                .spawn(move || shared.kill_after(deadline))
+            {
+                Ok(stopper) => Some(stopper),
+                Err(_) => {
+                    self.kill_tree();
+                    None
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = grace;
+            self.kill_tree();
+            None
+        }
+    }
+
+    /// SIGTERM to the group only; the caller waits (see `windows.rs` exit).
+    pub fn terminate(&self) {
+        if let Ok(mut tree) = self.inner.lock() {
+            tree.terminate();
+        }
+    }
+
+    /// Polls every 50 ms, locking only per poll, until the tree is gone or
+    /// `deadline` passes; then kills what is left.
+    #[cfg(unix)]
+    fn kill_after(&self, deadline: Instant) {
+        loop {
+            {
+                let Ok(mut tree) = self.inner.lock() else {
+                    return;
+                };
+                if tree.killed {
+                    return;
+                }
+                if !tree.tree_alive() {
+                    // Nothing left to signal; a later kill_tree must not
+                    // signal the pgid either.
+                    tree.killed = true;
+                    return;
+                }
+                if Instant::now() >= deadline {
+                    tree.kill_tree();
+                    return;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
         }
     }
 
@@ -166,6 +281,8 @@ pub fn prepare_command(cmd: &mut Command) {
 /// `KILL_ON_JOB_CLOSE`, plus `taskkill /T`, matching ACP sessions.
 pub struct PidGuard {
     pid: u32,
+    /// The leader was reaped, so its pid (and pgid) may be reused.
+    reaped: AtomicBool,
     #[cfg(windows)]
     job: Option<winjob::Job>,
 }
@@ -176,12 +293,42 @@ impl PidGuard {
         {
             Self {
                 pid,
+                reaped: AtomicBool::new(false),
                 job: winjob::Job::create_and_assign_pid(pid).ok(),
             }
         }
         #[cfg(not(windows))]
         {
-            Self { pid }
+            Self {
+                pid,
+                reaped: AtomicBool::new(false),
+            }
+        }
+    }
+
+    /// Called once the leader's exit has been collected.
+    pub fn mark_reaped(&self) {
+        self.reaped.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether anything of the group may still be running. Unix only.
+    #[cfg(unix)]
+    pub fn group_alive(&self) -> bool {
+        group_alive(self.pid)
+    }
+
+    /// Ask the group to exit (SIGTERM). No-op on Windows.
+    pub fn terminate(&self) {
+        #[cfg(unix)]
+        {
+            self.signal(SIGTERM);
+        }
+    }
+
+    #[cfg(unix)]
+    fn signal(&self, sig: i32) {
+        if !self.reaped.load(Ordering::SeqCst) || group_alive(self.pid) {
+            signal_group(self.pid, sig);
         }
     }
 
@@ -191,7 +338,7 @@ impl PidGuard {
         }
         #[cfg(unix)]
         {
-            kill_process_group(self.pid);
+            self.signal(SIGKILL);
         }
         #[cfg(windows)]
         {
@@ -211,13 +358,63 @@ impl Drop for PidGuard {
 }
 
 #[cfg(unix)]
-fn kill_process_group(pid: u32) {
+const SIGTERM: i32 = 15;
+#[cfg(unix)]
+const SIGKILL: i32 = 9;
+
+/// Signal the process group `pid` leads. Returns whether it was delivered.
+/// Never signals pid 0, 1 or -1 (our own group, init, everything).
+#[cfg(unix)]
+fn signal_group(pid: u32, sig: i32) -> bool {
     extern "C" {
         fn kill(pid: i32, sig: i32) -> i32;
     }
-    const SIGKILL: i32 = 9;
-    unsafe {
-        kill(-(pid as i32), SIGKILL);
+    let Some(pid) = i32::try_from(pid).ok().filter(|pid| *pid > 1) else {
+        return false;
+    };
+    // SAFETY: kill(2) with a negative pid signals that group only.
+    unsafe { kill(-pid, sig) == 0 }
+}
+
+/// Signal 0: whether the group still has a member (a zombie counts).
+#[cfg(unix)]
+fn group_alive(pid: u32) -> bool {
+    signal_group(pid, 0)
+}
+
+/// SIGTERM to a PTY's group (it leads its own session). App exit only; the
+/// PTY's control thread still owns and reaps the child, so the group is
+/// signalled only while it has members. No-op on Windows.
+pub fn terminate_group(pid: u32) {
+    #[cfg(unix)]
+    if group_alive(pid) {
+        signal_group(pid, SIGTERM);
+    }
+    #[cfg(not(unix))]
+    let _ = pid;
+}
+
+/// SIGKILL to a PTY's group if it still has members. App exit only.
+pub fn kill_group(pid: u32) {
+    #[cfg(unix)]
+    if group_alive(pid) {
+        signal_group(pid, SIGKILL);
+    }
+    #[cfg(not(unix))]
+    let _ = pid;
+}
+
+/// Whether a PTY's group still has a member. Always false on Windows, where
+/// exit does not wait.
+pub fn group_running(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        group_alive(pid)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        false
     }
 }
 
@@ -488,6 +685,72 @@ mod tests {
         let gone = wait_until_gone(sleep_pid);
         let _ = fs::remove_dir_all(&dir);
         assert!(gone, "grandchild sleep {sleep_pid} still alive");
+    }
+
+    /// `sh -c script` in its own group, after `ready` exists (traps set).
+    fn spawn_ready(dir: &std::path::Path, script: &str) -> SharedProcess {
+        let ready = dir.join("ready");
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg(format!("{script}\ntouch '{}'\nwhile :; do sleep 0.05; done", ready.display()));
+        prepare_command(&mut cmd);
+        let shared = SharedProcess::from_child(cmd.spawn().expect("spawn sh")).expect("adopt");
+        assert!(wait_for_file(&ready, Duration::from_secs(5)), "script ready");
+        shared
+    }
+
+    fn wait_for_file(path: &std::path::Path, limit: Duration) -> bool {
+        let start = std::time::Instant::now();
+        while start.elapsed() < limit {
+            if path.exists() {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        false
+    }
+
+    fn leader_pid(shared: &SharedProcess) -> u32 {
+        shared.inner.lock().unwrap().child.id()
+    }
+
+    // Regression: Stop sent SIGKILL only, so Claude never wrote the end of
+    // its session log.
+    #[test]
+    fn stopping_lets_the_group_handle_sigterm() {
+        let dir = crate::test_support::TempDir::new("stop_term");
+        let handled = dir.join("handled");
+        let shared = spawn_ready(
+            dir.path(),
+            &format!("trap \"touch '{}'; exit 0\" TERM", handled.display()),
+        );
+        let stopper = shared.stop_gracefully(STOP_GRACE);
+        assert!(wait_for_file(&handled, Duration::from_secs(3)), "TERM trap ran");
+        if let Some(stopper) = stopper {
+            stopper.join().unwrap();
+        }
+        assert!(matches!(shared.try_wait(), Ok(Some(_))), "process exited");
+    }
+
+    #[test]
+    fn stopping_returns_at_once_and_kills_a_term_ignorer() {
+        let dir = crate::test_support::TempDir::new("stop_ignorer");
+        let shared = spawn_ready(dir.path(), "trap '' TERM");
+        let pid = leader_pid(&shared);
+        let start = std::time::Instant::now();
+        let stopper = shared.stop_gracefully(STOP_GRACE);
+        let took = start.elapsed();
+        assert!(took < Duration::from_millis(200), "stop took {took:?}");
+        thread::sleep(Duration::from_millis(500));
+        assert!(process_alive(pid), "a TERM-ignorer gets the grace period");
+        let deadline = std::time::Instant::now() + STOP_GRACE + Duration::from_secs(1);
+        while process_alive(pid) && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!process_alive(pid), "killed once the grace ran out");
+        if let Some(stopper) = stopper {
+            stopper.join().unwrap();
+        }
     }
 
     /// The killed grandchild is reparented and reaped by init; poll for it.

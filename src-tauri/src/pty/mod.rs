@@ -90,6 +90,18 @@ impl PtyRegistry {
         self.claude_sessions.clear();
     }
 
+    /// App exit, step 1: SIGTERM every terminal's process group and return
+    /// their pids, so the caller can wait without holding this lock.
+    pub fn terminate_all(&self) -> Vec<u32> {
+        self.sessions
+            .values()
+            .map(|session| {
+                crate::process_tree::terminate_group(session.pid());
+                session.pid()
+            })
+            .collect()
+    }
+
     pub fn claude_session(&self, id: &str) -> Option<&str> {
         self.claude_sessions.get(id).map(String::as_str)
     }
