@@ -119,6 +119,9 @@ export type AgentToast = {
   body: string;
 };
 
+/** Toast slot of the startup "Data recovered" notice: one note per line, scrolled. */
+export const DATA_RECOVERED_SLOT = "__data-recovered__";
+
 /** Newest first. A tab keeps only its latest toast. */
 export function pushToast(list: AgentToast[], toast: AgentToast, max = 4): AgentToast[] {
   return [toast, ...list.filter((t) => t.tabId !== toast.tabId)].slice(0, max);

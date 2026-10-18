@@ -903,6 +903,12 @@ describe("blank tab card", () => {
     for (const name of ["a", "b", "c", "d"]) {
       expect(screen.getByRole("button", { name: new RegExp(`${name}\\.json was damaged`) })).toBeTruthy();
     }
+    // One note per line, in a toast whose text scrolls instead of growing off-screen.
+    const toast = screen.getByRole("button", { name: /e\.json was damaged/ });
+    expect(toast.querySelector(".agent-toast-text")?.textContent).toBe(
+      ["5 data files needed recovery.", ...notes].join("\n"),
+    );
+    expect(toast.closest(".agent-toast")?.classList.contains("agent-toast-long")).toBe(true);
   });
 });
 

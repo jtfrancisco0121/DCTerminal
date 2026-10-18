@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { toastIsSticky, toastLifetimeMs, type AgentToast } from "../notify/agentNotify";
+import {
+  DATA_RECOVERED_SLOT,
+  toastIsSticky,
+  toastLifetimeMs,
+  type AgentToast,
+} from "../notify/agentNotify";
 
 type Props = {
   toasts: AgentToast[];
@@ -36,7 +41,9 @@ function ToastItem({
   const urgent = toast.kind !== "finished";
   return (
     <div
-      className={`agent-toast agent-toast-${toast.kind}`}
+      className={`agent-toast agent-toast-${toast.kind}${
+        toast.tabId === DATA_RECOVERED_SLOT ? " agent-toast-long" : ""
+      }`}
       role={urgent ? "alert" : "status"}
       onMouseEnter={() => setHeld(true)}
       onMouseLeave={() => setHeld(false)}

@@ -232,7 +232,7 @@ import {
 } from "./handoff/verdict";
 import { limitAlerts, statusLimit } from "./usage/limits";
 import type { ChatFindRequest } from "./SessionTerminal";
-import { classifyPromptFinished, type NotificationSettings } from "./notify/agentNotify";
+import { classifyPromptFinished, DATA_RECOVERED_SLOT, type NotificationSettings } from "./notify/agentNotify";
 import { showSystemNotification } from "./notify/systemNotify";
 import { useAgentNotifications } from "./notify/useAgentNotifications";
 import { isWindowFocused, useWindowFocused } from "./notify/windowFocus";
@@ -3797,8 +3797,10 @@ export function StartupForm({
         // so a toast per note would drop the oldest when many files were kept.
         if (!notes?.length) return;
         const body =
-          notes.length === 1 ? notes[0] : `${notes.length} files were kept aside. ${notes.join(" ")}`;
-        showNoticeRef.current("Data recovered", body, "failed", "__data-recovered__");
+          notes.length === 1
+            ? notes[0]
+            : [`${notes.length} data files needed recovery.`, ...notes].join("\n");
+        showNoticeRef.current("Data recovered", body, "failed", DATA_RECOVERED_SLOT);
       })
       .catch((err: unknown) => reportOnce("startupNotices", "Startup notices did not load", err));
   }, []);
