@@ -228,8 +228,14 @@ mod tests {
         // read as a legacy edit and point that account at ~/.claude.
         providers.claude.config_dir = providers.claude.accounts[0].config_dir.clone();
         store.set_providers(providers).unwrap();
-        // Never let the fake run against a real Claude folder.
+        // Never let a check fall back to a real `claude` on PATH.
         let claude = &store.providers().claude;
+        assert_eq!(
+            resolve_claude(claude.claude_path.as_deref()),
+            Some(fake.clone()),
+            "claude resolved to something other than the fake"
+        );
+        // Never let the fake run against a real Claude folder.
         let root = std::fs::canonicalize(dir.path()).unwrap();
         for account in &claude.accounts {
             let config = resolved_account_config(claude, &account.id);
@@ -240,6 +246,15 @@ mod tests {
             );
         }
         Mutex::new(store)
+    }
+
+    /// Creates the file when dropped, including on a failed assert.
+    struct ReleaseOnDrop<'a>(&'a Path);
+
+    impl Drop for ReleaseOnDrop<'_> {
+        fn drop(&mut self) {
+            let _ = std::fs::write(self.0, b"");
+        }
     }
 
     fn wait_for(path: &Path, limit: Duration) -> bool {
@@ -271,6 +286,9 @@ mod tests {
         );
         let settings = settings_with(&dir, &script, &["one"]);
         std::thread::scope(|scope| {
+            // Releases the fake even if an assert below fails, so the scope's
+            // join never waits out the fake's loop.
+            let _release = ReleaseOnDrop(&release);
             let check = scope.spawn(|| account_logins_from(&settings));
             assert!(wait_for(&started, Duration::from_secs(5)), "fake claude started");
             let free = settings.try_lock().is_ok();
