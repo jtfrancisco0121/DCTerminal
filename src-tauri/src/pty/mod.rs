@@ -24,7 +24,7 @@ use crate::store::{
 use crate::template::{merge_role_prompt, FieldError};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
@@ -32,7 +32,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, UNIX_EPOCH};
 use tauri::ipc::Channel;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -65,8 +65,13 @@ pub struct PtyRegistry {
     sessions: HashMap<String, PtySession>,
     /// Claude session id per live PTY (the `<id>.jsonl` it writes).
     claude_sessions: HashMap<String, String>,
-    /// Terminals being opened. A `kill` meanwhile cancels the open.
-    opening: HashSet<String>,
+    /// The latest open per id. A `kill` meanwhile cancels it; a newer open
+    /// of the same id supersedes it.
+    opening: HashMap<String, u64>,
+    next_open: u64,
+    /// A replaced program that may still be stopping, so every open of that
+    /// id waits for it, not only the one that replaced it.
+    stopping: HashMap<String, crate::process_tree::PtyGroup>,
 }
 
 impl PtyRegistry {
@@ -74,7 +79,9 @@ impl PtyRegistry {
         Self {
             sessions: HashMap::new(),
             claude_sessions: HashMap::new(),
-            opening: HashSet::new(),
+            opening: HashMap::new(),
+            next_open: 0,
+            stopping: HashMap::new(),
         }
     }
 
@@ -94,6 +101,7 @@ impl PtyRegistry {
         self.sessions.clear();
         self.claude_sessions.clear();
         self.opening.clear();
+        self.stopping.clear();
     }
 
     /// App exit, step 1: SIGTERM every terminal's process group and return
@@ -183,35 +191,48 @@ pub fn pty_set_scheme(light: bool) {
 
 /// Start the terminal `id`, replacing the one running under that id.
 ///
-/// Runs on a command worker thread, never the UI thread. A replaced program
-/// is stopped first, and the new one starts only once its group has exited
-/// (at most [`STOP_GRACE`] plus a margin), so a Claude resumed with the same
-/// session id never writes `<id>.jsonl` alongside the old one. The registry
-/// lock is not held during that wait; closing the terminal meanwhile
-/// cancels the open.
+/// Blocking: runs on a `spawn_blocking` thread, never the UI thread or a
+/// Tokio worker. A replaced program is stopped first, and the new one
+/// starts only once its group has exited (at most [`STOP_GRACE`] plus a
+/// margin), so a Claude resumed with the same session id never writes
+/// `<id>.jsonl` alongside the old one. The registry lock is not held during
+/// that wait. Closing the terminal meanwhile cancels the open (an error); a
+/// newer open of the same id supersedes it (`Ok(None)`, nothing started).
 fn open_session(
     registry: &Mutex<PtyRegistry>,
     id: &str,
     spec: SpawnSpec,
     claude_session: Option<String>,
     on_output: Channel<PtyPacket>,
-) -> Result<u32, String> {
-    let replaced = {
+) -> Result<Option<u32>, String> {
+    let (token, stopping) = {
         let mut registry = registry.lock().map_err(|err| err.to_string())?;
         registry.claude_sessions.remove(id);
-        registry.opening.insert(id.to_string());
-        registry.sessions.remove(id)
+        registry.next_open += 1;
+        let token = registry.next_open;
+        registry.opening.insert(id.to_string(), token);
+        let stopping = match registry.sessions.remove(id) {
+            Some(old) => {
+                let group = old.group();
+                // Dropping the session asks its control thread to stop the program.
+                drop(old);
+                registry.stopping.insert(id.to_string(), group.clone());
+                Some(group)
+            }
+            None => registry.stopping.get(id).cloned(),
+        };
+        (token, stopping)
     };
-    if let Some(old) = replaced {
-        let group = old.group();
-        // Dropping the session asks its control thread to stop the program.
-        drop(old);
+    if let Some(group) = stopping {
         wait_until_stopped(&group);
     }
     let mut registry = registry.lock().map_err(|err| err.to_string())?;
-    if !registry.opening.remove(id) {
-        return Err("The terminal was closed while it was starting.".to_string());
+    match registry.opening.get(id) {
+        None => return Err("The terminal was closed while it was starting.".to_string()),
+        Some(latest) if *latest != token => return Ok(None),
+        Some(_) => {}
     }
+    registry.stopping.remove(id);
     let mut session = PtySession::spawn(spec).map_err(|err| err.to_string())?;
     let pid = session.pid();
     if let Some(rx) = session.take_output() {
@@ -222,7 +243,7 @@ fn open_session(
     }
     registry.sessions.insert(id.to_string(), session);
     registry.pin_claude_session(id, claude_session);
-    Ok(pid)
+    Ok(Some(pid))
 }
 
 /// Wait until a replaced terminal's program group has exited. Its control
@@ -348,9 +369,29 @@ fn remember_folder(projects: &State<Mutex<crate::store::ProjectsStore>>, folder:
     }
 }
 
-// async: replacing a running terminal waits for its program to exit.
-#[tauri::command(async)]
-pub fn shell_terminal_start(
+/// Async with the work on a blocking thread: replacing a running terminal
+/// waits for its program to exit (see `open_session`).
+#[tauri::command]
+pub async fn shell_terminal_start(
+    app: AppHandle,
+    input: ShellTerminalInput,
+    on_output: Channel<PtyPacket>,
+) -> Result<TerminalStartResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        shell_terminal_start_blocking(
+            input,
+            on_output,
+            app.state(),
+            app.state(),
+            app.state(),
+            app.state(),
+        )
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+fn shell_terminal_start_blocking(
     input: ShellTerminalInput,
     on_output: Channel<PtyPacket>,
     settings: State<Mutex<SettingsStore>>,
@@ -560,7 +601,7 @@ pub fn shell_terminal_start(
     Ok(TerminalStartResult {
         errors: Vec::new(),
         tab_id: Some(tab_id),
-        pid: Some(pid),
+        pid,
         used_prompt_file: false,
     })
 }
@@ -579,10 +620,31 @@ pub struct RoleTerminalInput {
     pub window_id: Option<String>,
 }
 
-// async: replacing a running terminal waits for its program to exit.
-#[tauri::command(async)]
+/// Async with the work on a blocking thread, like [`shell_terminal_start`].
+#[tauri::command]
+pub async fn role_terminal_start(
+    app: AppHandle,
+    input: RoleTerminalInput,
+    on_output: Channel<PtyPacket>,
+) -> Result<TerminalStartResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        role_terminal_start_blocking(
+            app.clone(),
+            input,
+            on_output,
+            app.state(),
+            app.state(),
+            app.state(),
+            app.state(),
+            app.state(),
+        )
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
 #[allow(clippy::too_many_arguments)]
-pub fn role_terminal_start(
+fn role_terminal_start_blocking(
     app: AppHandle,
     input: RoleTerminalInput,
     on_output: Channel<PtyPacket>,
@@ -728,7 +790,7 @@ pub fn role_terminal_start(
     Ok(TerminalStartResult {
         errors: Vec::new(),
         tab_id: Some(tab_id),
-        pid: Some(pid),
+        pid,
         used_prompt_file: delivery.stored_body.is_some(),
     })
 }
@@ -794,9 +856,28 @@ fn role_resume_id(
     Ok(Some(id.to_string()))
 }
 
-// async: replacing a running terminal waits for its program to exit.
-#[tauri::command(async)]
-pub fn pty_open(
+/// Async with the work on a blocking thread, like [`shell_terminal_start`].
+#[tauri::command]
+pub async fn pty_open(
+    app: AppHandle,
+    input: PtyOpenInput,
+    on_output: Channel<PtyPacket>,
+) -> Result<u32, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        pty_open_blocking(
+            app.clone(),
+            input,
+            on_output,
+            app.state(),
+            app.state(),
+            app.state(),
+        )
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+fn pty_open_blocking(
     app: AppHandle,
     input: PtyOpenInput,
     on_output: Channel<PtyPacket>,
@@ -1012,7 +1093,8 @@ pub fn pty_open(
         claude_session,
         on_output,
     )?;
-    Ok(pid)
+    // The frontend does not use the pid; 0 means a newer open replaced this one.
+    Ok(pid.unwrap_or(0))
 }
 
 #[tauri::command]
@@ -1307,6 +1389,50 @@ mod tests {
         assert!(!registry.lock().unwrap().sessions.contains_key("t"));
         std::thread::sleep(std::time::Duration::from_millis(200));
         assert!(!started.exists(), "the new program never started");
+    }
+
+    // Review: two opens of the same id. The first stopped the old program
+    // and waited; the second saw no old session and spawned while the old
+    // program still ran, and the first then failed as "closed".
+    #[cfg(unix)]
+    #[test]
+    fn a_second_open_of_the_same_terminal_also_waits_and_the_first_yields() {
+        let dir = crate::test_support::TempDir::new("pty_reopen_twice");
+        let registry = Mutex::new(PtyRegistry::new());
+        let old = open_slow_stopper(&registry, dir.path(), "t");
+        let (first, second) = std::thread::scope(|scope| {
+            let first = scope.spawn(|| {
+                open_session(
+                    &registry,
+                    "t",
+                    sh_spec(dir.path(), "sleep 5"),
+                    None,
+                    Channel::new(|_| Ok(())),
+                )
+            });
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let second = scope.spawn(|| {
+                let opened = open_session(
+                    &registry,
+                    "t",
+                    sh_spec(dir.path(), "sleep 5"),
+                    None,
+                    Channel::new(|_| Ok(())),
+                );
+                (opened, old.running())
+            });
+            (first.join().unwrap(), second.join().unwrap())
+        });
+        let (second, old_running) = second;
+        assert!(!old_running, "the second open also waited for the old program");
+        assert!(matches!(second, Ok(Some(_))), "the newer open runs: {second:?}");
+        assert_eq!(first, Ok(None), "the older open yields quietly");
+        let registry = registry.lock().unwrap();
+        assert_eq!(
+            registry.sessions["t"].pid(),
+            second.unwrap().unwrap(),
+            "the newer open's terminal is the one kept"
+        );
     }
 
     // Regression: a resize waited up to 2 s for a busy terminal's ack while

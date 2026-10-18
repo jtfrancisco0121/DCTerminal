@@ -10,7 +10,7 @@ use crate::store::{SettingsStore, StateStore};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -85,7 +85,7 @@ pub fn acp_set_effort(
 /// flags once the old agent has exited (at most
 /// [`STOP_GRACE`](crate::process_tree::STOP_GRACE)), so it is
 /// not still finishing the session log when the new one reopens it. Waits
-/// without the registry lock, on the command's worker thread.
+/// without the registry lock, on `acp_set_model`'s blocking thread.
 pub(super) fn stop_for_restart(
     registry: &Mutex<SessionRegistry>,
     tab_id: &str,
@@ -105,9 +105,22 @@ pub(super) fn stop_for_restart(
     Ok(flags)
 }
 
-// async: switching may restart the agent and reload the session.
-#[tauri::command(async)]
-pub fn acp_set_model(
+/// Async with the work on a blocking thread: switching may restart the
+/// agent, wait for the old one to exit, and reload the session.
+#[tauri::command]
+pub async fn acp_set_model(
+    app: AppHandle,
+    tab_id: String,
+    model: Option<String>,
+) -> Result<SetModelResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        set_model_blocking(tab_id, model, app.state(), app.state(), app.state())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn set_model_blocking(
     tab_id: String,
     model: Option<String>,
     registry: State<Mutex<SessionRegistry>>,
