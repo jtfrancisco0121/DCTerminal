@@ -462,6 +462,55 @@ fn a_set_aside_file_survives_the_startup_sweep() {
     );
 }
 
+// Regression: settings restored from a month-old .bak lived only in memory,
+// so the same launch's sweep deleted the .bak and the next launch lost them.
+#[test]
+fn restored_settings_survive_the_startup_sweep_and_a_restart() {
+    let dir = TempDir::new("settings_restored_sweep");
+    let mut store = SettingsStore::open(dir.path()).unwrap();
+    for _ in 0..2 {
+        store
+            .set_ui(UiSettings {
+                theme: "nord".into(),
+                ..UiSettings::default()
+            })
+            .unwrap();
+    }
+    let bak = dir.join("settings.json.bak");
+    let body = std::fs::read(&bak).unwrap();
+    write_aged(&bak, &body, 40 * DAY);
+    std::fs::remove_file(dir.join("settings.json")).unwrap();
+    assert_eq!(SettingsStore::open(dir.path()).unwrap().ui().theme, "nord");
+    let mut scratch = ScratchStore::open(dir.path()).unwrap();
+    crate::commands::storage::run_sweep(dir.path(), &mut scratch, &[]);
+    assert_eq!(SettingsStore::open(dir.path()).unwrap().ui().theme, "nord");
+}
+
+// Regression: a newer-version file with a newer-version .bak beside it was
+// set aside again (with a new notice) on every launch until something saved.
+#[test]
+fn a_newer_settings_file_and_backup_are_set_aside_once() {
+    let dir = TempDir::new("settings_newer_twice");
+    let newer = r#"{"schemaVersion": 7, "ui": {"theme": "github-light"}}"#;
+    let older = r#"{"schemaVersion": 7, "ui": {"theme": "nord"}}"#;
+    std::fs::write(dir.join("settings.json"), newer).unwrap();
+    std::fs::write(dir.join("settings.json.bak"), older).unwrap();
+    let kept = |dir: &TempDir| -> Vec<String> {
+        let mut texts: Vec<String> = names_in(dir.path())
+            .into_iter()
+            .filter(|name| name.starts_with("settings.json.from-v7-"))
+            .map(|name| std::fs::read_to_string(dir.join(name)).unwrap())
+            .collect();
+        texts.sort();
+        texts
+    };
+    for _ in 0..3 {
+        let store = SettingsStore::open(dir.path()).unwrap();
+        assert_eq!(store.ui().theme, "github-dark");
+        assert_eq!(kept(&dir), vec![newer.to_string(), older.to_string()]);
+    }
+}
+
 // ---------- workspaces ----------
 
 fn ws_tab(label: &str, role: &str, kind: &str, launch: &str) -> crate::store::WorkspaceTab {

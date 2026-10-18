@@ -307,6 +307,7 @@ import {
   setTabModel,
   setTabProvider,
   shellTerminalStart,
+  startupNotices,
   selectActiveTab,
   setTabLabel,
   syncActiveTabForm,
@@ -858,6 +859,27 @@ describe("blank tab card", () => {
     const values = calls[calls.length - 1]?.[3];
     expect(values?.taskType).toBeUndefined();
     expect(values?.cwd).toContain("Encryptor");
+  });
+
+  // Regression: every notice shared one toast slot, so only the last showed.
+  it("shows one notice per data file recovered at startup", async () => {
+    vi.mocked(startupNotices).mockResolvedValueOnce([
+      "roles.json was damaged; kept as roles.json.corrupt-1. Restored from the backup.",
+      "settings.json was written by a different DCTerminal version (v7); kept as settings.json.from-v7-1. Defaults are in use.",
+    ]);
+    render(
+      <StartupForm
+        roles={[
+          { id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 },
+        ]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+    expect(await screen.findByRole("button", { name: /roles\.json was damaged/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /settings\.json was written by a different/ })).toBeTruthy();
   });
 });
 

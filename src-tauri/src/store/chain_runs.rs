@@ -1089,9 +1089,10 @@ mod tests {
         let recovered = StateStore::open_path(path.clone()).unwrap();
         assert_chain_intact(&recovered, &planner, &reviewer);
 
-        // The damaged file was moved aside. Quitting before any save must
-        // not leave the next start with an empty state.
-        assert!(!path.exists());
+        // The damaged file was moved aside and the backup put back in its
+        // place. Quitting before any save must not leave the next start with
+        // an empty state.
+        assert!(path.exists());
         let again = StateStore::open_path(path.clone()).unwrap();
         assert_chain_intact(&again, &planner, &reviewer);
 

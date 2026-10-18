@@ -64,7 +64,13 @@ pub fn read_json_or_recover_with<T: serde::de::DeserializeOwned>(
         // No file, but an intact copy beside it: a save interrupted between
         // removing the old file and renaming the new one in (Windows), or a
         // recovery from `.bak` that was never saved before the app quit.
-        return Ok(intact_copy(path).unwrap_or_else(fallback));
+        return Ok(match intact_copy(path) {
+            Some((value, source)) => {
+                restore(&source, path);
+                value
+            }
+            None => fallback(),
+        });
     }
     match read_json::<T>(path) {
         Ok(value) => Ok(value),
@@ -76,6 +82,9 @@ pub fn read_json_or_recover_with<T: serde::de::DeserializeOwned>(
             }
             let bak = path.with_extension("json.bak");
             let restored = if bak.exists() { read_json::<T>(&bak).ok() } else { None };
+            if moved && restored.is_some() {
+                restore(&bak, path);
+            }
             if moved {
                 note_recovery(format!(
                     "{} was damaged; kept as {}. {}",
@@ -95,9 +104,38 @@ pub fn read_json_or_recover_with<T: serde::de::DeserializeOwned>(
 
 /// Move a file written by a different DCTerminal version to
 /// `<name>.json.from-v{found}-<stamp>`, so no later save or sweep removes it.
-/// When `path` is gone (already moved aside as damaged), its `.bak` is
-/// copied instead. Never deletes anything. Returns the kept file.
+/// When `path` is gone, its `.bak` is moved instead. A `.bak` of the same
+/// other version goes aside too (one identical to `path` is only removed).
+/// Never loses data. Returns the kept file.
 pub fn set_aside_other_version(path: &Path, found: u32) -> Option<PathBuf> {
+    let bak = path.with_extension("json.bak");
+    let target = if path.exists() {
+        let target = move_aside(path, path, found)?;
+        // A `.bak` from the same other version would be restored on the next
+        // launch and set aside again, with another notice: keep it aside now.
+        if schema_version_of(&bak) == Some(found) {
+            if fs::read(&bak).ok() == fs::read(&target).ok() {
+                let _ = fs::remove_file(&bak);
+            } else {
+                move_aside(&bak, path, found);
+            }
+        }
+        target
+    } else if bak.exists() {
+        move_aside(&bak, path, found)?
+    } else {
+        return None;
+    };
+    note_recovery(format!(
+        "{} was written by a different DCTerminal version (v{found}); kept as {}. Defaults are in use.",
+        file_name(path),
+        file_name(&target)
+    ));
+    Some(target)
+}
+
+/// Move `source` to a fresh `<path>.from-v{found}-<stamp>` and date it now.
+fn move_aside(source: &Path, path: &Path, found: u32) -> Option<PathBuf> {
     let base = path.with_extension(format!("json.from-v{found}-{}", stamp()));
     // Two set-asides in the same millisecond must not replace each other.
     let target = (0..)
@@ -109,22 +147,28 @@ pub fn set_aside_other_version(path: &Path, found: u32) -> Option<PathBuf> {
             }
         })
         .find(|candidate| !candidate.exists())?;
-    let kept = if path.exists() {
-        fs::rename(path, &target).is_ok() || fs::copy(path, &target).is_ok()
-    } else {
-        let bak = path.with_extension("json.bak");
-        bak.exists() && fs::copy(&bak, &target).is_ok()
-    };
-    if !kept {
+    if !(fs::rename(source, &target).is_ok() || fs::copy(source, &target).is_ok()) {
         return None;
     }
     touch(&target);
-    note_recovery(format!(
-        "{} was written by a different DCTerminal version (v{found}); kept as {}. Defaults are in use.",
-        file_name(path),
-        file_name(&target)
-    ));
     Some(target)
+}
+
+/// The `schemaVersion` in the JSON file at `path`, if it has one.
+fn schema_version_of(path: &Path) -> Option<u32> {
+    let value: serde_json::Value = read_json(path).ok()?;
+    u32::try_from(value.get("schemaVersion")?.as_u64()?).ok()
+}
+
+/// Put recovered data back as the main file, so it survives the sweep of an
+/// orphan `.bak` and a quit before the next save. Byte for byte, so a file
+/// from another version is still recognised (and set aside) by its store.
+fn restore(source: &Path, path: &Path) {
+    let tmp = path.with_extension("json.tmp");
+    if source != tmp && fs::copy(source, &tmp).is_err() {
+        return;
+    }
+    let _ = fs::rename(&tmp, path);
 }
 
 pub fn note_recovery(msg: String) {
@@ -161,9 +205,10 @@ fn file_name(path: &Path) -> String {
 }
 
 /// `.json.tmp` (a finished write that was not renamed in), then `.json.bak`.
-fn intact_copy<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
+/// Returns the value and the file it came from.
+fn intact_copy<T: serde::de::DeserializeOwned>(path: &Path) -> Option<(T, PathBuf)> {
     [path.with_extension("json.tmp"), path.with_extension("json.bak")]
-        .iter()
+        .into_iter()
         .filter(|candidate| candidate.exists())
-        .find_map(|candidate| read_json::<T>(candidate).ok())
+        .find_map(|candidate| read_json::<T>(&candidate).ok().map(|value| (value, candidate)))
 }

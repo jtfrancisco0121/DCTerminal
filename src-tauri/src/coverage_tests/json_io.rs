@@ -87,7 +87,7 @@ fn recover_moves_a_corrupt_file_aside_and_uses_the_backup() {
 
     let value: Doc = read_json_or_recover(&path).unwrap();
     assert_eq!(value, doc(1), "falls back to the last good copy");
-    assert!(!path.exists());
+    assert_eq!(read_json::<Doc>(&path).unwrap(), doc(1), "and puts it back");
     let names = names_in(dir.path());
     let corrupt: Vec<_> = names
         .iter()
@@ -139,6 +139,33 @@ fn recover_with_uses_the_given_fallback() {
     assert_eq!(read_json_or_recover_with(&path, || doc(8)).unwrap(), doc(8));
     write_json_atomic(&path, &doc(2)).unwrap();
     assert_eq!(read_json_or_recover_with(&path, || doc(9)).unwrap(), doc(2));
+}
+
+// Regression: recovered data lived only in memory, so a sweep of the orphan
+// .bak (or a crash before the next save) lost it on the next launch.
+#[test]
+fn recovered_data_is_written_back_as_the_main_file() {
+    let dir = TempDir::new("io_write_back");
+    let path = dir.join("doc.json");
+    write_json_atomic(&path, &doc(1)).unwrap();
+    write_json_atomic(&path, &doc(2)).unwrap();
+    let bak = std::fs::read(dir.join("doc.json.bak")).unwrap();
+
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(read_json_or_recover::<Doc>(&path).unwrap(), doc(1));
+    assert_eq!(std::fs::read(&path).unwrap(), bak, "missing main restored");
+
+    std::fs::write(&path, b"{damaged").unwrap();
+    assert_eq!(read_json_or_recover::<Doc>(&path).unwrap(), doc(1));
+    assert_eq!(std::fs::read(&path).unwrap(), bak, "damaged main restored");
+    assert!(!dir.join("doc.json.tmp").exists());
+
+    // An interrupted save's finished .tmp is renamed in.
+    std::fs::remove_file(&path).unwrap();
+    std::fs::write(dir.join("doc.json.tmp"), br#"{"n": 3}"#).unwrap();
+    assert_eq!(read_json_or_recover::<Doc>(&path).unwrap().n, 3);
+    assert_eq!(std::fs::read(&path).unwrap(), br#"{"n": 3}"#);
+    assert!(!dir.join("doc.json.tmp").exists());
 }
 
 // The only test that drains the notes, so parallel tests cannot steal them.

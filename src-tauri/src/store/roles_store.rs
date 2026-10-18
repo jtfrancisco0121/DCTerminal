@@ -272,4 +272,22 @@ mod open_tests {
         let store = RolesStore::open(dir.path()).expect("opens");
         assert!(has_role(&store, "role_custom_1"));
     }
+
+    // Regression: the restored roles lived only in memory, so the same
+    // launch's sweep deleted the month-old orphan .bak they came from and
+    // the next launch re-seeded.
+    #[test]
+    fn restored_roles_survive_the_startup_sweep_and_a_restart() {
+        let dir = TempDir::new("roles_restored_sweep");
+        saved_with_custom(&dir);
+        let bak = dir.join("roles.json.bak");
+        let body = std::fs::read(&bak).unwrap();
+        crate::test_support::write_aged(&bak, &body, 40 * crate::test_support::DAY);
+        std::fs::write(dir.join("roles.json"), b"{oops").unwrap();
+        assert!(has_role(&RolesStore::open(dir.path()).unwrap(), "role_custom_1"));
+        let mut scratch = crate::store::ScratchStore::open(dir.path()).unwrap();
+        crate::commands::storage::run_sweep(dir.path(), &mut scratch, &[]);
+        let reopened = RolesStore::open(dir.path()).unwrap();
+        assert!(has_role(&reopened, "role_custom_1"), "{:?}", names_in(dir.path()));
+    }
 }

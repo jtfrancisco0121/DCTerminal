@@ -3793,7 +3793,10 @@ export function StartupForm({
     // A data file moved aside at startup (damaged, or from another version).
     startupNotices()
       .then((notes) => {
-        for (const note of notes ?? []) showNoticeRef.current("Data recovered", note, "failed");
+        // Own toast slot per note: notices share one slot and replace each other.
+        (notes ?? []).forEach((note, i) =>
+          showNoticeRef.current("Data recovered", note, "failed", `__data-recovered-${i}__`),
+        );
       })
       .catch((err: unknown) => reportOnce("startupNotices", "Startup notices did not load", err));
   }, []);
