@@ -69,6 +69,12 @@ impl ProcessTree {
         let status = self.child.try_wait()?;
         if status.is_some() {
             self.reaped = true;
+            // Leader reaped and group empty: the pgid may be reused, so
+            // nothing may signal it again.
+            #[cfg(unix)]
+            if !self.killed && !group_alive(self.child.id()) {
+                self.killed = true;
+            }
         }
         Ok(status)
     }
@@ -283,6 +289,8 @@ pub struct PidGuard {
     pid: u32,
     /// The leader was reaped, so its pid (and pgid) may be reused.
     reaped: AtomicBool,
+    /// Shared with [`PtyGroup`]: the group is no longer ours to signal.
+    done: Arc<AtomicBool>,
     #[cfg(windows)]
     job: Option<winjob::Job>,
 }
@@ -294,6 +302,7 @@ impl PidGuard {
             Self {
                 pid,
                 reaped: AtomicBool::new(false),
+                done: Arc::new(AtomicBool::new(false)),
                 job: winjob::Job::create_and_assign_pid(pid).ok(),
             }
         }
@@ -302,7 +311,16 @@ impl PidGuard {
             Self {
                 pid,
                 reaped: AtomicBool::new(false),
+                done: Arc::new(AtomicBool::new(false)),
             }
+        }
+    }
+
+    /// The group as seen from outside the control thread (app exit).
+    pub fn group(&self) -> PtyGroup {
+        PtyGroup {
+            pid: self.pid,
+            done: Arc::clone(&self.done),
         }
     }
 
@@ -314,7 +332,21 @@ impl PidGuard {
     /// Whether anything of the group may still be running. Unix only.
     #[cfg(unix)]
     pub fn group_alive(&self) -> bool {
-        group_alive(self.pid)
+        self.ours()
+    }
+
+    /// Whether the pgid is still ours: the leader is unreaped, or the group
+    /// still has members. Once a reaped group is seen empty it stays done.
+    #[cfg(unix)]
+    fn ours(&self) -> bool {
+        if self.done.load(Ordering::SeqCst) {
+            return false;
+        }
+        if !self.reaped.load(Ordering::SeqCst) || group_alive(self.pid) {
+            return true;
+        }
+        self.done.store(true, Ordering::SeqCst);
+        false
     }
 
     /// Ask the group to exit (SIGTERM). No-op on Windows.
@@ -327,7 +359,7 @@ impl PidGuard {
 
     #[cfg(unix)]
     fn signal(&self, sig: i32) {
-        if !self.reaped.load(Ordering::SeqCst) || group_alive(self.pid) {
+        if self.ours() {
             signal_group(self.pid, sig);
         }
     }
@@ -354,6 +386,9 @@ impl PidGuard {
 impl Drop for PidGuard {
     fn drop(&mut self) {
         self.kill();
+        // The control thread is done with the child; whatever was left got
+        // SIGKILL, and the pgid is no longer ours to signal.
+        self.done.store(true, Ordering::SeqCst);
     }
 }
 
@@ -382,39 +417,45 @@ fn group_alive(pid: u32) -> bool {
     signal_group(pid, 0)
 }
 
-/// SIGTERM to a PTY's group (it leads its own session). App exit only; the
-/// PTY's control thread still owns and reaps the child, so the group is
-/// signalled only while it has members. No-op on Windows.
-pub fn terminate_group(pid: u32) {
-    #[cfg(unix)]
-    if group_alive(pid) {
-        signal_group(pid, SIGTERM);
-    }
-    #[cfg(not(unix))]
-    let _ = pid;
+/// A PTY's process group (it leads its own session), for app exit. The
+/// PTY's control thread still owns and reaps the child; once it is done with
+/// the group (`done`), the pgid may be reused and is never signalled again.
+/// Otherwise the group is signalled only while it has members.
+#[derive(Clone)]
+#[cfg_attr(not(unix), allow(dead_code))]
+pub struct PtyGroup {
+    pid: u32,
+    done: Arc<AtomicBool>,
 }
 
-/// SIGKILL to a PTY's group if it still has members. App exit only.
-pub fn kill_group(pid: u32) {
-    #[cfg(unix)]
-    if group_alive(pid) {
-        signal_group(pid, SIGKILL);
+impl PtyGroup {
+    /// Whether the group may still be ours and has a member. Always false on
+    /// Windows, where exit does not wait.
+    pub fn running(&self) -> bool {
+        #[cfg(unix)]
+        {
+            !self.done.load(Ordering::SeqCst) && group_alive(self.pid)
+        }
+        #[cfg(not(unix))]
+        {
+            false
+        }
     }
-    #[cfg(not(unix))]
-    let _ = pid;
-}
 
-/// Whether a PTY's group still has a member. Always false on Windows, where
-/// exit does not wait.
-pub fn group_running(pid: u32) -> bool {
-    #[cfg(unix)]
-    {
-        group_alive(pid)
+    /// SIGTERM to the group. No-op on Windows.
+    pub fn terminate(&self) {
+        #[cfg(unix)]
+        if self.running() {
+            signal_group(self.pid, SIGTERM);
+        }
     }
-    #[cfg(not(unix))]
-    {
-        let _ = pid;
-        false
+
+    /// SIGKILL to the group if it is still running. No-op on Windows.
+    pub fn kill(&self) {
+        #[cfg(unix)]
+        if self.running() {
+            signal_group(self.pid, SIGKILL);
+        }
     }
 }
 
@@ -751,6 +792,26 @@ mod tests {
         if let Some(stopper) = stopper {
             stopper.join().unwrap();
         }
+    }
+
+    // Review: once the leader was reaped and its group seen empty, the pgid
+    // may belong to a new process, so a later Stop must not signal it.
+    #[test]
+    fn stopping_an_exited_reaped_process_sends_no_signal() {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("exit 0");
+        prepare_command(&mut cmd);
+        let shared = SharedProcess::from_child(cmd.spawn().expect("spawn sh")).expect("adopt");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !matches!(shared.try_wait(), Ok(Some(_))) {
+            assert!(std::time::Instant::now() < deadline, "sh exited");
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            shared.stop_gracefully(STOP_GRACE).is_none(),
+            "no SIGTERM and no stop thread for a finished group"
+        );
+        assert!(shared.inner.lock().unwrap().killed, "marked done");
     }
 
     /// The killed grandchild is reparented and reaped by init; poll for it.

@@ -170,7 +170,7 @@ fn shutdown_processes(app: &AppHandle) {
             && (agents
                 .iter()
                 .any(|agent| matches!(agent.try_wait(), Ok(None)))
-                || ptys.iter().any(|pid| crate::process_tree::group_running(*pid)))
+                || ptys.iter().any(crate::process_tree::PtyGroup::running))
         {
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -180,8 +180,8 @@ fn shutdown_processes(app: &AppHandle) {
             guard.kill_all();
         }
     }
-    for pid in ptys {
-        crate::process_tree::kill_group(pid);
+    for group in ptys {
+        group.kill();
     }
     if let Some(state) = terminals {
         if let Ok(mut guard) = state.lock() {

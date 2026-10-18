@@ -91,14 +91,15 @@ impl PtyRegistry {
     }
 
     /// App exit, step 1: SIGTERM every terminal's process group and return
-    /// their pids, so the caller can wait without holding this lock.
-    pub fn terminate_all(&self) -> Vec<u32> {
+    /// those groups, so the caller can wait without holding this lock. A
+    /// terminal whose program already exited and was reaped is skipped: its
+    /// pid may now lead an unrelated group.
+    pub fn terminate_all(&self) -> Vec<crate::process_tree::PtyGroup> {
         self.sessions
             .values()
-            .map(|session| {
-                crate::process_tree::terminate_group(session.pid());
-                session.pid()
-            })
+            .map(PtySession::group)
+            .filter(|group| group.running())
+            .inspect(|group| group.terminate())
             .collect()
     }
 
@@ -1139,6 +1140,46 @@ mod tests {
         assert_eq!(role_id, "cursor-cli");
         assert_eq!(snapshot.name, "Cursor CLI");
         assert_eq!(shell_snapshot("shell").0, "terminal");
+    }
+
+    // Review: Quit SIGTERMed (and then waited on and SIGKILLed) the pid of a
+    // terminal whose program had already exited and been reaped. That pid
+    // may since lead an unrelated process group.
+    #[cfg(unix)]
+    #[test]
+    fn quitting_skips_a_terminal_whose_program_already_exited() {
+        let dir = crate::test_support::TempDir::new("pty_exited");
+        let session = PtySession::spawn(SpawnSpec {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "exit 0".into()],
+            env: Vec::new(),
+            cwd: dir.path().to_path_buf(),
+            cols: 80,
+            rows: 24,
+        })
+        .expect("spawn sh");
+        let mut exited = false;
+        for _ in 0..100 {
+            if matches!(
+                session.recv_timeout(std::time::Duration::from_millis(50)),
+                Ok(Some(session::PtyOutput::Exit { .. }))
+            ) {
+                exited = true;
+                break;
+            }
+        }
+        assert!(exited, "the program exited on its own");
+        let mut registry = PtyRegistry::new();
+        registry.sessions.insert("done".into(), session);
+        // The control thread finishes with the group right after reporting
+        // the exit; give it a moment.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut left = registry.terminate_all();
+        while !left.is_empty() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            left = registry.terminate_all();
+        }
+        assert!(left.is_empty(), "an exited, reaped terminal is not signalled or waited on");
     }
 
     // Regression: a resize waited up to 2 s for a busy terminal's ack while

@@ -3,7 +3,7 @@
 //! Output is delivered on a channel. The master stays on a control thread so
 //! resize and write do not race the reader.
 
-use crate::process_tree::PidGuard;
+use crate::process_tree::{PidGuard, PtyGroup};
 #[cfg(unix)]
 use crate::process_tree::STOP_GRACE;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
@@ -70,6 +70,7 @@ pub struct PtySession {
     ctrl: Sender<Ctrl>,
     output: Option<Receiver<PtyOutput>>,
     pid: u32,
+    group: PtyGroup,
 }
 
 impl PtySession {
@@ -107,6 +108,7 @@ impl PtySession {
             .map_err(|err| io::Error::other(err.to_string()))?;
         let pid = child.process_id().unwrap_or(0);
         let guard = PidGuard::adopt(pid);
+        let group = guard.group();
         let reader = pair
             .master
             .try_clone_reader()
@@ -134,6 +136,7 @@ impl PtySession {
             ctrl: ctrl_tx,
             output: Some(out_rx),
             pid,
+            group,
         })
     }
 
@@ -143,6 +146,12 @@ impl PtySession {
 
     pub fn pid(&self) -> u32 {
         self.pid
+    }
+
+    /// The process group, for app exit. Never signalled once the control
+    /// thread is done with the child.
+    pub fn group(&self) -> PtyGroup {
+        self.group.clone()
     }
 
     pub fn write(&self, data: &[u8]) -> io::Result<()> {
@@ -195,6 +204,7 @@ impl PtySession {
             ctrl: ctrl_tx,
             output: None,
             pid: 0,
+            group: PidGuard::adopt(0).group(),
         };
         (session, size_rx)
     }
