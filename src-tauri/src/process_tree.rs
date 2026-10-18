@@ -16,7 +16,9 @@ use std::process::{Child, Command, ExitStatus};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(unix)]
+use std::time::Instant;
 
 /// How long a stopped agent or terminal gets to exit on SIGTERM (finishing
 /// its session log) before the group is killed.
@@ -96,11 +98,8 @@ impl ProcessTree {
     /// Ask the group to exit (SIGTERM). Windows has no equivalent; there
     /// [`kill_tree`](Self::kill_tree) is the only stop.
     pub fn terminate(&mut self) {
-        if self.killed {
-            return;
-        }
         #[cfg(unix)]
-        {
+        if !self.killed {
             self.signal_tree(SIGTERM);
         }
     }
@@ -324,9 +323,13 @@ impl PidGuard {
         }
     }
 
-    /// Called once the leader's exit has been collected.
+    /// Called once the leader's exit has been collected. If the group is
+    /// already empty it is done at once, so [`PtyGroup`] never relies on the
+    /// pgid alone after this.
     pub fn mark_reaped(&self) {
         self.reaped.store(true, Ordering::SeqCst);
+        #[cfg(unix)]
+        let _ = self.ours();
     }
 
     /// Whether anything of the group may still be running. Unix only.
@@ -349,12 +352,10 @@ impl PidGuard {
         false
     }
 
-    /// Ask the group to exit (SIGTERM). No-op on Windows.
+    /// Ask the group to exit (SIGTERM). Unix only.
+    #[cfg(unix)]
     pub fn terminate(&self) {
-        #[cfg(unix)]
-        {
-            self.signal(SIGTERM);
-        }
+        self.signal(SIGTERM);
     }
 
     #[cfg(unix)]
@@ -733,7 +734,9 @@ mod tests {
         let ready = dir.join("ready");
         let mut cmd = Command::new("sh");
         cmd.arg("-c")
-            .arg(format!("{script}\ntouch '{}'\nwhile :; do sleep 0.05; done", ready.display()));
+            .arg(format!("{script}\ntouch '{}'\nwhile :; do sleep 0.05; done", ready.display()))
+            // sh reports its killed `sleep` ("Terminated: 15"); keep test output clean.
+            .stderr(std::process::Stdio::null());
         prepare_command(&mut cmd);
         let shared = SharedProcess::from_child(cmd.spawn().expect("spawn sh")).expect("adopt");
         assert!(wait_for_file(&ready, Duration::from_secs(5)), "script ready");
@@ -812,6 +815,47 @@ mod tests {
             "no SIGTERM and no stop thread for a finished group"
         );
         assert!(shared.inner.lock().unwrap().killed, "marked done");
+    }
+
+    /// `sh -c script` as its own process group leader.
+    fn spawn_group(script: &str) -> Child {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg(script);
+        prepare_command(&mut cmd);
+        cmd.spawn().expect("spawn sh")
+    }
+
+    // Review: once the control thread is done with a terminal (`done`), its
+    // pgid may lead an unrelated group, so app exit must not wait on or
+    // signal it even though that group is alive.
+    #[test]
+    fn a_done_pty_group_is_never_signalled_even_while_its_pgid_is_alive() {
+        let mut child = spawn_group("sleep 30");
+        let group = PtyGroup {
+            pid: child.id(),
+            done: Arc::new(AtomicBool::new(true)),
+        };
+        assert!(!group.running(), "a done group is not running");
+        group.terminate();
+        group.kill();
+        thread::sleep(Duration::from_millis(200));
+        let untouched = matches!(child.try_wait(), Ok(None));
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(untouched, "the unrelated group got no signal");
+    }
+
+    // Review: between "leader reaped and group empty" and the control thread
+    // setting `done`, app exit relied on the pgid alone, which may already
+    // lead an unrelated group.
+    #[test]
+    fn marking_an_empty_group_reaped_makes_it_done_at_once() {
+        let mut child = spawn_group("exit 0");
+        let guard = PidGuard::adopt(child.id());
+        child.wait().expect("reap sh");
+        guard.mark_reaped();
+        assert!(guard.done.load(Ordering::SeqCst), "done as soon as reaped");
+        assert!(!guard.group().running());
     }
 
     /// The killed grandchild is reparented and reaped by init; poll for it.

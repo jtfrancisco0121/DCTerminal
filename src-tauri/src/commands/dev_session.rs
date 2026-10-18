@@ -120,10 +120,11 @@ impl LiveSession {
 
     /// Stop the agent: SIGTERM now, SIGKILL after [`STOP_GRACE`] on a
     /// background thread, so Claude can finish its session log. Returns at
-    /// once; callers may hold the registry lock.
-    pub fn shutdown(&mut self) {
+    /// once; callers may hold the registry lock. Join the returned thread
+    /// (never under that lock) to wait until the agent is gone.
+    pub fn shutdown(&mut self) -> Option<std::thread::JoinHandle<()>> {
         self.release_pending();
-        let _ = self.process.stop_gracefully(STOP_GRACE);
+        self.process.stop_gracefully(STOP_GRACE)
     }
 
     /// Stop at once (app exit, after the shared grace already ran).

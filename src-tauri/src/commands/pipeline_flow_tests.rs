@@ -9,6 +9,7 @@ use super::agent_requests::{
     read_plan_file, reject_option_id, ClaudeRoute,
 };
 use super::dev_session::{agent_logs, LiveSession, PendingPlan, SessionRegistry};
+use super::model_session::stop_for_restart;
 use super::session_flow_tests::{
     claude_scenario, claude_tool_options, connect, exit_plan_request, is_text, kill,
     permission_request, reply, start,
@@ -545,6 +546,31 @@ fn a_model_restart_waits_for_a_start_in_progress() {
         "a restart holds the tab like a start"
     );
     registry.finish_start("tab-restart");
+}
+
+// Review: a model restart stopped the old agent in the background and
+// reopened the same session at once, so old and new Claude could both
+// append to <id>.jsonl while the old one finished on SIGTERM.
+#[test]
+fn a_model_restart_waits_until_the_old_agent_has_exited() {
+    let mut scenario = claude_scenario(json!([]));
+    scenario["term_delay"] = json!(0.4);
+    let agent = fake!("restart-wait", scenario);
+    let old = LiveSession::from_client(
+        "tab-model",
+        "role_implementer",
+        connect(&agent, ProviderId::Claude, "bypassPermissions"),
+    );
+    let old_process = old.process.clone();
+    let registry = Mutex::new(SessionRegistry::new());
+    registry.lock().unwrap().insert(old);
+    stop_for_restart(&registry, "tab-model").expect("restart allowed");
+    assert!(
+        matches!(old_process.try_wait(), Ok(Some(_))),
+        "the old agent exited before the session is reopened"
+    );
+    assert!(registry.try_lock().is_ok(), "the registry is free again");
+    registry.lock().unwrap().finish_start("tab-model");
 }
 
 #[test]

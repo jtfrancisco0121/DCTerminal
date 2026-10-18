@@ -80,6 +80,31 @@ pub fn acp_set_effort(
     Ok(client.current_effort().unwrap_or(&effort).to_string())
 }
 
+/// Take the tab's session for a restart (the tab stays starting until
+/// `finish_start`) and stop its agent. Returns the old session's startup
+/// flags once the old agent has exited (at most
+/// [`STOP_GRACE`](crate::process_tree::STOP_GRACE)), so it is
+/// not still finishing the session log when the new one reopens it. Waits
+/// without the registry lock, on the command's worker thread.
+pub(super) fn stop_for_restart(
+    registry: &Mutex<SessionRegistry>,
+    tab_id: &str,
+) -> Result<(bool, Option<String>), String> {
+    let (flags, stopper) = {
+        let mut guard = registry.lock().map_err(|e| e.to_string())?;
+        let mut old = guard.begin_restart(tab_id)?;
+        let flags = old
+            .as_ref()
+            .map(|s| (s.startup_injected, s.pending_startup_prompt.clone()))
+            .unwrap_or((true, None));
+        (flags, old.as_mut().and_then(LiveSession::shutdown))
+    };
+    if let Some(stopper) = stopper {
+        let _ = stopper.join();
+    }
+    Ok(flags)
+}
+
 // async: switching may restart the agent and reload the session.
 #[tauri::command(async)]
 pub fn acp_set_model(
@@ -149,19 +174,7 @@ pub fn acp_set_model(
             restarted: false,
         });
     }
-    // Stop the old process before the new one opens the same session.
-    let (startup_injected, pending_startup) = {
-        let mut guard = registry.lock().map_err(|e| e.to_string())?;
-        let mut old = guard.begin_restart(&tab_id)?;
-        let flags = old
-            .as_ref()
-            .map(|s| (s.startup_injected, s.pending_startup_prompt.clone()))
-            .unwrap_or((true, None));
-        if let Some(session) = old.as_mut() {
-            session.shutdown();
-        }
-        flags
-    };
+    let (startup_injected, pending_startup) = stop_for_restart(&registry, &tab_id)?;
     let loaded = AcpClient::load_with_model(
         live.provider.clone(),
         &live.cwd,
