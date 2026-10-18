@@ -159,23 +159,31 @@ pub fn transcript_save(
     transcripts: State<Mutex<TranscriptStore>>,
     state: State<Mutex<StateStore>>,
 ) -> Result<(), String> {
-    let keep = {
-        let state = state.lock().map_err(|e| e.to_string())?;
-        state
-            .data
-            .tabs
-            .iter()
-            .map(|t| t.id.clone())
-            .collect::<Vec<_>>()
-    };
+    let state = state.lock().map_err(|e| e.to_string())?;
     let transcripts = transcripts.lock().map_err(|e| e.to_string())?;
-    transcripts.save(
+    save_tab_transcript(
+        &state,
+        &transcripts,
         &tab_id,
         &text,
         &cwd,
         &chrono::Utc::now().to_rfc3339(),
-        &keep,
     )
+}
+
+/// Saves one tab's transcript. Rotation never drops the file of an open or
+/// closed tab, so a tab reopened from the closed list gets its chat back.
+/// Callers lock the state store before the transcript store.
+pub(crate) fn save_tab_transcript(
+    state: &StateStore,
+    transcripts: &TranscriptStore,
+    tab_id: &str,
+    text: &str,
+    cwd: &str,
+    now: &str,
+) -> Result<(), String> {
+    let keep = crate::commands::storage::known_tab_ids(state);
+    transcripts.save(tab_id, text, cwd, now, &keep)
 }
 
 /// F5: search saved chat text across open tabs, closed tabs, and older

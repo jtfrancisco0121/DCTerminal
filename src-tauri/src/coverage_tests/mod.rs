@@ -11,4 +11,5 @@ mod roles_template;
 mod state;
 mod storage_sweep;
 mod stores;
+mod transcripts;
 mod usage_activity;

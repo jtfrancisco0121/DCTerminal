@@ -25,7 +25,7 @@ mod pipeline_flow_tests;
 mod session_flow_tests;
 mod setup;
 pub(crate) mod storage;
-mod workspace;
+pub(crate) mod workspace;
 mod workspaces;
 mod worktree_tabs;
 

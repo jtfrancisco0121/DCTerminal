@@ -273,6 +273,24 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[test]
+    fn rotation_keeps_every_id_in_keep_even_past_the_cap() {
+        let dir = dir();
+        let store = TranscriptStore::open(&dir).unwrap();
+        let ids: Vec<String> = (0..(MAX_TRANSCRIPT_FILES + 5))
+            .map(|i| format!("tab_{i}"))
+            .collect();
+        for (i, id) in ids.iter().enumerate() {
+            store.save(id, "t", "C:\\w", "now", &ids).unwrap();
+            filetime_touch(&store.path_for(id), i as u64);
+        }
+        store.save("tab_new", "n", "C:\\w", "now", &ids).unwrap();
+        for id in &ids {
+            assert!(store.load(id).unwrap().is_some(), "{id} was rotated away");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     fn filetime_touch(path: &Path, seconds: u64) {
         let time = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(seconds + 10);
         let _ = file_set_mtime(path, time);
