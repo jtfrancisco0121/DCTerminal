@@ -141,16 +141,17 @@ fn stop(run: &mut PipelineRun, stage: Option<&StageDef>, reason: String) -> Deci
 fn go(run: &mut PipelineRun, decision: Decision, detail: Option<String>) -> Decision {
     autopilot(run).waiting = None;
     let kind = if decision.action == "complete" { "complete" } else { "autopilot" };
-    let summary = match decision.lane.as_deref().and_then(|id| run.lane(id)) {
+    let (lane_id, summary) = match decision.lane.as_deref().and_then(|id| run.lane(id)) {
         Some(lane) if decision.action != "laneDone" && decision.action != "complete" => {
-            format!("{}: {}", lane.title, decision.reason)
+            (Some(lane.id.clone()), format!("{}: {}", lane.title, decision.reason))
         }
-        _ => decision.reason.clone(),
+        _ => (None, decision.reason.clone()),
     };
-    run.log_outcome(
+    run.log_in_lane(
         kind,
         decision.stage_id.as_deref(),
         decision.role_id.as_deref(),
+        lane_id.as_deref(),
         summary,
         detail,
         Some(decision.action.clone()),
@@ -160,14 +161,16 @@ fn go(run: &mut PipelineRun, decision: Decision, detail: Option<String>) -> Deci
 
 /// A ledger line for a turn autopilot leaves alone, and the `skip` decision.
 fn skip(run: &mut PipelineRun, stage: &StageDef, lane: Option<&str>, reason: String) -> Decision {
-    let tag = lane
+    let lane_id = lane.filter(|id| run.lane(id).is_some());
+    let tag = lane_id
         .and_then(|id| run.lane(id))
         .map(|l| format!("{}: ", l.title))
         .unwrap_or_default();
-    run.log_outcome(
+    run.log_in_lane(
         "autopilot",
         Some(&stage.id),
         Some(&stage.role_id),
+        lane_id,
         format!("{tag}{reason}"),
         None,
         Some("skip".to_string()),

@@ -209,6 +209,43 @@ describe("runLanes", () => {
     expect([review.lane, review.verdict, ...span(review)]).toEqual(["pr1", "CHANGES", 11, 15]);
   });
 
+  it("reads an event's lane from its laneId, not its summary text", () => {
+    // "PR1: Auth" starts with "PR1: ", so the text alone names the wrong lane.
+    const lanes = [
+      { id: "pr1", title: "PR1", status: "active", stage: "implementer", round: 1, tabIds: {} },
+      { id: "pr1b", title: "PR1: Auth", status: "active", stage: "implementer", round: 1, tabIds: {} },
+    ];
+    const model = runLanes(
+      run(
+        [
+          ev(5, "handoff", { stageId: "implementer", laneId: "pr1b", summary: "PR1: Auth: Handed to Implementer" }),
+          ev(8, "gate", { stageId: "implementer", laneId: "pr1b", summary: "PR1: Auth: lint: clean" }),
+          // An old saved event, from before laneId: still read from its text.
+          ev(9, "handoff", { stageId: "implementer", summary: "PR1: Handed to Implementer" }),
+        ],
+        {
+          lanes,
+          gates: {
+            "implementer@pr1b": {
+              round: 1,
+              at: at(8),
+              results: [{ kind: "command", label: "lint", status: "passed", summary: "clean", durationMs: MIN }],
+            },
+          },
+        },
+      ),
+      stages,
+      T0 + 10 * MIN,
+    );
+    const impl = turnsOf(model, "implementer");
+    expect(impl.map((b) => [b.lane, ...span(b)])).toEqual([
+      ["pr1b", 5, 10],
+      ["pr1", 9, 10],
+    ]);
+    const [gate] = model.rows.find((r) => r.stageId === "implementer")!.gates;
+    expect([gate.lane, gate.status, ...span(gate)]).toEqual(["pr1b", "passed", 7, 8]);
+  });
+
   it("a coalesced turn (one event at the last reply) draws the same span as one event per reply", () => {
     const head = [ev(2, "handoff", { stageId: "plan_reviewer" })];
     const perReply = runLanes(

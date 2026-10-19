@@ -1,5 +1,5 @@
 use crate::commands::chain_events::ChainEvents;
-use crate::store::{PipelineRun, StateStore};
+use crate::store::{PipelineRun, RunEvent, StateStore};
 use serde::Serialize;
 use std::sync::Mutex;
 use tauri::State;
@@ -159,10 +159,11 @@ pub async fn pipeline_run_gates(
         .map(|l| format!("{}: ", l.title))
         .unwrap_or_default();
     for result in &results {
-        run.log_outcome(
+        run.log_in_lane(
             "gate",
             Some(&stage_id),
             None,
+            lane.as_deref(),
             format!("{lane_tag}{}: {}", result.label, result.summary),
             (!result.output.is_empty()).then(|| result.output.clone()),
             Some(result.status.clone()),
@@ -340,11 +341,11 @@ pub fn turn_finished(
             && last.stage_id.as_deref() == Some(stage_id)
             && last.role_id.as_deref() == Some(role_id)
             && last.round == round
-            && event_lane(run, &last.summary) == lane
+            && event_lane(run, last) == lane
     });
     if !same_turn {
         let summary = summary_for(verdict.as_deref());
-        run.log_outcome("turn", Some(stage_id), Some(role_id), summary, None, verdict);
+        run.log_in_lane("turn", Some(stage_id), Some(role_id), lane, summary, None, verdict);
         store.save()?;
         return Ok(true);
     }
@@ -366,11 +367,15 @@ pub fn turn_finished(
     Ok(true)
 }
 
-/// The lane an event's summary names by its "PR title: " prefix.
-fn event_lane<'a>(run: &'a PipelineRun, summary: &str) -> Option<&'a str> {
+/// The lane an event is about: its `lane_id`, or on events saved before
+/// that existed, the lane its "PR title: " prefix names.
+fn event_lane<'a>(run: &'a PipelineRun, event: &'a RunEvent) -> Option<&'a str> {
+    if let Some(id) = event.lane_id.as_deref() {
+        return Some(id);
+    }
     run.lanes
         .iter()
-        .find(|l| !l.title.is_empty() && summary.starts_with(&format!("{}: ", l.title)))
+        .find(|l| !l.title.is_empty() && event.summary.starts_with(&format!("{}: ", l.title)))
         .map(|l| l.id.as_str())
 }
 
@@ -519,7 +524,7 @@ pub fn set_lane_status(store: &mut StateStore, run_id: &str, lane: &str, status:
         l.status = status.to_string();
         l.title.clone()
     };
-    run.log("note", None, None, format!("{title}: {status}"), None);
+    run.log_in_lane("note", None, None, Some(lane), format!("{title}: {status}"), None, None);
     store.save()
 }
 
@@ -585,7 +590,7 @@ pub fn approve(store: &mut StateStore, run_id: &str, lane: Option<&str>) -> Resu
     if let Some(autopilot) = run.autopilot.as_mut() {
         autopilot.waiting = None;
     }
-    run.log("note", None, None, summary, None);
+    run.log_in_lane("note", None, None, lane, summary, None, None);
     let complete = run.lanes.iter().all(|l| l.status == "approved");
     if complete {
         run.log("complete", None, None, "Complete: approved by you.", None);
@@ -854,6 +859,58 @@ mod tests {
         turn_finished(&mut store, "ee_f", "implementer", "role_implementer", Some("pr9"), None).unwrap();
         let last = store.pipeline_run_by_id("ee_f").unwrap().events.last().cloned().unwrap();
         assert!(last.summary.starts_with("Implementer"), "{}", last.summary);
+    }
+
+    #[test]
+    fn lane_events_carry_their_lane_id() {
+        let (_dir, mut store) = store("lane_ids");
+        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        // "PR1: Auth" starts with "PR1: ", so the text alone names the wrong lane.
+        let lanes = vec![
+            LaneInput { id: "pr1".into(), title: "PR1".into(), depends_on: vec![] },
+            LaneInput { id: "pr1b".into(), title: "PR1: Auth".into(), depends_on: vec![] },
+        ];
+        fan_out(&mut store, "ee_f", "implementer", lanes).unwrap();
+        let last_lane = |store: &StateStore| {
+            store.pipeline_run_by_id("ee_f").unwrap().events.last().unwrap().lane_id.clone()
+        };
+        let impl1b = store.create_draft_tab(&role("role_implementer"), "/tmp/wt", true, None).unwrap();
+        store.set_tab_chain(&impl1b, Some(chain(3, Some("pr1b"))), Some("plan")).unwrap();
+        assert_eq!(last_lane(&store).as_deref(), Some("pr1b"), "handoff");
+        store
+            .chain_loop_back_in("ee_f", Some("pr1b"), "role_pr_reviewer", &impl1b, Some("REQUEST CHANGES"), Some("fix"))
+            .unwrap();
+        assert_eq!(last_lane(&store).as_deref(), Some("pr1b"), "loopBack");
+        set_lane_status(&mut store, "ee_f", "pr1", "waiting").unwrap();
+        assert_eq!(last_lane(&store).as_deref(), Some("pr1"), "lane status note");
+        approve(&mut store, "ee_f", Some("pr1b")).unwrap();
+        assert_eq!(last_lane(&store).as_deref(), Some("pr1b"), "approval note");
+
+        // Turns of the two lanes keep their own lines, though one's text
+        // starts with the other's title.
+        store.pipeline_run_by_id_mut("ee_f").unwrap().round = 2;
+        turn_finished(&mut store, "ee_f", "implementer", "role_implementer", Some("pr1b"), None).unwrap();
+        assert_eq!(last_lane(&store).as_deref(), Some("pr1b"), "turn");
+        turn_finished(&mut store, "ee_f", "implementer", "role_implementer", Some("pr1"), None).unwrap();
+        let run = store.pipeline_run_by_id("ee_f").unwrap();
+        let turns: Vec<_> = run.events.iter().filter(|e| e.kind == "turn").map(|e| e.lane_id.as_deref()).collect();
+        assert_eq!(turns, vec![Some("pr1b"), Some("pr1")]);
+        // Off a lane, no lane id is written.
+        turn_finished(&mut store, "ee_f", "planner", "role_planner", None, None).unwrap();
+        assert_eq!(last_lane(&store), None);
+        let json = serde_json::to_string(store.pipeline_run_by_id("ee_f").unwrap().events.last().unwrap()).unwrap();
+        assert!(!json.contains("laneId"), "{json}");
+    }
+
+    #[test]
+    fn an_event_saved_before_lane_ids_still_loads() {
+        let old = r#"{"at":"2026-10-01T00:00:00Z","kind":"turn","round":1,"summary":"PR1: Implementer finished its turn"}"#;
+        let event: crate::store::RunEvent = serde_json::from_str(old).unwrap();
+        assert_eq!(event.lane_id, None);
+        let new = r#"{"at":"2026-10-01T00:00:00Z","kind":"turn","round":1,"summary":"x","laneId":"pr1"}"#;
+        let event: crate::store::RunEvent = serde_json::from_str(new).unwrap();
+        assert_eq!(event.lane_id.as_deref(), Some("pr1"));
     }
 
     #[test]
