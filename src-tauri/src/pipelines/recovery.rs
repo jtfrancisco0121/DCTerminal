@@ -252,10 +252,10 @@ fn quiet_text(quiet: Duration) -> String {
 }
 
 /// The watchdog found `tab` quiet for `quiet` while Working: the run waits
-/// with `stalled`. Only a `running` run stops; returns the sentence it
-/// stopped with.
+/// with `stalled`. Only a `running` run stops, and never for a stage you
+/// took over (V5); returns the sentence it stopped with.
 pub fn stop_stalled(run: &mut PipelineRun, tab: &StageTab, quiet: Duration) -> Option<String> {
-    if run.status != RunStatus::Running {
+    if run.status != RunStatus::Running || run.taken_over.contains(&tab.tab_id) {
         return None;
     }
     let why = format!(

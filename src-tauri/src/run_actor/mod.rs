@@ -3,7 +3,8 @@
 //! it, one at a time, and is the only thing that acts on it:
 //!
 //! - a finished turn the bridge dropped in the run's inbox (`watch`),
-//! - your buttons on the run (Send, Send back, Approve, Continue),
+//! - your buttons on the run (Send, Send back, Approve, Continue, and Take
+//!   over / Hand back of a stage, V5),
 //! - the results of the gates it started, and
 //! - a stage terminal that exited.
 //!
@@ -25,6 +26,12 @@
 //! autopilot's hand-off can no longer race, because both are messages here.
 //! The run's hand-off records (`claims`) still say who made a hand-off, so
 //! a Send after autopilot made the same one warns once.
+//!
+//! A stage you took over (V5, D28) is yours: its `mode` file says
+//! `takeover`, so its bridge enforces no result and its terminal takes your
+//! keystrokes; its turns are recorded but not decided, and its exit or a
+//! stall there does not stop the run. Hand back puts it on autopilot again
+//! and decides at once a current turn that already has a result.
 //!
 //! The actor reaches the app through [`Host`]: the store, the role
 //! templates, starting and pasting into terminals, running gates, usage and
@@ -132,6 +139,16 @@ pub enum UserAction {
     /// stage finished while the app was closed.
     #[serde(rename = "continue")]
     Continue,
+    /// Take the stage terminal `tab_id` over (V5, D28): you drive it now.
+    /// Its bridge stops enforcing a result and the actor stops deciding its
+    /// turns; you can type into its Watch view.
+    #[serde(rename = "takeOver", rename_all = "camelCase")]
+    TakeOver { tab_id: String },
+    /// Hand a stage you took over back to autopilot: enforcement and
+    /// decisions are on again, and a turn that already has a result is
+    /// decided at once.
+    #[serde(rename = "handBack", rename_all = "camelCase")]
+    HandBack { tab_id: String },
     /// What your Send from `source_tab_id` to the next stage would carry,
     /// built from the run folder's files (D20), for the hand-off form to
     /// show before you send. Changes nothing.

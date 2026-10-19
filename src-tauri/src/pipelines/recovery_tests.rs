@@ -229,3 +229,14 @@ fn a_stall_stops_only_a_running_run_with_stalled() {
     assert_eq!(quiet_text(Duration::from_millis(1500)), "1 second");
     assert_eq!(quiet_text(Duration::from_secs(45)), "45 seconds");
 }
+
+// V5 (D28): a stage you took over is yours; quiet there is not a stall.
+#[test]
+fn a_taken_over_stage_never_stalls_the_run() {
+    let def = eagle1();
+    let mut run = run("implementer", &[("role_implementer", "tab_i")]);
+    run.taken_over.push("tab_i".into());
+    let tab = current_stage_tabs(&def, &run).remove(0);
+    assert_eq!(stop_stalled(&mut run, &tab, Duration::from_secs(3600)), None);
+    assert_eq!(run.status, RunStatus::Running);
+}

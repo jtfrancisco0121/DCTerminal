@@ -32,6 +32,7 @@ fn run(round: u32) -> PipelineRun {
         status: RunStatus::Running,
         stop_reason: None,
         engine: 1,
+        taken_over: Vec::new(),
     }
 }
 

@@ -7,9 +7,9 @@ use super::prompts::{self, StageSources};
 use super::{lock, ActorMsg, Host, Prefill, StageLaunch, UserAction, UserOutcome};
 use crate::bridge::folder::{read_json, RunFindings, RunPrs, TASKS_FILE};
 use crate::bridge::launch::{
-    clear_stage_turn, launch_args, plan_for, prepare_stage, read_stage_turn, relaunch_args, BridgePlan,
+    clear_stage_turn, launch_args, plan_for, prepare_stage, read_stage_turn, relaunch_args, set_stage_mode, BridgePlan,
 };
-use crate::bridge::{BridgeTag, BridgeTurn, TurnOutcome};
+use crate::bridge::{BridgeTag, BridgeTurn, StageMode, TurnOutcome};
 use crate::commands::pipeline::{approve, note, set_lane_status, turn_finished};
 use crate::pipelines::autopilot::{decide, review_round, stage_key, Decision, FindingReport, TurnReport};
 use crate::pipelines::{GateResult, PipelineDef, StageDef};
@@ -188,6 +188,14 @@ impl<H: Host> Actor<H> {
         self.host.terminal_live(&tab.id) && read_stage_turn(&self.host.runs_root(), tag, &tab.id).is_some()
     }
 
+    /// You took `tab_id` over (V5, D28): autopilot leaves it alone.
+    fn taken_over(&self, tab_id: &str) -> bool {
+        let store = lock(self.host.store());
+        store
+            .pipeline_run_by_id(&self.run_id)
+            .is_some_and(|run| run.taken_over.iter().any(|id| id == tab_id))
+    }
+
     // ---- Finished turns ----
 
     /// A bridged stage finished a turn: record it, then (autopilot on) run
@@ -201,7 +209,7 @@ impl<H: Host> Actor<H> {
         }
         self.handled.insert(turn.tab_id.clone(), turn.turn.clone());
         let verdict = bridge_verdict(review(&turn).and_then(|r| r.get("verdict")).and_then(Value::as_str), placed.revise());
-        let (enabled, status, round) = {
+        let (enabled, status, round, mine) = {
             let mut store = lock(self.host.store());
             // intentionally silent: the lanes only lose a bar end.
             let _ = turn_finished(
@@ -217,19 +225,27 @@ impl<H: Host> Actor<H> {
                     run.autopilot.as_ref().is_some_and(|a| a.enabled),
                     run.status,
                     run.round_for(placed.lane.as_deref()),
+                    run.taken_over.iter().any(|id| id == &placed.tab.id),
                 ),
                 None => return,
             }
         };
         self.changed();
-        if !enabled || status == RunStatus::Complete {
+        // You drive a stage you took over: its turns are recorded, never
+        // decided (D28). Hand back decides the one that has a result.
+        if !enabled || status == RunStatus::Complete || mine {
             return;
         }
+        self.take_up(&placed, turn, round, status);
+    }
+
+    /// Act on a finished turn: its gates first (on a running run), then a decision.
+    fn take_up(&mut self, placed: &Placed, turn: BridgeTurn, round: u32, status: RunStatus) {
         if status == RunStatus::Running && !placed.stage.gates.is_empty() {
-            self.start_gates(&placed, turn, round);
+            self.start_gates(placed, turn, round);
             return;
         }
-        self.decide_and_carry_out(&placed, &turn, round);
+        self.decide_and_carry_out(placed, &turn, round);
     }
 
     /// Run the stage's gates on a thread of their own; the results come
@@ -308,6 +324,10 @@ impl<H: Host> Actor<H> {
             }
         }
         self.changed();
+        // You took the stage over while its checks ran: Hand back decides.
+        if self.taken_over(&placed.tab.id) {
+            return;
+        }
         // The checks take a while: a turn started since is the stage's result now.
         let tag = placed.tab.bridge.clone().unwrap_or(BridgeTag {
             run_id: self.run_id.clone(),
@@ -882,6 +902,8 @@ impl<H: Host> Actor<H> {
             } => self.user_send_back(&source_tab_id, &target_role_id, &text, verdict, values, handoff_plan, force),
             UserAction::Approve { lane } => self.user_approve(lane.as_deref()),
             UserAction::Continue => self.user_continue(),
+            UserAction::TakeOver { tab_id } => self.user_take_over(&tab_id),
+            UserAction::HandBack { tab_id } => self.user_hand_back(&tab_id),
             UserAction::Prefill {
                 source_tab_id,
                 target_role_id,
@@ -1114,12 +1136,108 @@ impl<H: Host> Actor<H> {
         Ok(UserOutcome::default())
     }
 
+    /// Take a stage over (V5, D28). Its `mode` file says `takeover`, so its
+    /// bridge stops enforcing a result and its Watch view takes keystrokes;
+    /// its turns are no longer decided. When it was all the run was waiting
+    /// on, the run waits for you (`taken_over`).
+    fn user_take_over(&mut self, tab_id: &str) -> Result<UserOutcome, String> {
+        let (placed, tag) = self.bridged_tab(tab_id)?;
+        if !set_stage_mode(&self.host.runs_root(), &tag, tab_id, StageMode::Takeover)? {
+            return Err(format!("{} no longer holds its stage.", placed.tab.label));
+        }
+        {
+            let mut store = lock(self.host.store());
+            let run = store.pipeline_run_by_id_mut(&self.run_id).ok_or("the run is gone")?;
+            if !run.taken_over.iter().any(|id| id == tab_id) {
+                run.taken_over.push(tab_id.to_string());
+            }
+            let summary = format!("You took over {}. Autopilot leaves it alone until you hand it back.", placed.stage.title);
+            run.log("note", Some(&placed.stage.id), Some(&placed.tab.role_id), summary, None);
+            let all_yours = crate::pipelines::recovery::current_stage_tabs(&placed.def, run)
+                .iter()
+                .all(|stage| run.taken_over.contains(&stage.tab_id));
+            if run.status == RunStatus::Running && all_yours {
+                run.set_waiting(
+                    StopReason::TakenOver,
+                    format!("You took over {}. Hand it back to let autopilot carry on.", placed.stage.title),
+                );
+            }
+            store.save()?;
+        }
+        self.changed();
+        Ok(UserOutcome::default())
+    }
+
+    /// Hand a stage back (D28): enforcement and decisions are on again
+    /// (its `mode` follows the run's autopilot), the run carries on when it
+    /// waited only for that, and a turn that already has a result is
+    /// decided at once. A stage not taken over is left as it is.
+    fn user_hand_back(&mut self, tab_id: &str) -> Result<UserOutcome, String> {
+        let (placed, tag) = self.bridged_tab(tab_id)?;
+        let enabled = {
+            let store = lock(self.host.store());
+            let run = store.pipeline_run_by_id(&self.run_id).ok_or("the run is gone")?;
+            if !run.taken_over.iter().any(|id| id == tab_id) {
+                return Ok(UserOutcome::default());
+            }
+            run.autopilot.as_ref().is_some_and(|a| a.enabled)
+        };
+        let mode = if enabled { StageMode::Autopilot } else { StageMode::Manual };
+        set_stage_mode(&self.host.runs_root(), &tag, tab_id, mode)?;
+        let turn = read_stage_turn(&self.host.runs_root(), &tag, tab_id).filter(|turn| turn.result.is_some());
+        let (status, round, decided) = {
+            let mut store = lock(self.host.store());
+            let run = store.pipeline_run_by_id_mut(&self.run_id).ok_or("the run is gone")?;
+            run.taken_over.retain(|id| id != tab_id);
+            let summary = format!("You handed {} back to autopilot.", placed.stage.title);
+            run.log("note", Some(&placed.stage.id), Some(&placed.tab.role_id), summary, None);
+            let still_yours = crate::pipelines::recovery::current_stage_tabs(&placed.def, run)
+                .iter()
+                .any(|stage| run.taken_over.contains(&stage.tab_id));
+            if run.status == RunStatus::Waiting && run.stop_reason == Some(StopReason::TakenOver) && !still_yours {
+                run.set_running();
+            }
+            // A turn decided before you took over is not decided (or checked) again.
+            let decided = turn.as_ref().is_some_and(|turn| {
+                let key = format!("{}|bridge|{}", turn.tab_id, turn.turn);
+                run.autopilot.as_ref().is_some_and(|a| a.decided.contains(&key))
+            });
+            let state = (run.status, run.round_for(placed.lane.as_deref()), decided);
+            store.save()?;
+            state
+        };
+        self.changed();
+        if !enabled || status == RunStatus::Complete || decided {
+            return Ok(UserOutcome::default());
+        }
+        if let Some(turn) = turn {
+            self.handled.insert(turn.tab_id.clone(), turn.turn.clone());
+            self.take_up(&placed, turn, round, status);
+        }
+        Ok(UserOutcome::default())
+    }
+
+    /// `tab_id` on this run, with the stage it reports for.
+    fn bridged_tab(&self, tab_id: &str) -> Result<(Placed, BridgeTag), String> {
+        let placed = self.place_tab(tab_id).ok_or("That tab is not on this run.")?;
+        let tag = placed
+            .tab
+            .bridge
+            .clone()
+            .ok_or_else(|| format!("{} does not report through the pipeline bridge.", placed.tab.label))?;
+        Ok((placed, tag))
+    }
+
     /// A stage terminal exited. While autopilot waits on that stage's turn,
-    /// nothing would ever come: stop and say so.
+    /// nothing would ever come: stop and say so. A stage you took over is
+    /// yours to end.
     fn on_exit(&mut self, tab_id: &str, code: Option<i32>) {
         let Some(placed) = self.place_tab(tab_id) else {
             return;
         };
+        if self.taken_over(tab_id) {
+            return;
+        }
         let current = {
             let store = lock(self.host.store());
             let Some(run) = store.pipeline_run_by_id(&self.run_id) else {

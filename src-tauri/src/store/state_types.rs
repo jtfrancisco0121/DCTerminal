@@ -182,6 +182,10 @@ pub struct PipelineRun {
     /// as 1 and keep the v1 path.
     #[serde(default = "first_engine")]
     pub engine: u32,
+    /// Stage tabs you took over (V5, D28): autopilot neither enforces a
+    /// result on them nor decides their turns until you hand them back.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub taken_over: Vec<String>,
 }
 
 fn first_engine() -> u32 {
