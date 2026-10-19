@@ -32,4 +32,35 @@ describe("ChatFindBar", () => {
     expect(onClose).toHaveBeenCalledOnce();
     expect(onCancelTurn).not.toHaveBeenCalled();
   });
+
+  it("closes on Escape from a button in the bar without cancelling the turn", () => {
+    const onCancelTurn = vi.fn();
+    const onClose = vi.fn();
+    renderHook(() =>
+      useAppShortcuts({
+        platform: "mac",
+        dialogOpen: false,
+        promptInFlight: true,
+        onAction: () => {},
+        onCancelTurn,
+      }),
+    );
+    render(
+      <ChatFindBar
+        query="x"
+        index={0}
+        count={1}
+        focusKey={0}
+        onQuery={() => {}}
+        onStep={() => {}}
+        onClose={onClose}
+        onSearchAll={() => {}}
+      />,
+    );
+    fireEvent.keyDown(screen.getByRole("button", { name: "Search all chats" }), {
+      key: "Escape",
+    });
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(onCancelTurn).not.toHaveBeenCalled();
+  });
 });
