@@ -21,6 +21,7 @@ import {
 import { detectPlatform } from "../keymap";
 import { findBarePaths, findPathLinks, isLinkModifier } from "./links";
 import { existingPaths } from "./fileLinks";
+import { reportError } from "../uiErrors";
 
 export type ParkedTerminal = {
   host: HTMLDivElement;
@@ -250,7 +251,10 @@ export function ensureParkedTerminal(id: string, fontSize: number): ParkedTermin
     // Wait for the drag to settle, then copy once.
     copyTimer = window.setTimeout(() => {
       if (!term.hasSelection()) return;
-      void navigator.clipboard.writeText(term.getSelection()).catch(() => {});
+      // Every selection copies, so a denied clipboard is shown once, not per drag.
+      void navigator.clipboard
+        .writeText(term.getSelection())
+        .catch((err: unknown) => reportError("Copy on select failed", err, { notify: true, once: true }));
     }, 200);
   });
   term.open(host);

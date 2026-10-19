@@ -1,9 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
+
+vi.mock("../uiErrors", () => ({ reportError: vi.fn() }));
+
+import { reportError } from "../uiErrors";
 import { createDialogDetector } from "./permissionDialog";
 import {
   answerPermission,
   composerPayload,
   permissionKey,
+  pressStop,
   sendComposerText,
   stopTurn,
   STOP_KEY,
@@ -69,6 +74,12 @@ describe("composer", () => {
     await stopTurn("t1", { write, note });
     expect(note).toHaveBeenCalledWith("t1", STOP_KEY);
     expect(write).toHaveBeenCalledWith("t1", "\x1b");
+  });
+
+  it("a Stop that fails to reach the terminal is shown, not swallowed", async () => {
+    const error = new Error("no terminal: t1");
+    await pressStop("t1", { write: () => Promise.reject(error), note: vi.fn() });
+    expect(reportError).toHaveBeenCalledWith("Could not stop the turn", error, { notify: true });
   });
 });
 

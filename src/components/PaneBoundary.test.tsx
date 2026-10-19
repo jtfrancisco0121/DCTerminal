@@ -2,7 +2,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { clearUiErrors, uiErrors } from "../uiErrors";
+import { clearUiErrors, setErrorNotifier, uiErrors } from "../uiErrors";
 import { requestPaneCrash } from "./devPaneCrash";
 import { PaneBoundary } from "./PaneBoundary";
 
@@ -44,6 +44,20 @@ describe("PaneBoundary", () => {
     expect(uiErrors()).toEqual([
       expect.objectContaining({ source: "Terminal view", message: "left exploded" }),
     ]);
+  });
+
+  it("reports through reportError to the log only: the fallback is the notice", () => {
+    const toast = vi.fn();
+    setErrorNotifier(toast);
+    broken.add("left");
+    render(
+      <PaneBoundary label="Terminal view">
+        <Child name="left" />
+      </PaneBoundary>,
+    );
+    setErrorNotifier(null);
+    expect(uiErrors()).toHaveLength(1);
+    expect(toast).not.toHaveBeenCalled();
   });
 
   it("a crash in one pane leaves the sibling pane mounted", () => {

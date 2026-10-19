@@ -9,6 +9,7 @@ import { TerminalContextMenu, type ContextMenuItem } from "./TerminalContextMenu
 import { formatDroppedPaths } from "../terminal/drop";
 import { elementAtDropPosition } from "../dragDropPosition";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { reportError } from "../uiErrors";
 import {
   beginLivePty,
   clearPtyOpening,
@@ -75,6 +76,19 @@ export function focusBelongsElsewhere(slot: HTMLElement): boolean {
   if (active.closest(".scratch-pad, .file-panel, .model-picker, .model-picker-popover")) return true;
   const otherPane = active.closest("[data-pane]");
   return !!otherPane && otherPane !== slot.closest("[data-pane]");
+}
+
+/**
+ * Keystrokes to the PTY (a drop or paste reaches it the same way, through
+ * xterm). A failed write is shown once per window, not per keystroke. An
+ * exited or still-opening terminal refusing them is expected, not news.
+ */
+function sendInput(ptyId: string, data: string): void {
+  void ptyWrite(ptyId, data).catch((err: unknown) => {
+    const live = livePty(ptyId);
+    if (!live || live.exited || isPtyOpening(ptyId)) return;
+    reportError("Keystrokes not sent", err, { notify: true, once: true });
+  });
 }
 
 export function readTerminalHandoff(ptyId: string): {
@@ -198,7 +212,8 @@ export function TerminalView({
           if (disposed) fn();
           else unlisten = fn;
         })
-        .catch(() => {});
+        // Background: dropping files then does nothing, so say why in the log.
+        .catch((err: unknown) => reportError("File drop unavailable", err, { once: true }));
     } catch {
       // Not running inside Tauri (unit tests, a plain browser).
     }
@@ -257,7 +272,7 @@ export function TerminalView({
     // query, and xterm answers that only through onData.
     const onData = parked.term.onData((data) => {
       notePtyInput(ptyId, data);
-      void ptyWrite(ptyId, data).catch(() => {});
+      sendInput(ptyId, data);
     });
     const detach = live?.buffer.attach({
       data: (bytes) => parked.term.write(bytes),
@@ -271,7 +286,7 @@ export function TerminalView({
         // Handle keydown only; swallow keypress and keyup so xterm sends no CR.
         if (event.type === "keydown" && !event.repeat) {
           notePtyInput(ptyId, SHIFT_ENTER_SEQUENCE);
-          void ptyWrite(ptyId, SHIFT_ENTER_SEQUENCE).catch(() => {});
+          sendInput(ptyId, SHIFT_ENTER_SEQUENCE);
         }
         return false;
       }
@@ -449,7 +464,7 @@ export function TerminalView({
             void navigator.clipboard
               .writeText(lastFiftyLines(terminalScrollbackText(ptyId)))
               .then(() => setCopied(true))
-              .catch(() => {});
+              .catch((err: unknown) => reportError("Copy failed", err, { notify: true }));
           }}
         />
       )}

@@ -17,7 +17,7 @@ function uiErrorLine(entry: UiError): string {
 
 /**
  * FR-080: agent stderr and app log tail for the active session tab, plus
- * the pane and view crashes caught in this window (uiErrors.ts).
+ * the pane and view crashes and failed calls caught in this window (uiErrors.ts).
  */
 export function LogDrawer({ stderr, appLog, logPath, busy, onRefresh, onClose }: Props) {
   const errors = useSyncExternalStore(subscribeUiErrors, uiErrors);
