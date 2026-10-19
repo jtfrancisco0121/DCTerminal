@@ -42,8 +42,10 @@ fn locked_target(
 }
 
 /// The summary of the tab's session log. Reads only what was appended since
-/// the last read (see `claude_session_log::reader`).
-#[tauri::command]
+/// the last read (see `claude_session_log::reader`). async: a tab's first
+/// read walks the config folder and parses up to 8 MB, so it runs off the
+/// main thread.
+#[tauri::command(async)]
 pub fn terminal_session_log(
     tab_id: String,
     store: State<Mutex<StateStore>>,
@@ -63,7 +65,8 @@ pub fn terminal_session_log(
 
 /// The tab's chat entries changed after revision `since` (all of them, with
 /// `reset`, when `since` is missing or stale). `None` until the log exists.
-#[tauri::command]
+/// async, like `terminal_session_log`.
+#[tauri::command(async)]
 pub fn terminal_chat_entries(
     tab_id: String,
     since: Option<u64>,
@@ -135,6 +138,22 @@ mod tests {
     use std::collections::HashMap;
 
     const SID: &str = "11111111-2222-4333-8444-555555555555";
+
+    // Review: after a restart each terminal tab's first read walks the
+    // config folder's projects and parses up to 8 MB of log. As plain
+    // commands those reads ran on the main thread, one tab after another.
+    #[test]
+    fn session_log_reads_are_async_commands_off_the_main_thread() {
+        let source = include_str!("session_log.rs");
+        for name in ["terminal_session_log", "terminal_chat_entries"] {
+            let at = source.find(&format!("pub fn {name}(")).expect("command");
+            let attr = source[..at].rfind("#[tauri::command").expect("attribute");
+            assert!(
+                source[attr..at].starts_with("#[tauri::command(async)]"),
+                "{name} runs on the main thread"
+            );
+        }
+    }
 
     #[test]
     fn the_saved_session_id_survives_a_reopen_and_reads_only_its_config_dir() {
