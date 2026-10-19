@@ -100,7 +100,8 @@ function PreviewFrame({ slot, children }: { slot: HTMLElement | null; children: 
   const [paneHovered, setPaneHovered] = useState(false);
   useLayoutEffect(() => {
     const pane = slot?.closest(".split-pane");
-    setPaneHovered(false);
+    // A slot can arrive in a pane the pointer already rests on (no mouseenter).
+    setPaneHovered(pane?.matches(":hover") ?? false);
     if (!pane) {
       setDim(false);
       return;
