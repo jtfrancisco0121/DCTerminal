@@ -114,6 +114,21 @@ describe("RunLanes", () => {
     delete entries["tab-impl-2"];
   });
 
+  it("keeps every axis label inside the chart, the last tick right-anchored at the edge", () => {
+    // 30 minutes in: ticks every 5m, so "30m" sits at 100%.
+    render(<RunLanes run={run()} tabs={[]} now={T0 + 30 * 60_000} />);
+    const ticks = [...document.querySelectorAll<HTMLElement>(".run-lanes-tick")];
+    expect(ticks.map((el) => [el.textContent, el.style.left, el.style.transform])).toEqual([
+      ["0s", "0%", "translateX(-0%)"],
+      ["5m", "16.666666666666664%", "translateX(-16.666666666666664%)"],
+      ["10m", "33.33333333333333%", "translateX(-33.33333333333333%)"],
+      ["15m", "50%", "translateX(-50%)"],
+      ["20m", "66.66666666666666%", "translateX(-66.66666666666666%)"],
+      ["25m", "83.33333333333334%", "translateX(-83.33333333333334%)"],
+      ["30m", "100%", "translateX(-100%)"],
+    ]);
+  });
+
   it("a complete run has no now line", () => {
     const done = run();
     done.events = [...(done.events ?? []), { at: at(19), kind: "complete", round: 1, summary: "" }];
