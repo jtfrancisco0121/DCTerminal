@@ -108,10 +108,21 @@ describe("TerminalSearchBar", () => {
     expect(onCancelTurn).not.toHaveBeenCalled();
   });
 
-  it("closes once on Escape from a button in the bar", () => {
+  it("closes once on Escape from a button in the bar without cancelling the turn", () => {
+    const onCancelTurn = vi.fn();
     const onClose = vi.fn();
+    renderHook(() =>
+      useAppShortcuts({
+        platform: "mac",
+        dialogOpen: false,
+        promptInFlight: true,
+        onAction: () => {},
+        onCancelTurn,
+      }),
+    );
     render(<TerminalSearchBar search={fakeSearch("abc")} onClose={onClose} />);
     fireEvent.keyDown(screen.getByRole("button", { name: "Next match" }), { key: "Escape" });
     expect(onClose).toHaveBeenCalledOnce();
+    expect(onCancelTurn).not.toHaveBeenCalled();
   });
 });
