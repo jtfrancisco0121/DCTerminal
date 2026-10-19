@@ -180,7 +180,9 @@ flowchart LR
 3. Repeat down the chain. When a reviewer asks for changes, **Send back to …** returns the findings to the earlier tab as a new round. Each loop stops after 3 rounds.
 4. Use **Open chain overview…** to see every stage on a time axis, with its status, verdict and checks.
 
-**Autopilot** is off by default. Turn it on for one run in the chain overview, and the run moves on by itself after each turn. It stops when Claude needs you, at the checkpoint before the Implementer, when a check keeps failing, or when your Claude usage limit is near. Review rounds go back until the reviewer approves, unless a pipeline sets a round cap. It never merges a pull request. Autopilot drives terminal tabs only.
+**Autopilot** is off by default. Turn it on for one run in the chain overview, and the run moves on by itself after each turn. A Rust run actor drives it: each stage's `claude` reports its turn end and result through the pipeline bridge (hooks and a `submit_result` tool), so nothing is guessed from the screen or the reply, and no keystrokes are typed. Stages run hidden; open one's tab or **Watch** it, and **Take over** to type in it. A round sent back resumes the earlier stage's Claude session. It stops when Claude needs you, at the checkpoint before the Implementer, when a check keeps failing, when a stage reports no result, or when your Claude usage limit is near. Review rounds go back until the reviewer approves, unless a pipeline sets a round cap. It never merges a pull request. Autopilot drives terminal tabs only.
+
+Runs started before pipeline v2, and runs of a pipeline with parallel reviewers or a role other than Planner, reviewer and Implementer, are **manual only**: the overview says so, and you hand each stage on yourself.
 
 Terminal roles launch Claude Code in `plan` mode (Planner) or `auto` mode (the others), so Claude still asks before risky actions. Those questions show up as **Needs you**, and in Chat view as buttons.
 

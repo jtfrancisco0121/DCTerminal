@@ -25,7 +25,7 @@ DCTerminal reads these sections to fill the next role's form and decide the next
 | Implementer | `HANDOFF: Implementation summary` · `Files changed` · `Tests run` · `Deviations from the plan` · `Pull requests` |
 | PR Reviewer | `HANDOFF: Verdict` · `HANDOFF: Findings for the Implementer` · `HANDOFF: Result` (JSON) |
 
-`HANDOFF: Result` is one JSON block: the verdict and every finding with its severity (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`). Manual hand-offs work without it. Autopilot uses it to tell a finding worth another round (MEDIUM and above by default) from a follow-up. Without it, autopilot treats every finding as blocking.
+`HANDOFF: Result` is one JSON block: the verdict and every finding with its severity (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`). Manual hand-offs work without it; the chain overview uses it to show each finding's severity. Autopilot does not read these sections: on an autopilot run each stage reports its result through the `submit_result` tool (see [Autopilot](#autopilot)), and the HANDOFF sections stay for you and for manual hand-offs.
 
 If a reply is missing them, don't send it. Paste this into the same terminal:
 
@@ -139,20 +139,22 @@ Group HANDOFF: Findings for the Implementer by pull request: one PR<n> — <URL>
 
 ## Autopilot
 
-Each chain run can turn on **Autopilot** in its overview (ADR-014). It drives terminal stages only. After each stage's turn:
+A run of Eagle-Eye 1 or 2 (or any pipeline whose stages are all a Planner, a reviewer or an Implementer, with no parallel reviewers) can turn on **Autopilot** in its chain overview. A Rust run actor then drives it: each stage's terminal reports through the pipeline bridge, so a turn's end comes from Claude Code's Stop hook and its result from a `submit_result` tool call (the Planner's from its plan), never from parsing the reply. Autopilot types no keystrokes. After each stage's turn:
 
 | What happened | Autopilot does |
 | --- | --- |
-| The stage has checks (Implementer: the project's check command, and the PRs exist) and one failed | Sends the output back to the same tab. After the third failure it stops. |
-| HANDOFF sections are missing | Asks once (the paste above), then stops. |
-| Verdict needs changes, with a finding at or above the threshold | Sends the round back, as many rounds as it takes. A pipeline can set a round cap (`maxRounds`); then it stops at the cap. Eagle-Eye 1 and 2 have none. |
+| The stage has checks (Implementer: the project's check command, and the PRs exist) and one failed | Resumes the same Claude session with the check's output. After the third failure it stops. |
+| The stage ended its turn without reporting a result | Claude is asked once, in the same turn, to call `submit_result`. If it still stops without one, the run stops (`no_result`). |
+| Verdict needs changes, with a finding at or above the threshold | Sends the round back by resuming the earlier stage's session (the same session id), pointing it at the round's findings file. As many rounds as it takes; a pipeline can set a round cap (`maxRounds`), then it stops at the cap. Eagle-Eye 1 and 2 have none. |
 | Verdict needs changes, but only LOW findings | Moves on and lists them under **Follow-ups**. |
 | Approved | Moves on, or finishes the run on the last stage. |
 | The next stage is a checkpoint (Implementer, by default) | Stops. Send it yourself; autopilot carries on after that. |
 
-It also stops when Claude needs you (a permission, a question, a plan), when usage reaches 90%, or when a stage is a chat tab. It never merges. Every decision is in the overview's **Timeline**, and **Export run report** saves it as Markdown.
+It also stops when Claude needs you (a permission, a question), when usage reaches 90%, and when a working stage stays quiet for 30 minutes (`stalled`). If the app was closed while a stage finished, the run waits (`app_restarted`) until you press **Continue**. It never merges. Every decision is in the overview's **Timeline**, and **Export run report** saves it as Markdown.
 
-Each hand-off on, and each send-back, happens once per stage and round. When you hand a turn on (or send a round back) yourself, autopilot skips that turn and the Timeline says "already handed on by you". When autopilot made the hand-off first, your **Send** warns you once; press it again to send anyway. A turn you interrupt (Esc) is not a finished turn: autopilot leaves it to you. A turn whose round was sent back while its checks ran is skipped.
+Stages run hidden; open a stage's tab or **Watch** it from the overview. **Take over** lets you type in a stage while autopilot leaves it alone; **Hand back** returns it. Your **Send**, **Send back**, **Approve** and **Continue** on an autopilot run go through the same run actor, one at a time, so you and autopilot never make the same hand-off twice: when autopilot made it first, your **Send** warns you once; press it again to send anyway. A turn you interrupt (Esc) is not a finished turn: autopilot leaves it to you.
+
+**Older runs are manual only.** A run started before pipeline v2, and a run of a pipeline with parallel reviewers or another role, cannot use autopilot; its overview says so. Hand each stage on with **Send to …** and **Send back to …** as above. Its verdicts and HANDOFF sections are still read from the replies, to show them and to fill the next form.
 
 ## Fan out by pull request
 
