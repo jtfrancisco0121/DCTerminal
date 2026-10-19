@@ -515,6 +515,53 @@ mod session_log {
     }
 
     #[test]
+    fn approving_a_plan_with_manual_edits_switches_to_default_mode() {
+        let home = FakeHome::new("fc_plan_manual");
+        let scenario = json!({ "turns": [
+            { "steps": [
+                { "tool": "ExitPlanMode", "input": { "plan": "# Plan\n1. Do it" }, "permission": true },
+                { "reply": "Approved." }
+            ] },
+            { "steps": [ { "reply": "Next." } ] }
+        ]});
+        let mut fake = home.run(
+            &scenario,
+            &["--session-id", SID, "--permission-mode", "plan", "Plan it"],
+        );
+        let log = fake.wait_log(SID, |log| log.open_tool.is_some());
+        assert_eq!(log.permission_mode.as_deref(), Some("plan"));
+        assert!(
+            fake.wait_screen("Yes, and manually approve edits"),
+            "screen:\n{}",
+            fake.screen()
+        );
+
+        // Option 2: leave plan mode, but ask before each edit.
+        fake.write(b"2");
+        fake.wait_log(SID, |log| {
+            log.last_reply.ends_with("Approved.") && log.turn_done
+        });
+        fake.write(b"next\r");
+        let log = fake.wait_log(SID, |log| log.last_reply == "Next." && log.turn_done);
+        assert_eq!(log.permission_mode.as_deref(), Some("default"));
+        let records = log_records(&fake.log_path(SID).unwrap(), false);
+        let modes: Vec<&Value> = records
+            .iter()
+            .filter(|r| r["type"] == "user" && r["message"]["content"].is_string())
+            .map(|r| &r["permissionMode"])
+            .collect();
+        assert_eq!(modes, vec![&json!("plan"), &json!("default")]);
+        assert!(
+            fake.wait_screen("? for shortcuts"),
+            "screen:\n{}",
+            fake.screen()
+        );
+        let screen = fake.screen();
+        let after = &screen[screen.rfind("Approved.").expect("approved on screen")..];
+        assert!(!after.contains("plan mode on"), "screen:\n{screen}");
+    }
+
+    #[test]
     fn sub_agent_records_stay_off_the_main_chain() {
         let home = FakeHome::new("fc_subagent");
         let scenario = json!({ "turns": [
