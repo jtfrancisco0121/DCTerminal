@@ -299,6 +299,48 @@ pub(crate) fn kill_all_with(
     }
 }
 
+/// A start begun on a tab, ended when dropped however the start returns, so
+/// an early `?` never leaves the tab answering "Start already in progress".
+/// [`finish`](Self::finish) ends it under a lock the caller already holds
+/// (the one it inserts the session under). Never drop it while holding the
+/// registry lock: the drop takes that lock.
+pub struct StartingTab<'a> {
+    registry: &'a Mutex<SessionRegistry>,
+    key: Option<String>,
+}
+
+impl<'a> StartingTab<'a> {
+    pub fn begin(registry: &'a Mutex<SessionRegistry>, key: &str) -> Result<Self, String> {
+        registry
+            .lock()
+            .map_err(|e| e.to_string())?
+            .try_begin_start(key)?;
+        Ok(Self {
+            registry,
+            key: Some(key.to_string()),
+        })
+    }
+
+    pub fn finish(mut self, registry: &mut SessionRegistry) {
+        if let Some(key) = self.key.take() {
+            registry.finish_start(&key);
+        }
+    }
+}
+
+impl Drop for StartingTab<'_> {
+    fn drop(&mut self) {
+        if let Some(key) = self.key.take() {
+            let mut registry = match self.registry.lock() {
+                Ok(guard) => guard,
+                // A panic elsewhere must not keep the tab from starting.
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            registry.finish_start(&key);
+        }
+    }
+}
+
 impl Drop for SessionRegistry {
     fn drop(&mut self) {
         self.shutdown_all();
