@@ -78,6 +78,44 @@ describe("WorkspaceShell boundaries", () => {
     expect(screen.getByText("alpha view")).toBeTruthy();
   });
 
+  it("a file panel crash clears when another tab becomes active", () => {
+    const panelFor = (id: string) => (id === "a" ? <Boom /> : <p>beta files</p>);
+    const base = { secondaryTab: undefined, split: { mode: "single" as const, secondaryTabId: null, primarySize: 50 } };
+    const { rerender } = render(<WorkspaceShell {...props({ ...base, filePanel: panelFor("a") })} />);
+    expect(screen.getByRole("alert").textContent).toContain("File panel");
+    rerender(
+      <WorkspaceShell
+        {...props({
+          ...base,
+          activeTabId: "b",
+          activeTabSummary: tab("b", "Beta"),
+          filePanel: panelFor("b"),
+          children: <p>beta view</p>,
+        })}
+      />,
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText("beta files")).toBeTruthy();
+  });
+
+  it("a crash in pane 1's strip keeps the active view and the second pane", () => {
+    render(
+      <WorkspaceShell
+        {...props({
+          panes: {
+            ...props({}).panes,
+            renderSecondary: () => <p>beta view</p>,
+            paneStrip: (_tab, number) => (number === 1 ? <Boom /> : null),
+          },
+        })}
+      />,
+    );
+    expect(screen.getByRole("alert").textContent).toContain("Pane 1 strip");
+    expect(screen.getByText("alpha view")).toBeTruthy();
+    expect(screen.getByText("beta view")).toBeTruthy();
+    expect(screen.getByRole("tablist", { name: "Tabs" })).toBeTruthy();
+  });
+
   it("a crash in a grid cell keeps the other cells", () => {
     render(
       <WorkspaceShell

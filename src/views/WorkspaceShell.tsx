@@ -105,7 +105,8 @@ export function WorkspaceShell({
         {tabBar}
         <div className="workspace-body">
           {filePanel && (
-            <PaneBoundary label="File panel" paneId="files">
+            // The panel follows the active tab, so a crash clears on a tab switch.
+            <PaneBoundary label="File panel" paneId="files" resetKey={activeTabId}>
               {filePanel}
             </PaneBoundary>
           )}
@@ -157,7 +158,11 @@ export function WorkspaceShell({
                     onMouseDown={() => setFocusedPane("primary")}
                   >
                     {/* Pane 1's strip shows only while a second pane is open. */}
-                    {secondaryTab && activeTabSummary && paneStrip(activeTabSummary, 1, focusedPane === "primary")}
+                    {secondaryTab && activeTabSummary && (
+                      <PaneBoundary label="Pane 1 strip" resetKey={activeTabId}>
+                        {paneStrip(activeTabSummary, 1, focusedPane === "primary")}
+                      </PaneBoundary>
+                    )}
                     {activeView}
                   </div>
                 }
