@@ -23,12 +23,18 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const RUN: &str = "ee_1760000000100";
+/// The session the Planner terminal was started with.
+const PLANNER_SID: &str = "5f0c2a31-1b2c-4d3e-8f40-00000000000a";
 
 struct TestHost {
     store: Mutex<StateStore>,
     runs: PathBuf,
     roles: Vec<Role>,
     launches: Mutex<Vec<StageLaunch>>,
+    /// Stages resumed in place (V4): their terminal stopped and `--resume`d.
+    resumes: Mutex<Vec<StageLaunch>>,
+    /// `resume_stage` fails with this.
+    resume_error: Mutex<Option<String>>,
     pastes: Mutex<Vec<(String, String)>>,
     live: Mutex<HashSet<String>>,
     /// Gate results handed out in order; `passed` once they run out.
@@ -55,6 +61,14 @@ impl Host for TestHost {
     fn spawn_stage(&self, launch: &StageLaunch) -> Result<(), String> {
         self.live.lock().unwrap().insert(launch.tab_id.clone());
         self.launches.lock().unwrap().push(launch.clone());
+        Ok(())
+    }
+    fn resume_stage(&self, launch: &StageLaunch) -> Result<(), String> {
+        if let Some(err) = self.resume_error.lock().unwrap().clone() {
+            return Err(err);
+        }
+        self.live.lock().unwrap().insert(launch.tab_id.clone());
+        self.resumes.lock().unwrap().push(launch.clone());
         Ok(())
     }
     fn paste(&self, tab_id: &str, text: &str) -> Result<(), String> {
@@ -154,11 +168,14 @@ impl Fixture {
         store
             .set_tab_bridge(&planner, Some(BridgeTag { run_id: RUN.into(), stage: "planner".into() }))
             .unwrap();
+        store.remember_claude_terminal_session(&planner, PLANNER_SID).unwrap();
         let host = Arc::new(TestHost {
             store: Mutex::new(store),
             runs,
             roles,
             launches: Mutex::new(Vec::new()),
+            resumes: Mutex::new(Vec::new()),
+            resume_error: Mutex::new(None),
             pastes: Mutex::new(Vec::new()),
             live: Mutex::new(HashSet::from([planner.clone()])),
             gates: Mutex::new(VecDeque::new()),
@@ -231,6 +248,14 @@ impl Fixture {
         self.host.launches.lock().unwrap().clone()
     }
 
+    fn resumes(&self) -> Vec<StageLaunch> {
+        self.host.resumes.lock().unwrap().clone()
+    }
+
+    fn run_file(&self, name: &str) -> PathBuf {
+        self.host.runs.join(RUN).join(name)
+    }
+
     fn pastes(&self) -> Vec<(String, String)> {
         self.host.pastes.lock().unwrap().clone()
     }
@@ -286,6 +311,10 @@ fn a_planner_turn_opens_the_plan_reviewer_with_the_plan_from_the_run_folder() {
     assert!(launch.prompt.contains("1. Refresh tokens in src/auth.ts."), "the plan, from plan.md:\n{}", launch.prompt);
     assert!(launch.prompt.contains("Title: Expired tokens"), "the step-1 request as one block");
     assert!(launch.prompt.contains("mcp__dcterminal__submit_result"), "the result instructions");
+    // It points at the run's hand-off files (D20).
+    assert!(launch.prompt.contains(&fx.run_file("plan.md").display().to_string()), "plan.md: {}", launch.prompt);
+    assert!(launch.prompt.contains(&fx.run_file("tasks.json").display().to_string()), "tasks.json");
+    assert!(!launch.prompt.contains("prs.json"), "no pull requests yet");
     assert!(launch.bridge_args.iter().any(|a| a == "--mcp-config"), "{:?}", launch.bridge_args);
     assert!(launch.cwd.ends_with(fx.work.path().file_name().unwrap()), "{}", launch.cwd.display());
     let tab = fx.tab(&reviewer);
@@ -318,7 +347,7 @@ fn a_turn_is_acted_on_once_even_by_a_new_actor() {
 }
 
 #[test]
-fn changes_required_goes_into_the_idle_planner_and_records_the_round() {
+fn changes_required_resumes_the_planner_session_pointing_at_the_findings_file() {
     let mut fx = Fixture::new("loop_back");
     let reviewer = fx.open_plan_reviewer();
     let turn = fx.end_turn(
@@ -328,17 +357,70 @@ fn changes_required_goes_into_the_idle_planner_and_records_the_round() {
         "Changes required.",
     );
     fx.actor.handle(ActorMsg::Turn(turn));
-    let pastes = fx.pastes();
-    assert_eq!(pastes.len(), 1, "{pastes:?}");
-    assert_eq!(pastes[0].0, fx.planner);
-    assert!(pastes[0].1.starts_with("Review findings from the Plan Reviewer (round 1):"), "{}", pastes[0].1);
-    assert!(pastes[0].1.contains("1. [HIGH] src/auth.ts:42: Retries forever."), "{}", pastes[0].1);
+    assert!(fx.pastes().is_empty(), "no keystrokes (D17): {:?}", fx.pastes());
+    let resumes = fx.resumes();
+    assert_eq!(resumes.len(), 1, "{resumes:?}");
+    let resumed = &resumes[0];
+    assert_eq!((resumed.tab_id.as_str(), resumed.role_id.as_str()), (fx.planner.as_str(), "role_planner"));
+    assert_eq!(resumed.session_id, PLANNER_SID, "the same session");
+    // The same flags it was launched with.
+    let expected = crate::bridge::launch::relaunch_args(
+        &fx.host.runs,
+        &BridgeTag { run_id: RUN.into(), stage: "planner".into() },
+        &fx.planner,
+        Path::new("/opt/dcterminal"),
+    )
+    .unwrap();
+    assert_eq!(resumed.bridge_args, expected);
+    // A short prompt pointing at the findings file, which holds the round.
+    let file = fx.run_file("findings-plan_reviewer-r1.json");
+    assert!(resumed.prompt.starts_with("Review findings from the Plan Reviewer (round 1)"), "{}", resumed.prompt);
+    assert!(resumed.prompt.contains(&file.display().to_string()), "{}", resumed.prompt);
+    assert!(resumed.prompt.contains("1. [HIGH] src/auth.ts:42: Retries forever."), "{}", resumed.prompt);
+    let saved: Value = serde_json::from_slice(&std::fs::read(&file).expect("findings file")).unwrap();
+    assert_eq!(saved["round"], json!(1));
+    assert_eq!(saved["stageKey"], json!("plan_reviewer"));
+    assert_eq!(saved["verdict"], json!("CHANGES_REQUIRED"));
+    assert_eq!(saved["findings"][0]["summary"], json!("Retries forever."));
     fx.run(|run| {
         assert_eq!(run.round, 2);
         assert_eq!(run.verdicts.last().and_then(|v| v.verdict.as_deref()), Some("REQUIRES REVISION"));
         assert_eq!(run.stage, "planner");
+        assert_eq!(run.tab_ids.get("role_planner"), Some(&fx.planner), "the view stays on the Planner's tab");
     });
-    assert_eq!(fx.launches().len(), 1, "no new Planner: the round went into the running one");
+    assert_eq!(fx.launches().len(), 1, "no new Planner tab");
+    // Until the resumed session's first prompt, the Planner reads as working:
+    // its old turn was handed on, and an exit now would be news.
+    assert!(!fx.host.runs.join(RUN).join("stages/planner/turn.json").exists());
+    fx.actor.handle(ActorMsg::Exited { tab_id: fx.planner.clone(), code: Some(1) });
+    fx.run(|run| assert_eq!(run.stop_reason, Some(StopReason::CarryOutFailed)));
+}
+
+#[test]
+fn a_resume_that_fails_stops_the_run() {
+    let mut fx = Fixture::new("resume_fails");
+    let reviewer = fx.open_plan_reviewer();
+    *fx.host.resume_error.lock().unwrap() = Some("claude would not start".into());
+    let turn = fx.end_turn(&reviewer, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "x" }])), "");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    fx.run(|run| {
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::CarryOutFailed)));
+        assert!(run.claims.iter().all(|c| !c.key.starts_with("back:")), "its hand-off record is given back: {:?}", run.claims);
+    });
+    assert!(fx.stops().last().unwrap().1.contains("claude would not start"), "{:?}", fx.stops());
+}
+
+#[test]
+fn a_stage_with_no_saved_session_gets_the_round_pasted_after_clearing_its_input() {
+    let mut fx = Fixture::new("no_session");
+    let reviewer = fx.open_plan_reviewer();
+    fx.host.store.lock().unwrap().data.tabs.iter_mut().find(|t| t.id == fx.planner).unwrap().sessions.claude_terminal_session_id = None;
+    let turn = fx.end_turn(&reviewer, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "Retries forever." }])), "");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    assert!(fx.resumes().is_empty());
+    let pastes = fx.pastes();
+    assert_eq!(pastes.len(), 1, "{pastes:?}");
+    assert!(pastes[0].1.contains("findings-plan_reviewer-r1.json"), "{}", pastes[0].1);
 }
 
 #[test]
@@ -359,18 +441,34 @@ fn a_round_sent_back_while_the_stage_still_works_stops_the_run() {
 }
 
 #[test]
-fn a_closed_planner_gets_a_new_terminal_with_its_form_and_the_findings() {
-    let mut fx = Fixture::new("new_planner");
+fn an_exited_planner_is_resumed_in_its_own_tab() {
+    let mut fx = Fixture::new("exited_planner");
     let reviewer = fx.open_plan_reviewer();
     fx.host.live.lock().unwrap().remove(&fx.planner.clone());
     let turn = fx.end_turn(&reviewer, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "Retries forever." }])), "");
     fx.actor.handle(ActorMsg::Turn(turn));
+    let resumes = fx.resumes();
+    assert_eq!(resumes.len(), 1, "{resumes:?}");
+    assert_eq!((resumes[0].tab_id.as_str(), resumes[0].session_id.as_str()), (fx.planner.as_str(), PLANNER_SID));
+    assert_eq!(fx.launches().len(), 1, "no new tab");
+}
+
+#[test]
+fn an_exited_planner_with_no_session_gets_a_new_terminal_with_its_form_and_the_findings() {
+    let mut fx = Fixture::new("new_planner");
+    let reviewer = fx.open_plan_reviewer();
+    fx.host.live.lock().unwrap().remove(&fx.planner.clone());
+    fx.host.store.lock().unwrap().data.tabs.iter_mut().find(|t| t.id == fx.planner).unwrap().sessions.claude_terminal_session_id = None;
+    let turn = fx.end_turn(&reviewer, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "Retries forever." }])), "");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    assert!(fx.resumes().is_empty());
     let launches = fx.launches();
-    assert_eq!(launches.len(), 2);
+    assert_eq!(launches.len(), 2, "{:?}", fx.stops());
     let planner = &launches[1];
     assert_eq!(planner.role_id, "role_planner");
     assert!(planner.prompt.contains("Refresh expired tokens instead of failing."), "its own form");
     assert!(planner.prompt.contains("Retries forever."), "and the findings");
+    assert!(planner.prompt.contains("findings-plan_reviewer-r1.json"), "and where they are");
     let tab = fx.tab(&planner.tab_id);
     assert_eq!(tab.chain.as_ref().map(|c| (c.step, c.round)), Some((1, 2)));
     fx.run(|run| assert_eq!(run.tab_ids.get("role_planner"), Some(&planner.tab_id)));
@@ -432,10 +530,13 @@ fn a_failed_gate_goes_back_to_the_implementer_and_a_pass_moves_on() {
     fx.actor.handle(ActorMsg::Turn(turn));
     assert!(fx.actor.busy(), "the gates run on their own thread");
     fx.finish_gates();
-    let pastes = fx.pastes();
-    assert_eq!(pastes.len(), 1, "{pastes:?}");
-    assert_eq!(pastes[0].0, implementer);
-    assert!(pastes[0].1.contains("FAIL src/auth.test.ts"), "{}", pastes[0].1);
+    assert!(fx.pastes().is_empty(), "no keystrokes: {:?}", fx.pastes());
+    let resumes = fx.resumes();
+    assert_eq!(resumes.len(), 1, "{resumes:?}");
+    assert_eq!(resumes[0].tab_id, implementer);
+    let first = fx.launches().into_iter().find(|l| l.tab_id == implementer).unwrap();
+    assert_eq!(resumes[0].session_id, first.session_id, "the Implementer's own session");
+    assert!(resumes[0].prompt.contains("FAIL src/auth.test.ts"), "the gate output: {}", resumes[0].prompt);
     fx.run(|run| {
         assert_eq!(run.autopilot.as_ref().unwrap().gate_retries.get("implementer"), Some(&1));
         assert!(run.events.iter().any(|e| e.kind == "gate" && e.outcome.as_deref() == Some("failed")));
@@ -448,6 +549,7 @@ fn a_failed_gate_goes_back_to_the_implementer_and_a_pass_moves_on() {
     assert_eq!(launch.role_id, "role_pr_reviewer");
     assert!(launch.prompt.contains("Pull request: https://github.com/acme/app/pull/12 (branch `fix/refresh`): Refresh"), "{}", launch.prompt);
     assert!(launch.prompt.contains("npm test: passed"));
+    assert!(launch.prompt.contains(&fx.run_file("prs.json").display().to_string()), "points at prs.json: {}", launch.prompt);
     fx.run(|run| assert!(run.autopilot.as_ref().unwrap().gate_retries.is_empty(), "a pass resets the retries"));
 }
 
@@ -519,7 +621,11 @@ fn your_send_back_goes_into_the_running_stage() {
         })
         .unwrap();
     assert_eq!(outcome.tab_id.as_deref(), Some(fx.planner.as_str()));
-    assert_eq!(fx.pastes().len(), 1);
+    assert!(fx.pastes().is_empty());
+    let resumes = fx.resumes();
+    assert_eq!(resumes.len(), 1);
+    assert_eq!(resumes[0].session_id, PLANNER_SID);
+    assert!(resumes[0].prompt.starts_with("Review findings from the Plan Reviewer (round 1):\n\nAdd a test."), "your text: {}", resumes[0].prompt);
     fx.run(|run| {
         assert_eq!(run.round, 2);
         assert_eq!(run.claims.last().map(|c| (c.key.as_str(), c.by.as_str())), Some(("back:plan_reviewer#1", "you")));
@@ -635,4 +741,25 @@ fn every_built_in_stage_merges_from_the_run_folder_alone() {
     let reviewer = roles.iter().find(|r| r.id == "role_pr_reviewer").unwrap();
     let values = stage_values(reviewer, true, &ee2).values;
     assert_eq!(values["originalTask"], "Title: T\n\nRequest:\nDo it.");
+}
+
+#[test]
+fn a_prefill_for_your_send_comes_from_the_run_files() {
+    let mut fx = Fixture::new("prefill");
+    let reviewer = fx.open_plan_reviewer();
+    fx.end_turn(&reviewer, "r-1", review("APPROVED", json!([])), "Approved.");
+    let outcome = fx
+        .user(UserAction::Prefill { source_tab_id: reviewer.clone(), target_role_id: "role_implementer".into() })
+        .unwrap();
+    let prefill = outcome.prefill.expect("values");
+    assert_eq!(prefill.values["approvedPlan"], "# Plan\n1. Refresh tokens in src/auth.ts.", "from plan.md");
+    assert_eq!(prefill.values["taskType"], "Bug Fix");
+    assert!(prefill.values["additionalContext"].contains(&fx.run_file("plan.md").display().to_string()));
+    assert_eq!(prefill.handoff_text, "# Plan\n1. Refresh tokens in src/auth.ts.");
+    assert!(fx.launches().len() == 1 && fx.run(|run| run.claims.iter().all(|c| c.by != "you")), "nothing happens");
+    // Not the next stage: no prefill.
+    let err = fx
+        .user(UserAction::Prefill { source_tab_id: reviewer, target_role_id: "role_pr_reviewer".into() })
+        .unwrap_err();
+    assert!(err.contains("not the stage after"), "{err}");
 }

@@ -1201,7 +1201,8 @@ export async function pipelineContinue(runId: string): Promise<string[]> {
  * lane, or with `lane` null the run), Continue (after a restart). `values`
  * and `handoffPlan` are the hand-off form as you left it; left out, the
  * actor fills it from the run folder. `force` makes a hand-off autopilot
- * made already.
+ * made already. Prefill (V4, D20) changes nothing: it returns the next
+ * stage's form as the run folder's files fill it.
  */
 export type ActorAction =
   | {
@@ -1224,7 +1225,8 @@ export type ActorAction =
       force?: boolean;
     }
   | { kind: "approve"; lane: string | null }
-  | { kind: "continue" };
+  | { kind: "continue" }
+  | { kind: "prefill"; sourceTabId: string; targetRoleId: string };
 
 /** What a button did on an engine-2 run. */
 export type ActorOutcome = {
@@ -1236,6 +1238,8 @@ export type ActorOutcome = {
   complete?: boolean;
   /** Approve: the lanes it started. */
   started?: string[];
+  /** Prefill: the next stage's form values (no `cwd`) and the text recorded as the hand-off. */
+  prefill?: { values: Record<string, string>; handoffText: string } | null;
 };
 
 export async function pipelineActorMessage(runId: string, action: ActorAction): Promise<ActorOutcome> {

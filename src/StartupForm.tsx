@@ -4672,6 +4672,8 @@ export function StartupForm({
           sourceChain: sourceTab?.chain ?? null,
           loopBack: loopStep,
           planFile: terminalCapture?.planFile ?? null,
+          // Engine 2 (V4, D20): the next stage's form comes from the run folder's files.
+          runFilesFrom: sourceSummary?.chain ? (sourceSummary.bridge?.runId ?? null) : null,
           fallbackFields: handoffFields,
           fallbackTemplate: handoffTemplate,
           roles,

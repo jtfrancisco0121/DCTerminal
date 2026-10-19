@@ -1,8 +1,9 @@
 //! The run folder (`<app data>/runs/<runId>/`) and the files in it. The app
 //! writes `run.json`, `stages/<key>/stage.json` and `stages/<key>/mode` when
-//! it launches a stage; the bridge writes the rest, including the run-level
-//! hand-off files: the Planner's `plan.md` and `tasks.json`, and each
-//! Implementer's `prs.json` (`prs-<lane>.json` in a lane). Every write is
+//! it launches a stage, and the run actor writes each review round it sends
+//! back as `findings-<stage>-r<N>.json` (V4); the bridge writes the rest,
+//! including the run-level hand-off files: the Planner's `plan.md` and
+//! `tasks.json`, and each Implementer's `prs.json` (`prs-<lane>.json` in a lane). Every write is
 //! atomic (a temp file in the same folder, then a rename) and every path is
 //! built from checked parts, so nothing lands outside the run folder (D37).
 
@@ -358,6 +359,40 @@ pub fn prs_file_name(lane: Option<&str>) -> String {
     }
 }
 
+/// `findings-<stage>-r<N>.json`: a reviewer's round the run actor sent back
+/// (V4). The stage it went back to is resumed with a prompt that points here.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunFindings {
+    pub schema: u32,
+    pub run_id: String,
+    /// The reviewer's stage key (`pr_reviewer`, `pr_reviewer@pr1`).
+    pub stage_key: String,
+    /// The review round this was (`round N` in the prompt).
+    pub round: u32,
+    /// The reviewer turn that reported it.
+    pub turn: String,
+    pub at: String,
+    /// `CHANGES_REQUIRED`, `APPROVED_WITH_CHANGES` or `APPROVED`.
+    pub verdict: String,
+    /// The reviewer's `findings[]`, as `submit_result` checked them.
+    pub findings: Value,
+}
+
+/// The file a reviewer's round `round` goes in, when the key is valid.
+pub fn findings_file_name(stage_key: &str, round: u32) -> Option<String> {
+    valid_stage_key(stage_key).then(|| format!("findings-{stage_key}-r{round}.json"))
+}
+
+/// Write `findings` at the run's top; returns its path.
+pub fn write_findings(run_dir: &Path, findings: &RunFindings) -> io::Result<PathBuf> {
+    let name = findings_file_name(&findings.stage_key, findings.round)
+        .ok_or_else(|| io::Error::other(format!("not a stage key: {:?}", findings.stage_key)))?;
+    let path = run_dir.join(name);
+    write_json(&path, findings)?;
+    Ok(path)
+}
+
 /// Why a stage folder could not be used.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OpenError {
@@ -566,6 +601,14 @@ pub(crate) fn write_stage(run_dir: &Path, info: &StageInfo, mode: StageMode) -> 
         _ => {}
     }
     Ok(dir)
+}
+
+/// Forget the stage's last turn (`turn.json`); a missing one is fine.
+pub(crate) fn clear_turn(stage_dir: &Path) -> io::Result<()> {
+    match std::fs::remove_file(stage_dir.join(TURN_FILE)) {
+        Err(err) if err.kind() != io::ErrorKind::NotFound => Err(err),
+        _ => Ok(()),
+    }
 }
 
 /// Every stage folder of a run.

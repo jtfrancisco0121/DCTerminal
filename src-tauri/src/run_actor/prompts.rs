@@ -20,6 +20,10 @@
 //!   reported some) and the findings its previous round sent back; a lane
 //!   gets its task's line from `tasks.json`; a new terminal for a round sent
 //!   back gets the findings.
+//! - The context also points at the run's hand-off files (`plan.md`,
+//!   `tasks.json`, `prs.json`, V4), so the stage can read them whole. Their
+//!   content stays in the fields too: a role's template requires its plan
+//!   field, and a stage may not be allowed to read outside its folder.
 
 use crate::roles::Role;
 use serde_json::Value;
@@ -51,6 +55,9 @@ pub struct StageSources {
     /// The step-1 form's task type, when its own form has none.
     pub task_type: Option<String>,
     pub cwd: String,
+    /// The run's hand-off files that exist, as (what, path): the plan, the
+    /// tasks, the pull requests.
+    pub run_files: Vec<(String, String)>,
 }
 
 /// A stage's form values, the text recorded as its hand-off on the run, and
@@ -191,6 +198,15 @@ fn pull_request_context(prs: &Value) -> String {
     join(&parts)
 }
 
+/// The lines that point a stage at the run's hand-off files.
+fn run_files_note(files: &[(String, String)]) -> String {
+    if files.is_empty() {
+        return String::new();
+    }
+    let lines: Vec<String> = files.iter().map(|(what, path)| format!("- {what}: {path}")).collect();
+    format!("This run's hand-off files (read them for the full detail):\n{}", lines.join("\n"))
+}
+
 /// The values `role`'s terminal starts with. `reviewer`: the stage reviews
 /// the work before it (a stage with a loop-back).
 pub fn stage_values(role: &Role, reviewer: bool, src: &StageSources) -> StageValues {
@@ -283,6 +299,7 @@ pub fn stage_values(role: &Role, reviewer: bool, src: &StageSources) -> StageVal
             ));
         }
     }
+    context.push(run_files_note(&src.run_files));
     context.push(answer(&src.first_answers, "additionalContext"));
     let context = join(&context);
     if let Some(key) = &context_slot {

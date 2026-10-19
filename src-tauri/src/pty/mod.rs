@@ -75,6 +75,24 @@ pub struct PtyRegistry {
     /// Terminals the run actor started with no view (V3): their output, kept
     /// until a view attaches (`pty_open` of that id).
     detached: HashMap<String, Arc<Mutex<DetachedOutput>>>,
+    /// Every other terminal's view, so a stage the run actor resumes (V4)
+    /// keeps the view it was opened with.
+    views: HashMap<String, ViewOutput>,
+}
+
+/// A view a terminal streams to ([`forward`]).
+#[derive(Clone)]
+struct ViewOutput {
+    channel: Channel<PtyPacket>,
+    state: Arc<Mutex<ViewState>>,
+}
+
+#[derive(Default)]
+struct ViewState {
+    /// The program's exit was sent to the view.
+    exited: bool,
+    /// The run actor resumed the terminal: the old program's exit is not sent.
+    quiet: bool,
 }
 
 /// Output of a terminal started with no view. Bytes collect (the newest
@@ -91,6 +109,14 @@ pub(crate) struct DetachedOutput {
 
 /// Most bytes a terminal with no view keeps for the view that attaches later.
 const DETACHED_BUFFER: usize = 2 * 1024 * 1024;
+
+/// How long a stage the run actor resumes gets to exit on SIGTERM before it
+/// is killed (D17): Claude finishes its session log first (T11: 0.6 s).
+pub(crate) const RESUME_STOP_GRACE: Duration = Duration::from_secs(10);
+
+/// Ctrl+U: clears the input line. After an Esc, Claude Code puts the
+/// interrupted prompt back in the input box (D40), so a paste clears it first.
+const CLEAR_INPUT: &[u8] = b"\x15";
 
 fn data_packet(bytes: &[u8]) -> PtyPacket {
     PtyPacket {
@@ -117,6 +143,7 @@ impl PtyRegistry {
             next_open: 0,
             stopping: HashMap::new(),
             detached: HashMap::new(),
+            views: HashMap::new(),
         }
     }
 
@@ -134,19 +161,19 @@ impl PtyRegistry {
     }
 
     /// Paste `text` into the terminal `id` and press Enter, as the scratch
-    /// pad's Send does (`src/terminal/paste.ts`): one bracketed paste, then CR.
+    /// pad's Send does (`src/terminal/paste.ts`): one bracketed paste, then
+    /// CR. The input box is cleared first (D40): an interrupted prompt Claude
+    /// put back there would otherwise be sent along.
     pub fn paste(&self, id: &str, text: &str) -> Result<(), String> {
         let session = self.sessions.get(id).ok_or_else(|| format!("no terminal: {id}"))?;
-        let mut bytes = b"\x1b[200~".to_vec();
-        bytes.extend_from_slice(clean_paste_text(text).as_bytes());
-        bytes.extend_from_slice(b"\x1b[201~\r");
-        session.write(&bytes).map_err(|err| err.to_string())
+        session.write(&paste_bytes(text)).map_err(|err| err.to_string())
     }
 
     /// Close the terminal `id`. A replaced program it was still stopping
     /// is forgotten too; its control thread kills it within the grace.
     pub fn kill(&mut self, id: &str) {
         self.forget_detached(id);
+        self.views.remove(id);
         self.sessions.remove(id);
         self.claude_sessions.remove(id);
         self.opening.remove(id);
@@ -164,6 +191,7 @@ impl PtyRegistry {
         for id in ids {
             self.forget_detached(&id);
         }
+        self.views.clear();
         self.sessions.clear();
         self.claude_sessions.clear();
         self.opening.clear();
@@ -231,13 +259,22 @@ impl Drop for PtyRegistry {
     }
 }
 
-fn forward(output: Receiver<PtyOutput>, channel: Channel<PtyPacket>) {
+fn forward(output: Receiver<PtyOutput>, view: ViewOutput) {
     while let Ok(event) = output.recv() {
         let packet = match event {
             PtyOutput::Data(bytes) => data_packet(&bytes),
-            PtyOutput::Exit { code } => exit_packet(code),
+            PtyOutput::Exit { code } => {
+                let Ok(mut state) = view.state.lock() else {
+                    return;
+                };
+                if !state.quiet {
+                    state.exited = true;
+                    let _ = view.channel.send(exit_packet(code));
+                }
+                return;
+            }
         };
-        if channel.send(packet).is_err() {
+        if view.channel.send(packet).is_err() {
             break;
         }
     }
@@ -286,8 +323,10 @@ pub(crate) type OnExit = Box<dyn FnOnce(Option<i32>) + Send>;
 enum Output {
     /// A view's channel (every terminal the frontend opens).
     View(Channel<PtyPacket>),
-    /// Nowhere yet: kept for a view that attaches later (the run actor's stages).
-    Detached(OnExit),
+    /// The run actor's stages: to `view` when one is attached (a resumed
+    /// stage keeps its old process's view, V4), else kept for a view that
+    /// attaches later.
+    Detached { on_exit: OnExit, view: Option<Channel<PtyPacket>> },
 }
 
 /// A view attaching to a terminal the run actor started (`pty_open` with
@@ -361,6 +400,7 @@ fn open_session_to(
         let mut registry = registry.lock().map_err(|err| err.to_string())?;
         registry.claude_sessions.remove(id);
         registry.forget_detached(id);
+        registry.views.remove(id);
         registry.next_open += 1;
         let token = registry.next_open;
         registry.opening.insert(id.to_string(), token);
@@ -394,10 +434,17 @@ fn open_session_to(
     if let Some(rx) = session.take_output() {
         let name = format!("pty-fwd-{id}");
         match output {
-            Output::View(channel) => thread::Builder::new().name(name).spawn(move || forward(rx, channel)),
-            Output::Detached(on_exit) => {
+            Output::View(channel) => {
+                let view = ViewOutput {
+                    channel,
+                    state: Arc::new(Mutex::new(ViewState::default())),
+                };
+                registry.views.insert(id.to_string(), view.clone());
+                thread::Builder::new().name(name).spawn(move || forward(rx, view))
+            }
+            Output::Detached { on_exit, view } => {
                 let sink = Arc::new(Mutex::new(DetachedOutput {
-                    channel: None,
+                    channel: view,
                     buffer: Vec::new(),
                     exit: None,
                     replaced: false,
@@ -411,6 +458,56 @@ fn open_session_to(
     registry.sessions.insert(id.to_string(), session);
     registry.pin_claude_session(id, claude_session);
     Ok(Some(pid))
+}
+
+/// Resume a stage the run actor started (V4, D17): stop its program with
+/// SIGTERM, wait up to `grace` for it to exit, SIGKILL it if it has not,
+/// then start `spec` (the same session, `--resume`) under the same id. The
+/// old program's exit is nobody's news, and a view attached to it (a stage
+/// the actor started, or one you started, like the Planner) stays attached
+/// and streams the new one. A view that already saw the old one
+/// exit attaches again (`pty_open`). Blocking; the registry lock is not
+/// held during the wait.
+fn replace_detached(
+    registry: &Mutex<PtyRegistry>,
+    id: &str,
+    spec: SpawnSpec,
+    claude_session: Option<String>,
+    on_exit: OnExit,
+    grace: Duration,
+) -> Result<Option<u32>, String> {
+    let (group, view) = {
+        let registry = registry.lock().map_err(|err| err.to_string())?;
+        let group = registry.sessions.get(id).map(|session| session.group());
+        // A view that heard the old program exit shows it ended; it attaches anew.
+        let view = match (registry.detached.get(id), registry.views.get(id)) {
+            (Some(sink), _) => {
+                let mut out = sink.lock().map_err(|err| err.to_string())?;
+                out.replaced = true;
+                let view = out.channel.take();
+                view.filter(|_| out.exit.is_none())
+            }
+            // A stage you started yourself (the Planner) streams to its view.
+            (None, Some(view)) => {
+                let mut state = view.state.lock().map_err(|err| err.to_string())?;
+                state.quiet = !state.exited;
+                state.quiet.then(|| view.channel.clone())
+            }
+            (None, None) => None,
+        };
+        (group, view)
+    };
+    if let Some(group) = group {
+        group.terminate();
+        let deadline = std::time::Instant::now() + grace;
+        while group.running() && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        if group.running() {
+            group.kill();
+        }
+    }
+    open_session_to(registry, id, spec, claude_session, Output::Detached { on_exit, view })
 }
 
 /// Wait until a replaced terminal's program group has exited. Its control
@@ -1091,6 +1188,16 @@ fn role_terminal_start_blocking(
     })
 }
 
+/// What [`PtyRegistry::paste`] writes: Ctrl+U, then `text` as one
+/// bracketed paste, then Enter.
+fn paste_bytes(text: &str) -> Vec<u8> {
+    let mut bytes = CLEAR_INPUT.to_vec();
+    bytes.extend_from_slice(b"\x1b[200~");
+    bytes.extend_from_slice(clean_paste_text(text).as_bytes());
+    bytes.extend_from_slice(b"\x1b[201~\r");
+    bytes
+}
+
 /// Text safe to paste (`cleanPasteText` in `src/terminal/paste.ts`):
 /// newlines as `\n`, and no control byte but `\t` and `\n`, so nothing in
 /// it can end the bracketed paste early.
@@ -1107,9 +1214,15 @@ pub(crate) fn clean_paste_text(text: &str) -> String {
 /// model and run mode, the prompt file for a long prompt), plus the bridge
 /// flags, at 120×40 (D26). A view attaches with `pty_open`. Blocking; no
 /// store lock is held across the spawn. `on_exit` hears the program exit.
+///
+/// `resume` (V4, D17): the stage's terminal already ran this session. Its
+/// program is stopped ([`RESUME_STOP_GRACE`]) and `claude --resume <id>`
+/// starts in its place with the same flags and `launch.prompt` as its turn;
+/// the view stays (see [`replace_detached`]).
 pub(crate) fn start_actor_stage(
     app: &AppHandle,
     launch: &crate::run_actor::StageLaunch,
+    resume: bool,
     on_exit: OnExit,
 ) -> Result<(), String> {
     let store = app.state::<Mutex<StateStore>>();
@@ -1131,10 +1244,19 @@ pub(crate) fn start_actor_stage(
         state.remember_claude_config(tab_id, &dir.path)?;
     }
     let role_launch = |prompt: Option<String>| TerminalLaunch {
-        kind: TerminalKind::Role {
-            role_id: launch.role_id.clone(),
-            run_mode: mode,
-            prompt,
+        kind: if resume {
+            TerminalKind::RoleResume {
+                role_id: launch.role_id.clone(),
+                run_mode: mode,
+                session_id: launch.session_id.clone(),
+                prompt,
+            }
+        } else {
+            TerminalKind::Role {
+                role_id: launch.role_id.clone(),
+                run_mode: mode,
+                prompt,
+            }
         },
         model: Some(model.clone()),
         session_id: Some(launch.session_id.clone()),
@@ -1145,20 +1267,20 @@ pub(crate) fn start_actor_stage(
     let has_prompt = !delivery.argument.trim().is_empty();
     crate::bridge::launch::insert_before_prompt(&mut command.args, has_prompt, launch.bridge_args.clone());
     command.env.push(claude_scheme_env());
-    open_session_to(
-        &registry,
-        tab_id,
-        SpawnSpec {
-            program: command.program,
-            args: command.args,
-            env: command.env,
-            cwd: launch.cwd.clone(),
-            cols: 120,
-            rows: 40,
-        },
-        Some(launch.session_id.clone()),
-        Output::Detached(on_exit),
-    )?;
+    let spec = SpawnSpec {
+        program: command.program,
+        args: command.args,
+        env: command.env,
+        cwd: launch.cwd.clone(),
+        cols: 120,
+        rows: 40,
+    };
+    let session = Some(launch.session_id.clone());
+    if resume {
+        replace_detached(&registry, tab_id, spec, session, on_exit, RESUME_STOP_GRACE)?;
+    } else {
+        open_session_to(&registry, tab_id, spec, session, Output::Detached { on_exit, view: None })?;
+    }
     Ok(())
 }
 
@@ -1409,6 +1531,7 @@ fn pty_open_blocking(
                         role_id: role_id.clone(),
                         run_mode: mode,
                         session_id: id.clone(),
+                        prompt: None,
                     },
                     None => TerminalKind::Role {
                         role_id: role_id.clone(),
@@ -1750,7 +1873,7 @@ mod tests {
             let _ = exit_tx.send(code);
         });
         let script = "printf 'hello from the stage'; read line; printf 'bye'; exit 3";
-        open_session_to(&registry, "s", sh_spec(dir.path(), script), None, Output::Detached(on_exit)).unwrap();
+        open_session_to(&registry, "s", sh_spec(dir.path(), script), None, Output::Detached { on_exit, view: None }).unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             let buffered = {
@@ -1786,7 +1909,7 @@ mod tests {
         let on_exit: OnExit = Box::new(move |code| {
             let _ = exit_tx.send(code);
         });
-        open_session_to(&registry, "t", sh_spec(dir.path(), "sleep 30"), None, Output::Detached(on_exit)).unwrap();
+        open_session_to(&registry, "t", sh_spec(dir.path(), "sleep 30"), None, Output::Detached { on_exit, view: None }).unwrap();
         registry.lock().unwrap().kill("t");
         assert!(exit_rx.recv_timeout(Duration::from_secs(5)).is_err(), "a closed terminal's exit is nobody's news");
         assert!(!registry.lock().unwrap().detached.contains_key("t"), "closing forgets it");
@@ -1797,6 +1920,158 @@ mod tests {
     fn a_paste_keeps_newlines_and_drops_what_could_end_it_early() {
         assert_eq!(clean_paste_text("a\r\nb\rc\n\td"), "a\nb\nc\n\td");
         assert_eq!(clean_paste_text("x\u{1b}[201~y\u{7}"), "x[201~y");
+    }
+
+    // D40: after an Esc, Claude Code puts the interrupted prompt back in the
+    // input box; a paste that did not clear it first would be appended to it.
+    #[test]
+    fn a_paste_clears_the_input_box_first() {
+        assert_eq!(paste_bytes("fix it"), b"\x15\x1b[200~fix it\x1b[201~\r".to_vec());
+    }
+
+    /// Wait until `seen` has a packet that `found` accepts.
+    fn wait_seen(seen: &Seen, what: &str, found: impl Fn(&(String, String, Option<i32>)) -> bool) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !seen.lock().unwrap().iter().any(&found) {
+            assert!(std::time::Instant::now() < deadline, "{what}: {:?}", seen.lock().unwrap());
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn exit_probe() -> (OnExit, std::sync::mpsc::Receiver<Option<i32>>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (
+            Box::new(move |code| {
+                let _ = tx.send(code);
+            }),
+            rx,
+        )
+    }
+
+    // V4 (D17): a loop-back stops the stage's program gracefully and resumes
+    // its session in the same terminal; the view stays on it.
+    #[cfg(unix)]
+    #[test]
+    fn resuming_a_stage_stops_it_gracefully_and_keeps_its_view() {
+        let dir = crate::test_support::TempDir::new("pty_resume_view");
+        let registry = Mutex::new(PtyRegistry::new());
+        let stopped = dir.join("stopped");
+        let script = format!(
+            "trap 'sleep 0.3; touch \"{}\"; exit 143' TERM\nprintf 'old program'\nwhile :; do sleep 0.05; done",
+            stopped.display()
+        );
+        let (old_exit, old_exits) = exit_probe();
+        open_session_to(&registry, "s", sh_spec(dir.path(), &script), None, Output::Detached { on_exit: old_exit, view: None })
+            .unwrap();
+        let (view, seen) = recording_view();
+        // The view attaches once the old program has printed.
+        loop {
+            attach_detached(&registry, "s", &view).unwrap();
+            if seen.lock().unwrap().iter().any(|p| p.1.contains("old program")) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        let (new_exit, new_exits) = exit_probe();
+        replace_detached(
+            &registry,
+            "s",
+            sh_spec(dir.path(), "printf 'resumed program'; read line; exit 4"),
+            Some("sid".into()),
+            new_exit,
+            RESUME_STOP_GRACE,
+        )
+        .unwrap();
+        assert!(stopped.exists(), "SIGTERM first, and the new program waited for the old one to finish");
+        wait_seen(&seen, "the same view streams the resumed program", |p| p.1.contains("resumed program"));
+        assert!(old_exits.recv_timeout(Duration::from_millis(300)).is_err(), "the old exit is nobody's news");
+        assert!(!seen.lock().unwrap().iter().any(|p| p.0 == "exit"), "the view never hears the old program end");
+        assert_eq!(registry.lock().unwrap().claude_sessions.get("s").map(String::as_str), Some("sid"));
+        registry.lock().unwrap().sessions["s"].write(b"\r").unwrap();
+        assert_eq!(new_exits.recv_timeout(Duration::from_secs(5)).unwrap(), Some(4), "the new exit is reported");
+        wait_seen(&seen, "and the view hears it", |p| p.0 == "exit");
+        registry.lock().unwrap().shutdown_all();
+    }
+
+    // The Planner you started yourself has a view from the start: a resume
+    // keeps it too.
+    #[cfg(unix)]
+    #[test]
+    fn resuming_a_terminal_you_opened_keeps_its_view() {
+        let dir = crate::test_support::TempDir::new("pty_resume_own");
+        let registry = Mutex::new(PtyRegistry::new());
+        let (view, seen) = recording_view();
+        let script = "trap 'exit 143' TERM\nprintf 'your planner'\nwhile :; do sleep 0.05; done";
+        open_session(&registry, "p", sh_spec(dir.path(), script), None, view).unwrap();
+        wait_seen(&seen, "the view streams it", |p| p.1.contains("your planner"));
+        let (new_exit, new_exits) = exit_probe();
+        replace_detached(&registry, "p", sh_spec(dir.path(), "printf 'resumed planner'; read line; exit 5"), None, new_exit, RESUME_STOP_GRACE)
+            .unwrap();
+        wait_seen(&seen, "the same view streams the resumed program", |p| p.1.contains("resumed planner"));
+        assert!(!seen.lock().unwrap().iter().any(|p| p.0 == "exit"), "the view never hears the old program end");
+        registry.lock().unwrap().sessions["p"].write(b"\r").unwrap();
+        assert_eq!(new_exits.recv_timeout(Duration::from_secs(5)).unwrap(), Some(5));
+        wait_seen(&seen, "and the view hears the new one end", |p| p.0 == "exit" && p.2 == Some(5));
+        registry.lock().unwrap().shutdown_all();
+    }
+
+    // D17: SIGKILL when the program has not exited within the grace.
+    #[cfg(unix)]
+    #[test]
+    fn resuming_a_stage_kills_a_program_that_ignores_sigterm() {
+        let dir = crate::test_support::TempDir::new("pty_resume_kill");
+        let registry = Mutex::new(PtyRegistry::new());
+        let ready = dir.join("ready");
+        let script = format!("trap '' TERM\ntouch '{}'\nwhile :; do sleep 0.05; done", ready.display());
+        let (old_exit, _old_exits) = exit_probe();
+        open_session_to(&registry, "s", sh_spec(dir.path(), &script), None, Output::Detached { on_exit: old_exit, view: None })
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !ready.exists() {
+            assert!(std::time::Instant::now() < deadline, "the old program is ready");
+            thread::sleep(Duration::from_millis(20));
+        }
+        let old = registry.lock().unwrap().sessions["s"].group();
+        let (new_exit, _new_exits) = exit_probe();
+        let began = std::time::Instant::now();
+        let grace = Duration::from_millis(400);
+        replace_detached(&registry, "s", sh_spec(dir.path(), "sleep 5"), None, new_exit, grace).unwrap();
+        assert!(began.elapsed() >= grace, "it waited the grace out first");
+        assert!(!old.running(), "then killed it");
+        assert!(registry.lock().unwrap().running("s"), "and started the new program");
+        registry.lock().unwrap().shutdown_all();
+    }
+
+    // A stage whose program already exited (its view showed that) is resumed
+    // too; the view attaches anew and gets what the new program printed.
+    #[cfg(unix)]
+    #[test]
+    fn resuming_an_exited_stage_keeps_the_new_output_for_the_next_view() {
+        let dir = crate::test_support::TempDir::new("pty_resume_exited");
+        let registry = Mutex::new(PtyRegistry::new());
+        let (old_exit, old_exits) = exit_probe();
+        open_session_to(&registry, "s", sh_spec(dir.path(), "exit 1"), None, Output::Detached { on_exit: old_exit, view: None })
+            .unwrap();
+        let (view, seen) = recording_view();
+        attach_detached(&registry, "s", &view).unwrap();
+        assert_eq!(old_exits.recv_timeout(Duration::from_secs(5)).unwrap(), Some(1));
+        wait_seen(&seen, "the view saw it exit", |p| p.0 == "exit");
+        let (new_exit, _new_exits) = exit_probe();
+        replace_detached(&registry, "s", sh_spec(dir.path(), "printf 'back again'; sleep 5"), None, new_exit, RESUME_STOP_GRACE)
+            .unwrap();
+        thread::sleep(Duration::from_millis(300));
+        assert!(!seen.lock().unwrap().iter().any(|p| p.1.contains("back again")), "not into the ended view");
+        let (next, next_seen) = recording_view();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            attach_detached(&registry, "s", &next).unwrap();
+            if next_seen.lock().unwrap().iter().any(|p| p.1.contains("back again")) {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "the next view gets it");
+            thread::sleep(Duration::from_millis(20));
+        }
+        registry.lock().unwrap().shutdown_all();
     }
 
     /// Open a terminal whose program takes 0.4 s to exit on SIGTERM (like

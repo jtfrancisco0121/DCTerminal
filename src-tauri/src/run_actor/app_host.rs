@@ -5,7 +5,8 @@
 //!
 //! - `chain-run-updated`: an overview refetches the run.
 //! - `pipeline-stage-opened` (`{runId, tabId}`): the actor opened a stage
-//!   terminal; the frontend lists the tab and attaches to its output.
+//!   terminal, or resumed one (V4); the frontend lists the tab and attaches
+//!   to its output (again, when its view saw the old program exit).
 //! - `autopilot-stopped`: the run stopped; you get a toast and a notification.
 //! - `pipeline-notice` (`{runId, title, body}`): the run is complete.
 //!
@@ -55,6 +56,17 @@ impl AppHost {
     pub fn new(app: AppHandle) -> Self {
         Self { app }
     }
+
+    /// A stage terminal's exit goes to its run's actor.
+    fn on_exit(&self, launch: &StageLaunch) -> crate::pty::OnExit {
+        let app = self.app.clone();
+        let (run_id, tab_id) = (launch.run_id.clone(), launch.tab_id.clone());
+        Box::new(move |code: Option<i32>| {
+            if let Some(actors) = app.try_state::<AppActors>() {
+                actors.send(&run_id, ActorMsg::Exited { tab_id, code });
+            }
+        })
+    }
 }
 
 impl Host for AppHost {
@@ -77,14 +89,11 @@ impl Host for AppHost {
     }
 
     fn spawn_stage(&self, launch: &StageLaunch) -> Result<(), String> {
-        let app = self.app.clone();
-        let (run_id, tab_id) = (launch.run_id.clone(), launch.tab_id.clone());
-        let on_exit = Box::new(move |code: Option<i32>| {
-            if let Some(actors) = app.try_state::<AppActors>() {
-                actors.send(&run_id, ActorMsg::Exited { tab_id, code });
-            }
-        });
-        crate::pty::start_actor_stage(&self.app, launch, on_exit)
+        crate::pty::start_actor_stage(&self.app, launch, false, self.on_exit(launch))
+    }
+
+    fn resume_stage(&self, launch: &StageLaunch) -> Result<(), String> {
+        crate::pty::start_actor_stage(&self.app, launch, true, self.on_exit(launch))
     }
 
     fn paste(&self, tab_id: &str, text: &str) -> Result<(), String> {

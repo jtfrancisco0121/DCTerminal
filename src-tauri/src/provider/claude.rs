@@ -155,6 +155,7 @@ pub fn claude_terminal_args(req: &TerminalLaunch) -> Result<Vec<String>, String>
         TerminalKind::RoleResume {
             role_id,
             session_id,
+            prompt,
             ..
         } => {
             let id = session_id.trim();
@@ -165,6 +166,10 @@ pub fn claude_terminal_args(req: &TerminalLaunch) -> Result<Vec<String>, String>
             args.push(id.to_string());
             args.push("--permission-mode".to_string());
             args.push(claude_terminal_role_mode(role_id).to_string());
+            // `--resume <id> "<prompt>"` starts that turn at once (T11).
+            if let Some(text) = prompt.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+                args.push(text.to_string());
+            }
         }
         TerminalKind::Role {
             role_id, prompt, ..
@@ -538,6 +543,7 @@ mod tests {
                 role_id: role_id.to_string(),
                 run_mode: RunMode::Default,
                 session_id: ID.to_string(),
+                prompt: None,
             },
             model: model.map(str::to_string),
             session_id: None,
@@ -553,11 +559,27 @@ mod tests {
         // No new session id and no startup prompt on a resume.
         let args = claude_terminal_args(&resume("role_implementer", None)).unwrap();
         assert!(!args.iter().any(|a| a == "--session-id"));
+        // V4: the run actor resumes a stage with its next prompt, last.
+        let with_prompt = TerminalLaunch {
+            kind: TerminalKind::RoleResume {
+                role_id: "role_implementer".to_string(),
+                run_mode: RunMode::Default,
+                session_id: ID.to_string(),
+                prompt: Some("Read findings-pr_reviewer-r1.json".to_string()),
+            },
+            model: Some("opus".to_string()),
+            session_id: Some(ID.to_string()),
+        };
+        assert_eq!(
+            claude_terminal_args(&with_prompt).unwrap(),
+            vec!["--model", "opus", "--resume", ID, "--permission-mode", "auto", "Read findings-pr_reviewer-r1.json"]
+        );
         let bad = TerminalLaunch {
             kind: TerminalKind::RoleResume {
                 role_id: "role_implementer".to_string(),
                 run_mode: RunMode::Default,
                 session_id: "../etc".to_string(),
+                prompt: None,
             },
             model: None,
             session_id: None,

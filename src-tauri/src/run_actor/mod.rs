@@ -11,8 +11,15 @@
 //! own (never inside the Stop hook, D16), asks `pipelines::autopilot::decide`
 //! what to do, and does it: opens the next stage's terminal with a prompt it
 //! builds from the role template and the run folder's files (`prompts`),
-//! pastes a round sent back or a failed check's output into the stage that
-//! must act, starts lanes that were waiting, or stops and tells you why.
+//! sends a round back or a failed check's output to the stage that must act,
+//! starts lanes that were waiting, or stops and tells you why.
+//!
+//! Sending to a stage resumes it (V4, D17): its `claude` is stopped
+//! (SIGTERM, SIGKILL after 10 s) and `claude --resume <session>` starts in
+//! the same terminal with the same flags and a short prompt, pointing at
+//! the round's `findings-<stage>-r<N>.json` or carrying the check's output.
+//! The tab and its view stay. Only a stage with no saved session gets a
+//! paste, which clears the input box first (D40).
 //! Handling one message at a time, plus the decided-turn list on the run,
 //! replaces the frontend's claims for engine-2 runs: your Send and
 //! autopilot's hand-off can no longer race, because both are messages here.
@@ -125,6 +132,21 @@ pub enum UserAction {
     /// stage finished while the app was closed.
     #[serde(rename = "continue")]
     Continue,
+    /// What your Send from `source_tab_id` to the next stage would carry,
+    /// built from the run folder's files (D20), for the hand-off form to
+    /// show before you send. Changes nothing.
+    #[serde(rename = "prefill", rename_all = "camelCase")]
+    Prefill { source_tab_id: String, target_role_id: String },
+}
+
+/// A hand-off form filled from the run folder (`UserAction::Prefill`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Prefill {
+    /// The next stage's form values (no `cwd`).
+    pub values: HashMap<String, String>,
+    /// The text recorded as the hand-off on the run.
+    pub handoff_text: String,
 }
 
 /// What a button did.
@@ -144,6 +166,9 @@ pub struct UserOutcome {
     /// Approve: lanes it started.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub started: Vec<String>,
+    /// Prefill: the form from the run folder (boxed: most outcomes carry none).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefill: Option<Box<Prefill>>,
 }
 
 /// A stage terminal the actor wants started. The host turns it into the
@@ -174,6 +199,11 @@ pub trait Host: Send + Sync + 'static {
     fn role(&self, role_id: &str) -> Option<Role>;
     /// Start a stage terminal (see [`StageLaunch`]).
     fn spawn_stage(&self, launch: &StageLaunch) -> Result<(), String>;
+    /// Resume a stage terminal's session (V4, D17): stop its program
+    /// (SIGTERM, then SIGKILL after 10 s), then start `claude --resume
+    /// <session_id>` in the same terminal with the same flags and `prompt`
+    /// as its next turn. A view on the terminal stays on it. Blocking.
+    fn resume_stage(&self, launch: &StageLaunch) -> Result<(), String>;
     /// Paste `text` into a running terminal and press Enter.
     fn paste(&self, tab_id: &str, text: &str) -> Result<(), String>;
     /// The terminal's program is running.

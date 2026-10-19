@@ -275,6 +275,22 @@ pub fn relaunch_args(runs_root: &Path, tag: &BridgeTag, tab_id: &str, program: &
         .then(|| launch_args(info.result, program, &run_dir, &tag.run_id, &tag.stage, tab_id))
 }
 
+/// A stage about to be resumed (V4): its last turn was handed on, so it
+/// reads as working (not idle, and an exit before its next turn ends is
+/// news) until the resumed session's first prompt writes a new turn. Does
+/// nothing when `tab_id` no longer owns the stage.
+pub fn clear_stage_turn(runs_root: &Path, tag: &BridgeTag, tab_id: &str) -> Result<(), String> {
+    let Some(dir) = folder::run_dir(runs_root, &tag.run_id).and_then(|run| folder::stage_dir_path(&run, &tag.stage)) else {
+        return Ok(());
+    };
+    match read_stage(&dir) {
+        Some((info, _)) if info.run_id == tag.run_id && info.tab_id == tab_id => {
+            folder::clear_turn(&dir).map_err(|err| format!("{}: {err}", dir.display()))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// The run's `tasks.json`: the tasks of its Planner's latest plan, which
 /// fan-out reads directly. `None` before a bridged Planner handed one over.
 pub fn read_run_tasks(runs_root: &Path, run_id: &str) -> Option<folder::RunTasks> {

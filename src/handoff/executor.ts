@@ -15,6 +15,7 @@ import {
   gitRepoInfo,
   handoffAttach,
   handoffSave,
+  pipelineActorMessage,
   pipelineClaimHandoff,
   pipelineReleaseHandoff,
   terminalPlanFile,
@@ -53,7 +54,12 @@ export type HandoffIo = {
   validateAndPreview: typeof validateAndPreview;
   handoffSave: typeof handoffSave;
   handoffAttach: typeof handoffAttach;
+  /** Engine 2: the next stage's form as the run folder's files fill it (null when the actor has none). */
+  runFilesPrefill: (runId: string, sourceTabId: string, targetRoleId: string) => Promise<RunFilesPrefill | null>;
 };
+
+/** The next stage's form values from the run folder (no `cwd`), and the text recorded as the hand-off. */
+export type RunFilesPrefill = { values: Record<string, string>; handoffText: string };
 
 export const bridgeHandoffIo: HandoffIo = {
   getRole,
@@ -64,6 +70,8 @@ export const bridgeHandoffIo: HandoffIo = {
   validateAndPreview,
   handoffSave,
   handoffAttach,
+  runFilesPrefill: async (runId, sourceTabId, targetRoleId) =>
+    (await pipelineActorMessage(runId, { kind: "prefill", sourceTabId, targetRoleId })).prefill ?? null,
 };
 
 export function handoffFieldsOf(role: Role): HandoffField[] {
@@ -95,6 +103,12 @@ export type PrepareRequest = {
   loopBack: LoopBackStep | null;
   /** The source terminal's plan file when the scope is `plan_file`. */
   planFile?: { name: string; path: string } | null;
+  /**
+   * Engine 2 (V4, D20): the source's run id when it is a bridged stage. The
+   * next stage's form is then filled from the run folder's files (plan.md,
+   * tasks.json, prs.json), not mapped from the reply; it stays editable.
+   */
+  runFilesFrom?: string | null;
   /** Fields and template loaded with the dialog, used if the role cannot be re-read. */
   fallbackFields?: HandoffField[] | null;
   fallbackTemplate?: string | null;
@@ -155,6 +169,22 @@ async function implementerContext(
 }
 
 /**
+ * The mapped form with the run folder's values over it (engine 2, D20). The
+ * plan field then holds the whole plan from `plan.md`, so nothing is cut.
+ */
+export function withRunFiles(mapped: MappedHandoff, prefill: RunFilesPrefill): MappedHandoff {
+  const answers: Record<string, string> = { ...mapped.answers, ...prefill.values, cwd: mapped.answers.cwd ?? "" };
+  const planFilled = !!mapped.planField && !!prefill.values[mapped.planField]?.trim();
+  return {
+    ...mapped,
+    answers,
+    planText: prefill.handoffText.trim() ? prefill.handoffText : mapped.planText,
+    inlinePlan: planFilled && mapped.planField ? answers[mapped.planField] : mapped.inlinePlan,
+    truncated: planFilled ? false : mapped.truncated,
+  };
+}
+
+/**
  * Everything before anything is written: the mapped form, the chain step,
  * and (for a terminal, which starts the CLI at once) a complete prompt.
  */
@@ -183,6 +213,13 @@ export async function prepareHandoff(
     // intentionally silent: without it the task type is simply not carried over.
     const view = await io.getPipelineRun(nextChain.chainId).catch(() => null);
     mapped = carryChainTaskType(mapped, target, view?.taskType);
+  }
+  if (req.runFilesFrom && nextChain && !req.loopBack) {
+    // intentionally silent: without it the form keeps the values mapped from the reply.
+    const prefill = await io
+      .runFilesPrefill(req.runFilesFrom, source.sourceTabId, req.targetRoleId)
+      .catch(() => null);
+    if (prefill) mapped = withRunFiles(mapped, prefill);
   }
   if (req.surface === "terminal") {
     // The form summary names what the hand-off left empty, then the backend
