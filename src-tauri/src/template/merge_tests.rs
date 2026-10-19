@@ -231,8 +231,9 @@ mod tests {
     }
 
     #[test]
-    fn both_reviewer_templates_carry_the_result_instructions_token() {
-        for id in ["role_plan_reviewer", "role_pr_reviewer"] {
+    fn bridged_role_templates_carry_the_result_instructions_token() {
+        // V2a: the reviewers; V2b: the Planner and the Implementer.
+        for id in ["role_plan_reviewer", "role_pr_reviewer", "role_planner", "role_implementer"] {
             let role = reviewer_role(id);
             assert!(role.template_text.contains("{{result_instructions}}"), "{id}");
             // It is filled by the app, never a form field.

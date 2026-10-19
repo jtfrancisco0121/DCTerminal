@@ -89,6 +89,9 @@ pub const SHIPPED_TEMPLATE_HASHES: &[(&str, &str)] = &[
     // Before `{{result_instructions}}` (pipeline v2, V2a).
     ("role_plan_reviewer", "sha256:f5781f4b8c5f3a1b66174a6ea3bb93eeb4a098282a645205f29c46f78380d2e2"),
     ("role_pr_reviewer", "sha256:2288d8119621c91393174f9827bf7f3dfb678d419de1f183c515b0a294274061"),
+    // Before `{{result_instructions}}` (pipeline v2, V2b).
+    ("role_planner", "sha256:92f3ac859197d94782928163fbd068ccf7e37a63f5f188092bf9ec5e7ca9a4d9"),
+    ("role_implementer", "sha256:863eab45a897b33b03eddf946e973081614f32b4408d87ad3de59ebec49b2831"),
 ];
 
 /// Moves unedited built-in roles to the current seed template and fields.

@@ -7,12 +7,15 @@
 //! `--allowedTools` and `--mcp-config` take several values, so they come
 //! before `--settings` (one value), and the startup prompt stays last. Hooks
 //! and the MCP server are this executable run as `dcterminal bridge`, given
-//! as an `args` array so nothing is shell-quoted (D38).
+//! as an `args` array so nothing is shell-quoted (D38). A Planner stage gets
+//! `--settings` only: it reports through ExitPlanMode (D11), so it has no
+//! tool to allow or serve.
 //!
-//! V2a bridges reviewer stages only: the stage of an engine-2 run that has a
-//! loop-back and no parallel reviewers. Planner and Implementer stages keep
-//! the v1 path until V2b, and so does a stage with parallel reviewers, whose
-//! merge stays in the frontend until the run actor (V3).
+//! Bridged stages of an engine-2 run: a reviewer (a stage with a loop-back
+//! and no parallel reviewers, V2a), the Planner and the Implementer (V2b),
+//! told apart by role id until stages carry a kind (H4). A stage with
+//! parallel reviewers keeps the v1 path, its merge staying in the frontend
+//! until the run actor (V3), and so does any other stage.
 
 use super::folder::{
     self, read_mode, read_result, read_stage, stage_dirs, write_mode, BridgeTurn, ResultKind, StageInfo,
@@ -52,24 +55,71 @@ pub struct BridgeTag {
 
 /// Whether `role_id` starting at `chain`'s step of `run` launches bridged.
 pub fn plan_for(run: &PipelineRun, def: &PipelineDef, chain: &ChainRef, role_id: &str) -> Option<BridgePlan> {
-    if run.engine < ENGINE_V2 || !folder::valid_run_id(&run.id) {
-        return None;
-    }
-    let stage = def.stages.get((chain.step as usize).checked_sub(1)?)?;
-    if stage.role_id != role_id || stage.loop_back.is_none() || !stage.also_reviewers.is_empty() {
+    if run.engine < ENGINE_V2 {
         return None;
     }
     let lane = chain.lane.clone().filter(|id| run.lane(id).is_some());
+    let autopilot = run.autopilot.as_ref().is_some_and(|a| a.enabled);
+    stage_plan(&run.id, def, chain, role_id, lane, autopilot)
+}
+
+/// The chain a launch starts (Eagle mode's first stage), before its run
+/// exists: the app makes the run (engine 2, autopilot off) just before the
+/// spawn, so the first stage launches bridged like the later ones.
+pub fn new_chain(def: &PipelineDef, chain_kind: &str, now_ms: i64) -> ChainRef {
+    ChainRef {
+        chain_id: format!("ee_{now_ms}"),
+        kind: chain_kind.to_string(),
+        step: 1,
+        total: def.stages.len() as u32,
+        round: 1,
+        lane: None,
+    }
+}
+
+/// [`plan_for`] for the first stage of a run [`new_chain`] starts.
+pub fn plan_for_new_run(def: &PipelineDef, chain: &ChainRef, role_id: &str) -> Option<BridgePlan> {
+    stage_plan(&chain.chain_id, def, chain, role_id, None, false)
+}
+
+fn stage_plan(
+    run_id: &str,
+    def: &PipelineDef,
+    chain: &ChainRef,
+    role_id: &str,
+    lane: Option<String>,
+    autopilot: bool,
+) -> Option<BridgePlan> {
+    if !folder::valid_run_id(run_id) {
+        return None;
+    }
+    let stage = def.stages.get((chain.step as usize).checked_sub(1)?)?;
+    if stage.role_id != role_id {
+        return None;
+    }
+    let kind = stage_kind(stage)?;
     let key = stage_key(&stage.id, lane.as_deref());
     folder::valid_stage_key(&key).then(|| BridgePlan {
-        run_id: run.id.clone(),
+        run_id: run_id.to_string(),
         stage_id: stage.id.clone(),
         role_id: stage.role_id.clone(),
         lane,
         stage_key: key,
-        kind: ResultKind::Reviewer,
-        autopilot: run.autopilot.as_ref().is_some_and(|a| a.enabled),
+        kind,
+        autopilot,
     })
+}
+
+/// The result a stage reports with, when it launches bridged.
+fn stage_kind(stage: &crate::pipelines::StageDef) -> Option<ResultKind> {
+    if stage.loop_back.is_some() {
+        return stage.also_reviewers.is_empty().then_some(ResultKind::Reviewer);
+    }
+    match stage.role_id.as_str() {
+        "role_planner" => Some(ResultKind::Planner),
+        "role_implementer" => Some(ResultKind::Implementer),
+        _ => None,
+    }
 }
 
 /// `<app data>/runs`.
@@ -131,15 +181,30 @@ fn hook(program: &Path, run_dir: &Path, run_id: &str, stage_key: &str, tab_id: &
     json!({ "type": "command", "command": program.display().to_string(), "args": args })
 }
 
-/// The inline `--settings`: UserPromptSubmit and Stop for every turn, and
-/// PreToolUse answering `allow` for `submit_result` (D12).
-pub fn hook_settings(program: &Path, run_dir: &Path, run_id: &str, stage_key: &str, tab_id: &str) -> Value {
+/// The inline `--settings`: UserPromptSubmit and Stop for every turn;
+/// PreToolUse answering `allow` for `submit_result` (D12), or on a Planner
+/// taking its plan from ExitPlanMode (D11); PermissionRequest and
+/// Notification for Needs you (D22).
+pub fn hook_settings(
+    kind: ResultKind,
+    program: &Path,
+    run_dir: &Path,
+    run_id: &str,
+    stage_key: &str,
+    tab_id: &str,
+) -> Value {
     let on = |event: &str| hook(program, run_dir, run_id, stage_key, tab_id, event);
+    let pre_tool = match kind {
+        ResultKind::Planner => "ExitPlanMode",
+        ResultKind::Reviewer | ResultKind::Implementer => FULL_TOOL_NAME,
+    };
     json!({
         "hooks": {
             "UserPromptSubmit": [{ "hooks": [on("UserPromptSubmit")] }],
             "Stop": [{ "hooks": [on("Stop")] }],
-            "PreToolUse": [{ "matcher": FULL_TOOL_NAME, "hooks": [on("PreToolUse")] }],
+            "PreToolUse": [{ "matcher": pre_tool, "hooks": [on("PreToolUse")] }],
+            "PermissionRequest": [{ "hooks": [on("PermissionRequest")] }],
+            "Notification": [{ "hooks": [on("Notification")] }],
         }
     })
 }
@@ -159,15 +224,28 @@ pub fn mcp_config(program: &Path, run_dir: &Path, run_id: &str, stage_key: &str,
 
 /// The flags added to a bridged stage's `claude`, in an order that keeps
 /// the startup prompt positional (see the module header).
-pub fn launch_args(program: &Path, run_dir: &Path, run_id: &str, stage_key: &str, tab_id: &str) -> Vec<String> {
-    vec![
-        "--allowedTools".to_string(),
-        FULL_TOOL_NAME.to_string(),
-        "--mcp-config".to_string(),
-        mcp_config(program, run_dir, run_id, stage_key, tab_id).to_string(),
+pub fn launch_args(
+    kind: ResultKind,
+    program: &Path,
+    run_dir: &Path,
+    run_id: &str,
+    stage_key: &str,
+    tab_id: &str,
+) -> Vec<String> {
+    let mut args = Vec::new();
+    if kind != ResultKind::Planner {
+        args.extend([
+            "--allowedTools".to_string(),
+            FULL_TOOL_NAME.to_string(),
+            "--mcp-config".to_string(),
+            mcp_config(program, run_dir, run_id, stage_key, tab_id).to_string(),
+        ]);
+    }
+    args.extend([
         "--settings".to_string(),
-        hook_settings(program, run_dir, run_id, stage_key, tab_id).to_string(),
-    ]
+        hook_settings(kind, program, run_dir, run_id, stage_key, tab_id).to_string(),
+    ]);
+    args
 }
 
 /// A bridged tab relaunching (Restart, resume): the same flags, while the
@@ -177,7 +255,14 @@ pub fn relaunch_args(runs_root: &Path, tag: &BridgeTag, tab_id: &str, program: &
     let dir = folder::stage_dir_path(&run_dir, &tag.stage)?;
     let (info, _) = read_stage(&dir)?;
     (info.run_id == tag.run_id && info.tab_id == tab_id)
-        .then(|| launch_args(program, &run_dir, &tag.run_id, &tag.stage, tab_id))
+        .then(|| launch_args(info.result, program, &run_dir, &tag.run_id, &tag.stage, tab_id))
+}
+
+/// The run's `tasks.json`: the tasks of its Planner's latest plan, which
+/// fan-out reads directly. `None` before a bridged Planner handed one over.
+pub fn read_run_tasks(runs_root: &Path, run_id: &str) -> Option<folder::RunTasks> {
+    let run_dir = folder::run_dir(runs_root, run_id)?;
+    folder::read_tasks(&run_dir).filter(|tasks| tasks.run_id == run_id)
 }
 
 /// Put `extra` before the trailing startup prompt (when there is one).

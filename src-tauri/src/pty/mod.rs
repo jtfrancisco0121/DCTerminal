@@ -644,22 +644,60 @@ pub struct RoleTerminalInput {
     #[serde(default)]
     pub provider: Option<ProviderId>,
     /// The pipeline step this terminal is opened for (a hand-off on a
-    /// chain). A reviewer stage of an engine-2 run launches with the bridge.
+    /// chain). A bridged stage of an engine-2 run launches with the bridge.
     #[serde(default)]
     pub chain: Option<crate::store::ChainRef>,
+    /// Eagle mode: this start begins a new chain of this kind (`eagle1`,
+    /// `eagle2`). Its run is made just before the spawn, so its first stage
+    /// launches with the bridge too. Ignored for a tab already in a chain.
+    #[serde(default)]
+    pub start_chain: Option<String>,
+}
+
+/// The chain this start begins (`RoleTerminalInput::start_chain`), when the
+/// tab is in none yet.
+fn starting_chain(
+    store: &Mutex<StateStore>,
+    input: &RoleTerminalInput,
+) -> Result<Option<crate::store::ChainRef>, String> {
+    let Some(kind) = input.start_chain.as_deref().map(str::trim).filter(|k| !k.is_empty()) else {
+        return Ok(None);
+    };
+    if input.chain.is_some() {
+        return Ok(None);
+    }
+    let state = store.lock().map_err(|err| err.to_string())?;
+    let chained = input
+        .tab_id
+        .as_deref()
+        .and_then(|id| state.tab_by_id(id))
+        .is_some_and(|tab| tab.chain.is_some());
+    drop(state);
+    if chained {
+        return Ok(None);
+    }
+    Ok(crate::pipelines::find(kind)
+        .map(|def| crate::bridge::launch::new_chain(&def, kind, chrono::Utc::now().timestamp_millis())))
 }
 
 /// The bridge plan for a role terminal opened at `chain`, when that stage
-/// launches bridged (`bridge::launch::plan_for`).
+/// launches bridged (`bridge::launch::plan_for`). Without a `chain`, the
+/// chain step the tab already holds: a fanned-out lane's Implementer, or a
+/// prefilled stage form you start yourself.
 fn bridge_plan_for(
     store: &Mutex<StateStore>,
     chain: Option<&crate::store::ChainRef>,
+    tab_id: Option<&str>,
     role_id: &str,
 ) -> Result<Option<crate::bridge::BridgePlan>, String> {
-    let Some(chain) = chain else {
+    let state = store.lock().map_err(|err| err.to_string())?;
+    let held = tab_id
+        .and_then(|id| state.tab_by_id(id))
+        .and_then(|tab| tab.chain.clone());
+    let Some(chain) = chain.cloned().or(held) else {
         return Ok(None);
     };
-    let state = store.lock().map_err(|err| err.to_string())?;
+    let chain = &chain;
     let run = state
         .chain_run_id(&chain.chain_id)
         .and_then(|id| state.pipeline_run_by_id(&id));
@@ -729,12 +767,15 @@ fn role_terminal_start_blocking(
             input.tab_id.as_deref(),
         )
     };
-    // Pipeline v2 (ADR-015): a reviewer stage of an engine-2 run reports
-    // through the bridge, and its prompt says how.
-    let bridge = if provider.id() == ProviderId::Claude {
-        bridge_plan_for(&store, input.chain.as_ref(), &role.id)?
-    } else {
-        None
+    // Pipeline v2 (ADR-015): a bridged stage of an engine-2 run reports
+    // through the bridge, and its prompt says how. A chain this start
+    // begins is planned as the engine-2 run it is about to get.
+    let starting = starting_chain(&store, &input)?;
+    let mut bridge = match (&starting, provider.id() == ProviderId::Claude) {
+        (_, false) => None,
+        (Some(chain), true) => crate::pipelines::find(&chain.kind)
+            .and_then(|def| crate::bridge::launch::plan_for_new_run(&def, chain, &role.id)),
+        (None, true) => bridge_plan_for(&store, input.chain.as_ref(), input.tab_id.as_deref(), &role.id)?,
     };
     let instructions = bridge
         .as_ref()
@@ -835,6 +876,18 @@ fn role_terminal_start_blocking(
             state.remember_claude_terminal_session(&tab_id, id)?;
         }
     }
+    // The chain this start begins: its run exists before the spawn (and
+    // before the run folder below), labelled the way the frontend used to
+    // label it once the terminal ran.
+    if let Some(chain) = starting {
+        let mut state = store.lock().map_err(|err| err.to_string())?;
+        if state.tab_by_id(&tab_id).is_some_and(|tab| tab.chain.is_none()) {
+            crate::commands::chain_events::set_tab_chain_and_notify(&app, &mut state, &tab_id, Some(chain), None)?;
+        } else {
+            // It joined a chain meanwhile: the planned run never came to be.
+            bridge = None;
+        }
+    }
     // The run folder is written before the launch, and the tab records the
     // stage it holds (or that it holds none, when reused for another role).
     let bridge_args = match &bridge {
@@ -842,6 +895,7 @@ fn role_terminal_start_blocking(
             let (runs, program) = bridge_paths(&app)?;
             let run_dir = crate::bridge::launch::prepare_stage(&runs, plan, &tab_id)?;
             Some(crate::bridge::launch::launch_args(
+                plan.kind,
                 &program,
                 &run_dir,
                 &plan.run_id,

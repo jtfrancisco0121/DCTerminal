@@ -466,6 +466,8 @@ Only add a dependency when one unit really needs another's code. Units with no d
 
 Questions that must be answered before implementation, or `None.`
 
+{{result_instructions}}
+
 **STOP HERE.**
 
 Do not implement anything until I explicitly approve the implementation plan.

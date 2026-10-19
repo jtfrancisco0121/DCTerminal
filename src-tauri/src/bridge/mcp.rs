@@ -6,11 +6,12 @@
 //!
 //! An accepted result is written to `results/<turn>.json` for the turn in
 //! `turn.json` before the tool answers, so the Stop that follows finds it.
+//! An Implementer's also goes to the run's `prs.json` (`prs-<lane>.json`).
 //! Rejected arguments get a tool error naming each problem; nothing is
 //! written. The stage folder is checked again on every call, so a tab that
 //! lost its stage to a newer one cannot report into it.
 
-use super::folder::{OpenError, ResultKind, StageDir, StoredResult, SCHEMA};
+use super::folder::{OpenError, ResultKind, RunPrs, StageDir, StoredResult, SCHEMA};
 use super::schema::{self, TOOL_NAME};
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
@@ -135,7 +136,22 @@ fn call(server: &Server, params: &Value) -> Value {
                 at: super::folder::now(),
                 result: result.clone(),
             };
-            match dir.write_result(&stored) {
+            let saved = match dir.info.result {
+                // The run-level copy first: the result is what ends the turn.
+                ResultKind::Implementer => dir
+                    .write_prs(&RunPrs {
+                        schema: SCHEMA,
+                        run_id: dir.info.run_id.clone(),
+                        stage_key: dir.info.stage_key.clone(),
+                        lane: dir.info.lane.clone(),
+                        turn: stored.turn.clone(),
+                        at: stored.at.clone(),
+                        result: result.clone(),
+                    })
+                    .and_then(|_| dir.write_result(&stored)),
+                _ => dir.write_result(&stored),
+            };
+            match saved {
                 Ok(()) => tool_text(&schema::accepted_message(dir.info.result, &result), false),
                 Err(err) => {
                     dir.log(&format!("could not save a result: {err}"));

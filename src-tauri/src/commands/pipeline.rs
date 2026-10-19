@@ -252,6 +252,16 @@ pub fn pipeline_bridge_turn(
     Ok(crate::bridge::launch::read_stage_turn(&runs, &tag, &tab_id))
 }
 
+/// The tasks of the run's Planner (its `tasks.json`, V2b): fan-out reads
+/// them directly. `None` before a bridged Planner handed a plan over (an
+/// engine-1 run, or a Planner launched without the bridge). Reads one file;
+/// takes no lock.
+#[tauri::command]
+pub fn pipeline_run_tasks(app: tauri::AppHandle, run_id: String) -> Result<Option<crate::bridge::RunTasks>, String> {
+    let runs = crate::bridge::launch::runs_root(&crate::data_dir::app_data_dir(&app).path);
+    Ok(crate::bridge::launch::read_run_tasks(&runs, run_id.trim()))
+}
+
 /// After a stage's turn: what autopilot does next (`decide`). Recorded in
 /// the run's ledger; the frontend carries it out.
 #[tauri::command]
