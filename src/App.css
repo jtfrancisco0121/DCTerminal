@@ -1622,6 +1622,16 @@ body,
   flex: none;
 }
 
+/* A failed startup step under the tab bar, with its Retry and Dismiss. */
+.startup-step-notice {
+  margin: var(--space-2) var(--space-3) 0;
+}
+
+.startup-step-notice .inline-notice-action {
+  display: flex;
+  gap: var(--space-3);
+}
+
 .pipeline-plan-details > summary {
   cursor: pointer;
   margin-bottom: var(--space-2);

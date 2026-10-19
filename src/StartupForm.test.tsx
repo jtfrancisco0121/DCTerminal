@@ -2638,3 +2638,199 @@ describe("terminal hand-off source", () => {
     expect(within(dialog).queryByText(/waiting for you on a plan/)).toBeNull();
   });
 });
+
+describe("fast tab switches and a failed startup step (M4)", () => {
+  const folder = "/work/app";
+  const summary = (id: string, label: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    label,
+    roleId: "role_developer",
+    cwd: folder,
+    phase: "draft",
+    mergedPromptChars: 0,
+    startupPromptSent: false,
+    hasTranscript: false,
+    folderStatus: "ok",
+    color: "#3fb950",
+    kind: "role",
+    terminalLaunch: "",
+    acpSessionId: null,
+    ...extra,
+  });
+  const record = (id: string) => ({ ...tab, id, cwd: folder, answers: { cwd: folder } });
+  const deferred = <T,>() => {
+    let resolve!: (value: T) => void;
+    let reject!: (err: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  };
+  const renderForm = () =>
+    render(
+      <StartupForm
+        roles={[{ id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 }]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+  const goToTab = (n: number) =>
+    fireEvent.keyDown(window, { key: String(n), code: `Digit${n}`, ctrlKey: true });
+  const selected = () => screen.getByRole("tab", { selected: true }).textContent ?? "";
+
+  beforeEach(() => {
+    vi.mocked(getRole).mockResolvedValue(developer);
+    vi.mocked(listCursorCliHistory).mockResolvedValue([]);
+    vi.mocked(selectActiveTab).mockReset();
+  });
+
+  afterEach(() => {
+    vi.mocked(newDraftTab).mockReset();
+  });
+
+  it("ends on the last tab clicked when an earlier switch answers late", async () => {
+    vi.mocked(getAppState).mockResolvedValue({
+      activeTabId: "tab_a",
+      tabs: [summary("tab_a", "Tab A"), summary("tab_b", "Tab B"), summary("tab_c", "Tab C")],
+      closedTabs: [],
+    } as never);
+    const slowB = deferred<{ tab: ReturnType<typeof record> }>();
+    vi.mocked(selectActiveTab).mockImplementation(async (id: string) =>
+      (id === "tab_b" ? slowB.promise : { tab: record(id) }) as never,
+    );
+    renderForm();
+    await waitFor(() => expect(selected()).toContain("Tab A"));
+
+    goToTab(2);
+    await waitFor(() => expect(selectActiveTab).toHaveBeenCalledWith("tab_b"));
+    goToTab(3);
+    await waitFor(() => expect(selectActiveTab).toHaveBeenCalledWith("tab_c"));
+    await waitFor(() => expect(selected()).toContain("Tab C"));
+
+    await act(async () => slowB.resolve({ tab: record("tab_b") }));
+    expect(selected()).toContain("Tab C");
+  });
+
+  it("keeps the tab bar busy until the latest switch answers", async () => {
+    vi.mocked(getAppState).mockResolvedValue({
+      activeTabId: "tab_a",
+      tabs: [summary("tab_a", "Tab A"), summary("tab_b", "Tab B"), summary("tab_c", "Tab C")],
+      closedTabs: [],
+    } as never);
+    const slowC = deferred<{ tab: ReturnType<typeof record> }>();
+    const slowB = deferred<{ tab: ReturnType<typeof record> }>();
+    vi.mocked(selectActiveTab).mockImplementation(async (id: string) =>
+      (id === "tab_b" ? slowB.promise : id === "tab_c" ? slowC.promise : { tab: record(id) }) as never,
+    );
+    renderForm();
+    await waitFor(() => expect(selected()).toContain("Tab A"));
+
+    goToTab(2);
+    await waitFor(() => expect(selectActiveTab).toHaveBeenCalledWith("tab_b"));
+    goToTab(3);
+    await waitFor(() => expect(selectActiveTab).toHaveBeenCalledWith("tab_c"));
+    await act(async () => slowB.resolve({ tab: record("tab_b") }));
+    // B's late answer neither shows B nor frees the tab bar while C is loading.
+    expect(selected()).not.toContain("Tab B");
+    expect((screen.getByRole("tab", { name: /Tab A/ }) as HTMLButtonElement).disabled).toBe(true);
+
+    await act(async () => slowC.resolve({ tab: record("tab_c") }));
+    await waitFor(() => expect(selected()).toContain("Tab C"));
+    await waitFor(() =>
+      expect((screen.getByRole("tab", { name: /Tab A/ }) as HTMLButtonElement).disabled).toBe(false),
+    );
+  });
+
+  it("stays on a terminal tab chosen while a chat tab was still loading", async () => {
+    vi.mocked(getAppState).mockResolvedValue({
+      activeTabId: "tab_a",
+      tabs: [
+        summary("tab_a", "Tab A"),
+        summary("tab_b", "Tab B"),
+        summary("tab_t", "Shell T", { kind: "terminal", phase: "terminal", terminalLaunch: "shell" }),
+      ],
+      closedTabs: [],
+    } as never);
+    const slowB = deferred<{ tab: ReturnType<typeof record> }>();
+    vi.mocked(selectActiveTab).mockImplementation(async (id: string) =>
+      (id === "tab_b" ? slowB.promise : { tab: record(id) }) as never,
+    );
+    renderForm();
+    await waitFor(() => expect(selected()).toContain("Tab A"));
+
+    goToTab(2);
+    await waitFor(() => expect(selectActiveTab).toHaveBeenCalledWith("tab_b"));
+    goToTab(3);
+    await waitFor(() => expect(selected()).toContain("Shell T"));
+
+    await act(async () => slowB.resolve({ tab: record("tab_b") }));
+    expect(selected()).toContain("Shell T");
+  });
+
+  it("stays on the shown tab when it is clicked again while another switch is still loading", async () => {
+    vi.mocked(getAppState).mockResolvedValue({
+      activeTabId: "tab_a",
+      tabs: [summary("tab_a", "Tab A"), summary("tab_b", "Tab B")],
+      closedTabs: [],
+    } as never);
+    const slowB = deferred<{ tab: ReturnType<typeof record> }>();
+    vi.mocked(selectActiveTab).mockImplementation(async (id: string) =>
+      (id === "tab_b" ? slowB.promise : { tab: record(id) }) as never,
+    );
+    renderForm();
+    await waitFor(() => expect(selected()).toContain("Tab A"));
+
+    goToTab(2);
+    await waitFor(() => expect(selectActiveTab).toHaveBeenCalledWith("tab_b"));
+    goToTab(1);
+    await waitFor(() =>
+      expect((screen.getByRole("tab", { name: /Tab B/ }) as HTMLButtonElement).disabled).toBe(false),
+    );
+
+    await act(async () => slowB.resolve({ tab: record("tab_b") }));
+    expect(selected()).toContain("Tab A");
+  });
+
+  it("dismisses the failed-step notice without retrying", async () => {
+    vi.mocked(getAppState).mockResolvedValue({
+      activeTabId: "tab_a",
+      tabs: [summary("tab_a", "Tab A"), summary("tab_b", "Tab B")],
+      closedTabs: [],
+    } as never);
+    vi.mocked(selectActiveTab).mockRejectedValueOnce(new Error("role role_gone not found"));
+    vi.mocked(selectActiveTab).mockImplementation(async (id: string) => ({ tab: record(id) }) as never);
+    renderForm();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByText(/role role_gone not found/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(selectActiveTab).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("tab", { name: /Tab A/ })).toBeTruthy();
+  });
+
+  it("still shows the saved tabs when the active tab fails to load, and Retry loads it", async () => {
+    vi.mocked(getAppState).mockResolvedValue({
+      activeTabId: "tab_a",
+      tabs: [summary("tab_a", "Tab A"), summary("tab_b", "Tab B")],
+      closedTabs: [],
+    } as never);
+    vi.mocked(selectActiveTab).mockRejectedValueOnce(new Error("role role_gone not found"));
+    vi.mocked(selectActiveTab).mockImplementation(async (id: string) => ({ tab: record(id) }) as never);
+    renderForm();
+
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    expect(screen.getByRole("tab", { name: /Tab A/ })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: /Tab B/ })).toBeTruthy();
+    expect(screen.queryByText("Tabs did not load")).toBeNull();
+    expect(screen.getByText(/role role_gone not found/)).toBeTruthy();
+
+    fireEvent.click(retry);
+    await waitFor(() => expect(selectActiveTab).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(selectActiveTab).mock.calls[1]).toEqual(["tab_a"]);
+    await waitFor(() => expect(selected()).toContain("Tab A"));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Retry" })).toBeNull());
+  });
+});

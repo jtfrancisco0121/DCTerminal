@@ -133,7 +133,7 @@ import { blockedSlashCommand } from "./composer/slashCommands";
 import { CommandPalette } from "./components/CommandPalette";
 import { useConfirm } from "./components/confirm";
 import { Dialog } from "./components/Dialog";
-import { errorText } from "./components/InlineNotice";
+import { InlineNotice, errorText } from "./components/InlineNotice";
 import {
   HandoffBanner,
   HandoffDialog,
@@ -311,6 +311,8 @@ import { terminalViewOf } from "./terminal/chatEntries";
 import { pressStop } from "./terminal/ptyAnswers";
 import { saveLayout } from "./layoutSave";
 import { reportError, setErrorNotifier } from "./uiErrors";
+import { createSwitchTickets } from "./tabSwitch";
+import { runStartupSteps, type StartupFailure, type StartupStep } from "./startupSteps";
 import { toggledView, useTerminalViews } from "./terminal/terminalViews";
 import { forgetComposerDraft, type TerminalComposerHandle } from "./views/TerminalChatControls";
 import { usePrunePlanPanes } from "./views/planPaneState";
@@ -763,6 +765,10 @@ export function StartupForm({
   const confirmedClaimRef = useRef<string | null>(null);
   const activeTabIdRef = useRef(activeTabId);
   activeTabIdRef.current = activeTabId;
+  /** The newest tab switch wins; an older one's late answer is dropped (tabSwitch.ts). */
+  const tabSwitchesRef = useRef(createSwitchTickets());
+  /** A startup step that failed after the tabs loaded, with its Retry. */
+  const [startupFailure, setStartupFailure] = useState<StartupFailure | null>(null);
   // A grid cell clicked in its composer: the active cell renders a new one, so focus it.
   const gridFocusRef = useRef<string | null>(null);
   useEffect(() => {
@@ -1055,6 +1061,12 @@ export function StartupForm({
     return snap;
   }, []);
 
+  /** Show a failed startup step with its Retry, or clear it. Logged once per step. */
+  const settleStartup = useCallback((failure: StartupFailure | null) => {
+    if (failure) reportError(failure.title, failure.error, { once: `startup:${failure.title}` });
+    setStartupFailure(failure);
+  }, []);
+
   useEffect(() => {
     if (tabsBootstrappedRef.current) return;
     tabsBootstrappedRef.current = true;
@@ -1089,42 +1101,77 @@ export function StartupForm({
                 ],
           }));
         }
-        if (snap.tabs.length === 0) {
-          const { tab } = await newDraftTab(seedRoleId, "");
-          await refreshTabs();
-          loadTabIntoForm(tab);
-          // A fresh profile shows first-run setup over this draft; the setting
-          // applies only once setup is skipped (finishing it starts a role here).
-          const setupNeeded = await firstRunCheck().then((s) => !!s?.needed, () => false);
-          if (setupNeeded) {
-            firstRunLaunchRef.current = tab.id;
-            return;
-          }
-          await runNewTabLaunch(tab.id);
-          return;
-        }
-        const activeId = snap.activeTabId ?? snap.tabs[snap.tabs.length - 1]?.id;
-        if (!activeId) return;
-        const summary = snap.tabs.find((t) => t.id === activeId);
-        if (!summary) return;
-        if (
-          summary.kind === "terminal" ||
-          summary.kind === "pipeline_overview" ||
-          summary.kind === "preview" ||
-          summary.kind === "github" ||
-          summary.phase === "running"
-        ) {
-          setActiveTabId(activeId);
-          return;
-        }
-        const { tab } = await selectActiveTab(activeId);
-        loadTabIntoForm(tab);
+        settleStartup(await runStartupSteps(startupSteps(snap)));
       })
       .catch((err: unknown) => {
+        // Without the tab list there is nothing to show or retry from.
         setSavedTabs([]);
         showNotice("Tabs did not load", errorText(err), "failed");
       });
-  }, [loadTabIntoForm, patchRuntime, refreshTabs, roles, showNotice]);
+
+    /** What runs once the tabs load. A failure keeps the tabs and offers Retry. */
+    function startupSteps(snap: Awaited<ReturnType<typeof refreshTabs>>): StartupStep[] {
+      if (snap.tabs.length === 0) {
+        let draft: Awaited<ReturnType<typeof newDraftTab>>["tab"] | null = null;
+        return [
+          {
+            title: "New tab did not open",
+            run: async () => {
+              draft = (await newDraftTab(seedRoleId, "")).tab;
+            },
+          },
+          {
+            title: "Tabs did not refresh",
+            run: async () => {
+              if (!draft) return;
+              await refreshTabs();
+              loadTabIntoForm(draft);
+            },
+          },
+          {
+            title: "New tab did not start",
+            run: async () => {
+              if (!draft) return;
+              // A fresh profile shows first-run setup over this draft; the setting
+              // applies only once setup is skipped (finishing it starts a role here).
+              const setupNeeded = await firstRunCheck().then((s) => !!s?.needed, () => false);
+              if (setupNeeded) {
+                firstRunLaunchRef.current = draft.id;
+                return;
+              }
+              await runNewTabLaunch(draft.id);
+            },
+          },
+        ];
+      }
+      const activeId = snap.activeTabId ?? snap.tabs[snap.tabs.length - 1]?.id;
+      if (!activeId) return [];
+      const summary = snap.tabs.find((t) => t.id === activeId);
+      if (!summary) return [];
+      if (
+        summary.kind === "terminal" ||
+        summary.kind === "pipeline_overview" ||
+        summary.kind === "preview" ||
+        summary.kind === "github" ||
+        summary.phase === "running"
+      ) {
+        setActiveTabId(activeId);
+        return [];
+      }
+      return [
+        {
+          title: "Active tab did not load",
+          run: async () => {
+            // A tab the user opened meanwhile wins: before a Retry, or during this load.
+            if (activeTabIdRef.current) return;
+            const seen = tabSwitchesRef.current.watch();
+            const { tab } = await selectActiveTab(activeId);
+            if (seen.isCurrent()) loadTabIntoForm(tab);
+          },
+        },
+      ];
+    }
+  }, [loadTabIntoForm, patchRuntime, refreshTabs, roles, settleStartup, showNotice]);
 
   useEffect(() => {
     sessionActiveRef.current = !!session;
@@ -2563,12 +2610,18 @@ export function StartupForm({
 
   const handleSelectTab = useCallback(
     async (tabId: string) => {
-      if (tabId === activeTabIdRef.current) return;
+      if (tabId === activeTabIdRef.current) {
+        // Back on the tab still shown: a switch to another tab that is still loading must not land.
+        if (tabSwitchesRef.current.stayOn(tabId)) setBusy(false);
+        return;
+      }
       const fileGuard = fileDiscardGuardRef.current;
       if (fileGuard?.dirty() && !(await fileGuard.confirm())) return;
       // The answer can come after another switch.
       if (tabId === activeTabIdRef.current) return;
       stashActiveTab();
+      // A newer switch drops this one's answer and ends the busy state itself.
+      const ticket = tabSwitchesRef.current.begin(tabId);
       const summary = savedTabs.find((tab) => tab.id === tabId);
       if (
         summary?.kind === "terminal" ||
@@ -2580,9 +2633,10 @@ export function StartupForm({
         setBusy(true);
         try {
           await selectActiveTab(tabId);
+          if (!ticket.isCurrent()) return;
           await refreshTabs();
         } finally {
-          setBusy(false);
+          if (ticket.finish()) setBusy(false);
         }
         return;
       }
@@ -2591,6 +2645,7 @@ export function StartupForm({
       setBusy(true);
       try {
         const { tab } = await selectActiveTab(tabId);
+        if (!ticket.isCurrent()) return;
         if (tab.kind === "terminal") {
           setActiveTabId(tab.id);
           await refreshTabs();
@@ -2599,7 +2654,7 @@ export function StartupForm({
         loadTabIntoForm(tab);
         await refreshTabs();
       } finally {
-        setBusy(false);
+        if (ticket.finish()) setBusy(false);
       }
     },
     [applyDraft, loadTabIntoForm, refreshTabs, savedTabs, stashActiveTab],
@@ -5086,45 +5141,72 @@ export function StartupForm({
     .map((tab) => tab.id);
 
   const tabBar = (
-    <TabBar
-      tabs={savedTabs}
-      activeTabId={activeTabId}
-      roleColors={roleColors}
-      disableSwitch={busy && !session}
-      disableNew={busy}
-      statuses={tabStatuses}
-      doneTabIds={doneTabIds}
-      renamingTabId={renamingTabId}
-      onRenameStart={setRenamingTabId}
-      onRename={(tabId, label) => {
-        void setTabLabel(tabId, label)
-          .then(() => refreshTabs())
-          .catch((err: unknown) => showNotice("Tab not renamed", errorText(err), "failed"));
-      }}
-      onRenameEnd={() => setRenamingTabId(null)}
-      canReopen={closedTabs.length > 0}
-      settingsOpen={settingsOpen}
-      roleNames={roleNames}
-      modelFor={modelForTab}
-      providerFor={(tab) =>
-        tabHasProvider(tab) ? providerTooltipLine(providerOf(tab), claudeInfo) : null
-      }
-      onSelect={handleSelectTab}
-      onClose={handleCloseTab}
-      onNew={handleNewTab}
-      onNewWindow={requestNewWindow}
-      newWindowTitle={`New window (${newWindowShortcutLabel(
-        platform === "mac" ? "mac" : platform === "windows" ? "windows" : "other",
-      )})`}
-      onNewWorktree={() => setWorktreeDialogOpen(true)}
-      onToggleGrid={toggleGrid}
-      gridOpen={gridOpen(split)}
-      onReopen={() => void reopenTab()}
-      onSettings={() => guardFileEdits(() => setSettingsOpen((open) => toggleSettings(open)))}
-      onColor={(tabId, color) => {
-        void setTabColor(tabId, color).then(() => refreshTabs());
-      }}
-    />
+    <>
+      <TabBar
+        tabs={savedTabs}
+        activeTabId={activeTabId}
+        roleColors={roleColors}
+        disableSwitch={busy && !session}
+        disableNew={busy}
+        statuses={tabStatuses}
+        doneTabIds={doneTabIds}
+        renamingTabId={renamingTabId}
+        onRenameStart={setRenamingTabId}
+        onRename={(tabId, label) => {
+          void setTabLabel(tabId, label)
+            .then(() => refreshTabs())
+            .catch((err: unknown) => showNotice("Tab not renamed", errorText(err), "failed"));
+        }}
+        onRenameEnd={() => setRenamingTabId(null)}
+        canReopen={closedTabs.length > 0}
+        settingsOpen={settingsOpen}
+        roleNames={roleNames}
+        modelFor={modelForTab}
+        providerFor={(tab) =>
+          tabHasProvider(tab) ? providerTooltipLine(providerOf(tab), claudeInfo) : null
+        }
+        onSelect={handleSelectTab}
+        onClose={handleCloseTab}
+        onNew={handleNewTab}
+        onNewWindow={requestNewWindow}
+        newWindowTitle={`New window (${newWindowShortcutLabel(
+          platform === "mac" ? "mac" : platform === "windows" ? "windows" : "other",
+        )})`}
+        onNewWorktree={() => setWorktreeDialogOpen(true)}
+        onToggleGrid={toggleGrid}
+        gridOpen={gridOpen(split)}
+        onReopen={() => void reopenTab()}
+        onSettings={() => guardFileEdits(() => setSettingsOpen((open) => toggleSettings(open)))}
+        onColor={(tabId, color) => {
+          void setTabColor(tabId, color).then(() => refreshTabs());
+        }}
+      />
+      {startupFailure && (
+        <InlineNotice
+          tone="error"
+          className="startup-step-notice"
+          action={
+            <>
+              <button
+                type="button"
+                className="link-button"
+                onClick={() => {
+                  setStartupFailure(null);
+                  void startupFailure.retry().then(settleStartup);
+                }}
+              >
+                Retry
+              </button>
+              <button type="button" className="link-button" onClick={() => setStartupFailure(null)}>
+                Dismiss
+              </button>
+            </>
+          }
+        >
+          {startupFailure.title}: {errorText(startupFailure.error)}
+        </InlineNotice>
+      )}
+    </>
   );
 
   const settingsPage = (
