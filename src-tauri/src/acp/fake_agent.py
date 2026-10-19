@@ -20,7 +20,8 @@ Scenario keys (all optional):
   term_delay        seconds the agent takes to exit on SIGTERM, like Claude
                     finishing its session log (default: exits at once)
   ignore_eof        true: keep running when stdin closes, like an adapter that
-                    does not notice its client is gone (default: exits)
+                    does not notice its client is gone, until its
+                    parent dies (default: exits)
 
 Steps:
   {"update": {...}}            session/update notification (sessionUpdate ...)
@@ -88,7 +89,11 @@ def read_stdin():
         line = sys.stdin.readline()
         if not line:
             if scenario.get("ignore_eof"):
-                time.sleep(3600)
+                # Linger like a deaf adapter, but never outlive the test
+                # process that spawned us.
+                parent = os.getppid()
+                while os.getppid() == parent:
+                    time.sleep(0.2)
             sys.exit(0)
         line = line.strip()
         if not line:
