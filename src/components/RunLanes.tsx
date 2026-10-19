@@ -237,11 +237,16 @@ export function RunLanes({ run, tabs, now: fixedNow }: { run: PipelineRun; tabs:
         ))}
         <div />
         <div className="run-lanes-axis">
-          {model.ticks.map((tick) => (
-            <span key={tick.at} className="run-lanes-tick" style={{ left: `${((tick.at - model.start) / span) * 100}%` }}>
-              {tick.label}
-            </span>
-          ))}
+          {model.ticks.map((tick) => {
+            // Shift each label by its own position: left-aligned at 0, centred
+            // mid-axis, right-anchored at 100%, so none hangs past the chart.
+            const left = ((tick.at - model.start) / span) * 100;
+            return (
+              <span key={tick.at} className="run-lanes-tick" style={{ left: `${left}%`, transform: `translateX(-${left}%)` }}>
+                {tick.label}
+              </span>
+            );
+          })}
           {model.active && <span className="run-lanes-now-label" style={{ left: `${Math.min(100, ((model.now - model.start) / span) * 100)}%` }}>now</span>}
         </div>
       </div>

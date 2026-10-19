@@ -6501,6 +6501,8 @@ button.chain-label {
   top: 0;
   bottom: 0;
   width: 0;
+  /* Draw the 1px line on the left of now, so at 100% it stays inside the chart. */
+  margin-left: -1px;
   border-left: 1px dashed var(--accent-fg);
   pointer-events: none;
 }
@@ -6516,16 +6518,14 @@ button.chain-label {
 .run-lanes-now-label {
   position: absolute;
   top: 2px;
-  transform: translateX(-50%);
   white-space: nowrap;
 }
 
-.run-lanes-tick:first-child {
-  transform: none;
-}
-
+/* Ends at the now line: a running chain's now is the chart's right edge, so a
+   centred label would hang past it and scroll the overview sideways. */
 .run-lanes-now-label {
   top: 0.65rem;
+  transform: translateX(-100%);
   color: var(--accent-fg);
 }
 
