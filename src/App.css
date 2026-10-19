@@ -1622,6 +1622,11 @@ body,
   flex: none;
 }
 
+/* A failed startup step under the tab bar, with its Retry. */
+.startup-step-notice {
+  margin: var(--space-2) var(--space-3) 0;
+}
+
 .pipeline-plan-details > summary {
   cursor: pointer;
   margin-bottom: var(--space-2);
