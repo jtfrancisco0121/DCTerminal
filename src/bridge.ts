@@ -4,6 +4,7 @@
  */
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow, type CloseRequestedEvent } from "@tauri-apps/api/window";
 import { ensureWindow } from "./windowScope";
 import type { NotificationSettings } from "./notify/agentNotify";
@@ -70,9 +71,11 @@ export function onWindowCloseRequested(
   return getCurrentWindow().onCloseRequested(handler);
 }
 
-/** macOS File > New Window (and its shortcut) asks this webview to open one. */
+/** macOS File > New Window (and its shortcut) asks this webview to open one.
+ * The backend sends it to the focused window only; a global `listen` would
+ * hear it in every window, so each open window would open one. */
 export function listenNewWindow(handler: () => void): Promise<UnlistenFn> {
-  return listen("new-window", () => handler());
+  return getCurrentWebviewWindow().listen("new-window", () => handler());
 }
 
 /**
