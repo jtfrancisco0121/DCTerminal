@@ -1,8 +1,11 @@
-// Serves the built frontend (`dist/`) with the production Content-Security-Policy
+// Serves the prod-csp build of the frontend with the production Content-Security-Policy
 // from src-tauri/tauri.conf.json (`app.security.csp`) as a response header, for
 // the Playwright prod-csp projects. Node built-ins only.
 //
 // E2E_PROD_CSP_PORT  port (default 1440)
+// E2E_PROD_CSP_DIST  the build folder, repo-relative (default
+//                    e2e/.tmp/prod-csp-dist-<port>; playwright.config.ts builds
+//                    there, not dist/, so it never races `npm run check`)
 // DCT_CSP_CONF       a tauri.conf.json to read the policy from instead (to see
 //                    the specs fail on a broken policy; never commit a break);
 //                    a relative path is taken from the repo root, as csp.ts does
@@ -13,7 +16,8 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("../../..", import.meta.url));
-const DIST = path.join(ROOT, "dist");
+const PORT = Number(process.env.E2E_PROD_CSP_PORT ?? 1440);
+const DIST = path.resolve(ROOT, process.env.E2E_PROD_CSP_DIST || `e2e/.tmp/prod-csp-dist-${PORT}`);
 
 const TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -36,7 +40,7 @@ function productionCsp(confPath = path.resolve(ROOT, process.env.DCT_CSP_CONF ||
   return csp;
 }
 
-/** A file under dist/ for a request path; unknown paths get index.html. */
+/** A file under DIST for a request path; unknown paths get index.html. */
 function fileFor(urlPath) {
   const decoded = decodeURIComponent(urlPath.split("?")[0]);
   const file = path.normalize(path.join(DIST, decoded));
@@ -56,7 +60,6 @@ function isDirectRun() {
 
 if (isDirectRun()) {
   const csp = productionCsp();
-  const port = Number(process.env.E2E_PROD_CSP_PORT ?? 1440);
   createServer((req, res) => {
     let body;
     let file;
@@ -65,7 +68,7 @@ if (isDirectRun()) {
       body = readFileSync(file);
     } catch (err) {
       res.writeHead(500, { "Content-Type": "text/plain" });
-      res.end(`prod-csp server: ${err instanceof Error ? err.message : err} (run \`npx vite build\`)`);
+      res.end(`prod-csp server: ${err instanceof Error ? err.message : err} (run \`npx vite build --outDir ${path.relative(ROOT, DIST)}\`)`);
       return;
     }
     res.writeHead(200, {
@@ -74,7 +77,7 @@ if (isDirectRun()) {
       "Cache-Control": "no-store",
     });
     res.end(body);
-  }).listen(port, "127.0.0.1", () => {
-    console.log(`prod-csp: serving ${DIST} on http://127.0.0.1:${port}`);
+  }).listen(PORT, "127.0.0.1", () => {
+    console.log(`prod-csp: serving ${DIST} on http://127.0.0.1:${PORT}`);
   });
 }

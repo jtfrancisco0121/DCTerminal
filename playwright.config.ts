@@ -15,6 +15,9 @@ const safari = { ...devices["Desktop Safari"], viewport: { width: 1400, height: 
 const chrome = { ...devices["Desktop Chrome"], viewport: { width: 1400, height: 900 } };
 const prodCsp = { testMatch: "prod-csp/**/*.spec.ts" };
 const prodCspURL = `http://127.0.0.1:${PROD_CSP_PORT}`;
+// The prod-csp build gets its own gitignored folder (one per port), so it never
+// races `npm run check`, which builds dist/, or another checkout's run.
+const prodCspDist = `e2e/.tmp/prod-csp-dist-${PROD_CSP_PORT}`;
 // E2E_SLOWMO=<ms> with --headed slows every action down so a person can follow along.
 const SLOWMO = Number(process.env.E2E_SLOWMO ?? 0);
 export default defineConfig({
@@ -49,10 +52,11 @@ export default defineConfig({
     ...(wantsProdCsp
       ? [
           {
-            // `vite build` (about a second) writes dist/; the server adds the CSP header.
-            command: "npx vite build --logLevel error && node e2e/ui/prod-csp/server.mjs",
+            // `vite build` (about a second, same vite.config.ts as the real build,
+            // only the output folder differs); the server adds the CSP header.
+            command: `npx vite build --logLevel error --outDir ${prodCspDist} --emptyOutDir && node e2e/ui/prod-csp/server.mjs`,
             url: prodCspURL,
-            env: { E2E_PROD_CSP_PORT: String(PROD_CSP_PORT) },
+            env: { E2E_PROD_CSP_PORT: String(PROD_CSP_PORT), E2E_PROD_CSP_DIST: prodCspDist },
             reuseExistingServer: false,
             timeout: 120_000,
           },

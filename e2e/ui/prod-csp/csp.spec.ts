@@ -1,4 +1,4 @@
-// The built frontend (dist/) under the production CSP from tauri.conf.json,
+// The built frontend (a production `vite build`) under the production CSP from tauri.conf.json,
 // served by e2e/ui/prod-csp/server.mjs. Runs only in the prod-csp-* projects.
 // Specs here use `responses`, not `handlers`: handlers are compiled with
 // `new Function`, which `script-src 'self'` forbids.
