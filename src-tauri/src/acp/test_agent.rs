@@ -32,6 +32,15 @@ pub fn python3() -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
+/// `DCT_REQUIRE_PYTHON=1` (set by `npm run check`): a missing python3 fails
+/// the test instead of skipping it.
+const REQUIRE_PYTHON_ENV: &str = "DCT_REQUIRE_PYTHON";
+
+/// Whether a missing python3 must fail the test, given `DCT_REQUIRE_PYTHON`.
+fn python_required(value: Option<&str>) -> bool {
+    value.map(str::trim) == Some("1")
+}
+
 /// One fake agent: its scenario, the folder it runs in, and the log of what
 /// the client sent it. The folder is removed on drop.
 pub struct FakeAgent {
@@ -41,9 +50,14 @@ pub struct FakeAgent {
 }
 
 impl FakeAgent {
-    /// `None` (with a note on stderr) when python3 is missing.
+    /// `None` (with a note on stderr) when python3 is missing. Panics instead
+    /// when `DCT_REQUIRE_PYTHON=1`, so `npm run check` never skips silently.
     pub fn new(name: &str, scenario: &Value) -> Option<Self> {
         let Some(python) = python3() else {
+            let required = std::env::var(REQUIRE_PYTHON_ENV).ok();
+            if python_required(required.as_deref()) {
+                panic!("{name}: python3 not found and {REQUIRE_PYTHON_ENV}=1");
+            }
             eprintln!("skipping {name}: python3 not found");
             return None;
         };
@@ -211,7 +225,7 @@ pub fn claude_fixture_result(name: &str, pointer: &str) -> Value {
 }
 
 mod tests {
-    use super::FakeAgent;
+    use super::{python_required, FakeAgent};
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
@@ -242,5 +256,15 @@ mod tests {
         let _ = child.wait();
         assert!(exited, "fake agent still running after drop");
         assert!(!dir.exists());
+    }
+
+    #[test]
+    fn missing_python_fails_only_when_required() {
+        assert!(python_required(Some("1")));
+        assert!(python_required(Some(" 1\n")));
+        assert!(!python_required(None));
+        assert!(!python_required(Some("")));
+        assert!(!python_required(Some("0")));
+        assert!(!python_required(Some("true")));
     }
 }

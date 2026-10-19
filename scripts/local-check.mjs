@@ -10,6 +10,9 @@ const steps = [
     name: "cargo test",
     cmd: "cargo",
     args: ["test", "--manifest-path", "src-tauri/Cargo.toml"],
+    // The ACP flow tests fail instead of skipping when python3 is missing
+    // (src-tauri/src/acp/test_agent.rs).
+    env: { DCT_REQUIRE_PYTHON: "1" },
   },
   {
     name: "cargo clippy",
@@ -162,27 +165,31 @@ export function usesCmdShim(command) {
 
 /**
  * Run a command. Clippy's `-- -D warnings` stays separate arguments.
+ * `options.env` is added to this process's environment.
  * On Windows only `.cmd`/`.bat` shims go through `cmd.exe /d /s /c`.
  */
 export function spawnCommand(command, args, options = {}) {
   const stdio = options.stdio ?? "inherit";
+  const env = options.env ? { ...process.env, ...options.env } : undefined;
   if (process.platform === "win32" && usesCmdShim(command)) {
     const invocation = windowsInvocation(command, args);
     return spawnSync(invocation.file, invocation.args, {
       stdio,
       windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       encoding: options.encoding,
+      env,
     });
   }
   return spawnSync(command, args, {
     stdio,
     encoding: options.encoding,
+    env,
   });
 }
 
 function runStep(step) {
   console.log(`\n==> ${step.name}`);
-  const result = spawnCommand(step.cmd, step.args);
+  const result = spawnCommand(step.cmd, step.args, { env: step.env });
   if (result.error) {
     console.error(`\n${step.name} failed to start: ${result.error.message}`);
     process.exit(1);

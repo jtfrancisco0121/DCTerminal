@@ -51,6 +51,9 @@ export function installTauriMock(config: MockConfig): void {
     pads: [] as Json[],
     attachments: 0,
     tabCounter: config.tabs.length,
+    /** GitHub monitor: saved filters, and the notification ids already claimed. */
+    githubFilters: clone(config.github.status.filters),
+    githubClaimed: null as string[] | null,
   };
 
   const findRole = (id: string) => state.roles.find((r: Json) => r.id === id);
@@ -377,6 +380,53 @@ export function installTauriMock(config: MockConfig): void {
       tab.previewUrl = String(a.url);
       tab.label = `Preview · ${tab.previewUrl.replace(/^http:\/\//i, "").split(/[/?#]/)[0]}`;
       return null;
+    },
+    // The GitHub tab and monitor (src-tauri/src/store/github_tabs.rs,
+    // src-tauri/src/commands/github.rs), answering from config.github.
+    open_github_tab: () => {
+      const existing = state.tabs.find((t: Json) => t.kind === "github");
+      if (existing) {
+        state.activeTabId = existing.id;
+        return snapshot();
+      }
+      state.tabCounter += 1;
+      const tab = {
+        id: `tab-${state.tabCounter}`,
+        label: "GitHub",
+        roleId: "",
+        cwd: "",
+        phase: "draft",
+        mergedPromptChars: 0,
+        startupPromptSent: false,
+        hasTranscript: false,
+        folderStatus: "empty",
+        color: "",
+        kind: "github",
+        terminalLaunch: "",
+        acpSessionId: null,
+        model: null,
+        provider: "claude",
+        chain: null,
+      };
+      state.tabs.push(tab);
+      state.activeTabId = tab.id;
+      return snapshot();
+    },
+    github_status: () => ({ ...config.github.status, filters: state.githubFilters }),
+    github_feed: () => config.github.feed,
+    github_push_commits: (a) =>
+      config.github.commits[`${a.repo}@${a.head}`] ?? { commits: [], total: 0 },
+    github_save_filters: (a) => {
+      state.githubFilters = clone(a.filters);
+      return state.githubFilters;
+    },
+    // The first call sets the baseline and returns nothing; later calls return
+    // the ids not claimed before. All are marked claimed.
+    github_claim_notifications: (a) => {
+      const ids: string[] = a.ids ?? [];
+      const before: string[] | null = state.githubClaimed;
+      state.githubClaimed = [...new Set([...(before ?? []), ...ids])];
+      return before ? ids.filter((id) => !before.includes(id)) : [];
     },
     get_tab: (a) => record(findTab(a.tabId)),
     select_active_tab: (a) => {

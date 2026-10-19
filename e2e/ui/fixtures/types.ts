@@ -1,4 +1,13 @@
 import type { Role, TabSummary } from "../../../src/bridge";
+import type { GithubFeed, GithubStatus, PushCommits } from "../../../src/github/githubTypes";
+
+/** What the GitHub monitor commands answer (see fixtures/data.ts `sampleGithub`). */
+export type GithubMock = {
+  status: GithubStatus;
+  feed: GithubFeed;
+  /** `github_push_commits` by `repo@head`. */
+  commits: Record<string, PushCommits>;
+};
 
 export type MockConfig = {
   cwd: string;
@@ -17,6 +26,8 @@ export type MockConfig = {
   roleSurface: Record<string, string>;
   /** `get_terminal_settings` → `newTabOpens`. Defaults to `start`. */
   newTabOpens?: "ask" | "claude" | "shell" | "start";
+  /** GitHub monitor answers. */
+  github: GithubMock;
 };
 
 export type InvokeCall = { cmd: string; args: Record<string, unknown> };
