@@ -479,7 +479,9 @@ describe("TabBar rename vs. running turn", () => {
       }),
     );
     render(<TabBar {...props} onRename={onRename} onRenameEnd={onRenameEnd} />);
-    fireEvent.keyDown(screen.getByLabelText("Rename Planner · UI"), { key: "Escape" });
+    const input = screen.getByLabelText("Rename Planner · UI");
+    fireEvent.change(input, { target: { value: "Renamed" } });
+    fireEvent.keyDown(input, { key: "Escape" });
     expect(onRenameEnd).toHaveBeenCalledTimes(1);
     expect(onRename).not.toHaveBeenCalled();
     expect(onCancelTurn).not.toHaveBeenCalled();
