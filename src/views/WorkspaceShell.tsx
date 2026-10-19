@@ -1,9 +1,11 @@
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 import type { TabSummary } from "../bridge";
 import { GridSplit } from "../components/GridSplit";
+import { PaneBoundary } from "../components/PaneBoundary";
 import { WorkspaceSplit } from "../components/WorkspaceSplit";
 import { PreviewLayer, PreviewSlotProvider, usePreviewSlots } from "../preview/PreviewLayer";
 import { clampSplitSize, type SplitState } from "../tabChrome";
+import { viewLabel } from "./paneLabel";
 import type { PaneRenderers } from "./workspacePanes";
 
 export type WorkspaceShellProps = {
@@ -39,7 +41,8 @@ export type WorkspaceShellProps = {
 /**
  * The workspace frame: tab strip, file panel, the active tab's view (alone,
  * split with a second tab, or in the grid), first-use tip, status bar and
- * overlays. With `settings`, the Settings page takes the body.
+ * overlays. With `settings`, the Settings page takes the body. Each pane and
+ * view sits in its own PaneBoundary, so one crash leaves the rest working.
  */
 export function WorkspaceShell({
   tabBar,
@@ -69,7 +72,11 @@ export function WorkspaceShell({
       key="preview-layer"
       tabIds={savedTabs.filter((tab) => tab.kind === "preview").map((tab) => tab.id)}
       slots={slots}
-      render={renderPreview}
+      render={(tabId) => (
+        <PaneBoundary label="Preview" paneId={`preview:${tabId}`}>
+          {renderPreview(tabId)}
+        </PaneBoundary>
+      )}
     />
   );
   if (settings !== undefined) {
@@ -77,19 +84,31 @@ export function WorkspaceShell({
       <PreviewSlotProvider register={register}>
         <section className="workspace-shell">
           {tabBar}
-          {settings}
+          <PaneBoundary label="Settings" paneId="settings">
+            {settings}
+          </PaneBoundary>
           {overlays}
           {previews}
         </section>
       </PreviewSlotProvider>
     );
   }
+  // The active tab's view; a crash clears when another tab takes the pane.
+  const activeView = (
+    <PaneBoundary label={viewLabel(activeTabSummary)} paneId={activeTabId} resetKey={activeTabId}>
+      {children}
+    </PaneBoundary>
+  );
   return (
     <PreviewSlotProvider register={register}>
       <section className="workspace-shell">
         {tabBar}
         <div className="workspace-body">
-          {filePanel}
+          {filePanel && (
+            <PaneBoundary label="File panel" paneId="files">
+              {filePanel}
+            </PaneBoundary>
+          )}
           <div className="workspace-main">
             {showGrid ? (
               <GridSplit
@@ -97,17 +116,19 @@ export function WorkspaceShell({
                 renderCell={(tabId) => {
                   if (tabId === activeTabId && activeTabSummary) {
                     return (
-                      <div
-                        className={`split-pane split-pane-primary split-pane-focused grid-cell grid-cell-active grid-cell-${gridTone(activeTabSummary)}`}
-                        data-pane="primary"
-                      >
-                        {gridCellBar(activeTabSummary)}
-                        <div className="grid-cell-main">{children}</div>
-                      </div>
+                      <PaneBoundary label="Grid cell">
+                        <div
+                          className={`split-pane split-pane-primary split-pane-focused grid-cell grid-cell-active grid-cell-${gridTone(activeTabSummary)}`}
+                          data-pane="primary"
+                        >
+                          {gridCellBar(activeTabSummary)}
+                          <div className="grid-cell-main">{activeView}</div>
+                        </div>
+                      </PaneBoundary>
                     );
                   }
                   const tab = savedTabs.find((item) => item.id === tabId);
-                  return tab ? renderGridCell(tab) : null;
+                  return tab ? <PaneBoundary label="Grid cell">{renderGridCell(tab)}</PaneBoundary> : null;
                 }}
               />
             ) : (
@@ -137,10 +158,16 @@ export function WorkspaceShell({
                   >
                     {/* Pane 1's strip shows only while a second pane is open. */}
                     {secondaryTab && activeTabSummary && paneStrip(activeTabSummary, 1, focusedPane === "primary")}
-                    {children}
+                    {activeView}
                   </div>
                 }
-                secondary={secondaryTab ? renderSecondary(secondaryTab) : null}
+                secondary={
+                  secondaryTab ? (
+                    <PaneBoundary label="Second pane" resetKey={secondaryTab.id}>
+                      {renderSecondary(secondaryTab)}
+                    </PaneBoundary>
+                  ) : null
+                }
               />
             )}
           </div>

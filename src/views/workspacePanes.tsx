@@ -24,6 +24,8 @@ import { headerStateOf } from "../terminal/headerState";
 import { PaneStrip } from "./PaneStrip";
 import { PreviewSlot } from "../preview/PreviewLayer";
 import { GitHubTab } from "../components/GitHubTab";
+import { PaneBoundary } from "../components/PaneBoundary";
+import { viewLabel } from "./paneLabel";
 import { isClaudeTerminal, terminalLaunchOf } from "./tabHelpers";
 
 /** What the second pane and the grid cells read and change in the workspace. */
@@ -140,7 +142,8 @@ export function createPaneRenderers({
 
   /**
    * A live view of a tab that is not the active one: the same terminal
-   * process, or the running chat with its own composer.
+   * process, or the running chat with its own composer. Wrapped in its own
+   * PaneBoundary.
    */
   const paneBody = (
     tab: TabSummary,
@@ -228,7 +231,12 @@ export function createPaneRenderers({
     } else {
       body = idle;
     }
-    return body;
+    // A crash in the view keeps the pane's strip and buttons (Swap, Close, ×).
+    return (
+      <PaneBoundary label={viewLabel(tab)} paneId={tab.id} resetKey={tab.id}>
+        {body}
+      </PaneBoundary>
+    );
   };
 
   const renderSecondary = (tab: TabSummary) => {

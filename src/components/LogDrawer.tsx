@@ -1,3 +1,5 @@
+import { useSyncExternalStore } from "react";
+import { subscribeUiErrors, uiErrors, type UiError } from "../uiErrors";
 import { Dialog } from "./Dialog";
 
 type Props = {
@@ -9,8 +11,16 @@ type Props = {
   onClose: () => void;
 };
 
-/** FR-080: agent stderr and app log tail for the active session tab. */
+function uiErrorLine(entry: UiError): string {
+  return `${new Date(entry.at).toLocaleTimeString()} ${entry.source}: ${entry.message}`;
+}
+
+/**
+ * FR-080: agent stderr and app log tail for the active session tab, plus
+ * the pane and view crashes caught in this window (uiErrors.ts).
+ */
 export function LogDrawer({ stderr, appLog, logPath, busy, onRefresh, onClose }: Props) {
+  const errors = useSyncExternalStore(subscribeUiErrors, uiErrors);
   return (
     <Dialog
       title="Session logs"
@@ -30,6 +40,12 @@ export function LogDrawer({ stderr, appLog, logPath, busy, onRefresh, onClose }:
       <section className="log-drawer-section">
         <h3>App log (tail)</h3>
         <pre className="mono-snippet log-drawer-pre">{appLog || "(empty)"}</pre>
+      </section>
+      <section className="log-drawer-section" aria-labelledby="log-drawer-ui-errors">
+        <h3 id="log-drawer-ui-errors">Interface errors</h3>
+        <pre className="mono-snippet log-drawer-pre">
+          {errors.length ? errors.map(uiErrorLine).join("\n") : "(no interface errors)"}
+        </pre>
       </section>
     </Dialog>
   );
