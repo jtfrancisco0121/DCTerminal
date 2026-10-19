@@ -118,7 +118,7 @@ impl LiveSession {
         self.exited || matches!(self.process.try_wait(), Ok(Some(_)))
     }
 
-    /// Stop the agent: SIGTERM now, SIGKILL after [`STOP_GRACE`] on a
+    /// Stop the agent: SIGTERM, then SIGKILL after [`STOP_GRACE`], both on a
     /// background thread, so Claude can finish its session log. Returns at
     /// once; callers may hold the registry lock. Join the returned thread
     /// (never under that lock) to wait until the agent is gone.
@@ -261,15 +261,12 @@ impl SessionRegistry {
             .count()
     }
 
-    /// App exit, step 1: SIGTERM every live agent and return their
-    /// processes, so the caller can wait without holding this lock.
-    pub fn terminate_all(&self) -> Vec<SharedProcess> {
+    /// App exit, step 1: every agent's process, so the caller can SIGTERM
+    /// them and wait without holding this lock.
+    pub fn processes(&self) -> Vec<SharedProcess> {
         self.sessions
             .values()
-            .map(|session| {
-                session.process.terminate();
-                session.process.clone()
-            })
+            .map(|session| session.process.clone())
             .collect()
     }
 

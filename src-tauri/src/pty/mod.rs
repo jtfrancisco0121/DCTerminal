@@ -107,18 +107,17 @@ impl PtyRegistry {
         self.stopping.clear();
     }
 
-    /// App exit, step 1: SIGTERM every terminal's process group and return
-    /// those groups, so the caller can wait without holding this lock. A
+    /// App exit, step 1: every terminal's running process group, so the
+    /// caller can SIGTERM them and wait without holding this lock. A
     /// terminal whose program already exited and was reaped is skipped: its
     /// pid may now lead an unrelated group. A replaced program that is still
     /// stopping (a reopen is waiting on it) is included.
-    pub fn terminate_all(&self) -> Vec<crate::process_tree::PtyGroup> {
+    pub fn running_groups(&self) -> Vec<crate::process_tree::PtyGroup> {
         self.sessions
             .values()
             .map(PtySession::group)
             .chain(self.stopping.values().cloned())
             .filter(|group| group.running())
-            .inspect(|group| group.terminate())
             .collect()
     }
 
@@ -1313,10 +1312,10 @@ mod tests {
         // The control thread finishes with the group right after reporting
         // the exit; give it a moment.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        let mut left = registry.terminate_all();
+        let mut left = registry.running_groups();
         while !left.is_empty() && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(20));
-            left = registry.terminate_all();
+            left = registry.running_groups();
         }
         assert!(left.is_empty(), "an exited, reaped terminal is not signalled or waited on");
     }
@@ -1536,7 +1535,7 @@ mod tests {
             });
             std::thread::sleep(std::time::Duration::from_millis(100));
             assert!(old.running(), "the old program is still finishing");
-            let groups = registry.lock().unwrap().terminate_all();
+            let groups = registry.lock().unwrap().running_groups();
             assert_eq!(groups.len(), 1, "quit waits on the stopping program");
             registry.lock().unwrap().kill("t");
             let _ = reopen.join();

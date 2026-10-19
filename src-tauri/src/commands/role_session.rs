@@ -289,10 +289,10 @@ pub fn role_session_start(
         store.should_skip_startup_injection(tab_id.as_deref(), resend)
     };
 
-    let persisted_tab_id = {
+    let promoted = {
         let mut store = state_store.lock().map_err(|e| e.to_string())?;
         store.bind_window(window_id.as_deref());
-        match store.promote_tab_to_running(
+        store.promote_tab_to_running(
             tab_id.as_deref(),
             &role,
             &values,
@@ -300,14 +300,15 @@ pub fn role_session_start(
             &merged_text,
             session_ref,
             provider.id(),
-        ) {
-            Ok(id) => id,
-            Err(err) => {
-                // Drop the process we just spawned.
-                let mut live = LiveSession::from_client(&start_key, &role.id, client);
-                live.shutdown();
-                return Err(err);
-            }
+        )
+    };
+    let persisted_tab_id = match promoted {
+        Ok(id) => id,
+        Err(err) => {
+            // Drop the process we just spawned, with the store lock released.
+            let mut live = LiveSession::from_client(&start_key, &role.id, client);
+            live.shutdown();
+            return Err(err);
         }
     };
     if let Ok(store) = state_store.lock() {

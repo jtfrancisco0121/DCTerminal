@@ -680,6 +680,33 @@ mod tests {
         assert!(saw_exit, "kill reported an exit");
     }
 
+    // Ticket 14yq6g2z34b: closing a terminal left a child that had left
+    // the terminal's group (setsid) running.
+    #[cfg(unix)]
+    #[test]
+    fn kill_stops_a_detached_child() {
+        use crate::process_tree::tests::{
+            assert_only_detached_stopped, detached_child_script, wait_for_children,
+        };
+        let dir = crate::test_support::TempDir::new("pty_detached");
+        let pid_file = dir.join("detached.pid");
+        let Some(script) = detached_child_script(&pid_file, false) else {
+            return;
+        };
+        let session = PtySession::spawn(SpawnSpec {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), script],
+            env: Vec::new(),
+            cwd: dir.path().to_path_buf(),
+            cols: 80,
+            rows: 24,
+        })
+        .expect("spawn sh");
+        let children = wait_for_children(&pid_file);
+        session.kill();
+        assert_only_detached_stopped(children, "closing the terminal");
+    }
+
     #[cfg(unix)]
     fn process_alive(pid: u32) -> bool {
         std::path::Path::new(&format!("/proc/{pid}")).exists()
