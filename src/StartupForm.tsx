@@ -288,7 +288,12 @@ import { launchProviders, RoleLauncher, type RoleLaunch } from "./components/Rol
 import { useNewTab } from "./useNewTab";
 import { activeTabFolder } from "./newTab";
 import { liveTabs } from "./liveWork";
-import { attachStageTerminal, startTerminalTab, type NewTerminalLaunch } from "./terminal/openTerminalTab";
+import {
+  attachStageTerminal,
+  detachStageTerminal,
+  startTerminalTab,
+  type NewTerminalLaunch,
+} from "./terminal/openTerminalTab";
 import { detectPlatform, keySurface, type ShortcutMatch, type TerminalAction } from "./keymap";
 import {
   beginLivePty,
@@ -1562,6 +1567,34 @@ export function StartupForm({
     // ptyVersion: a PTY started or exited.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTabId, savedTabs, split, ptyVersion]);
+  // V5: a hidden stage whose last view left the screen lets go of it. The
+  // backend keeps it running and keeps its output for the next Watch, which
+  // replays it; closing a view never stops a stage.
+  const watchedStages = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const onScreen = new Set([
+      activeTabId,
+      splitOpen(split) ? split.secondaryTabId : null,
+      ...(gridOpen(split) ? (split.gridTabIds ?? []) : []),
+    ]);
+    const stages = savedTabs.filter((tab) => !!tab.bridge);
+    const watched = new Set(stages.filter((tab) => onScreen.has(tab.id)).map((tab) => tab.id));
+    for (const id of watchedStages.current) {
+      const tab = stages.find((item) => item.id === id);
+      if (watched.has(id) || !tab) continue;
+      const back = () => {
+        const now = splitRef.current;
+        return (
+          activeTabIdRef.current === id ||
+          (splitOpen(now) && now.secondaryTabId === id) ||
+          (gridOpen(now) && (now.gridTabIds ?? []).includes(id))
+        );
+      };
+      // intentionally silent: a failed detach keeps streaming; the next view replays from the backend either way.
+      void detachStageTerminal(tab, back).catch(() => {});
+    }
+    watchedStages.current = watched;
+  }, [activeTabId, savedTabs, split]);
   useEffect(() => {
     const ids = sessionLogTabIds ? sessionLogTabIds.split("\n") : [];
     const watch = sessionLogWatch.current;
@@ -2473,8 +2506,11 @@ export function StartupForm({
     sessionLog: (tabId) => sessionLogsRef.current[tabId],
   });
   autopilotLogRef.current = autopilot.onTerminalLog;
-  // Engine 2 (V3): the run actor opened a stage terminal with no view. List
-  // its tab and attach to its output, as a terminal started here quietly.
+  // Engine 2 (V3): the run actor opened a stage terminal with no view, or
+  // resumed one (V4). List its tab. The stage stays hidden (V5): it runs at
+  // 120x40 in the backend's ring buffer until a view watches it (its tab,
+  // Watch in split, a grid cell). A view that held the old program follows
+  // the resumed one.
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | null = null;
@@ -2482,7 +2518,7 @@ export function StartupForm({
       void (async () => {
         const snap = await refreshTabs();
         const tab = snap?.tabs.find((item) => item.id === event.tabId);
-        if (!tab) return;
+        if (!tab || !livePty(tab.id)) return;
         await attachStageTerminal({ id: tab.id, cwd: tab.cwd, roleId: tab.roleId }).catch((err: unknown) => {
           showNotice("Stage not shown", `${tab.label}: ${errorText(err)} Open its tab to see it.`, "question");
         });
@@ -6356,6 +6392,9 @@ export function StartupForm({
           onApproveLane={approveLaneById}
           onApproveRun={(runId) => approveLaneById(runId, null)}
           onContinue={autopilot.continueRun}
+          onStageControl={async (runId, tabId, kind) => {
+            await pipelineActorMessage(runId, { kind, tabId });
+          }}
         />
       </section>,
     );
@@ -6410,6 +6449,7 @@ export function StartupForm({
         openPromptLibrary={openPromptLibrary}
         focusActiveTerminal={focusActiveTerminal}
         onPadError={(message) => showNotice("Not sent to the terminal", message, "failed")}
+        onNotice={(title, body) => showNotice(title, body, "failed")}
       />,
     );
   }

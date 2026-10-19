@@ -3,15 +3,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../bridge", () => ({
   createPtyChannel: () => ({ id: 1 }),
   ptyOpen: vi.fn(async () => 42),
+  ptyDetach: vi.fn(async () => true),
   shellTerminalStart: vi.fn(),
 }));
 vi.mock("./park", () => ({
   measuredTerminalSize: () => ({ cols: 100, rows: 30 }),
+  parkedTerminal: vi.fn(() => ({ term: { reset: resetTerm } })),
+  releaseParkedTerminal: vi.fn(),
 }));
+const resetTerm = vi.hoisted(() => vi.fn());
 
-import { ptyOpen } from "../bridge";
+import { ptyDetach, ptyOpen } from "../bridge";
 import { dropLivePty, livePty } from "./live";
-import { attachStageTerminal } from "./openTerminalTab";
+import { attachStageTerminal, detachStageTerminal } from "./openTerminalTab";
+import { releaseParkedTerminal } from "./park";
 
 describe("attachStageTerminal", () => {
   beforeEach(() => {
@@ -60,5 +65,42 @@ describe("attachStageTerminal", () => {
     expect(livePty("stage")).toBeUndefined();
     await attachStageTerminal({ id: "stage", cwd: "/repo", roleId: "role_pr_reviewer" });
     expect(ptyOpen).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("detachStageTerminal (V5)", () => {
+  const stage = { id: "stage", cwd: "/repo", roleId: "role_pr_reviewer" };
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dropLivePty("stage");
+  });
+
+  it("lets go of a hidden stage's view so the next Watch replays it, never stopping it", async () => {
+    await attachStageTerminal(stage);
+    expect(await detachStageTerminal(stage, () => false)).toBe(true);
+    expect(ptyDetach).toHaveBeenCalledWith("stage");
+    expect(livePty("stage")).toBeUndefined();
+    expect(releaseParkedTerminal).toHaveBeenCalledWith("stage");
+    await attachStageTerminal(stage);
+    expect(ptyOpen).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the stream of a terminal a view started (not a hidden stage)", async () => {
+    await attachStageTerminal({ ...stage, roleId: "role_planner" });
+    vi.mocked(ptyDetach).mockResolvedValueOnce(false);
+    expect(await detachStageTerminal(stage, () => false)).toBe(false);
+    expect(livePty("stage")).toBeDefined();
+    expect(releaseParkedTerminal).not.toHaveBeenCalled();
+  });
+
+  it("watches afresh when a view came back while the old one let go", async () => {
+    await attachStageTerminal(stage);
+    const before = livePty("stage");
+    expect(await detachStageTerminal(stage, () => true)).toBe(true);
+    expect(resetTerm).toHaveBeenCalled();
+    expect(releaseParkedTerminal).not.toHaveBeenCalled();
+    expect(livePty("stage")).toBeDefined();
+    expect(livePty("stage")).not.toBe(before);
+    expect(vi.mocked(ptyOpen).mock.calls[1][0]).toMatchObject({ id: "stage", attach: true });
   });
 });

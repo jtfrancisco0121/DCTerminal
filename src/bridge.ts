@@ -369,6 +369,8 @@ export type PipelineRun = {
    * runs, and on runs of a pipeline the bridge does not cover whole.
    */
   engine?: number;
+  /** Stage tabs you took over (V5): autopilot leaves them alone until you hand them back. */
+  takenOver?: string[];
 };
 
 /**
@@ -1202,7 +1204,8 @@ export async function pipelineContinue(runId: string): Promise<string[]> {
  * and `handoffPlan` are the hand-off form as you left it; left out, the
  * actor fills it from the run folder. `force` makes a hand-off autopilot
  * made already. Prefill (V4, D20) changes nothing: it returns the next
- * stage's form as the run folder's files fill it.
+ * stage's form as the run folder's files fill it. Take over and Hand back
+ * (V5) move a stage between you and autopilot.
  */
 export type ActorAction =
   | {
@@ -1226,7 +1229,11 @@ export type ActorAction =
     }
   | { kind: "approve"; lane: string | null }
   | { kind: "continue" }
-  | { kind: "prefill"; sourceTabId: string; targetRoleId: string };
+  | { kind: "prefill"; sourceTabId: string; targetRoleId: string }
+  /** You drive the stage now (V5, D28): no enforcement, no decisions, and its Watch view takes keystrokes. */
+  | { kind: "takeOver"; tabId: string }
+  /** Autopilot drives it again, deciding at once when its current turn already has a result. */
+  | { kind: "handBack"; tabId: string };
 
 /** What a button did on an engine-2 run. */
 export type ActorOutcome = {
@@ -1246,7 +1253,10 @@ export async function pipelineActorMessage(runId: string, action: ActorAction): 
   return invoke<ActorOutcome>("pipeline_actor_message", { runId, action });
 }
 
-/** The run actor opened a stage terminal (engine 2): list the tab and attach to its output. */
+/**
+ * The run actor opened a stage terminal (engine 2), or resumed one: list
+ * the tab. The stage runs hidden until a view watches it (V5).
+ */
 export type StageOpenedEvent = { runId: string; tabId: string };
 
 export function listenStageOpened(handler: (event: StageOpenedEvent) => void): Promise<UnlistenFn> {
@@ -1955,6 +1965,40 @@ export async function ptyResize(id: string, cols: number, rows: number): Promise
 
 export async function ptyKill(id: string): Promise<void> {
   return invoke("pty_kill", { id });
+}
+
+/**
+ * Whether you may type into a terminal now (V5, D27). A bridged pipeline
+ * stage on autopilot is watch-only, except while it needs you or you took
+ * it over; every other terminal is always open.
+ */
+export type StageInput = {
+  /** Keystrokes go through. */
+  open: boolean;
+  /** The terminal is a bridged pipeline stage. */
+  stage: boolean;
+  /** You took the stage over. */
+  takenOver: boolean;
+  /** It needs you now (a permission dialog or a question). */
+  needs: boolean;
+};
+
+export async function ptyInputState(id: string): Promise<StageInput> {
+  return invoke<StageInput>("pty_input_state", { id });
+}
+
+/** Tell the backend a bridged stage needs you, or no longer does; returns what typing allows now. */
+export async function ptyStageNeeds(id: string, needs: boolean): Promise<StageInput> {
+  return invoke<StageInput>("pty_stage_needs", { id, needs });
+}
+
+/**
+ * A Watch view closed (V5): the hidden stage keeps running and keeps its
+ * output for the next view. False when the terminal is not a hidden stage
+ * (it keeps streaming to this app).
+ */
+export async function ptyDetach(id: string): Promise<boolean> {
+  return invoke<boolean>("pty_detach", { id });
 }
 
 export async function getTerminalSettings(): Promise<TerminalSettings> {

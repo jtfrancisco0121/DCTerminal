@@ -7,7 +7,7 @@ import type {
   SetStateAction,
 } from "react";
 import type { getClaudeUsage, RoleSummary, TabSummary } from "../bridge";
-import { TerminalView } from "../components/TerminalView";
+import { StageTerminalView } from "./StageTerminalView";
 import { chainLabel } from "../handoff/chains";
 import { handoffMenuItems, type HandoffTargetId } from "../handoff/map";
 import type { TabRuntime } from "../liveTabs";
@@ -160,9 +160,13 @@ export function createPaneRenderers({
       body = <GitHubTab onNotice={onNotice} />;
     } else if (tab.kind === "terminal") {
       const tabLaunch = terminalLaunchOf(tab);
+      const needs = tabStatuses[tab.id]?.needsYou;
       body = (
-        <TerminalView
+        <StageTerminalView
           key={tab.id}
+          tab={tab}
+          needsYou={needs === "permission" || needs === "plan" || needs === "question"}
+          onNotice={onNotice}
           ptyId={tab.id}
           cwd={tab.cwd}
           launch={tabLaunch}
