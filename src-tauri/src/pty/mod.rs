@@ -2,7 +2,7 @@
 
 pub(crate) mod launch;
 pub(crate) mod plans;
-mod session;
+pub(crate) mod session;
 mod shell;
 
 use crate::paths::validate_working_folder;

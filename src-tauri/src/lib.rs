@@ -29,6 +29,16 @@ pub mod turn_changes;
 mod usage;
 mod windows;
 pub mod worktree;
+
+/// What `tests/fake_claude.rs` drives: the PTY and the session-log reader.
+/// Cargo hands the `fake_claude` bin's path only to integration tests, so
+/// those scenario tests cannot be unit tests. Not used by the app.
+#[doc(hidden)]
+pub mod testing {
+    pub use crate::claude_session_log::reader::SessionLogReader;
+    pub use crate::claude_session_log::{find_session_log, TerminalSessionLog, ToolCallStatus};
+    pub use crate::pty::session::{PtyOutput, PtySession, SpawnSpec};
+}
 #[cfg(test)]
 mod coverage_tests;
 #[cfg(test)]

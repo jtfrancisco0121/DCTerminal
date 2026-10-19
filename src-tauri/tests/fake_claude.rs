@@ -1,0 +1,725 @@
+//! Scenario tests for the `fake_claude` bin (`src/bin/fake_claude.rs`, which
+//! documents the scenario format). Each test runs the bin in a real
+//! `PtySession` with `CLAUDE_CONFIG_DIR` pinned to a temp folder, and reads
+//! its session log through the app's `SessionLogReader`.
+//!
+//! These are integration tests, not unit tests next to `claude_session_log`
+//! and `pty`, because Cargo sets `CARGO_BIN_EXE_<name>` only for integration
+//! tests and benches. `mod session_log` covers what the reader sees; `mod pty`
+//! covers what the bin draws, how it takes input and how it stops.
+#![cfg(unix)]
+
+use dcterminal_lib::testing::{
+    find_session_log, PtyOutput, PtySession, SessionLogReader, SpawnSpec, TerminalSessionLog,
+    ToolCallStatus,
+};
+use serde_json::Value;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::Receiver;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+const FAKE_CLAUDE: &str = env!("CARGO_BIN_EXE_fake_claude");
+const WAIT: Duration = Duration::from_secs(15);
+
+fn now_nanos() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+}
+
+/// This process's folder, `temp_dir()/dcterminal-tests/run-<pid>-<nanos>`,
+/// the layout `test_support` uses, so its sweep removes what a crashed run
+/// leaves behind.
+fn test_root() -> &'static Path {
+    static ROOT: OnceLock<PathBuf> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        let root = std::env::temp_dir().join("dcterminal-tests").join(format!(
+            "run-{}-{}",
+            std::process::id(),
+            now_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("create test run dir");
+        root
+    })
+}
+
+/// A fresh folder under the run folder, removed on drop.
+struct TempDir {
+    path: PathBuf,
+}
+
+impl TempDir {
+    fn new(tag: &str) -> Self {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let path = test_root().join(format!(
+            "{tag}_{}_{}",
+            NEXT.fetch_add(1, Ordering::SeqCst),
+            now_nanos()
+        ));
+        std::fs::create_dir_all(&path).expect("create temp dir");
+        Self { path }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn join(&self, part: impl AsRef<Path>) -> PathBuf {
+        self.path.join(part)
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+/// A config folder and a working folder for one or more runs (a resume
+/// reuses both).
+struct FakeHome {
+    config: TempDir,
+    cwd: TempDir,
+}
+
+impl FakeHome {
+    fn new(tag: &str) -> Self {
+        let home = Self {
+            config: TempDir::new(&format!("{tag}_config")),
+            cwd: TempDir::new(&format!("{tag}_cwd")),
+        };
+        // An empty config dir would resolve to the real ~/.claude; never let
+        // a test run without the pin.
+        assert!(
+            home.config.path().starts_with(test_root()),
+            "config dir must be a test temp dir: {}",
+            home.config.path().display()
+        );
+        home
+    }
+
+    /// Spawn `fake_claude <args>` with this scenario.
+    fn run(&self, scenario: &Value, args: &[&str]) -> FakeClaude {
+        let file = self.cwd.join(format!("scenario-{}.json", now_nanos()));
+        std::fs::write(&file, serde_json::to_vec(scenario).unwrap()).expect("write scenario");
+        let mut session = PtySession::spawn(SpawnSpec {
+            program: FAKE_CLAUDE.into(),
+            args: args.iter().map(|arg| arg.to_string()).collect(),
+            env: vec![
+                (
+                    "CLAUDE_CONFIG_DIR".into(),
+                    self.config.path().display().to_string(),
+                ),
+                (
+                    "DCT_FAKE_CLAUDE_SCENARIO".into(),
+                    file.display().to_string(),
+                ),
+            ],
+            cwd: self.cwd.path().to_path_buf(),
+            cols: 120,
+            rows: 40,
+        })
+        .expect("spawn fake_claude");
+        let output = session.take_output().expect("pty output");
+        FakeClaude {
+            session,
+            output,
+            config: self.config.path().to_path_buf(),
+            screen: Vec::new(),
+            exit: None,
+        }
+    }
+}
+
+struct FakeClaude {
+    session: PtySession,
+    output: Receiver<PtyOutput>,
+    config: PathBuf,
+    screen: Vec<u8>,
+    exit: Option<Option<i32>>,
+}
+
+impl FakeClaude {
+    fn pump(&mut self, slice: Duration) {
+        match self.output.recv_timeout(slice) {
+            Ok(PtyOutput::Data(bytes)) => self.screen.extend_from_slice(&bytes),
+            Ok(PtyOutput::Exit { code }) => self.exit = Some(code),
+            Err(_) => {}
+        }
+    }
+
+    /// Everything drawn so far, as plain lines (see `plain_screen`).
+    fn screen(&self) -> String {
+        plain_screen(&self.screen)
+    }
+
+    /// Wait until the plain screen contains `marker`.
+    fn wait_screen(&mut self, marker: &str) -> bool {
+        let deadline = Instant::now() + WAIT;
+        while Instant::now() < deadline {
+            if self.screen().contains(marker) {
+                return true;
+            }
+            if self.exit.is_some() {
+                break;
+            }
+            self.pump(Duration::from_millis(50));
+        }
+        self.screen().contains(marker)
+    }
+
+    /// Wait for the process to exit; its code.
+    fn wait_exit(&mut self) -> Option<i32> {
+        let deadline = Instant::now() + WAIT;
+        while self.exit.is_none() && Instant::now() < deadline {
+            self.pump(Duration::from_millis(50));
+        }
+        self.exit.expect("fake_claude did not exit")
+    }
+
+    fn write(&self, bytes: &[u8]) {
+        self.session.write(bytes).expect("write to fake_claude");
+    }
+
+    /// The log for `session_id`, under the pinned config dir only.
+    fn log_path(&self, session_id: &str) -> Option<PathBuf> {
+        let path = find_session_log(&self.config, session_id)?;
+        assert!(path.starts_with(&self.config), "{}", path.display());
+        Some(path)
+    }
+
+    /// Read the log through the app's reader until `done` holds.
+    fn wait_log(
+        &mut self,
+        session_id: &str,
+        done: impl Fn(&TerminalSessionLog) -> bool,
+    ) -> TerminalSessionLog {
+        let deadline = Instant::now() + WAIT;
+        let mut reader: Option<SessionLogReader> = None;
+        loop {
+            if reader.is_none() {
+                reader = self
+                    .log_path(session_id)
+                    .and_then(|path| SessionLogReader::open(&path, session_id));
+            } else if let Some(reader) = reader.as_mut() {
+                reader.refresh();
+            }
+            if let Some(summary) = reader.as_ref().map(SessionLogReader::summary) {
+                if done(&summary) || Instant::now() >= deadline {
+                    return summary;
+                }
+            } else {
+                assert!(
+                    Instant::now() < deadline,
+                    "no session log for {session_id}; screen:\n{}",
+                    self.screen()
+                );
+            }
+            self.pump(Duration::from_millis(30));
+        }
+    }
+}
+
+/// The log's records, one JSON value per line. Panics on a line that is not
+/// complete JSON, except a trailing partial line when `allow_partial`.
+fn log_records(path: &Path, allow_partial: bool) -> Vec<Value> {
+    let body = std::fs::read(path).expect("read log");
+    let complete = body.last() == Some(&b'\n');
+    let mut lines: Vec<&[u8]> = body.split(|b| *b == b'\n').collect();
+    let tail = lines.pop().unwrap_or_default();
+    if !complete && !allow_partial {
+        panic!(
+            "the last log line is not complete: {:?}",
+            String::from_utf8_lossy(tail)
+        );
+    }
+    lines
+        .into_iter()
+        .map(|line| {
+            serde_json::from_slice(line)
+                .unwrap_or_else(|err| panic!("{err}: {:?}", String::from_utf8_lossy(line)))
+        })
+        .collect()
+}
+
+/// Raw PTY bytes to rough plain lines, the way `src/terminal/permissionDialog.ts`
+/// `normalizeTerminalText` does: CHA is a space, cursor-forward is spaces,
+/// vertical moves and CR are line breaks, other escapes vanish.
+fn plain_screen(raw: &[u8]) -> String {
+    let text = String::from_utf8_lossy(raw);
+    let mut out = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\u{1b}' {
+            match ch {
+                '\r' | '\n' => out.push('\n'),
+                '\t' => out.push(' '),
+                c if (c as u32) < 0x20 => {}
+                c => out.push(c),
+            }
+            continue;
+        }
+        match chars.peek() {
+            Some('[') => {
+                chars.next();
+                let mut params = String::new();
+                let mut fin = None;
+                for next in chars.by_ref() {
+                    if ('@'..='~').contains(&next) {
+                        fin = Some(next);
+                        break;
+                    }
+                    params.push(next);
+                }
+                let private = params.starts_with(['<', '=', '>', '?']);
+                let n: usize = params.parse().unwrap_or(1).max(1);
+                match fin {
+                    _ if private => {}
+                    Some('C') => out.push_str(&" ".repeat(n.min(256))),
+                    Some('G' | '`') => out.push(' '),
+                    Some('A' | 'B' | 'E' | 'F' | 'd' | 'H' | 'f') => out.push('\n'),
+                    _ => {}
+                }
+            }
+            Some(']') => {
+                chars.next();
+                while let Some(next) = chars.next() {
+                    if next == '\u{7}' {
+                        break;
+                    }
+                    if next == '\u{1b}' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            Some(_) => {
+                chars.next();
+            }
+            None => {}
+        }
+    }
+    out.lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// What the app's session-log reader sees.
+mod session_log {
+    use super::*;
+    use serde_json::json;
+
+    const SID: &str = "5f0c2a9e-1b2c-4d3e-8f40-0123456789ab";
+
+    fn kinds(records: &[Value]) -> Vec<String> {
+        records
+            .iter()
+            .map(|r| {
+                let kind = r["type"].as_str().unwrap_or("?");
+                match r["subtype"].as_str() {
+                    Some(sub) => format!("{kind}/{sub}"),
+                    None => kind.to_string(),
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_reply_and_turn_duration_read_as_turn_done() {
+        let home = FakeHome::new("fc_done");
+        let scenario = json!({ "turns": [
+            // No end_turn: only the turn_duration record ends this turn.
+            { "steps": [ { "thinking": "Let me think." }, { "text": "All done." } ] }
+        ]});
+        let mut fake = home.run(
+            &scenario,
+            &[
+                "--session-id",
+                SID,
+                "--model",
+                "claude-sonnet-4-5",
+                "--permission-mode",
+                "auto",
+                "Fix it",
+            ],
+        );
+        let log = fake.wait_log(SID, |log| log.turn_done);
+        assert!(log.turn_done, "screen:\n{}", fake.screen());
+        assert!(!log.interrupted);
+        assert_eq!(log.last_reply, "All done.");
+        assert_eq!(log.permission_mode.as_deref(), Some("auto"));
+        assert!(log.open_tool.is_none());
+
+        let path = fake.log_path(SID).unwrap();
+        let folder = path
+            .parent()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        assert!(!folder.contains('/') && folder.starts_with('-'), "{folder}");
+        let records = log_records(&path, false);
+        let kinds = kinds(&records);
+        assert_eq!(
+            kinds
+                .iter()
+                .filter(|k| k.as_str() != "file-history-snapshot" && k.as_str() != "ai-title")
+                .collect::<Vec<_>>(),
+            vec!["user", "assistant", "assistant", "system/turn_duration"]
+        );
+        let prompt = records.iter().find(|r| r["type"] == "user").unwrap();
+        assert_eq!(prompt["message"]["content"], json!("Fix it"));
+        assert_eq!(prompt["sessionId"], json!(SID));
+        assert_eq!(prompt["isSidechain"], json!(false));
+        let cwd = std::fs::canonicalize(home.cwd.path()).unwrap();
+        assert_eq!(
+            std::fs::canonicalize(prompt["cwd"].as_str().unwrap()).unwrap(),
+            cwd
+        );
+        let reply = records.iter().rfind(|r| r["type"] == "assistant").unwrap();
+        assert_eq!(reply["message"]["stop_reason"], Value::Null);
+        assert_eq!(reply["message"]["model"], json!("claude-sonnet-4-5"));
+        let thinking = records.iter().find(|r| r["type"] == "assistant").unwrap();
+        assert_eq!(reply["parentUuid"], thinking["uuid"]);
+    }
+
+    #[test]
+    fn esc_and_a_scripted_interrupt_end_the_turn_as_interrupted() {
+        let home = FakeHome::new("fc_interrupt");
+        let scenario = json!({ "turns": [
+            { "steps": [ { "text": "Starting" }, { "delay_ms": 20000 }, { "reply": "never" } ] },
+            { "steps": [ { "text": "Partial" }, { "interrupt": true }, { "reply": "never" } ] },
+            { "steps": [ { "reply": "Third." } ] }
+        ]});
+        let mut fake = home.run(&scenario, &["--session-id", SID, "go"]);
+        assert!(fake.wait_screen("Starting"), "screen:\n{}", fake.screen());
+        fake.write(b"\x1b");
+        let log = fake.wait_log(SID, |log| log.turn_done);
+        assert!(log.turn_done && log.interrupted, "{log:?}");
+        assert_eq!(log.last_reply, "Starting");
+
+        fake.write(b"second\r");
+        let log = fake.wait_log(SID, |log| log.last_reply == "Partial" && log.turn_done);
+        assert!(log.interrupted, "{log:?}");
+
+        fake.write(b"third\r");
+        let log = fake.wait_log(SID, |log| log.last_reply == "Third." && log.turn_done);
+        assert!(!log.interrupted, "{log:?}");
+        let records = log_records(&fake.log_path(SID).unwrap(), false);
+        let interrupts = records
+            .iter()
+            .filter(|r| {
+                r["message"]["content"][0]["text"] == json!("[Request interrupted by user]")
+            })
+            .count();
+        assert_eq!(interrupts, 2);
+        assert!(!records.iter().any(|r| r.to_string().contains("never")));
+    }
+
+    #[test]
+    fn exit_plan_mode_is_the_open_tool_and_keep_planning_rejects_it() {
+        let home = FakeHome::new("fc_plan");
+        let scenario = json!({ "turns": [
+            { "steps": [
+                { "tool": "ExitPlanMode", "input": { "plan": "# Plan\n1. Do it" }, "permission": true },
+                { "reply": "never" }
+            ] }
+        ]});
+        let mut fake = home.run(
+            &scenario,
+            &["--session-id", SID, "--permission-mode", "plan", "Plan it"],
+        );
+        let log = fake.wait_log(SID, |log| log.open_tool.is_some());
+        let open = log.open_tool.as_ref().expect("open tool");
+        assert_eq!(open.name, "ExitPlanMode");
+        assert_eq!(log.plan.as_deref(), Some("# Plan\n1. Do it"));
+        assert_eq!(log.permission_mode.as_deref(), Some("plan"));
+        assert!(!log.turn_done);
+        assert!(
+            fake.wait_screen("No, keep planning"),
+            "screen:\n{}",
+            fake.screen()
+        );
+
+        fake.write(b"3");
+        let log = fake.wait_log(SID, |log| log.turn_done);
+        assert!(log.turn_done && log.interrupted, "{log:?}");
+        assert!(log.open_tool.is_none());
+        assert_eq!(log.tool_calls[0].status, ToolCallStatus::Failed);
+        assert_eq!(log.plan.as_deref(), Some("# Plan\n1. Do it"));
+    }
+
+    #[test]
+    fn sub_agent_records_stay_off_the_main_chain() {
+        let home = FakeHome::new("fc_subagent");
+        let scenario = json!({ "turns": [
+            { "steps": [
+                { "subagent": {
+                    "description": "Explore code",
+                    "prompt": "Find main",
+                    "steps": [
+                        { "tool": "Grep", "input": { "pattern": "fn main" } },
+                        { "reply": "Found it in main.rs" }
+                    ]
+                } },
+                { "reply": "Main says done." }
+            ] }
+        ]});
+        let mut fake = home.run(&scenario, &["--session-id", SID, "Look around"]);
+        let log = fake.wait_log(SID, |log| log.turn_done);
+        assert!(log.turn_done, "{log:?}");
+        assert_eq!(log.last_reply, "Main says done.");
+        let names: Vec<&str> = log.tool_calls.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec!["Task"]);
+        assert_eq!(log.tool_calls[0].status, ToolCallStatus::Completed);
+        assert_eq!(log.tool_calls[0].title, "Task: Explore code");
+        let records = log_records(&fake.log_path(SID).unwrap(), false);
+        let side: Vec<&Value> = records
+            .iter()
+            .filter(|r| r["isSidechain"] == json!(true))
+            .collect();
+        assert_eq!(side.len(), 4, "prompt, Grep, its result, reply");
+        assert!(side.iter().all(|r| r["sessionId"] == json!(SID)));
+    }
+
+    #[test]
+    fn a_crash_mid_turn_leaves_an_unfinished_turn_and_a_held_back_line() {
+        let home = FakeHome::new("fc_crash");
+        let scenario = json!({ "turns": [
+            { "steps": [
+                { "tool": "Bash", "input": { "command": "ls" } },
+                { "text": "Looking" },
+                { "crash": true }
+            ] }
+        ]});
+        let mut fake = home.run(&scenario, &["--session-id", SID, "go"]);
+        let code = fake.wait_exit();
+        assert_ne!(code, Some(0));
+        let path = fake.log_path(SID).unwrap();
+        let records = log_records(&path, true);
+        assert_eq!(
+            records.last().unwrap()["message"]["content"][0]["text"],
+            json!("Looking")
+        );
+        assert_ne!(
+            std::fs::read(&path).unwrap().last(),
+            Some(&b'\n'),
+            "a partial line"
+        );
+        let log = fake.wait_log(SID, |_| true);
+        assert!(!log.turn_done, "{log:?}");
+        assert_eq!(log.last_reply, "Looking");
+        assert_eq!(log.tool_calls[0].status, ToolCallStatus::Completed);
+    }
+
+    #[test]
+    fn resume_appends_to_the_same_log() {
+        let home = FakeHome::new("fc_resume");
+        let first = json!({ "turns": [ { "steps": [ { "reply": "First." } ] }, { "exit": 0 } ] });
+        let mut fake = home.run(&first, &["--session-id", SID, "one"]);
+        assert_eq!(fake.wait_exit(), Some(0));
+        let path = fake.log_path(SID).unwrap();
+
+        // An id already in use is refused, like Claude Code does.
+        let mut again = home.run(&first, &["--session-id", SID, "one"]);
+        assert_ne!(again.wait_exit(), Some(0));
+
+        let second = json!({ "turns": [ { "steps": [ { "reply": "Second." } ] }, { "exit": 0 } ] });
+        let mut resumed = home.run(
+            &second,
+            &["--resume", SID, "--permission-mode", "plan", "two"],
+        );
+        assert_eq!(resumed.wait_exit(), Some(0));
+        assert_eq!(resumed.log_path(SID).unwrap(), path);
+        let log = resumed.wait_log(SID, |log| log.turn_done);
+        assert_eq!(log.last_reply, "Second.");
+        assert_eq!(log.permission_mode.as_deref(), Some("plan"));
+        let records = log_records(&path, false);
+        let prompts: Vec<&Value> = records
+            .iter()
+            .filter(|r| r["type"] == "user")
+            .map(|r| &r["message"]["content"])
+            .collect();
+        assert_eq!(prompts, vec![&json!("one"), &json!("two")]);
+        assert!(records
+            .iter()
+            .all(|r| r.get("sessionId").is_none() || r["sessionId"] == json!(SID)));
+
+        let unknown = "00000000-0000-4000-8000-000000000000";
+        let mut missing = home.run(&second, &["--resume", unknown, "x"]);
+        assert_ne!(missing.wait_exit(), Some(0));
+        assert!(missing.log_path(unknown).is_none());
+    }
+}
+
+/// What the bin draws in the PTY, how it takes input and how it stops.
+mod pty {
+    use super::*;
+    use serde_json::json;
+
+    const SID: &str = "7a1d3c5e-2f4b-4c6d-9e8f-abcdef012345";
+
+    #[test]
+    fn a_tool_awaiting_permission_is_the_open_tool_and_draws_the_dialog() {
+        let home = FakeHome::new("fc_permission");
+        let scenario = json!({ "turns": [
+            { "steps": [
+                { "tool": "Bash", "input": { "command": "npm test", "description": "Run tests" }, "permission": true },
+                { "reply": "Tests pass." }
+            ] }
+        ]});
+        let mut fake = home.run(&scenario, &["--session-id", SID, "Run the tests"]);
+        let log = fake.wait_log(SID, |log| log.open_tool.is_some());
+        let open = log.open_tool.as_ref().expect("open tool");
+        assert_eq!(
+            (open.name.as_str(), open.title.as_str(), open.hint.as_str()),
+            ("Bash", "Bash: Run tests", "npm test")
+        );
+        assert!(!log.turn_done);
+        // The lines `src/terminal/permissionDialog.ts` looks for, in order.
+        assert!(fake.wait_screen("3. No"), "screen:\n{}", fake.screen());
+        let screen = fake.screen();
+        let lines: Vec<&str> = screen.lines().collect();
+        let question = lines
+            .iter()
+            .rposition(|line| *line == "Do you want to proceed?")
+            .unwrap_or_else(|| panic!("no question:\n{screen}"));
+        assert!(
+            lines[..question].contains(&"npm test"),
+            "{screen}"
+        );
+        assert_eq!(lines[question + 1], "❯ 1. Yes", "{screen}");
+        assert!(lines[question + 2].starts_with("2. Yes, and"), "{screen}");
+        assert_eq!(lines[question + 3], "3. No", "{screen}");
+
+        fake.write(b"1");
+        let log = fake.wait_log(SID, |log| log.turn_done);
+        assert!(log.turn_done && !log.interrupted, "{log:?}");
+        assert_eq!(log.tool_calls[0].status, ToolCallStatus::Completed);
+        assert_eq!(log.last_reply, "Tests pass.");
+    }
+
+    #[test]
+    fn a_file_write_asks_to_create_the_file() {
+        let home = FakeHome::new("fc_write");
+        let scenario = json!({ "turns": [
+            { "steps": [
+                { "tool": "Write", "input": { "file_path": "/repo/note.txt", "content": "hi" }, "permission": true },
+                { "reply": "Wrote it." }
+            ] }
+        ]});
+        let mut fake = home.run(&scenario, &["--session-id", SID, "Write a note"]);
+        assert!(fake.wait_screen("3. No"), "screen:\n{}", fake.screen());
+        assert!(
+            fake.screen().contains("Do you want to create note.txt?"),
+            "{}",
+            fake.screen()
+        );
+        let log = fake.wait_log(SID, |log| log.open_tool.is_some());
+        assert_eq!(log.open_tool.as_ref().unwrap().hint, "note.txt");
+        // Esc rejects it: the tool fails and the turn ends interrupted.
+        fake.write(b"\x1b");
+        let log = fake.wait_log(SID, |log| log.turn_done);
+        assert!(log.interrupted, "{log:?}");
+        assert_eq!(log.tool_calls[0].status, ToolCallStatus::Failed);
+    }
+
+    #[test]
+    fn the_prompt_line_takes_typed_prompts_and_other_flags_are_ignored() {
+        let home = FakeHome::new("fc_prompt");
+        let scenario = json!({ "turns": [
+            { "steps": [ { "reply": "One." } ] },
+            { "steps": [ { "reply": "Two." } ] }
+        ]});
+        let mut fake = home.run(
+            &scenario,
+            &[
+                "--settings",
+                "{\"hooks\":{}}",
+                "--allowedTools",
+                "mcp__dcterminal__submit_result",
+                "--verbose",
+                "--session-id",
+                SID,
+            ],
+        );
+        assert!(fake.wait_screen("❯"), "screen:\n{}", fake.screen());
+        fake.write(b"first prompt\r");
+        fake.wait_log(SID, |log| log.last_reply == "One." && log.turn_done);
+        fake.write(b"second prompt\r");
+        let log = fake.wait_log(SID, |log| log.last_reply == "Two." && log.turn_done);
+        assert!(log.turn_done);
+        fake.write(b"/exit\r");
+        assert_eq!(fake.wait_exit(), Some(0));
+        let records = log_records(&fake.log_path(SID).unwrap(), false);
+        let prompts: Vec<_> = records
+            .iter()
+            .filter(|r| r["type"] == "user")
+            .map(|r| r["message"]["content"].clone())
+            .collect();
+        assert_eq!(prompts, vec![json!("first prompt"), json!("second prompt")]);
+    }
+
+    /// The S1 graceful stop: SIGTERM, then up to `STOP_GRACE` before SIGKILL.
+    /// A record half written when SIGTERM lands is finished first.
+    #[test]
+    fn sigterm_mid_turn_still_leaves_a_complete_last_line() {
+        let home = FakeHome::new("fc_sigterm");
+        let long = format!("LONGREPLY {}", "word ".repeat(600));
+        let scenario = json!({
+            "write_chunk_ms": 10,
+            "turns": [ { "steps": [ { "text": "Working" }, { "reply": long }, { "delay_ms": 20000 } ] } ]
+        });
+        let mut fake = home.run(&scenario, &["--session-id", SID, "go"]);
+        // Wait until the long record is partly on disk.
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let path = loop {
+            assert!(Instant::now() < deadline, "the long reply never started");
+            if let Some(path) = fake.log_path(SID) {
+                let body = std::fs::read(&path).unwrap_or_default();
+                let tail = body.rsplit(|b| *b == b'\n').next().unwrap_or_default();
+                if String::from_utf8_lossy(tail).contains("LONGREPLY") {
+                    break path;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        fake.session.kill();
+        let code = fake.wait_exit();
+        let records = log_records(&path, false);
+        let last = records.last().unwrap();
+        assert_eq!(last["message"]["content"][0]["text"], json!(long));
+        assert_eq!(last["message"]["stop_reason"], json!("end_turn"));
+        assert_eq!(code, Some(143), "it exited on SIGTERM, not SIGKILL");
+    }
+
+    #[test]
+    fn it_refuses_to_run_without_a_pinned_config_dir() {
+        let home = FakeHome::new("fc_noconfig");
+        let scenario = home.cwd.join("scenario.json");
+        std::fs::write(&scenario, b"{\"turns\":[]}").unwrap();
+        for config in [None, Some(""), Some("/nonexistent/.claude-account9")] {
+            let mut command = std::process::Command::new(FAKE_CLAUDE);
+            command
+                .args(["--session-id", SID, "hi"])
+                .current_dir(home.cwd.path())
+                .env("DCT_FAKE_CLAUDE_SCENARIO", &scenario)
+                .env_remove("CLAUDE_CONFIG_DIR")
+                .stdin(std::process::Stdio::null());
+            if let Some(dir) = config {
+                command.env("CLAUDE_CONFIG_DIR", dir);
+            }
+            let out = command.output().expect("run fake_claude");
+            assert_eq!(out.status.code(), Some(2), "{config:?}");
+            let err = String::from_utf8_lossy(&out.stderr);
+            assert!(err.contains("CLAUDE_CONFIG_DIR"), "{config:?}: {err}");
+        }
+        assert!(!std::path::Path::new("/nonexistent").exists());
+    }
+}
