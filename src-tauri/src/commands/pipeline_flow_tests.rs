@@ -461,6 +461,46 @@ fn an_agent_that_exits_between_turns_is_seen_as_exited_and_can_be_restarted() {
     registry.finish_start("tab-exit");
 }
 
+// Quit asks first while an agent turn is running, as closing a window does
+// (src/liveWork.ts). An idle agent, or one whose process exited, is not counted.
+#[test]
+fn an_agent_counts_as_live_work_only_while_its_turn_runs() {
+    let mut registry = SessionRegistry::new();
+    assert_eq!(registry.live_count(), 0);
+    let idle = fake!("live-count-idle", claude_scenario(json!([])));
+    registry.insert(LiveSession::from_client(
+        "tab-idle",
+        "role_implementer",
+        connect(&idle, ProviderId::Claude, "bypassPermissions"),
+    ));
+    assert_eq!(registry.live_count(), 0, "an idle agent has no turn to stop");
+
+    registry.get_mut("tab-idle").unwrap().prompt_in_flight = true;
+    assert_eq!(registry.live_count(), 1, "a running turn stops on quit");
+    registry.get_mut("tab-idle").unwrap().prompt_in_flight = false;
+    assert_eq!(registry.live_count(), 0, "a finished turn is not live");
+
+    // A real turn clears the flag when it ends; the agent then exits.
+    let agent = fake!(
+        "live-count",
+        claude_scenario(json!([[{ "say": "bye" }, { "end_exit": 0 }]]))
+    );
+    let client = connect(&agent, ProviderId::Claude, "bypassPermissions");
+    let (client, result, _, _) = start(client, "role_implementer", "go", vec![]).finish();
+    assert_eq!(result.unwrap().agent_text, "bye");
+    let mut exited = LiveSession::from_client("tab-exit", "role_implementer", client);
+    // Even with the flag left set, a process that is gone is not live.
+    exited.prompt_in_flight = true;
+    registry.insert(exited);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !registry.get("tab-exit").unwrap().is_dead() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(registry.live_count(), 0, "an exited agent is not live");
+    registry.shutdown_all();
+    assert_eq!(registry.live_count(), 0);
+}
+
 #[test]
 fn agent_logs_read_while_a_turn_holds_the_client_lock() {
     // A turn holds the client lock until it ends, and its callbacks take the

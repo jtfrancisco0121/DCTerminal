@@ -34,6 +34,166 @@ struct ReopenWindowItem(tauri::menu::MenuItem<tauri::Wry>);
 
 /// Set while a real quit is in progress so closing windows does not archive them.
 static QUITTING: AtomicBool = AtomicBool::new(false);
+/// Set while the quit question is on screen, so a second quit does not stack another.
+static QUIT_ASKING: AtomicBool = AtomicBool::new(false);
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const QUIT_ITEM: &str = "quit";
+
+/// What a quit would stop, across every window.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct LiveWork {
+    pub terminals: usize,
+    pub agents: usize,
+}
+
+impl LiveWork {
+    pub fn total(self) -> usize {
+        self.terminals + self.agents
+    }
+}
+
+/// A registry that knows how much of its work is still running.
+pub(crate) trait LiveCount {
+    fn live_count(&self) -> usize;
+}
+
+impl LiveCount for crate::pty::PtyRegistry {
+    fn live_count(&self) -> usize {
+        crate::pty::PtyRegistry::live_count(self)
+    }
+}
+
+impl LiveCount for crate::commands::SessionRegistry {
+    fn live_count(&self) -> usize {
+        crate::commands::SessionRegistry::live_count(self)
+    }
+}
+
+/// Count live terminals and agents, each under its own short lock that is
+/// dropped before anyone is asked anything. A missing registry counts 0.
+pub(crate) fn count_live_work<T: LiveCount, A: LiveCount>(
+    terminals: Option<&Mutex<T>>,
+    agents: Option<&Mutex<A>>,
+) -> LiveWork {
+    LiveWork {
+        terminals: live_in(terminals),
+        agents: live_in(agents),
+    }
+}
+
+fn live_in<R: LiveCount>(registry: Option<&Mutex<R>>) -> usize {
+    registry.map_or(0, |registry| match registry.lock() {
+        Ok(guard) => guard.live_count(),
+        // A panic elsewhere does not make running work disappear.
+        Err(poisoned) => poisoned.into_inner().live_count(),
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QuitDecision {
+    /// Quit now: nothing would be lost, or the user already said Quit.
+    Quit,
+    /// Something is running: ask before stopping it.
+    Ask,
+    /// The question is already on screen; this request does nothing.
+    Ignore,
+}
+
+/// Whether an explicit quit goes ahead, asks, or is dropped.
+pub(crate) fn quit_decision(live: usize, confirmed: bool, dialog_open: bool) -> QuitDecision {
+    if confirmed {
+        QuitDecision::Quit
+    } else if dialog_open {
+        QuitDecision::Ignore
+    } else if live == 0 {
+        QuitDecision::Quit
+    } else {
+        QuitDecision::Ask
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExitStep {
+    /// The last window closed on macOS: the process stays up.
+    StayUp,
+    /// Exit, as today.
+    Proceed,
+    /// A programmatic exit nobody confirmed: decide with [`quit_decision`].
+    AskFirst,
+}
+
+/// `ExitRequested`: `code` is `None` when the last window closed and
+/// `Some` for a programmatic exit (`app.exit`).
+pub(crate) fn exit_step(code: Option<i32>, os: &str, confirmed: bool) -> ExitStep {
+    match code {
+        None if !quit_when_last_window_closes(os) => ExitStep::StayUp,
+        Some(_) if !confirmed => ExitStep::AskFirst,
+        _ => ExitStep::Proceed,
+    }
+}
+
+/// The quit question, in the window-close confirm's words.
+pub(crate) fn quit_message(live: LiveWork) -> String {
+    let count = |n: usize, what: &str| {
+        let s = if n == 1 { "" } else { "s" };
+        format!("{n} running {what}{s}")
+    };
+    let parts: Vec<String> = [(live.terminals, "terminal"), (live.agents, "agent")]
+        .into_iter()
+        .filter(|(n, _)| *n > 0)
+        .map(|(n, what)| count(n, what))
+        .collect();
+    format!("{} will be stopped.", parts.join(" and "))
+}
+
+/// An explicit quit (DCTerminal > Quit, Cmd+Q, or an `app.exit`). With
+/// nothing running, or once the user said Quit, it marks the quit and
+/// returns [`QuitDecision::Quit`]; the caller then exits. With work running
+/// it asks once (the answer arrives on another thread, so the main thread
+/// never waits); Quit then exits again, which goes straight through.
+fn request_quit(app: &AppHandle) -> QuitDecision {
+    let live = count_live_work(
+        app.try_state::<Mutex<crate::pty::PtyRegistry>>().as_deref(),
+        app.try_state::<Mutex<crate::commands::SessionRegistry>>().as_deref(),
+    );
+    let decision = quit_decision(
+        live.total(),
+        QUITTING.load(Ordering::SeqCst),
+        QUIT_ASKING.load(Ordering::SeqCst),
+    );
+    match decision {
+        QuitDecision::Quit => QUITTING.store(true, Ordering::SeqCst),
+        QuitDecision::Ask => {
+            // Two quits racing here: only the first one asks.
+            if QUIT_ASKING.swap(true, Ordering::SeqCst) {
+                return QuitDecision::Ignore;
+            }
+            ask_to_quit(app, live);
+        }
+        QuitDecision::Ignore => {}
+    }
+    decision
+}
+
+fn ask_to_quit(app: &AppHandle, live: LiveWork) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    let app_for_answer = app.clone();
+    app.dialog()
+        .message(quit_message(live))
+        .title("Quit DCTerminal?")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Quit".to_string(),
+            "Cancel".to_string(),
+        ))
+        .show(move |quit| {
+            if quit {
+                QUITTING.store(true, Ordering::SeqCst);
+                app_for_answer.exit(0);
+            }
+            QUIT_ASKING.store(false, Ordering::SeqCst);
+        });
+}
 
 pub fn window_title(account_name: &str) -> String {
     let name = account_name.trim();
@@ -91,7 +251,15 @@ pub fn install_macos_menu(app: &tauri::App) -> tauri::Result<()> {
         )?;
         let file = Submenu::with_items(app, "File", true, &[&new_window, &reopen_window])?;
         app.manage(ReopenWindowItem(reopen_window));
-        let quit = PredefinedMenuItem::quit(app, None)?;
+        // Not the predefined Quit: that sends `terminate:`, which tao turns
+        // straight into `RunEvent::Exit` with no chance to ask first.
+        let quit = MenuItem::with_id(
+            app,
+            QUIT_ITEM,
+            "Quit DCTerminal",
+            true,
+            Some("CmdOrCtrl+Q"),
+        )?;
         let app_menu = Submenu::with_items(app, "DCTerminal", true, &[&quit])?;
         // Without these, Cmd+C/V/X/A/Z never reach text fields on macOS.
         let edit = Submenu::with_items(
@@ -112,6 +280,11 @@ pub fn install_macos_menu(app: &tauri::App) -> tauri::Result<()> {
         app.set_menu(menu)?;
         app.on_menu_event(|app, event| match event.id().as_ref() {
             "new-window" => request_new_window(app),
+            QUIT_ITEM => {
+                if request_quit(app) == QuitDecision::Quit {
+                    app.exit(0);
+                }
+            }
             REOPEN_WINDOW_ITEM => {
                 // Off the main thread: transcripts load from disk, and the
                 // window build hands itself to the main thread and waits.
@@ -154,10 +327,14 @@ pub fn handle_run_event(app: &AppHandle, event: tauri::RunEvent) {
     match event {
         tauri::RunEvent::Exit => shutdown_processes(app),
         tauri::RunEvent::ExitRequested { code, api, .. } => {
-            if code.is_none() && !quit_when_last_window_closes(host_os()) {
-                api.prevent_exit();
-            } else {
-                QUITTING.store(true, Ordering::SeqCst);
+            match exit_step(code, host_os(), QUITTING.load(Ordering::SeqCst)) {
+                ExitStep::StayUp => api.prevent_exit(),
+                ExitStep::Proceed => QUITTING.store(true, Ordering::SeqCst),
+                ExitStep::AskFirst => {
+                    if request_quit(app) != QuitDecision::Quit {
+                        api.prevent_exit();
+                    }
+                }
             }
         }
         tauri::RunEvent::WindowEvent {
@@ -615,6 +792,78 @@ mod tests {
     fn only_the_last_window_is_kept_for_restore() {
         assert!(should_keep_window_for_restore(0));
         assert!(!should_keep_window_for_restore(1));
+    }
+
+    #[test]
+    fn quitting_with_nothing_live_quits_at_once() {
+        assert_eq!(quit_decision(0, false, false), QuitDecision::Quit);
+    }
+
+    #[test]
+    fn quitting_with_live_work_asks_first() {
+        assert_eq!(quit_decision(1, false, false), QuitDecision::Ask);
+        assert_eq!(quit_decision(3, false, false), QuitDecision::Ask);
+    }
+
+    #[test]
+    fn a_confirmed_quit_goes_through_without_asking_again() {
+        assert_eq!(quit_decision(2, true, false), QuitDecision::Quit);
+        assert_eq!(quit_decision(2, true, true), QuitDecision::Quit);
+    }
+
+    #[test]
+    fn a_quit_while_the_question_is_open_is_ignored() {
+        assert_eq!(quit_decision(2, false, true), QuitDecision::Ignore);
+        assert_eq!(quit_decision(0, false, true), QuitDecision::Ignore);
+    }
+
+    #[test]
+    fn closing_the_last_window_on_macos_still_keeps_the_process_up() {
+        assert_eq!(exit_step(None, "macos", false), ExitStep::StayUp);
+        assert_eq!(exit_step(None, "macos", true), ExitStep::StayUp);
+        // Elsewhere the last window quits, as before (it already asked on close).
+        assert_eq!(exit_step(None, "windows", false), ExitStep::Proceed);
+        assert_eq!(exit_step(None, "linux", false), ExitStep::Proceed);
+    }
+
+    #[test]
+    fn a_programmatic_exit_asks_unless_already_confirmed() {
+        assert_eq!(exit_step(Some(0), "macos", false), ExitStep::AskFirst);
+        assert_eq!(exit_step(Some(0), "windows", false), ExitStep::AskFirst);
+        // Our own `app.exit(0)` after Quit must not loop back into a question.
+        assert_eq!(exit_step(Some(0), "macos", true), ExitStep::Proceed);
+    }
+
+    #[test]
+    fn the_quit_question_names_what_stops() {
+        let one = |terminals, agents| quit_message(LiveWork { terminals, agents });
+        assert_eq!(one(1, 0), "1 running terminal will be stopped.");
+        assert_eq!(one(0, 1), "1 running agent will be stopped.");
+        assert_eq!(one(2, 3), "2 running terminals and 3 running agents will be stopped.");
+        assert_eq!(one(1, 1), "1 running terminal and 1 running agent will be stopped.");
+    }
+
+    struct FakeRegistry(usize);
+
+    impl LiveCount for FakeRegistry {
+        fn live_count(&self) -> usize {
+            self.0
+        }
+    }
+
+    #[test]
+    fn live_work_is_counted_across_both_registries_without_keeping_a_lock() {
+        let terminals = Mutex::new(FakeRegistry(2));
+        let agents = Mutex::new(FakeRegistry(1));
+        let live = count_live_work(Some(&terminals), Some(&agents));
+        assert_eq!(live, LiveWork { terminals: 2, agents: 1 });
+        assert_eq!(live.total(), 3);
+        // Both locks are free again before anyone is asked.
+        assert!(terminals.try_lock().is_ok());
+        assert!(agents.try_lock().is_ok());
+        // A registry not set up yet counts nothing.
+        let none = count_live_work::<FakeRegistry, FakeRegistry>(None, Some(&agents));
+        assert_eq!(none, LiveWork { terminals: 0, agents: 1 });
     }
 
     #[test]

@@ -122,6 +122,15 @@ impl PtyRegistry {
             .collect()
     }
 
+    /// Terminals whose program is still running (what a quit would stop).
+    /// Windows cannot tell, so every open terminal counts there.
+    pub fn live_count(&self) -> usize {
+        self.sessions
+            .values()
+            .filter(|session| cfg!(not(unix)) || session.group().running())
+            .count()
+    }
+
     pub fn claude_session(&self, id: &str) -> Option<&str> {
         self.claude_sessions.get(id).map(String::as_str)
     }
@@ -1482,6 +1491,29 @@ mod tests {
         )
         .expect("reopen");
         assert!(empty(&registry), "nothing left after a reopen");
+    }
+
+    // Quit asks first when a terminal is still running; one whose program
+    // ended, or that was closed, is not counted.
+    #[cfg(unix)]
+    #[test]
+    fn running_terminals_count_as_live_work_for_quit() {
+        let dir = crate::test_support::TempDir::new("pty_live_count");
+        let registry = Mutex::new(PtyRegistry::new());
+        assert_eq!(registry.lock().unwrap().live_count(), 0);
+        open_slow_stopper(&registry, dir.path(), "a");
+        open_slow_stopper(&registry, dir.path(), "b");
+        assert_eq!(registry.lock().unwrap().live_count(), 2);
+        registry.lock().unwrap().kill_tab("a");
+        assert_eq!(registry.lock().unwrap().live_count(), 1, "a closed terminal is not live");
+        open_session(&registry, "c", sh_spec(dir.path(), "exit 0"), None, Channel::new(|_| Ok(())))
+            .expect("open short terminal");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while registry.lock().unwrap().live_count() != 1 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(registry.lock().unwrap().live_count(), 1, "an ended program is not live");
+        registry.lock().unwrap().kill_tab("b");
     }
 
     // Review: quit walked only live sessions, so a replaced program still
