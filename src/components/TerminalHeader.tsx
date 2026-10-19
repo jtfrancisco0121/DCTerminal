@@ -103,6 +103,8 @@ export function SendToSplitButton({
     <span
       ref={rootRef}
       className={`split-button${compact ? " split-button-compact" : ""}`}
+      // While open, Escape closes the menu, not a running turn.
+      data-own-escape={open ? "" : undefined}
       onPointerOver={onPrepare}
       onFocus={onPrepare}
     >
