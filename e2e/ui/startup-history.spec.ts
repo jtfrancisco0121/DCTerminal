@@ -69,7 +69,11 @@ test.describe("Claude Code history", () => {
         ]),
       },
     });
-    expect((await app.waitForCall("list_claude_history")).args).toEqual({ cwd: CWD, windowId: "main" });
+    // A quick pass over the folder's own project directory, then the full one.
+    for (const ownFolderOnly of [true, false]) {
+      const call = await app.waitForCall("list_claude_history", (args) => args.ownFolderOnly === ownFolderOnly);
+      expect(call.args).toEqual({ cwd: CWD, windowId: "main", ownFolderOnly });
+    }
     const region = history(page, "Claude Code history");
     await expect(region.getByRole("heading", { name: "Claude Code history" })).toBeVisible();
     await expect(region.getByText("Saved sessions for this folder. Read from ~/.claude.")).toBeVisible();

@@ -186,7 +186,7 @@ pub fn run() {
             commands::storage::spawn_startup_sweep(app.handle(), data_dir.clone(), known_tabs);
             // The env-changing steps at the start of `run()` are done, so a
             // thread may ask the login shell again (it only rewrites the
-            // PATH cache this launch used).
+            // PATH cache, for the next launch).
             shell_env::spawn_login_path_refresh();
             Ok(())
         })

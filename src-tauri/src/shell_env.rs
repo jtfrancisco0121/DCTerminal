@@ -11,8 +11,11 @@
 //! A launch with a cache uses it at once and asks the shell again on a
 //! background thread started from `setup`, which only rewrites the cache: a
 //! tool installed since shows up one launch later. A shell that prints its
-//! PATH and then hangs (a slow rc file) is killed after the timeout, but the
-//! PATH it printed is still used.
+//! PATH and then hangs (a sleep in `.zlogout`, an exit trap) is killed after
+//! the timeout, but the PATH it printed is still used. A slow rc file prints
+//! nothing in time (`zsh -l -i -c` sources `.zshrc` before the command), so
+//! that launch keeps the inherited PATH and the background refresh, with a
+//! longer timeout, caches the answer for the next launch.
 
 #[cfg(unix)]
 use std::ffi::OsStr;
@@ -35,8 +38,8 @@ const CACHE_FILE: &str = "login-shell-path.json";
 
 /// Set by [`apply_login_path`] on the main thread, read by the refresh
 /// thread: the shell and the PATH this process was started with (the refresh
-/// must not feed the cached PATH back into the shell), and whether a cache
-/// was used, so it needs refreshing.
+/// must not feed the cached PATH back into the shell). Set only when a
+/// refresh is needed (see [`refresh_for`]).
 #[cfg(unix)]
 static REFRESH: std::sync::OnceLock<Refresh> = std::sync::OnceLock::new();
 
@@ -107,12 +110,8 @@ pub fn apply_login_path() {
             "DCTerminal: PATH from {source} in {} ms",
             started.elapsed().as_millis()
         );
-        if let (Source::Cache, Some(cache)) = (resolved.source, cache) {
-            let _ = REFRESH.set(Refresh {
-                shell,
-                inherited,
-                cache,
-            });
+        if let Some(refresh) = refresh_for(resolved.source, shell, inherited, cache) {
+            let _ = REFRESH.set(refresh);
         }
         // Safety: called first thing in `run()` on the main thread, before
         // the Tauri builder or any other thread starts, so nothing can read
@@ -122,9 +121,9 @@ pub fn apply_login_path() {
 }
 
 /// Ask the login shell again, on a background thread, when this launch used
-/// the cached PATH. Only the cache file is rewritten; this process's env is
-/// never touched. Call it after the env-changing steps at the start of
-/// `run()` (from `setup`).
+/// the cached PATH or the shell gave no answer in time. Only the cache file
+/// is rewritten; this process's env is never touched. Call it after the
+/// env-changing steps at the start of `run()` (from `setup`).
 pub fn spawn_login_path_refresh() {
     #[cfg(unix)]
     {
@@ -164,6 +163,27 @@ fn startup_path(
         write_cache(cache, shell, login);
     }
     resolved
+}
+
+/// Whether this launch's PATH source calls for a background refresh, and
+/// with what: a cache in use may be stale, and a shell that gave no answer
+/// in time (a slow rc file) gets the longer refresh timeout, so the next
+/// launch has a cache. A shell that answered already wrote the cache.
+#[cfg(unix)]
+fn refresh_for(
+    source: Source,
+    shell: PathBuf,
+    inherited: String,
+    cache: Option<PathBuf>,
+) -> Option<Refresh> {
+    match (source, cache) {
+        (Source::Cache | Source::Inherited, Some(cache)) => Some(Refresh {
+            shell,
+            inherited,
+            cache,
+        }),
+        _ => None,
+    }
 }
 
 #[cfg(unix)]
@@ -438,8 +458,9 @@ fn shell_path(shell: &Path, path_env: Option<&str>, timeout: Duration) -> Option
         });
     }
     // Whether the shell started; after a timeout the file still holds
-    // whatever it printed, often the whole PATH (a slow rc file that hangs
-    // after the command ran).
+    // whatever it printed, often the whole PATH (a shell that hangs after
+    // the command ran: a sleep in `.zlogout`, an exit trap). A slow rc file
+    // runs before the command, so it prints nothing in time.
     let started = match command.spawn() {
         Ok(mut child) => {
             let deadline = Instant::now() + timeout;
@@ -688,6 +709,61 @@ mod tests {
         write_cache(&cache, &broken.shell, "/kept/bin");
         refresh_cache(&broken, Duration::from_secs(1));
         assert_eq!(read_cache(&cache, &broken.shell).as_deref(), Some("/kept/bin"));
+    }
+
+    #[test]
+    fn a_shell_too_slow_to_answer_is_asked_again_and_cached_for_the_next_launch() {
+        let dir = TempDir::new("shell_env_slow_rc");
+        // A slow rc file: `zsh -l -i -c` sources .zshrc before the command,
+        // so nothing is printed before the startup timeout.
+        let shell = fake_shell(
+            &dir,
+            &format!("sleep 1\necho {START_MARKER}\necho /rc/bin:/usr/bin\necho {END_MARKER}"),
+        );
+        let cache = dir.join("data").join(CACHE_FILE);
+        let first = startup_path(
+            &shell,
+            "/usr/bin:/bin",
+            None,
+            Some(&cache),
+            Duration::from_millis(300),
+        );
+        assert_eq!(first.source, Source::Inherited);
+        assert_eq!(read_cache(&cache, &shell), None);
+
+        let refresh = refresh_for(
+            first.source,
+            shell.clone(),
+            "/usr/bin:/bin".into(),
+            Some(cache.clone()),
+        )
+        .expect("an unanswered startup shell arms the refresh");
+        refresh_cache(&refresh, Duration::from_secs(10));
+
+        let next = startup_path(
+            &shell,
+            "/usr/bin:/bin",
+            None,
+            Some(&cache),
+            Duration::from_millis(300),
+        );
+        assert_eq!(next.source, Source::Cache);
+        assert!(
+            next.path.starts_with("/rc/bin:/usr/bin:/bin"),
+            "{}",
+            next.path
+        );
+
+        // A shell that answered at startup already wrote the cache; no data
+        // dir means nowhere to cache.
+        assert!(refresh_for(
+            Source::LoginShell,
+            shell.clone(),
+            String::new(),
+            Some(cache.clone())
+        )
+        .is_none());
+        assert!(refresh_for(Source::Inherited, shell, String::new(), None).is_none());
     }
 
     #[test]
