@@ -4,4 +4,17 @@ declare module "node:fs" {
   /** A Buffer, which is a Uint8Array. */
   export function readFileSync(path: URL): Uint8Array;
 }
-declare const process: { env: Record<string, string | undefined> };
+declare module "node:http" {
+  export type IncomingMessage = { url?: string };
+  export type ServerResponse = {
+    writeHead(status: number, headers?: Record<string, string>): void;
+    end(body?: string): void;
+  };
+  export type Server = {
+    listen(port: number, host: string, done: () => void): void;
+    address(): { port: number } | string | null;
+    close(done?: () => void): void;
+  };
+  export function createServer(handler: (req: IncomingMessage, res: ServerResponse) => void): Server;
+}
+declare const process: { env: Record<string, string | undefined>; argv: string[] };

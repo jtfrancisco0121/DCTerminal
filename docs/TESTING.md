@@ -31,6 +31,25 @@ npm run check
 - Files: Cmd+B. Open folders, check `.git`, `node_modules`, `target`, and ignored files are hidden. Preview a source file and an image. Edit, Cmd+S, then change the file in another editor and save again: the conflict bar appears. A symlink to a file outside the folder must not open. Reveal in Finder, Copy path, Insert @file.
 - Models: Settings > Models shows the `agent --list-models` list (or the cached/built-in list with a note). Change a role default and a tab override. A role terminal restarts with `--model <id>`. On a running chat, the transcript says how the model changed (in place, or restarted and reloaded).
 
+### ACP flow tests need python3
+
+The ACP flow tests drive a Python fake agent (`src-tauri/src/acp/fake_agent.py`). A plain `cargo test` on a machine without `python3` skips them and prints `skipping <name>: python3 not found`. `npm run check` sets `DCT_REQUIRE_PYTHON=1` for its cargo test step, so there a missing `python3` fails the run.
+
+## Playwright under the production CSP
+
+`npm run e2e:ui` runs the Playwright UI tests (`e2e/ui`) in WebKit and Chromium against the Vite dev server and a faked Tauri IPC layer (`e2e/ui/fixtures/mock.ts`). The dev server sends no Content-Security-Policy, so two more projects, `prod-csp-webkit` and `prod-csp-chromium`, run the specs in `e2e/ui/prod-csp/` against the built frontend. Their web server runs `vite build` into `dist/` (about a second), then `e2e/ui/prod-csp/server.mjs` serves `dist/` with the policy from `app.security.csp` in `src-tauri/tauri.conf.json` as a response header. The specs fail on any `securitypolicyviolation` and check that the app boots, a Mermaid diagram in a Markdown file is drawn, a localhost preview frame loads, and xterm and the bundled fonts load. The real app also adds hashes for its own scripts to that policy; the header here is the policy as written.
+
+```bash
+npx playwright test --project='prod-csp-*'                # both engines
+npx playwright test --project=webkit --project=chromium   # the dev-server projects only, no build
+```
+
+The prod-csp server listens on `E2E_PROD_CSP_PORT` (default `E2E_PORT` + 10, so 1440). The build only runs when no `--project` is given or one names prod-csp. Specs there use `responses`, not `handlers`: the mock compiles handlers with `new Function`, which `script-src 'self'` forbids. To see the specs catch a broken policy, point `DCT_CSP_CONF` at an edited copy of `tauri.conf.json` (never commit the break):
+
+```bash
+DCT_CSP_CONF=/tmp/broken-tauri.conf.json npx playwright test --project='prod-csp-*'
+```
+
 ## Linux checks that also cover the Windows build
 
 ```bash

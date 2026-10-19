@@ -9,9 +9,9 @@ import type {
   SessionUpdateEvent,
   TabSummary,
 } from "../../../src/bridge";
-import { builtInRoles, CWD, roleTab } from "./data";
+import { builtInRoles, CWD, roleTab, sampleGithub } from "./data";
 import { installTauriMock } from "./mock";
-import type { InvokeCall, MockConfig } from "./types";
+import type { GithubMock, InvokeCall, MockConfig } from "./types";
 
 /** In-page handler; runs in the browser, so it may only use `args` and `state`. */
 export type PageHandler = (args: any, state: any) => unknown;
@@ -33,6 +33,8 @@ export type OpenOptions = {
   roleSurface?: Record<string, string>;
   /** What Mod+T opens (`get_terminal_settings` → `newTabOpens`). Defaults to `start`. */
   newTabOpens?: MockConfig["newTabOpens"];
+  /** GitHub monitor answers. Defaults to `sampleGithub()`. */
+  github?: GithubMock;
 };
 
 /** Every role remembered as Chat (the fixture default, see OpenOptions.roleSurface). */
@@ -61,6 +63,7 @@ export class TauriApp {
       strict: options.strict,
       roleSurface: options.roleSurface ?? allChat(roles),
       newTabOpens: options.newTabOpens,
+      github: options.github ?? sampleGithub(),
     };
     await this.page.addInitScript(installTauriMock, config);
     await this.page.goto("/");
