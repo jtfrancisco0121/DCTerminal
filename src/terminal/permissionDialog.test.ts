@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 // @ts-expect-error type error without @types/node package
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { TESTED_CLAUDE_VERSION } from "./claudeVersion";
 import {
   createDialogDetector,
   findPermissionOptions,
@@ -405,4 +406,16 @@ describe("dialog options", () => {
       expect(options[options.length - 1].label).toMatch(/^No\b/);
     },
   );
+});
+
+describe("permission dialog fixtures", () => {
+  // The fixtures are named after the version they were captured from. A new
+  // capture means a new tested version, and the other way round.
+  it("are all captured from the tested Claude Code version", () => {
+    const names = readdirSync(new URL("./fixtures/", import.meta.url)).filter((name: string) =>
+      name.startsWith("claude-"),
+    );
+    expect(names.length).toBeGreaterThan(0);
+    for (const name of names) expect(name).toMatch(new RegExp(`^claude-${TESTED_CLAUDE_VERSION.replace(/\./g, "\\.")}-`));
+  });
 });

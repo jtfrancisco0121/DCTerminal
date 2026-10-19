@@ -7,6 +7,9 @@
 // text: words are placed with CHA (`ESC[nG`), lines are stepped with
 // `CR ESC[1B` or `CR CR LF`, indents use `ESC[nC`, and the bold file name in
 // an edit question is wrapped in SGR. See fixtures/claude-2.1.287-*.bin.
+// That version is TESTED_CLAUDE_VERSION in claudeVersion.ts: the app warns
+// when the installed Claude differs, and a test keeps the fixture names and
+// the constant in step. Re-capture the fixtures and bump it together.
 
 /** One numbered choice of the dialog: pressing `key` picks it. */
 export type DialogOption = { key: string; label: string };

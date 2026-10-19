@@ -18,25 +18,43 @@ import {
   type ProviderId,
 } from "../provider/types";
 import type { ProvidersState } from "../provider/useProviders";
+import { claudeVersionWarning } from "../terminal/claudeVersion";
 
 type Props = {
   providers: ProvidersState;
 };
 
-function DetectRows({ report, label }: { report: ProviderReport | null; label: string }) {
+function DetectRows({
+  report,
+  label,
+  versionWarning,
+}: {
+  report: ProviderReport | null;
+  label: string;
+  /** Text shown under the version (Claude: not the version Needs-you was tested on). */
+  versionWarning?: (version: string | null) => string | null;
+}) {
   if (!report) return <p className="hint">Checking {label}…</p>;
   const { status } = report;
   if (!status.found) {
     return <p className="error">{status.error ?? `${label} was not found.`}</p>;
   }
+  const warning = versionWarning?.(status.version) ?? null;
   return (
-    <dl className="settings-paths">
-      <dt>{label}</dt>
-      <dd>
-        {status.version ? `${status.version} · ` : ""}
-        <code>{status.path}</code>
-      </dd>
-    </dl>
+    <>
+      <dl className="settings-paths">
+        <dt>{label}</dt>
+        <dd>
+          {status.version ? `${status.version} · ` : ""}
+          <code>{status.path}</code>
+        </dd>
+      </dl>
+      {warning && (
+        <InlineNotice tone="warning">
+          <span data-testid="claude-version-warning">{warning}</span>
+        </InlineNotice>
+      )}
+    </>
   );
 }
 
@@ -146,7 +164,7 @@ export function ProvidersSettingsSection({ providers }: Props) {
 
       <div className="settings-subsection" aria-label="Claude Code">
         <h4>Claude Code</h4>
-        <DetectRows report={claude} label="Claude Code" />
+        <DetectRows report={claude} label="Claude Code" versionWarning={claudeVersionWarning} />
         {claude?.status.found && (
           <dl className="settings-paths">
             <dt>Chat adapter</dt>

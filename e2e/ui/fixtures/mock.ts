@@ -221,7 +221,7 @@ export function installTauriMock(config: MockConfig): void {
         id: a?.provider ?? "claude",
         found: true,
         path: "/usr/local/bin/claude",
-        version: "2.1.0",
+        version: "2.1.287",
         adapterFound: true,
         adapterPath: "/usr/local/bin/claude-agent-acp",
         error: null,
