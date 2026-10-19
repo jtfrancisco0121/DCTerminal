@@ -362,7 +362,12 @@ export type PipelineRun = {
   status?: RunStatus;
   /** Why the run is waiting, or `paused_by_you` when you turned autopilot off. */
   stopReason?: StopReason | null;
-  /** Pipeline engine: 2 on new runs (Planner, reviewers and Implementer report through the bridge, ADR-015); 1 (or missing) on older runs. */
+  /**
+   * Pipeline engine: 2 on new runs whose every stage reports through the
+   * bridge (ADR-015); the Rust run actor drives those, and your buttons on
+   * them are its messages (`pipelineActorMessage`). 1 (or missing) on older
+   * runs, and on runs of a pipeline the bridge does not cover whole.
+   */
   engine?: number;
 };
 
@@ -1190,6 +1195,71 @@ export async function pipelineContinue(runId: string): Promise<string[]> {
   return invoke("pipeline_continue", { runId });
 }
 
+/**
+ * A button on an engine-2 run, as a message to its Rust run actor (V3):
+ * Send (hand a stage's turn on), Send back (a reviewer's round), Approve (a
+ * lane, or with `lane` null the run), Continue (after a restart). `values`
+ * and `handoffPlan` are the hand-off form as you left it; left out, the
+ * actor fills it from the run folder. `force` makes a hand-off autopilot
+ * made already.
+ */
+export type ActorAction =
+  | {
+      kind: "send";
+      sourceTabId: string;
+      targetRoleId: string;
+      values?: Record<string, string> | null;
+      handoffPlan?: string | null;
+      handoffText?: string | null;
+      force?: boolean;
+    }
+  | {
+      kind: "sendBack";
+      sourceTabId: string;
+      targetRoleId: string;
+      text: string;
+      verdict?: string | null;
+      values?: Record<string, string> | null;
+      handoffPlan?: string | null;
+      force?: boolean;
+    }
+  | { kind: "approve"; lane: string | null }
+  | { kind: "continue" };
+
+/** What a button did on an engine-2 run. */
+export type ActorOutcome = {
+  /** The terminal it opened or sent into. */
+  tabId?: string | null;
+  /** Nothing was done: autopilot made this hand-off already; send again with `force` to make it anyway. */
+  warning?: string | null;
+  /** Approve: the run is complete. */
+  complete?: boolean;
+  /** Approve: the lanes it started. */
+  started?: string[];
+};
+
+export async function pipelineActorMessage(runId: string, action: ActorAction): Promise<ActorOutcome> {
+  return invoke<ActorOutcome>("pipeline_actor_message", { runId, action });
+}
+
+/** The run actor opened a stage terminal (engine 2): list the tab and attach to its output. */
+export type StageOpenedEvent = { runId: string; tabId: string };
+
+export function listenStageOpened(handler: (event: StageOpenedEvent) => void): Promise<UnlistenFn> {
+  return listen<StageOpenedEvent>("pipeline-stage-opened", (e) => {
+    handler(e.payload);
+  });
+}
+
+/** Something the run actor tells you (the run is complete). */
+export type PipelineNoticeEvent = { runId: string; title: string; body: string };
+
+export function listenPipelineNotice(handler: (event: PipelineNoticeEvent) => void): Promise<UnlistenFn> {
+  return listen<PipelineNoticeEvent>("pipeline-notice", (e) => {
+    handler(e.payload);
+  });
+}
+
 /** One finding a reviewer reported through `submit_result` (plan "Result schemas"). */
 export type BridgeFinding = {
   severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
@@ -1239,8 +1309,8 @@ export type RunTasks = {
 };
 
 /**
- * A bridged stage's finished turn (ADR-015): from the Stop hook, live as
- * `pipeline-bridge-turn`, or read back with `pipelineBridgeTurn`.
+ * A bridged stage's finished turn (ADR-015), as the Stop hook drops it in
+ * the run's inbox for the run actor.
  * `no_result`: the turn ended without `submit_result`, after one block on autopilot.
  */
 export type BridgeTurn = {
@@ -1262,11 +1332,6 @@ export type BridgeTurn = {
   blocked: boolean;
 };
 
-export function listenBridgeTurn(handler: (event: BridgeTurn) => void): Promise<UnlistenFn> {
-  return listen<BridgeTurn>("pipeline-bridge-turn", (e) => {
-    handler(e.payload);
-  });
-}
 
 /**
  * A bridged stage is waiting on a permission dialog (D22): from the
@@ -1301,10 +1366,6 @@ export async function pipelineRunTasks(runId: string): Promise<RunTasks | null> 
   return invoke<RunTasks | null>("pipeline_run_tasks", { runId });
 }
 
-/** A bridged terminal's latest finished turn; null when it is not bridged or its turn still runs. */
-export async function pipelineBridgeTurn(tabId: string): Promise<BridgeTurn | null> {
-  return invoke<BridgeTurn | null>("pipeline_bridge_turn", { tabId });
-}
 
 /** The core stopped a run by itself: a stall, or a turn that finished while the app was closed. */
 export type AutopilotStoppedEvent = {
@@ -1593,6 +1654,11 @@ export async function handoffSave(input: HandoffSaveInput): Promise<HandoffRecor
  * Binds a saved hand-off to the tab it opened and records that tab's chain
  * step, or the reviewer's loop-back round, in one backend call.
  */
+/** Binds a saved hand-off to the tab it opened, when something else recorded the chain step (the run actor). */
+export async function handoffBindTab(id: string, tabId: string): Promise<HandoffRecord> {
+  return invoke("handoff_bind_tab", { id, tabId });
+}
+
 export async function handoffAttach(input: {
   id: string;
   tabId: string;
@@ -1849,6 +1915,8 @@ export async function ptyOpen(input: {
   resumeSessionId?: string | null;
   cols: number;
   rows: number;
+  /** A view opening (not restarting) it: a stage terminal the run actor started is attached to, not started again. */
+  attach?: boolean;
   onOutput: Channel<PtyPacket>;
 }): Promise<number> {
   return invoke<number>("pty_open", {
@@ -1862,6 +1930,7 @@ export async function ptyOpen(input: {
       cols: input.cols,
       rows: input.rows,
       windowId: await windowId(),
+      attach: input.attach ?? false,
     },
     onOutput: input.onOutput,
   });
