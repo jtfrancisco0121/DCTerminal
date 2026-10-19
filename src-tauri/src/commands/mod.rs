@@ -46,7 +46,7 @@ pub use changes::{changes_file_diff, changes_list, changes_revert, changes_snaps
 pub use cursor_cli::{list_claude_history, list_cursor_cli_history, open_in_cursor_cli};
 pub use dev_session::{
     dev_session_cancel, dev_session_live, dev_session_send, dev_session_start, dev_session_stop,
-    session_agent_logs,
+    kill_all_agents, session_agent_logs,
     SessionRegistry,
 };
 pub use forms::{get_form_recall, save_form_draft};

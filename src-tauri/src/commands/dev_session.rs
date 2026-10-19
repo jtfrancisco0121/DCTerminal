@@ -273,11 +273,29 @@ impl SessionRegistry {
             .collect()
     }
 
-    /// App exit, last step: kill whatever is left, without a grace.
-    pub fn kill_all(&mut self) {
-        for (_, mut session) in self.sessions.drain() {
-            session.kill();
-        }
+    /// Every session, taken out for [`kill_all_agents`].
+    fn take_all(&mut self) -> Vec<LiveSession> {
+        self.sessions.drain().map(|(_, session)| session).collect()
+    }
+}
+
+/// App exit, last step: kill whatever is left, without a grace. The
+/// sessions are taken out first, so no kill (`taskkill` on Windows) runs
+/// under the registry lock.
+pub fn kill_all_agents(registry: &Mutex<SessionRegistry>) {
+    kill_all_with(registry, LiveSession::kill);
+}
+
+pub(crate) fn kill_all_with(
+    registry: &Mutex<SessionRegistry>,
+    mut kill: impl FnMut(&mut LiveSession),
+) {
+    let left = match registry.lock() {
+        Ok(mut guard) => guard.take_all(),
+        Err(_) => return,
+    };
+    for mut session in left {
+        kill(&mut session);
     }
 }
 

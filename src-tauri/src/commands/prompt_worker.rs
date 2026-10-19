@@ -204,6 +204,8 @@ fn run_prompt_turn(
         Err(err) => {
             let agent_exited = is_agent_exit(&err);
             let mut session_id = String::new();
+            // Killed after the lock is dropped (`taskkill` on Windows).
+            let mut exited_process = None;
             if let Ok(mut guard) = state.lock() {
                 let own = guard.get_mut(tab_id).filter(|session| {
                     turn_client
@@ -218,9 +220,12 @@ fn run_prompt_turn(
                     session.pending_questions.clear();
                     if agent_exited {
                         session.exited = true;
-                        session.process.kill_tree();
+                        exited_process = Some(session.process.clone());
                     }
                 }
+            }
+            if let Some(process) = exited_process {
+                process.kill_tree();
             }
             // The turn's own session id (the frontend ignores an id it no
             // longer shows), read without waiting on a client a turn holds.
