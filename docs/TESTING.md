@@ -44,7 +44,7 @@ npx playwright test --project='prod-csp-*'                # both engines
 npx playwright test --project=webkit --project=chromium   # the dev-server projects only, no build
 ```
 
-The prod-csp server listens on `E2E_PROD_CSP_PORT` (default `E2E_PORT` + 10, so 1440). The build only runs when no `--project` is given or one names prod-csp. Specs there use `responses`, not `handlers`: the mock compiles handlers with `new Function`, which `script-src 'self'` forbids. To see the specs catch a broken policy, point `DCT_CSP_CONF` at an edited copy of `tauri.conf.json` (never commit the break):
+The prod-csp server listens on `E2E_PROD_CSP_PORT` (default `E2E_PORT` + 10, so 1440). Two runs at once whose `E2E_PORT` values are 10 apart therefore collide (one run's prod-csp port is the other's dev-server port): set `E2E_PROD_CSP_PORT` for each run, or space the `E2E_PORT` values by something other than 10. The build only runs when no `--project` is given or one names prod-csp. Specs there use `responses`, not `handlers`: the mock compiles handlers with `new Function`, which `script-src 'self'` forbids. To see the specs catch a broken policy, point `DCT_CSP_CONF` at an edited copy of `tauri.conf.json` (a plain path; a relative one is taken from the repo root; never commit the break):
 
 ```bash
 DCT_CSP_CONF=/tmp/broken-tauri.conf.json npx playwright test --project='prod-csp-*'

@@ -4,7 +4,8 @@
 //
 // E2E_PROD_CSP_PORT  port (default 1440)
 // DCT_CSP_CONF       a tauri.conf.json to read the policy from instead (to see
-//                    the specs fail on a broken policy; never commit a break)
+//                    the specs fail on a broken policy; never commit a break);
+//                    a relative path is taken from the repo root, as csp.ts does
 import { readFileSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import path from "node:path";
@@ -29,7 +30,7 @@ const TYPES = {
 };
 
 /** The policy the app ships, read from a tauri.conf.json. */
-function productionCsp(confPath = process.env.DCT_CSP_CONF || path.join(ROOT, "src-tauri/tauri.conf.json")) {
+function productionCsp(confPath = path.resolve(ROOT, process.env.DCT_CSP_CONF || "src-tauri/tauri.conf.json")) {
   const csp = JSON.parse(readFileSync(confPath, "utf8"))?.app?.security?.csp;
   if (typeof csp !== "string" || !csp.trim()) throw new Error(`no app.security.csp in ${confPath}`);
   return csp;

@@ -1,15 +1,18 @@
 import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Page } from "@playwright/test";
 import { expect, test as base } from "../fixtures/tauri";
 
+const ROOT = fileURLToPath(new URL("../../..", import.meta.url));
+
 /**
  * The policy the app ships (`app.security.csp` in src-tauri/tauri.conf.json),
- * or the one in DCT_CSP_CONF, the same file the prod-csp server reads.
+ * or the one in DCT_CSP_CONF, the same file the prod-csp server reads (a plain
+ * path; a relative one is taken from the repo root, as the server does).
  */
 export function productionCsp(): string {
-  const conf = process.env.DCT_CSP_CONF
-    ? new URL(`file://${process.env.DCT_CSP_CONF}`)
-    : new URL("../../../src-tauri/tauri.conf.json", import.meta.url);
+  const conf = path.resolve(ROOT, process.env.DCT_CSP_CONF || "src-tauri/tauri.conf.json");
   return JSON.parse(readFileSync(conf, "utf8")).app.security.csp;
 }
 
