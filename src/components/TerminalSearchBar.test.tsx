@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { useAppShortcuts } from "../useAppShortcuts";
 import { TerminalSearchBar, type TerminalSearchLike } from "./TerminalSearchBar";
 
 function fakeSearch(buffer: string) {
@@ -82,5 +83,46 @@ describe("TerminalSearchBar", () => {
       });
     });
     expect(screen.getByText("Invalid pattern")).toBeTruthy();
+  });
+
+  // TerminalView is also the shell pane under a chat tab (`${tabId}::pane`), so
+  // this bar can be open while that chat's turn runs, and Escape reaches the
+  // window-level handler, which would cancel the turn.
+  it("closes on Escape without cancelling a running chat turn", () => {
+    const onCancelTurn = vi.fn();
+    const onClose = vi.fn();
+    renderHook(() =>
+      useAppShortcuts({
+        platform: "mac",
+        dialogOpen: false,
+        promptInFlight: true,
+        onAction: () => {},
+        onCancelTurn,
+      }),
+    );
+    render(<TerminalSearchBar search={fakeSearch("abc")} onClose={onClose} />);
+    fireEvent.keyDown(screen.getByRole("searchbox", { name: "Search terminal" }), {
+      key: "Escape",
+    });
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(onCancelTurn).not.toHaveBeenCalled();
+  });
+
+  it("closes once on Escape from a button in the bar without cancelling the turn", () => {
+    const onCancelTurn = vi.fn();
+    const onClose = vi.fn();
+    renderHook(() =>
+      useAppShortcuts({
+        platform: "mac",
+        dialogOpen: false,
+        promptInFlight: true,
+        onAction: () => {},
+        onCancelTurn,
+      }),
+    );
+    render(<TerminalSearchBar search={fakeSearch("abc")} onClose={onClose} />);
+    fireEvent.keyDown(screen.getByRole("button", { name: "Next match" }), { key: "Escape" });
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(onCancelTurn).not.toHaveBeenCalled();
   });
 });

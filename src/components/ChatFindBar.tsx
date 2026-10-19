@@ -31,12 +31,16 @@ export function ChatFindBar({
     inputRef.current?.select();
   }, [focusKey]);
 
+  // On the root so Escape also closes from the nav and search-all buttons.
+  const onRootKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    event.stopPropagation();
+    onClose();
+  };
+
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      event.stopPropagation();
-      onClose();
-    } else if (event.key === "Enter") {
+    if (event.key === "Enter") {
       event.preventDefault();
       onStep(event.shiftKey ? -1 : 1);
     }
@@ -45,7 +49,13 @@ export function ChatFindBar({
   const status = !query.trim() ? "" : count === 0 ? "No results" : `${index + 1} of ${count}`;
 
   return (
-    <div className="chat-find" role="search">
+    <div
+      className="chat-find"
+      role="search"
+      // While open, Escape closes the bar, not a running turn.
+      data-own-escape=""
+      onKeyDown={onRootKeyDown}
+    >
       <input
         ref={inputRef}
         type="search"
