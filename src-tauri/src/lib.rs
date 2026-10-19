@@ -123,7 +123,8 @@ pub fn run() {
     // parent Claude Code session's variables, so Claude tabs (and a `claude`
     // typed in a shell tab) don't take themselves for nested sessions and
     // skip their session log. The per-command `CLAUDE_CONFIG_DIR` and
-    // `CLAUDE_CODE_EXECUTABLE` are applied later and are untouched.
+    // `CLAUDE_CODE_EXECUTABLE` are applied later and are untouched. A cached
+    // login PATH is refreshed from `setup`, never from a thread started here.
     shell_env::apply_login_path();
     shell_env::scrub_parent_claude_session();
     isolate_webview_data_dir();
@@ -183,6 +184,10 @@ pub fn run() {
             // After the stores are managed, on its own thread: the window
             // does not wait for the sweep's directory walk.
             commands::storage::spawn_startup_sweep(app.handle(), data_dir.clone(), known_tabs);
+            // The env-changing steps at the start of `run()` are done, so a
+            // thread may ask the login shell again (it only rewrites the
+            // PATH cache this launch used).
+            shell_env::spawn_login_path_refresh();
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

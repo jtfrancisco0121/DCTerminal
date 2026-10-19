@@ -6,6 +6,13 @@
 //! its PATH once (`$SHELL -l -i -c`, killed after a timeout) and the result is
 //! merged with the inherited PATH and the usual install folders. Windows is
 //! left alone. `DCT_SKIP_SHELL_ENV=1` turns the whole step off.
+//!
+//! The login shell's answer is cached in the data dir (`login-shell-path.json`).
+//! A launch with a cache uses it at once and asks the shell again on a
+//! background thread started from `setup`, which only rewrites the cache: a
+//! tool installed since shows up one launch later. A shell that prints its
+//! PATH and then hangs (a slow rc file) is killed after the timeout, but the
+//! PATH it printed is still used.
 
 #[cfg(unix)]
 use std::ffi::OsStr;
@@ -20,11 +27,39 @@ const START_MARKER: &str = "__DCT_PATH_START__";
 const END_MARKER: &str = "__DCT_PATH_END__";
 #[cfg(unix)]
 const SHELL_TIMEOUT: Duration = Duration::from_secs(3);
+/// The background refresh blocks nothing, so it can wait longer.
+#[cfg(unix)]
+const REFRESH_TIMEOUT: Duration = Duration::from_secs(15);
+#[cfg(unix)]
+const CACHE_FILE: &str = "login-shell-path.json";
+
+/// Set by [`apply_login_path`] on the main thread, read by the refresh
+/// thread: the shell and the PATH this process was started with (the refresh
+/// must not feed the cached PATH back into the shell), and whether a cache
+/// was used, so it needs refreshing.
+#[cfg(unix)]
+static REFRESH: std::sync::OnceLock<Refresh> = std::sync::OnceLock::new();
+
+#[cfg(unix)]
+#[derive(Debug)]
+struct Refresh {
+    shell: PathBuf,
+    inherited: String,
+    cache: PathBuf,
+}
+
+#[cfg(unix)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct CachedPath {
+    shell: String,
+    path: String,
+}
 
 #[cfg(unix)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Source {
     LoginShell,
+    Cache,
     Inherited,
 }
 
@@ -33,6 +68,8 @@ enum Source {
 struct Resolved {
     path: String,
     source: Source,
+    /// The login shell's own PATH, before merging (what the cache holds).
+    login: Option<String>,
 }
 
 /// Replace this process's PATH with the merged login-shell PATH.
@@ -40,7 +77,8 @@ struct Resolved {
 /// Must run on the main thread before any other thread exists (the start of
 /// `run()`): `set_var` is not safe while another thread may read the
 /// environment. The shell is polled, not read on a helper thread, so this
-/// function itself starts no threads.
+/// function itself starts no threads. With a cached PATH the shell is not
+/// run at all; [`spawn_login_path_refresh`] asks it later.
 pub fn apply_login_path() {
     #[cfg(unix)]
     {
@@ -52,19 +90,121 @@ pub fn apply_login_path() {
         let inherited = std::env::var("PATH").unwrap_or_default();
         let shell = login_shell();
         let home = std::env::var_os("HOME").map(PathBuf::from);
-        let resolved = resolve(&shell, &inherited, home.as_deref(), SHELL_TIMEOUT);
+        let cache = crate::data_dir::data_dir_before_tauri().map(|dir| dir.join(CACHE_FILE));
+        let resolved = startup_path(
+            &shell,
+            &inherited,
+            home.as_deref(),
+            cache.as_deref(),
+            SHELL_TIMEOUT,
+        );
         let source = match resolved.source {
             Source::LoginShell => format!("login shell {}", shell.display()),
+            Source::Cache => format!("cached login shell {} (refreshing)", shell.display()),
             Source::Inherited => format!("inherited (login shell {} failed)", shell.display()),
         };
         eprintln!(
             "DCTerminal: PATH from {source} in {} ms",
             started.elapsed().as_millis()
         );
+        if let (Source::Cache, Some(cache)) = (resolved.source, cache) {
+            let _ = REFRESH.set(Refresh {
+                shell,
+                inherited,
+                cache,
+            });
+        }
         // Safety: called first thing in `run()` on the main thread, before
         // the Tauri builder or any other thread starts, so nothing can read
         // the environment concurrently.
         std::env::set_var("PATH", &resolved.path);
+    }
+}
+
+/// Ask the login shell again, on a background thread, when this launch used
+/// the cached PATH. Only the cache file is rewritten; this process's env is
+/// never touched. Call it after the env-changing steps at the start of
+/// `run()` (from `setup`).
+pub fn spawn_login_path_refresh() {
+    #[cfg(unix)]
+    {
+        let Some(refresh) = REFRESH.get() else {
+            return;
+        };
+        let spawned = std::thread::Builder::new()
+            .name("login-path-refresh".into())
+            .spawn(move || refresh_cache(refresh, REFRESH_TIMEOUT));
+        if let Err(err) = spawned {
+            eprintln!("DCTerminal: login PATH refresh not started: {err}");
+        }
+    }
+}
+
+/// The PATH for this launch: from the cache when it was written for this
+/// shell, else from the shell (and then cached). Touches no env.
+#[cfg(unix)]
+fn startup_path(
+    shell: &Path,
+    inherited: &str,
+    home: Option<&Path>,
+    cache: Option<&Path>,
+    timeout: Duration,
+) -> Resolved {
+    if let Some(login) = cache.and_then(|cache| read_cache(cache, shell)) {
+        return Resolved {
+            path: merge_path(Some(&login), inherited, &fallback_dirs(home), |dir| {
+                dir.is_dir()
+            }),
+            source: Source::Cache,
+            login: Some(login),
+        };
+    }
+    let resolved = resolve(shell, inherited, home, timeout);
+    if let (Some(cache), Some(login)) = (cache, resolved.login.as_deref()) {
+        write_cache(cache, shell, login);
+    }
+    resolved
+}
+
+#[cfg(unix)]
+fn refresh_cache(refresh: &Refresh, timeout: Duration) {
+    match shell_path(&refresh.shell, Some(&refresh.inherited), timeout) {
+        Some(login) => write_cache(&refresh.cache, &refresh.shell, &login),
+        // Keep the old cache: one slow or failed run says little.
+        None => eprintln!(
+            "DCTerminal: login shell {} did not report a PATH; cache kept",
+            refresh.shell.display()
+        ),
+    }
+}
+
+/// The cached login PATH, when it was written for `shell`.
+#[cfg(unix)]
+fn read_cache(cache: &Path, shell: &Path) -> Option<String> {
+    let cached: CachedPath = serde_json::from_slice(&std::fs::read(cache).ok()?).ok()?;
+    (Path::new(&cached.shell) == shell && !cached.path.trim().is_empty()).then_some(cached.path)
+}
+
+/// Best effort: a failed write only means the next launch asks the shell.
+#[cfg(unix)]
+fn write_cache(cache: &Path, shell: &Path, login: &str) {
+    let cached = CachedPath {
+        shell: shell.display().to_string(),
+        path: login.to_string(),
+    };
+    let Ok(body) = serde_json::to_vec_pretty(&cached) else {
+        return;
+    };
+    let Some(dir) = cache.parent() else {
+        return;
+    };
+    let tmp = cache.with_extension("json.tmp");
+    let written = std::fs::create_dir_all(dir)
+        .and_then(|_| std::fs::write(&tmp, body))
+        .and_then(|_| std::fs::rename(&tmp, cache));
+    if let Err(err) = written {
+        let _ = std::fs::remove_file(&tmp);
+        eprintln!("DCTerminal: login PATH not cached: {err}");
     }
 }
 
@@ -173,7 +313,7 @@ fn login_shell() -> PathBuf {
 
 #[cfg(unix)]
 fn resolve(shell: &Path, inherited: &str, home: Option<&Path>, timeout: Duration) -> Resolved {
-    let login = shell_path(shell, timeout);
+    let login = shell_path(shell, None, timeout);
     let source = if login.is_some() {
         Source::LoginShell
     } else {
@@ -182,7 +322,11 @@ fn resolve(shell: &Path, inherited: &str, home: Option<&Path>, timeout: Duration
     let path = merge_path(login.as_deref(), inherited, &fallback_dirs(home), |dir| {
         dir.is_dir()
     });
-    Resolved { path, source }
+    Resolved {
+        path,
+        source,
+        login,
+    }
 }
 
 /// Folders tools are commonly installed to, added when they exist.
@@ -240,7 +384,9 @@ fn parse_marked(output: &str) -> Option<String> {
     (!path.is_empty()).then(|| path.to_string())
 }
 
-/// Run the login shell and read its PATH; `None` on failure or timeout.
+/// Run the login shell and read its PATH; `None` on failure, or on a timeout
+/// before the shell printed both markers. `path_env` replaces the PATH the
+/// shell starts with (the refresh passes the PATH this process inherited).
 ///
 /// stdout goes to a temp file rather than a pipe: no reader thread is needed,
 /// a chatty rc file cannot fill a pipe and stall, and a background job the
@@ -248,7 +394,7 @@ fn parse_marked(output: &str) -> Option<String> {
 /// session (no controlling terminal), like a Dock launch, so an interactive
 /// shell started from a dev terminal cannot take over that terminal.
 #[cfg(unix)]
-fn shell_path(shell: &Path, timeout: Duration) -> Option<String> {
+fn shell_path(shell: &Path, path_env: Option<&str>, timeout: Duration) -> Option<String> {
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
 
@@ -281,6 +427,9 @@ fn shell_path(shell: &Path, timeout: Duration) -> Option<String> {
         .stdin(Stdio::null())
         .stdout(Stdio::from(out))
         .stderr(Stdio::null());
+    if let Some(path) = path_env {
+        command.env("PATH", path);
+    }
     // Safety: `setsid` is async-signal-safe and touches no Rust state.
     unsafe {
         command.pre_exec(|| {
@@ -288,7 +437,10 @@ fn shell_path(shell: &Path, timeout: Duration) -> Option<String> {
             Ok(())
         });
     }
-    let result = match command.spawn() {
+    // Whether the shell started; after a timeout the file still holds
+    // whatever it printed, often the whole PATH (a slow rc file that hangs
+    // after the command ran).
+    let started = match command.spawn() {
         Ok(mut child) => {
             let deadline = Instant::now() + timeout;
             loop {
@@ -306,14 +458,14 @@ fn shell_path(shell: &Path, timeout: Duration) -> Option<String> {
                         }
                         let _ = child.kill();
                         let _ = child.wait();
-                        break false;
+                        break true;
                     }
                 }
             }
         }
         Err(_) => false,
     };
-    let text = result
+    let text = started
         .then(|| std::fs::read(&out_path).ok())
         .flatten()
         .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
@@ -403,7 +555,7 @@ mod tests {
 
     #[test]
     fn real_sh_reports_its_path_through_the_script() {
-        let resolved = shell_path(Path::new("/bin/sh"), Duration::from_secs(5));
+        let resolved = shell_path(Path::new("/bin/sh"), None, Duration::from_secs(5));
         assert!(resolved.is_some_and(|path| !path.is_empty()));
     }
 
@@ -428,6 +580,114 @@ mod tests {
             resolved.path
         );
         assert!(!resolved.path.contains("/never"));
+    }
+
+    #[test]
+    fn a_timed_out_shell_still_yields_its_printed_path() {
+        let dir = TempDir::new("shell_env_printed_then_hung");
+        let shell = fake_shell(
+            &dir,
+            &format!("echo {START_MARKER}\necho /printed/bin:/usr/bin\necho {END_MARKER}\nsleep 30"),
+        );
+        // Long enough for a freshly written script's first launch (macOS
+        // checks a new executable before it runs), far below the sleep.
+        let timeout = Duration::from_secs(2);
+        let started = Instant::now();
+        let resolved = resolve(&shell, "/usr/bin:/bin", None, timeout);
+        assert!(
+            started.elapsed() < timeout + Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(resolved.source, Source::LoginShell);
+        assert!(
+            resolved.path.starts_with("/printed/bin:/usr/bin:/bin"),
+            "{}",
+            resolved.path
+        );
+    }
+
+    #[test]
+    fn a_cached_path_is_used_without_running_the_shell() {
+        let dir = TempDir::new("shell_env_cached");
+        let shell = fake_shell(
+            &dir,
+            &format!("sleep 30\necho {START_MARKER}\necho /never\necho {END_MARKER}"),
+        );
+        let cache = dir.join("data").join(CACHE_FILE);
+        write_cache(&cache, &shell, "/cached/bin:/usr/bin");
+        let started = Instant::now();
+        let resolved = startup_path(
+            &shell,
+            "/usr/bin:/bin",
+            None,
+            Some(&cache),
+            Duration::from_secs(5),
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(resolved.source, Source::Cache);
+        assert!(
+            resolved.path.starts_with("/cached/bin:/usr/bin:/bin"),
+            "{}",
+            resolved.path
+        );
+    }
+
+    #[test]
+    fn without_a_cache_for_this_shell_the_shell_runs_and_its_answer_is_cached() {
+        let dir = TempDir::new("shell_env_cache_miss");
+        let shell = fake_shell(
+            &dir,
+            &format!("echo {START_MARKER}\necho /fresh/bin\necho {END_MARKER}"),
+        );
+        let cache = dir.join("data").join(CACHE_FILE);
+        write_cache(&cache, Path::new("/bin/other-shell"), "/stale/bin");
+        let resolved = startup_path(
+            &shell,
+            "/usr/bin",
+            None,
+            Some(&cache),
+            Duration::from_secs(5),
+        );
+        assert_eq!(resolved.source, Source::LoginShell);
+        assert!(resolved.path.starts_with("/fresh/bin:/usr/bin"), "{}", resolved.path);
+        assert_eq!(read_cache(&cache, &shell).as_deref(), Some("/fresh/bin"));
+        assert_eq!(read_cache(&cache, Path::new("/bin/other-shell")), None);
+    }
+
+    #[test]
+    fn the_refresh_asks_the_shell_with_the_inherited_path_and_keeps_the_cache_on_failure() {
+        let dir = TempDir::new("shell_env_refresh");
+        // Prints the PATH it was started with, so the test can see it.
+        let shell = fake_shell(
+            &dir,
+            &format!("echo {START_MARKER}\necho \"$PATH\"\necho {END_MARKER}"),
+        );
+        let cache = dir.join("data").join(CACHE_FILE);
+        write_cache(&cache, &shell, "/old/bin");
+        let refresh = Refresh {
+            shell: shell.clone(),
+            inherited: "/inherited/bin:/usr/bin:/bin".into(),
+            cache: cache.clone(),
+        };
+        refresh_cache(&refresh, Duration::from_secs(5));
+        assert_eq!(
+            read_cache(&cache, &shell).as_deref(),
+            Some("/inherited/bin:/usr/bin:/bin")
+        );
+
+        let broken = Refresh {
+            shell: dir.join("no-such-shell"),
+            inherited: "/usr/bin".into(),
+            cache: cache.clone(),
+        };
+        write_cache(&cache, &broken.shell, "/kept/bin");
+        refresh_cache(&broken, Duration::from_secs(1));
+        assert_eq!(read_cache(&cache, &broken.shell).as_deref(), Some("/kept/bin"));
     }
 
     #[test]
