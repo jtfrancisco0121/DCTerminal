@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -12,6 +12,7 @@ vi.mock("../bridge", () => ({
 
 import { changesFileDiff, changesList, changesRevert, changesSnapshot } from "../bridge";
 import { ChangesPanel } from "./ChangesPanel";
+import { clearPaneCrash, requestPaneCrash } from "./devPaneCrash";
 
 const base = "a".repeat(40);
 const now = "f".repeat(40);
@@ -195,5 +196,30 @@ describe("ChangesPanel", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Snapshot now" }));
     await waitFor(() => expect(changesSnapshot).toHaveBeenCalledWith("t1"));
     expect(await screen.findByText(/No changes since/)).toBeTruthy();
+  });
+});
+
+describe("ChangesPanel crash", () => {
+  it("a render error shows the pane fallback, and Close closes the panel", async () => {
+    vi.mocked(changesList).mockReset().mockResolvedValue(okSet());
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    const onClose = vi.fn();
+    render(
+      <ChangesPanel
+        tabId="t1"
+        tabLabel="Dev"
+        busy={false}
+        accepted={new Set()}
+        onAccept={() => {}}
+        onOpenInFilePanel={() => {}}
+        onClose={onClose}
+      />,
+    );
+    act(() => requestPaneCrash("changes"));
+    expect(screen.getByRole("alert").textContent).toContain("Changes hit an error");
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    act(() => clearPaneCrash("changes"));
+    errorLog.mockRestore();
   });
 });

@@ -793,6 +793,7 @@ export function installTauriMock(config: MockConfig): void {
       throw new Error("not a git repository");
     },
     session_agent_logs: () => ({ stderr: "" }),
+    diagnostics_read_log: () => ({ text: "", path: "/tmp/dct-e2e/app.log" }),
     storage_status: () => ({ appDataDir: "/tmp/dct-e2e", bytes: 0 }),
     startup_notices: () => [],
   };

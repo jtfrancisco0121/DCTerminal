@@ -23,6 +23,7 @@ import {
 import { Dialog } from "./Dialog";
 import { useConfirm } from "./confirm";
 import { PanelHeader } from "./PanelHeader";
+import { PaneBoundary } from "./PaneBoundary";
 
 type View = "unified" | "split";
 
@@ -99,7 +100,16 @@ function Cell({ line, side }: { line: DiffLine | null; side: "old" | "new" }) {
 }
 
 /** F4: what changed since this turn (or tab) started, with Accept / Revert. */
-export function ChangesPanel({
+export function ChangesPanel(props: Props) {
+  // Its own boundary: a crash here leaves the tab under it working.
+  return (
+    <PaneBoundary label="Changes" paneId="changes" onDismiss={props.onClose}>
+      <ChangesPanelBody {...props} />
+    </PaneBoundary>
+  );
+}
+
+function ChangesPanelBody({
   tabId,
   tabLabel,
   busy,

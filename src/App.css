@@ -2392,6 +2392,28 @@ kbd {
   text-align: center;
 }
 
+/* A pane or view that crashed (PaneBoundary): the error and Reload this pane. */
+.pane-crash {
+  margin: auto;
+  padding: 1rem;
+  max-width: 36rem;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.pane-crash-title {
+  margin: 0;
+  font-weight: 600;
+}
+
+.pane-crash-message {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 /* ---------------------------------------------------------------------
    Grid view: several tabs live at once. Cells keep their places; the
    active cell has the full controls and an accent ring.
