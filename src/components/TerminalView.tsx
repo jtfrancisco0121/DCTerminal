@@ -80,14 +80,14 @@ export function focusBelongsElsewhere(slot: HTMLElement): boolean {
 
 /**
  * Keystrokes to the PTY (a drop or paste reaches it the same way, through
- * xterm). A failed write is shown once per window, not per keystroke. An
+ * xterm). A failed write is shown once per terminal, not per keystroke. An
  * exited or still-opening terminal refusing them is expected, not news.
  */
 function sendInput(ptyId: string, data: string): void {
   void ptyWrite(ptyId, data).catch((err: unknown) => {
     const live = livePty(ptyId);
     if (!live || live.exited || isPtyOpening(ptyId)) return;
-    reportError("Keystrokes not sent", err, { notify: true, once: true });
+    reportError("Keystrokes not sent", err, { notify: true, once: `Keystrokes not sent:${ptyId}` });
   });
 }
 

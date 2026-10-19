@@ -8,7 +8,11 @@ let dataHandler: ((data: string) => void) | null = null;
 let live: { exitCode: number | null; exited: boolean; buffer: { attach: () => () => void } } | undefined;
 const dropError = new Error("drag-drop listen denied");
 
-vi.mock("../uiErrors", () => ({ reportError: vi.fn() }));
+// The real reporter behind a spy, so its once-keys are exercised too.
+vi.mock("../uiErrors", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../uiErrors")>();
+  return { ...actual, reportError: vi.fn(actual.reportError) };
+});
 
 vi.mock("../bridge", () => ({
   ptyOpen: vi.fn(() => Promise.resolve()),
@@ -68,7 +72,7 @@ vi.mock("../terminal/park", () => {
 });
 
 import { ptyWrite } from "../bridge";
-import { reportError } from "../uiErrors";
+import { clearUiErrors, reportError, setErrorNotifier, uiErrors } from "../uiErrors";
 import { TerminalView } from "./TerminalView";
 
 class NoopResizeObserver {
@@ -89,27 +93,53 @@ describe("TerminalView reports failed writes and copies", () => {
   beforeEach(() => {
     vi.stubGlobal("ResizeObserver", NoopResizeObserver);
     vi.mocked(reportError).mockClear();
+    clearUiErrors();
     vi.mocked(ptyWrite).mockReset();
     vi.mocked(ptyWrite).mockImplementation(() => Promise.reject(writeError));
     live = { exitCode: null, exited: false, buffer: { attach: () => () => {} } };
   });
   afterEach(() => {
     vi.unstubAllGlobals();
+    setErrorNotifier(null);
   });
 
-  it("a keystroke (or drop-paste) the PTY rejects is shown, once per source", async () => {
+  it("a keystroke (or drop-paste) the PTY rejects is shown, once per terminal", async () => {
     mount();
     dataHandler!("a");
     dataHandler!("b");
     await flush();
-    expect(reportError).toHaveBeenCalledWith("Keystrokes not sent", writeError, { notify: true, once: true });
+    expect(reportError).toHaveBeenCalledWith("Keystrokes not sent", writeError, {
+      notify: true,
+      once: "Keystrokes not sent:pty-1",
+    });
   });
 
   it("a Shift+Enter the PTY rejects is shown too", async () => {
     mount();
     keyHandler!(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", shiftKey: true }));
     await flush();
-    expect(reportError).toHaveBeenCalledWith("Keystrokes not sent", writeError, { notify: true, once: true });
+    expect(reportError).toHaveBeenCalledWith("Keystrokes not sent", writeError, {
+      notify: true,
+      once: "Keystrokes not sent:pty-1",
+    });
+  });
+
+  it("a rejected keystroke is shown once per terminal, not once per window", async () => {
+    const notify = vi.fn();
+    setErrorNotifier(notify);
+    mount({ ptyId: "pty-1" });
+    const typeInFirst = dataHandler!;
+    mount({ ptyId: "pty-2" });
+    const typeInSecond = dataHandler!;
+    typeInFirst("a");
+    typeInFirst("b");
+    typeInSecond("c");
+    typeInSecond("d");
+    await flush();
+    expect(notify).toHaveBeenCalledTimes(2);
+    expect(notify).toHaveBeenNthCalledWith(1, "Keystrokes not sent", "no terminal: pty-1");
+    expect(notify).toHaveBeenNthCalledWith(2, "Keystrokes not sent", "no terminal: pty-1");
+    expect(uiErrors().filter((entry) => entry.source === "Keystrokes not sent")).toHaveLength(2);
   });
 
   it("typing into an exited terminal is not an error", async () => {
@@ -117,6 +147,8 @@ describe("TerminalView reports failed writes and copies", () => {
     mount();
     dataHandler!("a");
     await flush();
+    // Only the report is held back; the write still goes to the PTY.
+    expect(ptyWrite).toHaveBeenCalledWith("pty-1", "a");
     expect(reportError).not.toHaveBeenCalledWith("Keystrokes not sent", expect.anything(), expect.anything());
   });
 

@@ -251,10 +251,12 @@ export function ensureParkedTerminal(id: string, fontSize: number): ParkedTermin
     // Wait for the drag to settle, then copy once.
     copyTimer = window.setTimeout(() => {
       if (!term.hasSelection()) return;
-      // Every selection copies, so a denied clipboard is shown once, not per drag.
+      // Every selection copies, so a denied clipboard is shown once per terminal, not per drag.
       void navigator.clipboard
         .writeText(term.getSelection())
-        .catch((err: unknown) => reportError("Copy on select failed", err, { notify: true, once: true }));
+        .catch((err: unknown) =>
+          reportError("Copy on select failed", err, { notify: true, once: `Copy on select failed:${id}` }),
+        );
     }, 200);
   });
   term.open(host);
