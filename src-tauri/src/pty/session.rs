@@ -8,11 +8,11 @@ use crate::process_tree::{PidGuard, PtyGroup};
 use crate::process_tree::STOP_GRACE;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::{self, Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// ConPTY's cursor-position query. It sends this on startup and blocks
 /// further output until a cursor position report comes back.
@@ -66,11 +66,20 @@ impl PtyHandle {
     }
 }
 
+/// Milliseconds since the first call in this process: a clock an atomic can hold.
+fn clock_ms() -> u64 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_millis() as u64
+}
+
 pub struct PtySession {
     ctrl: Sender<Ctrl>,
     output: Option<Receiver<PtyOutput>>,
     pid: u32,
     group: PtyGroup,
+    /// `clock_ms` when the program last printed anything (or started), for
+    /// the stall watchdog. Written by the read thread.
+    last_output: Arc<AtomicU64>,
 }
 
 impl PtySession {
@@ -124,9 +133,11 @@ impl PtySession {
         let attached = Arc::new(AtomicBool::new(false));
         let read_ctrl = ctrl_tx.clone();
         let read_attached = Arc::clone(&attached);
+        let last_output = Arc::new(AtomicU64::new(clock_ms()));
+        let read_last_output = Arc::clone(&last_output);
         thread::Builder::new()
             .name("pty-read".into())
-            .spawn(move || read_loop(reader, read_out, read_ctrl, read_attached))
+            .spawn(move || read_loop(reader, read_out, read_ctrl, read_attached, read_last_output))
             .map_err(|err| io::Error::other(err.to_string()))?;
         thread::Builder::new()
             .name("pty-ctrl".into())
@@ -137,7 +148,13 @@ impl PtySession {
             output: Some(out_rx),
             pid,
             group,
+            last_output,
         })
+    }
+
+    /// How long since the program last printed anything (or started).
+    pub fn quiet_for(&self) -> Duration {
+        Duration::from_millis(clock_ms().saturating_sub(self.last_output.load(Ordering::Relaxed)))
     }
 
     pub fn take_output(&mut self) -> Option<Receiver<PtyOutput>> {
@@ -205,6 +222,7 @@ impl PtySession {
             output: None,
             pid: 0,
             group: PidGuard::adopt(0).group(),
+            last_output: Arc::new(AtomicU64::new(clock_ms())),
         };
         (session, size_rx)
     }
@@ -233,6 +251,7 @@ fn read_loop(
     output: Sender<PtyOutput>,
     ctrl: Sender<Ctrl>,
     attached: Arc<AtomicBool>,
+    last_output: Arc<AtomicU64>,
 ) {
     let mut gate = DsrGate::default();
     let mut buf = [0u8; 8192];
@@ -246,6 +265,7 @@ fn read_loop(
                 break;
             }
             Ok(n) => {
+                last_output.store(clock_ms(), Ordering::Relaxed);
                 let (forward, reply) = gate.push(&buf[..n], attached.load(Ordering::Relaxed));
                 if !reply.is_empty() && ctrl.send(Ctrl::Reply(reply)).is_err() {
                     break;
@@ -500,6 +520,41 @@ mod tests {
             }
         }
         false
+    }
+
+    /// The stall watchdog reads how long a terminal printed nothing.
+    #[cfg(unix)]
+    #[test]
+    fn quiet_for_restarts_on_each_output() {
+        let mut session = PtySession::spawn(SpawnSpec {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "echo first; sleep 0.6; echo second; sleep 5".into()],
+            env: Vec::new(),
+            cwd: std::env::temp_dir(),
+            cols: 80,
+            rows: 24,
+        })
+        .expect("spawn sh");
+        let output = session.take_output().expect("output");
+        let wait = |marker: &str| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut seen = Vec::new();
+            while Instant::now() < deadline {
+                if let Ok(PtyOutput::Data(bytes)) = output.recv_timeout(Duration::from_millis(50)) {
+                    seen.extend_from_slice(&bytes);
+                    if String::from_utf8_lossy(&seen).contains(marker) {
+                        return true;
+                    }
+                }
+            }
+            false
+        };
+        assert!(wait("first"));
+        thread::sleep(Duration::from_millis(300));
+        assert!(session.quiet_for() >= Duration::from_millis(250), "{:?}", session.quiet_for());
+        assert!(wait("second"));
+        assert!(session.quiet_for() < Duration::from_millis(250), "{:?}", session.quiet_for());
+        session.kill();
     }
 
     #[test]

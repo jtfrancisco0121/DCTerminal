@@ -1171,6 +1171,31 @@ export async function pipelineSetAutopilot(runId: string, enabled: boolean): Pro
   return invoke("pipeline_set_autopilot", { runId, enabled });
 }
 
+/**
+ * Continue a run waiting with `app_restarted` (a stage finished while the
+ * app was closed): it runs again. Returns its current stage's tab ids, whose
+ * finished turn autopilot then decides.
+ */
+export async function pipelineContinue(runId: string): Promise<string[]> {
+  return invoke("pipeline_continue", { runId });
+}
+
+/** The core stopped a run by itself: a stall, or a turn that finished while the app was closed. */
+export type AutopilotStoppedEvent = {
+  runId: string;
+  tabId: string;
+  reason: StopReason;
+  summary: string;
+};
+
+export function listenAutopilotStopped(
+  handler: (event: AutopilotStoppedEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<AutopilotStoppedEvent>("autopilot-stopped", (e) => {
+    handler(e.payload);
+  });
+}
+
 /** What a stage's finished turn reported, for the autopilot decision. */
 export type TurnReport = {
   stageId: string;

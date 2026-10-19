@@ -560,6 +560,17 @@ export function installTauriMock(config: MockConfig): void {
       }
       return null;
     },
+    pipeline_continue: (a) => {
+      const run = findRun(a.runId);
+      if (!run) throw new Error(`unknown pipeline run: ${a.runId}`);
+      if (run.status !== "waiting" || run.stopReason !== "app_restarted") {
+        throw new Error("This run is not waiting after a restart.");
+      }
+      run.status = "running";
+      run.stopReason = null;
+      run.autopilot = { ...(run.autopilot ?? {}), waiting: null };
+      return Object.values(run.tabIds ?? {});
+    },
     pipeline_run_gates: (a) => {
       const run = findRun(a.runId);
       if (!run) throw new Error(`unknown pipeline run: ${a.runId}`);

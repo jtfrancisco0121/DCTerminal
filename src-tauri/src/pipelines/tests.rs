@@ -142,3 +142,24 @@ fn a_role_used_in_two_stages_is_rejected() {
     also.stages[1].also_reviewers = vec!["role_implementer".into()];
     assert!(validate_user_pipelines(&[also]).unwrap_err().contains("two stages"));
 }
+
+#[test]
+fn stall_minutes_default_to_30_and_are_set_per_pipeline() {
+    assert_eq!(find("eagle1").unwrap().autopilot.stall_minutes, 30);
+    assert_eq!(user_def("quiet").autopilot.stall_minutes, 30, "left out of the file");
+    let mut slow: PipelineDef = serde_json::from_value(serde_json::json!({
+        "id": "slow_suite",
+        "name": "Slow suite",
+        "stages": [{ "id": "fix", "roleId": "role_implementer", "title": "Implementer" }],
+        "autopilot": { "stallMinutes": 90 }
+    }))
+    .unwrap();
+    assert_eq!(slow.autopilot.stall_minutes, 90);
+    assert_eq!(slow.autopilot.pause_at_usage_percent, 90, "the other policy keeps its default");
+    assert_eq!(recovery::stall_limit(&slow), std::time::Duration::from_secs(90 * 60));
+    assert_eq!(validate_user_pipelines(&[slow.clone()]), Ok(()));
+    slow.autopilot.stall_minutes = 0;
+    assert!(validate_user_pipelines(&[slow.clone()]).unwrap_err().contains("stallMinutes is 1 to 1440"));
+    slow.autopilot.stall_minutes = 1441;
+    assert!(validate_user_pipelines(&[slow]).unwrap_err().contains("stallMinutes"));
+}

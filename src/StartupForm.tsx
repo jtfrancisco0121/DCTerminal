@@ -28,6 +28,7 @@ import {
   diagnosticsSetCapture,
   diagnosticsStatus,
   sessionAgentLogs,
+  listenAutopilotStopped,
   listenPermissionAuto,
   listenPermissionRequests,
   listenPlanRequests,
@@ -2428,6 +2429,25 @@ export function StartupForm({
     sessionLog: (tabId) => sessionLogsRef.current[tabId],
   });
   autopilotLogRef.current = autopilot.onTerminalLog;
+  // The core stopped a run by itself (a stall, or a turn that finished while
+  // the app was closed): tell you the way a stop autopilot made does.
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listenAutopilotStopped((event) => {
+      notifyAgent(event.tabId, { kind: "question", detail: `Autopilot: ${event.summary}` });
+    })
+      .then((stop) => {
+        if (disposed) stop();
+        else unlisten = stop;
+      })
+      // intentionally silent: the overview still shows the stop; only the toast is lost.
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [notifyAgent]);
 
   const startBlankTerminal = useCallback(
     async (launch: "shell" | CliLaunch) => {
@@ -6139,6 +6159,7 @@ export function StartupForm({
           onStartLane={startLaneById}
           onApproveLane={approveLaneById}
           onApproveRun={(runId) => approveLaneById(runId, null)}
+          onContinue={autopilot.continueRun}
         />
       </section>,
     );
