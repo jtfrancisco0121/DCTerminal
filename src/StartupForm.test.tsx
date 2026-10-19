@@ -2718,6 +2718,28 @@ describe("terminal hand-off source", () => {
     );
     expect(within(dialog).queryByText(/waiting for you on a plan/)).toBeNull();
   });
+
+  it("does not open the dialog after a switch to another tab while the hand-off was loading", async () => {
+    vi.mocked(getAppState).mockResolvedValue({
+      activeTabId: "tab_plan",
+      tabs: [plannerTerminal, { ...plannerTerminal, id: "tab_other", label: "Other" }],
+      closedTabs: [],
+    } as never);
+    vi.mocked(selectActiveTab).mockResolvedValue({ tab: { ...tab, id: "tab_other", kind: "terminal" } } as never);
+    let answer!: (value: unknown) => void;
+    vi.mocked(getTab).mockImplementation(
+      () => new Promise((resolve) => (answer = resolve)) as never,
+    );
+    renderPlanner();
+    fireEvent.click(await screen.findByRole("button", { name: /Send to Plan Reviewer/ }));
+    await waitFor(() => expect(getTab).toHaveBeenCalledWith("tab_plan"));
+
+    fireEvent.keyDown(window, { key: "2", code: "Digit2", ctrlKey: true });
+    await waitFor(() => expect(selectActiveTab).toHaveBeenCalledWith("tab_other"));
+    await act(async () => answer({ tab: { ...tab, id: "tab_plan", answers: {} } }));
+
+    expect(screen.queryByRole("dialog", { name: "Send plan" })).toBeNull();
+  });
 });
 
 describe("fast tab switches and a failed startup step (M4)", () => {

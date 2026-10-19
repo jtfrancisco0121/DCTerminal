@@ -138,6 +138,33 @@ describe("Dialog", () => {
     expect(openDialogCount()).toBe(0);
   });
 
+  it("does not give focus back to a terminal that was parked while it was open", () => {
+    // A hidden tab's terminal host moves to the off-screen, aria-hidden park
+    // (terminal/park.ts): still connected, but typing there reaches a hidden PTY.
+    const park = document.createElement("div");
+    park.id = "terminal-park";
+    park.setAttribute("aria-hidden", "true");
+    const host = document.createElement("div");
+    const xtermInput = document.createElement("textarea");
+    host.appendChild(xtermInput);
+    document.body.append(host, park);
+    try {
+      xtermInput.focus();
+      const { rerender } = render(
+        <Dialog title="T" onClose={() => {}}>
+          <button type="button">action</button>
+        </Dialog>,
+      );
+      park.appendChild(host);
+      rerender(<></>);
+      expect(xtermInput.isConnected).toBe(true);
+      expect(document.activeElement).not.toBe(xtermInput);
+    } finally {
+      host.remove();
+      park.remove();
+    }
+  });
+
   it("leaves a control that already took focus alone", () => {
     render(
       <Dialog title="T" onClose={() => {}}>
