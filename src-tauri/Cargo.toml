@@ -38,6 +38,10 @@ ignore = "0.4"
 uuid = { version = "1", features = ["v4"] }
 notify = "8"
 
+# Already built through tao; used for `applicationShouldTerminate:` (src/macos_terminate.rs).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+
 [[bin]]
 name = "build_roles_seed"
 path = "src/bin/build_roles_seed.rs"

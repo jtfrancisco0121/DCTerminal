@@ -11,6 +11,8 @@ mod data_dir;
 mod files;
 mod github;
 mod history_search;
+#[cfg(target_os = "macos")]
+mod macos_terminate;
 mod models;
 mod orchestrator;
 mod paths;
