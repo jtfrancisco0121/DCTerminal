@@ -114,6 +114,7 @@ import {
   type TerminalSettings,
   type ValidatePreviewResult,
 } from "./bridge";
+import { loadHistoryInTwoPasses } from "./historyLoad";
 import {
   applyAutoPermission,
   applyPermission,
@@ -1829,23 +1830,33 @@ export function StartupForm({
     }
     setHistoryLoading(true);
     let cancelled = false;
+    const showRows = (rows: CursorHistoryEntry[]) => {
+      setHistoryEntries(rows);
+      setHistoryError(null);
+    };
     const load =
       historyProvider === "claude"
-        ? listClaudeHistory(historyFolder).then((view) => {
-            if (!cancelled) setHistoryReadFrom(view.configDisplay);
-            return view.entries;
-          })
-        : listCursorCliHistory(historyFolder).then((rows) => {
-            if (!cancelled) setHistoryReadFrom(null);
-            return rows;
-          });
+        ? loadHistoryInTwoPasses(
+            () => listClaudeHistory(historyFolder, true).then((view) => view.entries),
+            () =>
+              listClaudeHistory(historyFolder).then((view) => {
+                if (!cancelled) setHistoryReadFrom(view.configDisplay);
+                return view.entries;
+              }),
+            showRows,
+            () => cancelled,
+          )
+        : loadHistoryInTwoPasses(
+            null,
+            () =>
+              listCursorCliHistory(historyFolder).then((rows) => {
+                if (!cancelled) setHistoryReadFrom(null);
+                return rows;
+              }),
+            showRows,
+            () => cancelled,
+          );
     load
-      .then((rows) => {
-        if (!cancelled) {
-          setHistoryEntries(rows);
-          setHistoryError(null);
-        }
-      })
       .catch((err: unknown) => {
         if (!cancelled) {
           setHistoryError(errorText(err));

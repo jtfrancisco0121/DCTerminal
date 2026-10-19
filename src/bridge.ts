@@ -560,8 +560,12 @@ export type ClaudeHistoryView = {
   exists: boolean;
 };
 
-export async function listClaudeHistory(cwd: string): Promise<ClaudeHistoryView> {
-  return invoke("list_claude_history", { cwd, windowId: await windowId() });
+/** `ownFolderOnly` reads only the folder's own project directory (quick pass). */
+export async function listClaudeHistory(
+  cwd: string,
+  ownFolderOnly = false,
+): Promise<ClaudeHistoryView> {
+  return invoke("list_claude_history", { cwd, windowId: await windowId(), ownFolderOnly });
 }
 
 export async function listCursorCliHistory(

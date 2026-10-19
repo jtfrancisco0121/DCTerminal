@@ -1,4 +1,7 @@
-use crate::claude_history::{list_claude_history as scan_claude_history, ClaudeHistoryEntry};
+use crate::claude_history::{
+    list_claude_history as scan_claude_history, list_claude_history_own_folder as scan_own_folder,
+    ClaudeHistoryEntry,
+};
 use crate::cursor_history::{
     annotate_history, cli_chat_required, cursor_data_dir, first_heading, list_cursor_history,
     user_text_from_answers, CursorHistoryEntry, RoleHeading,
@@ -9,16 +12,21 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::State;
 
+/// The folder walk runs on a blocking thread; the store locks are taken only
+/// afterwards, to label the rows.
 #[tauri::command]
-pub fn list_cursor_cli_history(
+pub async fn list_cursor_cli_history(
     cwd: String,
-    store: State<Mutex<StateStore>>,
-    roles: State<Mutex<RolesStore>>,
+    store: State<'_, Mutex<StateStore>>,
+    roles: State<'_, Mutex<RolesStore>>,
 ) -> Result<Vec<CursorHistoryEntry>, String> {
     let Some(root) = cursor_data_dir() else {
         return Ok(Vec::new());
     };
-    let mut entries = list_cursor_history(&root, cwd.trim());
+    let mut entries =
+        tauri::async_runtime::spawn_blocking(move || list_cursor_history(&root, cwd.trim()))
+            .await
+            .map_err(|err| err.to_string())?;
     let store = store.lock().map_err(|err| err.to_string())?;
     let roles = roles.lock().map_err(|err| err.to_string())?;
     let local = local_session_labels(&store);
@@ -80,13 +88,17 @@ pub struct ClaudeHistoryView {
 }
 
 /// Read-only Claude sessions for `cwd` from the resolved config dir.
-/// Never `~/.claude` unless that is the resolved dir.
+/// Never `~/.claude` unless that is the resolved dir. The store locks are
+/// released before the scan, which runs on a blocking thread. With
+/// `own_folder_only`, only the folder's own project directory is read (the
+/// Start form's quick first pass); otherwise every project is.
 #[tauri::command]
-pub fn list_claude_history(
+pub async fn list_claude_history(
     cwd: String,
     window_id: Option<String>,
-    settings: State<Mutex<crate::store::SettingsStore>>,
-    state: State<Mutex<crate::store::StateStore>>,
+    own_folder_only: Option<bool>,
+    settings: State<'_, Mutex<crate::store::SettingsStore>>,
+    state: State<'_, Mutex<crate::store::StateStore>>,
 ) -> Result<ClaudeHistoryView, String> {
     let config = {
         let mut state = state.lock().map_err(|err| err.to_string())?;
@@ -99,7 +111,17 @@ pub fn list_claude_history(
         )
     };
     let entries = if config.exists {
-        scan_claude_history(std::path::Path::new(&config.path), cwd.trim())
+        let dir = std::path::PathBuf::from(&config.path);
+        let own_only = own_folder_only.unwrap_or(false);
+        tauri::async_runtime::spawn_blocking(move || {
+            if own_only {
+                scan_own_folder(&dir, cwd.trim())
+            } else {
+                scan_claude_history(&dir, cwd.trim())
+            }
+        })
+        .await
+        .map_err(|err| err.to_string())?
     } else {
         Vec::new()
     };
