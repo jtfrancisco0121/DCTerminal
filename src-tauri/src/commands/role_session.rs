@@ -254,6 +254,9 @@ pub fn role_session_start(
         }
     };
 
+    // From here to the registry insert every early return drops the agent
+    // through this guard, which stops it (nothing else owns it yet).
+    let client = StartedAgent::new(&start_key, &role.id, client);
     let info = DevSessionInfo {
         session_id: client.session_id().to_string(),
         mode_id: client.mode_id().to_string(),
@@ -302,35 +305,23 @@ pub fn role_session_start(
             provider.id(),
         )
     };
-    let persisted_tab_id = match promoted {
-        Ok(id) => id,
-        Err(err) => {
-            // Drop the process we just spawned, with the store lock released.
-            let mut live = LiveSession::from_client(&start_key, &role.id, client);
-            live.shutdown();
-            return Err(err);
-        }
-    };
+    let persisted_tab_id = promoted?;
     if let Ok(store) = state_store.lock() {
         crate::commands::chain_events::notify_tab(&app, &store, &persisted_tab_id);
     }
 
     if provider.id() == ProviderId::Claude {
-        let mut store = state_store.lock().map_err(|e| e.to_string())?;
-        if let Some(dir) = provider.config_dir() {
-            store.remember_claude_config(&persisted_tab_id, &dir.path)?;
-        }
-        let wanted = crate::provider::claude::claude_role_mode(&role.id);
-        let note = (info.mode_id != wanted).then(|| {
-            format!("the adapter did not offer {wanted} (using {})", info.mode_id)
-        });
-        store.set_permission_note(&persisted_tab_id, note)?;
-        if start_notice.is_some() {
-            store.set_provider_notice(&persisted_tab_id, start_notice.clone())?;
-        }
+        record_claude_start(
+            &state_store,
+            &provider,
+            &persisted_tab_id,
+            &role.id,
+            &info.mode_id,
+            start_notice.as_deref(),
+        )?;
     }
 
-    let mut live = LiveSession::from_client(&persisted_tab_id, &role.id, client);
+    let mut live = client.into_live(&persisted_tab_id);
     let mut injection_in_flight = false;
     if skip_startup {
         live.startup_injected = true;
@@ -402,6 +393,72 @@ pub fn role_session_start(
         replay,
         model_via: Some(model_via),
     })
+}
+
+/// A connected agent that is not yet in the registry. Dropping it stops the
+/// agent: `ProcessTree` has no `Drop` and neither Stop nor quit can reach a
+/// session the registry does not hold, so a failed start would orphan it.
+struct StartedAgent {
+    key: String,
+    role_id: String,
+    client: Option<AcpClient>,
+}
+
+impl StartedAgent {
+    fn new(key: &str, role_id: &str, client: AcpClient) -> Self {
+        Self {
+            key: key.to_string(),
+            role_id: role_id.to_string(),
+            client: Some(client),
+        }
+    }
+
+    /// Hand the agent to the registry's session type; it is no longer stopped on drop.
+    fn into_live(mut self, tab_id: &str) -> LiveSession {
+        let client = self.client.take().expect("agent already handed over");
+        LiveSession::from_client(tab_id, &self.role_id, client)
+    }
+}
+
+impl std::ops::Deref for StartedAgent {
+    type Target = AcpClient;
+
+    fn deref(&self) -> &AcpClient {
+        self.client.as_ref().expect("agent already handed over")
+    }
+}
+
+impl Drop for StartedAgent {
+    fn drop(&mut self) {
+        // Runs with no store lock held; `shutdown` returns at once.
+        if let Some(client) = self.client.take() {
+            LiveSession::from_client(&self.key, &self.role_id, client).shutdown();
+        }
+    }
+}
+
+/// Claude-only state the promoted tab records: the config dir it runs under,
+/// the permission-mode note and the provider notice.
+fn record_claude_start(
+    state_store: &Mutex<StateStore>,
+    provider: &SharedProvider,
+    tab_id: &str,
+    role_id: &str,
+    mode_id: &str,
+    notice: Option<&str>,
+) -> Result<(), String> {
+    let mut store = state_store.lock().map_err(|e| e.to_string())?;
+    if let Some(dir) = provider.config_dir() {
+        store.remember_claude_config(tab_id, &dir.path)?;
+    }
+    let wanted = crate::provider::claude::claude_role_mode(role_id);
+    let note = (mode_id != wanted)
+        .then(|| format!("the adapter did not offer {wanted} (using {mode_id})"));
+    store.set_permission_note(tab_id, note)?;
+    if let Some(notice) = notice {
+        store.set_provider_notice(tab_id, Some(notice.to_string()))?;
+    }
+    Ok(())
 }
 
 fn friendly_load_error(err: &str) -> String {
@@ -527,5 +584,79 @@ mod tests {
         let text = friendly_load_error("LOAD_UNSUPPORTED: loadSession is false");
         assert!(text.contains("Start a new session"));
         assert!(!text.contains("ACP"));
+    }
+
+    /// The Claude-only bookkeeping saves state.json. When that save fails
+    /// after the agent connected, the start errors and the agent must not
+    /// keep running: nothing else (Stop, quit) can reach it.
+    #[test]
+    fn a_start_that_fails_after_connecting_stops_the_agent() {
+        use super::{record_claude_start, StartedAgent};
+        use crate::acp::test_agent::FakeAgent;
+        use crate::commands::session_flow_tests::{claude_scenario, connect};
+        use crate::provider::ProviderId;
+        use crate::store::{StateStore, TabSessionRef};
+        use crate::test_support::{role, TempDir};
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+        use std::time::{Duration, Instant};
+
+        // An agent that outlives its client's pipes: only a stop ends it.
+        let mut scenario = claude_scenario(serde_json::json!([]));
+        scenario["ignore_eof"] = serde_json::json!(true);
+        let Some(agent) = FakeAgent::new("start_fails", &scenario)
+        else {
+            return;
+        };
+        let client = connect(&agent, ProviderId::Claude, "default");
+        let process = client.process_handle();
+        let provider = client.provider();
+        let started = StartedAgent::new("tab-1", "role_implementer", client);
+
+        let dir = TempDir::new("start_fails_state");
+        let mut store = StateStore::open_path(dir.join("state.json")).unwrap();
+        let role = role("role_implementer", "Implementer");
+        let tab_id = store
+            .promote_tab_to_running(
+                None,
+                &role,
+                &HashMap::new(),
+                "/w/app",
+                "merged",
+                TabSessionRef {
+                    acp_session_id: "fake-session-1".into(),
+                    mode_id: "default".into(),
+                    injection_pending: false,
+                    injected_at: None,
+                },
+                ProviderId::Claude,
+            )
+            .unwrap();
+        // A directory where the save writes its temp file: every save fails.
+        std::fs::create_dir(dir.join("state.json.tmp")).unwrap();
+        let store = Mutex::new(store);
+
+        let result = record_claude_start(
+            &store,
+            &provider,
+            &tab_id,
+            "role_implementer",
+            "default",
+            None,
+        );
+        assert!(result.is_err(), "the save should have failed");
+        assert!(
+            process.try_wait().unwrap().is_none(),
+            "the agent runs until the start gives up"
+        );
+        drop(started);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while process.try_wait().unwrap().is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let exited = process.try_wait().unwrap().is_some();
+        process.kill_tree(); // never leave the fake behind, even when red
+        assert!(exited, "the failed start left the agent process running");
     }
 }

@@ -19,6 +19,8 @@ Scenario keys (all optional):
                     schema check would)
   term_delay        seconds the agent takes to exit on SIGTERM, like Claude
                     finishing its session log (default: exits at once)
+  ignore_eof        true: keep running when stdin closes, like an adapter that
+                    does not notice its client is gone (default: exits)
 
 Steps:
   {"update": {...}}            session/update notification (sessionUpdate ...)
@@ -85,6 +87,8 @@ def read_stdin():
     while True:
         line = sys.stdin.readline()
         if not line:
+            if scenario.get("ignore_eof"):
+                time.sleep(3600)
             sys.exit(0)
         line = line.strip()
         if not line:
