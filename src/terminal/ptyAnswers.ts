@@ -8,6 +8,7 @@ import { ptyWrite } from "../bridge";
 import { notePtyInput } from "./live";
 import { encodeTerminalPaste } from "./paste";
 import { dialogDetector, type DialogDetector, type DialogOption } from "./permissionDialog";
+import { reportError } from "../uiErrors";
 
 export type PtyAnswerDeps = {
   write: (tabId: string, data: string) => Promise<void>;
@@ -60,6 +61,18 @@ export async function stopTurn(
 ): Promise<void> {
   deps.note(tabId, STOP_KEY);
   await deps.write(tabId, STOP_KEY);
+}
+
+/** The header's Stop button: a user action, so a failed write is shown. */
+export async function pressStop(
+  tabId: string,
+  deps: Pick<PtyAnswerDeps, "write" | "note"> = defaultDeps,
+): Promise<void> {
+  try {
+    await stopTurn(tabId, deps);
+  } catch (err) {
+    reportError("Could not stop the turn", err, { notify: true });
+  }
 }
 
 /** The key that picks a permission option: its single digit, else null. */

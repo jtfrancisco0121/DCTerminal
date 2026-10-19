@@ -1,5 +1,5 @@
 import { Component, Fragment, type ErrorInfo, type ReactNode } from "react";
-import { recordUiError } from "../uiErrors";
+import { reportError } from "../uiErrors";
 import { clearPaneCrash, DevCrashProbe } from "./devPaneCrash";
 
 type Props = {
@@ -41,7 +41,8 @@ export class PaneBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, info: ErrorInfo) {
     console.error(`DCTerminal ${this.props.label} error:`, error, info.componentStack);
-    recordUiError(this.props.label, error);
+    // The fallback already shows it; no toast.
+    reportError(this.props.label, error);
   }
 
   private reload = () => {

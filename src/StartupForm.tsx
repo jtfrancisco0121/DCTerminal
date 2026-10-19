@@ -11,7 +11,6 @@ import {
   listModels,
   setModelSettings,
   ptyKill,
-  setLayout,
   setTabModel,
   setTabProvider,
   providerStatus,
@@ -309,7 +308,9 @@ import {
 } from "./terminal/park";
 import { encodeTerminalPaste } from "./terminal/paste";
 import { terminalViewOf } from "./terminal/chatEntries";
-import { stopTurn } from "./terminal/ptyAnswers";
+import { pressStop } from "./terminal/ptyAnswers";
+import { saveLayout } from "./layoutSave";
+import { reportError, setErrorNotifier } from "./uiErrors";
 import { toggledView, useTerminalViews } from "./terminal/terminalViews";
 import { forgetComposerDraft, type TerminalComposerHandle } from "./views/TerminalChatControls";
 import { usePrunePlanPanes } from "./views/planPaneState";
@@ -881,14 +882,16 @@ export function StartupForm({
   showNoticeRef.current = showNotice;
   useEffect(() => {
     setLinkOpenErrorHandler((message) => showNoticeRef.current("Could not open link", message, "failed"));
-    return () => setLinkOpenErrorHandler(null);
+    // reportError (uiErrors.ts) shows a failed user action here.
+    setErrorNotifier((title, message) => showNoticeRef.current(title, message, "failed"));
+    return () => {
+      setLinkOpenErrorHandler(null);
+      setErrorNotifier(null);
+    };
   }, []);
-  const reportedRef = useRef(new Set<string>());
   /** A background load or poll that failed: say so once per `key`, not per retry. */
   const reportOnce = useCallback((key: string, title: string, err: unknown) => {
-    if (reportedRef.current.has(key)) return;
-    reportedRef.current.add(key);
-    showNoticeRef.current(title, errorText(err), "failed");
+    reportError(title, err, { notify: true, once: key });
   }, []);
   const confirm = useConfirm();
   const settingsDirtyRef = useRef(false);
@@ -1658,17 +1661,7 @@ export function StartupForm({
   useEffect(() => {
     if (!layoutLoadedRef.current) return;
     const timer = window.setTimeout(() => {
-      const open = splitOpen(split);
-      const grid = gridOpen(split);
-      void setLayout({
-        splitMode: open ? split.mode : "single",
-        secondaryTabId: open && !grid ? split.secondaryTabId : null,
-        gridTabIds: grid ? (split.gridTabIds ?? []) : [],
-        primarySize: clampSplitSize(split.primarySize),
-        filePanelOpen,
-        filePanelWidth,
-        // intentionally silent: the layout is saved again on the next change.
-      }).catch(() => {});
+      void saveLayout(split, filePanelOpen, filePanelWidth);
     }, 300);
     return () => window.clearTimeout(timer);
   }, [split, filePanelOpen, filePanelWidth]);
@@ -5779,8 +5772,7 @@ export function StartupForm({
     openChainOverviewTab,
     readTerminalVerdict,
     // Esc interrupts Claude Code's running turn.
-    // intentionally silent: a dead PTY has no turn to stop.
-    stopTerminalTurn: (tabId) => void stopTurn(tabId).catch(() => {}),
+    stopTerminalTurn: (tabId) => void pressStop(tabId),
     terminalViews,
     setTerminalView,
   };
