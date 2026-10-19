@@ -3998,7 +3998,8 @@ export function StartupForm({
       const tabId = sourceTabId ?? activeTabIdRef.current;
       if (!tabId) return;
       const captured = readTerminalHandoff(tabId);
-      const started = livePty(tabId)?.startedAt ?? Date.now();
+      // The first start: a plan written before a Restart or Resume still counts.
+      const started = livePty(tabId)?.planSince ?? Date.now();
       const tab = savedTabsRef.current.find((item) => item.id === tabId);
       const sourceRoleId = tab?.roleId ?? "";
       setHandoffError(null);

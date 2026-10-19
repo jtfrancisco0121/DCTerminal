@@ -9,7 +9,7 @@ import { terminalSelection, terminalTailText } from "../terminal/park";
 export type TerminalReader = {
   selection: (tabId: string) => string;
   tail: (tabId: string) => string;
-  /** Newest plan file since the terminal started (provider plans folder). */
+  /** Newest plan file since the terminal first started, across restarts (provider plans folder). */
   planFile: (tabId: string) => Promise<string>;
 };
 
@@ -19,7 +19,7 @@ export const liveTerminalReader: TerminalReader = {
   planFile: async (tabId) => {
     const pty = livePty(tabId);
     if (!pty) return "";
-    const file = await terminalPlanFile(pty.startedAt, tabId).catch(() => null);
+    const file = await terminalPlanFile(pty.planSince, tabId).catch(() => null);
     return file?.text.trim() ?? "";
   },
 };

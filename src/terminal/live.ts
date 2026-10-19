@@ -14,7 +14,13 @@ export type LivePty = {
   id: string;
   buffer: PtyBuffer;
   channel: Channel<PtyPacket>;
+  /** When this process started: entries older than it belong to a dead one. */
   startedAt: number;
+  /**
+   * When the tab's run first started, kept across Restart and Resume: plan
+   * files written since then still count as this tab's.
+   */
+  planSince: number;
   exitCode: number | null;
   /** The process exited (its code can be null after a signal). */
   exited: boolean;
@@ -91,11 +97,13 @@ export function beginLivePty(id: string): LivePty {
   terminalActivity.forget(id);
   dialogDetector.forget(id);
   const buffer = createPtyBuffer();
+  const startedAt = Date.now();
   const live: LivePty = {
     id,
     buffer,
     channel: createPtyChannel(() => {}),
-    startedAt: Date.now(),
+    startedAt,
+    planSince: startedAt,
     exitCode: null,
     exited: false,
   };
@@ -122,6 +130,19 @@ export function beginLivePty(id: string): LivePty {
   sessions.set(id, live);
   opening.delete(id);
   notify();
+  return live;
+}
+
+/**
+ * Restart or Resume on the same tab: a fresh record that replaces the old one.
+ * `startedAt` is the new process's, so a decision or sub-agent the dead one
+ * left open is not the current run's; `planSince` stays the tab's first start.
+ */
+export function restartLivePty(id: string): LivePty {
+  // Same tab, same run: plan files written before the restart still count.
+  const planSince = sessions.get(id)?.planSince;
+  const live = beginLivePty(id);
+  if (planSince) live.planSince = planSince;
   return live;
 }
 
