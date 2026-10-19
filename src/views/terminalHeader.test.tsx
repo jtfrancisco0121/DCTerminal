@@ -2,7 +2,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { TabSummary } from "../bridge";
-import { folderName, terminalHeaderFor, type TerminalHeaderDeps } from "./terminalHeader";
+import { folderName, terminalHeaderFor, terminalHeaderState, type TerminalHeaderDeps } from "./terminalHeader";
 
 const tab = (partial: Partial<TabSummary> = {}): TabSummary => ({
   id: "t1",
@@ -41,6 +41,16 @@ const deps = (partial: Partial<TerminalHeaderDeps> = {}): TerminalHeaderDeps => 
   readTerminalVerdict: vi.fn(),
   stopTerminalTurn: vi.fn(),
   ...partial,
+});
+
+describe("terminalHeaderState", () => {
+  it("counts a working or unknown turn as working for the chat composer", () => {
+    const working = (state: Parameters<typeof deps>[0] = {}) => terminalHeaderState(deps(state), tab()).working;
+    expect(working({ terminalStates: { t1: { kind: "working", unknown: true } } })).toBe(true);
+    expect(working({ terminalStates: { t1: { kind: "working" } } })).toBe(true);
+    expect(working()).toBe(false);
+    expect(working({ terminalStates: { t1: { kind: "idle" } }, sessionLogs: {} })).toBe(false);
+  });
 });
 
 describe("terminalHeaderFor (grid cells and second pane)", () => {

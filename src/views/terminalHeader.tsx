@@ -9,7 +9,7 @@ import { roleDisplayName } from "../handoff/transitions";
 import type { ReviewVerdict } from "../handoff/verdict";
 import type { TerminalState } from "../terminal/claudeState";
 import type { TerminalViewMode } from "../terminal/chatEntries";
-import { headerStateOf, type HeaderState } from "../terminal/headerState";
+import { headerStateOf, headerWorking, type HeaderState } from "../terminal/headerState";
 import type { TabStatus } from "../tabStatus";
 import type { HeaderControls } from "./SessionHeaderControls";
 import { isClaudeTerminal } from "./tabHelpers";
@@ -62,7 +62,7 @@ export function folderName(cwd: string | undefined | null): string | null {
 export function terminalHeaderState(
   deps: Pick<TerminalHeaderDeps, "terminalVerdict" | "sessionLogs" | "terminalStates" | "tabStatuses">,
   tab: TabSummary,
-): { header: HeaderState; turnEnded: boolean } {
+): { header: HeaderState; turnEnded: boolean; working: boolean } {
   const isRole = tab.terminalLaunch === "role";
   const verdict = deps.terminalVerdict?.tabId === tab.id ? deps.terminalVerdict.verdict : null;
   const log = deps.sessionLogs[tab.id];
@@ -74,7 +74,8 @@ export function terminalHeaderState(
     turnEnded,
     verdict,
   });
-  return { header, turnEnded };
+  // An unknown turn may still be running: the composer keeps Stop and Queue.
+  return { header, turnEnded, working: headerWorking(header) };
 }
 
 /** The R16 header of one terminal tab, for the tab itself, the second pane or a grid cell. */
