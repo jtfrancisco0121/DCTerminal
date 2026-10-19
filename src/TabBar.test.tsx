@@ -468,6 +468,7 @@ describe("TabBar rename vs. running turn", () => {
   it("Escape in the rename input cancels the rename but not the running turn", () => {
     const onCancelTurn = vi.fn();
     const onRenameEnd = vi.fn();
+    const onRename = vi.fn();
     const { unmount } = renderHook(() =>
       useAppShortcuts({
         platform: "mac",
@@ -477,9 +478,10 @@ describe("TabBar rename vs. running turn", () => {
         onCancelTurn,
       }),
     );
-    render(<TabBar {...props} onRenameEnd={onRenameEnd} />);
+    render(<TabBar {...props} onRename={onRename} onRenameEnd={onRenameEnd} />);
     fireEvent.keyDown(screen.getByLabelText("Rename Planner · UI"), { key: "Escape" });
     expect(onRenameEnd).toHaveBeenCalledTimes(1);
+    expect(onRename).not.toHaveBeenCalled();
     expect(onCancelTurn).not.toHaveBeenCalled();
     unmount();
   });
