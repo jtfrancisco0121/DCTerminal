@@ -516,6 +516,8 @@ export function TerminalView({
           type="button"
           className="terminal-menu-dismiss"
           aria-label="Close menu"
+          // Tab from the menu lands here; Escape still closes the menu, not a turn.
+          data-own-escape=""
           onClick={() => setMenu(null)}
         />
       )}
