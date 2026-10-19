@@ -92,6 +92,22 @@ function PreviewFrame({ slot, children }: { slot: HTMLElement | null; children: 
   // A slot can also move without resizing (a pane strip or bar appears).
   useLayoutEffect(measure);
 
+  // The frame is not inside its pane, so it dims with the pane by hand.
+  const [dim, setDim] = useState(false);
+  useLayoutEffect(() => {
+    const pane = slot?.closest(".split-pane");
+    if (!pane) {
+      setDim(false);
+      return;
+    }
+    const read = () => setDim(pane.classList.contains("split-pane-dim"));
+    read();
+    if (typeof MutationObserver === "undefined") return;
+    const observer = new MutationObserver(read);
+    observer.observe(pane, { attributes: true, attributeFilter: ["class"] });
+    return () => observer.disconnect();
+  }, [slot]);
+
   const shown = slot != null;
   // Clicks and focus in the frame count as being in the pane that shows it
   // (focusing the second pane, activating a grid cell).
@@ -108,6 +124,7 @@ function PreviewFrame({ slot, children }: { slot: HTMLElement | null; children: 
       ref={ref}
       className="preview-layer-frame"
       data-shown={shown || undefined}
+      data-dim={(shown && dim) || undefined}
       aria-hidden={shown ? undefined : true}
       inert={!shown}
       style={{

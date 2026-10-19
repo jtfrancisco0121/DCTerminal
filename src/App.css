@@ -6626,6 +6626,18 @@ button.chain-label {
   opacity: 1;
 }
 
+/* A preview's page sits outside its pane (.preview-layer-frame), so it dims
+   by the pane's class (data-dim), and lifts when you point at or use it. */
+.preview-layer-frame[data-dim] {
+  opacity: 0.82;
+  transition: opacity 0.12s ease;
+}
+
+.preview-layer-frame[data-dim]:hover,
+.preview-layer-frame[data-dim]:focus-within {
+  opacity: 1;
+}
+
 .terminal-chat-answer-here,
 .terminal-chat-answer-failed,
 .terminal-chat-composer-exited {

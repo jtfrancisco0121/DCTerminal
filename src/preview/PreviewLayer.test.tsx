@@ -92,6 +92,32 @@ describe("PreviewLayer", () => {
   });
 });
 
+describe("preview dimming", () => {
+  function InPane({ paneClass }: { paneClass: string }) {
+    const { slots, register } = usePreviewSlots();
+    return (
+      <PreviewSlotProvider register={register}>
+        <div className={paneClass}>
+          <PreviewSlot tabId="a" />
+        </div>
+        <PreviewLayer tabIds={["a"]} slots={slots} render={() => <iframe title="page a" />} />
+      </PreviewSlotProvider>
+    );
+  }
+
+  it("dims a preview's frame while the pane that shows it is dimmed", async () => {
+    const view = render(<InPane paneClass="split-pane split-pane-dim" />);
+    expect(frameOf("page a").hasAttribute("data-dim")).toBe(true);
+    // Focusing the pane lifts the dim, as it does for the pane's own content.
+    view.rerender(<InPane paneClass="split-pane split-pane-focused" />);
+    await act(async () => {});
+    expect(frameOf("page a").hasAttribute("data-dim")).toBe(false);
+    view.rerender(<InPane paneClass="split-pane split-pane-dim" />);
+    await act(async () => {});
+    expect(frameOf("page a").hasAttribute("data-dim")).toBe(true);
+  });
+});
+
 describe("preview tabs outside the main pane", () => {
   it("show the preview in the second pane instead of the no-session note", () => {
     const tab = { id: "p1", kind: "preview", label: "localhost:3000", cwd: "" } as TabSummary;
