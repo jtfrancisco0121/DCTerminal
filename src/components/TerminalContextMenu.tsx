@@ -61,6 +61,8 @@ export function TerminalContextMenu({ x, y, items }: Props) {
       className="terminal-menu"
       style={{ left: x, top: y }}
       role="menu"
+      // While open, Escape closes the menu, not a running turn.
+      data-own-escape=""
       onKeyDown={move}
     >
       {items.map((item) => (
