@@ -1253,6 +1253,30 @@ pub(crate) mod tests {
         assert_only_detached_stopped(children, "kill_tree");
     }
 
+    // Review: the guards were untested. A remembered pid that now has
+    // another start time (reused), sits in our own group, is our own pid,
+    // or is init is never signalled.
+    #[test]
+    fn remembered_pids_that_fail_a_guard_are_never_signalled() {
+        let mut reused = spawn_group("sleep 30");
+        let mut same_group = Command::new("sleep").arg("30").spawn().expect("spawn sleep");
+        let mut seen = proc_info(reused.id()).expect("info for a live child");
+        seen.start += 1;
+        let mut detached = Detached(vec![seen]);
+        let own = [same_group.id(), std::process::id(), 1];
+        detached.0.extend(own.into_iter().filter_map(proc_info));
+        assert!(!detached.alive(), "no remembered pid passes the guards");
+        detached.signal(SIGKILL);
+        thread::sleep(Duration::from_millis(200));
+        let untouched = [&mut reused, &mut same_group].map(|child| {
+            let alive = matches!(child.try_wait(), Ok(None));
+            let _ = child.kill();
+            let _ = child.wait();
+            alive
+        });
+        assert_eq!(untouched, [true, true], "a guarded pid got SIGKILL");
+    }
+
     // Review: the Linux `/proc/<pid>/stat` parser was never compiled on
     // macOS. A comm may hold ") " and spaces; fields count from the last ')'.
     #[test]
