@@ -54,6 +54,24 @@ export function quietTurn(input: { outputAt: number | undefined; logAt: number; 
   return input.now - Math.max(input.outputAt ?? 0, input.logAt) >= TURN_QUIET_MS;
 }
 
+/**
+ * The watched tabs whose turn has no known end and saw no output or new
+ * records for TURN_QUIET_MS (since they were first watched, before any read).
+ */
+export function quietTurnIds(
+  watched: Iterable<[string, { since: number; records?: LogRecordsSeen }]>,
+  logs: Record<string, { turnDone: boolean } | null | undefined>,
+  outputAt: (id: string) => number | undefined,
+  now: number,
+): string[] {
+  const ids: string[] = [];
+  for (const [id, entry] of watched) {
+    if (logs[id]?.turnDone !== false) continue;
+    if (quietTurn({ outputAt: outputAt(id), logAt: entry.records?.at ?? entry.since, now })) ids.push(id);
+  }
+  return ids.sort();
+}
+
 /** What the last read found, and when those records first appeared (`quietTurn`'s `logAt`). */
 export type LogRecordsSeen = { key: string; at: number };
 

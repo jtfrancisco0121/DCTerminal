@@ -251,7 +251,7 @@ import {
   dialogDrawn,
   dialogToolFor,
   logRecordsSeen,
-  quietTurn,
+  quietTurnIds,
   sameTerminalState,
   terminalNeedsMessage,
   terminalWaitingText,
@@ -1362,14 +1362,12 @@ export function StartupForm({
         prev.length === busy.length && prev.every((id, i) => id === busy[i]) ? prev : busy,
       );
       // Mid-turn Claude terminals quiet for a minute show as unknown.
-      const quietTurns = [...sessionLogWatch.current]
-        .filter(([id, entry]) => {
-          if (sessionLogsRef.current[id]?.turnDone !== false) return false;
-          const outputAt = terminalActivity.lastOutputAt(id);
-          return quietTurn({ outputAt, logAt: entry.records?.at ?? entry.since, now });
-        })
-        .map(([id]) => id)
-        .sort();
+      const quietTurns = quietTurnIds(
+        sessionLogWatch.current,
+        sessionLogsRef.current,
+        terminalActivity.lastOutputAt,
+        now,
+      );
       setQuietTurnTabs((prev) =>
         prev.length === quietTurns.length && prev.every((id, i) => id === quietTurns[i])
           ? prev

@@ -6,6 +6,7 @@ import {
   dialogToolFor,
   logRecordsSeen,
   quietTurn,
+  quietTurnIds,
   sameTerminalState,
   TURN_QUIET_MS,
   terminalNeedsMessage,
@@ -120,6 +121,26 @@ describe("deriveTerminalState", () => {
     expect(logRecordsSeen(second, { ...after, lastReply: "more" }, 7000)?.at).toBe(7000);
     // A failed read changes nothing.
     expect(logRecordsSeen(second, null, 7000)).toBe(second);
+  });
+
+  it("picks the watched tabs whose open turn went quiet, sorted", () => {
+    const now = 100_000;
+    const watched = new Map([
+      ["b", { since: 0 }],
+      ["a", { since: 0, records: { key: "k", at: 10_000 } }],
+      ["recent-record", { since: 0, records: { key: "k", at: 90_000 } }],
+      ["recent-output", { since: 0 }],
+      ["new-watch", { since: 80_000 }],
+      ["done", { since: 0 }],
+      ["no-log", { since: 0 }],
+    ]);
+    const open = { turnDone: false };
+    const logs = {
+      ...{ a: open, b: open, "recent-record": open, "recent-output": open, "new-watch": open },
+      done: { turnDone: true },
+    };
+    const outputAt = (id: string) => (id === "recent-output" ? 95_000 : id === "a" ? 5000 : undefined);
+    expect(quietTurnIds(watched, logs, outputAt, now)).toEqual(["a", "b"]);
   });
 });
 
