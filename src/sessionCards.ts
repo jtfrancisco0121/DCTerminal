@@ -150,12 +150,14 @@ export function reduceSessionCards(
   cards: SessionCards,
   evt: { kind: string; rawJson: string },
 ): SessionCards {
-  let raw: Raw;
+  let raw: Raw | null;
   try {
-    raw = JSON.parse(evt.rawJson) as Raw;
+    raw = asRecord(JSON.parse(evt.rawJson));
   } catch {
     return cards;
   }
+  // `params: null` (or any non-object) arrives as "null"; nothing to reduce.
+  if (!raw) return cards;
   const update = asRecord(raw.update) ?? asRecord(raw.params) ?? raw;
   const kind = `${evt.kind} ${textOf(update.sessionUpdate)} ${textOf(update.type)}`.toLowerCase();
 

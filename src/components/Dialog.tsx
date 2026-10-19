@@ -109,7 +109,11 @@ export function Dialog({
       window.removeEventListener("keydown", onKey);
       const at = stack.lastIndexOf(id);
       if (at >= 0) stack.splice(at, 1);
-      if (previous && previous.isConnected) previous.focus();
+      // A hidden tab's terminal stays connected in the aria-hidden park; typing
+      // there would reach a PTY the user cannot see.
+      if (previous && previous.isConnected && !previous.closest("[aria-hidden='true']")) {
+        previous.focus();
+      }
     };
     // requestClose reads the latest props from a ref.
     // eslint-disable-next-line react-hooks/exhaustive-deps
