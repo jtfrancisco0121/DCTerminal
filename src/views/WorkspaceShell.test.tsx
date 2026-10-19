@@ -116,6 +116,56 @@ describe("WorkspaceShell boundaries", () => {
     expect(screen.getByRole("tablist", { name: "Tabs" })).toBeTruthy();
   });
 
+  it("a second pane whose render helper throws keeps the main pane and tab bar", () => {
+    const panes = {
+      ...props({}).panes,
+      renderSecondary: () => {
+        throw new Error("second pane broke");
+      },
+    };
+    render(<WorkspaceShell {...props({ panes })} />);
+    expect(screen.getByRole("alert").textContent).toContain("Second pane");
+    expect(screen.getByText("alpha view")).toBeTruthy();
+    expect(screen.getByRole("tablist", { name: "Tabs" })).toBeTruthy();
+  });
+
+  it("a pane 1 strip whose helper throws keeps the active view and the second pane", () => {
+    const panes = {
+      ...props({}).panes,
+      renderSecondary: () => <p>beta view</p>,
+      paneStrip: (_tab: TabSummary, number: number) => {
+        if (number === 1) throw new Error("strip broke");
+        return null;
+      },
+    };
+    render(<WorkspaceShell {...props({ panes })} />);
+    expect(screen.getByRole("alert").textContent).toContain("Pane 1 strip");
+    expect(screen.getByText("alpha view")).toBeTruthy();
+    expect(screen.getByText("beta view")).toBeTruthy();
+    expect(screen.getByRole("tablist", { name: "Tabs" })).toBeTruthy();
+  });
+
+  it("a grid cell whose render helper throws keeps the other cells", () => {
+    render(
+      <WorkspaceShell
+        {...props({
+          showGrid: true,
+          split: { mode: "grid", secondaryTabId: null, gridTabIds: ["a", "b"] },
+          secondaryTab: undefined,
+          panes: {
+            ...props({}).panes,
+            renderGridCell: () => {
+              throw new Error("grid cell broke");
+            },
+          },
+        })}
+      />,
+    );
+    expect(screen.getByRole("alert").textContent).toContain("Grid cell");
+    expect(screen.getByText("alpha view")).toBeTruthy();
+    expect(screen.getByRole("tablist", { name: "Tabs" })).toBeTruthy();
+  });
+
   it("a crash in a grid cell keeps the other cells", () => {
     render(
       <WorkspaceShell

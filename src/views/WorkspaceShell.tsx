@@ -8,6 +8,14 @@ import { clampSplitSize, type SplitState } from "../tabChrome";
 import { viewLabel } from "./paneLabel";
 import type { PaneRenderers } from "./workspacePanes";
 
+/**
+ * Calls a pane helper during its own render, so an error the helper throws
+ * lands in the PaneBoundary around it rather than in the shell. No DOM.
+ */
+function RenderInBoundary({ render }: { render: () => ReactNode }) {
+  return <>{render()}</>;
+}
+
 export type WorkspaceShellProps = {
   /** The tab strip. */
   tabBar: ReactNode;
@@ -129,7 +137,11 @@ export function WorkspaceShell({
                     );
                   }
                   const tab = savedTabs.find((item) => item.id === tabId);
-                  return tab ? <PaneBoundary label="Grid cell">{renderGridCell(tab)}</PaneBoundary> : null;
+                  return tab ? (
+                    <PaneBoundary label="Grid cell">
+                      <RenderInBoundary render={() => renderGridCell(tab)} />
+                    </PaneBoundary>
+                  ) : null;
                 }}
               />
             ) : (
@@ -160,7 +172,7 @@ export function WorkspaceShell({
                     {/* Pane 1's strip shows only while a second pane is open. */}
                     {secondaryTab && activeTabSummary && (
                       <PaneBoundary label="Pane 1 strip" resetKey={activeTabId}>
-                        {paneStrip(activeTabSummary, 1, focusedPane === "primary")}
+                        <RenderInBoundary render={() => paneStrip(activeTabSummary, 1, focusedPane === "primary")} />
                       </PaneBoundary>
                     )}
                     {activeView}
@@ -169,7 +181,7 @@ export function WorkspaceShell({
                 secondary={
                   secondaryTab ? (
                     <PaneBoundary label="Second pane" resetKey={secondaryTab.id}>
-                      {renderSecondary(secondaryTab)}
+                      <RenderInBoundary render={() => renderSecondary(secondaryTab)} />
                     </PaneBoundary>
                   ) : null
                 }
