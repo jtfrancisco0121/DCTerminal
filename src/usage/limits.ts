@@ -1,6 +1,8 @@
 /**
- * Display helpers for Claude 5-hour and 7-day limits. The adapter sends
- * utilization and a reset time. Token totals and dollar amounts are not shown.
+ * Display helpers for Claude 5-hour and 7-day limits. Chat tabs (the ACP
+ * adapter) and terminal tabs (the status line DCTerminal sets) send
+ * utilization and a reset time. Usage that is missing or stale reads as
+ * unknown, never 0% (Track H5). Token totals and dollar amounts are not shown.
  */
 
 export type RateWindow = {
@@ -20,7 +22,15 @@ export type LimitLine = {
   title: string;
 };
 
-const USAGE_NOTE = "Updated by Claude chat tabs; terminal tabs don't report usage.";
+/** Where usage readings come from (status bar title, Settings › Usage). */
+export const USAGE_NOTE =
+  "Updated by Claude chat tabs; terminal tabs report it through the status line DCTerminal sets, unless you set your own.";
+
+/** How long each window lasts: a reading with no reset time is stale after it. */
+const WINDOW_MS: Record<string, number> = {
+  five_hour: 5 * 3_600_000,
+  seven_day: 7 * 24 * 3_600_000,
+};
 
 export function limitTone(window: RateWindow): UsageTone {
   if (window.status === "rejected") return "hot";
@@ -47,17 +57,48 @@ export function formatWindowLine(window: RateWindow): string {
 
 /**
  * The window has reset since this reading (for example a reading saved before
- * a restart), so its percent no longer applies.
+ * a restart), so its percent no longer applies. With no reset time, a reading
+ * older than its window's length is stale too.
  */
 export function isStale(window: RateWindow, now = Date.now()): boolean {
-  return window.resetsAt != null && window.resetsAt * 1000 <= now;
+  if (window.resetsAt != null) return window.resetsAt * 1000 <= now;
+  const length = WINDOW_MS[window.rateLimitType];
+  return length != null && now - window.seenAtMs > length;
 }
 
-/** Status-bar line. Prefers the 5-hour window. Empty until the first update. */
+/**
+ * The highest current window, in percent: null when unknown (no reading, no
+ * percent, or every reading stale). Never 0 for unknown.
+ */
+export function knownUsagePercent(windows: RateWindow[], now = Date.now()): number | null {
+  const values = windows
+    .filter((window) => !isStale(window, now))
+    .map((window) => window.utilization)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  return values.length ? Math.round(Math.max(...values)) : null;
+}
+
+/** The pipeline overview's usage line: what autopilot does with usage now. */
+export function autopilotUsageLine(
+  windows: RateWindow[],
+  pauseAt: number,
+  now = Date.now(),
+): { known: boolean; text: string } {
+  const used = knownUsagePercent(windows, now);
+  if (used == null) {
+    return {
+      known: false,
+      text: "Claude usage: unknown. Autopilot keeps going, and stops if Claude reports a usage limit.",
+    };
+  }
+  return { known: true, text: `Claude usage: ${used}% (autopilot pauses at ${pauseAt}%).` };
+}
+
+/** Status-bar line. Prefers the 5-hour window. Unknown until the first update. */
 export function statusLimit(windows: RateWindow[], now = Date.now()): LimitLine {
   if (windows.length === 0) {
     return {
-      text: "Claude usage not reported yet",
+      text: "Claude usage unknown",
       tone: "muted",
       title: USAGE_NOTE,
     };
@@ -68,7 +109,7 @@ export function statusLimit(windows: RateWindow[], now = Date.now()): LimitLine 
   );
   const title = [USAGE_NOTE, ...lines, `Last reported ${formatSeen(primary.seenAtMs)}`].join("\n");
   if (isStale(primary, now)) {
-    return { text: `Claude ${primary.label} reset · no new reading`, tone: "muted", title };
+    return { text: `Claude usage unknown · ${primary.label} reset since the last reading`, tone: "muted", title };
   }
   return { text: formatWindowLine(primary), tone: limitTone(primary), title };
 }

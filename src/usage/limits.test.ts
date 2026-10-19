@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { contextPercent, isStale, limitAlerts, limitTone, statusLimit, type RateWindow } from "./limits";
+import {
+  autopilotUsageLine,
+  contextPercent,
+  isStale,
+  knownUsagePercent,
+  limitAlerts,
+  limitTone,
+  statusLimit,
+  type RateWindow,
+} from "./limits";
 
 function window(overrides: Partial<RateWindow> = {}): RateWindow {
   return {
@@ -14,11 +23,12 @@ function window(overrides: Partial<RateWindow> = {}): RateWindow {
 }
 
 describe("Claude limit display", () => {
-  it("says not reported yet before the first update", () => {
+  it("says unknown before the first update, never 0%", () => {
     const line = statusLimit([]);
-    expect(line.text).toBe("Claude usage not reported yet");
+    expect(line.text).toBe("Claude usage unknown");
+    expect(line.text).not.toMatch(/0%/);
     expect(line.tone).toBe("muted");
-    expect(line.title).toMatch(/terminal tabs don't report usage/);
+    expect(line.title).toMatch(/terminal tabs report it through the status line/i);
   });
 
   it("formats the 5-hour window and does not invent a percent", () => {
@@ -52,10 +62,52 @@ describe("Claude limit display", () => {
     const old = window({ resetsAt: Date.UTC(2026, 9, 10, 9, 0) / 1000, utilization: 91 });
     expect(isStale(old, now)).toBe(true);
     const line = statusLimit([old], now);
-    expect(line.text).toBe("Claude 5h reset · no new reading");
+    expect(line.text).toBe("Claude usage unknown · 5h reset since the last reading");
     expect(line.tone).toBe("muted");
     expect(line.title).toContain("Last reported");
-    expect(isStale(window({ resetsAt: null }), now)).toBe(false);
+    expect(isStale(window({ resetsAt: null, seenAtMs: now - 60_000 }), now)).toBe(false);
+  });
+
+  it("a reading with no reset time is stale once its window's length has passed", () => {
+    const now = Date.UTC(2026, 9, 10, 12, 0);
+    const hour = 3_600_000;
+    expect(isStale(window({ resetsAt: null, seenAtMs: now - 6 * hour }), now)).toBe(true);
+    expect(isStale(window({ resetsAt: null, seenAtMs: now - 4 * hour }), now)).toBe(false);
+    const week = window({ rateLimitType: "seven_day", label: "7d", resetsAt: null });
+    expect(isStale({ ...week, seenAtMs: now - 6 * hour }, now)).toBe(false);
+    expect(isStale({ ...week, seenAtMs: now - 8 * 24 * hour }, now)).toBe(true);
+  });
+
+  it("usage is the highest window still current; stale or missing is unknown, not 0", () => {
+    const now = Date.UTC(2026, 9, 10, 12, 0);
+    const later = Date.UTC(2026, 9, 10, 15, 0) / 1000;
+    const earlier = Date.UTC(2026, 9, 10, 9, 0) / 1000;
+    expect(knownUsagePercent([], now)).toBeNull();
+    expect(knownUsagePercent([window({ utilization: null, resetsAt: later })], now)).toBeNull();
+    // Reset since the reading: its 95% no longer applies.
+    expect(knownUsagePercent([window({ utilization: 95, resetsAt: earlier })], now)).toBeNull();
+    expect(
+      knownUsagePercent(
+        [
+          window({ utilization: 95, resetsAt: earlier }),
+          window({ rateLimitType: "seven_day", label: "7d", utilization: 40.4, resetsAt: later }),
+        ],
+        now,
+      ),
+    ).toBe(40);
+    expect(knownUsagePercent([window({ utilization: 0, resetsAt: later })], now)).toBe(0);
+  });
+
+  it("the overview says what autopilot does with usage, known or not", () => {
+    const now = Date.UTC(2026, 9, 10, 12, 0);
+    const later = Date.UTC(2026, 9, 10, 15, 0) / 1000;
+    const unknown = autopilotUsageLine([], 90, now);
+    expect(unknown.known).toBe(false);
+    expect(unknown.text).toBe(
+      "Claude usage: unknown. Autopilot keeps going, and stops if Claude reports a usage limit.",
+    );
+    const known = autopilotUsageLine([window({ utilization: 42, resetsAt: later })], 90, now);
+    expect(known).toEqual({ known: true, text: "Claude usage: 42% (autopilot pauses at 90%)." });
   });
 
   it("raises one alert near the limit and another when it is reached", () => {

@@ -595,6 +595,11 @@ fn every_stop_in_decide_carries_its_reason_code() {
         let d = decide(def, &mut r, &rep);
         assert_eq!(d.action, "stop", "{}", d.reason);
         assert_eq!(r.status, RunStatus::Waiting, "{}", d.reason);
+        // The same code goes to the notification (the decision) and the ledger.
+        assert_eq!(d.stop_reason, r.stop_reason, "{}", d.reason);
+        let last = r.events.last().unwrap();
+        assert_eq!(last.kind, "stop");
+        assert_eq!(last.outcome.as_deref(), r.stop_reason.map(StopReason::as_str), "{}", d.reason);
         r.stop_reason
     };
     let mut capped = run(3);
@@ -621,6 +626,35 @@ fn every_stop_in_decide_carries_its_reason_code() {
     chat.chat = true;
     assert_eq!(stopped(&eagle1(), run(1), chat), Some(StopReason::CarryOutFailed));
     assert_eq!(stopped(&eagle1(), run(1), report("nowhere", None)), Some(StopReason::CarryOutFailed));
+    let mut limited = report("planner", None);
+    limited.rate_limit = Some("You've hit your limit · resets 3pm".into());
+    assert_eq!(stopped(&eagle1(), run(1), limited), Some(StopReason::UsageLimit));
+}
+
+#[test]
+fn unknown_usage_carries_on_but_a_rate_limit_error_stops_the_run() {
+    // Unknown usage (never read, or reset since the reading) is not 0%: the
+    // run simply carries on.
+    let unknown = report("planner", None);
+    assert_eq!(unknown.usage_percent, None);
+    assert_eq!(decide(&eagle1(), &mut run(1), &unknown).action, "advance");
+
+    // A rate-limit error in the stage's log stops it, whatever usage reads.
+    let mut limited = report("plan_reviewer", Some("APPROVED"));
+    limited.rate_limit = Some("Claude AI usage limit reached|1760000000".into());
+    let mut r = run(1);
+    let d = decide(&eagle1(), &mut r, &limited);
+    assert_eq!((d.action.as_str(), d.stop_reason), ("stop", Some(StopReason::UsageLimit)));
+    assert!(d.reason.contains("Plan Reviewer hit a Claude usage limit"), "{}", d.reason);
+    assert!(d.reason.contains("usage limit reached"), "{}", d.reason);
+    assert_eq!(d.stage_id.as_deref(), Some("plan_reviewer"));
+    // Before the missing-sections re-ask: a limited reply has no sections.
+    limited.missing_sections = vec!["Reviewed plan".into()];
+    assert_eq!(decide(&eagle1(), &mut run(1), &limited).stop_reason, Some(StopReason::UsageLimit));
+    // A blank error line is no error.
+    let mut blank = report("planner", None);
+    blank.rate_limit = Some("  ".into());
+    assert_eq!(decide(&eagle1(), &mut run(1), &blank).action, "advance");
 }
 
 #[test]

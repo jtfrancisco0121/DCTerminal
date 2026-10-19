@@ -11,7 +11,9 @@ import {
   pipelineSetAutopilot,
   pipelineSetCandidatePlan,
 } from "../bridge";
-import { maxRounds, pipelineDef, pipelineStages, type StageDef } from "../pipeline/defs";
+import { DEFAULT_PAUSE_AT_USAGE_PERCENT, maxRounds, pipelineDef, pipelineStages, type StageDef } from "../pipeline/defs";
+import { stopReasonText } from "../pipeline/stopReasons";
+import { autopilotUsageLine, type RateWindow } from "../usage/limits";
 import { eventLabel, eventTime, followUps, formatRunReport, reviewRound, stageTitle } from "../pipeline/runReport";
 import { githubPrUrls } from "../handoff/map";
 import { lanesFromReply } from "../pipeline/prPlan";
@@ -60,6 +62,8 @@ type Props = {
   onApproveLane?: (runId: string, laneId: string) => Promise<void>;
   /** Marks a run without lanes complete by hand (autopilot stopped at its last stage). */
   onApproveRun?: (runId: string) => Promise<void>;
+  /** The latest Claude limit windows, for the autopilot usage line. Null: not loaded. */
+  usageWindows?: RateWindow[] | null;
 };
 
 /** "Round 4", or "Round 2 of at most 3" when the loop-back has a round cap. */
@@ -128,6 +132,7 @@ export function PipelineOverview({
   onStartLane,
   onApproveLane,
   onApproveRun,
+  usageWindows = null,
 }: Props) {
   const [run, setRun] = useState<PipelineRun | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -396,12 +401,24 @@ export function PipelineOverview({
           </label>
           <p className="hint">
             {autopilotOn
-              ? "After each terminal stage's turn, the checks run and the run moves on, sends a round back, or stops for you. Rounds go back until the reviewer approves (or up to a round cap, if the pipeline sets one). It stops before a checkpoint, when Claude needs you, and near your usage limit. It never merges."
+              ? "After each terminal stage's turn, the checks run and the run moves on, sends a round back, or stops for you. Rounds go back until the reviewer approves (or up to a round cap, if the pipeline sets one). It stops before a checkpoint, when Claude needs you, near your usage limit, and when Claude refuses a request for a usage limit. It never merges."
               : "Off: every hand-off waits for you. Turn it on to let terminal stages hand on by themselves."}
           </p>
+          {autopilotOn && usageWindows && (
+            <p className="hint" data-testid="autopilot-usage">
+              {
+                autopilotUsageLine(
+                  usageWindows,
+                  def.autopilot?.pauseAtUsagePercent ?? DEFAULT_PAUSE_AT_USAGE_PERCENT,
+                ).text
+              }
+            </p>
+          )}
           {autopilotOn && run.autopilot?.waiting && (
             <p className="pipeline-autopilot-waiting" role="status">
-              Waiting for you: {run.autopilot.waiting}
+              Waiting for you:{" "}
+              {stopReasonText(run.stopReason) && <strong>{stopReasonText(run.stopReason)} </strong>}
+              {run.autopilot.waiting}
             </p>
           )}
           {autopilotOn && run.autopilot?.waiting && lanes.length === 0 && atLastStage && onApproveRun && (
@@ -762,6 +779,9 @@ export function PipelineOverview({
                 <span className="pipeline-event-kind">{eventLabel(event.kind)}</span>
                 {event.stageId && <span className="hint"> · {stageTitle(run, event.stageId)}</span>}
                 <span className="hint"> · round {event.round}</span>
+                {stopReasonText(event.outcome) && (
+                  <div className="pipeline-event-reason">{stopReasonText(event.outcome)}</div>
+                )}
                 <div>{event.summary}</div>
                 {event.detail?.trim() && (
                   <details>

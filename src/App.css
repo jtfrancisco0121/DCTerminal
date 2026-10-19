@@ -5515,6 +5515,11 @@ mark.search-hit-current {
   color: var(--success);
 }
 
+/* A stop's reason code, in plain English, above its own sentence. */
+.pipeline-event-reason {
+  font-weight: 600;
+}
+
 .pipeline-list {
   margin: 0 0 1rem;
   padding: 0;

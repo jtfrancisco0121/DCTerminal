@@ -24,6 +24,7 @@ mod pty;
 pub mod roles;
 mod session_id;
 mod shell_env;
+pub mod status_line;
 pub mod store;
 pub mod supervisor;
 pub mod template;

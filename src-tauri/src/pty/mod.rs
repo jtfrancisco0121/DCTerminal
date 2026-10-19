@@ -197,6 +197,40 @@ fn claude_scheme_env() -> (String, String) {
     ("COLORFGBG".to_string(), value.to_string())
 }
 
+/// Puts `--settings` with DCTerminal's status line first in a Claude
+/// terminal's arguments, so the tab reports Claude usage (`status_line`,
+/// plan D32), and has `UsageStore` read what it writes. Adds nothing when
+/// you set a status line of your own (it wins; usage from the tab stays
+/// unknown) or the config folder or the app's own path is unknown.
+fn add_usage_status_line(
+    app: &AppHandle,
+    args: &mut Vec<String>,
+    tab_id: &str,
+    config_dir: Option<&str>,
+    cwd: &std::path::Path,
+) {
+    let Some(config) = config_dir.map(str::trim).filter(|dir| !dir.is_empty()) else {
+        return;
+    };
+    if crate::status_line::user_has_status_line(std::path::Path::new(config), cwd) {
+        return;
+    }
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let file = crate::status_line::file_for(&crate::data_dir::app_data_dir(app).path, tab_id);
+    let Some(usage) = app.try_state::<Mutex<crate::usage::UsageStore>>() else {
+        return;
+    };
+    let Ok(mut usage) = usage.lock() else {
+        return;
+    };
+    usage.watch_status_line(tab_id, config, file.clone());
+    drop(usage);
+    let flag = crate::status_line::settings_args(&crate::status_line::command(&exe, &file));
+    args.splice(0..0, flag);
+}
+
 #[tauri::command]
 pub fn pty_set_scheme(light: bool) {
     LIGHT_SCHEME.store(light, Ordering::Relaxed);
@@ -395,6 +429,7 @@ pub async fn shell_terminal_start(
 ) -> Result<TerminalStartResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         shell_terminal_start_blocking(
+            app.clone(),
             input,
             on_output,
             app.state(),
@@ -408,6 +443,7 @@ pub async fn shell_terminal_start(
 }
 
 fn shell_terminal_start_blocking(
+    app: AppHandle,
     input: ShellTerminalInput,
     on_output: Channel<PtyPacket>,
     settings: State<Mutex<SettingsStore>>,
@@ -577,6 +613,7 @@ fn shell_terminal_start_blocking(
             },
         )?
     };
+    let mut claude_config: Option<String> = None;
     if launch == "claude-cli" {
         let mut state = store.lock().map_err(|err| err.to_string())?;
         let settings = settings.lock().map_err(|err| err.to_string())?;
@@ -588,6 +625,7 @@ fn shell_terminal_start_blocking(
         );
         if let Some(dir) = provider.config_dir() {
             state.remember_claude_config(&tab_id, &dir.path)?;
+            claude_config = Some(dir.path);
         }
         if let Some(id) = &resume_id {
             state.remember_provider_session(&tab_id, ProviderId::Claude, Some(id.clone()))?;
@@ -598,6 +636,9 @@ fn shell_terminal_start_blocking(
         if let Some(id) = &claude_session {
             state.remember_claude_terminal_session(&tab_id, id)?;
         }
+    }
+    if launch == "claude-cli" {
+        add_usage_status_line(&app, &mut command.args, &tab_id, claude_config.as_deref(), &cwd);
     }
     let pid = open_session(
         &registry,
@@ -791,6 +832,8 @@ fn role_terminal_start_blocking(
     let mut command = provider.terminal_command(&role_launch(Some(delivery.argument.clone())))?;
     if provider.id() == ProviderId::Claude {
         command.env.push(claude_scheme_env());
+        let config = provider.config_dir().map(|dir| dir.path);
+        add_usage_status_line(&app, &mut command.args, &tab_id, config.as_deref(), &cwd);
     }
     let pid = open_session(
         &registry,
@@ -972,6 +1015,8 @@ fn pty_open_blocking(
                 session_id: Some(session_id.clone()),
             })?;
             command.env.push(claude_scheme_env());
+            let config = provider.config_dir().map(|dir| dir.path);
+            add_usage_status_line(&app, &mut command.args, &input.id, config.as_deref(), &cwd);
             remember_terminal_session(&store, &input.id, Some(&session_id))?;
             claude_session = Some(session_id);
             let resuming = input
@@ -1076,6 +1121,8 @@ fn pty_open_blocking(
             let mut command = provider.terminal_command(&role_launch(argument))?;
             if provider.id() == ProviderId::Claude {
                 command.env.push(claude_scheme_env());
+                let config = provider.config_dir().map(|dir| dir.path);
+                add_usage_status_line(&app, &mut command.args, &input.id, config.as_deref(), &cwd);
             }
             remember_terminal_session(&store, &input.id, claude_session.as_deref())?;
             (command.program, command.args, command.env)

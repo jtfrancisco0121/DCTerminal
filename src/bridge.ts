@@ -403,7 +403,9 @@ export type RunEvent = {
   detail?: string | null;
   /**
    * A gate's `passed`/`failed`/`skipped`, an autopilot decision's action,
-   * a turn's verdict, `planApproved` on a promoted plan. Missing on older events.
+   * a turn's verdict, `planApproved` on a promoted plan, a stop's reason
+   * code (`stop` events, and `paused_by_you` on "Autopilot off"). Missing on
+   * older events.
    */
   outcome?: string | null;
   /** The fanned-out pull request (lane) the event is about. Missing on older events. */
@@ -1178,7 +1180,10 @@ export type TurnReport = {
   findings: { severity: string; summary: string }[];
   findingsKnown: boolean;
   missingSections: string[];
+  /** Highest Claude usage window in percent; null when unknown (never read, or reset since), never 0. */
   usagePercent: number | null;
+  /** The rate-limit error in the stage's session log this turn; stops the run with `usage_limit`. */
+  rateLimit: string | null;
   chat: boolean;
   lane: string | null;
   /** The run's (or lane's) round when the turn was read; a turn from an ended round is skipped. */
@@ -1209,6 +1214,8 @@ export type AutopilotDecision = {
   unblocked?: string[];
   /** `advance`, `loopBack`: the hand-off claim; release it when the hand-off fails. */
   claim?: string;
+  /** `stop`: why, as a reason code. Absent on older backends. */
+  stopReason?: StopReason | null;
 };
 
 /** A hand-off made once per stage and round (or source turn), by you or autopilot. */
@@ -1795,6 +1802,8 @@ export type TerminalSessionLog = {
   pendingTools?: { id: string; name: string; title: string }[];
   /** `permissionMode` of the latest real prompt. */
   permissionMode?: string | null;
+  /** The turn ended on a Claude rate-limit error (its text). Absent on older backends. */
+  rateLimit?: string | null;
 };
 
 /** `null` until the tab has a pinned Claude session whose log exists. */

@@ -11,6 +11,7 @@ import { terminalLogFields, type HandoffField, type HandoffSource } from "../han
 import { roleDisplayName, type RoleName } from "../handoff/transitions";
 import { parseReviewVerdict } from "../handoff/verdict";
 import { pipelineDef, stageRoles, type PipelineDef, type StageDef } from "./defs";
+import { knownUsagePercent } from "../usage/limits";
 
 /** The stage a chain tab holds on its pipeline, if its role matches that step. */
 export function stageForTab(
@@ -23,12 +24,12 @@ export function stageForTab(
   return def && stage && stageRoles(stage).includes(roleId) ? { def, stage } : null;
 }
 
-/** The highest Claude usage window, in percent; null when none is known. */
-export function usagePercent(usage: UsageSnapshot | null | undefined): number | null {
-  const values = (usage?.windows ?? [])
-    .map((window) => window.utilization)
-    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
-  return values.length ? Math.round(Math.max(...values)) : null;
+/**
+ * The highest current Claude usage window, in percent; null when unknown
+ * (none read, or each reset since its reading). Autopilot carries on then.
+ */
+export function usagePercent(usage: UsageSnapshot | null | undefined, now = Date.now()): number | null {
+  return knownUsagePercent(usage?.windows ?? [], now);
 }
 
 /**
@@ -40,6 +41,8 @@ export function turnReport(args: {
   reply: string;
   chat: boolean;
   usage: number | null;
+  /** The rate-limit error in the stage's session log this turn, if any. */
+  rateLimit?: string | null;
   /** A Planner waiting on its plan dialog: its plan is the result, sections are not checked. */
   awaitingPlan?: boolean;
   /** The tab's lane, when the run fanned out. */
@@ -50,7 +53,7 @@ export function turnReport(args: {
    */
   ownReply?: string;
 }): TurnReport {
-  const { stage, reply, chat, usage, awaitingPlan = false, lane = null, ownReply = reply } = args;
+  const { stage, reply, chat, usage, rateLimit = null, awaitingPlan = false, lane = null, ownReply = reply } = args;
   const result = contractResult(reply);
   const reviewer = !!stage.loopBack;
   return {
@@ -62,6 +65,7 @@ export function turnReport(args: {
     findingsKnown: reviewer && !!result,
     missingSections: awaitingPlan ? [] : missingHandoffSections(stage.roleId, ownReply),
     usagePercent: usage,
+    rateLimit: rateLimit?.trim() || null,
     chat,
     lane,
   };

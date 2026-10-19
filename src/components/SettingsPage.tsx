@@ -23,7 +23,7 @@ import { ProvidersSettingsSection } from "./ProvidersSettings";
 import { StorageRow } from "./StorageRow";
 import type { ProvidersState } from "../provider/useProviders";
 import type { NotificationSettings } from "../notify/agentNotify";
-import { formatReset, formatSeen, isStale, limitTone } from "../usage/limits";
+import { formatReset, formatSeen, isStale, limitTone, USAGE_NOTE } from "../usage/limits";
 import { APP_VERSION } from "../workspaceView";
 import { errorText } from "./InlineNotice";
 import { RoleEditor } from "./RoleEditor";
@@ -486,9 +486,7 @@ export function SettingsPage({
           {category === "Usage" && (
             <section className="settings-section" aria-label="Usage">
               <h3>Usage</h3>
-              <p className="hint">
-                Updated by Claude chat tabs; terminal tabs don&apos;t report usage.
-              </p>
+              <p className="hint">{USAGE_NOTE}</p>
               {usageError && <p className="error">{usageError}</p>}
               {usage && usage.windows.length === 0 && (
                 <p className="hint">Claude usage not reported yet.</p>

@@ -196,12 +196,14 @@ pub fn set_autopilot(store: &mut StateStore, run_id: &str, enabled: bool) -> Res
         return Ok(false);
     }
     run.set_autopilot_enabled(enabled);
-    run.log(
+    // Off is a stop too: the ledger line carries its code.
+    run.log_outcome(
         "autopilot",
         None,
         None,
         if enabled { "Autopilot on" } else { "Autopilot off" },
         None,
+        (!enabled).then(|| StopReason::PausedByYou.as_str().to_string()),
     );
     store.save()?;
     Ok(true)
@@ -292,9 +294,10 @@ pub fn note(
         .pipeline_run_by_id_mut(run_id)
         .ok_or_else(|| format!("unknown pipeline run: {run_id}"))?;
     if stop {
-        run.set_waiting(reason.unwrap_or(StopReason::CarryOutFailed), summary.clone());
+        run.stop_for(reason.unwrap_or(StopReason::CarryOutFailed), stage_id, None, summary, detail);
+    } else {
+        run.log("note", stage_id, None, summary, detail);
     }
-    run.log(if stop { "stop" } else { "note" }, stage_id, None, summary, detail);
     store.save()
 }
 
@@ -997,8 +1000,12 @@ mod tests {
         let run = store.pipeline_run_by_id("ee_f").unwrap();
         assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::CarryOutFailed)));
         assert_eq!(run.events.last().unwrap().kind, "stop");
+        // The ledger line carries the code, for its plain-English line.
+        assert_eq!(run.events.last().unwrap().outcome.as_deref(), Some("carry_out_failed"));
         note(&mut store, "ee_f", None, "Quiet for 30 minutes", None, true, Some(StopReason::Stalled)).unwrap();
-        assert_eq!(store.pipeline_run_by_id("ee_f").unwrap().stop_reason, Some(StopReason::Stalled));
+        let run = store.pipeline_run_by_id("ee_f").unwrap();
+        assert_eq!(run.stop_reason, Some(StopReason::Stalled));
+        assert_eq!(run.events.last().unwrap().outcome.as_deref(), Some("stalled"));
         assert!(note(&mut store, "ee_f", None, "  ", None, true, None).is_err());
     }
 
@@ -1017,6 +1024,7 @@ mod tests {
         assert_eq!((run.status, run.stop_reason), (RunStatus::Stopped, Some(StopReason::PausedByYou)));
         assert!(run.autopilot.as_ref().unwrap().waiting.is_none());
         assert_eq!(run.events.last().unwrap().summary, "Autopilot off");
+        assert_eq!(run.events.last().unwrap().outcome.as_deref(), Some("paused_by_you"));
     }
 
     #[test]

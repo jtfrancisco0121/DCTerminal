@@ -13,7 +13,10 @@
 //! - the startup prompt as the positional argument (`deliver_prompt_limited`)
 //!
 //! Never passed: `--dangerously-skip-permissions`, `--allowedTools`,
-//! `--disallowedTools`, `--cloud`, `--bg`, `--settings`, `--continue`.
+//! `--disallowedTools`, `--cloud`, `--bg`, `--continue`. `--settings` only
+//! ever carries DCTerminal's usage status line, added at launch by
+//! `pty::add_usage_status_line` (see `status_line`), and not when you set a
+//! status line of your own.
 //! The Settings run-mode override is a Cursor setting and is ignored here.
 //!
 //! Chat (Phase 4) spawns `claude-agent-acp` with `CLAUDE_CODE_EXECUTABLE` set

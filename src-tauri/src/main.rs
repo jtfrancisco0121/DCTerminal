@@ -2,5 +2,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    // Started by Claude Code as a terminal tab's status line: record the
+    // usage it reports and exit, without starting the app.
+    if dcterminal_lib::status_line::run_if_requested() {
+        return;
+    }
     dcterminal_lib::run()
 }
