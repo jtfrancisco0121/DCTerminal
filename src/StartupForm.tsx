@@ -2610,14 +2610,18 @@ export function StartupForm({
 
   const handleSelectTab = useCallback(
     async (tabId: string) => {
-      if (tabId === activeTabIdRef.current) return;
+      if (tabId === activeTabIdRef.current) {
+        // Back on the tab still shown: a switch to another tab that is still loading must not land.
+        if (tabSwitchesRef.current.stayOn(tabId)) setBusy(false);
+        return;
+      }
       const fileGuard = fileDiscardGuardRef.current;
       if (fileGuard?.dirty() && !(await fileGuard.confirm())) return;
       // The answer can come after another switch.
       if (tabId === activeTabIdRef.current) return;
       stashActiveTab();
       // A newer switch drops this one's answer and ends the busy state itself.
-      const ticket = tabSwitchesRef.current.begin();
+      const ticket = tabSwitchesRef.current.begin(tabId);
       const summary = savedTabs.find((tab) => tab.id === tabId);
       if (
         summary?.kind === "terminal" ||
@@ -2632,7 +2636,7 @@ export function StartupForm({
           if (!ticket.isCurrent()) return;
           await refreshTabs();
         } finally {
-          if (ticket.isCurrent()) setBusy(false);
+          if (ticket.finish()) setBusy(false);
         }
         return;
       }
@@ -2650,7 +2654,7 @@ export function StartupForm({
         loadTabIntoForm(tab);
         await refreshTabs();
       } finally {
-        if (ticket.isCurrent()) setBusy(false);
+        if (ticket.finish()) setBusy(false);
       }
     },
     [applyDraft, loadTabIntoForm, refreshTabs, savedTabs, stashActiveTab],
@@ -5181,16 +5185,21 @@ export function StartupForm({
           tone="error"
           className="startup-step-notice"
           action={
-            <button
-              type="button"
-              className="link-button"
-              onClick={() => {
-                setStartupFailure(null);
-                void startupFailure.retry().then(settleStartup);
-              }}
-            >
-              Retry
-            </button>
+            <>
+              <button
+                type="button"
+                className="link-button"
+                onClick={() => {
+                  setStartupFailure(null);
+                  void startupFailure.retry().then(settleStartup);
+                }}
+              >
+                Retry
+              </button>
+              <button type="button" className="link-button" onClick={() => setStartupFailure(null)}>
+                Dismiss
+              </button>
+            </>
           }
         >
           {startupFailure.title}: {errorText(startupFailure.error)}

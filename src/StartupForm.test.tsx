@@ -2770,6 +2770,47 @@ describe("fast tab switches and a failed startup step (M4)", () => {
     expect(selected()).toContain("Shell T");
   });
 
+  it("stays on the shown tab when it is clicked again while another switch is still loading", async () => {
+    vi.mocked(getAppState).mockResolvedValue({
+      activeTabId: "tab_a",
+      tabs: [summary("tab_a", "Tab A"), summary("tab_b", "Tab B")],
+      closedTabs: [],
+    } as never);
+    const slowB = deferred<{ tab: ReturnType<typeof record> }>();
+    vi.mocked(selectActiveTab).mockImplementation(async (id: string) =>
+      (id === "tab_b" ? slowB.promise : { tab: record(id) }) as never,
+    );
+    renderForm();
+    await waitFor(() => expect(selected()).toContain("Tab A"));
+
+    goToTab(2);
+    await waitFor(() => expect(selectActiveTab).toHaveBeenCalledWith("tab_b"));
+    goToTab(1);
+    await waitFor(() =>
+      expect((screen.getByRole("tab", { name: /Tab B/ }) as HTMLButtonElement).disabled).toBe(false),
+    );
+
+    await act(async () => slowB.resolve({ tab: record("tab_b") }));
+    expect(selected()).toContain("Tab A");
+  });
+
+  it("dismisses the failed-step notice without retrying", async () => {
+    vi.mocked(getAppState).mockResolvedValue({
+      activeTabId: "tab_a",
+      tabs: [summary("tab_a", "Tab A"), summary("tab_b", "Tab B")],
+      closedTabs: [],
+    } as never);
+    vi.mocked(selectActiveTab).mockRejectedValueOnce(new Error("role role_gone not found"));
+    vi.mocked(selectActiveTab).mockImplementation(async (id: string) => ({ tab: record(id) }) as never);
+    renderForm();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByText(/role role_gone not found/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(selectActiveTab).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("tab", { name: /Tab A/ })).toBeTruthy();
+  });
+
   it("still shows the saved tabs when the active tab fails to load, and Retry loads it", async () => {
     vi.mocked(getAppState).mockResolvedValue({
       activeTabId: "tab_a",
