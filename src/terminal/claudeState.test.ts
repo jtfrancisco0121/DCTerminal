@@ -4,6 +4,7 @@ import {
   dialogAfterRead,
   dialogDrawn,
   dialogToolFor,
+  logRecordsSeen,
   quietTurn,
   sameTerminalState,
   TURN_QUIET_MS,
@@ -102,6 +103,23 @@ describe("deriveTerminalState", () => {
     expect(quietTurn({ outputAt: 30_000, logAt: 2000, now: 2000 + TURN_QUIET_MS })).toBe(false);
     expect(quietTurn({ outputAt: 1000, logAt: 30_000, now: 2000 + TURN_QUIET_MS })).toBe(false);
     expect(quietTurn({ outputAt: undefined, logAt: 0, now: TURN_QUIET_MS - 1 })).toBe(false);
+  });
+
+  it("dates new log records against the previous read, not the stored log", () => {
+    const call = (id: string, status: "pending" | "completed") => ({ id, status });
+    const toolCalls: { id: string; status: string }[] = [];
+    const log = { turnDone: false, lastPromptAt: "p", lastReply: "", pendingTools: [], toolCalls };
+    const first = logRecordsSeen(undefined, log, 1000);
+    expect(first?.at).toBe(1000);
+    // A fast tool: the call shows up and completes between reads.
+    const after = { ...log, toolCalls: [call("t1", "completed")] };
+    const second = logRecordsSeen(first, after, 4000);
+    expect(second?.at).toBe(4000);
+    // Later reads of the same records keep the time they first appeared.
+    expect(logRecordsSeen(second, { ...after }, 7000)?.at).toBe(4000);
+    expect(logRecordsSeen(second, { ...after, lastReply: "more" }, 7000)?.at).toBe(7000);
+    // A failed read changes nothing.
+    expect(logRecordsSeen(second, null, 7000)).toBe(second);
   });
 });
 

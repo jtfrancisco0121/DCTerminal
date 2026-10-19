@@ -54,6 +54,33 @@ export function quietTurn(input: { outputAt: number | undefined; logAt: number; 
   return input.now - Math.max(input.outputAt ?? 0, input.logAt) >= TURN_QUIET_MS;
 }
 
+/** What the last read found, and when those records first appeared (`quietTurn`'s `logAt`). */
+export type LogRecordsSeen = { key: string; at: number };
+
+type RecordsView = Pick<TerminalSessionLog, "turnDone" | "lastPromptAt" | "lastReply" | "pendingTools"> & {
+  toolCalls: { id: string; status: string }[];
+};
+
+/** Compared with the previous read, so a call that came and went between reads still counts once. */
+export function logRecordsSeen(
+  prev: LogRecordsSeen | undefined,
+  log: RecordsView | null,
+  now: number,
+): LogRecordsSeen | undefined {
+  if (!log) return prev;
+  const last = log.toolCalls[log.toolCalls.length - 1];
+  const key = JSON.stringify([
+    log.turnDone,
+    log.lastPromptAt,
+    log.lastReply,
+    (log.pendingTools ?? []).map((tool) => tool.id),
+    log.toolCalls.length,
+    last?.id,
+    last?.status,
+  ]);
+  return prev?.key === key ? prev : { key, at: now };
+}
+
 export function deriveTerminalState(input: TerminalStateInput): TerminalState {
   if (input.exitCode !== null && input.exitCode !== undefined) {
     return { kind: "exited", code: input.exitCode };

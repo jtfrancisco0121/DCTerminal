@@ -250,11 +250,13 @@ import {
   dialogAfterRead,
   dialogDrawn,
   dialogToolFor,
+  logRecordsSeen,
   quietTurn,
   sameTerminalState,
   terminalNeedsMessage,
   terminalWaitingText,
   type DialogOwner,
+  type LogRecordsSeen,
   type TerminalState,
 } from "./terminal/claudeState";
 import { dialogDetector } from "./terminal/permissionDialog";
@@ -551,8 +553,8 @@ export function StartupForm({
         finishedPromptAt?: string | null;
         /** Read at the next tick even if a read is in flight now (a dialog appeared). */
         forceRead?: boolean;
-        /** When a read last found new records (claudeState.ts `quietTurn`). */
-        logAt?: number;
+        /** What the last read found and when (claudeState.ts `quietTurn`). */
+        records?: LogRecordsSeen;
       }
     >(),
   );
@@ -1364,7 +1366,7 @@ export function StartupForm({
         .filter(([id, entry]) => {
           if (sessionLogsRef.current[id]?.turnDone !== false) return false;
           const outputAt = terminalActivity.lastOutputAt(id);
-          return quietTurn({ outputAt, logAt: entry.logAt ?? entry.since, now });
+          return quietTurn({ outputAt, logAt: entry.records?.at ?? entry.since, now });
         })
         .map(([id]) => id)
         .sort();
@@ -1451,8 +1453,7 @@ export function StartupForm({
       if (next.clear) dialogDetector.clear(tabId, { keepPartial: !!log && !log.turnDone });
       autopilotLogRef.current?.(tabId, log);
       // New records restart the quiet minute before a turn shows as unknown.
-      const newRecords = !prev || !sameSessionLog(prev, log) || prev.toolCalls.length !== log?.toolCalls.length;
-      if (watched && log && newRecords) watched.logAt = Date.now();
+      if (watched) watched.records = logRecordsSeen(watched.records, log, Date.now());
       if (prev !== undefined && sameSessionLog(prev, log)) return;
       sessionLogsRef.current = { ...sessionLogsRef.current, [tabId]: log };
       setSessionLogs(sessionLogsRef.current);
