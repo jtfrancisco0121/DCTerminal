@@ -5,7 +5,7 @@ use crate::orchestrator::{injection_strategy_from_role, InjectionStrategy};
 use crate::paths::{same_folder_warning, validate_working_folder};
 use crate::provider::{provider_for_account, ProviderId, SharedProvider};
 use crate::session_id::{session_start_bind, SessionStartBind};
-use crate::store::{FormsStore, RolesStore, StateStore, TabSessionRef};
+use crate::store::{FormsStore, ProjectsStore, RolesStore, StateStore, TabSessionRef};
 use crate::template::{merge_role_prompt, FieldError};
 use serde::Serialize;
 use serde_json::Value;
@@ -71,7 +71,7 @@ pub fn role_session_start(
     state: State<Mutex<SessionRegistry>>,
     state_store: State<Mutex<StateStore>>,
     forms_store: State<Mutex<FormsStore>>,
-    projects: State<Mutex<crate::store::ProjectsStore>>,
+    projects: State<Mutex<ProjectsStore>>,
     settings: State<Mutex<crate::store::SettingsStore>>,
 ) -> Result<RoleSessionStartResult, String> {
     let role = {
@@ -269,7 +269,7 @@ pub fn role_session_start(
         effort_options: client.effort_options().to_vec(),
         supports_images: client.supports_images(),
     };
-    let mut folder_warning = {
+    let folder_warning = {
         let guard = state.lock().map_err(|e| e.to_string())?;
         let others = guard.agent_folders_except(&start_key);
         let refs: Vec<(&str, &str)> = others
@@ -310,23 +310,21 @@ pub fn role_session_start(
         crate::commands::chain_events::notify_tab(&app, &store, &persisted_tab_id);
     }
 
-    if provider.id() == ProviderId::Claude {
-        record_claude_start(
-            &state_store,
-            &provider,
-            &persisted_tab_id,
-            &role.id,
-            &info.mode_id,
-            start_notice.as_deref(),
-        )?;
-    }
-
     // The registry lock is taken while the agent is still guarded: a poisoned
     // registry stops the agent instead of dropping a live session that has no Drop.
     // From the handover to `insert` below there are only field assignments and one
     // `clone()`, no fallible call. A panic there would still leak the agent
     // (`LiveSession` has no Drop); that gap is accepted.
-    let (mut guard, mut live) = client.into_live_locked(&state, &persisted_tab_id)?;
+    let (mut guard, mut live) = register_promoted_start(
+        &state_store,
+        &state,
+        &provider,
+        client,
+        &persisted_tab_id,
+        &role.id,
+        &info.mode_id,
+        start_notice.as_deref(),
+    )?;
     let mut injection_in_flight = false;
     if skip_startup {
         live.startup_injected = true;
@@ -344,21 +342,8 @@ pub fn role_session_start(
     guard.insert(live);
     drop(guard);
 
-    {
-        let mut forms = forms_store.lock().map_err(|e| e.to_string())?;
-        forms.save_after_session_start(&role.id, &info.cwd)?;
-    }
-
-    if let Ok(mut projects) = projects.lock() {
-        projects.remember(&info.cwd, &chrono::Utc::now().to_rfc3339());
-        if let Err(err) = projects.save() {
-            let note = format!("Could not save this folder to recent projects ({err}).");
-            folder_warning = Some(match folder_warning {
-                Some(existing) => format!("{existing} {note}"),
-                None => note,
-            });
-        }
-    }
+    let folder_warning =
+        remember_start_folder(&forms_store, &projects, &role.id, &info.cwd, folder_warning);
 
     if injection_in_flight {
         spawn_prompt_turn(
@@ -450,6 +435,82 @@ impl Drop for StartedAgent {
             LiveSession::from_client(&self.key, &self.role_id, client).shutdown();
         }
     }
+}
+
+/// Claude bookkeeping on the promoted tab, then the registry handover. On
+/// failure the tab goes back to awaiting input: the agent guard has stopped
+/// the agent, so nothing runs behind it (state.json must not say it does).
+#[allow(clippy::too_many_arguments)]
+fn register_promoted_start<'a>(
+    state_store: &Mutex<StateStore>,
+    registry: &'a Mutex<SessionRegistry>,
+    provider: &SharedProvider,
+    client: StartedAgent,
+    tab_id: &str,
+    role_id: &str,
+    mode_id: &str,
+    notice: Option<&str>,
+) -> Result<(MutexGuard<'a, SessionRegistry>, LiveSession), String> {
+    let recorded = if provider.id() == ProviderId::Claude {
+        record_claude_start(state_store, provider, tab_id, role_id, mode_id, notice)
+    } else {
+        Ok(())
+    };
+    // On either failure `client` is dropped (the agent stopped) before the
+    // state lock is taken here, and no registry lock is held.
+    let handed_over = recorded.and_then(|()| client.into_live_locked(registry, tab_id));
+    if handed_over.is_err() {
+        clear_failed_start(state_store, tab_id);
+    }
+    handed_over
+}
+
+/// Best effort: the start error is what the caller reports.
+fn clear_failed_start(state_store: &Mutex<StateStore>, tab_id: &str) {
+    let Ok(mut store) = state_store.lock() else {
+        return;
+    };
+    if let Err(err) = store.mark_tab_awaiting_input(tab_id, None) {
+        eprintln!("DCTerminal: could not clear the running mark on {tab_id} ({err})");
+    }
+}
+
+/// Remember the start folder for the role's form and the recent projects.
+/// The session is already registered and running, so a failed save is a note
+/// added to `folder_warning`, never an error.
+fn remember_start_folder(
+    forms_store: &Mutex<FormsStore>,
+    projects: &Mutex<ProjectsStore>,
+    role_id: &str,
+    cwd: &str,
+    mut folder_warning: Option<String>,
+) -> Option<String> {
+    let mut add_note = |note: String| {
+        folder_warning = Some(match folder_warning.take() {
+            Some(existing) => format!("{existing} {note}"),
+            None => note,
+        });
+    };
+
+    let forms_saved = forms_store
+        .lock()
+        .map_err(|e| e.to_string())
+        .and_then(|mut forms| forms.save_after_session_start(role_id, cwd));
+    if let Err(err) = forms_saved {
+        add_note(format!(
+            "Could not save this folder as the role's last folder ({err})."
+        ));
+    }
+
+    if let Ok(mut projects) = projects.lock() {
+        projects.remember(cwd, &chrono::Utc::now().to_rfc3339());
+        if let Err(err) = projects.save() {
+            add_note(format!(
+                "Could not save this folder to recent projects ({err})."
+            ));
+        }
+    }
+    folder_warning
 }
 
 /// Claude-only state the promoted tab records: the config dir it runs under,
@@ -752,5 +813,122 @@ mod tests {
         process.kill_tree(); // never leave the fake behind, even when red
         drop(live);
         assert!(alive, "the guard stopped an agent that was handed over");
+    }
+
+    /// A start that fails after the tab was promoted must not leave it marked
+    /// running in state.json: no agent is behind it (the guard stopped it).
+    #[test]
+    fn a_start_that_fails_after_promotion_clears_the_running_mark() {
+        use super::{register_promoted_start, StartedAgent};
+        use crate::acp::test_agent::FakeAgent;
+        use crate::commands::dev_session::SessionRegistry;
+        use crate::commands::session_flow_tests::{connect, cursor_scenario};
+        use crate::provider::ProviderId;
+        use crate::store::{StateStore, TabSessionRef};
+        use crate::test_support::{role, TempDir};
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
+
+        let Some(agent) = FakeAgent::new(
+            "failed_after_promotion",
+            &cursor_scenario(serde_json::json!([])),
+        ) else {
+            return;
+        };
+        let client = connect(&agent, ProviderId::Cursor, "agent");
+        let process = client.process_handle();
+        let provider = client.provider();
+        let started = StartedAgent::new("tab-1", "role_implementer", client);
+
+        let dir = TempDir::new("failed_after_promotion_state");
+        let path = dir.join("state.json");
+        let mut store = StateStore::open_path(path.clone()).unwrap();
+        let tab_id = store
+            .promote_tab_to_running(
+                None,
+                &role("role_implementer", "Implementer"),
+                &HashMap::new(),
+                "/w/app",
+                "merged",
+                TabSessionRef {
+                    acp_session_id: "fake-session-1".into(),
+                    mode_id: "agent".into(),
+                    injection_pending: false,
+                    injected_at: None,
+                },
+                ProviderId::Cursor,
+            )
+            .unwrap();
+        let store = Mutex::new(store);
+
+        // A poisoned registry: the handover fails after the promotion.
+        let registry = Arc::new(Mutex::new(SessionRegistry::new()));
+        let poisoner = Arc::clone(&registry);
+        let _ = std::thread::spawn(move || {
+            let _held = poisoner.lock().unwrap();
+            panic!("poison the registry");
+        })
+        .join();
+
+        let result = register_promoted_start(
+            &store,
+            &registry,
+            &provider,
+            started,
+            &tab_id,
+            "role_implementer",
+            "agent",
+            None,
+        );
+        process.kill_tree(); // never leave the fake behind, even when red
+        assert!(
+            result.is_err(),
+            "a poisoned registry cannot take the session"
+        );
+        drop(result);
+
+        let in_memory = store
+            .lock()
+            .unwrap()
+            .tab_by_id(&tab_id)
+            .unwrap()
+            .phase
+            .clone();
+        assert_ne!(in_memory, "running", "the tab is still marked running");
+        let reopened = StateStore::open_path(path).unwrap();
+        let on_disk = reopened.tab_by_id(&tab_id).unwrap().phase.clone();
+        assert_ne!(on_disk, "running", "state.json still marks the tab running");
+    }
+
+    /// The session is registered and running before the folder is saved, so a
+    /// failed forms save is a note on the start, not an error.
+    #[test]
+    fn a_failed_forms_save_after_the_start_is_a_note_not_an_error() {
+        use super::remember_start_folder;
+        use crate::store::{FormsStore, ProjectsStore};
+        use crate::test_support::TempDir;
+        use std::sync::Mutex;
+
+        let dir = TempDir::new("forms_save_fails");
+        let forms = FormsStore::open(&dir.join("forms")).unwrap();
+        // A directory where the save writes its temp file: every save fails.
+        std::fs::create_dir(dir.join("forms").join("forms.json.tmp")).unwrap();
+        let projects = ProjectsStore::open(&dir.join("projects")).unwrap();
+        let forms = Mutex::new(forms);
+        let projects = Mutex::new(projects);
+
+        let result = remember_start_folder(
+            &forms,
+            &projects,
+            "role_implementer",
+            "/w/app",
+            Some("Another tab works in this folder.".to_string()),
+        );
+        let note = result.expect("the failed save is reported");
+        assert!(
+            note.starts_with("Another tab works in this folder."),
+            "{note}"
+        );
+        assert!(note.contains("Could not save this folder"), "{note}");
     }
 }
