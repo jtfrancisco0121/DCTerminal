@@ -977,3 +977,181 @@ mod recovery {
         quit(&mut fake);
     }
 }
+
+/// Pipeline v2 (V2a): a reviewer stage launched with the bridge's flags, as
+/// `role_terminal_start` launches it, against the real `dcterminal bridge`
+/// (hooks and the stdio MCP server). `fake_claude` runs the hooks and calls
+/// the tool the way Claude Code does.
+mod bridge {
+    use super::*;
+    use dcterminal_lib::testing::{
+        drain_inbox, launch_args, prepare_stage, read_stage_turn, runs_root, BridgePlan, BridgeTag, BridgeTurn,
+        ResultKind, TurnOutcome,
+    };
+    use serde_json::json;
+
+    const DCTERMINAL: &str = env!("CARGO_BIN_EXE_dcterminal");
+    const RUN: &str = "ee_1760000000000";
+    const TAB: &str = "tab_pr_reviewer";
+    const SID: &str = "6a1d3b0f-2c3d-4e5f-9a51-0123456789cd";
+
+    struct Stage {
+        home: FakeHome,
+        runs: PathBuf,
+        run_dir: PathBuf,
+        _data: TempDir,
+    }
+
+    impl Stage {
+        fn new(tag: &str, autopilot: bool) -> Self {
+            let data = TempDir::new(&format!("{tag}_data"));
+            let runs = runs_root(data.path());
+            let plan = BridgePlan {
+                run_id: RUN.into(),
+                stage_id: "pr_reviewer".into(),
+                role_id: "role_pr_reviewer".into(),
+                lane: None,
+                stage_key: "pr_reviewer".into(),
+                kind: ResultKind::Reviewer,
+                autopilot,
+            };
+            let run_dir = prepare_stage(&runs, &plan, TAB).expect("prepare stage");
+            Self { home: FakeHome::new(tag), runs, run_dir, _data: data }
+        }
+
+        fn launch(&self, scenario: &Value) -> FakeClaude {
+            let mut args: Vec<String> = ["--session-id", SID, "--permission-mode", "auto"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            args.extend(launch_args(Path::new(DCTERMINAL), &self.run_dir, RUN, "pr_reviewer", TAB));
+            args.push("Review PR1 and report your result.".into());
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            self.home.run(scenario, &args)
+        }
+
+        /// Wait for the stage's turn to end; the turn as Continue reads it.
+        fn wait_turn(&self, fake: &mut FakeClaude) -> BridgeTurn {
+            let tag = BridgeTag { run_id: RUN.into(), stage: "pr_reviewer".into() };
+            let deadline = Instant::now() + WAIT;
+            loop {
+                if let Some(turn) = read_stage_turn(&self.runs, &tag, TAB) {
+                    return turn;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the turn never ended; screen:\n{}\nbridge.log: {}",
+                    fake.screen(),
+                    std::fs::read_to_string(self.run_dir.join("bridge.log")).unwrap_or_default()
+                );
+                fake.pump(Duration::from_millis(30));
+            }
+        }
+
+        fn inbox(&self) -> Vec<BridgeTurn> {
+            let mut events = Vec::new();
+            drain_inbox(&self.runs, &mut |event| events.push(event));
+            events
+        }
+    }
+
+    fn submit(arguments: Value) -> Value {
+        json!({ "mcp": "submit_result", "arguments": arguments })
+    }
+
+    #[test]
+    fn a_reviewer_that_forgets_the_tool_is_blocked_once_then_submits() {
+        let stage = Stage::new("bridge_forgets", true);
+        let scenario = json!({ "turns": [
+            {
+                "steps": [{ "reply": "## HANDOFF: Verdict\nREQUEST CHANGES" }],
+                "on_block": [[
+                    // A wrong verdict word first: the tool names the problem.
+                    submit(json!({ "verdict": "REQUEST CHANGES", "findings": [] })),
+                    submit(json!({ "verdict": "CHANGES_REQUIRED", "findings": [
+                        { "severity": "HIGH", "file": "src/auth.ts:42", "summary": "An expired token returns 500." }
+                    ] })),
+                    { "reply": "Submitted the result." }
+                ]]
+            },
+            { "exit": 0 }
+        ] });
+        let mut fake = stage.launch(&scenario);
+        let turn = stage.wait_turn(&mut fake);
+        assert_eq!(turn.outcome, TurnOutcome::Result, "screen:\n{}", fake.screen());
+        assert!(turn.blocked, "the first stop was blocked");
+        assert_eq!(turn.last_assistant_message, "Submitted the result.");
+        let result = turn.result.clone().expect("result");
+        assert_eq!(result["verdict"], "CHANGES_REQUIRED");
+        assert_eq!(result["findings"][0]["file"], "src/auth.ts:42");
+        assert_eq!(fake.wait_exit(), Some(0));
+        // The screen shows the block, and the tool's answers came back.
+        let screen = fake.screen();
+        assert!(screen.contains("Stop hook error"), "{screen}");
+        assert!(screen.contains("mcp__dcterminal__submit_result"), "{screen}");
+        // The watcher's view: exactly one finished turn.
+        let events = stage.inbox();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].turn, turn.turn);
+        assert_eq!(events[0].tab_id, TAB);
+        // The session log has both tool calls; the first was refused with the problem named.
+        let path = fake.log_path(SID).expect("log");
+        let results: Vec<Value> = log_records(&path, false)
+            .into_iter()
+            .filter(|r| r["message"]["content"][0]["type"] == "tool_result")
+            .map(|r| r["message"]["content"][0].clone())
+            .collect();
+        assert_eq!(results.len(), 2, "{results:?}");
+        assert_eq!(results[0]["is_error"], true);
+        assert!(results[0]["content"].as_str().unwrap().contains("`verdict` \"REQUEST CHANGES\" is not one of"));
+        assert_eq!(results[1]["is_error"], false);
+    }
+
+    #[test]
+    fn a_reviewer_that_never_submits_ends_with_no_result_after_one_block() {
+        let stage = Stage::new("bridge_never", true);
+        let scenario = json!({ "turns": [
+            {
+                "steps": [{ "reply": "Looks fine." }],
+                "on_block": [[{ "reply": "Which verdict should I submit?" }], [{ "reply": "never reached" }]]
+            },
+            { "exit": 0 }
+        ] });
+        let mut fake = stage.launch(&scenario);
+        let turn = stage.wait_turn(&mut fake);
+        assert_eq!(turn.outcome, TurnOutcome::NoResult);
+        assert!(turn.blocked);
+        assert!(turn.result.is_none());
+        assert_eq!(turn.last_assistant_message, "Which verdict should I submit?");
+        assert_eq!(fake.wait_exit(), Some(0));
+        assert!(!fake.screen().contains("never reached"), "blocked once, not twice");
+        assert_eq!(stage.inbox().len(), 1);
+    }
+
+    #[test]
+    fn a_manual_run_is_never_blocked_but_keeps_the_result() {
+        let stage = Stage::new("bridge_manual", false);
+        let scenario = json!({ "turns": [
+            {
+                "steps": [
+                    submit(json!({ "verdict": "APPROVED", "findings": [] })),
+                    { "reply": "Approved." }
+                ],
+                "on_block": [[{ "reply": "never reached" }]]
+            },
+            { "steps": [{ "reply": "A question answered." }], "prompt": "One more thing?" },
+            { "exit": 0 }
+        ] });
+        let mut fake = stage.launch(&scenario);
+        assert_eq!(fake.wait_exit(), Some(0));
+        let events = stage.inbox();
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert_eq!(events[0].outcome, TurnOutcome::Result);
+        assert_eq!(events[0].result.as_ref().unwrap()["verdict"], "APPROVED");
+        assert!(!events[0].blocked);
+        // A turn without the tool on a manual run just ends.
+        assert_eq!(events[1].outcome, TurnOutcome::NoResult);
+        assert_ne!(events[0].turn, events[1].turn, "each turn has its own prompt_id");
+        assert!(!fake.screen().contains("never reached"));
+    }
+}

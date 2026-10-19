@@ -113,6 +113,7 @@ impl StateStore {
             chain: None,
             permission_note: None,
             window_id: self.draft_window.clone(),
+            bridge: None,
         };
         self.data.tabs.push(record);
         let window_id = self.draft_window.clone();

@@ -843,6 +843,15 @@ describe("Report → Planner", () => {
     );
   });
 
+  it("the app's own tokens never count as unresolved, {{result_instructions}} included", () => {
+    const mapped = mapHandoff(audit("Security"), "selection", PLANNER);
+    const summary = handoffFillSummary(mapped, {
+      ...PLANNER,
+      templateText: "In {{cwd}} ({{folderName}}, {{date}}), as {{roleName}}.\n\n{{result_instructions}}\n\n{{mystery}}",
+    });
+    expect(summary.unresolved).toEqual(["mystery"]);
+  });
+
   it.each(["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"])("[%s] severity is not part of the title", (severity) => {
     const mapped = mapHandoff(audit("Security", severity), "selection", PLANNER);
     expect(mapped.answers.title).toBe("Token leak");

@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { TerminalSessionLog } from "../bridge";
+import type { BridgeTurn, TerminalSessionLog } from "../bridge";
 import { parseReviewVerdict as parseReviewVerdictOf } from "../handoff/verdict";
 import {
+  bridgeFindingsText,
+  bridgeTurnReport,
+  bridgeVerdict,
   finishedTurn,
+  reviseVerdict,
   loopBackText,
   mergeReviews,
   worstVerdict,
@@ -186,5 +190,86 @@ describe("parallel reviews", () => {
     );
     expect(partial).not.toContain("HANDOFF: Result");
     expect(parseReviewVerdictOf(partial)).toBe("APPROVED");
+  });
+});
+
+function bridgeTurn(patch: Partial<BridgeTurn> = {}): BridgeTurn {
+  return {
+    schema: 1,
+    runId: "ee_1",
+    stageKey: "pr_reviewer",
+    stageId: "pr_reviewer",
+    roleId: "role_pr_reviewer",
+    tabId: "t4",
+    turn: "p-1",
+    outcome: "result",
+    endedAt: "2026-10-19T10:00:00Z",
+    lastAssistantMessage: "## HANDOFF: Verdict\nREQUEST CHANGES",
+    blocked: false,
+    result: {
+      schema: 1,
+      verdict: "CHANGES_REQUIRED",
+      findings: [
+        { severity: "HIGH", file: "src/a.ts:4", summary: "Null token." },
+        { severity: "LOW", summary: "Typo." },
+      ],
+    },
+    ...patch,
+  };
+}
+
+describe("bridge turns (engine 2)", () => {
+  const def = pipelineDef("eagle1")!;
+  const prStage = def.stages.find((s) => s.id === "pr_reviewer")!;
+
+  it("reads the bridge's verdict words as the words the rest of the pipeline uses", () => {
+    expect(bridgeVerdict("APPROVED", "REQUEST CHANGES")).toBe("APPROVED");
+    expect(bridgeVerdict("APPROVED_WITH_CHANGES", "REQUEST CHANGES")).toBe("APPROVED WITH CHANGES");
+    expect(bridgeVerdict("CHANGES_REQUIRED", "REQUIRES REVISION")).toBe("REQUIRES REVISION");
+    expect(bridgeVerdict(undefined, "REQUEST CHANGES")).toBeNull();
+    // The plan reviewer of a full run asks for revision; every other reviewer for changes.
+    expect(reviseVerdict("full", "role_plan_reviewer")).toBe("REQUIRES REVISION");
+    expect(reviseVerdict("full", "role_pr_reviewer")).toBe("REQUEST CHANGES");
+    expect(reviseVerdict("execute", "role_plan_reviewer")).toBe("REQUEST CHANGES");
+  });
+
+  it("decides on the submitted result, not on the reply's text", () => {
+    const turn = bridgeTurn({ lastAssistantMessage: "## HANDOFF: Verdict\nAPPROVED" });
+    const report = bridgeTurnReport({ stage: prStage, turn, usage: 12, lane: "pr1", revise: "REQUEST CHANGES" });
+    expect(report).toEqual({
+      stageId: "pr_reviewer",
+      verdict: "REQUEST CHANGES",
+      findings: [
+        { severity: "HIGH", summary: "Null token." },
+        { severity: "LOW", summary: "Typo." },
+      ],
+      findingsKnown: true,
+      missingSections: [],
+      usagePercent: 12,
+      chat: false,
+      lane: "pr1",
+      noResult: false,
+    });
+  });
+
+  it("reports a turn without a result as no_result", () => {
+    const report = bridgeTurnReport({
+      stage: prStage,
+      turn: bridgeTurn({ outcome: "no_result", result: null, blocked: true }),
+      usage: null,
+      lane: null,
+      revise: "REQUEST CHANGES",
+    });
+    expect(report.noResult).toBe(true);
+    expect(report.verdict).toBeNull();
+    expect(report.findingsKnown).toBe(false);
+    expect(report.findings).toEqual([]);
+  });
+
+  it("lists the findings a loop-back sends the way the v1 path does", () => {
+    expect(bridgeFindingsText(bridgeTurn().result!.findings)).toBe(
+      "1. [HIGH] src/a.ts:4: Null token.\n2. [LOW] Typo.",
+    );
+    expect(bridgeFindingsText([])).toBe("");
   });
 });

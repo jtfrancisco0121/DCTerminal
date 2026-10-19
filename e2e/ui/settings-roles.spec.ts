@@ -30,7 +30,7 @@ const previewTemplate: PageHandler = (args) => {
   const text = String(args.templateText).trim();
   if (!text) return { fields: [], error: "Template text cannot be empty." };
   if (/\{\{[^}]*$/.test(text)) return { fields: [], error: "Unclosed {{ in the template." };
-  const builtIn = ["cwd", "folderName", "date", "roleName"];
+  const builtIn = ["cwd", "folderName", "date", "roleName", "result_instructions"];
   const keys = [...text.matchAll(/\{\{(\w+)\}\}/g)].map((m) => m[1]).filter((k) => !builtIn.includes(k));
   return {
     error: null,

@@ -215,11 +215,41 @@ pub fn pipeline_set_autopilot(
     store: State<Mutex<StateStore>>,
 ) -> Result<(), String> {
     let run_id = run_id.trim().to_string();
-    let mut store = store.lock().map_err(|e| e.to_string())?;
-    if set_autopilot(&mut store, &run_id, enabled)? {
+    let changed = {
+        let mut store = store.lock().map_err(|e| e.to_string())?;
+        set_autopilot(&mut store, &run_id, enabled)?
+    };
+    if changed {
         app.chain_run_updated(&run_id);
     }
+    // Bridged stages enforce a result only on autopilot (D13): from their
+    // next stop. Written after the store lock is dropped (a folder walk).
+    let runs = crate::bridge::launch::runs_root(&crate::data_dir::app_data_dir(&app).path);
+    if let Err(err) = crate::bridge::launch::set_run_mode(&runs, &run_id, enabled) {
+        eprintln!("DCTerminal: run {run_id}: bridge mode not updated: {err}");
+    }
     Ok(())
+}
+
+/// A bridged terminal's latest finished turn (its verdict and findings from
+/// `submit_result`), read from the run folder. `None` for a tab that is not
+/// bridged, or while its turn runs. Continue uses it after a restart.
+#[tauri::command]
+pub fn pipeline_bridge_turn(
+    app: tauri::AppHandle,
+    tab_id: String,
+    store: State<Mutex<StateStore>>,
+) -> Result<Option<crate::bridge::BridgeTurn>, String> {
+    let tab_id = tab_id.trim().to_string();
+    let tag = {
+        let store = store.lock().map_err(|e| e.to_string())?;
+        store.tab_by_id(&tab_id).and_then(|tab| tab.bridge.clone())
+    };
+    let Some(tag) = tag else {
+        return Ok(None);
+    };
+    let runs = crate::bridge::launch::runs_root(&crate::data_dir::app_data_dir(&app).path);
+    Ok(crate::bridge::launch::read_stage_turn(&runs, &tag, &tab_id))
 }
 
 /// After a stage's turn: what autopilot does next (`decide`). Recorded in

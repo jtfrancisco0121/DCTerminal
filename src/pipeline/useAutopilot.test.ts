@@ -7,6 +7,7 @@ vi.mock("../bridge", () => ({
   getClaudeUsage: vi.fn(async () => ({ configDir: "", windows: [], contextByTab: {} })),
   getPipelineRun: vi.fn(),
   getTab: vi.fn(async () => ({ tab: { answers: { cwd: "/repo", title: "Login 500" } } })),
+  pipelineBridgeTurn: vi.fn(async () => null),
   pipelineContinue: vi.fn(async () => []),
   pipelineDecide: vi.fn(),
   pipelineNote: vi.fn(async () => {}),
@@ -53,6 +54,7 @@ import {
   chainLoopBack,
   getPipelineRun,
   handoffAttach,
+  pipelineBridgeTurn,
   pipelineContinue,
   pipelineDecide,
   pipelineNote,
@@ -62,6 +64,7 @@ import {
   ptyWrite,
   setTabProvider,
   terminalSessionLog,
+  type BridgeTurn,
   type PipelineRun,
   type TabSummary,
   type TerminalSessionLog,
@@ -143,7 +146,39 @@ function setup(tabs: TabSummary[], states: Record<string, TerminalState> = {}) {
     sessionLog: () => null,
   };
   const { result } = renderHook(() => useAutopilot(deps));
-  return { deps, onLog: result.current.onTerminalLog, continueRun: result.current.continueRun };
+  return {
+    deps,
+    onLog: result.current.onTerminalLog,
+    onBridgeTurn: result.current.onBridgeTurn,
+    continueRun: result.current.continueRun,
+  };
+}
+
+/** A PR Reviewer tab launched with the bridge (engine 2). */
+function bridgedReviewer(): TabSummary {
+  return { ...tab("pr", "role_pr_reviewer", 4), bridge: { runId: "ee_1", stage: "pr_reviewer" } } as TabSummary;
+}
+
+function bridgeTurn(patch: Partial<BridgeTurn> = {}): BridgeTurn {
+  return {
+    schema: 1,
+    runId: "ee_1",
+    stageKey: "pr_reviewer",
+    stageId: "pr_reviewer",
+    roleId: "role_pr_reviewer",
+    tabId: "pr",
+    turn: "p-1",
+    outcome: "result",
+    endedAt: new Date(Date.now() + 1000).toISOString(),
+    lastAssistantMessage: "## HANDOFF: Verdict\nREQUEST CHANGES",
+    blocked: true,
+    result: {
+      schema: 1,
+      verdict: "CHANGES_REQUIRED",
+      findings: [{ severity: "HIGH", file: "src/a.ts:4", summary: "Null token." }],
+    },
+    ...patch,
+  };
 }
 
 describe("useAutopilot", () => {
@@ -732,5 +767,99 @@ describe("useAutopilot", () => {
     await expect(continueRun("ee_1")).rejects.toThrow("not waiting after a restart");
     expect(terminalSessionLog).not.toHaveBeenCalled();
     expect(pipelineDecide).not.toHaveBeenCalled();
+  });
+
+  describe("bridged stages (engine 2)", () => {
+    it("a bridged reviewer's turn is never decided from its log", async () => {
+      vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+      const { onLog } = setup([tab("impl", "role_implementer", 3), bridgedReviewer()]);
+      onLog("pr", log("## HANDOFF: Verdict\nAPPROVED"));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(pipelineDecide).not.toHaveBeenCalled();
+      expect(pipelineTurnFinished).not.toHaveBeenCalled();
+    });
+
+    it("decides on the submitted result and sends its findings back", async () => {
+      vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+      vi.mocked(pipelineDecide).mockResolvedValue({
+        action: "loopBack",
+        stageId: "implementer",
+        roleId: "role_implementer",
+        reason: "round 1 goes back",
+      });
+      live.set("impl", { exited: false });
+      const { onBridgeTurn } = setup([tab("impl", "role_implementer", 3), bridgedReviewer()], {
+        impl: { kind: "idle" },
+      });
+      // The reply's own words say APPROVED; the tool call is what counts.
+      onBridgeTurn(bridgeTurn({ lastAssistantMessage: "## HANDOFF: Verdict\nAPPROVED" }));
+      await waitFor(() => expect(chainLoopBack).toHaveBeenCalled());
+      expect(vi.mocked(pipelineDecide).mock.calls[0][1]).toMatchObject({
+        stageId: "pr_reviewer",
+        verdict: "REQUEST CHANGES",
+        findings: [{ severity: "HIGH", summary: "Null token." }],
+        findingsKnown: true,
+        missingSections: [],
+        noResult: false,
+        round: 1,
+        turn: "pr|bridge|p-1",
+      });
+      expect(pipelineTurnFinished).toHaveBeenCalledWith("ee_1", {
+        stageId: "pr_reviewer",
+        roleId: "role_pr_reviewer",
+        lane: null,
+        verdict: "REQUEST CHANGES",
+      });
+      const pasted = String(vi.mocked(ptyWrite).mock.calls[0][1]);
+      expect(pasted).toContain("1. [HIGH] src/a.ts:4: Null token.");
+      expect(vi.mocked(chainLoopBack).mock.calls[0][0]).toMatchObject({ verdict: "REQUEST CHANGES", tabId: "impl" });
+    });
+
+    it("a turn that ended without the tool is decided as no_result", async () => {
+      vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+      vi.mocked(pipelineDecide).mockResolvedValue({ action: "stop", reason: "no result" });
+      const { deps, onBridgeTurn } = setup([bridgedReviewer()]);
+      onBridgeTurn(bridgeTurn({ outcome: "no_result", result: null }));
+      await waitFor(() => expect(deps.notifyStop).toHaveBeenCalledWith("pr", "no result"));
+      expect(vi.mocked(pipelineDecide).mock.calls[0][1]).toMatchObject({ noResult: true, verdict: null });
+    });
+
+    it("the same turn is decided once, and other tabs' turns are not this tab's", async () => {
+      vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+      vi.mocked(pipelineDecide).mockResolvedValue({ action: "skip", reason: "x" });
+      const { onBridgeTurn } = setup([bridgedReviewer(), tab("impl", "role_implementer", 3)]);
+      onBridgeTurn(bridgeTurn());
+      onBridgeTurn(bridgeTurn());
+      // A tab that is not bridged: never decided from an event.
+      onBridgeTurn(bridgeTurn({ tabId: "impl" }));
+      await waitFor(() => expect(pipelineDecide).toHaveBeenCalledTimes(1));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(pipelineDecide).toHaveBeenCalledTimes(1);
+    });
+
+    it("a turn the event missed is read back from the bridge when the log shows the turn ended", async () => {
+      vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+      vi.mocked(pipelineDecide).mockResolvedValue({ action: "skip", reason: "x" });
+      vi.mocked(pipelineBridgeTurn).mockResolvedValue(bridgeTurn());
+      const { onLog } = setup([bridgedReviewer()]);
+      onLog("pr", log("## HANDOFF: Verdict\nREQUEST CHANGES"));
+      await waitFor(() => expect(pipelineDecide).toHaveBeenCalledTimes(1));
+      expect(pipelineBridgeTurn).toHaveBeenCalledWith("pr");
+    });
+
+    it("a bridge turn that ended before the app started waits for Continue", async () => {
+      vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+      vi.mocked(pipelineDecide).mockResolvedValue({ action: "skip", reason: "x" });
+      const old = bridgeTurn({ endedAt: "2026-01-01T00:00:00Z" });
+      vi.mocked(pipelineBridgeTurn).mockResolvedValue(old);
+      vi.mocked(pipelineContinue).mockResolvedValue(["pr"]);
+      const { onLog, continueRun } = setup([bridgedReviewer()]);
+      onLog("pr", log("## HANDOFF: Verdict\nREQUEST CHANGES", "2026-01-01T00:00:00Z"));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(pipelineDecide).not.toHaveBeenCalled();
+      await continueRun("ee_1");
+      await waitFor(() => expect(pipelineDecide).toHaveBeenCalledTimes(1));
+      expect(vi.mocked(pipelineDecide).mock.calls[0][1].turn).toBe("pr|bridge|p-1");
+    });
   });
 });

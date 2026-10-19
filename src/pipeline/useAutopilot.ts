@@ -9,6 +9,12 @@
  * A turn that finished before this app session (a restart) is never acted
  * on by itself (D29): the core puts its run in `waiting` with
  * `app_restarted`, and `continueRun` (the overview's Continue) decides it.
+ *
+ * A bridged stage (engine 2, ADR-015: a reviewer launched with the bridge)
+ * is different: its turn end and its result come from the Rust core
+ * (`onBridgeTurn`, fed by `pipeline-bridge-turn`), never from its log or its
+ * reply's text. Its log only wakes a read-back (`pipelineBridgeTurn`) in
+ * case an event was missed.
  */
 import { useCallback, useRef } from "react";
 import {
@@ -17,6 +23,7 @@ import {
   getPipelineRun,
   getTab,
   type PipelineRun,
+  pipelineBridgeTurn,
   pipelineContinue,
   type RunLane,
   pipelineDecide,
@@ -27,6 +34,7 @@ import {
   ptyWrite,
   terminalSessionLog,
   type AutopilotDecision,
+  type BridgeTurn,
   type TabSummary,
   type TerminalSessionLog,
 } from "../bridge";
@@ -46,8 +54,12 @@ import { reviewRound } from "./runReport";
 import { parseReviewVerdict } from "../handoff/verdict";
 import { roleDisplayName } from "../handoff/transitions";
 import {
+  bridgeFindingsText,
+  bridgeTurnReport,
+  bridgeVerdict,
   finishedTurn,
   loopBackText,
+  reviseVerdict,
   mergeReviews,
   stageForTab,
   terminalStageSource,
@@ -60,12 +72,17 @@ export type AutopilotDeps = {
   tabs: () => TabSummary[];
   roles: () => readonly RoleName[] | null;
   terminalState: (tabId: string) => TerminalState | undefined;
-  /** Starts a role terminal without taking focus, as `provider`; the new tab id, or null. */
+  /**
+   * Starts a role terminal without taking focus, as `provider`, for the
+   * chain step `chain` (a bridged stage launches with the bridge); the new
+   * tab id, or null.
+   */
   startTerminal: (options: {
     roleId: string;
     values: Record<string, string>;
     handoffPlan: string | null;
     provider: ProviderId;
+    chain: ChainRef | null;
   }) => Promise<string | null>;
   refreshTabs: () => Promise<unknown>;
   /** Tells you autopilot stopped on `tabId` (toast and system notification). */
@@ -120,6 +137,10 @@ export function useAutopilot(deps: AutopilotDeps) {
   /** Tabs whose log was read at least once since the app started. */
   const seen = useRef(new Set<string>());
   const startedAt = useRef(Date.now());
+  /** Bridged tabs: the bridge turn (`prompt_id`) last handled. */
+  const handledBridge = useRef(new Map<string, string>());
+  /** Bridged tabs: a turn that ended while the previous one was still being handled. */
+  const pendingBridge = useRef(new Map<string, BridgeTurn>());
 
   const stop = useCallback(async (runId: string, tabId: string, stageId: string | null, why: string) => {
     // intentionally silent: the toast below still tells you; the ledger line is extra.
@@ -158,6 +179,7 @@ export function useAutopilot(deps: AutopilotDeps) {
         values: { ...terminal.values, cwd: source.cwd },
         handoffPlan: terminal.handoffPlan,
         provider: job.tab.provider ?? "claude",
+        chain: loopBack?.next ?? prepared.value.nextChain,
       });
       if (!tabId) return "The terminal did not start.";
       await attachHandoff({ record, tabId, prepared: prepared.value, loopBack, verdict });
@@ -168,7 +190,15 @@ export function useAutopilot(deps: AutopilotDeps) {
   );
 
   const carryOut = useCallback(
-    async (job: Job, runId: string, decision: AutopilotDecision, reply: string, verdict: string | null) => {
+    async (
+      job: Job,
+      runId: string,
+      decision: AutopilotDecision,
+      reply: string,
+      verdict: string | null,
+      /** A bridged reviewer's findings, as a loop-back sends them (else read from `reply`). */
+      findingsText?: string,
+    ) => {
       const d = depsRef.current;
       const { tab, chain } = job;
       // The hand-off did not happen: give its claim back, so a hand-off you
@@ -263,7 +293,7 @@ export function useAutopilot(deps: AutopilotDeps) {
           const tabs = d.tabs();
           const live = (t: TabSummary) => !!livePty(t.id) && !livePty(t.id)?.exited;
           const target = chainTabFor(tabs, chain, next.step, live);
-          const findings = loopBackText(reply) || reply.trim();
+          const findings = findingsText || loopBackText(reply) || reply.trim();
           if (target && live(target)) {
             const state = d.terminalState(target.id);
             if (!liveIdleTerminal(target, state)) {
@@ -323,6 +353,120 @@ export function useAutopilot(deps: AutopilotDeps) {
     [openStage, stop],
   );
 
+  /** Itself, for a turn queued while the tab's previous turn was handled. */
+  const onBridgeTurnRef = useRef<(turn: BridgeTurn) => void>(() => {});
+
+  /**
+   * A bridged stage's finished turn (engine 2): the bridge says the turn
+   * ended and what `submit_result` reported. Recorded in the ledger, then,
+   * on a run with autopilot on, decided once per turn and carried out.
+   */
+  const onBridgeTurn = useCallback(
+    (turn: BridgeTurn) => {
+      const d = depsRef.current;
+      const tab = d.tabs().find((t) => t.id === turn.tabId);
+      if (!tab?.chain || !tab.bridge || tab.kind !== "terminal" || ptyExitCode(tab.id) != null) return;
+      if (tab.bridge.runId !== turn.runId || tab.bridge.stage !== turn.stageKey) return;
+      if (handledBridge.current.get(tab.id) === turn.turn) return;
+      if (busy.current.has(tab.id)) {
+        pendingBridge.current.set(tab.id, turn);
+        return;
+      }
+      const placed = stageForTab(tab.chain, tab.roleId);
+      if (!placed) return;
+      handledBridge.current.set(tab.id, turn.turn);
+      const chain = tab.chain;
+      const runId = chain.chainId;
+      busy.current.add(tab.id);
+      void (async () => {
+        /** The decision's hand-off claim until it is carried out. */
+        let claimed: string | undefined;
+        try {
+          const view = await getPipelineRun(runId).catch(() => null);
+          const revise = reviseVerdict(view?.run.kind ?? "", tab.roleId);
+          const lane = chain.lane ?? null;
+          // intentionally silent: the lanes only lose a bar end.
+          void pipelineTurnFinished(runId, {
+            stageId: placed.stage.id,
+            roleId: tab.roleId,
+            lane,
+            verdict: turn.outcome === "result" ? bridgeVerdict(turn.result?.verdict, revise) : null,
+          }).catch(() => {});
+          if (!view?.run.autopilot?.enabled) return;
+          // Complete is final: a late turn changes nothing.
+          if (view.run.status === "complete") return;
+          const acting = !view.run.status || view.run.status === "running";
+          // The log is read only to carry the reply on in a hand-off.
+          // intentionally silent: the hand-off falls back to the bridge's last message.
+          const fresh = (await terminalSessionLog(tab.id).catch(() => null)) ?? d.sessionLog(tab.id) ?? null;
+          const reply = turn.lastAssistantMessage.trim() || fresh?.lastReply?.trim() || "";
+          const log: TerminalSessionLog = fresh
+            ? { ...fresh, lastReply: reply }
+            : { sessionId: "", path: "", turnDone: true, lastReply: reply, plan: null, planAt: null, lastPromptAt: null, toolCalls: [] };
+          const job: Job = { tab, chain, log, awaitingPlan: false };
+          const round = currentRound(view.run, lane);
+          if (acting && placed.stage.gates?.length) {
+            await pipelineRunGates(runId, placed.stage.id, tab.cwd, githubPrUrls(reply), lane, round);
+            // The checks take a while: a turn started since is the stage's result now.
+            // intentionally silent: an unreadable stage counts as unchanged.
+            const latest = await pipelineBridgeTurn(tab.id).catch(() => turn);
+            if (latest?.turn !== turn.turn) {
+              // intentionally silent: the ledger line is extra; nothing else happens either way.
+              await pipelineNote(runId, {
+                stageId: placed.stage.id,
+                summary: `Skipped ${placed.stage.title}'s turn: ${tab.label} got a newer prompt while its checks ran.`,
+                stop: false,
+              }).catch(() => {});
+              return;
+            }
+          }
+          // intentionally silent: without usage data autopilot simply does not pause for it.
+          const usage = usagePercent(await getClaudeUsage().catch(() => null));
+          const report = bridgeTurnReport({ stage: placed.stage, turn, usage, lane, revise });
+          const decision = await pipelineDecide(runId, { ...report, round, turn: `${tab.id}|bridge|${turn.turn}` });
+          claimed = decision.claim;
+          const findings = bridgeFindingsText(turn.result?.findings ?? []);
+          await carryOut(job, runId, decision, reply, report.verdict, findings);
+          claimed = undefined;
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          // intentionally silent: a claim left behind only adds a warning to your own hand-off.
+          if (claimed) await pipelineReleaseHandoff(runId, claimed).catch(() => {});
+          await stop(runId, tab.id, placed.stage.id, `Autopilot stopped: ${message}`);
+        } finally {
+          busy.current.delete(tab.id);
+          const next = pendingBridge.current.get(tab.id);
+          if (next) {
+            pendingBridge.current.delete(tab.id);
+            onBridgeTurnRef.current(next);
+          }
+        }
+      })();
+    },
+    [carryOut, stop],
+  );
+  onBridgeTurnRef.current = onBridgeTurn;
+
+  /**
+   * A bridged tab's log shows its turn ended: read the bridge's turn back,
+   * in case its event was missed. One that ended before this app session
+   * waits for Continue (D29).
+   */
+  const readBridgeTurn = useCallback(
+    async (tabId: string) => {
+      // intentionally silent: the event (or Continue) still delivers the turn.
+      const turn = await pipelineBridgeTurn(tabId).catch(() => null);
+      if (!turn || handledBridge.current.get(tabId) === turn.turn) return;
+      const at = Date.parse(turn.endedAt);
+      if (!(Number.isFinite(at) && at >= startedAt.current - 2000)) {
+        handledBridge.current.set(tabId, turn.turn);
+        return;
+      }
+      onBridgeTurn(turn);
+    },
+    [onBridgeTurn],
+  );
+
   /**
    * Call with each fresh session log of a terminal tab. Handles a finished
    * turn once: on every chain terminal it records where the turn ended (run
@@ -333,6 +477,11 @@ export function useAutopilot(deps: AutopilotDeps) {
       const d = depsRef.current;
       const tab = d.tabs().find((t) => t.id === tabId);
       if (!tab?.chain || tab.kind !== "terminal" || ptyExitCode(tabId) != null) return;
+      if (tab.bridge) {
+        // Engine 2: the bridge reports this tab's turns (onBridgeTurn).
+        if (log?.turnDone && !busy.current.has(tabId)) void readBridgeTurn(tabId);
+        return;
+      }
       const turn = finishedTurn(tab.roleId, log);
       if (log && !seen.current.has(tabId)) {
         seen.current.add(tabId);
@@ -460,18 +609,26 @@ export function useAutopilot(deps: AutopilotDeps) {
         }
       })();
     },
-    [carryOut, stop],
+    [carryOut, readBridgeTurn, stop],
   );
 
   /**
    * Overview › Continue on a run waiting after a restart: the core runs it
    * again, then each of its current stage tabs' turns is decided as if it
    * had just finished (one decided before the quit is ignored by the core).
+   * A bridged tab's turn is read back from the bridge.
    */
   const continueRun = useCallback(
     async (runId: string) => {
       const tabIds = await pipelineContinue(runId);
       for (const tabId of tabIds) {
+        if (depsRef.current.tabs().find((t) => t.id === tabId)?.bridge) {
+          // intentionally silent: a stage with no finished turn has nothing to decide.
+          const turn = await pipelineBridgeTurn(tabId).catch(() => null);
+          handledBridge.current.delete(tabId);
+          if (turn) onBridgeTurn(turn);
+          continue;
+        }
         // intentionally silent: a tab with no log has no turn to decide.
         const log = await terminalSessionLog(tabId).catch(() => null);
         // Seen only with a log, as onTerminalLog marks it: a log that shows
@@ -481,8 +638,8 @@ export function useAutopilot(deps: AutopilotDeps) {
         onTerminalLog(tabId, log);
       }
     },
-    [onTerminalLog],
+    [onBridgeTurn, onTerminalLog],
   );
 
-  return { onTerminalLog, continueRun };
+  return { onTerminalLog, onBridgeTurn, continueRun };
 }

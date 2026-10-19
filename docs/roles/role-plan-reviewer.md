@@ -242,6 +242,8 @@ One JSON block that DCTerminal reads. `verdict` is the same as above. `findings`
 {"verdict": "REQUIRES REVISION", "findings": [{"severity": "MEDIUM", "file": "Step 3", "summary": "The migration has no rollback."}]}
 ```
 
+{{result_instructions}}
+
 ---
 
 ## Rules

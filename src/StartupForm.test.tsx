@@ -55,6 +55,7 @@ vi.mock("./bridge", () => {
     note: null,
   })),
   listenAutopilotStopped: listen,
+  listenBridgeTurn: listen,
   listenPermissionAuto: listen,
   listenPermissionRequests: vi.fn(async (handler: (evt: unknown) => void) => {
     captured.permission = handler;

@@ -51,6 +51,9 @@ pub struct TabSummary {
     /// Address a localhost preview tab shows. None for other tabs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview_url: Option<String>,
+    /// The bridged pipeline stage this terminal launched as (ADR-015).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge: Option<crate::bridge::BridgeTag>,
 }
 
 /// Permission mode shown for a tab: only Claude role terminals have one.
@@ -534,6 +537,7 @@ pub(crate) fn snapshot_from_store(store: &StateStore) -> AppStateSnapshot {
                     &t.role_id,
                 ),
                 preview_url: crate::store::preview_tabs::preview_url_of(t),
+                bridge: t.bridge.clone(),
             })
             .collect(),
         closed_tabs: store

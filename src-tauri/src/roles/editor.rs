@@ -21,7 +21,13 @@ pub const MAX_IMPORT_BYTES: u64 = 2 * 1024 * 1024;
 pub const ROLE_MODES: [&str; 3] = ["agent", "plan", "ask"];
 
 /// Filled in by the merge step, never form fields.
-const BUILTIN_TOKENS: [&str; 4] = ["cwd", "folderName", "date", "roleName"];
+const BUILTIN_TOKENS: [&str; 5] = [
+    "cwd",
+    "folderName",
+    "date",
+    "roleName",
+    crate::template::RESULT_INSTRUCTIONS_KEY,
+];
 
 const NEW_ROLE_TEMPLATE: &str = "# {{title}}\n\nYou are working in {{cwd}}.\n\n{{request}}\n";
 

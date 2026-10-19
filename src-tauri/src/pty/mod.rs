@@ -21,7 +21,7 @@ use crate::pty::shell::resolve_shell_for_host;
 use crate::store::{
     tab_label, RoleSnapshot, SettingsStore, StateStore, TerminalSettings, TerminalTabDraft,
 };
-use crate::template::{merge_role_prompt, FieldError};
+use crate::template::{merge_role_prompt_with, FieldError};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -643,6 +643,38 @@ pub struct RoleTerminalInput {
     /// Omitted: the tab's own, or the window's new-tab provider.
     #[serde(default)]
     pub provider: Option<ProviderId>,
+    /// The pipeline step this terminal is opened for (a hand-off on a
+    /// chain). A reviewer stage of an engine-2 run launches with the bridge.
+    #[serde(default)]
+    pub chain: Option<crate::store::ChainRef>,
+}
+
+/// The bridge plan for a role terminal opened at `chain`, when that stage
+/// launches bridged (`bridge::launch::plan_for`).
+fn bridge_plan_for(
+    store: &Mutex<StateStore>,
+    chain: Option<&crate::store::ChainRef>,
+    role_id: &str,
+) -> Result<Option<crate::bridge::BridgePlan>, String> {
+    let Some(chain) = chain else {
+        return Ok(None);
+    };
+    let state = store.lock().map_err(|err| err.to_string())?;
+    let run = state
+        .chain_run_id(&chain.chain_id)
+        .and_then(|id| state.pipeline_run_by_id(&id));
+    Ok(run.and_then(|run| {
+        let def = crate::pipelines::find(&run.kind)?;
+        crate::bridge::launch::plan_for(run, &def, chain, role_id)
+    }))
+}
+
+/// `<app data>/runs` and this executable, for a bridged launch.
+fn bridge_paths(app: &AppHandle) -> Result<(PathBuf, PathBuf), String> {
+    let program = crate::bridge::launch::bridge_program()
+        .ok_or_else(|| "DCTerminal could not find its own executable for the pipeline bridge.".to_string())?;
+    let runs = crate::bridge::launch::runs_root(&crate::data_dir::app_data_dir(app).path);
+    Ok((runs, program))
 }
 
 /// Async with the work on a blocking thread, like [`shell_terminal_start`].
@@ -686,7 +718,29 @@ fn role_terminal_start_blocking(
             .cloned()
             .ok_or_else(|| format!("unknown role: {}", input.role_id))?
     };
-    let preview = merge_role_prompt(&role, &input.values);
+    let provider = {
+        let mut store = store.lock().map_err(|err| err.to_string())?;
+        store.bind_window(input.window_id.as_deref());
+        let settings = settings.lock().map_err(|err| err.to_string())?;
+        provider_for_window(
+            &store,
+            settings.providers(),
+            store.provider_for_start_as(input.tab_id.as_deref(), input.provider),
+            input.tab_id.as_deref(),
+        )
+    };
+    // Pipeline v2 (ADR-015): a reviewer stage of an engine-2 run reports
+    // through the bridge, and its prompt says how.
+    let bridge = if provider.id() == ProviderId::Claude {
+        bridge_plan_for(&store, input.chain.as_ref(), &role.id)?
+    } else {
+        None
+    };
+    let instructions = bridge
+        .as_ref()
+        .map(|plan| crate::bridge::schema::result_instructions(plan.kind))
+        .unwrap_or_default();
+    let preview = merge_role_prompt_with(&role, &input.values, &instructions);
     if !preview.errors.is_empty() {
         return Ok(TerminalStartResult {
             errors: preview.errors,
@@ -723,17 +777,6 @@ fn role_terminal_start_blocking(
     let mode = {
         let settings = settings.lock().map_err(|err| err.to_string())?;
         RunMode::parse(&settings.run_mode_for(&role.id))
-    };
-    let provider = {
-        let mut store = store.lock().map_err(|err| err.to_string())?;
-        store.bind_window(input.window_id.as_deref());
-        let settings = settings.lock().map_err(|err| err.to_string())?;
-        provider_for_window(
-            &store,
-            settings.providers(),
-            store.provider_for_start_as(input.tab_id.as_deref(), input.provider),
-            input.tab_id.as_deref(),
-        )
     };
     let model = crate::models::model_for_tab_provider(
         &store,
@@ -792,8 +835,36 @@ fn role_terminal_start_blocking(
             state.remember_claude_terminal_session(&tab_id, id)?;
         }
     }
+    // The run folder is written before the launch, and the tab records the
+    // stage it holds (or that it holds none, when reused for another role).
+    let bridge_args = match &bridge {
+        Some(plan) => {
+            let (runs, program) = bridge_paths(&app)?;
+            let run_dir = crate::bridge::launch::prepare_stage(&runs, plan, &tab_id)?;
+            Some(crate::bridge::launch::launch_args(
+                &program,
+                &run_dir,
+                &plan.run_id,
+                &plan.stage_key,
+                &tab_id,
+            ))
+        }
+        None => None,
+    };
+    {
+        let mut state = store.lock().map_err(|err| err.to_string())?;
+        let tag = bridge.as_ref().map(|plan| crate::bridge::BridgeTag {
+            run_id: plan.run_id.clone(),
+            stage: plan.stage_key.clone(),
+        });
+        state.set_tab_bridge(&tab_id, tag)?;
+    }
     let delivery = store_prompt(&app, &tab_id, &program, &prompt)?;
     let mut command = provider.terminal_command(&role_launch(Some(delivery.argument.clone())))?;
+    if let Some(extra) = bridge_args {
+        let has_prompt = !delivery.argument.trim().is_empty();
+        crate::bridge::launch::insert_before_prompt(&mut command.args, has_prompt, extra);
+    }
     if provider.id() == ProviderId::Claude {
         command.env.push(claude_scheme_env());
     }
@@ -1078,7 +1149,29 @@ fn pty_open_blocking(
                 Some(text) => Some(store_prompt(&app, &input.id, &program, text)?.argument),
                 None => None,
             };
+            let has_prompt = argument.is_some();
             let mut command = provider.terminal_command(&role_launch(argument))?;
+            // A bridged stage relaunches with the same bridge flags while it
+            // still owns its stage; otherwise it is a plain role terminal now.
+            let tag = {
+                let state = store.lock().map_err(|err| err.to_string())?;
+                state.tab_by_id(&input.id).and_then(|tab| tab.bridge.clone())
+            };
+            if let Some(tag) = tag {
+                let extra = match (provider.id() == ProviderId::Claude).then(|| bridge_paths(&app)) {
+                    Some(Ok((runs, program))) => {
+                        crate::bridge::launch::relaunch_args(&runs, &tag, &input.id, &program)
+                    }
+                    _ => None,
+                };
+                match extra {
+                    Some(extra) => crate::bridge::launch::insert_before_prompt(&mut command.args, has_prompt, extra),
+                    None => {
+                        let mut state = store.lock().map_err(|err| err.to_string())?;
+                        state.set_tab_bridge(&input.id, None)?;
+                    }
+                }
+            }
             if provider.id() == ProviderId::Claude {
                 command.env.push(claude_scheme_env());
             }

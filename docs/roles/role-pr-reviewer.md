@@ -405,6 +405,8 @@ One JSON block that DCTerminal reads. `verdict` is the same as above. `findings`
 {"verdict": "REQUEST CHANGES", "findings": [{"severity": "HIGH", "pr": "PR1", "file": "src/auth.ts:42", "summary": "An expired token returns 500 instead of 401."}]}
 ```
 
+{{result_instructions}}
+
 ---
 
 # STRICT REVIEW RULES

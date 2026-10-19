@@ -1529,7 +1529,8 @@ export type FillSummary = {
   scratchPad: boolean;
 };
 
-const BUILT_IN_TOKENS = new Set(["cwd", "folderName", "date", "roleName"]);
+/** Filled by the merge itself, never by a form field (`result_instructions`: engine-2 pipeline stages). */
+const BUILT_IN_TOKENS = new Set(["cwd", "folderName", "date", "roleName", "result_instructions"]);
 
 /** What the target form will hold after this hand-off, for the dialog and the terminal check. */
 export function handoffFillSummary(mapped: MappedHandoff, target: HandoffTarget): FillSummary {

@@ -177,6 +177,15 @@ pub struct PipelineRun {
     /// Why the run is `waiting` (or `stopped`, when you turned autopilot off).
     #[serde(default, deserialize_with = "lenient_stop_reason", skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<StopReason>,
+    /// Pipeline engine (D19). New runs are 2: their reviewer stages report
+    /// through the bridge (ADR-015). Runs saved before engines existed read
+    /// as 1 and keep the v1 path.
+    #[serde(default = "first_engine")]
+    pub engine: u32,
+}
+
+fn first_engine() -> u32 {
+    1
 }
 
 /// Where a run stands (Track H2).
@@ -864,6 +873,10 @@ pub struct TabRecord {
     /// Window this tab belongs to. Old files are the original window.
     #[serde(default = "default_window_id")]
     pub window_id: String,
+    /// The bridged pipeline stage this terminal launched as (ADR-015): its
+    /// turn ends and results come from the bridge, not from its log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge: Option<crate::bridge::BridgeTag>,
 }
 
 pub fn default_tab_kind() -> String {

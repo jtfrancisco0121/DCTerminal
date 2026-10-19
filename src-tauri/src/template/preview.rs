@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use super::{
     builtins::{folder_name_from_cwd, BuiltinVars},
-    merge::merge_template,
+    merge::{merge_template, RESULT_INSTRUCTIONS_KEY},
     validate::{validate_values, FieldError},
 };
 
@@ -24,7 +24,19 @@ pub struct MergePreviewResult {
 }
 
 /// Validate form values (including `cwd`) and merge the role template.
+/// `{{result_instructions}}` is left out (see [`merge_role_prompt_with`]).
 pub fn merge_role_prompt(role: &Role, values: &HashMap<String, String>) -> MergePreviewResult {
+    merge_role_prompt_with(role, values, "")
+}
+
+/// [`merge_role_prompt`], with `{{result_instructions}}` filled with
+/// `result_instructions` (an engine-2 pipeline stage, D21). A form value of
+/// that name never fills it.
+pub fn merge_role_prompt_with(
+    role: &Role,
+    values: &HashMap<String, String>,
+    result_instructions: &str,
+) -> MergePreviewResult {
     let errors = validate_values(role, values);
     if !errors.is_empty() {
         return MergePreviewResult {
@@ -42,6 +54,7 @@ pub fn merge_role_prompt(role: &Role, values: &HashMap<String, String>) -> Merge
         role_name: role.name.clone(),
     };
     builtins.apply_to_map(&mut merge_values);
+    merge_values.insert(RESULT_INSTRUCTIONS_KEY.to_string(), result_instructions.to_string());
 
     let result = merge_template(&role.template_text, &role.fields, &merge_values);
     let text = prepend_loose_context(&role.template_text, &result.text, &merge_values);

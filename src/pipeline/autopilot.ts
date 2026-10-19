@@ -2,9 +2,11 @@
  * Autopilot glue on the frontend (ADR-014). The decision itself is the
  * Rust core's (`pipeline_decide`); this module turns a finished terminal
  * turn into the report it decides on, builds the hand-off source a decision
- * sends on, and works out which turns were already handled. Pure.
+ * sends on, and works out which turns were already handled. A bridged
+ * stage's turn (engine 2, ADR-015) is reported from its `submit_result`
+ * instead of its reply. Pure.
  */
-import type { TabSummary, TerminalSessionLog, TurnReport, UsageSnapshot } from "../bridge";
+import type { BridgeFinding, BridgeTurn, TabSummary, TerminalSessionLog, TurnReport, UsageSnapshot } from "../bridge";
 import type { ChainRef } from "../handoff/chains";
 import { contractFindings, contractResult, missingHandoffSections } from "../handoff/contract";
 import { terminalLogFields, type HandoffField, type HandoffSource } from "../handoff/map";
@@ -203,4 +205,57 @@ export function mergeReviews(
     sections.push(`## HANDOFF: Result\n\`\`\`json\n${JSON.stringify({ verdict, findings: merged })}\n\`\`\``);
   }
   return sections.join("\n\n");
+}
+
+/** The verdict a reviewer's "changes" means on this run: the full run's Plan Reviewer revises, the rest request changes. */
+export function reviseVerdict(runKind: string, roleId: string): string {
+  return runKind === "full" && roleId === "role_plan_reviewer" ? "REQUIRES REVISION" : "REQUEST CHANGES";
+}
+
+/** A `submit_result` verdict in the words the ledger, loop-backs and the hand-off use. */
+export function bridgeVerdict(verdict: string | null | undefined, revise: string): string | null {
+  switch (verdict) {
+    case "APPROVED":
+      return "APPROVED";
+    case "APPROVED_WITH_CHANGES":
+      return "APPROVED WITH CHANGES";
+    case "CHANGES_REQUIRED":
+      return revise;
+    default:
+      return null;
+  }
+}
+
+/** The findings a loop-back sends, numbered like `loopBackText` lists Result findings. */
+export function bridgeFindingsText(findings: readonly BridgeFinding[]): string {
+  return findings
+    .map((f, i) => `${i + 1}. [${f.severity}]${f.file ? ` ${f.file}:` : ""} ${f.summary}`)
+    .join("\n");
+}
+
+/**
+ * The report a bridged stage's turn is decided on: its `submit_result`
+ * (verdict and findings), or `noResult` when the turn ended without one.
+ * HANDOFF sections are not checked: the tool replaced them as the result.
+ */
+export function bridgeTurnReport(args: {
+  stage: StageDef;
+  turn: BridgeTurn;
+  usage: number | null;
+  lane: string | null;
+  revise: string;
+}): TurnReport {
+  const { stage, turn, usage, lane, revise } = args;
+  const result = turn.outcome === "result" ? (turn.result ?? null) : null;
+  return {
+    stageId: stage.id,
+    verdict: bridgeVerdict(result?.verdict, revise),
+    findings: (result?.findings ?? []).map((f) => ({ severity: f.severity, summary: f.summary })),
+    findingsKnown: !!result,
+    missingSections: [],
+    usagePercent: usage,
+    chat: false,
+    lane,
+    noResult: !result,
+  };
 }

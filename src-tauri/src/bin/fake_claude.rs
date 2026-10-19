@@ -9,10 +9,12 @@
 //! `fake_claude [--session-id <uuid> | --resume <uuid>] [--permission-mode <mode>]
 //! [--model <id>] [<startup prompt>]`
 //!
-//! Other flags are ignored. Those Claude Code gives a value
-//! (`--settings <json>`, `--allowedTools <tools>`, …, see `VALUE_FLAGS`) skip
-//! their value; any other unknown flag is taken as a switch, so give it as
-//! `--flag=value`. Without `--session-id` or `--resume` a new id is made up.
+//! `--settings <json>` and `--mcp-config <json>` (inline JSON, or a file
+//! holding it) give the hooks and MCP servers, as below. Other flags are
+//! ignored. Those Claude Code gives a value (`--allowedTools <tools>`, …,
+//! see `VALUE_FLAGS`) skip their value; any other unknown flag is taken as a
+//! switch, so give it as `--flag=value`. Without `--session-id` or
+//! `--resume` a new id is made up.
 //! `--session-id` of an existing log and `--resume` of a missing one are
 //! refused (exit 1), as Claude Code does.
 //!
@@ -69,6 +71,35 @@
 //! - `{"crash": true}`: write half of the next record, no newline, and exit
 //!   101 at once.
 //! - `{"exit": 0}`: exit now with that code.
+//! - `{"mcp": "submit_result", "server": "dcterminal", "arguments": {…}}`:
+//!   a `tool_use` of `mcp__<server>__<tool>` (server defaults to
+//!   `dcterminal`), PreToolUse hooks for it (a `deny` refuses it), then a
+//!   `tools/call` to that `--mcp-config` server and its answer as the
+//!   `tool_result` (`isError` → `is_error`).
+//!
+//! A turn may also carry `"on_block": [[steps], …]`: when a Stop hook blocks
+//! the end of the turn, the next list runs (as Claude going on), then Stop
+//! hooks run again with `stop_hook_active: true`. With no list left the turn
+//! ends anyway, so a scenario never loops.
+//!
+//! # Hooks and MCP
+//!
+//! Hooks come from `--settings`' `hooks`, as Claude Code 2.1.287 runs them
+//! (docs/claude-hooks-observed.md): `UserPromptSubmit` when a turn starts,
+//! `Stop` when it ends normally (never after an interrupt), `PreToolUse`
+//! before an `mcp` step (matcher: empty, `*`, or `|`-separated names). Each
+//! `command` hook runs with its `args` (or through `sh -c` without), the
+//! JSON payload on stdin (`session_id`, `transcript_path`, `cwd`,
+//! `prompt_id` (one per turn), `permission_mode`, `hook_event_name`, plus
+//! the event's own fields), in the session's folder. Exit 2 with a reason on
+//! stderr, or `{"decision":"block","reason":…}` on stdout, blocks a Stop;
+//! `hookSpecificOutput.permissionDecision` answers a PreToolUse. A blocked
+//! Stop draws `Stop hook error: <reason>`.
+//!
+//! An `mcp` step starts its stdio server on first use (`command` and `args`
+//! from `--mcp-config`' `mcpServers`), and shakes hands as Claude Code does
+//! (`initialize`, `notifications/initialized`, `tools/list`). Permission
+//! prompts for MCP tools are not drawn.
 //!
 //! Esc during a turn (between steps or in a wait) interrupts it: a `[Request
 //! interrupted by user]` record, no `turn_duration`, and the turn ends.
@@ -82,9 +113,10 @@
 //! does, which `src/terminal/permissionDialog.ts` reads (see its fixtures).
 
 use serde_json::{json, Value};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs::{File, OpenOptions};
-use std::io::{IsTerminal, Read, Write};
+use std::io::{BufRead, BufReader, IsTerminal, Read, Write};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -100,8 +132,6 @@ const INTERRUPTED: &str = "[Request interrupted by user]";
 const REJECTED: &str = "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.";
 /// Flags Claude Code gives a value; their value is skipped.
 const VALUE_FLAGS: &[&str] = &[
-    "--settings",
-    "--mcp-config",
     "--allowedTools",
     "--allowed-tools",
     "--disallowedTools",
@@ -135,8 +165,11 @@ fn main() {
         .append(true)
         .open(&path)
         .unwrap_or_else(|err| fail(&format!("open {}: {err}", path.display())));
+    let settings = json_flag(args.settings.as_deref(), "--settings");
+    let mcp_config = json_flag(args.mcp_config.as_deref(), "--mcp-config");
     let mut fake = Fake {
         log,
+        log_path: path.clone(),
         session_id,
         cwd: cwd.display().to_string(),
         model: args
@@ -157,6 +190,11 @@ fn main() {
         typed: Vec::new(),
         queued: VecDeque::new(),
         tty: Tty::raw(),
+        hooks: settings.get("hooks").cloned().unwrap_or(Value::Null),
+        mcp_servers: mcp_config.get("mcpServers").cloned().unwrap_or(Value::Null),
+        mcp: HashMap::new(),
+        prompt_id: String::new(),
+        last_text: String::new(),
     };
     fake.draw(&format!(
         "\x1b[38;5;174m✻\x1b[39m Welcome to fake_claude {VERSION}\r\n\x1b[38;5;246m  cwd: {}\x1b[39m\r\n",
@@ -183,7 +221,22 @@ struct Args {
     resume: Option<String>,
     permission_mode: Option<String>,
     model: Option<String>,
+    settings: Option<String>,
+    mcp_config: Option<String>,
     prompt: Option<String>,
+}
+
+/// A JSON flag value: inline JSON, else the file it names. Absent: `{}`.
+fn json_flag(value: Option<&str>, flag: &str) -> Value {
+    let Some(value) = value.map(str::trim).filter(|v| !v.is_empty()) else {
+        return json!({});
+    };
+    let text = if value.starts_with('{') {
+        value.to_string()
+    } else {
+        std::fs::read_to_string(value).unwrap_or_else(|err| refuse(&format!("{flag} {value}: {err}")))
+    };
+    serde_json::from_str(&text).unwrap_or_else(|err| refuse(&format!("{flag}: {err}")))
 }
 
 fn parse_args(mut argv: impl Iterator<Item = String>) -> Args {
@@ -205,6 +258,8 @@ fn parse_args(mut argv: impl Iterator<Item = String>) -> Args {
             "--resume" | "-r" => Some(&mut args.resume),
             "--permission-mode" => Some(&mut args.permission_mode),
             "--model" => Some(&mut args.model),
+            "--settings" => Some(&mut args.settings),
+            "--mcp-config" => Some(&mut args.mcp_config),
             _ => None,
         };
         if let Some(slot) = slot {
@@ -421,6 +476,7 @@ enum Ended {
 
 struct Fake {
     log: File,
+    log_path: PathBuf,
     session_id: String,
     cwd: String,
     model: String,
@@ -438,6 +494,109 @@ struct Fake {
     /// Prompts typed during a turn, taken in order once it ends.
     queued: VecDeque<String>,
     tty: Tty,
+    /// `--settings`' `hooks`, by event.
+    hooks: Value,
+    /// `--mcp-config`' `mcpServers`, by name.
+    mcp_servers: Value,
+    /// MCP servers started so far, by name.
+    mcp: HashMap<String, McpClient>,
+    /// The current turn's `prompt_id`, as hooks see it.
+    prompt_id: String,
+    /// The current turn's last assistant text (Stop's `last_assistant_message`).
+    last_text: String,
+}
+
+/// What the hooks of one event answered.
+#[derive(Default)]
+struct HookReply {
+    /// A Stop hook blocked, with this reason.
+    block: Option<String>,
+    /// A PreToolUse hook's `permissionDecision`.
+    permission: Option<String>,
+}
+
+/// A started stdio MCP server.
+struct McpClient {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    next_id: u64,
+}
+
+impl McpClient {
+    fn start(config: &Value) -> Result<Self, String> {
+        let command = config
+            .get("command")
+            .and_then(Value::as_str)
+            .ok_or("the server has no command")?;
+        let args: Vec<String> = config
+            .get("args")
+            .and_then(Value::as_array)
+            .map(|args| args.iter().filter_map(Value::as_str).map(str::to_string).collect())
+            .unwrap_or_default();
+        let mut child = Command::new(command)
+            .args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|err| format!("start {command}: {err}"))?;
+        let stdin = child.stdin.take().ok_or("no stdin")?;
+        let stdout = BufReader::new(child.stdout.take().ok_or("no stdout")?);
+        let mut client = Self { child, stdin, stdout, next_id: 0 };
+        client.request(
+            "initialize",
+            json!({ "protocolVersion": "2025-11-25", "capabilities": {},
+                "clientInfo": { "name": "fake_claude", "version": VERSION } }),
+        )?;
+        client.send(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))?;
+        client.request("tools/list", json!({}))?;
+        Ok(client)
+    }
+
+    fn send(&mut self, message: &Value) -> Result<(), String> {
+        writeln!(self.stdin, "{message}")
+            .and_then(|_| self.stdin.flush())
+            .map_err(|err| format!("write to the server: {err}"))
+    }
+
+    /// A request and its result (an error reply is an `Err`).
+    fn request(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        self.next_id += 1;
+        let id = self.next_id;
+        self.send(&json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }))?;
+        loop {
+            let mut line = String::new();
+            match self.stdout.read_line(&mut line) {
+                Ok(0) => return Err("the server closed its output".into()),
+                Ok(_) => {}
+                Err(err) => return Err(format!("read from the server: {err}")),
+            }
+            let Ok(reply) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if reply.get("id").and_then(Value::as_u64) != Some(id) {
+                continue;
+            }
+            if let Some(error) = reply.get("error") {
+                return Err(format!("{method}: {error}"));
+            }
+            return Ok(reply.get("result").cloned().unwrap_or(Value::Null));
+        }
+    }
+}
+
+impl Drop for McpClient {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// A hook matcher: empty or `*` matches every tool, else `|`-separated names.
+fn matcher_matches(matcher: &str, tool: &str) -> bool {
+    let matcher = matcher.trim();
+    matcher.is_empty() || matcher == "*" || matcher.split('|').any(|name| name.trim() == tool)
 }
 
 impl Fake {
@@ -464,7 +623,18 @@ impl Fake {
                 .and_then(Value::as_array)
                 .cloned()
                 .unwrap_or_default();
+            let on_block: VecDeque<Vec<Value>> = turn
+                .get("on_block")
+                .and_then(Value::as_array)
+                .map(|lists| {
+                    lists
+                        .iter()
+                        .map(|list| list.as_array().cloned().unwrap_or_default())
+                        .collect()
+                })
+                .unwrap_or_default();
             if self.steps(&steps) == Ended::Done
+                && self.stop(on_block) == Ended::Done
                 && turn.get("turn_duration").and_then(Value::as_bool) != Some(false)
             {
                 self.turn_duration(started);
@@ -477,8 +647,178 @@ impl Fake {
             self.start_turn(&prompt);
             let started = Instant::now();
             self.reply("fake_claude: no scenario turn left.");
+            self.stop(VecDeque::new());
             self.turn_duration(started);
         }
+    }
+
+    /// The turn ended normally: Stop hooks run, and while one blocks, the
+    /// next `on_block` list runs and they run again.
+    fn stop(&mut self, mut on_block: VecDeque<Vec<Value>>) -> Ended {
+        let mut active = false;
+        loop {
+            let payload = json!({
+                "stop_hook_active": active,
+                "last_assistant_message": self.last_text,
+                "background_tasks": [],
+                "session_crons": [],
+            });
+            let Some(reason) = self.run_hooks("Stop", payload, None).block else {
+                return Ended::Done;
+            };
+            self.draw(&format!(
+                "\r\n\x1b[38;5;174m  ⎿  Stop hook error: {}\x1b[39m\r\n",
+                screen_text(&reason)
+            ));
+            active = true;
+            let Some(steps) = on_block.pop_front() else {
+                return Ended::Done;
+            };
+            if self.steps(&steps) == Ended::Interrupted {
+                return Ended::Interrupted;
+            }
+        }
+    }
+
+    /// Run `event`'s command hooks with the common fields added to `payload`.
+    fn run_hooks(&mut self, event: &str, mut payload: Value, tool: Option<&str>) -> HookReply {
+        let mut reply = HookReply::default();
+        let Some(groups) = self.hooks.get(event).and_then(Value::as_array).cloned() else {
+            return reply;
+        };
+        if let Some(fields) = payload.as_object_mut() {
+            fields.insert("session_id".into(), json!(self.session_id));
+            fields.insert("transcript_path".into(), json!(self.log_path.display().to_string()));
+            fields.insert("cwd".into(), json!(self.cwd));
+            fields.insert("prompt_id".into(), json!(self.prompt_id));
+            fields.insert("permission_mode".into(), json!(self.mode));
+            fields.insert("hook_event_name".into(), json!(event));
+        }
+        for group in &groups {
+            let matcher = group.get("matcher").and_then(Value::as_str);
+            if let (Some(tool), Some(matcher)) = (tool, matcher) {
+                if !matcher_matches(matcher, tool) {
+                    continue;
+                }
+            }
+            let hooks = group.get("hooks").and_then(Value::as_array).cloned().unwrap_or_default();
+            for hook in hooks.iter().filter(|h| h.get("type").and_then(Value::as_str) == Some("command")) {
+                self.run_hook(event, hook, &payload, &mut reply);
+            }
+        }
+        reply
+    }
+
+    fn run_hook(&mut self, event: &str, hook: &Value, payload: &Value, reply: &mut HookReply) {
+        let Some(command) = hook.get("command").and_then(Value::as_str) else {
+            return;
+        };
+        let mut process = match hook.get("args").and_then(Value::as_array) {
+            Some(args) => {
+                let mut process = Command::new(command);
+                process.args(args.iter().filter_map(Value::as_str));
+                process
+            }
+            None => {
+                let mut process = Command::new("sh");
+                process.args(["-c", command]);
+                process
+            }
+        };
+        let spawned = process
+            .current_dir(&self.cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn();
+        let output = spawned.and_then(|mut child| {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(payload.to_string().as_bytes());
+            }
+            child.wait_with_output()
+        });
+        let output = match output {
+            Ok(output) => output,
+            Err(err) => {
+                self.draw(&format!("\r\n  ⎿  {event} hook error: {err}\r\n"));
+                return;
+            }
+        };
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        match output.status.code() {
+            Some(0) => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let Ok(answer) = serde_json::from_str::<Value>(stdout.trim()) else {
+                    return;
+                };
+                if answer.get("decision").and_then(Value::as_str) == Some("block") {
+                    let reason = answer.get("reason").and_then(Value::as_str).unwrap_or_default();
+                    reply.block = Some(reason.to_string());
+                }
+                if let Some(decision) = answer
+                    .pointer("/hookSpecificOutput/permissionDecision")
+                    .and_then(Value::as_str)
+                {
+                    reply.permission = Some(decision.to_string());
+                }
+            }
+            Some(2) => reply.block = Some(stderr),
+            code => self.draw(&format!(
+                "\r\n  ⎿  {event} hook error (exit {}): {}\r\n",
+                code.map_or("signal".to_string(), |c| c.to_string()),
+                screen_text(&stderr)
+            )),
+        }
+    }
+
+    /// An `mcp` step: the tool_use, PreToolUse hooks, the call, its result.
+    fn mcp_step(&mut self, tool: &str, step: &Value) -> Ended {
+        let server = step.get("server").and_then(Value::as_str).unwrap_or("dcterminal").to_string();
+        let name = format!("mcp__{server}__{tool}");
+        let input = step.get("arguments").cloned().unwrap_or_else(|| json!({}));
+        let id = self.next_tool_id();
+        self.draw(&format!("\r\n⏺ {name}({})\r\n", screen_text(&input.to_string())));
+        self.assistant(
+            json!({ "type": "tool_use", "id": id, "name": name, "input": input }),
+            Some("tool_use"),
+        );
+        let hooks = self.run_hooks(
+            "PreToolUse",
+            json!({ "tool_name": name, "tool_input": input, "tool_use_id": id }),
+            Some(&name),
+        );
+        let (text, error) = if hooks.permission.as_deref() == Some("deny") {
+            ("A PreToolUse hook denied this tool.".to_string(), true)
+        } else {
+            match self.mcp_call(&server, tool, &input) {
+                Ok(answer) => answer,
+                Err(why) => (format!("MCP error: {why}"), true),
+            }
+        };
+        self.draw(&format!("  ⎿  {}\r\n", screen_text(&text)));
+        self.tool_result(&id, &text, error);
+        Ended::Done
+    }
+
+    /// `tools/call` on `server`, started on first use: the text and `isError`.
+    fn mcp_call(&mut self, server: &str, tool: &str, input: &Value) -> Result<(String, bool), String> {
+        if !self.mcp.contains_key(server) {
+            let config = self
+                .mcp_servers
+                .get(server)
+                .ok_or_else(|| format!("no MCP server {server:?} in --mcp-config"))?;
+            let client = McpClient::start(config)?;
+            self.mcp.insert(server.to_string(), client);
+        }
+        let client = self.mcp.get_mut(server).ok_or("the server is gone")?;
+        let result = client.request("tools/call", json!({ "name": tool, "arguments": input }))?;
+        let text = result
+            .pointer("/content/0/text")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let error = result.get("isError").and_then(Value::as_bool).unwrap_or(false);
+        Ok((text, error))
     }
 
     fn steps(&mut self, steps: &[Value]) -> Ended {
@@ -505,11 +845,16 @@ impl Fake {
             );
         } else if let Some(text) = text_of("text") {
             self.draw(&format!("\r\n⏺ {}\r\n", screen_text(text)));
+            if !self.sidechain {
+                self.last_text = text.to_string();
+            }
             self.assistant(json!({ "type": "text", "text": text }), text_of("stop"));
         } else if let Some(text) = text_of("reply") {
             self.reply(text);
         } else if let Some(name) = text_of("tool") {
             return self.tool(name, step);
+        } else if let Some(tool) = text_of("mcp") {
+            return self.mcp_step(tool, step);
         } else if let Some(agent) = step.get("subagent") {
             return self.subagent(agent);
         } else if let Some(ms) = step.get("delay_ms").and_then(Value::as_u64) {
@@ -543,6 +888,9 @@ impl Fake {
     }
 
     fn reply(&mut self, text: &str) {
+        if !self.sidechain {
+            self.last_text = text.to_string();
+        }
         self.draw(&format!("\r\n⏺ {}\r\n", screen_text(text)));
         self.assistant(json!({ "type": "text", "text": text }), Some("end_turn"));
     }
@@ -752,6 +1100,9 @@ impl Fake {
     }
 
     fn start_turn(&mut self, prompt: &str) {
+        self.prompt_id = uuid::Uuid::new_v4().to_string();
+        self.last_text.clear();
+        self.run_hooks("UserPromptSubmit", json!({ "prompt": prompt }), None);
         let snapshot = uuid::Uuid::new_v4().to_string();
         self.write(json!({
             "type": "file-history-snapshot",
