@@ -10,6 +10,10 @@
 //! signalled blind after its leader was reaped: once the leader is gone its
 //! pgid could belong to a new process, so it is only signalled while the
 //! group still has members.
+//!
+//! A descendant that left the group (`setsid`, Node's `detached: true`) is
+//! missed by a group signal, so each Unix signal also goes to the leader's
+//! [`Detached`] descendants, found by parent pid before the group exits.
 
 use std::io;
 use std::process::{Child, Command, ExitStatus};
@@ -29,6 +33,8 @@ pub struct ProcessTree {
     killed: bool,
     /// `try_wait` collected the leader's exit, so its pid may be reused.
     reaped: bool,
+    #[cfg(unix)]
+    detached: Detached,
     #[cfg(windows)]
     resumed: bool,
     #[cfg(windows)]
@@ -63,6 +69,8 @@ impl ProcessTree {
                 child,
                 killed: false,
                 reaped: false,
+                #[cfg(unix)]
+                detached: Detached::default(),
             })
         }
     }
@@ -74,7 +82,7 @@ impl ProcessTree {
             // Leader reaped and group empty: the pgid may be reused, so
             // nothing may signal it again.
             #[cfg(unix)]
-            if !self.killed && !group_alive(self.child.id()) {
+            if !self.killed && !group_alive(self.child.id()) && !self.detached.alive() {
                 self.killed = true;
             }
         }
@@ -107,17 +115,21 @@ impl ProcessTree {
     /// Whether anything of the tree may still be running.
     #[cfg(unix)]
     fn tree_alive(&mut self) -> bool {
-        !matches!(self.try_wait(), Ok(Some(_))) || group_alive(self.child.id())
+        !matches!(self.try_wait(), Ok(Some(_)))
+            || group_alive(self.child.id())
+            || self.detached.alive()
     }
 
     #[cfg(unix)]
-    fn signal_tree(&self, sig: i32) {
+    fn signal_tree(&mut self, sig: i32) {
         let pid = self.child.id();
         // An unreaped leader holds its pgid; a reaped one only while the
         // group still has members.
         if !self.reaped || group_alive(pid) {
+            self.detached.remember(pid);
             signal_group(pid, sig);
         }
+        self.detached.signal(sig);
     }
 
     pub fn kill_tree(&mut self) {
@@ -311,6 +323,8 @@ pub struct PidGuard {
     reaped: AtomicBool,
     /// Shared with [`PtyGroup`]: the group is no longer ours to signal.
     done: Arc<AtomicBool>,
+    #[cfg(unix)]
+    detached: Arc<Mutex<Detached>>,
     #[cfg(windows)]
     job: Option<winjob::Job>,
 }
@@ -332,6 +346,8 @@ impl PidGuard {
                 pid,
                 reaped: AtomicBool::new(false),
                 done: Arc::new(AtomicBool::new(false)),
+                #[cfg(unix)]
+                detached: Arc::default(),
             }
         }
     }
@@ -341,6 +357,8 @@ impl PidGuard {
         PtyGroup {
             pid: self.pid,
             done: Arc::clone(&self.done),
+            #[cfg(unix)]
+            detached: Arc::clone(&self.detached),
         }
     }
 
@@ -356,7 +374,7 @@ impl PidGuard {
     /// Whether anything of the group may still be running. Unix only.
     #[cfg(unix)]
     pub fn group_alive(&self) -> bool {
-        self.ours()
+        self.ours() || lock(&self.detached).alive()
     }
 
     /// Whether the pgid is still ours: the leader is unreaped, or the group
@@ -381,9 +399,7 @@ impl PidGuard {
 
     #[cfg(unix)]
     fn signal(&self, sig: i32) {
-        if self.ours() {
-            signal_group(self.pid, sig);
-        }
+        signal_pty_tree(self.ours(), self.pid, &self.detached, sig);
     }
 
     pub fn kill(&self) {
@@ -423,14 +439,190 @@ const SIGKILL: i32 = 9;
 /// Never signals pid 0, 1 or -1 (our own group, init, everything).
 #[cfg(unix)]
 fn signal_group(pid: u32, sig: i32) -> bool {
-    extern "C" {
-        fn kill(pid: i32, sig: i32) -> i32;
-    }
     let Some(pid) = i32::try_from(pid).ok().filter(|pid| *pid > 1) else {
         return false;
     };
     // SAFETY: kill(2) with a negative pid signals that group only.
     unsafe { kill(-pid, sig) == 0 }
+}
+
+#[cfg(unix)]
+extern "C" {
+    fn kill(pid: i32, sig: i32) -> i32;
+    fn getpgrp() -> i32;
+}
+
+/// One process, as seen when it was found. `start` tells a reused pid apart.
+#[cfg(unix)]
+#[derive(Clone, Copy, PartialEq)]
+struct ProcInfo {
+    pid: u32,
+    ppid: u32,
+    pgid: u32,
+    start: u64,
+}
+
+/// Descendants of a group leader that left its group. They are found by
+/// parent pid before the group is signalled: once the group exits they are
+/// reparented and the link is lost. A child that already double-forked away
+/// to init is missed. Enumeration failures find nothing (group-only stop).
+#[cfg(unix)]
+#[derive(Default)]
+struct Detached(Vec<ProcInfo>);
+
+#[cfg(unix)]
+impl Detached {
+    /// Adds `leader`'s live descendants outside its group. Call only while
+    /// `leader`'s pid is still ours.
+    fn remember(&mut self, leader: u32) {
+        let children = children_lister();
+        let (mut parents, mut walked) = (vec![leader], 0);
+        while let Some(parent) = parents.pop() {
+            for child in children(parent) {
+                walked += 1;
+                if walked > 4096 {
+                    return; // only a pid-reuse cycle gets this deep
+                }
+                parents.push(child.pid);
+                if child.pgid != leader && !self.0.contains(&child) {
+                    self.0.push(child);
+                }
+            }
+        }
+    }
+
+    /// The remembered processes still running as themselves, never our own
+    /// process or group, init, or a pid reused since.
+    fn live(&self) -> impl Iterator<Item = u32> + '_ {
+        // SAFETY: getpgrp(2) cannot fail.
+        let own_group = unsafe { getpgrp() } as u32;
+        self.0
+            .iter()
+            .filter(move |seen| {
+                proc_info(seen.pid).is_some_and(|now| {
+                    now.start == seen.start
+                        && now.pgid != own_group
+                        && seen.pid > 1
+                        && seen.pid != std::process::id()
+                })
+            })
+            .map(|seen| seen.pid)
+    }
+
+    fn alive(&self) -> bool {
+        self.live().next().is_some()
+    }
+
+    fn signal(&mut self, sig: i32) {
+        let live: Vec<u32> = self.live().collect();
+        self.0.retain(|seen| live.contains(&seen.pid));
+        for pid in live {
+            // SAFETY: kill(2) on one pid just confirmed to be the same process.
+            unsafe { kill(pid as i32, sig) };
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn proc_info(pid: u32) -> Option<ProcInfo> {
+    /// `struct proc_bsdinfo` from <sys/proc_info.h>.
+    #[repr(C)]
+    struct BsdInfo {
+        head: [u32; 4],
+        ppid: u32,
+        ids: [u32; 7],
+        names: [u8; 48],
+        nfiles: u32,
+        pgid: u32,
+        tail: [u32; 4],
+        start_sec: u64,
+        start_usec: u64,
+    }
+    const _: () = assert!(std::mem::size_of::<BsdInfo>() == 136);
+    extern "C" {
+        fn proc_pidinfo(pid: i32, flavor: i32, arg: u64, buf: *mut BsdInfo, size: i32) -> i32;
+    }
+    const PROC_PIDTBSDINFO: i32 = 3;
+    let size = std::mem::size_of::<BsdInfo>() as i32;
+    // SAFETY: an all-zero proc_bsdinfo is valid; the kernel fills at most `size` bytes.
+    let mut info: BsdInfo = unsafe { std::mem::zeroed() };
+    let got = unsafe {
+        proc_pidinfo(
+            i32::try_from(pid).ok()?,
+            PROC_PIDTBSDINFO,
+            0,
+            &mut info,
+            size,
+        )
+    };
+    (got == size).then_some(ProcInfo {
+        pid,
+        ppid: info.ppid,
+        pgid: info.pgid,
+        start: info.start_sec * 1_000_000 + info.start_usec,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn children_lister() -> impl Fn(u32) -> Vec<ProcInfo> {
+    extern "C" {
+        fn proc_listpids(kind: u32, typeinfo: u32, buf: *mut i32, size: i32) -> i32;
+    }
+    const PROC_PPID_ONLY: u32 = 6;
+    |ppid| {
+        let mut pids = vec![0i32; 1024];
+        let size = (pids.len() * 4) as i32;
+        // SAFETY: the kernel writes at most `size` bytes of pids.
+        let bytes = unsafe { proc_listpids(PROC_PPID_ONLY, ppid, pids.as_mut_ptr(), size) };
+        pids.truncate(usize::try_from(bytes).unwrap_or(0) / 4);
+        pids.into_iter()
+            .filter_map(|pid| proc_info(u32::try_from(pid).ok().filter(|pid| *pid > 1)?))
+            .filter(|info| info.ppid == ppid)
+            .collect()
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn proc_info(pid: u32) -> Option<ProcInfo> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // Fields after the `(comm)`: state ppid pgrp ... starttime (22nd overall).
+    let fields: Vec<&str> = stat.rsplit_once(')')?.1.split_whitespace().collect();
+    Some(ProcInfo {
+        pid,
+        ppid: fields.get(1)?.parse().ok()?,
+        pgid: fields.get(2)?.parse().ok()?,
+        start: fields.get(19)?.parse().ok()?,
+    })
+}
+
+/// One `/proc` walk per snapshot, not one per tree level.
+#[cfg(target_os = "linux")]
+fn children_lister() -> impl Fn(u32) -> Vec<ProcInfo> {
+    let table: Vec<ProcInfo> = std::fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.parse().ok())
+        .filter(|pid| *pid > 1)
+        .filter_map(proc_info)
+        .collect();
+    move |ppid| {
+        table
+            .iter()
+            .filter(|info| info.ppid == ppid)
+            .copied()
+            .collect()
+    }
+}
+
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
+fn proc_info(_pid: u32) -> Option<ProcInfo> {
+    None
+}
+
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
+fn children_lister() -> impl Fn(u32) -> Vec<ProcInfo> {
+    |_| Vec::new()
 }
 
 /// Signal 0: whether the group still has a member (a zombie counts).
@@ -448,6 +640,8 @@ fn group_alive(pid: u32) -> bool {
 pub struct PtyGroup {
     pid: u32,
     done: Arc<AtomicBool>,
+    #[cfg(unix)]
+    detached: Arc<Mutex<Detached>>,
 }
 
 impl PtyGroup {
@@ -456,7 +650,7 @@ impl PtyGroup {
     pub fn running(&self) -> bool {
         #[cfg(unix)]
         {
-            !self.done.load(Ordering::SeqCst) && group_alive(self.pid)
+            self.group_running() || lock(&self.detached).alive()
         }
         #[cfg(not(unix))]
         {
@@ -464,21 +658,41 @@ impl PtyGroup {
         }
     }
 
+    #[cfg(unix)]
+    fn group_running(&self) -> bool {
+        !self.done.load(Ordering::SeqCst) && group_alive(self.pid)
+    }
+
     /// SIGTERM to the group. No-op on Windows.
     pub fn terminate(&self) {
         #[cfg(unix)]
-        if self.running() {
-            signal_group(self.pid, SIGTERM);
-        }
+        signal_pty_tree(self.group_running(), self.pid, &self.detached, SIGTERM);
     }
 
     /// SIGKILL to the group if it is still running. No-op on Windows.
     pub fn kill(&self) {
         #[cfg(unix)]
-        if self.running() {
-            signal_group(self.pid, SIGKILL);
-        }
+        signal_pty_tree(self.group_running(), self.pid, &self.detached, SIGKILL);
     }
+}
+
+/// Signals a PTY's group while it is `ours`, after noting its detached
+/// descendants, then the detached ones still alive.
+#[cfg(unix)]
+fn signal_pty_tree(ours: bool, pid: u32, detached: &Mutex<Detached>, sig: i32) {
+    let mut detached = lock(detached);
+    if ours {
+        detached.remember(pid);
+        signal_group(pid, sig);
+    }
+    detached.signal(sig);
+}
+
+#[cfg(unix)]
+fn lock(detached: &Mutex<Detached>) -> std::sync::MutexGuard<'_, Detached> {
+    detached
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 #[cfg(windows)]
@@ -723,7 +937,7 @@ mod taskkill_tests {
 }
 
 #[cfg(all(test, unix))]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::fs;
     use std::thread;
@@ -855,6 +1069,7 @@ mod tests {
         let group = PtyGroup {
             pid: child.id(),
             done: Arc::new(AtomicBool::new(true)),
+            detached: Arc::default(),
         };
         assert!(!group.running(), "a done group is not running");
         group.terminate();
@@ -880,7 +1095,7 @@ mod tests {
     }
 
     /// The killed grandchild is reparented and reaped by init; poll for it.
-    fn wait_until_gone(pid: u32) -> bool {
+    pub(crate) fn wait_until_gone(pid: u32) -> bool {
         for _ in 0..100 {
             if !process_alive(pid) {
                 return true;
@@ -890,8 +1105,8 @@ mod tests {
         false
     }
 
-    fn wait_for_pid(path: &std::path::Path) -> u32 {
-        for _ in 0..50 {
+    pub(crate) fn wait_for_pid(path: &std::path::Path) -> u32 {
+        for _ in 0..100 {
             if let Ok(text) = fs::read_to_string(path) {
                 if let Ok(pid) = text.trim().parse::<u32>() {
                     return pid;
@@ -932,6 +1147,72 @@ mod tests {
             "the kill ran while its caller still held the registry lock"
         );
         assert!(matches!(shared.try_wait(), Ok(Some(_))), "process killed");
+    }
+
+    /// A `sh -c` line whose program forks a child that leaves the group
+    /// (`setsid`, like Node's `detached: true`) and writes its pid to
+    /// `pid_file`; the parent stays. None when there is no `perl`.
+    pub(crate) fn detached_child_script(
+        pid_file: &std::path::Path,
+        ignore_term: bool,
+    ) -> Option<String> {
+        let perl = Command::new("perl").arg("-e1").status();
+        if !perl.is_ok_and(|status| status.success()) {
+            eprintln!("skipped: no perl to start a detached child");
+            return None;
+        }
+        Some(format!(
+            "perl -MPOSIX -e 'if (fork) {{ sleep 60; exit }} POSIX::setsid(); \
+             $SIG{{TERM}} = \"IGNORE\" if {}; open my $f, \">\", $ARGV[0] or die; \
+             print $f $$; close $f; sleep 60' '{}'",
+            u8::from(ignore_term),
+            pid_file.display()
+        ))
+    }
+
+    /// Kills a leftover test process so a failed run does not leak it.
+    pub(crate) fn reap_leftover(pid: u32) {
+        extern "C" {
+            fn kill(pid: i32, sig: i32) -> i32;
+        }
+        if pid > 1 && crate::test_support::pid_alive(pid) == Some(true) {
+            // SAFETY: kill(2) on one pid the test itself started.
+            unsafe { kill(pid as i32, SIGKILL) };
+        }
+    }
+
+    // Ticket 14yq6g2z34b: a child that left the group (setsid) survived
+    // Stop, even one that ignores SIGTERM until the grace runs out.
+    #[test]
+    fn stopping_kills_a_detached_child_after_the_grace() {
+        let dir = crate::test_support::TempDir::new("stop_detached");
+        let pid_file = dir.join("detached.pid");
+        let Some(script) = detached_child_script(&pid_file, true) else {
+            return;
+        };
+        let shared = SharedProcess::from_child(spawn_group(&script)).expect("adopt");
+        let detached = wait_for_pid(&pid_file);
+        if let Some(stopper) = shared.stop_gracefully(STOP_GRACE) {
+            stopper.join().unwrap();
+        }
+        let gone = wait_until_gone(detached);
+        reap_leftover(detached);
+        assert!(gone, "detached child {detached} survived Stop");
+    }
+
+    #[test]
+    fn kill_tree_kills_a_detached_child() {
+        let dir = crate::test_support::TempDir::new("kill_detached");
+        let pid_file = dir.join("detached.pid");
+        let Some(script) = detached_child_script(&pid_file, false) else {
+            return;
+        };
+        let shared = SharedProcess::from_child(spawn_group(&script)).expect("adopt");
+        let detached = wait_for_pid(&pid_file);
+        shared.kill_tree();
+        let gone = wait_until_gone(detached);
+        reap_leftover(detached);
+        assert!(gone, "detached child {detached} survived kill_tree");
     }
 
     /// `kill(pid, 0)`: works on macOS too (there is no `/proc` there).
