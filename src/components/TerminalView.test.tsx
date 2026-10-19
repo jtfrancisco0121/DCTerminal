@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, renderHook, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 type KeyHandler = (event: KeyboardEvent) => boolean;
@@ -108,6 +108,42 @@ describe("TerminalView context menu dismiss button", () => {
     fireEvent.contextMenu(container.querySelector(".terminal-view")!);
     const dismiss = screen.getByRole("button", { name: "Close menu" });
     fireEvent.keyDown(dismiss, { key: "Escape" });
+    expect(onCancelTurn).not.toHaveBeenCalled();
+  });
+
+  // Shift+Tab from the first item or a second Tab past the dismiss button leaves
+  // the menu. Focus outside it closes the menu so Escape is never half-owned.
+  it("closes when focus leaves the menu and its dismiss button", () => {
+    const { container } = render(
+      <div>
+        <TerminalView ptyId="pty-menu" cwd="/tmp" launch="shell" fontSize={13} />
+        <button type="button">page</button>
+      </div>,
+    );
+    fireEvent.contextMenu(container.querySelector(".terminal-view")!);
+    const items = screen.getAllByRole("menuitem");
+    act(() => items[items.length - 1].focus());
+    expect(screen.getByRole("menu")).toBeTruthy();
+    act(() => screen.getByRole("button", { name: "Close menu" }).focus());
+    expect(screen.getByRole("menu")).toBeTruthy();
+    act(() => screen.getByRole("button", { name: "page" }).focus());
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("leaves a running chat turn alone on Escape from a focused menu item", () => {
+    const onCancelTurn = vi.fn();
+    renderHook(() =>
+      useAppShortcuts({
+        platform: "mac",
+        dialogOpen: false,
+        promptInFlight: true,
+        onAction: () => {},
+        onCancelTurn,
+      }),
+    );
+    const { container } = render(<TerminalView ptyId="pty-menu" cwd="/tmp" launch="shell" fontSize={13} />);
+    fireEvent.contextMenu(container.querySelector(".terminal-view")!);
+    fireEvent.keyDown(screen.getAllByRole("menuitem")[0], { key: "Escape" });
     expect(onCancelTurn).not.toHaveBeenCalled();
   });
 });

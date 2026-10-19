@@ -192,6 +192,20 @@ export function TerminalView({
     return () => window.removeEventListener("keydown", onKey, true);
   }, [menu, ptyId]);
 
+  // The menu has no Tab trap. When focus moves outside the menu and its
+  // dismiss button (Shift+Tab or a second Tab), close it so Escape is never
+  // left half-owned by a closed menu.
+  useEffect(() => {
+    if (!menu) return;
+    const onFocusIn = (event: FocusEvent) => {
+      const target = event.target as Element | null;
+      if (target?.closest?.(".terminal-menu, .terminal-menu-dismiss")) return;
+      setMenu(null);
+    };
+    document.addEventListener("focusin", onFocusIn);
+    return () => document.removeEventListener("focusin", onFocusIn);
+  }, [menu]);
+
   // Files dropped from the OS paste their quoted paths, like a paste. Tauri
   // reports the drop for the whole window, so each view checks the position.
   useEffect(() => {
@@ -516,7 +530,8 @@ export function TerminalView({
           type="button"
           className="terminal-menu-dismiss"
           aria-label="Close menu"
-          // Tab from the menu lands here; Escape still closes the menu, not a turn.
+          // Tab from the last item lands here; Escape closes the menu, not a turn.
+          // Focus moving past it closes the menu (see the focusin effect).
           data-own-escape=""
           onClick={() => setMenu(null)}
         />
