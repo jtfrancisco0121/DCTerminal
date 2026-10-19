@@ -6,6 +6,7 @@ vi.mock("./systemNotify", () => ({ showSystemNotification: vi.fn(async () => tru
 
 import { DEFAULT_NOTIFICATION_SETTINGS, type NotificationSettings } from "./agentNotify";
 import { useAgentNotifications } from "./useAgentNotifications";
+import { CLAUDE_VERSION_NOTICE_SLOT } from "../terminal/claudeVersion";
 
 function setup(opts: {
   focused: boolean;
@@ -91,6 +92,18 @@ describe("useAgentNotifications", () => {
       body: "feat/x",
     });
     expect(showSystem).not.toHaveBeenCalled();
+  });
+
+  it("keeps the Claude version notice when another app notice follows", () => {
+    const { result } = setup({ focused: true });
+    act(() => {
+      result.current.notice("Claude Code version not tested", "you have 2.1.300", "question", CLAUDE_VERSION_NOTICE_SLOT);
+      result.current.notice("Roles did not load", "boom", "question");
+    });
+    expect(result.current.toasts.map((t) => t.title)).toEqual([
+      "Roles did not load",
+      "Claude Code version not tested",
+    ]);
   });
 
   it("sends a test notification regardless of focus", () => {

@@ -903,7 +903,7 @@ export function StartupForm({
     if (rolesError) showNotice("Roles did not load", rolesError, "question");
   }, [rolesError, showNotice]);
   const claudeVersionNotice = useCallback(
-    (title: string, body: string) => showNotice(title, body, "question"),
+    (title: string, body: string, slot: string) => showNotice(title, body, "question", slot),
     [showNotice],
   );
   // Needs-you detection is pinned to one Claude Code version: say so once per window.

@@ -913,6 +913,87 @@ describe("blank tab card", () => {
   });
 });
 
+// M6: Needs-you detection is pinned to one Claude Code version. The version comes
+// from the provider check StartupForm already runs (useProviders).
+describe("Claude Code version notice", () => {
+  let restoreProviderStatus: () => void = () => {};
+
+  beforeEach(async () => {
+    const bridge = await import("./bridge");
+    const { resetClaudeVersionNotices } = await import("./terminal/claudeVersion");
+    resetClaudeVersionNotices();
+    const original = vi.mocked(bridge.providerStatus).getMockImplementation()!;
+    restoreProviderStatus = () => vi.mocked(bridge.providerStatus).mockImplementation(original);
+    vi.mocked(getAppState).mockResolvedValue({
+      activeTabId: "tab_dev",
+      tabs: [
+        {
+          id: "tab_dev",
+          label: "Developer · Feature",
+          roleId: "role_developer",
+          cwd: tab.cwd,
+          phase: "draft",
+          mergedPromptChars: 0,
+          startupPromptSent: false,
+          hasTranscript: false,
+          folderStatus: "ok",
+          color: "#3fb950",
+          kind: "role",
+          terminalLaunch: "",
+          acpSessionId: null,
+        },
+      ],
+      closedTabs: [],
+    });
+    vi.mocked(selectActiveTab).mockResolvedValue({ tab });
+    vi.mocked(getRole).mockImplementation(async () => developer);
+    vi.mocked(listCursorCliHistory).mockResolvedValue([]);
+  });
+
+  afterEach(() => restoreProviderStatus());
+
+  async function renderWithClaude(version: string, rolesError: string | null = null) {
+    const bridge = await import("./bridge");
+    const original = vi.mocked(bridge.providerStatus).getMockImplementation()!;
+    vi.mocked(bridge.providerStatus).mockImplementation(async (id) => {
+      const report = await original(id);
+      return id === "claude" ? { ...report, status: { ...report.status, version } } : report;
+    });
+    vi.mocked(bridge.providerStatus).mockClear();
+    const props: React.ComponentProps<typeof StartupForm> = {
+      roles: [
+        { id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 },
+      ],
+      cli: { found: true, path: "agent", version: "test", error: null },
+      cliError: null,
+      cliFound: true,
+      showDevTools: false,
+      rolesError,
+    };
+    const view = render(<StartupForm {...props} />);
+    await waitFor(() => expect(bridge.providerStatus).toHaveBeenCalledWith("claude"));
+    return { ...view, rerenderSame: () => view.rerender(<StartupForm {...props} />) };
+  }
+
+  it("shows one notice for a Claude Code version other than the tested one", async () => {
+    const { rerenderSame } = await renderWithClaude("2.1.236 (Claude Code)", "roles.json is busy");
+    const toast = await screen.findByRole("button", { name: /Claude Code version not tested/ });
+    expect(toast.textContent).toContain("Needs-you detection was written for Claude Code 2.1.287; you have 2.1.236.");
+    // Another app notice does not replace it.
+    expect(screen.getByRole("button", { name: /Roles did not load/ })).toBeTruthy();
+    rerenderSame();
+    await act(async () => {});
+    expect(screen.getAllByText("Claude Code version not tested")).toHaveLength(1);
+  });
+
+  it("shows no notice for the tested version", async () => {
+    await renderWithClaude("2.1.287 (Claude Code)", "roles.json is busy");
+    await screen.findByRole("button", { name: /Roles did not load/ });
+    await act(async () => {});
+    expect(screen.queryByText("Claude Code version not tested")).toBeNull();
+  });
+});
+
 describe("terminal tab scratch pad", () => {
   beforeEach(() => {
     vi.mocked(listCursorCliHistory).mockResolvedValue([]);
