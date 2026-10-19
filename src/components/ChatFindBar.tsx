@@ -45,7 +45,8 @@ export function ChatFindBar({
   const status = !query.trim() ? "" : count === 0 ? "No results" : `${index + 1} of ${count}`;
 
   return (
-    <div className="chat-find" role="search">
+    // Escape closes the bar; the window shortcut handler must not also cancel the turn.
+    <div className="chat-find" role="search" data-own-escape="">
       <input
         ref={inputRef}
         type="search"
