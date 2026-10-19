@@ -639,6 +639,25 @@ fn a_stage_with_parallel_reviewers_keeps_the_v1_path() {
     assert_eq!(launch::plan_for(&engine2_run(true), &def, &chain(4, None), "role_pr_reviewer"), None);
 }
 
+/// V3: the run actor follows only runs whose every stage reports through
+/// the bridge; any other run starts on engine 1 and keeps the v1 path.
+#[test]
+fn only_a_pipeline_the_bridge_covers_whole_starts_on_engine_2() {
+    let builtin = crate::pipelines::find("full").unwrap();
+    assert_eq!(launch::engine_for(&builtin), launch::ENGINE_V2);
+    assert_eq!(launch::engine_for(&crate::pipelines::find("execute").unwrap()), launch::ENGINE_V2);
+    let mut parallel = builtin.clone();
+    parallel.stages[3].also_reviewers = vec!["role_security_reviewer".into()];
+    assert_eq!(launch::engine_for(&parallel), 1);
+    let mut generic = builtin.clone();
+    generic.stages[0].role_id = "role_general".into();
+    assert_eq!(launch::engine_for(&generic), 1);
+    // Its first stage then starts without the bridge.
+    let start = launch::new_chain(&parallel, "custom", 1);
+    assert_eq!(launch::plan_for_new_run(&parallel, &start, "role_planner"), None);
+    assert!(launch::plan_for_new_run(&builtin, &launch::new_chain(&builtin, "eagle1", 1), "role_planner").is_some());
+}
+
 #[test]
 fn launch_flags_keep_the_prompt_last_and_use_args_arrays() {
     let program = Path::new("/Applications/DCTerminal.app/Contents/MacOS/dcterminal");

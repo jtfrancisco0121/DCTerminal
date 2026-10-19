@@ -28,7 +28,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, UNIX_EPOCH};
 use tauri::ipc::Channel;
@@ -72,6 +72,40 @@ pub struct PtyRegistry {
     /// A replaced program that may still be stopping, so every open of that
     /// id waits for it, not only the one that replaced it.
     stopping: HashMap<String, crate::process_tree::PtyGroup>,
+    /// Terminals the run actor started with no view (V3): their output, kept
+    /// until a view attaches (`pty_open` of that id).
+    detached: HashMap<String, Arc<Mutex<DetachedOutput>>>,
+}
+
+/// Output of a terminal started with no view. Bytes collect (the newest
+/// [`DETACHED_BUFFER`] of them) until a view attaches; then they stream to
+/// it like any terminal's. A view that goes away (a reload) drops back to
+/// collecting, so the next one attaches again.
+pub(crate) struct DetachedOutput {
+    channel: Option<Channel<PtyPacket>>,
+    buffer: Vec<u8>,
+    exit: Option<Option<i32>>,
+    /// Closed or replaced: its exit is nobody's news.
+    replaced: bool,
+}
+
+/// Most bytes a terminal with no view keeps for the view that attaches later.
+const DETACHED_BUFFER: usize = 2 * 1024 * 1024;
+
+fn data_packet(bytes: &[u8]) -> PtyPacket {
+    PtyPacket {
+        kind: "data".to_string(),
+        data: base64::engine::general_purpose::STANDARD.encode(bytes),
+        code: None,
+    }
+}
+
+fn exit_packet(code: Option<i32>) -> PtyPacket {
+    PtyPacket {
+        kind: "exit".to_string(),
+        data: String::new(),
+        code,
+    }
 }
 
 impl PtyRegistry {
@@ -82,12 +116,37 @@ impl PtyRegistry {
             opening: HashMap::new(),
             next_open: 0,
             stopping: HashMap::new(),
+            detached: HashMap::new(),
         }
+    }
+
+    fn forget_detached(&mut self, id: &str) {
+        if let Some(output) = self.detached.remove(id) {
+            if let Ok(mut output) = output.lock() {
+                output.replaced = true;
+            }
+        }
+    }
+
+    /// The terminal's program is running.
+    pub fn running(&self, id: &str) -> bool {
+        self.sessions.get(id).is_some_and(|session| session.group().running())
+    }
+
+    /// Paste `text` into the terminal `id` and press Enter, as the scratch
+    /// pad's Send does (`src/terminal/paste.ts`): one bracketed paste, then CR.
+    pub fn paste(&self, id: &str, text: &str) -> Result<(), String> {
+        let session = self.sessions.get(id).ok_or_else(|| format!("no terminal: {id}"))?;
+        let mut bytes = b"\x1b[200~".to_vec();
+        bytes.extend_from_slice(clean_paste_text(text).as_bytes());
+        bytes.extend_from_slice(b"\x1b[201~\r");
+        session.write(&bytes).map_err(|err| err.to_string())
     }
 
     /// Close the terminal `id`. A replaced program it was still stopping
     /// is forgotten too; its control thread kills it within the grace.
     pub fn kill(&mut self, id: &str) {
+        self.forget_detached(id);
         self.sessions.remove(id);
         self.claude_sessions.remove(id);
         self.opening.remove(id);
@@ -101,6 +160,10 @@ impl PtyRegistry {
     }
 
     pub fn shutdown_all(&mut self) {
+        let ids: Vec<String> = self.detached.keys().cloned().collect();
+        for id in ids {
+            self.forget_detached(&id);
+        }
         self.sessions.clear();
         self.claude_sessions.clear();
         self.opening.clear();
@@ -171,21 +234,81 @@ impl Drop for PtyRegistry {
 fn forward(output: Receiver<PtyOutput>, channel: Channel<PtyPacket>) {
     while let Ok(event) = output.recv() {
         let packet = match event {
-            PtyOutput::Data(bytes) => PtyPacket {
-                kind: "data".to_string(),
-                data: base64::engine::general_purpose::STANDARD.encode(bytes),
-                code: None,
-            },
-            PtyOutput::Exit { code } => PtyPacket {
-                kind: "exit".to_string(),
-                data: String::new(),
-                code,
-            },
+            PtyOutput::Data(bytes) => data_packet(&bytes),
+            PtyOutput::Exit { code } => exit_packet(code),
         };
         if channel.send(packet).is_err() {
             break;
         }
     }
+}
+
+/// [`forward`] for a terminal with no view yet (see [`DetachedOutput`]).
+/// `on_exit` hears the program's exit unless the terminal was closed or
+/// replaced first.
+fn forward_detached(output: Receiver<PtyOutput>, sink: Arc<Mutex<DetachedOutput>>, on_exit: OnExit) {
+    while let Ok(event) = output.recv() {
+        let Ok(mut out) = sink.lock() else {
+            return;
+        };
+        match event {
+            PtyOutput::Data(bytes) => {
+                let sent = out.channel.as_ref().is_some_and(|channel| channel.send(data_packet(&bytes)).is_ok());
+                if !sent {
+                    out.channel = None;
+                    out.buffer.extend_from_slice(&bytes);
+                    if out.buffer.len() > DETACHED_BUFFER {
+                        let drop = out.buffer.len() - DETACHED_BUFFER;
+                        out.buffer.drain(..drop);
+                    }
+                }
+            }
+            PtyOutput::Exit { code } => {
+                out.exit = Some(code);
+                if let Some(channel) = out.channel.as_ref() {
+                    let _ = channel.send(exit_packet(code));
+                }
+                let replaced = out.replaced;
+                drop(out);
+                if !replaced {
+                    on_exit(code);
+                }
+                return;
+            }
+        }
+    }
+}
+
+/// Called once with a detached terminal's exit code.
+pub(crate) type OnExit = Box<dyn FnOnce(Option<i32>) + Send>;
+
+/// Where a terminal's output goes.
+enum Output {
+    /// A view's channel (every terminal the frontend opens).
+    View(Channel<PtyPacket>),
+    /// Nowhere yet: kept for a view that attaches later (the run actor's stages).
+    Detached(OnExit),
+}
+
+/// A view attaching to a terminal the run actor started (`pty_open` with
+/// `attach`): what it printed since no view had it, then everything live.
+/// It replaces a view attached before (one a reload left behind). `None`
+/// when `id` is not such a terminal; `pty_open` then starts one as usual.
+fn attach_detached(registry: &Mutex<PtyRegistry>, id: &str, channel: &Channel<PtyPacket>) -> Result<Option<u32>, String> {
+    let registry = registry.lock().map_err(|err| err.to_string())?;
+    let (Some(sink), Some(session)) = (registry.detached.get(id), registry.sessions.get(id)) else {
+        return Ok(None);
+    };
+    let mut out = sink.lock().map_err(|err| err.to_string())?;
+    if !out.buffer.is_empty() {
+        let buffered = std::mem::take(&mut out.buffer);
+        channel.send(data_packet(&buffered)).map_err(|err| err.to_string())?;
+    }
+    if let Some(code) = out.exit {
+        let _ = channel.send(exit_packet(code));
+    }
+    out.channel = Some(channel.clone());
+    Ok(Some(session.pid()))
 }
 
 /// True while the app theme is a light one. Claude Code reads COLORFGBG to pick
@@ -223,9 +346,21 @@ fn open_session(
     claude_session: Option<String>,
     on_output: Channel<PtyPacket>,
 ) -> Result<Option<u32>, String> {
+    open_session_to(registry, id, spec, claude_session, Output::View(on_output))
+}
+
+/// [`open_session`] with its output going to `output`.
+fn open_session_to(
+    registry: &Mutex<PtyRegistry>,
+    id: &str,
+    spec: SpawnSpec,
+    claude_session: Option<String>,
+    output: Output,
+) -> Result<Option<u32>, String> {
     let (token, stopping) = {
         let mut registry = registry.lock().map_err(|err| err.to_string())?;
         registry.claude_sessions.remove(id);
+        registry.forget_detached(id);
         registry.next_open += 1;
         let token = registry.next_open;
         registry.opening.insert(id.to_string(), token);
@@ -257,10 +392,21 @@ fn open_session(
     let mut session = PtySession::spawn(spec).map_err(|err| err.to_string())?;
     let pid = session.pid();
     if let Some(rx) = session.take_output() {
-        thread::Builder::new()
-            .name(format!("pty-fwd-{id}"))
-            .spawn(move || forward(rx, on_output))
-            .map_err(|err| err.to_string())?;
+        let name = format!("pty-fwd-{id}");
+        match output {
+            Output::View(channel) => thread::Builder::new().name(name).spawn(move || forward(rx, channel)),
+            Output::Detached(on_exit) => {
+                let sink = Arc::new(Mutex::new(DetachedOutput {
+                    channel: None,
+                    buffer: Vec::new(),
+                    exit: None,
+                    replaced: false,
+                }));
+                registry.detached.insert(id.to_string(), sink.clone());
+                thread::Builder::new().name(name).spawn(move || forward_detached(rx, sink, on_exit))
+            }
+        }
+        .map_err(|err| err.to_string())?;
     }
     registry.sessions.insert(id.to_string(), session);
     registry.pin_claude_session(id, claude_session);
@@ -945,6 +1091,77 @@ fn role_terminal_start_blocking(
     })
 }
 
+/// Text safe to paste (`cleanPasteText` in `src/terminal/paste.ts`):
+/// newlines as `\n`, and no control byte but `\t` and `\n`, so nothing in
+/// it can end the bracketed paste early.
+pub(crate) fn clean_paste_text(text: &str) -> String {
+    text.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .chars()
+        .filter(|&ch| ch == '\n' || ch == '\t' || !ch.is_control())
+        .collect()
+}
+
+/// Start a stage terminal for the run actor (V3), with no view: as
+/// [`role_terminal_start`] starts a role terminal (the role's account,
+/// model and run mode, the prompt file for a long prompt), plus the bridge
+/// flags, at 120×40 (D26). A view attaches with `pty_open`. Blocking; no
+/// store lock is held across the spawn. `on_exit` hears the program exit.
+pub(crate) fn start_actor_stage(
+    app: &AppHandle,
+    launch: &crate::run_actor::StageLaunch,
+    on_exit: OnExit,
+) -> Result<(), String> {
+    let store = app.state::<Mutex<StateStore>>();
+    let settings = app.state::<Mutex<SettingsStore>>();
+    let registry = app.state::<Mutex<PtyRegistry>>();
+    let tab_id = launch.tab_id.as_str();
+    let provider = {
+        let state = store.lock().map_err(|err| err.to_string())?;
+        let settings = settings.lock().map_err(|err| err.to_string())?;
+        provider_for_window(&state, settings.providers(), ProviderId::Claude, Some(tab_id))
+    };
+    let mode = {
+        let settings = settings.lock().map_err(|err| err.to_string())?;
+        RunMode::parse(&settings.run_mode_for(&launch.role_id))
+    };
+    let model = crate::models::model_for_tab_provider(&store, &settings, Some(tab_id), &launch.role_id, ProviderId::Claude)?;
+    if let Some(dir) = provider.config_dir() {
+        let mut state = store.lock().map_err(|err| err.to_string())?;
+        state.remember_claude_config(tab_id, &dir.path)?;
+    }
+    let role_launch = |prompt: Option<String>| TerminalLaunch {
+        kind: TerminalKind::Role {
+            role_id: launch.role_id.clone(),
+            run_mode: mode,
+            prompt,
+        },
+        model: Some(model.clone()),
+        session_id: Some(launch.session_id.clone()),
+    };
+    let program = provider.terminal_command(&role_launch(None))?.program;
+    let delivery = store_prompt(app, tab_id, &program, &launch.prompt)?;
+    let mut command = provider.terminal_command(&role_launch(Some(delivery.argument.clone())))?;
+    let has_prompt = !delivery.argument.trim().is_empty();
+    crate::bridge::launch::insert_before_prompt(&mut command.args, has_prompt, launch.bridge_args.clone());
+    command.env.push(claude_scheme_env());
+    open_session_to(
+        &registry,
+        tab_id,
+        SpawnSpec {
+            program: command.program,
+            args: command.args,
+            env: command.env,
+            cwd: launch.cwd.clone(),
+            cols: 120,
+            rows: 40,
+        },
+        Some(launch.session_id.clone()),
+        Output::Detached(on_exit),
+    )?;
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PtyOpenInput {
@@ -961,6 +1178,10 @@ pub struct PtyOpenInput {
     /// Window this terminal belongs to. Omitted means the original window.
     #[serde(default)]
     pub window_id: Option<String>,
+    /// A view opening (not restarting) the terminal: a stage the run actor
+    /// started with no view is attached to instead of started again.
+    #[serde(default)]
+    pub attach: bool,
 }
 
 fn claude_terminal_resume(
@@ -1035,6 +1256,12 @@ fn pty_open_blocking(
     store: State<Mutex<StateStore>>,
     registry: State<Mutex<PtyRegistry>>,
 ) -> Result<u32, String> {
+    // A stage the run actor started with no view: this view attaches to it.
+    if input.attach {
+        if let Some(pid) = attach_detached(&registry, &input.id, &on_output)? {
+            return Ok(pid);
+        }
+    }
     let cwd = validate_working_folder(&input.cwd).map_err(|err| err.message())?;
     let configured = {
         let settings = settings.lock().map_err(|err| err.to_string())?;
@@ -1487,6 +1714,89 @@ mod tests {
             cols: 80,
             rows: 24,
         }
+    }
+
+    /// Every packet a view got, decoded: (kind, text, code).
+    type Seen = Arc<Mutex<Vec<(String, String, Option<i32>)>>>;
+
+    fn recording_view() -> (Channel<PtyPacket>, Seen) {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let into = seen.clone();
+        let channel = Channel::new(move |body| {
+            if let tauri::ipc::InvokeResponseBody::Json(json) = body {
+                let packet: serde_json::Value = serde_json::from_str(&json).unwrap();
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(packet["data"].as_str().unwrap_or_default())
+                    .unwrap_or_default();
+                into.lock().unwrap().push((
+                    packet["kind"].as_str().unwrap_or_default().to_string(),
+                    String::from_utf8_lossy(&bytes).into_owned(),
+                    packet["code"].as_i64().map(|c| c as i32),
+                ));
+            }
+            Ok(())
+        });
+        (channel, seen)
+    }
+
+    // V3: the run actor starts stage terminals before any view exists.
+    #[cfg(unix)]
+    #[test]
+    fn a_terminal_started_with_no_view_keeps_its_output_for_the_view_that_attaches() {
+        let dir = crate::test_support::TempDir::new("pty_detached");
+        let registry = Mutex::new(PtyRegistry::new());
+        let (exit_tx, exit_rx) = std::sync::mpsc::channel();
+        let on_exit: OnExit = Box::new(move |code| {
+            let _ = exit_tx.send(code);
+        });
+        let script = "printf 'hello from the stage'; read line; printf 'bye'; exit 3";
+        open_session_to(&registry, "s", sh_spec(dir.path(), script), None, Output::Detached(on_exit)).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let buffered = {
+                let registry = registry.lock().unwrap();
+                let out = registry.detached["s"].lock().unwrap();
+                String::from_utf8_lossy(&out.buffer).into_owned()
+            };
+            if buffered.contains("hello from the stage") {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "no output kept: {buffered:?}");
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(registry.lock().unwrap().running("s"));
+        let (view, seen) = recording_view();
+        assert!(attach_detached(&registry, "s", &view).unwrap().is_some(), "the first view attaches");
+        assert!(seen.lock().unwrap()[0].1.contains("hello from the stage"), "what it printed so far");
+        // A view after a reload takes over; what was printed meanwhile is all it gets.
+        let (other, _) = recording_view();
+        assert!(attach_detached(&registry, "s", &other).unwrap().is_some());
+        assert!(attach_detached(&registry, "s", &view).unwrap().is_some(), "back to the first view");
+        registry.lock().unwrap().sessions["s"].write(b"\r").unwrap();
+        assert_eq!(exit_rx.recv_timeout(Duration::from_secs(5)).unwrap(), Some(3), "the exit is reported");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !seen.lock().unwrap().iter().any(|p| p.0 == "exit") {
+            assert!(std::time::Instant::now() < deadline, "the view hears the exit");
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(seen.lock().unwrap().iter().any(|p| p.1.contains("bye")), "and streams live after attaching");
+
+        // A terminal closed (or replaced) before it exits reports nothing.
+        let (exit_tx, exit_rx) = std::sync::mpsc::channel();
+        let on_exit: OnExit = Box::new(move |code| {
+            let _ = exit_tx.send(code);
+        });
+        open_session_to(&registry, "t", sh_spec(dir.path(), "sleep 30"), None, Output::Detached(on_exit)).unwrap();
+        registry.lock().unwrap().kill("t");
+        assert!(exit_rx.recv_timeout(Duration::from_secs(5)).is_err(), "a closed terminal's exit is nobody's news");
+        assert!(!registry.lock().unwrap().detached.contains_key("t"), "closing forgets it");
+        registry.lock().unwrap().shutdown_all();
+    }
+
+    #[test]
+    fn a_paste_keeps_newlines_and_drops_what_could_end_it_early() {
+        assert_eq!(clean_paste_text("a\r\nb\rc\n\td"), "a\nb\nc\n\td");
+        assert_eq!(clean_paste_text("x\u{1b}[201~y\u{7}"), "x[201~y");
     }
 
     /// Open a terminal whose program takes 0.4 s to exit on SIGTERM (like

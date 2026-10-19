@@ -33,7 +33,7 @@
 //! ```
 //!
 //! `launch` decides which tabs launch bridged and builds their flags;
-//! `watch` hands finished turns to the frontend.
+//! `watch` hands finished turns to the run actor (`run_actor`, V3).
 
 pub mod folder;
 mod hook;

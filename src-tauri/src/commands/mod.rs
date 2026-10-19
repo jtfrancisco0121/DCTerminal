@@ -10,7 +10,7 @@ mod dev_session;
 mod forms;
 mod github;
 mod handoff;
-mod pipeline;
+pub(crate) mod pipeline;
 mod model_session;
 mod prompt_worker;
 mod prompts;
@@ -61,7 +61,7 @@ pub use pipeline::{
     pipeline_approve, pipeline_claim_handoff, pipeline_lane_status, pipeline_note,
     pipeline_release_handoff, pipeline_turn_finished,
     pipeline_promote_plan, pipeline_run_gates, pipeline_set_autopilot, pipeline_set_candidate_plan,
-    pipeline_bridge_turn, pipeline_run_tasks,
+    pipeline_run_tasks, pipeline_actor_message,
 };
 pub use model_session::{acp_set_effort, acp_set_model};
 pub use run_recovery::{pipeline_continue, spawn_run_recovery};

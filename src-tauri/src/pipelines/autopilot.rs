@@ -568,7 +568,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
 /// The round a reviewer stage is on along its loop-back edge: the recorded
 /// send-backs of any of its roles (in its lane, or the run) plus one. A
 /// specialist's manual send-back counts too. Other edges do not count.
-fn review_round(run: &PipelineRun, lane: Option<&str>, stage: &StageDef) -> u32 {
+pub(crate) fn review_round(run: &PipelineRun, lane: Option<&str>, stage: &StageDef) -> u32 {
     let verdicts = match lane.and_then(|id| run.lane(id)) {
         Some(l) => &l.verdicts,
         None => &run.verdicts,

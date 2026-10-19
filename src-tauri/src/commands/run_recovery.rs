@@ -239,9 +239,10 @@ pub fn spawn_run_recovery(app: AppHandle) {
 }
 
 /// Continue after a restart: the run carries on (`running`), and the tabs of
-/// its current stage are returned so the frontend decides the turn they
-/// finished while the app was closed. Only a run waiting with
-/// `app_restarted` continues this way.
+/// its current stage are returned so the turn they finished while the app
+/// was closed is decided (by the frontend on an engine-1 run, by the run
+/// actor on an engine-2 run). Only a run waiting with `app_restarted`
+/// continues this way.
 pub fn continue_after_restart(store: &mut StateStore, run_id: &str) -> Result<Vec<String>, String> {
     let run = store
         .pipeline_run_by_id_mut(run_id)

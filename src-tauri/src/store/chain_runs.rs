@@ -143,7 +143,8 @@ impl StateStore {
                     claims: Vec::new(),
                     status: RunStatus::Stopped,
                     stop_reason: None,
-                    engine: crate::bridge::launch::ENGINE_V2,
+                    engine: crate::pipelines::find(&kind)
+                        .map_or(1, |def| crate::bridge::launch::engine_for(&def)),
                 });
                 chain.chain_id.clone()
             }
