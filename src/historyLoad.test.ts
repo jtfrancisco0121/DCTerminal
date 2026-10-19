@@ -41,6 +41,25 @@ describe("loadHistoryInTwoPasses", () => {
     expect(failing).toEqual([["all"]]);
   });
 
+  it("clears the quick rows when the full pass fails, and ignores a late quick pass", async () => {
+    const shown: string[][] = [];
+    const quickFirst = loadHistoryInTwoPasses(async () => ["own"], async () => {
+      await flush();
+      throw new Error("boom");
+    }, (rows) => shown.push(rows), () => false);
+    await expect(quickFirst).rejects.toThrow("boom");
+    expect(shown).toEqual([["own"], []]);
+
+    const late = deferred<string[]>();
+    const lateShown: string[][] = [];
+    await expect(
+      loadHistoryInTwoPasses(() => late.promise, async () => Promise.reject(new Error("boom")), (rows) => lateShown.push(rows), () => false),
+    ).rejects.toThrow("boom");
+    late.resolve(["late"]);
+    await flush();
+    expect(lateShown).toEqual([[]]);
+  });
+
   it("shows nothing once cancelled and passes the full pass's error on", async () => {
     const shown: string[][] = [];
     await loadHistoryInTwoPasses(async () => ["own"], async () => ["all"], (rows) => shown.push(rows), () => true);

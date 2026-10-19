@@ -2,7 +2,8 @@
  * Start form history in two passes. The quick pass reads only the folder's
  * own sessions and shows them first; the full pass reads every project and
  * replaces them, so the final rows are exactly what one full read returns.
- * A quick pass that fails, or ends after the full one, is ignored.
+ * A quick pass that fails, or ends after the full one, is ignored. A full
+ * pass that fails clears any quick rows, so only its error shows.
  */
 export function loadHistoryInTwoPasses<T>(
   quick: (() => Promise<T[]>) | null,
@@ -23,6 +24,7 @@ export function loadHistoryInTwoPasses<T>(
     if (!isCancelled()) onRows(rows);
   }, (err: unknown) => {
     fullDone = true;
+    if (!isCancelled()) onRows([]);
     throw err;
   });
 }

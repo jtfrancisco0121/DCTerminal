@@ -51,6 +51,35 @@ struct Refresh {
     cache: PathBuf,
 }
 
+/// The refresh's running shell, so app exit can stop it: see
+/// [`stop_login_path_refresh`].
+#[cfg(unix)]
+static REFRESH_CHILD: std::sync::Mutex<RefreshChild> = std::sync::Mutex::new(RefreshChild::NEW);
+
+#[cfg(unix)]
+#[derive(Debug)]
+struct RefreshChild {
+    /// Set at app exit: a refresh that has not started its shell yet never does.
+    stopped: bool,
+    /// The shell's pid (it leads its own process group) and its temp file.
+    running: Option<(i32, PathBuf)>,
+}
+
+#[cfg(unix)]
+impl RefreshChild {
+    const NEW: Self = Self {
+        stopped: false,
+        running: None,
+    };
+}
+
+#[cfg(unix)]
+extern "C" {
+    fn kill(pid: i32, sig: i32) -> i32;
+}
+#[cfg(unix)]
+const SIGKILL: i32 = 9;
+
 #[cfg(unix)]
 #[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct CachedPath {
@@ -132,10 +161,32 @@ pub fn spawn_login_path_refresh() {
         };
         let spawned = std::thread::Builder::new()
             .name("login-path-refresh".into())
-            .spawn(move || refresh_cache(refresh, REFRESH_TIMEOUT));
+            .spawn(move || refresh_cache(refresh, REFRESH_TIMEOUT, &REFRESH_CHILD));
         if let Err(err) = spawned {
             eprintln!("DCTerminal: login PATH refresh not started: {err}");
         }
+    }
+}
+
+/// App exit: kill the background refresh's shell (its whole process group)
+/// and remove its temp file, so neither outlives the app. A refresh that has
+/// not started its shell yet will not start one.
+pub fn stop_login_path_refresh() {
+    #[cfg(unix)]
+    stop_refresh(&REFRESH_CHILD);
+}
+
+#[cfg(unix)]
+fn stop_refresh(slot: &std::sync::Mutex<RefreshChild>) {
+    let Ok(mut child) = slot.lock() else {
+        return;
+    };
+    child.stopped = true;
+    if let Some((pid, out_path)) = child.running.take() {
+        // Safety: signals only the shell's own group; no Rust state. The
+        // poll loop reaps it.
+        unsafe { kill(-pid, SIGKILL) };
+        let _ = std::fs::remove_file(out_path);
     }
 }
 
@@ -187,8 +238,8 @@ fn refresh_for(
 }
 
 #[cfg(unix)]
-fn refresh_cache(refresh: &Refresh, timeout: Duration) {
-    match shell_path(&refresh.shell, Some(&refresh.inherited), timeout) {
+fn refresh_cache(refresh: &Refresh, timeout: Duration, slot: &std::sync::Mutex<RefreshChild>) {
+    match shell_path(&refresh.shell, Some(&refresh.inherited), timeout, Some(slot)) {
         Some(login) => write_cache(&refresh.cache, &refresh.shell, &login),
         // Keep the old cache: one slow or failed run says little.
         None => eprintln!(
@@ -333,7 +384,7 @@ fn login_shell() -> PathBuf {
 
 #[cfg(unix)]
 fn resolve(shell: &Path, inherited: &str, home: Option<&Path>, timeout: Duration) -> Resolved {
-    let login = shell_path(shell, None, timeout);
+    let login = shell_path(shell, None, timeout, None);
     let source = if login.is_some() {
         Source::LoginShell
     } else {
@@ -407,6 +458,8 @@ fn parse_marked(output: &str) -> Option<String> {
 /// Run the login shell and read its PATH; `None` on failure, or on a timeout
 /// before the shell printed both markers. `path_env` replaces the PATH the
 /// shell starts with (the refresh passes the PATH this process inherited).
+/// With `slot`, the running shell is recorded there so [`stop_refresh`] can
+/// kill it, and no shell starts once the slot is stopped.
 ///
 /// stdout goes to a temp file rather than a pipe: no reader thread is needed,
 /// a chatty rc file cannot fill a pipe and stall, and a background job the
@@ -414,15 +467,18 @@ fn parse_marked(output: &str) -> Option<String> {
 /// session (no controlling terminal), like a Dock launch, so an interactive
 /// shell started from a dev terminal cannot take over that terminal.
 #[cfg(unix)]
-fn shell_path(shell: &Path, path_env: Option<&str>, timeout: Duration) -> Option<String> {
+fn shell_path(
+    shell: &Path,
+    path_env: Option<&str>,
+    timeout: Duration,
+    slot: Option<&std::sync::Mutex<RefreshChild>>,
+) -> Option<String> {
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
 
     extern "C" {
         fn setsid() -> i32;
-        fn kill(pid: i32, sig: i32) -> i32;
     }
-    const SIGKILL: i32 = 9;
 
     let out_path = std::env::temp_dir().join(format!(
         "dct-shell-env-{}-{}",
@@ -457,19 +513,37 @@ fn shell_path(shell: &Path, path_env: Option<&str>, timeout: Duration) -> Option
             Ok(())
         });
     }
+    // The slot stays locked from the stopped check to the record, and while
+    // each poll reaps, so a stop never signals a reaped (reusable) pid.
+    let lock = || slot.and_then(|slot| slot.lock().ok());
+    let mut guard = lock();
+    if guard.as_ref().is_some_and(|child| child.stopped) {
+        let _ = std::fs::remove_file(&out_path);
+        return None;
+    }
+    let spawned = command.spawn();
+    if let (Some(child), Ok(spawned)) = (guard.as_mut(), spawned.as_ref()) {
+        if let Ok(pid) = i32::try_from(spawned.id()) {
+            child.running = Some((pid, out_path.clone()));
+        }
+    }
+    drop(guard);
     // Whether the shell started; after a timeout the file still holds
     // whatever it printed, often the whole PATH (a shell that hangs after
     // the command ran: a sleep in `.zlogout`, an exit trap). A slow rc file
     // runs before the command, so it prints nothing in time.
-    let started = match command.spawn() {
+    let started = match spawned {
         Ok(mut child) => {
             let deadline = Instant::now() + timeout;
             loop {
+                let mut guard = lock();
                 match child.try_wait() {
-                    Ok(Some(_)) => break true,
                     Ok(None) if Instant::now() < deadline => {
+                        drop(guard);
                         std::thread::sleep(Duration::from_millis(10));
+                        continue;
                     }
+                    Ok(Some(_)) => {}
                     _ => {
                         // The shell leads its own process group (setsid), so
                         // this also stops anything the rc file started.
@@ -479,9 +553,12 @@ fn shell_path(shell: &Path, path_env: Option<&str>, timeout: Duration) -> Option
                         }
                         let _ = child.kill();
                         let _ = child.wait();
-                        break true;
                     }
                 }
+                if let Some(slot) = guard.as_mut() {
+                    slot.running = None;
+                }
+                break true;
             }
         }
         Err(_) => false,
@@ -576,7 +653,7 @@ mod tests {
 
     #[test]
     fn real_sh_reports_its_path_through_the_script() {
-        let resolved = shell_path(Path::new("/bin/sh"), None, Duration::from_secs(5));
+        let resolved = shell_path(Path::new("/bin/sh"), None, Duration::from_secs(5), None);
         assert!(resolved.is_some_and(|path| !path.is_empty()));
     }
 
@@ -695,7 +772,7 @@ mod tests {
             inherited: "/inherited/bin:/usr/bin:/bin".into(),
             cache: cache.clone(),
         };
-        refresh_cache(&refresh, Duration::from_secs(5));
+        refresh_cache(&refresh, Duration::from_secs(5), &std::sync::Mutex::new(RefreshChild::NEW));
         assert_eq!(
             read_cache(&cache, &shell).as_deref(),
             Some("/inherited/bin:/usr/bin:/bin")
@@ -707,7 +784,7 @@ mod tests {
             cache: cache.clone(),
         };
         write_cache(&cache, &broken.shell, "/kept/bin");
-        refresh_cache(&broken, Duration::from_secs(1));
+        refresh_cache(&broken, Duration::from_secs(1), &std::sync::Mutex::new(RefreshChild::NEW));
         assert_eq!(read_cache(&cache, &broken.shell).as_deref(), Some("/kept/bin"));
     }
 
@@ -738,7 +815,7 @@ mod tests {
             Some(cache.clone()),
         )
         .expect("an unanswered startup shell arms the refresh");
-        refresh_cache(&refresh, Duration::from_secs(10));
+        refresh_cache(&refresh, Duration::from_secs(10), &std::sync::Mutex::new(RefreshChild::NEW));
 
         let next = startup_path(
             &shell,
@@ -764,6 +841,59 @@ mod tests {
         )
         .is_none());
         assert!(refresh_for(Source::Inherited, shell, String::new(), None).is_none());
+    }
+
+    #[test]
+    fn stopping_the_refresh_kills_its_shell_and_removes_its_temp_file() {
+        let dir = TempDir::new("shell_env_refresh_stop");
+        let finished = dir.join("finished");
+        let shell = fake_shell(
+            &dir,
+            &format!(
+                "sleep 1\ntouch '{}'\necho {START_MARKER}\necho /late/bin\necho {END_MARKER}",
+                finished.display()
+            ),
+        );
+        let cache = dir.join("data").join(CACHE_FILE);
+        let refresh = Refresh {
+            shell: shell.clone(),
+            inherited: "/usr/bin:/bin".into(),
+            cache: cache.clone(),
+        };
+        let slot = std::sync::Mutex::new(RefreshChild::NEW);
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| refresh_cache(&refresh, Duration::from_secs(15), &slot));
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let (pid, tmp) = loop {
+                if let Some(running) = slot.lock().unwrap().running.clone() {
+                    break running;
+                }
+                assert!(Instant::now() < deadline, "the refresh never started its shell");
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            assert!(tmp.exists());
+            let stopped = Instant::now();
+            stop_refresh(&slot);
+            // Safety: signal 0 only checks that the pid exists.
+            while unsafe { kill(pid, 0) } == 0 && stopped.elapsed() < Duration::from_secs(1) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(
+                stopped.elapsed() < Duration::from_secs(1),
+                "the refresh shell still runs after stop"
+            );
+            assert!(!tmp.exists(), "the refresh left its temp file behind");
+            worker.join().unwrap();
+        });
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(!finished.exists(), "the killed shell's group kept running");
+        assert_eq!(read_cache(&cache, &shell), None);
+
+        // A refresh that starts after the stop runs no shell.
+        let started = Instant::now();
+        refresh_cache(&refresh, Duration::from_secs(15), &slot);
+        assert!(started.elapsed() < Duration::from_millis(500), "{:?}", started.elapsed());
+        assert_eq!(read_cache(&cache, &shell), None);
     }
 
     #[test]
