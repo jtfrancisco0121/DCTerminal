@@ -55,6 +55,7 @@ import {
   laneBranch,
   laneNote,
   lanesFromReply,
+  lanesFromTasks,
   parsePullRequestPlan,
   startLane,
 } from "./fanOut";
@@ -87,6 +88,20 @@ describe("pull-request plan", () => {
       ["pr4", []],
     ]);
     expect(lanesFromReply("## HANDOFF: Pull requests\nOne pull request.")).toEqual([]);
+  });
+
+  it("lanes from the Planner's tasks.json skip manual steps and carry each task's summary (engine 2)", () => {
+    const tasks = [
+      { id: "pr1", title: "Token refresh", dependsOn: [], manual: false, summary: "Refresh expired tokens." },
+      { id: "pr2", title: "Login screen", dependsOn: ["pr1", "pr3"], manual: false, summary: "The new screen." },
+      { id: "pr3", title: "Release v2", dependsOn: ["pr2"], manual: true, summary: "Cut the release." },
+    ];
+    expect(lanesFromTasks(tasks)).toEqual([
+      { id: "pr1", title: "PR1 — Token refresh", dependsOn: [], manual: false, summary: "Refresh expired tokens." },
+      { id: "pr2", title: "PR2 — Login screen", dependsOn: ["pr1"], manual: false, summary: "The new screen." },
+    ]);
+    expect(lanesFromTasks(tasks.slice(0, 1))).toEqual([]);
+    expect(laneNote(lanesFromTasks(tasks)[1], lanesFromTasks(tasks), "ee_1")).toContain("Its scope: The new screen.");
   });
 
   it("a lane note names the lane, the others, and what it builds on", () => {
@@ -174,6 +189,30 @@ describe("fan out", () => {
       { chainId: "ee_1", kind: "eagle1", step: 3, total: 4, lane: "pr1" },
       { chainId: "ee_1", kind: "eagle1", step: 3, total: 4, lane: "pr2" },
       { chainId: "ee_1", kind: "eagle1", step: 3, total: 4, lane: "pr4" },
+    ]);
+  });
+
+  it("an engine-2 run fans out from the Planner's tasks, not the reply's list", async () => {
+    const startTerminal = vi.fn(async (tabId: string) => tabId);
+    const tasks = [
+      { id: "pr1", title: "API", dependsOn: [], manual: false, summary: "The endpoint." },
+      { id: "pr2", title: "Web", dependsOn: ["pr1"], manual: false, summary: "The page." },
+    ];
+    const result = await fanOutRun(
+      {
+        run,
+        stage: pipelineDef("eagle1")!.stages[2],
+        // The reply says one pull request: the tasks decide.
+        source: { ...source, latestMessage: "## HANDOFF: Pull requests\nOne pull request." },
+        sourceChain: { chainId: "ee_1", kind: "eagle1", step: 2, total: 4 },
+        tasks,
+      },
+      { startTerminal, syncForm: vi.fn(async () => {}), refreshTabs: async () => {}, roles: null },
+    );
+    expect(result).toEqual({ started: ["pr1"], waiting: ["pr2"] });
+    expect(vi.mocked(pipelineFanOut).mock.calls[0][2]).toEqual([
+      { id: "pr1", title: "PR1 — API", dependsOn: [] },
+      { id: "pr2", title: "PR2 — Web", dependsOn: ["pr1"] },
     ]);
   });
 

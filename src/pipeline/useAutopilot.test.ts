@@ -815,6 +815,97 @@ describe("useAutopilot", () => {
       expect(vi.mocked(chainLoopBack).mock.calls[0][0]).toMatchObject({ verdict: "REQUEST CHANGES", tabId: "impl" });
     });
 
+    it("a bridged Implementer's checks use the pull requests it reported, then it advances", async () => {
+      vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+      vi.mocked(pipelineDecide).mockResolvedValue({
+        action: "advance",
+        stageId: "pr_reviewer",
+        roleId: "role_pr_reviewer",
+        reason: "on to PR Reviewer",
+      });
+      const impl = { ...tab("impl", "role_implementer", 3), bridge: { runId: "ee_1", stage: "implementer" } } as TabSummary;
+      const turn = bridgeTurn({
+        tabId: "impl",
+        stageKey: "implementer",
+        stageId: "implementer",
+        roleId: "role_implementer",
+        // The reply names no pull request: the tool's prs[] does.
+        lastAssistantMessage: "Done.",
+        blocked: false,
+        result: {
+          schema: 1,
+          prs: [{ url: "https://github.com/jt/app/pull/9", branch: "feat/x", title: "X" }],
+          summary: "Built X.",
+        },
+      });
+      // Still the stage's latest turn once its checks ran.
+      vi.mocked(pipelineBridgeTurn).mockResolvedValue(turn);
+      const { deps, onBridgeTurn } = setup([impl]);
+      onBridgeTurn(turn);
+      await waitFor(() => expect(deps.startTerminal).toHaveBeenCalled());
+      expect(pipelineRunGates).toHaveBeenCalledWith(
+        "ee_1",
+        "implementer",
+        "/repo",
+        ["https://github.com/jt/app/pull/9"],
+        null,
+        1,
+      );
+      expect(vi.mocked(pipelineDecide).mock.calls[0][1]).toMatchObject({
+        stageId: "implementer",
+        verdict: null,
+        findings: [],
+        missingSections: [],
+        noResult: false,
+        turn: "impl|bridge|p-1",
+      });
+      expect(deps.startTerminal).toHaveBeenCalledWith(expect.objectContaining({ roleId: "role_pr_reviewer" }));
+    });
+
+    it("a bridged Planner's handed-over plan advances to the Plan Reviewer with the plan", async () => {
+      vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+      vi.mocked(pipelineDecide).mockResolvedValue({
+        action: "advance",
+        stageId: "plan_reviewer",
+        roleId: "role_plan_reviewer",
+        reason: "on to Plan Reviewer",
+      });
+      const planner = { ...tab("plan", "role_planner", 1), bridge: { runId: "ee_1", stage: "planner" } } as TabSummary;
+      // The session log still holds the ExitPlanMode plan the bridge denied as received.
+      vi.mocked(terminalSessionLog).mockResolvedValue({
+        ...log("Plan received; here is a summary."),
+        plan: "# Plan\n\n## HANDOFF: Plan\n1. Do it.",
+        planAt: "2026-10-19T00:00:01Z",
+        lastPromptAt: "2026-10-19T00:00:00Z",
+      });
+      const { deps, onBridgeTurn } = setup([planner]);
+      onBridgeTurn(
+        bridgeTurn({
+          tabId: "plan",
+          stageKey: "planner",
+          stageId: "planner",
+          roleId: "role_planner",
+          lastAssistantMessage: "Plan received; here is a summary.",
+          blocked: false,
+          result: {
+            schema: 1,
+            tasks: [{ id: "pr1", title: "Do it", dependsOn: [], manual: false, summary: "All of it." }],
+          },
+        }),
+      );
+      await waitFor(() => expect(deps.startTerminal).toHaveBeenCalled());
+      expect(vi.mocked(pipelineDecide).mock.calls[0][1]).toMatchObject({
+        stageId: "planner",
+        verdict: null,
+        missingSections: [],
+        noResult: false,
+      });
+      const started = vi.mocked(deps.startTerminal).mock.calls[0][0];
+      expect(started.roleId).toBe("role_plan_reviewer");
+      expect(started.chain).toMatchObject({ chainId: "ee_1", step: 2 });
+      expect(Object.values(started.values).join("\n") + (started.handoffPlan ?? "")).toContain("1. Do it.");
+    });
+
     it("a turn that ended without the tool is decided as no_result", async () => {
       vi.mocked(getPipelineRun).mockResolvedValue(run(true));
       vi.mocked(pipelineDecide).mockResolvedValue({ action: "stop", reason: "no result" });

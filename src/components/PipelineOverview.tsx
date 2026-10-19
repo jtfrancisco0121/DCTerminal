@@ -1,20 +1,21 @@
 import { useCallback, useEffect, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { DisabledReason } from "./DisabledReason";
-import type { GateResult, PipelineRun, TabSummary } from "../bridge";
+import type { GateResult, PipelineRun, PlannedTask, TabSummary } from "../bridge";
 import {
   exportTextFile,
   getPipelineRun,
   listenChainRunUpdated,
   pipelinePromotePlan,
   pipelineRunGates,
+  pipelineRunTasks,
   pipelineSetAutopilot,
   pipelineSetCandidatePlan,
 } from "../bridge";
 import { maxRounds, pipelineDef, pipelineStages, type StageDef } from "../pipeline/defs";
 import { eventLabel, eventTime, followUps, formatRunReport, reviewRound, stageTitle } from "../pipeline/runReport";
 import { githubPrUrls } from "../handoff/map";
-import { lanesFromReply } from "../pipeline/prPlan";
+import { lanesFromReply, lanesFromTasks } from "../pipeline/prPlan";
 import { errorText } from "./InlineNotice";
 import { RunLanes } from "./RunLanes";
 import {
@@ -141,12 +142,23 @@ export function PipelineOverview({
   const [approvedOpen, setApprovedOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [checking, setChecking] = useState<Record<string, boolean>>({});
+  /** Engine 2: the Planner's tasks (`tasks.json`), which the fan-out offer reads. */
+  const [runTasks, setRunTasks] = useState<PlannedTask[] | null>(null);
 
   const reload = useCallback(async () => {
     try {
       const view = await getPipelineRun(runId);
       setRun(view.run);
       setLoadError(null);
+      if ((view.run.engine ?? 1) >= 2) {
+        let planned: PlannedTask[] | null = null;
+        try {
+          planned = (await pipelineRunTasks(runId))?.tasks ?? null;
+        } catch {
+          // intentionally silent: without tasks.json the offer reads the plan stage's reply.
+        }
+        setRunTasks(planned);
+      }
       setCandidateDraft((prev) => prev || view.run.candidatePlan || "");
       setApprovedDraft((prev) => prev || view.run.approvedPlan || "");
     } catch (err: unknown) {
@@ -371,13 +383,17 @@ export function PipelineOverview({
   const lanes = run.lanes ?? [];
   // From the fan-out stage on, rounds are per lane (shown in Pull requests).
   const fanOutIndex = run.fanOutStage ? stageDefs.findIndex((s) => s.id === run.fanOutStage) : -1;
-  // Fan-out reads the pull-request list in the reply of the stage before the Implementer.
+  // Fan-out reads the Planner's tasks (engine 2), else the pull-request list
+  // in the reply of the stage before the Implementer.
   const fanStage = stageDefs.find((s) => s.roleId === "role_implementer") ?? null;
   const planStage = fanStage ? stageDefs[stageDefs.indexOf(fanStage) - 1] ?? null : null;
   const planTab = planStage ? tabs.find((t) => t.id === run.tabIds[planStage.roleId]) : undefined;
+  // Engine 2 reads the Planner's tasks.json; otherwise the plan stage's reply.
   const plannedPrs =
     run.chainId && !lanes.length && planTab && fanStage
-      ? lanesFromReply(stageReply(planTab, runtimes[planTab.id], terminalReader, sessionLogs))
+      ? runTasks
+        ? lanesFromTasks(runTasks)
+        : lanesFromReply(stageReply(planTab, runtimes[planTab.id], terminalReader, sessionLogs))
       : [];
   const implementerStarted = !!fanStage && !!tabs.find(
     (t) => t.id === run.tabIds[fanStage.roleId] && t.phase !== "draft",

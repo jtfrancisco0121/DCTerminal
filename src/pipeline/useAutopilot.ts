@@ -55,6 +55,8 @@ import { parseReviewVerdict } from "../handoff/verdict";
 import { roleDisplayName } from "../handoff/transitions";
 import {
   bridgeFindingsText,
+  bridgePrUrls,
+  bridgeReview,
   bridgeTurnReport,
   bridgeVerdict,
   finishedTurn,
@@ -390,7 +392,7 @@ export function useAutopilot(deps: AutopilotDeps) {
             stageId: placed.stage.id,
             roleId: tab.roleId,
             lane,
-            verdict: turn.outcome === "result" ? bridgeVerdict(turn.result?.verdict, revise) : null,
+            verdict: bridgeVerdict(bridgeReview(turn)?.verdict, revise),
           }).catch(() => {});
           if (!view?.run.autopilot?.enabled) return;
           // Complete is final: a late turn changes nothing.
@@ -406,7 +408,9 @@ export function useAutopilot(deps: AutopilotDeps) {
           const job: Job = { tab, chain, log, awaitingPlan: false };
           const round = currentRound(view.run, lane);
           if (acting && placed.stage.gates?.length) {
-            await pipelineRunGates(runId, placed.stage.id, tab.cwd, githubPrUrls(reply), lane, round);
+            // A bridged Implementer named its pull requests through submit_result.
+            const prs = bridgePrUrls(turn) ?? githubPrUrls(reply);
+            await pipelineRunGates(runId, placed.stage.id, tab.cwd, prs, lane, round);
             // The checks take a while: a turn started since is the stage's result now.
             // intentionally silent: an unreadable stage counts as unchanged.
             const latest = await pipelineBridgeTurn(tab.id).catch(() => turn);
@@ -425,7 +429,7 @@ export function useAutopilot(deps: AutopilotDeps) {
           const report = bridgeTurnReport({ stage: placed.stage, turn, usage, lane, revise });
           const decision = await pipelineDecide(runId, { ...report, round, turn: `${tab.id}|bridge|${turn.turn}` });
           claimed = decision.claim;
-          const findings = bridgeFindingsText(turn.result?.findings ?? []);
+          const findings = bridgeFindingsText(bridgeReview(turn)?.findings ?? []);
           await carryOut(job, runId, decision, reply, report.verdict, findings);
           claimed = undefined;
         } catch (err: unknown) {

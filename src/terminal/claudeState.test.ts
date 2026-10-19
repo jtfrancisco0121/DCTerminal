@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  BRIDGE_NEEDS_GRACE_MS,
+  bridgeNeedsAfterRead,
   deriveTerminalState,
   dialogAfterRead,
   dialogDrawn,
@@ -345,5 +347,49 @@ describe("dialog owner", () => {
   it("does nothing while no dialog is shown", () => {
     expect(read(undefined, log([]), 200)).toEqual({ owner: undefined, clear: false });
     expect(shown(undefined, log(["toolu_a"]))).toBe(null);
+  });
+});
+
+describe("bridged Needs you (PermissionRequest hook, D22)", () => {
+  const bash = open("Bash", "toolu_b1", "git push");
+  const mark = { tool: "Bash", at: 1_000, key: "p-1|t" };
+
+  it("needs permission at once, naming the hooked tool, before any dialog is scraped", () => {
+    const log = { turnDone: false, openTool: bash, pendingTools: [open("Read", "toolu_r1"), bash] };
+    expect(derive({ log, bridgeNeeds: mark })).toEqual({
+      kind: "needs",
+      needs: "permission",
+      toolId: "toolu_b1",
+      toolTitle: "Bash: x",
+      promptKey: "bridge:p-1|t",
+    });
+    // The hook comes first: a dialog the screen shows for the same prompt does not change the state.
+    expect(derive({ log, bridgeNeeds: mark, dialogTool: onScreen(bash, "9") })).toMatchObject({ promptKey: "bridge:p-1|t" });
+    // Before the log caught up: still needs you, under the hook's tool name.
+    expect(derive({ log: { turnDone: true, openTool: null }, bridgeNeeds: mark })).toMatchObject({
+      kind: "needs",
+      needs: "permission",
+      toolTitle: "Bash",
+    });
+    // The Notification backup names no tool: the first tool waiting on a dialog.
+    expect(derive({ log, bridgeNeeds: { ...mark, tool: null } })).toMatchObject({ toolId: "toolu_r1" });
+    expect(derive({ exitCode: 1, bridgeNeeds: mark })).toEqual({ kind: "exited", code: 1 });
+  });
+
+  it("clears once a read made after it shows the tool answered or the turn over", () => {
+    const waiting = { turnDone: false, openTool: bash, pendingTools: [bash] };
+    const after = mark.at + BRIDGE_NEEDS_GRACE_MS;
+    // A read from before the hook (or just after it, while the log catches up) changes nothing.
+    expect(bridgeNeedsAfterRead(mark, { turnDone: true, openTool: null }, after - 1)).toBe(mark);
+    expect(bridgeNeedsAfterRead(mark, null, after + 5)).toBe(mark);
+    expect(bridgeNeedsAfterRead(mark, waiting, after)).toBe(mark);
+    expect(bridgeNeedsAfterRead(mark, { turnDone: false, openTool: null, pendingTools: [] }, after)).toBeUndefined();
+    expect(bridgeNeedsAfterRead(mark, { turnDone: true, openTool: null }, after)).toBeUndefined();
+    const backup = { ...mark, tool: null };
+    expect(bridgeNeedsAfterRead(backup, waiting, after)).toBe(backup);
+    // Plans and questions show their own prompt: they are not a permission dialog.
+    const plan = open("ExitPlanMode", "toolu_p1");
+    expect(bridgeNeedsAfterRead(backup, { turnDone: false, openTool: plan, pendingTools: [plan] }, after)).toBeUndefined();
+    expect(bridgeNeedsAfterRead(undefined, waiting, after)).toBeUndefined();
   });
 });

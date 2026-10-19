@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
   acpSetModel,
   getPipelineRun,
+  pipelineRunTasks,
   type PipelineRun,
   type RunLane,
   closeTab,
@@ -29,6 +30,7 @@ import {
   diagnosticsStatus,
   sessionAgentLogs,
   listenAutopilotStopped,
+  listenBridgeNeeds,
   listenBridgeTurn,
   listenPermissionAuto,
   listenPermissionRequests,
@@ -249,6 +251,7 @@ import {
   type SessionLogPollState,
 } from "./terminal/sessionLogPoll";
 import {
+  bridgeNeedsAfterRead,
   deriveTerminalState,
   dialogAfterRead,
   dialogDrawn,
@@ -258,6 +261,7 @@ import {
   sameTerminalState,
   terminalNeedsMessage,
   terminalWaitingText,
+  type BridgeNeedsMark,
   type DialogOwner,
   type LogRecordsSeen,
   type TerminalState,
@@ -576,6 +580,20 @@ export function StartupForm({
     if (prev?.toolId !== owner?.toolId || prev?.promptKey !== owner?.promptKey) {
       setDialogOwnerVersion((value) => value + 1);
     }
+  }, []);
+  /**
+   * Bridged stages' Needs you (D22): the PermissionRequest hook (or its
+   * Notification backup) said a permission dialog is up. Cleared by a later
+   * log read (`bridgeNeedsAfterRead`).
+   */
+  const bridgeNeeds = useRef(new Map<string, BridgeNeedsMark>());
+  const [bridgeNeedsVersion, setBridgeNeedsVersion] = useState(0);
+  const setBridgeNeeds = useCallback((tabId: string, mark: BridgeNeedsMark | undefined) => {
+    const prev = bridgeNeeds.current.get(tabId);
+    if (prev === mark) return;
+    if (mark) bridgeNeeds.current.set(tabId, mark);
+    else bridgeNeeds.current.delete(tabId);
+    setBridgeNeedsVersion((value) => value + 1);
   }, []);
   /** Tabs whose PTYs a workspace replace is stopping: their exit is not news. */
   const replacingTabs = useRef(new Set<string>());
@@ -1450,6 +1468,7 @@ export function StartupForm({
         dialogDetector.answering(tabId),
       );
       setDialogOwner(tabId, next.owner);
+      setBridgeNeeds(tabId, bridgeNeedsAfterRead(bridgeNeeds.current.get(tabId), log, readAt));
       // Mid-turn, the next call's dialog may be half drawn already.
       if (next.clear) dialogDetector.clear(tabId, { keepPartial: !!log && !log.turnDone });
       // New records restart the quiet minute before a turn shows as unknown.
@@ -1462,7 +1481,7 @@ export function StartupForm({
       // log with the turn it decides on, and a stale one reads as a newer prompt.
       autopilotLogRef.current?.(tabId, log);
     },
-    [isWatchingTab, notifyAgent, setDialogOwner],
+    [isWatchingTab, notifyAgent, setBridgeNeeds, setDialogOwner],
   );
 
   // PTY start and exit change which terminals are live and their state.
@@ -1598,6 +1617,7 @@ export function StartupForm({
       if (!isClaudeRoleTerminal(tab)) continue;
       const state = deriveTerminalState({
         log: sessionLogs[tab.id],
+        bridgeNeeds: bridgeNeeds.current.get(tab.id) ?? null,
         // Only once a log read tied the dialog to one of the turn's tools.
         dialogTool: dialogTabs.includes(tab.id)
           ? dialogToolFor(dialogOwners.current.get(tab.id), sessionLogs[tab.id])
@@ -1612,9 +1632,10 @@ export function StartupForm({
     if (!changed && Object.keys(prev).length === Object.keys(next).length) return prev;
     terminalStatesRef.current = next;
     return next;
-    // ptyVersion: exit codes, dialogOwnerVersion: dialog owners live outside React state.
+    // ptyVersion: exit codes, dialogOwnerVersion and bridgeNeedsVersion: dialog
+    // owners and bridge Needs you live outside React state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dialogOwnerVersion, dialogTabs, ptyVersion, quietTurnTabs, savedTabs, sessionLogs, terminalBusy]);
+  }, [bridgeNeedsVersion, dialogOwnerVersion, dialogTabs, ptyVersion, quietTurnTabs, savedTabs, sessionLogs, terminalBusy]);
 
   // One toast and OS notification per prompt that needs the user.
   const needsNotified = useRef(new Set<string>());
@@ -2264,6 +2285,17 @@ export function StartupForm({
       const form = options?.values ?? formValues;
       const preferred = options && "tabId" in options ? options.tabId : activeTabId;
       const pendingId = preferred || `starting-${Date.now()}`;
+      // Eagle mode: a Planner or Implementer started from the form begins a
+      // chain. The core makes its run before the launch (engine 2), so the
+      // stage launches with the bridge instead of being tagged once it runs.
+      const startChain =
+        !options && eagleOnRef.current && !inChain(pendingId)
+          ? roleToStart === "role_planner"
+            ? "eagle1"
+            : roleToStart === "role_implementer"
+              ? "eagle2"
+              : null
+          : null;
       const live = beginLivePty(pendingId);
       try {
         const result = await roleTerminalStart({
@@ -2273,6 +2305,7 @@ export function StartupForm({
           handoffPlan: options?.handoffPlan ?? null,
           provider: options?.provider ?? null,
           chain: options?.chain ?? null,
+          startChain,
           ...measuredTerminalSize(),
           onOutput: live.channel,
         });
@@ -2295,16 +2328,7 @@ export function StartupForm({
           setActiveTabId(result.tabId);
           setPreview(null);
         }
-        if (
-          !options &&
-          eagleOnRef.current &&
-          !inChain(pendingId) &&
-          !inChain(result.tabId) &&
-          (roleToStart === "role_planner" || roleToStart === "role_implementer")
-        ) {
-          const kind = roleToStart === "role_planner" ? "eagle1" : "eagle2";
-          await setTabChain(result.tabId, newChain(kind));
-        }
+        // A chain this start began (`startChain`) was labelled by the core.
         await refreshTabs();
         return result.tabId;
       } catch (err: unknown) {
@@ -2389,8 +2413,11 @@ export function StartupForm({
         throw new Error("Fan out needs this run's plan stage tab (the stage before the Implementer) to be open.");
       }
       const source = await stageSourceOf(planTab);
+      // Engine 2: the Planner's tasks.json, read directly; else the reply's list.
+      // intentionally silent: without the file the reply's list is read, as on engine 1.
+      const planned = (run.engine ?? 1) >= 2 ? await pipelineRunTasks(run.id).catch(() => null) : null;
       const result = await fanOutRun(
-        { run, stage: fanStage, source, sourceChain: planTab.chain },
+        { run, stage: fanStage, source, sourceChain: planTab.chain, tasks: planned?.tasks ?? null },
         { startTerminal: laneStartTerminal, syncForm: syncActiveTabForm, refreshTabs, roles },
       );
       showNotice(
@@ -2452,6 +2479,29 @@ export function StartupForm({
       unlisten?.();
     };
   }, []);
+  // Engine 2 (ADR-015, D22): a bridged stage's permission dialog is up,
+  // straight from Claude Code's PermissionRequest hook; the screen is the fallback.
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listenBridgeNeeds((event) => {
+      const tab = savedTabsRef.current.find((item) => item.id === event.tabId);
+      if (!tab?.bridge || tab.bridge.runId !== event.runId || tab.bridge.stage !== event.stageKey) return;
+      // The late Notification backup never replaces what the hook said.
+      if (event.source === "permission_prompt" && bridgeNeeds.current.has(tab.id)) return;
+      setBridgeNeeds(tab.id, { tool: event.tool ?? null, at: Date.now(), key: `${event.turn}|${event.at}` });
+    })
+      .then((stop) => {
+        if (disposed) stop();
+        else unlisten = stop;
+      })
+      // intentionally silent: the screen's permission dialog still shows Needs you.
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [setBridgeNeeds]);
   // The core stopped a run by itself (a stall, or a turn that finished while
   // the app was closed): tell you the way a stop autopilot made does.
   useEffect(() => {

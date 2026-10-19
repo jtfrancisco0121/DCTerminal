@@ -362,7 +362,7 @@ export type PipelineRun = {
   status?: RunStatus;
   /** Why the run is waiting, or `paused_by_you` when you turned autopilot off. */
   stopReason?: StopReason | null;
-  /** Pipeline engine: 2 on new runs (reviewer stages report through the bridge, ADR-015); 1 (or missing) on older runs. */
+  /** Pipeline engine: 2 on new runs (Planner, reviewers and Implementer report through the bridge, ADR-015); 1 (or missing) on older runs. */
   engine?: number;
 };
 
@@ -1206,6 +1206,38 @@ export type BridgeReviewResult = {
   findings: BridgeFinding[];
 };
 
+/** One task of the Planner's plan (its fenced JSON block, plan "Result schemas"). */
+export type PlannedTask = {
+  /** `pr1`, `pr2`, … */
+  id: string;
+  title: string;
+  dependsOn: string[];
+  /** A release, deploy or config change, not a pull request. */
+  manual: boolean;
+  summary: string;
+};
+
+/** The Planner's result: the tasks the bridge took from its ExitPlanMode plan. */
+export type BridgePlanResult = { schema: number; tasks: PlannedTask[] };
+
+/** An Implementer's `submit_result`, already checked by the bridge. */
+export type BridgeImplementerResult = {
+  schema: number;
+  prs: { url: string; branch: string; title: string; lane?: string }[];
+  summary: string;
+  checks?: { command: string; passed: boolean }[];
+};
+
+/** The run's `tasks.json`: its Planner's latest tasks, which fan-out reads. */
+export type RunTasks = {
+  schema: number;
+  runId: string;
+  stageKey: string;
+  turn: string;
+  at: string;
+  tasks: PlannedTask[];
+};
+
 /**
  * A bridged stage's finished turn (ADR-015): from the Stop hook, live as
  * `pipeline-bridge-turn`, or read back with `pipelineBridgeTurn`.
@@ -1224,7 +1256,8 @@ export type BridgeTurn = {
   outcome: "result" | "no_result";
   endedAt: string;
   lastAssistantMessage: string;
-  result?: BridgeReviewResult | null;
+  /** Reviewers: verdict and findings; the Planner: its tasks; the Implementer: its pull requests. */
+  result?: BridgeReviewResult | BridgePlanResult | BridgeImplementerResult | null;
   /** The bridge blocked one stop of this turn before it ended. */
   blocked: boolean;
 };
@@ -1233,6 +1266,39 @@ export function listenBridgeTurn(handler: (event: BridgeTurn) => void): Promise<
   return listen<BridgeTurn>("pipeline-bridge-turn", (e) => {
     handler(e.payload);
   });
+}
+
+/**
+ * A bridged stage is waiting on a permission dialog (D22): from the
+ * PermissionRequest hook at once, or the `permission_prompt` Notification
+ * as the backup. Live as `pipeline-bridge-needs`.
+ */
+export type BridgeNeeds = {
+  schema: number;
+  runId: string;
+  stageKey: string;
+  stageId: string;
+  roleId: string;
+  lane?: string | null;
+  tabId: string;
+  /** Claude's `prompt_id` ("" when unknown). */
+  turn: string;
+  source: "permission_request" | "permission_prompt";
+  /** The tool the dialog asks about (PermissionRequest only). */
+  tool?: string | null;
+  message?: string;
+  at: string;
+};
+
+export function listenBridgeNeeds(handler: (event: BridgeNeeds) => void): Promise<UnlistenFn> {
+  return listen<BridgeNeeds>("pipeline-bridge-needs", (e) => {
+    handler(e.payload);
+  });
+}
+
+/** The run's Planner tasks (`tasks.json`); null before a bridged Planner handed a plan over. */
+export async function pipelineRunTasks(runId: string): Promise<RunTasks | null> {
+  return invoke<RunTasks | null>("pipeline_run_tasks", { runId });
 }
 
 /** A bridged terminal's latest finished turn; null when it is not bridged or its turn still runs. */
@@ -1749,8 +1815,13 @@ export async function roleTerminalStart(input: {
   onOutput: Channel<PtyPacket>;
   /** Launch as this provider (a hand-off's new tab keeps its source's). Omitted: the tab's, or the window's default. */
   provider?: ProviderId | null;
-  /** The pipeline step it opens for: a reviewer stage of an engine-2 run launches with the bridge. */
+  /** The pipeline step it opens for: a bridged stage of an engine-2 run launches with the bridge. */
   chain?: import("./handoff/chains").ChainRef | null;
+  /**
+   * Eagle mode: this start begins a chain of this kind. The core makes its
+   * run before the launch, so the first stage launches with the bridge too.
+   */
+  startChain?: "eagle1" | "eagle2" | null;
 }): Promise<TerminalStartResult> {
   return invoke<TerminalStartResult>("role_terminal_start", {
     input: {
@@ -1763,6 +1834,7 @@ export async function roleTerminalStart(input: {
       windowId: await windowId(),
       provider: input.provider ?? null,
       chain: input.chain ?? null,
+      startChain: input.startChain ?? null,
     },
     onOutput: input.onOutput,
   });

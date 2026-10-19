@@ -17,4 +17,4 @@ Built-in pipeline definitions ([ADR-014](../adr/014-pipeline-engine-opt-in-autop
 | `autopilot.pauseAtUsagePercent` | Autopilot pauses when the Claude 5-hour or 7-day usage reaches this percent (default 90). |
 | `autopilot.stallMinutes` | While a stage is Working, this many minutes with no terminal output and no growth of its session log stops the run with `stalled` (default 30, 1 to 1440). Raise it for a pipeline whose checks run quietly for long. |
 
-A pipeline with a `role_implementer` stage can **fan out** at that stage: the stage before it (its plan) lists several pull requests, and each gets its own lane of the remaining stages in its own git worktree. See `docs/PIPELINE-REPLY-GUIDE.md`.
+A pipeline with a `role_implementer` stage can **fan out** at that stage: the stage before it (its plan) lists several pull requests, and each gets its own lane of the remaining stages in its own git worktree. See `docs/PIPELINE-REPLY-GUIDE.md`. On an engine-2 run whose Planner launched with the bridge, fan-out reads the Planner's tasks from the run folder's `tasks.json` instead of the reply's list.

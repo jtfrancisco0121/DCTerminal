@@ -573,6 +573,8 @@ export function installTauriMock(config: MockConfig): void {
     },
     // Engine 2 (ADR-015): no mocked tab is bridged, so it never has a bridge turn.
     pipeline_bridge_turn: () => null,
+    // No mocked run has a bridged Planner, so no tasks.json: fan-out reads the reply's list.
+    pipeline_run_tasks: () => null,
     pipeline_run_gates: (a) => {
       const run = findRun(a.runId);
       if (!run) throw new Error(`unknown pipeline run: ${a.runId}`);
@@ -1016,6 +1018,23 @@ export function installTauriMock(config: MockConfig): void {
   });
   afterCall("role_session_start", (_a, out) => chainRunUpdated(overviewRunForTab(out.tabId)));
   afterCall("role_terminal_start", (_a, out) => chainRunUpdated(overviewRunForTab(out.tabId)));
+  // pty/mod.rs role_terminal_start `startChain` (V2b): the core labels the
+  // chain a form start begins before the launch. Recorded as the
+  // set_tab_chain the app used to call after the start, so specs keep
+  // asserting the same data.
+  const roleTerminalStartChaining = defaults.role_terminal_start;
+  defaults.role_terminal_start = (a, s) => {
+    const out = roleTerminalStartChaining(a, s);
+    const kind = a.input?.startChain as string | null | undefined;
+    const tab = out?.tabId ? findTab(out.tabId) : null;
+    if (kind && tab && !tab.chain) {
+      const stages = PIPELINE_STAGES[runKindForChain(kind) ?? ""] ?? [];
+      const args = { tabId: tab.id, chain: { chainId: `ee_${Date.now()}`, kind, step: 1, total: stages.length || 1 }, handoffText: null };
+      calls.push({ cmd: "set_tab_chain", args: clone(args) });
+      defaults.set_tab_chain(args, s);
+    }
+    return out;
+  };
   afterCall("dev_session_stop", (a) => {
     if (a.tabId) chainRunUpdated(overviewRunForTab(a.tabId));
   });

@@ -240,7 +240,7 @@ npm run check       # cargo test, clippy -D warnings, vitest, build
 | Windows: `cargo metadata` / `program not found` | Rust isn't on PATH. Open a new terminal, or add `%USERPROFILE%\.cargo\bin` to Path |
 | Tab shows **Needs you** | Claude is waiting on a permission prompt, question or plan. Answer it in the tab, or with the buttons in Chat view |
 | "Couldn't confirm — check the terminal" | A prompt button's key may not have reached Claude Code. Switch to Terminal and answer there |
-| **Needs you** stops showing after a Claude Code update | Prompt detection reads Claude Code's screen layout. Answer in the terminal, and report the version |
+| **Needs you** stops showing after a Claude Code update | Prompt detection reads Claude Code's screen layout (pipeline stages on engine 2 also hear it from Claude Code's PermissionRequest hook). Answer in the terminal, and report the version |
 | Localhost preview is blank | The dev server forbids framing (X-Frame-Options or CSP `frame-ancestors`). Use **Open in browser** |
 | "Not authenticated" | `claude` then `/login` (or `agent login` for Cursor), then Start again |
 | The app closed unexpectedly | Details are in `logs/crash.log` in your data folder. **Settings › Data** shows the path |
