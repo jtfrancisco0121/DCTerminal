@@ -379,6 +379,8 @@ export type RunEvent = {
    * a turn's verdict, `planApproved` on a promoted plan. Missing on older events.
    */
   outcome?: string | null;
+  /** The fanned-out pull request (lane) the event is about. Missing on older events. */
+  laneId?: string | null;
 };
 
 export type GateResult = {

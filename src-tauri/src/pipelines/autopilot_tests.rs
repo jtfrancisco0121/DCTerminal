@@ -378,6 +378,7 @@ fn a_lane_counts_its_own_rounds_and_gates() {
     assert_eq!((pr1.action.as_str(), pr1.stage_id.as_deref()), ("advance", Some("pr_reviewer")));
     assert_eq!(pr1.lane.as_deref(), Some("pr1"));
     assert!(r.events.last().unwrap().summary.starts_with("PR1: "));
+    assert_eq!(r.events.last().unwrap().lane_id.as_deref(), Some("pr1"));
 }
 
 #[test]
