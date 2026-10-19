@@ -11,9 +11,10 @@
 //! pgid could belong to a new process, so it is only signalled while the
 //! group still has members.
 //!
-//! A descendant that left the group (`setsid`, Node's `detached: true`) is
-//! missed by a group signal, so each Unix signal also goes to the leader's
-//! [`Detached`] descendants, found by parent pid before the group exits.
+//! A descendant that left the leader's session (`setsid`, Node's
+//! `detached: true`) is missed by a group signal, so each Unix signal also
+//! goes to the leader's [`Detached`] descendants, found by parent pid before
+//! the group exits. A shell's jobs (own group, same session) are left alone.
 
 use std::io;
 use std::process::{Child, Command, ExitStatus};
@@ -450,6 +451,8 @@ fn signal_group(pid: u32, sig: i32) -> bool {
 extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
     fn getpgrp() -> i32;
+    #[cfg(target_os = "macos")]
+    fn getsid(pid: i32) -> i32;
 }
 
 /// One process, as seen when it was found. `start` tells a reused pid apart.
@@ -459,10 +462,11 @@ struct ProcInfo {
     pid: u32,
     ppid: u32,
     pgid: u32,
+    sid: u32,
     start: u64,
 }
 
-/// Descendants of a group leader that left its group. They are found by
+/// Descendants of a group leader that left its session. They are found by
 /// parent pid before the group is signalled: once the group exits they are
 /// reparented and the link is lost. A child that already double-forked away
 /// to init is missed. Enumeration failures find nothing (group-only stop).
@@ -472,9 +476,13 @@ struct Detached(Vec<ProcInfo>);
 
 #[cfg(unix)]
 impl Detached {
-    /// Adds `leader`'s live descendants outside its group. Call only while
-    /// `leader`'s pid is still ours.
+    /// Adds `leader`'s live descendants outside its session (they called
+    /// `setsid`). Others, such as a shell's jobs in their own group, are
+    /// walked through but kept out. Call only while `leader`'s pid is ours.
     fn remember(&mut self, leader: u32) {
+        let Some(session) = proc_info(leader).map(|info| info.sid) else {
+            return;
+        };
         let children = children_lister();
         let (mut parents, mut walked) = (vec![leader], 0);
         while let Some(parent) = parents.pop() {
@@ -484,7 +492,7 @@ impl Detached {
                     return; // only a pid-reuse cycle gets this deep
                 }
                 parents.push(child.pid);
-                if child.pgid != leader && !self.0.contains(&child) {
+                if child.sid != session && !self.0.contains(&child) {
                     self.0.push(child);
                 }
             }
@@ -555,10 +563,13 @@ fn proc_info(pid: u32) -> Option<ProcInfo> {
             size,
         )
     };
+    // SAFETY: getsid(2) only reads; -1 (error) skips the pid.
+    let sid = u32::try_from(unsafe { getsid(pid as i32) }).ok()?;
     (got == size).then_some(ProcInfo {
         pid,
         ppid: info.ppid,
         pgid: info.pgid,
+        sid,
         start: info.start_sec * 1_000_000 + info.start_usec,
     })
 }
@@ -585,12 +596,13 @@ fn children_lister() -> impl Fn(u32) -> Vec<ProcInfo> {
 #[cfg(target_os = "linux")]
 fn proc_info(pid: u32) -> Option<ProcInfo> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    // Fields after the `(comm)`: state ppid pgrp ... starttime (22nd overall).
+    // Fields after the `(comm)`: state ppid pgrp session ... starttime (22nd overall).
     let fields: Vec<&str> = stat.rsplit_once(')')?.1.split_whitespace().collect();
     Some(ProcInfo {
         pid,
         ppid: fields.get(1)?.parse().ok()?,
         pgid: fields.get(2)?.parse().ok()?,
+        sid: fields.get(3)?.parse().ok()?,
         start: fields.get(19)?.parse().ok()?,
     })
 }
@@ -1149,9 +1161,11 @@ pub(crate) mod tests {
         assert!(matches!(shared.try_wait(), Ok(Some(_))), "process killed");
     }
 
-    /// A `sh -c` line whose program forks a child that leaves the group
+    /// A `sh -c` line whose program forks a child that leaves the session
     /// (`setsid`, like Node's `detached: true`) and writes its pid to
-    /// `pid_file`; the parent stays. None when there is no `perl`.
+    /// `pid_file`, and a job-control-style child (own group, same session,
+    /// like a shell's `&` or `nohup` job) that writes `<pid_file>.job`. The
+    /// parent stays. None when there is no `perl`.
     pub(crate) fn detached_child_script(
         pid_file: &std::path::Path,
         ignore_term: bool,
@@ -1162,12 +1176,31 @@ pub(crate) mod tests {
             return None;
         }
         Some(format!(
-            "perl -MPOSIX -e 'if (fork) {{ sleep 60; exit }} POSIX::setsid(); \
+            "perl -MPOSIX -e 'unless (fork) {{ setpgid(0, 0); \
+             open my $f, \">\", \"$ARGV[0].job\" or die; print $f $$; close $f; sleep 60; exit }} \
+             if (fork) {{ sleep 60; exit }} POSIX::setsid(); \
              $SIG{{TERM}} = \"IGNORE\" if {}; open my $f, \">\", $ARGV[0] or die; \
              print $f $$; close $f; sleep 60' '{}'",
             u8::from(ignore_term),
             pid_file.display()
         ))
+    }
+
+    /// The (detached, job) pids from [`detached_child_script`].
+    pub(crate) fn wait_for_children(pid_file: &std::path::Path) -> (u32, u32) {
+        let job = wait_for_pid(std::path::Path::new(&format!("{}.job", pid_file.display())));
+        (wait_for_pid(pid_file), job)
+    }
+
+    /// After a stop: the detached child is gone, the same-session job is
+    /// not (closing a tab must not kill a shell's `nohup` jobs).
+    pub(crate) fn assert_only_detached_stopped((detached, job): (u32, u32), what: &str) {
+        let gone = wait_until_gone(detached);
+        let job_kept = crate::test_support::pid_alive(job) == Some(true);
+        reap_leftover(detached);
+        reap_leftover(job);
+        assert!(gone, "detached child {detached} survived {what}");
+        assert!(job_kept, "same-session job {job} was killed by {what}");
     }
 
     /// Kills a leftover test process so a failed run does not leak it.
@@ -1191,13 +1224,11 @@ pub(crate) mod tests {
             return;
         };
         let shared = SharedProcess::from_child(spawn_group(&script)).expect("adopt");
-        let detached = wait_for_pid(&pid_file);
+        let children = wait_for_children(&pid_file);
         if let Some(stopper) = shared.stop_gracefully(STOP_GRACE) {
             stopper.join().unwrap();
         }
-        let gone = wait_until_gone(detached);
-        reap_leftover(detached);
-        assert!(gone, "detached child {detached} survived Stop");
+        assert_only_detached_stopped(children, "Stop");
     }
 
     #[test]
@@ -1208,11 +1239,9 @@ pub(crate) mod tests {
             return;
         };
         let shared = SharedProcess::from_child(spawn_group(&script)).expect("adopt");
-        let detached = wait_for_pid(&pid_file);
+        let children = wait_for_children(&pid_file);
         shared.kill_tree();
-        let gone = wait_until_gone(detached);
-        reap_leftover(detached);
-        assert!(gone, "detached child {detached} survived kill_tree");
+        assert_only_detached_stopped(children, "kill_tree");
     }
 
     /// `kill(pid, 0)`: works on macOS too (there is no `/proc` there).

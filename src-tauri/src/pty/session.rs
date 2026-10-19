@@ -686,7 +686,7 @@ mod tests {
     #[test]
     fn kill_stops_a_detached_child() {
         use crate::process_tree::tests::{
-            detached_child_script, reap_leftover, wait_for_pid, wait_until_gone,
+            assert_only_detached_stopped, detached_child_script, wait_for_children,
         };
         let dir = crate::test_support::TempDir::new("pty_detached");
         let pid_file = dir.join("detached.pid");
@@ -702,14 +702,9 @@ mod tests {
             rows: 24,
         })
         .expect("spawn sh");
-        let detached = wait_for_pid(&pid_file);
+        let children = wait_for_children(&pid_file);
         session.kill();
-        let gone = wait_until_gone(detached);
-        reap_leftover(detached);
-        assert!(
-            gone,
-            "detached child {detached} survived closing the terminal"
-        );
+        assert_only_detached_stopped(children, "closing the terminal");
     }
 
     #[cfg(unix)]
