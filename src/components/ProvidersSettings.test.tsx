@@ -85,7 +85,7 @@ describe("Settings > Providers", () => {
   it("shows detection, the adapter hint, the folder source, and the account", async () => {
     render(<Harness />);
     const section = await screen.findByRole("region", { name: "Providers" });
-    expect(await within(section).findByText(/2\.1\.236/)).toBeTruthy();
+    expect(await within(section).findByText(/2\.1\.236 \(Claude Code\) ·/)).toBeTruthy();
     expect(within(section).getByText("/opt/homebrew/bin/claude")).toBeTruthy();
     expect(
       within(section).getByText(
@@ -100,6 +100,29 @@ describe("Settings > Providers", () => {
     ).toBe("~/.claude");
     expect(within(section).getByText(/Signed in as jt@example\.com \(claude\.ai · team\)/)).toBeTruthy();
     expect(within(section).getByText("All tabs run with full permissions.")).toBeTruthy();
+  });
+
+  it("says next to the version that Needs-you detection was written for another one", async () => {
+    render(<Harness />);
+    const section = await screen.findByRole("region", { name: "Providers" });
+    const claude = await within(section).findByLabelText("Claude Code");
+    const warning = await within(claude).findByTestId("claude-version-warning");
+    expect(warning.textContent).toContain("Needs-you detection was written for Claude Code 2.1.287");
+    expect(warning.textContent).toContain("you have 2.1.236");
+    expect(within(section).queryAllByTestId("claude-version-warning")).toHaveLength(1);
+  });
+
+  it("shows no version warning for the tested version", async () => {
+    vi.mocked(providerStatus).mockImplementation(async (id) => {
+      const next = report(id);
+      return id === "claude"
+        ? { ...next, status: { ...next.status, version: "2.1.287 (Claude Code)" } }
+        : next;
+    });
+    render(<Harness />);
+    const section = await screen.findByRole("region", { name: "Providers" });
+    expect(await within(section).findByText(/2\.1\.287 \(Claude Code\) ·/)).toBeTruthy();
+    expect(within(section).queryByTestId("claude-version-warning")).toBeNull();
   });
 
   it("persists the default provider", async () => {

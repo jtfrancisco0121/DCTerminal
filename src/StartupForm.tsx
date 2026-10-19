@@ -391,6 +391,7 @@ import { withImageMarkers } from "./attachments/chatImages";
 import { promptNeedsSnapshot, snapshotTerminalTurn } from "./changes/turnSnapshot";
 import { useUiSettings } from "./useUiSettings";
 import { useProviders } from "./provider/useProviders";
+import { useClaudeVersionNotice } from "./terminal/claudeVersion";
 import {
   modelsForProvider,
   providerIndicator,
@@ -907,6 +908,12 @@ export function StartupForm({
   useEffect(() => {
     if (rolesError) showNotice("Roles did not load", rolesError, "question");
   }, [rolesError, showNotice]);
+  const claudeVersionNotice = useCallback(
+    (title: string, body: string, slot: string) => showNotice(title, body, "question", slot),
+    [showNotice],
+  );
+  // Needs-you detection is pinned to one Claude Code version: say so once per window.
+  useClaudeVersionNotice(providers.claude?.status.version, claudeVersionNotice);
 
   const launchAccountWindow = useCallback(
     (accountId: string) => {

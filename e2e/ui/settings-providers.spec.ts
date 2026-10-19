@@ -28,7 +28,7 @@ function claudeReport(patch: { status?: Partial<ProviderReport["status"]>; login
       id: "claude",
       found: true,
       path: "/usr/local/bin/claude",
-      version: "2.1.0",
+      version: "2.1.287",
       adapterFound: true,
       adapterPath: "/usr/local/bin/claude-agent-acp",
       error: null,
@@ -52,7 +52,7 @@ test("signed-in Claude shows version, adapter, config folder and account", async
   await app.open();
   const section = await openProviders(page);
   const claude = section.locator(`[aria-label="Claude Code"]`);
-  await expect(claude.getByText("2.1.0 · /usr/local/bin/claude")).toBeVisible();
+  await expect(claude.getByText("2.1.287 · /usr/local/bin/claude")).toBeVisible();
   await expect(claude.getByText("/usr/local/bin/claude-agent-acp")).toBeVisible();
   await expect(claude.getByRole("textbox", { name: "Account name" })).toHaveValue("Claude");
   await expect(claude.getByRole("textbox", { name: "Claude config folder" })).toHaveValue("");
@@ -64,7 +64,7 @@ test("signed-in Claude shows version, adapter, config folder and account", async
   await expect(claude.getByText(/Run CLAUDE_CONFIG_DIR=/)).toHaveCount(0);
 
   const cursor = section.locator(`[aria-label="Cursor CLI"]`);
-  await expect(cursor.getByText("2.1.0 · /usr/local/bin/claude")).toBeVisible();
+  await expect(cursor.getByText("2.1.287 · /usr/local/bin/claude")).toBeVisible();
   await expect(section.getByRole("radiogroup", { name: "Default provider" }).getByRole("radio", { name: "Claude", exact: true })).toHaveAttribute("aria-checked", "true");
   for (const provider of ["claude", "cursor"]) {
     await app.waitForCall("provider_status", (a) => a.provider === provider);

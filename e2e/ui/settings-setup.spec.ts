@@ -56,7 +56,7 @@ test("Claude step: found and signed in, Next moves to the Cursor step", async ({
   await expectStep(page, "Claude Code");
   const claude = dialog.getByRole("region", { name: "Claude Code" });
   await expect(claude.getByText("Claude Code found.")).toBeVisible();
-  await expect(claude.getByText("Version 2.1.0")).toBeVisible();
+  await expect(claude.getByText("Version 2.1.287")).toBeVisible();
   await expect(claude.getByText("/usr/local/bin/claude", { exact: true })).toBeVisible();
   await expect(claude.getByText("Config folder: ~/.claude")).toBeVisible();
   await expect(claude.getByText("Signed in as e2e@example.com (claude.ai · team).")).toBeVisible();
