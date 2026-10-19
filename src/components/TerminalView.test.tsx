@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { render } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, renderHook, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 type KeyHandler = (event: KeyboardEvent) => boolean;
 let keyHandler: KeyHandler | null = null;
@@ -44,6 +44,7 @@ vi.mock("../terminal/park", () => {
 });
 
 import { ptyWrite, type TerminalLaunch } from "../bridge";
+import { useAppShortcuts } from "../useAppShortcuts";
 import { TerminalView } from "./TerminalView";
 
 class NoopResizeObserver {
@@ -80,5 +81,33 @@ describe("TerminalView Shift+Enter", () => {
     const handler = mount(launch);
     expect(handler(shiftEnter("keydown"))).toBe(true);
     expect(ptyWrite).not.toHaveBeenCalled();
+  });
+});
+
+describe("TerminalView context menu dismiss button", () => {
+  beforeEach(() => {
+    vi.stubGlobal("ResizeObserver", NoopResizeObserver);
+  });
+  afterEach(cleanup);
+
+  // Tab from the last menu item lands on the full-screen dismiss button, which
+  // sits outside the menu root. Escape there closes the menu (the owner's
+  // listener) and must not also cancel a running chat turn.
+  it("leaves a running chat turn alone on Escape", () => {
+    const onCancelTurn = vi.fn();
+    renderHook(() =>
+      useAppShortcuts({
+        platform: "mac",
+        dialogOpen: false,
+        promptInFlight: true,
+        onAction: () => {},
+        onCancelTurn,
+      }),
+    );
+    const { container } = render(<TerminalView ptyId="pty-menu" cwd="/tmp" launch="shell" fontSize={13} />);
+    fireEvent.contextMenu(container.querySelector(".terminal-view")!);
+    const dismiss = screen.getByRole("button", { name: "Close menu" });
+    fireEvent.keyDown(dismiss, { key: "Escape" });
+    expect(onCancelTurn).not.toHaveBeenCalled();
   });
 });
