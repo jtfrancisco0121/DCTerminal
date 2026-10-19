@@ -518,13 +518,12 @@ pub fn agent_logs(registry: &SessionRegistry, tab_id: &str) -> Result<SessionLog
 }
 
 #[tauri::command]
-pub fn dev_session_stop(
+pub async fn dev_session_stop(
     app: tauri::AppHandle,
     transcript: Option<String>,
     tab_id: Option<String>,
-    state: State<Mutex<SessionRegistry>>,
-    state_store: State<Mutex<StateStore>>,
-    transcripts: State<Mutex<crate::store::TranscriptStore>>,
+    state: State<'_, Mutex<SessionRegistry>>,
+    state_store: State<'_, Mutex<StateStore>>,
 ) -> Result<(), String> {
     let tab_id = resolve_tab_id(tab_id);
     {
@@ -544,15 +543,9 @@ pub fn dev_session_stop(
             store.mark_tab_awaiting_input(&tab_id, transcript.clone())?;
             crate::commands::chain_events::notify_tab(&app, &store, &tab_id);
         }
-        if let Some(text) = transcript.as_ref().filter(|text| !text.trim().is_empty()) {
-            crate::commands::workspace::save_tab_transcript(
-                &state_store,
-                &transcripts,
-                &tab_id,
-                text,
-                &cwd,
-                &chrono::Utc::now().to_rfc3339(),
-            )?;
+        if let Some(text) = transcript.filter(|text| !text.trim().is_empty()) {
+            crate::commands::workspace::save_tab_transcript_blocking(app, tab_id, text, cwd)
+                .await?;
         }
     }
     Ok(())

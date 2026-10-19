@@ -148,3 +148,88 @@ fn a_tab_saved_while_another_save_waits_is_not_rotated_away() {
         "B's new transcript was rotated away by A's stale keep set"
     );
 }
+
+#[test]
+fn saving_a_transcript_does_not_hold_the_lock_while_rotating() {
+    let dir = TempDir::new("transcripts_rotate_lock");
+    let state = Mutex::new(StateStore::open_path(dir.join("state.json")).unwrap());
+    let transcripts = Arc::new(Mutex::new(TranscriptStore::open(dir.path()).unwrap()));
+    // Old files from tabs that are gone: past the cap, so rotation has work.
+    for i in 0..40 {
+        transcripts
+            .lock()
+            .unwrap()
+            .save(&format!("old_{i}"), "old", "/tmp/a", NOW, &[])
+            .unwrap();
+    }
+    let dev = role("role_dev", "Developer");
+    let id = state
+        .lock()
+        .unwrap()
+        .create_draft_tab(&dev, "/tmp/a", true, None)
+        .unwrap();
+
+    // Mid-scan, another thread tries the transcript lock.
+    let free_during_rotation = Arc::new(Mutex::new(None::<bool>));
+    {
+        let (transcripts, seen) = (transcripts.clone(), free_during_rotation.clone());
+        crate::store::ROTATION_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                let transcripts = transcripts.clone();
+                let free = std::thread::spawn(move || transcripts.try_lock().is_ok())
+                    .join()
+                    .unwrap();
+                *seen.lock().unwrap() = Some(free);
+            }));
+        });
+    }
+    save_tab_transcript(&state, &transcripts, &id, "hello", "/tmp/a", NOW).unwrap();
+    crate::store::ROTATION_HOOK.with(|hook| *hook.borrow_mut() = None);
+
+    assert_eq!(
+        *free_during_rotation.lock().unwrap(),
+        Some(true),
+        "transcript lock held while rotating the folder"
+    );
+    assert!(transcripts.lock().unwrap().load(&id).unwrap().is_some());
+}
+
+fn transcript_files(dir: &std::path::Path) -> usize {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .filter(|entry| {
+            let name = entry.as_ref().unwrap().file_name();
+            name.to_string_lossy().ends_with(".json")
+        })
+        .count()
+}
+
+// Regression: rotation runs without the store lock, so two saves could trim
+// the folder at once and, from different keep lists, remove past the cap.
+#[test]
+fn a_rotation_skips_while_another_rotation_runs() {
+    let dir = TempDir::new("transcripts_one_rotation");
+    let transcripts = TranscriptStore::open(dir.path()).unwrap();
+    for i in 0..40 {
+        transcripts
+            .write(&format!("old_{i}"), "old", "/tmp/a", NOW)
+            .unwrap();
+    }
+    let folder = transcripts.dir.clone();
+
+    let running = crate::store::RotationGuard::try_acquire(&folder).expect("guard free");
+    crate::store::rotate_transcripts(&folder, &[], None).unwrap();
+    assert_eq!(
+        transcript_files(&folder),
+        40,
+        "a second rotation removed files while another one ran"
+    );
+
+    drop(running);
+    crate::store::rotate_transcripts(&folder, &[], None).unwrap();
+    assert_eq!(
+        transcript_files(&folder),
+        30, // MAX_TRANSCRIPT_FILES
+        "the next rotation trims to the cap"
+    );
+}

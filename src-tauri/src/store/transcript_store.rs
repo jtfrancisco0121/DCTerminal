@@ -5,11 +5,53 @@
 use crate::store::json_io::{read_json, write_json_atomic};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::SystemTime;
 
 pub const TRANSCRIPT_SCHEMA_VERSION: u32 = 1;
 pub const MAX_TRANSCRIPT_CHARS: usize = 500_000;
 pub const MAX_TRANSCRIPT_FILES: usize = 30;
+
+#[cfg(test)]
+thread_local! {
+    /// Runs once per rotation scan, after the folder is listed, on the
+    /// thread doing the rotation. Lets a test look at the locks mid-scan.
+    pub(crate) static ROTATION_HOOK: std::cell::RefCell<Option<Box<dyn Fn()>>> =
+        std::cell::RefCell::new(None);
+}
+
+/// Folders with a rotation running. Rotation runs without the store lock,
+/// so two saves could otherwise trim the same folder at once and, picking
+/// from different keep lists, remove more than the overflow. Keyed by
+/// folder so unrelated stores (and parallel tests) never skip each other.
+static ROTATING: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// One rotation per folder at a time. `try_acquire` never waits: a save
+/// that finds a rotation running skips its own, and the next save trims
+/// whatever is left over. Released on drop, so every return path frees it.
+pub struct RotationGuard {
+    dir: PathBuf,
+}
+
+impl RotationGuard {
+    pub fn try_acquire(dir: &Path) -> Option<Self> {
+        let mut rotating = ROTATING.lock().unwrap_or_else(|p| p.into_inner());
+        if rotating.iter().any(|busy| busy == dir) {
+            return None;
+        }
+        rotating.push(dir.to_path_buf());
+        Some(Self {
+            dir: dir.to_path_buf(),
+        })
+    }
+}
+
+impl Drop for RotationGuard {
+    fn drop(&mut self) {
+        let mut rotating = ROTATING.lock().unwrap_or_else(|p| p.into_inner());
+        rotating.retain(|busy| busy != &self.dir);
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -51,21 +93,14 @@ impl TranscriptStore {
         now: &str,
         keep_ids: &[String],
     ) -> Result<(), String> {
-        self.save_since(tab_id, text, cwd, now, keep_ids, None)
+        self.write(tab_id, text, cwd, now)?;
+        rotate_transcripts(&self.dir, keep_ids, None)
     }
 
-    /// `save`, but rotation also spares every file modified at or after
-    /// `cutoff`: a tab that saved after the caller read `keep_ids` is newer
-    /// than that list and must not be rotated away by it.
-    pub fn save_since(
-        &self,
-        tab_id: &str,
-        text: &str,
-        cwd: &str,
-        now: &str,
-        keep_ids: &[String],
-        cutoff: Option<SystemTime>,
-    ) -> Result<(), String> {
+    /// Writes one tab's transcript, with no rotation. Callers that hold the
+    /// store lock write with this, drop the guard, then rotate with
+    /// `rotate_transcripts`.
+    pub fn write(&self, tab_id: &str, text: &str, cwd: &str, now: &str) -> Result<(), String> {
         if !safe_tab_id(tab_id) {
             return Err(format!("refusing transcript name: {tab_id}"));
         }
@@ -78,10 +113,7 @@ impl TranscriptStore {
             updated_at: now.to_string(),
             read_only: true,
         };
-        let path = self.path_for(tab_id);
-        write_json_atomic(&path, &file)?;
-        self.rotate(keep_ids, cutoff)?;
-        Ok(())
+        write_json_atomic(&self.path_for(tab_id), &file)
     }
 
     pub fn load(&self, tab_id: &str) -> Result<Option<LoadedTranscript>, String> {
@@ -135,43 +167,63 @@ impl TranscriptStore {
     fn path_for(&self, tab_id: &str) -> PathBuf {
         self.dir.join(format!("{tab_id}.json"))
     }
+}
 
-    fn rotate(&self, keep_ids: &[String], cutoff: Option<SystemTime>) -> Result<(), String> {
-        let mut files = Vec::new();
-        for entry in std::fs::read_dir(&self.dir).map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
-            let name = entry.file_name().to_string_lossy().to_string();
-            if !name.ends_with(".json") || name.contains(".corrupt") || name.ends_with(".bak") {
-                continue;
-            }
-            let modified = entry
-                .metadata()
-                .and_then(|m| m.modified())
-                .unwrap_or(SystemTime::UNIX_EPOCH);
-            files.push((modified, entry.path(), name));
+/// Caps the folder at `MAX_TRANSCRIPT_FILES`, oldest first. Never removes
+/// a file named in `keep_ids`, or one modified at or after `cutoff`: a tab
+/// that saved after the caller read `keep_ids` is newer than that list and
+/// must not be rotated away by it. A directory walk, so it takes only the
+/// folder path and runs without the store lock. Skips when another
+/// rotation of the same folder is running (`RotationGuard`).
+pub fn rotate_transcripts(
+    dir: &Path,
+    keep_ids: &[String],
+    cutoff: Option<SystemTime>,
+) -> Result<(), String> {
+    // Another save is trimming this folder: skip, the next save trims the rest.
+    let Some(_rotating) = RotationGuard::try_acquire(dir) else {
+        return Ok(());
+    };
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.ends_with(".json") || name.contains(".corrupt") || name.ends_with(".bak") {
+            continue;
         }
-        if files.len() <= MAX_TRANSCRIPT_FILES {
-            return Ok(());
-        }
-        files.sort_by_key(|(modified, _, _)| *modified);
-        let overflow = files.len() - MAX_TRANSCRIPT_FILES;
-        let mut removed = 0;
-        for (modified, path, name) in files {
-            if removed >= overflow {
-                break;
-            }
-            let id = name.trim_end_matches(".json");
-            if keep_ids.iter().any(|keep| keep == id) {
-                continue;
-            }
-            if cutoff.is_some_and(|cutoff| modified >= cutoff) {
-                continue;
-            }
-            let _ = std::fs::remove_file(path);
-            removed += 1;
-        }
-        Ok(())
+        let modified = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        files.push((modified, entry.path(), name));
     }
+    #[cfg(test)]
+    ROTATION_HOOK.with(|hook| {
+        if let Some(hook) = hook.borrow().as_ref() {
+            hook();
+        }
+    });
+    if files.len() <= MAX_TRANSCRIPT_FILES {
+        return Ok(());
+    }
+    files.sort_by_key(|(modified, _, _)| *modified);
+    let overflow = files.len() - MAX_TRANSCRIPT_FILES;
+    let mut removed = 0;
+    for (modified, path, name) in files {
+        if removed >= overflow {
+            break;
+        }
+        let id = name.trim_end_matches(".json");
+        if keep_ids.iter().any(|keep| keep == id) {
+            continue;
+        }
+        if cutoff.is_some_and(|cutoff| modified >= cutoff) {
+            continue;
+        }
+        let _ = std::fs::remove_file(path);
+        removed += 1;
+    }
+    Ok(())
 }
 
 fn safe_tab_id(tab_id: &str) -> bool {
@@ -182,7 +234,8 @@ fn safe_tab_id(tab_id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
-fn truncate_transcript(text: &str) -> String {
+/// Keeps the newest `MAX_TRANSCRIPT_CHARS` characters, marked as cut.
+pub fn truncate_transcript(text: &str) -> String {
     let count = text.chars().count();
     if count <= MAX_TRANSCRIPT_CHARS {
         return text.to_string();

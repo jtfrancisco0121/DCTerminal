@@ -530,3 +530,28 @@ fn a_failed_build_reports_the_build_error_even_when_the_archive_save_fails() {
     std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
     assert!(err.contains("no window"), "build error kept: {err}");
 }
+
+// Regression: a chat past the cap used to come back from state.json with its
+// first 500k characters, so the newest output was lost after a restart.
+#[test]
+fn a_restored_long_transcript_keeps_its_newest_output() {
+    let dir = TempDir::new("state_long_transcript");
+    let mut store = store_at(&dir);
+    let id = store
+        .create_draft_tab(&role("role_dev", "Developer"), "/tmp/a", true, None)
+        .unwrap();
+    let long = format!("FIRST-LINE{}NEWEST-OUTPUT", "x".repeat(600_000));
+    store.mark_tab_awaiting_input(&id, Some(long)).unwrap();
+    drop(store);
+
+    let reopened = store_at(&dir);
+    let text = reopened
+        .tab_by_id(&id)
+        .and_then(|tab| tab.transcript.clone())
+        .expect("transcript restored");
+    assert!(text.ends_with("NEWEST-OUTPUT"), "newest output lost");
+    assert!(
+        !text.contains("FIRST-LINE"),
+        "oldest output kept past the cap"
+    );
+}
