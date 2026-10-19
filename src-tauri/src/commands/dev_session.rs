@@ -273,10 +273,70 @@ impl SessionRegistry {
             .collect()
     }
 
-    /// App exit, last step: kill whatever is left, without a grace.
-    pub fn kill_all(&mut self) {
-        for (_, mut session) in self.sessions.drain() {
-            session.kill();
+    /// Every session, taken out for [`kill_all_agents`].
+    fn take_all(&mut self) -> Vec<LiveSession> {
+        self.sessions.drain().map(|(_, session)| session).collect()
+    }
+}
+
+/// App exit, last step: kill whatever is left, without a grace. The
+/// sessions are taken out first, so no kill (`taskkill` on Windows) runs
+/// under the registry lock.
+pub fn kill_all_agents(registry: &Mutex<SessionRegistry>) {
+    kill_all_with(registry, LiveSession::kill);
+}
+
+pub(crate) fn kill_all_with(
+    registry: &Mutex<SessionRegistry>,
+    mut kill: impl FnMut(&mut LiveSession),
+) {
+    let left = match registry.lock() {
+        Ok(mut guard) => guard.take_all(),
+        Err(_) => return,
+    };
+    for mut session in left {
+        kill(&mut session);
+    }
+}
+
+/// A start begun on a tab, ended when dropped however the start returns, so
+/// an early `?` never leaves the tab answering "Start already in progress".
+/// [`finish`](Self::finish) ends it under a lock the caller already holds
+/// (the one it inserts the session under). Never drop it while holding the
+/// registry lock: the drop takes that lock.
+pub struct StartingTab<'a> {
+    registry: &'a Mutex<SessionRegistry>,
+    key: Option<String>,
+}
+
+impl<'a> StartingTab<'a> {
+    pub fn begin(registry: &'a Mutex<SessionRegistry>, key: &str) -> Result<Self, String> {
+        registry
+            .lock()
+            .map_err(|e| e.to_string())?
+            .try_begin_start(key)?;
+        Ok(Self {
+            registry,
+            key: Some(key.to_string()),
+        })
+    }
+
+    pub fn finish(mut self, registry: &mut SessionRegistry) {
+        if let Some(key) = self.key.take() {
+            registry.finish_start(&key);
+        }
+    }
+}
+
+impl Drop for StartingTab<'_> {
+    fn drop(&mut self) {
+        if let Some(key) = self.key.take() {
+            let mut registry = match self.registry.lock() {
+                Ok(guard) => guard,
+                // A panic elsewhere must not keep the tab from starting.
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            registry.finish_start(&key);
         }
     }
 }

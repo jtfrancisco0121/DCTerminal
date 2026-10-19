@@ -49,6 +49,19 @@ describe("design tokens (R1)", () => {
     expect(raw).toEqual([]);
   });
 
+  it("dims a preview's frame like a dimmed pane's content, and lifts it on hover and focus", () => {
+    const text = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    const opacityOf = (selector: string) => {
+      const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return new RegExp(`${escaped}[^{]*\\{[^}]*opacity:\\s*([\\d.]+)`).exec(text)?.[1];
+    };
+    const paneDim = opacityOf(".split-pane-dim > :not(.pane-strip)");
+    expect(paneDim).toBeDefined();
+    expect(opacityOf(".preview-layer-frame[data-dim]")).toBe(paneDim);
+    expect(text).toMatch(/\.preview-layer-frame\[data-dim\]:hover[^{]*\{[^}]*opacity:\s*1;/);
+    expect(text).toMatch(/\.preview-layer-frame\[data-dim\]:focus-within[^{]*\{[^}]*opacity:\s*1;/);
+  });
+
   it("has no duplicate top-level selector blocks", () => {
     const seen = new Map<string, number>();
     for (const sel of topLevelSelectors(css)) {

@@ -86,10 +86,14 @@ function time(at: string | null | undefined): number | null {
   return Number.isFinite(ms) ? ms : null;
 }
 
-/** The lane an event names by its "PR1 — Title: " prefix. */
-function laneOf(run: PipelineRun, summary: string): string | null {
+/**
+ * The lane an event is about: its `laneId`, or on events saved before that
+ * existed, the lane its "PR1 — Title: " prefix names.
+ */
+function laneOf(run: PipelineRun, event: RunEvent): string | null {
+  if (event.laneId) return event.laneId;
   for (const lane of run.lanes ?? []) {
-    if (lane.title && summary.startsWith(`${lane.title}: `)) return lane.id;
+    if (lane.title && event.summary.startsWith(`${lane.title}: `)) return lane.id;
   }
   return null;
 }
@@ -110,7 +114,9 @@ function gateStatusOf(
 ): { status: GateStatus; durationMs: number } {
   const key = lane ? `${stageId}@${lane}` : stageId;
   const latest = run.gates?.[key];
-  const label = event.summary.slice(lane ? event.summary.indexOf(": ") + 2 : 0);
+  // The summary is "<lane title>: <gate label>: <result>" in a lane.
+  const prefix = `${laneTitle(run, lane ?? "")}: `;
+  const label = lane && event.summary.startsWith(prefix) ? event.summary.slice(prefix.length) : event.summary;
   const match: GateResult | undefined = latest?.results.find((r) => label.startsWith(`${r.label}: `));
   const outcome = event.outcome?.trim() ?? "";
   const status: GateStatus =
@@ -217,7 +223,7 @@ export function runLanes(run: PipelineRun, stages: readonly StageDef[], now: num
   for (const event of events) {
     const at = time(event.at)!;
     lastAt = Math.max(lastAt, at);
-    const lane = laneOf(run, event.summary);
+    const lane = laneOf(run, event);
     const stageId = event.stageId ?? "";
     if (event.kind !== "stop" && event.kind !== "gate") endWait(at);
     switch (event.kind) {

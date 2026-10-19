@@ -171,7 +171,7 @@ impl SharedProcess {
 
     /// SIGTERM to the group now; a `proc-stop` thread kills it if anything
     /// is still running after `grace`. Returns at once, without waiting on
-    /// the process. Windows: kills at once, as before.
+    /// the process. Windows has no SIGTERM: the thread kills at once.
     pub fn stop_gracefully(&self, grace: Duration) -> Option<JoinHandle<()>> {
         #[cfg(unix)]
         {
@@ -195,8 +195,29 @@ impl SharedProcess {
         #[cfg(not(unix))]
         {
             let _ = grace;
-            self.kill_tree();
-            None
+            self.kill_on_thread(SharedProcess::kill_tree)
+        }
+    }
+
+    /// Kill on a `proc-stop` thread and return at once, so a caller holding
+    /// a registry lock never waits on the kill (`taskkill` on Windows, which
+    /// has no SIGTERM to send first). Kills here only if no thread starts.
+    #[cfg(any(not(unix), test))]
+    fn kill_on_thread<F>(&self, kill: F) -> Option<JoinHandle<()>>
+    where
+        F: FnOnce(&SharedProcess) + Clone + Send + 'static,
+    {
+        let shared = self.clone();
+        let on_thread = kill.clone();
+        match std::thread::Builder::new()
+            .name("proc-stop".into())
+            .spawn(move || on_thread(&shared))
+        {
+            Ok(stopper) => Some(stopper),
+            Err(_) => {
+                kill(self);
+                None
+            }
         }
     }
 
@@ -879,6 +900,38 @@ mod tests {
             thread::sleep(Duration::from_millis(20));
         }
         panic!("grandchild pid file was not written");
+    }
+
+    // Review: on Windows a Stop ran `taskkill` inline, under the session
+    // registry lock its caller held, so every chat waited on it.
+    #[test]
+    fn a_kill_without_sigterm_runs_after_the_caller_lets_go_of_its_lock() {
+        let shared = SharedProcess::from_child(spawn_group("sleep 30")).expect("adopt");
+        let registry = Arc::new(Mutex::new(()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let stopper = {
+            let _held = registry.lock().unwrap();
+            let registry = Arc::clone(&registry);
+            shared.kill_on_thread(move |process| {
+                // A killer that waited on the lock would wait forever; poll.
+                let deadline = std::time::Instant::now() + Duration::from_secs(2);
+                let mut free = registry.try_lock().is_ok();
+                while !free && std::time::Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(20));
+                    free = registry.try_lock().is_ok();
+                }
+                let _ = tx.send(free);
+                process.kill_tree();
+            })
+        };
+        if let Some(stopper) = stopper {
+            stopper.join().unwrap();
+        }
+        assert!(
+            rx.recv().unwrap(),
+            "the kill ran while its caller still held the registry lock"
+        );
+        assert!(matches!(shared.try_wait(), Ok(Some(_))), "process killed");
     }
 
     /// `kill(pid, 0)`: works on macOS too (there is no `/proc` there).

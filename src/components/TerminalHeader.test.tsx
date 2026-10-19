@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { useAppShortcuts } from "../useAppShortcuts";
 import { TerminalHeader, type NextStep } from "./TerminalHeader";
 
 const working = { tone: "working", text: "Working", timed: true } as const;
@@ -87,6 +88,50 @@ describe("TerminalHeader", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "Send to Planner" }));
     expect(onSend).toHaveBeenCalledWith("role_planner");
     expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("closes the hand-off menu on Escape without cancelling another tab's running turn", () => {
+    // Grid view: the active chat tab has a turn in flight; this header is another cell's.
+    const onCancelTurn = vi.fn();
+    renderHook(() =>
+      useAppShortcuts({
+        platform: "mac",
+        dialogOpen: false,
+        promptInFlight: true,
+        onAction: () => {},
+        onCancelTurn,
+      }),
+    );
+    render(<TerminalHeader {...base} compact state={done} next={next()} turnEnded />);
+    const caret = screen.getByRole("button", { name: "More hand-off targets" });
+    fireEvent.click(caret);
+    expect(screen.getByRole("menu")).toBeTruthy();
+    fireEvent.keyDown(caret, { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(onCancelTurn).not.toHaveBeenCalled();
+  });
+
+  it("claims Escape for an open hand-off menu even when the click left focus on the body", () => {
+    // WebKit does not focus a clicked button (nor does jsdom's click), so
+    // Escape goes to whatever holds focus after the menu opens.
+    const onCancelTurn = vi.fn();
+    renderHook(() =>
+      useAppShortcuts({
+        platform: "mac",
+        dialogOpen: false,
+        promptInFlight: true,
+        onAction: () => {},
+        onCancelTurn,
+      }),
+    );
+    render(<TerminalHeader {...base} compact state={done} next={next()} turnEnded />);
+    const caret = screen.getByRole("button", { name: "More hand-off targets" });
+    fireEvent.click(caret);
+    expect(document.activeElement).toBe(screen.getAllByRole("menuitem")[0]);
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(onCancelTurn).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(caret);
   });
 
   it("shows Stop only while working", () => {

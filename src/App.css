@@ -6501,6 +6501,8 @@ button.chain-label {
   top: 0;
   bottom: 0;
   width: 0;
+  /* Draw the 1px line on the left of now, so at 100% it stays inside the chart. */
+  margin-left: -1px;
   border-left: 1px dashed var(--accent-fg);
   pointer-events: none;
 }
@@ -6516,16 +6518,14 @@ button.chain-label {
 .run-lanes-now-label {
   position: absolute;
   top: 2px;
-  transform: translateX(-50%);
   white-space: nowrap;
 }
 
-.run-lanes-tick:first-child {
-  transform: none;
-}
-
+/* Ends at the now line: a running chain's now is the chart's right edge, so a
+   centred label would hang past it and scroll the overview sideways. */
 .run-lanes-now-label {
   top: 0.65rem;
+  transform: translateX(-100%);
   color: var(--accent-fg);
 }
 
@@ -6623,6 +6623,18 @@ button.chain-label {
 
 .split-pane-dim:hover > :not(.pane-strip),
 .split-pane-dim:focus-within > :not(.pane-strip) {
+  opacity: 1;
+}
+
+/* A preview's page sits outside its pane (.preview-layer-frame), so it dims
+   by the pane's class (data-dim), and lifts when you point at or use it. */
+.preview-layer-frame[data-dim] {
+  opacity: 0.82;
+  transition: opacity 0.12s ease;
+}
+
+.preview-layer-frame[data-dim]:hover,
+.preview-layer-frame[data-dim]:focus-within {
   opacity: 1;
 }
 

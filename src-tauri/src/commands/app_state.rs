@@ -268,6 +268,20 @@ pub fn open_chain_overview(
     })
 }
 
+/// The pipeline `kind` names, and the role of its first stage.
+fn first_stage(kind: &str) -> Result<(crate::pipelines::PipelineDef, String), String> {
+    let def = crate::pipelines::find(kind.trim())
+        .filter(|def| def.id == kind.trim())
+        .ok_or_else(|| format!("unknown pipeline: {}", kind.trim()))?;
+    // pipelines.json loads unvalidated, so a hand edit can leave no stages.
+    let role_id = def
+        .stages
+        .first()
+        .map(|stage| stage.role_id.clone())
+        .ok_or_else(|| format!("{} has no stages: add one in Settings", def.name))?;
+    Ok((def, role_id))
+}
+
 /// Open a draft of a pipeline's first stage, tagged as step 1 of a new
 /// chain: Planner for Eagle-Eye 1, Implementer for Eagle-Eye 2, or the first
 /// stage of one of your own pipelines.
@@ -280,12 +294,9 @@ pub fn start_eagle_eye(
     roles: State<Mutex<RolesStore>>,
     store: State<Mutex<StateStore>>,
 ) -> Result<TabDetail, String> {
-    let def = crate::pipelines::find(kind.trim())
-        .filter(|def| def.id == kind.trim())
-        .ok_or_else(|| format!("unknown pipeline: {}", kind.trim()))?;
+    let (def, role_id) = first_stage(&kind)?;
     let kind = def.id.clone();
     let total = def.stages.len() as u32;
-    let role_id = def.stages[0].role_id.clone();
     let role = {
         let roles = roles.lock().map_err(|e| e.to_string())?;
         roles
@@ -756,5 +767,27 @@ mod permission_mode_tests {
             tab_permission_mode(ProviderId::Claude, "terminal", "shell", ""),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod first_stage_tests {
+    use super::first_stage;
+    use crate::pipelines::{register_for_test, unregister_for_test, PipelineDef};
+
+    // Review: pipelines.json is loaded without validation (a hand edit still
+    // loads), and starting a pipeline with no stages indexed `stages[0]`.
+    #[test]
+    fn a_pipeline_with_no_stages_is_refused_not_a_panic() {
+        let def: PipelineDef = serde_json::from_value(serde_json::json!({
+            "id": "user_no_stages", "name": "Emptied by hand", "stages": []
+        }))
+        .unwrap();
+        register_for_test(def);
+        let result = std::panic::catch_unwind(|| first_stage("user_no_stages"));
+        unregister_for_test("user_no_stages");
+        let err = result.expect("no panic").unwrap_err();
+        assert!(err.contains("Emptied by hand"), "{err}");
+        assert_eq!(first_stage("eagle1").unwrap().1, "role_planner");
     }
 }

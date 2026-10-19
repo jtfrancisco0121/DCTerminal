@@ -420,6 +420,40 @@ mod tests {
         assert!(!is_plan_file_path("/x/notplans/a.md"));
     }
 
+    // Review: the `as_object_mut().unwrap()`s in `enrich_params` run under
+    // the session registry lock. They are reached only with a cached entry,
+    // which needs a `toolCallId` read off the same object they unwrap (or
+    // the `{}` put in its place), so no shape of request panics there.
+    #[test]
+    fn enriching_never_panics_on_an_odd_request_shape() {
+        let mut cache = ToolCallCache::new();
+        cache.observe_tool_update(&json!({
+            "sessionUpdate": "tool_call", "toolCallId": "c1", "kind": "delete",
+            "title": "Delete `a.txt`", "rawInput": { "path": "a.txt" },
+            "locations": [{ "path": "a.txt" }]
+        }));
+        for params in [
+            json!(null),
+            json!("c1"),
+            json!([{ "toolCallId": "c1" }]),
+            json!({ "toolCallId": "c1" }),
+            json!({ "toolCall": null, "toolCallId": "c1" }),
+            json!({ "toolCall": "c1", "tool_call": { "toolCallId": "c1" } }),
+            json!({ "toolCall": [], "toolCallId": "c1" }),
+            json!({ "tool_call": 5, "toolCallId": "c1" }),
+            json!({ "toolCall": { "toolCallId": "c1", "rawInput": "rm a.txt" } }),
+            json!({ "toolCall": { "toolCallId": "c1", "rawInput": { "x": 1 }, "kind": "" } }),
+            json!({ "tool_call": { "tool_call_id": "c1", "locations": null } }),
+        ] {
+            let enriched = cache.enrich_params(&params);
+            if let Some(tool) = tool_object(&enriched).as_object() {
+                if tool.contains_key("toolCallId") || tool.contains_key("tool_call_id") {
+                    assert_eq!(tool["kind"], "delete", "{params}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn enriches_shell_from_preceding_tool_call() {
         let mut cache = ToolCallCache::new();

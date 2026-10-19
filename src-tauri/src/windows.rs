@@ -421,9 +421,7 @@ fn shutdown_processes(app: &AppHandle) {
         }
     }
     if let Some(state) = sessions {
-        if let Ok(mut guard) = state.lock() {
-            guard.kill_all();
-        }
+        crate::commands::kill_all_agents(&state);
     }
     for group in ptys {
         group.kill();
