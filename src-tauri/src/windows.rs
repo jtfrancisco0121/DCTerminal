@@ -403,12 +403,17 @@ fn shutdown_processes(app: &AppHandle) {
     let terminals = app.try_state::<Mutex<crate::pty::PtyRegistry>>();
     let agents = sessions
         .as_ref()
-        .and_then(|state| state.lock().ok().map(|guard| guard.terminate_all()))
+        .and_then(|state| state.lock().ok().map(|guard| guard.processes()))
         .unwrap_or_default();
     let ptys = terminals
         .as_ref()
-        .and_then(|state| state.lock().ok().map(|guard| guard.terminate_all()))
+        .and_then(|state| state.lock().ok().map(|guard| guard.running_groups()))
         .unwrap_or_default();
+    // Signalled with no registry lock held: each walks its descendants.
+    agents
+        .iter()
+        .for_each(crate::process_tree::SharedProcess::terminate);
+    ptys.iter().for_each(crate::process_tree::PtyGroup::terminate);
     if cfg!(unix) {
         let deadline = Instant::now() + STOP_GRACE;
         while Instant::now() < deadline

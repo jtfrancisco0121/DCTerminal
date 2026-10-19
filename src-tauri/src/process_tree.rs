@@ -182,21 +182,25 @@ impl SharedProcess {
         }
     }
 
-    /// SIGTERM to the group now; a `proc-stop` thread kills it if anything
-    /// is still running after `grace`. Returns at once, without waiting on
-    /// the process. Windows has no SIGTERM: the thread kills at once.
+    /// SIGTERM to the group on a `proc-stop` thread, which kills it if
+    /// anything is still running after `grace`. Returns at once, without
+    /// waiting on the process or walking its descendants, so a caller may
+    /// hold a registry lock. Windows has no SIGTERM: the thread kills at once.
     pub fn stop_gracefully(&self, grace: Duration) -> Option<JoinHandle<()>> {
         #[cfg(unix)]
         {
             match self.inner.lock() {
-                Ok(mut tree) if !tree.killed => tree.terminate(),
+                Ok(tree) if !tree.killed => {}
                 _ => return None,
             }
             let shared = self.clone();
             let deadline = Instant::now() + grace;
             match std::thread::Builder::new()
                 .name("proc-stop".into())
-                .spawn(move || shared.kill_after(deadline))
+                .spawn(move || {
+                    shared.terminate();
+                    shared.kill_after(deadline);
+                })
             {
                 Ok(stopper) => Some(stopper),
                 Err(_) => {
