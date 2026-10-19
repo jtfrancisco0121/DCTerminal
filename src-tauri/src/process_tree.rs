@@ -599,8 +599,13 @@ fn children_lister() -> impl Fn(u32) -> Vec<ProcInfo> {
 
 #[cfg(target_os = "linux")]
 fn proc_info(pid: u32) -> Option<ProcInfo> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    // Fields after the `(comm)`: state ppid pgrp session ... starttime (22nd overall).
+    parse_stat(pid, &std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
+}
+
+/// One `/proc/<pid>/stat` line. The comm may hold spaces and ')', so fields
+/// count from the last ')': state ppid pgrp session ... starttime (22nd).
+#[cfg(any(target_os = "linux", test))]
+fn parse_stat(pid: u32, stat: &str) -> Option<ProcInfo> {
     let fields: Vec<&str> = stat.rsplit_once(')')?.1.split_whitespace().collect();
     Some(ProcInfo {
         pid,
@@ -1246,6 +1251,22 @@ pub(crate) mod tests {
         let children = wait_for_children(&pid_file);
         shared.kill_tree();
         assert_only_detached_stopped(children, "kill_tree");
+    }
+
+    // Review: the Linux `/proc/<pid>/stat` parser was never compiled on
+    // macOS. A comm may hold ") " and spaces; fields count from the last ')'.
+    #[test]
+    fn parses_a_proc_stat_line_whose_comm_holds_parens() {
+        let mut line = String::from("4242 ((a) b) (c d)) S 77 88 99 34816 -1");
+        for field in 9..=21 {
+            line.push_str(&format!(" {field}"));
+        }
+        line.push_str(" 123456 0 0\n");
+        let info = parse_stat(4242, &line).expect("parsed");
+        assert_eq!((info.pid, info.ppid, info.pgid), (4242, 77, 88));
+        assert_eq!((info.sid, info.start), (99, 123456));
+        assert!(parse_stat(1, "1 (short) S 0").is_none());
+        assert!(parse_stat(1, "no parens at all").is_none());
     }
 
     /// `kill(pid, 0)`: works on macOS too (there is no `/proc` there).
