@@ -140,3 +140,21 @@ describe("spawnCommand", () => {
     expect(JSON.parse(result.stdout)).toEqual(args);
   });
 });
+
+describe("cargo test step", () => {
+  it("makes the ACP flow tests fail when python3 is missing", () => {
+    const cargoTest = steps.find((step) => step.name === "cargo test");
+    expect(cargoTest).toBeDefined();
+    expect(cargoTest.env).toEqual({ DCT_REQUIRE_PYTHON: "1" });
+  });
+
+  it("adds a step's env to the child's environment", () => {
+    const result = spawnCommand(
+      process.execPath,
+      ["-e", "process.stdout.write(`${process.env.DCT_REQUIRE_PYTHON}|${!!process.env.PATH}`)"],
+      { stdio: "pipe", encoding: "utf8", env: { DCT_REQUIRE_PYTHON: "1" } },
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("1|true");
+  });
+});
