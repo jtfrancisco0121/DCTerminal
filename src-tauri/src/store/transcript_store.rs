@@ -5,6 +5,7 @@
 use crate::store::json_io::{read_json, write_json_atomic};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::SystemTime;
 
 pub const TRANSCRIPT_SCHEMA_VERSION: u32 = 1;
@@ -17,6 +18,39 @@ thread_local! {
     /// thread doing the rotation. Lets a test look at the locks mid-scan.
     pub(crate) static ROTATION_HOOK: std::cell::RefCell<Option<Box<dyn Fn()>>> =
         std::cell::RefCell::new(None);
+}
+
+/// Folders with a rotation running. Rotation runs without the store lock,
+/// so two saves could otherwise trim the same folder at once and, picking
+/// from different keep lists, remove more than the overflow. Keyed by
+/// folder so unrelated stores (and parallel tests) never skip each other.
+static ROTATING: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// One rotation per folder at a time. `try_acquire` never waits: a save
+/// that finds a rotation running skips its own, and the next save trims
+/// whatever is left over. Released on drop, so every return path frees it.
+pub struct RotationGuard {
+    dir: PathBuf,
+}
+
+impl RotationGuard {
+    pub fn try_acquire(dir: &Path) -> Option<Self> {
+        let mut rotating = ROTATING.lock().unwrap_or_else(|p| p.into_inner());
+        if rotating.iter().any(|busy| busy == dir) {
+            return None;
+        }
+        rotating.push(dir.to_path_buf());
+        Some(Self {
+            dir: dir.to_path_buf(),
+        })
+    }
+}
+
+impl Drop for RotationGuard {
+    fn drop(&mut self) {
+        let mut rotating = ROTATING.lock().unwrap_or_else(|p| p.into_inner());
+        rotating.retain(|busy| busy != &self.dir);
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -139,12 +173,17 @@ impl TranscriptStore {
 /// a file named in `keep_ids`, or one modified at or after `cutoff`: a tab
 /// that saved after the caller read `keep_ids` is newer than that list and
 /// must not be rotated away by it. A directory walk, so it takes only the
-/// folder path and runs without the store lock.
+/// folder path and runs without the store lock. Skips when another
+/// rotation of the same folder is running (`RotationGuard`).
 pub fn rotate_transcripts(
     dir: &Path,
     keep_ids: &[String],
     cutoff: Option<SystemTime>,
 ) -> Result<(), String> {
+    // Another save is trimming this folder: skip, the next save trims the rest.
+    let Some(_rotating) = RotationGuard::try_acquire(dir) else {
+        return Ok(());
+    };
     let mut files = Vec::new();
     for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;

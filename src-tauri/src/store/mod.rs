@@ -68,7 +68,7 @@ pub use state_types::{
 };
 pub use chain_runs::ClaimOutcome;
 pub use transcript_store::{
-    rotate_transcripts, truncate_transcript, TranscriptFile, TranscriptStore,
+    rotate_transcripts, truncate_transcript, RotationGuard, TranscriptFile, TranscriptStore,
 };
 #[cfg(test)]
 pub(crate) use transcript_store::ROTATION_HOOK;

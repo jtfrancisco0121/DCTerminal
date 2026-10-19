@@ -193,3 +193,43 @@ fn saving_a_transcript_does_not_hold_the_lock_while_rotating() {
     );
     assert!(transcripts.lock().unwrap().load(&id).unwrap().is_some());
 }
+
+fn transcript_files(dir: &std::path::Path) -> usize {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .filter(|entry| {
+            let name = entry.as_ref().unwrap().file_name();
+            name.to_string_lossy().ends_with(".json")
+        })
+        .count()
+}
+
+// Regression: rotation runs without the store lock, so two saves could trim
+// the folder at once and, from different keep lists, remove past the cap.
+#[test]
+fn a_rotation_skips_while_another_rotation_runs() {
+    let dir = TempDir::new("transcripts_one_rotation");
+    let transcripts = TranscriptStore::open(dir.path()).unwrap();
+    for i in 0..40 {
+        transcripts
+            .write(&format!("old_{i}"), "old", "/tmp/a", NOW)
+            .unwrap();
+    }
+    let folder = transcripts.dir.clone();
+
+    let running = crate::store::RotationGuard::try_acquire(&folder).expect("guard free");
+    crate::store::rotate_transcripts(&folder, &[], None).unwrap();
+    assert_eq!(
+        transcript_files(&folder),
+        40,
+        "a second rotation removed files while another one ran"
+    );
+
+    drop(running);
+    crate::store::rotate_transcripts(&folder, &[], None).unwrap();
+    assert_eq!(
+        transcript_files(&folder),
+        30, // MAX_TRANSCRIPT_FILES
+        "the next rotation trims to the cap"
+    );
+}

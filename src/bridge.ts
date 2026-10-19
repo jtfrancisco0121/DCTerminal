@@ -674,10 +674,13 @@ export async function devSessionStop(
   transcript?: string,
   tabId?: string | null,
 ): Promise<void> {
-  return invoke("dev_session_stop", {
-    transcript: transcript ?? null,
-    tabId: tabId ?? null,
-  });
+  // With a tab, this also saves that tab's transcript: keep it in save order.
+  const stop = () =>
+    invoke<void>("dev_session_stop", {
+      transcript: transcript ?? null,
+      tabId: tabId ?? null,
+    });
+  return tabId ? inTabSaveOrder(tabId, stop) : stop();
 }
 
 export async function devSessionCancel(tabId?: string | null): Promise<void> {
@@ -841,12 +844,36 @@ export async function checkWorkingFolder(path: string): Promise<string> {
   return invoke<string>("check_working_folder", { path });
 }
 
+/**
+ * The tail of each tab's transcript-save chain. The save commands are async
+ * on the Rust side, so two saves for one tab could otherwise reach the file
+ * out of order and leave the older text on disk.
+ */
+const tabSaveChains = new Map<string, Promise<void>>();
+
+/** Runs `save` after the tab's previous save settles. A failed save rejects
+ *  only its own caller; the chain goes on. The entry is dropped once the
+ *  newest save settles, so the map holds only tabs with a save in flight. */
+function inTabSaveOrder<T>(tabId: string, save: () => Promise<T>): Promise<T> {
+  const previous = tabSaveChains.get(tabId) ?? Promise.resolve();
+  const result = previous.then(save);
+  const link = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  tabSaveChains.set(tabId, link);
+  void link.then(() => {
+    if (tabSaveChains.get(tabId) === link) tabSaveChains.delete(tabId);
+  });
+  return result;
+}
+
 export async function transcriptSave(
   tabId: string,
   text: string,
   cwd: string,
 ): Promise<void> {
-  return invoke("transcript_save", { tabId, text, cwd });
+  return inTabSaveOrder(tabId, () => invoke<void>("transcript_save", { tabId, text, cwd }));
 }
 
 export async function transcriptLoad(tabId: string): Promise<{
