@@ -701,6 +701,7 @@ dependencies = [
  "chrono",
  "ignore",
  "notify",
+ "objc2",
  "portable-pty",
  "serde",
  "serde_json",

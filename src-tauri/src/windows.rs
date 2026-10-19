@@ -152,27 +152,65 @@ pub(crate) fn quit_message(live: LiveWork) -> String {
 /// it asks once (the answer arrives on another thread, so the main thread
 /// never waits); Quit then exits again, which goes straight through.
 fn request_quit(app: &AppHandle) -> QuitDecision {
-    let live = count_live_work(
+    quit_request(live_work(app), &QUITTING, &QUIT_ASKING, |live| {
+        ask_to_quit(app, live)
+    })
+}
+
+fn live_work(app: &AppHandle) -> LiveWork {
+    count_live_work(
         app.try_state::<Mutex<crate::pty::PtyRegistry>>().as_deref(),
         app.try_state::<Mutex<crate::commands::SessionRegistry>>().as_deref(),
-    );
+    )
+}
+
+/// [`request_quit`] over its flags (`QUITTING`, `QUIT_ASKING`) and its
+/// question, so it runs in tests without an app.
+fn quit_request(
+    live: LiveWork,
+    quitting: &AtomicBool,
+    asking: &AtomicBool,
+    ask: impl FnOnce(LiveWork),
+) -> QuitDecision {
     let decision = quit_decision(
         live.total(),
-        QUITTING.load(Ordering::SeqCst),
-        QUIT_ASKING.load(Ordering::SeqCst),
+        quitting.load(Ordering::SeqCst),
+        asking.load(Ordering::SeqCst),
     );
     match decision {
-        QuitDecision::Quit => QUITTING.store(true, Ordering::SeqCst),
+        QuitDecision::Quit => quitting.store(true, Ordering::SeqCst),
         QuitDecision::Ask => {
             // Two quits racing here: only the first one asks.
-            if QUIT_ASKING.swap(true, Ordering::SeqCst) {
+            if asking.swap(true, Ordering::SeqCst) {
                 return QuitDecision::Ignore;
             }
-            ask_to_quit(app, live);
+            ask(live);
         }
         QuitDecision::Ignore => {}
     }
     decision
+}
+
+/// macOS `applicationShouldTerminate:` (Dock icon Quit, logout, AppleScript
+/// `quit`): true lets AppKit terminate now. Otherwise the Cmd+Q question is
+/// (or already was) put on screen, AppKit is told to cancel, and the
+/// question's Quit exits through `app.exit` like Cmd+Q does.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn terminate_now(
+    live: LiveWork,
+    quitting: &AtomicBool,
+    asking: &AtomicBool,
+    ask: impl FnOnce(LiveWork),
+) -> bool {
+    quit_request(live, quitting, asking, ask) == QuitDecision::Quit
+}
+
+/// [`terminate_now`] for the running app.
+#[cfg(target_os = "macos")]
+pub(crate) fn should_terminate(app: &AppHandle) -> bool {
+    terminate_now(live_work(app), &QUITTING, &QUIT_ASKING, |live| {
+        ask_to_quit(app, live)
+    })
 }
 
 fn ask_to_quit(app: &AppHandle, live: LiveWork) {
@@ -261,6 +299,8 @@ pub fn install_macos_menu(app: &tauri::App) -> tauri::Result<()> {
             Some("CmdOrCtrl+Q"),
         )?;
         let app_menu = Submenu::with_items(app, "DCTerminal", true, &[&quit])?;
+        // The other `terminate:` senders (Dock icon, logout, AppleScript).
+        crate::macos_terminate::install(app.handle());
         // Without these, Cmd+C/V/X/A/Z never reach text fields on macOS.
         let edit = Submenu::with_items(
             app,
@@ -813,6 +853,46 @@ mod tests {
     fn a_quit_while_the_question_is_open_is_ignored() {
         assert_eq!(quit_decision(2, false, true), QuitDecision::Ignore);
         assert_eq!(quit_decision(0, false, true), QuitDecision::Ignore);
+    }
+
+    const TWO_LIVE: LiveWork = LiveWork {
+        terminals: 1,
+        agents: 1,
+    };
+
+    #[test]
+    fn a_dock_quit_with_live_work_asks_and_does_not_terminate_yet() {
+        let (quitting, asking) = (AtomicBool::new(false), AtomicBool::new(false));
+        let mut asked = None;
+        let now = terminate_now(TWO_LIVE, &quitting, &asking, |live| asked = Some(live));
+        assert!(!now);
+        assert_eq!(asked, Some(TWO_LIVE));
+        assert!(asking.load(Ordering::SeqCst));
+        assert!(!quitting.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_dock_quit_with_nothing_live_terminates_now_without_asking() {
+        let (quitting, asking) = (AtomicBool::new(false), AtomicBool::new(false));
+        let now = terminate_now(LiveWork::default(), &quitting, &asking, |_| {
+            panic!("nothing is running: no question")
+        });
+        assert!(now);
+        assert!(quitting.load(Ordering::SeqCst), "windows are not archived on this quit");
+    }
+
+    #[test]
+    fn a_dock_quit_after_the_user_said_quit_terminates_now() {
+        let (quitting, asking) = (AtomicBool::new(true), AtomicBool::new(false));
+        let now = terminate_now(TWO_LIVE, &quitting, &asking, |_| panic!("already confirmed"));
+        assert!(now);
+    }
+
+    #[test]
+    fn a_second_dock_quit_while_the_question_is_open_neither_asks_nor_terminates() {
+        let (quitting, asking) = (AtomicBool::new(false), AtomicBool::new(true));
+        let now = terminate_now(TWO_LIVE, &quitting, &asking, |_| panic!("one question at a time"));
+        assert!(!now);
     }
 
     #[test]
