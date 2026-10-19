@@ -3,29 +3,15 @@
 //! The overview reads it. Nothing here starts a session.
 
 use crate::store::state_types::{
-    claim_key, pipeline_stages, run_kind_for_chain, window_matches, ChainRef, HandoffClaim,
-    PipelineRun, RunStatus, StageHandoff, StageVerdict,
+    pipeline_stages, run_kind_for_chain, window_matches, ChainRef, PipelineRun, RunStatus,
+    StageHandoff, StageVerdict,
 };
 use crate::store::StateStore;
 use chrono::{DateTime, Utc};
-use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 
 /// Runs kept at startup besides those that still have a tab.
 pub const KEEP_RECENT_RUNS: usize = 50;
-
-/// What claiming a hand-off found (`StateStore::claim_handoff`).
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ClaimOutcome {
-    pub run_id: String,
-    pub key: String,
-    /// Claimed now: release it if the hand-off does not happen.
-    pub claimed: bool,
-    /// The claim made before for the same stage and round, or the same turn.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub existing: Option<HandoffClaim>,
-}
 
 /// "Title\n\nRequest" from a step-1 form. Planner uses `request`,
 /// Implementer uses `description`.
@@ -349,50 +335,6 @@ impl StateStore {
         self.record_chain_step(target_tab_id, &chain, handoff_text);
         self.save()?;
         Ok(chain)
-    }
-
-    /// Claim the hand-off on (`advance`) or send-back (`back`) from
-    /// `source_tab_id`'s stage, in its run's current round (and lane), for
-    /// `by` (`you`). When one was made already for that stage and round, or
-    /// for the same source `turn`, it is returned unclaimed unless `force`.
-    /// Saves when it claims. `None` for a tab that is not on a chain run.
-    pub fn claim_handoff(
-        &mut self,
-        source_tab_id: &str,
-        kind: &str,
-        turn: Option<&str>,
-        by: &str,
-        force: bool,
-    ) -> Result<Option<ClaimOutcome>, String> {
-        if kind != "advance" && kind != "back" {
-            return Err(format!("unknown hand-off kind: {kind}"));
-        }
-        let Some(chain) = self.tab_by_id(source_tab_id).and_then(|tab| tab.chain.clone()) else {
-            return Ok(None);
-        };
-        let Some(run_id) = self.chain_run_id(&chain.chain_id) else {
-            return Ok(None);
-        };
-        let Some(run) = self.pipeline_run_by_id_mut(&run_id) else {
-            return Ok(None);
-        };
-        let stages = pipeline_stages(&run.kind);
-        let Some((stage_id, _)) = (chain.step as usize)
-            .checked_sub(1)
-            .and_then(|index| stages.get(index))
-        else {
-            return Ok(None);
-        };
-        let lane = chain.lane.as_deref().filter(|id| run.lane(id).is_some());
-        let key = claim_key(kind, stage_id, run.round_for(lane), lane);
-        let turn = turn.map(str::trim).filter(|turn| !turn.is_empty());
-        let existing = run.claim_for(&key, turn).cloned();
-        if existing.is_some() && !force {
-            return Ok(Some(ClaimOutcome { run_id, key, claimed: false, existing }));
-        }
-        run.add_claim(key.clone(), turn.map(str::to_string), by);
-        self.save()?;
-        Ok(Some(ClaimOutcome { run_id, key, claimed: true, existing }))
     }
 
     /// Drop a claim whose hand-off did not happen after all. Saves.
@@ -773,62 +715,29 @@ mod tests {
             ..TurnReport::default()
         };
 
-        // You hand the Implementer's turn on; autopilot's later decision skips.
-        let mine = store
-            .claim_handoff(&implementer, "advance", Some("impl|s|t1"), "you", false)
-            .unwrap()
-            .unwrap();
-        assert!(mine.claimed && mine.existing.is_none());
-        assert_eq!((mine.run_id.as_str(), mine.key.as_str()), ("ee_7", "advance:implementer#1"));
+        // You hand the Implementer's turn on (the run actor records it);
+        // autopilot's later decision skips.
         let run = store.pipeline_run_by_id_mut("ee_7").unwrap();
+        run.add_claim("advance:implementer#1".into(), None, "you");
         let d = decide(&def, run, &turn("implementer", "impl|s|t1"));
         assert_eq!((d.action.as_str(), d.reason.as_str()), ("skip", "Implementer finished: already handed on by you."));
 
-        // Autopilot sends the reviewer's round back; you then try the same reply.
-        let run = store.pipeline_run_by_id_mut("ee_7").unwrap();
+        // Autopilot sends the reviewer's round back and records it as its own.
         let mut review = turn("pr_reviewer", "rev|s|t2");
         review.verdict = Some("REQUEST CHANGES".into());
         let d = decide(&def, run, &review);
         assert_eq!(d.action, "loopBack");
-        store
-            .chain_loop_back("ee_7", "role_pr_reviewer", &implementer, Some("REQUEST CHANGES"), Some("fix"))
-            .unwrap();
-        let again = store
-            .claim_handoff(&reviewer, "back", Some("rev|s|t2"), "you", false)
-            .unwrap()
-            .unwrap();
-        assert!(!again.claimed, "the same reply was sent back already");
-        assert_eq!(again.existing.as_ref().map(|c| c.by.as_str()), Some("autopilot"));
-        // You can still send it on purpose; then it is yours.
-        let forced = store
-            .claim_handoff(&reviewer, "back", Some("rev|s|t2"), "you", true)
-            .unwrap()
-            .unwrap();
-        assert!(forced.claimed);
-        assert_eq!(forced.key, "back:pr_reviewer#2");
-        let next = store
-            .claim_handoff(&reviewer, "back", Some("rev|s|t3"), "you", false)
-            .unwrap()
-            .unwrap();
-        assert_eq!(next.existing.as_ref().map(|c| c.by.as_str()), Some("you"));
+        let key = d.claim.clone().unwrap();
+        assert_eq!(key, "back:pr_reviewer#1");
+        assert_eq!(run.claim_for(&key, None).map(|c| c.by.as_str()), Some("autopilot"));
 
-        // A hand-off that did not happen gives its claim back.
-        store.release_handoff_claim("ee_7", &forced.key).unwrap();
-        let run = store.pipeline_run_by_id("ee_7").unwrap();
-        assert!(run.claims.iter().all(|c| c.key != forced.key));
-        assert!(store
-            .claim_handoff(&reviewer, "back", Some("rev|s|t3"), "you", false)
-            .unwrap()
-            .unwrap()
-            .claimed);
-        // Saved, and a tab off any chain claims nothing.
+        // A hand-off that did not happen gives its record back; saved.
+        store.release_handoff_claim("ee_7", &key).unwrap();
         let loaded = StateStore::open_path(store.path.clone()).unwrap();
-        assert!(!loaded.pipeline_run_by_id("ee_7").unwrap().claims.is_empty());
-        let loose = store
-            .create_draft_tab(&role("role_implementer"), "/tmp/p", true, None)
-            .unwrap();
-        assert!(store.claim_handoff(&loose, "advance", None, "you", false).unwrap().is_none());
-        assert!(store.claim_handoff(&implementer, "sideways", None, "you", false).is_err());
+        let run = loaded.pipeline_run_by_id("ee_7").unwrap();
+        assert!(run.claims.iter().all(|c| c.key != key));
+        assert!(run.claims.iter().any(|c| c.key == "advance:implementer#1"));
+        assert!(store.release_handoff_claim("nope", &key).is_err());
     }
 
     #[test]

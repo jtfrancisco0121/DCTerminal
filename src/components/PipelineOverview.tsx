@@ -391,7 +391,9 @@ export function PipelineOverview({
   const round = Math.max(1, run.round ?? 1);
   const def = pipelineDef(run.kind);
   const stageDefs = pipelineStages(run.kind);
-  const autopilotOn = !!run.autopilot?.enabled;
+  // An engine-1 run is manual only (V6): its saved autopilot flag does nothing.
+  const manualOnly = (run.engine ?? 1) < 2;
+  const autopilotOn = !manualOnly && !!run.autopilot?.enabled;
   // Mark complete is only for a run that reached its last stage.
   const atLastStage = stageDefs.length > 0 && run.stage === stageDefs[stageDefs.length - 1].id;
   const later = followUps(run);
@@ -439,14 +441,17 @@ export function PipelineOverview({
             <input
               type="checkbox"
               checked={autopilotOn}
+              disabled={manualOnly}
               onChange={(e) => void setAutopilot(e.currentTarget.checked)}
             />{" "}
             <strong>Autopilot</strong>
           </label>
           <p className="hint">
-            {autopilotOn
-              ? "After each terminal stage's turn, the checks run and the run moves on, sends a round back, or stops for you. Rounds go back until the reviewer approves (or up to a round cap, if the pipeline sets one). It stops before a checkpoint, when Claude needs you, and near your usage limit. It never merges."
-              : "Off: every hand-off waits for you. Turn it on to let terminal stages hand on by themselves."}
+            {manualOnly
+              ? "This run is manual only: it started before pipeline v2, or its pipeline has a stage autopilot cannot follow (parallel reviewers, or a role that is not a Planner, reviewer or Implementer). Hand each stage on yourself; start a new run to use autopilot."
+              : autopilotOn
+                ? "After each terminal stage's turn, the checks run and the run moves on, sends a round back, or stops for you. Rounds go back until the reviewer approves (or up to a round cap, if the pipeline sets one). It stops before a checkpoint, when Claude needs you, and near your usage limit. It never merges."
+                : "Off: every hand-off waits for you. Turn it on to let terminal stages hand on by themselves."}
           </p>
           {autopilotOn && run.autopilot?.waiting && (
             <p className="pipeline-autopilot-waiting" role="status">

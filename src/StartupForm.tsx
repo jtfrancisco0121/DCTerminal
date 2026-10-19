@@ -225,14 +225,13 @@ import {
 import { handoffRoute, loopBackMessage } from "./handoff/routing";
 import {
   attachHandoff,
-  claimManualHandoff,
   handoffFieldsOf,
   prepareHandoff,
   saveHandoff,
 } from "./handoff/executor";
 import { pipelineDef, pipelineStages } from "./pipeline/defs";
-import { useAutopilot } from "./pipeline/useAutopilot";
-import { terminalStageSource, turnId } from "./pipeline/autopilot";
+import { useRunTurns } from "./pipeline/useRunTurns";
+import { terminalStageSource } from "./pipeline/stageTurn";
 import { approveByHand, fanOutRun, planStageFor, stageTab, startLane } from "./pipeline/fanOut";
 import {
   isReviewerRole,
@@ -799,7 +798,7 @@ export function StartupForm({
   const startLockRef = useRef(false);
   /** One hand-off confirm at a time: a double click must not open two tabs. */
   const handoffLockRef = useRef(false);
-  /** The hand-off autopilot made already that you were warned about; Send again makes it anyway. */
+  /** An engine-2 hand-off autopilot made already that you were warned about; Send again makes it anyway. */
   const confirmedClaimRef = useRef<string | null>(null);
   const activeTabIdRef = useRef(activeTabId);
   activeTabIdRef.current = activeTabId;
@@ -1428,8 +1427,8 @@ export function StartupForm({
     return () => window.clearInterval(timer);
   }, [hasTerminalTabs, isWatchingTab, notifyAgent]);
 
-  /** Autopilot sees every fresh session log (set once the hook exists). */
-  const autopilotLogRef = useRef<((tabId: string, log: TerminalSessionLog | null) => void) | null>(
+  /** The run turns hook sees every fresh session log (set once the hook exists). */
+  const runTurnsLogRef = useRef<((tabId: string, log: TerminalSessionLog | null) => void) | null>(
     null,
   );
   const storeSessionLog = useCallback(
@@ -1486,9 +1485,8 @@ export function StartupForm({
         sessionLogsRef.current = { ...sessionLogsRef.current, [tabId]: log };
         setSessionLogs(sessionLogsRef.current);
       }
-      // After the stored log is this one: autopilot compares a tab's stored
-      // log with the turn it decides on, and a stale one reads as a newer prompt.
-      autopilotLogRef.current?.(tabId, log);
+      // Notes a chain terminal's finished turn in its run's ledger.
+      runTurnsLogRef.current?.(tabId, log);
     },
     [isWatchingTab, notifyAgent, setBridgeNeeds, setDialogOwner],
   );
@@ -2299,7 +2297,7 @@ export function StartupForm({
       values: Record<string, string>;
       tabId?: string | null;
       handoffPlan?: string | null;
-      /** Autopilot: keep the current tab on screen and throw errors instead of showing them. */
+      /** Lane starts (fan-out): keep the current tab on screen and throw errors instead of showing them. */
       quiet?: boolean;
       /** Launch as this provider (a hand-off keeps its source tab's). */
       provider?: ProviderId | null;
@@ -2481,7 +2479,7 @@ export function StartupForm({
   const approveLaneById = useCallback(
     async (runId: string, laneId: string | null) => {
       // Engine 2 (V3): a message to the run's actor, which also starts the lanes it unblocks.
-      // intentionally silent: an unreadable run is approved the engine-1 way, which names the problem.
+      // intentionally silent: an unreadable run is approved by hand, which names the problem.
       const view = await getPipelineRun(runId).catch(() => null);
       if ((view?.run.engine ?? 1) >= 2) {
         const outcome = await pipelineActorMessage(runId, { kind: "approve", lane: laneId });
@@ -2493,19 +2491,8 @@ export function StartupForm({
     [showNotice, startLaneOf],
   );
 
-  const autopilot = useAutopilot({
-    tabs: () => savedTabsRef.current,
-    roles: () => roles,
-    terminalState: (tabId) => terminalStatesRef.current[tabId],
-    startTerminal: (options) =>
-      startRoleTerminal({ ...options, tabId: null, quiet: true }),
-    refreshTabs,
-    notifyStop: (tabId, reason) => notifyAgent(tabId, { kind: "question", detail: `Autopilot: ${reason}` }),
-    notice: (title, body) => showNotice(title, body),
-    startLane: startLaneOf,
-    sessionLog: (tabId) => sessionLogsRef.current[tabId],
-  });
-  autopilotLogRef.current = autopilot.onTerminalLog;
+  const runTurns = useRunTurns({ tabs: () => savedTabsRef.current });
+  runTurnsLogRef.current = runTurns.onTerminalLog;
   // Engine 2 (V3): the run actor opened a stage terminal with no view, or
   // resumed one (V4). List its tab. The stage stays hidden (V5): it runs at
   // 120x40 in the backend's ring buffer until a view watches it (its tab,
@@ -4562,30 +4549,11 @@ export function StartupForm({
           patchRuntime(handoffSource.sourceTabId, (rt) => ({ ...rt, plan: null }));
         }
       };
-      // The source terminal's turn, so a reply autopilot already sent on is recognised.
-      const sourceTurn =
-        terminalCapture?.tabId === handoffSource.sourceTabId
-          ? turnId(handoffSource.sourceTabId, captureLog)
-          : null;
-      /** Claims this chain hand-off; null (with the warning shown) when autopilot made it already. */
-      const claimHandoff = async (kind: "advance" | "back") => {
-        const claim = await claimManualHandoff({
-          sourceTabId: handoffSource.sourceTabId,
-          kind,
-          turn: sourceTurn,
-          confirmedKey: confirmedClaimRef.current,
-        });
-        if (!claim.ok) {
-          confirmedClaimRef.current = claim.key;
-          setHandoffError(claim.warning);
-          return null;
-        }
-        confirmedClaimRef.current = null;
-        return claim;
-      };
       // Engine 2 (V3): a bridged stage's run belongs to its run actor; your
       // terminal hand-off on it is a message to that actor, which records
-      // and carries it out in turn with autopilot (claims are not used).
+      // and carries it out in turn with autopilot. Anything else (an
+      // engine-1 run is manual only, V6) has no autopilot to race, so it
+      // goes ahead here.
       const sourceSummary = savedTabs.find((tab) => tab.id === handoffSource.sourceTabId);
       const actorRun = surface === "terminal" && sourceSummary?.chain ? (sourceSummary.bridge?.runId ?? null) : null;
       /** Sends one actor message; null (with the warning shown) when autopilot made the hand-off already. */
@@ -4641,11 +4609,7 @@ export function StartupForm({
         }
         setBusy(true);
         setHandoffError(null);
-        let claim: Awaited<ReturnType<typeof claimHandoff>> = null;
-        let sent = false;
         try {
-          claim = await claimHandoff("back");
-          if (!claim) return;
           if (loop.terminal) {
             // One paste and one Enter, like the terminal scratch pad's Send.
             notePtyInput(targetTab.id);
@@ -4666,7 +4630,6 @@ export function StartupForm({
               return;
             }
           }
-          sent = true;
           // The follow-up is out: close the dialog first, so a failure below
           // cannot invite a second send of the same findings.
           setTerminalCapture(null);
@@ -4688,15 +4651,12 @@ export function StartupForm({
         } catch (err: unknown) {
           setHandoffError(errorText(err));
         } finally {
-          if (claim && !sent) await claim.release();
           setBusy(false);
         }
         return;
       }
       setBusy(true);
       setHandoffError(null);
-      let claim: Awaited<ReturnType<typeof claimHandoff>> = null;
-      let opened = false;
       try {
         const sourceTab = savedTabs.find((tab) => tab.id === handoffSource.sourceTabId);
         const loopStep = loop ? { chainId: loop.chain.chainId, next: loop.next } : null;
@@ -4755,11 +4715,6 @@ export function StartupForm({
           await refreshTabs();
           return;
         }
-        // The next stage on the chain, or a round sent back: made once.
-        if (loopStep || prepared.value.nextChain) {
-          claim = await claimHandoff(loopStep ? "back" : "advance");
-          if (!claim) return;
-        }
         const { mapped } = prepared.value;
         const saved = await saveHandoff(prepared.value, scope);
         const attach = (tabId: string) =>
@@ -4789,7 +4744,6 @@ export function StartupForm({
             setHandoffError("Terminal did not start.");
             return;
           }
-          opened = true;
           const bound = await attach(tabId);
           if (mapped.usesScratchPad) {
             scratch.setContent(tabId, mapped.inlinePlan);
@@ -4802,7 +4756,6 @@ export function StartupForm({
         }
         stashActiveTab();
         const { tab } = await newDraftTab(handoffTarget, handoffSource.cwd);
-        opened = true;
         await setTabProvider(tab.id, sourceProvider);
         const bound = await attach(tab.id);
         await syncActiveTabForm(tab.id, handoffTarget, handoffSource.cwd, nextValues);
@@ -4826,7 +4779,6 @@ export function StartupForm({
         const message = errorText(err);
         setHandoffError(message);
       } finally {
-        if (claim && !opened) await claim.release();
         setBusy(false);
       }
     },
@@ -6391,7 +6343,7 @@ export function StartupForm({
           onStartLane={startLaneById}
           onApproveLane={approveLaneById}
           onApproveRun={(runId) => approveLaneById(runId, null)}
-          onContinue={autopilot.continueRun}
+          onContinue={runTurns.continueRun}
           onStageControl={async (runId, tabId, kind) => {
             await pipelineActorMessage(runId, { kind, tabId });
           }}

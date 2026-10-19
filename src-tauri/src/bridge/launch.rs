@@ -16,7 +16,7 @@
 //! told apart by role id until stages carry a kind (H4). A pipeline with any
 //! other stage (parallel reviewers, another role) gives its runs engine 1
 //! ([`engine_for`]), so the run actor (V3) only ever drives runs it can
-//! follow end to end.
+//! follow end to end. An engine-1 run is manual only (V6).
 
 use super::folder::{
     self, read_mode, read_result, read_stage, stage_dirs, write_mode, BridgeTurn, ResultKind, StageInfo,
@@ -35,8 +35,8 @@ pub const ENGINE_V2: u32 = 2;
 
 /// The engine a new run of `def` gets: 2 when every stage reports through
 /// the bridge, so the run actor can follow the whole run (V3); else 1, and
-/// the run keeps the v1 path (a stage with parallel reviewers, or a role
-/// that is none of Planner, reviewer and Implementer).
+/// the run is manual only (V6): a stage with parallel reviewers, or a role
+/// that is none of Planner, reviewer and Implementer.
 pub fn engine_for(def: &PipelineDef) -> u32 {
     if def.stages.iter().all(|stage| stage_kind(stage).is_some()) {
         ENGINE_V2

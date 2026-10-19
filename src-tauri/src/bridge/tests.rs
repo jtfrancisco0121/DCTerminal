@@ -640,7 +640,7 @@ fn a_stage_with_parallel_reviewers_keeps_the_v1_path() {
 }
 
 /// V3: the run actor follows only runs whose every stage reports through
-/// the bridge; any other run starts on engine 1 and keeps the v1 path.
+/// the bridge; any other run starts on engine 1 and is manual only (V6).
 #[test]
 fn only_a_pipeline_the_bridge_covers_whole_starts_on_engine_2() {
     let builtin = crate::pipelines::find("full").unwrap();

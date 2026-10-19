@@ -1189,15 +1189,6 @@ export async function pipelineSetAutopilot(runId: string, enabled: boolean): Pro
 }
 
 /**
- * Continue a run waiting with `app_restarted` (a stage finished while the
- * app was closed): it runs again. Returns its current stage's tab ids, whose
- * finished turn autopilot then decides.
- */
-export async function pipelineContinue(runId: string): Promise<string[]> {
-  return invoke("pipeline_continue", { runId });
-}
-
-/**
  * A button on an engine-2 run, as a message to its Rust run actor (V3):
  * Send (hand a stage's turn on), Send back (a reviewer's round), Approve (a
  * lane, or with `lane` null the run), Continue (after a restart). `values`
@@ -1397,110 +1388,8 @@ export function listenAutopilotStopped(
   });
 }
 
-/** What a stage's finished turn reported, for the autopilot decision. */
-export type TurnReport = {
-  stageId: string;
-  verdict: string | null;
-  findings: { severity: string; summary: string }[];
-  findingsKnown: boolean;
-  missingSections: string[];
-  usagePercent: number | null;
-  chat: boolean;
-  lane: string | null;
-  /** The run's (or lane's) round when the turn was read; a turn from an ended round is skipped. */
-  round?: number | null;
-  /** The turn (`tab|session|prompt`); each one is decided on once. */
-  turn?: string | null;
-  /** Engine 2: the turn ended without `submit_result` after the bridge asked once. */
-  noResult?: boolean;
-};
-
-export type AutopilotDecision = {
-  /** `skip`: a stale turn, or a hand-off you or autopilot made already (the ledger says which). */
-  action:
-    | "advance"
-    | "loopBack"
-    | "retry"
-    | "reask"
-    | "stop"
-    | "complete"
-    | "laneDone"
-    | "ignore"
-    | "skip";
-  stageId?: string;
-  roleId?: string;
-  reason: string;
-  message?: string;
-  followUps?: string[];
-  lane?: string;
-  /** `laneDone`: waiting lanes that can start now. */
-  unblocked?: string[];
-  /** `advance`, `loopBack`: the hand-off claim; release it when the hand-off fails. */
-  claim?: string;
-};
-
-/** A hand-off made once per stage and round (or source turn), by you or autopilot. */
+/** A hand-off made once per stage and round (or source turn), by you or autopilot (the run actor keeps these). */
 export type HandoffClaim = { key: string; turn?: string | null; by: "you" | "autopilot" | string; at: string };
-
-export type ClaimOutcome = {
-  runId: string;
-  key: string;
-  /** Claimed now: release it when the hand-off does not happen. */
-  claimed: boolean;
-  /** The hand-off made already for this stage and round, or this turn. */
-  existing?: HandoffClaim | null;
-};
-
-/**
- * Before you hand a chain tab's turn on (`advance`) or send it back
- * (`back`): claims it, or returns the one made already. Null off a chain run.
- */
-export async function pipelineClaimHandoff(args: {
-  sourceTabId: string;
-  kind: "advance" | "back";
-  turn: string | null;
-  force: boolean;
-}): Promise<ClaimOutcome | null> {
-  return invoke("pipeline_claim_handoff", {
-    sourceTabId: args.sourceTabId,
-    kind: args.kind,
-    turn: args.turn,
-    force: args.force,
-  });
-}
-
-/** Gives back a claim whose hand-off did not happen. */
-export async function pipelineReleaseHandoff(runId: string, key: string): Promise<void> {
-  return invoke("pipeline_release_handoff", { runId, key });
-}
-
-export async function pipelineDecide(runId: string, report: TurnReport): Promise<AutopilotDecision> {
-  return invoke("pipeline_decide", { runId, report });
-}
-
-/**
- * Adds a line to the run ledger; `stop` also puts the run in `waiting` with
- * `reason` (default `carry_out_failed`).
- */
-export async function pipelineNote(
-  runId: string,
-  note: {
-    stageId?: string | null;
-    summary: string;
-    detail?: string | null;
-    stop: boolean;
-    reason?: StopReason | null;
-  },
-): Promise<void> {
-  return invoke("pipeline_note", {
-    runId,
-    stageId: note.stageId ?? null,
-    summary: note.summary,
-    detail: note.detail ?? null,
-    stop: note.stop,
-    reason: note.reason ?? null,
-  });
-}
 
 /** A stage's terminal finished a turn: one `turn` line in the run's ledger (run lanes). */
 export async function pipelineTurnFinished(

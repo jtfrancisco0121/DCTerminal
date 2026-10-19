@@ -5,11 +5,10 @@
 //!
 //! - Restart (D29): a `running` run whose current stage finished a turn that
 //!   no decision covers goes to `waiting` with `app_restarted`. Autopilot
-//!   never acts on that turn by itself: Continue (`pipeline_continue`) runs
-//!   the run again and the turn is decided then (by the frontend on an
-//!   engine-1 run, by the run actor on an engine-2 run). A turn the quit
-//!   cut off is only noted: the run keeps running and the stage's next
-//!   finished turn is decided as usual.
+//!   never acts on that turn by itself: Continue (a message to the run
+//!   actor) runs the run again and the actor decides the turn then. A turn
+//!   the quit cut off is only noted: the run keeps running and the stage's
+//!   next finished turn is decided as usual.
 //! - Stall (D30, D9a): while a current stage is Working (a prompt with no
 //!   finished turn, which also covers a turn abandoned without a Stop), no
 //!   terminal output and no log growth for the pipeline's
@@ -71,7 +70,7 @@ pub fn current_stage_tabs(def: &PipelineDef, run: &PipelineRun) -> Vec<StageTab>
 
 /// The log holds a turn autopilot would act on: done and not interrupted, or
 /// a Planner waiting on its plan approval (`finishedTurn` in
-/// `src/pipeline/autopilot.ts`).
+/// `src/pipeline/stageTurn.ts`).
 pub fn finished_turn(role_id: &str, log: &TerminalSessionLog) -> bool {
     if log.turn_done {
         return !log.interrupted;
@@ -86,8 +85,8 @@ pub fn working(role_id: &str, log: &TerminalSessionLog) -> bool {
     log.last_prompt_at.is_some() && !log.turn_done && !finished_turn(role_id, log)
 }
 
-/// The turn's key, `tab|session|prompt`, as autopilot records decided turns
-/// (`turnId` in `src/pipeline/autopilot.ts`).
+/// The turn's key, `tab|session|prompt`, as the v1 autopilot recorded
+/// decided turns (its frontend `turnId`, removed in V6).
 pub fn turn_key(tab_id: &str, log: &TerminalSessionLog) -> String {
     format!("{tab_id}|{}|{}", log.session_id, log.last_prompt_at.as_deref().unwrap_or(""))
 }

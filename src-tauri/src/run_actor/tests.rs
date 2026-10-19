@@ -649,7 +649,7 @@ fn a_stage_that_exits_mid_turn_stops_the_run() {
 }
 
 #[test]
-fn a_turn_on_an_engine_1_run_is_left_to_the_frontend() {
+fn a_turn_on_an_engine_1_run_is_left_alone_because_it_is_manual_only() {
     let mut fx = Fixture::with_engine("engine1", 1);
     let turn = fx.planner_turn("p-1", "# Plan");
     fx.actor.handle(ActorMsg::Turn(turn));

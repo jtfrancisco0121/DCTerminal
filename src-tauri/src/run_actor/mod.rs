@@ -22,8 +22,9 @@
 //! The tab and its view stay. Only a stage with no saved session gets a
 //! paste, which clears the input box first (D40).
 //! Handling one message at a time, plus the decided-turn list on the run,
-//! replaces the frontend's claims for engine-2 runs: your Send and
-//! autopilot's hand-off can no longer race, because both are messages here.
+//! replaced the frontend's claims (removed with the v1 autopilot in V6):
+//! your Send and autopilot's hand-off can no longer race, because both are
+//! messages here. An engine-1 run is manual only, so nothing races there.
 //! The run's hand-off records (`claims`) still say who made a hand-off, so
 //! a Send after autopilot made the same one warns once.
 //!

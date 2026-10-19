@@ -23,9 +23,6 @@ use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
-/// What a re-ask pastes (engine-1 wording; a bridged stage is never re-asked
-/// for HANDOFF sections, `submit_result` is its result).
-const ASK_FOR_RESULT: &str = "Your reply is missing its result. Repeat your result, complete and self-contained, and report it as your instructions say.";
 /// What a round sent back asks of the Planner and of the Implementer
 /// (`src/handoff/routing.ts`, which reads them back).
 const PLANNER_ASK: &str = "Revise the plan to address these findings, then reply with the full revised plan, ending with the `## HANDOFF: Plan` and `## HANDOFF: Open questions` sections.";
@@ -118,7 +115,7 @@ impl<H: Host> Actor<H> {
     }
 
     /// Nothing more for this thread: the run is complete, gone, or not an
-    /// engine-2 run (the frontend drives those).
+    /// engine-2 run (an engine-1 run is manual only, V6).
     fn run_over(&self) -> bool {
         let store = lock(self.host.store());
         store.pipeline_run_by_id(&self.run_id).is_none_or(|run| {
@@ -141,7 +138,7 @@ impl<H: Host> Actor<H> {
         if store.chain_run_id(&chain.chain_id).as_deref() != Some(self.run_id.as_str()) {
             return None;
         }
-        // An engine-1 run keeps the v1 path (the frontend's autopilot).
+        // An engine-1 run is manual only (V6): nothing drives it.
         let run = store
             .pipeline_run_by_id(&self.run_id)
             .filter(|run| run.engine >= crate::bridge::launch::ENGINE_V2)?;
@@ -384,17 +381,14 @@ impl<H: Host> Actor<H> {
                     }
                 }
             }
-            "reask" | "retry" => {
-                let text = match decision.action.as_str() {
-                    "reask" => ASK_FOR_RESULT.to_string(),
-                    _ => decision.message.clone().unwrap_or_default(),
-                };
+            "retry" => {
+                let text = decision.message.clone().unwrap_or_default();
                 if !self.idle(&placed.tab) {
                     fail(self, format!("send to {}: the terminal is not open and idle.", placed.tab.label));
                     return;
                 }
                 // A failed check resumes the stage's session with its output (D17).
-                let sent = match session_of(&placed.tab).filter(|_| decision.action == "retry") {
+                let sent = match session_of(&placed.tab) {
                     Some(session) => self.resume(&placed.tab, &session, &text),
                     None => self.host.paste(&placed.tab.id, &text),
                 };
@@ -1314,9 +1308,7 @@ pub(super) fn turn_report(stage: &StageDef, turn: &BridgeTurn, usage: Option<u8>
         verdict: bridge_verdict(review.and_then(|r| r.get("verdict")).and_then(Value::as_str), revise),
         findings,
         findings_known: result.is_some(),
-        missing_sections: Vec::new(),
         usage_percent: usage,
-        chat: false,
         lane,
         round: None,
         turn: None,

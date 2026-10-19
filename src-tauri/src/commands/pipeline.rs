@@ -59,7 +59,6 @@ pub fn pipeline_set_candidate_plan(
 
 // ---- Pipeline definitions, gates and autopilot (ADR-014) ----
 
-use crate::pipelines::autopilot::{decide, Decision, TurnReport};
 use crate::pipelines::{GateDef, GateResult, PipelineDef};
 use crate::store::{PipelineStore, StageGates, StopReason};
 use std::collections::HashMap;
@@ -105,12 +104,13 @@ fn stage_gates(
     Ok((stage.gates.clone(), PathBuf::from(folder), run.round.max(1)))
 }
 
-/// Run a stage's gates now (Run checks, or autopilot after the stage's
-/// turn) and keep the results on the run. `cwd` is the stage tab's folder
-/// (a worktree), else the run's. `pr_urls` are the pull requests the stage
-/// reported. No store lock is held while the commands run. `round` is the
-/// round the checks are for (autopilot): when another round started while
-/// they ran, the results are returned but not kept.
+/// Run a stage's gates now (the overview's Run checks) and keep the
+/// results on the run. `cwd` is the stage tab's folder (a worktree), else
+/// the run's. `pr_urls` are the pull requests the stage reported. No store
+/// lock is held while the commands run. `round` is the round the checks are
+/// for, if given: when another round started while they ran, the results
+/// are returned but not kept. (The run actor runs an engine-2 run's gates
+/// itself.)
 #[tauri::command]
 pub async fn pipeline_run_gates(
     app: tauri::AppHandle,
@@ -187,13 +187,17 @@ pub async fn pipeline_run_gates(
 /// Turn autopilot on (the run is `running`) or off (`stopped`, paused by
 /// you) for one run. Either clears what it was waiting for; checkpoints
 /// already passed stay passed; a complete run stays complete. Returns
-/// whether anything changed (and was saved).
+/// whether anything changed (and was saved). An engine-1 run is manual only
+/// (V6): autopilot cannot be turned on for it, only off.
 pub fn set_autopilot(store: &mut StateStore, run_id: &str, enabled: bool) -> Result<bool, String> {
     let run = store
         .pipeline_run_by_id_mut(run_id)
         .ok_or_else(|| format!("unknown pipeline run: {run_id}"))?;
     if run.autopilot.as_ref().is_some_and(|a| a.enabled == enabled) {
         return Ok(false);
+    }
+    if enabled && run.engine < crate::bridge::launch::ENGINE_V2 {
+        return Err(MANUAL_ONLY.into());
     }
     run.set_autopilot_enabled(enabled);
     run.log(
@@ -206,6 +210,9 @@ pub fn set_autopilot(store: &mut StateStore, run_id: &str, enabled: bool) -> Res
     store.save()?;
     Ok(true)
 }
+
+/// Why autopilot stays off on an engine-1 run.
+const MANUAL_ONLY: &str = "This run started before pipeline v2 (or its pipeline has a stage the bridge cannot follow), so it is manual only: hand each stage on yourself. Start a new run to use autopilot.";
 
 #[tauri::command]
 pub fn pipeline_set_autopilot(
@@ -260,60 +267,10 @@ pub async fn pipeline_actor_message(
     .map_err(|e| e.to_string())?
 }
 
-/// After a stage's turn: what autopilot does next (`decide`). Recorded in
-/// the run's ledger; the frontend carries it out (engine-1 runs; the run
-/// actor decides engine-2 runs itself).
-#[tauri::command]
-pub fn pipeline_decide(
-    app: tauri::AppHandle,
-    run_id: String,
-    report: TurnReport,
-    store: State<Mutex<StateStore>>,
-) -> Result<Decision, String> {
-    let run_id = run_id.trim().to_string();
-    let mut store = store.lock().map_err(|e| e.to_string())?;
-    let run = store
-        .pipeline_run_by_id_mut(&run_id)
-        .ok_or_else(|| format!("unknown pipeline run: {run_id}"))?;
-    let def = crate::pipelines::find(&run.kind)
-        .ok_or_else(|| format!("unknown pipeline: {}", run.kind))?;
-    let decision = decide(&def, run, &report);
-    store.save()?;
-    app.chain_run_updated(&run_id);
-    Ok(decision)
-}
-
-/// Before you hand a chain tab's turn on (`advance`) or send it back
-/// (`back`): claim it, so autopilot does not make the same hand-off, and
-/// hear about one autopilot (or you) made already. `turn` is the source
-/// tab's turn (`tab|session|prompt`). `None` off a chain run.
-#[tauri::command]
-pub fn pipeline_claim_handoff(
-    source_tab_id: String,
-    kind: String,
-    turn: Option<String>,
-    force: bool,
-    store: State<Mutex<StateStore>>,
-) -> Result<Option<crate::store::ClaimOutcome>, String> {
-    let mut store = store.lock().map_err(|e| e.to_string())?;
-    store.claim_handoff(source_tab_id.trim(), kind.trim(), turn.as_deref(), "you", force)
-}
-
-/// Drop a claim whose hand-off did not happen (it failed, or was cancelled).
-#[tauri::command]
-pub fn pipeline_release_handoff(
-    run_id: String,
-    key: String,
-    store: State<Mutex<StateStore>>,
-) -> Result<(), String> {
-    let mut store = store.lock().map_err(|e| e.to_string())?;
-    store.release_handoff_claim(run_id.trim(), key.trim())
-}
-
-/// A line the frontend adds to the ledger, e.g. why autopilot could not
+/// A line the run actor adds to the ledger, e.g. why autopilot could not
 /// carry out a decision. `stop` also puts the run in `waiting` with
-/// `reason` (by default `carry_out_failed`: the frontend stops when it
-/// cannot carry a decision out).
+/// `reason` (by default `carry_out_failed`: autopilot stops when it cannot
+/// carry a decision out).
 pub fn note(
     store: &mut StateStore,
     run_id: &str,
@@ -335,25 +292,6 @@ pub fn note(
     }
     run.log(if stop { "stop" } else { "note" }, stage_id, None, summary, detail);
     store.save()
-}
-
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn pipeline_note(
-    app: tauri::AppHandle,
-    run_id: String,
-    stage_id: Option<String>,
-    summary: String,
-    detail: Option<String>,
-    stop: bool,
-    reason: Option<StopReason>,
-    store: State<Mutex<StateStore>>,
-) -> Result<(), String> {
-    let run_id = run_id.trim().to_string();
-    let mut store = store.lock().map_err(|e| e.to_string())?;
-    note(&mut store, &run_id, stage_id.as_deref(), &summary, detail, stop, reason)?;
-    app.chain_run_updated(&run_id);
-    Ok(())
 }
 
 /// Records that a stage's terminal finished a turn, so the run lanes can
@@ -1056,6 +994,22 @@ mod tests {
         assert_eq!((run.status, run.stop_reason), (RunStatus::Stopped, Some(StopReason::PausedByYou)));
         assert!(run.autopilot.as_ref().unwrap().waiting.is_none());
         assert_eq!(run.events.last().unwrap().summary, "Autopilot off");
+    }
+
+    #[test]
+    fn an_engine_1_run_is_manual_only_and_autopilot_cannot_be_turned_on() {
+        let (_dir, mut store) = store("autopilot_engine_1");
+        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        store.pipeline_run_by_id_mut("ee_f").unwrap().engine = 1;
+        let err = set_autopilot(&mut store, "ee_f", true).unwrap_err();
+        assert!(err.contains("manual only"), "{err}");
+        let run = store.pipeline_run_by_id("ee_f").unwrap();
+        assert!(!run.autopilot.as_ref().is_some_and(|a| a.enabled));
+        assert!(run.events.iter().all(|e| e.summary != "Autopilot on"));
+        // Saved before v2 with autopilot on: it can still be turned off.
+        store.pipeline_run_by_id_mut("ee_f").unwrap().set_autopilot_enabled(true);
+        assert!(set_autopilot(&mut store, "ee_f", false).unwrap());
     }
 
     #[test]

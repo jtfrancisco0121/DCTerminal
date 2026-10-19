@@ -2,8 +2,8 @@
  * Fan-out (ADR-014 phase 3): a plan that ships as several pull requests
  * gets one lane per pull request, each with its own Implementer in its own
  * git worktree. Lanes with no dependency start at once; the others wait
- * until the lanes they depend on are approved (autopilot starts them, or
- * Start in the overview).
+ * until the lanes they depend on are approved (the run actor starts them on
+ * an engine-2 run, or Start in the overview).
  */
 import {
   type PlannedTask,
@@ -247,7 +247,7 @@ export async function approveByHand(
   for (const id of result.unblocked) {
     const lane = run.lanes?.find((item) => item.id === id);
     if (!lane) continue;
-    // startLane claims the lane, so one autopilot may have started is skipped.
+    // startLane claims the lane, so one started already (by another click) is skipped.
     await start(run, lane).catch((err: unknown) => {
       failed.push(`${lane.title}: ${err instanceof Error ? err.message : String(err)}`);
     });
