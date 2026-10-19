@@ -94,20 +94,30 @@ function PreviewFrame({ slot, children }: { slot: HTMLElement | null; children: 
     };
   }, [slot, measure]);
 
-  // The frame is not inside its pane, so it dims with the pane by hand.
+  // The frame is not inside its pane, so it dims with the pane by hand, and
+  // lifts while the pointer is over the pane, as the pane's content does.
   const [dim, setDim] = useState(false);
+  const [paneHovered, setPaneHovered] = useState(false);
   useLayoutEffect(() => {
     const pane = slot?.closest(".split-pane");
+    setPaneHovered(false);
     if (!pane) {
       setDim(false);
       return;
     }
     const read = () => setDim(pane.classList.contains("split-pane-dim"));
     read();
-    if (typeof MutationObserver === "undefined") return;
-    const observer = new MutationObserver(read);
-    observer.observe(pane, { attributes: true, attributeFilter: ["class"] });
-    return () => observer.disconnect();
+    const enter = () => setPaneHovered(true);
+    const leave = () => setPaneHovered(false);
+    pane.addEventListener("mouseenter", enter);
+    pane.addEventListener("mouseleave", leave);
+    const observer = typeof MutationObserver === "undefined" ? null : new MutationObserver(read);
+    observer?.observe(pane, { attributes: true, attributeFilter: ["class"] });
+    return () => {
+      observer?.disconnect();
+      pane.removeEventListener("mouseenter", enter);
+      pane.removeEventListener("mouseleave", leave);
+    };
   }, [slot]);
 
   const shown = slot != null;
@@ -126,7 +136,7 @@ function PreviewFrame({ slot, children }: { slot: HTMLElement | null; children: 
       ref={ref}
       className="preview-layer-frame"
       data-shown={shown || undefined}
-      data-dim={(shown && dim) || undefined}
+      data-dim={(shown && dim && !paneHovered) || undefined}
       aria-hidden={shown ? undefined : true}
       inert={!shown}
       style={{

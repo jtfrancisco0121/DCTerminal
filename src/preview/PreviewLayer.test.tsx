@@ -116,6 +116,20 @@ describe("preview dimming", () => {
     await act(async () => {});
     expect(frameOf("page a").hasAttribute("data-dim")).toBe(true);
   });
+
+  it("lifts the dim while the pointer is over the dimmed pane, as the pane's own content does", async () => {
+    render(<InPane paneClass="split-pane split-pane-dim" />);
+    const pane = document.querySelector(".split-pane")!;
+    expect(frameOf("page a").hasAttribute("data-dim")).toBe(true);
+    await act(async () => {
+      pane.dispatchEvent(new MouseEvent("mouseenter"));
+    });
+    expect(frameOf("page a").hasAttribute("data-dim")).toBe(false);
+    await act(async () => {
+      pane.dispatchEvent(new MouseEvent("mouseleave"));
+    });
+    expect(frameOf("page a").hasAttribute("data-dim")).toBe(true);
+  });
 });
 
 describe("preview measuring", () => {
