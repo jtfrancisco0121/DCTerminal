@@ -19,6 +19,9 @@ Scenario keys (all optional):
                     schema check would)
   term_delay        seconds the agent takes to exit on SIGTERM, like Claude
                     finishing its session log (default: exits at once)
+  ignore_eof        true: keep running when stdin closes, like an adapter that
+                    does not notice its client is gone, until the parent it
+                    started under dies (default: exits)
 
 Steps:
   {"update": {...}}            session/update notification (sessionUpdate ...)
@@ -51,6 +54,9 @@ import sys
 import time
 
 scenario = json.load(open(sys.argv[1]))
+# Captured at startup: if the parent is already gone by the time stdin closes,
+# a pid read then would be the reaper's and the ignore_eof wait would never end.
+PARENT = os.getppid()
 received = open(sys.argv[2], "a")
 session_id = scenario.get("session_id", "fake-session-1")
 prompts = list(scenario.get("prompts", []))
@@ -85,6 +91,11 @@ def read_stdin():
     while True:
         line = sys.stdin.readline()
         if not line:
+            if scenario.get("ignore_eof"):
+                # Linger like a deaf adapter, but never outlive the test
+                # process that spawned us.
+                while os.getppid() == PARENT:
+                    time.sleep(0.2)
             sys.exit(0)
         line = line.strip()
         if not line:
