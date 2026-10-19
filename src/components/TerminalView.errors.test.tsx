@@ -73,7 +73,7 @@ vi.mock("../terminal/park", () => {
 
 import { ptyWrite } from "../bridge";
 import { clearUiErrors, reportError, setErrorNotifier, uiErrors } from "../uiErrors";
-import { TerminalView } from "./TerminalView";
+import { KEYSTROKE_SETTLE_MS, TerminalView } from "./TerminalView";
 
 class NoopResizeObserver {
   observe() {}
@@ -81,6 +81,11 @@ class NoopResizeObserver {
 }
 
 const flush = () => act(async () => {});
+/** Past the window in which a just-died PTY's exit event can still arrive. */
+const settle = () =>
+  act(async () => {
+    await vi.advanceTimersByTimeAsync(KEYSTROKE_SETTLE_MS);
+  });
 
 function mount(props: Partial<Parameters<typeof TerminalView>[0]> = {}) {
   keyHandler = null;
@@ -99,15 +104,20 @@ describe("TerminalView reports failed writes and copies", () => {
     live = { exitCode: null, exited: false, buffer: { attach: () => () => {} } };
   });
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     setErrorNotifier(null);
   });
 
   it("a keystroke (or drop-paste) the PTY rejects is shown, once per terminal", async () => {
+    vi.useFakeTimers();
     mount();
     dataHandler!("a");
     dataHandler!("b");
     await flush();
+    // Not yet: the PTY may have just died and its exit event be on the way.
+    expect(reportError).not.toHaveBeenCalledWith("Keystrokes not sent", expect.anything(), expect.anything());
+    await settle();
     expect(reportError).toHaveBeenCalledWith("Keystrokes not sent", writeError, {
       notify: true,
       once: "Keystrokes not sent:pty-1",
@@ -115,9 +125,10 @@ describe("TerminalView reports failed writes and copies", () => {
   });
 
   it("a Shift+Enter the PTY rejects is shown too", async () => {
+    vi.useFakeTimers();
     mount();
     keyHandler!(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", shiftKey: true }));
-    await flush();
+    await settle();
     expect(reportError).toHaveBeenCalledWith("Keystrokes not sent", writeError, {
       notify: true,
       once: "Keystrokes not sent:pty-1",
@@ -125,6 +136,7 @@ describe("TerminalView reports failed writes and copies", () => {
   });
 
   it("a rejected keystroke is shown once per terminal, not once per window", async () => {
+    vi.useFakeTimers();
     const notify = vi.fn();
     setErrorNotifier(notify);
     mount({ ptyId: "pty-1" });
@@ -135,7 +147,7 @@ describe("TerminalView reports failed writes and copies", () => {
     typeInFirst("b");
     typeInSecond("c");
     typeInSecond("d");
-    await flush();
+    await settle();
     expect(notify).toHaveBeenCalledTimes(2);
     expect(notify).toHaveBeenNthCalledWith(1, "Keystrokes not sent", "no terminal: pty-1");
     expect(notify).toHaveBeenNthCalledWith(2, "Keystrokes not sent", "no terminal: pty-1");
@@ -143,13 +155,49 @@ describe("TerminalView reports failed writes and copies", () => {
   });
 
   it("typing into an exited terminal is not an error", async () => {
+    vi.useFakeTimers();
     live = { exitCode: 0, exited: true, buffer: { attach: () => () => {} } };
     mount();
     dataHandler!("a");
-    await flush();
+    await settle();
     // Only the report is held back; the write still goes to the PTY.
     expect(ptyWrite).toHaveBeenCalledWith("pty-1", "a");
     expect(reportError).not.toHaveBeenCalledWith("Keystrokes not sent", expect.anything(), expect.anything());
+  });
+
+  it("a write the PTY rejects because it just died is not an error once its exit event lands", async () => {
+    vi.useFakeTimers();
+    mount();
+    dataHandler!("a");
+    await flush();
+    // The exit event arrives inside the settle window.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(KEYSTROKE_SETTLE_MS / 2);
+    });
+    live!.exitCode = 1;
+    live!.exited = true;
+    await settle();
+    expect(ptyWrite).toHaveBeenCalledWith("pty-1", "a");
+    expect(reportError).not.toHaveBeenCalledWith("Keystrokes not sent", expect.anything(), expect.anything());
+  });
+
+  it("a write the PTY rejects while it stays live past the settle window is shown once", async () => {
+    vi.useFakeTimers();
+    const notify = vi.fn();
+    setErrorNotifier(notify);
+    mount();
+    dataHandler!("a");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(KEYSTROKE_SETTLE_MS - 1);
+    });
+    expect(notify).not.toHaveBeenCalled();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    dataHandler!("b");
+    await settle();
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith("Keystrokes not sent", "no terminal: pty-1");
   });
 
   it("a file-drop listener that fails to start goes to the log once", async () => {

@@ -78,6 +78,9 @@ export function focusBelongsElsewhere(slot: HTMLElement): boolean {
   return !!otherPane && otherPane !== slot.closest("[data-pane]");
 }
 
+/** How long a rejected keystroke waits for the PTY's exit event before it is shown. */
+export const KEYSTROKE_SETTLE_MS = 300;
+
 /**
  * Keystrokes to the PTY (a drop or paste reaches it the same way, through
  * xterm). A failed write is shown once per terminal, not per keystroke. An
@@ -85,9 +88,13 @@ export function focusBelongsElsewhere(slot: HTMLElement): boolean {
  */
 function sendInput(ptyId: string, data: string): void {
   void ptyWrite(ptyId, data).catch((err: unknown) => {
-    const live = livePty(ptyId);
-    if (!live || live.exited || isPtyOpening(ptyId)) return;
-    reportError("Keystrokes not sent", err, { notify: true, once: `Keystrokes not sent:${ptyId}` });
+    // A PTY that just died rejects the write before its exit event lands, so
+    // decide once that event has had time to arrive.
+    window.setTimeout(() => {
+      const live = livePty(ptyId);
+      if (!live || live.exited || isPtyOpening(ptyId)) return;
+      reportError("Keystrokes not sent", err, { notify: true, once: `Keystrokes not sent:${ptyId}` });
+    }, KEYSTROKE_SETTLE_MS);
   });
 }
 
