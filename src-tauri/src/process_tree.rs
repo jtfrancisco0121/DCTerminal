@@ -238,7 +238,8 @@ impl SharedProcess {
         }
     }
 
-    /// SIGTERM to the group only; the caller waits (see `windows.rs` exit).
+    /// SIGTERM to the group and to children that left its session; the
+    /// caller waits (see `windows.rs` exit).
     pub fn terminate(&self) {
         if let Ok(mut tree) = self.inner.lock() {
             tree.terminate();
