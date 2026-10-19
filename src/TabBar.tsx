@@ -120,6 +120,8 @@ function RenameField({
       className="tab-rename-input"
       aria-label={`Rename ${label}`}
       autoFocus
+      // Escape closes only the rename; the window shortcut handler must not cancel a running turn.
+      data-own-escape=""
       maxLength={80}
       value={value}
       onFocus={(event) => event.currentTarget.select()}

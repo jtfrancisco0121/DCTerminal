@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { TabBar, tabTooltip } from "./TabBar";
+import { useAppShortcuts } from "./useAppShortcuts";
 import type { TabSummary } from "./bridge";
 
 const tab = (partial: Partial<TabSummary>): TabSummary => ({
@@ -451,5 +452,52 @@ describe("TabBar chain tabs (R19)", () => {
         /^Settings \((Ctrl|⌘)\+,\)$/,
       );
     });
+  });
+});
+
+describe("TabBar rename vs. running turn", () => {
+  const props = {
+    tabs: [tab({ id: "tab_1", label: "Planner · UI" })],
+    activeTabId: "tab_1",
+    onSelect: () => {},
+    onClose: () => {},
+    onNew: () => {},
+    renamingTabId: "tab_1",
+  };
+
+  it("Escape in the rename input cancels the rename but not the running turn", () => {
+    const onCancelTurn = vi.fn();
+    const onRenameEnd = vi.fn();
+    const { unmount } = renderHook(() =>
+      useAppShortcuts({
+        platform: "mac",
+        dialogOpen: false,
+        promptInFlight: true,
+        onAction: () => {},
+        onCancelTurn,
+      }),
+    );
+    render(<TabBar {...props} onRenameEnd={onRenameEnd} />);
+    fireEvent.keyDown(screen.getByLabelText("Rename Planner · UI"), { key: "Escape" });
+    expect(onRenameEnd).toHaveBeenCalledTimes(1);
+    expect(onCancelTurn).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  it("Escape outside the rename input still cancels the running turn", () => {
+    const onCancelTurn = vi.fn();
+    const { unmount } = renderHook(() =>
+      useAppShortcuts({
+        platform: "mac",
+        dialogOpen: false,
+        promptInFlight: true,
+        onAction: () => {},
+        onCancelTurn,
+      }),
+    );
+    render(<TabBar {...props} renamingTabId={null} />);
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(onCancelTurn).toHaveBeenCalledTimes(1);
+    unmount();
   });
 });
