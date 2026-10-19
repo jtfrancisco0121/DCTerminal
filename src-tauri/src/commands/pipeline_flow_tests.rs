@@ -8,7 +8,9 @@ use super::agent_requests::{
     claude_permission_route, exit_plan_body, exit_plan_file, permission_response, plan_response,
     read_plan_file, reject_option_id, ClaudeRoute,
 };
-use super::dev_session::{agent_logs, LiveSession, PendingPlan, SessionRegistry};
+use super::dev_session::{
+    agent_logs, kill_all_with, LiveSession, PendingPlan, SessionRegistry, StartingTab,
+};
 use super::model_session::stop_for_restart;
 use super::session_flow_tests::{
     claude_scenario, claude_tool_options, connect, exit_plan_request, is_text, kill,
@@ -572,6 +574,53 @@ fn a_session_displaced_from_its_tab_is_shut_down_not_leaked() {
     let live = registry.get("tab-swap").expect("the new session stays");
     assert!(!live.is_dead());
     registry.shutdown_tab("tab-swap");
+}
+
+// Review: app exit killed what was left under the registry lock, so on
+// Windows every `taskkill` ran with the lock held.
+#[test]
+fn app_exit_kills_the_agents_left_without_the_registry_lock() {
+    let agent = fake!("exit-kill", claude_scenario(json!([])));
+    let registry = Mutex::new(SessionRegistry::new());
+    registry.lock().unwrap().insert(LiveSession::from_client(
+        "tab-exit-kill",
+        "role_implementer",
+        connect(&agent, ProviderId::Claude, "bypassPermissions"),
+    ));
+    let mut lock_free = Vec::new();
+    kill_all_with(&registry, |session| {
+        lock_free.push(registry.try_lock().is_ok());
+        session.kill();
+    });
+    assert_eq!(lock_free, vec![true], "each kill runs with the lock released");
+    assert!(registry.lock().unwrap().get("tab-exit-kill").is_none());
+}
+
+// Review: a role start that failed after it began (saving state.json, say)
+// returned with `?` and never ended its start, so the tab answered "Start
+// already in progress" until the app restarted.
+#[test]
+fn a_start_that_fails_after_it_began_leaves_the_tab_startable() {
+    let registry = Mutex::new(SessionRegistry::new());
+    let start = || -> Result<(), String> {
+        let _starting = StartingTab::begin(&registry, "tab-fail")?;
+        Err("could not save state.json".to_string())
+    };
+    assert_eq!(start(), Err("could not save state.json".to_string()));
+    assert_eq!(
+        start(),
+        Err("could not save state.json".to_string()),
+        "the second click starts again"
+    );
+
+    // A start that finished under the insert's lock is not ended again
+    // later, so a newer start on the tab keeps its mark.
+    let starting = StartingTab::begin(&registry, "tab-ok").unwrap();
+    starting.finish(&mut registry.lock().unwrap());
+    let newer = StartingTab::begin(&registry, "tab-ok").unwrap();
+    assert!(StartingTab::begin(&registry, "tab-ok").is_err(), "one start at a time");
+    drop(newer);
+    assert!(StartingTab::begin(&registry, "tab-ok").is_ok());
 }
 
 #[test]

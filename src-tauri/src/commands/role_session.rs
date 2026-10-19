@@ -1,5 +1,5 @@
 use crate::acp::{map_session_update, AcpClient, ModelVia, SessionUpdateEvent};
-use crate::commands::dev_session::{DevSessionInfo, LiveSession, SessionRegistry};
+use crate::commands::dev_session::{DevSessionInfo, LiveSession, SessionRegistry, StartingTab};
 use crate::commands::prompt_worker::spawn_prompt_turn;
 use crate::orchestrator::{injection_strategy_from_role, InjectionStrategy};
 use crate::paths::{same_folder_warning, validate_working_folder};
@@ -52,12 +52,6 @@ fn empty_start(errors: Vec<FieldError>) -> RoleSessionStartResult {
         replay_truncated: false,
         replay: Vec::new(),
         model_via: None,
-    }
-}
-
-fn finish_starting(state: &Mutex<SessionRegistry>, key: &str) {
-    if let Ok(mut guard) = state.lock() {
-        guard.finish_start(key);
     }
 }
 
@@ -179,15 +173,16 @@ pub fn role_session_start(
     let start_key = tab_id
         .clone()
         .unwrap_or_else(|| "__role_start__".to_string());
-    {
-        let mut guard = state.lock().map_err(|e| e.to_string())?;
-        if let Err(err) = guard.try_begin_start(&start_key) {
+    // Ended on every return; the success path ends it with the insert.
+    let starting = match StartingTab::begin(&state, &start_key) {
+        Ok(starting) => starting,
+        Err(err) => {
             return Ok(empty_start(vec![FieldError {
                 key: "_session".to_string(),
                 message: err,
             }]));
         }
-    }
+    };
 
     // Claude: the per-role mode table (Decisions), never the Cursor mode.
     let mode_id = if provider.id() == ProviderId::Claude {
@@ -210,7 +205,6 @@ pub fn role_session_start(
         &model,
     ) {
         Err(e) if e.starts_with("AUTH_ERROR:") || e.contains("AUTH_ERROR:") => {
-            finish_starting(&state, &start_key);
             let msg = e
                 .split("AUTH_ERROR:")
                 .nth(1)
@@ -223,23 +217,18 @@ pub fn role_session_start(
             }]));
         }
         Err(e) if is_cli_missing(&e) || e == provider.missing_message() => {
-            finish_starting(&state, &start_key);
             return Ok(empty_start(vec![FieldError {
                 key: "_cli".to_string(),
                 message: e,
             }]));
         }
         Err(e) if loading => {
-            finish_starting(&state, &start_key);
             return Ok(empty_start(vec![FieldError {
                 key: "_session".to_string(),
                 message: friendly_load_error(&e),
             }]));
         }
-        Err(e) => {
-            finish_starting(&state, &start_key);
-            return Err(e);
-        }
+        Err(e) => return Err(e),
         Ok((mut client, notes, via)) => {
             // Cache the adapter's model list (Phase 5). App data only.
             if provider.id() == ProviderId::Claude && !client.model_entries().is_empty() {
@@ -314,7 +303,6 @@ pub fn role_session_start(
         ) {
             Ok(id) => id,
             Err(err) => {
-                finish_starting(&state, &start_key);
                 // Drop the process we just spawned.
                 let mut live = LiveSession::from_client(&start_key, &role.id, client);
                 live.shutdown();
@@ -354,7 +342,7 @@ pub fn role_session_start(
 
     {
         let mut guard = state.lock().map_err(|e| e.to_string())?;
-        guard.finish_start(&start_key);
+        starting.finish(&mut guard);
         if persisted_tab_id != start_key {
             guard.finish_start(&persisted_tab_id);
         }
