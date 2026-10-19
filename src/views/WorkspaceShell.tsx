@@ -126,13 +126,17 @@ export function WorkspaceShell({
                   if (tabId === activeTabId && activeTabSummary) {
                     return (
                       <PaneBoundary label="Grid cell">
-                        <div
-                          className={`split-pane split-pane-primary split-pane-focused grid-cell grid-cell-active grid-cell-${gridTone(activeTabSummary)}`}
-                          data-pane="primary"
-                        >
-                          {gridCellBar(activeTabSummary)}
-                          <div className="grid-cell-main">{activeView}</div>
-                        </div>
+                        <RenderInBoundary
+                          render={() => (
+                            <div
+                              className={`split-pane split-pane-primary split-pane-focused grid-cell grid-cell-active grid-cell-${gridTone(activeTabSummary)}`}
+                              data-pane="primary"
+                            >
+                              {gridCellBar(activeTabSummary)}
+                              <div className="grid-cell-main">{activeView}</div>
+                            </div>
+                          )}
+                        />
                       </PaneBoundary>
                     );
                   }

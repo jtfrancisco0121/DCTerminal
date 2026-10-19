@@ -166,6 +166,28 @@ describe("WorkspaceShell boundaries", () => {
     expect(screen.getByRole("tablist", { name: "Tabs" })).toBeTruthy();
   });
 
+  it("an active grid cell whose bar helper throws keeps the other cells and tab bar", () => {
+    render(
+      <WorkspaceShell
+        {...props({
+          showGrid: true,
+          split: { mode: "grid", secondaryTabId: null, gridTabIds: ["a", "b"] },
+          secondaryTab: undefined,
+          panes: {
+            ...props({}).panes,
+            renderGridCell: () => <p>beta cell</p>,
+            gridCellBar: () => {
+              throw new Error("cell bar broke");
+            },
+          },
+        })}
+      />,
+    );
+    expect(screen.getByRole("alert").textContent).toContain("Grid cell");
+    expect(screen.getByText("beta cell")).toBeTruthy();
+    expect(screen.getByRole("tablist", { name: "Tabs" })).toBeTruthy();
+  });
+
   it("a crash in a grid cell keeps the other cells", () => {
     render(
       <WorkspaceShell
