@@ -130,6 +130,31 @@ describe("preview dimming", () => {
     });
     expect(frameOf("page a").hasAttribute("data-dim")).toBe(true);
   });
+
+  it("stays lifted when its slot moves into a dimmed pane the pointer is already over", async () => {
+    function TwoPanes({ inPane }: { inPane: "one" | "two" }) {
+      const { slots, register } = usePreviewSlots();
+      return (
+        <PreviewSlotProvider register={register}>
+          {(["one", "two"] as const).map((name) => (
+            <div key={name} data-testid={name} className="split-pane split-pane-dim">
+              {inPane === name && <PreviewSlot tabId="a" />}
+            </div>
+          ))}
+          <PreviewLayer tabIds={["a"]} slots={slots} render={() => <iframe title="page a" />} />
+        </PreviewSlotProvider>
+      );
+    }
+    const view = render(<TwoPanes inPane="one" />);
+    expect(frameOf("page a").hasAttribute("data-dim")).toBe(true);
+    // The pointer rests on pane two (its strip, say): no mouseenter comes.
+    const two = screen.getByTestId("two");
+    const matches = two.matches.bind(two);
+    vi.spyOn(two, "matches").mockImplementation((selector) => selector === ":hover" || matches(selector));
+    view.rerender(<TwoPanes inPane="two" />);
+    await act(async () => {});
+    expect(frameOf("page a").hasAttribute("data-dim")).toBe(false);
+  });
 });
 
 describe("preview measuring", () => {
