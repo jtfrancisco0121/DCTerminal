@@ -6,6 +6,10 @@
  * only from the session log's unanswered tools: ExitPlanMode and
  * AskUserQuestion right away, any other tool only while the PTY shows Claude
  * Code's permission dialog for it. Quiet time alone never means "needs you".
+ * A turn with no known end and no unanswered tool that stayed quiet for
+ * TURN_QUIET_MS is still working, flagged `unknown` (Claude Code may have
+ * changed its log format): the pill says to check the terminal, nothing
+ * treats the turn as done.
  */
 
 import type { TerminalSessionLog } from "../bridge";
@@ -22,7 +26,7 @@ export type TerminalState =
       /** Which permission prompt this is: stays the same while one dialog is up. */
       promptKey?: string;
     }
-  | { kind: "working" }
+  | { kind: "working"; unknown?: true }
   | { kind: "idle" };
 
 type LogView = Pick<TerminalSessionLog, "turnDone" | "openTool" | "pendingTools">;
@@ -38,7 +42,62 @@ export type TerminalStateInput = {
   ptyBusy: boolean;
   /** null while the process runs. */
   exitCode: number | null | undefined;
+  /** No output and no new log record for TURN_QUIET_MS (`quietTurn`). */
+  quiet?: boolean;
 };
+
+/** Quiet time after which a turn with no end marker shows as unknown. */
+export const TURN_QUIET_MS = 60_000;
+
+/** No PTY output since `outputAt` and no new log record since `logAt` for TURN_QUIET_MS. */
+export function quietTurn(input: { outputAt: number | undefined; logAt: number; now: number }): boolean {
+  return input.now - Math.max(input.outputAt ?? 0, input.logAt) >= TURN_QUIET_MS;
+}
+
+/**
+ * The watched tabs whose turn has no known end and saw no output or new
+ * records for TURN_QUIET_MS (since they were first watched, before any read).
+ */
+export function quietTurnIds(
+  watched: Iterable<[string, { since: number; records?: LogRecordsSeen }]>,
+  logs: Record<string, { turnDone: boolean } | null | undefined>,
+  outputAt: (id: string) => number | undefined,
+  now: number,
+): string[] {
+  const ids: string[] = [];
+  for (const [id, entry] of watched) {
+    if (logs[id]?.turnDone !== false) continue;
+    if (quietTurn({ outputAt: outputAt(id), logAt: entry.records?.at ?? entry.since, now })) ids.push(id);
+  }
+  return ids.sort();
+}
+
+/** What the last read found, and when those records first appeared (`quietTurn`'s `logAt`). */
+export type LogRecordsSeen = { key: string; at: number };
+
+type RecordsView = Pick<TerminalSessionLog, "turnDone" | "lastPromptAt" | "lastReply" | "pendingTools"> & {
+  toolCalls: { id: string; status: string }[];
+};
+
+/** Compared with the previous read, so a call that came and went between reads still counts once. */
+export function logRecordsSeen(
+  prev: LogRecordsSeen | undefined,
+  log: RecordsView | null,
+  now: number,
+): LogRecordsSeen | undefined {
+  if (!log) return prev;
+  const last = log.toolCalls[log.toolCalls.length - 1];
+  const key = JSON.stringify([
+    log.turnDone,
+    log.lastPromptAt,
+    log.lastReply,
+    (log.pendingTools ?? []).map((tool) => tool.id),
+    log.toolCalls.length,
+    last?.id,
+    last?.status,
+  ]);
+  return prev?.key === key ? prev : { key, at: now };
+}
 
 export function deriveTerminalState(input: TerminalStateInput): TerminalState {
   if (input.exitCode !== null && input.exitCode !== undefined) {
@@ -64,6 +123,9 @@ export function deriveTerminalState(input: TerminalStateInput): TerminalState {
   if (open?.name === "AskUserQuestion") {
     return { kind: "needs", needs: "question", toolId: open.id, toolTitle: open.title };
   }
+  if (log && !log.turnDone && input.quiet && pendingToolsOf(log).length === 0) {
+    return { kind: "working", unknown: true };
+  }
   const working = log ? !log.turnDone : input.ptyBusy;
   return working ? { kind: "working" } : { kind: "idle" };
 }
@@ -72,6 +134,7 @@ export function sameTerminalState(a: TerminalState | undefined, b: TerminalState
   if (!a || !b) return a === b;
   if (a.kind !== b.kind) return false;
   if (a.kind === "exited" && b.kind === "exited") return a.code === b.code;
+  if (a.kind === "working" && b.kind === "working") return !!a.unknown === !!b.unknown;
   if (a.kind === "needs" && b.kind === "needs") {
     return (
       a.needs === b.needs &&

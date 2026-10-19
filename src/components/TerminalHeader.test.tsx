@@ -143,6 +143,12 @@ describe("TerminalHeader", () => {
     expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
   });
 
+  it("keeps Stop while a turn's state is unknown", () => {
+    const unknown = { tone: "unknown", text: "State unknown · check the terminal", timed: false } as const;
+    render(<TerminalHeader {...base} state={unknown} onStop={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy();
+  });
+
   it("renders the compact variant with its actions", () => {
     const { container } = render(
       <TerminalHeader

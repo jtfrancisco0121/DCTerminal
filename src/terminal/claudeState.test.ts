@@ -4,7 +4,11 @@ import {
   dialogAfterRead,
   dialogDrawn,
   dialogToolFor,
+  logRecordsSeen,
+  quietTurn,
+  quietTurnIds,
   sameTerminalState,
+  TURN_QUIET_MS,
   terminalNeedsMessage,
   terminalWaitingText,
   type TerminalStateInput,
@@ -78,11 +82,72 @@ describe("deriveTerminalState", () => {
     expect(derive({ log: null, ptyBusy: true })).toEqual({ kind: "working" });
     expect(derive({ log: undefined, ptyBusy: false, exitCode: undefined })).toEqual({ kind: "idle" });
   });
+
+  it("shows a quiet turn with no end marker and no open tool as unknown, still working", () => {
+    const log = { turnDone: false, openTool: null, pendingTools: [] };
+    const state = derive({ log, quiet: true });
+    expect(state).toEqual({ kind: "working", unknown: true });
+    // Still working: autopilot and the hand-off keep waiting on turnDone.
+    expect(state.kind).toBe("working");
+    expect(log.turnDone).toBe(false);
+    // An unanswered tool, an ended turn or recent activity: as before.
+    expect(derive({ log: { ...log, pendingTools: [open("Bash")] }, quiet: true })).toEqual({ kind: "working" });
+    expect(derive({ log: { turnDone: false, openTool: open("Bash") }, quiet: true })).toEqual({ kind: "working" });
+    expect(derive({ log: { turnDone: true }, quiet: true })).toEqual({ kind: "idle" });
+    expect(derive({ log, quiet: false })).toEqual({ kind: "working" });
+  });
+
+  it("is quiet after a minute with no output and no new log record", () => {
+    expect(TURN_QUIET_MS).toBe(60_000);
+    expect(quietTurn({ outputAt: 1000, logAt: 2000, now: 2000 + TURN_QUIET_MS })).toBe(true);
+    // New output or a new record starts the minute again.
+    expect(quietTurn({ outputAt: 30_000, logAt: 2000, now: 2000 + TURN_QUIET_MS })).toBe(false);
+    expect(quietTurn({ outputAt: 1000, logAt: 30_000, now: 2000 + TURN_QUIET_MS })).toBe(false);
+    expect(quietTurn({ outputAt: undefined, logAt: 0, now: TURN_QUIET_MS - 1 })).toBe(false);
+  });
+
+  it("dates new log records against the previous read, not the stored log", () => {
+    const call = (id: string, status: "pending" | "completed") => ({ id, status });
+    const toolCalls: { id: string; status: string }[] = [];
+    const log = { turnDone: false, lastPromptAt: "p", lastReply: "", pendingTools: [], toolCalls };
+    const first = logRecordsSeen(undefined, log, 1000);
+    expect(first?.at).toBe(1000);
+    // A fast tool: the call shows up and completes between reads.
+    const after = { ...log, toolCalls: [call("t1", "completed")] };
+    const second = logRecordsSeen(first, after, 4000);
+    expect(second?.at).toBe(4000);
+    // Later reads of the same records keep the time they first appeared.
+    expect(logRecordsSeen(second, { ...after }, 7000)?.at).toBe(4000);
+    expect(logRecordsSeen(second, { ...after, lastReply: "more" }, 7000)?.at).toBe(7000);
+    // A failed read changes nothing.
+    expect(logRecordsSeen(second, null, 7000)).toBe(second);
+  });
+
+  it("picks the watched tabs whose open turn went quiet, sorted", () => {
+    const now = 100_000;
+    const watched = new Map([
+      ["b", { since: 0 }],
+      ["a", { since: 0, records: { key: "k", at: 10_000 } }],
+      ["recent-record", { since: 0, records: { key: "k", at: 90_000 } }],
+      ["recent-output", { since: 0 }],
+      ["new-watch", { since: 80_000 }],
+      ["done", { since: 0 }],
+      ["no-log", { since: 0 }],
+    ]);
+    const open = { turnDone: false };
+    const logs = {
+      ...{ a: open, b: open, "recent-record": open, "recent-output": open, "new-watch": open },
+      done: { turnDone: true },
+    };
+    const outputAt = (id: string) => (id === "recent-output" ? 95_000 : id === "a" ? 5000 : undefined);
+    expect(quietTurnIds(watched, logs, outputAt, now)).toEqual(["a", "b"]);
+  });
 });
 
 describe("terminal state text", () => {
   it("compares states by value", () => {
     expect(sameTerminalState({ kind: "working" }, { kind: "working" })).toBe(true);
+    expect(sameTerminalState({ kind: "working" }, { kind: "working", unknown: true })).toBe(false);
     expect(sameTerminalState({ kind: "exited", code: 1 }, { kind: "exited", code: 2 })).toBe(false);
     const a = { kind: "needs", needs: "permission", toolId: "a", toolTitle: "Bash" } as const;
     expect(sameTerminalState(a, { ...a })).toBe(true);
