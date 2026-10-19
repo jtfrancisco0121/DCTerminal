@@ -4059,6 +4059,8 @@ export function StartupForm({
     async (target: HandoffTargetId, sourceTabId?: string) => {
       const tabId = sourceTabId ?? activeTabIdRef.current;
       if (!tabId) return;
+      // A tab switch while the reads below run drops this dialog.
+      const seen = tabSwitchesRef.current.watch();
       const captured = readTerminalHandoff(tabId);
       // The first start: a plan written before a Restart or Resume still counts.
       const started = livePty(tabId)?.planSince ?? Date.now();
@@ -4072,6 +4074,7 @@ export function StartupForm({
         .then(({ tab: record }) => ({ ...record.answers }))
         .catch(() => ({ cwd: tab?.cwd ?? "" }));
       let planFile: PlanFileInfo | null = null;
+      let planError: string | null = null;
       // Reports never use a plan file: the plans folder is shared by every tab.
       if (isPlanSource(sourceRoleId)) {
         try {
@@ -4084,12 +4087,13 @@ export function StartupForm({
           );
           if (file?.text.trim()) planFile = file;
         } catch (err: unknown) {
-          const message = errorText(err);
-          setHandoffError(message);
+          planError = errorText(err);
         }
       }
       const log = await logRead;
       storeSessionLog(tabId, log, logReadAt);
+      if (!seen.isCurrent()) return;
+      if (planError) setHandoffError(planError);
       readTerminalVerdict(tabId);
       setTerminalCapture({
         tabId,
