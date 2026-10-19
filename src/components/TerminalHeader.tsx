@@ -74,13 +74,19 @@ export function SendToSplitButton({
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLSpanElement>(null);
+  const caretRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if (!open) return;
+    // Focus moves into the menu, so Escape lands inside `data-own-escape`
+    // even where a click does not focus the caret (WebKit).
+    rootRef.current?.querySelector<HTMLElement>("[role='menuitem']")?.focus();
     const onDown = (event: MouseEvent) => {
       if (event.target instanceof Node && !rootRef.current?.contains(event.target)) setOpen(false);
     };
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key !== "Escape") return;
+      if (rootRef.current?.contains(document.activeElement)) caretRef.current?.focus();
+      setOpen(false);
     };
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
@@ -120,6 +126,7 @@ export function SendToSplitButton({
       </button>
       {others.length > 0 && (
         <button
+          ref={caretRef}
           type="button"
           className={`${className} split-button-caret`}
           disabled={next.busy}

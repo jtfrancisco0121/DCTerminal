@@ -111,6 +111,29 @@ describe("TerminalHeader", () => {
     expect(onCancelTurn).not.toHaveBeenCalled();
   });
 
+  it("claims Escape for an open hand-off menu even when the click left focus on the body", () => {
+    // WebKit does not focus a clicked button (nor does jsdom's click), so
+    // Escape goes to whatever holds focus after the menu opens.
+    const onCancelTurn = vi.fn();
+    renderHook(() =>
+      useAppShortcuts({
+        platform: "mac",
+        dialogOpen: false,
+        promptInFlight: true,
+        onAction: () => {},
+        onCancelTurn,
+      }),
+    );
+    render(<TerminalHeader {...base} compact state={done} next={next()} turnEnded />);
+    const caret = screen.getByRole("button", { name: "More hand-off targets" });
+    fireEvent.click(caret);
+    expect(document.activeElement).toBe(screen.getAllByRole("menuitem")[0]);
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(onCancelTurn).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(caret);
+  });
+
   it("shows Stop only while working", () => {
     const onStop = vi.fn();
     const { rerender } = render(<TerminalHeader {...base} state={working} onStop={onStop} />);
