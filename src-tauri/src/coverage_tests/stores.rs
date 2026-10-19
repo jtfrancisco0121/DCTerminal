@@ -456,6 +456,30 @@ fn a_newer_pipelines_schema_is_set_aside() {
     assert_eq!(set_aside(&dir, PIPELINES_FILE, 3), original);
 }
 
+// Track H4: one entry that is not a pipeline used to fail the whole file,
+// which was set aside as damaged and every pipeline dropped.
+#[test]
+fn a_pipeline_entry_that_cannot_be_read_is_kept_and_the_others_load() {
+    use crate::store::{PipelineStore, PIPELINES_FILE};
+    let dir = TempDir::new("pipelines_lenient");
+    let original = r#"{"schemaVersion": 1, "pipelines": [
+        {"id": "fix", "name": "Fix", "stages": [{"id": "a", "roleId": "role_implementer", "title": "A"}]},
+        {"id": "odd", "name": "Odd", "stages": [{"id": "a", "roleId": "role_x", "title": "A",
+          "gates": [{"kind": "lint"}]}]}
+    ]}"#;
+    std::fs::write(dir.join(PIPELINES_FILE), original).unwrap();
+    // `load`, not `open`: open would publish to the registry other tests share.
+    let data = PipelineStore::load(&dir.join(PIPELINES_FILE)).unwrap();
+    let ids: Vec<&str> = data.pipelines.iter().map(|def| def.id.as_str()).collect();
+    assert_eq!(ids, ["fix", "odd"]);
+    assert_eq!(data.pipelines[0].disabled, None);
+    let odd = &data.pipelines[1];
+    assert!(odd.disabled.as_deref().unwrap().starts_with("It could not be read"), "{odd:?}");
+    assert_eq!(odd.raw.as_ref().unwrap()["stages"][0]["gates"][0]["kind"], "lint");
+    assert_eq!(std::fs::read_to_string(dir.join(PIPELINES_FILE)).unwrap(), original, "not set aside");
+    assert!(names_in(dir.path()).iter().all(|name| !name.contains("corrupt")));
+}
+
 // ---------- startup sweep ----------
 
 // Regression: `fs::rename` keeps the old mtime, so the startup sweep could

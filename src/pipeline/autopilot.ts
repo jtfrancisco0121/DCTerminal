@@ -10,7 +10,7 @@ import { contractFindings, contractResult, missingHandoffSections } from "../han
 import { terminalLogFields, type HandoffField, type HandoffSource } from "../handoff/map";
 import { roleDisplayName, type RoleName } from "../handoff/transitions";
 import { parseReviewVerdict } from "../handoff/verdict";
-import { pipelineDef, stageRoles, type PipelineDef, type StageDef } from "./defs";
+import { pipelineDef, roleBehaviour, stageRoles, type PipelineDef, type StageDef } from "./defs";
 
 /** The stage a chain tab holds on its pipeline, if its role matches that step. */
 export function stageForTab(
@@ -44,13 +44,15 @@ export function turnReport(args: {
   awaitingPlan?: boolean;
   /** The tab's lane, when the run fanned out. */
   lane?: string | null;
+  /** The run's pipeline (chain kind): the stage's kind picks the sections its reply owes. */
+  chainKind?: string | null;
   /**
    * The stage reviewer's own reply, when `reply` merges parallel reviews:
    * its HANDOFF sections are checked, not the merged ones.
    */
   ownReply?: string;
 }): TurnReport {
-  const { stage, reply, chat, usage, awaitingPlan = false, lane = null, ownReply = reply } = args;
+  const { stage, reply, chat, usage, awaitingPlan = false, lane = null, ownReply = reply, chainKind = null } = args;
   const result = contractResult(reply);
   const reviewer = !!stage.loopBack;
   return {
@@ -60,7 +62,7 @@ export function turnReport(args: {
       ? (result?.findings ?? []).map((f) => ({ severity: f.severity, summary: f.summary }))
       : [],
     findingsKnown: reviewer && !!result,
-    missingSections: awaitingPlan ? [] : missingHandoffSections(stage.roleId, ownReply),
+    missingSections: awaitingPlan ? [] : missingHandoffSections(stage.roleId, ownReply, chainKind),
     usagePercent: usage,
     chat,
     lane,
@@ -105,6 +107,7 @@ export function terminalStageSource(args: {
   const { tab, log, answers, tail, roles, sourceFields, awaitingPlan } = args;
   return {
     sourceRoleId: tab.roleId,
+    sourceChainKind: tab.chain?.kind ?? null,
     sourceTabId: tab.id,
     sourceLabel: tab.label || roleDisplayName(tab.roleId, roles),
     cwd: tab.cwd,
@@ -130,10 +133,12 @@ export function terminalStageSource(args: {
  * Planner turn waiting on its plan. Null while the turn is still working or
  * waits on anything else. A turn you interrupted is not finished work, so
  * it is null too. The key changes once per turn, so each turn is handled once.
+ * `chainKind`: the tab's pipeline, where its stage's kind says it plans.
  */
 export function finishedTurn(
   roleId: string,
   log: TerminalSessionLog | null | undefined,
+  chainKind?: string | null,
 ): { key: string; awaitingPlan: boolean } | null {
   if (!log) return null;
   const prompt = log.lastPromptAt ?? "";
@@ -141,7 +146,7 @@ export function finishedTurn(
     return log.interrupted ? null : { key: `${log.sessionId}|${prompt}|done`, awaitingPlan: false };
   }
   const open = log.openTool;
-  if (roleId === "role_planner" && open?.name === "ExitPlanMode" && (log.plan ?? "").trim()) {
+  if (roleBehaviour(roleId, chainKind) === "planner" && open?.name === "ExitPlanMode" && (log.plan ?? "").trim()) {
     return { key: `${log.sessionId}|${prompt}|plan|${open.id}`, awaitingPlan: true };
   }
   return null;

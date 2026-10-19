@@ -221,7 +221,7 @@ import {
   prepareHandoff,
   saveHandoff,
 } from "./handoff/executor";
-import { pipelineDef, pipelineStages } from "./pipeline/defs";
+import { behaviourRole, pipelineDef, pipelineStages, roleBehaviour, stageBehaviour } from "./pipeline/defs";
 import { useAutopilot } from "./pipeline/useAutopilot";
 import { terminalStageSource, turnId } from "./pipeline/autopilot";
 import { approveByHand, fanOutRun, planStageFor, stageTab, startLane } from "./pipeline/fanOut";
@@ -429,8 +429,8 @@ function promptAfter(promptAt: string | null | undefined, sinceMs: number): bool
 }
 
 /** A finished terminal turn's toast text: a reviewer's verdict, else its last line. */
-function finishedDetail(roleId: string, log: TerminalSessionLog): string {
-  if (isReviewerRole(roleId)) {
+function finishedDetail(roleId: string, log: TerminalSessionLog, chainKind?: string | null): string {
+  if (isReviewerRole(roleId, chainKind)) {
     const verdict = terminalLogVerdict(log, "");
     if (verdict) return `Verdict: ${verdict}`;
   }
@@ -1433,7 +1433,7 @@ export function StartupForm({
           const watching = isWatchingTab(tabId);
           if (!watching) {
             const tab = savedTabsRef.current.find((item) => item.id === tabId);
-            notifyAgent(tabId, { kind: "finished", detail: finishedDetail(tab?.roleId ?? "", log) });
+            notifyAgent(tabId, { kind: "finished", detail: finishedDetail(tab?.roleId ?? "", log, tab?.chain?.kind) });
           }
           setTabMarks((marks) => markAfterTurn(marks, tabId, "finished", watching));
         }
@@ -2330,7 +2330,7 @@ export function StartupForm({
     async (run: PipelineRun, lane: RunLane) => {
       const laneRole =
         pipelineStages(run.kind).find((stage) => stage.id === run.fanOutStage)?.roleId ??
-        "role_implementer";
+        behaviourRole(run.kind, "implementer");
       return startLane(run, lane, laneRole, { startTerminal: laneStartTerminal, refreshTabs });
     },
     [laneStartTerminal, refreshTabs],
@@ -2356,12 +2356,15 @@ export function StartupForm({
       const segments = runtimesRef.current[tab.id]?.segments ?? [];
       return {
         sourceRoleId: tab.roleId,
+        sourceChainKind: tab.chain?.kind ?? null,
         sourceTabId: tab.id,
         sourceLabel: tab.label || roleDisplayName(tab.roleId, roles),
         cwd: tab.cwd,
         answers,
         latestMessage:
-          tab.roleId === "role_implementer" ? latestAgentMessage(segments) : latestReplyText(segments),
+          roleBehaviour(tab.roleId, tab.chain?.kind) === "implementer"
+            ? latestAgentMessage(segments)
+            : latestReplyText(segments),
         plan: [],
         todos: [],
         selection: "",
@@ -2376,7 +2379,7 @@ export function StartupForm({
     async (runId: string) => {
       const { run } = await getPipelineRun(runId);
       const def = pipelineDef(run.kind);
-      const fanStage = def?.stages.find((stage) => stage.roleId === "role_implementer");
+      const fanStage = def?.stages.find((stage) => stageBehaviour(def, stage) === "implementer");
       const planStage = def && fanStage ? planStageFor(def, fanStage) : null;
       const planTab = planStage ? stageTab(run, planStage, savedTabsRef.current) : null;
       if (!fanStage || !planTab?.chain) {
@@ -4045,7 +4048,7 @@ export function StartupForm({
   const readTerminalVerdict = useCallback(
     (tabId: string | null | undefined, fresh = false) => {
       const tab = tabId ? savedTabsRef.current.find((item) => item.id === tabId) : undefined;
-      if (!tab || tab.kind !== "terminal" || !isReviewerRole(tab.roleId)) return;
+      if (!tab || tab.kind !== "terminal" || !isReviewerRole(tab.roleId, tab.chain?.kind)) return;
       const apply = (log: TerminalSessionLog | null | undefined) => {
         const verdict = terminalLogVerdict(
           log,
@@ -4105,7 +4108,7 @@ export function StartupForm({
       let planFile: PlanFileInfo | null = null;
       let planError: string | null = null;
       // Reports never use a plan file: the plans folder is shared by every tab.
-      if (isPlanSource(sourceRoleId)) {
+      if (isPlanSource(sourceRoleId, tab?.chain?.kind)) {
         try {
           // Read-only: ~/.cursor/plans, or <configDir>/plans for a Claude tab.
           // No plan file → the dialog defaults to the selection, then the tail.
@@ -4151,7 +4154,7 @@ export function StartupForm({
       setChatPlanFile(null);
       const tabId = activeTabIdRef.current;
       const rt = tabId ? runtimesRef.current[tabId] : undefined;
-      if (tabId && summary && isPlanSource(summary.roleId) && !rt?.plan && !rt?.lastPlanMarkdown) {
+      if (tabId && summary && isPlanSource(summary.roleId, summary.chain?.kind) && !rt?.plan && !rt?.lastPlanMarkdown) {
         // After a restart the plan lives only in the file Claude wrote. Use it
         // only when this tab's own tool calls name that file. A continued
         // session may replay only messages, so the saved transcript counts too.
@@ -4209,6 +4212,7 @@ export function StartupForm({
       const captureState = terminalStates[captureTab.id];
       return {
         sourceRoleId: captureTab.roleId,
+        sourceChainKind: captureTab.chain?.kind ?? null,
         sourceTabId: captureTab.id,
         sourceLabel: captureTab.label || roleDisplayName(captureTab.roleId, roles),
         cwd: captureTab.cwd || values.cwd || "",
@@ -4236,6 +4240,7 @@ export function StartupForm({
     const cards = cardsByTab[activeTabId ?? ""] ?? emptySessionCards();
     return {
       sourceRoleId: roleId,
+      sourceChainKind: activeTabSummary?.chain?.kind ?? null,
       sourceTabId: activeTabId ?? "",
       sourceLabel:
         savedTabs.find((tab) => tab.id === activeTabId)?.label ?? roleDisplayName(roleId, roles),
@@ -4245,7 +4250,7 @@ export function StartupForm({
       // An Implementer's summary is its last message; other roles' replies
       // may be split by tool calls, so their whole reply in this turn is read.
       latestMessage:
-        roleId === "role_implementer"
+        roleBehaviour(roleId, activeTabSummary?.chain?.kind) === "implementer"
           ? latestAgentMessage(streamSegments)
           : latestReplyText(streamSegments),
       plan: cards.plan,
@@ -4289,7 +4294,7 @@ export function StartupForm({
   const handoffBlock = handoffBlockReason({ ...handoffSource, selection: "" }, roles);
   // A reviewer's verdict picks the primary button; the user still sends.
   const sourceVerdict =
-    isReviewerRole(handoffSource.sourceRoleId) && !handoffSource.turnInFlight
+    isReviewerRole(handoffSource.sourceRoleId, handoffSource.sourceChainKind) && !handoffSource.turnInFlight
       ? handoffSource.fromTerminal
         ? terminalLogVerdict(
             captureLog,
@@ -4426,7 +4431,13 @@ export function StartupForm({
           setHandoffError(loop.target.blocked ?? "That choice has no content.");
           return;
         }
-        const text = loopBackMessage(handoffSource.sourceRoleId, findings, loop.target.round, roles);
+        const text = loopBackMessage(
+          handoffSource.sourceRoleId,
+          findings,
+          loop.target.round,
+          roles,
+          handoffSource.sourceChainKind,
+        );
         setBusy(true);
         setHandoffError(null);
         let claim: Awaited<ReturnType<typeof claimHandoff>> = null;
@@ -5723,7 +5734,7 @@ export function StartupForm({
           splitOpen={splitOpen(split)}
           gridOpen={gridOpen(split)}
           canAddToGrid={gridCandidates.length > 0 && (!gridOpen(split) || (split.gridTabIds?.length ?? 0) < GRID_MAX_TABS)}
-          canSendPlan={(isCaptureSource(roleId) && !!session) || !!isPlanTerminal}
+          canSendPlan={(isCaptureSource(roleId, activeTabSummary?.chain?.kind) && !!session) || !!isPlanTerminal}
           sendPlanTargets={
             isPlanTerminal
               ? planTerminalTargets

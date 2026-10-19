@@ -93,8 +93,7 @@ fn stage_gates(
     let run = store
         .pipeline_run_by_id(run_id)
         .ok_or_else(|| format!("unknown pipeline run: {run_id}"))?;
-    let def = crate::pipelines::find(&run.kind)
-        .ok_or_else(|| format!("unknown pipeline: {}", run.kind))?;
+    let def = crate::pipelines::find_enabled(&run.kind)?;
     let stage = def
         .stage(stage_id)
         .ok_or_else(|| format!("{} has no stage \"{stage_id}\"", def.name))?;
@@ -133,11 +132,11 @@ pub async fn pipeline_run_gates(
         gates
             .iter()
             .map(|gate| match gate {
-                GateDef::Command { run, timeout_secs } => crate::pipelines::run_command_gate(
-                    &folder,
-                    run,
-                    timeout_secs.map(Duration::from_secs),
-                ),
+                GateDef::Command { run, timeout_secs, optional } => GateResult {
+                    // `decide` stops on an `auto` gate with nothing to run unless it is optional.
+                    optional: *optional,
+                    ..crate::pipelines::run_command_gate(&folder, run, timeout_secs.map(Duration::from_secs))
+                },
                 GateDef::PullRequest => crate::pipelines::run_pull_request_gate(&folder, &pr_urls),
             })
             .collect()
@@ -236,9 +235,11 @@ pub fn pipeline_decide(
     let run = store
         .pipeline_run_by_id_mut(&run_id)
         .ok_or_else(|| format!("unknown pipeline run: {run_id}"))?;
-    let def = crate::pipelines::find(&run.kind)
-        .ok_or_else(|| format!("unknown pipeline: {}", run.kind))?;
-    let decision = decide(&def, run, &report);
+    let decision = match crate::pipelines::find_enabled(&run.kind) {
+        Ok(def) => decide(&def, run, &report),
+        // Unknown or disabled: a loud stop with the reason, never a guess.
+        Err(why) => crate::pipelines::autopilot::stop_for_pipeline(run, why),
+    };
     store.save()?;
     app.chain_run_updated(&run_id);
     Ok(decision)
@@ -442,8 +443,7 @@ pub fn fan_out(store: &mut StateStore, run_id: &str, stage_id: &str, lanes: Vec<
     if !run.lanes.is_empty() {
         return Err("This run already fanned out.".into());
     }
-    let def = crate::pipelines::find(&run.kind)
-        .ok_or_else(|| format!("unknown pipeline: {}", run.kind))?;
+    let def = crate::pipelines::find_enabled(&run.kind)?;
     if def.stage(stage_id).is_none() {
         return Err(format!("{} has no stage \"{stage_id}\"", def.name));
     }

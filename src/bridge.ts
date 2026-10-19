@@ -419,6 +419,8 @@ export type GateResult = {
   summary: string;
   output?: string;
   durationMs: number;
+  /** The gate is marked optional: an `auto` check with nothing to run was skipped, not a stop. */
+  optional?: boolean;
 };
 
 export type RunAutopilot = {

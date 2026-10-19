@@ -6,6 +6,9 @@
 //!
 //! It acts only while the run is `running` (Track H2): a stop puts the run
 //! in `waiting` with a reason code until you act, and `complete` is final.
+//! An `auto` gate that found nothing to run stops it with `no_check_found`
+//! unless the gate is optional (Track H4, D31). The rules read the stage's
+//! loop-back and kind, never a role id, so a copied role decides the same.
 
 use super::{PipelineDef, Severity, StageDef};
 use crate::store::{claim_key, PipelineRun, RunAutopilot, RunStatus, StopReason, MAX_DECIDED_TURNS};
@@ -139,6 +142,19 @@ fn stop(run: &mut PipelineRun, stage: Option<&StageDef>, code: StopReason, reaso
         Some(stage) => decision.for_stage(stage),
         None => decision,
     }
+}
+
+/// The run's pipeline is unknown or disabled (`why` says which): nothing can
+/// be decided, so a running run stops and says so instead of guessing a
+/// pipeline. Off or complete, it is left as it is, like `decide` does.
+pub fn stop_for_pipeline(run: &mut PipelineRun, why: String) -> Decision {
+    if !run.autopilot.as_ref().is_some_and(|a| a.enabled) {
+        return Decision::new("stop", "Autopilot is off for this run.");
+    }
+    if run.status == RunStatus::Complete {
+        return Decision::new("ignore", "The run is complete.");
+    }
+    stop(run, None, StopReason::CarryOutFailed, format!("Autopilot stopped: {why}"))
 }
 
 fn go(run: &mut PipelineRun, decision: Decision, detail: Option<String>) -> Decision {
@@ -381,6 +397,15 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             .for_stage(&stage);
         decision.lane = lane.map(str::to_string);
         return go(run, decision, None);
+    }
+    let this_round = run.gates.get(&key_of_stage).filter(|gates| gates.round == round);
+    if let Some(gate) = this_round.and_then(|gates| gates.results.iter().find(|r| r.no_check_found()).cloned()) {
+        // D31: an `auto` check that found nothing to run is not a pass.
+        let reason = format!(
+            "{} finished, but its `{}` check has nothing to run: {} Add a check command to the pipeline, or mark the gate optional.",
+            stage.title, gate.label, gate.summary
+        );
+        return stop(run, Some(&stage), StopReason::NoCheckFound, reason);
     }
     let failed_gate = run
         .gates

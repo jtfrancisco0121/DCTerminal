@@ -3,6 +3,7 @@
  * verdict. Only labels and emphasis: a manual hand-off still waits for the
  * user (autopilot, when a run turns it on, is `src/pipeline/autopilot.ts`).
  */
+import { behaviourRole, roleBehaviour } from "../pipeline/defs";
 import { chainSteps, loopBackTarget, nextChainRole, type ChainRef } from "./chains";
 import { roleDisplayName, type HandoffTargetId, type RoleName } from "./transitions";
 import { needsRevision, type ReviewVerdict } from "./verdict";
@@ -41,11 +42,13 @@ export function handoffRoute(options: {
     // A reviewer approved on the chain's last step: nothing left to hand on.
     return { primaryTarget: null, primaryLabel: null, complete: true };
   }
-  if (sourceRoleId === "role_plan_reviewer" && verdict) {
+  // What the source does on its chain's pipeline, so a copied reviewer routes like its original.
+  const behaviour = roleBehaviour(sourceRoleId, chain?.kind);
+  if (behaviour === "plan_reviewer" && verdict) {
     // APPROVED / APPROVED WITH CHANGES: on to the Implementer, chain or not.
-    return next(chainNext ?? "role_implementer");
+    return next(chainNext ?? behaviourRole(chain?.kind, "implementer"));
   }
-  if (sourceRoleId === "role_pr_reviewer" && verdict === "APPROVED") {
+  if (behaviour === "pr_reviewer" && verdict === "APPROVED") {
     return { primaryTarget: null, primaryLabel: null, complete: true };
   }
   return next(chainNext);
@@ -61,13 +64,15 @@ const OLD_ASKS = [
   "Address these findings, then push to the same branch so the existing pull request updates (do not open a new one). End your reply with the HANDOFF sections: Implementation summary, Files changed, Tests run, Deviations from the plan, and Pull request (the same URL).",
 ];
 
+/** `chainKind`: the reviewer's pipeline, so a copied Plan Reviewer asks for a revised plan too. */
 export function loopBackMessage(
   sourceRoleId: string,
   findings: string,
   round: number,
   roles?: readonly RoleName[] | null,
+  chainKind?: string | null,
 ): string {
-  const ask = sourceRoleId === "role_plan_reviewer" ? PLANNER_ASK : IMPLEMENTER_ASK;
+  const ask = roleBehaviour(sourceRoleId, chainKind) === "plan_reviewer" ? PLANNER_ASK : IMPLEMENTER_ASK;
   const from = roleDisplayName(sourceRoleId, roles);
   return `Review findings from the ${from} (round ${round}):\n\n${findings.trim()}\n\n${ask}`;
 }

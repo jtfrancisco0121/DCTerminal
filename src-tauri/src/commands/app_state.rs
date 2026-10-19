@@ -273,6 +273,8 @@ fn first_stage(kind: &str) -> Result<(crate::pipelines::PipelineDef, String), St
     let def = crate::pipelines::find(kind.trim())
         .filter(|def| def.id == kind.trim())
         .ok_or_else(|| format!("unknown pipeline: {}", kind.trim()))?;
+    // Listed but not valid (a deleted role, a broken entry): say why.
+    let def = crate::pipelines::find_enabled(&def.id)?;
     // pipelines.json loads unvalidated, so a hand edit can leave no stages.
     let role_id = def
         .stages
@@ -789,5 +791,19 @@ mod first_stage_tests {
         let err = result.expect("no panic").unwrap_err();
         assert!(err.contains("Emptied by hand"), "{err}");
         assert_eq!(first_stage("eagle1").unwrap().1, "role_planner");
+    }
+
+    #[test]
+    fn a_disabled_pipeline_is_refused_with_its_reason() {
+        let mut def: PipelineDef = serde_json::from_value(serde_json::json!({
+            "id": "user_disabled", "name": "Lost role",
+            "stages": [{ "id": "a", "roleId": "role_gone", "title": "A" }]
+        }))
+        .unwrap();
+        def.disabled = Some("stage \"a\" uses the role \"role_gone\", which does not exist.".into());
+        register_for_test(def);
+        let err = first_stage("user_disabled").unwrap_err();
+        unregister_for_test("user_disabled");
+        assert!(err.contains("Lost role") && err.contains("role_gone"), "{err}");
     }
 }

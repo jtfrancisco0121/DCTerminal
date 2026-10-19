@@ -35,7 +35,7 @@ import { terminalBracketedPaste, terminalTailText } from "../terminal/park";
 import { encodeTerminalPaste } from "../terminal/paste";
 import type { TerminalState } from "../terminal/claudeState";
 import type { ProviderId } from "../provider/types";
-import { pipelineDef, stageOfRole, stageRoles } from "./defs";
+import { pipelineDef, stageBehaviour, stageOfRole, stageRoles } from "./defs";
 import { reviewRound } from "./runReport";
 import { parseReviewVerdict } from "../handoff/verdict";
 import { roleDisplayName } from "../handoff/transitions";
@@ -276,7 +276,7 @@ export function useAutopilot(deps: AutopilotDeps) {
             const round = reviewer
               ? reviewRound(view.run, decision.lane, reviewer)
               : Math.max(1, chain.round ?? 1);
-            const text = loopBackMessage(tab.roleId, findings, round, d.roles());
+            const text = loopBackMessage(tab.roleId, findings, round, d.roles(), chain.kind);
             // Record the round first: pasted into an unrecorded round, the
             // stage's next turn would be skipped as handed on already.
             try {
@@ -327,7 +327,7 @@ export function useAutopilot(deps: AutopilotDeps) {
       const d = depsRef.current;
       const tab = d.tabs().find((t) => t.id === tabId);
       if (!tab?.chain || tab.kind !== "terminal" || ptyExitCode(tabId) != null) return;
-      const turn = finishedTurn(tab.roleId, log);
+      const turn = finishedTurn(tab.roleId, log, tab.chain.kind);
       if (log && !seen.current.has(tabId)) {
         seen.current.add(tabId);
         // Finished before this app session (a restart): never acted on again.
@@ -380,7 +380,7 @@ export function useAutopilot(deps: AutopilotDeps) {
               const id = tabIds[role];
               // This tab's log is the one just read; the others' are stored.
               const own = id === tabId ? log : id ? d.sessionLog(id) : null;
-              const done = id ? finishedTurn(role, own) : null;
+              const done = id ? finishedTurn(role, own, tab.chain!.kind) : null;
               return { role, id, log: own, key: done ? `${id}|${done.key}` : null };
             });
             const first = reviews[0];
@@ -394,9 +394,8 @@ export function useAutopilot(deps: AutopilotDeps) {
                 name: roleDisplayName(r.role, d.roles()),
                 reply: r.log?.lastReply ?? "",
               })),
-              view.run.kind === "full" && placed.stage.roleId === "role_plan_reviewer"
-                ? "REQUIRES REVISION"
-                : "REQUEST CHANGES",
+              // A plan reviewer's "changes" verdict; the stage's kind says which it is.
+              stageBehaviour(placed.def, placed.stage) === "plan_reviewer" ? "REQUIRES REVISION" : "REQUEST CHANGES",
             );
             // The hand-off carries the stage reviewer's own reply; the merged one decides.
             job = { tab: main, chain: main.chain, log: first.log!, awaitingPlan: false };
@@ -439,6 +438,7 @@ export function useAutopilot(deps: AutopilotDeps) {
             awaitingPlan: turn.awaitingPlan,
             lane,
             ownReply,
+            chainKind: job.chain.kind,
           });
           const decision = await pipelineDecide(runId, { ...report, round, turn: turnKey });
           claimed = decision.claim;

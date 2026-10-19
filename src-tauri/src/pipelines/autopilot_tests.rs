@@ -264,6 +264,7 @@ fn a_failed_gate_is_retried_twice_then_stops() {
                 summary: "Failed (exit code 1).".into(),
                 output: "1 test failed".into(),
                 duration_ms: 10,
+                optional: false,
             }],
         },
     );
@@ -376,6 +377,7 @@ fn a_lane_counts_its_own_rounds_and_gates() {
                 summary: "Failed (exit code 101).".into(),
                 output: String::new(),
                 duration_ms: 1,
+                optional: false,
             }],
         },
     );
@@ -577,6 +579,7 @@ fn failed_gate(round: u32) -> StageGates {
             summary: "Failed (exit code 1).".into(),
             output: "1 test failed".into(),
             duration_ms: 10,
+            optional: false,
         }],
     }
 }
@@ -686,4 +689,107 @@ fn a_passing_gate_resets_the_stage_retries() {
     r.gates.insert("implementer".into(), failed_gate(1));
     let d = decide(&eagle1(), &mut r, &rep);
     assert_eq!(d.action, "retry", "{}", d.reason);
+}
+
+fn auto_gate_found_nothing(optional: bool) -> StageGates {
+    let mut skipped = GateResult::skipped("command", "auto", "No check command found.");
+    skipped.optional = optional;
+    StageGates {
+        round: 1,
+        at: "now".into(),
+        results: vec![skipped],
+    }
+}
+
+#[test]
+fn an_auto_gate_with_nothing_to_run_stops_with_no_check_found() {
+    let mut r = run(1);
+    r.gates.insert("implementer".into(), auto_gate_found_nothing(false));
+    let d = decide(&eagle1(), &mut r, &report("implementer", None));
+    assert_eq!((d.action.as_str(), d.stage_id.as_deref()), ("stop", Some("implementer")));
+    assert!(d.reason.contains("nothing to run"), "{}", d.reason);
+    assert_eq!((r.status, r.stop_reason), (RunStatus::Waiting, Some(StopReason::NoCheckFound)));
+}
+
+#[test]
+fn an_optional_auto_gate_with_nothing_to_run_is_skipped() {
+    let mut r = run(1);
+    r.gates.insert("implementer".into(), auto_gate_found_nothing(true));
+    r.autopilot.as_mut().unwrap().passed_checkpoints.push("implementer".into());
+    let d = decide(&eagle1(), &mut r, &report("implementer", None));
+    assert_eq!((d.action.as_str(), d.stage_id.as_deref()), ("advance", Some("pr_reviewer")));
+}
+
+#[test]
+fn an_unknown_or_disabled_pipeline_stops_the_run_with_the_reason() {
+    let mut r = run(1);
+    let d = stop_for_pipeline(&mut r, "unknown pipeline: mystery".into());
+    assert_eq!(d.action, "stop");
+    assert!(d.reason.contains("mystery"), "{}", d.reason);
+    assert_eq!((r.status, r.stop_reason), (RunStatus::Waiting, Some(StopReason::CarryOutFailed)));
+    assert_eq!(r.events.last().unwrap().kind, "stop");
+    // Autopilot off: nothing changes.
+    let mut off = run(1);
+    off.autopilot = None;
+    assert_eq!(stop_for_pipeline(&mut off, "x".into()).action, "stop");
+    assert!(off.events.is_empty());
+}
+
+/// Eagle-Eye 2 with its PR Reviewer swapped for a copy (Settings › Roles ›
+/// Duplicate), as a pipeline of your own. `kind` as written in the file.
+fn with_copied_reviewer(kind: Option<&str>) -> crate::pipelines::PipelineDef {
+    let mut review = serde_json::json!({
+        "id": "pr_reviewer", "roleId": "role_custom_7", "title": "PR Reviewer copy",
+        "loopBack": { "to": "implementer", "minSeverity": "MEDIUM" }
+    });
+    if let Some(kind) = kind {
+        review["kind"] = kind.into();
+    }
+    serde_json::from_value(serde_json::json!({
+        "id": "copied_review", "name": "Copied review",
+        "stages": [
+            { "id": "implementer", "roleId": "role_implementer", "title": "Implementer" },
+            review
+        ]
+    }))
+    .unwrap()
+}
+
+/// What autopilot does with a PR Reviewer's turns on `def`: the reply lacks
+/// its sections twice, then asks for changes with a blocking finding.
+fn reviewer_turns(def: &crate::pipelines::PipelineDef) -> Vec<(String, Option<String>, Option<StopReason>)> {
+    let mut r = run(1);
+    r.kind = def.run_kind().to_string();
+    let mut out = Vec::new();
+    let mut lacking = report("pr_reviewer", None);
+    lacking.missing_sections = vec!["Verdict".into(), "Findings for the Implementer".into()];
+    for _ in 0..2 {
+        let d = decide(def, &mut r, &lacking);
+        out.push((d.action, d.stage_id, r.stop_reason));
+    }
+    r.resume_after_you();
+    let mut changes = report("pr_reviewer", Some("REQUEST CHANGES"));
+    changes.findings = vec![finding("MEDIUM", "null token")];
+    changes.findings_known = true;
+    let d = decide(def, &mut r, &changes);
+    out.push((d.action, d.stage_id, r.stop_reason));
+    out
+}
+
+#[test]
+fn a_duplicated_pr_reviewer_re_asks_and_loops_exactly_like_the_built_in_one() {
+    let built_in = reviewer_turns(&find("eagle2").unwrap());
+    assert_eq!(
+        built_in,
+        vec![
+            ("reask".to_string(), Some("pr_reviewer".to_string()), None),
+            ("stop".to_string(), Some("pr_reviewer".to_string()), Some(StopReason::NoResult)),
+            ("loopBack".to_string(), Some("implementer".to_string()), None),
+        ]
+    );
+    for kind in [Some("reviewer"), None] {
+        let def = with_copied_reviewer(kind);
+        assert_eq!(def.stages[1].kind(), crate::pipelines::StageKind::Reviewer, "{kind:?}");
+        assert_eq!(reviewer_turns(&def), built_in, "kind {kind:?}");
+    }
 }

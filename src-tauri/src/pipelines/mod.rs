@@ -6,6 +6,13 @@
 //!
 //! The registry is process-wide so the chain-run code (`store/chain_runs.rs`)
 //! can look stages up without threading the store through every call.
+//!
+//! Track H4: each stage has a `kind` (planner, reviewer, implementer,
+//! generic), so a copied role behaves like its original; behaviour never
+//! keys on a built-in role id. Your own pipelines are checked when they
+//! load and whenever the roles change: one that does not validate stays in
+//! the list, disabled, with the reason, and is never dropped. An unknown
+//! run kind is an error, never a silent Eagle-Eye 1.
 
 pub mod autopilot;
 mod gates;
@@ -92,16 +99,43 @@ pub struct LoopBackDef {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum GateDef {
-    /// A shell command in the stage's folder; `auto` picks one.
+    /// A shell command in the stage's folder; `auto` picks one. An `auto`
+    /// gate that finds nothing to run stops the run (`no_check_found`)
+    /// unless it is `optional`.
     #[serde(rename = "command", rename_all = "camelCase")]
     Command {
         run: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeout_secs: Option<u64>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        optional: bool,
     },
     /// Every pull request the stage reported exists (`gh pr view`).
     #[serde(rename = "pullRequest")]
     PullRequest,
+}
+
+/// What a stage does, whatever its role is called (D33). Read by every rule
+/// that used to key on `role_planner` and friends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StageKind {
+    Planner,
+    Reviewer,
+    Implementer,
+    Generic,
+}
+
+impl StageKind {
+    /// The kind of a built-in role, if `role_id` is one.
+    pub fn of_builtin_role(role_id: &str) -> Option<StageKind> {
+        match role_id.trim() {
+            "role_planner" => Some(StageKind::Planner),
+            "role_plan_reviewer" | "role_pr_reviewer" => Some(StageKind::Reviewer),
+            "role_implementer" => Some(StageKind::Implementer),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,6 +144,10 @@ pub struct StageDef {
     pub id: String,
     pub role_id: String,
     pub title: String,
+    /// What the stage does. Left out: from the built-in role id, else
+    /// `reviewer` for a stage with a loop-back, else `generic` (`kind()`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<StageKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loop_back: Option<LoopBackDef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -124,6 +162,18 @@ pub struct StageDef {
 }
 
 impl StageDef {
+    /// The stage's kind: as set, else from the built-in role id, else a
+    /// stage that loops back reviews, else generic.
+    pub fn kind(&self) -> StageKind {
+        self.kind
+            .or_else(|| StageKind::of_builtin_role(&self.role_id))
+            .unwrap_or(if self.loop_back.is_some() {
+                StageKind::Reviewer
+            } else {
+                StageKind::Generic
+            })
+    }
+
     /// The stage's role, then its parallel reviewers.
     pub fn roles(&self) -> Vec<String> {
         std::iter::once(self.role_id.clone())
@@ -163,6 +213,15 @@ pub struct PipelineDef {
     /// Set by the app, never read from a file.
     #[serde(default)]
     pub built_in: bool,
+    /// Why this pipeline of yours is disabled (it does not validate, for
+    /// example a role it names was deleted). Set by the app on load; a
+    /// disabled pipeline is listed but cannot start or drive a run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled: Option<String>,
+    /// The entry exactly as `pipelines.json` has it, when it could not be
+    /// read as a pipeline at all. Settings shows it so nothing is lost.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw: Option<serde_json::Value>,
 }
 
 impl PipelineDef {
@@ -187,6 +246,36 @@ impl PipelineDef {
     }
 }
 
+/// One entry of `pipelines.json`. An entry that is not a pipeline at all is
+/// kept as a disabled placeholder carrying the entry itself, never dropped.
+pub fn parse_user_entry(value: serde_json::Value, index: usize) -> PipelineDef {
+    match serde_json::from_value::<PipelineDef>(value.clone()) {
+        Ok(def) => def,
+        Err(err) => {
+            let text = |key: &str| {
+                value
+                    .get(key)
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+            };
+            let id = text("id").unwrap_or_else(|| format!("pipeline_{}", index + 1));
+            PipelineDef {
+                name: text("name").unwrap_or_else(|| id.clone()),
+                id,
+                description: String::new(),
+                run_kind: None,
+                stages: Vec::new(),
+                autopilot: AutopilotPolicy::default(),
+                built_in: false,
+                disabled: Some(format!("It could not be read: {err}.")),
+                raw: Some(value),
+            }
+        }
+    }
+}
+
 fn parse_builtin(json: &str) -> PipelineDef {
     let mut def: PipelineDef = serde_json::from_str(json).expect("built-in pipeline JSON");
     def.built_in = true;
@@ -203,16 +292,56 @@ fn user_registry() -> &'static RwLock<Vec<PipelineDef>> {
     USER.get_or_init(|| RwLock::new(Vec::new()))
 }
 
-/// Replace the user's pipelines in the registry (after load or save).
+/// Role ids that exist (`roles.json`), published by the roles store. `None`
+/// until it is: role ids are then not checked.
+fn known_roles() -> &'static RwLock<Option<HashSet<String>>> {
+    static ROLES: OnceLock<RwLock<Option<HashSet<String>>>> = OnceLock::new();
+    ROLES.get_or_init(|| RwLock::new(None))
+}
+
+fn known_roles_now() -> Option<HashSet<String>> {
+    known_roles().read().ok().and_then(|roles| roles.clone())
+}
+
+/// Each pipeline with `disabled` set from its own problem (`roles`: the role
+/// ids that exist, `None` to skip that check). An entry that could not be
+/// read at all keeps its reason.
+pub fn checked_user_pipelines(mut defs: Vec<PipelineDef>, roles: Option<&HashSet<String>>) -> Vec<PipelineDef> {
+    for def in defs.iter_mut() {
+        def.built_in = false;
+        if def.raw.is_none() {
+            def.disabled = None;
+        }
+    }
+    let problems = pipeline_problems(&defs, roles);
+    for (def, problem) in defs.iter_mut().zip(problems) {
+        if def.raw.is_none() {
+            def.disabled = problem;
+        }
+    }
+    defs
+}
+
+/// Replace the user's pipelines in the registry (after load or save). Each
+/// one is checked; one that does not validate is kept, disabled.
 pub fn set_user_pipelines(defs: Vec<PipelineDef>) {
+    let defs = checked_user_pipelines(defs, known_roles_now().as_ref());
     if let Ok(mut user) = user_registry().write() {
-        *user = defs
-            .into_iter()
-            .map(|mut def| {
-                def.built_in = false;
-                def
-            })
-            .collect();
+        *user = defs;
+    }
+}
+
+/// The role ids that exist now (at startup and after a role is added or
+/// removed). Your pipelines are checked again: one naming a deleted role
+/// becomes disabled, and one whose role came back is enabled again.
+pub fn set_known_roles(ids: impl IntoIterator<Item = String>) {
+    let ids: HashSet<String> = ids.into_iter().collect();
+    if let Ok(mut roles) = known_roles().write() {
+        *roles = Some(ids.clone());
+    }
+    if let Ok(mut user) = user_registry().write() {
+        let defs = std::mem::take(&mut *user);
+        *user = checked_user_pipelines(defs, Some(&ids));
     }
 }
 
@@ -249,12 +378,20 @@ pub fn find(key: &str) -> Option<PipelineDef> {
         .find(|def| def.id == key || def.run_kind() == key)
 }
 
+/// The pipeline `key` names, enabled: an unknown or disabled pipeline is an
+/// error that says which and why.
+pub fn find_enabled(key: &str) -> Result<PipelineDef, String> {
+    let def = find(key).ok_or_else(|| format!("unknown pipeline: {}", key.trim()))?;
+    match &def.disabled {
+        Some(why) => Err(format!("The pipeline \"{}\" is disabled: {why}", def.name)),
+        None => Ok(def),
+    }
+}
+
 /// `(stage id, role id)` per stage of a run kind or chain kind. An unknown
-/// kind reads as Eagle-Eye 1, like runs saved before pipelines were data.
-pub fn stages(kind: &str) -> Vec<(String, String)> {
-    find(kind)
-        .unwrap_or_else(|| builtins()[0].clone())
-        .stage_pairs()
+/// kind is `None`, never Eagle-Eye 1 (every run ever saved has a known one).
+pub fn stages(kind: &str) -> Option<Vec<(String, String)>> {
+    find(kind).map(|def| def.stage_pairs())
 }
 
 /// Run kind for a chain kind (`eagle1` → `full`), if the pipeline exists.
@@ -262,11 +399,10 @@ pub fn run_kind_for_chain(chain_kind: &str) -> Option<String> {
     find(chain_kind).map(|def| def.run_kind().to_string())
 }
 
-/// Chain kind (pipeline id) for a run kind (`execute` → `eagle2`).
-pub fn chain_kind_for_run(run_kind: &str) -> String {
-    find(run_kind)
-        .map(|def| def.id)
-        .unwrap_or_else(|| "eagle1".to_string())
+/// Chain kind (pipeline id) for a run kind (`execute` → `eagle2`); `None`
+/// for an unknown one.
+pub fn chain_kind_for_run(run_kind: &str) -> Option<String> {
+    find(run_kind).map(|def| def.id)
 }
 
 fn valid_id(id: &str) -> bool {
@@ -287,124 +423,166 @@ fn check_text(what: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Problems a person can fix in Settings, one message per pipeline.
-pub fn validate_user_pipelines(defs: &[PipelineDef]) -> Result<(), String> {
-    if defs.len() > MAX_PIPELINES {
-        return Err(format!("At most {MAX_PIPELINES} pipelines."));
+fn label_of(def: &PipelineDef) -> String {
+    if def.name.trim().is_empty() {
+        def.id.clone()
+    } else {
+        def.name.clone()
     }
+}
+
+/// Problems a person can fix in Settings: the first one for each pipeline,
+/// in order, or `None` when it is fine. `roles` are the role ids that exist
+/// (`None`: not checked). A later pipeline reusing an id is the one at fault.
+pub fn pipeline_problems(defs: &[PipelineDef], roles: Option<&HashSet<String>>) -> Vec<Option<String>> {
     let builtin_keys: HashSet<String> = builtins()
         .iter()
         .flat_map(|def| [def.id.clone(), def.run_kind().to_string()])
         .collect();
     let mut seen = HashSet::new();
-    for def in defs {
-        let label = if def.name.trim().is_empty() {
-            def.id.clone()
-        } else {
-            def.name.clone()
-        };
-        let fail = |msg: String| Err(format!("Pipeline \"{label}\": {msg}"));
-        if !valid_id(&def.id) {
-            return fail("the id may only use letters, digits, _ and -.".into());
+    defs.iter()
+        .enumerate()
+        .map(|(index, def)| {
+            // An id is taken by its first entry, valid, readable or not.
+            let repeated = !seen.insert(def.id.clone());
+            if let Some(why) = def.disabled.as_ref().filter(|_| def.raw.is_some()) {
+                return Some(why.clone());
+            }
+            if index >= MAX_PIPELINES {
+                return Some(format!("at most {MAX_PIPELINES} pipelines."));
+            }
+            check_pipeline(def, &builtin_keys, roles)
+                .err()
+                .or_else(|| repeated.then(|| "two pipelines use this id.".to_string()))
+        })
+        .collect()
+}
+
+/// For a save: every pipeline must validate, role ids included (against the
+/// roles published by the roles store). Names the first problem.
+pub fn validate_user_pipelines(defs: &[PipelineDef]) -> Result<(), String> {
+    validate_user_pipelines_with(defs, known_roles_now().as_ref())
+}
+
+pub fn validate_user_pipelines_with(defs: &[PipelineDef], roles: Option<&HashSet<String>>) -> Result<(), String> {
+    if defs.len() > MAX_PIPELINES {
+        return Err(format!("At most {MAX_PIPELINES} pipelines."));
+    }
+    match defs
+        .iter()
+        .zip(pipeline_problems(defs, roles))
+        .find_map(|(def, problem)| problem.map(|msg| (def, msg)))
+    {
+        Some((def, msg)) => Err(format!("Pipeline \"{}\": {msg}", label_of(def))),
+        None => Ok(()),
+    }
+}
+
+/// The first problem of one pipeline, on its own.
+fn check_pipeline(
+    def: &PipelineDef,
+    builtin_keys: &HashSet<String>,
+    roles: Option<&HashSet<String>>,
+) -> Result<(), String> {
+    if !valid_id(&def.id) {
+        return Err("the id may only use letters, digits, _ and -.".into());
+    }
+    if builtin_keys.contains(&def.id) {
+        return Err(format!("\"{}\" is a built-in pipeline id.", def.id));
+    }
+    if let Some(kind) = &def.run_kind {
+        if kind != &def.id {
+            return Err("only built-in pipelines set runKind.".into());
         }
-        if builtin_keys.contains(&def.id) {
-            return fail(format!("\"{}\" is a built-in pipeline id.", def.id));
-        }
-        if let Some(kind) = &def.run_kind {
-            if kind != &def.id {
-                return fail("only built-in pipelines set runKind.".into());
+    }
+    check_text("the name", &def.name)?;
+    if def.stages.is_empty() || def.stages.len() > MAX_STAGES {
+        return Err(format!("a pipeline has 1 to {MAX_STAGES} stages."));
+    }
+    let mut stage_ids = HashSet::new();
+    let mut roles_used: HashSet<String> = HashSet::new();
+    for stage in &def.stages {
+        // A repeat inside one stage is reported below as listed "twice".
+        let in_stage: HashSet<String> = stage.roles().into_iter().collect();
+        for role in in_stage {
+            if !roles_used.insert(role.clone()) {
+                return Err(format!(
+                    "the role \"{role}\" is in two stages. A run keeps one tab per role, so use a copy of the role (Settings › Roles › Duplicate)."
+                ));
             }
         }
-        if !seen.insert(def.id.clone()) {
-            return fail("two pipelines use this id.".into());
+    }
+    for (index, stage) in def.stages.iter().enumerate() {
+        if !valid_id(&stage.id) {
+            return Err(format!("stage {} needs an id of letters, digits, _ and -.", index + 1));
         }
-        if let Err(msg) = check_text("the name", &def.name) {
-            return fail(msg);
+        if !stage_ids.insert(stage.id.clone()) {
+            return Err(format!("two stages use the id \"{}\".", stage.id));
         }
-        if def.stages.is_empty() || def.stages.len() > MAX_STAGES {
-            return fail(format!("a pipeline has 1 to {MAX_STAGES} stages."));
+        if !valid_id(&stage.role_id) {
+            return Err(format!("stage \"{}\" needs a role id.", stage.id));
         }
-        let mut stage_ids = HashSet::new();
-        let mut roles_used: HashSet<String> = HashSet::new();
-        for stage in &def.stages {
-            // A repeat inside one stage is reported below as listed "twice".
-            let in_stage: HashSet<String> = stage.roles().into_iter().collect();
-            for role in in_stage {
-                if !roles_used.insert(role.clone()) {
-                    return fail(format!(
-                        "the role \"{role}\" is in two stages. A run keeps one tab per role, so use a copy of the role (Settings › Roles › Duplicate)."
-                    ));
-                }
-            }
+        if let Some(missing) = roles.and_then(|roles| stage.roles().into_iter().find(|role| !roles.contains(role))) {
+            return Err(format!(
+                "stage \"{}\" uses the role \"{missing}\", which does not exist (deleted or renamed?).",
+                stage.id
+            ));
         }
-        for (index, stage) in def.stages.iter().enumerate() {
-            if !valid_id(&stage.id) {
-                return fail(format!("stage {} needs an id of letters, digits, _ and -.", index + 1));
+        check_text(&format!("stage \"{}\" title", stage.id), &stage.title)?;
+        if !stage.also_reviewers.is_empty() {
+            if stage.loop_back.is_none() {
+                return Err(format!(
+                    "stage \"{}\" has alsoReviewers, so it needs a loopBack (reviewers send rounds back).",
+                    stage.id
+                ));
             }
-            if !stage_ids.insert(stage.id.clone()) {
-                return fail(format!("two stages use the id \"{}\".", stage.id));
+            if stage.also_reviewers.len() > 4 {
+                return Err(format!("stage \"{}\": at most 4 alsoReviewers.", stage.id));
             }
-            if !valid_id(&stage.role_id) {
-                return fail(format!("stage \"{}\" needs a role id.", stage.id));
-            }
-            if let Err(msg) = check_text(&format!("stage \"{}\" title", stage.id), &stage.title) {
-                return fail(msg);
-            }
-            if !stage.also_reviewers.is_empty() {
-                if stage.loop_back.is_none() {
-                    return fail(format!(
-                        "stage \"{}\" has alsoReviewers, so it needs a loopBack (reviewers send rounds back).",
+            let mut seen_roles = HashSet::from([stage.role_id.clone()]);
+            for role in &stage.also_reviewers {
+                if !valid_id(role) || !seen_roles.insert(role.clone()) {
+                    return Err(format!(
+                        "stage \"{}\": alsoReviewers lists \"{role}\" twice or it is not a role id.",
                         stage.id
                     ));
                 }
-                if stage.also_reviewers.len() > 4 {
-                    return fail(format!("stage \"{}\": at most 4 alsoReviewers.", stage.id));
-                }
-                let mut seen_roles = HashSet::from([stage.role_id.clone()]);
-                for role in &stage.also_reviewers {
-                    if !valid_id(role) || !seen_roles.insert(role.clone()) {
-                        return fail(format!(
-                            "stage \"{}\": alsoReviewers lists \"{role}\" twice or it is not a role id.",
-                            stage.id
-                        ));
-                    }
-                }
             }
-            if let Some(back) = &stage.loop_back {
-                let earlier = def.stages[..index].iter().any(|s| s.id == back.to);
-                if !earlier {
-                    return fail(format!(
-                        "stage \"{}\" loops back to \"{}\", which is not an earlier stage.",
-                        stage.id, back.to
+        }
+        if let Some(back) = &stage.loop_back {
+            let earlier = def.stages[..index].iter().any(|s| s.id == back.to);
+            if !earlier {
+                return Err(format!(
+                    "stage \"{}\" loops back to \"{}\", which is not an earlier stage.",
+                    stage.id, back.to
+                ));
+            }
+            if back.max_rounds.is_some_and(|max| max == 0 || max > 20) {
+                return Err(format!(
+                    "stage \"{}\": maxRounds is 1 to 20, or left out for no limit.",
+                    stage.id
+                ));
+            }
+        }
+        for gate in &stage.gates {
+            if let GateDef::Command { run, timeout_secs, .. } = gate {
+                if run.trim().is_empty() || run.chars().count() > MAX_COMMAND_CHARS {
+                    return Err(format!(
+                        "stage \"{}\": a command gate needs a command (at most {MAX_COMMAND_CHARS} characters).",
+                        stage.id
                     ));
                 }
-                if back.max_rounds.is_some_and(|max| max == 0 || max > 20) {
-                    return fail(format!(
-                        "stage \"{}\": maxRounds is 1 to 20, or left out for no limit.",
+                if timeout_secs.is_some_and(|secs| secs == 0 || secs > 6 * 3600) {
+                    return Err(format!(
+                        "stage \"{}\": timeoutSecs is 1 to 21600.",
                         stage.id
                     ));
                 }
             }
-            for gate in &stage.gates {
-                if let GateDef::Command { run, timeout_secs } = gate {
-                    if run.trim().is_empty() || run.chars().count() > MAX_COMMAND_CHARS {
-                        return fail(format!(
-                            "stage \"{}\": a command gate needs a command (at most {MAX_COMMAND_CHARS} characters).",
-                            stage.id
-                        ));
-                    }
-                    if timeout_secs.is_some_and(|secs| secs == 0 || secs > 6 * 3600) {
-                        return fail(format!(
-                            "stage \"{}\": timeoutSecs is 1 to 21600.",
-                            stage.id
-                        ));
-                    }
-                }
-            }
         }
-        if def.autopilot.pause_at_usage_percent == 0 || def.autopilot.pause_at_usage_percent > 100 {
-            return fail("autopilot.pauseAtUsagePercent is 1 to 100.".into());
-        }
+    }
+    if def.autopilot.pause_at_usage_percent == 0 || def.autopilot.pause_at_usage_percent > 100 {
+        return Err("autopilot.pauseAtUsagePercent is 1 to 100.".into());
     }
     Ok(())
 }
