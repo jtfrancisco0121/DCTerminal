@@ -718,4 +718,37 @@ mod tests {
         process.kill_tree(); // never leave the fake behind, even when red
         assert!(exited, "the unregistered agent was left running");
     }
+
+    /// The guard only stops agents that never reached the registry: one that
+    /// was handed over keeps running.
+    #[test]
+    fn a_successful_start_is_not_stopped_by_the_guard() {
+        use super::StartedAgent;
+        use crate::acp::test_agent::FakeAgent;
+        use crate::commands::dev_session::SessionRegistry;
+        use crate::commands::session_flow_tests::{claude_scenario, connect};
+        use crate::provider::ProviderId;
+        use std::sync::Mutex;
+        use std::time::Duration;
+
+        let mut scenario = claude_scenario(serde_json::json!([]));
+        scenario["ignore_eof"] = serde_json::json!(true);
+        let Some(agent) = FakeAgent::new("successful_start", &scenario)
+        else {
+            return;
+        };
+        let client = connect(&agent, ProviderId::Claude, "default");
+        let process = client.process_handle();
+        let started = StartedAgent::new("tab-1", "role_implementer", client);
+
+        let registry = Mutex::new(SessionRegistry::new());
+        let (guard, live) = started.into_live_locked(&registry, "tab-1").unwrap();
+        drop(guard);
+        // Long enough for a wrongly armed guard's shutdown to land.
+        std::thread::sleep(Duration::from_millis(1500));
+        let alive = process.try_wait().unwrap().is_none();
+        process.kill_tree(); // never leave the fake behind, even when red
+        drop(live);
+        assert!(alive, "the guard stopped an agent that was handed over");
+    }
 }
