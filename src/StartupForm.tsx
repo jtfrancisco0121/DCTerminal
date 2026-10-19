@@ -323,7 +323,6 @@ import {
   type SessionCards as Cards,
 } from "./sessionCards";
 import {
-  chainMarkBlocked,
   chainMarkSent,
   chainMarkSettled,
   chainStart,
@@ -337,6 +336,7 @@ import {
   type ChainCursor,
   type TurnOutcome,
 } from "./scratch/pad";
+import { chainAfterAgentRequest } from "./scratch/chainPause";
 import { createTurnWaiter } from "./scratch/turnWait";
 import { answersForRole, fieldsForForm } from "./startupFields";
 import { ShortcutBar } from "./components/ShortcutBar";
@@ -1237,7 +1237,7 @@ export function StartupForm({
       }),
       listenPermissionRequests((evt) => {
         if (!evt.tabId) return;
-        setChain((current) => (current ? chainMarkBlocked(current) : current));
+        setChain((current) => chainAfterAgentRequest(current, evt.tabId, savedTabsRef.current));
         patchRuntime(evt.tabId, (rt) => applyPermission(rt, evt));
         notifyAgent(evt.tabId, { kind: "permission", detail: evt.title || evt.message });
       }),
@@ -1269,13 +1269,13 @@ export function StartupForm({
       }),
       listenPlanRequests((evt) => {
         if (!evt.tabId) return;
-        setChain((current) => (current ? chainMarkBlocked(current) : current));
+        setChain((current) => chainAfterAgentRequest(current, evt.tabId, savedTabsRef.current));
         patchRuntime(evt.tabId, (rt) => applyPlan(rt, evt));
         notifyAgent(evt.tabId, { kind: "plan", detail: evt.title });
       }),
       listenQuestionRequests((evt) => {
         if (!evt.tabId) return;
-        setChain((current) => (current ? chainMarkBlocked(current) : current));
+        setChain((current) => chainAfterAgentRequest(current, evt.tabId, savedTabsRef.current));
         patchRuntime(evt.tabId, (rt) => applyQuestion(rt, evt));
         notifyAgent(evt.tabId, {
           kind: "question",
