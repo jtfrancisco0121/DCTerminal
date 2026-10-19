@@ -251,6 +251,11 @@ impl SessionRegistry {
         }
     }
 
+    /// Agent sessions whose process is still running (what a quit would stop).
+    pub fn live_count(&self) -> usize {
+        self.sessions.values().filter(|session| !session.is_dead()).count()
+    }
+
     /// App exit, step 1: SIGTERM every live agent and return their
     /// processes, so the caller can wait without holding this lock.
     pub fn terminate_all(&self) -> Vec<SharedProcess> {

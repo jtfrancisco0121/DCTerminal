@@ -461,6 +461,36 @@ fn an_agent_that_exits_between_turns_is_seen_as_exited_and_can_be_restarted() {
     registry.finish_start("tab-exit");
 }
 
+// Quit asks first while an agent is running; one that exited is not counted.
+#[test]
+fn a_running_agent_counts_as_live_work_until_it_exits() {
+    let agent = fake!(
+        "live-count",
+        claude_scenario(json!([[{ "say": "bye" }, { "end_exit": 0 }]]))
+    );
+    let client = connect(&agent, ProviderId::Claude, "bypassPermissions");
+    let mut registry = SessionRegistry::new();
+    assert_eq!(registry.live_count(), 0);
+    let idle = fake!("live-count-idle", claude_scenario(json!([])));
+    registry.insert(LiveSession::from_client(
+        "tab-idle",
+        "role_implementer",
+        connect(&idle, ProviderId::Claude, "bypassPermissions"),
+    ));
+    assert_eq!(registry.live_count(), 1, "an idle agent process still stops on quit");
+
+    let (client, result, _, _) = start(client, "role_implementer", "go", vec![]).finish();
+    assert_eq!(result.unwrap().agent_text, "bye");
+    registry.insert(LiveSession::from_client("tab-exit", "role_implementer", client));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !registry.get("tab-exit").unwrap().is_dead() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(registry.live_count(), 1, "an exited agent is not live");
+    registry.shutdown_all();
+    assert_eq!(registry.live_count(), 0);
+}
+
 #[test]
 fn agent_logs_read_while_a_turn_holds_the_client_lock() {
     // A turn holds the client lock until it ends, and its callbacks take the
