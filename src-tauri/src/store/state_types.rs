@@ -297,6 +297,10 @@ pub struct RunEvent {
     /// verdict. Missing on older events.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
+    /// The fanned-out pull request (lane) the event is about. Missing on
+    /// older events, whose summary starts with the lane's title instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lane_id: Option<String>,
 }
 
 /// A stage's latest gate results.
@@ -357,6 +361,21 @@ impl PipelineRun {
         detail: Option<String>,
         outcome: Option<String>,
     ) {
+        self.log_in_lane(kind, stage_id, role_id, None, summary, detail, outcome);
+    }
+
+    /// `log_outcome` for an event about one lane (see `RunEvent::lane_id`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn log_in_lane(
+        &mut self,
+        kind: &str,
+        stage_id: Option<&str>,
+        role_id: Option<&str>,
+        lane_id: Option<&str>,
+        summary: impl Into<String>,
+        detail: Option<String>,
+        outcome: Option<String>,
+    ) {
         let detail = detail.map(|text| {
             let chars = text.chars().count();
             if chars > MAX_EVENT_DETAIL_CHARS {
@@ -375,6 +394,7 @@ impl PipelineRun {
             summary: summary.into(),
             detail: detail.filter(|text| !text.trim().is_empty()),
             outcome: outcome.filter(|text| !text.trim().is_empty()),
+            lane_id: lane_id.map(str::to_string),
         });
         if self.events.len() > MAX_RUN_EVENTS {
             let drop = self.events.len() - MAX_RUN_EVENTS;

@@ -188,16 +188,19 @@ impl StateStore {
             let title = crate::pipelines::find(&kind)
                 .and_then(|def| def.stage(&stage_id).map(|stage| stage.title.clone()))
                 .unwrap_or_else(|| stage_id.clone());
+            let lane_id = lane_id.filter(|id| run.lane(id).is_some());
             let lane_tag = lane_id
                 .and_then(|id| run.lane(id))
                 .map(|lane| format!("{}: ", lane.title))
                 .unwrap_or_default();
-            run.log(
+            run.log_in_lane(
                 "handoff",
                 Some(&stage_id),
                 Some(&role_id),
+                lane_id,
                 format!("{lane_tag}Handed to {title}"),
                 Some(text.to_string()),
+                None,
             );
             // Sending into a checkpoint stage yourself passes it; autopilot
             // carries on from the next turn.
@@ -283,11 +286,13 @@ impl StateStore {
             .and_then(|id| run.lane(id))
             .map(|l| format!("{}: ", l.title))
             .unwrap_or_default();
-        run.log(
+        run.log_in_lane(
             "loopBack",
             Some(&stages[target].0),
             Some(reviewer_role_id),
+            lane.as_deref(),
             format!("{lane_tag}Round {ending} sent back ({verdict_text})"),
+            None,
             None,
         );
         let target_stage = stages[target].0.clone();
