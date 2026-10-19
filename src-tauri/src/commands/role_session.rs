@@ -10,7 +10,7 @@ use crate::template::{merge_role_prompt, FieldError};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use tauri::{AppHandle, State};
 
 #[derive(Serialize)]
@@ -323,6 +323,9 @@ pub fn role_session_start(
 
     // The registry lock is taken while the agent is still guarded: a poisoned
     // registry stops the agent instead of dropping a live session that has no Drop.
+    // From the handover to `insert` below there are only field assignments and one
+    // `clone()`, no fallible call. A panic there would still leak the agent
+    // (`LiveSession` has no Drop); that gap is accepted.
     let (mut guard, mut live) = client.into_live_locked(&state, &persisted_tab_id)?;
     let mut injection_in_flight = false;
     if skip_startup {
@@ -418,9 +421,7 @@ impl StartedAgent {
         let client = self.client.take().expect("agent already handed over");
         LiveSession::from_client(tab_id, &self.role_id, client)
     }
-}
 
-impl StartedAgent {
     /// Lock the registry, then hand the agent over. The lock comes first so a
     /// poisoned registry returns an error while this guard still owns (and so
     /// stops) the agent; once handed over there is no early return before the insert.
@@ -428,7 +429,7 @@ impl StartedAgent {
         self,
         state: &'a Mutex<SessionRegistry>,
         tab_id: &str,
-    ) -> Result<(std::sync::MutexGuard<'a, SessionRegistry>, LiveSession), String> {
+    ) -> Result<(MutexGuard<'a, SessionRegistry>, LiveSession), String> {
         let guard = state.lock().map_err(|e| e.to_string())?;
         Ok((guard, self.into_live(tab_id)))
     }
@@ -744,8 +745,9 @@ mod tests {
         let registry = Mutex::new(SessionRegistry::new());
         let (guard, live) = started.into_live_locked(&registry, "tab-1").unwrap();
         drop(guard);
-        // Long enough for a wrongly armed guard's shutdown to land.
-        std::thread::sleep(Duration::from_millis(1500));
+        // A wrongly armed guard sends SIGTERM at once on the proc-stop thread and
+        // the fake exits at once on SIGTERM, so half a second is ample.
+        std::thread::sleep(Duration::from_millis(500));
         let alive = process.try_wait().unwrap().is_none();
         process.kill_tree(); // never leave the fake behind, even when red
         drop(live);
