@@ -115,6 +115,25 @@ describe("useUiSettings (U7/U8)", () => {
     );
   });
 
+  it("updateChecked made before the first load rejects, not hangs, when the hook unmounts first", async () => {
+    vi.mocked(getUiSettings).mockImplementationOnce(() => new Promise(() => {}));
+    const { result, unmount } = renderHook(() => useUiSettings());
+    let saved: Promise<void> = Promise.resolve();
+    act(() => {
+      saved = result.current.updateChecked({ shortcutBar: true });
+    });
+    unmount();
+    const outcome = await Promise.race([
+      saved.then(
+        () => "resolved",
+        (err: unknown) => `rejected: ${err instanceof Error ? err.message : String(err)}`,
+      ),
+      new Promise((resolve) => setTimeout(() => resolve("pending"), 20)),
+    ]);
+    expect(outcome).toMatch(/^rejected: /);
+    expect(setUiSettings).not.toHaveBeenCalled();
+  });
+
   it("updateChecked rejects when the save fails", async () => {
     const { result } = renderHook(() => useUiSettings());
     await waitFor(() => expect(result.current.loaded).toBe(true));

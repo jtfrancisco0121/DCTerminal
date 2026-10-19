@@ -34,8 +34,14 @@ export function useUiSettings(onError?: (title: string, message: string) => void
   const pendingRef = useRef<Array<(current: UiSettings) => UiSettings>>([]);
   const [firstLoad] = useState(() => {
     let settle: () => void = () => {};
-    const done = new Promise<void>((resolve) => (settle = resolve));
-    return { done, settle, saved: Promise.resolve() };
+    let fail: (err: Error) => void = () => {};
+    const done = new Promise<void>((resolve, reject) => {
+      settle = resolve;
+      fail = reject;
+    });
+    // Only queued changes wait on it; nobody waiting is not an error.
+    done.catch(() => {});
+    return { done, settle, fail, saved: Promise.resolve() };
   });
 
   const write = useCallback(
@@ -70,6 +76,13 @@ export function useUiSettings(onError?: (title: string, message: string) => void
       });
     return () => {
       cancelled = true;
+      // Unmounted before the load: queued changes are not saved, so their
+      // callers hear it instead of waiting forever. (StrictMode's extra
+      // cleanup runs before anything can be queued.)
+      if (!settledRef.current && pendingRef.current.length > 0) {
+        pendingRef.current = [];
+        firstLoad.fail(new Error("Display settings closed before they loaded"));
+      }
     };
   }, [firstLoad, write]);
 
