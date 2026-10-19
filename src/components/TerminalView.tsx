@@ -17,6 +17,7 @@ import {
   livePty,
   markPtyOpening,
   notePtyInput,
+  restartLivePty,
   subscribeLivePty,
 } from "../terminal/live";
 import {
@@ -388,10 +389,7 @@ export function TerminalView({
     setFailed(null);
     const parked = ensureParkedTerminal(ptyId, fontSize);
     parked.term.reset();
-    // Same tab, same run: plan files written before the restart still count.
-    const firstStart = livePty(ptyId)?.startedAt;
-    const live = beginLivePty(ptyId);
-    if (firstStart) live.startedAt = firstStart;
+    const live = restartLivePty(ptyId);
     void ptyOpen({
       id: ptyId,
       cwd,

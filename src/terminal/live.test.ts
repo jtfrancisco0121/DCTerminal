@@ -9,7 +9,8 @@ vi.mock("../bridge", () => ({
   },
 }));
 
-const { beginLivePty, dropLivePty, notePtyInput, ptyExitCode, subscribePtyExit } = await import("./live");
+const { beginLivePty, dropLivePty, livePty, notePtyInput, ptyExitCode, restartLivePty, subscribePtyExit } =
+  await import("./live");
 const { dialogDetector } = await import("./permissionDialog");
 
 const last = () => handlers[handlers.length - 1];
@@ -18,6 +19,7 @@ const exit = (code: number | null) => last()({ kind: "exit", data: "", code });
 afterEach(() => {
   dropLivePty("t1");
   handlers.length = 0;
+  vi.restoreAllMocks();
 });
 
 describe("live PTY exit", () => {
@@ -56,6 +58,33 @@ describe("live PTY exit", () => {
     expect(dialogDetector.isVisible("t1")).toBe(true);
     exit(0);
     expect(dialogDetector.isVisible("t1")).toBe(false);
+  });
+});
+
+describe("restart", () => {
+  it("replaces startedAt with the new process's start but keeps planSince", () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const first = beginLivePty("t1");
+    exit(1);
+    now.mockReturnValue(5_000);
+    const live = restartLivePty("t1");
+    expect(livePty("t1")).toBe(live);
+    // The dead process's start is not the new one's.
+    expect(live.startedAt).toBe(5_000);
+    expect(live.exited).toBe(false);
+    // Plan files written since the tab's first start still count.
+    expect(first.planSince).toBe(1_000);
+    expect(live.planSince).toBe(1_000);
+    // A second restart still keeps the tab's first start.
+    now.mockReturnValue(9_000);
+    expect(restartLivePty("t1")).toMatchObject({ startedAt: 9_000, planSince: 1_000 });
+  });
+
+  it("starts both at now when nothing ran before", () => {
+    vi.spyOn(Date, "now").mockReturnValue(2_000);
+    const live = restartLivePty("t1");
+    expect(live.startedAt).toBe(2_000);
+    expect(live.planSince).toBe(2_000);
   });
 });
 

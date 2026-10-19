@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChatEntry } from "../bridge";
 import { EMPTY_CHAT, type ChatEntriesState } from "../terminal/chatEntries";
 
@@ -15,7 +15,14 @@ vi.mock("../terminal/useLivePty", () => ({
   useLivePtyStart: () => (pty && !pty.exited ? pty.startedAt : null),
 }));
 
+// The real live-PTY records, with a channel that needs no Tauri.
+vi.mock("../bridge", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../bridge")>()),
+  createPtyChannel: () => ({}),
+}));
+
 const { SubAgentIndicator, TerminalChatView, TerminalViewSwitch } = await import("./TerminalChatView");
+const { beginLivePty, dropLivePty, livePty, restartLivePty } = await import("../terminal/live");
 
 const AT = "2026-10-16T10:00:00.000Z";
 const entries: ChatEntry[] = [
@@ -39,6 +46,12 @@ const entries: ChatEntry[] = [
     questions: [{ header: "DB", question: "Which DB?", options: ["Postgres", "SQLite"], multiSelect: false }],
   },
 ];
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  dropLivePty("t1");
+  pty = { startedAt: 0, exited: false };
+});
 
 describe("TerminalChatView", () => {
   it("renders prompts, replies, tools, sub-agents, the plan and a question", () => {
@@ -79,6 +92,26 @@ describe("TerminalChatView", () => {
     expect(onShowTerminal).toHaveBeenCalled();
     // The question was answered: no button on it.
     expect(within(screen.getByRole("region", { name: "Question" })).queryByRole("button")).toBeNull();
+  });
+
+  it("after a restart, a decision the dead process waited on does not hold the composer", () => {
+    // Claude Code started, launched a sub-agent and asked for a plan, then died.
+    const now = vi.spyOn(Date, "now").mockReturnValue(Date.parse(AT) - 60_000);
+    beginLivePty("t1");
+    state = { sessionId: "s1", revision: 7, entries: entries.slice(0, 6) };
+    pty = livePty("t1");
+    const { unmount } = render(<TerminalChatView tabId="t1" needsYou={false} onShowTerminal={() => {}} />);
+    const hint = "Answer the question above, or in the terminal, first.";
+    expect(screen.getByText(hint)).toBeTruthy();
+    unmount();
+    // Resume from the exit strip: a new process, which asked nothing yet.
+    now.mockReturnValue(Date.parse(AT) + 5_000);
+    restartLivePty("t1");
+    pty = livePty("t1");
+    render(<TerminalChatView tabId="t1" needsYou={false} onShowTerminal={() => {}} />);
+    expect(screen.queryByText(hint)).toBeNull();
+    const { container } = render(<SubAgentIndicator tabId="t1" />);
+    expect(container.textContent).toBe("");
   });
 
   it("says so when there is no conversation yet", () => {
