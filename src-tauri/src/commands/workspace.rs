@@ -177,29 +177,47 @@ pub fn check_working_folder(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn transcript_save(
+pub async fn transcript_save(
+    app: tauri::AppHandle,
     tab_id: String,
     text: String,
     cwd: String,
-    transcripts: State<Mutex<TranscriptStore>>,
-    state: State<Mutex<StateStore>>,
 ) -> Result<(), String> {
-    save_tab_transcript(
-        &state,
-        &transcripts,
-        &tab_id,
-        &text,
-        &cwd,
-        &chrono::Utc::now().to_rfc3339(),
-    )
+    save_tab_transcript_blocking(app, tab_id, text, cwd).await
+}
+
+/// `save_tab_transcript` on a blocking thread, stamped now: the write and
+/// the rotation scan never run on the main thread.
+pub(crate) async fn save_tab_transcript_blocking(
+    app: tauri::AppHandle,
+    tab_id: String,
+    text: String,
+    cwd: String,
+) -> Result<(), String> {
+    use tauri::Manager;
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<StateStore>>();
+        let transcripts = app.state::<Mutex<TranscriptStore>>();
+        save_tab_transcript(
+            &state,
+            &transcripts,
+            &tab_id,
+            &text,
+            &cwd,
+            &chrono::Utc::now().to_rfc3339(),
+        )
+    })
+    .await
+    .map_err(|err| err.to_string())?
 }
 
 /// Saves one tab's transcript. Rotation never drops the file of an open or
 /// closed tab, so a tab reopened from the closed list gets its chat back.
-/// The state lock is released before the transcript lock is taken, so the
-/// file write and rotation scan never block state readers. Callers must
-/// not hold either lock. A tab that saves in that gap is not in `keep`, so
-/// rotation also spares any file modified since this save began.
+/// The state lock is released before the transcript lock is taken, and the
+/// transcript lock covers only the file write: the rotation scan runs after
+/// it is dropped. Callers must not hold either lock. A tab that saves in
+/// either gap is not in `keep`, so rotation also spares any file modified
+/// since this save began. Blocking: call it off the main thread.
 pub(crate) fn save_tab_transcript(
     state: &Mutex<StateStore>,
     transcripts: &Mutex<TranscriptStore>,
@@ -214,8 +232,12 @@ pub(crate) fn save_tab_transcript(
         crate::commands::storage::known_tab_ids(&state)
     };
     keep.push(tab_id.to_string());
-    let transcripts = transcripts.lock().map_err(|e| e.to_string())?;
-    transcripts.save_since(tab_id, text, cwd, now, &keep, Some(cutoff))
+    let dir = {
+        let transcripts = transcripts.lock().map_err(|e| e.to_string())?;
+        transcripts.write(tab_id, text, cwd, now)?;
+        transcripts.dir.clone()
+    };
+    crate::store::rotate_transcripts(&dir, &keep, Some(cutoff))
 }
 
 /// F5: search saved chat text across open tabs, closed tabs, and older

@@ -67,5 +67,9 @@ pub use state_types::{
     ArchivedWindow, TabRecord, TabSessionRef, WindowRecord, MAIN_WINDOW_ID, MAX_DECIDED_TURNS,
 };
 pub use chain_runs::ClaimOutcome;
-pub use transcript_store::{TranscriptFile, TranscriptStore};
+pub use transcript_store::{
+    rotate_transcripts, truncate_transcript, TranscriptFile, TranscriptStore,
+};
+#[cfg(test)]
+pub(crate) use transcript_store::ROTATION_HOOK;
 pub use workspace_store::{Workspace, WorkspaceStore, WorkspaceTab};

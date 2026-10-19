@@ -148,3 +148,48 @@ fn a_tab_saved_while_another_save_waits_is_not_rotated_away() {
         "B's new transcript was rotated away by A's stale keep set"
     );
 }
+
+#[test]
+fn saving_a_transcript_does_not_hold_the_lock_while_rotating() {
+    let dir = TempDir::new("transcripts_rotate_lock");
+    let state = Mutex::new(StateStore::open_path(dir.join("state.json")).unwrap());
+    let transcripts = Arc::new(Mutex::new(TranscriptStore::open(dir.path()).unwrap()));
+    // Old files from tabs that are gone: past the cap, so rotation has work.
+    for i in 0..40 {
+        transcripts
+            .lock()
+            .unwrap()
+            .save(&format!("old_{i}"), "old", "/tmp/a", NOW, &[])
+            .unwrap();
+    }
+    let dev = role("role_dev", "Developer");
+    let id = state
+        .lock()
+        .unwrap()
+        .create_draft_tab(&dev, "/tmp/a", true, None)
+        .unwrap();
+
+    // Mid-scan, another thread tries the transcript lock.
+    let free_during_rotation = Arc::new(Mutex::new(None::<bool>));
+    {
+        let (transcripts, seen) = (transcripts.clone(), free_during_rotation.clone());
+        crate::store::ROTATION_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                let transcripts = transcripts.clone();
+                let free = std::thread::spawn(move || transcripts.try_lock().is_ok())
+                    .join()
+                    .unwrap();
+                *seen.lock().unwrap() = Some(free);
+            }));
+        });
+    }
+    save_tab_transcript(&state, &transcripts, &id, "hello", "/tmp/a", NOW).unwrap();
+    crate::store::ROTATION_HOOK.with(|hook| *hook.borrow_mut() = None);
+
+    assert_eq!(
+        *free_during_rotation.lock().unwrap(),
+        Some(true),
+        "transcript lock held while rotating the folder"
+    );
+    assert!(transcripts.lock().unwrap().load(&id).unwrap().is_some());
+}

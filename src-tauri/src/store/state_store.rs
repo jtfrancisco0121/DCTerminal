@@ -671,7 +671,7 @@ impl StateStore {
         if let Some(text) = transcript {
             let trimmed = text.trim();
             if !trimmed.is_empty() {
-                tab.transcript = Some(trimmed.chars().take(500_000).collect());
+                tab.transcript = Some(crate::store::truncate_transcript(trimmed));
                 tab.startup_prompt_sent = true;
             }
         }
