@@ -61,6 +61,11 @@ export function headerStateOf(input: {
   return { tone: "idle", text: "Idle", timed: false };
 }
 
+/** Mid-turn, including a turn whose state is unknown: Stop and Queue stay offered. */
+export function headerWorking(state: HeaderState): boolean {
+  return state.tone === "working" || state.tone === "unknown";
+}
+
 /** The pill's full text with the elapsed time when it is working. */
 export function headerPillText(state: HeaderState, elapsedSeconds: number): string {
   return state.timed ? `${state.text} · ${formatElapsed(elapsedSeconds)}` : state.text;

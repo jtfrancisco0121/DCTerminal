@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { formatElapsed, type HeaderState } from "../terminal/headerState";
+import { formatElapsed, headerWorking, type HeaderState } from "../terminal/headerState";
 
 export type NextStep = {
   /** Hand-off targets with their display names. */
@@ -225,7 +225,7 @@ export function TerminalHeader({
       <div className="terminal-header-right">
         {viewSwitch}
         {right}
-        {onStop && (state.tone === "working" || state.tone === "unknown") && (
+        {onStop && headerWorking(state) && (
           <button
             type="button"
             className="secondary-button"

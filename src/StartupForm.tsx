@@ -258,7 +258,7 @@ import {
   type TerminalState,
 } from "./terminal/claudeState";
 import { dialogDetector } from "./terminal/permissionDialog";
-import { headerStateOf, trackWorkingSince } from "./terminal/headerState";
+import { headerStateOf, headerWorking, trackWorkingSince } from "./terminal/headerState";
 import {
   clearMarks,
   computeTabStatus,
@@ -6169,7 +6169,7 @@ export function StartupForm({
         header={terminalHeaderFor(headerDeps, activeTabSummary, { viewSwitch: true })}
         view={terminalViewOf(terminalViews, activeTabSummary.id)}
         needsYou={terminalHeaderState(headerDeps, activeTabSummary).header.tone === "needs"}
-        working={terminalHeaderState(headerDeps, activeTabSummary).header.tone === "working"}
+        working={headerWorking(terminalHeaderState(headerDeps, activeTabSummary).header)}
         exited={ptyExitCode(activeTabSummary.id) != null}
         onShowTerminal={() => headerDeps.setTerminalView?.(activeTabSummary.id, "terminal")}
         composerRef={terminalComposerRef}

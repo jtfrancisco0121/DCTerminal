@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatElapsed, headerPillText, headerStateOf, trackWorkingSince } from "./headerState";
+import { formatElapsed, headerPillText, headerStateOf, headerWorking, trackWorkingSince } from "./headerState";
 
 describe("headerStateOf", () => {
   it("reads exited, needs you, working, done and idle from the terminal state", () => {
@@ -39,6 +39,13 @@ describe("headerStateOf", () => {
   it("says to check the terminal when a working turn's state is unknown", () => {
     const state = headerStateOf({ turnEnded: false, state: { kind: "working", unknown: true } });
     expect(state).toEqual({ tone: "unknown", text: "State unknown · check the terminal", timed: false });
+  });
+
+  it("counts an unknown turn as working for Stop and the composer's Queue", () => {
+    const unknown = headerStateOf({ turnEnded: false, state: { kind: "working", unknown: true } });
+    expect(headerWorking(unknown)).toBe(true);
+    expect(headerWorking(headerStateOf({ turnEnded: false, state: { kind: "working" } }))).toBe(true);
+    expect(headerWorking(headerStateOf({ turnEnded: true, state: { kind: "idle" } }))).toBe(false);
   });
 
   it("counts up while working", () => {
