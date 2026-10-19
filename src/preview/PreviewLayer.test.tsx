@@ -118,6 +118,58 @@ describe("preview dimming", () => {
   });
 });
 
+describe("preview measuring", () => {
+  it("measures its slot when the slot or a box around it resizes, not on every render", () => {
+    const observers: { callback: () => void; targets: Element[] }[] = [];
+    class FakeResizeObserver {
+      targets: Element[] = [];
+      constructor(public callback: () => void) {
+        observers.push(this);
+      }
+      observe(el: Element) {
+        this.targets.push(el);
+      }
+      disconnect() {
+        this.targets = [];
+      }
+    }
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+    const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect");
+    function Page({ count }: { count: number }) {
+      const { slots, register } = usePreviewSlots();
+      return (
+        <PreviewSlotProvider register={register}>
+          <div data-testid="outer">
+            <span>{count}</span>
+            <PreviewSlot tabId="a" />
+          </div>
+          <PreviewLayer tabIds={["a"]} slots={slots} render={() => <iframe title="page a" />} />
+        </PreviewSlotProvider>
+      );
+    }
+    try {
+      const view = render(<Page count={0} />);
+      const slot = document.querySelector('[data-preview-slot="a"]');
+      const measured = () => rect.mock.contexts.filter((el) => el === slot).length;
+      const first = measured();
+      expect(first).toBeGreaterThan(0);
+      // Renders that move nothing do not measure.
+      view.rerender(<Page count={1} />);
+      view.rerender(<Page count={2} />);
+      expect(measured()).toBe(first);
+      // A box around the slot resizing can move it without resizing it.
+      const outer = screen.getByTestId("outer");
+      const watching = observers.find((o) => o.targets.includes(outer) && o.targets.includes(slot!));
+      expect(watching).toBeDefined();
+      act(() => watching!.callback());
+      expect(measured()).toBe(first + 1);
+    } finally {
+      rect.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe("preview tabs outside the main pane", () => {
   it("show the preview in the second pane instead of the no-session note", () => {
     const tab = { id: "p1", kind: "preview", label: "localhost:3000", cwd: "" } as TabSummary;

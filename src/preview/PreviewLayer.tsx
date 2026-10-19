@@ -72,7 +72,9 @@ function PreviewFrame({ slot, children }: { slot: HTMLElement | null; children: 
     setRect((current) => (sameRect(current, next) ? current : next));
   }, [slot]);
 
-  // Panes resize and move with splits, the file panel and the window.
+  // Panes resize and move with splits, the file panel and the window. A
+  // slot can also move without resizing (a bar appears above its pane): a
+  // box around it then resizes, so those are watched too.
   useLayoutEffect(() => {
     if (!slot) {
       // Keys must not keep reaching a page that is no longer on screen.
@@ -82,15 +84,15 @@ function PreviewFrame({ slot, children }: { slot: HTMLElement | null; children: 
     }
     measure();
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
-    observer?.observe(slot);
+    for (let box: Element | null = slot; box && box !== document.documentElement; box = box.parentElement) {
+      observer?.observe(box);
+    }
     window.addEventListener("resize", measure);
     return () => {
       observer?.disconnect();
       window.removeEventListener("resize", measure);
     };
   }, [slot, measure]);
-  // A slot can also move without resizing (a pane strip or bar appears).
-  useLayoutEffect(measure);
 
   // The frame is not inside its pane, so it dims with the pane by hand.
   const [dim, setDim] = useState(false);
