@@ -1,12 +1,12 @@
 /**
  * What the terminal header's state pill says (R16): Working · 12s, Needs you,
- * Done · <verdict>, Exited · code N. One place, so the active tab, the second
+ * Done · <verdict>, Exited · code N, State unknown · check the terminal. One place, so the active tab, the second
  * pane and every grid cell read alike.
  */
 import { NEEDS_YOU_TEXT, type TabStatus } from "../tabStatus";
 import type { TerminalState } from "./claudeState";
 
-export type HeaderTone = "working" | "needs" | "done" | "exited" | "idle";
+export type HeaderTone = "working" | "unknown" | "needs" | "done" | "exited" | "idle";
 
 export type HeaderState = {
   tone: HeaderTone;
@@ -48,6 +48,9 @@ export function headerStateOf(input: {
   if (needs) {
     // Which kind of prompt, worded as the tab chip's tooltip words it.
     return { tone: "needs", text: `Needs you: ${NEEDS_YOU_TEXT[needs]}`, timed: false };
+  }
+  if (state?.kind === "working" && state.unknown) {
+    return { tone: "unknown", text: "State unknown · check the terminal", timed: false };
   }
   if (state?.kind === "working" || (!state && status?.busy)) {
     return { tone: "working", text: "Working", timed: true };

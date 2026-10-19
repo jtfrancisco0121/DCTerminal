@@ -5788,6 +5788,12 @@ button.chain-label {
   color: var(--accent-bright);
 }
 
+.terminal-header-pill-unknown {
+  border-color: var(--attention);
+  border-style: dashed;
+  color: var(--fg-muted);
+}
+
 .terminal-header-pill-needs {
   border-color: var(--attention);
   color: var(--attention);

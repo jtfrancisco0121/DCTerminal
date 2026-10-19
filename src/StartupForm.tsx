@@ -250,6 +250,7 @@ import {
   dialogAfterRead,
   dialogDrawn,
   dialogToolFor,
+  quietTurn,
   sameTerminalState,
   terminalNeedsMessage,
   terminalWaitingText,
@@ -509,6 +510,8 @@ export function StartupForm({
   // F2: finished/question/error left on a tab the user was not watching.
   const [tabMarks, setTabMarks] = useState<Record<string, TabMark>>({});
   const [terminalBusy, setTerminalBusy] = useState<string[]>([]);
+  /** Claude role terminals mid-turn with no output or new log record for a minute. */
+  const [quietTurnTabs, setQuietTurnTabs] = useState<string[]>([]);
   /** Terminal or Chat per Claude terminal tab, kept across restarts. */
   const { views: terminalViews, setView: setTerminalView } = useTerminalViews(
     savedTabs.map((tab) => tab.id),
@@ -548,6 +551,8 @@ export function StartupForm({
         finishedPromptAt?: string | null;
         /** Read at the next tick even if a read is in flight now (a dialog appeared). */
         forceRead?: boolean;
+        /** When a read last found new records (claudeState.ts `quietTurn`). */
+        logAt?: number;
       }
     >(),
   );
@@ -1349,9 +1354,24 @@ export function StartupForm({
       return;
     }
     const timer = window.setInterval(() => {
-      const { busy, settled } = terminalActivity.sweep();
+      const now = Date.now();
+      const { busy, settled } = terminalActivity.sweep(now);
       setTerminalBusy((prev) =>
         prev.length === busy.length && prev.every((id, i) => id === busy[i]) ? prev : busy,
+      );
+      // Mid-turn Claude terminals quiet for a minute show as unknown.
+      const quietTurns = [...sessionLogWatch.current]
+        .filter(([id, entry]) => {
+          if (sessionLogsRef.current[id]?.turnDone !== false) return false;
+          const outputAt = terminalActivity.lastOutputAt(id);
+          return quietTurn({ outputAt, logAt: entry.logAt ?? entry.since, now });
+        })
+        .map(([id]) => id)
+        .sort();
+      setQuietTurnTabs((prev) =>
+        prev.length === quietTurns.length && prev.every((id, i) => id === quietTurns[i])
+          ? prev
+          : quietTurns,
       );
       // A Claude role terminal is marked when its turn ends, not when output
       // stops; an exited process is reported as exited, never as finished.
@@ -1430,6 +1450,9 @@ export function StartupForm({
       // Mid-turn, the next call's dialog may be half drawn already.
       if (next.clear) dialogDetector.clear(tabId, { keepPartial: !!log && !log.turnDone });
       autopilotLogRef.current?.(tabId, log);
+      // New records restart the quiet minute before a turn shows as unknown.
+      const newRecords = !prev || !sameSessionLog(prev, log) || prev.toolCalls.length !== log?.toolCalls.length;
+      if (watched && log && newRecords) watched.logAt = Date.now();
       if (prev !== undefined && sameSessionLog(prev, log)) return;
       sessionLogsRef.current = { ...sessionLogsRef.current, [tabId]: log };
       setSessionLogs(sessionLogsRef.current);
@@ -1576,6 +1599,7 @@ export function StartupForm({
           : null,
         ptyBusy: terminalBusy.includes(tab.id),
         exitCode: ptyExitCode(tab.id),
+        quiet: quietTurnTabs.includes(tab.id),
       });
       next[tab.id] = sameTerminalState(prev[tab.id], state) ? prev[tab.id] : state;
       if (next[tab.id] !== prev[tab.id]) changed = true;
@@ -1585,7 +1609,7 @@ export function StartupForm({
     return next;
     // ptyVersion: exit codes, dialogOwnerVersion: dialog owners live outside React state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dialogOwnerVersion, dialogTabs, ptyVersion, savedTabs, sessionLogs, terminalBusy]);
+  }, [dialogOwnerVersion, dialogTabs, ptyVersion, quietTurnTabs, savedTabs, sessionLogs, terminalBusy]);
 
   // One toast and OS notification per prompt that needs the user.
   const needsNotified = useRef(new Set<string>());

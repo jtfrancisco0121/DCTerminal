@@ -32,6 +32,10 @@ export function createActivityTracker(opts: { quietMs?: number; echoMs?: number 
       lastOutput.set(id, now);
     },
     isBusy,
+    /** When output (not keystroke echo) last arrived. */
+    lastOutputAt(id: string): number | undefined {
+      return lastOutput.get(id);
+    },
     sweep(now = Date.now()): ActivitySweep {
       const busy: string[] = [];
       const settled: string[] = [];

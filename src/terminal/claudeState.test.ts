@@ -4,7 +4,9 @@ import {
   dialogAfterRead,
   dialogDrawn,
   dialogToolFor,
+  quietTurn,
   sameTerminalState,
+  TURN_QUIET_MS,
   terminalNeedsMessage,
   terminalWaitingText,
   type TerminalStateInput,
@@ -78,11 +80,35 @@ describe("deriveTerminalState", () => {
     expect(derive({ log: null, ptyBusy: true })).toEqual({ kind: "working" });
     expect(derive({ log: undefined, ptyBusy: false, exitCode: undefined })).toEqual({ kind: "idle" });
   });
+
+  it("shows a quiet turn with no end marker and no open tool as unknown, still working", () => {
+    const log = { turnDone: false, openTool: null, pendingTools: [] };
+    const state = derive({ log, quiet: true });
+    expect(state).toEqual({ kind: "working", unknown: true });
+    // Still working: autopilot and the hand-off keep waiting on turnDone.
+    expect(state.kind).toBe("working");
+    expect(log.turnDone).toBe(false);
+    // An unanswered tool, an ended turn or recent activity: as before.
+    expect(derive({ log: { ...log, pendingTools: [open("Bash")] }, quiet: true })).toEqual({ kind: "working" });
+    expect(derive({ log: { turnDone: false, openTool: open("Bash") }, quiet: true })).toEqual({ kind: "working" });
+    expect(derive({ log: { turnDone: true }, quiet: true })).toEqual({ kind: "idle" });
+    expect(derive({ log, quiet: false })).toEqual({ kind: "working" });
+  });
+
+  it("is quiet after a minute with no output and no new log record", () => {
+    expect(TURN_QUIET_MS).toBe(60_000);
+    expect(quietTurn({ outputAt: 1000, logAt: 2000, now: 2000 + TURN_QUIET_MS })).toBe(true);
+    // New output or a new record starts the minute again.
+    expect(quietTurn({ outputAt: 30_000, logAt: 2000, now: 2000 + TURN_QUIET_MS })).toBe(false);
+    expect(quietTurn({ outputAt: 1000, logAt: 30_000, now: 2000 + TURN_QUIET_MS })).toBe(false);
+    expect(quietTurn({ outputAt: undefined, logAt: 0, now: TURN_QUIET_MS - 1 })).toBe(false);
+  });
 });
 
 describe("terminal state text", () => {
   it("compares states by value", () => {
     expect(sameTerminalState({ kind: "working" }, { kind: "working" })).toBe(true);
+    expect(sameTerminalState({ kind: "working" }, { kind: "working", unknown: true })).toBe(false);
     expect(sameTerminalState({ kind: "exited", code: 1 }, { kind: "exited", code: 2 })).toBe(false);
     const a = { kind: "needs", needs: "permission", toolId: "a", toolTitle: "Bash" } as const;
     expect(sameTerminalState(a, { ...a })).toBe(true);

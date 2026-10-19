@@ -36,6 +36,11 @@ describe("headerStateOf", () => {
     );
   });
 
+  it("says to check the terminal when a working turn's state is unknown", () => {
+    const state = headerStateOf({ turnEnded: false, state: { kind: "working", unknown: true } });
+    expect(state).toEqual({ tone: "unknown", text: "State unknown · check the terminal", timed: false });
+  });
+
   it("counts up while working", () => {
     expect(formatElapsed(12)).toBe("12s");
     expect(formatElapsed(65)).toBe("1m 05s");

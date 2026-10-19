@@ -225,7 +225,7 @@ export function TerminalHeader({
       <div className="terminal-header-right">
         {viewSwitch}
         {right}
-        {onStop && state.tone === "working" && (
+        {onStop && (state.tone === "working" || state.tone === "unknown") && (
           <button
             type="button"
             className="secondary-button"
