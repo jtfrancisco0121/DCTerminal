@@ -321,7 +321,9 @@ pub fn role_session_start(
         )?;
     }
 
-    let mut live = client.into_live(&persisted_tab_id);
+    // The registry lock is taken while the agent is still guarded: a poisoned
+    // registry stops the agent instead of dropping a live session that has no Drop.
+    let (mut guard, mut live) = client.into_live_locked(&state, &persisted_tab_id)?;
     let mut injection_in_flight = false;
     if skip_startup {
         live.startup_injected = true;
@@ -332,14 +334,12 @@ pub fn role_session_start(
         injection_in_flight = true;
     }
 
-    {
-        let mut guard = state.lock().map_err(|e| e.to_string())?;
-        starting.finish(&mut guard);
-        if persisted_tab_id != start_key {
-            guard.finish_start(&persisted_tab_id);
-        }
-        guard.insert(live);
+    starting.finish(&mut guard);
+    if persisted_tab_id != start_key {
+        guard.finish_start(&persisted_tab_id);
     }
+    guard.insert(live);
+    drop(guard);
 
     {
         let mut forms = forms_store.lock().map_err(|e| e.to_string())?;
@@ -417,6 +417,20 @@ impl StartedAgent {
     fn into_live(mut self, tab_id: &str) -> LiveSession {
         let client = self.client.take().expect("agent already handed over");
         LiveSession::from_client(tab_id, &self.role_id, client)
+    }
+}
+
+impl StartedAgent {
+    /// Lock the registry, then hand the agent over. The lock comes first so a
+    /// poisoned registry returns an error while this guard still owns (and so
+    /// stops) the agent; once handed over there is no early return before the insert.
+    fn into_live_locked<'a>(
+        self,
+        state: &'a Mutex<SessionRegistry>,
+        tab_id: &str,
+    ) -> Result<(std::sync::MutexGuard<'a, SessionRegistry>, LiveSession), String> {
+        let guard = state.lock().map_err(|e| e.to_string())?;
+        Ok((guard, self.into_live(tab_id)))
     }
 }
 
@@ -658,5 +672,50 @@ mod tests {
         let exited = process.try_wait().unwrap().is_some();
         process.kill_tree(); // never leave the fake behind, even when red
         assert!(exited, "the failed start left the agent process running");
+    }
+
+    /// A poisoned registry must not leak the agent: the lock is taken before
+    /// the agent is handed over, so the error return still stops it.
+    #[test]
+    fn a_poisoned_registry_stops_the_agent_it_could_not_register() {
+        use super::StartedAgent;
+        use crate::acp::test_agent::FakeAgent;
+        use crate::commands::dev_session::SessionRegistry;
+        use crate::commands::session_flow_tests::{claude_scenario, connect};
+        use crate::provider::ProviderId;
+        use std::sync::{Arc, Mutex};
+        use std::time::{Duration, Instant};
+
+        // An agent that outlives its client's pipes: only a stop ends it.
+        let mut scenario = claude_scenario(serde_json::json!([]));
+        scenario["ignore_eof"] = serde_json::json!(true);
+        let Some(agent) = FakeAgent::new("poisoned_registry", &scenario)
+        else {
+            return;
+        };
+        let client = connect(&agent, ProviderId::Claude, "default");
+        let process = client.process_handle();
+        let started = StartedAgent::new("tab-1", "role_implementer", client);
+
+        let registry = Arc::new(Mutex::new(SessionRegistry::new()));
+        let poisoner = Arc::clone(&registry);
+        let _ = std::thread::spawn(move || {
+            let _held = poisoner.lock().unwrap();
+            panic!("poison the registry");
+        })
+        .join();
+        assert!(registry.is_poisoned());
+
+        let result = started.into_live_locked(&registry, "tab-1");
+        assert!(result.is_err(), "a poisoned registry cannot take the session");
+        drop(result);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while process.try_wait().unwrap().is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let exited = process.try_wait().unwrap().is_some();
+        process.kill_tree(); // never leave the fake behind, even when red
+        assert!(exited, "the unregistered agent was left running");
     }
 }
