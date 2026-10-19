@@ -4,6 +4,10 @@
 //! `StateStore` before `SettingsStore`, or drop one before taking the other.
 //! Usage updates on the chat turn thread lock State then Settings, so the
 //! reverse order anywhere else can deadlock.
+//!
+//! Review rule: no store lock is held across a process spawn or a directory
+//! walk. Copy what is needed out of the store, drop the guard, then do the
+//! slow work (and lock again only to write the result back).
 
 mod activity_store;
 mod chain_runs;

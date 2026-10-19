@@ -178,8 +178,10 @@ pub fn handle_run_event(app: &AppHandle, event: tauri::RunEvent) {
 /// App exit: SIGTERM every agent and terminal at once, wait for all of them
 /// together for at most [`STOP_GRACE`] (no registry lock held), then kill
 /// what is left. Claude gets the same chance to finish its session log as
-/// on Stop. Windows has no SIGTERM, so nothing waits there.
+/// on Stop. Windows has no SIGTERM, so nothing waits there. The login PATH
+/// refresh's shell is killed first; it holds nothing worth waiting for.
 fn shutdown_processes(app: &AppHandle) {
+    crate::shell_env::stop_login_path_refresh();
     let sessions = app.try_state::<Mutex<crate::commands::SessionRegistry>>();
     let terminals = app.try_state::<Mutex<crate::pty::PtyRegistry>>();
     let agents = sessions

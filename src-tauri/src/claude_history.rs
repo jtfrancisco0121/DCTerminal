@@ -45,15 +45,66 @@ pub fn list_claude_history(config_dir: &Path, folder: &str) -> Vec<ClaudeHistory
     if !projects.is_dir() {
         return Vec::new();
     }
-    let mut entries = Vec::new();
     let Ok(projects_read) = std::fs::read_dir(&projects) else {
         return Vec::new();
     };
-    for project in projects_read.flatten() {
-        if !project.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
-            continue;
+    let dirs = projects_read
+        .flatten()
+        .filter(|project| {
+            project
+                .file_type()
+                .map(|kind| kind.is_dir())
+                .unwrap_or(false)
+        })
+        .map(|project| project.path());
+    sessions_in(dirs, &wanted)
+}
+
+/// The quick first pass: only the project folders Claude Code names after
+/// `folder` (as given, and canonicalized), so the other projects are not
+/// read. The full [`list_claude_history`] can find more (a session filed
+/// under another name); every entry here is also in its result.
+pub fn list_claude_history_own_folder(config_dir: &Path, folder: &str) -> Vec<ClaudeHistoryEntry> {
+    let wanted = folder_key(folder);
+    if wanted.is_empty() {
+        return Vec::new();
+    }
+    let projects = projects_dir(config_dir);
+    let mut names = vec![claude_project_folder_name(&wanted)];
+    if let Some(canon) = canonicalize_existing(&wanted) {
+        let name = claude_project_folder_name(&canon);
+        if !names.contains(&name) {
+            names.push(name);
         }
-        let Ok(files) = std::fs::read_dir(project.path()) else {
+    }
+    let dirs = names
+        .into_iter()
+        .map(|name| projects.join(name))
+        .filter(|dir| dir.is_dir());
+    sessions_in(dirs, &wanted)
+}
+
+/// The project folder name Claude Code uses for `cwd`: every character other
+/// than an ASCII letter or digit becomes `-` (one per UTF-16 unit, as in its
+/// JavaScript). Very long paths are shortened by Claude Code with a hash;
+/// those are left to the full scan.
+pub fn claude_project_folder_name(cwd: &str) -> String {
+    let mut name = String::new();
+    for c in folder_key(cwd).chars() {
+        if c.is_ascii_alphanumeric() {
+            name.push(c);
+        } else {
+            name.extend(std::iter::repeat_n('-', c.len_utf16()));
+        }
+    }
+    name
+}
+
+/// The newest [`MAX_ENTRIES`] matching sessions in `dirs` (not recursive).
+fn sessions_in(dirs: impl Iterator<Item = PathBuf>, wanted: &str) -> Vec<ClaudeHistoryEntry> {
+    let mut entries = Vec::new();
+    for dir in dirs {
+        let Ok(files) = std::fs::read_dir(&dir) else {
             continue;
         };
         for file in files.flatten() {
@@ -61,7 +112,7 @@ pub fn list_claude_history(config_dir: &Path, folder: &str) -> Vec<ClaudeHistory
             if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
                 continue;
             }
-            if let Some(entry) = read_session(&path, &wanted) {
+            if let Some(entry) = read_session(&path, wanted) {
                 entries.push(entry);
             }
         }
@@ -380,6 +431,75 @@ mod tests {
         let after = std::fs::metadata(&projects).unwrap().modified().unwrap();
         assert_eq!(before, after);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_folder_names_follow_claude_codes_encoding() {
+        assert_eq!(
+            claude_project_folder_name("/Users/me/my.app_x"),
+            "-Users-me-my-app-x"
+        );
+        assert_eq!(
+            claude_project_folder_name("/Users/me/My App/"),
+            "-Users-me-My-App"
+        );
+    }
+
+    #[test]
+    fn the_folders_own_sessions_come_back_without_reading_the_other_projects() {
+        let root = crate::test_support::TempDir::new("claude_hist_own");
+        let folder = root.join("app");
+        std::fs::create_dir_all(&folder).unwrap();
+        let folder_text = folder.display().to_string();
+        let config = root.join("cfg");
+        let projects = projects_dir(&config);
+        let session = |id: &str, title: &str| {
+            serde_json::json!({
+                "type": "user",
+                "sessionId": id,
+                "cwd": folder_text,
+                "message": { "content": title }
+            })
+            .to_string()
+        };
+        let own = projects.join(claude_project_folder_name(&folder_text));
+        write_session(&own, "own-1.jsonl", &session("own-1", "first own"));
+        write_session(&own, "own-2.jsonl", &session("own-2", "second own"));
+        // Many other projects. One holds a session for the same folder under a
+        // name that is not the folder's own (a renamed or aliased project):
+        // only the full scan may find it, so seeing it here would mean the
+        // other folders were read.
+        for index in 0..50 {
+            let other = projects.join(format!("-other-project-{index}"));
+            write_session(
+                &other,
+                "x.jsonl",
+                &serde_json::json!({
+                    "type": "user",
+                    "cwd": format!("/other/{index}"),
+                    "message": { "content": "elsewhere" }
+                })
+                .to_string(),
+            );
+        }
+        write_session(
+            &projects.join("-renamed-project"),
+            "stray.jsonl",
+            &session("stray", "found only by the full scan"),
+        );
+
+        let quick = list_claude_history_own_folder(&config, &folder_text);
+        let mut quick_ids: Vec<_> = quick.iter().map(|entry| entry.id.as_str()).collect();
+        quick_ids.sort();
+        assert_eq!(quick_ids, ["own-1", "own-2"]);
+
+        let full = list_claude_history(&config, &folder_text);
+        let mut full_ids: Vec<_> = full.iter().map(|entry| entry.id.as_str()).collect();
+        full_ids.sort();
+        assert_eq!(full_ids, ["own-1", "own-2", "stray"]);
+        for entry in &quick {
+            assert!(full.contains(entry), "{entry:?}");
+        }
     }
 
     #[test]

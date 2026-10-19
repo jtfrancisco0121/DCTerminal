@@ -36,52 +36,71 @@ pub fn agent_missing_message() -> String {
         .to_string()
 }
 
+/// How long `agent --version` may take before detection gives up on it.
+const VERSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 pub fn detect_agent() -> CliDetectResult {
-    match resolve_agent_executable() {
-        Some(path) => {
-            let version = read_agent_version(&path);
-            CliDetectResult {
-                found: true,
-                path: Some(path.display().to_string()),
-                version,
-                error: None,
-            }
-        }
-        None => CliDetectResult {
+    detect_agent_at(resolve_agent_executable(), VERSION_TIMEOUT)
+}
+
+/// Detection for an already resolved `agent`. A binary that does not answer
+/// `--version` within `timeout` is reported as not found, with the reason.
+pub(crate) fn detect_agent_at(
+    agent: Option<PathBuf>,
+    timeout: std::time::Duration,
+) -> CliDetectResult {
+    let Some(path) = agent else {
+        return CliDetectResult {
             found: false,
             path: None,
             version: None,
             error: Some(agent_missing_message()),
+        };
+    };
+    match read_agent_version(&path, timeout) {
+        Ok(version) => CliDetectResult {
+            found: true,
+            path: Some(path.display().to_string()),
+            version,
+            error: None,
+        },
+        Err(reason) => CliDetectResult {
+            found: false,
+            path: Some(path.display().to_string()),
+            version: None,
+            error: Some(reason),
         },
     }
 }
 
+/// Runs on a blocking thread: a hung `agent` must not stall the window.
 #[tauri::command]
-pub fn detect_cli() -> CliDetectResult {
-    detect_agent()
+pub async fn detect_cli() -> Result<CliDetectResult, String> {
+    tauri::async_runtime::spawn_blocking(detect_agent)
+        .await
+        .map_err(|err| err.to_string())
 }
 
-fn read_agent_version(agent: &Path) -> Option<String> {
-    let output = Command::new(agent).arg("--version").output();
-    match output {
-        Ok(out) if out.status.success() => {
-            let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if text.is_empty() {
-                None
-            } else {
-                Some(text)
-            }
+/// `Ok(None)` when the CLI ran but printed nothing (or could not be started,
+/// as before); `Err` only when it did not answer within `timeout`.
+fn read_agent_version(
+    agent: &Path,
+    timeout: std::time::Duration,
+) -> Result<Option<String>, String> {
+    let (stdout, stderr, success) = match run_cli_within(agent, &["--version"], &[], timeout) {
+        Ok(output) => output,
+        Err(CliRunError::TimedOut(_)) => {
+            return Err(format!(
+                "{} did not answer `--version` within {} s. Check the Cursor CLI install, then use Detect again.",
+                agent.display(),
+                timeout.as_secs_f32()
+            ))
         }
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            if stderr.is_empty() {
-                None
-            } else {
-                Some(stderr)
-            }
-        }
-        Err(_) => None,
-    }
+        Err(CliRunError::Failed(_)) => return Ok(None),
+    };
+    let text = if success { stdout } else { stderr };
+    let text = text.trim();
+    Ok((!text.is_empty()).then(|| text.to_string()))
 }
 
 pub(crate) fn find_on_path(binary: &str) -> Option<PathBuf> {
@@ -281,6 +300,23 @@ fn run_agent(agent: &Path, args: &[&str]) -> Result<(String, String, bool), Stri
     run_cli(agent, args, &[])
 }
 
+/// Why [`run_cli_within`] returned no output.
+#[derive(Debug)]
+pub(crate) enum CliRunError {
+    /// Killed after the timeout.
+    TimedOut(String),
+    /// Could not be started or waited on.
+    Failed(String),
+}
+
+impl CliRunError {
+    fn into_message(self) -> String {
+        match self {
+            CliRunError::TimedOut(message) | CliRunError::Failed(message) => message,
+        }
+    }
+}
+
 /// Run `<program> <args>` with extra env, no window, stdin closed, and a
 /// timeout. Returns stdout, stderr, success.
 pub(crate) fn run_cli(
@@ -288,6 +324,16 @@ pub(crate) fn run_cli(
     args: &[&str],
     env: &[(String, String)],
 ) -> Result<(String, String, bool), String> {
+    run_cli_within(program, args, env, STATUS_TIMEOUT).map_err(CliRunError::into_message)
+}
+
+/// [`run_cli`] with its own timeout.
+pub(crate) fn run_cli_within(
+    program: &Path,
+    args: &[&str],
+    env: &[(String, String)],
+    timeout: std::time::Duration,
+) -> Result<(String, String, bool), CliRunError> {
     use std::io::Read;
     use std::process::Stdio;
     let mut command = Command::new(program);
@@ -307,17 +353,21 @@ pub(crate) fn run_cli(
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(CREATE_NO_WINDOW);
     }
-    let mut child = command
-        .spawn()
-        .map_err(|err| {
-            format!(
-                "could not run {} {}: {err}",
-                program.display(),
-                args.join(" ")
-            )
-        })?;
-    let mut stdout = child.stdout.take().ok_or("no stdout")?;
-    let mut stderr = child.stderr.take().ok_or("no stderr")?;
+    let mut child = command.spawn().map_err(|err| {
+        CliRunError::Failed(format!(
+            "could not run {} {}: {err}",
+            program.display(),
+            args.join(" ")
+        ))
+    })?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| CliRunError::Failed("no stdout".into()))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| CliRunError::Failed("no stderr".into()))?;
     let out_thread = std::thread::spawn(move || {
         let mut text = String::new();
         let _ = stdout.read_to_string(&mut text);
@@ -328,17 +378,21 @@ pub(crate) fn run_cli(
         let _ = stderr.read_to_string(&mut text);
         text
     });
-    let deadline = std::time::Instant::now() + STATUS_TIMEOUT;
+    let deadline = std::time::Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if std::time::Instant::now() >= deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!("{} {} timed out", program.display(), args.join(" ")));
+                return Err(CliRunError::TimedOut(format!(
+                    "{} {} timed out",
+                    program.display(),
+                    args.join(" ")
+                )));
             }
             Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
-            Err(err) => return Err(err.to_string()),
+            Err(err) => return Err(CliRunError::Failed(err.to_string())),
         }
     };
     Ok((
@@ -466,6 +520,28 @@ mod tests {
                 "expected cursor-agent install candidate"
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detect_cli_returns_when_agent_hangs() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = crate::test_support::TempDir::new("cli_detect_hang");
+        let agent = dir.join("agent");
+        std::fs::write(&agent, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let timeout = std::time::Duration::from_millis(300);
+        let started = std::time::Instant::now();
+        let result = detect_agent_at(Some(agent.clone()), timeout);
+        assert!(
+            started.elapsed() < timeout + std::time::Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(!result.found);
+        assert_eq!(result.version, None);
+        let error = result.error.expect("a hung agent explains itself");
+        assert!(error.contains("did not answer"), "{error}");
     }
 
     #[test]

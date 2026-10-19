@@ -468,8 +468,8 @@ fn a_set_aside_file_survives_the_startup_sweep() {
     write_aged(&dir.join("projects.json"), b"{damaged", 40 * DAY);
     SettingsStore::open(dir.path()).unwrap();
     ProjectsStore::open(dir.path()).unwrap();
-    let mut scratch = ScratchStore::open(dir.path()).unwrap();
-    crate::commands::storage::run_sweep(dir.path(), &mut scratch, &[]);
+    let scratch = std::sync::Mutex::new(ScratchStore::open(dir.path()).unwrap());
+    crate::commands::storage::run_sweep(dir.path(), &scratch, &[]).unwrap();
     assert_eq!(set_aside(&dir, "settings.json", 7), newer);
     assert!(
         names_in(dir.path())
@@ -499,8 +499,8 @@ fn restored_settings_survive_the_startup_sweep_and_a_restart() {
     write_aged(&bak, &body, 40 * DAY);
     std::fs::remove_file(dir.join("settings.json")).unwrap();
     assert_eq!(SettingsStore::open(dir.path()).unwrap().ui().theme, "nord");
-    let mut scratch = ScratchStore::open(dir.path()).unwrap();
-    crate::commands::storage::run_sweep(dir.path(), &mut scratch, &[]);
+    let scratch = std::sync::Mutex::new(ScratchStore::open(dir.path()).unwrap());
+    crate::commands::storage::run_sweep(dir.path(), &scratch, &[]).unwrap();
     assert_eq!(SettingsStore::open(dir.path()).unwrap().ui().theme, "nord");
 }
 
