@@ -122,6 +122,9 @@ describe("TerminalView context menu dismiss button", () => {
     );
     fireEvent.contextMenu(container.querySelector(".terminal-view")!);
     const items = screen.getAllByRole("menuitem");
+    // The initial focus move into the menu must not close it.
+    expect(screen.getByRole("menu")).toBeTruthy();
+    expect(document.activeElement?.getAttribute("role")).toBe("menuitem");
     act(() => items[items.length - 1].focus());
     expect(screen.getByRole("menu")).toBeTruthy();
     act(() => screen.getByRole("button", { name: "Close menu" }).focus());
