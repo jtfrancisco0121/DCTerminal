@@ -146,7 +146,7 @@ pub fn run() {
                 eprintln!("DCTerminal: {warning}");
             }
             let data_dir = resolved.path;
-            let mut scratch_store = ScratchStore::open(&data_dir)?;
+            let scratch_store = ScratchStore::open(&data_dir)?;
             let projects_store = ProjectsStore::open(&data_dir)?;
             let settings_store = SettingsStore::open(&data_dir)?;
             let transcript_store = TranscriptStore::open(&data_dir)?;
@@ -157,7 +157,6 @@ pub fn run() {
             let github_cache = store::github_store::GithubCache::open(&data_dir)?;
             state_store.new_tab_provider = settings_store.default_provider();
             let known_tabs = commands::storage::known_tab_ids(&state_store);
-            commands::storage::run_sweep(&data_dir, &mut scratch_store, &known_tabs);
             app.manage(ChangesRoot::open(&data_dir, &known_tabs));
             app.manage(attachments::AttachmentStore::open(&data_dir, &known_tabs));
             app.manage(Mutex::new(ActivityStore::open(&data_dir, &known_tabs)));
@@ -181,6 +180,9 @@ pub fn run() {
             app.manage(claude_session_log::reader::SessionLogReaders::new());
             windows::install_macos_menu(app)?;
             windows::restore_saved_windows(app.handle());
+            // After the stores are managed, on its own thread: the window
+            // does not wait for the sweep's directory walk.
+            commands::storage::spawn_startup_sweep(app.handle(), data_dir.clone(), known_tabs);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

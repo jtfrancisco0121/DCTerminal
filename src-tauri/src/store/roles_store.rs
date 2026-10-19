@@ -285,8 +285,8 @@ mod open_tests {
         crate::test_support::write_aged(&bak, &body, 40 * crate::test_support::DAY);
         std::fs::write(dir.join("roles.json"), b"{oops").unwrap();
         assert!(has_role(&RolesStore::open(dir.path()).unwrap(), "role_custom_1"));
-        let mut scratch = crate::store::ScratchStore::open(dir.path()).unwrap();
-        crate::commands::storage::run_sweep(dir.path(), &mut scratch, &[]);
+        let scratch = std::sync::Mutex::new(crate::store::ScratchStore::open(dir.path()).unwrap());
+        crate::commands::storage::run_sweep(dir.path(), &scratch, &[]).unwrap();
         let reopened = RolesStore::open(dir.path()).unwrap();
         assert!(has_role(&reopened, "role_custom_1"), "{:?}", names_in(dir.path()));
     }
