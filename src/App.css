@@ -6518,12 +6518,7 @@ button.chain-label {
 .run-lanes-now-label {
   position: absolute;
   top: 2px;
-  transform: translateX(-50%);
   white-space: nowrap;
-}
-
-.run-lanes-tick:first-child {
-  transform: none;
 }
 
 /* Ends at the now line: a running chain's now is the chart's right edge, so a
