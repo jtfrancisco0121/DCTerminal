@@ -25,7 +25,8 @@
 //! - `DCT_FAKE_CLAUDE_SCENARIO` (required): the scenario file's path.
 //!
 //! The encoded cwd swaps every character other than an ASCII letter or digit
-//! for `-` (`/private/tmp/a.b` → `-private-tmp-a-b`), as Claude Code does.
+//! for `-` (`/private/tmp/a.b` → `-private-tmp-a-b`), as Claude Code does:
+//! one `-` per UTF-16 unit, so an emoji gives two (`x😀y` → `x--y`).
 //! The app's reader finds a log by `projects/*/<sessionId>.jsonl`, so it has
 //! no encoding of its own to share.
 //!
@@ -271,13 +272,18 @@ fn valid_session_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && id.chars().all(|ch| ch.is_ascii_hexdigit() || ch == '-')
 }
 
-/// The project folder name for `cwd`: non-alphanumerics become `-`.
+/// The project folder name for `cwd`: non-alphanumerics become `-`, one per
+/// UTF-16 unit (Claude Code's JS `replace(/[^a-zA-Z0-9]/g, "-")`).
 fn encode_cwd(cwd: &Path) -> String {
-    cwd.display()
-        .to_string()
-        .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
-        .collect()
+    let mut out = String::new();
+    for ch in cwd.display().to_string().chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+        } else {
+            out.extend(std::iter::repeat_n('-', ch.len_utf16()));
+        }
+    }
+    out
 }
 
 fn log_path(config: &Path, cwd: &Path, args: &Args) -> Result<(String, PathBuf), String> {
@@ -582,6 +588,16 @@ impl Fake {
                 self.tool_result(&id, REJECTED, true);
                 self.interrupted("[Request interrupted by user for tool use]");
                 return Ended::Interrupted;
+            }
+            // Approving a plan leaves plan mode: option 1 auto-accepts edits,
+            // option 2 asks for each. Not checked against a live capture.
+            if name == "ExitPlanMode" {
+                self.mode = if answer == 1 {
+                    "acceptEdits"
+                } else {
+                    "default"
+                }
+                .to_string();
             }
         }
         let result = step.get("result").and_then(Value::as_str).unwrap_or("ok");

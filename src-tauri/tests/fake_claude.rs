@@ -103,6 +103,11 @@ impl FakeHome {
 
     /// Spawn `fake_claude <args>` with this scenario.
     fn run(&self, scenario: &Value, args: &[&str]) -> FakeClaude {
+        self.run_in(self.cwd.path(), scenario, args)
+    }
+
+    /// `run`, with `cwd` (a folder under this home's cwd) as the working folder.
+    fn run_in(&self, cwd: &Path, scenario: &Value, args: &[&str]) -> FakeClaude {
         let file = self.cwd.join(format!("scenario-{}.json", now_nanos()));
         std::fs::write(&file, serde_json::to_vec(scenario).unwrap()).expect("write scenario");
         let mut session = PtySession::spawn(SpawnSpec {
@@ -118,7 +123,7 @@ impl FakeHome {
                     file.display().to_string(),
                 ),
             ],
-            cwd: self.cwd.path().to_path_buf(),
+            cwd: cwd.to_path_buf(),
             cols: 120,
             rows: 40,
         })
@@ -389,6 +394,27 @@ mod session_log {
         assert_eq!(reply["parentUuid"], thinking["uuid"]);
     }
 
+    /// Claude Code encodes per UTF-16 unit (JS `replace(/[^a-zA-Z0-9]/g, "-")`),
+    /// so an emoji (two units) becomes two dashes.
+    #[test]
+    fn the_project_folder_has_a_dash_per_utf16_unit() {
+        let home = FakeHome::new("fc_encode");
+        let cwd = home.cwd.join("x\u{1F600}y");
+        std::fs::create_dir_all(&cwd).expect("create emoji cwd");
+        let scenario = json!({ "turns": [ { "steps": [ { "reply": "Done." } ] }, { "exit": 0 } ] });
+        let mut fake = home.run_in(&cwd, &scenario, &["--session-id", SID, "go"]);
+        assert_eq!(fake.wait_exit(), Some(0), "screen:\n{}", fake.screen());
+        let path = fake.log_path(SID).unwrap();
+        let folder = path
+            .parent()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        assert!(folder.ends_with("-x--y"), "{folder}");
+    }
+
     #[test]
     fn esc_and_a_scripted_interrupt_end_the_turn_as_interrupted() {
         let home = FakeHome::new("fc_interrupt");
@@ -429,7 +455,13 @@ mod session_log {
             { "steps": [
                 { "tool": "ExitPlanMode", "input": { "plan": "# Plan\n1. Do it" }, "permission": true },
                 { "reply": "never" }
-            ] }
+            ] },
+            { "steps": [
+                { "text": "Planning again." },
+                { "tool": "ExitPlanMode", "input": { "plan": "# Plan\n1. Do it" }, "permission": true },
+                { "reply": "Approved." }
+            ] },
+            { "steps": [ { "reply": "Next." } ] }
         ]});
         let mut fake = home.run(
             &scenario,
@@ -453,6 +485,33 @@ mod session_log {
         assert!(log.open_tool.is_none());
         assert_eq!(log.tool_calls[0].status, ToolCallStatus::Failed);
         assert_eq!(log.plan.as_deref(), Some("# Plan\n1. Do it"));
+
+        // Kept planning: still plan mode. Approving leaves it.
+        fake.write(b"again\r");
+        assert!(
+            fake.wait_screen("Planning again."),
+            "screen:\n{}",
+            fake.screen()
+        );
+        let log = fake.wait_log(SID, |log| log.open_tool.is_some());
+        assert_eq!(log.permission_mode.as_deref(), Some("plan"));
+        fake.write(b"1");
+        fake.wait_log(SID, |log| {
+            log.last_reply.ends_with("Approved.") && log.turn_done
+        });
+        fake.write(b"next\r");
+        let log = fake.wait_log(SID, |log| log.last_reply == "Next." && log.turn_done);
+        assert_eq!(log.permission_mode.as_deref(), Some("acceptEdits"));
+        let records = log_records(&fake.log_path(SID).unwrap(), false);
+        let modes: Vec<&Value> = records
+            .iter()
+            .filter(|r| r["type"] == "user" && r["message"]["content"].is_string())
+            .map(|r| &r["permissionMode"])
+            .collect();
+        assert_eq!(
+            modes,
+            vec![&json!("plan"), &json!("plan"), &json!("acceptEdits")]
+        );
     }
 
     #[test]
