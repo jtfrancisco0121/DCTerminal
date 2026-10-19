@@ -22,7 +22,8 @@ type Props = {
  * Right-click menu: kept inside the window, first item focused, arrow keys
  * move, Home and End jump. Escape is handled by the owner. The root is
  * `data-own-escape` so the app-wide turn cancel stands down; the owner's
- * full-screen dismiss button carries the same mark.
+ * full-screen dismiss button carries the same mark. There is no Tab trap: the
+ * owner closes the menu when focus leaves the menu and that button.
  */
 export function TerminalContextMenu({ x, y, items }: Props) {
   const ref = useRef<HTMLDivElement>(null);
