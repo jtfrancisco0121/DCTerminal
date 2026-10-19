@@ -105,4 +105,13 @@ describe("session view cards", () => {
     }
     expect(cards).toEqual(emptySessionCards());
   });
+  it("ignores updates whose raw JSON is not an object", () => {
+    // The Rust mapper forwards `params` verbatim, so `"params": null` arrives
+    // as the string "null" and must not throw inside the cards reducer.
+    for (const rawJson of ["null", "42", '"text"', "[1, 2]"]) {
+      expect(reduceSessionCards(emptySessionCards(), { kind: "cursor/task", rawJson })).toEqual(
+        emptySessionCards(),
+      );
+    }
+  });
 });
