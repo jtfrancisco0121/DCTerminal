@@ -42,11 +42,22 @@ fn locked_target(
 }
 
 /// The summary of the tab's session log. Reads only what was appended since
-/// the last read (see `claude_session_log::reader`). async: a tab's first
-/// read walks the config folder and parses up to 8 MB, so it runs off the
-/// main thread.
-#[tauri::command(async)]
-pub fn terminal_session_log(
+/// the last read (see `claude_session_log::reader`). Async with the work on
+/// a blocking thread: a tab's first read walks the config folder and parses
+/// up to 8 MB.
+#[tauri::command]
+pub async fn terminal_session_log(
+    app: AppHandle,
+    tab_id: String,
+) -> Result<Option<TerminalSessionLog>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        session_log_blocking(tab_id, app.state(), app.state(), app.state())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn session_log_blocking(
     tab_id: String,
     store: State<Mutex<StateStore>>,
     registry: State<Mutex<PtyRegistry>>,
@@ -65,9 +76,21 @@ pub fn terminal_session_log(
 
 /// The tab's chat entries changed after revision `since` (all of them, with
 /// `reset`, when `since` is missing or stale). `None` until the log exists.
-/// async, like `terminal_session_log`.
-#[tauri::command(async)]
-pub fn terminal_chat_entries(
+/// On a blocking thread, like `terminal_session_log`.
+#[tauri::command]
+pub async fn terminal_chat_entries(
+    app: AppHandle,
+    tab_id: String,
+    since: Option<u64>,
+) -> Result<Option<ChatEntriesUpdate>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        chat_entries_blocking(tab_id, since, app.state(), app.state(), app.state())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn chat_entries_blocking(
     tab_id: String,
     since: Option<u64>,
     store: State<Mutex<StateStore>>,
@@ -141,16 +164,20 @@ mod tests {
 
     // Review: after a restart each terminal tab's first read walks the
     // config folder's projects and parses up to 8 MB of log. As plain
-    // commands those reads ran on the main thread, one tab after another.
+    // commands those reads ran on the main thread, one tab after another;
+    // as sync `(async)` commands they would hold async runtime workers.
     #[test]
-    fn session_log_reads_are_async_commands_off_the_main_thread() {
+    fn session_log_reads_run_on_blocking_threads_off_the_main_thread() {
         let source = include_str!("session_log.rs");
         for name in ["terminal_session_log", "terminal_chat_entries"] {
-            let at = source.find(&format!("pub fn {name}(")).expect("command");
-            let attr = source[..at].rfind("#[tauri::command").expect("attribute");
+            let at = source
+                .find(&format!("pub async fn {name}("))
+                .unwrap_or_else(|| panic!("{name} is not an async command"));
+            let body = &source[at..];
+            let end = body.find("\n}\n").expect("end of command");
             assert!(
-                source[attr..at].starts_with("#[tauri::command(async)]"),
-                "{name} runs on the main thread"
+                body[..end].contains("spawn_blocking("),
+                "{name} reads the log on an async runtime worker"
             );
         }
     }
