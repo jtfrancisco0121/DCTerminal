@@ -9,7 +9,7 @@ vi.mock("./bridge", () => ({
 }));
 vi.mock("./terminal/park", () => ({ setTerminalTheme: vi.fn() }));
 
-import { setUiSettings } from "./bridge";
+import { getUiSettings, setUiSettings, type UiSettings } from "./bridge";
 import { setTerminalTheme } from "./terminal/park";
 import { useUiSettings } from "./useUiSettings";
 
@@ -71,6 +71,48 @@ describe("useUiSettings (U7/U8)", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it("waits for the first load before saving, so a change does not save defaults over stored settings", async () => {
+    let finishLoad: (value: UiSettings) => void = () => {};
+    vi.mocked(getUiSettings).mockImplementationOnce(() => new Promise((resolve) => (finishLoad = resolve)));
+    const { result } = renderHook(() => useUiSettings());
+    act(() => result.current.markTipSeen("palette"));
+    // Applied at once, but nothing is saved before the stored settings arrive.
+    expect(result.current.ui.tipsSeen).toEqual(["palette"]);
+    expect(setUiSettings).not.toHaveBeenCalled();
+    await act(async () =>
+      finishLoad({ theme: "github-light", shortcutBar: true, tipsSeen: ["welcome"], padHeight: 120, padHidden: false }),
+    );
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+    // One save: the stored settings with the change on top.
+    expect(setUiSettings).toHaveBeenCalledTimes(1);
+    expect(setUiSettings).toHaveBeenCalledWith({
+      theme: "github-light",
+      shortcutBar: true,
+      tipsSeen: ["welcome", "palette"],
+      padHeight: 120,
+      padHidden: false,
+    });
+    expect(result.current.ui.tipsSeen).toEqual(["welcome", "palette"]);
+  });
+
+  it("updateChecked made before the first load resolves once the merged settings are saved", async () => {
+    let finishLoad: (value: UiSettings) => void = () => {};
+    vi.mocked(getUiSettings).mockImplementationOnce(() => new Promise((resolve) => (finishLoad = resolve)));
+    const { result } = renderHook(() => useUiSettings());
+    let saved: Promise<void> = Promise.resolve();
+    act(() => {
+      saved = result.current.updateChecked({ shortcutBar: true });
+    });
+    expect(setUiSettings).not.toHaveBeenCalled();
+    await act(async () =>
+      finishLoad({ theme: "github-light", shortcutBar: false, tipsSeen: ["welcome"], padHeight: 0, padHidden: false }),
+    );
+    await act(async () => saved);
+    expect(setUiSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ shortcutBar: true, tipsSeen: ["welcome"], theme: "github-light" }),
+    );
   });
 
   it("updateChecked rejects when the save fails", async () => {
