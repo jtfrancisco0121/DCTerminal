@@ -251,9 +251,14 @@ impl SessionRegistry {
         }
     }
 
-    /// Agent sessions whose process is still running (what a quit would stop).
+    /// Agents with a turn running (what a quit would cut short), counted as
+    /// the window-close confirm counts them (`src/liveWork.ts`). An idle
+    /// agent is not counted: it holds nothing a restart would not restore.
     pub fn live_count(&self) -> usize {
-        self.sessions.values().filter(|session| !session.is_dead()).count()
+        self.sessions
+            .values()
+            .filter(|session| session.prompt_in_flight && !session.is_dead())
+            .count()
     }
 
     /// App exit, step 1: SIGTERM every live agent and return their
