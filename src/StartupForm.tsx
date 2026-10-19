@@ -1449,12 +1449,15 @@ export function StartupForm({
       setDialogOwner(tabId, next.owner);
       // Mid-turn, the next call's dialog may be half drawn already.
       if (next.clear) dialogDetector.clear(tabId, { keepPartial: !!log && !log.turnDone });
-      autopilotLogRef.current?.(tabId, log);
       // New records restart the quiet minute before a turn shows as unknown.
       if (watched) watched.records = logRecordsSeen(watched.records, log, Date.now());
-      if (prev !== undefined && sameSessionLog(prev, log)) return;
-      sessionLogsRef.current = { ...sessionLogsRef.current, [tabId]: log };
-      setSessionLogs(sessionLogsRef.current);
+      if (prev === undefined || !sameSessionLog(prev, log)) {
+        sessionLogsRef.current = { ...sessionLogsRef.current, [tabId]: log };
+        setSessionLogs(sessionLogsRef.current);
+      }
+      // After the stored log is this one: autopilot compares a tab's stored
+      // log with the turn it decides on, and a stale one reads as a newer prompt.
+      autopilotLogRef.current?.(tabId, log);
     },
     [isWatchingTab, notifyAgent, setDialogOwner],
   );
@@ -2237,6 +2240,8 @@ export function StartupForm({
       handoffPlan?: string | null;
       /** Autopilot: keep the current tab on screen and throw errors instead of showing them. */
       quiet?: boolean;
+      /** Launch as this provider (a hand-off keeps its source tab's). */
+      provider?: ProviderId | null;
     }) => {
       const quiet = !!options?.quiet;
       if (startLockRef.current) {
@@ -2261,6 +2266,7 @@ export function StartupForm({
           values: form,
           tabId: preferred,
           handoffPlan: options?.handoffPlan ?? null,
+          provider: options?.provider ?? null,
           ...measuredTerminalSize(),
           onOutput: live.channel,
         });
@@ -4519,18 +4525,19 @@ export function StartupForm({
         if (surface === "terminal") {
           const terminal = terminalHandoffInput(mapped);
           stashActiveTab();
+          // Launched as the source's provider, not switched after the CLI started.
           const tabId = await startRoleTerminal({
             roleId: handoffTarget,
             values: { ...terminal.values, cwd: handoffSource.cwd },
             tabId: null,
             handoffPlan: terminal.handoffPlan,
+            provider: sourceProvider,
           });
           if (!tabId) {
             setHandoffError("Terminal did not start.");
             return;
           }
           opened = true;
-          await setTabProvider(tabId, sourceProvider);
           const bound = await attach(tabId);
           if (mapped.usesScratchPad) {
             scratch.setContent(tabId, mapped.inlinePlan);

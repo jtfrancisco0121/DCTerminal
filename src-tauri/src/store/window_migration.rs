@@ -98,6 +98,7 @@ mod tests {
             migrations: Migrations {
                 claude_first: true,
                 windows: false,
+                run_status: true,
             },
             windows: Vec::new(),
             archived_windows: Vec::new(),

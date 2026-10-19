@@ -634,6 +634,10 @@ pub struct RoleTerminalInput {
     /// Window this terminal belongs to. Omitted means the original window.
     #[serde(default)]
     pub window_id: Option<String>,
+    /// Provider to launch as (a hand-off's new tab keeps its source's).
+    /// Omitted: the tab's own, or the window's new-tab provider.
+    #[serde(default)]
+    pub provider: Option<ProviderId>,
 }
 
 /// Async with the work on a blocking thread, like [`shell_terminal_start`].
@@ -722,7 +726,7 @@ fn role_terminal_start_blocking(
         provider_for_window(
             &store,
             settings.providers(),
-            store.provider_for_start(input.tab_id.as_deref()),
+            store.provider_for_start_as(input.tab_id.as_deref(), input.provider),
             input.tab_id.as_deref(),
         )
     };

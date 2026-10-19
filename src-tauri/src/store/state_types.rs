@@ -109,6 +109,9 @@ pub struct Migrations {
     /// Tabs and layout moved onto per-window records.
     #[serde(default)]
     pub windows: bool,
+    /// Pipeline runs given a `status` and `stop_reason` from their older fields.
+    #[serde(default)]
+    pub run_status: bool,
 }
 
 /// Linked multi-tab pipeline (eagle-eye overview + stage worker tabs).
@@ -167,6 +170,75 @@ pub struct PipelineRun {
     /// one is never made twice, by you or by autopilot. Capped.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub claims: Vec<HandoffClaim>,
+    /// Where the run stands. Missing on files saved before it existed:
+    /// `migrate_run_status` fills it from the fields above on load.
+    #[serde(default, deserialize_with = "lenient_status")]
+    pub status: RunStatus,
+    /// Why the run is `waiting` (or `stopped`, when you turned autopilot off).
+    #[serde(default, deserialize_with = "lenient_stop_reason", skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<StopReason>,
+}
+
+/// Where a run stands (Track H2).
+///
+/// - `running`: autopilot is on and acts on each finished turn.
+/// - `waiting`: autopilot stopped for you (`stop_reason` says why). Finished
+///   turns are left alone until you hand on, send back, approve, or turn
+///   autopilot on again.
+/// - `stopped`: autopilot is off; every hand-off is yours.
+/// - `complete`: the run is done. Final: later turns are ignored.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RunStatus {
+    Running,
+    Waiting,
+    Complete,
+    #[default]
+    Stopped,
+}
+
+/// Why a run stopped. Every stop carries one (plan "Stop reason codes").
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StopReason {
+    /// A checkpoint stage you have not passed yet.
+    Checkpoint,
+    /// A check failed after its retries.
+    GateFailed,
+    /// An `auto` check found nothing to run.
+    NoCheckFound,
+    /// The reply still lacked its result (v1: HANDOFF sections) after one re-ask.
+    NoResult,
+    /// No verdict could be read from a reviewer's reply.
+    NoVerdict,
+    /// The reviewer asked for changes, or approved with findings at the threshold.
+    BlockingFindings,
+    /// A loop-back reached its round cap.
+    RoundCap,
+    /// Claude usage is at the pause threshold.
+    UsageLimit,
+    /// A stage stopped producing output.
+    Stalled,
+    /// A turn finished while the app was closed.
+    AppRestarted,
+    /// Autopilot decided, but could not carry the decision out.
+    CarryOutFailed,
+    /// You took over the stage.
+    TakenOver,
+    /// You turned autopilot off.
+    PausedByYou,
+}
+
+/// A status written by a newer build reads as `stopped`, never a failed load.
+fn lenient_status<'de, D: serde::Deserializer<'de>>(de: D) -> Result<RunStatus, D::Error> {
+    let value = serde_json::Value::deserialize(de)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
+}
+
+/// A reason code written by a newer build reads as none, never a failed load.
+fn lenient_stop_reason<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Option<StopReason>, D::Error> {
+    let value = serde_json::Value::deserialize(de)?;
+    Ok(serde_json::from_value(value).ok())
 }
 
 /// Most hand-off claims a run keeps; older ones are dropped first.
@@ -337,6 +409,130 @@ pub struct RunAutopilot {
 
 /// Most decided turns autopilot remembers per run.
 pub const MAX_DECIDED_TURNS: usize = 100;
+
+impl PipelineRun {
+    /// Autopilot stops for you: `waiting`, with the reason code and the
+    /// sentence the overview shows. A complete run stays complete.
+    pub fn set_waiting(&mut self, reason: StopReason, why: impl Into<String>) {
+        if self.status == RunStatus::Complete {
+            return;
+        }
+        self.autopilot.get_or_insert_with(RunAutopilot::default).waiting = Some(why.into());
+        self.status = RunStatus::Waiting;
+        self.stop_reason = Some(reason);
+    }
+
+    /// Autopilot acts again: `running` while it is on. Clears what it was
+    /// waiting for. A complete run stays complete; a run with autopilot off
+    /// stays stopped.
+    pub fn set_running(&mut self) {
+        if let Some(autopilot) = self.autopilot.as_mut() {
+            autopilot.waiting = None;
+        }
+        let enabled = self.autopilot.as_ref().is_some_and(|a| a.enabled);
+        if enabled && self.status != RunStatus::Complete {
+            self.status = RunStatus::Running;
+            self.stop_reason = None;
+        }
+    }
+
+    /// You acted on the run (a hand-off, a send-back, an approval): a
+    /// waiting run carries on from the next turn.
+    pub fn resume_after_you(&mut self) {
+        if let Some(autopilot) = self.autopilot.as_mut() {
+            autopilot.waiting = None;
+        }
+        if self.status == RunStatus::Waiting {
+            self.set_running();
+        }
+    }
+
+    /// Autopilot turned on (`running`) or off (`stopped`, paused by you).
+    /// A complete run stays complete.
+    pub fn set_autopilot_enabled(&mut self, enabled: bool) {
+        let autopilot = self.autopilot.get_or_insert_with(RunAutopilot::default);
+        autopilot.enabled = enabled;
+        autopilot.waiting = None;
+        if self.status == RunStatus::Complete {
+            return;
+        }
+        if enabled {
+            self.status = RunStatus::Running;
+            self.stop_reason = None;
+        } else {
+            self.status = RunStatus::Stopped;
+            self.stop_reason = Some(StopReason::PausedByYou);
+        }
+    }
+
+    /// The run is done. Final.
+    pub fn set_complete(&mut self) {
+        if let Some(autopilot) = self.autopilot.as_mut() {
+            autopilot.waiting = None;
+        }
+        self.status = RunStatus::Complete;
+        self.stop_reason = None;
+    }
+
+    /// `status` and `stop_reason` for a run saved before they existed:
+    /// complete when its last `complete` event came after its last hand-off
+    /// or send-back; else waiting when autopilot was waiting (the reason read
+    /// from its sentence); else running when autopilot was on; else stopped
+    /// (paused by you when autopilot had been turned on before).
+    pub fn migrated_status(&self) -> (RunStatus, Option<StopReason>) {
+        let last = |kinds: &[&str]| self.events.iter().rposition(|e| kinds.contains(&e.kind.as_str()));
+        if let Some(done) = last(&["complete"]) {
+            if last(&["handoff", "loopBack"]).is_none_or(|moved| moved < done) {
+                return (RunStatus::Complete, None);
+            }
+        }
+        match self.autopilot.as_ref() {
+            Some(a) if a.enabled => match a.waiting.as_deref() {
+                Some(why) => (RunStatus::Waiting, Some(stop_reason_from_sentence(why))),
+                None => (RunStatus::Running, None),
+            },
+            Some(_) => (RunStatus::Stopped, Some(StopReason::PausedByYou)),
+            None => (RunStatus::Stopped, None),
+        }
+    }
+}
+
+/// The reason code behind a waiting sentence saved before codes existed.
+/// Anything not recognised was autopilot failing to carry a decision out.
+fn stop_reason_from_sentence(why: &str) -> StopReason {
+    let has = |text: &str| why.contains(text);
+    if why.starts_with("Checkpoint before") {
+        StopReason::Checkpoint
+    } else if why.starts_with("Round cap reached") {
+        StopReason::RoundCap
+    } else if why.starts_with("Paused: Claude usage") {
+        StopReason::UsageLimit
+    } else if has("lacks HANDOFF sections") {
+        StopReason::NoResult
+    } else if has("No verdict could be read") {
+        StopReason::NoVerdict
+    } else if has(" check failed ") {
+        StopReason::GateFailed
+    } else if has("finding(s) at") || has("asked for changes, but") {
+        StopReason::BlockingFindings
+    } else {
+        StopReason::CarryOutFailed
+    }
+}
+
+/// Gives every run of a file saved before run status existed its `status`
+/// and `stop_reason` (`PipelineRun::migrated_status`). Once per file; the
+/// next save keeps them. Returns whether it ran.
+pub fn migrate_run_status(data: &mut AppStateFile) -> bool {
+    if data.migrations.run_status {
+        return false;
+    }
+    for run in &mut data.pipeline_runs {
+        (run.status, run.stop_reason) = run.migrated_status();
+    }
+    data.migrations.run_status = true;
+    true
+}
 
 impl PipelineRun {
     /// Append to the ledger (detail capped, oldest events dropped past the cap).
@@ -538,6 +734,7 @@ impl Default for AppStateFile {
             migrations: Migrations {
                 claude_first: true,
                 windows: true,
+                run_status: true,
             },
             windows: vec![WindowRecord {
                 id: MAIN_WINDOW_ID.to_string(),

@@ -155,6 +155,21 @@ fn new_tabs_get_the_default_provider() {
 }
 
 #[test]
+fn a_start_that_names_its_provider_launches_with_it() {
+    // An autopilot hand-off from a Cursor tab opens a new tab: it launches
+    // as Cursor, not as the window's new-tab provider.
+    let dir = temp_dir("start_as");
+    let mut store = StateStore::open_path(dir.join("state.json")).unwrap();
+    assert_eq!(store.new_tab_provider, ProviderId::Claude);
+    assert_eq!(store.provider_for_start_as(None, Some(ProviderId::Cursor)), ProviderId::Cursor);
+    assert_eq!(store.provider_for_start_as(None, None), ProviderId::Claude);
+    let id = store.create_draft_tab(&role(), "/w/app", true, None).unwrap();
+    store.set_tab_provider(&id, ProviderId::Cursor).unwrap();
+    assert_eq!(store.provider_for_start_as(Some(&id), None), ProviderId::Cursor);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn a_started_session_is_saved_under_its_provider_and_survives_close() {
     let dir = temp_dir("start");
     let mut store = StateStore::open_path(dir.join("state.json")).unwrap();

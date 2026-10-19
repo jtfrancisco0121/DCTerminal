@@ -143,6 +143,7 @@ impl Default for WorkspacesFile {
             migrations: crate::store::state_types::Migrations {
                 claude_first: true,
                 windows: true,
+                run_status: true,
             },
         }
     }
