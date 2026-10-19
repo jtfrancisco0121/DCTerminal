@@ -181,6 +181,17 @@ describe("TerminalView reports failed writes and copies", () => {
     expect(reportError).not.toHaveBeenCalledWith("Keystrokes not sent", expect.anything(), expect.anything());
   });
 
+  it("a write the old PTY rejected is not an error once a restart replaces it in the window", async () => {
+    vi.useFakeTimers();
+    mount();
+    dataHandler!("a");
+    await flush();
+    // Restarted: a new, live session under the same id.
+    live = { exitCode: null, exited: false, buffer: { attach: () => () => {} } };
+    await settle();
+    expect(reportError).not.toHaveBeenCalledWith("Keystrokes not sent", expect.anything(), expect.anything());
+  });
+
   it("a write the PTY rejects while it stays live past the settle window is shown once", async () => {
     vi.useFakeTimers();
     const notify = vi.fn();

@@ -89,10 +89,12 @@ export const KEYSTROKE_SETTLE_MS = 300;
 function sendInput(ptyId: string, data: string): void {
   void ptyWrite(ptyId, data).catch((err: unknown) => {
     // A PTY that just died rejects the write before its exit event lands, so
-    // decide once that event has had time to arrive.
+    // decide once that event has had time to arrive. A restart in between
+    // replaces the session, and the old process's refusal is not news either.
+    const rejectedBy = livePty(ptyId);
     window.setTimeout(() => {
       const live = livePty(ptyId);
-      if (!live || live.exited || isPtyOpening(ptyId)) return;
+      if (!live || live !== rejectedBy || live.exited || isPtyOpening(ptyId)) return;
       reportError("Keystrokes not sent", err, { notify: true, once: `Keystrokes not sent:${ptyId}` });
     }, KEYSTROKE_SETTLE_MS);
   });
