@@ -1,12 +1,12 @@
 /**
  * What the terminal header's state pill says (R16): Working · 12s, Needs you,
- * Done · <verdict>, Exited · code N. One place, so the active tab, the second
+ * Done · <verdict>, Exited · code N, State unknown · check the terminal. One place, so the active tab, the second
  * pane and every grid cell read alike.
  */
 import { NEEDS_YOU_TEXT, type TabStatus } from "../tabStatus";
 import type { TerminalState } from "./claudeState";
 
-export type HeaderTone = "working" | "needs" | "done" | "exited" | "idle";
+export type HeaderTone = "working" | "unknown" | "needs" | "done" | "exited" | "idle";
 
 export type HeaderState = {
   tone: HeaderTone;
@@ -49,6 +49,9 @@ export function headerStateOf(input: {
     // Which kind of prompt, worded as the tab chip's tooltip words it.
     return { tone: "needs", text: `Needs you: ${NEEDS_YOU_TEXT[needs]}`, timed: false };
   }
+  if (state?.kind === "working" && state.unknown) {
+    return { tone: "unknown", text: "State unknown · check the terminal", timed: false };
+  }
   if (state?.kind === "working" || (!state && status?.busy)) {
     return { tone: "working", text: "Working", timed: true };
   }
@@ -56,6 +59,11 @@ export function headerStateOf(input: {
     return { tone: "done", text: verdict ? `Done · ${verdict}` : "Done", timed: false };
   }
   return { tone: "idle", text: "Idle", timed: false };
+}
+
+/** Mid-turn, including a turn whose state is unknown: Stop and Queue stay offered. */
+export function headerWorking(state: HeaderState): boolean {
+  return state.tone === "working" || state.tone === "unknown";
 }
 
 /** The pill's full text with the elapsed time when it is working. */

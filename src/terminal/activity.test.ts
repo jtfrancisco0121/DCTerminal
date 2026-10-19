@@ -41,6 +41,15 @@ describe("terminal activity tracker", () => {
     t.forget("x");
     expect(t.sweep(1100)).toEqual({ busy: [], settled: [] });
   });
+
+  it("remembers when output last arrived, ignoring keystroke echo", () => {
+    const t = createActivityTracker({ quietMs: 3000, echoMs: 500 });
+    expect(t.lastOutputAt("x")).toBeUndefined();
+    t.output("x", 1000);
+    t.input("x", 2000);
+    t.output("x", 2100);
+    expect(t.lastOutputAt("x")).toBe(1000);
+  });
 });
 
 describe("ptyInputKind", () => {
