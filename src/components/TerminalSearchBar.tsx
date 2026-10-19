@@ -110,12 +110,16 @@ export function TerminalSearchBar({ search, onClose }: Props) {
     onClose();
   };
 
+  // On the root so Escape also closes from the toggle and nav buttons.
+  const onRootKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    event.stopPropagation();
+    close();
+  };
+
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      event.stopPropagation();
-      close();
-    } else if (event.key === "Enter") {
+    if (event.key === "Enter") {
       event.preventDefault();
       run(event.shiftKey ? "prev" : "next", false);
     }
@@ -145,7 +149,14 @@ export function TerminalSearchBar({ search, onClose }: Props) {
   );
 
   return (
-    <div className="terminal-search" role="search">
+    <div
+      className="terminal-search"
+      role="search"
+      // While open, Escape closes the bar, not a running turn (this terminal
+      // is also the shell pane under a chat tab).
+      data-own-escape=""
+      onKeyDown={onRootKeyDown}
+    >
       <input
         ref={inputRef}
         type="search"
