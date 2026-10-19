@@ -448,9 +448,23 @@ pub fn resolve_claude(setting: Option<&str>) -> Option<PathBuf> {
     lookup.setting = None;
     lookup.path_dirs.clear();
     lookup.known.clear();
-    let bin = npm_global_bin()?;
+    let bin = once_per_process(&NPM_GLOBAL_BIN, npm_global_bin)?;
     lookup.path_dirs.push(bin);
     resolve_claude_with(&lookup)
+}
+
+/// `npm prefix -g`'s answer, asked once per process: it can take seconds
+/// (20 s cap) and a role start or status check resolves `claude` more than
+/// once. A missing or failing npm is remembered too, so a restart is needed
+/// after installing npm; a `claude` added to the npm folder later is still
+/// found, since the folder is searched on every call.
+static NPM_GLOBAL_BIN: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+
+fn once_per_process(
+    cell: &std::sync::OnceLock<Option<PathBuf>>,
+    lookup: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    cell.get_or_init(lookup).clone()
 }
 
 /// `npm prefix -g` → its bin folder. `npm` itself may only be in Homebrew
@@ -596,6 +610,35 @@ pub fn claude_login_status(claude: Option<&Path>, config: &ConfigDirInfo) -> Log
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn npms_global_folder_is_asked_once_per_process() {
+        let cell = std::sync::OnceLock::new();
+        let calls = std::cell::Cell::new(0);
+        let lookup = || {
+            calls.set(calls.get() + 1);
+            Some(PathBuf::from("/npm/global/bin"))
+        };
+        assert_eq!(
+            once_per_process(&cell, lookup),
+            Some(PathBuf::from("/npm/global/bin"))
+        );
+        assert_eq!(
+            once_per_process(&cell, lookup),
+            Some(PathBuf::from("/npm/global/bin"))
+        );
+        assert_eq!(calls.get(), 1);
+        // A failed lookup is remembered too: a hung npm costs one timeout.
+        let missing = std::sync::OnceLock::new();
+        let misses = std::cell::Cell::new(0);
+        let fail = || {
+            misses.set(misses.get() + 1);
+            None
+        };
+        assert_eq!(once_per_process(&missing, fail), None);
+        assert_eq!(once_per_process(&missing, fail), None);
+        assert_eq!(misses.get(), 1);
+    }
     use super::*;
     use crate::provider::claude_config::{resolve_with, CLAUDE_CONFIG_DIR};
     use std::time::{SystemTime, UNIX_EPOCH};
