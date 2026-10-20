@@ -1485,7 +1485,31 @@ pub(crate) fn actor_stage_gate(
         provider_for_window(&state, settings.providers(), ProviderId::Claude, None)
     };
     let (version, hooks_off) = gate_inputs(provider.as_ref(), cwd);
-    Ok(gate_run(&store, run_id, stage_key, version.as_deref(), hooks_off.as_ref(), GateAt::Start, None)?.bridged)
+    let runs = crate::bridge::launch::runs_root(&crate::data_dir::app_data_dir(app).path);
+    actor_gate_on(&store, &runs, run_id, stage_key, version.as_deref(), hooks_off.as_ref())
+}
+
+/// [`actor_stage_gate`] once the CLI version and settings are read. The
+/// actor only ever opens a stage mid-run (a chain's first stage starts
+/// through `startChain`), so the bridge has decided turns already: a switch
+/// to engine 1 makes the run manual for good, as at a relaunch (V2a's
+/// `make_manual`, one Timeline note), and the run's bridged tabs stop
+/// enforcing a result (their hooks read `mode`). True to launch bridged.
+pub(crate) fn actor_gate_on(
+    store: &Mutex<StateStore>,
+    runs_root: &std::path::Path,
+    run_id: &str,
+    stage_key: &str,
+    version: Option<&str>,
+    hooks_off: Option<&crate::bridge::gate::HooksOff>,
+) -> Result<bool, String> {
+    let gated = gate_run(store, run_id, stage_key, version, hooks_off, GateAt::Relaunch, None)?;
+    if gated.manual_now {
+        if let Err(err) = crate::bridge::launch::set_run_mode(runs_root, run_id, false) {
+            eprintln!("DCTerminal: could not switch the run folder to manual: {err}");
+        }
+    }
+    Ok(gated.bridged)
 }
 
 /// Start a stage terminal for the run actor (V3), with no view: as
@@ -2164,7 +2188,7 @@ mod tests {
         let gate = &source[source.find("pub(crate) fn actor_stage_gate(").expect("an actor gate")..];
         let gate = &gate[..gate.find("\n}\n").unwrap()];
         let inputs = gate.find("gate_inputs(").expect("reads the version and settings");
-        let applied = gate.find("gate_run(").expect("applies the gate to the run");
+        let applied = gate.find("actor_gate_on(").expect("applies the gate to the run");
         assert!(inputs < applied);
         assert!(!gate[inputs..applied].contains(".lock()"), "no lock while reading the CLI and settings");
     }

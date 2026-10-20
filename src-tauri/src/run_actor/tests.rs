@@ -64,10 +64,8 @@ impl Host for TestHost {
         if self.gate_open.load(Ordering::SeqCst) {
             return Ok(true);
         }
-        let mut store = self.store.lock().unwrap();
-        let run = store.pipeline_run_by_id_mut(run_id).unwrap();
-        let gate = crate::bridge::gate::Gate::EngineOne(format!("Claude Code is too old for {stage_key}."));
-        Ok(crate::bridge::gate::apply(run, &gate, stage_key).0)
+        // The app's gate with an older Claude Code read (`actor_stage_gate`).
+        crate::pty::actor_gate_on(&self.store, &self.runs, run_id, stage_key, Some("2.1.200 (Claude Code)"), None)
     }
     fn spawn_stage(&self, launch: &StageLaunch) -> Result<(), String> {
         self.live.lock().unwrap().insert(launch.tab_id.clone());
@@ -895,9 +893,11 @@ fn a_turn_cut_off_by_the_usage_limit_stops_as_usage_limit_without_checks() {
     assert_eq!(fx.stops().last().map(|s| s.0), Some(StopReason::UsageLimit));
 }
 
-/// D24 on the actor's launch path: a stage the gate sends to engine 1 opens
-/// without the bridge (no flags, no result instructions, no stage folder),
-/// and the run is engine 1 from then on, left to the frontend.
+/// D24 on the actor's launch path (always mid-run): a stage the gate sends
+/// to engine 1 opens without the bridge (no flags, no result instructions,
+/// no stage folder), and the run is manual from then on (V2a's rule for a
+/// mid-run switch): autopilot off for good, the stages stop enforcing a
+/// result, one Timeline note.
 #[test]
 fn a_stage_the_version_gate_refuses_opens_unbridged_and_the_run_goes_to_engine_1() {
     let mut fx = Fixture::new("gate_refused");
@@ -910,8 +910,15 @@ fn a_stage_the_version_gate_refuses_opens_unbridged_and_the_run_goes_to_engine_1
     assert!(!fx.host.runs.join(RUN).join("stages/plan_reviewer").exists(), "no stage folder");
     fx.run(|run| {
         assert_eq!(run.engine, 1);
-        assert!(run.engine_note.as_deref().unwrap().contains("too old"));
+        assert!(run.engine_note.as_deref().unwrap().contains("manual from now on"), "{:?}", run.engine_note);
+        assert!(!run.autopilot.as_ref().unwrap().enabled, "autopilot is off");
+        assert!(run.manual_only, "for good");
+        assert_eq!(run.status, RunStatus::Stopped);
+        let notes = run.events.iter().filter(|e| e.kind == "note" && e.summary.contains("Claude Code 2.1.200")).count();
+        assert_eq!(notes, 1, "one Timeline note: {:?}", run.events);
     });
+    let mode = std::fs::read_to_string(fx.host.runs.join(RUN).join("stages/planner/mode")).unwrap();
+    assert_eq!(mode, "manual", "the bridged Planner stops enforcing a result");
 }
 
 /// H4 on engine 2: an `auto` check with nothing to run stops the run with

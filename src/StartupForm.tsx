@@ -213,7 +213,7 @@ import { FirstRunSetup, type FirstRunFinish } from "./components/FirstRunSetup";
 import { insertIntoPad, type PadSelection } from "./prompts/library";
 import { startQueue } from "./terminal/startQueue";
 import { handoffTerminalStart } from "./handoff/terminalStart";
-import { showActorOutcome } from "./handoff/actorSend";
+import { actorRunFor, showActorOutcome } from "./handoff/actorSend";
 import {
   chainRound,
   chainTabFor,
@@ -4510,11 +4510,18 @@ export function StartupForm({
         confirmedClaimRef.current = null;
         return claim;
       };
-      // Engine 2 (V3): a bridged stage's run belongs to its run actor; your
+      // Engine 2 (V3): an engine-2 run belongs to its run actor; your
       // terminal hand-off on it is a message to that actor, which records
       // and carries it out in turn with autopilot (claims are not used).
+      // The run's engine decides, not the tab: a still-bridged tab of a run
+      // switched to engine 1 mid-run hands on the engine-1 way.
       const sourceSummary = savedTabs.find((tab) => tab.id === handoffSource.sourceTabId);
-      const actorRun = surface === "terminal" && sourceSummary?.chain ? (sourceSummary.bridge?.runId ?? null) : null;
+      const sourceRun =
+        surface === "terminal" && sourceSummary?.chain
+          ? // intentionally silent: an unreadable run hands on the engine-1 way, which names the problem.
+            await getPipelineRun(sourceSummary.chain.chainId).catch(() => null)
+          : null;
+      const actorRun = actorRunFor(surface, sourceSummary, sourceRun?.run.engine);
       /** Sends one actor message; null (with the warning shown) when autopilot made the hand-off already. */
       const askActor = async (
         runId: string,
