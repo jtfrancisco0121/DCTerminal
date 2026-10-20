@@ -895,3 +895,44 @@ fn a_stage_the_version_gate_refuses_opens_unbridged_and_the_run_goes_to_engine_1
         assert!(run.engine_note.as_deref().unwrap().contains("too old"));
     });
 }
+
+/// H4 on engine 2: an `auto` check with nothing to run stops the run with
+/// `no_check_found` unless its gate is `optional`; the actor carries the
+/// gate's `optional` into the result whatever the host reported.
+#[test]
+fn an_optional_gate_with_no_check_lets_the_run_go_on_and_a_required_one_stops_it() {
+    let no_check = || GateResult::skipped("command", "auto", "No check command found.");
+    let prs = json!({ "schema": 1, "prs": [{ "url": "https://github.com/acme/app/pull/12", "branch": "b", "title": "t" }], "summary": "s" });
+
+    // Required (Eagle-Eye 1's own gate): the run stops.
+    let mut fx = Fixture::new("gate_required");
+    let implementer = to_implementer(&mut fx);
+    fx.host.gates.lock().unwrap().push_back(no_check());
+    let turn = fx.end_turn(&implementer, "i-1", Some(prs.clone()), "Done.");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    fx.finish_gates();
+    fx.run(|run| assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::NoCheckFound))));
+
+    // Optional, on a pipeline of your own: the run moves on to the PR Reviewer.
+    let id = "eagle1_optional_gate_v3";
+    let mut def = crate::pipelines::find("eagle1").unwrap();
+    def.id = id.into();
+    def.name = "Optional gate".into();
+    def.run_kind = None;
+    def.built_in = false;
+    let implementer_stage = def.stages.iter_mut().find(|s| s.id == "implementer").unwrap();
+    implementer_stage.gates = vec![crate::pipelines::GateDef::Command { run: "auto".into(), timeout_secs: None, optional: true }];
+    crate::pipelines::register_for_test(def);
+    let mut fx = Fixture::with_pipeline("gate_optional", id, Vec::new());
+    let implementer = to_implementer(&mut fx);
+    fx.host.gates.lock().unwrap().push_back(no_check());
+    let turn = fx.end_turn(&implementer, "i-1", Some(prs), "Done.");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    fx.finish_gates();
+    crate::pipelines::unregister_for_test(id);
+    fx.run(|run| {
+        assert_eq!(run.status, RunStatus::Running, "{:?}", run.events.last());
+        assert!(run.gates["implementer"].results[0].optional, "the result says the gate is optional");
+    });
+    assert_eq!(fx.launches().last().map(|l| l.role_id.as_str()), Some("role_pr_reviewer"));
+}

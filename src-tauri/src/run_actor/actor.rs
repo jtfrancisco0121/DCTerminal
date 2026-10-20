@@ -13,7 +13,7 @@ use crate::bridge::{BridgeTag, BridgeTurn, TurnOutcome};
 use crate::commands::pipeline::{approve, note, set_lane_status, turn_finished};
 use crate::pipelines::autopilot::{decide, review_round, stage_key, Decision, FindingReport, TurnReport};
 use crate::pipelines::recovery::bridge_turn_key;
-use crate::pipelines::{GateResult, PipelineDef, StageDef, StageKind};
+use crate::pipelines::{GateDef, GateResult, PipelineDef, StageDef, StageKind};
 use crate::store::{
     claim_key, tab_label, ChainRef, RoleSnapshot, RunStatus, StageGates, StopReason, TabRecord,
     TerminalTabDraft,
@@ -278,16 +278,22 @@ impl<H: Host> Actor<H> {
                 let results = gates
                     .iter()
                     .map(|gate| {
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| host.run_gate(gate, &folder, &prs)))
-                            .unwrap_or_else(|_| GateResult {
-                                kind: "command".into(),
-                                label: "check".into(),
-                                status: "failed".into(),
-                                summary: "The check could not run (internal error).".into(),
-                                output: String::new(),
-                                duration_ms: 0,
-                                optional: false,
-                            })
+                        // H4: `decide` stops on an `auto` check with nothing
+                        // to run unless the gate is optional, so the result
+                        // carries the gate's flag (as `pipeline_run_gates`).
+                        let optional = matches!(gate, GateDef::Command { optional: true, .. });
+                        let result =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| host.run_gate(gate, &folder, &prs)))
+                                .unwrap_or_else(|_| GateResult {
+                                    kind: "command".into(),
+                                    label: "check".into(),
+                                    status: "failed".into(),
+                                    summary: "The check could not run (internal error).".into(),
+                                    output: String::new(),
+                                    duration_ms: 0,
+                                    optional: false,
+                                });
+                        GateResult { optional, ..result }
                     })
                     .collect();
                 let _ = me.send(ActorMsg::GatesDone { turn, round, results });
