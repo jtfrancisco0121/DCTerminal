@@ -7,6 +7,7 @@ import {
   type RoleSummary,
 } from "./bridge";
 import { setPipelineDefs } from "./pipeline/defs";
+import { refreshRolesAndPipelines } from "./pipeline/rolesRefresh";
 import { StartupForm } from "./StartupForm";
 import { ConfirmHost } from "./components/confirm";
 import "./App.css";
@@ -63,9 +64,14 @@ function App() {
         onRedetectCli={redetectCli}
         onPipelinesChanged={() => setPipelinesLoaded((n) => n + 1)}
         onRefreshRoles={() =>
-          listRoles().then((next) => {
-            setRoles(next);
-            setRolesError(null);
+          refreshRolesAndPipelines({
+            listRoles,
+            setRoles: (next: RoleSummary[]) => {
+              setRoles(next);
+              setRolesError(null);
+            },
+            listPipelines: pipelineDefsList,
+            pipelinesChanged: () => setPipelinesLoaded((n) => n + 1),
           })
         }
       />

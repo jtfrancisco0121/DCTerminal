@@ -1,7 +1,7 @@
 //! The user's own pipelines (`pipelines.json` in app data, ADR-014).
 //! Built-ins are bundled (`crate::pipelines`) and never written here.
 
-use crate::pipelines::{set_user_pipelines, validate_user_pipelines, PipelineDef};
+use crate::pipelines::{parse_user_entry, set_user_pipelines, validate_user_pipelines, PipelineDef};
 use crate::store::json_io::{read_json_or_recover, set_aside_other_version, write_json_atomic};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -13,8 +13,19 @@ pub const PIPELINES_SCHEMA_VERSION: u32 = 1;
 #[serde(rename_all = "camelCase")]
 pub struct PipelinesFile {
     pub schema_version: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_pipelines")]
     pub pipelines: Vec<PipelineDef>,
+}
+
+/// Each entry on its own: one that is not a pipeline becomes a disabled
+/// placeholder holding the entry, so neither it nor the others are lost.
+fn lenient_pipelines<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Vec<PipelineDef>, D::Error> {
+    let values = Vec::<serde_json::Value>::deserialize(de)?;
+    Ok(values
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| parse_user_entry(value, index))
+        .collect())
 }
 
 impl Default for PipelinesFile {
@@ -32,9 +43,9 @@ pub struct PipelineStore {
 }
 
 impl PipelineStore {
-    /// Load the file and publish its pipelines to the registry. A file that
-    /// no longer validates (a role id renamed by hand) still loads; Settings
-    /// shows the problem on the next save.
+    /// Load the file and publish its pipelines to the registry. A pipeline
+    /// that does not validate (a role id renamed by hand, an entry that is
+    /// not a pipeline) still loads, disabled with the reason (Track H4).
     pub fn open(dir: &Path) -> Result<Self, String> {
         let path = dir.join(PIPELINES_FILE);
         let data = Self::load(&path)?;
@@ -63,6 +74,9 @@ impl PipelineStore {
             .into_iter()
             .map(|mut def| {
                 def.built_in = false;
+                // Both are the app's to set, never the editor's.
+                def.disabled = None;
+                def.raw = None;
                 def
             })
             .collect();

@@ -32,7 +32,6 @@ import {
   diagnosticsSetCapture,
   diagnosticsStatus,
   sessionAgentLogs,
-  listenAutopilotStopped,
   listenBridgeNeeds,
   listenPipelineNotice,
   listenStageOpened,
@@ -214,6 +213,8 @@ import { WorkspacesDialog } from "./components/WorkspacesDialog";
 import { FirstRunSetup, type FirstRunFinish } from "./components/FirstRunSetup";
 import { insertIntoPad, type PadSelection } from "./prompts/library";
 import { startQueue } from "./terminal/startQueue";
+import { handoffTerminalStart } from "./handoff/terminalStart";
+import { showActorOutcome } from "./handoff/actorSend";
 import {
   chainRound,
   chainTabFor,
@@ -230,8 +231,10 @@ import {
   prepareHandoff,
   saveHandoff,
 } from "./handoff/executor";
-import { pipelineDef, pipelineStages } from "./pipeline/defs";
+import { behaviourRole, pipelineDef, pipelineStages, roleBehaviour, stageBehaviour } from "./pipeline/defs";
+import { eagleStartChain } from "./pipeline/eagleStart";
 import { useAutopilot } from "./pipeline/useAutopilot";
+import { onceValue, subscribeAutopilotStops } from "./pipeline/autopilotStops";
 import { terminalStageSource, turnId } from "./pipeline/autopilot";
 import { approveByHand, fanOutRun, planStageFor, stageTab, startLane } from "./pipeline/fanOut";
 import {
@@ -241,6 +244,7 @@ import {
   type ReviewVerdict,
 } from "./handoff/verdict";
 import { limitAlerts, statusLimit } from "./usage/limits";
+import { stopNotice } from "./pipeline/stopReasons";
 import type { ChatFindRequest } from "./SessionTerminal";
 import { classifyPromptFinished, DATA_RECOVERED_SLOT, type NotificationSettings } from "./notify/agentNotify";
 import { showSystemNotification } from "./notify/systemNotify";
@@ -255,6 +259,8 @@ import {
   type SessionLogPollState,
 } from "./terminal/sessionLogPoll";
 import {
+  bridgeNeedsAfterAnswer,
+  bridgeNeedsAfterDialog,
   bridgeNeedsAfterRead,
   deriveTerminalState,
   dialogAfterRead,
@@ -303,6 +309,7 @@ import {
   ptyExitCode,
   rekeyLivePty,
   subscribeLivePty,
+  subscribePtyAnswer,
   subscribePtyExit,
 } from "./terminal/live";
 import {
@@ -445,8 +452,8 @@ function promptAfter(promptAt: string | null | undefined, sinceMs: number): bool
 }
 
 /** A finished terminal turn's toast text: a reviewer's verdict, else its last line. */
-function finishedDetail(roleId: string, log: TerminalSessionLog): string {
-  if (isReviewerRole(roleId)) {
+function finishedDetail(roleId: string, log: TerminalSessionLog, chainKind?: string | null): string {
+  if (isReviewerRole(roleId, chainKind)) {
     const verdict = terminalLogVerdict(log, "");
     if (verdict) return `Verdict: ${verdict}`;
   }
@@ -511,6 +518,8 @@ export function StartupForm({
   const [savedTabs, setSavedTabs] = useState<TabSummary[]>([]);
   const savedTabsRef = useRef(savedTabs);
   savedTabsRef.current = savedTabs;
+  /** Set by the first tab list load; until then savedTabs is only the empty start. */
+  const [tabsLoaded, setTabsLoaded] = useState(false);
   /** Set once useNewTab exists; the tab bootstrap calls it on a first launch. */
   const newTabLaunchRef = useRef<(draftTabId: string, mode: string) => Promise<void>>(
     async () => {},
@@ -592,8 +601,9 @@ export function StartupForm({
   }, []);
   /**
    * Bridged stages' Needs you (D22): the PermissionRequest hook (or its
-   * Notification backup) said a permission dialog is up. Cleared by a later
-   * log read (`bridgeNeedsAfterRead`).
+   * Notification backup) said a permission dialog is up. Cleared when you
+   * answer it (an answer key, or its screen dialog gone), or by a later log
+   * read that shows the tool finished or the turn over.
    */
   const bridgeNeeds = useRef(new Map<string, BridgeNeedsMark>());
   const [bridgeNeedsVersion, setBridgeNeedsVersion] = useState(0);
@@ -1102,6 +1112,7 @@ export function StartupForm({
     const snap = await getAppState();
     setSavedTabs(snap.tabs);
     setClosedTabs(snap.closedTabs ?? []);
+    setTabsLoaded(true);
     return snap;
   }, []);
 
@@ -1463,7 +1474,7 @@ export function StartupForm({
           const watching = isWatchingTab(tabId);
           if (!watching) {
             const tab = savedTabsRef.current.find((item) => item.id === tabId);
-            notifyAgent(tabId, { kind: "finished", detail: finishedDetail(tab?.roleId ?? "", log) });
+            notifyAgent(tabId, { kind: "finished", detail: finishedDetail(tab?.roleId ?? "", log, tab?.chain?.kind) });
           }
           setTabMarks((marks) => markAfterTurn(marks, tabId, "finished", watching));
         }
@@ -1532,16 +1543,24 @@ export function StartupForm({
             )
           : undefined,
       );
+      // The hook's Needs you: a dialog drawn after it and gone again was answered.
+      setBridgeNeeds(id, bridgeNeedsAfterDialog(bridgeNeeds.current.get(id), visible));
       // Read the log now: the open tool decides what the dialog is for.
       const entry = sessionLogWatch.current.get(id);
       if (visible && entry) entry.forceRead = true;
+    });
+    // An answer key sent after the hook answered its prompt: the approved
+    // tool may run for minutes, and the log shows nothing until it finishes.
+    const unsubscribeAnswer = subscribePtyAnswer((id) => {
+      setBridgeNeeds(id, bridgeNeedsAfterAnswer(bridgeNeeds.current.get(id), Date.now()));
     });
     return () => {
       unsubscribeLive();
       unsubscribeExit();
       unsubscribeDialog();
+      unsubscribeAnswer();
     };
-  }, [isWatchingTab, notifyAgent, setDialogOwner]);
+  }, [isWatchingTab, notifyAgent, setBridgeNeeds, setDialogOwner]);
 
   // Every live Claude role terminal, plus role terminals on screen or in a
   // chain: read their Claude session log while the PTY streams output, until
@@ -2209,15 +2228,9 @@ export function StartupForm({
         };
       });
       if (!pane) setPreview(null);
-      if (
-        !resumeId &&
-        eagleOnRef.current &&
-        targetId &&
-        !inChain(targetId) &&
-        (startRoleId === "role_planner" || startRoleId === "role_implementer")
-      ) {
-        const kind = startRoleId === "role_planner" ? "eagle1" : "eagle2";
-        await setTabChain(targetId, newChain(kind));
+      const eagleKind = !resumeId && eagleOnRef.current && targetId && !inChain(targetId) ? eagleStartChain(startRoleId) : null;
+      if (eagleKind && targetId) {
+        await setTabChain(targetId, newChain(eagleKind));
       }
       await refreshTabs();
     } catch (err: unknown) {
@@ -2303,7 +2316,7 @@ export function StartupForm({
       quiet?: boolean;
       /** Launch as this provider (a hand-off keeps its source tab's). */
       provider?: ProviderId | null;
-      /** The chain step it opens for: an engine-2 reviewer stage launches with the bridge. */
+      /** The chain tag a hand-off's new tab joins: its stage kind sets the permission mode, and an engine-2 reviewer stage launches with the bridge. */
       chain?: ChainRef | null;
     }) => {
       const quiet = !!options?.quiet;
@@ -2325,14 +2338,7 @@ export function StartupForm({
       // Eagle mode: a Planner or Implementer started from the form begins a
       // chain. The core makes its run before the launch (engine 2), so the
       // stage launches with the bridge instead of being tagged once it runs.
-      const startChain =
-        !options && eagleOnRef.current && !inChain(pendingId)
-          ? roleToStart === "role_planner"
-            ? "eagle1"
-            : roleToStart === "role_implementer"
-              ? "eagle2"
-              : null
-          : null;
+      const startChain = !options && eagleOnRef.current && !inChain(pendingId) ? eagleStartChain(roleToStart) : null;
       const live = beginLivePty(pendingId);
       try {
         const result = await roleTerminalStart({
@@ -2397,7 +2403,7 @@ export function StartupForm({
     async (run: PipelineRun, lane: RunLane) => {
       const laneRole =
         pipelineStages(run.kind).find((stage) => stage.id === run.fanOutStage)?.roleId ??
-        "role_implementer";
+        behaviourRole(run.kind, "implementer");
       return startLane(run, lane, laneRole, { startTerminal: laneStartTerminal, refreshTabs });
     },
     [laneStartTerminal, refreshTabs],
@@ -2423,12 +2429,15 @@ export function StartupForm({
       const segments = runtimesRef.current[tab.id]?.segments ?? [];
       return {
         sourceRoleId: tab.roleId,
+        sourceChainKind: tab.chain?.kind ?? null,
         sourceTabId: tab.id,
         sourceLabel: tab.label || roleDisplayName(tab.roleId, roles),
         cwd: tab.cwd,
         answers,
         latestMessage:
-          tab.roleId === "role_implementer" ? latestAgentMessage(segments) : latestReplyText(segments),
+          roleBehaviour(tab.roleId, tab.chain?.kind) === "implementer"
+            ? latestAgentMessage(segments)
+            : latestReplyText(segments),
         plan: [],
         todos: [],
         selection: "",
@@ -2443,7 +2452,7 @@ export function StartupForm({
     async (runId: string) => {
       const { run } = await getPipelineRun(runId);
       const def = pipelineDef(run.kind);
-      const fanStage = def?.stages.find((stage) => stage.roleId === "role_implementer");
+      const fanStage = def?.stages.find((stage) => stageBehaviour(def, stage) === "implementer");
       const planStage = def && fanStage ? planStageFor(def, fanStage) : null;
       const planTab = planStage ? stageTab(run, planStage, savedTabsRef.current) : null;
       if (!fanStage || !planTab?.chain) {
@@ -2500,7 +2509,8 @@ export function StartupForm({
     startTerminal: (options) =>
       startRoleTerminal({ ...options, tabId: null, quiet: true }),
     refreshTabs,
-    notifyStop: (tabId, reason) => notifyAgent(tabId, { kind: "question", detail: `Autopilot: ${reason}` }),
+    notifyStop: (tabId, reason, code) =>
+      notifyAgent(tabId, { kind: "question", detail: `Autopilot stopped. ${stopNotice(code, reason)}` }),
     notice: (title, body) => showNotice(title, body),
     startLane: startLaneOf,
     sessionLog: (tabId) => sessionLogsRef.current[tabId],
@@ -2576,23 +2586,20 @@ export function StartupForm({
   }, [setBridgeNeeds]);
   // The core stopped a run by itself (a stall, or a turn that finished while
   // the app was closed): tell you the way a stop autopilot made does.
+  // Stops made before this listener attached (the startup reconcile) are
+  // fetched once it is attached and this window's tabs have loaded (so the
+  // toast's tab is known), and only those on this window's tabs.
+  const [ownTabs] = useState(() => onceValue<string[]>());
   useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | null = null;
-    void listenAutopilotStopped((event) => {
-      notifyAgent(event.tabId, { kind: "question", detail: `Autopilot: ${event.summary}` });
-    })
-      .then((stop) => {
-        if (disposed) stop();
-        else unlisten = stop;
-      })
-      // intentionally silent: the overview still shows the stop; only the toast is lost.
-      .catch(() => {});
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, [notifyAgent]);
+    if (tabsLoaded) ownTabs.resolve(savedTabs.map((tab) => tab.id));
+  }, [ownTabs, tabsLoaded, savedTabs]);
+  useEffect(
+    () =>
+      subscribeAutopilotStops((event) => {
+        notifyAgent(event.tabId, { kind: "question", detail: `Autopilot: ${event.summary}` });
+      }, ownTabs.promise),
+    [notifyAgent, ownTabs],
+  );
 
   const startBlankTerminal = useCallback(
     async (launch: "shell" | CliLaunch) => {
@@ -4210,7 +4217,7 @@ export function StartupForm({
   const readTerminalVerdict = useCallback(
     (tabId: string | null | undefined, fresh = false) => {
       const tab = tabId ? savedTabsRef.current.find((item) => item.id === tabId) : undefined;
-      if (!tab || tab.kind !== "terminal" || !isReviewerRole(tab.roleId)) return;
+      if (!tab || tab.kind !== "terminal" || !isReviewerRole(tab.roleId, tab.chain?.kind)) return;
       const apply = (log: TerminalSessionLog | null | undefined) => {
         const verdict = terminalLogVerdict(
           log,
@@ -4270,7 +4277,7 @@ export function StartupForm({
       let planFile: PlanFileInfo | null = null;
       let planError: string | null = null;
       // Reports never use a plan file: the plans folder is shared by every tab.
-      if (isPlanSource(sourceRoleId)) {
+      if (isPlanSource(sourceRoleId, tab?.chain?.kind)) {
         try {
           // Read-only: ~/.cursor/plans, or <configDir>/plans for a Claude tab.
           // No plan file → the dialog defaults to the selection, then the tail.
@@ -4316,7 +4323,7 @@ export function StartupForm({
       setChatPlanFile(null);
       const tabId = activeTabIdRef.current;
       const rt = tabId ? runtimesRef.current[tabId] : undefined;
-      if (tabId && summary && isPlanSource(summary.roleId) && !rt?.plan && !rt?.lastPlanMarkdown) {
+      if (tabId && summary && isPlanSource(summary.roleId, summary.chain?.kind) && !rt?.plan && !rt?.lastPlanMarkdown) {
         // After a restart the plan lives only in the file Claude wrote. Use it
         // only when this tab's own tool calls name that file. A continued
         // session may replay only messages, so the saved transcript counts too.
@@ -4374,6 +4381,7 @@ export function StartupForm({
       const captureState = terminalStates[captureTab.id];
       return {
         sourceRoleId: captureTab.roleId,
+        sourceChainKind: captureTab.chain?.kind ?? null,
         sourceTabId: captureTab.id,
         sourceLabel: captureTab.label || roleDisplayName(captureTab.roleId, roles),
         cwd: captureTab.cwd || values.cwd || "",
@@ -4401,6 +4409,7 @@ export function StartupForm({
     const cards = cardsByTab[activeTabId ?? ""] ?? emptySessionCards();
     return {
       sourceRoleId: roleId,
+      sourceChainKind: activeTabSummary?.chain?.kind ?? null,
       sourceTabId: activeTabId ?? "",
       sourceLabel:
         savedTabs.find((tab) => tab.id === activeTabId)?.label ?? roleDisplayName(roleId, roles),
@@ -4410,7 +4419,7 @@ export function StartupForm({
       // An Implementer's summary is its last message; other roles' replies
       // may be split by tool calls, so their whole reply in this turn is read.
       latestMessage:
-        roleId === "role_implementer"
+        roleBehaviour(roleId, activeTabSummary?.chain?.kind) === "implementer"
           ? latestAgentMessage(streamSegments)
           : latestReplyText(streamSegments),
       plan: cards.plan,
@@ -4454,7 +4463,7 @@ export function StartupForm({
   const handoffBlock = handoffBlockReason({ ...handoffSource, selection: "" }, roles);
   // A reviewer's verdict picks the primary button; the user still sends.
   const sourceVerdict =
-    isReviewerRole(handoffSource.sourceRoleId) && !handoffSource.turnInFlight
+    isReviewerRole(handoffSource.sourceRoleId, handoffSource.sourceChainKind) && !handoffSource.turnInFlight
       ? handoffSource.fromTerminal
         ? terminalLogVerdict(
             captureLog,
@@ -4614,7 +4623,13 @@ export function StartupForm({
           setHandoffError(loop.target.blocked ?? "That choice has no content.");
           return;
         }
-        const text = loopBackMessage(handoffSource.sourceRoleId, findings, loop.target.round, roles);
+        const text = loopBackMessage(
+          handoffSource.sourceRoleId,
+          findings,
+          loop.target.round,
+          roles,
+          handoffSource.sourceChainKind,
+        );
         if (actorRun && loop.terminal) {
           setBusy(true);
           setHandoffError(null);
@@ -4630,8 +4645,7 @@ export function StartupForm({
             setTerminalCapture(null);
             setHandoffTarget(null);
             await cancelPendingPlan();
-            await refreshTabs();
-            await handleSelectTab(outcome.tabId ?? targetTab.id);
+            await showActorOutcome(outcome, { refreshTabs, selectTab: handleSelectTab }, targetTab.id);
           } catch (err: unknown) {
             setHandoffError(errorText(err));
           } finally {
@@ -4752,7 +4766,8 @@ export function StartupForm({
           setHandoffs((prev) => [bound, ...prev.filter((item) => item.id !== bound.id)]);
           setTerminalCapture(null);
           setHandoffTarget(null);
-          await refreshTabs();
+          // Your Send shows the stage it opened, as a manual Send always did.
+          await showActorOutcome(outcome, { refreshTabs, selectTab: handleSelectTab });
           return;
         }
         // The next stage on the chain, or a round sent back: made once.
@@ -4774,17 +4789,11 @@ export function StartupForm({
         const nextValues = { ...mapped.answers, cwd: handoffSource.cwd };
         const sourceProvider = providerOf(sourceTab ?? null);
         if (surface === "terminal") {
-          const terminal = terminalHandoffInput(mapped);
           stashActiveTab();
           // Launched as the source's provider, not switched after the CLI started.
-          const tabId = await startRoleTerminal({
-            roleId: handoffTarget,
-            values: { ...terminal.values, cwd: handoffSource.cwd },
-            tabId: null,
-            handoffPlan: terminal.handoffPlan,
-            provider: sourceProvider,
-            chain: loopStep?.next ?? prepared.value.nextChain,
-          });
+          const tabId = await startRoleTerminal(
+            handoffTerminalStart(prepared.value, handoffTarget, handoffSource.cwd, sourceProvider, loopStep?.next),
+          );
           if (!tabId) {
             setHandoffError("Terminal did not start.");
             return;
@@ -5975,7 +5984,7 @@ export function StartupForm({
           splitOpen={splitOpen(split)}
           gridOpen={gridOpen(split)}
           canAddToGrid={gridCandidates.length > 0 && (!gridOpen(split) || (split.gridTabIds?.length ?? 0) < GRID_MAX_TABS)}
-          canSendPlan={(isCaptureSource(roleId) && !!session) || !!isPlanTerminal}
+          canSendPlan={(isCaptureSource(roleId, activeTabSummary?.chain?.kind) && !!session) || !!isPlanTerminal}
           sendPlanTargets={
             isPlanTerminal
               ? planTerminalTargets
@@ -6371,6 +6380,7 @@ export function StartupForm({
     return shell(
       <section className="status-card status-card-session-full pipeline-overview-screen">
         <PipelineOverview
+          key={activeTabSummary.pipelineRunId}
           runId={activeTabSummary.pipelineRunId}
           cwd={activeTabSummary.cwd}
           tabs={savedTabs}
@@ -6395,6 +6405,7 @@ export function StartupForm({
           onStageControl={async (runId, tabId, kind) => {
             await pipelineActorMessage(runId, { kind, tabId });
           }}
+          usageWindows={usageSnap?.windows ?? null}
         />
       </section>,
     );

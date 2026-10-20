@@ -33,6 +33,10 @@ pub struct GateResult {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub output: String,
     pub duration_ms: u64,
+    /// The gate is marked `optional`: an `auto` check with nothing to run
+    /// is skipped instead of stopping the run.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub optional: bool,
 }
 
 impl GateResult {
@@ -44,6 +48,12 @@ impl GateResult {
         self.status == "failed"
     }
 
+    /// An `auto` command check that found nothing to run, on a gate not
+    /// marked optional: the run stops with `no_check_found` (D31).
+    pub fn no_check_found(&self) -> bool {
+        self.kind == "command" && self.status == "skipped" && !self.optional
+    }
+
     pub fn skipped(kind: &str, label: &str, summary: &str) -> Self {
         Self {
             kind: kind.into(),
@@ -52,6 +62,7 @@ impl GateResult {
             summary: summary.into(),
             output: String::new(),
             duration_ms: 0,
+            optional: false,
         }
     }
 }
@@ -226,6 +237,7 @@ pub fn run_command_gate(cwd: &Path, run: &str, timeout: Option<Duration>) -> Gat
             summary: format!("The folder {} does not exist.", cwd.display()),
             output: String::new(),
             duration_ms: 0,
+            optional: false,
         };
     }
     let timeout = timeout.unwrap_or(DEFAULT_GATE_TIMEOUT);
@@ -249,6 +261,7 @@ pub fn run_command_gate(cwd: &Path, run: &str, timeout: Option<Duration>) -> Gat
                 summary,
                 output: if passed { String::new() } else { ran.output },
                 duration_ms: ran.duration.as_millis() as u64,
+                optional: false,
             }
         }
         Err(err) => GateResult {
@@ -258,6 +271,7 @@ pub fn run_command_gate(cwd: &Path, run: &str, timeout: Option<Duration>) -> Gat
             summary: err,
             output: String::new(),
             duration_ms: 0,
+            optional: false,
         },
     }
 }
@@ -294,6 +308,7 @@ pub fn run_pull_request_gate(cwd: &Path, urls: &[String]) -> GateResult {
             summary: "The stage reported no GitHub pull request URL.".into(),
             output: String::new(),
             duration_ms: 0,
+            optional: false,
         };
     }
     let started = Instant::now();
@@ -333,6 +348,7 @@ pub fn run_pull_request_gate(cwd: &Path, urls: &[String]) -> GateResult {
         },
         output: output.join("\n"),
         duration_ms: started.elapsed().as_millis() as u64,
+        optional: false,
     }
 }
 

@@ -12,7 +12,17 @@ import {
   pipelineSetAutopilot,
   pipelineSetCandidatePlan,
 } from "../bridge";
-import { maxRounds, pipelineDef, pipelineStages, type StageDef } from "../pipeline/defs";
+import {
+  behaviourRole,
+  DEFAULT_PAUSE_AT_USAGE_PERCENT,
+  maxRounds,
+  pipelineDef,
+  pipelineStages,
+  stageBehaviour,
+  type StageDef,
+} from "../pipeline/defs";
+import { stopReasonText } from "../pipeline/stopReasons";
+import { autopilotUsageLine, type RateWindow } from "../usage/limits";
 import { eventLabel, eventTime, followUps, formatRunReport, reviewRound, stageTitle } from "../pipeline/runReport";
 import { githubPrUrls } from "../handoff/map";
 import { lanesFromReply, lanesFromTasks } from "../pipeline/prPlan";
@@ -65,6 +75,8 @@ type Props = {
   onContinue?: (runId: string) => Promise<void>;
   /** Engine 2 (V5, D28): take a stage over from autopilot, or hand it back. */
   onStageControl?: (runId: string, tabId: string, kind: "takeOver" | "handBack") => Promise<void>;
+  /** The latest Claude limit windows, for the autopilot usage line. Null: not loaded. */
+  usageWindows?: RateWindow[] | null;
 };
 
 /** "Round 4", or "Round 2 of at most 3" when the loop-back has a round cap. */
@@ -135,6 +147,7 @@ export function PipelineOverview({
   onApproveRun,
   onContinue,
   onStageControl,
+  usageWindows = null,
 }: Props) {
   const [run, setRun] = useState<PipelineRun | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -161,6 +174,9 @@ export function PipelineOverview({
           // intentionally silent: without tasks.json the offer reads the plan stage's reply.
         }
         setRunTasks(planned);
+      } else {
+        // Engine 1 fans out from the plan stage's reply, never another run's tasks.
+        setRunTasks(null);
       }
       setCandidateDraft((prev) => prev || view.run.candidatePlan || "");
       setApprovedDraft((prev) => prev || view.run.approvedPlan || "");
@@ -348,7 +364,7 @@ export function PipelineOverview({
       await pipelinePromotePlan(runId, text);
       await reload();
       await onRefreshTabs();
-      const implId = run?.tabIds.role_implementer;
+      const implId = run ? run.tabIds[behaviourRole(run.kind, "implementer")] : undefined;
       onNotice("Approved for implementation", "Implementer form updated. Open that tab and Start.");
       if (implId) onJump(implId);
     } catch (err: unknown) {
@@ -375,7 +391,9 @@ export function PipelineOverview({
   }
 
   const stages = overviewStages(run, tabs, runtimes, terminalReader, terminalStates, sessionLogs);
-  const implementerTab = tabs.find((t) => t.id === run.tabIds.role_implementer);
+  // The implementer stage's role on this pipeline (a copied Implementer keeps its own id).
+  const implementerRole = behaviourRole(run.kind, "implementer");
+  const implementerTab = tabs.find((t) => t.id === run.tabIds[implementerRole]);
   // A chain's Implementer may already be running; promote only fills a draft form.
   const canPromote = !run.chainId || implementerTab?.phase === "draft";
   // Why promote is off: the Implementer runs already, or there is none yet
@@ -384,7 +402,7 @@ export function PipelineOverview({
     ? null
     : implementerTab
       ? "The Implementer tab already started. Use Hand off on the Plan Reviewer tab."
-      : run.tabIds.role_implementer
+      : run.tabIds[implementerRole]
         ? "The Implementer tab is closed. Use Hand off on the Plan Reviewer tab to start a new one."
         : "There is no Implementer tab yet. Use Hand off on the Plan Reviewer tab to start it.";
   const originalRequest = run.originalRequest?.trim() ?? "";
@@ -401,7 +419,7 @@ export function PipelineOverview({
   const fanOutIndex = run.fanOutStage ? stageDefs.findIndex((s) => s.id === run.fanOutStage) : -1;
   // Fan-out reads the Planner's tasks (engine 2), else the pull-request list
   // in the reply of the stage before the Implementer.
-  const fanStage = stageDefs.find((s) => s.roleId === "role_implementer") ?? null;
+  const fanStage = (def && stageDefs.find((s) => stageBehaviour(def, s) === "implementer")) ?? null;
   const planStage = fanStage ? stageDefs[stageDefs.indexOf(fanStage) - 1] ?? null : null;
   const planTab = planStage ? tabs.find((t) => t.id === run.tabIds[planStage.roleId]) : undefined;
   // Engine 2 reads the Planner's tasks.json; otherwise the plan stage's reply.
@@ -445,12 +463,29 @@ export function PipelineOverview({
           </label>
           <p className="hint">
             {autopilotOn
-              ? "After each terminal stage's turn, the checks run and the run moves on, sends a round back, or stops for you. Rounds go back until the reviewer approves (or up to a round cap, if the pipeline sets one). It stops before a checkpoint, when Claude needs you, and near your usage limit. It never merges."
+              ? "After each terminal stage's turn, the checks run and the run moves on, sends a round back, or stops for you. Rounds go back until the reviewer approves (or up to a round cap, if the pipeline sets one). It stops before a checkpoint, when Claude needs you, near your usage limit, and when Claude refuses a request for a usage limit. It never merges."
               : "Off: every hand-off waits for you. Turn it on to let terminal stages hand on by themselves."}
           </p>
+          {run.engineNote && (
+            <p className="hint" data-testid="engine-note">
+              {run.engineNote}
+            </p>
+          )}
+          {autopilotOn && usageWindows && (
+            <p className="hint" data-testid="autopilot-usage">
+              {
+                autopilotUsageLine(
+                  usageWindows,
+                  def.autopilot?.pauseAtUsagePercent ?? DEFAULT_PAUSE_AT_USAGE_PERCENT,
+                ).text
+              }
+            </p>
+          )}
           {autopilotOn && run.autopilot?.waiting && (
             <p className="pipeline-autopilot-waiting" role="status">
-              Waiting for you: {run.autopilot.waiting}
+              Waiting for you:{" "}
+              {stopReasonText(run.stopReason) && <strong>{stopReasonText(run.stopReason)} </strong>}
+              {run.autopilot.waiting}
             </p>
           )}
           {autopilotOn && run.status === "waiting" && run.stopReason === "app_restarted" && onContinue && (
@@ -847,6 +882,9 @@ export function PipelineOverview({
                 <span className="pipeline-event-kind">{eventLabel(event.kind)}</span>
                 {event.stageId && <span className="hint"> · {stageTitle(run, event.stageId)}</span>}
                 <span className="hint"> · round {event.round}</span>
+                {stopReasonText(event.outcome) && (
+                  <div className="pipeline-event-reason">{stopReasonText(event.outcome)}</div>
+                )}
                 <div>{event.summary}</div>
                 {event.detail?.trim() && (
                   <details>

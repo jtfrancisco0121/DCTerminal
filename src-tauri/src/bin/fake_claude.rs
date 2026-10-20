@@ -66,6 +66,11 @@
 //! - `{"subagent": {"description": "…", "prompt": "…", "steps": [ … ]}}`: a
 //!   `Task` tool_use, the sub-agent's records (`isSidechain: true`; thinking,
 //!   text, reply and tool steps without permission), then the Task's result.
+//! - `{"rate_limit": "You've hit your limit · resets 3pm"}`: the request is
+//!   refused for a usage limit. Writes the synthetic assistant record Claude
+//!   Code is understood to write (`isApiErrorMessage`, `error: "rate_limit"`,
+//!   model `<synthetic>`, `stop_reason: "stop_sequence"`; not yet captured
+//!   live) and ends the turn.
 //! - `{"delay_ms": 500}`: wait.
 //! - `{"interrupt": true}`: as if Esc was pressed.
 //! - `{"crash": true}`: write half of the next record, no newline, and exit
@@ -79,8 +84,10 @@
 //!
 //! A turn may also carry `"on_block": [[steps], …]`: when a Stop hook blocks
 //! the end of the turn, the next list runs (as Claude going on), then Stop
-//! hooks run again with `stop_hook_active: true`. With no list left the turn
-//! ends anyway, so a scenario never loops.
+//! hooks run again with `stop_hook_active: true` (or `false` when the turn
+//! has `"stop_hook_active_after_block": false`, so only the hook's own
+//! once-per-turn record can end it). With no list left the turn ends
+//! anyway, so a scenario never loops.
 //!
 //! # Hooks and MCP
 //!
@@ -664,8 +671,12 @@ impl Fake {
                         .collect()
                 })
                 .unwrap_or_default();
+            let active_after_block = turn
+                .get("stop_hook_active_after_block")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
             if self.steps(&steps) == Ended::Done
-                && self.stop(on_block) == Ended::Done
+                && self.stop(on_block, active_after_block) == Ended::Done
                 && turn.get("turn_duration").and_then(Value::as_bool) != Some(false)
             {
                 self.turn_duration(started);
@@ -678,14 +689,15 @@ impl Fake {
             self.start_turn(&prompt);
             let started = Instant::now();
             self.reply("fake_claude: no scenario turn left.");
-            self.stop(VecDeque::new());
+            self.stop(VecDeque::new(), true);
             self.turn_duration(started);
         }
     }
 
     /// The turn ended normally: Stop hooks run, and while one blocks, the
-    /// next `on_block` list runs and they run again.
-    fn stop(&mut self, mut on_block: VecDeque<Vec<Value>>) -> Ended {
+    /// next `on_block` list runs and they run again, with `stop_hook_active`
+    /// set to `active_after_block`.
+    fn stop(&mut self, mut on_block: VecDeque<Vec<Value>>, active_after_block: bool) -> Ended {
         let mut active = false;
         loop {
             let payload = json!({
@@ -701,7 +713,7 @@ impl Fake {
                 "\r\n\x1b[38;5;174m  ⎿  Stop hook error: {}\x1b[39m\r\n",
                 screen_text(&reason)
             ));
-            active = true;
+            active = active_after_block;
             let Some(steps) = on_block.pop_front() else {
                 return Ended::Done;
             };
@@ -861,6 +873,10 @@ impl Fake {
             if self.step(step) == Ended::Interrupted {
                 return Ended::Interrupted;
             }
+            if step.get("rate_limit").is_some() {
+                // A refused request ends the turn; later steps never run.
+                break;
+            }
             if self.esc_pressed() {
                 self.interrupted(INTERRUPTED);
                 return Ended::Interrupted;
@@ -886,6 +902,15 @@ impl Fake {
             self.assistant(json!({ "type": "text", "text": text }), text_of("stop"));
         } else if let Some(text) = text_of("reply") {
             self.reply(text);
+        } else if let Some(text) = text_of("rate_limit") {
+            self.draw(&format!("\r\n  ⎿  {}\r\n", screen_text(text)));
+            let mut message = message("<synthetic>", json!({ "type": "text", "text": text }), Some("stop_sequence"));
+            message["usage"] = json!({ "input_tokens": 0, "output_tokens": 0 });
+            let record = self.record(
+                "assistant",
+                json!({ "message": message, "isApiErrorMessage": true, "error": "rate_limit" }),
+            );
+            self.write(record);
         } else if let Some(name) = text_of("tool") {
             return self.tool(name, step);
         } else if let Some(tool) = text_of("mcp") {
