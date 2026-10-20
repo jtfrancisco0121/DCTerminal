@@ -274,7 +274,8 @@ pub fn pipeline_release_handoff(
 /// A line the frontend adds to the ledger, e.g. why autopilot could not
 /// carry out a decision. `stop` also puts the run in `waiting` with
 /// `reason` (by default `carry_out_failed`: the frontend stops when it
-/// cannot carry a decision out).
+/// cannot carry a decision out); with autopilot off it only logs the line
+/// and the run stays `stopped`.
 pub fn note(
     store: &mut StateStore,
     run_id: &str,
@@ -1085,6 +1086,28 @@ mod tests {
         note(&mut store, "ee_f", None, "Quiet for 30 minutes", None, true, Some(StopReason::Stalled)).unwrap();
         assert_eq!(store.pipeline_run_by_id("ee_f").unwrap().stop_reason, Some(StopReason::Stalled));
         assert!(note(&mut store, "ee_f", None, "  ", None, true, None).is_err());
+    }
+
+    #[test]
+    fn a_stop_note_with_autopilot_off_logs_the_line_and_leaves_the_run_stopped() {
+        let (_dir, mut store) = store("note_stop_off");
+        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        set_autopilot(&mut store, "ee_f", true).unwrap();
+        // You turned autopilot off while it was opening a terminal; the hand-off then failed.
+        set_autopilot(&mut store, "ee_f", false).unwrap();
+        note(&mut store, "ee_f", Some("planner"), "Autopilot could not open plan_reviewer", None, true, None).unwrap();
+        let run = store.pipeline_run_by_id("ee_f").unwrap();
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Stopped, Some(StopReason::PausedByYou)));
+        assert!(run.autopilot.as_ref().unwrap().waiting.is_none(), "no waiting sentence while off");
+        assert_eq!(run.events.last().unwrap().kind, "stop", "the line is still logged");
+        // A manual run that never had autopilot stays stopped too.
+        let (_dir2, mut manual) = self::store("note_stop_manual");
+        let planner = manual.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
+        manual.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        note(&mut manual, "ee_f", None, "Autopilot stopped", None, true, None).unwrap();
+        let run = manual.pipeline_run_by_id("ee_f").unwrap();
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Stopped, None));
     }
 
     #[test]

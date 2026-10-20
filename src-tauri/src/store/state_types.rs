@@ -412,9 +412,11 @@ pub const MAX_DECIDED_TURNS: usize = 100;
 
 impl PipelineRun {
     /// Autopilot stops for you: `waiting`, with the reason code and the
-    /// sentence the overview shows. A complete run stays complete.
+    /// sentence the overview shows. A complete run stays complete, and a run
+    /// with autopilot off stays `stopped`: only autopilot waits for you.
     pub fn set_waiting(&mut self, reason: StopReason, why: impl Into<String>) {
-        if self.status == RunStatus::Complete {
+        let enabled = self.autopilot.as_ref().is_some_and(|a| a.enabled);
+        if self.status == RunStatus::Complete || !enabled {
             return;
         }
         self.autopilot.get_or_insert_with(RunAutopilot::default).waiting = Some(why.into());
