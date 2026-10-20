@@ -1400,7 +1400,18 @@ fn handing_back_a_stage_you_revised_yourself_decides_your_turn_not_the_held_roun
         );
         let decided = &run.autopilot.as_ref().unwrap().decided;
         assert!(decided.iter().any(|t| t.ends_with("|bridge|p-2")), "your turn is decided: {decided:?}");
+        // The Timeline never says the round went back: nothing was sent.
+        let lines: Vec<&str> = run.events.iter().map(|e| e.summary.as_str()).collect();
+        assert!(
+            !lines.iter().any(|l| l.contains("goes back to") || l.contains("sent back") || l.contains("Handed to Planner")),
+            "{lines:?}"
+        );
+        assert!(lines.iter().any(|l| l.contains("revised Planner yourself")), "{lines:?}");
+        // Nor is the review stored as the Planner's hand-off.
+        let handoff = run.handoffs.get("role_planner").map(|h| h.text.clone()).unwrap_or_default();
+        assert!(!handoff.starts_with("Review findings from the"), "{handoff}");
     });
+    assert!(!fx.run_file("findings-plan_reviewer-r1.json").exists(), "no findings file nothing points to");
     // Nothing is decided twice: handing back again changes nothing.
     let launches = fx.launches().len();
     fx.user(UserAction::TakeOver { tab_id: planner.clone() }).unwrap();

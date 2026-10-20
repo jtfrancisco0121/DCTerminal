@@ -416,6 +416,16 @@ impl<H: Host> Actor<H> {
             let mut trial = run.clone();
             let decision = decide(&placed.def, &mut trial, &report);
             let held = taken_over_target(&placed.def, run, placed, &decision);
+            // A round you dealt with yourself (D28) is not sent back: its
+            // decision line says so instead of "goes back to".
+            if held.is_none() && decision.action == "loopBack" && self.revised_target(&trial, placed, &decision, turn).is_some() {
+                if let Some(event) = trial.events.last_mut().filter(|e| e.outcome.as_deref() == Some("loopBack")) {
+                    event.summary = format!(
+                        "{}, which you revised yourself, so nothing was sent.",
+                        event.summary.replace(" goes back to ", " was for ").trim_end_matches('.')
+                    );
+                }
+            }
             if held.is_some() {
                 (decision, held)
             } else {
@@ -487,7 +497,7 @@ impl<H: Host> Actor<H> {
             "loopBack" => {
                 let verdict = verdict.unwrap_or(placed.revise()).to_string();
                 if let Some(target) = self.revised_since(placed, decision, turn) {
-                    if let Err(err) = self.record_round_you_revised(placed, turn, decision, &verdict, &target) {
+                    if let Err(err) = self.record_round_you_revised(placed, decision, &verdict, &target) {
                         fail(self, format!("record the round: {err}"));
                     }
                     return;
@@ -679,12 +689,15 @@ impl<H: Host> Actor<H> {
     /// The tab a held round goes back to when Hand back finds that you
     /// revised it yourself after the round's turn ended (D28): its tab id.
     fn revised_since(&self, placed: &Placed, decision: &Decision, turn: &BridgeTurn) -> Option<String> {
+        let store = lock(self.host.store());
+        let run = store.pipeline_run_by_id(&self.run_id)?;
+        self.revised_target(run, placed, decision, turn)
+    }
+
+    /// [`Self::revised_since`] over `run`, with the store already locked.
+    fn revised_target(&self, run: &PipelineRun, placed: &Placed, decision: &Decision, turn: &BridgeTurn) -> Option<String> {
         let (tab_id, ended) = self.revised.as_ref()?;
-        let target = {
-            let store = lock(self.host.store());
-            let run = store.pipeline_run_by_id(&self.run_id)?;
-            loop_back_tab(&placed.def, run, placed, decision)?
-        };
+        let target = loop_back_tab(&placed.def, run, placed, decision)?;
         (target == *tab_id && ended_after(ended, &turn.ended_at)).then_some(target)
     }
 
@@ -693,13 +706,14 @@ impl<H: Host> Actor<H> {
     fn record_round_you_revised(
         &mut self,
         placed: &Placed,
-        turn: &BridgeTurn,
         decision: &Decision,
         verdict: &str,
         target_tab: &str,
     ) -> Result<(), String> {
-        let (target, text, _) = self.round_back(placed, turn, decision)?;
+        let target_id = decision.stage_id.as_deref().ok_or("the decision names no stage")?;
+        let target = placed.def.stage(target_id).ok_or("that stage is not in the pipeline")?.clone();
         {
+            // No hand-off text and no findings file: nothing went to the stage.
             let mut store = lock(self.host.store());
             store.chain_loop_back_in(
                 &placed.chain.chain_id,
@@ -707,8 +721,13 @@ impl<H: Host> Actor<H> {
                 &placed.tab.role_id,
                 target_tab,
                 Some(verdict),
-                Some(&text),
+                None,
             )?;
+            let run = store.pipeline_run_by_id_mut(&self.run_id).ok_or("the run is gone")?;
+            if let Some(event) = run.events.last_mut().filter(|e| e.kind == "loopBack") {
+                event.summary = event.summary.replace(" sent back (", " dealt with by you (");
+            }
+            store.save()?;
         }
         let summary = format!(
             "You revised {} yourself after {}'s review, so its findings are not sent again. Autopilot decides your newest turn.",
