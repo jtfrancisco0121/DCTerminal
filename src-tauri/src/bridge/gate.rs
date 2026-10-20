@@ -86,11 +86,19 @@ pub fn decide(version: Option<&str>, hooks_off: Option<&HooksOff>) -> Gate {
 /// Returns (launch bridged, run changed). Engine 1: the run switches for
 /// good, with its notice on the overview (`engine_note`) and the Timeline.
 pub fn apply(run: &mut crate::store::PipelineRun, gate: &Gate, stage_id: &str) -> (bool, bool) {
+    apply_with(run, gate, stage_id, true)
+}
+
+/// [`apply`]; `timeline: false` leaves the engine-1 notice off the Timeline
+/// (a relaunch's switch logs its own "manual from now on" line instead).
+pub fn apply_with(run: &mut crate::store::PipelineRun, gate: &Gate, stage_id: &str, timeline: bool) -> (bool, bool) {
     match gate {
         Gate::EngineOne(notice) => {
             run.engine = 1;
             run.engine_note = Some(notice.clone());
-            run.log("note", Some(stage_id), None, notice.clone(), None);
+            if timeline {
+                run.log("note", Some(stage_id), None, notice.clone(), None);
+            }
             (false, true)
         }
         Gate::Bridge { unverified } => {
@@ -101,6 +109,40 @@ pub fn apply(run: &mut crate::store::PipelineRun, gate: &Gate, stage_id: &str) -
             (true, changed)
         }
     }
+}
+
+/// A run that was running bridged was just switched to engine 1 at a
+/// relaunch: autopilot goes off for good (status `stopped`, no stop reason:
+/// the engine note and the Timeline say why), and cannot be turned back on
+/// (`manual_only`).
+pub fn make_manual(run: &mut crate::store::PipelineRun, stage_id: &str, decided_key: Option<&str>) {
+    run.manual_only = true;
+    // Belt and braces for restart recovery and Continue: the relaunched
+    // tab's current turn (decided by the bridge) under its v1 key too.
+    if let Some(key) = decided_key.map(str::trim).filter(|key| !key.is_empty()) {
+        let decided = &mut run.autopilot.get_or_insert_with(Default::default).decided;
+        if !decided.iter().any(|seen| seen == key) {
+            decided.push(key.to_string());
+            if decided.len() > crate::store::MAX_DECIDED_TURNS {
+                let drop = decided.len() - crate::store::MAX_DECIDED_TURNS;
+                decided.drain(..drop);
+            }
+        }
+    }
+    run.set_autopilot_enabled(false);
+    run.stop_reason = None;
+    let why = run
+        .engine_note
+        .take()
+        .and_then(|note| note.split(", so this run uses engine 1").next().map(str::to_string))
+        .filter(|why| !why.is_empty());
+    let line = "This run was running with the pipeline bridge, so it is manual from now on: autopilot is off. Hand each stage on yourself.";
+    let note = match why {
+        Some(why) => format!("{why}. {line}"),
+        None => line.to_string(),
+    };
+    run.log("note", Some(stage_id), None, note.clone(), None);
+    run.engine_note = Some(note);
 }
 
 /// The managed settings file Claude Code reads on this OS.

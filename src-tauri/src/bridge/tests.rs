@@ -576,6 +576,7 @@ fn a_call_to_another_tool_is_refused() {
         "params": { "name": "other_tool", "arguments": {} } }))
     .unwrap();
     assert_eq!(other["result"]["isError"], true);
+    assert!(stage.open().turn().is_none(), "only submit_result opens a fallback turn");
 }
 
 #[test]

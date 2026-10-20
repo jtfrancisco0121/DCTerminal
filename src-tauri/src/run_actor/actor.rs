@@ -768,8 +768,8 @@ impl<H: Host> Actor<H> {
                 .ok_or_else(|| format!("{} does not report through the pipeline bridge, so autopilot cannot follow it", role.name))?
         };
         // D24 and hooks-off, as at every bridged start: an engine-1 outcome
-        // switches the run for good, and this stage opens unbridged (the
-        // frontend's v1 path follows the run from here).
+        // switches the run for good and, mid-run, makes it manual (autopilot
+        // off, V2a); this stage opens unbridged for you to hand on.
         let plan = if self.host.bridge_gate(&plan.run_id, &plan.stage_key, &cwd)? {
             Some(plan)
         } else {

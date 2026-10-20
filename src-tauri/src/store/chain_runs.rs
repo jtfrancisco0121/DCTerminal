@@ -183,6 +183,7 @@ impl StateStore {
                     engine: crate::pipelines::find(&kind)
                         .map_or(1, |def| crate::bridge::launch::engine_for(&def)),
                     engine_note: None,
+                    manual_only: false,
                 });
                 chain.chain_id.clone()
             }
@@ -703,6 +704,7 @@ mod tests {
             stop_reason: None,
             engine: 1,
             engine_note: None,
+            manual_only: false,
         }
     }
 

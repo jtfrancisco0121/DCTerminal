@@ -1174,30 +1174,70 @@ fn gate_inputs(
     (version, hooks)
 }
 
+/// The v1 key (`tab|session|prompt`) of the tab's last finished turn in its
+/// session log under `(config folder, session id)`, read with no lock held.
+fn last_turn_key(tab_id: &str, target: Option<&(PathBuf, String)>) -> Option<String> {
+    let (dir, session) = target?;
+    let path = crate::claude_session_log::find_session_log(dir, session)?;
+    let log = crate::claude_session_log::reader::SessionLogReader::open(&path, session)?.summary();
+    log.turn_done.then(|| crate::pipelines::recovery::turn_key(tab_id, &log))
+}
+
+/// Where the D24 gate runs: a stage's first bridged start, or a Restart /
+/// Resume of a tab that was running bridged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GateAt {
+    Start,
+    Relaunch,
+}
+
+/// What [`gate_run`] decided.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct GateRun {
+    /// Launch bridged.
+    bridged: bool,
+    /// A relaunch switched a run that was running bridged to engine 1, and
+    /// autopilot is off for it from now on.
+    manual_now: bool,
+}
+
 /// D24 and hooks-off for an engine-2 run at a bridged start or relaunch of
-/// `stage` (a stage key; a lane suffix is dropped for the Timeline). True
-/// when it launches bridged. An engine-1 outcome switches the run for good
-/// (saved, with its notice); a run already on engine 1, or gone, is never
-/// bridged; a newer CLI leaves the overview's note.
+/// `stage` (a stage key; a lane suffix is dropped for the Timeline). An
+/// engine-1 outcome switches the run for good (saved, with its notice); a
+/// run already on engine 1, or gone, is never bridged; a newer CLI leaves
+/// the overview's note.
+///
+/// At a relaunch the run was already running bridged, and the bridge has
+/// decided turns the v1 path cannot recognise (a Resume continues the same
+/// session). So a switch there also turns autopilot off: the run is manual
+/// from now on, as engine 1 runs are after V6, and the note says why.
 fn gate_run(
     store: &Mutex<StateStore>,
     run_id: &str,
     stage: &str,
     version: Option<&str>,
     hooks_off: Option<&crate::bridge::gate::HooksOff>,
-) -> Result<bool, String> {
+    at: GateAt,
+    decided_key: Option<&str>,
+) -> Result<GateRun, String> {
     let decision = crate::bridge::gate::decide(version, hooks_off);
     let stage_id = stage.split('@').next().unwrap_or(stage);
     let mut state = store.lock().map_err(|err| err.to_string())?;
     let Some(run) = state.pipeline_run_by_id_mut(run_id).filter(|run| run.engine >= crate::bridge::launch::ENGINE_V2)
     else {
-        return Ok(false);
+        return Ok(GateRun::default());
     };
-    let (bridged, changed) = crate::bridge::gate::apply(run, &decision, stage_id);
+    let relaunch = at == GateAt::Relaunch;
+    let (bridged, mut changed) = crate::bridge::gate::apply_with(run, &decision, stage_id, !relaunch);
+    let manual_now = !bridged && relaunch;
+    if manual_now {
+        crate::bridge::gate::make_manual(run, stage_id, decided_key);
+        changed = true;
+    }
     if changed {
         state.save()?;
     }
-    Ok(bridged)
+    Ok(GateRun { bridged, manual_now })
 }
 
 /// [`gate_run`] at a stage's first bridged start.
@@ -1207,7 +1247,8 @@ fn gate_bridged_launch(
     version: Option<&str>,
     hooks_off: Option<&crate::bridge::gate::HooksOff>,
 ) -> Result<Option<crate::bridge::BridgePlan>, String> {
-    Ok(gate_run(store, &plan.run_id, &plan.stage_id, version, hooks_off)?.then_some(plan))
+    let gated = gate_run(store, &plan.run_id, &plan.stage_id, version, hooks_off, GateAt::Start, None)?;
+    Ok(gated.bridged.then_some(plan))
 }
 
 /// `<app data>/runs` and this executable, for a bridged launch.
@@ -1621,7 +1662,31 @@ pub(crate) fn actor_stage_gate(
         provider_for_window(&state, settings.providers(), ProviderId::Claude, None)
     };
     let (version, hooks_off) = gate_inputs(provider.as_ref(), cwd);
-    gate_run(&store, run_id, stage_key, version.as_deref(), hooks_off.as_ref())
+    let runs = crate::bridge::launch::runs_root(&crate::data_dir::app_data_dir(app).path);
+    actor_gate_on(&store, &runs, run_id, stage_key, version.as_deref(), hooks_off.as_ref())
+}
+
+/// [`actor_stage_gate`] once the CLI version and settings are read. The
+/// actor only ever opens a stage mid-run (a chain's first stage starts
+/// through `startChain`), so the bridge has decided turns already: a switch
+/// to engine 1 makes the run manual for good, as at a relaunch (V2a's
+/// `make_manual`, one Timeline note), and the run's bridged tabs stop
+/// enforcing a result (their hooks read `mode`). True to launch bridged.
+pub(crate) fn actor_gate_on(
+    store: &Mutex<StateStore>,
+    runs_root: &std::path::Path,
+    run_id: &str,
+    stage_key: &str,
+    version: Option<&str>,
+    hooks_off: Option<&crate::bridge::gate::HooksOff>,
+) -> Result<bool, String> {
+    let gated = gate_run(store, run_id, stage_key, version, hooks_off, GateAt::Relaunch, None)?;
+    if gated.manual_now {
+        if let Err(err) = crate::bridge::launch::set_run_mode(runs_root, run_id, false) {
+            eprintln!("DCTerminal: could not switch the run folder to manual: {err}");
+        }
+    }
+    Ok(gated.bridged)
 }
 
 /// Start a stage terminal for the run actor (V3), with no view: as
@@ -1969,20 +2034,48 @@ fn pty_open_blocking(
             }
             // A bridged stage relaunches with the same bridge flags while it
             // still owns its stage; otherwise it is a plain role terminal now.
-            let tag = {
+            let (tag, last_log) = {
                 let state = store.lock().map_err(|err| err.to_string())?;
-                state.tab_by_id(&input.id).and_then(|tab| tab.bridge.clone())
+                let tab = state.tab_by_id(&input.id);
+                let last_log = tab.and_then(|tab| {
+                    let dir = tab.sessions.claude_config_dir.clone()?;
+                    Some((PathBuf::from(dir), tab.sessions.claude_terminal_session_id.clone()?))
+                });
+                (tab.and_then(|tab| tab.bridge.clone()), last_log)
             };
             // The D24 gate again: the CLI or the hooks settings may have
             // changed since the first launch, and a run switched to engine 1
             // stays there. Without hooks a bridged tab would never end a turn.
             let mut flags = None;
             if let Some(tag) = tag {
-                let gated = provider.id() == ProviderId::Claude && {
+                let gated = if provider.id() == ProviderId::Claude {
                     let (version, hooks_off) = gate_inputs(provider.as_ref(), &cwd);
-                    gate_run(&store, &tag.run_id, &tag.stage, version.as_deref(), hooks_off.as_ref())?
+                    let decided_key = last_turn_key(&input.id, last_log.as_ref());
+                    gate_run(
+                        &store,
+                        &tag.run_id,
+                        &tag.stage,
+                        version.as_deref(),
+                        hooks_off.as_ref(),
+                        GateAt::Relaunch,
+                        decided_key.as_deref(),
+                    )?
+                } else {
+                    GateRun::default()
                 };
-                if gated {
+                if gated.manual_now {
+                    // The run's other bridged tabs stop enforcing a result
+                    // (their hooks read `mode`), and the overview refreshes.
+                    if let Ok((runs, _)) = bridge_paths(&app) {
+                        if let Err(err) = crate::bridge::launch::set_run_mode(&runs, &tag.run_id, false) {
+                            eprintln!("DCTerminal: could not switch the run folder to manual: {err}");
+                        }
+                    }
+                    if let Ok(state) = store.lock() {
+                        crate::commands::chain_events::notify_tab(&app, &state, &input.id);
+                    }
+                }
+                if gated.bridged {
                     flags = match bridge_paths(&app) {
                         Ok((runs, program)) => {
                             crate::bridge::launch::relaunch_flags(&runs, &tag, &input.id, &program)
@@ -2194,6 +2287,7 @@ mod tests {
         }))
         .unwrap();
         run.engine = crate::bridge::launch::ENGINE_V2;
+        run.set_autopilot_enabled(true);
         store.data.pipeline_runs.push(run);
         Mutex::new(store)
     }
@@ -2219,6 +2313,9 @@ mod tests {
         let saved = StateStore::open_path(dir.join("state.json")).unwrap();
         let run = saved.pipeline_run_by_id("ee_1700000000000").unwrap();
         assert_eq!(run.engine, 1, "saved as engine 1");
+        assert!(run.autopilot.as_ref().unwrap().enabled, "a first launch keeps autopilot (on engine 1)");
+        assert!(!run.manual_only);
+        assert_eq!(run.events.len(), 1, "one Timeline notice");
         assert!(run.engine_note.as_deref().unwrap().contains("2.1.200"));
 
         let dir = crate::test_support::TempDir::new("gate_bridged_launch_hooks");
@@ -2271,7 +2368,7 @@ mod tests {
         let gate = &source[source.find("pub(crate) fn actor_stage_gate(").expect("an actor gate")..];
         let gate = &gate[..gate.find("\n}\n").unwrap()];
         let inputs = gate.find("gate_inputs(").expect("reads the version and settings");
-        let applied = gate.find("gate_run(").expect("applies the gate to the run");
+        let applied = gate.find("actor_gate_on(").expect("applies the gate to the run");
         assert!(inputs < applied);
         assert!(!gate[inputs..applied].contains(".lock()"), "no lock while reading the CLI and settings");
     }
@@ -2588,25 +2685,75 @@ mod tests {
     }
 
     #[test]
+    fn a_relaunch_reads_the_tab_s_last_finished_turn_under_its_v1_key() {
+        let dir = crate::test_support::TempDir::new("last_turn_key");
+        let config = dir.join("claude-config");
+        assert!(config.starts_with(dir.path()), "pinned to the temp dir");
+        let sid = "7a1b2c3d-4e5f-4a6b-8c7d-0123456789ab";
+        let folder = config.join("projects").join("-tmp-p");
+        std::fs::create_dir_all(&folder).unwrap();
+        let record = |kind: &str, at: &str, message: serde_json::Value| {
+            serde_json::json!({ "parentUuid": null, "isSidechain": false, "type": kind, "uuid": format!("u-{at}"),
+                "timestamp": at, "cwd": "/tmp/p", "sessionId": sid, "version": "2.1.0", "message": message })
+        };
+        let prompt = record("user", "2026-10-19T10:00:00Z", serde_json::json!({ "role": "user", "content": "Review" }));
+        let reply = record("assistant", "2026-10-19T10:01:00Z", serde_json::json!({ "id": "m1", "type": "message",
+            "role": "assistant", "model": "t", "content": [{ "type": "text", "text": "Done." }], "stop_reason": "end_turn" }));
+        let target = (config.clone(), sid.to_string());
+        std::fs::write(folder.join(format!("{sid}.jsonl")), format!("{prompt}\n")).unwrap();
+        assert_eq!(last_turn_key("tab_r", Some(&target)), None, "a turn still running is not decided");
+        std::fs::write(folder.join(format!("{sid}.jsonl")), format!("{prompt}\n{reply}\n")).unwrap();
+        let key = last_turn_key("tab_r", Some(&target)).expect("finished turn");
+        assert!(key.starts_with(&format!("tab_r|{sid}|")), "{key}");
+        assert_eq!(last_turn_key("tab_r", None), None);
+    }
+
+    #[test]
     fn the_relaunch_gate_respects_engine_1_and_switches_when_hooks_were_turned_off() {
         let dir = crate::test_support::TempDir::new("gate_relaunch");
         let store = store_with_engine2_run(&dir);
         let run_id = "ee_1700000000000";
         let ok = Some("2.1.287 (Claude Code)");
-        assert!(gate_run(&store, run_id, "pr_reviewer", ok, None).unwrap(), "still bridged");
-        // Hooks turned off since the first launch: engine 1, with a notice.
+        let relaunch = GateAt::Relaunch;
+        let decided_key = Some("tab_r|6a1d3b0f-2c3d-4e5f-9a51-0123456789cd|2026-10-20T10:00:00Z");
+        assert!(gate_run(&store, run_id, "pr_reviewer", ok, None, relaunch, decided_key).unwrap().bridged, "still bridged");
+        let events_before = store.lock().unwrap().pipeline_run_by_id(run_id).unwrap().events.len();
+        // Hooks turned off since the first launch (a Resume mid-run): engine
+        // 1 with a notice, and autopilot off, so the turn the bridge already
+        // decided is never decided again the v1 way.
         let off = crate::bridge::gate::HooksOff { file: dir.join("settings.json"), setting: "disableAllHooks" };
-        assert!(!gate_run(&store, run_id, "pr_reviewer@pr1", ok, Some(&off)).unwrap());
+        let gated = gate_run(&store, run_id, "pr_reviewer@pr1", ok, Some(&off), relaunch, decided_key).unwrap();
+        assert_eq!(gated, GateRun { bridged: false, manual_now: true });
         {
             let state = store.lock().unwrap();
             let run = state.pipeline_run_by_id(run_id).unwrap();
             assert_eq!(run.engine, 1);
             assert_eq!(run.events.last().unwrap().stage_id.as_deref(), Some("pr_reviewer"));
-            assert!(run.engine_note.as_deref().unwrap().contains("disableAllHooks"));
+            let note = run.engine_note.as_deref().unwrap();
+            assert!(note.contains("disableAllHooks") && note.contains("manual from now on"), "{note}");
+            assert!(!run.autopilot.as_ref().unwrap().enabled, "autopilot is off");
+            assert_eq!(run.status, crate::store::RunStatus::Stopped);
+            assert_eq!(run.stop_reason, None, "not paused_by_you: the note says why");
+            // One Timeline note, the manual one (not "autopilot reads each reply as before").
+            let added: Vec<(&str, &str)> =
+                run.events[events_before..].iter().map(|e| (e.kind.as_str(), e.summary.as_str())).collect();
+            assert_eq!(added, vec![("note", note)], "{added:?}");
+            assert!(run.manual_only, "manual for good");
+            // Belt and braces: the tab's current turn counts as decided under its v1 key too.
+            assert!(run.autopilot.as_ref().unwrap().decided.iter().any(|k| Some(k.as_str()) == decided_key));
+            let saved = StateStore::open_path(dir.join("state.json")).unwrap();
+            assert!(!saved.pipeline_run_by_id(run_id).unwrap().autopilot.as_ref().unwrap().enabled, "saved");
+        }
+        // Autopilot cannot be turned back on for a run made manual this way.
+        {
+            let mut state = store.lock().unwrap();
+            let err = crate::commands::pipeline::set_autopilot(&mut state, run_id, true).unwrap_err();
+            assert!(err.contains("manual from now on"), "{err}");
+            assert!(!state.pipeline_run_by_id(run_id).unwrap().autopilot.as_ref().unwrap().enabled);
         }
         // An engine-1 run never relaunches bridged, whatever the CLI.
-        assert!(!gate_run(&store, run_id, "pr_reviewer", ok, None).unwrap());
-        assert!(!gate_run(&store, "ee_missing", "pr_reviewer", ok, None).unwrap());
+        assert_eq!(gate_run(&store, run_id, "pr_reviewer", ok, None, relaunch, None).unwrap(), GateRun::default());
+        assert_eq!(gate_run(&store, "ee_missing", "pr_reviewer", ok, None, relaunch, None).unwrap(), GateRun::default());
     }
 
     /// A pipeline of your own: a copy of the Planner (Settings › Roles ›

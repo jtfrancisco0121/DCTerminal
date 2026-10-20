@@ -118,6 +118,16 @@ describe("PipelineOverview: autopilot, checks and timeline", () => {
     expect(screen.queryByTestId("engine-note")).toBeNull();
   });
 
+  it("a run made manual by a mid-run engine switch cannot turn autopilot back on, and says why", async () => {
+    const note = "Claude Code hooks are turned off (disableAllHooks in /x/settings.json). This run was running with the pipeline bridge, so it is manual from now on: autopilot is off. Hand each stage on yourself.";
+    show(run({ engine: 1, engineNote: note, manualOnly: true, status: "stopped", autopilot: { enabled: false } }));
+    const panel = await screen.findByRole("region", { name: "Autopilot" });
+    const toggle = within(panel).getByRole("checkbox") as HTMLInputElement;
+    expect(toggle.disabled).toBe(true);
+    expect(toggle.title).toContain("manual from now on");
+    expect(within(panel).getByTestId("engine-note").textContent).toBe(note);
+  });
+
   it("says when Claude usage is unknown, never 0%, and what autopilot does about it", async () => {
     show(run({ autopilot: { enabled: true } }), {}, []);
     const panel = await screen.findByRole("region", { name: "Autopilot" });

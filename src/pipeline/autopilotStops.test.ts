@@ -19,7 +19,7 @@ vi.mock("../bridge", () => ({
 }));
 
 import { autopilotPendingStops } from "../bridge";
-import { subscribeAutopilotStops } from "./autopilotStops";
+import { autopilotStopDetail, subscribeAutopilotStops } from "./autopilotStops";
 
 const restarted: AutopilotStoppedEvent = {
   runId: "ee_1",
@@ -71,5 +71,22 @@ describe("subscribeAutopilotStops", () => {
     await vi.waitFor(() => expect(unlisten).toHaveBeenCalled());
     expect(autopilotPendingStops).not.toHaveBeenCalled();
     expect(onStop).not.toHaveBeenCalled();
+  });
+});
+
+describe("autopilotStopDetail", () => {
+  it("leads with the reason's plain-English line (H5), as engine-1 stops do", () => {
+    expect(autopilotStopDetail({ reason: "usage_limit", summary: "Implementer hit a Claude usage limit." })).toBe(
+      "Autopilot stopped. Claude's usage limit was reached. Implementer hit a Claude usage limit.",
+    );
+    expect(autopilotStopDetail({ reason: "checkpoint", summary: "Checkpoint before Implementer." })).toContain(
+      "Checkpoint: autopilot waits for you",
+    );
+  });
+
+  it("an unknown code shows the summary alone", () => {
+    expect(autopilotStopDetail({ reason: "from_a_newer_build" as never, summary: "Stopped." })).toBe(
+      "Autopilot stopped. Stopped.",
+    );
   });
 });
