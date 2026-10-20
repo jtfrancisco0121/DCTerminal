@@ -449,6 +449,28 @@ mod session_log {
     }
 
     #[test]
+    fn a_rate_limit_error_ends_the_turn_and_the_reader_names_it() {
+        let home = FakeHome::new("fc_rate_limit");
+        let limit = "You've hit your limit · resets 3pm (Europe/London)";
+        let scenario = json!({ "turns": [
+            { "steps": [ { "text": "Starting" }, { "rate_limit": limit }, { "reply": "never" } ] },
+            { "steps": [ { "reply": "Back again." } ] }
+        ]});
+        let mut fake = home.run(&scenario, &["--session-id", SID, "go"]);
+        let log = fake.wait_log(SID, |log| log.turn_done);
+        assert!(log.turn_done && !log.interrupted, "{log:?}");
+        assert_eq!(log.rate_limit.as_deref(), Some(limit), "screen:\n{}", fake.screen());
+        assert!(fake.screen().contains("hit your limit"), "screen:\n{}", fake.screen());
+
+        // The next turn is a fresh one: no limit any more.
+        fake.write(b"again\r");
+        let log = fake.wait_log(SID, |log| log.last_reply == "Back again." && log.turn_done);
+        assert_eq!(log.rate_limit, None, "{log:?}");
+        let records = log_records(&fake.log_path(SID).unwrap(), false);
+        assert!(!records.iter().any(|r| r.to_string().contains("never")), "the refused turn ended");
+    }
+
+    #[test]
     fn exit_plan_mode_is_the_open_tool_and_keep_planning_rejects_it() {
         let home = FakeHome::new("fc_plan");
         let scenario = json!({ "turns": [
@@ -838,7 +860,7 @@ mod recovery {
     use super::*;
     use dcterminal_lib::testing::{
         current_stage_tabs, find_pipeline, reconcile_run, stop_stalled, turn_key, working,
-        PipelineRun, Reconciled, RunStatus, StallObservation, StallWatch, StopReason,
+        PipelineRun, Reconciled, RunStatus, StageKind, StallObservation, StallWatch, StopReason,
     };
     use serde_json::json;
     use std::collections::HashMap;
@@ -935,7 +957,7 @@ mod recovery {
             reader.refresh();
             let log = reader.summary();
             let seen = StallObservation {
-                working: working("role_implementer", &log),
+                working: working(StageKind::Implementer, &log),
                 log_len: std::fs::metadata(reader.path()).ok().map(|m| m.len()),
                 pty_quiet: Some(fake.session.quiet_for()),
             };
@@ -985,8 +1007,9 @@ mod recovery {
 mod bridge {
     use super::*;
     use dcterminal_lib::testing::{
-        drain_inbox, launch_args, prepare_stage, read_stage_turn, runs_root, BridgePlan, BridgeTag, BridgeTurn,
-        InboxEvent, ResultKind, TurnOutcome,
+        bridged_command, claude_terminal_args, drain_inbox, launch_flags, prepare_stage, read_stage_turn, runs_root,
+        BridgePlan, BridgeTag, BridgeTurn, InboxEvent, ProgramArgs, ResultKind, RunMode, TerminalKind, TerminalLaunch,
+        TurnOutcome,
     };
     use serde_json::json;
 
@@ -1020,12 +1043,25 @@ mod bridge {
         }
 
         fn launch(&self, scenario: &Value) -> FakeClaude {
-            let mut args: Vec<String> = ["--session-id", SID, "--permission-mode", "auto"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
-            args.extend(launch_args(ResultKind::Reviewer, Path::new(DCTERMINAL), &self.run_dir, RUN, "pr_reviewer", TAB));
-            args.push("Review PR1 and report your result.".into());
+            // As role_terminal_start builds it: one --settings with the hooks
+            // merged into the status line, the prompt last.
+            let request = TerminalLaunch {
+                kind: TerminalKind::Role {
+                    role_id: "role_pr_reviewer".into(),
+                    run_mode: RunMode::Default,
+                    prompt: Some("Review PR1 and report your result.".into()),
+                    stage_kind: None,
+                },
+                model: None,
+                session_id: Some(SID.into()),
+                settings: Some(json!({ "statusLine": { "type": "command", "command": "true" } })),
+            };
+            let flags = launch_flags(ResultKind::Reviewer, Path::new(DCTERMINAL), &self.run_dir, RUN, "pr_reviewer", TAB);
+            let args = bridged_command(request, Some(flags), |req| {
+                Ok(ProgramArgs::new("claude", claude_terminal_args(req)?))
+            })
+            .expect("bridged launch")
+            .args;
             let args: Vec<&str> = args.iter().map(String::as_str).collect();
             self.home.run(scenario, &args)
         }
@@ -1117,7 +1153,9 @@ mod bridge {
         let scenario = json!({ "turns": [
             {
                 "steps": [{ "reply": "Looks fine." }],
-                "on_block": [[{ "reply": "Which verdict should I submit?" }], [{ "reply": "never reached" }]]
+                "on_block": [[{ "reply": "Which verdict should I submit?" }], [{ "reply": "never reached" }]],
+                // Only turn.json's blocked flag, read by the next hook process, ends the turn.
+                "stop_hook_active_after_block": false
             },
             { "exit": 0 }
         ] });
@@ -1129,6 +1167,7 @@ mod bridge {
         assert_eq!(turn.last_assistant_message, "Which verdict should I submit?");
         assert_eq!(fake.wait_exit(), Some(0));
         assert!(!fake.screen().contains("never reached"), "blocked once, not twice");
+        assert_eq!(fake.screen().matches("Stop hook error").count(), 1, "{}", fake.screen());
         assert_eq!(stage.inbox().len(), 1);
     }
 
@@ -1170,9 +1209,9 @@ mod bridge {
 mod eagle_eye_1 {
     use super::*;
     use dcterminal_lib::testing::{
-        decide, drain_inbox, find_pipeline, launch_args, prepare_stage, read_run_tasks, runs_root, BridgeNeeds,
-        BridgePlan, BridgeTurn, FindingReport, InboxEvent, NeedsSource, PipelineRun, ResultKind, TurnOutcome,
-        TurnReport,
+        bridged_command, claude_terminal_args, decide, drain_inbox, find_pipeline, launch_flags, prepare_stage,
+        read_run_tasks, runs_root, BridgeNeeds, BridgePlan, BridgeTurn, FindingReport, InboxEvent, NeedsSource,
+        PipelineRun, ProgramArgs, ResultKind, RunMode, TerminalKind, TerminalLaunch, TurnOutcome, TurnReport,
     };
     use serde_json::json;
 
@@ -1216,10 +1255,24 @@ mod eagle_eye_1 {
                 autopilot: true,
             };
             let run_dir = prepare_stage(&self.runs, &plan, tab).expect("prepare stage");
-            let mode = if kind == ResultKind::Planner { "plan" } else { "auto" };
-            let mut args: Vec<String> = ["--session-id", sid, "--permission-mode", mode].iter().map(|s| s.to_string()).collect();
-            args.extend(launch_args(kind, Path::new(DCTERMINAL), &run_dir, RUN, stage_id, tab));
-            args.push(format!("Run the {stage_id} stage."));
+            // As role_terminal_start builds it: one --settings (the hooks
+            // merged into the status line), the role's permission mode, the
+            // prompt last.
+            let request = TerminalLaunch {
+                kind: TerminalKind::Role {
+                    role_id: role_id.into(),
+                    run_mode: RunMode::Default,
+                    prompt: Some(format!("Run the {stage_id} stage.")),
+                    stage_kind: None,
+                },
+                model: None,
+                session_id: Some(sid.into()),
+                settings: Some(json!({ "statusLine": { "type": "command", "command": "true" } })),
+            };
+            let flags = launch_flags(kind, Path::new(DCTERMINAL), &run_dir, RUN, stage_id, tab);
+            let args = bridged_command(request, Some(flags), |req| Ok(ProgramArgs::new("claude", claude_terminal_args(req)?)))
+                .expect("bridged launch")
+                .args;
             let args: Vec<&str> = args.iter().map(String::as_str).collect();
             self.home.run(scenario, &args)
         }

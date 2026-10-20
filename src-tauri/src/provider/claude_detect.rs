@@ -528,6 +528,28 @@ pub fn read_claude_version(claude: &Path, config: &ConfigDirInfo) -> Option<Stri
     (!text.is_empty()).then(|| text.lines().next().unwrap_or("").trim().to_string())
 }
 
+/// [`read_claude_version`], run once per executable for the app's life
+/// (the pipeline v2 gate, D24, reads it at a bridged launch). A version
+/// that could not be read (or an error in its place) is not kept, so the
+/// next launch tries again.
+pub fn cached_claude_version(claude: &Path, config: &ConfigDirInfo) -> Option<String> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static VERSIONS: OnceLock<Mutex<HashMap<PathBuf, String>>> = OnceLock::new();
+    let cache = VERSIONS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(found) = cache.lock().ok().and_then(|map| map.get(claude).cloned()) {
+        return Some(found);
+    }
+    // Read with no lock held: `claude --version` can take a moment.
+    let found = read_claude_version(claude, config)?;
+    if crate::bridge::gate::parse_version(&found).is_some() {
+        if let Ok(mut map) = cache.lock() {
+            map.insert(claude.to_path_buf(), found.clone());
+        }
+    }
+    Some(found)
+}
+
 /// Parse `claude auth status --json` (CLI 2.1.236 shape, see
 /// `fixtures/claude/`). Falls back to the `--text` wording.
 pub fn parse_claude_auth_status(stdout: &str, stderr: &str) -> LoginStatus {

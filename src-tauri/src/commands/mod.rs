@@ -64,7 +64,7 @@ pub use pipeline::{
     pipeline_bridge_turn, pipeline_run_tasks,
 };
 pub use model_session::{acp_set_effort, acp_set_model};
-pub use run_recovery::{pipeline_continue, spawn_run_recovery};
+pub use run_recovery::{autopilot_pending_stops, pipeline_continue, spawn_run_recovery, StartupStops};
 pub use usage::get_claude_usage;
 pub use prompts::{
     prompt_clear_recent, prompt_delete, prompt_library_get, prompt_mark_used, prompt_record_send,

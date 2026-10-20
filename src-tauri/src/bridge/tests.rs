@@ -190,7 +190,9 @@ fn a_reviewer_that_forgets_the_tool_is_blocked_once_then_ends_with_no_result() {
     assert!(stage.open().turn().unwrap().blocked);
     assert!(stage.inbox().is_empty(), "a blocked stop is not a turn end");
 
-    assert_eq!(stage.hook("Stop", stop("p-1", true, "Still looks good.")), None);
+    // The next Stop is another hook process (a fresh StageDir): with
+    // stop_hook_active false, only turn.json's blocked flag ends the turn.
+    assert_eq!(stage.hook("Stop", stop("p-1", false, "Still looks good.")), None);
     let events = stage.inbox();
     assert_eq!(events.len(), 1);
     let event = &events[0];
@@ -202,7 +204,7 @@ fn a_reviewer_that_forgets_the_tool_is_blocked_once_then_ends_with_no_result() {
     assert_eq!(event.last_assistant_message, "Still looks good.");
     assert!(event.result.is_none());
     // The end is reported once, even if Claude stops again.
-    assert_eq!(stage.hook("Stop", stop("p-1", true, "again")), None);
+    assert_eq!(stage.hook("Stop", stop("p-1", false, "again")), None);
     assert!(stage.inbox().is_empty());
 }
 
@@ -240,7 +242,7 @@ fn each_turn_gets_its_own_block() {
     let stage = Stage::new("bridge_block_per_turn", true);
     stage.hook("UserPromptSubmit", prompt("p-1"));
     assert!(stage.hook("Stop", stop("p-1", false, "")).is_some());
-    stage.hook("Stop", stop("p-1", true, ""));
+    assert_eq!(stage.hook("Stop", stop("p-1", false, "")), None, "blocked once per turn");
     stage.hook("UserPromptSubmit", prompt("p-2"));
     assert!(stage.hook("Stop", stop("p-2", false, "")).is_some(), "a new turn is blocked again");
 }
@@ -370,6 +372,10 @@ fn a_hook_with_a_bad_setup_exits_1_and_writes_nothing() {
     assert_eq!(super::run_hook(&cli, "Stop", &b"{}"[..], &mut out), 1);
     assert!(out.is_empty());
     assert!(!dir.exists(), "nothing created outside a prepared run folder");
+    // A command line that does not parse exits 1 too: exit 2 would block a
+    // Stop or erase a prompt.
+    let args: Vec<String> = ["hook", "--run", RUN].iter().map(|s| s.to_string()).collect();
+    assert_eq!(super::run_cli(&args), 1);
 }
 
 #[test]
@@ -620,6 +626,26 @@ fn reviewer_planner_and_implementer_stages_of_engine_2_runs_are_bridged() {
 }
 
 #[test]
+fn a_copied_reviewer_is_bridged_by_its_stage_kind_like_the_built_in_one() {
+    let mut def = crate::pipelines::find("full").unwrap();
+    let run = engine2_run(true);
+    let built_in = launch::plan_for(&run, &def, &chain(4, None), "role_pr_reviewer").unwrap();
+    // A copy of the PR Reviewer on the same stage, its kind set explicitly.
+    def.stages[3].role_id = "role_custom_7".into();
+    def.stages[3].kind = Some(crate::pipelines::StageKind::Reviewer);
+    let copied = launch::plan_for(&run, &def, &chain(4, None), "role_custom_7").expect("copied reviewer");
+    assert_eq!(copied.kind, built_in.kind);
+    assert_eq!(copied.stage_key, built_in.stage_key);
+    // A reviewer stage with no loop-back still reports through the bridge.
+    def.stages[3].loop_back = None;
+    assert!(launch::plan_for(&run, &def, &chain(4, None), "role_custom_7").is_some());
+    // A stage marked generic is not a reviewer, even with a loop-back.
+    let mut def = crate::pipelines::find("full").unwrap();
+    def.stages[3].kind = Some(crate::pipelines::StageKind::Generic);
+    assert_eq!(launch::plan_for(&run, &def, &chain(4, None), "role_pr_reviewer"), None);
+}
+
+#[test]
 fn a_lane_names_its_own_stage_folder() {
     let def = crate::pipelines::find("full").unwrap();
     let mut run = engine2_run(true);
@@ -639,39 +665,74 @@ fn a_stage_with_parallel_reviewers_keeps_the_v1_path() {
     assert_eq!(launch::plan_for(&engine2_run(true), &def, &chain(4, None), "role_pr_reviewer"), None);
 }
 
-#[test]
-fn launch_flags_keep_the_prompt_last_and_use_args_arrays() {
+/// A bridged role launch as `role_terminal_start` builds it, with H5's
+/// status-line settings (`status`) when it applies.
+fn bridged_launch(status: Option<Value>, prompt: Option<&str>) -> Vec<String> {
+    use crate::provider::{ProgramArgs, TerminalKind, TerminalLaunch};
     let program = Path::new("/Applications/DCTerminal.app/Contents/MacOS/dcterminal");
     let run_dir = Path::new("/data/runs").join(RUN);
-    let extra = launch::launch_args(ResultKind::Reviewer, program, &run_dir, RUN, "pr_reviewer", TAB);
-    assert_eq!(extra[0], "--allowedTools");
-    assert_eq!(extra[1], FULL_TOOL_NAME);
-    assert_eq!(extra[2], "--mcp-config");
-    assert_eq!(extra[4], "--settings");
-    let mcp: Value = serde_json::from_str(&extra[3]).unwrap();
-    let server = &mcp["mcpServers"]["dcterminal"];
-    assert_eq!(server["type"], "stdio");
-    assert_eq!(server["command"], program.display().to_string());
-    assert_eq!(server["args"][0], "bridge");
-    assert_eq!(server["args"][1], "mcp");
-    let settings: Value = serde_json::from_str(&extra[5]).unwrap();
+    let flags = launch::launch_flags(ResultKind::Reviewer, program, &run_dir, RUN, "pr_reviewer", TAB);
+    let request = TerminalLaunch {
+        kind: TerminalKind::Role {
+            role_id: "role_pr_reviewer".into(),
+            run_mode: crate::pty::RunMode::Default,
+            prompt: prompt.map(str::to_string),
+            stage_kind: None,
+        },
+        model: Some("opus".into()),
+        session_id: Some("6a1d3b0f-2c3d-4e5f-9a51-0123456789cd".into()),
+        settings: status,
+    };
+    launch::bridged_command(request, Some(flags), |req| {
+        Ok(ProgramArgs::new("claude", crate::provider::claude::claude_terminal_args(req)?))
+    })
+    .unwrap()
+    .args
+}
+
+fn settings_of(args: &[String]) -> Value {
+    assert_eq!(args.iter().filter(|a| *a == "--settings").count(), 1, "exactly one --settings: {args:?}");
+    let at = args.iter().position(|a| a == "--settings").unwrap();
+    serde_json::from_str(&args[at + 1]).unwrap()
+}
+
+#[test]
+fn a_bridged_launch_merges_the_hooks_and_the_status_line_into_one_settings_flag() {
+    let status = crate::status_line::settings("'dct' --dct-status-line '/data/usage/tab.json'");
+    let args = bridged_launch(Some(status.clone()), Some("PROMPT"));
+    let settings = settings_of(&args);
+    assert_eq!(settings["statusLine"], status["statusLine"], "{settings}");
     for event in ["UserPromptSubmit", "Stop", "PreToolUse", "PermissionRequest", "Notification"] {
         let hook = &settings["hooks"][event][0]["hooks"][0];
         assert_eq!(hook["type"], "command", "{event}");
-        let args: Vec<&str> = hook["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
-        assert_eq!(&args[..2], &["bridge", "hook"], "{event}");
-        assert_eq!(args.last(), Some(&event), "{event}");
-        assert!(args.contains(&TAB) && args.contains(&RUN) && args.contains(&"pr_reviewer"));
+        let hook_args: Vec<&str> = hook["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
+        assert_eq!(&hook_args[..2], &["bridge", "hook"], "{event}");
+        assert_eq!(hook_args.last(), Some(&event), "{event}");
+        assert!(hook_args.contains(&TAB) && hook_args.contains(&RUN) && hook_args.contains(&"pr_reviewer"));
     }
     assert_eq!(settings["hooks"]["PreToolUse"][0]["matcher"], FULL_TOOL_NAME);
-
-    let mut args = vec!["--model".to_string(), "opus".to_string(), "PROMPT".to_string()];
-    launch::insert_before_prompt(&mut args, true, extra.clone());
+    // The variadic flags end at --settings (one value), so the prompt stays positional and last.
+    let tools = args.iter().position(|a| a == "--allowedTools").unwrap();
+    let mcp_at = args.iter().position(|a| a == "--mcp-config").unwrap();
+    let settings_at = args.iter().position(|a| a == "--settings").unwrap();
+    assert_eq!(args[tools + 1], FULL_TOOL_NAME);
+    assert!(tools < mcp_at && mcp_at + 2 == settings_at, "{args:?}");
     assert_eq!(args.last().map(String::as_str), Some("PROMPT"));
-    assert_eq!(args[2], "--allowedTools");
-    let mut no_prompt = vec!["--resume".to_string(), "id".to_string()];
-    launch::insert_before_prompt(&mut no_prompt, false, extra);
-    assert_eq!(no_prompt[2], "--allowedTools");
+    let mcp: Value = serde_json::from_str(&args[mcp_at + 1]).unwrap();
+    let server = &mcp["mcpServers"]["dcterminal"];
+    assert_eq!(server["type"], "stdio");
+    assert_eq!(server["args"][0], "bridge");
+    assert_eq!(server["args"][1], "mcp");
+}
+
+#[test]
+fn when_your_own_status_line_wins_the_bridged_settings_hold_only_the_hooks() {
+    let args = bridged_launch(None, None);
+    let settings = settings_of(&args);
+    assert!(settings.get("statusLine").is_none(), "{settings}");
+    assert!(settings["hooks"]["Stop"].is_array(), "{settings}");
+    let settings_at = args.iter().position(|a| a == "--settings").unwrap();
+    assert_eq!(args[settings_at - 2], "--mcp-config");
 }
 
 #[test]
@@ -1044,19 +1105,19 @@ fn a_turn_id_with_needs_in_it_still_ends_as_a_turn() {
 fn planner_launch_flags_have_no_tool_and_watch_exit_plan_mode() {
     let program = Path::new("/bin/dcterminal");
     let run_dir = Path::new("/data/runs").join(RUN);
-    let extra = launch::launch_args(ResultKind::Planner, program, &run_dir, RUN, "planner", TAB);
-    assert_eq!(extra.len(), 2, "{extra:?}");
-    assert_eq!(extra[0], "--settings");
-    let settings: Value = serde_json::from_str(&extra[1]).unwrap();
+    let extra = launch::launch_flags(ResultKind::Planner, program, &run_dir, RUN, "planner", TAB);
+    assert!(extra.args.is_empty(), "{extra:?}");
+    let settings = &extra.hooks;
     assert_eq!(settings["hooks"]["PreToolUse"][0]["matcher"], "ExitPlanMode");
     assert!(settings["hooks"]["PermissionRequest"][0].get("matcher").is_none());
-    let implementer = launch::launch_args(ResultKind::Implementer, program, &run_dir, RUN, "implementer", TAB);
-    assert_eq!(implementer[0], "--allowedTools");
+    let implementer = launch::launch_flags(ResultKind::Implementer, program, &run_dir, RUN, "implementer", TAB);
+    assert_eq!(implementer.args[0], "--allowedTools");
     // A relaunch keeps the stage's own kind.
     let stage = Stage::planner("bridge_plan_relaunch", true);
     let tag = BridgeTag { run_id: RUN.into(), stage: "planner".into() };
-    let again = launch::relaunch_args(&stage.runs, &tag, TAB, program).unwrap();
-    assert_eq!(again[0], "--settings");
+    let again = launch::relaunch_flags(&stage.runs, &tag, TAB, program).unwrap();
+    assert!(again.args.is_empty(), "{again:?}");
+    assert_eq!(again.hooks["hooks"]["PreToolUse"][0]["matcher"], "ExitPlanMode");
 }
 
 #[test]

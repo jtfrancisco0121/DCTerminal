@@ -12,7 +12,8 @@ import { contractFindings, contractResult, missingHandoffSections } from "../han
 import { terminalLogFields, type HandoffField, type HandoffSource } from "../handoff/map";
 import { roleDisplayName, type RoleName } from "../handoff/transitions";
 import { parseReviewVerdict } from "../handoff/verdict";
-import { pipelineDef, stageRoles, type PipelineDef, type StageDef } from "./defs";
+import { pipelineDef, roleBehaviour, stageBehaviour, stageRoles, type PipelineDef, type StageDef } from "./defs";
+import { knownUsagePercent } from "../usage/limits";
 
 /** The stage a chain tab holds on its pipeline, if its role matches that step. */
 export function stageForTab(
@@ -25,12 +26,12 @@ export function stageForTab(
   return def && stage && stageRoles(stage).includes(roleId) ? { def, stage } : null;
 }
 
-/** The highest Claude usage window, in percent; null when none is known. */
-export function usagePercent(usage: UsageSnapshot | null | undefined): number | null {
-  const values = (usage?.windows ?? [])
-    .map((window) => window.utilization)
-    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
-  return values.length ? Math.round(Math.max(...values)) : null;
+/**
+ * The highest current Claude usage window, in percent; null when unknown
+ * (none read, or each reset since its reading). Autopilot carries on then.
+ */
+export function usagePercent(usage: UsageSnapshot | null | undefined, now = Date.now()): number | null {
+  return knownUsagePercent(usage?.windows ?? [], now);
 }
 
 /**
@@ -42,17 +43,31 @@ export function turnReport(args: {
   reply: string;
   chat: boolean;
   usage: number | null;
+  /** The rate-limit error in the stage's session log this turn, if any. */
+  rateLimit?: string | null;
   /** A Planner waiting on its plan dialog: its plan is the result, sections are not checked. */
   awaitingPlan?: boolean;
   /** The tab's lane, when the run fanned out. */
   lane?: string | null;
+  /** The run's pipeline (chain kind): the stage's kind picks the sections its reply owes. */
+  chainKind?: string | null;
   /**
    * The stage reviewer's own reply, when `reply` merges parallel reviews:
    * its HANDOFF sections are checked, not the merged ones.
    */
   ownReply?: string;
 }): TurnReport {
-  const { stage, reply, chat, usage, awaitingPlan = false, lane = null, ownReply = reply } = args;
+  const {
+    stage,
+    reply,
+    chat,
+    usage,
+    rateLimit = null,
+    awaitingPlan = false,
+    lane = null,
+    ownReply = reply,
+    chainKind = null,
+  } = args;
   const result = contractResult(reply);
   const reviewer = !!stage.loopBack;
   return {
@@ -62,8 +77,9 @@ export function turnReport(args: {
       ? (result?.findings ?? []).map((f) => ({ severity: f.severity, summary: f.summary }))
       : [],
     findingsKnown: reviewer && !!result,
-    missingSections: awaitingPlan ? [] : missingHandoffSections(stage.roleId, ownReply),
+    missingSections: awaitingPlan ? [] : missingHandoffSections(stage.roleId, ownReply, chainKind),
     usagePercent: usage,
+    rateLimit: rateLimit?.trim() || null,
     chat,
     lane,
   };
@@ -107,6 +123,7 @@ export function terminalStageSource(args: {
   const { tab, log, answers, tail, roles, sourceFields, awaitingPlan } = args;
   return {
     sourceRoleId: tab.roleId,
+    sourceChainKind: tab.chain?.kind ?? null,
     sourceTabId: tab.id,
     sourceLabel: tab.label || roleDisplayName(tab.roleId, roles),
     cwd: tab.cwd,
@@ -132,10 +149,12 @@ export function terminalStageSource(args: {
  * Planner turn waiting on its plan. Null while the turn is still working or
  * waits on anything else. A turn you interrupted is not finished work, so
  * it is null too. The key changes once per turn, so each turn is handled once.
+ * `chainKind`: the tab's pipeline, where its stage's kind says it plans.
  */
 export function finishedTurn(
   roleId: string,
   log: TerminalSessionLog | null | undefined,
+  chainKind?: string | null,
 ): { key: string; awaitingPlan: boolean } | null {
   if (!log) return null;
   const prompt = log.lastPromptAt ?? "";
@@ -143,7 +162,7 @@ export function finishedTurn(
     return log.interrupted ? null : { key: `${log.sessionId}|${prompt}|done`, awaitingPlan: false };
   }
   const open = log.openTool;
-  if (roleId === "role_planner" && open?.name === "ExitPlanMode" && (log.plan ?? "").trim()) {
+  if (roleBehaviour(roleId, chainKind) === "planner" && open?.name === "ExitPlanMode" && (log.plan ?? "").trim()) {
     return { key: `${log.sessionId}|${prompt}|plan|${open.id}`, awaitingPlan: true };
   }
   return null;
@@ -207,9 +226,9 @@ export function mergeReviews(
   return sections.join("\n\n");
 }
 
-/** The verdict a reviewer's "changes" means on this run: the full run's Plan Reviewer revises, the rest request changes. */
-export function reviseVerdict(runKind: string, roleId: string): string {
-  return runKind === "full" && roleId === "role_plan_reviewer" ? "REQUIRES REVISION" : "REQUEST CHANGES";
+/** The verdict a reviewer stage's "changes" means: a plan reviewer revises, the rest request changes (by its kind, so a copied role behaves like its original). */
+export function reviseVerdict(def: PipelineDef, stage: StageDef): string {
+  return stageBehaviour(def, stage) === "plan_reviewer" ? "REQUIRES REVISION" : "REQUEST CHANGES";
 }
 
 /** A `submit_result` verdict in the words the ledger, loop-backs and the hand-off use. */
@@ -253,11 +272,14 @@ export function bridgeFindingsText(findings: readonly BridgeFinding[]): string {
  * The report a bridged stage's turn is decided on: its `submit_result`
  * (verdict and findings), or `noResult` when the turn ended without one.
  * HANDOFF sections are not checked: the tool replaced them as the result.
+ * A usage-limit error rides along, so `decide` stops for it before `noResult`.
  */
 export function bridgeTurnReport(args: {
   stage: StageDef;
   turn: BridgeTurn;
   usage: number | null;
+  /** H5: the session log's usage-limit error for this turn, if any. */
+  rateLimit?: string | null;
   lane: string | null;
   revise: string;
 }): TurnReport {
@@ -272,6 +294,7 @@ export function bridgeTurnReport(args: {
     findingsKnown: !!result,
     missingSections: [],
     usagePercent: usage,
+    rateLimit: args.rateLimit?.trim() || null,
     chat: false,
     lane,
     noResult: !result,

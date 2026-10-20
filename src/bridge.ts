@@ -364,6 +364,8 @@ export type PipelineRun = {
   stopReason?: StopReason | null;
   /** Pipeline engine: 2 on new runs (Planner, reviewers and Implementer report through the bridge, ADR-015); 1 (or missing) on older runs. */
   engine?: number;
+  /** The engine line on the overview (D24): why the run uses engine 1, or "Claude Code version not yet verified". */
+  engineNote?: string | null;
 };
 
 /**
@@ -413,7 +415,9 @@ export type RunEvent = {
   detail?: string | null;
   /**
    * A gate's `passed`/`failed`/`skipped`, an autopilot decision's action,
-   * a turn's verdict, `planApproved` on a promoted plan. Missing on older events.
+   * a turn's verdict, `planApproved` on a promoted plan, a stop's reason
+   * code (`stop` events, and `paused_by_you` on "Autopilot off"). Missing on
+   * older events.
    */
   outcome?: string | null;
   /** The fanned-out pull request (lane) the event is about. Missing on older events. */
@@ -429,6 +433,8 @@ export type GateResult = {
   summary: string;
   output?: string;
   durationMs: number;
+  /** The gate is marked optional: an `auto` check with nothing to run was skipped, not a stop. */
+  optional?: boolean;
 };
 
 export type RunAutopilot = {
@@ -1314,6 +1320,16 @@ export type AutopilotStoppedEvent = {
   summary: string;
 };
 
+/**
+ * Stops the core made before the frontend listened (the startup reconcile
+ * runs while the window loads), on the given tabs (this window's). Call once
+ * the `autopilot-stopped` listener is attached and the tab list has loaded;
+ * each stop is handed over once, and stops on other tabs stay held.
+ */
+export async function autopilotPendingStops(tabIds: string[]): Promise<AutopilotStoppedEvent[]> {
+  return invoke("autopilot_pending_stops", { tabIds });
+}
+
 export function listenAutopilotStopped(
   handler: (event: AutopilotStoppedEvent) => void,
 ): Promise<UnlistenFn> {
@@ -1329,7 +1345,10 @@ export type TurnReport = {
   findings: { severity: string; summary: string }[];
   findingsKnown: boolean;
   missingSections: string[];
+  /** Highest Claude usage window in percent; null when unknown (never read, or reset since), never 0. */
   usagePercent: number | null;
+  /** The rate-limit error in the stage's session log this turn; stops the run with `usage_limit`. */
+  rateLimit: string | null;
   chat: boolean;
   lane: string | null;
   /** The run's (or lane's) round when the turn was read; a turn from an ended round is skipped. */
@@ -1362,6 +1381,8 @@ export type AutopilotDecision = {
   unblocked?: string[];
   /** `advance`, `loopBack`: the hand-off claim; release it when the hand-off fails. */
   claim?: string;
+  /** `stop`: why, as a reason code. Absent on older backends. */
+  stopReason?: StopReason | null;
 };
 
 /** A hand-off made once per stage and round (or source turn), by you or autopilot. */
@@ -1815,7 +1836,7 @@ export async function roleTerminalStart(input: {
   onOutput: Channel<PtyPacket>;
   /** Launch as this provider (a hand-off's new tab keeps its source's). Omitted: the tab's, or the window's default. */
   provider?: ProviderId | null;
-  /** The pipeline step it opens for: a bridged stage of an engine-2 run launches with the bridge. */
+  /** The chain tag the new tab is about to join (a hand-off's next stage): its stage kind sets the permission mode, and a bridged stage (Planner, reviewer, Implementer) of an engine-2 run launches with the bridge. */
   chain?: import("./handoff/chains").ChainRef | null;
   /**
    * Eagle mode: this start begins a chain of this kind. The core makes its
@@ -1957,6 +1978,8 @@ export type TerminalSessionLog = {
   pendingTools?: { id: string; name: string; title: string }[];
   /** `permissionMode` of the latest real prompt. */
   permissionMode?: string | null;
+  /** The turn ended on a Claude rate-limit error (its text). Absent on older backends. */
+  rateLimit?: string | null;
 };
 
 /** `null` until the tab has a pinned Claude session whose log exists. */

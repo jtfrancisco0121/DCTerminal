@@ -187,8 +187,14 @@ impl Provider for FakeProvider {
     fn session_new_meta(&self, opts: &SessionOpts) -> Option<Value> {
         self.inner.session_new_meta(opts)
     }
-    fn mode_for_role(&self, role_id: &str, role_mode: &str, available: &[String]) -> String {
-        self.inner.mode_for_role(role_id, role_mode, available)
+    fn mode_for_role(
+        &self,
+        role_id: &str,
+        stage_kind: Option<crate::pipelines::StageKind>,
+        role_mode: &str,
+        available: &[String],
+    ) -> String {
+        self.inner.mode_for_role(role_id, stage_kind, role_mode, available)
     }
     fn classify_request(&self, method: &str, params: &Value) -> AgentRequestKind {
         self.inner.classify_request(method, params)

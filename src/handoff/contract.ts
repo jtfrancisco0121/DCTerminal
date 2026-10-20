@@ -4,6 +4,7 @@
  * heuristic, so the right text lands in the right field. Replies without
  * them fall back to the older parsing.
  */
+import { roleBehaviour, type RoleBehaviour } from "../pipeline/defs";
 
 /** `## HANDOFF: Plan`, `**HANDOFF: Plan**`, or a plain `HANDOFF: Plan` line (rendered copy). */
 const HEADING = /^[ \t]*(?:#{1,6}[ \t]*)?(?:\*\*)?[ \t]*HANDOFF[ \t]*:[ \t]*([^\n*]+?)[ \t]*(?:\*\*)?[ \t]*:?[ \t]*$/gim;
@@ -195,28 +196,35 @@ export function contractImplementation(text: string): {
   };
 }
 
-/** The sections each role's reply must end with (docs/PIPELINE-REPLY-GUIDE.md); alternates are accepted names. */
-const REQUIRED_SECTIONS: Record<string, string[][]> = {
-  role_planner: [["Plan", "Implementation plan"], ["Pull requests", "Pull request plan"], ["Open questions", "Questions"]],
-  role_plan_reviewer: [
+/**
+ * The sections each kind of role's reply must end with
+ * (docs/PIPELINE-REPLY-GUIDE.md); alternates are accepted names. Keyed by
+ * what the role does, so a copied role owes its original's sections.
+ */
+const REQUIRED_SECTIONS: Partial<Record<RoleBehaviour, string[][]>> = {
+  planner: [["Plan", "Implementation plan"], ["Pull requests", "Pull request plan"], ["Open questions", "Questions"]],
+  plan_reviewer: [
     ["Verdict"],
     ["Reviewed plan", "Revised plan"],
     ["Pull requests", "Pull request plan"],
     ["Review notes", "Notes"],
   ],
-  role_implementer: [
+  implementer: [
     ["Implementation summary", "Summary"],
     ["Files changed"],
     ["Tests run", "Tests"],
     ["Deviations from the plan", "Deviations"],
     ["Pull requests", "Pull request", "PR"],
   ],
-  role_pr_reviewer: [["Verdict"], ["Findings for the Implementer", "Findings"]],
+  pr_reviewer: [["Verdict"], ["Findings for the Implementer", "Findings"]],
 };
 
-/** The role's hand-off sections a reply lacks (by their guide names); empty for roles without a contract. */
-export function missingHandoffSections(roleId: string, text: string): string[] {
-  const required = REQUIRED_SECTIONS[roleId];
+/**
+ * The role's hand-off sections a reply lacks (by their guide names); empty
+ * for roles without a contract. `chainKind`: the pipeline the role is on.
+ */
+export function missingHandoffSections(roleId: string, text: string, chainKind?: string | null): string[] {
+  const required = REQUIRED_SECTIONS[roleBehaviour(roleId, chainKind)];
   if (!required || !text.trim()) return [];
   const have = handoffSections(text);
   return required

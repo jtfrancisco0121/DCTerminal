@@ -14,7 +14,7 @@
 //!   terminal output and no log growth for the pipeline's
 //!   `autopilot.stallMinutes` puts the run in `waiting` with `stalled`.
 
-use super::{PipelineDef, StageDef};
+use super::{PipelineDef, StageDef, StageKind, DEFAULT_STALL_MINUTES, MAX_STALL_MINUTES};
 use crate::claude_session_log::TerminalSessionLog;
 use crate::store::{PipelineRun, RunStatus, StopReason};
 use std::collections::{HashMap, HashSet};
@@ -26,6 +26,9 @@ pub struct StageTab {
     pub stage_id: String,
     pub stage_title: String,
     pub role_id: String,
+    /// The stage's kind (H4): a `planner` stage, a copied Planner included,
+    /// waits on its plan approval.
+    pub kind: StageKind,
     pub tab_id: String,
     pub lane: Option<String>,
     /// The stage's own role, not a parallel reviewer. Autopilot keys its
@@ -44,6 +47,7 @@ fn stage_tabs_of(stage: &StageDef, tab_ids: &HashMap<String, String>, lane: Opti
                 stage_title: stage.title.clone(),
                 own: role == stage.role_id,
                 role_id: role,
+                kind: stage.kind(),
                 tab_id,
                 lane: lane.map(str::to_string),
             })
@@ -69,26 +73,32 @@ pub fn current_stage_tabs(def: &PipelineDef, run: &PipelineRun) -> Vec<StageTab>
 }
 
 /// The log holds a turn autopilot would act on: done and not interrupted, or
-/// a Planner waiting on its plan approval (`finishedTurn` in
-/// `src/pipeline/autopilot.ts`).
-pub fn finished_turn(role_id: &str, log: &TerminalSessionLog) -> bool {
+/// a `planner` stage (by kind, so a copied Planner too) waiting on its plan
+/// approval (`finishedTurn` in `src/pipeline/autopilot.ts`).
+pub fn finished_turn(kind: StageKind, log: &TerminalSessionLog) -> bool {
     if log.turn_done {
         return !log.interrupted;
     }
-    role_id == "role_planner"
+    kind == StageKind::Planner
         && log.open_tool.as_ref().is_some_and(|tool| tool.name == "ExitPlanMode")
         && log.plan.as_deref().is_some_and(|plan| !plan.trim().is_empty())
 }
 
 /// A prompt was sent and its turn has not finished (or been interrupted).
-pub fn working(role_id: &str, log: &TerminalSessionLog) -> bool {
-    log.last_prompt_at.is_some() && !log.turn_done && !finished_turn(role_id, log)
+pub fn working(kind: StageKind, log: &TerminalSessionLog) -> bool {
+    log.last_prompt_at.is_some() && !log.turn_done && !finished_turn(kind, log)
 }
 
 /// The turn's key, `tab|session|prompt`, as autopilot records decided turns
 /// (`turnId` in `src/pipeline/autopilot.ts`).
 pub fn turn_key(tab_id: &str, log: &TerminalSessionLog) -> String {
     format!("{tab_id}|{}|{}", log.session_id, log.last_prompt_at.as_deref().unwrap_or(""))
+}
+
+/// A bridged (engine-2) turn's key, `tab|bridge|<turn id>`, as autopilot
+/// records it (`onBridgeTurn` in `src/pipeline/useAutopilot.ts`).
+pub fn bridge_turn_key(tab_id: &str, turn: &str) -> String {
+    format!("{tab_id}|bridge|{turn}")
 }
 
 /// What a startup reconcile did to a run.
@@ -107,6 +117,18 @@ pub fn reconcile_run(
     run: &mut PipelineRun,
     logs: &HashMap<String, TerminalSessionLog>,
 ) -> Option<Reconciled> {
+    reconcile_run_with(def, run, logs, &HashMap::new())
+}
+
+/// [`reconcile_run`], where `bridge_turns` gives each bridged tab's latest
+/// turn id (its stage's `turn.json`): that tab's turn counts as decided by
+/// its bridge key, the way autopilot records it.
+pub fn reconcile_run_with(
+    def: &PipelineDef,
+    run: &mut PipelineRun,
+    logs: &HashMap<String, TerminalSessionLog>,
+    bridge_turns: &HashMap<String, String>,
+) -> Option<Reconciled> {
     let enabled = run.autopilot.as_ref().is_some_and(|a| a.enabled);
     if run.status != RunStatus::Running || !enabled {
         return None;
@@ -119,9 +141,13 @@ pub fn reconcile_run(
     let tabs = current_stage_tabs(def, run);
     let finished = tabs.iter().find(|tab| {
         tab.own
-            && logs
-                .get(&tab.tab_id)
-                .is_some_and(|log| finished_turn(&tab.role_id, log) && !decided.contains(turn_key(&tab.tab_id, log).as_str()))
+            && logs.get(&tab.tab_id).is_some_and(|log| {
+                let key = match bridge_turns.get(&tab.tab_id) {
+                    Some(turn) => bridge_turn_key(&tab.tab_id, turn),
+                    None => turn_key(&tab.tab_id, log),
+                };
+                finished_turn(tab.kind, log) && !decided.contains(key.as_str())
+            })
     });
     if let Some(tab) = finished.cloned() {
         let why = format!(
@@ -134,7 +160,7 @@ pub fn reconcile_run(
     }
     let cut_off = tabs
         .iter()
-        .find(|tab| logs.get(&tab.tab_id).is_some_and(|log| working(&tab.role_id, log)))
+        .find(|tab| logs.get(&tab.tab_id).is_some_and(|log| working(tab.kind, log)))
         .cloned()?;
     let note = format!(
         "{}'s turn was cut off when the app closed. Autopilot acts on its next finished turn.",
@@ -165,8 +191,12 @@ fn log_for(run: &mut PipelineRun, kind: &str, tab: &StageTab, summary: String) {
 }
 
 /// How long a Working stage may stay quiet: the pipeline's `stallMinutes`.
+/// pipelines.json loads without validation, so a value outside 1 to 1440
+/// (only checked on save) counts as the default of 30; the file is left as is.
 pub fn stall_limit(def: &PipelineDef) -> Duration {
-    Duration::from_secs(u64::from(def.autopilot.stall_minutes.max(1)) * 60)
+    let minutes = def.autopilot.stall_minutes;
+    let minutes = if (1..=MAX_STALL_MINUTES).contains(&minutes) { minutes } else { DEFAULT_STALL_MINUTES };
+    Duration::from_secs(u64::from(minutes) * 60)
 }
 
 /// One look at a stage terminal, for `StallWatch::observe`.

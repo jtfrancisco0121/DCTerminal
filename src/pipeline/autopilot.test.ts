@@ -16,7 +16,7 @@ import {
   turnReport,
   usagePercent,
 } from "./autopilot";
-import { pipelineDef } from "./defs";
+import { pipelineDef, type PipelineDef } from "./defs";
 
 function log(patch: Partial<TerminalSessionLog> = {}): TerminalSessionLog {
   return {
@@ -87,6 +87,7 @@ describe("autopilot helpers", () => {
       findingsKnown: true,
       missingSections: [],
       usagePercent: 42,
+      rateLimit: null,
       chat: false,
       lane: null,
     });
@@ -146,6 +147,34 @@ describe("autopilot helpers", () => {
         ],
       }),
     ).toBe(92);
+    // A window that reset since its reading is unknown, not its old percent.
+    const now = Date.UTC(2026, 9, 10, 12, 0);
+    expect(
+      usagePercent(
+        {
+          configDir: "",
+          contextByTab: {},
+          windows: [
+            { rateLimitType: "five_hour", label: "5h", utilization: 97, resetsAt: now / 1000 - 60, status: "", seenAtMs: 0 },
+          ],
+        },
+        now,
+      ),
+    ).toBeNull();
+  });
+
+  it("a rate-limit error in the turn goes into the report", () => {
+    const planner = pipelineDef("eagle1")!.stages[0];
+    const limited = turnReport({
+      stage: planner,
+      reply: "",
+      chat: false,
+      usage: null,
+      rateLimit: "You've hit your limit · resets 3pm",
+    });
+    expect(limited.rateLimit).toBe("You've hit your limit · resets 3pm");
+    expect(limited.usagePercent).toBeNull();
+    expect(turnReport({ stage: planner, reply: "# Plan", chat: false, usage: null }).rateLimit).toBeNull();
   });
 });
 
@@ -229,10 +258,26 @@ describe("bridge turns (engine 2)", () => {
     expect(bridgeVerdict("APPROVED_WITH_CHANGES", "REQUEST CHANGES")).toBe("APPROVED WITH CHANGES");
     expect(bridgeVerdict("CHANGES_REQUIRED", "REQUIRES REVISION")).toBe("REQUIRES REVISION");
     expect(bridgeVerdict(undefined, "REQUEST CHANGES")).toBeNull();
-    // The plan reviewer of a full run asks for revision; every other reviewer for changes.
-    expect(reviseVerdict("full", "role_plan_reviewer")).toBe("REQUIRES REVISION");
-    expect(reviseVerdict("full", "role_pr_reviewer")).toBe("REQUEST CHANGES");
-    expect(reviseVerdict("execute", "role_plan_reviewer")).toBe("REQUEST CHANGES");
+    // A plan reviewer asks for revision; every other reviewer for changes.
+    const full = pipelineDef("eagle1")!;
+    const stage = (d: PipelineDef, id: string) => d.stages.find((s) => s.id === id)!;
+    expect(reviseVerdict(full, stage(full, "plan_reviewer"))).toBe("REQUIRES REVISION");
+    expect(reviseVerdict(full, stage(full, "pr_reviewer"))).toBe("REQUEST CHANGES");
+  });
+
+  it("a copied Plan Reviewer revises like the built-in one: its stage kind decides, not its role id", () => {
+    const copied: PipelineDef = {
+      id: "my_plan",
+      name: "My plan",
+      stages: [
+        { id: "planner", roleId: "role_planner", title: "Planner" },
+        { id: "plan_check", roleId: "role_custom_9", title: "Plan check", loopBack: { to: "planner", minSeverity: "MEDIUM" } },
+        { id: "implementer", roleId: "role_implementer", title: "Implementer" },
+        { id: "pr_check", roleId: "role_custom_10", title: "PR check", loopBack: { to: "implementer", minSeverity: "MEDIUM" } },
+      ],
+    };
+    expect(reviseVerdict(copied, copied.stages[1])).toBe("REQUIRES REVISION");
+    expect(reviseVerdict(copied, copied.stages[3])).toBe("REQUEST CHANGES");
   });
 
   it("decides on the submitted result, not on the reply's text", () => {
@@ -250,6 +295,7 @@ describe("bridge turns (engine 2)", () => {
       usagePercent: 12,
       chat: false,
       lane: "pr1",
+      rateLimit: null,
       noResult: false,
     });
   });

@@ -35,6 +35,7 @@ import {
   terminalSessionLog,
   type AutopilotDecision,
   type BridgeTurn,
+  type StopReason,
   type TabSummary,
   type TerminalSessionLog,
 } from "../bridge";
@@ -49,7 +50,7 @@ import { terminalBracketedPaste, terminalTailText } from "../terminal/park";
 import { encodeTerminalPaste } from "../terminal/paste";
 import type { TerminalState } from "../terminal/claudeState";
 import type { ProviderId } from "../provider/types";
-import { pipelineDef, stageOfRole, stageRoles } from "./defs";
+import { pipelineDef, stageBehaviour, stageOfRole, stageRoles } from "./defs";
 import { reviewRound } from "./runReport";
 import { parseReviewVerdict } from "../handoff/verdict";
 import { roleDisplayName } from "../handoff/transitions";
@@ -84,11 +85,12 @@ export type AutopilotDeps = {
     values: Record<string, string>;
     handoffPlan: string | null;
     provider: ProviderId;
+    /** The chain tag the new tab joins: its stage kind sets the permission mode. */
     chain: ChainRef | null;
   }) => Promise<string | null>;
   refreshTabs: () => Promise<unknown>;
-  /** Tells you autopilot stopped on `tabId` (toast and system notification). */
-  notifyStop: (tabId: string, reason: string) => void;
+  /** Tells you autopilot stopped on `tabId` and why (toast and system notification). */
+  notifyStop: (tabId: string, reason: string, code: StopReason | null) => void;
   notice: (title: string, body: string) => void;
   /** Claims and starts a waiting lane's Implementer (fanOut.startLane); false when it was not waiting. */
   startLane: (run: PipelineRun, lane: RunLane) => Promise<boolean>;
@@ -144,12 +146,15 @@ export function useAutopilot(deps: AutopilotDeps) {
   /** Bridged tabs: a turn that ended while the previous one was still being handled. */
   const pendingBridge = useRef(new Map<string, BridgeTurn>());
 
-  const stop = useCallback(async (runId: string, tabId: string, stageId: string | null, why: string) => {
-    // intentionally silent: the toast below still tells you; the ledger line is extra.
-    // Autopilot decided, but could not carry the decision out.
-    await pipelineNote(runId, { stageId, summary: why, stop: true, reason: "carry_out_failed" }).catch(() => {});
-    depsRef.current.notifyStop(tabId, why);
-  }, []);
+  const stop = useCallback(
+    async (runId: string, tabId: string, stageId: string | null, why: string, reason: StopReason = "carry_out_failed") => {
+      // intentionally silent: the toast below still tells you; the ledger line is extra.
+      // Default: autopilot decided, but could not carry the decision out.
+      await pipelineNote(runId, { stageId, summary: why, stop: true, reason }).catch(() => {});
+      depsRef.current.notifyStop(tabId, why, reason);
+    },
+    [],
+  );
 
   /** Open the decision's stage in a new terminal, carrying this stage's reply. */
   const openStage = useCallback(
@@ -220,7 +225,7 @@ export function useAutopilot(deps: AutopilotDeps) {
           // A stale turn, or a hand-off made already: the ledger says which.
           return;
         case "stop":
-          depsRef.current.notifyStop(tab.id, decision.reason);
+          depsRef.current.notifyStop(tab.id, decision.reason, decision.stopReason ?? null);
           return;
         case "complete":
           d.notice("Run complete", decision.reason);
@@ -314,7 +319,7 @@ export function useAutopilot(deps: AutopilotDeps) {
             const round = reviewer
               ? reviewRound(view.run, decision.lane, reviewer)
               : Math.max(1, chain.round ?? 1);
-            const text = loopBackMessage(tab.roleId, findings, round, d.roles());
+            const text = loopBackMessage(tab.roleId, findings, round, d.roles(), chain.kind);
             // Record the round first: pasted into an unrecorded round, the
             // stage's next turn would be skipped as handed on already.
             try {
@@ -385,7 +390,7 @@ export function useAutopilot(deps: AutopilotDeps) {
         let claimed: string | undefined;
         try {
           const view = await getPipelineRun(runId).catch(() => null);
-          const revise = reviseVerdict(view?.run.kind ?? "", tab.roleId);
+          const revise = reviseVerdict(placed.def, placed.stage);
           const lane = chain.lane ?? null;
           // intentionally silent: the lanes only lose a bar end.
           void pipelineTurnFinished(runId, {
@@ -407,7 +412,10 @@ export function useAutopilot(deps: AutopilotDeps) {
             : { sessionId: "", path: "", turnDone: true, lastReply: reply, plan: null, planAt: null, lastPromptAt: null, toolCalls: [] };
           const job: Job = { tab, chain, log, awaitingPlan: false };
           const round = currentRound(view.run, lane);
-          if (acting && placed.stage.gates?.length) {
+          // A turn cut off by a usage limit ends without the tool: it stops
+          // as usage_limit (H5), not no_result, and runs no checks.
+          const rateLimit = fresh?.rateLimit?.trim() || null;
+          if (acting && !rateLimit && placed.stage.gates?.length) {
             // A bridged Implementer named its pull requests through submit_result.
             const prs = bridgePrUrls(turn) ?? githubPrUrls(reply);
             await pipelineRunGates(runId, placed.stage.id, tab.cwd, prs, lane, round);
@@ -424,9 +432,10 @@ export function useAutopilot(deps: AutopilotDeps) {
               return;
             }
           }
-          // intentionally silent: without usage data autopilot simply does not pause for it.
+          // intentionally silent: unknown usage (no reading, or a stale one) is
+          // null, never 0: autopilot carries on, and a rate-limit error stops it.
           const usage = usagePercent(await getClaudeUsage().catch(() => null));
-          const report = bridgeTurnReport({ stage: placed.stage, turn, usage, lane, revise });
+          const report = bridgeTurnReport({ stage: placed.stage, turn, usage, rateLimit, lane, revise });
           const decision = await pipelineDecide(runId, { ...report, round, turn: `${tab.id}|bridge|${turn.turn}` });
           claimed = decision.claim;
           const findings = bridgeFindingsText(bridgeReview(turn)?.findings ?? []);
@@ -486,7 +495,7 @@ export function useAutopilot(deps: AutopilotDeps) {
         if (log?.turnDone && !busy.current.has(tabId)) void readBridgeTurn(tabId);
         return;
       }
-      const turn = finishedTurn(tab.roleId, log);
+      const turn = finishedTurn(tab.roleId, log, tab.chain.kind);
       if (log && !seen.current.has(tabId)) {
         seen.current.add(tabId);
         // Finished before this app session (a restart): never acted on again.
@@ -525,6 +534,8 @@ export function useAutopilot(deps: AutopilotDeps) {
           const acting = !view.run.status || view.run.status === "running";
           let reply = (turn.awaitingPlan ? log.plan : log.lastReply)?.trim() ?? "";
           let ownReply = reply;
+          // A refused request (usage limit) stops the run; nothing else is checked.
+          let rateLimit = log.rateLimit?.trim() || null;
           const roles = stageRoles(placed.stage);
           if (roles.length > 1) {
             // Parallel reviewers: decide when the stage's own reviewer has a
@@ -539,11 +550,12 @@ export function useAutopilot(deps: AutopilotDeps) {
               const id = tabIds[role];
               // This tab's log is the one just read; the others' are stored.
               const own = id === tabId ? log : id ? d.sessionLog(id) : null;
-              const done = id ? finishedTurn(role, own) : null;
+              const done = id ? finishedTurn(role, own, tab.chain!.kind) : null;
               return { role, id, log: own, key: done ? `${id}|${done.key}` : null };
             });
             const first = reviews[0];
             if (reviews.some((r) => !r.id || !r.key || !r.log) || merged.current.has(first.key!)) return;
+            rateLimit = reviews.map((r) => r.log?.rateLimit?.trim()).find((text) => !!text) ?? null;
             merged.current.add(first.key!);
             const main = d.tabs().find((t) => t.id === first.id);
             if (!main?.chain) return;
@@ -553,9 +565,8 @@ export function useAutopilot(deps: AutopilotDeps) {
                 name: roleDisplayName(r.role, d.roles()),
                 reply: r.log?.lastReply ?? "",
               })),
-              view.run.kind === "full" && placed.stage.roleId === "role_plan_reviewer"
-                ? "REQUIRES REVISION"
-                : "REQUEST CHANGES",
+              // A plan reviewer's "changes" verdict; the stage's kind says which it is.
+              stageBehaviour(placed.def, placed.stage) === "plan_reviewer" ? "REQUIRES REVISION" : "REQUEST CHANGES",
             );
             // The hand-off carries the stage reviewer's own reply; the merged one decides.
             job = { tab: main, chain: main.chain, log: first.log!, awaitingPlan: false };
@@ -564,7 +575,7 @@ export function useAutopilot(deps: AutopilotDeps) {
           // The round this turn ends: a round sent back while its checks run makes it stale.
           const round = currentRound(view.run, lane);
           const turnKey = turnId(job.tab.id, job.log);
-          if (acting && placed.stage.gates?.length) {
+          if (acting && !rateLimit && placed.stage.gates?.length) {
             await pipelineRunGates(
               runId,
               placed.stage.id,
@@ -588,16 +599,19 @@ export function useAutopilot(deps: AutopilotDeps) {
             }).catch(() => {});
             return;
           }
-          // intentionally silent: without usage data autopilot simply does not pause for it.
+          // intentionally silent: unknown usage (no reading, or a stale one) is
+          // null, never 0: autopilot carries on, and a rate-limit error stops it.
           const usage = usagePercent(await getClaudeUsage().catch(() => null));
           const report = turnReport({
             stage: placed.stage,
             reply,
             chat: false,
             usage,
+            rateLimit,
             awaitingPlan: turn.awaitingPlan,
             lane,
             ownReply,
+            chainKind: job.chain.kind,
           });
           const decision = await pipelineDecide(runId, { ...report, round, turn: turnKey });
           claimed = decision.claim;

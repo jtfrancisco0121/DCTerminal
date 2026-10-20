@@ -11,7 +11,7 @@ use crate::models::{
 };
 use crate::provider::claude_config::{resolve_with, ConfigDirInfo, ConfigDirSource};
 use crate::provider::claude_detect::{
-    claude_login_status, parse_claude_auth_status, read_claude_version, resolve_adapter_with,
+    cached_claude_version, claude_login_status, parse_claude_auth_status, read_claude_version, resolve_adapter_with,
     resolve_claude_with, Lookup,
 };
 use crate::pty::plans::newest_plan_since;
@@ -141,6 +141,39 @@ fn version_is_the_first_line_and_runs_with_the_resolved_config_dir() {
     let silent = fake_binary(bin.path(), "claude_silent", "exit 0");
     assert_eq!(read_claude_version(&silent, &info), None);
     assert_eq!(read_claude_version(&bin.join("not_there"), &info), None);
+}
+
+#[cfg(unix)]
+#[test]
+fn the_pipeline_gate_reads_each_claude_version_once() {
+    // D24: a fake claude prints its version and counts its runs.
+    let bin = TempDir::new("detect_cached_version_bin");
+    let config = TempDir::new("detect_cached_version_cfg");
+    let runs = bin.join("runs");
+    let claude = fake_binary(
+        bin.path(),
+        "claude",
+        &format!("echo x >> '{}'\nprintf '2.1.287 (Claude Code)\\n'", runs.display()),
+    );
+    let info = config_info(config.path(), true);
+    assert_eq!(cached_claude_version(&claude, &info).as_deref(), Some("2.1.287 (Claude Code)"));
+    assert_eq!(cached_claude_version(&claude, &info).as_deref(), Some("2.1.287 (Claude Code)"));
+    let count = std::fs::read_to_string(&runs).unwrap().lines().count();
+    assert_eq!(count, 1, "claude --version ran once");
+    // An unreadable version is not cached: the next launch tries again.
+    let silent = fake_binary(bin.path(), "claude_silent", &format!("echo x >> '{}'", runs.display()));
+    assert_eq!(cached_claude_version(&silent, &info), None);
+    assert_eq!(cached_claude_version(&silent, &info), None);
+    assert_eq!(std::fs::read_to_string(&runs).unwrap().lines().count(), 3);
+    let failing = fake_binary(
+        bin.path(),
+        "claude_fail",
+        &format!("echo x >> '{}'\necho 'boom: bad install' >&2\nexit 3", runs.display()),
+    );
+    assert_eq!(cached_claude_version(&failing, &info).as_deref(), Some("boom: bad install"));
+    assert_eq!(cached_claude_version(&failing, &info).as_deref(), Some("boom: bad install"));
+    assert_eq!(std::fs::read_to_string(&runs).unwrap().lines().count(), 5, "an error is not a version");
+    assert!(names_in(config.path()).is_empty(), "nothing written to the config dir");
 }
 
 #[cfg(unix)]

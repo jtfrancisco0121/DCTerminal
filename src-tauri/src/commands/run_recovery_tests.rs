@@ -109,12 +109,41 @@ impl Fixture {
     }
 
     fn reconcile(&self) -> RecoveryOutcome {
-        reconcile_on_startup(&self.store, &self.registry, &self.readers).unwrap()
+        reconcile_on_startup(&self.store, &self.registry, &self.readers, &self.dir.join("runs")).unwrap()
     }
 
     fn tick(&self, watch: &mut StallWatch, now: Instant, limit: Duration) -> RecoveryOutcome {
         watchdog_tick(&self.store, &self.registry, &self.readers, watch, now, &|_| limit).unwrap()
     }
+}
+
+#[test]
+fn startup_leaves_a_bridged_turn_autopilot_already_decided_alone() {
+    use crate::bridge::launch::{prepare_stage, BridgePlan, BridgeTag};
+    let fx = Fixture::new("recover_bridged_decided");
+    fx.write_log(&[prompt("2026-10-19T10:00:00Z"), reply("2026-10-19T10:01:00Z")]);
+    // The tab holds its stage's run folder, whose turn.json names turn p-7.
+    let plan = BridgePlan {
+        run_id: "ee_r".into(),
+        stage_id: "implementer".into(),
+        role_id: "role_implementer".into(),
+        lane: None,
+        stage_key: "implementer".into(),
+        kind: crate::bridge::ResultKind::Reviewer,
+        autopilot: true,
+    };
+    let run_dir = prepare_stage(&fx.dir.join("runs"), &plan, &fx.tab).unwrap();
+    let stage = crate::bridge::folder::StageDir::open(&run_dir, "ee_r", "implementer", &fx.tab).unwrap();
+    stage.write_turn(&crate::bridge::folder::TurnState::new("p-7")).unwrap();
+    {
+        let mut store = fx.store.lock().unwrap();
+        let tag = BridgeTag { run_id: "ee_r".into(), stage: "implementer".into() };
+        store.set_tab_bridge(&fx.tab, Some(tag)).unwrap();
+        let run = store.pipeline_run_by_id_mut("ee_r").unwrap();
+        run.autopilot.as_mut().unwrap().decided.push(format!("{}|bridge|p-7", fx.tab));
+    }
+    assert_eq!(fx.reconcile(), RecoveryOutcome::default());
+    assert_eq!(fx.status(), (RunStatus::Running, None));
 }
 
 #[test]
@@ -223,4 +252,43 @@ fn recovery_reads_logs_with_no_store_lock_held() {
         let lock = body.find("store.lock()").expect("locks to write back");
         assert!(read < lock, "{name} reads logs under the store lock");
     }
+}
+
+fn stop(run_id: &str, tab_id: &str) -> AutopilotStopped {
+    AutopilotStopped {
+        run_id: run_id.into(),
+        tab_id: tab_id.into(),
+        reason: StopReason::AppRestarted,
+        summary: "Implementer finished while the app was closed".into(),
+    }
+}
+
+fn ids(tabs: &[&str]) -> Vec<String> {
+    tabs.iter().map(|t| t.to_string()).collect()
+}
+
+#[test]
+fn a_stop_found_before_the_frontend_listens_is_delivered_once_when_it_asks() {
+    let stops = StartupStops::default();
+    let mut emitted = Vec::new();
+    // The startup reconcile runs before the webview has subscribed.
+    stops.deliver(vec![stop("ee_1", "impl")], |s| emitted.push(s));
+    assert!(emitted.is_empty(), "nobody is listening yet, so it is held");
+    // The frontend has attached its listener and asks for what it missed.
+    assert_eq!(stops.take(&ids(&["impl"])), vec![stop("ee_1", "impl")]);
+    assert!(stops.take(&ids(&["impl"])).is_empty(), "delivered once");
+    // From then on, a stop is an event at once (a later stall, or a reloaded webview).
+    stops.deliver(vec![stop("ee_2", "impl")], |s| emitted.push(s));
+    assert_eq!(emitted, vec![stop("ee_2", "impl")]);
+    assert!(stops.take(&ids(&["impl"])).is_empty());
+}
+
+#[test]
+fn each_window_gets_the_held_stops_for_its_own_tabs() {
+    let stops = StartupStops::default();
+    stops.deliver(vec![stop("ee_1", "impl_a"), stop("ee_2", "review_b")], |_| panic!("not listening yet"));
+    // Window A asks first and gets only its own tab's stop; B's is kept for B.
+    assert_eq!(stops.take(&ids(&["main_a", "impl_a"])), vec![stop("ee_1", "impl_a")]);
+    assert_eq!(stops.take(&ids(&["review_b"])), vec![stop("ee_2", "review_b")]);
+    assert!(stops.take(&ids(&["main_a", "impl_a", "review_b"])).is_empty());
 }

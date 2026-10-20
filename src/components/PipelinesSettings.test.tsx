@@ -7,7 +7,7 @@ vi.mock("../bridge", () => ({
   pipelineDefsSave: vi.fn(async (defs: unknown[]) => defs),
 }));
 
-import { pipelineDefsSave } from "../bridge";
+import { pipelineDefsList, pipelineDefsSave } from "../bridge";
 import { allPipelineDefs, setPipelineDefs } from "../pipeline/defs";
 import { PipelinesSettings } from "./PipelinesSettings";
 
@@ -64,5 +64,32 @@ describe("Settings › Pipelines", () => {
     expect(onDirtyChange).toHaveBeenLastCalledWith(true);
     unmount();
     expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it("lists a pipeline that does not validate as disabled with the reason, and keeps an unreadable entry as written", async () => {
+    vi.mocked(pipelineDefsList).mockResolvedValueOnce([
+      {
+        id: "lost",
+        name: "Lost role",
+        stages: [{ id: "a", roleId: "role_gone", title: "A" }],
+        disabled: 'stage "a" uses the role "role_gone", which does not exist (deleted or renamed?).',
+      },
+      {
+        id: "odd",
+        name: "Odd",
+        stages: [],
+        disabled: "It could not be read: unknown variant `lint`.",
+        raw: { id: "odd", name: "Odd", stages: [{ id: "a", roleId: "role_x", title: "A", gates: [{ kind: "lint" }] }] },
+      },
+    ]);
+    render(<PipelinesSettings />);
+    const editor = screen.getByLabelText("Your pipelines (JSON)") as HTMLTextAreaElement;
+    await waitFor(() => expect(editor.value).toContain('"lint"'));
+    const notes = screen.getAllByRole("note").map((note) => note.textContent);
+    expect(notes[0]).toContain('Disabled: stage "a" uses the role "role_gone"');
+    expect(notes[1]).toContain("could not be read");
+    // The editor holds what you wrote, never the app's own fields.
+    expect(editor.value).not.toContain("disabled");
+    expect(JSON.parse(editor.value)[1].stages[0].gates).toEqual([{ kind: "lint" }]);
   });
 });
