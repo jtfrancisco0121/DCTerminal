@@ -2,8 +2,9 @@
  * Bridged stages' Needs you (ADR-015, D22): the PermissionRequest hook (or
  * its Notification backup) said a permission dialog is up. The mark is set
  * at once from the bridge's event, and cleared when you answer it (an
- * answer key, or its screen dialog drawn and gone), or by a later log read
- * that shows the tool finished or the turn over.
+ * answer key, or its screen dialog drawn and gone), by a later log read
+ * that shows the tool finished or the turn over, or when the tab's PTY
+ * exits or a new one begins.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listenBridgeNeeds, type BridgeNeeds, type BridgeTag } from "../bridge";
@@ -13,7 +14,7 @@ import {
   bridgeNeedsAfterRead,
   type BridgeNeedsMark,
 } from "./claudeState";
-import { subscribePtyAnswer } from "./live";
+import { subscribePtyAnswer, subscribePtyBegin, subscribePtyExit } from "./live";
 
 /** Tools that show their own prompt (a plan, a question), never the permission dialog. */
 const OWN_PROMPT = new Set(["ExitPlanMode", "AskUserQuestion"]);
@@ -77,6 +78,17 @@ export function useBridgeNeeds(tabs: () => readonly BridgedTab[]) {
     () => subscribePtyAnswer((id) => set(id, bridgeNeedsAfterAnswer(marks.current.get(id), Date.now()))),
     [set],
   );
+
+  // The process that asked is gone: an exit, or a new PTY on the tab
+  // (Restart, Resume) drops its mark, so the new session is not "Needs you".
+  useEffect(() => {
+    const offExit = subscribePtyExit((id) => set(id, undefined));
+    const offBegin = subscribePtyBegin((id) => set(id, undefined));
+    return () => {
+      offExit();
+      offBegin();
+    };
+  }, [set]);
 
   /** A session-log read that started at `readAt`. */
   const afterRead = useCallback(

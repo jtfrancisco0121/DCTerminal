@@ -11,11 +11,15 @@ vi.mock("../bridge", () => ({
       emit = null;
     };
   }),
-  createPtyChannel: () => ({ onmessage: () => {} }),
+  createPtyChannel: (onPacket: (packet: { kind: string; data: string; code: number | null }) => void) => {
+    channels.push(onPacket);
+    return { onmessage: onPacket };
+  },
 }));
+const channels: ((packet: { kind: string; data: string; code: number | null }) => void)[] = [];
 
 const { useBridgeNeeds } = await import("./bridgeNeeds");
-const { notePtyInput } = await import("./live");
+const { beginLivePty, dropLivePty, notePtyInput, restartLivePty } = await import("./live");
 const { deriveTerminalState, BRIDGE_NEEDS_GRACE_MS } = await import("./claudeState");
 
 const TAB = { id: "impl", bridge: { runId: "ee_1", stage: "implementer" } };
@@ -101,6 +105,25 @@ describe("useBridgeNeeds: the bridged Needs you lifecycle (D22)", () => {
     act(() => emit!(needs({ tool: "ExitPlanMode" })));
     act(() => emit!(needs({ tool: "AskUserQuestion" })));
     expect(result.current.markOf("impl")).toBeNull();
+    unmount();
+  });
+
+  it("a PTY that exits, or a new one on the tab (Restart, Resume), drops the mark", async () => {
+    const { result, unmount } = await mount();
+    beginLivePty("impl");
+    act(() => emit!(needs()));
+    expect(result.current.markOf("impl")).not.toBeNull();
+    act(() => channels[channels.length - 1]({ kind: "exit", data: "", code: 0 }));
+    expect(result.current.markOf("impl")).toBeNull();
+    // Restart while the dialog was up: the new session starts with no Needs you.
+    act(() => emit!(needs({ turn: "p-2" })));
+    expect(result.current.markOf("impl")).not.toBeNull();
+    act(() => {
+      restartLivePty("impl");
+    });
+    expect(result.current.markOf("impl")).toBeNull();
+    expect(pill(result.current.markOf("impl"))).toEqual({ kind: "working" });
+    dropLivePty("impl");
     unmount();
   });
 
