@@ -16,6 +16,7 @@ Built-in pipeline definitions ([ADR-014](../adr/014-pipeline-engine-opt-in-autop
 | `stages[].checkpoint` | Autopilot stops before starting this stage and waits for you. |
 | `stages[].alsoReviewers` | Specialist reviewers (role ids, for example a custom Security Reviewer) that review the same work in parallel with the stage's role. Needs a `loopBack`. Autopilot opens them together, waits for all of them, and decides on the merged reviews: the worst verdict, every reviewer's findings. |
 | `autopilot.pauseAtUsagePercent` | Autopilot pauses when the Claude 5-hour or 7-day usage reaches this percent (default 90). |
+| `autopilot.stallMinutes` | While a stage is Working, this many minutes with no terminal output and no growth of its session log stops the run with `stalled` (default 30, 1 to 1440). Raise it for a pipeline whose checks run quietly for long. |
 
 Every role id must exist. When the app loads your pipelines (and whenever a role is added or deleted), one that does not validate stays listed under Settings › Pipelines, **disabled**, with the reason; it is never dropped, and an entry that is not a pipeline at all is kept exactly as written. A disabled pipeline cannot be started, and autopilot stops a run whose pipeline became disabled or unknown instead of guessing one.
 

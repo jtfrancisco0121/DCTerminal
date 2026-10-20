@@ -130,6 +130,11 @@ impl PtyRegistry {
             .count()
     }
 
+    /// How long the terminal `id` has printed nothing; `None` when it is not open.
+    pub fn quiet_for(&self, id: &str) -> Option<Duration> {
+        self.sessions.get(id).map(PtySession::quiet_for)
+    }
+
     pub fn claude_session(&self, id: &str) -> Option<&str> {
         self.claude_sessions.get(id).map(String::as_str)
     }

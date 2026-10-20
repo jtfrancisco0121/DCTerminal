@@ -16,6 +16,7 @@
 
 pub mod autopilot;
 mod gates;
+pub mod recovery;
 #[cfg(test)]
 mod tests;
 
@@ -29,6 +30,11 @@ const EAGLE1_JSON: &str = include_str!("../../../docs/pipelines/eagle1.json");
 const EAGLE2_JSON: &str = include_str!("../../../docs/pipelines/eagle2.json");
 
 pub const DEFAULT_PAUSE_AT_USAGE_PERCENT: u8 = 90;
+/// Minutes a Working stage may print nothing and write no log before the
+/// stall watchdog stops the run (D30).
+pub const DEFAULT_STALL_MINUTES: u32 = 30;
+/// Largest `stallMinutes`: one day.
+pub(crate) const MAX_STALL_MINUTES: u32 = 24 * 60;
 const MAX_PIPELINES: usize = 50;
 const MAX_STAGES: usize = 12;
 const MAX_ID_CHARS: usize = 64;
@@ -80,6 +86,10 @@ fn default_min_severity() -> Severity {
 
 fn default_pause_percent() -> u8 {
     DEFAULT_PAUSE_AT_USAGE_PERCENT
+}
+
+fn default_stall_minutes() -> u32 {
+    DEFAULT_STALL_MINUTES
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -197,12 +207,17 @@ impl StageDef {
 pub struct AutopilotPolicy {
     #[serde(default = "default_pause_percent")]
     pub pause_at_usage_percent: u8,
+    /// While a stage is Working, this many minutes with no terminal output
+    /// and no log growth stops the run with `stalled` (Track H3).
+    #[serde(default = "default_stall_minutes")]
+    pub stall_minutes: u32,
 }
 
 impl Default for AutopilotPolicy {
     fn default() -> Self {
         Self {
             pause_at_usage_percent: DEFAULT_PAUSE_AT_USAGE_PERCENT,
+            stall_minutes: DEFAULT_STALL_MINUTES,
         }
     }
 }
@@ -620,6 +635,9 @@ fn check_pipeline(
     }
     if def.autopilot.pause_at_usage_percent == 0 || def.autopilot.pause_at_usage_percent > 100 {
         return Err("autopilot.pauseAtUsagePercent is 1 to 100.".into());
+    }
+    if def.autopilot.stall_minutes == 0 || def.autopilot.stall_minutes > MAX_STALL_MINUTES {
+        return Err(format!("autopilot.stallMinutes is 1 to {MAX_STALL_MINUTES}."));
     }
     Ok(())
 }

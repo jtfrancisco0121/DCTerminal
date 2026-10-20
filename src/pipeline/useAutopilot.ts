@@ -5,6 +5,10 @@
  * round back, paste a failed check's output or the missing-sections ask into
  * the same tab, or stop and tell you why. Every step lands in the run's
  * ledger. Manual runs are never touched.
+ *
+ * A turn that finished before this app session (a restart) is never acted
+ * on by itself (D29): the core puts its run in `waiting` with
+ * `app_restarted`, and `continueRun` (the overview's Continue) decides it.
  */
 import { useCallback, useRef } from "react";
 import {
@@ -13,6 +17,7 @@ import {
   getPipelineRun,
   getTab,
   type PipelineRun,
+  pipelineContinue,
   type RunLane,
   pipelineDecide,
   pipelineNote,
@@ -20,6 +25,7 @@ import {
   pipelineRunGates,
   pipelineTurnFinished,
   ptyWrite,
+  terminalSessionLog,
   type AutopilotDecision,
   type TabSummary,
   type TerminalSessionLog,
@@ -460,5 +466,26 @@ export function useAutopilot(deps: AutopilotDeps) {
     [carryOut, stop],
   );
 
-  return { onTerminalLog };
+  /**
+   * Overview › Continue on a run waiting after a restart: the core runs it
+   * again, then each of its current stage tabs' turns is decided as if it
+   * had just finished (one decided before the quit is ignored by the core).
+   */
+  const continueRun = useCallback(
+    async (runId: string) => {
+      const tabIds = await pipelineContinue(runId);
+      for (const tabId of tabIds) {
+        // intentionally silent: a tab with no log has no turn to decide.
+        const log = await terminalSessionLog(tabId).catch(() => null);
+        // Seen only with a log, as onTerminalLog marks it: a log that shows
+        // up later still gets the restart check.
+        if (log) seen.current.add(tabId);
+        handled.current.delete(tabId);
+        onTerminalLog(tabId, log);
+      }
+    },
+    [onTerminalLog],
+  );
+
+  return { onTerminalLog, continueRun };
 }

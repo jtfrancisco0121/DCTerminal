@@ -224,6 +224,7 @@ import {
 } from "./handoff/executor";
 import { behaviourRole, pipelineDef, pipelineStages, roleBehaviour, stageBehaviour } from "./pipeline/defs";
 import { useAutopilot } from "./pipeline/useAutopilot";
+import { onceValue, subscribeAutopilotStops } from "./pipeline/autopilotStops";
 import { terminalStageSource, turnId } from "./pipeline/autopilot";
 import { approveByHand, fanOutRun, planStageFor, stageTab, startLane } from "./pipeline/fanOut";
 import {
@@ -496,6 +497,8 @@ export function StartupForm({
   const [savedTabs, setSavedTabs] = useState<TabSummary[]>([]);
   const savedTabsRef = useRef(savedTabs);
   savedTabsRef.current = savedTabs;
+  /** Set by the first tab list load; until then savedTabs is only the empty start. */
+  const [tabsLoaded, setTabsLoaded] = useState(false);
   /** Set once useNewTab exists; the tab bootstrap calls it on a first launch. */
   const newTabLaunchRef = useRef<(draftTabId: string, mode: string) => Promise<void>>(
     async () => {},
@@ -1073,6 +1076,7 @@ export function StartupForm({
     const snap = await getAppState();
     setSavedTabs(snap.tabs);
     setClosedTabs(snap.closedTabs ?? []);
+    setTabsLoaded(true);
     return snap;
   }, []);
 
@@ -2435,6 +2439,22 @@ export function StartupForm({
     sessionLog: (tabId) => sessionLogsRef.current[tabId],
   });
   autopilotLogRef.current = autopilot.onTerminalLog;
+  // The core stopped a run by itself (a stall, or a turn that finished while
+  // the app was closed): tell you the way a stop autopilot made does.
+  // Stops made before this listener attached (the startup reconcile) are
+  // fetched once it is attached and this window's tabs have loaded (so the
+  // toast's tab is known), and only those on this window's tabs.
+  const [ownTabs] = useState(() => onceValue<string[]>());
+  useEffect(() => {
+    if (tabsLoaded) ownTabs.resolve(savedTabs.map((tab) => tab.id));
+  }, [ownTabs, tabsLoaded, savedTabs]);
+  useEffect(
+    () =>
+      subscribeAutopilotStops((event) => {
+        notifyAgent(event.tabId, { kind: "question", detail: `Autopilot: ${event.summary}` });
+      }, ownTabs.promise),
+    [notifyAgent, ownTabs],
+  );
 
   const startBlankTerminal = useCallback(
     async (launch: "shell" | CliLaunch) => {
@@ -6149,6 +6169,7 @@ export function StartupForm({
           onStartLane={startLaneById}
           onApproveLane={approveLaneById}
           onApproveRun={(runId) => approveLaneById(runId, null)}
+          onContinue={autopilot.continueRun}
         />
       </section>,
     );
