@@ -234,7 +234,7 @@ import { behaviourRole, pipelineDef, pipelineStages, roleBehaviour, stageBehavio
 import { eagleStartChain } from "./pipeline/eagleStart";
 import { useBridgeNeeds } from "./terminal/bridgeNeeds";
 import { useAutopilot } from "./pipeline/useAutopilot";
-import { onceValue, subscribeAutopilotStops } from "./pipeline/autopilotStops";
+import { autopilotStopDetail, onceValue, subscribeAutopilotStops } from "./pipeline/autopilotStops";
 import { terminalStageSource, turnId } from "./pipeline/autopilot";
 import { approveByHand, fanOutRun, planStageFor, stageTab, startLane } from "./pipeline/fanOut";
 import {
@@ -2514,7 +2514,7 @@ export function StartupForm({
   useEffect(
     () =>
       subscribeAutopilotStops((event) => {
-        notifyAgent(event.tabId, { kind: "question", detail: `Autopilot: ${event.summary}` });
+        notifyAgent(event.tabId, { kind: "question", detail: autopilotStopDetail(event) });
       }, ownTabs.promise),
     [notifyAgent, ownTabs],
   );
