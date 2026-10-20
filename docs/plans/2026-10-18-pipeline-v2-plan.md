@@ -320,7 +320,7 @@ Every question I expect you to face, decided. Each has the reason and the eviden
 | D29 | Act on a finished turn after a restart? | Never by itself. The run waits with `app_restarted` and a Continue button | — |
 | D30 | Stall limit? | 30 minutes with no output and no log growth, set per pipeline (`autopilot.stallMinutes`) | Long quiet test suites trip it: raise the default |
 | D31 | `auto` gate with nothing to run? | Stops with `no_check_found`, unless the gate is marked `optional` | — |
-| D32 | Unknown usage? | Shown as unknown, never 0%. Autopilot continues; a rate-limit error in a stage's log stops the run | T9 gives terminal usage: pause before the limit, as chat does |
+| D32 | Unknown usage? | Shown as unknown, never 0%. Autopilot continues. When usage is known and at or above `autopilot.pauseAtUsagePercent`, the run stops with `usage_limit` before the next hand-off; a rate-limit error in a stage's log also stops the run | T9 gives terminal usage: pause before the limit, as chat does |
 | D33 | How do copied roles behave? | A `kind` on each stage replaces every role-id check | — |
 
 ### Process

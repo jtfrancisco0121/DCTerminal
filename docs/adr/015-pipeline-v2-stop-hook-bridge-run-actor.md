@@ -43,7 +43,7 @@ Every guardrail from ADR-014 §2 and its amendments still applies to engine-2 ru
 | Checkpoint before the first Implementer stage, on by default, can be turned off per pipeline | The actor stops with `checkpoint` before spawning the stage |
 | The run stops on Needs you (permission, question or plan card) | PermissionRequest hook first, Notification and screen scraping as fallbacks (D22) |
 | Round caps: none by default since 2026-10-16; an optional `maxRounds` (1 to 20) stops the run with `round_cap` | Unchanged; checked by `decide` |
-| Pause when Claude usage is near the limit | statusLine `rate_limits` gives terminal usage when present; unknown usage is shown as unknown, never 0%, and a rate-limit error in a stage's log stops the run with `usage_limit` (D32, H5) |
+| Pause when Claude usage is near the limit | statusLine `rate_limits` gives terminal usage when present. When usage is known and at or above the pipeline's `autopilot.pauseAtUsagePercent`, the run stops with `usage_limit` before the next hand-off. Unknown usage is shown as unknown, never 0%, and the run continues. A rate-limit error in a stage's log also stops the run with `usage_limit` (D32, H5) |
 | A missing verdict, or missing HANDOFF sections after one re-ask, stops the run | Becomes: no `submit_result` after one block stops with `no_result`. The reviewer schema requires a verdict, so `no_verdict` remains for engine-1 runs |
 | Repeated check failures stop the run | Unchanged; gates run in the actor and stop with `gate_failed` |
 | Autopilot never merges a pull request | Unchanged. Nothing in the bridge or the actor runs a merge |
@@ -114,7 +114,7 @@ The final decisions from the plan, with the V0 amendments of 2026-10-18 applied.
 | D29 | After a restart, never act on a finished turn by itself: the run waits with `app_restarted` and a Continue button | — |
 | D30 | Stall limit: 30 minutes with no output and no log growth, per pipeline (`autopilot.stallMinutes`) | Long quiet test suites trip it: raise the default |
 | D31 | An `auto` gate with nothing to run stops with `no_check_found`, unless the gate is marked `optional` | — |
-| D32 | Unknown usage is shown as unknown, never 0%; autopilot continues, and a rate-limit error in a stage's log stops the run. The statusLine input carries `rate_limits.five_hour` and `seven_day` when present, so terminals can report usage; it is optional, missing on the first render (changed by V0 T9 and pulled forward into H5) | — |
+| D32 | Unknown usage is shown as unknown, never 0%; autopilot continues. When usage is known and at or above `autopilot.pauseAtUsagePercent`, the run stops with `usage_limit` before the next hand-off, and so does a rate-limit error in a stage's log. The statusLine input carries `rate_limits.five_hour` and `seven_day` when present, so terminals can report usage; it is optional, missing on the first render (changed by V0 T9 and pulled forward into H5) | — |
 | D33 | A `kind` on each stage (`planner`, `reviewer`, `implementer`, `generic`) replaces every role-id check, so copied roles behave like their originals | — |
 
 ### Process
