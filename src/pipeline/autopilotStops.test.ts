@@ -35,24 +35,37 @@ describe("subscribeAutopilotStops", () => {
     vi.mocked(autopilotPendingStops).mockReset().mockResolvedValue([]);
   });
 
-  it("delivers a stop the core made before the listener attached, once the listener is attached", async () => {
+  it("asks for held stops only once the listener is attached and this window's tabs are known, naming them", async () => {
     vi.mocked(autopilotPendingStops).mockResolvedValue([restarted]);
     const onStop = vi.fn();
-    subscribeAutopilotStops(onStop);
+    let tabsKnown: (ids: string[]) => void = () => {};
+    subscribeAutopilotStops(onStop, new Promise((resolve) => (tabsKnown = resolve)));
     await Promise.resolve();
-    expect(autopilotPendingStops).not.toHaveBeenCalled();
     attach();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(autopilotPendingStops).not.toHaveBeenCalled();
+    tabsKnown(["impl", "review"]);
     await vi.waitFor(() => expect(onStop).toHaveBeenCalledWith(restarted));
     expect(autopilotPendingStops).toHaveBeenCalledTimes(1);
+    expect(autopilotPendingStops).toHaveBeenCalledWith(["impl", "review"]);
     // A live event still arrives through the listener.
     handler?.({ ...restarted, runId: "ee_2", reason: "stalled" });
     expect(onStop).toHaveBeenCalledTimes(2);
   });
 
+  it("waits for the listener even when the tabs are known first", async () => {
+    const onStop = vi.fn();
+    subscribeAutopilotStops(onStop, Promise.resolve(["impl"]));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(autopilotPendingStops).not.toHaveBeenCalled();
+    attach();
+    await vi.waitFor(() => expect(autopilotPendingStops).toHaveBeenCalledWith(["impl"]));
+  });
+
   it("stops listening and drops held stops when disposed before they arrive", async () => {
     vi.mocked(autopilotPendingStops).mockResolvedValue([restarted]);
     const onStop = vi.fn();
-    const dispose = subscribeAutopilotStops(onStop);
+    const dispose = subscribeAutopilotStops(onStop, Promise.resolve(["impl"]));
     dispose();
     attach();
     await vi.waitFor(() => expect(unlisten).toHaveBeenCalled());

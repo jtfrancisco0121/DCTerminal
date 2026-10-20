@@ -203,10 +203,12 @@ pub(crate) fn watchdog_tick(
 
 /// Stops the core made before the frontend listened. The startup reconcile
 /// runs while the webview is still loading, so its `autopilot-stopped`
-/// events would be lost: they are held here until the frontend, with its
-/// listener attached, asks for them (`autopilot_pending_stops`). From then
-/// on every stop is emitted at once. One lock covers both, so a stop is
-/// either held or emitted, never both and never neither.
+/// events would be lost: they are held here until a window, with its
+/// listener attached and its tabs loaded, asks for the ones on its tabs
+/// (`autopilot_pending_stops`). Stops on other windows' tabs stay held for
+/// them. After the first ask every new stop is emitted at once, to every
+/// window. One lock covers both, so a stop is either held or emitted, never
+/// both and never neither.
 #[derive(Default)]
 pub struct StartupStops(Mutex<HeldStops>);
 
@@ -227,11 +229,14 @@ impl StartupStops {
         }
     }
 
-    /// The frontend listens now: hand over what was held, once.
-    pub fn take(&self) -> Vec<AutopilotStopped> {
+    /// A window listens now: hand over, once, the held stops on its tabs.
+    pub fn take(&self, tab_ids: &[String]) -> Vec<AutopilotStopped> {
         let mut inner = self.0.lock().unwrap_or_else(|e| e.into_inner());
         inner.listening = true;
-        std::mem::take(&mut inner.held)
+        let (mine, others) =
+            std::mem::take(&mut inner.held).into_iter().partition(|stop| tab_ids.contains(&stop.tab_id));
+        inner.held = others;
+        mine
     }
 }
 
@@ -314,11 +319,12 @@ pub fn pipeline_continue(
     Ok(tabs)
 }
 
-/// The stops the core made before the frontend listened (`StartupStops`).
-/// The frontend calls this once its `autopilot-stopped` listener is attached.
+/// The stops the core made before the frontend listened (`StartupStops`),
+/// on the calling window's tabs. The frontend calls this once its
+/// `autopilot-stopped` listener is attached and its tab list has loaded.
 #[tauri::command]
-pub fn autopilot_pending_stops(stops: State<StartupStops>) -> Vec<AutopilotStopped> {
-    stops.take()
+pub fn autopilot_pending_stops(tab_ids: Vec<String>, stops: State<StartupStops>) -> Vec<AutopilotStopped> {
+    stops.take(&tab_ids)
 }
 
 #[cfg(test)]

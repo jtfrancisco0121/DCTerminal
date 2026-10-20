@@ -1190,11 +1190,12 @@ export type AutopilotStoppedEvent = {
 
 /**
  * Stops the core made before the frontend listened (the startup reconcile
- * runs while the window loads). Call once the `autopilot-stopped` listener
- * is attached; each stop is handed over once.
+ * runs while the window loads), on the given tabs (this window's). Call once
+ * the `autopilot-stopped` listener is attached and the tab list has loaded;
+ * each stop is handed over once, and stops on other tabs stay held.
  */
-export async function autopilotPendingStops(): Promise<AutopilotStoppedEvent[]> {
-  return invoke("autopilot_pending_stops");
+export async function autopilotPendingStops(tabIds: string[]): Promise<AutopilotStoppedEvent[]> {
+  return invoke("autopilot_pending_stops", { tabIds });
 }
 
 export function listenAutopilotStopped(
