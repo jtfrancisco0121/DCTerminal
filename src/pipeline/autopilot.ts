@@ -256,11 +256,14 @@ export function bridgeFindingsText(findings: readonly BridgeFinding[]): string {
  * The report a bridged stage's turn is decided on: its `submit_result`
  * (verdict and findings), or `noResult` when the turn ended without one.
  * HANDOFF sections are not checked: the tool replaced them as the result.
+ * A usage-limit error rides along, so `decide` stops for it before `noResult`.
  */
 export function bridgeTurnReport(args: {
   stage: StageDef;
   turn: BridgeTurn;
   usage: number | null;
+  /** H5: the session log's usage-limit error for this turn, if any. */
+  rateLimit?: string | null;
   lane: string | null;
   revise: string;
 }): TurnReport {
@@ -273,7 +276,7 @@ export function bridgeTurnReport(args: {
     findingsKnown: !!result,
     missingSections: [],
     usagePercent: usage,
-    rateLimit: null,
+    rateLimit: args.rateLimit?.trim() || null,
     chat: false,
     lane,
     noResult: !result,

@@ -834,6 +834,30 @@ describe("useAutopilot", () => {
       expect(vi.mocked(pipelineDecide).mock.calls[0][1]).toMatchObject({ noResult: true, verdict: null });
     });
 
+    it("a bridged reviewer that hit the usage limit reports it, runs no checks and stops as usage_limit", async () => {
+      vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+      vi.mocked(pipelineDecide).mockResolvedValue({
+        action: "stop",
+        stageId: "pr_reviewer",
+        reason: "PR Reviewer hit a Claude usage limit: You've hit your limit. Carry on yourself once it resets.",
+        stopReason: "usage_limit",
+      });
+      vi.mocked(terminalSessionLog).mockResolvedValue({
+        ...log("You've hit your limit"),
+        rateLimit: "You've hit your limit",
+      });
+      const { deps, onBridgeTurn } = setup([bridgedReviewer()]);
+      onBridgeTurn(bridgeTurn({ outcome: "no_result", result: null, lastAssistantMessage: "You've hit your limit" }));
+      await waitFor(() => expect(deps.notifyStop).toHaveBeenCalled());
+      expect(pipelineRunGates).not.toHaveBeenCalled();
+      expect(vi.mocked(pipelineDecide).mock.calls[0][1]).toMatchObject({
+        rateLimit: "You've hit your limit",
+        noResult: true,
+        usagePercent: null,
+      });
+      expect(vi.mocked(deps.notifyStop).mock.calls[0][2]).toBe("usage_limit");
+    });
+
     it("the same turn is decided once, and other tabs' turns are not this tab's", async () => {
       vi.mocked(getPipelineRun).mockResolvedValue(run(true));
       vi.mocked(pipelineDecide).mockResolvedValue({ action: "skip", reason: "x" });

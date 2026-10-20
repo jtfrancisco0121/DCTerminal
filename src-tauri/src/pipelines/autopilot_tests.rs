@@ -267,6 +267,19 @@ fn a_bridge_turn_with_no_result_stops_at_once_with_no_result() {
 }
 
 #[test]
+fn a_bridge_turn_cut_off_by_a_usage_limit_stops_as_usage_limit_not_no_result() {
+    let mut r = run(1);
+    let mut rep = report("pr_reviewer", None);
+    rep.no_result = true;
+    rep.rate_limit = Some("You've hit your limit".into());
+    rep.turn = Some("tab|bridge|p-1".into());
+    let d = decide(&eagle1(), &mut r, &rep);
+    assert_eq!(d.action, "stop");
+    assert_eq!(r.stop_reason, Some(StopReason::UsageLimit), "{}", d.reason);
+    assert!(d.reason.contains("usage limit"), "{}", d.reason);
+}
+
+#[test]
 fn bridge_verdict_words_decide_like_the_v1_words() {
     let mut r = run(1);
     let mut rep = report("pr_reviewer", Some("CHANGES_REQUIRED"));

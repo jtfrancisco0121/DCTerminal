@@ -410,7 +410,10 @@ export function useAutopilot(deps: AutopilotDeps) {
             : { sessionId: "", path: "", turnDone: true, lastReply: reply, plan: null, planAt: null, lastPromptAt: null, toolCalls: [] };
           const job: Job = { tab, chain, log, awaitingPlan: false };
           const round = currentRound(view.run, lane);
-          if (acting && placed.stage.gates?.length) {
+          // A turn cut off by a usage limit ends without the tool: it stops
+          // as usage_limit (H5), not no_result, and runs no checks.
+          const rateLimit = fresh?.rateLimit?.trim() || null;
+          if (acting && !rateLimit && placed.stage.gates?.length) {
             await pipelineRunGates(runId, placed.stage.id, tab.cwd, githubPrUrls(reply), lane, round);
             // The checks take a while: a turn started since is the stage's result now.
             // intentionally silent: an unreadable stage counts as unchanged.
@@ -425,9 +428,10 @@ export function useAutopilot(deps: AutopilotDeps) {
               return;
             }
           }
-          // intentionally silent: without usage data autopilot simply does not pause for it.
+          // intentionally silent: unknown usage (no reading, or a stale one) is
+          // null, never 0: autopilot carries on, and a rate-limit error stops it.
           const usage = usagePercent(await getClaudeUsage().catch(() => null));
-          const report = bridgeTurnReport({ stage: placed.stage, turn, usage, lane, revise });
+          const report = bridgeTurnReport({ stage: placed.stage, turn, usage, rateLimit, lane, revise });
           const decision = await pipelineDecide(runId, { ...report, round, turn: `${tab.id}|bridge|${turn.turn}` });
           claimed = decision.claim;
           const findings = bridgeFindingsText(turn.result?.findings ?? []);
