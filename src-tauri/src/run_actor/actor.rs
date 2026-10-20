@@ -16,7 +16,7 @@ use crate::pipelines::autopilot::{decide, review_round, stage_key, Decision, Fin
 use crate::pipelines::recovery::bridge_turn_key;
 use crate::pipelines::{GateDef, GateResult, PipelineDef, StageDef, StageKind};
 use crate::store::{
-    claim_key, tab_label, ChainRef, RoleSnapshot, RunStatus, StageGates, StopReason, TabRecord,
+    claim_key, tab_label, ChainRef, PipelineRun, RoleSnapshot, RunStatus, StageGates, StopReason, TabRecord,
     TerminalTabDraft,
 };
 use serde_json::Value;
@@ -388,17 +388,35 @@ impl<H: Host> Actor<H> {
         report.rate_limit = self.rate_limit(placed);
         report.round = Some(round);
         report.turn = Some(bridge_turn_key(&turn.tab_id, &turn.turn));
-        let decision = {
+        let (decision, held) = {
             let mut store = lock(self.host.store());
             let Some(run) = store.pipeline_run_by_id_mut(&self.run_id) else {
                 return;
             };
-            let decision = decide(&placed.def, run, &report);
-            if let Err(err) = store.save() {
-                eprintln!("DCTerminal: run {}: decision not saved: {err}", self.run_id);
+            // Decided on a copy first: a decision that would act on a stage
+            // you took over is not taken at all (D28), so Hand back decides
+            // the same turn afresh.
+            let mut trial = run.clone();
+            let decision = decide(&placed.def, &mut trial, &report);
+            let held = taken_over_target(&placed.def, run, placed, &decision);
+            if held.is_some() {
+                (decision, held)
+            } else {
+                *run = trial;
+                if let Err(err) = store.save() {
+                    eprintln!("DCTerminal: run {}: decision not saved: {err}", self.run_id);
+                }
+                (decision, None)
             }
-            decision
         };
+        if let Some((tab_id, stage_id, title)) = held {
+            let summary = format!(
+                "{} finished, and autopilot would act on {title}, which you took over. Hand it back to let autopilot carry on.",
+                placed.stage.title
+            );
+            self.stop_run(Some(&stage_id), Some(&tab_id), &summary, Some(StopReason::TakenOver));
+            return;
+        }
         self.changed();
         self.carry_out(placed, turn, &decision, report.verdict.as_deref());
     }
@@ -1259,34 +1277,48 @@ impl<H: Host> Actor<H> {
         let mode = if enabled { StageMode::Autopilot } else { StageMode::Manual };
         set_stage_mode(&self.host.runs_root(), &tag, tab_id, mode)?;
         let turn = read_stage_turn(&self.host.runs_root(), &tag, tab_id).filter(|turn| turn.result.is_some());
-        let (status, round, decided) = {
+        let (status, round, decided, others) = {
             let mut store = lock(self.host.store());
             let run = store.pipeline_run_by_id_mut(&self.run_id).ok_or("the run is gone")?;
             run.taken_over.retain(|id| id != tab_id);
             let summary = format!("You handed {} back to autopilot.", placed.stage.title);
             run.log("note", Some(&placed.stage.id), Some(&placed.tab.role_id), summary, None);
-            let still_yours = crate::pipelines::recovery::current_stage_tabs(&placed.def, run)
-                .iter()
-                .any(|stage| run.taken_over.contains(&stage.tab_id));
+            let current = crate::pipelines::recovery::current_stage_tabs(&placed.def, run);
+            let still_yours = current.iter().any(|stage| run.taken_over.contains(&stage.tab_id));
+            // The current stages' finished turns, decided again below: one
+            // whose decision waited on this stage (D28) is carried out now.
+            let mut others = Vec::new();
             if run.status == RunStatus::Waiting && run.stop_reason == Some(StopReason::TakenOver) && !still_yours {
                 run.set_running();
+                others = current.into_iter().map(|stage| stage.tab_id).filter(|id| id != tab_id).collect();
             }
             // A turn decided before you took over is not decided (or checked) again.
             let decided = turn.as_ref().is_some_and(|turn| {
                 let key = format!("{}|bridge|{}", turn.tab_id, turn.turn);
                 run.autopilot.as_ref().is_some_and(|a| a.decided.contains(&key))
             });
-            let state = (run.status, run.round_for(placed.lane.as_deref()), decided);
+            let state = (run.status, run.round_for(placed.lane.as_deref()), decided, others);
             store.save()?;
             state
         };
         self.changed();
-        if !enabled || status == RunStatus::Complete || decided {
+        if !enabled || status == RunStatus::Complete {
             return Ok(UserOutcome::default());
         }
-        if let Some(turn) = turn {
+        if let Some(turn) = turn.filter(|_| !decided) {
             self.handled.insert(turn.tab_id.clone(), turn.turn.clone());
             self.take_up(&placed, turn, round, status);
+        }
+        let runs = self.host.runs_root();
+        for other in others {
+            let tag = {
+                let store = lock(self.host.store());
+                store.tab_by_id(&other).and_then(|tab| tab.bridge.clone())
+            };
+            // A turn decided already is skipped by `on_turn`.
+            if let Some(turn) = tag.and_then(|tag| read_stage_turn(&runs, &tag, &other)) {
+                self.on_turn(turn, true);
+            }
         }
         Ok(UserOutcome::default())
     }
@@ -1521,4 +1553,23 @@ fn lane_note(run_dir: Option<&std::path::Path>, lane: &str) -> Option<String> {
         task.title,
         task.summary
     ))
+}
+
+/// The tab you took over that carrying `decision` out would act on (D28):
+/// the stage a round goes back to, or the turn's own stage for a retry or a
+/// re-ask. As (tab id, stage id, stage title).
+fn taken_over_target(def: &PipelineDef, run: &PipelineRun, placed: &Placed, decision: &Decision) -> Option<(String, String, String)> {
+    let target = match decision.action.as_str() {
+        "loopBack" => {
+            let stage = def.stage(decision.stage_id.as_deref()?)?;
+            let tab_ids = match placed.lane.as_deref().and_then(|id| run.lane(id)) {
+                Some(lane) => &lane.tab_ids,
+                None => &run.tab_ids,
+            };
+            (tab_ids.get(&stage.role_id)?.clone(), stage.id.clone(), stage.title.clone())
+        }
+        "retry" | "reask" => (placed.tab.id.clone(), placed.stage.id.clone(), placed.stage.title.clone()),
+        _ => return None,
+    };
+    run.taken_over.contains(&target.0).then_some(target)
 }

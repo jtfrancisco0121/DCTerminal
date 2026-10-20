@@ -1316,3 +1316,34 @@ fn take_over_with_autopilot_off_keeps_the_run_stopped_and_hand_back_leaves_it_ma
     // Only a tab of this run can be taken over.
     assert!(fx.user(UserAction::TakeOver { tab_id: "tab_elsewhere".into() }).is_err());
 }
+
+/// D28: a decision whose carry-out lands on a stage you took over (here a
+/// reviewer's round sent back to the Planner) leaves that stage alone. The
+/// run waits for you with `taken_over`, and Hand back carries it out.
+#[test]
+fn a_round_sent_back_to_a_stage_you_took_over_waits_and_hand_back_carries_it_out() {
+    let mut fx = Fixture::new("take_over_target");
+    let reviewer = fx.open_plan_reviewer();
+    let planner = fx.planner.clone();
+    fx.user(UserAction::TakeOver { tab_id: planner.clone() }).expect("take over");
+    fx.run(|run| assert_eq!(run.status, RunStatus::Running, "the reviewer still works"));
+    let turn = fx.end_turn(&reviewer, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "x" }])), "");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    assert!(fx.resumes().is_empty() && fx.pastes().is_empty(), "autopilot resumed a stage you took over: {:?}", fx.resumes());
+    assert_eq!(stage_mode(&fx, &planner), crate::bridge::StageMode::Takeover);
+    fx.run(|run| {
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::TakenOver)));
+        let why = run.autopilot.as_ref().and_then(|a| a.waiting.clone()).unwrap_or_default();
+        assert!(why.contains("Planner"), "names the stage: {why}");
+        assert_eq!(run.round, 1, "no round sent back yet");
+    });
+    // Hand back: the round goes back to the Planner now.
+    fx.user(UserAction::HandBack { tab_id: planner.clone() }).expect("hand back");
+    let resumes = fx.resumes();
+    assert_eq!(resumes.len(), 1, "{resumes:?}");
+    assert_eq!(resumes[0].tab_id, planner);
+    fx.run(|run| {
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Running, None));
+        assert_eq!(run.round, 2);
+    });
+}
