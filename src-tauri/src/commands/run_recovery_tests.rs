@@ -109,12 +109,41 @@ impl Fixture {
     }
 
     fn reconcile(&self) -> RecoveryOutcome {
-        reconcile_on_startup(&self.store, &self.registry, &self.readers).unwrap()
+        reconcile_on_startup(&self.store, &self.registry, &self.readers, &self.dir.join("runs")).unwrap()
     }
 
     fn tick(&self, watch: &mut StallWatch, now: Instant, limit: Duration) -> RecoveryOutcome {
         watchdog_tick(&self.store, &self.registry, &self.readers, watch, now, &|_| limit).unwrap()
     }
+}
+
+#[test]
+fn startup_leaves_a_bridged_turn_autopilot_already_decided_alone() {
+    use crate::bridge::launch::{prepare_stage, BridgePlan, BridgeTag};
+    let fx = Fixture::new("recover_bridged_decided");
+    fx.write_log(&[prompt("2026-10-19T10:00:00Z"), reply("2026-10-19T10:01:00Z")]);
+    // The tab holds its stage's run folder, whose turn.json names turn p-7.
+    let plan = BridgePlan {
+        run_id: "ee_r".into(),
+        stage_id: "implementer".into(),
+        role_id: "role_implementer".into(),
+        lane: None,
+        stage_key: "implementer".into(),
+        kind: crate::bridge::ResultKind::Reviewer,
+        autopilot: true,
+    };
+    let run_dir = prepare_stage(&fx.dir.join("runs"), &plan, &fx.tab).unwrap();
+    let stage = crate::bridge::folder::StageDir::open(&run_dir, "ee_r", "implementer", &fx.tab).unwrap();
+    stage.write_turn(&crate::bridge::folder::TurnState::new("p-7")).unwrap();
+    {
+        let mut store = fx.store.lock().unwrap();
+        let tag = BridgeTag { run_id: "ee_r".into(), stage: "implementer".into() };
+        store.set_tab_bridge(&fx.tab, Some(tag)).unwrap();
+        let run = store.pipeline_run_by_id_mut("ee_r").unwrap();
+        run.autopilot.as_mut().unwrap().decided.push(format!("{}|bridge|p-7", fx.tab));
+    }
+    assert_eq!(fx.reconcile(), RecoveryOutcome::default());
+    assert_eq!(fx.status(), (RunStatus::Running, None));
 }
 
 #[test]

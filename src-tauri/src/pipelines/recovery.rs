@@ -95,6 +95,12 @@ pub fn turn_key(tab_id: &str, log: &TerminalSessionLog) -> String {
     format!("{tab_id}|{}|{}", log.session_id, log.last_prompt_at.as_deref().unwrap_or(""))
 }
 
+/// A bridged (engine-2) turn's key, `tab|bridge|<turn id>`, as autopilot
+/// records it (`onBridgeTurn` in `src/pipeline/useAutopilot.ts`).
+pub fn bridge_turn_key(tab_id: &str, turn: &str) -> String {
+    format!("{tab_id}|bridge|{turn}")
+}
+
 /// What a startup reconcile did to a run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reconciled {
@@ -111,6 +117,18 @@ pub fn reconcile_run(
     run: &mut PipelineRun,
     logs: &HashMap<String, TerminalSessionLog>,
 ) -> Option<Reconciled> {
+    reconcile_run_with(def, run, logs, &HashMap::new())
+}
+
+/// [`reconcile_run`], where `bridge_turns` gives each bridged tab's latest
+/// turn id (its stage's `turn.json`): that tab's turn counts as decided by
+/// its bridge key, the way autopilot records it.
+pub fn reconcile_run_with(
+    def: &PipelineDef,
+    run: &mut PipelineRun,
+    logs: &HashMap<String, TerminalSessionLog>,
+    bridge_turns: &HashMap<String, String>,
+) -> Option<Reconciled> {
     let enabled = run.autopilot.as_ref().is_some_and(|a| a.enabled);
     if run.status != RunStatus::Running || !enabled {
         return None;
@@ -123,9 +141,13 @@ pub fn reconcile_run(
     let tabs = current_stage_tabs(def, run);
     let finished = tabs.iter().find(|tab| {
         tab.own
-            && logs
-                .get(&tab.tab_id)
-                .is_some_and(|log| finished_turn(tab.kind, log) && !decided.contains(turn_key(&tab.tab_id, log).as_str()))
+            && logs.get(&tab.tab_id).is_some_and(|log| {
+                let key = match bridge_turns.get(&tab.tab_id) {
+                    Some(turn) => bridge_turn_key(&tab.tab_id, turn),
+                    None => turn_key(&tab.tab_id, log),
+                };
+                finished_turn(tab.kind, log) && !decided.contains(key.as_str())
+            })
     });
     if let Some(tab) = finished.cloned() {
         let why = format!(

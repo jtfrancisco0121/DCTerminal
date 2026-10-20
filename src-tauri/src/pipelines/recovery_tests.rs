@@ -161,6 +161,27 @@ fn a_decided_turn_or_a_run_not_running_is_left_alone() {
 }
 
 #[test]
+fn a_bridged_turn_already_decided_is_not_stopped_as_app_restarted() {
+    // Engine 2: autopilot records a bridged turn as `tab|bridge|<turn id>`,
+    // the turn id from the stage's turn.json, not the log's prompt.
+    let def = eagle1();
+    let mut decided = run("pr_reviewer", &[("role_pr_reviewer", "tab_r")]);
+    decided.autopilot.as_mut().unwrap().decided.push(bridge_turn_key("tab_r", "p-7"));
+    let bridged = HashMap::from([("tab_r".to_string(), "p-7".to_string())]);
+    let found = reconcile_run_with(&def, &mut decided, &logs(&[("tab_r", log(true))]), &bridged);
+    assert_eq!(found, None);
+    assert_eq!(decided.status, RunStatus::Running);
+    assert!(decided.events.is_empty());
+
+    // A bridged turn nobody decided still waits for Continue.
+    let mut open = run("pr_reviewer", &[("role_pr_reviewer", "tab_r")]);
+    open.autopilot.as_mut().unwrap().decided.push(bridge_turn_key("tab_r", "p-6"));
+    let found = reconcile_run_with(&def, &mut open, &logs(&[("tab_r", log(true))]), &bridged);
+    assert!(matches!(found, Some(Reconciled::Waiting { .. })), "{found:?}");
+    assert_eq!(open.stop_reason, Some(StopReason::AppRestarted));
+}
+
+#[test]
 fn a_turn_cut_off_by_the_quit_is_noted_and_the_run_keeps_running() {
     let def = eagle1();
     let mut run = run("implementer", &[("role_implementer", "tab_i")]);

@@ -266,3 +266,13 @@ pub fn read_stage_turn(runs_root: &Path, tag: &BridgeTag, tab_id: &str) -> Optio
     let result = read_result(&dir, &turn.turn).map(|stored| stored.result);
     Some(BridgeTurn::new(&info, &turn, &end, result))
 }
+
+/// The stage's latest turn id, open or ended, from `turn.json` (restart
+/// recovery keys a bridged tab's decided turn on it). `None` before the
+/// first turn, or when `tab_id` no longer owns the stage.
+pub fn stage_turn_id(runs_root: &Path, tag: &BridgeTag, tab_id: &str) -> Option<String> {
+    let run_dir = folder::run_dir(runs_root, &tag.run_id)?;
+    let dir = folder::stage_dir_path(&run_dir, &tag.stage)?;
+    let (info, turn) = read_stage(&dir)?;
+    (info.run_id == tag.run_id && info.tab_id == tab_id).then_some(turn?.turn)
+}
