@@ -1088,6 +1088,24 @@ fn a_stage_the_version_gate_refuses_opens_unbridged_and_the_run_goes_to_engine_1
     });
 }
 
+/// V4 with V2a/H5: a resume relaunches through the same D24 gate as a first
+/// launch. When the gate now refuses (Claude Code downgraded, hooks off),
+/// the stage resumes its session unbridged and the run goes to engine 1.
+#[test]
+fn a_resume_the_version_gate_refuses_goes_on_unbridged_on_engine_1() {
+    let mut fx = Fixture::new("gate_refused_resume");
+    let reviewer = fx.open_plan_reviewer();
+    fx.host.gate_open.store(false, Ordering::SeqCst);
+    let turn = fx.end_turn(&reviewer, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "x" }])), "");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    let resumes = fx.resumes();
+    assert_eq!(resumes.len(), 1, "{resumes:?}");
+    assert_eq!(resumes[0].session_id, PLANNER_SID, "its own session");
+    assert_eq!(resumes[0].bridge, None, "resumed without the bridge");
+    assert_eq!(fx.tab(&fx.planner).bridge, None, "the tab no longer reports through the bridge");
+    fx.run(|run| assert_eq!(run.engine, 1));
+}
+
 /// H4 on engine 2: an `auto` check with nothing to run stops the run with
 /// `no_check_found` unless its gate is `optional`; the actor carries the
 /// gate's `optional` into the result whatever the host reported.
