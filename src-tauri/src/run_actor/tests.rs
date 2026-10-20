@@ -1577,3 +1577,70 @@ fn a_turn_another_lane_finished_while_a_round_was_held_is_acted_on_at_hand_back(
         assert_eq!(pr2.status, "approved", "PR2's approval is acted on: {:?}", run.events.iter().map(|e| e.summary.clone()).collect::<Vec<_>>());
     });
 }
+
+/// D28 with a reviewer stage that has checks: Hand back finds you revised
+/// the stage after the held round's turn. The stale round is recorded as
+/// dealt with by you at once (no checks on it), never resumed into the
+/// stage after its checks come back.
+#[test]
+fn a_held_round_with_checks_you_revised_yourself_is_not_sent_after_the_checks() {
+    let id = "eagle1_reviewer_gates_v5";
+    let mut def = crate::pipelines::find("eagle1").unwrap();
+    def.id = id.into();
+    def.name = "Reviewer with checks".into();
+    def.run_kind = None;
+    def.built_in = false;
+    def.stages.iter_mut().find(|s| s.id == "plan_reviewer").unwrap().gates =
+        vec![crate::pipelines::GateDef::Command { run: "npm run check".into(), timeout_secs: None, optional: false }];
+    crate::pipelines::register_for_test(def);
+    let mut fx = Fixture::with_pipeline("take_over_revised_gates", id, Vec::new());
+    let reviewer = fx.open_plan_reviewer();
+    let planner = fx.planner.clone();
+    fx.user(UserAction::TakeOver { tab_id: planner.clone() }).expect("take over");
+    let turn = fx.end_turn(&reviewer, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "x" }])), "");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    fx.finish_gates();
+    fx.run(|run| assert_eq!(run.stop_reason, Some(StopReason::TakenOver), "the round is held"));
+    let revised = fx.planner_turn("p-2", "# Plan\n1. Refresh tokens once, then fail.");
+    fx.actor.handle(ActorMsg::Turn(revised));
+    fx.user(UserAction::HandBack { tab_id: planner.clone() }).expect("hand back");
+    // Any checks Hand back started come back now.
+    while let Ok(msg) = fx.gates_done.recv_timeout(Duration::from_millis(500)) {
+        fx.actor.handle(msg);
+    }
+    crate::pipelines::unregister_for_test(id);
+    assert!(fx.resumes().is_empty() && fx.pastes().is_empty(), "the stale round is not sent back: {:?}", fx.resumes());
+    fx.run(|run| {
+        let decided = &run.autopilot.as_ref().unwrap().decided;
+        assert!(decided.iter().any(|t| t.ends_with("|bridge|p-2")), "your turn is decided: {decided:?}");
+    });
+}
+
+/// D28: Hand back sends a held round back to the stage (your own turn there
+/// is older than the round). When the round is pasted (no session to
+/// resume), your older turn is not decided as well: the stage's next turn,
+/// its reply to the round, is the one autopilot acts on.
+#[test]
+fn a_held_round_pasted_back_at_hand_back_leaves_your_older_turn_undecided() {
+    let mut fx = Fixture::new("take_over_pasted");
+    let reviewer = fx.open_plan_reviewer();
+    let planner = fx.planner.clone();
+    fx.user(UserAction::TakeOver { tab_id: planner.clone() }).expect("take over");
+    // You revise the plan first; the reviewer's round ends after it.
+    let yours = fx.planner_turn("p-2", "# Plan\n1. Refresh tokens once, then fail.");
+    fx.actor.handle(ActorMsg::Turn(yours));
+    std::thread::sleep(Duration::from_millis(5));
+    let turn = fx.end_turn(&reviewer, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "x" }])), "");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    fx.run(|run| assert_eq!(run.stop_reason, Some(StopReason::TakenOver), "the round is held"));
+    // No session to resume: the round is pasted into the Planner.
+    fx.host.store.lock().unwrap().data.tabs.iter_mut().find(|t| t.id == planner).unwrap().sessions.claude_terminal_session_id = None;
+    let launches = fx.launches().len();
+    fx.user(UserAction::HandBack { tab_id: planner.clone() }).expect("hand back");
+    assert_eq!(fx.pastes().iter().filter(|(tab, _)| *tab == planner).count(), 1, "the round went back");
+    assert_eq!(fx.launches().len(), launches, "your older plan is not sent to review: {:?}", fx.launches());
+    fx.run(|run| {
+        let decided = &run.autopilot.as_ref().unwrap().decided;
+        assert!(!decided.iter().any(|t| t.ends_with("|bridge|p-2")), "your older turn stays undecided: {decided:?}");
+    });
+}

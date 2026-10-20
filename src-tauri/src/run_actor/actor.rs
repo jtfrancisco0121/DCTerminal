@@ -84,6 +84,10 @@ pub(super) struct Actor<H: Host> {
     /// when its own newest turn ended. A held round for it from an older
     /// turn is recorded as dealt with by you, not sent.
     revised: Option<(String, String)>,
+    /// Set while Hand back re-decides when a held round goes back to the
+    /// handed-back tab (now, or once its checks pass): your own older turn
+    /// there is then not decided.
+    round_goes_back: bool,
 }
 
 impl<H: Host> Actor<H> {
@@ -95,6 +99,7 @@ impl<H: Host> Actor<H> {
             handled: HashMap::new(),
             gates_running: 0,
             revised: None,
+            round_goes_back: false,
         }
     }
 
@@ -287,6 +292,17 @@ impl<H: Host> Actor<H> {
     /// check runs (H5).
     fn take_up(&mut self, placed: &Placed, turn: BridgeTurn, round: u32, status: RunStatus) {
         let refused = self.rate_limit(placed);
+        // Hand back re-deciding a held round for the handed-back tab (D28).
+        match self.held_round_for_revised(placed, &turn, round) {
+            // You revised that stage since: the round is recorded now, with
+            // no checks on a review of what you have replaced.
+            Some(true) => {
+                self.decide_and_carry_out(placed, &turn, round);
+                return;
+            }
+            Some(false) => self.round_goes_back = true,
+            None => {}
+        }
         if status == RunStatus::Running && !placed.stage.gates.is_empty() && blocked(&turn).is_none() && refused.is_none() {
             self.start_gates(placed, turn, round);
             return;
@@ -398,13 +414,34 @@ impl<H: Host> Actor<H> {
         self.decide_and_carry_out(&placed, &turn, round);
     }
 
-    fn decide_and_carry_out(&mut self, placed: &Placed, turn: &BridgeTurn, round: u32) {
+    /// What `decide` is given for `turn`.
+    fn report(&self, placed: &Placed, turn: &BridgeTurn, round: u32) -> TurnReport {
         let usage = self.host.usage_percent(&self.run_id);
         let mut report = turn_report(&placed.stage, turn, usage, placed.lane.clone(), placed.revise());
         // H5: `decide` stops with `usage_limit` for it, ahead of `no_result`.
         report.rate_limit = self.rate_limit(placed);
         report.round = Some(round);
         report.turn = Some(bridge_turn_key(&turn.tab_id, &turn.turn));
+        report
+    }
+
+    /// While Hand back re-decides (D28): when `turn`'s decision would send a
+    /// round back to the handed-back tab, whether you revised that stage
+    /// since (decided on a copy of the run; nothing is recorded).
+    fn held_round_for_revised(&self, placed: &Placed, turn: &BridgeTurn, round: u32) -> Option<bool> {
+        let (tab_id, _) = self.revised.as_ref()?;
+        let report = self.report(placed, turn, round);
+        let store = lock(self.host.store());
+        let run = store.pipeline_run_by_id(&self.run_id)?;
+        let decision = decide(&placed.def, &mut run.clone(), &report);
+        if decision.action != "loopBack" || loop_back_tab(&placed.def, run, placed, &decision).as_ref() != Some(tab_id) {
+            return None;
+        }
+        Some(self.revised_target(run, placed, &decision, turn).is_some())
+    }
+
+    fn decide_and_carry_out(&mut self, placed: &Placed, turn: &BridgeTurn, round: u32) {
+        let report = self.report(placed, turn, round);
         let (decision, held) = {
             let mut store = lock(self.host.store());
             let Some(run) = store.pipeline_run_by_id_mut(&self.run_id) else {
@@ -1458,6 +1495,7 @@ impl<H: Host> Actor<H> {
         // recorded, not sent, and your turn is decided next (D28).
         let runs = self.host.runs_root();
         self.revised = own.as_ref().map(|turn| (tab_id.to_string(), turn.ended_at.clone()));
+        self.round_goes_back = false;
         for other in others {
             let tag = {
                 let store = lock(self.host.store());
@@ -1469,13 +1507,15 @@ impl<H: Host> Actor<H> {
             }
         }
         self.revised = None;
+        let sent_back = std::mem::take(&mut self.round_goes_back);
         // Your turn, while it is still the stage's latest (a round sent back
-        // meanwhile resumed the stage) and not decided yet.
+        // meanwhile resumed the stage), no round goes back to it (pasted, in
+        // a new terminal, or after its checks) and it is not decided yet.
         let Some(own) = own else {
             return Ok(UserOutcome::default());
         };
         let latest = read_stage_turn(&runs, &tag, tab_id).is_some_and(|t| t.turn == own.turn);
-        if !latest || self.decided(&bridge_turn_key(&own.tab_id, &own.turn)) {
+        if sent_back || !latest || self.decided(&bridge_turn_key(&own.tab_id, &own.turn)) {
             return Ok(UserOutcome::default());
         }
         let (status, round) = {
