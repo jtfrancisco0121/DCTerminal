@@ -999,6 +999,24 @@ describe("useAutopilot", () => {
       expect(pipelineBridgeTurn).toHaveBeenCalledWith("pr");
     });
 
+    it("a tab whose bridge tag the core dropped (a Restart switched the run to engine 1) is decided from its log", async () => {
+      vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+      vi.mocked(pipelineDecide).mockResolvedValue({ action: "skip", reason: "x" });
+      // The core has no bridged turn for the tab any more.
+      vi.mocked(pipelineBridgeTurn).mockResolvedValue(null);
+      const tabs = [bridgedReviewer()];
+      const { deps, onLog } = setup(tabs);
+      vi.mocked(deps.refreshTabs).mockImplementation(async () => {
+        tabs[0] = tab("pr", "role_pr_reviewer", 4);
+      });
+      onLog("pr", log("## HANDOFF: Verdict\nREQUEST CHANGES"));
+      await waitFor(() => expect(pipelineDecide).toHaveBeenCalledTimes(1));
+      expect(deps.refreshTabs).toHaveBeenCalled();
+      const report = vi.mocked(pipelineDecide).mock.calls[0][1];
+      expect(report.verdict).toBe("REQUEST CHANGES");
+      expect(report.turn).not.toContain("|bridge|");
+    });
+
     it("a bridge turn that ended before the app started waits for Continue", async () => {
       vi.mocked(getPipelineRun).mockResolvedValue(run(true));
       vi.mocked(pipelineDecide).mockResolvedValue({ action: "skip", reason: "x" });
