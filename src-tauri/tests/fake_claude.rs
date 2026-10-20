@@ -1705,6 +1705,9 @@ mod run_actor {
         fn usage_percent(&self, _run_id: &str) -> Option<u8> {
             None
         }
+        fn rate_limit(&self, _tab_id: &str) -> Option<String> {
+            None
+        }
         fn run_changed(&self, _run_id: &str) {}
         fn tab_opened(&self, _run_id: &str, _tab_id: &str) {}
         fn stopped(&self, _run_id: &str, _tab_id: Option<&str>, reason: StopReason, summary: &str) {

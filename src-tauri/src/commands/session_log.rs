@@ -57,7 +57,7 @@ pub async fn terminal_session_log(
     .map_err(|e| e.to_string())?
 }
 
-fn session_log_blocking(
+pub(crate) fn session_log_blocking(
     tab_id: String,
     store: State<Mutex<StateStore>>,
     registry: State<Mutex<PtyRegistry>>,

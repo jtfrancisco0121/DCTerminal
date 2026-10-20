@@ -34,6 +34,8 @@ struct TestHost {
     /// Gate results handed out in order; `passed` once they run out.
     gates: Mutex<VecDeque<GateResult>>,
     panic_on_usage: AtomicBool,
+    /// Session-log usage-limit errors by tab (H5).
+    rate_limits: Mutex<HashMap<String, String>>,
     stops: Mutex<Vec<(StopReason, String)>>,
     notices: Mutex<Vec<String>>,
     _dir: TempDir,
@@ -84,6 +86,9 @@ impl Host for TestHost {
             panic!("usage exploded");
         }
         None
+    }
+    fn rate_limit(&self, tab_id: &str) -> Option<String> {
+        self.rate_limits.lock().unwrap().get(tab_id).cloned()
     }
     fn run_changed(&self, _run_id: &str) {}
     fn tab_opened(&self, _run_id: &str, _tab_id: &str) {}
@@ -175,6 +180,7 @@ impl Fixture {
             live: Mutex::new(HashSet::from([planner.clone()])),
             gates: Mutex::new(VecDeque::new()),
             panic_on_usage: AtomicBool::new(false),
+            rate_limits: Mutex::new(HashMap::new()),
             stops: Mutex::new(Vec::new()),
             notices: Mutex::new(Vec::new()),
             _dir: dir,
@@ -834,4 +840,26 @@ fn plan_reviewers_and_fan_out_stages_are_known_by_their_kind() {
     let built_in = crate::pipelines::find("eagle1").unwrap();
     assert!(reviews_plan(&built_in, built_in.stage("plan_reviewer").unwrap()));
     assert_eq!(implementer_stage(&built_in).map(|s| s.role_id.as_str()), Some("role_implementer"));
+}
+
+/// H5 on engine 2: a turn Claude refused for the usage limit ends without
+/// the tool; the run stops with `usage_limit`, not `no_result`, and runs no checks.
+#[test]
+fn a_turn_cut_off_by_the_usage_limit_stops_as_usage_limit_without_checks() {
+    let mut fx = Fixture::new("rate_limit");
+    let implementer = to_implementer(&mut fx);
+    fx.host
+        .rate_limits
+        .lock()
+        .unwrap()
+        .insert(implementer.clone(), "You've hit your limit · resets 3pm".into());
+    let turn = fx.end_turn(&implementer, "i-1", None, "");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    assert!(!fx.actor.busy(), "no checks for a refused turn");
+    fx.run(|run| {
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::UsageLimit)));
+        assert!(run.events.iter().all(|e| e.kind != "gate"));
+        assert!(run.events.last().unwrap().summary.contains("resets 3pm"), "{:?}", run.events.last());
+    });
+    assert_eq!(fx.stops().last().map(|s| s.0), Some(StopReason::UsageLimit));
 }

@@ -19,7 +19,7 @@ mod role_session;
 mod usage;
 mod roles;
 pub(crate) mod run_recovery;
-mod session_log;
+pub(crate) mod session_log;
 #[cfg(all(test, unix))]
 mod pipeline_flow_tests;
 #[cfg(all(test, unix))]

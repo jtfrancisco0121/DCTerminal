@@ -169,6 +169,15 @@ impl<H: Host> Actor<H> {
         (tag.run_id == turn.run_id && tag.stage == turn.stage_key && placed.stage.id == turn.stage_id).then_some(placed)
     }
 
+    /// The stage terminal's usage-limit error for its latest turn (its
+    /// session log, read with no store lock held).
+    fn rate_limit(&self, placed: &Placed) -> Option<String> {
+        self.host
+            .rate_limit(&placed.tab.id)
+            .map(|error| error.trim().to_string())
+            .filter(|error| !error.is_empty())
+    }
+
     /// `key` is on the run's decided-turn list.
     fn decided(&self, key: &str) -> bool {
         let store = lock(self.host.store());
@@ -239,8 +248,11 @@ impl<H: Host> Actor<H> {
         if !enabled || status == RunStatus::Complete {
             return;
         }
-        // A blocked Implementer opened nothing to check: it waits for you (V2b).
-        if status == RunStatus::Running && !placed.stage.gates.is_empty() && blocked(&turn).is_none() {
+        // A blocked Implementer opened nothing to check: it waits for you
+        // (V2b). A turn Claude refused for the usage limit stops before any
+        // check runs (H5).
+        let refused = self.rate_limit(&placed);
+        if status == RunStatus::Running && !placed.stage.gates.is_empty() && blocked(&turn).is_none() && refused.is_none() {
             self.start_gates(&placed, turn, round);
             return;
         }
@@ -344,6 +356,8 @@ impl<H: Host> Actor<H> {
     fn decide_and_carry_out(&mut self, placed: &Placed, turn: &BridgeTurn, round: u32) {
         let usage = self.host.usage_percent(&self.run_id);
         let mut report = turn_report(&placed.stage, turn, usage, placed.lane.clone(), placed.revise());
+        // H5: `decide` stops with `usage_limit` for it, ahead of `no_result`.
+        report.rate_limit = self.rate_limit(placed);
         report.round = Some(round);
         report.turn = Some(bridge_turn_key(&turn.tab_id, &turn.turn));
         let decision = {

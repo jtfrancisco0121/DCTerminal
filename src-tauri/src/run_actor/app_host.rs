@@ -132,6 +132,20 @@ impl Host for AppHost {
             .map(|value| value.round().clamp(0.0, 255.0) as u8)
     }
 
+    /// The tab's session log summary (`terminal_session_log`), read the
+    /// same way: store and PTY locks only to find the file.
+    fn rate_limit(&self, tab_id: &str) -> Option<String> {
+        crate::commands::session_log::session_log_blocking(
+            tab_id.to_string(),
+            self.app.state(),
+            self.app.state(),
+            self.app.state(),
+        )
+        .ok()
+        .flatten()
+        .and_then(|log| log.rate_limit)
+    }
+
     fn run_changed(&self, run_id: &str) {
         self.app.chain_run_updated(run_id);
     }

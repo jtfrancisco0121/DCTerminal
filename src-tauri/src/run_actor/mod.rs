@@ -182,6 +182,9 @@ pub trait Host: Send + Sync + 'static {
     fn run_gate(&self, gate: &GateDef, folder: &Path, pr_urls: &[String]) -> GateResult;
     /// The highest Claude usage window of the run's account, in percent, when known.
     fn usage_percent(&self, run_id: &str) -> Option<u8>;
+    /// The usage-limit error in the stage terminal's session log for its
+    /// latest turn (H5), if Claude refused it. Read with no store lock held.
+    fn rate_limit(&self, tab_id: &str) -> Option<String>;
     /// The run changed: open overviews refetch it.
     fn run_changed(&self, run_id: &str);
     /// The actor opened a terminal tab: the frontend lists it.
