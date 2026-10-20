@@ -20,7 +20,6 @@ import {
   pipelineRunGates,
   pipelineTurnFinished,
   ptyWrite,
-  setTabProvider,
   type AutopilotDecision,
   type TabSummary,
   type TerminalSessionLog,
@@ -55,11 +54,12 @@ export type AutopilotDeps = {
   tabs: () => TabSummary[];
   roles: () => readonly RoleName[] | null;
   terminalState: (tabId: string) => TerminalState | undefined;
-  /** Starts a role terminal without taking focus; the new tab id, or null. */
+  /** Starts a role terminal without taking focus, as `provider`; the new tab id, or null. */
   startTerminal: (options: {
     roleId: string;
     values: Record<string, string>;
     handoffPlan: string | null;
+    provider: ProviderId;
   }) => Promise<string | null>;
   refreshTabs: () => Promise<unknown>;
   /** Tells you autopilot stopped on `tabId` (toast and system notification). */
@@ -88,6 +88,15 @@ function currentRound(run: PipelineRun, lane: string | null): number {
   return Math.max(1, laneRound ?? run.round ?? 1);
 }
 
+/** `latest` is a prompt sent after the turn's own (`turn`). */
+function promptAfterTurn(latest: string | null | undefined, turn: string | null | undefined): boolean {
+  if (!latest || latest === turn) return false;
+  const at = Date.parse(latest);
+  const since = Date.parse(turn ?? "");
+  // A prompt whose time cannot be compared still counts as newer, as before.
+  return !Number.isFinite(at) || !Number.isFinite(since) || at > since;
+}
+
 function liveIdleTerminal(tab: TabSummary, state: TerminalState | undefined): boolean {
   const pty = livePty(tab.id);
   return tab.kind === "terminal" && !!pty && !pty.exited && (!state || state.kind === "idle");
@@ -108,7 +117,8 @@ export function useAutopilot(deps: AutopilotDeps) {
 
   const stop = useCallback(async (runId: string, tabId: string, stageId: string | null, why: string) => {
     // intentionally silent: the toast below still tells you; the ledger line is extra.
-    await pipelineNote(runId, { stageId, summary: why, stop: true }).catch(() => {});
+    // Autopilot decided, but could not carry the decision out.
+    await pipelineNote(runId, { stageId, summary: why, stop: true, reason: "carry_out_failed" }).catch(() => {});
     depsRef.current.notifyStop(tabId, why);
   }, []);
 
@@ -135,14 +145,15 @@ export function useAutopilot(deps: AutopilotDeps) {
       if (!prepared.ok) return prepared.error;
       const record = await saveHandoff(prepared.value, scope);
       const terminal = terminalHandoffInput(prepared.value.mapped);
+      // The next stage launches as this stage's provider; switching it after
+      // the CLI started would leave the tab saying one and running the other.
       const tabId = await d.startTerminal({
         roleId: targetRoleId,
         values: { ...terminal.values, cwd: source.cwd },
         handoffPlan: terminal.handoffPlan,
+        provider: job.tab.provider ?? "claude",
       });
       if (!tabId) return "The terminal did not start.";
-      const provider: ProviderId = job.tab.provider ?? "claude";
-      await setTabProvider(tabId, provider);
       await attachHandoff({ record, tabId, prepared: prepared.value, loopBack, verdict });
       await d.refreshTabs();
       return null;
@@ -266,8 +277,15 @@ export function useAutopilot(deps: AutopilotDeps) {
               ? reviewRound(view.run, decision.lane, reviewer)
               : Math.max(1, chain.round ?? 1);
             const text = loopBackMessage(tab.roleId, findings, round, d.roles());
+            // Record the round first: pasted into an unrecorded round, the
+            // stage's next turn would be skipped as handed on already.
+            try {
+              await chainLoopBack(loopBackRecord(chain, tab.roleId, target.id, verdict, text));
+            } catch (err: unknown) {
+              await fail(`record round ${round} going back: ${err instanceof Error ? err.message : String(err)}`);
+              return;
+            }
             await pasteInto(target.id, text);
-            await chainLoopBack(loopBackRecord(chain, tab.roleId, target.id, verdict, text));
             await d.refreshTabs();
             return;
           }
@@ -342,6 +360,10 @@ export function useAutopilot(deps: AutopilotDeps) {
         try {
           const view = await getPipelineRun(runId).catch(() => null);
           if (!view?.run.autopilot?.enabled) return;
+          // Complete is final: a late turn changes nothing.
+          if (view.run.status === "complete") return;
+          // Waiting for you (or stopped): no checks; the core notes the turn was left alone.
+          const acting = !view.run.status || view.run.status === "running";
           let reply = (turn.awaitingPlan ? log.plan : log.lastReply)?.trim() ?? "";
           let ownReply = reply;
           const roles = stageRoles(placed.stage);
@@ -383,7 +405,7 @@ export function useAutopilot(deps: AutopilotDeps) {
           // The round this turn ends: a round sent back while its checks run makes it stale.
           const round = currentRound(view.run, lane);
           const turnKey = turnId(job.tab.id, job.log);
-          if (placed.stage.gates?.length) {
+          if (acting && placed.stage.gates?.length) {
             await pipelineRunGates(
               runId,
               placed.stage.id,
@@ -395,9 +417,10 @@ export function useAutopilot(deps: AutopilotDeps) {
           }
           // The checks take a while: a newer prompt in the tab since (a round
           // sent back, your own message) means this turn's reply is not the
-          // stage's result any more.
+          // stage's result any more. Only a later prompt counts: a read that
+          // landed out of order carries an older one.
           const latest = d.sessionLog(job.tab.id);
-          if (latest?.lastPromptAt && latest.lastPromptAt !== job.log.lastPromptAt) {
+          if (promptAfterTurn(latest?.lastPromptAt, job.log.lastPromptAt)) {
             // intentionally silent: the ledger line is extra; nothing else happens either way.
             await pipelineNote(runId, {
               stageId: placed.stage.id,

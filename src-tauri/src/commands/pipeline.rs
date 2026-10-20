@@ -61,7 +61,7 @@ pub fn pipeline_set_candidate_plan(
 
 use crate::pipelines::autopilot::{decide, Decision, TurnReport};
 use crate::pipelines::{GateDef, GateResult, PipelineDef};
-use crate::store::{PipelineStore, RunAutopilot, StageGates};
+use crate::store::{PipelineStore, StageGates, StopReason};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -184,8 +184,29 @@ pub async fn pipeline_run_gates(
     Ok(results)
 }
 
-/// Turn autopilot on or off for one run. Turning it on clears what it was
-/// waiting for; checkpoints already passed stay passed.
+/// Turn autopilot on (the run is `running`) or off (`stopped`, paused by
+/// you) for one run. Either clears what it was waiting for; checkpoints
+/// already passed stay passed; a complete run stays complete. Returns
+/// whether anything changed (and was saved).
+pub fn set_autopilot(store: &mut StateStore, run_id: &str, enabled: bool) -> Result<bool, String> {
+    let run = store
+        .pipeline_run_by_id_mut(run_id)
+        .ok_or_else(|| format!("unknown pipeline run: {run_id}"))?;
+    if run.autopilot.as_ref().is_some_and(|a| a.enabled == enabled) {
+        return Ok(false);
+    }
+    run.set_autopilot_enabled(enabled);
+    run.log(
+        "autopilot",
+        None,
+        None,
+        if enabled { "Autopilot on" } else { "Autopilot off" },
+        None,
+    );
+    store.save()?;
+    Ok(true)
+}
+
 #[tauri::command]
 pub fn pipeline_set_autopilot(
     app: tauri::AppHandle,
@@ -195,24 +216,9 @@ pub fn pipeline_set_autopilot(
 ) -> Result<(), String> {
     let run_id = run_id.trim().to_string();
     let mut store = store.lock().map_err(|e| e.to_string())?;
-    let run = store
-        .pipeline_run_by_id_mut(&run_id)
-        .ok_or_else(|| format!("unknown pipeline run: {run_id}"))?;
-    let autopilot = run.autopilot.get_or_insert_with(RunAutopilot::default);
-    if autopilot.enabled == enabled {
-        return Ok(());
+    if set_autopilot(&mut store, &run_id, enabled)? {
+        app.chain_run_updated(&run_id);
     }
-    autopilot.enabled = enabled;
-    autopilot.waiting = None;
-    run.log(
-        "autopilot",
-        None,
-        None,
-        if enabled { "Autopilot on" } else { "Autopilot off" },
-        None,
-    );
-    store.save()?;
-    app.chain_run_updated(&run_id);
     Ok(())
 }
 
@@ -266,8 +272,35 @@ pub fn pipeline_release_handoff(
 }
 
 /// A line the frontend adds to the ledger, e.g. why autopilot could not
-/// carry out a decision. `stop` also marks autopilot as waiting for you.
+/// carry out a decision. `stop` also puts the run in `waiting` with
+/// `reason` (by default `carry_out_failed`: the frontend stops when it
+/// cannot carry a decision out); with autopilot off it only logs the line
+/// and the run stays `stopped`.
+pub fn note(
+    store: &mut StateStore,
+    run_id: &str,
+    stage_id: Option<&str>,
+    summary: &str,
+    detail: Option<String>,
+    stop: bool,
+    reason: Option<StopReason>,
+) -> Result<(), String> {
+    let summary: String = summary.trim().chars().take(500).collect();
+    if summary.is_empty() {
+        return Err("empty note".into());
+    }
+    let run = store
+        .pipeline_run_by_id_mut(run_id)
+        .ok_or_else(|| format!("unknown pipeline run: {run_id}"))?;
+    if stop {
+        run.set_waiting(reason.unwrap_or(StopReason::CarryOutFailed), summary.clone());
+    }
+    run.log(if stop { "stop" } else { "note" }, stage_id, None, summary, detail);
+    store.save()
+}
+
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn pipeline_note(
     app: tauri::AppHandle,
     run_id: String,
@@ -275,28 +308,12 @@ pub fn pipeline_note(
     summary: String,
     detail: Option<String>,
     stop: bool,
+    reason: Option<StopReason>,
     store: State<Mutex<StateStore>>,
 ) -> Result<(), String> {
     let run_id = run_id.trim().to_string();
-    let summary: String = summary.trim().chars().take(500).collect();
-    if summary.is_empty() {
-        return Err("empty note".into());
-    }
     let mut store = store.lock().map_err(|e| e.to_string())?;
-    let run = store
-        .pipeline_run_by_id_mut(&run_id)
-        .ok_or_else(|| format!("unknown pipeline run: {run_id}"))?;
-    if stop {
-        run.autopilot.get_or_insert_with(RunAutopilot::default).waiting = Some(summary.clone());
-    }
-    run.log(
-        if stop { "stop" } else { "note" },
-        stage_id.as_deref(),
-        None,
-        summary,
-        detail,
-    );
-    store.save()?;
+    note(&mut store, &run_id, stage_id.as_deref(), &summary, detail, stop, reason)?;
     app.chain_run_updated(&run_id);
     Ok(())
 }
@@ -587,13 +604,13 @@ pub fn approve(store: &mut StateStore, run_id: &str, lane: Option<&str>) -> Resu
             "Approved by you".to_string()
         }
     };
-    if let Some(autopilot) = run.autopilot.as_mut() {
-        autopilot.waiting = None;
-    }
     run.log_in_lane("note", None, None, lane, summary, None, None);
     let complete = run.lanes.iter().all(|l| l.status == "approved");
     if complete {
+        run.set_complete();
         run.log("complete", None, None, "Complete: approved by you.", None);
+    } else {
+        run.resume_after_you();
     }
     let unblocked = if complete { Vec::new() } else { run.unblocked_lanes() };
     store.save()?;
@@ -617,7 +634,8 @@ pub fn pipeline_approve(
 
 #[cfg(test)]
 mod tests {
-    use super::{approve, fan_out, set_lane_status, turn_finished, ApproveResult, LaneInput};
+    use super::{approve, decide, fan_out, note, set_autopilot, set_lane_status, turn_finished, ApproveResult, LaneInput, TurnReport};
+    use crate::store::{RunStatus, StopReason};
     use crate::roles::Role;
     use crate::store::{AppStateFile, ChainRef, StateStore, MAIN_WINDOW_ID};
 
@@ -740,11 +758,8 @@ mod tests {
 
     fn waiting_on(store: &mut StateStore, why: &str) {
         let run = store.pipeline_run_by_id_mut("ee_f").unwrap();
-        run.autopilot = Some(crate::store::RunAutopilot {
-            enabled: true,
-            waiting: Some(why.into()),
-            ..Default::default()
-        });
+        run.set_autopilot_enabled(true);
+        run.set_waiting(StopReason::BlockingFindings, why);
     }
 
     #[test]
@@ -760,6 +775,7 @@ mod tests {
         let run = store.pipeline_run_by_id("ee_f").unwrap();
         assert_eq!(run.lane("pr1").unwrap().status, "approved");
         assert!(run.autopilot.as_ref().unwrap().waiting.is_none(), "no longer waiting");
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Running, None), "autopilot carries on");
         let last = run.events.last().unwrap();
         assert_eq!((last.kind.as_str(), last.summary.as_str()), ("note", "PR1 — API: approved by you"));
 
@@ -772,6 +788,7 @@ mod tests {
         let done = approve(&mut store, "ee_f", Some("pr2")).unwrap();
         assert_eq!(done, ApproveResult { complete: true, unblocked: vec![] });
         let run = store.pipeline_run_by_id("ee_f").unwrap();
+        assert_eq!(run.status, RunStatus::Complete);
         let last = run.events.last().unwrap();
         assert_eq!((last.kind.as_str(), last.summary.as_str()), ("complete", "Complete: approved by you."));
         assert!(approve(&mut store, "ee_f", Some("pr9")).is_err());
@@ -799,6 +816,93 @@ mod tests {
         assert_eq!(run.lane("pr2").unwrap().status, "waiting", "other lanes untouched");
     }
 
+    /// A fanned-out run with both lanes approved by hand (complete); returns
+    /// PR1's Implementer tab.
+    fn completed_lane_run(name: &str, autopilot: bool) -> (crate::test_support::TempDir, StateStore, String) {
+        let (dir, mut store) = store(name);
+        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        fan_out(&mut store, "ee_f", "implementer", lanes()).unwrap();
+        let impl1 = store.create_draft_tab(&role("role_implementer"), "/tmp/wt1", true, None).unwrap();
+        store.set_tab_chain(&impl1, Some(chain(3, Some("pr1"))), Some("plan")).unwrap();
+        let review1 = store.create_draft_tab(&role("role_pr_reviewer"), "/tmp/wt1", true, None).unwrap();
+        store.set_tab_chain(&review1, Some(chain(4, Some("pr1"))), Some("summary")).unwrap();
+        set_autopilot(&mut store, "ee_f", autopilot).unwrap();
+        approve(&mut store, "ee_f", Some("pr1")).unwrap();
+        set_lane_status(&mut store, "ee_f", "pr2", "active").unwrap();
+        approve(&mut store, "ee_f", Some("pr2")).unwrap();
+        assert_eq!(store.pipeline_run_by_id("ee_f").unwrap().status, RunStatus::Complete);
+        (dir, store, impl1)
+    }
+
+    #[test]
+    fn your_send_back_after_completion_reopens_the_run_as_the_migration_does() {
+        let (_dir, mut store, impl1) = completed_lane_run("reopen_on", true);
+        let def = crate::pipelines::find("eagle1").unwrap();
+        // A late turn with no send-back from you is still ignored.
+        let late = TurnReport {
+            stage_id: "pr_reviewer".into(),
+            verdict: Some("APPROVED".into()),
+            lane: Some("pr2".into()),
+            turn: Some("rev2|s|late".into()),
+            ..TurnReport::default()
+        };
+        assert_eq!(decide(&def, store.pipeline_run_by_id_mut("ee_f").unwrap(), &late).action, "ignore");
+
+        store
+            .chain_loop_back_in("ee_f", Some("pr1"), "role_pr_reviewer", &impl1, Some("REQUEST CHANGES"), Some("fix"))
+            .unwrap();
+        let run = store.pipeline_run_by_id("ee_f").unwrap();
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Running, None), "in play again, autopilot on");
+        assert_eq!(run.migrated_status(), (run.status, run.stop_reason), "live rule and migration agree");
+        // The Implementer's next turn in the reopened lane is decided.
+        let next = TurnReport {
+            stage_id: "implementer".into(),
+            lane: Some("pr1".into()),
+            turn: Some("impl1|s|next".into()),
+            ..TurnReport::default()
+        };
+        let d = decide(&def, store.pipeline_run_by_id_mut("ee_f").unwrap(), &next);
+        assert!(!matches!(d.action.as_str(), "ignore" | "skip"), "{} {}", d.action, d.reason);
+
+        // With autopilot turned off, the reopened run is stopped, paused by you,
+        // as it was before it completed and as the migration reads it.
+        let (_dir, mut store, impl1) = completed_lane_run("reopen_off", false);
+        store
+            .chain_loop_back_in("ee_f", Some("pr1"), "role_pr_reviewer", &impl1, Some("REQUEST CHANGES"), Some("fix"))
+            .unwrap();
+        let run = store.pipeline_run_by_id("ee_f").unwrap();
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Stopped, Some(StopReason::PausedByYou)));
+        assert_eq!(run.migrated_status(), (run.status, run.stop_reason), "live rule and migration agree");
+    }
+
+    #[test]
+    fn a_run_without_lanes_sent_back_or_handed_on_after_completion_is_reopened() {
+        let (_dir, mut store) = store("reopen_run");
+        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        let reviewer = store.create_draft_tab(&role("role_pr_reviewer"), "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&reviewer, Some(chain(4, None)), Some("summary")).unwrap();
+        set_autopilot(&mut store, "ee_f", true).unwrap();
+        approve(&mut store, "ee_f", None).unwrap();
+        assert_eq!(store.pipeline_run_by_id("ee_f").unwrap().status, RunStatus::Complete);
+        store
+            .chain_loop_back("ee_f", "role_pr_reviewer", &planner, Some("REQUEST CHANGES"), Some("again"))
+            .unwrap();
+        let run = store.pipeline_run_by_id("ee_f").unwrap();
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Running, None));
+        assert_eq!(run.migrated_status(), (run.status, run.stop_reason));
+
+        // A hand-off you make on a complete run reopens it the same way.
+        let run = store.pipeline_run_by_id_mut("ee_f").unwrap();
+        run.set_complete();
+        run.log("complete", None, None, "Complete.", None);
+        store.set_tab_chain(&reviewer, Some(chain(4, None)), Some("summary v2")).unwrap();
+        let run = store.pipeline_run_by_id("ee_f").unwrap();
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Running, None));
+        assert_eq!(run.migrated_status(), (run.status, run.stop_reason));
+    }
+
     #[test]
     fn mark_complete_is_refused_before_the_last_stage() {
         let (_dir, mut store) = store("approve_early");
@@ -824,6 +928,7 @@ mod tests {
         assert_eq!(done, ApproveResult { complete: true, unblocked: vec![] });
         let run = store.pipeline_run_by_id("ee_f").unwrap();
         assert!(run.autopilot.as_ref().unwrap().waiting.is_none());
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Complete, None));
         let kinds: Vec<(&str, &str)> = run
             .events
             .iter()
@@ -966,6 +1071,62 @@ mod tests {
             .unwrap_err()
             .contains("unknown stage"));
         assert_eq!(store.pipeline_run_by_id("ee_f").unwrap().events.len(), before);
+    }
+
+    #[test]
+    fn a_stop_note_puts_the_run_in_waiting_with_its_reason() {
+        let (_dir, mut store) = store("note_stop");
+        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        set_autopilot(&mut store, "ee_f", true).unwrap();
+        note(&mut store, "ee_f", None, "Tab 2 is still working.", None, false, None).unwrap();
+        assert_eq!(store.pipeline_run_by_id("ee_f").unwrap().status, RunStatus::Running, "a plain note");
+        note(&mut store, "ee_f", Some("planner"), "Autopilot could not open plan_reviewer", None, true, None).unwrap();
+        let run = store.pipeline_run_by_id("ee_f").unwrap();
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::CarryOutFailed)));
+        assert_eq!(run.events.last().unwrap().kind, "stop");
+        note(&mut store, "ee_f", None, "Quiet for 30 minutes", None, true, Some(StopReason::Stalled)).unwrap();
+        assert_eq!(store.pipeline_run_by_id("ee_f").unwrap().stop_reason, Some(StopReason::Stalled));
+        assert!(note(&mut store, "ee_f", None, "  ", None, true, None).is_err());
+    }
+
+    #[test]
+    fn a_stop_note_with_autopilot_off_logs_the_line_and_leaves_the_run_stopped() {
+        let (_dir, mut store) = store("note_stop_off");
+        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        set_autopilot(&mut store, "ee_f", true).unwrap();
+        // You turned autopilot off while it was opening a terminal; the hand-off then failed.
+        set_autopilot(&mut store, "ee_f", false).unwrap();
+        note(&mut store, "ee_f", Some("planner"), "Autopilot could not open plan_reviewer", None, true, None).unwrap();
+        let run = store.pipeline_run_by_id("ee_f").unwrap();
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Stopped, Some(StopReason::PausedByYou)));
+        assert!(run.autopilot.as_ref().unwrap().waiting.is_none(), "no waiting sentence while off");
+        assert_eq!(run.events.last().unwrap().kind, "stop", "the line is still logged");
+        // A manual run that never had autopilot stays stopped too.
+        let (_dir2, mut manual) = self::store("note_stop_manual");
+        let planner = manual.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
+        manual.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        note(&mut manual, "ee_f", None, "Autopilot stopped", None, true, None).unwrap();
+        let run = manual.pipeline_run_by_id("ee_f").unwrap();
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Stopped, None));
+    }
+
+    #[test]
+    fn turning_autopilot_off_stops_the_run_and_on_runs_it() {
+        let (_dir, mut store) = store("autopilot_toggle");
+        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        assert!(set_autopilot(&mut store, "ee_f", true).unwrap());
+        assert!(!set_autopilot(&mut store, "ee_f", true).unwrap(), "already on: nothing to do");
+        let run = store.pipeline_run_by_id("ee_f").unwrap();
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Running, None));
+        waiting_on(&mut store, "waiting");
+        assert!(set_autopilot(&mut store, "ee_f", false).unwrap());
+        let run = store.pipeline_run_by_id("ee_f").unwrap();
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Stopped, Some(StopReason::PausedByYou)));
+        assert!(run.autopilot.as_ref().unwrap().waiting.is_none());
+        assert_eq!(run.events.last().unwrap().summary, "Autopilot off");
     }
 
     #[test]

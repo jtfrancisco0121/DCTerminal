@@ -80,7 +80,7 @@ test("Planner (Cursor) → Implementer terminal: every field filled, plan sent o
   await expect(dialog).toBeHidden();
 
   const start = await app.waitForCall("role_terminal_start");
-  const input = start.args.input as { values: Record<string, string>; handoffPlan: string };
+  const input = start.args.input as { values: Record<string, string>; handoffPlan: string; provider: string };
   expect(input.values).toEqual({
     cwd: CWD,
     taskType: "Bug Fix",
@@ -96,8 +96,9 @@ test("Planner (Cursor) → Implementer terminal: every field filled, plan sent o
   });
   // The plan field holds it, so the terminal prompt does not add it a second time.
   expect(input.handoffPlan).toBe(PLAN);
-  const provider = await app.waitForCall("set_tab_provider", (args) => args.provider === "cursor");
-  expect(provider.args.tabId).toBe("tab-2");
+  // It launches as the Planner's provider instead of being switched after it started.
+  expect(input.provider).toBe("cursor");
+  expect(await app.calls("set_tab_provider")).toHaveLength(0);
   // Nothing was started for the user beyond the terminal they asked for.
   expect(await app.calls("role_session_start")).toHaveLength(1);
 });

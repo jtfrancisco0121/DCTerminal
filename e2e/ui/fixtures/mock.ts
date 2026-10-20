@@ -554,6 +554,10 @@ export function installTauriMock(config: MockConfig): void {
       const run = findRun(a.runId);
       if (!run) throw new Error(`unknown pipeline run: ${a.runId}`);
       run.autopilot = { ...(run.autopilot ?? {}), enabled: a.enabled, waiting: null };
+      if (run.status !== "complete") {
+        run.status = a.enabled ? "running" : "stopped";
+        run.stopReason = a.enabled ? null : "paused_by_you";
+      }
       return null;
     },
     pipeline_run_gates: (a) => {
@@ -608,7 +612,14 @@ export function installTauriMock(config: MockConfig): void {
       if (run.autopilot) run.autopilot.waiting = null;
       const approved = (id: string) => lanes.find((l) => l.id === id)?.status === "approved";
       const complete = lanes.every((l) => l.status === "approved");
-      if (complete) log("complete", "Complete: approved by you.");
+      if (complete) {
+        run.status = "complete";
+        run.stopReason = null;
+        log("complete", "Complete: approved by you.");
+      } else if (run.status === "waiting") {
+        run.status = "running";
+        run.stopReason = null;
+      }
       const unblocked = complete
         ? []
         : lanes.filter((l) => l.status === "waiting" && (l.dependsOn ?? []).every(approved)).map((l) => l.id);
@@ -637,6 +648,11 @@ export function installTauriMock(config: MockConfig): void {
     pipeline_release_handoff: () => null,
     pipeline_note: (a) => {
       const run = findRun(a.runId);
+      // Only autopilot waits for you: with it off a stop note just logs (PipelineRun::set_waiting).
+      if (run && a.stop && run.status !== "complete" && run.autopilot?.enabled) {
+        run.status = "waiting";
+        run.stopReason = a.reason ?? "carry_out_failed";
+      }
       if (run) {
         run.events = [
           ...(run.events ?? []),
@@ -698,6 +714,11 @@ export function installTauriMock(config: MockConfig): void {
       ];
       run.round = ending + 1;
       run.stage = stages[at][0];
+      // Your send-back puts a complete run back in play (PipelineRun::reopen_after_you).
+      if (run.status === "complete") {
+        run.status = run.autopilot?.enabled ? "running" : "stopped";
+        run.stopReason = run.autopilot && !run.autopilot.enabled ? "paused_by_you" : null;
+      }
       const chain = {
         chainId,
         kind: run.kind === "execute" ? "eagle2" : "eagle1",
@@ -876,7 +897,8 @@ export function installTauriMock(config: MockConfig): void {
       color: role.color,
       answers: input.values,
       startupPromptSent: true,
-      provider: "claude",
+      // A hand-off names its source's provider; otherwise the window's default.
+      provider: input.provider ?? "claude",
     });
     rememberPty(tab.id, a.onOutput);
     return { errors: [], tabId: tab.id, pid: 4243, usedPromptFile: false };

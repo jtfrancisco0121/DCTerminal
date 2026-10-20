@@ -1,6 +1,6 @@
 use super::*;
 use crate::pipelines::{find, GateResult};
-use crate::store::{claim_key, PipelineRun, RunAutopilot, StageGates};
+use crate::store::{claim_key, PipelineRun, RunAutopilot, RunStatus, StageGates, StopReason};
 use std::collections::HashMap;
 
 fn run(round: u32) -> PipelineRun {
@@ -29,6 +29,8 @@ fn run(round: u32) -> PipelineRun {
         lanes: Vec::new(),
         fan_out_stage: None,
         claims: Vec::new(),
+        status: RunStatus::Running,
+        stop_reason: None,
     }
 }
 
@@ -99,7 +101,9 @@ fn an_approved_plan_stops_at_the_implementer_checkpoint_until_passed() {
     assert_eq!((d.action.as_str(), d.stage_id.as_deref()), ("stop", Some("implementer")));
     assert!(d.reason.starts_with("Checkpoint before Implementer"));
     assert!(r.autopilot.as_ref().unwrap().waiting.is_some());
+    // You pass it (send into the Implementer yourself): the run carries on.
     r.autopilot.as_mut().unwrap().passed_checkpoints.push("implementer".into());
+    r.resume_after_you();
     let d = decide(&eagle1(), &mut r, &report("plan_reviewer", Some("APPROVED WITH CHANGES")));
     assert_eq!(d.action, "advance");
     assert!(r.autopilot.as_ref().unwrap().waiting.is_none());
@@ -355,6 +359,8 @@ fn a_lane_counts_its_own_rounds_and_gates() {
     let capped = decide(&eagle1_capped(3), &mut r, &rep);
     assert_eq!(capped.action, "stop");
     assert!(capped.reason.contains("3 of 3"), "{}", capped.reason);
+    // The run waits for you until you act on pr1 (here: you did).
+    r.resume_after_you();
     let other = decide(&eagle1_capped(3), &mut r, &in_lane("pr_reviewer", Some("REQUEST CHANGES"), "pr2"));
     assert_eq!((other.action.as_str(), other.lane.as_deref()), ("loopBack", Some("pr2")));
     // A failed check on one lane does not hold up the other.
@@ -558,4 +564,126 @@ fn a_turn_from_a_round_that_ended_is_skipped() {
     // A turn of the current round is decided as usual.
     rep.round = Some(5);
     assert_eq!(decide(&eagle1(), &mut r, &rep).action, "reask");
+}
+
+fn failed_gate(round: u32) -> StageGates {
+    StageGates {
+        round,
+        at: "now".into(),
+        results: vec![GateResult {
+            kind: "command".into(),
+            label: "npm run check".into(),
+            status: "failed".into(),
+            summary: "Failed (exit code 1).".into(),
+            output: "1 test failed".into(),
+            duration_ms: 10,
+        }],
+    }
+}
+
+#[test]
+fn a_stop_puts_the_run_in_waiting_with_its_reason_code() {
+    let mut r = run(1);
+    decide(&eagle1(), &mut r, &report("plan_reviewer", Some("APPROVED")));
+    assert_eq!((r.status, r.stop_reason), (RunStatus::Waiting, Some(StopReason::Checkpoint)));
+    assert!(r.autopilot.as_ref().unwrap().waiting.is_some(), "the sentence is kept for the overview");
+}
+
+#[test]
+fn every_stop_in_decide_carries_its_reason_code() {
+    let stopped = |def: &crate::pipelines::PipelineDef, mut r: PipelineRun, rep: TurnReport| {
+        let d = decide(def, &mut r, &rep);
+        assert_eq!(d.action, "stop", "{}", d.reason);
+        assert_eq!(r.status, RunStatus::Waiting, "{}", d.reason);
+        r.stop_reason
+    };
+    let mut capped = run(3);
+    capped.verdicts = sent_back(&["role_pr_reviewer"; 2]);
+    assert_eq!(stopped(&eagle1_capped(3), capped, changes_asked()), Some(StopReason::RoundCap));
+    let mut busy = report("planner", None);
+    busy.usage_percent = Some(95);
+    assert_eq!(stopped(&eagle1(), run(1), busy), Some(StopReason::UsageLimit));
+    assert_eq!(stopped(&eagle1(), run(1), report("pr_reviewer", None)), Some(StopReason::NoVerdict));
+    let mut missing = report("plan_reviewer", Some("APPROVED"));
+    missing.missing_sections = vec!["Reviewed plan".into()];
+    let mut reasked = run(1);
+    reasked.autopilot.as_mut().unwrap().reasked.push("plan_reviewer#1".into());
+    assert_eq!(stopped(&eagle1(), reasked, missing), Some(StopReason::NoResult));
+    let mut failing = run(1);
+    failing.gates.insert("implementer".into(), failed_gate(1));
+    failing.autopilot.as_mut().unwrap().gate_retries.insert("implementer".into(), MAX_GATE_RETRIES);
+    assert_eq!(stopped(&eagle1(), failing, report("implementer", None)), Some(StopReason::GateFailed));
+    let mut approved = report("pr_reviewer", Some("APPROVED"));
+    approved.findings = vec![finding("HIGH", "token leaks to log")];
+    approved.findings_known = true;
+    assert_eq!(stopped(&eagle1(), run(1), approved), Some(StopReason::BlockingFindings));
+    let mut chat = report("planner", None);
+    chat.chat = true;
+    assert_eq!(stopped(&eagle1(), run(1), chat), Some(StopReason::CarryOutFailed));
+    assert_eq!(stopped(&eagle1(), run(1), report("nowhere", None)), Some(StopReason::CarryOutFailed));
+}
+
+#[test]
+fn decide_acts_only_while_running() {
+    let mut r = run(1);
+    r.set_waiting(StopReason::Checkpoint, "Checkpoint before Implementer");
+    let mut rep = report("planner", None);
+    rep.turn = Some("planner|s|t1".into());
+    let d = decide(&eagle1(), &mut r, &rep);
+    assert_eq!(d.action, "skip", "{}", d.reason);
+    assert!(d.reason.contains("waiting for you"), "{}", d.reason);
+    assert!(r.claims.is_empty(), "nothing handed on");
+    assert_eq!((r.status, r.stop_reason), (RunStatus::Waiting, Some(StopReason::Checkpoint)));
+    // You acted (a hand-off, say): the next turn is decided again.
+    r.resume_after_you();
+    assert_eq!(r.status, RunStatus::Running);
+    let mut next = report("planner", None);
+    next.turn = Some("planner|s|t2".into());
+    assert_eq!(decide(&eagle1(), &mut r, &next).action, "advance");
+}
+
+#[test]
+fn complete_is_final_and_late_turns_after_it_are_ignored() {
+    let mut r = run(1);
+    let d = decide(&eagle1(), &mut r, &report("pr_reviewer", Some("APPROVED")));
+    assert_eq!(d.action, "complete");
+    assert_eq!((r.status, r.stop_reason), (RunStatus::Complete, None));
+    let events = r.events.len();
+    // A late turn (a background task reporting in) changes nothing.
+    let mut late = changes_asked();
+    late.turn = Some("rev|s|late".into());
+    let d = decide(&eagle1(), &mut r, &late);
+    assert_eq!(d.action, "ignore", "{}", d.reason);
+    assert_eq!(r.events.len(), events, "nothing logged");
+    assert!(r.claims.is_empty(), "no send-back claimed");
+    assert_eq!(r.status, RunStatus::Complete);
+    // Nothing reopens it: not a stop, not you turning autopilot off and on.
+    r.set_waiting(StopReason::CarryOutFailed, "x");
+    r.set_autopilot_enabled(false);
+    r.set_autopilot_enabled(true);
+    r.resume_after_you();
+    assert_eq!(r.status, RunStatus::Complete);
+    // The last lane approved completes a fanned-out run the same way.
+    let mut r = run(1);
+    r.lanes = vec![lane("pr1", &[], "active", 1)];
+    decide(&eagle1(), &mut r, &in_lane("pr_reviewer", Some("APPROVED"), "pr1"));
+    assert_eq!(r.status, RunStatus::Complete);
+}
+
+#[test]
+fn a_passing_gate_resets_the_stage_retries() {
+    let mut r = run(1);
+    r.gates.insert("implementer".into(), failed_gate(1));
+    let rep = report("implementer", None);
+    assert_eq!(decide(&eagle1(), &mut r, &rep).action, "retry");
+    assert_eq!(decide(&eagle1(), &mut r, &rep).action, "retry");
+    // The fix worked: the check passes and the stage hands on.
+    r.gates.get_mut("implementer").unwrap().results[0].status = "passed".into();
+    r.autopilot.as_mut().unwrap().passed_checkpoints.push("implementer".into());
+    assert_eq!(decide(&eagle1(), &mut r, &rep).action, "advance");
+    assert!(!r.autopilot.as_ref().unwrap().gate_retries.contains_key("implementer"));
+    // A later failure in the same round starts counting again.
+    r.gates.insert("implementer".into(), failed_gate(1));
+    let d = decide(&eagle1(), &mut r, &rep);
+    assert_eq!(d.action, "retry", "{}", d.reason);
 }

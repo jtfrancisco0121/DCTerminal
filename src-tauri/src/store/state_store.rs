@@ -58,6 +58,8 @@ impl StateStore {
         normalize_provider_sessions(&mut data);
         let claude_migrated = crate::store::claude_migration::migrate_state(&mut data);
         let windows_migrated = crate::store::window_migration::migrate_windows(&mut data);
+        // Derived from fields already on disk, so the next save keeps it.
+        crate::store::state_types::migrate_run_status(&mut data);
         let mut store = Self {
             path: path.clone(),
             data,
@@ -397,6 +399,13 @@ impl StateStore {
             Some(tab) => ProviderId::resolve(tab.provider),
             None => self.new_tab_provider,
         }
+    }
+
+    /// `provider_for_start`, unless the start names its provider (a
+    /// hand-off's new tab keeps its source tab's), so the CLI launches as
+    /// that provider instead of being switched after it started.
+    pub fn provider_for_start_as(&self, tab_id: Option<&str>, requested: Option<ProviderId>) -> ProviderId {
+        requested.unwrap_or_else(|| self.provider_for_start(tab_id))
     }
 
     /// Start-card provider chip. A running tab keeps its provider.
@@ -1266,6 +1275,8 @@ impl StateStore {
             lanes: Vec::new(),
             fan_out_stage: None,
             claims: Vec::new(),
+            status: crate::store::RunStatus::Stopped,
+            stop_reason: None,
         };
         self.data.pipeline_runs.push(run);
         self.save()?;

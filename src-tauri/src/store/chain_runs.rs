@@ -4,7 +4,7 @@
 
 use crate::store::state_types::{
     claim_key, pipeline_stages, run_kind_for_chain, window_matches, ChainRef, HandoffClaim,
-    PipelineRun, StageHandoff, StageVerdict,
+    PipelineRun, RunStatus, StageHandoff, StageVerdict,
 };
 use crate::store::StateStore;
 use chrono::{DateTime, Utc};
@@ -141,6 +141,8 @@ impl StateStore {
                     lanes: Vec::new(),
                     fan_out_stage: None,
                     claims: Vec::new(),
+                    status: RunStatus::Stopped,
+                    stop_reason: None,
                 });
                 chain.chain_id.clone()
             }
@@ -203,9 +205,11 @@ impl StateStore {
                 None,
             );
             // Sending into a checkpoint stage yourself passes it; autopilot
-            // carries on from the next turn.
+            // carries on from the next turn. A hand-off on a complete run
+            // puts it back in play.
+            run.reopen_after_you();
+            run.resume_after_you();
             if let Some(autopilot) = run.autopilot.as_mut() {
-                autopilot.waiting = None;
                 if !autopilot.passed_checkpoints.contains(&stage_id) {
                     autopilot.passed_checkpoints.push(stage_id.clone());
                 }
@@ -312,6 +316,10 @@ impl StateStore {
                 run.stage = target_stage;
             }
         }
+        // A send-back (yours, or autopilot carrying one out) resumes a waiting
+        // run, and puts a complete one back in play.
+        run.reopen_after_you();
+        run.resume_after_you();
         if let Some(autopilot) = run.autopilot.as_mut() {
             let prefix = lane.as_deref().map(|id| format!("@{id}"));
             match prefix {
@@ -649,6 +657,8 @@ mod tests {
             lanes: Vec::new(),
             fan_out_stage: None,
             claims: Vec::new(),
+            status: crate::store::RunStatus::Stopped,
+            stop_reason: None,
         }
     }
 
@@ -747,11 +757,13 @@ mod tests {
         store
             .set_tab_chain(&reviewer, Some(chain("ee_7", "eagle1", 4)), Some("the work"))
             .unwrap();
-        store.pipeline_run_by_id_mut("ee_7").unwrap().autopilot = Some(crate::store::RunAutopilot {
+        let run = store.pipeline_run_by_id_mut("ee_7").unwrap();
+        run.autopilot = Some(crate::store::RunAutopilot {
             enabled: true,
             passed_checkpoints: vec!["implementer".into()],
             ..Default::default()
         });
+        run.status = crate::store::RunStatus::Running;
         let def = crate::pipelines::find("eagle1").unwrap();
         let turn = |stage: &str, turn: &str| TurnReport {
             stage_id: stage.into(),
@@ -1162,6 +1174,131 @@ mod tests {
         assert!(store.pipeline_run_by_id("ee_tagged").is_some(), "tab {tagged} is on it");
         assert!(store.pipeline_run_by_id("run_overview").is_some());
         assert_eq!(store.data.pipeline_runs.len(), KEEP_RECENT_RUNS + 2);
+    }
+
+    /// A run as a build before run status saved it.
+    fn old_run_json(id: &str, autopilot: &str, events: &[&str]) -> String {
+        let events: Vec<String> = events
+            .iter()
+            .map(|kind| format!(r#"{{"at":"2026-10-01T00:00:00Z","kind":"{kind}","round":1,"summary":"x"}}"#))
+            .collect();
+        format!(
+            r#"{{"id":"{id}","kind":"full","cwd":"/tmp/p","stage":"pr_reviewer","overviewTabId":"","tabIds":{{}},
+              "createdAt":"2026-10-01T00:00:00Z","chainId":"{id}","events":[{}]{autopilot}}}"#,
+            events.join(",")
+        )
+    }
+
+    #[test]
+    fn runs_saved_before_run_status_get_one_from_their_fields_on_load() {
+        use crate::store::{RunStatus, StopReason};
+        let path = temp_path("run_status_migration");
+        let runs = [
+            old_run_json("done", r#","autopilot":{"enabled":true}"#, &["handoff", "complete"]),
+            // Sent back by hand after it completed: in play again.
+            old_run_json("reopened", r#","autopilot":{"enabled":true}"#, &["complete", "loopBack"]),
+            old_run_json(
+                "checkpoint",
+                r#","autopilot":{"enabled":true,"waiting":"Checkpoint before Implementer: check the work so far."}"#,
+                &["handoff"],
+            ),
+            old_run_json(
+                "capped",
+                r#","autopilot":{"enabled":true,"waiting":"Round cap reached (3 of 3): PR Reviewer still asks for changes."}"#,
+                &[],
+            ),
+            old_run_json(
+                "busy",
+                r#","autopilot":{"enabled":true,"waiting":"Tab 2 is still working. Send the findings back when its turn ends."}"#,
+                &[],
+            ),
+            old_run_json("running", r#","autopilot":{"enabled":true}"#, &["handoff"]),
+            old_run_json("paused", r#","autopilot":{"enabled":false}"#, &[]),
+            old_run_json("manual", "", &["handoff"]),
+        ];
+        let file = format!(
+            r#"{{"schemaVersion":1,"activeTabId":null,"tabs":[],
+               "migrations":{{"claudeFirst":true,"windows":true}},"pipelineRuns":[{}]}}"#,
+            runs.join(",")
+        );
+        std::fs::write(&path, file).unwrap();
+        let store = StateStore::open_path(path.clone()).unwrap();
+        let status = |id: &str| {
+            let run = store.pipeline_run_by_id(id).unwrap();
+            (run.status, run.stop_reason)
+        };
+        assert_eq!(status("done"), (RunStatus::Complete, None));
+        assert_eq!(status("reopened"), (RunStatus::Running, None));
+        assert_eq!(status("checkpoint"), (RunStatus::Waiting, Some(StopReason::Checkpoint)));
+        assert_eq!(status("capped"), (RunStatus::Waiting, Some(StopReason::RoundCap)));
+        assert_eq!(status("busy"), (RunStatus::Waiting, Some(StopReason::CarryOutFailed)));
+        assert_eq!(status("running"), (RunStatus::Running, None));
+        assert_eq!(status("paused"), (RunStatus::Stopped, Some(StopReason::PausedByYou)));
+        assert_eq!(status("manual"), (RunStatus::Stopped, None));
+        assert!(store.data.migrations.run_status);
+
+        // Saved, the codes are on disk in snake_case, and a reload keeps
+        // them instead of deriving them again.
+        let mut store = store;
+        store.pipeline_run_by_id_mut("running").unwrap().set_waiting(StopReason::GateFailed, "custom");
+        store.save().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(r#""stopReason": "gate_failed""#), "{text}");
+        assert!(text.contains(r#""status": "complete""#), "{text}");
+        let again = StateStore::open_path(path).unwrap();
+        let run = again.pipeline_run_by_id("running").unwrap();
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::GateFailed)));
+    }
+
+    #[test]
+    fn a_status_or_reason_from_a_newer_build_still_loads() {
+        use crate::store::{RunStatus, StopReason};
+        let run: PipelineRun = serde_json::from_str(&old_run_json(
+            "next",
+            r#","autopilot":{"enabled":true},"status":"paused_forever","stopReason":"cosmic_rays""#,
+            &[],
+        ))
+        .unwrap();
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Stopped, None));
+        let run: PipelineRun = serde_json::from_str(&old_run_json(
+            "now",
+            r#","status":"waiting","stopReason":"usage_limit""#,
+            &[],
+        ))
+        .unwrap();
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::UsageLimit)));
+    }
+
+    #[test]
+    fn your_hand_off_or_send_back_resumes_a_waiting_run() {
+        use crate::store::{RunStatus, StopReason};
+        let mut store = store("resume_after_you");
+        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&planner, Some(chain("ee_r", "eagle1", 1)), None).unwrap();
+        let run = store.pipeline_run_by_id_mut("ee_r").unwrap();
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Stopped, None), "a new run is manual");
+        run.set_autopilot_enabled(true);
+        run.set_waiting(StopReason::Checkpoint, "Checkpoint before Plan Reviewer");
+        let reviewer = store.create_draft_tab(&role("role_plan_reviewer"), "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&reviewer, Some(chain("ee_r", "eagle1", 2)), Some("the plan")).unwrap();
+        let run = store.pipeline_run_by_id("ee_r").unwrap();
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Running, None));
+        assert!(run.autopilot.as_ref().unwrap().waiting.is_none());
+
+        store
+            .pipeline_run_by_id_mut("ee_r")
+            .unwrap()
+            .set_waiting(StopReason::BlockingFindings, "Plan Reviewer asked for changes");
+        store
+            .chain_loop_back("ee_r", "role_plan_reviewer", &planner, Some("REQUIRES REVISION"), None)
+            .unwrap();
+        assert_eq!(store.pipeline_run_by_id("ee_r").unwrap().status, RunStatus::Running);
+
+        // With autopilot off, a hand-off leaves the run stopped.
+        store.pipeline_run_by_id_mut("ee_r").unwrap().set_autopilot_enabled(false);
+        store.set_tab_chain(&reviewer, Some(chain("ee_r", "eagle1", 2)), Some("plan v2")).unwrap();
+        let run = store.pipeline_run_by_id("ee_r").unwrap();
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Stopped, Some(StopReason::PausedByYou)));
     }
 
     #[test]

@@ -350,7 +350,34 @@ export type PipelineRun = {
   fanOutStage?: string | null;
   /** Hand-offs on and send-backs made, so none is made twice. */
   claims?: HandoffClaim[];
+  /** Where the run stands (Track H2). Missing on runs from older builds. */
+  status?: RunStatus;
+  /** Why the run is waiting, or `paused_by_you` when you turned autopilot off. */
+  stopReason?: StopReason | null;
 };
+
+/**
+ * `running`: autopilot acts on each finished turn. `waiting`: it stopped for
+ * you (see `stopReason`) and leaves turns alone until you act. `stopped`:
+ * autopilot is off. `complete`: done; later turns are ignored.
+ */
+export type RunStatus = "running" | "waiting" | "complete" | "stopped";
+
+/** Why a run stopped: every stop carries one. */
+export type StopReason =
+  | "checkpoint"
+  | "gate_failed"
+  | "no_check_found"
+  | "no_result"
+  | "no_verdict"
+  | "blocking_findings"
+  | "round_cap"
+  | "usage_limit"
+  | "stalled"
+  | "app_restarted"
+  | "carry_out_failed"
+  | "taken_over"
+  | "paused_by_you";
 
 export type RunLane = {
   id: string;
@@ -1223,10 +1250,19 @@ export async function pipelineDecide(runId: string, report: TurnReport): Promise
   return invoke("pipeline_decide", { runId, report });
 }
 
-/** Adds a line to the run ledger; `stop` also marks autopilot as waiting for you. */
+/**
+ * Adds a line to the run ledger; `stop` also puts the run in `waiting` with
+ * `reason` (default `carry_out_failed`).
+ */
 export async function pipelineNote(
   runId: string,
-  note: { stageId?: string | null; summary: string; detail?: string | null; stop: boolean },
+  note: {
+    stageId?: string | null;
+    summary: string;
+    detail?: string | null;
+    stop: boolean;
+    reason?: StopReason | null;
+  },
 ): Promise<void> {
   return invoke("pipeline_note", {
     runId,
@@ -1234,6 +1270,7 @@ export async function pipelineNote(
     summary: note.summary,
     detail: note.detail ?? null,
     stop: note.stop,
+    reason: note.reason ?? null,
   });
 }
 
@@ -1623,6 +1660,8 @@ export async function roleTerminalStart(input: {
   cols: number;
   rows: number;
   onOutput: Channel<PtyPacket>;
+  /** Launch as this provider (a hand-off's new tab keeps its source's). Omitted: the tab's, or the window's default. */
+  provider?: ProviderId | null;
 }): Promise<TerminalStartResult> {
   return invoke<TerminalStartResult>("role_terminal_start", {
     input: {
@@ -1633,6 +1672,7 @@ export async function roleTerminalStart(input: {
       cols: input.cols,
       rows: input.rows,
       windowId: await windowId(),
+      provider: input.provider ?? null,
     },
     onOutput: input.onOutput,
   });

@@ -57,6 +57,7 @@ import {
   pipelineRunGates,
   pipelineTurnFinished,
   ptyWrite,
+  setTabProvider,
   type PipelineRun,
   type TabSummary,
   type TerminalSessionLog,
@@ -555,6 +556,120 @@ describe("useAutopilot", () => {
     onLog("impl", log(IMPLEMENTED));
     await waitFor(() => expect(deps.notifyStop).toHaveBeenCalled());
     expect(pipelineReleaseHandoff).toHaveBeenCalledWith("ee_1", "advance:implementer#1");
+  });
+
+  it("opens the next stage's terminal as the source tab's provider, not switched after it started", async () => {
+    vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+    vi.mocked(pipelineDecide).mockResolvedValue({
+      action: "advance",
+      stageId: "pr_reviewer",
+      roleId: "role_pr_reviewer",
+      reason: "on to PR Reviewer",
+    });
+    const { deps, onLog } = setup([{ ...tab("impl", "role_implementer", 3), provider: "cursor" } as TabSummary]);
+    onLog("impl", log(IMPLEMENTED));
+    await waitFor(() => expect(handoffAttach).toHaveBeenCalled());
+    expect(deps.startTerminal).toHaveBeenCalledWith(
+      expect.objectContaining({ roleId: "role_pr_reviewer", provider: "cursor" }),
+    );
+    expect(setTabProvider).not.toHaveBeenCalled();
+  });
+
+  it("an older log read during the checks is not a newer prompt", async () => {
+    // A read that started before the turn ended lands while its checks run.
+    vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+    vi.mocked(pipelineDecide).mockResolvedValue({ action: "stop", reason: "test" });
+    const finished = log(IMPLEMENTED);
+    const { deps, onLog } = setup([tab("impl", "role_implementer", 3)]);
+    const older = { ...finished, turnDone: false, lastPromptAt: new Date(Date.now() - 60_000).toISOString() };
+    deps.sessionLog = (id) => (id === "impl" ? older : null);
+    onLog("impl", finished);
+    await waitFor(() => expect(pipelineDecide).toHaveBeenCalled());
+    expect(pipelineNote).not.toHaveBeenCalledWith(
+      "ee_1",
+      expect.objectContaining({ summary: expect.stringContaining("newer prompt") }),
+    );
+  });
+
+  it("records the round going back before pasting the findings into the earlier stage", async () => {
+    vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+    vi.mocked(pipelineDecide).mockResolvedValue({
+      action: "loopBack",
+      stageId: "implementer",
+      roleId: "role_implementer",
+      reason: "round 1 goes back",
+      claim: "back:pr_reviewer#1",
+    });
+    live.set("impl", { exited: false });
+    const order: string[] = [];
+    vi.mocked(chainLoopBack).mockImplementationOnce(async () => {
+      order.push("record");
+      return {} as never;
+    });
+    vi.mocked(ptyWrite).mockImplementationOnce(async () => {
+      order.push("paste");
+    });
+    const { onLog } = setup(
+      [tab("impl", "role_implementer", 3), tab("pr", "role_pr_reviewer", 4)],
+      { impl: { kind: "idle" } },
+    );
+    onLog("pr", log("## HANDOFF: Verdict\nREQUEST CHANGES\n\n## HANDOFF: Findings for the Implementer\n1. Guard it."));
+    await waitFor(() => expect(order).toEqual(["record", "paste"]));
+    // The text recorded is the text pasted.
+    expect(vi.mocked(chainLoopBack).mock.calls[0][0].handoffText).toContain("Guard it.");
+    expect(String(vi.mocked(ptyWrite).mock.calls[0][1])).toContain("Guard it.");
+  });
+
+  it("a loop-back whose round could not be recorded stops the run instead of pasting", async () => {
+    vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+    vi.mocked(pipelineDecide).mockResolvedValue({
+      action: "loopBack",
+      stageId: "implementer",
+      roleId: "role_implementer",
+      reason: "round 1 goes back",
+      claim: "back:pr_reviewer#1",
+    });
+    live.set("impl", { exited: false });
+    vi.mocked(chainLoopBack).mockRejectedValueOnce(new Error("disk full"));
+    const { deps, onLog } = setup(
+      [tab("impl", "role_implementer", 3), tab("pr", "role_pr_reviewer", 4)],
+      { impl: { kind: "idle" } },
+    );
+    onLog("pr", log("## HANDOFF: Verdict\nREQUEST CHANGES\n\n## HANDOFF: Findings for the Implementer\n1. Guard it."));
+    await waitFor(() => expect(deps.notifyStop).toHaveBeenCalled());
+    expect(ptyWrite).not.toHaveBeenCalled();
+    expect(pipelineReleaseHandoff).toHaveBeenCalledWith("ee_1", "back:pr_reviewer#1");
+    expect(pipelineNote).toHaveBeenCalledWith(
+      "ee_1",
+      expect.objectContaining({
+        stop: true,
+        reason: "carry_out_failed",
+        summary: expect.stringContaining("disk full"),
+      }),
+    );
+  });
+
+  it("a late turn after the run completed runs no checks and decides nothing", async () => {
+    vi.mocked(getPipelineRun).mockResolvedValue({ run: { ...run(true).run, status: "complete" } });
+    const { deps, onLog } = setup([tab("impl", "role_implementer", 3)]);
+    onLog("impl", log(IMPLEMENTED));
+    await waitFor(() => expect(getPipelineRun).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(pipelineRunGates).not.toHaveBeenCalled();
+    expect(pipelineDecide).not.toHaveBeenCalled();
+    expect(deps.startTerminal).not.toHaveBeenCalled();
+  });
+
+  it("a turn while the run waits for you runs no checks; the core notes it was left alone", async () => {
+    vi.mocked(getPipelineRun).mockResolvedValue({
+      run: { ...run(true).run, status: "waiting", stopReason: "checkpoint" },
+    });
+    vi.mocked(pipelineDecide).mockResolvedValue({ action: "skip", reason: "waiting for you" });
+    const { deps, onLog } = setup([tab("impl", "role_implementer", 3)]);
+    onLog("impl", log(IMPLEMENTED));
+    await waitFor(() => expect(pipelineDecide).toHaveBeenCalled());
+    expect(pipelineRunGates).not.toHaveBeenCalled();
+    expect(deps.notifyStop).not.toHaveBeenCalled();
   });
 });
 

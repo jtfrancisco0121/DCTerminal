@@ -3,9 +3,12 @@
 //! sections, or stop for the user. Pure over the pipeline definition, the
 //! run and the turn report, so every rule is unit-tested. It records what it
 //! decided in the run's ledger and autopilot state; the caller saves.
+//!
+//! It acts only while the run is `running` (Track H2): a stop puts the run
+//! in `waiting` with a reason code until you act, and `complete` is final.
 
 use super::{PipelineDef, Severity, StageDef};
-use crate::store::{claim_key, PipelineRun, RunAutopilot, MAX_DECIDED_TURNS};
+use crate::store::{claim_key, PipelineRun, RunAutopilot, RunStatus, StopReason, MAX_DECIDED_TURNS};
 use serde::{Deserialize, Serialize};
 
 /// Failed-gate retries per stage and round before autopilot stops.
@@ -122,8 +125,8 @@ fn autopilot(run: &mut PipelineRun) -> &mut RunAutopilot {
     run.autopilot.get_or_insert_with(RunAutopilot::default)
 }
 
-fn stop(run: &mut PipelineRun, stage: Option<&StageDef>, reason: String) -> Decision {
-    autopilot(run).waiting = Some(reason.clone());
+fn stop(run: &mut PipelineRun, stage: Option<&StageDef>, code: StopReason, reason: String) -> Decision {
+    run.set_waiting(code, reason.clone());
     run.log(
         "stop",
         stage.map(|s| s.id.as_str()),
@@ -139,7 +142,11 @@ fn stop(run: &mut PipelineRun, stage: Option<&StageDef>, reason: String) -> Deci
 }
 
 fn go(run: &mut PipelineRun, decision: Decision, detail: Option<String>) -> Decision {
-    autopilot(run).waiting = None;
+    if decision.action == "complete" {
+        run.set_complete();
+    } else {
+        run.set_running();
+    }
     let kind = if decision.action == "complete" { "complete" } else { "autopilot" };
     let (lane_id, summary) = match decision.lane.as_deref().and_then(|id| run.lane(id)) {
         Some(lane) if decision.action != "laneDone" && decision.action != "complete" => {
@@ -259,7 +266,7 @@ fn advance(
             "Checkpoint before {}: check the work so far, then send it yourself. Autopilot carries on after that.",
             next.title
         );
-        return stop(run, Some(next), reason);
+        return stop(run, Some(next), StopReason::Checkpoint, reason);
     }
     let key = match claim(run, "advance", &def.stages[index], lane, turn) {
         Ok(key) => key,
@@ -277,8 +284,17 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
     if !enabled {
         return Decision::new("stop", "Autopilot is off for this run.");
     }
+    if run.status == RunStatus::Complete {
+        // Final: a late turn (a background task reporting in) changes nothing.
+        return Decision::new("ignore", "The run is complete.");
+    }
     let Some(index) = def.stage_index(&report.stage_id) else {
-        return stop(run, None, format!("Stage \"{}\" is not in {}.", report.stage_id, def.name));
+        return stop(
+            run,
+            None,
+            StopReason::CarryOutFailed,
+            format!("Stage \"{}\" is not in {}.", report.stage_id, def.name),
+        );
     };
     let stage = def.stages[index].clone();
     if let Some(lane) = report.lane.as_deref().and_then(|id| run.lane(id)).filter(|l| l.status == "approved") {
@@ -304,6 +320,22 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             decided.drain(..drop);
         }
     }
+    if run.status != RunStatus::Running {
+        // Stopped for you: you hand on, send back or approve, and autopilot
+        // carries on from the next turn. Never acted on by itself.
+        let why = run
+            .autopilot
+            .as_ref()
+            .and_then(|a| a.waiting.clone())
+            .map(|why| format!(" ({})", why.trim_end_matches('.')))
+            .unwrap_or_default();
+        return skip(
+            run,
+            &stage,
+            lane,
+            format!("{} finished while the run is waiting for you{why}. Hand it on yourself.", stage.title),
+        );
+    }
     if let Some(read_in) = report.round.filter(|read_in| *read_in != round) {
         // A round sent back while this turn's checks ran: the turn is stale.
         return skip(
@@ -320,6 +352,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
         return stop(
             run,
             Some(&stage),
+            StopReason::CarryOutFailed,
             format!("{} is a chat tab. Autopilot drives terminal tabs only, so hand it on yourself.", stage.title),
         );
     }
@@ -328,6 +361,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
         return stop(
             run,
             Some(&stage),
+            StopReason::UsageLimit,
             format!("Paused: Claude usage is at {used}% (autopilot pauses at {pause}%)."),
         );
     }
@@ -338,6 +372,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             return stop(
                 run,
                 Some(&stage),
+                StopReason::NoResult,
                 format!("{}'s reply still lacks HANDOFF sections ({missing}).", stage.title),
             );
         }
@@ -358,6 +393,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             return stop(
                 run,
                 Some(&stage),
+                StopReason::GateFailed,
                 format!("The {} check failed {} times in a row. {}", gate.label, retries + 1, gate.summary),
             );
         }
@@ -379,9 +415,11 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
         ));
         return go(run, decision, Some(gate.output.clone()));
     }
+    // Every check passed (or none ran) this round: a later failure starts counting again.
+    autopilot(run).gate_retries.remove(&key_of_stage);
     let Some(verdict) = report.verdict.as_deref().map(str::trim).filter(|v| !v.is_empty()) else {
         if stage.loop_back.is_some() {
-            return stop(run, Some(&stage), format!("No verdict could be read from {}'s reply.", stage.title));
+            return stop(run, Some(&stage), StopReason::NoVerdict, format!("No verdict could be read from {}'s reply.", stage.title));
         }
         return advance(def, run, index, &format!("{} finished", stage.title), Vec::new(), Vec::new(), lane, turn);
     };
@@ -425,7 +463,12 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             );
         }
         let Some(back) = stage.loop_back.clone() else {
-            return stop(run, Some(&stage), format!("{} asked for changes, but this stage has no loop-back.", stage.title));
+            return stop(
+                run,
+                Some(&stage),
+                StopReason::BlockingFindings,
+                format!("{} asked for changes, but this stage has no loop-back.", stage.title),
+            );
         };
         // Rounds per loop-back edge: this reviewer's own rounds so far. With
         // no cap, rounds go back until the reviewer approves.
@@ -434,6 +477,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             return stop(
                 run,
                 Some(&stage),
+                StopReason::RoundCap,
                 format!(
                     "Round cap reached ({edge_round} of {cap}): {} still asks for changes.",
                     stage.title
@@ -441,7 +485,12 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             );
         }
         let Some(target) = def.stage(&back.to).cloned() else {
-            return stop(run, Some(&stage), format!("Loop-back stage \"{}\" is missing.", back.to));
+            return stop(
+                run,
+                Some(&stage),
+                StopReason::CarryOutFailed,
+                format!("Loop-back stage \"{}\" is missing.", back.to),
+            );
         };
         let mut decision = Decision::new(
             "loopBack",
@@ -484,7 +533,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             blocking.len(),
             threshold.label()
         );
-        autopilot(run).waiting = Some(reason.clone());
+        run.set_waiting(StopReason::BlockingFindings, reason.clone());
         run.log("stop", Some(&stage.id), Some(&stage.role_id), reason.clone(), Some(blocking.join("\n")));
         let mut decision = Decision::new("stop", reason).for_stage(&stage);
         decision.lane = lane.map(str::to_string);
