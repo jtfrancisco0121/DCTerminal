@@ -883,19 +883,13 @@ fn a_turn_handed_to_a_new_actor_again_runs_no_checks_and_pastes_nothing() {
     assert_eq!(fx.run(|run| run.events.iter().filter(|e| e.kind == "gate").count()), gate_lines, "no duplicate gate lines");
 }
 
-#[test]
-fn continue_on_a_turn_the_actor_decided_runs_no_checks() {
-    let mut fx = Fixture::new("dedupe_continue");
-    let (implementer, turn) = implementer_with_a_failed_gate(&mut fx);
-    // The app restarted with the run on that turn: H3's reconcile matches
-    // the actor's key, so the decided turn does not wait for Continue...
-    // (V4's resume cleared turn.json; its id is the turn the actor decided.)
-    let bridged = HashMap::from([(implementer.clone(), turn.turn.clone())]);
-    let finished = crate::claude_session_log::TerminalSessionLog {
+/// A session log whose last turn finished (what H3's reconcile reads).
+fn finished_log() -> crate::claude_session_log::TerminalSessionLog {
+    crate::claude_session_log::TerminalSessionLog {
         session_id: "s".into(),
         path: "/tmp/x.jsonl".into(),
         turn_done: true,
-        last_reply: "Opened".into(),
+        last_reply: "Done".into(),
         plan: None,
         plan_at: None,
         last_prompt_at: Some("2026-10-20T10:00:00Z".into()),
@@ -905,20 +899,61 @@ fn continue_on_a_turn_the_actor_decided_runs_no_checks() {
         pending_tools: Vec::new(),
         permission_mode: None,
         rate_limit: None,
-    };
-    let logs = HashMap::from([(implementer.clone(), finished)]);
-    {
-        let mut store = fx.host.store.lock().unwrap();
-        let run = store.pipeline_run_by_id_mut(RUN).unwrap();
-        let def = crate::pipelines::find(&run.kind).unwrap();
-        let found = crate::pipelines::recovery::reconcile_run_with(&def, run, &logs, &bridged);
-        assert_eq!(found, None, "a turn the actor decided is not stopped as app_restarted");
-        assert_eq!(run.status, RunStatus::Running);
-        // ...and when the run waits after a restart anyway (another tab), Continue
-        // on the decided turn decides nothing again.
-        run.stop_for(StopReason::AppRestarted, Some("implementer"), None, "Waiting after a restart.".to_string(), None);
-        assert_eq!(run.stop_reason, Some(StopReason::AppRestarted));
     }
+}
+
+/// H3's startup reconcile of the run, fed the way the app feeds it: each
+/// current stage tab's turn id from its stage's `turn.json`, read now.
+fn reconcile_after_restart(fx: &Fixture, tab_id: &str) -> Option<crate::pipelines::recovery::Reconciled> {
+    let mut store = fx.host.store.lock().unwrap();
+    let tag = store.tab_by_id(tab_id).and_then(|tab| tab.bridge.clone());
+    let mut bridged = HashMap::new();
+    let mut no_turn = HashSet::new();
+    match crate::commands::run_recovery::bridge_turn_of(&fx.host.runs, tab_id, tag.as_ref()) {
+        Some(Some(turn)) => {
+            bridged.insert(tab_id.to_string(), turn);
+        }
+        Some(None) => {
+            no_turn.insert(tab_id.to_string());
+        }
+        None => {}
+    }
+    let logs = HashMap::from([(tab_id.to_string(), finished_log())]);
+    let run = store.pipeline_run_by_id_mut(RUN).unwrap();
+    let def = crate::pipelines::find(&run.kind).unwrap();
+    crate::pipelines::recovery::reconcile_run_bridged(&def, run, &logs, &bridged, &no_turn)
+}
+
+/// A turn the actor decided that keeps its `turn.json`: the Planner's plan,
+/// handed on, then a round pasted back into it (a Planner with no saved
+/// session is pasted into, not resumed, so its `turn.json` stays). After a
+/// restart before the pasted round started, H3's reconcile sees that turn
+/// as decided, and Continue on it decides nothing again.
+#[test]
+fn continue_on_a_turn_the_actor_decided_runs_no_checks() {
+    let mut fx = Fixture::new("dedupe_continue");
+    let planner = fx.planner.clone();
+    let reviewer = fx.open_plan_reviewer();
+    fx.host.store.lock().unwrap().data.tabs.iter_mut().find(|t| t.id == planner).unwrap().sessions.claude_terminal_session_id = None;
+    let turn = fx.end_turn(&reviewer, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "x" }])), "");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    assert_eq!(fx.pastes().len(), 1, "the round was pasted into the Planner");
+    assert_eq!(fx.stage_dir(&planner).turn().map(|t| t.turn), Some("p-1".to_string()), "its decided turn keeps turn.json");
+    let launches = fx.launches().len();
+    let turn_lines = fx.run(|run| run.events.iter().filter(|e| e.kind == "turn").count());
+    // The app restarted with the run on the Planner: its decided turn does
+    // not wait for Continue...
+    assert_eq!(reconcile_after_restart(&fx, &planner), None, "a turn the actor decided is not stopped as app_restarted");
+    fx.run(|run| assert_eq!(run.status, RunStatus::Running));
+    // ...and when the run waits after a restart anyway (another tab), Continue
+    // reads that turn.json again and decides nothing twice.
+    fx.host.store.lock().unwrap().pipeline_run_by_id_mut(RUN).unwrap().stop_for(
+        StopReason::AppRestarted,
+        Some("planner"),
+        None,
+        "Waiting after a restart.".to_string(),
+        None,
+    );
     let (me, gates) = channel();
     let mut fresh = Actor::new(RUN.to_string(), fx.host.clone(), me);
     let (reply, answer) = channel();
@@ -926,10 +961,31 @@ fn continue_on_a_turn_the_actor_decided_runs_no_checks() {
     answer.recv().unwrap().unwrap();
     assert!(!fresh.busy(), "Continue starts no checks for a decided turn");
     assert!(gates.try_recv().is_err());
-    assert_eq!(fx.resumes().len(), 1);
-    assert!(fx.pastes().is_empty());
-    assert_eq!(retries(&fx), Some(1));
+    assert_eq!(fx.launches().len(), launches, "Continue does not hand the decided plan on again: {:?}", fx.launches());
+    let again = fx.run(|run| run.events.iter().filter(|e| e.kind == "turn").count());
+    assert_eq!(again, turn_lines, "no second ledger line for the decided turn");
+    assert_eq!(fx.pastes().len(), 1);
+    assert!(fx.resumes().is_empty());
     fx.run(|run| assert_eq!(run.status, RunStatus::Running, "the run carries on"));
+}
+
+/// A restart right after a resume: the stage's `turn.json` was cleared and
+/// its log still ends on the turn the actor decided. That is no finished
+/// turn to Continue on: the run is not stopped as `app_restarted`, and a
+/// Timeline note says the round may not have reached the stage.
+#[test]
+fn a_restart_right_after_a_resume_is_not_stopped_as_app_restarted() {
+    let mut fx = Fixture::new("restart_after_resume");
+    let (implementer, _) = implementer_with_a_failed_gate(&mut fx);
+    assert!(fx.stage_dir(&implementer).turn().is_none(), "the resume cleared turn.json");
+    let found = reconcile_after_restart(&fx, &implementer);
+    assert!(!matches!(found, Some(crate::pipelines::recovery::Reconciled::Waiting { .. })), "a false Continue: {found:?}");
+    fx.run(|run| {
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Running, None));
+        let last = run.events.last().unwrap();
+        assert_eq!(last.kind, "note");
+        assert!(last.summary.contains("may not have reached it"), "{}", last.summary);
+    });
 }
 
 /// A copy of a built-in role under another id (Settings › Roles › Duplicate).

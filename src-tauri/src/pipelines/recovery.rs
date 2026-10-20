@@ -130,6 +130,22 @@ pub fn reconcile_run_with(
     logs: &HashMap<String, TerminalSessionLog>,
     bridge_turns: &HashMap<String, String>,
 ) -> Option<Reconciled> {
+    reconcile_run_bridged(def, run, logs, bridge_turns, &HashSet::new())
+}
+
+/// [`reconcile_run_with`], where `no_turn` lists the bridged tabs whose
+/// stage has no `turn.json`. That is a stage sent its next prompt (V4: a
+/// resume clears `turn.json` until the resumed session's first prompt), so
+/// its log's last finished turn is not one to Continue on: it never stops
+/// the run as `app_restarted`, and is noted as a round that may not have
+/// arrived.
+pub fn reconcile_run_bridged(
+    def: &PipelineDef,
+    run: &mut PipelineRun,
+    logs: &HashMap<String, TerminalSessionLog>,
+    bridge_turns: &HashMap<String, String>,
+    no_turn: &HashSet<String>,
+) -> Option<Reconciled> {
     let enabled = run.autopilot.as_ref().is_some_and(|a| a.enabled);
     if run.status != RunStatus::Running || !enabled {
         return None;
@@ -142,6 +158,7 @@ pub fn reconcile_run_with(
     let tabs = current_stage_tabs(def, run);
     let finished = tabs.iter().find(|tab| {
         tab.own
+            && !no_turn.contains(&tab.tab_id)
             && logs.get(&tab.tab_id).is_some_and(|log| {
                 let key = match bridge_turns.get(&tab.tab_id) {
                     Some(turn) => bridge_turn_key(&tab.tab_id, turn),
@@ -158,6 +175,18 @@ pub fn reconcile_run_with(
         run.set_waiting(StopReason::AppRestarted, why.clone());
         log_for(run, "stop", &tab, why.clone());
         return Some(Reconciled::Waiting { tab_id: tab.tab_id, why });
+    }
+    let pending = tabs
+        .iter()
+        .find(|tab| no_turn.contains(&tab.tab_id) && logs.get(&tab.tab_id).is_some_and(|log| finished_turn(tab.kind, log)));
+    if let Some(tab) = pending.cloned() {
+        let note = format!(
+            "{} was being sent its next round when the app closed, and the round may not have reached it. \
+             Autopilot acts on its next finished turn; if the round never arrived, send it again yourself.",
+            stage_name(run, &tab)
+        );
+        log_for(run, "note", &tab, note);
+        return Some(Reconciled::CutOff);
     }
     let cut_off = tabs
         .iter()
