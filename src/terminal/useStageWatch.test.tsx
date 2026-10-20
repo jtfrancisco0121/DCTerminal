@@ -71,4 +71,18 @@ describe("useStageWatch (V5, D27)", () => {
     await act(async () => result.current!.onHandBack!());
     expect(onError).toHaveBeenCalledWith("Not handed back", "That tab is not on this run.");
   });
+
+  it("reads its rules again once its terminal is open (the first read after a restart can come too early)", async () => {
+    // Before the relaunch records the stage folder, the backend does not know the stage yet.
+    vi.mocked(ptyStageNeeds).mockResolvedValue({ open: true, stage: false, takenOver: false, needs: false });
+    const { result, rerender } = renderHook(({ opened }) => useStageWatch(stage, false, vi.fn(), opened), {
+      initialProps: { opened: 0 },
+    });
+    await flush();
+    expect(result.current).toBeNull();
+    rerender({ opened: 1 });
+    await flush();
+    expect(ptyInputState).toHaveBeenCalledWith("tab_rev");
+    expect(result.current).toMatchObject({ canType: false, takenOver: false });
+  });
 });

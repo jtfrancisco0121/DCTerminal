@@ -24,6 +24,8 @@ export function useStageWatch(
   tab: StageTab | null | undefined,
   needs: boolean,
   onError: (title: string, body: string) => void,
+  /** Bumped each time its terminal view opened the terminal: read again. */
+  opened = 0,
 ): StageWatch | null {
   const tabId = tab?.id ?? null;
   const runId = tab?.bridge?.runId ?? null;
@@ -42,6 +44,13 @@ export function useStageWatch(
     if (!tabId || !runId) return;
     void read(ptyStageNeeds(tabId, needs), tabId);
   }, [needs, read, runId, tabId]);
+
+  // After a restart the first read can land before the relaunch records the
+  // stage's folder (not a stage yet): read again once the terminal is open.
+  useEffect(() => {
+    if (!tabId || !runId || opened === 0) return;
+    void read(ptyInputState(tabId), tabId);
+  }, [opened, read, runId, tabId]);
 
   useEffect(() => {
     if (!tabId || !runId) return;
