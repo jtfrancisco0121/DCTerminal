@@ -1437,3 +1437,18 @@ fn take_over_and_hand_back_put_the_mode_back_when_the_run_cannot_be_saved() {
     });
     std::fs::remove_dir(&tmp).unwrap();
 }
+
+/// D28: the run waits with `taken_over` only when it has current stage tabs
+/// and you took over every one; a run with none (here its tab list was
+/// emptied) keeps running.
+#[test]
+fn take_over_never_waits_on_a_run_with_no_current_stage_tabs() {
+    let mut fx = Fixture::new("take_over_no_current");
+    let planner = fx.planner.clone();
+    fx.host.store.lock().unwrap().pipeline_run_by_id_mut(RUN).unwrap().tab_ids.clear();
+    fx.user(UserAction::TakeOver { tab_id: planner.clone() }).expect("take over");
+    fx.run(|run| {
+        assert_eq!(run.taken_over, vec![planner.clone()]);
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Running, None));
+    });
+}

@@ -1349,9 +1349,8 @@ impl<H: Host> Actor<H> {
             }
             let summary = format!("You took over {}. Autopilot leaves it alone until you hand it back.", placed.stage.title);
             run.log("note", Some(&placed.stage.id), Some(&placed.tab.role_id), summary, None);
-            let all_yours = crate::pipelines::recovery::current_stage_tabs(&placed.def, run)
-                .iter()
-                .all(|stage| run.taken_over.contains(&stage.tab_id));
+            let current = crate::pipelines::recovery::current_stage_tabs(&placed.def, run);
+            let all_yours = !current.is_empty() && current.iter().all(|stage| run.taken_over.contains(&stage.tab_id));
             if run.status == RunStatus::Running && all_yours {
                 run.set_waiting(
                     StopReason::TakenOver,
