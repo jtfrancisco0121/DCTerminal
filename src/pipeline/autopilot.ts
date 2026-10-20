@@ -12,7 +12,7 @@ import { contractFindings, contractResult, missingHandoffSections } from "../han
 import { terminalLogFields, type HandoffField, type HandoffSource } from "../handoff/map";
 import { roleDisplayName, type RoleName } from "../handoff/transitions";
 import { parseReviewVerdict } from "../handoff/verdict";
-import { pipelineDef, roleBehaviour, stageRoles, type PipelineDef, type StageDef } from "./defs";
+import { pipelineDef, roleBehaviour, stageBehaviour, stageRoles, type PipelineDef, type StageDef } from "./defs";
 import { knownUsagePercent } from "../usage/limits";
 
 /** The stage a chain tab holds on its pipeline, if its role matches that step. */
@@ -226,9 +226,9 @@ export function mergeReviews(
   return sections.join("\n\n");
 }
 
-/** The verdict a reviewer's "changes" means on this run: the full run's Plan Reviewer revises, the rest request changes. */
-export function reviseVerdict(runKind: string, roleId: string): string {
-  return runKind === "full" && roleId === "role_plan_reviewer" ? "REQUIRES REVISION" : "REQUEST CHANGES";
+/** The verdict a reviewer stage's "changes" means: a plan reviewer revises, the rest request changes (by its kind, so a copied role behaves like its original). */
+export function reviseVerdict(def: PipelineDef, stage: StageDef): string {
+  return stageBehaviour(def, stage) === "plan_reviewer" ? "REQUIRES REVISION" : "REQUEST CHANGES";
 }
 
 /** A `submit_result` verdict in the words the ledger, loop-backs and the hand-off use. */

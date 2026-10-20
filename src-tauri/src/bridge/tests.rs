@@ -560,6 +560,26 @@ fn only_reviewer_stages_of_engine_2_runs_are_bridged() {
 }
 
 #[test]
+fn a_copied_reviewer_is_bridged_by_its_stage_kind_like_the_built_in_one() {
+    let mut def = crate::pipelines::find("full").unwrap();
+    let run = engine2_run(true);
+    let built_in = launch::plan_for(&run, &def, &chain(4, None), "role_pr_reviewer").unwrap();
+    // A copy of the PR Reviewer on the same stage, its kind set explicitly.
+    def.stages[3].role_id = "role_custom_7".into();
+    def.stages[3].kind = Some(crate::pipelines::StageKind::Reviewer);
+    let copied = launch::plan_for(&run, &def, &chain(4, None), "role_custom_7").expect("copied reviewer");
+    assert_eq!(copied.kind, built_in.kind);
+    assert_eq!(copied.stage_key, built_in.stage_key);
+    // A reviewer stage with no loop-back still reports through the bridge.
+    def.stages[3].loop_back = None;
+    assert!(launch::plan_for(&run, &def, &chain(4, None), "role_custom_7").is_some());
+    // A stage marked generic is not a reviewer, even with a loop-back.
+    let mut def = crate::pipelines::find("full").unwrap();
+    def.stages[3].kind = Some(crate::pipelines::StageKind::Generic);
+    assert_eq!(launch::plan_for(&run, &def, &chain(4, None), "role_pr_reviewer"), None);
+}
+
+#[test]
 fn a_lane_names_its_own_stage_folder() {
     let def = crate::pipelines::find("full").unwrap();
     let mut run = engine2_run(true);

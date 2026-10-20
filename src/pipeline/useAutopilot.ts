@@ -388,7 +388,7 @@ export function useAutopilot(deps: AutopilotDeps) {
         let claimed: string | undefined;
         try {
           const view = await getPipelineRun(runId).catch(() => null);
-          const revise = reviseVerdict(view?.run.kind ?? "", tab.roleId);
+          const revise = reviseVerdict(placed.def, placed.stage);
           const lane = chain.lane ?? null;
           // intentionally silent: the lanes only lose a bar end.
           void pipelineTurnFinished(runId, {

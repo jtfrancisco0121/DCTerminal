@@ -14,7 +14,7 @@ import {
   turnReport,
   usagePercent,
 } from "./autopilot";
-import { pipelineDef } from "./defs";
+import { pipelineDef, type PipelineDef } from "./defs";
 
 function log(patch: Partial<TerminalSessionLog> = {}): TerminalSessionLog {
   return {
@@ -256,10 +256,26 @@ describe("bridge turns (engine 2)", () => {
     expect(bridgeVerdict("APPROVED_WITH_CHANGES", "REQUEST CHANGES")).toBe("APPROVED WITH CHANGES");
     expect(bridgeVerdict("CHANGES_REQUIRED", "REQUIRES REVISION")).toBe("REQUIRES REVISION");
     expect(bridgeVerdict(undefined, "REQUEST CHANGES")).toBeNull();
-    // The plan reviewer of a full run asks for revision; every other reviewer for changes.
-    expect(reviseVerdict("full", "role_plan_reviewer")).toBe("REQUIRES REVISION");
-    expect(reviseVerdict("full", "role_pr_reviewer")).toBe("REQUEST CHANGES");
-    expect(reviseVerdict("execute", "role_plan_reviewer")).toBe("REQUEST CHANGES");
+    // A plan reviewer asks for revision; every other reviewer for changes.
+    const full = pipelineDef("eagle1")!;
+    const stage = (d: PipelineDef, id: string) => d.stages.find((s) => s.id === id)!;
+    expect(reviseVerdict(full, stage(full, "plan_reviewer"))).toBe("REQUIRES REVISION");
+    expect(reviseVerdict(full, stage(full, "pr_reviewer"))).toBe("REQUEST CHANGES");
+  });
+
+  it("a copied Plan Reviewer revises like the built-in one: its stage kind decides, not its role id", () => {
+    const copied: PipelineDef = {
+      id: "my_plan",
+      name: "My plan",
+      stages: [
+        { id: "planner", roleId: "role_planner", title: "Planner" },
+        { id: "plan_check", roleId: "role_custom_9", title: "Plan check", loopBack: { to: "planner", minSeverity: "MEDIUM" } },
+        { id: "implementer", roleId: "role_implementer", title: "Implementer" },
+        { id: "pr_check", roleId: "role_custom_10", title: "PR check", loopBack: { to: "implementer", minSeverity: "MEDIUM" } },
+      ],
+    };
+    expect(reviseVerdict(copied, copied.stages[1])).toBe("REQUIRES REVISION");
+    expect(reviseVerdict(copied, copied.stages[3])).toBe("REQUEST CHANGES");
   });
 
   it("decides on the submitted result, not on the reply's text", () => {

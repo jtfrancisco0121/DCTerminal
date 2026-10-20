@@ -9,8 +9,9 @@
 //! and the MCP server are this executable run as `dcterminal bridge`, given
 //! as an `args` array so nothing is shell-quoted (D38).
 //!
-//! V2a bridges reviewer stages only: the stage of an engine-2 run that has a
-//! loop-back and no parallel reviewers. Planner and Implementer stages keep
+//! V2a bridges reviewer stages only: a stage of an engine-2 run whose kind
+//! is `reviewer` (H4's `StageKind`, so a copied reviewer role is bridged
+//! like the built-in one) and that has no parallel reviewers. Planner and Implementer stages keep
 //! the v1 path until V2b, and so does a stage with parallel reviewers, whose
 //! merge stays in the frontend until the run actor (V3).
 
@@ -20,7 +21,7 @@ use super::folder::{
 };
 use super::schema::{FULL_TOOL_NAME, SERVER_NAME};
 use crate::pipelines::autopilot::stage_key;
-use crate::pipelines::PipelineDef;
+use crate::pipelines::{PipelineDef, StageKind};
 use crate::store::{ChainRef, PipelineRun};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -56,7 +57,7 @@ pub fn plan_for(run: &PipelineRun, def: &PipelineDef, chain: &ChainRef, role_id:
         return None;
     }
     let stage = def.stages.get((chain.step as usize).checked_sub(1)?)?;
-    if stage.role_id != role_id || stage.loop_back.is_none() || !stage.also_reviewers.is_empty() {
+    if stage.role_id != role_id || stage.kind() != StageKind::Reviewer || !stage.also_reviewers.is_empty() {
         return None;
     }
     let lane = chain.lane.clone().filter(|id| run.lane(id).is_some());
