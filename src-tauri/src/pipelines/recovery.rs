@@ -97,7 +97,7 @@ pub fn turn_key(tab_id: &str, log: &TerminalSessionLog) -> String {
 }
 
 /// A bridged (engine-2) turn's key, `tab|bridge|<turn id>`, as autopilot
-/// records it (`onBridgeTurn` in `src/pipeline/useAutopilot.ts`).
+/// records it (the run actor, `src-tauri/src/run_actor/actor.rs`).
 pub fn bridge_turn_key(tab_id: &str, turn: &str) -> String {
     format!("{tab_id}|bridge|{turn}")
 }

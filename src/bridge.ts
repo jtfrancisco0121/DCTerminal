@@ -318,7 +318,8 @@ export type TabSummary = {
   previewUrl?: string | null;
   /**
    * The bridged pipeline stage this terminal launched as (ADR-015): its turn
-   * ends and results come from `pipeline-bridge-turn`, not from its log.
+   * ends and results go to the run actor in Rust (`src-tauri/src/run_actor`),
+   * not through its log.
    */
   bridge?: BridgeTag | null;
 };
@@ -1346,7 +1347,6 @@ export type BridgeTurn = {
   blocked: boolean;
 };
 
-
 /**
  * A bridged stage is waiting on a permission dialog (D22): from the
  * PermissionRequest hook at once, or the `permission_prompt` Notification
@@ -1379,7 +1379,6 @@ export function listenBridgeNeeds(handler: (event: BridgeNeeds) => void): Promis
 export async function pipelineRunTasks(runId: string): Promise<RunTasks | null> {
   return invoke<RunTasks | null>("pipeline_run_tasks", { runId });
 }
-
 
 /** The core stopped a run by itself: a stall, or a turn that finished while the app was closed. */
 export type AutopilotStoppedEvent = {
@@ -1681,15 +1680,15 @@ export async function handoffSave(input: HandoffSaveInput): Promise<HandoffRecor
   return invoke<HandoffRecord>("handoff_save", { input });
 }
 
-/**
- * Binds a saved hand-off to the tab it opened and records that tab's chain
- * step, or the reviewer's loop-back round, in one backend call.
- */
 /** Binds a saved hand-off to the tab it opened, when something else recorded the chain step (the run actor). */
 export async function handoffBindTab(id: string, tabId: string): Promise<HandoffRecord> {
   return invoke("handoff_bind_tab", { id, tabId });
 }
 
+/**
+ * Binds a saved hand-off to the tab it opened and records that tab's chain
+ * step, or the reviewer's loop-back round, in one backend call.
+ */
 export async function handoffAttach(input: {
   id: string;
   tabId: string;

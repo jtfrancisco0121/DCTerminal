@@ -1350,3 +1350,45 @@ fn a_message_queued_behind_a_panic_is_answered_by_the_next_thread() {
     assert!(err.contains("pr9"), "a new thread handled the queued press: {err}");
     fx.run(|run| assert_eq!(run.stop_reason, Some(StopReason::CarryOutFailed)));
 }
+
+/// When the D24 gate refuses one lane mid-run (the run goes manual on
+/// engine 1), the other lanes it unblocked are left waiting for you; the
+/// actor does not try them, fail on "does not report through the pipeline
+/// bridge" and add a `carry_out_failed` stop.
+#[test]
+fn lanes_after_a_gate_refusal_are_left_waiting_without_a_carry_out_failed_stop() {
+    let mut fx = Fixture::new("lanes_gate_refused");
+    let implementer = to_implementer(&mut fx);
+    let answers = fx.tab(&implementer).answers.clone();
+    let cwd = fx.work.path().display().to_string();
+    {
+        let mut store = fx.host.store.lock().unwrap();
+        let lane = |id: &str, deps: &[&str]| crate::commands::pipeline::LaneInput {
+            id: id.into(),
+            title: format!("PR {id}"),
+            depends_on: deps.iter().map(|d| d.to_string()).collect(),
+        };
+        crate::commands::pipeline::fan_out(&mut store, RUN, "implementer", vec![lane("pr1", &[]), lane("pr2", &["pr1"]), lane("pr3", &["pr1"])])
+            .unwrap();
+        let role = fx.host.roles.iter().find(|r| r.id == "role_implementer").unwrap().clone();
+        for id in ["pr2", "pr3"] {
+            let tab = store.create_draft_tab(&role, &cwd, false, None).unwrap();
+            store.data.tabs.iter_mut().find(|t| t.id == tab).unwrap().answers = answers.clone();
+            store.set_tab_chain(&tab, Some(chain(3, Some(id))), None).unwrap();
+            let run = store.pipeline_run_by_id_mut(RUN).unwrap();
+            run.lane_mut(id).unwrap().tab_ids.insert("role_implementer".into(), tab);
+        }
+    }
+    fx.host.gate_open.store(false, Ordering::SeqCst);
+    let before = fx.launches().len();
+    let outcome = fx.user(UserAction::Approve { lane: Some("pr1".into()) }).expect("approve");
+    assert_eq!(outcome.started.len(), 1, "the first lane opened (unbridged): {:?}", outcome.started);
+    assert_eq!(fx.launches().len(), before + 1);
+    assert!(fx.stops().iter().all(|s| s.0 != StopReason::CarryOutFailed), "{:?}", fx.stops());
+    fx.run(|run| {
+        assert!(run.manual_only);
+        assert_ne!(run.stop_reason, Some(StopReason::CarryOutFailed));
+        let waiting = run.lanes.iter().filter(|l| l.status == "waiting").count();
+        assert_eq!(waiting, 1, "the other lane waits for you: {:?}", run.lanes);
+    });
+}

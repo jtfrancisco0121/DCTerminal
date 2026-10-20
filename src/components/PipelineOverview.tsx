@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { DisabledReason } from "./DisabledReason";
-import type { GateResult, PipelineRun, PlannedTask, TabSummary } from "../bridge";
+import type { GateResult, PipelineRun, PlannedTask, ProviderModelSettings, TabSummary } from "../bridge";
 import {
   exportTextFile,
   getPipelineRun,
@@ -44,6 +44,7 @@ import {
   type SessionLogs,
 } from "../pipeline/overviewModel";
 import { liveTerminalReader, type TerminalReader } from "../pipeline/terminalText";
+import { haikuDefaultModeNote } from "../pipeline/haikuMode";
 import { parseReviewVerdict, verdictTone } from "../handoff/verdict";
 import { roleDisplayName } from "../handoff/transitions";
 import type { TerminalState } from "../terminal/claudeState";
@@ -75,6 +76,8 @@ type Props = {
   onContinue?: (runId: string) => Promise<void>;
   /** The latest Claude limit windows, for the autopilot usage line. Null: not loaded. */
   usageWindows?: RateWindow[] | null;
+  /** Model settings, to say when a stage on Haiku runs in default mode (D12a). */
+  modelSettings?: ProviderModelSettings | null;
 };
 
 /** "Round 4", or "Round 2 of at most 3" when the loop-back has a round cap. */
@@ -145,6 +148,7 @@ export function PipelineOverview({
   onApproveRun,
   onContinue,
   usageWindows = null,
+  modelSettings = null,
 }: Props) {
   const [run, setRun] = useState<PipelineRun | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -521,6 +525,7 @@ export function PipelineOverview({
           const stageDef = stageDefs.find((s) => s.id === stage.def.stageId);
           const gates = run.gates?.[stage.def.stageId];
           const hasGates = (stageDef?.gates?.length ?? 0) > 0;
+          const haikuNote = haikuDefaultModeNote(stage.tab, modelSettings);
           return (
           <article
             key={stage.def.roleId}
@@ -534,6 +539,7 @@ export function PipelineOverview({
               </span>
             </div>
             <p className="hint pipeline-lane-tab">{stage.tab?.label ?? "—"}</p>
+            {haikuNote && <p className="hint pipeline-haiku-mode">{haikuNote}</p>}
             {stage.verdict && (
               <p
                 className={`pipeline-verdict pipeline-verdict-${verdictTone(stage.verdict)}`}
