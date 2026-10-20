@@ -60,6 +60,8 @@ type Props = {
   onApproveLane?: (runId: string, laneId: string) => Promise<void>;
   /** Marks a run without lanes complete by hand (autopilot stopped at its last stage). */
   onApproveRun?: (runId: string) => Promise<void>;
+  /** Continue a run waiting after a restart: autopilot decides the turn that finished meanwhile. */
+  onContinue?: (runId: string) => Promise<void>;
 };
 
 /** "Round 4", or "Round 2 of at most 3" when the loop-back has a round cap. */
@@ -128,6 +130,7 @@ export function PipelineOverview({
   onStartLane,
   onApproveLane,
   onApproveRun,
+  onContinue,
 }: Props) {
   const [run, setRun] = useState<PipelineRun | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -249,6 +252,20 @@ export function PipelineOverview({
       await reload();
     } catch (err: unknown) {
       onNotice("Run not marked complete", errorText(err));
+      await reload();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const continueNow = async () => {
+    if (!run || !onContinue) return;
+    setBusy(true);
+    try {
+      await onContinue(run.id);
+      await reload();
+    } catch (err: unknown) {
+      onNotice("Run not continued", errorText(err));
       await reload();
     } finally {
       setBusy(false);
@@ -403,6 +420,19 @@ export function PipelineOverview({
             <p className="pipeline-autopilot-waiting" role="status">
               Waiting for you: {run.autopilot.waiting}
             </p>
+          )}
+          {autopilotOn && run.status === "waiting" && run.stopReason === "app_restarted" && onContinue && (
+            <div className="button-row">
+              <button
+                type="button"
+                className="primary-button"
+                disabled={busy}
+                title="Let autopilot act on the turn that finished while the app was closed."
+                onClick={() => void continueNow()}
+              >
+                Continue
+              </button>
+            </div>
           )}
           {autopilotOn && run.autopilot?.waiting && lanes.length === 0 && atLastStage && onApproveRun && (
             <div className="button-row">

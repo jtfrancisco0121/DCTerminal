@@ -41,7 +41,8 @@ export type PipelineDef = {
   /** Run kind stored on the chain's run; built-ins keep `full` / `execute`. */
   runKind?: string | null;
   stages: StageDef[];
-  autopilot?: { pauseAtUsagePercent?: number };
+  /** `stallMinutes`: quiet minutes while Working before the run stops with `stalled` (default 30). */
+  autopilot?: { pauseAtUsagePercent?: number; stallMinutes?: number };
   builtIn?: boolean;
 };
 

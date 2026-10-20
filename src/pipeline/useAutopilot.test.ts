@@ -7,6 +7,7 @@ vi.mock("../bridge", () => ({
   getClaudeUsage: vi.fn(async () => ({ configDir: "", windows: [], contextByTab: {} })),
   getPipelineRun: vi.fn(),
   getTab: vi.fn(async () => ({ tab: { answers: { cwd: "/repo", title: "Login 500" } } })),
+  pipelineContinue: vi.fn(async () => []),
   pipelineDecide: vi.fn(),
   pipelineNote: vi.fn(async () => {}),
   pipelineReleaseHandoff: vi.fn(async () => {}),
@@ -14,6 +15,7 @@ vi.mock("../bridge", () => ({
   pipelineTurnFinished: vi.fn(async () => {}),
   ptyWrite: vi.fn(async () => {}),
   setTabProvider: vi.fn(async () => {}),
+  terminalSessionLog: vi.fn(async () => null),
   // HandoffIo (handoff/executor)
   getRole: vi.fn(async (id: string) => ({
     id,
@@ -51,6 +53,7 @@ import {
   chainLoopBack,
   getPipelineRun,
   handoffAttach,
+  pipelineContinue,
   pipelineDecide,
   pipelineNote,
   pipelineReleaseHandoff,
@@ -58,6 +61,7 @@ import {
   pipelineTurnFinished,
   ptyWrite,
   setTabProvider,
+  terminalSessionLog,
   type PipelineRun,
   type TabSummary,
   type TerminalSessionLog,
@@ -139,7 +143,7 @@ function setup(tabs: TabSummary[], states: Record<string, TerminalState> = {}) {
     sessionLog: () => null,
   };
   const { result } = renderHook(() => useAutopilot(deps));
-  return { deps, onLog: result.current.onTerminalLog };
+  return { deps, onLog: result.current.onTerminalLog, continueRun: result.current.continueRun };
 }
 
 describe("useAutopilot", () => {
@@ -671,5 +675,62 @@ describe("useAutopilot", () => {
     expect(pipelineRunGates).not.toHaveBeenCalled();
     expect(deps.notifyStop).not.toHaveBeenCalled();
   });
-});
 
+  it("Continue after a restart decides the turn that finished while the app was closed", async () => {
+    vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+    vi.mocked(pipelineDecide).mockResolvedValue({
+      action: "advance",
+      stageId: "pr_reviewer",
+      roleId: "role_pr_reviewer",
+      reason: "on to PR Reviewer",
+    });
+    const before = log(IMPLEMENTED, "2026-01-01T00:00:00Z");
+    vi.mocked(pipelineContinue).mockResolvedValue(["impl"]);
+    vi.mocked(terminalSessionLog).mockResolvedValue(before);
+    const { deps, onLog, continueRun } = setup([tab("impl", "role_implementer", 3)]);
+    // First sight after the restart: never acted on by itself.
+    onLog("impl", before);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(pipelineDecide).not.toHaveBeenCalled();
+
+    await continueRun("ee_1");
+    expect(pipelineContinue).toHaveBeenCalledWith("ee_1");
+    await waitFor(() => expect(handoffAttach).toHaveBeenCalled());
+    expect(vi.mocked(pipelineDecide).mock.calls[0][1].turn).toBe("impl|s|2026-01-01T00:00:00Z");
+    expect(deps.startTerminal).toHaveBeenCalledWith(expect.objectContaining({ roleId: "role_pr_reviewer" }));
+  });
+
+  it("Continue decides a stage tab whose log was not read since the restart", async () => {
+    vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+    vi.mocked(pipelineDecide).mockResolvedValue({ action: "skip", reason: "handed on already" });
+    vi.mocked(pipelineContinue).mockResolvedValue(["impl", "gone"]);
+    vi.mocked(terminalSessionLog).mockImplementation(async (id: string) =>
+      id === "impl" ? log(IMPLEMENTED, "2026-01-01T00:00:00Z") : null,
+    );
+    const { continueRun } = setup([tab("impl", "role_implementer", 3)]);
+    await continueRun("ee_1");
+    await waitFor(() => expect(pipelineDecide).toHaveBeenCalledTimes(1));
+    expect(terminalSessionLog).toHaveBeenCalledWith("gone");
+  });
+
+  it("Continue leaves a tab with no log yet to the restart check when its log shows up", async () => {
+    vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+    vi.mocked(pipelineContinue).mockResolvedValue(["impl"]);
+    vi.mocked(terminalSessionLog).mockResolvedValue(null);
+    const { onLog, continueRun } = setup([tab("impl", "role_implementer", 3)]);
+    await continueRun("ee_1");
+    // The log read later holds a turn from before the restart: still not acted on.
+    onLog("impl", log(IMPLEMENTED, "2026-01-01T00:00:00Z"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(getPipelineRun).not.toHaveBeenCalled();
+    expect(pipelineDecide).not.toHaveBeenCalled();
+  });
+
+  it("Continue that the core refuses decides nothing and rejects", async () => {
+    vi.mocked(pipelineContinue).mockRejectedValue(new Error("This run is not waiting after a restart."));
+    const { continueRun } = setup([tab("impl", "role_implementer", 3)]);
+    await expect(continueRun("ee_1")).rejects.toThrow("not waiting after a restart");
+    expect(terminalSessionLog).not.toHaveBeenCalled();
+    expect(pipelineDecide).not.toHaveBeenCalled();
+  });
+});
