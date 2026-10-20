@@ -684,6 +684,24 @@ fn retries(fx: &Fixture) -> Option<u32> {
 }
 
 #[test]
+fn a_turn_handed_to_a_new_actor_again_runs_no_checks_and_pastes_nothing() {
+    let mut fx = Fixture::new("dedupe_retry");
+    let (_, turn) = implementer_with_a_failed_gate(&mut fx);
+    let gate_lines = fx.run(|run| run.events.iter().filter(|e| e.kind == "gate").count());
+    // The thread went idle; the watcher (or a re-read) hands the same turn to a new one.
+    let (me, gates) = channel();
+    let mut again = Actor::new(RUN.to_string(), fx.host.clone(), me);
+    again.handle(ActorMsg::Turn(turn));
+    if let Ok(msg) = gates.recv_timeout(Duration::from_millis(500)) {
+        again.handle(msg);
+    }
+    assert!(!again.busy(), "no checks for a turn decided already");
+    assert_eq!(fx.pastes().len(), 1, "the check's output is not pasted twice");
+    assert_eq!(retries(&fx), Some(1), "no extra retry is counted");
+    assert_eq!(fx.run(|run| run.events.iter().filter(|e| e.kind == "gate").count()), gate_lines, "no duplicate gate lines");
+}
+
+#[test]
 fn continue_on_a_turn_the_actor_decided_runs_no_checks() {
     let mut fx = Fixture::new("dedupe_continue");
     let (implementer, _) = implementer_with_a_failed_gate(&mut fx);
