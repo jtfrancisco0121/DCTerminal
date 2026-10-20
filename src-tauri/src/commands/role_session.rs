@@ -5,7 +5,9 @@ use crate::orchestrator::{injection_strategy_from_role, InjectionStrategy};
 use crate::paths::{same_folder_warning, validate_working_folder};
 use crate::provider::{provider_for_account, ProviderId, SharedProvider};
 use crate::session_id::{session_start_bind, SessionStartBind};
-use crate::store::{FormsStore, ProjectsStore, RolesStore, StateStore, TabSessionRef};
+use crate::store::{
+    FormsStore, PriorSession, ProjectsStore, RolesStore, StateStore, TabSessionRef,
+};
 use crate::template::{merge_role_prompt, FieldError};
 use serde::Serialize;
 use serde_json::Value;
@@ -295,17 +297,21 @@ pub fn role_session_start(
     let promoted = {
         let mut store = state_store.lock().map_err(|e| e.to_string())?;
         store.bind_window(window_id.as_deref());
-        store.promote_tab_to_running(
-            tab_id.as_deref(),
-            &role,
-            &values,
-            &info.cwd,
-            &merged_text,
-            session_ref,
-            provider.id(),
-        )
+        // A Continue keeps its ref if the start fails; a new session puts the old one back.
+        let prior = (!loading).then(|| store.prior_session(tab_id.as_deref(), provider.id()));
+        store
+            .promote_tab_to_running(
+                tab_id.as_deref(),
+                &role,
+                &values,
+                &info.cwd,
+                &merged_text,
+                session_ref,
+                provider.id(),
+            )
+            .map(|id| (id, prior))
     };
-    let persisted_tab_id = promoted?;
+    let (persisted_tab_id, prior_session) = promoted?;
     if let Ok(store) = state_store.lock() {
         crate::commands::chain_events::notify_tab(&app, &store, &persisted_tab_id);
     }
@@ -324,6 +330,7 @@ pub fn role_session_start(
         &role.id,
         &info.mode_id,
         start_notice.as_deref(),
+        prior_session,
     )?;
     let mut injection_in_flight = false;
     if skip_startup {
@@ -450,6 +457,7 @@ fn register_promoted_start<'a>(
     role_id: &str,
     mode_id: &str,
     notice: Option<&str>,
+    prior: Option<PriorSession>,
 ) -> Result<(MutexGuard<'a, SessionRegistry>, LiveSession), String> {
     let recorded = if provider.id() == ProviderId::Claude {
         record_claude_start(state_store, provider, tab_id, role_id, mode_id, notice)
@@ -460,17 +468,22 @@ fn register_promoted_start<'a>(
     // state lock is taken here, and no registry lock is held.
     let handed_over = recorded.and_then(|()| client.into_live_locked(registry, tab_id));
     if handed_over.is_err() {
-        clear_failed_start(state_store, tab_id);
+        clear_failed_start(state_store, tab_id, provider.id(), prior);
     }
     handed_over
 }
 
 /// Best effort: the start error is what the caller reports.
-fn clear_failed_start(state_store: &Mutex<StateStore>, tab_id: &str) {
+fn clear_failed_start(
+    state_store: &Mutex<StateStore>,
+    tab_id: &str,
+    provider: ProviderId,
+    prior: Option<PriorSession>,
+) {
     let Ok(mut store) = state_store.lock() else {
         return;
     };
-    if let Err(err) = store.mark_tab_awaiting_input(tab_id, None) {
+    if let Err(err) = store.abandon_failed_start(tab_id, provider, prior) {
         eprintln!("DCTerminal: could not clear the running mark on {tab_id} ({err})");
     }
 }
@@ -815,53 +828,64 @@ mod tests {
         assert!(alive, "the guard stopped an agent that was handed over");
     }
 
-    /// A start that fails after the tab was promoted must not leave it marked
-    /// running in state.json: no agent is behind it (the guard stopped it).
-    #[test]
-    fn a_start_that_fails_after_promotion_clears_the_running_mark() {
+    fn cursor_session(id: &str) -> crate::store::TabSessionRef {
+        crate::store::TabSessionRef {
+            acp_session_id: id.into(),
+            mode_id: "agent".into(),
+            injection_pending: false,
+            injected_at: None,
+        }
+    }
+
+    /// Promote `tab_id` (or a new tab) to running on `session_id` as a Cursor
+    /// start, taking the prior pointers first the way `role_session_start` does
+    /// (`loading` = a Continue). Returns the tab id and the prior pointers.
+    fn promote_cursor(
+        store: &mut crate::store::StateStore,
+        tab_id: Option<&str>,
+        session_id: &str,
+        loading: bool,
+    ) -> (String, Option<super::PriorSession>) {
+        use crate::provider::ProviderId;
+        let prior = (!loading).then(|| store.prior_session(tab_id, ProviderId::Cursor));
+        let id = store
+            .promote_tab_to_running(
+                tab_id,
+                &crate::test_support::role("role_implementer", "Implementer"),
+                &std::collections::HashMap::new(),
+                "/w/app",
+                "merged",
+                cursor_session(session_id),
+                ProviderId::Cursor,
+            )
+            .unwrap();
+        (id, prior)
+    }
+
+    /// Run `register_promoted_start` for a Cursor start against a poisoned
+    /// registry, so the handover fails after the promotion. `false` when the
+    /// fake agent is unavailable (the test is skipped).
+    fn fail_start_on_poisoned_registry(
+        name: &str,
+        store: &std::sync::Mutex<crate::store::StateStore>,
+        tab_id: &str,
+        prior: Option<super::PriorSession>,
+    ) -> bool {
         use super::{register_promoted_start, StartedAgent};
         use crate::acp::test_agent::FakeAgent;
         use crate::commands::dev_session::SessionRegistry;
         use crate::commands::session_flow_tests::{connect, cursor_scenario};
         use crate::provider::ProviderId;
-        use crate::store::{StateStore, TabSessionRef};
-        use crate::test_support::{role, TempDir};
-        use std::collections::HashMap;
         use std::sync::{Arc, Mutex};
 
-        let Some(agent) = FakeAgent::new(
-            "failed_after_promotion",
-            &cursor_scenario(serde_json::json!([])),
-        ) else {
-            return;
+        let Some(agent) = FakeAgent::new(name, &cursor_scenario(serde_json::json!([]))) else {
+            return false;
         };
         let client = connect(&agent, ProviderId::Cursor, "agent");
         let process = client.process_handle();
         let provider = client.provider();
-        let started = StartedAgent::new("tab-1", "role_implementer", client);
+        let started = StartedAgent::new(tab_id, "role_implementer", client);
 
-        let dir = TempDir::new("failed_after_promotion_state");
-        let path = dir.join("state.json");
-        let mut store = StateStore::open_path(path.clone()).unwrap();
-        let tab_id = store
-            .promote_tab_to_running(
-                None,
-                &role("role_implementer", "Implementer"),
-                &HashMap::new(),
-                "/w/app",
-                "merged",
-                TabSessionRef {
-                    acp_session_id: "fake-session-1".into(),
-                    mode_id: "agent".into(),
-                    injection_pending: false,
-                    injected_at: None,
-                },
-                ProviderId::Cursor,
-            )
-            .unwrap();
-        let store = Mutex::new(store);
-
-        // A poisoned registry: the handover fails after the promotion.
         let registry = Arc::new(Mutex::new(SessionRegistry::new()));
         let poisoner = Arc::clone(&registry);
         let _ = std::thread::spawn(move || {
@@ -871,33 +895,210 @@ mod tests {
         .join();
 
         let result = register_promoted_start(
-            &store,
+            store,
             &registry,
             &provider,
             started,
-            &tab_id,
+            tab_id,
             "role_implementer",
             "agent",
             None,
+            prior,
         );
         process.kill_tree(); // never leave the fake behind, even when red
         assert!(
             result.is_err(),
             "a poisoned registry cannot take the session"
         );
-        drop(result);
+        true
+    }
 
-        let in_memory = store
-            .lock()
-            .unwrap()
-            .tab_by_id(&tab_id)
-            .unwrap()
-            .phase
-            .clone();
+    /// The tab's ACP session id and Cursor session pointer.
+    fn session_pointers(
+        store: &crate::store::StateStore,
+        tab_id: &str,
+    ) -> (Option<String>, Option<String>) {
+        let tab = store.tab_by_id(tab_id).unwrap();
+        (
+            tab.session.as_ref().map(|s| s.acp_session_id.clone()),
+            tab.sessions
+                .get(crate::provider::ProviderId::Cursor)
+                .map(str::to_string),
+        )
+    }
+
+    /// A start that fails after the tab was promoted must not leave it marked
+    /// running in state.json: no agent is behind it (the guard stopped it).
+    /// The new tab it created must not offer Continue for the dead session.
+    #[test]
+    fn a_start_that_fails_after_promotion_clears_the_running_mark() {
+        use crate::store::StateStore;
+        use crate::test_support::TempDir;
+        use std::sync::Mutex;
+
+        let dir = TempDir::new("failed_after_promotion_state");
+        let path = dir.join("state.json");
+        let mut store = StateStore::open_path(path.clone()).unwrap();
+        let (tab_id, prior) = promote_cursor(&mut store, None, "fake-session-1", false);
+        let store = Mutex::new(store);
+        if !fail_start_on_poisoned_registry("failed_after_promotion", &store, &tab_id, prior) {
+            return;
+        }
+
+        let store = store.lock().unwrap();
+        let in_memory = store.tab_by_id(&tab_id).unwrap().phase.clone();
         assert_ne!(in_memory, "running", "the tab is still marked running");
         let reopened = StateStore::open_path(path).unwrap();
         let on_disk = reopened.tab_by_id(&tab_id).unwrap().phase.clone();
         assert_ne!(on_disk, "running", "state.json still marks the tab running");
+        for (what, s) in [("in memory", &*store), ("on disk", &reopened)] {
+            assert_eq!(
+                session_pointers(s, &tab_id),
+                (None, None),
+                "the failed new tab still points at the dead session ({what})"
+            );
+        }
+    }
+
+    /// A failed new-session start on a tab that had a session puts the old
+    /// pointers back, so Continue resumes the user's real session, not the
+    /// one that never got its role prompt.
+    #[test]
+    fn a_failed_new_session_start_restores_the_previous_session() {
+        use crate::store::StateStore;
+        use crate::test_support::TempDir;
+        use std::sync::Mutex;
+
+        let dir = TempDir::new("failed_new_session_restores");
+        let path = dir.join("state.json");
+        let mut store = StateStore::open_path(path.clone()).unwrap();
+        let (tab_id, _) = promote_cursor(&mut store, None, "old-session", false);
+        store.mark_tab_awaiting_input(&tab_id, None).unwrap();
+        let (_, prior) = promote_cursor(&mut store, Some(&tab_id), "fake-session-1", false);
+        let store = Mutex::new(store);
+        if !fail_start_on_poisoned_registry("failed_new_session_restores", &store, &tab_id, prior) {
+            return;
+        }
+
+        let store = store.lock().unwrap();
+        let reopened = StateStore::open_path(path).unwrap();
+        let old = Some("old-session".to_string());
+        for (what, s) in [("in memory", &*store), ("on disk", &reopened)] {
+            assert_eq!(
+                s.tab_by_id(&tab_id).unwrap().phase,
+                "awaitingInput",
+                "{what}"
+            );
+            assert_eq!(
+                session_pointers(s, &tab_id),
+                (old.clone(), old.clone()),
+                "the previous session was not restored ({what})"
+            );
+        }
+    }
+
+    /// A failed Continue keeps the ref: it is the user's earlier session.
+    #[test]
+    fn a_failed_continue_keeps_the_session_ref() {
+        use crate::store::StateStore;
+        use crate::test_support::TempDir;
+        use std::sync::Mutex;
+
+        let dir = TempDir::new("failed_continue_keeps");
+        let mut store = StateStore::open_path(dir.join("state.json")).unwrap();
+        let (tab_id, _) = promote_cursor(&mut store, None, "old-session", false);
+        store.mark_tab_awaiting_input(&tab_id, None).unwrap();
+        let (_, prior) = promote_cursor(&mut store, Some(&tab_id), "old-session", true);
+        assert!(prior.is_none());
+        let store = Mutex::new(store);
+        if !fail_start_on_poisoned_registry("failed_continue_keeps", &store, &tab_id, prior) {
+            return;
+        }
+
+        let store = store.lock().unwrap();
+        assert_eq!(store.tab_by_id(&tab_id).unwrap().phase, "awaitingInput");
+        let old = Some("old-session".to_string());
+        assert_eq!(session_pointers(&store, &tab_id), (old.clone(), old));
+    }
+
+    /// The Claude-only bookkeeping failing (a state.json save) clears the
+    /// running mark and the dead session in memory too, and stops the agent.
+    #[test]
+    fn a_failed_claude_record_after_promotion_clears_the_tab() {
+        use super::{register_promoted_start, StartedAgent};
+        use crate::acp::test_agent::FakeAgent;
+        use crate::commands::dev_session::SessionRegistry;
+        use crate::commands::session_flow_tests::{claude_scenario, connect};
+        use crate::provider::ProviderId;
+        use crate::store::{StateStore, TabSessionRef};
+        use crate::test_support::{role, TempDir};
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+        use std::time::{Duration, Instant};
+
+        let mut scenario = claude_scenario(serde_json::json!([]));
+        scenario["ignore_eof"] = serde_json::json!(true);
+        let Some(agent) = FakeAgent::new("claude_record_fails", &scenario) else {
+            return;
+        };
+        let client = connect(&agent, ProviderId::Claude, "default");
+        let process = client.process_handle();
+        let provider = client.provider();
+
+        let dir = TempDir::new("claude_record_fails_state");
+        let mut store = StateStore::open_path(dir.join("state.json")).unwrap();
+        let prior = store.prior_session(None, ProviderId::Claude);
+        let tab_id = store
+            .promote_tab_to_running(
+                None,
+                &role("role_implementer", "Implementer"),
+                &HashMap::new(),
+                "/w/app",
+                "merged",
+                TabSessionRef {
+                    acp_session_id: "fake-session-1".into(),
+                    mode_id: "default".into(),
+                    injection_pending: false,
+                    injected_at: None,
+                },
+                ProviderId::Claude,
+            )
+            .unwrap();
+        // A directory where the save writes its temp file: every save fails.
+        std::fs::create_dir(dir.join("state.json.tmp")).unwrap();
+        let store = Mutex::new(store);
+        let started = StartedAgent::new(&tab_id, "role_implementer", client);
+        let registry = Mutex::new(SessionRegistry::new());
+
+        let result = register_promoted_start(
+            &store,
+            &registry,
+            &provider,
+            started,
+            &tab_id,
+            "role_implementer",
+            "default",
+            None,
+            Some(prior),
+        );
+        let failed = result.is_err();
+        drop(result);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while process.try_wait().unwrap().is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let exited = process.try_wait().unwrap().is_some();
+        process.kill_tree(); // never leave the fake behind, even when red
+        assert!(failed, "the state.json save should have failed the start");
+        assert!(exited, "the failed start left the agent process running");
+        let store = store.lock().unwrap();
+        let tab = store.tab_by_id(&tab_id).unwrap();
+        assert_ne!(tab.phase, "running", "the tab is still marked running");
+        assert!(
+            tab.session.is_none(),
+            "the tab still points at the dead session"
+        );
+        assert_eq!(tab.sessions.get(ProviderId::Claude), None);
     }
 
     /// The session is registered and running before the folder is saved, so a

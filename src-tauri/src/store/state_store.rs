@@ -17,6 +17,16 @@ const CLOSED_TABS_PER_WINDOW: usize = 15;
 /// with their tabs.
 const ARCHIVED_WINDOWS_KEPT: usize = 5;
 
+/// A tab's session pointers before a new-session start overwrote them, so a
+/// start that fails after promotion can put them back (see
+/// [`StateStore::abandon_failed_start`]).
+#[derive(Debug, Clone)]
+pub struct PriorSession {
+    provider: Option<ProviderId>,
+    session: Option<TabSessionRef>,
+    provider_session: Option<String>,
+}
+
 pub struct StateStore {
     pub path: PathBuf,
     pub data: AppStateFile,
@@ -651,6 +661,48 @@ impl StateStore {
             self.save()?;
         }
         Ok(())
+    }
+
+    /// The session pointers `promote_tab_to_running` is about to overwrite for
+    /// `provider`. A start with no tab creates a new tab, which had none.
+    pub fn prior_session(&self, tab_id: Option<&str>, provider: ProviderId) -> PriorSession {
+        match tab_id.and_then(|id| self.tab_by_id(id)) {
+            Some(tab) => PriorSession {
+                provider: tab.provider,
+                session: tab.session.clone(),
+                provider_session: tab.sessions.get(provider).map(str::to_string),
+            },
+            None => PriorSession {
+                provider: Some(provider),
+                session: None,
+                provider_session: None,
+            },
+        }
+    }
+
+    /// A start failed after its tab was promoted and no agent runs behind it:
+    /// mark the tab awaiting input. With `prior` (a new-session start) the
+    /// session pointers go back to what they were, so Continue is not offered
+    /// for a session that never got its role prompt. Without it (a Continue)
+    /// the ref stays: it is the user's earlier session.
+    pub fn abandon_failed_start(
+        &mut self,
+        tab_id: &str,
+        provider: ProviderId,
+        prior: Option<PriorSession>,
+    ) -> Result<(), String> {
+        if let Some(prior) = prior {
+            let tab = self
+                .data
+                .tabs
+                .iter_mut()
+                .find(|t| t.id == tab_id)
+                .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
+            tab.provider = prior.provider;
+            tab.session = prior.session;
+            tab.sessions.set(provider, prior.provider_session);
+        }
+        self.mark_tab_awaiting_input(tab_id, None)
     }
 
     pub fn mark_tab_awaiting_input(
