@@ -35,6 +35,7 @@ fn log(turn_done: bool) -> TerminalSessionLog {
         open_tool: None,
         pending_tools: Vec::new(),
         permission_mode: None,
+        rate_limit: None,
     }
 }
 

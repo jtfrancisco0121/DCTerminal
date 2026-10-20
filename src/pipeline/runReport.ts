@@ -5,6 +5,7 @@
  */
 import type { GateResult, PipelineRun, RunEvent } from "../bridge";
 import { pipelineDef, pipelineStages, stageRoles, type StageDef } from "./defs";
+import { stopNotice } from "./stopReasons";
 
 const EVENT_LABEL: Record<string, string> = {
   handoff: "Hand-off",
@@ -87,7 +88,7 @@ function eventBlock(run: PipelineRun, event: RunEvent): string[] {
   const where = stageTitle(run, event.stageId);
   const head = `- ${eventTime(event.at)} · round ${event.round} · **${eventLabel(event.kind)}**${
     where ? ` (${where})` : ""
-  }: ${event.summary}`;
+  }: ${event.kind === "stop" ? stopNotice(event.outcome, event.summary) : event.summary}`;
   if (!event.detail?.trim() || event.kind === "handoff") return [head];
   return [head, "", fence(event.detail), ""];
 }
@@ -104,7 +105,7 @@ export function formatRunReport(run: PipelineRun, now = new Date()): string {
     `- Autopilot: ${run.autopilot?.enabled ? "on" : "off"}`,
     `- Report made: ${eventTime(now.toISOString())}`,
   ];
-  if (run.autopilot?.waiting) lines.push(`- Waiting for you: ${run.autopilot.waiting}`);
+  if (run.autopilot?.waiting) lines.push(`- Waiting for you: ${stopNotice(run.stopReason, run.autopilot.waiting)}`);
   const request = run.originalRequest?.trim();
   if (request) lines.push("", "## Original request", "", request);
   lines.push("", "## Stages", "");

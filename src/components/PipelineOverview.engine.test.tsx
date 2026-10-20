@@ -18,6 +18,7 @@ import { getPipelineRun, pipelineRunGates, pipelineSetAutopilot } from "../bridg
 import { emptyRuntime, type TabRuntime } from "../liveTabs";
 import { setPipelineDefs } from "../pipeline/defs";
 import type { TerminalReader } from "../pipeline/terminalText";
+import type { RateWindow } from "../usage/limits";
 import { PipelineOverview } from "./PipelineOverview";
 
 function tab(id: string, roleId: string): TabSummary {
@@ -53,7 +54,11 @@ function run(extra: Partial<PipelineRun> = {}): PipelineRun {
   };
 }
 
-function show(view: PipelineRun, runtimes: Record<string, TabRuntime> = {}) {
+function show(
+  view: PipelineRun,
+  runtimes: Record<string, TabRuntime> = {},
+  usageWindows: RateWindow[] | null = null,
+) {
   vi.mocked(getPipelineRun).mockResolvedValue({ run: view });
   render(
     <PipelineOverview
@@ -66,6 +71,7 @@ function show(view: PipelineRun, runtimes: Record<string, TabRuntime> = {}) {
       onRefreshTabs={async () => {}}
       onNotice={() => {}}
       terminalReader={noTerminal}
+      usageWindows={usageWindows}
     />,
   );
 }
@@ -84,6 +90,61 @@ describe("PipelineOverview: autopilot, checks and timeline", () => {
     );
     fireEvent.click(within(panel).getByRole("checkbox"));
     await waitFor(() => expect(pipelineSetAutopilot).toHaveBeenCalledWith("ee_1", false));
+  });
+
+  it("names why the run stopped with its reason code's plain-English line", async () => {
+    show(
+      run({
+        status: "waiting",
+        stopReason: "usage_limit",
+        autopilot: { enabled: true, waiting: "Implementer hit a Claude usage limit: resets 3pm." },
+      }),
+    );
+    const panel = await screen.findByRole("region", { name: "Autopilot" });
+    expect(within(panel).getByRole("status").textContent).toBe(
+      "Waiting for you: Claude's usage limit was reached. Implementer hit a Claude usage limit: resets 3pm.",
+    );
+  });
+
+  it("says when Claude usage is unknown, never 0%, and what autopilot does about it", async () => {
+    show(run({ autopilot: { enabled: true } }), {}, []);
+    const panel = await screen.findByRole("region", { name: "Autopilot" });
+    const usage = within(panel).getByTestId("autopilot-usage");
+    expect(usage.textContent).toBe(
+      "Claude usage: unknown. Autopilot keeps going, and stops if Claude reports a usage limit.",
+    );
+    expect(usage.textContent).not.toContain("0%");
+    cleanup();
+    const later = Math.floor(Date.now() / 1000) + 3600;
+    show(run({ autopilot: { enabled: true } }), {}, [
+      { rateLimitType: "five_hour", label: "5h", utilization: 42, resetsAt: later, status: "allowed", seenAtMs: Date.now() },
+    ]);
+    const known = await screen.findByTestId("autopilot-usage");
+    expect(known.textContent).toBe("Claude usage: 42% (autopilot pauses at 90%).");
+  });
+
+  it("the timeline shows each stop's reason line", async () => {
+    show(
+      run({
+        events: [
+          {
+            at: "2026-10-13T10:00:00Z",
+            kind: "stop",
+            stageId: "pr_reviewer",
+            round: 3,
+            summary: "Round cap reached (3 of 3): PR Reviewer still asks for changes.",
+            outcome: "round_cap",
+          },
+          { at: "2026-10-13T10:01:00Z", kind: "autopilot", round: 3, summary: "Autopilot off", outcome: "paused_by_you" },
+        ],
+      }),
+    );
+    const timeline = await screen.findByRole("region", { name: "Timeline" });
+    const items = within(timeline).getAllByRole("listitem");
+    expect(items.map((item) => item.querySelector(".pipeline-event-reason")?.textContent ?? null)).toEqual([
+      "You turned autopilot off.",
+      "The review reached its round cap.",
+    ]);
   });
 
   it("shows a stage's checks and round cap, and runs them against the stage tab's folder", async () => {

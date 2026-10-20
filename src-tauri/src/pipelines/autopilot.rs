@@ -40,9 +40,15 @@ pub struct TurnReport {
     pub findings_known: bool,
     #[serde(default)]
     pub missing_sections: Vec<String>,
-    /// Highest of the Claude 5-hour and 7-day usage, in percent.
+    /// Highest of the Claude 5-hour and 7-day usage, in percent. `None`
+    /// when usage is unknown (never read, or the window reset since the
+    /// last reading): autopilot carries on, and `rate_limit` stops it.
     #[serde(default)]
     pub usage_percent: Option<u8>,
+    /// The rate-limit error Claude wrote into the stage's session log this
+    /// turn ("You've hit your limit · resets 3pm"), if any.
+    #[serde(default)]
+    pub rate_limit: Option<String>,
     /// The stage's tab is a chat tab (autopilot drives terminals only).
     #[serde(default)]
     pub chat: bool,
@@ -96,6 +102,9 @@ pub struct Decision {
     /// releases it when it cannot carry the decision out.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub claim: Option<String>,
+    /// `stop`: why, as a reason code (the notification names it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<StopReason>,
 }
 
 impl Decision {
@@ -110,6 +119,7 @@ impl Decision {
             lane: None,
             unblocked: Vec::new(),
             claim: None,
+            stop_reason: None,
         }
     }
 
@@ -129,15 +139,15 @@ fn autopilot(run: &mut PipelineRun) -> &mut RunAutopilot {
 }
 
 fn stop(run: &mut PipelineRun, stage: Option<&StageDef>, code: StopReason, reason: String) -> Decision {
-    run.set_waiting(code, reason.clone());
-    run.log(
-        "stop",
+    run.stop_for(
+        code,
         stage.map(|s| s.id.as_str()),
         stage.map(|s| s.role_id.as_str()),
         reason.clone(),
         None,
     );
-    let decision = Decision::new("stop", reason);
+    let mut decision = Decision::new("stop", reason);
+    decision.stop_reason = Some(code);
     match stage {
         Some(stage) => decision.for_stage(stage),
         None => decision,
@@ -298,7 +308,11 @@ fn advance(
 pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> Decision {
     let enabled = run.autopilot.as_ref().is_some_and(|a| a.enabled);
     if !enabled {
-        return Decision::new("stop", "Autopilot is off for this run.");
+        // Turning autopilot off already stopped the run (`paused_by_you`);
+        // only the notification needs the code.
+        let mut decision = Decision::new("stop", "Autopilot is off for this run.");
+        decision.stop_reason = Some(StopReason::PausedByYou);
+        return decision;
     }
     if run.status == RunStatus::Complete {
         // Final: a late turn (a background task reporting in) changes nothing.
@@ -370,6 +384,18 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             Some(&stage),
             StopReason::CarryOutFailed,
             format!("{} is a chat tab. Autopilot drives terminal tabs only, so hand it on yourself.", stage.title),
+        );
+    }
+    if let Some(error) = report.rate_limit.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
+        return stop(
+            run,
+            Some(&stage),
+            StopReason::UsageLimit,
+            format!(
+                "{} hit a Claude usage limit: {}. Carry on yourself once it resets.",
+                stage.title,
+                error.trim_end_matches('.')
+            ),
         );
     }
     let pause = def.autopilot.pause_at_usage_percent;
@@ -565,10 +591,16 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             blocking.len(),
             threshold.label()
         );
-        run.set_waiting(StopReason::BlockingFindings, reason.clone());
-        run.log("stop", Some(&stage.id), Some(&stage.role_id), reason.clone(), Some(blocking.join("\n")));
+        run.stop_for(
+            StopReason::BlockingFindings,
+            Some(&stage.id),
+            Some(&stage.role_id),
+            reason.clone(),
+            Some(blocking.join("\n")),
+        );
         let mut decision = Decision::new("stop", reason).for_stage(&stage);
         decision.lane = lane.map(str::to_string);
+        decision.stop_reason = Some(StopReason::BlockingFindings);
         return decision;
     }
     let applied = if report.findings_known { blocking } else { Vec::new() };

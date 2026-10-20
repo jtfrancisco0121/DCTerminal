@@ -234,6 +234,7 @@ import {
   type ReviewVerdict,
 } from "./handoff/verdict";
 import { limitAlerts, statusLimit } from "./usage/limits";
+import { stopNotice } from "./pipeline/stopReasons";
 import type { ChatFindRequest } from "./SessionTerminal";
 import { classifyPromptFinished, DATA_RECOVERED_SLOT, type NotificationSettings } from "./notify/agentNotify";
 import { showSystemNotification } from "./notify/systemNotify";
@@ -2433,7 +2434,8 @@ export function StartupForm({
     startTerminal: (options) =>
       startRoleTerminal({ ...options, tabId: null, quiet: true }),
     refreshTabs,
-    notifyStop: (tabId, reason) => notifyAgent(tabId, { kind: "question", detail: `Autopilot: ${reason}` }),
+    notifyStop: (tabId, reason, code) =>
+      notifyAgent(tabId, { kind: "question", detail: `Autopilot stopped. ${stopNotice(code, reason)}` }),
     notice: (title, body) => showNotice(title, body),
     startLane: startLaneOf,
     sessionLog: (tabId) => sessionLogsRef.current[tabId],
@@ -6176,6 +6178,7 @@ export function StartupForm({
           onApproveLane={approveLaneById}
           onApproveRun={(runId) => approveLaneById(runId, null)}
           onContinue={autopilot.continueRun}
+          usageWindows={usageSnap?.windows ?? null}
         />
       </section>,
     );
