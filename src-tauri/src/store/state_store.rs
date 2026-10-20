@@ -1298,6 +1298,7 @@ impl StateStore {
             status: crate::store::RunStatus::Stopped,
             stop_reason: None,
             engine: crate::bridge::launch::ENGINE_V2,
+            taken_over: Vec::new(),
             engine_note: None,
             manual_only: false,
         };

@@ -5954,6 +5954,20 @@ button.chain-label {
   border-bottom: 1px solid var(--border);
 }
 
+/* V5: a pipeline stage being watched; read-only until it needs you or you take it over. */
+.terminal-watch-bar {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  padding: 0.35rem 0.6rem;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.9em;
+}
+
 .terminal-exit-strip-text {
   min-width: 0;
   flex: 1 1 14rem;

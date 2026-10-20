@@ -40,13 +40,27 @@ import {
   terminalTailText,
 } from "../terminal/park";
 
+/**
+ * A pipeline stage this view watches (V5, D27). While `canType` is false
+ * (autopilot drives the stage, and it does not need you) keystrokes are not
+ * sent, so you and autopilot never drive it at once; the backend refuses
+ * them too. `onTakeOver` and `onHandBack` move the stage between you and
+ * autopilot.
+ */
+export type StageWatch = {
+  canType: boolean;
+  takenOver: boolean;
+  onTakeOver?: () => void;
+  onHandBack?: () => void;
+};
+
 export type TerminalMenuAction = {
   id: string;
   label: string;
   onSelect: () => void;
 };
 
-type Props = {
+export type TerminalViewProps = {
   ptyId: string;
   cwd: string;
   launch: TerminalLaunch;
@@ -65,7 +79,14 @@ type Props = {
   menuActions?: TerminalMenuAction[];
   /** Right-click, before the menu shows (e.g. read a reviewer's verdict). */
   onMenuOpen?: () => void;
+  /** A pipeline stage being watched: typing follows its rules (`StageWatch`). */
+  watch?: StageWatch | null;
+  /** The terminal this view opened (or restarted) is up. */
+  onOpened?: () => void;
 };
+
+/** What a keystroke into a watch-only stage shows. */
+const WATCH_ONLY_HINT = "Read-only: autopilot drives this stage. Take it over to type.";
 
 /**
  * True when keyboard focus is in a place that must keep it: the scratch pad,
@@ -147,8 +168,17 @@ export function TerminalView({
   claudeSession = false,
   menuActions = [],
   onMenuOpen,
-}: Props) {
+  watch = null,
+  onOpened,
+}: TerminalViewProps) {
   const slotRef = useRef<HTMLDivElement>(null);
+  const onOpenedRef = useRef(onOpened);
+  onOpenedRef.current = onOpened;
+  // Read by the keystroke handlers, which outlive a render.
+  const canTypeRef = useRef(true);
+  canTypeRef.current = !watch || watch.canType;
+  const [watchHint, setWatchHint] = useState(false);
+  const watchHintTimer = useRef(0);
   const [exitCode, setExitCode] = useState<number | null>(livePty(ptyId)?.exitCode ?? null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number; hasSelection: boolean } | null>(null);
@@ -275,6 +305,7 @@ export function TerminalView({
   }, [ptyId]);
 
   useEffect(() => subscribeLivePty(() => setGeneration((value) => value + 1)), []);
+  useEffect(() => () => window.clearTimeout(watchHintTimer.current), []);
 
   useEffect(() => {
     return setTerminalSearchOpener(ptyId, () => setSearchOpen(true));
@@ -296,7 +327,16 @@ export function TerminalView({
     const live = livePty(ptyId);
     // Subscribe before replaying. ConPTY's first bytes are often a cursor
     // query, and xterm answers that only through onData.
+    // A watch-only stage drops keystrokes here (D27), and says why once in a while.
+    const allowed = () => {
+      if (canTypeRef.current) return true;
+      setWatchHint(true);
+      window.clearTimeout(watchHintTimer.current);
+      watchHintTimer.current = window.setTimeout(() => setWatchHint(false), 4000);
+      return false;
+    };
     const onData = parked.term.onData((data) => {
+      if (!allowed()) return;
       notePtyInput(ptyId, data);
       sendInput(ptyId, data);
     });
@@ -312,7 +352,7 @@ export function TerminalView({
     parked.term.attachCustomKeyEventHandler((event) => {
       if (newlineOnShiftEnter && isShiftEnter(event)) {
         // Handle keydown only; swallow keypress and keyup so xterm sends no CR.
-        if (event.type === "keydown" && !event.repeat) {
+        if (event.type === "keydown" && !event.repeat && allowed()) {
           notePtyInput(ptyId, SHIFT_ENTER_SEQUENCE);
           sendInput(ptyId, SHIFT_ENTER_SEQUENCE);
         }
@@ -398,10 +438,12 @@ export function TerminalView({
       // A stage the run actor started with no view (engine 2) is attached to, not restarted.
       attach: true,
       onOutput: live.channel,
-    }).catch((err: unknown) => {
-      clearPtyOpening(ptyId);
-      setFailed(err instanceof Error ? err.message : String(err));
-    });
+    })
+      .then(() => onOpenedRef.current?.())
+      .catch((err: unknown) => {
+        clearPtyOpening(ptyId);
+        setFailed(err instanceof Error ? err.message : String(err));
+      });
   }, [autoOpen, cwd, fontSize, launch, prompt, ptyId, resumeSessionId, roleId]);
 
   const restart = (resume?: string | null) => {
@@ -421,9 +463,11 @@ export function TerminalView({
       cols: openSize(parked).cols,
       rows: openSize(parked).rows,
       onOutput: live.channel,
-    }).catch((err: unknown) => {
-      setFailed(err instanceof Error ? err.message : String(err));
-    });
+    })
+      .then(() => onOpenedRef.current?.())
+      .catch((err: unknown) => {
+        setFailed(err instanceof Error ? err.message : String(err));
+      });
   };
 
   const mac = detectPlatform(navigator.platform) === "mac";
@@ -494,6 +538,27 @@ export function TerminalView({
               .catch((err: unknown) => reportError("Copy failed", err, { notify: true }));
           }}
         />
+      )}
+      {watch && (!watch.canType || watch.takenOver) && (
+        <div className="terminal-watch-bar" role="status">
+          <span>
+            {watch.takenOver
+              ? "You took this stage over: autopilot leaves it alone until you hand it back."
+              : watchHint
+                ? WATCH_ONLY_HINT
+                : "Watching: read-only while autopilot drives this stage. You can type when it needs you."}
+          </span>
+          {!watch.takenOver && watch.onTakeOver && (
+            <button type="button" className="secondary-button" onClick={watch.onTakeOver}>
+              Take over
+            </button>
+          )}
+          {watch.takenOver && watch.onHandBack && (
+            <button type="button" className="secondary-button" onClick={watch.onHandBack}>
+              Hand back
+            </button>
+          )}
+        </div>
       )}
       {searchOpen && (
         <TerminalSearchBar

@@ -104,7 +104,8 @@ function stageOfRoleIn(stages: readonly StageDef[], roleId: string | null | unde
 }
 
 const STARTS = new Set(["advance", "reask", "retry"]);
-const ROUND_SENT_BACK = /Round (\d+) sent back/;
+/** "Round N sent back", or "Round N dealt with by you" (V5, D28: you revised the stage yourself). */
+const ROUND_SENT_BACK = /Round (\d+) (?:sent back|dealt with by you)/;
 
 function gateStatusOf(
   run: PipelineRun,

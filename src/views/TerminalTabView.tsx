@@ -10,7 +10,7 @@ import {
 import { snapshotTerminalTurn } from "../changes/turnSnapshot";
 import { HandoffBanner } from "../components/HandoffDialog";
 import { TerminalScratchPad, type TerminalPadHandle } from "../components/TerminalScratchPad";
-import { TerminalView } from "../components/TerminalView";
+import { StageTerminalView } from "./StageTerminalView";
 import { handoffMenuItems, type HandoffTargetId } from "../handoff/map";
 import type { HandoffRoute } from "../handoff/routing";
 import type { Platform } from "../keymap";
@@ -69,6 +69,8 @@ export type TerminalTabViewProps = {
   exited?: boolean;
   onShowTerminal?: () => void;
   composerRef?: RefObject<TerminalComposerHandle | null>;
+  /** A pipeline stage's Take over or Hand back failed. */
+  onNotice?: (title: string, body: string) => void;
 };
 
 /** The active terminal tab: hand-off banner, toolbar, terminal and scratch pad. */
@@ -103,6 +105,7 @@ export function TerminalTabView({
   exited = false,
   onShowTerminal,
   composerRef,
+  onNotice = () => {},
 }: TerminalTabViewProps) {
   const linked = handoffs.find((item) => item.targetTabId === activeTabId) ?? null;
   const launch = terminalLaunchOf(activeTabSummary);
@@ -134,7 +137,10 @@ export function TerminalTabView({
         />
       )}
       {!chat && (
-        <TerminalView
+        <StageTerminalView
+          tab={activeTabSummary}
+          needsYou={needsYou}
+          onNotice={onNotice}
           ptyId={activeTabSummary.id}
           cwd={activeTabSummary.cwd}
           launch={launch}

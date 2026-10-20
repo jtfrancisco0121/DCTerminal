@@ -74,6 +74,8 @@ type Props = {
   onApproveRun?: (runId: string) => Promise<void>;
   /** Continue a run waiting after a restart: autopilot decides the turn that finished meanwhile. */
   onContinue?: (runId: string) => Promise<void>;
+  /** Engine 2 (V5, D28): take a stage over from autopilot, or hand it back. */
+  onStageControl?: (runId: string, tabId: string, kind: "takeOver" | "handBack") => Promise<void>;
   /** The latest Claude limit windows, for the autopilot usage line. Null: not loaded. */
   usageWindows?: RateWindow[] | null;
   /** Model settings, to say when a stage on Haiku runs in default mode (D12a). */
@@ -147,6 +149,7 @@ export function PipelineOverview({
   onApproveLane,
   onApproveRun,
   onContinue,
+  onStageControl,
   usageWindows = null,
   modelSettings = null,
 }: Props) {
@@ -300,6 +303,19 @@ export function PipelineOverview({
       onNotice("Run not continued", errorText(err));
       await reload();
     } finally {
+      setBusy(false);
+    }
+  };
+
+  const controlStage = async (tabId: string, kind: "takeOver" | "handBack") => {
+    if (!run || !onStageControl) return;
+    setBusy(true);
+    try {
+      await onStageControl(run.id, tabId, kind);
+    } catch (err: unknown) {
+      onNotice(kind === "takeOver" ? "Not taken over" : "Not handed back", errorText(err));
+    } finally {
+      await reload();
       setBusy(false);
     }
   };
@@ -603,6 +619,29 @@ export function PipelineOverview({
                 >
                   Watch in split
                 </button>
+                {onStageControl && (run.engine ?? 1) >= 2 && stage.tab.bridge && (
+                  (run.takenOver ?? []).includes(stage.tabId) ? (
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={busy}
+                      title="Let autopilot drive this stage again. A turn that already has a result is acted on at once."
+                      onClick={() => void controlStage(stage.tabId!, "handBack")}
+                    >
+                      Hand back
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={busy}
+                      title="Drive this stage yourself: autopilot stops checking and acting on its turns, and you can type in it."
+                      onClick={() => void controlStage(stage.tabId!, "takeOver")}
+                    >
+                      Take over
+                    </button>
+                  )
+                )}
                 {hasGates && (
                   <button
                     type="button"

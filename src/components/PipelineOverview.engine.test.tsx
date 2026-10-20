@@ -638,4 +638,39 @@ describe("PipelineOverview: autopilot, checks and timeline", () => {
     expect(screen.getByRole("region", { name: "Fan out" }).textContent).not.toContain("UI");
     expect(pipelineRunTasks).not.toHaveBeenCalledWith("ee_2");
   });
+
+  it("offers Take over on an engine-2 stage and Hand back once you took it over (V5)", async () => {
+    const onStageControl = vi.fn(async (_run: string, _tab: string, kind: string) => {
+      const takenOver = kind === "takeOver" ? ["impl"] : [];
+      vi.mocked(getPipelineRun).mockResolvedValue({ run: run({ engine: 2, takenOver }) });
+    });
+    const bridged = { ...tab("impl", "role_implementer"), bridge: { runId: "ee_1", stage: "implementer" } };
+    vi.mocked(getPipelineRun).mockResolvedValue({ run: run({ engine: 2 }) });
+    render(
+      <PipelineOverview
+        runId="ee_1"
+        cwd="/p"
+        tabs={[bridged]}
+        runtimes={{}}
+        onJump={() => {}}
+        onWatch={() => {}}
+        onRefreshTabs={async () => {}}
+        onNotice={() => {}}
+        terminalReader={noTerminal}
+        onStageControl={onStageControl}
+      />,
+    );
+    const lane = await screen.findByRole("article", { name: "Implementer" });
+    fireEvent.click(within(lane).getByRole("button", { name: "Take over" }));
+    await waitFor(() => expect(onStageControl).toHaveBeenCalledWith("ee_1", "impl", "takeOver"));
+    fireEvent.click(await within(lane).findByRole("button", { name: "Hand back" }));
+    await waitFor(() => expect(onStageControl).toHaveBeenLastCalledWith("ee_1", "impl", "handBack"));
+    expect(await within(lane).findByRole("button", { name: "Take over" })).toBeTruthy();
+  });
+
+  it("offers no Take over on an engine-1 run", async () => {
+    show(run());
+    const lane = await screen.findByRole("article", { name: "Implementer" });
+    expect(within(lane).queryByRole("button", { name: "Take over" })).toBeNull();
+  });
 });

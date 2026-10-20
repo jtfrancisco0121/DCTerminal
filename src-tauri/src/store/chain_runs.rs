@@ -182,6 +182,7 @@ impl StateStore {
                     stop_reason: None,
                     engine: crate::pipelines::find(&kind)
                         .map_or(1, |def| crate::bridge::launch::engine_for(&def)),
+                    taken_over: Vec::new(),
                     engine_note: None,
                     manual_only: false,
                 });
@@ -703,6 +704,7 @@ mod tests {
             status: crate::store::RunStatus::Stopped,
             stop_reason: None,
             engine: 1,
+            taken_over: Vec::new(),
             engine_note: None,
             manual_only: false,
         }

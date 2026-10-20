@@ -524,6 +524,11 @@ export function installTauriMock(config: MockConfig): void {
       state.ptys = state.ptys.filter((id: string) => id !== a.id);
       return null;
     },
+    // V5: no mocked terminal is a bridged stage, so every one takes keystrokes.
+    pty_input_state: () => ({ open: true, stage: false, takenOver: false, needs: false }),
+    pty_stage_needs: (a) => ({ open: true, stage: false, takenOver: false, needs: !!a.needs }),
+    pty_detach: () => false,
+    pty_running: () => [],
 
     get_layout: () => clone(state.layout),
     set_layout: (a) => {

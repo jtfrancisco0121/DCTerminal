@@ -11,7 +11,9 @@
 //! - `pipeline-notice` (`{runId, title, body}`): the run is complete.
 //!
 //! It also feeds the actors: [`deliver_inbox`] hands the watcher's finished
-//! turns to them (V2a/V2b sent those to the frontend's executor).
+//! turns to them (V2a/V2b sent those to the frontend's executor), and tells
+//! the PTY registry when a stage needs you (V5: its Watch view takes
+//! keystrokes then).
 
 use super::{ActorMsg, Host, RunActors, StageLaunch};
 use crate::bridge::watch::{InboxEvent, BRIDGE_NEEDS_EVENT};
@@ -180,17 +182,29 @@ impl Host for AppHost {
 }
 
 /// The inbox watcher's delivery: finished turns to their run's actor,
-/// Needs you to the frontend.
+/// Needs you to the frontend. Both also tell the terminal whether its
+/// stage needs you, so a watch-only stage takes keystrokes while a
+/// permission dialog is up (V5, D27) and stops once its turn ends.
 pub fn deliver_inbox(app: AppHandle) -> impl FnMut(InboxEvent) + Send + 'static {
     move |event| match event {
         InboxEvent::Turn(turn) => {
+            set_needs(&app, &turn.tab_id, false);
             if let Some(actors) = app.try_state::<AppActors>() {
                 let run_id = turn.run_id.clone();
                 actors.send(&run_id, ActorMsg::Turn(turn));
             }
         }
         InboxEvent::Needs(needs) => {
+            set_needs(&app, &needs.tab_id, true);
             let _ = app.emit(BRIDGE_NEEDS_EVENT, needs);
+        }
+    }
+}
+
+fn set_needs(app: &AppHandle, tab_id: &str, needs: bool) {
+    if let Some(registry) = app.try_state::<Mutex<PtyRegistry>>() {
+        if let Ok(mut registry) = registry.lock() {
+            registry.set_needs(tab_id, needs);
         }
     }
 }

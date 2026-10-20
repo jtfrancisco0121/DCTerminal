@@ -8,15 +8,15 @@ use super::{lock, ActorMsg, Host, Prefill, StageLaunch, UserAction, UserOutcome}
 use crate::bridge::folder::{read_json, RunFindings, RunPrs, TASKS_FILE};
 use crate::bridge::launch::{
     clear_stage_turn, launch_flags, plan_for, prepare_stage, read_stage_turn, relaunch_flags, restore_stage_turn,
-    BridgeFlags, BridgePlan,
+    set_stage_mode, BridgeFlags, BridgePlan,
 };
-use crate::bridge::{BridgeTag, BridgeTurn, TurnOutcome};
+use crate::bridge::{BridgeTag, BridgeTurn, StageMode, TurnOutcome};
 use crate::commands::pipeline::{approve, note, set_lane_status, turn_finished};
 use crate::pipelines::autopilot::{decide, review_round, stage_key, Decision, FindingReport, TurnReport};
 use crate::pipelines::recovery::bridge_turn_key;
 use crate::pipelines::{GateDef, GateResult, PipelineDef, StageDef, StageKind};
 use crate::store::{
-    claim_key, tab_label, ChainRef, RoleSnapshot, RunStatus, StageGates, StopReason, TabRecord,
+    claim_key, tab_label, ChainRef, PipelineRun, RoleSnapshot, RunStatus, StageGates, StateStore, StopReason, TabRecord,
     TerminalTabDraft,
 };
 use serde_json::Value;
@@ -87,6 +87,14 @@ pub(super) struct Actor<H: Host> {
     handled: HashMap<String, String>,
     /// Gate runs started and not yet back.
     gates_running: usize,
+    /// While Hand back re-decides held turns (D28): the handed-back tab and
+    /// when its own newest turn ended. A held round for it from an older
+    /// turn is recorded as dealt with by you, not sent.
+    revised: Option<(String, String)>,
+    /// Set while Hand back re-decides when a held round goes back to the
+    /// handed-back tab (now, or once its checks pass): your own older turn
+    /// there is then not decided.
+    round_goes_back: bool,
 }
 
 impl<H: Host> Actor<H> {
@@ -97,6 +105,8 @@ impl<H: Host> Actor<H> {
             me,
             handled: HashMap::new(),
             gates_running: 0,
+            revised: None,
+            round_goes_back: false,
         }
     }
 
@@ -213,6 +223,14 @@ impl<H: Host> Actor<H> {
         self.host.terminal_live(&tab.id) && read_stage_turn(&self.host.runs_root(), tag, &tab.id).is_some()
     }
 
+    /// You took `tab_id` over (V5, D28): autopilot leaves it alone.
+    fn taken_over(&self, tab_id: &str) -> bool {
+        let store = lock(self.host.store());
+        store
+            .pipeline_run_by_id(&self.run_id)
+            .is_some_and(|run| run.taken_over.iter().any(|id| id == tab_id))
+    }
+
     // ---- Finished turns ----
 
     /// A bridged stage finished a turn: record it, then (autopilot on) run
@@ -233,7 +251,7 @@ impl<H: Host> Actor<H> {
             return;
         }
         let verdict = bridge_verdict(review(&turn).and_then(|r| r.get("verdict")).and_then(Value::as_str), placed.revise());
-        let (enabled, status, round) = {
+        let (enabled, status, round, mine, held) = {
             let mut store = lock(self.host.store());
             // intentionally silent: the lanes only lose a bar end.
             let _ = turn_finished(
@@ -249,23 +267,54 @@ impl<H: Host> Actor<H> {
                     run.autopilot.as_ref().is_some_and(|a| a.enabled),
                     run.status,
                     run.round_for(placed.lane.as_deref()),
+                    run.taken_over.iter().any(|id| id == &placed.tab.id),
+                    run.status == RunStatus::Waiting && run.stop_reason == Some(StopReason::TakenOver),
                 ),
                 None => return,
             }
         };
         self.changed();
-        if !enabled || status == RunStatus::Complete {
+        // You drive a stage you took over: its turns are recorded, never
+        // decided (D28). Hand back decides the one that has a result.
+        if !enabled || status == RunStatus::Complete || mine {
             return;
         }
-        // A blocked Implementer opened nothing to check: it waits for you
-        // (V2b). A turn Claude refused for the usage limit stops before any
-        // check runs (H5).
-        let refused = self.rate_limit(&placed);
+        // The run waits on a stage you took over (another lane's, in a
+        // fanned-out run): this turn stays undecided, and Hand back decides
+        // it with the current stages' other turns.
+        if held {
+            let summary = format!(
+                "{} finished while the run waits on a stage you took over. Autopilot acts on it when you hand that stage back.",
+                placed.tab.label
+            );
+            self.note(Some(&placed.stage.id), &summary, false);
+            return;
+        }
+        self.take_up(&placed, turn, round, status);
+    }
+
+    /// Act on a finished turn: its gates first (on a running run), then a
+    /// decision. A blocked Implementer opened nothing to check: it waits for
+    /// you (V2b). A turn Claude refused for the usage limit stops before any
+    /// check runs (H5).
+    fn take_up(&mut self, placed: &Placed, turn: BridgeTurn, round: u32, status: RunStatus) {
+        let refused = self.rate_limit(placed);
+        // Hand back re-deciding a held round for the handed-back tab (D28).
+        match self.held_round_for_revised(placed, &turn, round) {
+            // You revised that stage since: the round is recorded now, with
+            // no checks on a review of what you have replaced.
+            Some(true) => {
+                self.decide_and_carry_out(placed, &turn, round);
+                return;
+            }
+            Some(false) => self.round_goes_back = true,
+            None => {}
+        }
         if status == RunStatus::Running && !placed.stage.gates.is_empty() && blocked(&turn).is_none() && refused.is_none() {
-            self.start_gates(&placed, turn, round);
+            self.start_gates(placed, turn, round);
             return;
         }
-        self.decide_and_carry_out(&placed, &turn, round);
+        self.decide_and_carry_out(placed, &turn, round);
     }
 
     /// Run the stage's gates on a thread of their own; the results come
@@ -351,6 +400,10 @@ impl<H: Host> Actor<H> {
             }
         }
         self.changed();
+        // You took the stage over while its checks ran: Hand back decides.
+        if self.taken_over(&placed.tab.id) {
+            return;
+        }
         // The checks take a while: a turn started since is the stage's result now.
         let tag = placed.tab.bridge.clone().unwrap_or(BridgeTag {
             run_id: self.run_id.clone(),
@@ -368,24 +421,73 @@ impl<H: Host> Actor<H> {
         self.decide_and_carry_out(&placed, &turn, round);
     }
 
-    fn decide_and_carry_out(&mut self, placed: &Placed, turn: &BridgeTurn, round: u32) {
+    /// What `decide` is given for `turn`.
+    fn report(&self, placed: &Placed, turn: &BridgeTurn, round: u32) -> TurnReport {
         let usage = self.host.usage_percent(&self.run_id);
         let mut report = turn_report(&placed.stage, turn, usage, placed.lane.clone(), placed.revise());
         // H5: `decide` stops with `usage_limit` for it, ahead of `no_result`.
         report.rate_limit = self.rate_limit(placed);
         report.round = Some(round);
         report.turn = Some(bridge_turn_key(&turn.tab_id, &turn.turn));
-        let decision = {
+        report
+    }
+
+    /// While Hand back re-decides (D28): when `turn`'s decision would send a
+    /// round back to the handed-back tab, whether you revised that stage
+    /// since (decided on a copy of the run; nothing is recorded).
+    fn held_round_for_revised(&self, placed: &Placed, turn: &BridgeTurn, round: u32) -> Option<bool> {
+        let (tab_id, _) = self.revised.as_ref()?;
+        let report = self.report(placed, turn, round);
+        let store = lock(self.host.store());
+        let run = store.pipeline_run_by_id(&self.run_id)?;
+        let decision = decide(&placed.def, &mut run.clone(), &report);
+        if decision.action != "loopBack" || loop_back_tab(&placed.def, run, placed, &decision).as_ref() != Some(tab_id) {
+            return None;
+        }
+        Some(self.revised_target(run, placed, &decision, turn).is_some())
+    }
+
+    fn decide_and_carry_out(&mut self, placed: &Placed, turn: &BridgeTurn, round: u32) {
+        let report = self.report(placed, turn, round);
+        let (decision, held) = {
             let mut store = lock(self.host.store());
             let Some(run) = store.pipeline_run_by_id_mut(&self.run_id) else {
                 return;
             };
-            let decision = decide(&placed.def, run, &report);
-            if let Err(err) = store.save() {
-                eprintln!("DCTerminal: run {}: decision not saved: {err}", self.run_id);
+            // Decided on a copy first: a decision that would act on a stage
+            // you took over is not taken at all (D28), so Hand back decides
+            // the same turn afresh.
+            let mut trial = run.clone();
+            let decision = decide(&placed.def, &mut trial, &report);
+            let held = taken_over_target(&placed.def, run, placed, &decision);
+            // A round you dealt with yourself (D28) is not sent back: its
+            // decision line says so instead of "goes back to".
+            if held.is_none() && decision.action == "loopBack" && self.revised_target(&trial, placed, &decision, turn).is_some() {
+                if let Some(event) = trial.events.last_mut().filter(|e| e.outcome.as_deref() == Some("loopBack")) {
+                    event.summary = format!(
+                        "{}, which you revised yourself, so nothing was sent.",
+                        event.summary.replace(" goes back to ", " was for ").trim_end_matches('.')
+                    );
+                }
             }
-            decision
+            if held.is_some() {
+                (decision, held)
+            } else {
+                *run = trial;
+                if let Err(err) = store.save() {
+                    eprintln!("DCTerminal: run {}: decision not saved: {err}", self.run_id);
+                }
+                (decision, None)
+            }
         };
+        if let Some((tab_id, stage_id, title)) = held {
+            let summary = format!(
+                "{} finished, and autopilot would act on {title}, which you took over. Hand it back to let autopilot carry on.",
+                placed.stage.title
+            );
+            self.stop_run(Some(&stage_id), Some(&tab_id), &summary, Some(StopReason::TakenOver));
+            return;
+        }
         self.changed();
         self.carry_out(placed, turn, &decision, report.verdict.as_deref());
     }
@@ -438,6 +540,12 @@ impl<H: Host> Actor<H> {
             }
             "loopBack" => {
                 let verdict = verdict.unwrap_or(placed.revise()).to_string();
+                if let Some(target) = self.revised_since(placed, decision, turn) {
+                    if let Err(err) = self.record_round_you_revised(placed, decision, &verdict, &target) {
+                        fail(self, format!("record the round: {err}"));
+                    }
+                    return;
+                }
                 match self.loop_back(placed, turn, decision, &verdict) {
                     // The run is manual now; its Timeline note says so. Nothing
                     // was sent, so autopilot's hand-off record goes back.
@@ -592,7 +700,14 @@ impl<H: Host> Actor<H> {
         })
     }
 
-    fn loop_back(&mut self, placed: &Placed, turn: &BridgeTurn, decision: &Decision, verdict: &str) -> Result<String, String> {
+    /// The stage a reviewer's round goes back to, the text it gets and the
+    /// findings file (`findings-<stage>-r<N>.json`) it is saved in.
+    fn round_back(
+        &mut self,
+        placed: &Placed,
+        turn: &BridgeTurn,
+        decision: &Decision,
+    ) -> Result<(StageDef, String, Option<PathBuf>), String> {
         let target_id = decision.stage_id.as_deref().ok_or("the decision names no stage")?;
         let target_index = placed.def.stage_index(target_id).ok_or("that stage is not in the pipeline")?;
         let target = placed.def.stages[target_index].clone();
@@ -612,7 +727,63 @@ impl<H: Host> Actor<H> {
         let file = self.write_findings(turn, round)?;
         let reviewer_name = self.host.role(&placed.tab.role_id).map(|r| r.name).unwrap_or_else(|| placed.stage.title.clone());
         let text = loop_back_message(target.kind() == StageKind::Planner, &reviewer_name, &findings, round, file.as_deref());
+        Ok((target, text, file))
+    }
+
+    fn loop_back(&mut self, placed: &Placed, turn: &BridgeTurn, decision: &Decision, verdict: &str) -> Result<String, String> {
+        let (target, text, file) = self.round_back(placed, turn, decision)?;
         self.send_back(placed, &target, verdict, &text, None, None, Some(turn), file.as_deref(), false)
+    }
+
+    /// The tab a held round goes back to when Hand back finds that you
+    /// revised it yourself after the round's turn ended (D28): its tab id.
+    fn revised_since(&self, placed: &Placed, decision: &Decision, turn: &BridgeTurn) -> Option<String> {
+        let store = lock(self.host.store());
+        let run = store.pipeline_run_by_id(&self.run_id)?;
+        self.revised_target(run, placed, decision, turn)
+    }
+
+    /// [`Self::revised_since`] over `run`, with the store already locked.
+    fn revised_target(&self, run: &PipelineRun, placed: &Placed, decision: &Decision, turn: &BridgeTurn) -> Option<String> {
+        let (tab_id, ended) = self.revised.as_ref()?;
+        let target = loop_back_tab(&placed.def, run, placed, decision)?;
+        (target == *tab_id && ended_after(ended, &turn.ended_at)).then_some(target)
+    }
+
+    /// You dealt with the round yourself (D28): it is recorded (so your
+    /// newer turn counts as its reply), and nothing is sent or resumed.
+    fn record_round_you_revised(
+        &mut self,
+        placed: &Placed,
+        decision: &Decision,
+        verdict: &str,
+        target_tab: &str,
+    ) -> Result<(), String> {
+        let target_id = decision.stage_id.as_deref().ok_or("the decision names no stage")?;
+        let target = placed.def.stage(target_id).ok_or("that stage is not in the pipeline")?.clone();
+        {
+            // No hand-off text and no findings file: nothing went to the stage.
+            let mut store = lock(self.host.store());
+            store.chain_loop_back_in(
+                &placed.chain.chain_id,
+                placed.lane.as_deref(),
+                &placed.tab.role_id,
+                target_tab,
+                Some(verdict),
+                None,
+            )?;
+            let run = store.pipeline_run_by_id_mut(&self.run_id).ok_or("the run is gone")?;
+            if let Some(event) = run.events.last_mut().filter(|e| e.kind == "loopBack") {
+                event.summary = event.summary.replace(" sent back (", " dealt with by you (");
+            }
+            store.save()?;
+        }
+        let summary = format!(
+            "You revised {} yourself after {}'s review, so its findings are not sent again. Autopilot decides your newest turn.",
+            target.title, placed.stage.title
+        );
+        self.note(Some(&target.id), &summary, false);
+        Ok(())
     }
 
     /// The reviewer's round as `findings-<stage>-r<N>.json` (V4), when its
@@ -1026,6 +1197,8 @@ impl<H: Host> Actor<H> {
             } => self.user_send_back(&source_tab_id, &target_role_id, &text, verdict, values, handoff_plan, force),
             UserAction::Approve { lane } => self.user_approve(lane.as_deref()),
             UserAction::Continue => self.user_continue(),
+            UserAction::TakeOver { tab_id } => self.user_take_over(&tab_id),
+            UserAction::HandBack { tab_id } => self.user_hand_back(&tab_id),
             UserAction::Prefill {
                 source_tab_id,
                 target_role_id,
@@ -1258,12 +1431,170 @@ impl<H: Host> Actor<H> {
         Ok(UserOutcome::default())
     }
 
+    /// Take a stage over (V5, D28). Its `mode` file says `takeover`, so its
+    /// bridge stops enforcing a result and its Watch view takes keystrokes;
+    /// its turns are no longer decided. When it was all the run was waiting
+    /// on, the run waits for you (`taken_over`).
+    fn user_take_over(&mut self, tab_id: &str) -> Result<UserOutcome, String> {
+        let (placed, tag) = self.bridged_tab(tab_id)?;
+        let before = {
+            let store = lock(self.host.store());
+            store.pipeline_run_by_id(&self.run_id).ok_or("the run is gone")?.clone()
+        };
+        let enabled = before.autopilot.as_ref().is_some_and(|a| a.enabled);
+        let was = if enabled { StageMode::Autopilot } else { StageMode::Manual };
+        if !set_stage_mode(&self.host.runs_root(), &tag, tab_id, StageMode::Takeover)? {
+            return Err(format!("{} no longer holds its stage.", placed.tab.label));
+        }
+        {
+            let mut store = lock(self.host.store());
+            let run = store.pipeline_run_by_id_mut(&self.run_id).ok_or("the run is gone")?;
+            if !run.taken_over.iter().any(|id| id == tab_id) {
+                run.taken_over.push(tab_id.to_string());
+            }
+            let summary = format!("You took over {}. Autopilot leaves it alone until you hand it back.", placed.stage.title);
+            run.log("note", Some(&placed.stage.id), Some(&placed.tab.role_id), summary, None);
+            let current = crate::pipelines::recovery::current_stage_tabs(&placed.def, run);
+            let all_yours = !current.is_empty() && current.iter().all(|stage| run.taken_over.contains(&stage.tab_id));
+            if run.status == RunStatus::Running && all_yours {
+                run.set_waiting(
+                    StopReason::TakenOver,
+                    format!("You took over {}. Hand it back to let autopilot carry on.", placed.stage.title),
+                );
+            }
+            if let Err(err) = store.save() {
+                self.undo_mode_change(&mut store, before, &tag, tab_id, was);
+                return Err(err);
+            }
+        }
+        self.changed();
+        Ok(UserOutcome::default())
+    }
+
+    /// Hand a stage back (D28): enforcement and decisions are on again
+    /// (its `mode` follows the run's autopilot), the run carries on when it
+    /// waited only for that, and a turn that already has a result is
+    /// decided at once. A stage not taken over is left as it is.
+    fn user_hand_back(&mut self, tab_id: &str) -> Result<UserOutcome, String> {
+        let (placed, tag) = self.bridged_tab(tab_id)?;
+        let (enabled, before) = {
+            let store = lock(self.host.store());
+            let run = store.pipeline_run_by_id(&self.run_id).ok_or("the run is gone")?;
+            if !run.taken_over.iter().any(|id| id == tab_id) {
+                return Ok(UserOutcome::default());
+            }
+            (run.autopilot.as_ref().is_some_and(|a| a.enabled), run.clone())
+        };
+        let mode = if enabled { StageMode::Autopilot } else { StageMode::Manual };
+        set_stage_mode(&self.host.runs_root(), &tag, tab_id, mode)?;
+        let turn = read_stage_turn(&self.host.runs_root(), &tag, tab_id).filter(|turn| turn.result.is_some());
+        let (status, round, decided, others) = {
+            let mut store = lock(self.host.store());
+            let run = store.pipeline_run_by_id_mut(&self.run_id).ok_or("the run is gone")?;
+            run.taken_over.retain(|id| id != tab_id);
+            let summary = format!("You handed {} back to autopilot.", placed.stage.title);
+            run.log("note", Some(&placed.stage.id), Some(&placed.tab.role_id), summary, None);
+            let current = crate::pipelines::recovery::current_stage_tabs(&placed.def, run);
+            let still_yours = current.iter().any(|stage| run.taken_over.contains(&stage.tab_id));
+            // The current stages' finished turns, decided again below: one
+            // whose decision waited on this stage (D28) is carried out now.
+            let mut others = Vec::new();
+            if run.status == RunStatus::Waiting && run.stop_reason == Some(StopReason::TakenOver) && !still_yours {
+                run.set_running();
+                others = current.into_iter().map(|stage| stage.tab_id).filter(|id| id != tab_id).collect();
+            }
+            // A turn decided before you took over is not decided (or checked) again.
+            let decided = turn.as_ref().is_some_and(|turn| {
+                let key = format!("{}|bridge|{}", turn.tab_id, turn.turn);
+                run.autopilot.as_ref().is_some_and(|a| a.decided.contains(&key))
+            });
+            let state = (run.status, run.round_for(placed.lane.as_deref()), decided, others);
+            if let Err(err) = store.save() {
+                self.undo_mode_change(&mut store, before, &tag, tab_id, StageMode::Takeover);
+                return Err(err);
+            }
+            state
+        };
+        self.changed();
+        if !enabled || status == RunStatus::Complete {
+            return Ok(UserOutcome::default());
+        }
+        let own = turn.filter(|_| !decided);
+        if others.is_empty() {
+            if let Some(turn) = own {
+                self.handled.insert(turn.tab_id.clone(), turn.turn.clone());
+                self.take_up(&placed, turn, round, status);
+            }
+            return Ok(UserOutcome::default());
+        }
+        // A held round for this stage is decided first. When your own turn
+        // here is newer than the round's, you dealt with it: the round is
+        // recorded, not sent, and your turn is decided next (D28).
+        let runs = self.host.runs_root();
+        self.revised = own.as_ref().map(|turn| (tab_id.to_string(), turn.ended_at.clone()));
+        self.round_goes_back = false;
+        for other in others {
+            let tag = {
+                let store = lock(self.host.store());
+                store.tab_by_id(&other).and_then(|tab| tab.bridge.clone())
+            };
+            // A turn decided already is skipped by `on_turn`.
+            if let Some(turn) = tag.and_then(|tag| read_stage_turn(&runs, &tag, &other)) {
+                self.on_turn(turn, true);
+            }
+        }
+        self.revised = None;
+        let sent_back = std::mem::take(&mut self.round_goes_back);
+        // Your turn, while it is still the stage's latest (a round sent back
+        // meanwhile resumed the stage), no round goes back to it (pasted, in
+        // a new terminal, or after its checks) and it is not decided yet.
+        let Some(own) = own else {
+            return Ok(UserOutcome::default());
+        };
+        let latest = read_stage_turn(&runs, &tag, tab_id).is_some_and(|t| t.turn == own.turn);
+        if sent_back || !latest || self.decided(&bridge_turn_key(&own.tab_id, &own.turn)) {
+            return Ok(UserOutcome::default());
+        }
+        let (status, round) = {
+            let store = lock(self.host.store());
+            let run = store.pipeline_run_by_id(&self.run_id).ok_or("the run is gone")?;
+            (run.status, run.round_for(placed.lane.as_deref()))
+        };
+        self.handled.insert(own.tab_id.clone(), own.turn.clone());
+        self.take_up(&placed, own, round, status);
+        Ok(UserOutcome::default())
+    }
+
+    /// Take over or Hand back could not save the run: put the run and the
+    /// stage's `mode` file back as they were, so the two never disagree.
+    fn undo_mode_change(&self, store: &mut StateStore, before: PipelineRun, tag: &BridgeTag, tab_id: &str, was: StageMode) {
+        if let Some(run) = store.pipeline_run_by_id_mut(&self.run_id) {
+            *run = before;
+        }
+        let _ = set_stage_mode(&self.host.runs_root(), tag, tab_id, was);
+    }
+
+    /// `tab_id` on this run, with the stage it reports for.
+    fn bridged_tab(&self, tab_id: &str) -> Result<(Placed, BridgeTag), String> {
+        let placed = self.place_tab(tab_id).ok_or("That tab is not on this run.")?;
+        let tag = placed
+            .tab
+            .bridge
+            .clone()
+            .ok_or_else(|| format!("{} does not report through the pipeline bridge.", placed.tab.label))?;
+        Ok((placed, tag))
+    }
+
     /// A stage terminal exited. While autopilot waits on that stage's turn,
-    /// nothing would ever come: stop and say so.
+    /// nothing would ever come: stop and say so. A stage you took over is
+    /// yours to end.
     fn on_exit(&mut self, tab_id: &str, code: Option<i32>) {
         let Some(placed) = self.place_tab(tab_id) else {
             return;
         };
+        if self.taken_over(tab_id) {
+            return;
+        }
         let current = {
             let store = lock(self.host.store());
             let Some(run) = store.pipeline_run_by_id(&self.run_id) else {
@@ -1478,4 +1809,38 @@ fn lane_note(run_dir: Option<&std::path::Path>, lane: &str) -> Option<String> {
         task.title,
         task.summary
     ))
+}
+
+/// The tab you took over that carrying `decision` out would act on (D28):
+/// the stage a round goes back to, or the turn's own stage for a retry or a
+/// re-ask. As (tab id, stage id, stage title).
+fn taken_over_target(def: &PipelineDef, run: &PipelineRun, placed: &Placed, decision: &Decision) -> Option<(String, String, String)> {
+    let target = match decision.action.as_str() {
+        "loopBack" => {
+            let stage = def.stage(decision.stage_id.as_deref()?)?;
+            (loop_back_tab(def, run, placed, decision)?, stage.id.clone(), stage.title.clone())
+        }
+        "retry" | "reask" => (placed.tab.id.clone(), placed.stage.id.clone(), placed.stage.title.clone()),
+        _ => return None,
+    };
+    run.taken_over.contains(&target.0).then_some(target)
+}
+
+/// The tab a loop-back `decision` sends its round to: the target stage's
+/// tab on the run, or on the turn's lane (as `send_back` looks it up).
+fn loop_back_tab(def: &PipelineDef, run: &PipelineRun, placed: &Placed, decision: &Decision) -> Option<String> {
+    let stage = def.stage(decision.stage_id.as_deref()?)?;
+    let tab_ids = match placed.lane.as_deref().and_then(|id| run.lane(id)) {
+        Some(lane) => &lane.tab_ids,
+        None => &run.tab_ids,
+    };
+    tab_ids.get(&stage.role_id).cloned()
+}
+
+/// `later` ended after `earlier` (RFC 3339 times; text order if unreadable).
+fn ended_after(later: &str, earlier: &str) -> bool {
+    match (chrono::DateTime::parse_from_rfc3339(later), chrono::DateTime::parse_from_rfc3339(earlier)) {
+        (Ok(later), Ok(earlier)) => later > earlier,
+        _ => later > earlier,
+    }
 }

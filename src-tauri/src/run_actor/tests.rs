@@ -1351,6 +1351,402 @@ fn a_message_queued_behind_a_panic_is_answered_by_the_next_thread() {
     fx.run(|run| assert_eq!(run.stop_reason, Some(StopReason::CarryOutFailed)));
 }
 
+// ---- Take over and Hand back (V5, D28) ----
+
+fn stage_mode(fx: &Fixture, tab_id: &str) -> crate::bridge::StageMode {
+    fx.stage_dir(tab_id).mode()
+}
+
+#[test]
+fn a_taken_over_stage_is_never_decided_and_hand_back_decides_its_result_at_once() {
+    let mut fx = Fixture::new("take_over");
+    let reviewer = fx.open_plan_reviewer();
+    fx.user(UserAction::TakeOver { tab_id: reviewer.clone() }).expect("take over");
+    assert_eq!(stage_mode(&fx, &reviewer), crate::bridge::StageMode::Takeover, "the bridge stops enforcing");
+    fx.run(|run| {
+        assert_eq!(run.taken_over, vec![reviewer.clone()]);
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::TakenOver)));
+    });
+    // You and the reviewer reach a verdict while you drive it: nothing acts on it.
+    let turn = fx.end_turn(
+        &reviewer,
+        "r-1",
+        review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "Retries forever." }])),
+        "Changes required.",
+    );
+    fx.actor.handle(ActorMsg::Turn(turn));
+    assert!(fx.resumes().is_empty() && fx.pastes().is_empty(), "no decision while taken over");
+    fx.run(|run| {
+        assert!(run.events.iter().any(|e| e.kind == "turn"), "the turn is still recorded");
+        let decided = &run.autopilot.as_ref().unwrap().decided;
+        assert!(!decided.iter().any(|t| t.ends_with("|bridge|r-1")), "and left undecided: {decided:?}");
+    });
+    // Hand back: enforcement and decisions are on again, and the turn that
+    // already has a result is decided at once.
+    fx.user(UserAction::HandBack { tab_id: reviewer.clone() }).expect("hand back");
+    assert_eq!(stage_mode(&fx, &reviewer), crate::bridge::StageMode::Autopilot);
+    assert_eq!(fx.resumes().len(), 1, "the round went back to the Planner");
+    assert_eq!(fx.resumes()[0].tab_id, fx.planner);
+    fx.run(|run| {
+        assert!(run.taken_over.is_empty());
+        assert_eq!(run.round, 2);
+        assert!(run.events.iter().any(|e| e.summary.contains("handed") && e.summary.contains("back")), "{:?}", run.events);
+    });
+    // A second Hand back changes nothing.
+    fx.user(UserAction::HandBack { tab_id: reviewer.clone() }).expect("hand back again");
+    assert_eq!(fx.resumes().len(), 1);
+    // Nor does taking over and handing back again: that turn was decided.
+    fx.user(UserAction::TakeOver { tab_id: reviewer.clone() }).unwrap();
+    fx.user(UserAction::HandBack { tab_id: reviewer.clone() }).unwrap();
+    assert_eq!(fx.resumes().len(), 1);
+    fx.run(|run| assert_eq!(run.round, 2));
+}
+
+#[test]
+fn handing_back_a_turn_with_no_result_waits_for_the_next_turn() {
+    let mut fx = Fixture::new("hand_back_no_result");
+    let reviewer = fx.open_plan_reviewer();
+    fx.user(UserAction::TakeOver { tab_id: reviewer.clone() }).unwrap();
+    let turn = fx.end_turn(&reviewer, "r-1", None, "What should I look at first?");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    fx.user(UserAction::HandBack { tab_id: reviewer.clone() }).unwrap();
+    assert!(fx.resumes().is_empty() && fx.pastes().is_empty());
+    assert!(fx.stops().is_empty(), "no stop for a turn you drove: {:?}", fx.stops());
+    fx.run(|run| assert_eq!((run.status, run.stop_reason), (RunStatus::Running, None)));
+    // The next turn, on autopilot again, is decided as usual.
+    let turn = fx.end_turn(&reviewer, "r-2", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "x" }])), "");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    assert_eq!(fx.resumes().len(), 1);
+}
+
+#[test]
+fn a_taken_over_stage_may_exit_without_stopping_the_run() {
+    let mut fx = Fixture::new("take_over_exit");
+    let reviewer = fx.open_plan_reviewer();
+    fx.start_turn(&reviewer, "r-1");
+    fx.user(UserAction::TakeOver { tab_id: reviewer.clone() }).unwrap();
+    fx.actor.handle(ActorMsg::Exited { tab_id: reviewer.clone(), code: Some(0) });
+    assert!(fx.stops().is_empty(), "{:?}", fx.stops());
+}
+
+#[test]
+fn take_over_with_autopilot_off_keeps_the_run_stopped_and_hand_back_leaves_it_manual() {
+    let mut fx = Fixture::new("take_over_manual");
+    let reviewer = fx.open_plan_reviewer();
+    fx.host.store.lock().unwrap().pipeline_run_by_id_mut(RUN).unwrap().set_autopilot_enabled(false);
+    fx.user(UserAction::TakeOver { tab_id: reviewer.clone() }).unwrap();
+    fx.run(|run| assert_eq!((run.status, run.stop_reason), (RunStatus::Stopped, Some(StopReason::PausedByYou))));
+    fx.user(UserAction::HandBack { tab_id: reviewer.clone() }).unwrap();
+    assert_eq!(stage_mode(&fx, &reviewer), crate::bridge::StageMode::Manual);
+    // Only a tab of this run can be taken over.
+    assert!(fx.user(UserAction::TakeOver { tab_id: "tab_elsewhere".into() }).is_err());
+}
+
+/// D28: a decision whose carry-out lands on a stage you took over (here a
+/// reviewer's round sent back to the Planner) leaves that stage alone. The
+/// run waits for you with `taken_over`, and Hand back carries it out.
+#[test]
+fn a_round_sent_back_to_a_stage_you_took_over_waits_and_hand_back_carries_it_out() {
+    let mut fx = Fixture::new("take_over_target");
+    let reviewer = fx.open_plan_reviewer();
+    let planner = fx.planner.clone();
+    fx.user(UserAction::TakeOver { tab_id: planner.clone() }).expect("take over");
+    fx.run(|run| assert_eq!(run.status, RunStatus::Running, "the reviewer still works"));
+    let turn = fx.end_turn(&reviewer, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "x" }])), "");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    assert!(fx.resumes().is_empty() && fx.pastes().is_empty(), "autopilot resumed a stage you took over: {:?}", fx.resumes());
+    assert_eq!(stage_mode(&fx, &planner), crate::bridge::StageMode::Takeover);
+    fx.run(|run| {
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::TakenOver)));
+        let why = run.autopilot.as_ref().and_then(|a| a.waiting.clone()).unwrap_or_default();
+        assert!(why.contains("Planner"), "names the stage: {why}");
+        assert_eq!(run.round, 1, "no round sent back yet");
+    });
+    // Hand back: the round goes back to the Planner now.
+    fx.user(UserAction::HandBack { tab_id: planner.clone() }).expect("hand back");
+    let resumes = fx.resumes();
+    assert_eq!(resumes.len(), 1, "{resumes:?}");
+    assert_eq!(resumes[0].tab_id, planner);
+    fx.run(|run| {
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Running, None));
+        assert_eq!(run.round, 2);
+    });
+}
+
+/// D28: you revised the plan yourself in the Planner you took over while a
+/// round for it was held, then handed it back. Your newer turn is decided
+/// (the plan goes to review again); the stale findings are not sent back.
+#[test]
+fn handing_back_a_stage_you_revised_yourself_decides_your_turn_not_the_held_round() {
+    let mut fx = Fixture::new("take_over_revised");
+    let reviewer = fx.open_plan_reviewer();
+    let planner = fx.planner.clone();
+    fx.user(UserAction::TakeOver { tab_id: planner.clone() }).expect("take over");
+    let turn = fx.end_turn(&reviewer, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "x" }])), "");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    fx.run(|run| assert_eq!(run.stop_reason, Some(StopReason::TakenOver), "the round is held"));
+    // You revise the plan yourself: the Planner ends a newer turn.
+    let revised = fx.planner_turn("p-2", "# Plan\n1. Refresh tokens once, then fail.");
+    fx.actor.handle(ActorMsg::Turn(revised));
+    let reviews_before = fx.launches().iter().filter(|l| l.role_id == "role_plan_reviewer").count();
+    fx.user(UserAction::HandBack { tab_id: planner.clone() }).expect("hand back");
+    assert!(fx.resumes().is_empty() && fx.pastes().is_empty(), "the stale round is not sent back: {:?}", fx.resumes());
+    let reviews = fx.launches().iter().filter(|l| l.role_id == "role_plan_reviewer").count();
+    assert_eq!(reviews, reviews_before + 1, "your revised plan goes to review");
+    fx.run(|run| {
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Running, None));
+        assert!(
+            !run.events.iter().any(|e| e.summary.contains("already handed on")),
+            "your turn is not skipped: {:?}",
+            run.events.iter().map(|e| e.summary.clone()).collect::<Vec<_>>()
+        );
+        let decided = &run.autopilot.as_ref().unwrap().decided;
+        assert!(decided.iter().any(|t| t.ends_with("|bridge|p-2")), "your turn is decided: {decided:?}");
+        // The Timeline never says the round went back: nothing was sent.
+        let lines: Vec<&str> = run.events.iter().map(|e| e.summary.as_str()).collect();
+        assert!(
+            !lines.iter().any(|l| l.contains("goes back to") || l.contains("sent back") || l.contains("Handed to Planner")),
+            "{lines:?}"
+        );
+        assert!(lines.iter().any(|l| l.contains("revised Planner yourself")), "{lines:?}");
+        // Nor is the review stored as the Planner's hand-off.
+        let handoff = run.handoffs.get("role_planner").map(|h| h.text.clone()).unwrap_or_default();
+        assert!(!handoff.starts_with("Review findings from the"), "{handoff}");
+    });
+    assert!(!fx.run_file("findings-plan_reviewer-r1.json").exists(), "no findings file nothing points to");
+    // Nothing is decided twice: handing back again changes nothing.
+    let launches = fx.launches().len();
+    fx.user(UserAction::TakeOver { tab_id: planner.clone() }).unwrap();
+    fx.user(UserAction::HandBack { tab_id: planner.clone() }).unwrap();
+    assert_eq!(fx.launches().len(), launches);
+    assert!(fx.resumes().is_empty());
+}
+
+/// D28: Take over and Hand back keep the stage's `mode` file and the saved
+/// run in step. When the run cannot be saved, the mode is put back and the
+/// press fails, so the bridge and the keystroke gate never disagree with it.
+#[test]
+fn take_over_and_hand_back_put_the_mode_back_when_the_run_cannot_be_saved() {
+    let mut fx = Fixture::new("take_over_save_fails");
+    let reviewer = fx.open_plan_reviewer();
+    let tmp = fx.host.store.lock().unwrap().path.with_extension("json.tmp");
+    // A directory where the save writes its temp file: every save fails.
+    std::fs::create_dir_all(&tmp).unwrap();
+    assert!(fx.user(UserAction::TakeOver { tab_id: reviewer.clone() }).is_err());
+    assert_eq!(stage_mode(&fx, &reviewer), crate::bridge::StageMode::Autopilot, "the mode is put back");
+    fx.run(|run| {
+        assert!(run.taken_over.is_empty(), "nor is the run left taken over");
+        assert_eq!(run.status, RunStatus::Running);
+    });
+
+    std::fs::remove_dir(&tmp).unwrap();
+    fx.user(UserAction::TakeOver { tab_id: reviewer.clone() }).expect("take over");
+    std::fs::create_dir_all(&tmp).unwrap();
+    assert!(fx.user(UserAction::HandBack { tab_id: reviewer.clone() }).is_err());
+    assert_eq!(stage_mode(&fx, &reviewer), crate::bridge::StageMode::Takeover, "still yours");
+    fx.run(|run| {
+        assert_eq!(run.taken_over, vec![reviewer.clone()]);
+        assert_eq!(run.stop_reason, Some(StopReason::TakenOver));
+    });
+    std::fs::remove_dir(&tmp).unwrap();
+}
+
+/// D28: the run waits with `taken_over` only when it has current stage tabs
+/// and you took over every one; a run with none (here its tab list was
+/// emptied) keeps running.
+#[test]
+fn take_over_never_waits_on_a_run_with_no_current_stage_tabs() {
+    let mut fx = Fixture::new("take_over_no_current");
+    let planner = fx.planner.clone();
+    fx.host.store.lock().unwrap().pipeline_run_by_id_mut(RUN).unwrap().tab_ids.clear();
+    fx.user(UserAction::TakeOver { tab_id: planner.clone() }).expect("take over");
+    fx.run(|run| {
+        assert_eq!(run.taken_over, vec![planner.clone()]);
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Running, None));
+    });
+}
+
+/// D28 with V2a: a run the version gate sends to engine 1 mid-run is manual
+/// for good, so nothing is taken over any more. A stage you had taken over
+/// is released (`manual`, which takes keystrokes) and leaves `takenOver`,
+/// so neither its view nor the overview offers a Hand back that would fail.
+#[test]
+fn a_switch_to_engine_1_releases_the_stages_you_took_over() {
+    let mut fx = Fixture::new("take_over_engine_1");
+    let reviewer = fx.open_plan_reviewer();
+    let planner = fx.planner.clone();
+    fx.user(UserAction::TakeOver { tab_id: planner.clone() }).expect("take over");
+    let turn = fx.end_turn(&reviewer, "r-1", review("APPROVED", json!([])), "Approved.");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    fx.host.gate_open.store(false, Ordering::SeqCst);
+    fx.user(UserAction::Send {
+        source_tab_id: reviewer,
+        target_role_id: "role_implementer".into(),
+        values: None,
+        handoff_plan: None,
+        handoff_text: None,
+        force: false,
+    })
+    .expect("send");
+    fx.run(|run| {
+        assert_eq!(run.engine, 1);
+        assert!(run.taken_over.is_empty(), "nothing is taken over on a manual run: {:?}", run.taken_over);
+    });
+    assert_eq!(stage_mode(&fx, &planner), crate::bridge::StageMode::Manual, "the Planner is released");
+}
+
+impl Fixture {
+    /// A bridged, live tab of `role_id` at `step` of the run (in `lane`).
+    fn bridged_tab(&self, role_id: &str, stage_id: &str, step: u32, lane: Option<&str>, kind: ResultKind) -> String {
+        let mut store = self.host.store.lock().unwrap();
+        let role = self.host.roles.iter().find(|r| r.id == role_id).unwrap();
+        let cwd = self.work.path().display().to_string();
+        let tab = store.create_draft_tab(role, &cwd, true, None).unwrap();
+        store.set_tab_chain(&tab, Some(chain(step, lane)), None).unwrap();
+        let stage_key = crate::pipelines::autopilot::stage_key(stage_id, lane);
+        let plan = BridgePlan {
+            run_id: RUN.into(),
+            stage_id: stage_id.into(),
+            role_id: role_id.into(),
+            lane: lane.map(str::to_string),
+            stage_key: stage_key.clone(),
+            kind,
+            autopilot: true,
+        };
+        prepare_stage(&self.host.runs, &plan, &tab).unwrap();
+        store.set_tab_bridge(&tab, Some(BridgeTag { run_id: RUN.into(), stage: stage_key })).unwrap();
+        store.remember_claude_terminal_session(&tab, &format!("5f0c2a31-1b2c-4d3e-8f40-{:012}", step * 10 + lane.map_or(0, |l| l.len() as u32))).unwrap();
+        if let Some(lane) = lane {
+            let run = store.pipeline_run_by_id_mut(RUN).unwrap();
+            run.lanes.iter_mut().find(|l| l.id == lane).unwrap().tab_ids.insert(role_id.into(), tab.clone());
+        }
+        store.save().unwrap();
+        self.host.live.lock().unwrap().insert(tab.clone());
+        tab
+    }
+}
+
+/// D28 in a fanned-out run: a decision held for a stage you took over in
+/// one lane makes the run wait. A turn another lane finishes meanwhile is
+/// not lost: Hand back acts on it with the held round.
+#[test]
+fn a_turn_another_lane_finished_while_a_round_was_held_is_acted_on_at_hand_back() {
+    let mut fx = Fixture::new("take_over_lanes");
+    {
+        let mut store = fx.host.store.lock().unwrap();
+        let lanes = ["pr1", "pr2"]
+            .iter()
+            .map(|id| crate::commands::pipeline::LaneInput { id: id.to_string(), title: id.to_uppercase(), depends_on: vec![] })
+            .collect();
+        crate::commands::pipeline::fan_out(&mut store, RUN, "implementer", lanes).unwrap();
+        let run = store.pipeline_run_by_id_mut(RUN).unwrap();
+        run.stage = "pr_reviewer".into();
+        for lane in &mut run.lanes {
+            lane.stage = "pr_reviewer".into();
+        }
+        store.save().unwrap();
+    }
+    let impl1 = fx.bridged_tab("role_implementer", "implementer", 3, Some("pr1"), ResultKind::Implementer);
+    let rev1 = fx.bridged_tab("role_pr_reviewer", "pr_reviewer", 4, Some("pr1"), ResultKind::Reviewer);
+    let _impl2 = fx.bridged_tab("role_implementer", "implementer", 3, Some("pr2"), ResultKind::Implementer);
+    let rev2 = fx.bridged_tab("role_pr_reviewer", "pr_reviewer", 4, Some("pr2"), ResultKind::Reviewer);
+    let prs = json!({ "schema": 1, "prs": [{ "url": "https://github.com/acme/app/pull/12", "branch": "b", "title": "t" }], "summary": "s" });
+    fx.end_turn(&impl1, "i-1", Some(prs), "Done.");
+    fx.run(|run| {
+        let current: Vec<String> = crate::pipelines::recovery::current_stage_tabs(&crate::pipelines::find("eagle1").unwrap(), run)
+            .into_iter()
+            .map(|t| t.tab_id)
+            .collect();
+        assert!(current.contains(&rev1) && current.contains(&rev2), "{current:?}");
+    });
+
+    fx.user(UserAction::TakeOver { tab_id: impl1.clone() }).expect("take over");
+    let turn = fx.end_turn(&rev1, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "x" }])), "");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    fx.run(|run| assert_eq!(run.stop_reason, Some(StopReason::TakenOver), "the round is held"));
+    // PR2's reviewer approves while the run waits.
+    let turn = fx.end_turn(&rev2, "r2-1", review("APPROVED", json!([])), "Approved.");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    fx.run(|run| {
+        let decided = &run.autopilot.as_ref().unwrap().decided;
+        assert!(!decided.iter().any(|t| t.ends_with("|bridge|r2-1")), "not decided while the run waits: {decided:?}");
+    });
+
+    fx.user(UserAction::HandBack { tab_id: impl1.clone() }).expect("hand back");
+    assert_eq!(fx.resumes().iter().filter(|l| l.tab_id == impl1).count(), 1, "the held round went back");
+    fx.run(|run| {
+        let pr2 = run.lane("pr2").unwrap();
+        assert_eq!(pr2.status, "approved", "PR2's approval is acted on: {:?}", run.events.iter().map(|e| e.summary.clone()).collect::<Vec<_>>());
+    });
+}
+
+/// D28 with a reviewer stage that has checks: Hand back finds you revised
+/// the stage after the held round's turn. The stale round is recorded as
+/// dealt with by you at once (no checks on it), never resumed into the
+/// stage after its checks come back.
+#[test]
+fn a_held_round_with_checks_you_revised_yourself_is_not_sent_after_the_checks() {
+    let id = "eagle1_reviewer_gates_v5";
+    let mut def = crate::pipelines::find("eagle1").unwrap();
+    def.id = id.into();
+    def.name = "Reviewer with checks".into();
+    def.run_kind = None;
+    def.built_in = false;
+    def.stages.iter_mut().find(|s| s.id == "plan_reviewer").unwrap().gates =
+        vec![crate::pipelines::GateDef::Command { run: "npm run check".into(), timeout_secs: None, optional: false }];
+    crate::pipelines::register_for_test(def);
+    let mut fx = Fixture::with_pipeline("take_over_revised_gates", id, Vec::new());
+    let reviewer = fx.open_plan_reviewer();
+    let planner = fx.planner.clone();
+    fx.user(UserAction::TakeOver { tab_id: planner.clone() }).expect("take over");
+    let turn = fx.end_turn(&reviewer, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "x" }])), "");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    fx.finish_gates();
+    fx.run(|run| assert_eq!(run.stop_reason, Some(StopReason::TakenOver), "the round is held"));
+    let revised = fx.planner_turn("p-2", "# Plan\n1. Refresh tokens once, then fail.");
+    fx.actor.handle(ActorMsg::Turn(revised));
+    fx.user(UserAction::HandBack { tab_id: planner.clone() }).expect("hand back");
+    // Any checks Hand back started come back now.
+    while let Ok(msg) = fx.gates_done.recv_timeout(Duration::from_millis(500)) {
+        fx.actor.handle(msg);
+    }
+    crate::pipelines::unregister_for_test(id);
+    assert!(fx.resumes().is_empty() && fx.pastes().is_empty(), "the stale round is not sent back: {:?}", fx.resumes());
+    fx.run(|run| {
+        let decided = &run.autopilot.as_ref().unwrap().decided;
+        assert!(decided.iter().any(|t| t.ends_with("|bridge|p-2")), "your turn is decided: {decided:?}");
+    });
+}
+
+/// D28: Hand back sends a held round back to the stage (your own turn there
+/// is older than the round). When the round is pasted (no session to
+/// resume), your older turn is not decided as well: the stage's next turn,
+/// its reply to the round, is the one autopilot acts on.
+#[test]
+fn a_held_round_pasted_back_at_hand_back_leaves_your_older_turn_undecided() {
+    let mut fx = Fixture::new("take_over_pasted");
+    let reviewer = fx.open_plan_reviewer();
+    let planner = fx.planner.clone();
+    fx.user(UserAction::TakeOver { tab_id: planner.clone() }).expect("take over");
+    // You revise the plan first; the reviewer's round ends after it.
+    let yours = fx.planner_turn("p-2", "# Plan\n1. Refresh tokens once, then fail.");
+    fx.actor.handle(ActorMsg::Turn(yours));
+    std::thread::sleep(Duration::from_millis(5));
+    let turn = fx.end_turn(&reviewer, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "x" }])), "");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    fx.run(|run| assert_eq!(run.stop_reason, Some(StopReason::TakenOver), "the round is held"));
+    // No session to resume: the round is pasted into the Planner.
+    fx.host.store.lock().unwrap().data.tabs.iter_mut().find(|t| t.id == planner).unwrap().sessions.claude_terminal_session_id = None;
+    let launches = fx.launches().len();
+    fx.user(UserAction::HandBack { tab_id: planner.clone() }).expect("hand back");
+    assert_eq!(fx.pastes().iter().filter(|(tab, _)| *tab == planner).count(), 1, "the round went back");
+    assert_eq!(fx.launches().len(), launches, "your older plan is not sent to review: {:?}", fx.launches());
+    fx.run(|run| {
+        let decided = &run.autopilot.as_ref().unwrap().decided;
+        assert!(!decided.iter().any(|t| t.ends_with("|bridge|p-2")), "your older turn stays undecided: {decided:?}");
+    });
+}
+
 /// When the D24 gate refuses one lane mid-run (the run goes manual on
 /// engine 1), the other lanes it unblocked are left waiting for you; the
 /// actor does not try them, fail on "does not report through the pipeline

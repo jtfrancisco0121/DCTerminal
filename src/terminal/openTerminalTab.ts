@@ -2,7 +2,7 @@
  * Open a terminal tab (Claude Code or a plain shell) in a folder. The same
  * live-PTY steps as opening a Cursor/Claude chat in a terminal, without resume.
  */
-import { ptyOpen, shellTerminalStart } from "../bridge";
+import { ptyDetach, ptyOpen, shellTerminalStart } from "../bridge";
 import {
   beginLivePty,
   clearPtyOpening,
@@ -11,8 +11,9 @@ import {
   markPtyOpening,
   rekeyLivePty,
   restartLivePty,
+  type LivePty,
 } from "./live";
-import { measuredTerminalSize } from "./park";
+import { measuredTerminalSize, parkedTerminal, releaseParkedTerminal } from "./park";
 
 export type NewTerminalLaunch = "claude-cli" | "shell";
 
@@ -49,34 +50,66 @@ export async function startTerminalTab(
 
 /**
  * Attaches to a stage terminal the run actor started with no view (an
- * engine-2 run, V3): `pty_open` of that id hands over what it printed so
- * far and streams the rest, like a terminal started here quietly. Does
+ * engine-2 run, V3): `pty_open` of that id replays its ring buffer (V5)
+ * and streams the rest, like a terminal started here quietly. Does
  * nothing when this app already holds the running terminal: a stage the
  * actor resumes (V4) keeps streaming into the same view. A view that saw
  * the old program exit attaches again, to the resumed one. Throws when it
  * cannot attach.
  */
-export async function attachStageTerminal(tab: { id: string; cwd: string; roleId: string }): Promise<void> {
+export async function attachStageTerminal(tab: StageTab): Promise<void> {
   const held = livePty(tab.id);
   if (held && !held.exited) return;
   if (!held && !markPtyOpening(tab.id)) return;
   const live = held ? restartLivePty(tab.id) : beginLivePty(tab.id);
   try {
-    await ptyOpen({
-      id: tab.id,
-      cwd: tab.cwd,
-      launch: "role",
-      roleId: tab.roleId,
-      prompt: null,
-      resumeSessionId: null,
-      ...measuredTerminalSize(),
-      attach: true,
-      onOutput: live.channel,
-    });
+    await openAttached(tab, live.channel);
   } catch (err: unknown) {
     dropLivePty(tab.id);
     throw err;
   } finally {
     clearPtyOpening(tab.id);
   }
+}
+
+type StageTab = { id: string; cwd: string; roleId: string };
+
+/** `pty_open` attaching `channel` to the stage terminal the run actor started. */
+function openAttached(tab: StageTab, channel: LivePty["channel"]): Promise<number> {
+  return ptyOpen({
+    id: tab.id,
+    cwd: tab.cwd,
+    launch: "role",
+    roleId: tab.roleId,
+    prompt: null,
+    resumeSessionId: null,
+    ...measuredTerminalSize(),
+    attach: true,
+    onOutput: channel,
+  });
+}
+
+/**
+ * Nobody watches a hidden stage any more (V5): the backend stops streaming
+ * to this app and keeps the stage running, with its output in the ring
+ * buffer for the next Watch, and this app lets go of its copy. False (and
+ * nothing dropped) for a terminal that is not a hidden stage. `watched`
+ * says whether a view came back meanwhile: that view then watches afresh
+ * (a cleared screen, the ring replayed), since the backend stopped
+ * streaming to the old copy.
+ */
+export async function detachStageTerminal(tab: StageTab, watched: () => boolean): Promise<boolean> {
+  if (!(await ptyDetach(tab.id))) return false;
+  if (watched()) {
+    parkedTerminal(tab.id)?.term.reset();
+    const live = restartLivePty(tab.id);
+    await openAttached(tab, live.channel).catch((err: unknown) => {
+      dropLivePty(tab.id);
+      throw err;
+    });
+    return true;
+  }
+  dropLivePty(tab.id);
+  releaseParkedTerminal(tab.id);
+  return true;
 }

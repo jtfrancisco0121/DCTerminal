@@ -393,6 +393,41 @@ pub fn set_run_mode_to(runs_root: &Path, run_id: &str, mode: StageMode) -> Resul
     Ok(())
 }
 
+/// The run went to engine 1 mid-run and is manual for good (V2a's
+/// `make_manual`): every stage folder says `manual`, a stage you took over
+/// too (V5), since nothing is taken over on a manual run.
+pub fn set_run_manual_for_good(runs_root: &Path, run_id: &str) -> Result<(), String> {
+    let Some(run_dir) = folder::run_dir(runs_root, run_id) else {
+        return Ok(());
+    };
+    for dir in stage_dirs(&run_dir) {
+        write_mode(&dir, StageMode::Manual).map_err(|err| format!("{}: {err}", dir.display()))?;
+    }
+    Ok(())
+}
+
+/// A bridged tab's stage folder (`runs/<run>/stages/<stage>`), when the ids are valid.
+pub fn stage_dir_of(runs_root: &Path, tag: &BridgeTag) -> Option<PathBuf> {
+    let run_dir = folder::run_dir(runs_root, &tag.run_id)?;
+    folder::stage_dir_path(&run_dir, &tag.stage)
+}
+
+/// You took a stage over, or handed it back (V5, D28): its `mode` file,
+/// which the bridge reads at each stop and the terminal at each keystroke.
+/// False (nothing written) when `tab_id` no longer owns the stage.
+pub fn set_stage_mode(runs_root: &Path, tag: &BridgeTag, tab_id: &str, mode: StageMode) -> Result<bool, String> {
+    let Some(dir) = stage_dir_of(runs_root, tag) else {
+        return Ok(false);
+    };
+    match read_stage(&dir) {
+        Some((info, _)) if info.run_id == tag.run_id && info.tab_id == tab_id => {
+            write_mode(&dir, mode).map_err(|err| format!("{}: {err}", dir.display()))?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
 /// The stage's latest finished turn, read back from `turn.json` (Continue
 /// after a restart). `None` while a turn runs, before the first one, after
 /// an abandoned one, or when `tab_id` no longer owns the stage.

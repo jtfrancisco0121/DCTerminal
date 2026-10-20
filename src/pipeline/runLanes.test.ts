@@ -209,6 +209,32 @@ describe("runLanes", () => {
     expect([review.lane, review.verdict, ...span(review)]).toEqual(["pr1", "CHANGES", 11, 15]);
   });
 
+  it("a round you dealt with yourself (V5, D28) ends that round like one sent back", () => {
+    const lanes = [{ id: "pr1", title: "PR1 — API", status: "active", stage: "implementer", round: 2, tabIds: {} }];
+    const model = runLanes(
+      run(
+        [
+          ev(5, "handoff", { stageId: "implementer", summary: "PR1 — API: Handed to Implementer" }),
+          ev(11, "handoff", { stageId: "pr_reviewer", summary: "PR1 — API: Handed to PR Reviewer" }),
+          // The run's own round is not the lane's.
+          ev(15, "loopBack", {
+            stageId: "implementer",
+            roleId: "role_pr_reviewer",
+            round: 4,
+            summary: "PR1 — API: Round 1 dealt with by you (REQUEST CHANGES)",
+          }),
+        ],
+        { lanes },
+      ),
+      stages,
+      T0 + 20 * MIN,
+    );
+    expect(turnsOf(model, "implementer").map((b) => [b.lane, b.round, ...span(b)])).toEqual([
+      ["pr1", 1, 5, 11],
+      ["pr1", 2, 15, 20],
+    ]);
+  });
+
   it("reads an event's lane from its laneId, not its summary text", () => {
     // "PR1: Auth" starts with "PR1: ", so the text alone names the wrong lane.
     const lanes = [
