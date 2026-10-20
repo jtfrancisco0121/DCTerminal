@@ -214,6 +214,7 @@ import { FirstRunSetup, type FirstRunFinish } from "./components/FirstRunSetup";
 import { insertIntoPad, type PadSelection } from "./prompts/library";
 import { startQueue } from "./terminal/startQueue";
 import { handoffTerminalStart } from "./handoff/terminalStart";
+import { showActorOutcome } from "./handoff/actorSend";
 import {
   chainRound,
   chainTabFor,
@@ -4608,8 +4609,7 @@ export function StartupForm({
             setTerminalCapture(null);
             setHandoffTarget(null);
             await cancelPendingPlan();
-            await refreshTabs();
-            await handleSelectTab(outcome.tabId ?? targetTab.id);
+            await showActorOutcome(outcome, { refreshTabs, selectTab: handleSelectTab }, targetTab.id);
           } catch (err: unknown) {
             setHandoffError(errorText(err));
           } finally {
@@ -4728,7 +4728,8 @@ export function StartupForm({
           setHandoffs((prev) => [bound, ...prev.filter((item) => item.id !== bound.id)]);
           setTerminalCapture(null);
           setHandoffTarget(null);
-          await refreshTabs();
+          // Your Send shows the stage it opened, as a manual Send always did.
+          await showActorOutcome(outcome, { refreshTabs, selectTab: handleSelectTab });
           return;
         }
         // The next stage on the chain, or a round sent back: made once.
