@@ -133,7 +133,9 @@ fn a_reviewer_that_forgets_the_tool_is_blocked_once_then_ends_with_no_result() {
     assert!(stage.open().turn().unwrap().blocked);
     assert!(stage.inbox().is_empty(), "a blocked stop is not a turn end");
 
-    assert_eq!(stage.hook("Stop", stop("p-1", true, "Still looks good.")), None);
+    // The next Stop is another hook process (a fresh StageDir): with
+    // stop_hook_active false, only turn.json's blocked flag ends the turn.
+    assert_eq!(stage.hook("Stop", stop("p-1", false, "Still looks good.")), None);
     let events = stage.inbox();
     assert_eq!(events.len(), 1);
     let event = &events[0];
@@ -145,7 +147,7 @@ fn a_reviewer_that_forgets_the_tool_is_blocked_once_then_ends_with_no_result() {
     assert_eq!(event.last_assistant_message, "Still looks good.");
     assert!(event.result.is_none());
     // The end is reported once, even if Claude stops again.
-    assert_eq!(stage.hook("Stop", stop("p-1", true, "again")), None);
+    assert_eq!(stage.hook("Stop", stop("p-1", false, "again")), None);
     assert!(stage.inbox().is_empty());
 }
 
@@ -183,7 +185,7 @@ fn each_turn_gets_its_own_block() {
     let stage = Stage::new("bridge_block_per_turn", true);
     stage.hook("UserPromptSubmit", prompt("p-1"));
     assert!(stage.hook("Stop", stop("p-1", false, "")).is_some());
-    stage.hook("Stop", stop("p-1", true, ""));
+    assert_eq!(stage.hook("Stop", stop("p-1", false, "")), None, "blocked once per turn");
     stage.hook("UserPromptSubmit", prompt("p-2"));
     assert!(stage.hook("Stop", stop("p-2", false, "")).is_some(), "a new turn is blocked again");
 }

@@ -1148,7 +1148,9 @@ mod bridge {
         let scenario = json!({ "turns": [
             {
                 "steps": [{ "reply": "Looks fine." }],
-                "on_block": [[{ "reply": "Which verdict should I submit?" }], [{ "reply": "never reached" }]]
+                "on_block": [[{ "reply": "Which verdict should I submit?" }], [{ "reply": "never reached" }]],
+                // Only turn.json's blocked flag, read by the next hook process, ends the turn.
+                "stop_hook_active_after_block": false
             },
             { "exit": 0 }
         ] });
@@ -1160,6 +1162,7 @@ mod bridge {
         assert_eq!(turn.last_assistant_message, "Which verdict should I submit?");
         assert_eq!(fake.wait_exit(), Some(0));
         assert!(!fake.screen().contains("never reached"), "blocked once, not twice");
+        assert_eq!(fake.screen().matches("Stop hook error").count(), 1, "{}", fake.screen());
         assert_eq!(stage.inbox().len(), 1);
     }
 
