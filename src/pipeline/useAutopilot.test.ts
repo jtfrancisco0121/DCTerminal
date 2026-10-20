@@ -743,6 +743,48 @@ describe("useAutopilot", () => {
     expect(terminalSessionLog).not.toHaveBeenCalled();
     expect(pipelineDecide).not.toHaveBeenCalled();
   });
+
+  it("a rate-limited turn runs no checks, reports the error and tells you it stopped for usage_limit", async () => {
+    vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+    vi.mocked(pipelineDecide).mockResolvedValue({
+      action: "stop",
+      stageId: "implementer",
+      reason: "Implementer hit a Claude usage limit: You've hit your limit. Carry on yourself once it resets.",
+      stopReason: "usage_limit",
+    });
+    const { deps, onLog } = setup([tab("impl", "role_implementer", 3)]);
+    onLog("impl", { ...log("You've hit your limit"), rateLimit: "You've hit your limit" });
+    await waitFor(() => expect(deps.notifyStop).toHaveBeenCalled());
+    expect(pipelineRunGates).not.toHaveBeenCalled();
+    expect(vi.mocked(pipelineDecide).mock.calls[0][1]).toMatchObject({
+      rateLimit: "You've hit your limit",
+      // No usage reading: unknown, not 0.
+      usagePercent: null,
+    });
+    expect(vi.mocked(deps.notifyStop).mock.calls[0]).toEqual([
+      "impl",
+      "Implementer hit a Claude usage limit: You've hit your limit. Carry on yourself once it resets.",
+      "usage_limit",
+    ]);
+  });
+
+  it("a stop autopilot makes itself while carrying out names carry_out_failed in the notification", async () => {
+    vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+    vi.mocked(pipelineDecide).mockResolvedValue({
+      action: "loopBack",
+      stageId: "implementer",
+      roleId: "role_implementer",
+      reason: "round 1 goes back",
+    });
+    live.set("impl", { exited: false });
+    const { deps, onLog } = setup(
+      [tab("impl", "role_implementer", 3), tab("pr", "role_pr_reviewer", 4)],
+      { impl: { kind: "working" } as TerminalState },
+    );
+    onLog("pr", log("## HANDOFF: Verdict\nREQUEST CHANGES"));
+    await waitFor(() => expect(deps.notifyStop).toHaveBeenCalled());
+    expect(vi.mocked(deps.notifyStop).mock.calls[0][2]).toBe("carry_out_failed");
+  });
 });
 
 describe("a duplicated PR Reviewer in a pipeline of your own (Track H4)", () => {

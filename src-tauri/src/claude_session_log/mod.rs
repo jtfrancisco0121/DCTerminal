@@ -61,6 +61,10 @@ pub struct TerminalSessionLog {
     pub pending_tools: Vec<OpenTool>,
     /// `permissionMode` of the latest real prompt.
     pub permission_mode: Option<String>,
+    /// The current turn ended on a Claude rate-limit error (its text, as
+    /// shown: "You've hit your limit · resets 3pm"). Autopilot stops the run
+    /// with `usage_limit` on it.
+    pub rate_limit: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -200,6 +204,7 @@ pub(crate) struct Parser {
     plan_at: Option<String>,
     tools: Vec<SessionToolCall>,
     by_id: HashMap<String, usize>,
+    rate_limit: Option<String>,
 }
 
 impl Parser {
@@ -233,6 +238,9 @@ impl Parser {
             .get("stop_reason")
             .and_then(Value::as_str)
             .map(str::to_string);
+        if let Some(error) = rate_limit_error(value, message) {
+            self.rate_limit = Some(error);
+        }
         let Some(blocks) = message.get("content").and_then(Value::as_array) else {
             if let Some(text) = message.get("content").and_then(Value::as_str) {
                 self.push_text(text);
@@ -330,6 +338,7 @@ impl Parser {
             UserTurn::Prompt(_) => {
                 self.reply.clear();
                 self.turn_tools.clear();
+                self.rate_limit = None;
                 self.last_stop = None;
                 self.ended = false;
                 self.interrupted = false;
@@ -388,8 +397,48 @@ impl Parser {
             open_tool,
             pending_tools,
             permission_mode: self.permission_mode.clone(),
+            rate_limit: self.rate_limit.clone(),
         }
     }
+}
+
+/// Most characters of a rate-limit error kept.
+const RATE_LIMIT_CHARS: usize = 300;
+
+/// The text of a Claude rate-limit error record, if `value` is one. Claude
+/// Code writes a refused request as a synthetic assistant message flagged
+/// `isApiErrorMessage` (model `<synthetic>`), with `error: "rate_limit"` on
+/// recent builds; older ones say so only in the text ("Claude AI usage limit
+/// reached|<reset>", "API Error: 429 … rate_limit_error"). Not seen live yet
+/// (V0 hit no limit), so both are matched. A model's own reply never counts.
+fn rate_limit_error(value: &Value, message: &Value) -> Option<String> {
+    let synthetic = is_flag(value, "isApiErrorMessage")
+        || message.get("model").and_then(Value::as_str) == Some("<synthetic>");
+    if !synthetic {
+        return None;
+    }
+    let text = match message.get("content") {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(blocks)) => blocks
+            .iter()
+            .filter_map(|b| b.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join(" "),
+        _ => String::new(),
+    };
+    let text = text.trim();
+    let flagged = value.get("error").and_then(Value::as_str) == Some("rate_limit");
+    let lower = text.to_ascii_lowercase();
+    let said = ["usage limit", "limit reached", "hit your limit", "rate limit", "rate_limit", "error: 429"]
+        .iter()
+        .any(|needle| lower.contains(needle));
+    // "Context limit reached" and the like are about the conversation, not usage.
+    let about_context = lower.contains("context") && !lower.contains("usage");
+    if !flagged && (!said || about_context) {
+        return None;
+    }
+    let shown = if text.is_empty() { "Claude reported a rate limit" } else { text };
+    Some(shown.chars().take(RATE_LIMIT_CHARS).collect())
 }
 
 /// What a main-chain `user` record that carries no tool result is.
@@ -944,6 +993,70 @@ mod tests {
         ]);
         let hints: Vec<&str> = log.pending_tools.iter().map(|t| t.hint.as_str()).collect();
         assert_eq!(hints, vec!["auth.ts", "docs.example.com", "npm test", ""]);
+    }
+
+    /// The record Claude Code writes when a request is refused for a limit:
+    /// a synthetic assistant message flagged `isApiErrorMessage`.
+    fn api_error(t: &str, error: Option<&str>, at: &str) -> Value {
+        let mut v = text(t, Some("stop_sequence"), at);
+        v["message"]["model"] = json!("<synthetic>");
+        v["isApiErrorMessage"] = json!(true);
+        if let Some(error) = error {
+            v["error"] = json!(error);
+        }
+        v
+    }
+
+    #[test]
+    fn a_rate_limit_error_ends_the_turn_and_is_named() {
+        let limited = parse(&[
+            prompt("Fix it", "t1"),
+            api_error("You've hit your limit · resets 3pm (Europe/London)", Some("rate_limit"), "t2"),
+        ]);
+        assert!(limited.turn_done);
+        assert_eq!(
+            limited.rate_limit.as_deref(),
+            Some("You've hit your limit · resets 3pm (Europe/London)")
+        );
+        // Older builds: no `error` field, the limit in the text.
+        let legacy = parse(&[
+            prompt("Fix it", "t1"),
+            api_error("Claude AI usage limit reached|1760000000", None, "t2"),
+        ]);
+        assert_eq!(legacy.rate_limit.as_deref(), Some("Claude AI usage limit reached|1760000000"));
+        let http = parse(&[
+            prompt("Fix it", "t1"),
+            api_error("API Error: 429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\"}}", None, "t2"),
+        ]);
+        assert!(http.rate_limit.is_some());
+    }
+
+    #[test]
+    fn other_errors_and_a_reply_about_limits_are_not_a_rate_limit() {
+        let overloaded = parse(&[
+            prompt("Fix it", "t1"),
+            api_error("API Error: 529 Overloaded", None, "t2"),
+        ]);
+        assert_eq!(overloaded.rate_limit, None);
+        let context = parse(&[
+            prompt("Fix it", "t1"),
+            api_error("Context limit reached · /compact or /clear to continue", None, "t2"),
+        ]);
+        assert_eq!(context.rate_limit, None);
+        let talk = parse(&[
+            prompt("What is the usage limit?", "t1"),
+            text("The 5-hour usage limit reached 80% earlier; rate limit details are in docs.", Some("end_turn"), "t2"),
+        ]);
+        assert_eq!(talk.rate_limit, None);
+        // A new prompt starts a new turn: the error belonged to the last one.
+        let next = parse(&[
+            prompt("Fix it", "t1"),
+            api_error("You've hit your limit · resets 3pm", Some("rate_limit"), "t2"),
+            prompt("try again", "t3"),
+            text("Done.", Some("end_turn"), "t4"),
+        ]);
+        assert_eq!(next.rate_limit, None);
+        assert_eq!(next.last_reply, "Done.");
     }
 
     #[test]

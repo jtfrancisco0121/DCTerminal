@@ -200,6 +200,9 @@ pub struct TerminalLaunch {
     pub model: Option<String>,
     /// Claude `Plain` / `Role`: pin the new session to this id. Cursor ignores it.
     pub session_id: Option<String>,
+    /// Claude: one `--settings` value, put with the other Claude flags (after
+    /// any `node` script, before the prompt). Cursor ignores it.
+    pub settings: Option<serde_json::Value>,
 }
 
 /// A fresh v4 UUID for `claude --session-id`.

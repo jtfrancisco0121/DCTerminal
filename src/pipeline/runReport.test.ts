@@ -75,6 +75,32 @@ describe("run report", () => {
     expect(followUps(run())).toEqual(["[LOW] rename x", "[INFO] comment wording"]);
   });
 
+  it("a stopped run and each stop line name the reason code's plain-English line", () => {
+    const report = formatRunReport(
+      run({
+        status: "waiting",
+        stopReason: "usage_limit",
+        autopilot: { enabled: true, waiting: "Implementer hit a Claude usage limit: resets 3pm." },
+        events: [
+          {
+            at: "2026-10-13T10:30:00Z",
+            kind: "stop",
+            stageId: "implementer",
+            round: 2,
+            summary: "Implementer hit a Claude usage limit: resets 3pm.",
+            outcome: "usage_limit",
+          },
+        ],
+      }),
+    );
+    expect(report).toContain(
+      "- Waiting for you: Claude's usage limit was reached. Implementer hit a Claude usage limit: resets 3pm.",
+    );
+    expect(report).toContain(
+      "**Waiting for you** (Implementer): Claude's usage limit was reached. Implementer hit a Claude usage limit: resets 3pm.",
+    );
+  });
+
   it("an empty ledger says so", () => {
     expect(formatRunReport(run({ events: [], gates: {} }))).toContain("Nothing recorded yet.");
   });

@@ -1264,6 +1264,18 @@ mod tests {
     }
 
     #[test]
+    fn every_stop_reason_code_is_saved_as_its_snake_case_name_and_reads_back() {
+        use crate::store::StopReason;
+        for code in StopReason::ALL {
+            let saved = serde_json::to_value(code).unwrap();
+            assert_eq!(saved, serde_json::json!(code.as_str()));
+            assert_eq!(serde_json::from_value::<StopReason>(saved).unwrap(), code);
+        }
+        let names: std::collections::HashSet<_> = StopReason::ALL.iter().map(|c| c.as_str()).collect();
+        assert_eq!(names.len(), 13, "one name per code");
+    }
+
+    #[test]
     fn a_status_or_reason_from_a_newer_build_still_loads() {
         use crate::store::{RunStatus, StopReason};
         let run: PipelineRun = serde_json::from_str(&old_run_json(

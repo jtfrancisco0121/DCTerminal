@@ -217,6 +217,7 @@ mod tests {
             },
             model: Some("composer-2.5".into()),
             session_id: None,
+            settings: None,
         };
         assert_eq!(
             cursor_terminal_args(&role).unwrap(),
@@ -233,6 +234,7 @@ mod tests {
             kind: TerminalKind::Plain,
             model: Some("gpt-5".into()),
             session_id: None,
+            settings: None,
         };
         assert_eq!(
             cursor_terminal_args(&plain).unwrap(),
@@ -244,6 +246,7 @@ mod tests {
             },
             model: None,
             session_id: None,
+            settings: None,
         };
         assert_eq!(
             cursor_terminal_args(&resume).unwrap(),
@@ -255,6 +258,7 @@ mod tests {
             },
             model: None,
             session_id: None,
+            settings: None,
         };
         assert!(cursor_terminal_args(&bad).is_err());
     }
