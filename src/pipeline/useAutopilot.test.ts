@@ -881,22 +881,30 @@ describe("useAutopilot", () => {
       expect(pipelineBridgeTurn).toHaveBeenCalledWith("pr");
     });
 
-    it("a tab whose bridge tag the core dropped (a Restart switched the run to engine 1) is decided from its log", async () => {
+    it("a Resume that switched the run to engine 1 decides nothing: the bridge already decided the turn and autopilot is off", async () => {
+      // First the bridge's turn is decided once.
       vi.mocked(getPipelineRun).mockResolvedValue(run(true));
       vi.mocked(pipelineDecide).mockResolvedValue({ action: "skip", reason: "x" });
-      // The core has no bridged turn for the tab any more.
-      vi.mocked(pipelineBridgeTurn).mockResolvedValue(null);
+      vi.mocked(pipelineBridgeTurn).mockResolvedValue(bridgeTurn());
       const tabs = [bridgedReviewer()];
       const { deps, onLog } = setup(tabs);
-      vi.mocked(deps.refreshTabs).mockImplementation(async () => {
-        tabs[0] = tab("pr", "role_pr_reviewer", 4);
-      });
-      onLog("pr", log("## HANDOFF: Verdict\nREQUEST CHANGES"));
+      const reply = log("## HANDOFF: Verdict\nREQUEST CHANGES");
+      onLog("pr", reply);
       await waitFor(() => expect(pipelineDecide).toHaveBeenCalledTimes(1));
-      expect(deps.refreshTabs).toHaveBeenCalled();
-      const report = vi.mocked(pipelineDecide).mock.calls[0][1];
-      expect(report.verdict).toBe("REQUEST CHANGES");
-      expect(report.turn).not.toContain("|bridge|");
+      // The Resume's gate: the core dropped the tag and turned autopilot off.
+      vi.mocked(getPipelineRun).mockResolvedValue(run(false));
+      vi.mocked(pipelineBridgeTurn).mockResolvedValue(null);
+      vi.mocked(deps.refreshTabs).mockImplementation(async () => {
+        // React applies the refreshed list later, as a render would.
+        setTimeout(() => (tabs[0] = tab("pr", "role_pr_reviewer", 4)), 0);
+      });
+      // The resumed session's log still shows the same finished turn.
+      onLog("pr", reply);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      onLog("pr", reply);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(pipelineDecide).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(pipelineDecide).mock.calls[0][1].turn).toBe("pr|bridge|p-1");
     });
 
     it("a bridge turn that ended before the app started waits for Continue", async () => {
