@@ -29,7 +29,6 @@ import {
   diagnosticsSetCapture,
   diagnosticsStatus,
   sessionAgentLogs,
-  listenBridgeNeeds,
   listenBridgeTurn,
   listenPermissionAuto,
   listenPermissionRequests,
@@ -227,6 +226,7 @@ import {
 } from "./handoff/executor";
 import { behaviourRole, pipelineDef, pipelineStages, roleBehaviour, stageBehaviour } from "./pipeline/defs";
 import { eagleStartChain } from "./pipeline/eagleStart";
+import { useBridgeNeeds } from "./terminal/bridgeNeeds";
 import { useAutopilot } from "./pipeline/useAutopilot";
 import { onceValue, subscribeAutopilotStops } from "./pipeline/autopilotStops";
 import { terminalStageSource, turnId } from "./pipeline/autopilot";
@@ -253,9 +253,6 @@ import {
   type SessionLogPollState,
 } from "./terminal/sessionLogPoll";
 import {
-  bridgeNeedsAfterAnswer,
-  bridgeNeedsAfterDialog,
-  bridgeNeedsAfterRead,
   deriveTerminalState,
   dialogAfterRead,
   dialogDrawn,
@@ -265,7 +262,6 @@ import {
   sameTerminalState,
   terminalNeedsMessage,
   terminalWaitingText,
-  type BridgeNeedsMark,
   type DialogOwner,
   type LogRecordsSeen,
   type TerminalState,
@@ -298,7 +294,6 @@ import {
   ptyExitCode,
   rekeyLivePty,
   subscribeLivePty,
-  subscribePtyAnswer,
   subscribePtyExit,
 } from "./terminal/live";
 import {
@@ -588,21 +583,9 @@ export function StartupForm({
       setDialogOwnerVersion((value) => value + 1);
     }
   }, []);
-  /**
-   * Bridged stages' Needs you (D22): the PermissionRequest hook (or its
-   * Notification backup) said a permission dialog is up. Cleared when you
-   * answer it (an answer key, or its screen dialog gone), or by a later log
-   * read that shows the tool finished or the turn over.
-   */
-  const bridgeNeeds = useRef(new Map<string, BridgeNeedsMark>());
-  const [bridgeNeedsVersion, setBridgeNeedsVersion] = useState(0);
-  const setBridgeNeeds = useCallback((tabId: string, mark: BridgeNeedsMark | undefined) => {
-    const prev = bridgeNeeds.current.get(tabId);
-    if (prev === mark) return;
-    if (mark) bridgeNeeds.current.set(tabId, mark);
-    else bridgeNeeds.current.delete(tabId);
-    setBridgeNeedsVersion((value) => value + 1);
-  }, []);
+  /** Bridged stages' Needs you (D22): see `useBridgeNeeds`. */
+  const bridgeNeeds = useBridgeNeeds(() => savedTabsRef.current);
+  const { afterRead: bridgeNeedsAfterLogRead, afterDialog: bridgeNeedsAfterScreen } = bridgeNeeds;
   /** Tabs whose PTYs a workspace replace is stopping: their exit is not news. */
   const replacingTabs = useRef(new Set<string>());
   const [renamingTabId, setRenamingTabId] = useState<string | null>(null);
@@ -1477,7 +1460,7 @@ export function StartupForm({
         dialogDetector.answering(tabId),
       );
       setDialogOwner(tabId, next.owner);
-      setBridgeNeeds(tabId, bridgeNeedsAfterRead(bridgeNeeds.current.get(tabId), log, readAt));
+      bridgeNeedsAfterLogRead(tabId, log, readAt);
       // Mid-turn, the next call's dialog may be half drawn already.
       if (next.clear) dialogDetector.clear(tabId, { keepPartial: !!log && !log.turnDone });
       // New records restart the quiet minute before a turn shows as unknown.
@@ -1490,7 +1473,7 @@ export function StartupForm({
       // log with the turn it decides on, and a stale one reads as a newer prompt.
       autopilotLogRef.current?.(tabId, log);
     },
-    [isWatchingTab, notifyAgent, setBridgeNeeds, setDialogOwner],
+    [bridgeNeedsAfterLogRead, isWatchingTab, notifyAgent, setDialogOwner],
   );
 
   // PTY start and exit change which terminals are live and their state.
@@ -1533,23 +1516,17 @@ export function StartupForm({
           : undefined,
       );
       // The hook's Needs you: a dialog drawn after it and gone again was answered.
-      setBridgeNeeds(id, bridgeNeedsAfterDialog(bridgeNeeds.current.get(id), visible));
+      bridgeNeedsAfterScreen(id, visible);
       // Read the log now: the open tool decides what the dialog is for.
       const entry = sessionLogWatch.current.get(id);
       if (visible && entry) entry.forceRead = true;
-    });
-    // An answer key sent after the hook answered its prompt: the approved
-    // tool may run for minutes, and the log shows nothing until it finishes.
-    const unsubscribeAnswer = subscribePtyAnswer((id) => {
-      setBridgeNeeds(id, bridgeNeedsAfterAnswer(bridgeNeeds.current.get(id), Date.now()));
     });
     return () => {
       unsubscribeLive();
       unsubscribeExit();
       unsubscribeDialog();
-      unsubscribeAnswer();
     };
-  }, [isWatchingTab, notifyAgent, setBridgeNeeds, setDialogOwner]);
+  }, [bridgeNeedsAfterScreen, isWatchingTab, notifyAgent, setDialogOwner]);
 
   // Every live Claude role terminal, plus role terminals on screen or in a
   // chain: read their Claude session log while the PTY streams output, until
@@ -1634,7 +1611,7 @@ export function StartupForm({
       if (!isClaudeRoleTerminal(tab)) continue;
       const state = deriveTerminalState({
         log: sessionLogs[tab.id],
-        bridgeNeeds: bridgeNeeds.current.get(tab.id) ?? null,
+        bridgeNeeds: bridgeNeeds.markOf(tab.id),
         // Only once a log read tied the dialog to one of the turn's tools.
         dialogTool: dialogTabs.includes(tab.id)
           ? dialogToolFor(dialogOwners.current.get(tab.id), sessionLogs[tab.id])
@@ -1649,10 +1626,10 @@ export function StartupForm({
     if (!changed && Object.keys(prev).length === Object.keys(next).length) return prev;
     terminalStatesRef.current = next;
     return next;
-    // ptyVersion: exit codes, dialogOwnerVersion and bridgeNeedsVersion: dialog
+    // ptyVersion: exit codes, dialogOwnerVersion and bridgeNeeds.version: dialog
     // owners and bridge Needs you live outside React state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bridgeNeedsVersion, dialogOwnerVersion, dialogTabs, ptyVersion, quietTurnTabs, savedTabs, sessionLogs, terminalBusy]);
+  }, [bridgeNeeds.version, dialogOwnerVersion, dialogTabs, ptyVersion, quietTurnTabs, savedTabs, sessionLogs, terminalBusy]);
 
   // One toast and OS notification per prompt that needs the user.
   const needsNotified = useRef(new Set<string>());
@@ -2487,29 +2464,6 @@ export function StartupForm({
       unlisten?.();
     };
   }, []);
-  // Engine 2 (ADR-015, D22): a bridged stage's permission dialog is up,
-  // straight from Claude Code's PermissionRequest hook; the screen is the fallback.
-  useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | null = null;
-    void listenBridgeNeeds((event) => {
-      const tab = savedTabsRef.current.find((item) => item.id === event.tabId);
-      if (!tab?.bridge || tab.bridge.runId !== event.runId || tab.bridge.stage !== event.stageKey) return;
-      // The late Notification backup never replaces what the hook said.
-      if (event.source === "permission_prompt" && bridgeNeeds.current.has(tab.id)) return;
-      setBridgeNeeds(tab.id, { tool: event.tool ?? null, at: Date.now(), key: `${event.turn}|${event.at}` });
-    })
-      .then((stop) => {
-        if (disposed) stop();
-        else unlisten = stop;
-      })
-      // intentionally silent: the screen's permission dialog still shows Needs you.
-      .catch(() => {});
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, [setBridgeNeeds]);
   // The core stopped a run by itself (a stall, or a turn that finished while
   // the app was closed): tell you the way a stop autopilot made does.
   // Stops made before this listener attached (the startup reconcile) are
