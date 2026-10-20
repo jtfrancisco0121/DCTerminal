@@ -127,6 +127,16 @@ pub enum StageKind {
 }
 
 impl StageKind {
+    /// The kind as written in `pipelines.json`.
+    pub fn label(self) -> &'static str {
+        match self {
+            StageKind::Planner => "planner",
+            StageKind::Reviewer => "reviewer",
+            StageKind::Implementer => "implementer",
+            StageKind::Generic => "generic",
+        }
+    }
+
     /// The kind of a built-in role, if `role_id` is one.
     pub fn of_builtin_role(role_id: &str) -> Option<StageKind> {
         match role_id.trim() {
@@ -529,6 +539,24 @@ fn check_pipeline(
             ));
         }
         check_text(&format!("stage \"{}\" title", stage.id), &stage.title)?;
+        // Autopilot reads a verdict from a stage exactly when it loops back,
+        // so a kind written in the file must agree with its loopBack.
+        match (stage.kind, stage.loop_back.is_some()) {
+            (Some(kind), true) if kind != StageKind::Reviewer => {
+                return Err(format!(
+                    "stage \"{}\" has a loopBack, so its kind is reviewer (it is set to {}). Change the kind or remove the loopBack.",
+                    stage.id,
+                    kind.label()
+                ));
+            }
+            (Some(StageKind::Reviewer), false) => {
+                return Err(format!(
+                    "stage \"{}\" is a reviewer, so it needs a loopBack (reviewers send rounds back). Add one or change the kind.",
+                    stage.id
+                ));
+            }
+            _ => {}
+        }
         if !stage.also_reviewers.is_empty() {
             if stage.loop_back.is_none() {
                 return Err(format!(

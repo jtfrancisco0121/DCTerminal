@@ -228,6 +228,35 @@ fn an_invalid_pipeline_is_kept_disabled_with_the_reason() {
     assert!(again[2].disabled.is_some(), "an unreadable entry stays disabled");
 }
 
+// Rust reads "reviewer" from the loop-back, TS from the kind: a kind written
+// in the file that says otherwise is refused, so the two never disagree.
+#[test]
+fn a_kind_that_contradicts_the_loop_back_is_refused_and_kept_as_written() {
+    let err = |def: PipelineDef| validate_user_pipelines_with(&[def], None).unwrap_err();
+    for kind in [StageKind::Planner, StageKind::Implementer, StageKind::Generic] {
+        let mut looped = user_def("looped");
+        looped.stages[1].kind = Some(kind);
+        let msg = err(looped);
+        assert!(msg.contains("stage \"review\"") && msg.contains("loopBack"), "{kind:?}: {msg}");
+    }
+    let mut lone = user_def("lone");
+    lone.stages[0].kind = Some(StageKind::Reviewer);
+    let msg = err(lone);
+    assert!(msg.contains("stage \"fix\"") && msg.contains("loopBack"), "{msg}");
+    // Written as the defaults would read it: fine.
+    let mut said = user_def("said");
+    said.stages[0].kind = Some(StageKind::Implementer);
+    said.stages[1].kind = Some(StageKind::Reviewer);
+    assert_eq!(validate_user_pipelines_with(&[said], None), Ok(()));
+    // Kept, disabled with the reason, and the kind stays as written.
+    let mut looped = user_def("looped");
+    looped.stages[1].kind = Some(StageKind::Implementer);
+    let checked = checked_user_pipelines(vec![looped], None);
+    assert!(checked[0].disabled.as_deref().unwrap().contains("loopBack"));
+    assert_eq!(checked[0].stages[1].kind, Some(StageKind::Implementer));
+    assert!(checked[0].stages[1].loop_back.is_some());
+}
+
 #[test]
 fn a_disabled_pipeline_cannot_drive_a_run() {
     let id = "disabled_registry_test";
