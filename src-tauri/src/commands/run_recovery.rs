@@ -165,7 +165,7 @@ pub(crate) fn watchdog_tick(
         let key = item.key();
         let log = read_log(readers, item);
         let seen = StallObservation {
-            working: log.as_ref().is_some_and(|(log, _)| working(&item.tab.role_id, log)),
+            working: log.as_ref().is_some_and(|(log, _)| working(item.tab.kind, log)),
             log_len: log.as_ref().and_then(|(_, len)| *len),
             pty_quiet: item.pty_quiet,
         };

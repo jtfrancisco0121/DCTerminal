@@ -860,7 +860,7 @@ mod recovery {
     use super::*;
     use dcterminal_lib::testing::{
         current_stage_tabs, find_pipeline, reconcile_run, stop_stalled, turn_key, working,
-        PipelineRun, Reconciled, RunStatus, StallObservation, StallWatch, StopReason,
+        PipelineRun, Reconciled, RunStatus, StageKind, StallObservation, StallWatch, StopReason,
     };
     use serde_json::json;
     use std::collections::HashMap;
@@ -957,7 +957,7 @@ mod recovery {
             reader.refresh();
             let log = reader.summary();
             let seen = StallObservation {
-                working: working("role_implementer", &log),
+                working: working(StageKind::Implementer, &log),
                 log_len: std::fs::metadata(reader.path()).ok().map(|m| m.len()),
                 pty_quiet: Some(fake.session.quiet_for()),
             };

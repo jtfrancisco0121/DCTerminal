@@ -42,6 +42,7 @@ pub mod testing {
     pub use crate::claude_session_log::{find_session_log, TerminalSessionLog, ToolCallStatus};
     pub use crate::pty::session::{PtyOutput, PtySession, SpawnSpec};
     pub use crate::pipelines::find as find_pipeline;
+    pub use crate::pipelines::StageKind;
     pub use crate::pipelines::recovery::{
         reconcile_run, stop_stalled, current_stage_tabs, working, turn_key, Reconciled, StallObservation,
         StallWatch,

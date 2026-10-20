@@ -1,6 +1,6 @@
 use super::*;
 use crate::claude_session_log::OpenTool;
-use crate::pipelines::find;
+use crate::pipelines::{find, StageKind};
 use crate::store::{RunAutopilot, RunLane};
 
 const SID: &str = "11111111-2222-4333-8444-555555555555";
@@ -49,14 +49,14 @@ fn eagle1() -> PipelineDef {
 
 #[test]
 fn finished_and_working_turns_read_like_the_frontend() {
-    assert!(finished_turn("role_implementer", &log(true)));
-    assert!(!working("role_implementer", &log(true)));
+    assert!(finished_turn(StageKind::Implementer, &log(true)));
+    assert!(!working(StageKind::Implementer, &log(true)));
     let interrupted = TerminalSessionLog { interrupted: true, ..log(true) };
-    assert!(!finished_turn("role_implementer", &interrupted), "an interrupted turn is left to you");
-    assert!(!working("role_implementer", &interrupted));
-    assert!(working("role_implementer", &log(false)));
+    assert!(!finished_turn(StageKind::Implementer, &interrupted), "an interrupted turn is left to you");
+    assert!(!working(StageKind::Implementer, &interrupted));
+    assert!(working(StageKind::Implementer, &log(false)));
     let fresh = TerminalSessionLog { last_prompt_at: None, ..log(false) };
-    assert!(!working("role_implementer", &fresh), "no prompt yet");
+    assert!(!working(StageKind::Implementer, &fresh), "no prompt yet");
     let plan = TerminalSessionLog {
         plan: Some("# Plan".into()),
         open_tool: Some(OpenTool {
@@ -67,10 +67,58 @@ fn finished_and_working_turns_read_like_the_frontend() {
         }),
         ..log(false)
     };
-    assert!(finished_turn("role_planner", &plan), "a plan awaiting approval");
-    assert!(!working("role_planner", &plan));
-    assert!(working("role_implementer", &plan), "only the Planner's plan counts");
+    assert!(finished_turn(StageKind::Planner, &plan), "a plan awaiting approval");
+    assert!(!working(StageKind::Planner, &plan));
+    assert!(working(StageKind::Implementer, &plan), "only a planner stage's plan counts");
     assert_eq!(turn_key("tab_1", &log(true)), format!("tab_1|{SID}|{PROMPT}"));
+}
+
+fn awaiting_plan() -> TerminalSessionLog {
+    TerminalSessionLog {
+        plan: Some("# Plan".into()),
+        open_tool: Some(OpenTool {
+            id: "toolu_1".into(),
+            name: "ExitPlanMode".into(),
+            title: "Plan".into(),
+            hint: String::new(),
+        }),
+        ..log(false)
+    }
+}
+
+// Integration H3 x H4: a copy of the Planner (Settings › Roles › Duplicate)
+// on a planner stage waits on its plan approval exactly like the built-in
+// one, so a restart stops for Continue and the watchdog never counts it as
+// Working. The stage kind decides, not the role id.
+#[test]
+fn a_copied_planner_awaiting_plan_approval_reads_like_the_built_in_one() {
+    let def: PipelineDef = serde_json::from_value(serde_json::json!({
+        "id": "copied_plan", "name": "Copied plan",
+        "stages": [
+            { "id": "plan", "roleId": "role_custom_planner", "title": "Planner copy", "kind": "planner" },
+            { "id": "fix", "roleId": "role_implementer", "title": "Implementer" }
+        ]
+    }))
+    .unwrap();
+    let mut run = run("plan", &[("role_custom_planner", "tab_p")]);
+    let tabs = current_stage_tabs(&def, &run);
+    assert_eq!(tabs[0].kind, StageKind::Planner);
+    assert!(!working(tabs[0].kind, &awaiting_plan()), "the watchdog does not count it as Working");
+    let found = reconcile_run(&def, &mut run, &logs(&[("tab_p", awaiting_plan())]));
+    let Some(Reconciled::Waiting { tab_id, why }) = found else {
+        panic!("not waiting: {found:?}");
+    };
+    assert_eq!(tab_id, "tab_p");
+    assert!(why.starts_with("Planner copy finished while the app was closed"), "{why}");
+    assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::AppRestarted)));
+    // The built-in Planner on a generic stage does not plan there.
+    let mut generic = def.clone();
+    generic.stages[0].role_id = "role_planner".into();
+    generic.stages[0].kind = Some(StageKind::Generic);
+    let mut other = super::tests::run("plan", &[("role_planner", "tab_p")]);
+    let tabs = current_stage_tabs(&generic, &other);
+    assert!(working(tabs[0].kind, &awaiting_plan()), "a generic stage's open ExitPlanMode is Working");
+    assert_eq!(reconcile_run(&generic, &mut other, &logs(&[("tab_p", awaiting_plan())])), Some(Reconciled::CutOff));
 }
 
 #[test]

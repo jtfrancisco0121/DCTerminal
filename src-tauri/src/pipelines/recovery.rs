@@ -14,7 +14,7 @@
 //!   terminal output and no log growth for the pipeline's
 //!   `autopilot.stallMinutes` puts the run in `waiting` with `stalled`.
 
-use super::{PipelineDef, StageDef, DEFAULT_STALL_MINUTES, MAX_STALL_MINUTES};
+use super::{PipelineDef, StageDef, StageKind, DEFAULT_STALL_MINUTES, MAX_STALL_MINUTES};
 use crate::claude_session_log::TerminalSessionLog;
 use crate::store::{PipelineRun, RunStatus, StopReason};
 use std::collections::{HashMap, HashSet};
@@ -26,6 +26,9 @@ pub struct StageTab {
     pub stage_id: String,
     pub stage_title: String,
     pub role_id: String,
+    /// The stage's kind (H4): a `planner` stage, a copied Planner included,
+    /// waits on its plan approval.
+    pub kind: StageKind,
     pub tab_id: String,
     pub lane: Option<String>,
     /// The stage's own role, not a parallel reviewer. Autopilot keys its
@@ -44,6 +47,7 @@ fn stage_tabs_of(stage: &StageDef, tab_ids: &HashMap<String, String>, lane: Opti
                 stage_title: stage.title.clone(),
                 own: role == stage.role_id,
                 role_id: role,
+                kind: stage.kind(),
                 tab_id,
                 lane: lane.map(str::to_string),
             })
@@ -69,20 +73,20 @@ pub fn current_stage_tabs(def: &PipelineDef, run: &PipelineRun) -> Vec<StageTab>
 }
 
 /// The log holds a turn autopilot would act on: done and not interrupted, or
-/// a Planner waiting on its plan approval (`finishedTurn` in
-/// `src/pipeline/autopilot.ts`).
-pub fn finished_turn(role_id: &str, log: &TerminalSessionLog) -> bool {
+/// a `planner` stage (by kind, so a copied Planner too) waiting on its plan
+/// approval (`finishedTurn` in `src/pipeline/autopilot.ts`).
+pub fn finished_turn(kind: StageKind, log: &TerminalSessionLog) -> bool {
     if log.turn_done {
         return !log.interrupted;
     }
-    role_id == "role_planner"
+    kind == StageKind::Planner
         && log.open_tool.as_ref().is_some_and(|tool| tool.name == "ExitPlanMode")
         && log.plan.as_deref().is_some_and(|plan| !plan.trim().is_empty())
 }
 
 /// A prompt was sent and its turn has not finished (or been interrupted).
-pub fn working(role_id: &str, log: &TerminalSessionLog) -> bool {
-    log.last_prompt_at.is_some() && !log.turn_done && !finished_turn(role_id, log)
+pub fn working(kind: StageKind, log: &TerminalSessionLog) -> bool {
+    log.last_prompt_at.is_some() && !log.turn_done && !finished_turn(kind, log)
 }
 
 /// The turn's key, `tab|session|prompt`, as autopilot records decided turns
@@ -121,7 +125,7 @@ pub fn reconcile_run(
         tab.own
             && logs
                 .get(&tab.tab_id)
-                .is_some_and(|log| finished_turn(&tab.role_id, log) && !decided.contains(turn_key(&tab.tab_id, log).as_str()))
+                .is_some_and(|log| finished_turn(tab.kind, log) && !decided.contains(turn_key(&tab.tab_id, log).as_str()))
     });
     if let Some(tab) = finished.cloned() {
         let why = format!(
@@ -134,7 +138,7 @@ pub fn reconcile_run(
     }
     let cut_off = tabs
         .iter()
-        .find(|tab| logs.get(&tab.tab_id).is_some_and(|log| working(&tab.role_id, log)))
+        .find(|tab| logs.get(&tab.tab_id).is_some_and(|log| working(tab.kind, log)))
         .cloned()?;
     let note = format!(
         "{}'s turn was cut off when the app closed. Autopilot acts on its next finished turn.",
