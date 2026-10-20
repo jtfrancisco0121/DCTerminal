@@ -787,3 +787,34 @@ fn exit_plan_on_a_planner_stage_goes_to_the_plan_card_whatever_the_role_id() {
         ClaudeRoute::AutoAllow { exit_plan: true, .. }
     ));
 }
+
+// Review H4 round 2: the plan card decision looks the tab's stage kind up.
+#[test]
+fn exit_plan_on_a_tab_tagged_as_a_planner_stage_goes_to_the_plan_card() {
+    use crate::commands::agent_requests::claude_tab_route;
+    use crate::pipelines::{register_for_test, unregister_for_test, PipelineDef, StageKind};
+    use crate::store::StateStore;
+    use crate::test_support::{role, TempDir};
+    use std::sync::Mutex;
+    let id = "copied_planner_card_test";
+    let def: PipelineDef = serde_json::from_value(json!({
+        "id": id, "name": "Copied planner",
+        "stages": [{ "id": "plan", "roleId": "role_custom_planner", "title": "Planner copy", "kind": "planner" }]
+    }))
+    .unwrap();
+    register_for_test(def);
+    let dir = TempDir::new("plan_card_stage");
+    let mut store = StateStore::open_path(dir.join("state.json")).unwrap();
+    let copy = role("role_custom_planner", "Planner copy");
+    let tagged = store.create_draft_tab(&copy, "/tmp/p", true, None).unwrap();
+    let chain = serde_json::from_value(json!({ "chainId": "ee_6", "kind": id, "step": 1, "total": 1 })).unwrap();
+    store.set_tab_chain(&tagged, Some(chain), None).unwrap();
+    let plain = store.create_draft_tab(&copy, "/tmp/p", true, None).unwrap();
+    let store = Mutex::new(store);
+    let usual = exit_plan_request(1)["request"]["params"].clone();
+    let on_stage = claude_tab_route(Some(&store), &tagged, "role_custom_planner", &usual);
+    let off_stage = claude_tab_route(Some(&store), &plain, "role_custom_planner", &usual);
+    unregister_for_test(id);
+    assert_eq!(on_stage, (ClaudeRoute::PlanCard, Some(StageKind::Planner)));
+    assert!(matches!(off_stage, (ClaudeRoute::AutoAllow { exit_plan: true, .. }, None)));
+}
