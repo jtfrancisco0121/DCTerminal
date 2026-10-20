@@ -156,6 +156,7 @@ impl StateStore {
                     stop_reason: None,
                     engine: crate::bridge::launch::ENGINE_V2,
                     engine_note: None,
+                    manual_only: false,
                 });
                 chain.chain_id.clone()
             }
@@ -676,6 +677,7 @@ mod tests {
             stop_reason: None,
             engine: 1,
             engine_note: None,
+            manual_only: false,
         }
     }
 

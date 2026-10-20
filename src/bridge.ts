@@ -366,6 +366,8 @@ export type PipelineRun = {
   engine?: number;
   /** The engine line on the overview (D24): why the run uses engine 1, or "Claude Code version not yet verified". */
   engineNote?: string | null;
+  /** A Restart or Resume switched this run from the bridge to engine 1 mid-run: manual for good, autopilot cannot be turned on. */
+  manualOnly?: boolean;
 };
 
 /**
