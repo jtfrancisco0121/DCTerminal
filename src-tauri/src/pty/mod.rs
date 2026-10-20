@@ -719,26 +719,53 @@ fn bridge_plan_for(
     }))
 }
 
-/// D24 and `disableAllHooks` at a bridged launch: `version` (the CLI's
-/// `--version` text) and `hooks_off` are read by the caller with no store
-/// lock held. An engine-1 outcome switches the run for good and launches
-/// this stage unbridged; a newer CLI leaves the overview's note.
+/// What the D24 gate reads, with no lock held: the CLI's `--version` text
+/// (run once per executable, then cached) and whether a settings file turns
+/// the hooks off for a stage in `cwd`.
+fn gate_inputs(
+    provider: &dyn crate::provider::Provider,
+    cwd: &std::path::Path,
+) -> (Option<String>, Option<crate::bridge::gate::HooksOff>) {
+    let version = provider.cli_version();
+    let config = provider.config_dir().map(|dir| PathBuf::from(dir.path));
+    let hooks = crate::bridge::gate::hooks_off(config.as_deref(), cwd, crate::bridge::gate::managed_settings_path());
+    (version, hooks)
+}
+
+/// D24 and hooks-off for an engine-2 run at a bridged start or relaunch of
+/// `stage` (a stage key; a lane suffix is dropped for the Timeline). True
+/// when it launches bridged. An engine-1 outcome switches the run for good
+/// (saved, with its notice); a run already on engine 1, or gone, is never
+/// bridged; a newer CLI leaves the overview's note.
+fn gate_run(
+    store: &Mutex<StateStore>,
+    run_id: &str,
+    stage: &str,
+    version: Option<&str>,
+    hooks_off: Option<&crate::bridge::gate::HooksOff>,
+) -> Result<bool, String> {
+    let decision = crate::bridge::gate::decide(version, hooks_off);
+    let stage_id = stage.split('@').next().unwrap_or(stage);
+    let mut state = store.lock().map_err(|err| err.to_string())?;
+    let Some(run) = state.pipeline_run_by_id_mut(run_id).filter(|run| run.engine >= crate::bridge::launch::ENGINE_V2)
+    else {
+        return Ok(false);
+    };
+    let (bridged, changed) = crate::bridge::gate::apply(run, &decision, stage_id);
+    if changed {
+        state.save()?;
+    }
+    Ok(bridged)
+}
+
+/// [`gate_run`] at a stage's first bridged start.
 fn gate_bridged_launch(
     store: &Mutex<StateStore>,
     plan: crate::bridge::BridgePlan,
     version: Option<&str>,
-    hooks_off: Option<&std::path::Path>,
+    hooks_off: Option<&crate::bridge::gate::HooksOff>,
 ) -> Result<Option<crate::bridge::BridgePlan>, String> {
-    let decision = crate::bridge::gate::decide(version, hooks_off);
-    let mut state = store.lock().map_err(|err| err.to_string())?;
-    let Some(run) = state.pipeline_run_by_id_mut(&plan.run_id) else {
-        return Ok(None);
-    };
-    let (bridged, changed) = crate::bridge::gate::apply(run, &decision, &plan.stage_id);
-    if changed {
-        state.save()?;
-    }
-    Ok(bridged.then_some(plan))
+    Ok(gate_run(store, &plan.run_id, &plan.stage_id, version, hooks_off)?.then_some(plan))
 }
 
 /// `<app data>/runs` and this executable, for a bridged launch.
@@ -889,16 +916,9 @@ fn role_terminal_start_blocking(
     // (`claude --version` runs once per executable, then it is cached).
     let bridge = match bridge {
         Some(plan) => {
-            let version = provider.cli_version();
-            let config = provider.config_dir().map(|dir| PathBuf::from(dir.path));
             let cwd = input.values.get("cwd").map(|value| PathBuf::from(value.trim())).unwrap_or_default();
-            let files = crate::bridge::gate::settings_files(
-                config.as_deref(),
-                &cwd,
-                crate::bridge::gate::managed_settings_path(),
-            );
-            let hooks_off = crate::bridge::gate::hooks_disabled_in(&files);
-            gate_bridged_launch(&store, plan, version.as_deref(), hooks_off.as_deref())?
+            let (version, hooks_off) = gate_inputs(provider.as_ref(), &cwd);
+            gate_bridged_launch(&store, plan, version.as_deref(), hooks_off.as_ref())?
         }
         None => None,
     };
@@ -1330,14 +1350,23 @@ fn pty_open_blocking(
                 let state = store.lock().map_err(|err| err.to_string())?;
                 state.tab_by_id(&input.id).and_then(|tab| tab.bridge.clone())
             };
+            // The D24 gate again: the CLI or the hooks settings may have
+            // changed since the first launch, and a run switched to engine 1
+            // stays there. Without hooks a bridged tab would never end a turn.
             let mut flags = None;
             if let Some(tag) = tag {
-                flags = match (provider.id() == ProviderId::Claude).then(|| bridge_paths(&app)) {
-                    Some(Ok((runs, program))) => {
-                        crate::bridge::launch::relaunch_flags(&runs, &tag, &input.id, &program)
-                    }
-                    _ => None,
+                let gated = provider.id() == ProviderId::Claude && {
+                    let (version, hooks_off) = gate_inputs(provider.as_ref(), &cwd);
+                    gate_run(&store, &tag.run_id, &tag.stage, version.as_deref(), hooks_off.as_ref())?
                 };
+                if gated {
+                    flags = match bridge_paths(&app) {
+                        Ok((runs, program)) => {
+                            crate::bridge::launch::relaunch_flags(&runs, &tag, &input.id, &program)
+                        }
+                        Err(_) => None,
+                    };
+                }
                 if flags.is_none() {
                     let mut state = store.lock().map_err(|err| err.to_string())?;
                     state.set_tab_bridge(&input.id, None)?;
@@ -1529,8 +1558,6 @@ pub fn kill_tab_pty(registry: &Mutex<PtyRegistry>, tab_id: &str) {
 mod tests {
     use super::*;
 
-    /// A pipeline of your own: a copy of the Planner (Settings › Roles ›
-    /// Duplicate) as stage 1, then the built-in Planner on a generic stage.
     fn store_with_engine2_run(dir: &crate::test_support::TempDir) -> Mutex<StateStore> {
         let mut store = StateStore {
             path: dir.join("state.json"),
@@ -1573,9 +1600,9 @@ mod tests {
 
         let dir = crate::test_support::TempDir::new("gate_bridged_launch_hooks");
         let store = store_with_engine2_run(&dir);
-        let managed = dir.join("managed-settings.json");
+        let off = crate::bridge::gate::HooksOff { file: dir.join("managed-settings.json"), setting: "disableAllHooks" };
         let launched =
-            gate_bridged_launch(&store, reviewer_plan(), Some("2.1.287 (Claude Code)"), Some(&managed)).unwrap();
+            gate_bridged_launch(&store, reviewer_plan(), Some("2.1.287 (Claude Code)"), Some(&off)).unwrap();
         assert_eq!(launched, None, "hooks off launches unbridged");
         let state = store.lock().unwrap();
         assert_eq!(state.pipeline_run_by_id("ee_1700000000000").unwrap().engine, 1);
@@ -1596,14 +1623,51 @@ mod tests {
         let source = include_str!("mod.rs");
         let body = &source[source.find("fn role_terminal_start_blocking(").unwrap()..];
         let body = &body[..body.find("\n}\n").unwrap()];
-        let version = body.find("provider.cli_version()").expect("reads the version");
-        let hooks = body.find("hooks_disabled_in(").expect("reads the settings");
+        let inputs = body.find("gate_inputs(").expect("reads the version and settings");
         let gate = body.find("gate_bridged_launch(").expect("applies the gate");
-        assert!(version < gate && hooks < gate);
-        let between = &body[version..gate];
-        assert!(!between.contains(".lock()"), "no lock while reading the CLI and settings");
+        assert!(inputs < gate);
+        assert!(!body[inputs..gate].contains(".lock()"), "no lock while reading the CLI and settings");
+        let helper = &source[source.find("fn gate_inputs(").unwrap()..];
+        let helper = &helper[..helper.find("\n}\n").unwrap()];
+        assert!(helper.contains("cli_version()") && helper.contains("hooks_off("));
+        assert!(!helper.contains(".lock()"));
     }
 
+    #[test]
+    fn a_bridged_restart_runs_the_same_gate_before_it_relaunches_bridged() {
+        let source = include_str!("mod.rs");
+        let body = &source[source.find("fn pty_open_blocking(").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let inputs = body.find("gate_inputs(").expect("restart reads the version and settings");
+        let gate = body.find("gate_run(").expect("restart applies the gate");
+        let flags = body.find("relaunch_flags(").expect("relaunch flags");
+        assert!(inputs < gate && gate < flags, "the gate decides before the bridge flags are built");
+    }
+
+    #[test]
+    fn the_relaunch_gate_respects_engine_1_and_switches_when_hooks_were_turned_off() {
+        let dir = crate::test_support::TempDir::new("gate_relaunch");
+        let store = store_with_engine2_run(&dir);
+        let run_id = "ee_1700000000000";
+        let ok = Some("2.1.287 (Claude Code)");
+        assert!(gate_run(&store, run_id, "pr_reviewer", ok, None).unwrap(), "still bridged");
+        // Hooks turned off since the first launch: engine 1, with a notice.
+        let off = crate::bridge::gate::HooksOff { file: dir.join("settings.json"), setting: "disableAllHooks" };
+        assert!(!gate_run(&store, run_id, "pr_reviewer@pr1", ok, Some(&off)).unwrap());
+        {
+            let state = store.lock().unwrap();
+            let run = state.pipeline_run_by_id(run_id).unwrap();
+            assert_eq!(run.engine, 1);
+            assert_eq!(run.events.last().unwrap().stage_id.as_deref(), Some("pr_reviewer"));
+            assert!(run.engine_note.as_deref().unwrap().contains("disableAllHooks"));
+        }
+        // An engine-1 run never relaunches bridged, whatever the CLI.
+        assert!(!gate_run(&store, run_id, "pr_reviewer", ok, None).unwrap());
+        assert!(!gate_run(&store, "ee_missing", "pr_reviewer", ok, None).unwrap());
+    }
+
+    /// A pipeline of your own: a copy of the Planner (Settings › Roles ›
+    /// Duplicate) as stage 1, then the built-in Planner on a generic stage.
     fn copied_planner_pipeline(id: &str) -> crate::pipelines::PipelineDef {
         serde_json::from_value(serde_json::json!({
             "id": id, "name": "Copied planner",
