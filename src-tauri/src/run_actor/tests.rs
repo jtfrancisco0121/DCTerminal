@@ -1069,6 +1069,19 @@ fn a_turn_cut_off_by_the_usage_limit_stops_as_usage_limit_without_checks() {
     assert_eq!(fx.stops().last().map(|s| s.0), Some(StopReason::UsageLimit));
 }
 
+/// H5 with V4: a review turn the usage limit cut off sends no round back,
+/// so no stage is killed and resumed into the same limit.
+#[test]
+fn a_review_cut_off_by_the_usage_limit_resumes_nothing() {
+    let mut fx = Fixture::new("rate_limit_resume");
+    let reviewer = fx.open_plan_reviewer();
+    fx.host.rate_limits.lock().unwrap().insert(reviewer.clone(), "You've hit your limit · resets 3pm".into());
+    let turn = fx.end_turn(&reviewer, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "x" }])), "");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    assert!(fx.resumes().is_empty() && fx.pastes().is_empty(), "nothing sent back: {:?}", fx.resumes());
+    fx.run(|run| assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::UsageLimit))));
+}
+
 /// D24 on the actor's launch path: a stage the gate sends to engine 1 opens
 /// without the bridge (no flags, no result instructions, no stage folder),
 /// and the run is engine 1 from then on, left to the frontend.
