@@ -1871,7 +1871,7 @@ pub(crate) fn actor_gate_on(
 ) -> Result<bool, String> {
     let gated = gate_run(store, run_id, stage_key, version, hooks_off, GateAt::Relaunch, None)?;
     if gated.manual_now {
-        if let Err(err) = crate::bridge::launch::set_run_mode(runs_root, run_id, false) {
+        if let Err(err) = crate::bridge::launch::set_run_manual_for_good(runs_root, run_id) {
             eprintln!("DCTerminal: could not switch the run folder to manual: {err}");
         }
     }
@@ -2265,7 +2265,7 @@ fn pty_open_blocking(
                     // The run's other bridged tabs stop enforcing a result
                     // (their hooks read `mode`), and the overview refreshes.
                     if let Ok((runs, _)) = bridge_paths(&app) {
-                        if let Err(err) = crate::bridge::launch::set_run_mode(&runs, &tag.run_id, false) {
+                        if let Err(err) = crate::bridge::launch::set_run_manual_for_good(&runs, &tag.run_id) {
                             eprintln!("DCTerminal: could not switch the run folder to manual: {err}");
                         }
                     }

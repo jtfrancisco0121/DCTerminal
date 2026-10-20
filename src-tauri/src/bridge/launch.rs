@@ -393,6 +393,19 @@ pub fn set_run_mode_to(runs_root: &Path, run_id: &str, mode: StageMode) -> Resul
     Ok(())
 }
 
+/// The run went to engine 1 mid-run and is manual for good (V2a's
+/// `make_manual`): every stage folder says `manual`, a stage you took over
+/// too (V5), since nothing is taken over on a manual run.
+pub fn set_run_manual_for_good(runs_root: &Path, run_id: &str) -> Result<(), String> {
+    let Some(run_dir) = folder::run_dir(runs_root, run_id) else {
+        return Ok(());
+    };
+    for dir in stage_dirs(&run_dir) {
+        write_mode(&dir, StageMode::Manual).map_err(|err| format!("{}: {err}", dir.display()))?;
+    }
+    Ok(())
+}
+
 /// A bridged tab's stage folder (`runs/<run>/stages/<stage>`), when the ids are valid.
 pub fn stage_dir_of(runs_root: &Path, tag: &BridgeTag) -> Option<PathBuf> {
     let run_dir = folder::run_dir(runs_root, &tag.run_id)?;

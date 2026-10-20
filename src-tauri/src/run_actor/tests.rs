@@ -1452,3 +1452,32 @@ fn take_over_never_waits_on_a_run_with_no_current_stage_tabs() {
         assert_eq!((run.status, run.stop_reason), (RunStatus::Running, None));
     });
 }
+
+/// D28 with V2a: a run the version gate sends to engine 1 mid-run is manual
+/// for good, so nothing is taken over any more. A stage you had taken over
+/// is released (`manual`, which takes keystrokes) and leaves `takenOver`,
+/// so neither its view nor the overview offers a Hand back that would fail.
+#[test]
+fn a_switch_to_engine_1_releases_the_stages_you_took_over() {
+    let mut fx = Fixture::new("take_over_engine_1");
+    let reviewer = fx.open_plan_reviewer();
+    let planner = fx.planner.clone();
+    fx.user(UserAction::TakeOver { tab_id: planner.clone() }).expect("take over");
+    let turn = fx.end_turn(&reviewer, "r-1", review("APPROVED", json!([])), "Approved.");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    fx.host.gate_open.store(false, Ordering::SeqCst);
+    fx.user(UserAction::Send {
+        source_tab_id: reviewer,
+        target_role_id: "role_implementer".into(),
+        values: None,
+        handoff_plan: None,
+        handoff_text: None,
+        force: false,
+    })
+    .expect("send");
+    fx.run(|run| {
+        assert_eq!(run.engine, 1);
+        assert!(run.taken_over.is_empty(), "nothing is taken over on a manual run: {:?}", run.taken_over);
+    });
+    assert_eq!(stage_mode(&fx, &planner), crate::bridge::StageMode::Manual, "the Planner is released");
+}
