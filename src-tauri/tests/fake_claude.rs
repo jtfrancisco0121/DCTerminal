@@ -1572,6 +1572,8 @@ mod run_actor {
         launches: Mutex<Vec<StageLaunch>>,
         stops: Mutex<Vec<String>>,
         notices: Mutex<Vec<String>>,
+        /// The pull requests each pull-request gate was given.
+        pr_gate_urls: Mutex<Vec<Vec<String>>>,
         _data: TempDir,
     }
 
@@ -1674,8 +1676,9 @@ mod run_actor {
         fn terminal_live(&self, tab_id: &str) -> bool {
             self.terminals.lock().unwrap().get(tab_id).is_some_and(|t| !t.exited.load(Ordering::SeqCst))
         }
-        fn run_gate(&self, gate: &GateDef, folder: &Path, _pr_urls: &[String]) -> GateResult {
+        fn run_gate(&self, gate: &GateDef, folder: &Path, pr_urls: &[String]) -> GateResult {
             let GateDef::Command { .. } = gate else {
+                self.pr_gate_urls.lock().unwrap().push(pr_urls.to_vec());
                 return GateResult {
                     kind: "pullRequest".into(),
                     label: "pull requests".into(),
@@ -1888,6 +1891,7 @@ mod run_actor {
             launches: Mutex::new(Vec::new()),
             stops: Mutex::new(Vec::new()),
             notices: Mutex::new(Vec::new()),
+            pr_gate_urls: Mutex::new(Vec::new()),
             _data: data,
         });
         let actors = RunActors::new(host.clone());
@@ -1999,5 +2003,12 @@ mod run_actor {
         assert!(!launches[4].prompt.contains("It retries forever."), "not the plan review's findings");
         assert_eq!(run.verdicts.len(), 2);
         assert_eq!((run.round, run.status), (3, RunStatus::Complete));
+        // Each Implementer turn's pull-request gate checked the pull request
+        // it reported through submit_result.
+        let pr_gates = host.pr_gate_urls.lock().unwrap().clone();
+        assert!(!pr_gates.is_empty());
+        for urls in &pr_gates {
+            assert_eq!(urls, &vec!["https://github.com/acme/app/pull/12".to_string()], "{pr_gates:?}");
+        }
     }
 }

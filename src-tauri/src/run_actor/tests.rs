@@ -34,6 +34,8 @@ struct TestHost {
     /// Gate results handed out in order; `passed` once they run out.
     gates: Mutex<VecDeque<GateResult>>,
     panic_on_usage: AtomicBool,
+    /// The pull requests each pull-request gate was given.
+    pr_gate_urls: Mutex<Vec<Vec<String>>>,
     /// The D24 gate's answer for the next bridged opens (false: engine 1).
     gate_open: AtomicBool,
     /// Session-log usage-limit errors by tab (H5).
@@ -77,7 +79,10 @@ impl Host for TestHost {
     fn terminal_live(&self, tab_id: &str) -> bool {
         self.live.lock().unwrap().contains(tab_id)
     }
-    fn run_gate(&self, gate: &GateDef, _folder: &Path, _pr_urls: &[String]) -> GateResult {
+    fn run_gate(&self, gate: &GateDef, _folder: &Path, pr_urls: &[String]) -> GateResult {
+        if matches!(gate, GateDef::PullRequest) {
+            self.pr_gate_urls.lock().unwrap().push(pr_urls.to_vec());
+        }
         let label = match gate {
             GateDef::Command { .. } => "npm run check",
             GateDef::PullRequest => "pull requests",
@@ -191,6 +196,7 @@ impl Fixture {
             live: Mutex::new(HashSet::from([planner.clone()])),
             gates: Mutex::new(VecDeque::new()),
             panic_on_usage: AtomicBool::new(false),
+            pr_gate_urls: Mutex::new(Vec::new()),
             gate_open: AtomicBool::new(true),
             rate_limits: Mutex::new(HashMap::new()),
             stops: Mutex::new(Vec::new()),
@@ -460,10 +466,15 @@ fn a_failed_gate_goes_back_to_the_implementer_and_a_pass_moves_on() {
     let dir = fx.stage_dir(&implementer);
     dir.write_prs(&RunPrs { schema: 1, run_id: RUN.into(), stage_key: "implementer".into(), lane: None, turn: "i-1".into(), at: "now".into(), result: prs.clone() })
         .unwrap();
-    let turn = fx.end_turn(&implementer, "i-1", Some(prs.clone()), "Opened https://github.com/acme/app/pull/12");
+    let turn = fx.end_turn(&implementer, "i-1", Some(prs.clone()), "Opened https://github.com/acme/app/pull/12 (see https://github.com/acme/app/pull/1)");
     fx.actor.handle(ActorMsg::Turn(turn));
     assert!(fx.actor.busy(), "the gates run on their own thread");
     fx.finish_gates();
+    assert_eq!(
+        fx.host.pr_gate_urls.lock().unwrap().clone(),
+        vec![vec!["https://github.com/acme/app/pull/12".to_string()]],
+        "the pull-request gate checks what submit_result reported"
+    );
     let pastes = fx.pastes();
     assert_eq!(pastes.len(), 1, "{pastes:?}");
     assert_eq!(pastes[0].0, implementer);
@@ -935,4 +946,45 @@ fn an_optional_gate_with_no_check_lets_the_run_go_on_and_a_required_one_stops_it
         assert!(run.gates["implementer"].results[0].optional, "the result says the gate is optional");
     });
     assert_eq!(fx.launches().last().map(|l| l.role_id.as_str()), Some("role_pr_reviewer"));
+}
+
+fn turn_with(result: Option<Value>, message: &str) -> BridgeTurn {
+    BridgeTurn {
+        schema: 1,
+        run_id: RUN.into(),
+        stage_key: "implementer".into(),
+        stage_id: "implementer".into(),
+        role_id: "role_implementer".into(),
+        lane: None,
+        tab_id: "tab_i".into(),
+        turn: "i-1".into(),
+        outcome: if result.is_some() { TurnOutcome::Result } else { TurnOutcome::NoResult },
+        ended_at: "2026-10-20T10:00:00Z".into(),
+        last_assistant_message: message.into(),
+        blocked: false,
+        result,
+    }
+}
+
+#[test]
+fn the_pull_request_gate_checks_the_reported_pull_requests_else_the_links_in_the_reply() {
+    use super::actor::{github_pr_urls, pr_urls};
+    // submit_result's prs[] wins over the reply's links.
+    let reported = turn_with(
+        Some(json!({ "schema": 1, "prs": [{ "url": "https://github.com/acme/app/pull/12" }, { "url": "https://github.com/acme/app/pull/13" }], "summary": "s" })),
+        "See https://github.com/other/repo/pull/99",
+    );
+    assert_eq!(pr_urls(&reported), vec!["https://github.com/acme/app/pull/12", "https://github.com/acme/app/pull/13"]);
+    // No prs[] (no result, or an empty list): every pull-request link in the reply.
+    let none = turn_with(None, "Opened https://github.com/acme/app/pull/12.");
+    assert_eq!(pr_urls(&none), vec!["https://github.com/acme/app/pull/12"]);
+    let empty = turn_with(Some(json!({ "schema": 1, "prs": [], "summary": "s" })), "https://github.com/acme/app/pull/7");
+    assert_eq!(pr_urls(&empty), vec!["https://github.com/acme/app/pull/7"]);
+    // Trailing paths, anchors and punctuation are cut; repeats count once.
+    let text = "PRs: (https://github.com/acme/app/pull/12), https://github.com/acme/app/pull/12/files, \
+                https://github.com/acme/app/pull/12#issuecomment-1, [x](https://github.com/acme/my.app-2/pull/3).\n\
+                Not these: https://github.com/acme/app/pulls, https://github.com/acme/app/issues/4, \
+                https://github.com/acme/app/pull/, https://github.com/acme/pull/5";
+    assert_eq!(github_pr_urls(text), vec!["https://github.com/acme/app/pull/12", "https://github.com/acme/my.app-2/pull/3"]);
+    assert!(github_pr_urls("").is_empty());
 }
