@@ -1239,6 +1239,35 @@ mod tests {
     }
 
     #[test]
+    fn a_run_saved_with_the_removed_re_ask_and_hand_off_claims_still_loads() {
+        let path = temp_path("reasked_and_claims");
+        let run = old_run_json(
+            "v1",
+            r#","engine":1,"autopilot":{"enabled":true,"reasked":["role_pr_reviewer|s|p"],"decided":["t|s|p"]},
+              "claims":[{"key":"advance:implementer#1","turn":"t|s|p","by":"autopilot","at":"2026-10-01T00:00:00Z"}]"#,
+            &["handoff"],
+        );
+        let file = format!(
+            r#"{{"schemaVersion":1,"activeTabId":null,"tabs":[],
+               "migrations":{{"claudeFirst":true,"windows":true}},"pipelineRuns":[{run}]}}"#
+        );
+        std::fs::write(&path, file).unwrap();
+        let mut store = StateStore::open_path(path.clone()).unwrap();
+        let run = store.pipeline_run_by_id("v1").unwrap();
+        let autopilot = run.autopilot.as_ref().unwrap();
+        assert!(autopilot.enabled);
+        assert_eq!(autopilot.decided, vec!["t|s|p".to_string()]);
+        let claim = run.claim_for("advance:implementer#1", None).expect("claims are kept");
+        assert_eq!((claim.by.as_str(), claim.turn.as_deref()), ("autopilot", Some("t|s|p")));
+
+        // Saved again, the claims stay and the re-ask's field is gone.
+        store.save().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("reasked"), "{text}");
+        assert!(text.contains("advance:implementer#1"), "{text}");
+    }
+
+    #[test]
     fn your_hand_off_or_send_back_resumes_a_waiting_run() {
         use crate::store::{RunStatus, StopReason};
         let mut store = store("resume_after_you");
