@@ -28,7 +28,7 @@
 
 use super::claude_config::{claude_env, resolve_claude_config_dir, ConfigDirInfo};
 use super::claude_detect::{
-    claude_login_status, native_executable, read_claude_version, resolve_adapter, resolve_claude,
+    cached_claude_version, claude_login_status, native_executable, read_claude_version, resolve_adapter, resolve_claude,
     unwrap_windows_shim, ResolvedCli,
 };
 use super::{
@@ -306,6 +306,11 @@ impl Provider for ClaudeProvider {
             adapter_path: adapter.as_ref().map(|p| p.display().to_string()),
             error: claude.is_none().then(|| self.missing_message()),
         }
+    }
+
+    fn cli_version(&self) -> Option<String> {
+        let claude = resolve_claude(self.settings.claude_path.as_deref())?;
+        cached_claude_version(&claude, &self.config)
     }
 
     fn login_status(&self) -> LoginStatus {

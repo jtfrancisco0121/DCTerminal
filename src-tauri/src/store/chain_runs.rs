@@ -155,6 +155,7 @@ impl StateStore {
                     status: RunStatus::Stopped,
                     stop_reason: None,
                     engine: crate::bridge::launch::ENGINE_V2,
+                    engine_note: None,
                 });
                 chain.chain_id.clone()
             }
@@ -674,6 +675,7 @@ mod tests {
             status: crate::store::RunStatus::Stopped,
             stop_reason: None,
             engine: 1,
+            engine_note: None,
         }
     }
 

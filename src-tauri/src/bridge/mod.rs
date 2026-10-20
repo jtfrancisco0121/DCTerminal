@@ -29,9 +29,12 @@
 //! ```
 //!
 //! `launch` decides which tabs launch bridged and builds their flags;
-//! `watch` hands finished turns to the frontend.
+//! `gate` checks the Claude Code version and `disableAllHooks` at a bridged
+//! launch (D24) and falls back to engine 1; `watch` hands finished turns to
+//! the frontend.
 
 pub mod folder;
+pub mod gate;
 mod hook;
 pub mod launch;
 mod mcp;

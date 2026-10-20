@@ -431,6 +431,11 @@ export function PipelineOverview({
               ? "After each terminal stage's turn, the checks run and the run moves on, sends a round back, or stops for you. Rounds go back until the reviewer approves (or up to a round cap, if the pipeline sets one). It stops before a checkpoint, when Claude needs you, near your usage limit, and when Claude refuses a request for a usage limit. It never merges."
               : "Off: every hand-off waits for you. Turn it on to let terminal stages hand on by themselves."}
           </p>
+          {run.engineNote && (
+            <p className="hint" data-testid="engine-note">
+              {run.engineNote}
+            </p>
+          )}
           {autopilotOn && usageWindows && (
             <p className="hint" data-testid="autopilot-usage">
               {

@@ -719,6 +719,28 @@ fn bridge_plan_for(
     }))
 }
 
+/// D24 and `disableAllHooks` at a bridged launch: `version` (the CLI's
+/// `--version` text) and `hooks_off` are read by the caller with no store
+/// lock held. An engine-1 outcome switches the run for good and launches
+/// this stage unbridged; a newer CLI leaves the overview's note.
+fn gate_bridged_launch(
+    store: &Mutex<StateStore>,
+    plan: crate::bridge::BridgePlan,
+    version: Option<&str>,
+    hooks_off: Option<&std::path::Path>,
+) -> Result<Option<crate::bridge::BridgePlan>, String> {
+    let decision = crate::bridge::gate::decide(version, hooks_off);
+    let mut state = store.lock().map_err(|err| err.to_string())?;
+    let Some(run) = state.pipeline_run_by_id_mut(&plan.run_id) else {
+        return Ok(None);
+    };
+    let (bridged, changed) = crate::bridge::gate::apply(run, &decision, &plan.stage_id);
+    if changed {
+        state.save()?;
+    }
+    Ok(bridged.then_some(plan))
+}
+
 /// `<app data>/runs` and this executable, for a bridged launch.
 fn bridge_paths(app: &AppHandle) -> Result<(PathBuf, PathBuf), String> {
     let program = crate::bridge::launch::bridge_program()
@@ -862,6 +884,23 @@ fn role_terminal_start_blocking(
         bridge_plan_for(&store, input.chain.as_ref(), &role.id)?
     } else {
         None
+    };
+    // D24: the CLI version and disableAllHooks, read with no lock held
+    // (`claude --version` runs once per executable, then it is cached).
+    let bridge = match bridge {
+        Some(plan) => {
+            let version = provider.cli_version();
+            let config = provider.config_dir().map(|dir| PathBuf::from(dir.path));
+            let cwd = input.values.get("cwd").map(|value| PathBuf::from(value.trim())).unwrap_or_default();
+            let files = crate::bridge::gate::settings_files(
+                config.as_deref(),
+                &cwd,
+                crate::bridge::gate::managed_settings_path(),
+            );
+            let hooks_off = crate::bridge::gate::hooks_disabled_in(&files);
+            gate_bridged_launch(&store, plan, version.as_deref(), hooks_off.as_deref())?
+        }
+        None => None,
     };
     let instructions = bridge
         .as_ref()
@@ -1492,6 +1531,79 @@ mod tests {
 
     /// A pipeline of your own: a copy of the Planner (Settings › Roles ›
     /// Duplicate) as stage 1, then the built-in Planner on a generic stage.
+    fn store_with_engine2_run(dir: &crate::test_support::TempDir) -> Mutex<StateStore> {
+        let mut store = StateStore {
+            path: dir.join("state.json"),
+            data: crate::store::AppStateFile::default(),
+            new_tab_provider: ProviderId::DEFAULT,
+            draft_window: crate::store::MAIN_WINDOW_ID.to_string(),
+        };
+        let mut run: crate::store::PipelineRun = serde_json::from_value(serde_json::json!({
+            "id": "ee_1700000000000", "kind": "full", "cwd": "/repo", "stage": "pr_reviewer",
+            "tabIds": {}, "createdAt": "2026-10-19T00:00:00Z", "status": "running"
+        }))
+        .unwrap();
+        run.engine = crate::bridge::launch::ENGINE_V2;
+        store.data.pipeline_runs.push(run);
+        Mutex::new(store)
+    }
+
+    fn reviewer_plan() -> crate::bridge::BridgePlan {
+        crate::bridge::BridgePlan {
+            run_id: "ee_1700000000000".into(),
+            stage_id: "pr_reviewer".into(),
+            role_id: "role_pr_reviewer".into(),
+            lane: None,
+            stage_key: "pr_reviewer".into(),
+            kind: crate::bridge::ResultKind::Reviewer,
+            autopilot: true,
+        }
+    }
+
+    #[test]
+    fn an_older_claude_code_or_hooks_turned_off_launch_the_run_as_engine_1_and_save_it() {
+        let dir = crate::test_support::TempDir::new("gate_bridged_launch");
+        let store = store_with_engine2_run(&dir);
+        let launched = gate_bridged_launch(&store, reviewer_plan(), Some("2.1.200 (Claude Code)"), None).unwrap();
+        assert_eq!(launched, None, "an older CLI launches unbridged");
+        let saved = StateStore::open_path(dir.join("state.json")).unwrap();
+        let run = saved.pipeline_run_by_id("ee_1700000000000").unwrap();
+        assert_eq!(run.engine, 1, "saved as engine 1");
+        assert!(run.engine_note.as_deref().unwrap().contains("2.1.200"));
+
+        let dir = crate::test_support::TempDir::new("gate_bridged_launch_hooks");
+        let store = store_with_engine2_run(&dir);
+        let managed = dir.join("managed-settings.json");
+        let launched =
+            gate_bridged_launch(&store, reviewer_plan(), Some("2.1.287 (Claude Code)"), Some(&managed)).unwrap();
+        assert_eq!(launched, None, "hooks off launches unbridged");
+        let state = store.lock().unwrap();
+        assert_eq!(state.pipeline_run_by_id("ee_1700000000000").unwrap().engine, 1);
+
+        let dir = crate::test_support::TempDir::new("gate_bridged_launch_newer");
+        let store = store_with_engine2_run(&dir);
+        let launched = gate_bridged_launch(&store, reviewer_plan(), Some("2.1.300 (Claude Code)"), None).unwrap();
+        assert_eq!(launched, Some(reviewer_plan()), "a newer CLI is allowed");
+        let saved = StateStore::open_path(dir.join("state.json")).unwrap();
+        let run = saved.pipeline_run_by_id("ee_1700000000000").unwrap();
+        assert_eq!(run.engine, crate::bridge::launch::ENGINE_V2);
+        assert!(run.engine_note.as_deref().unwrap().starts_with("Claude Code version not yet verified"));
+    }
+
+    #[test]
+    fn the_gate_reads_the_cli_and_settings_before_it_locks_the_store() {
+        // Review rule (store/mod.rs): no store lock across a process spawn.
+        let source = include_str!("mod.rs");
+        let body = &source[source.find("fn role_terminal_start_blocking(").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let version = body.find("provider.cli_version()").expect("reads the version");
+        let hooks = body.find("hooks_disabled_in(").expect("reads the settings");
+        let gate = body.find("gate_bridged_launch(").expect("applies the gate");
+        assert!(version < gate && hooks < gate);
+        let between = &body[version..gate];
+        assert!(!between.contains(".lock()"), "no lock while reading the CLI and settings");
+    }
+
     fn copied_planner_pipeline(id: &str) -> crate::pipelines::PipelineDef {
         serde_json::from_value(serde_json::json!({
             "id": id, "name": "Copied planner",

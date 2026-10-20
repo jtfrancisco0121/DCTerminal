@@ -182,6 +182,11 @@ pub struct PipelineRun {
     /// as 1 and keep the v1 path.
     #[serde(default = "first_engine")]
     pub engine: u32,
+    /// The overview's line about the engine (D24): why the run uses engine 1
+    /// (an older Claude Code, hooks turned off), or "Claude Code version not
+    /// yet verified" for a newer one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_note: Option<String>,
 }
 
 fn first_engine() -> u32 {

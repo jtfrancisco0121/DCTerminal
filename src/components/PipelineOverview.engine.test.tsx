@@ -106,6 +106,17 @@ describe("PipelineOverview: autopilot, checks and timeline", () => {
     );
   });
 
+  it("shows the engine note: Claude Code version not yet verified, or why the run uses engine 1", async () => {
+    const note = "Claude Code version not yet verified: 2.1.300 is newer than 2.1.287, the version pipeline v2 was checked against.";
+    show(run({ engine: 2, engineNote: note, autopilot: { enabled: false } }));
+    const panel = await screen.findByRole("region", { name: "Autopilot" });
+    expect(within(panel).getByTestId("engine-note").textContent).toBe(note);
+    cleanup();
+    show(run({ engine: 2, autopilot: { enabled: true } }));
+    await screen.findByRole("region", { name: "Autopilot" });
+    expect(screen.queryByTestId("engine-note")).toBeNull();
+  });
+
   it("says when Claude usage is unknown, never 0%, and what autopilot does about it", async () => {
     show(run({ autopilot: { enabled: true } }), {}, []);
     const panel = await screen.findByRole("region", { name: "Autopilot" });

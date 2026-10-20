@@ -364,6 +364,8 @@ export type PipelineRun = {
   stopReason?: StopReason | null;
   /** Pipeline engine: 2 on new runs (reviewer stages report through the bridge, ADR-015); 1 (or missing) on older runs. */
   engine?: number;
+  /** The engine line on the overview (D24): why the run uses engine 1, or "Claude Code version not yet verified". */
+  engineNote?: string | null;
 };
 
 /**

@@ -222,6 +222,11 @@ pub trait Provider: Send + Sync {
     fn id(&self) -> ProviderId;
     /// Executable lookup and version (read-only).
     fn detect(&self) -> ProviderStatus;
+    /// The CLI's `--version` text, for the pipeline v2 gate (D24). Claude
+    /// reads it once per executable and caches it.
+    fn cli_version(&self) -> Option<String> {
+        self.detect().version
+    }
     /// Signed-in state from the CLI itself (read-only CLI call).
     fn login_status(&self) -> LoginStatus;
     /// The ACP agent process for chat tabs. `model` is a spawn-time model
