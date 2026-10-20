@@ -484,10 +484,37 @@ fn rejected_arguments_get_a_tool_error_and_nothing_is_saved() {
 }
 
 #[test]
-fn a_result_before_any_turn_is_refused() {
+fn the_startup_prompt_turn_counts_even_without_a_user_prompt_submit() {
+    // V0 did not check that UserPromptSubmit fires for the positional
+    // startup prompt. PreToolUse for the tool carries the prompt_id: it
+    // opens the turn, so the result and the Stop join up.
+    let stage = Stage::new("bridge_first_turn_pre_tool", true);
+    let pre = json!({ "session_id": "s1", "prompt_id": "p-1", "hook_event_name": "PreToolUse",
+        "tool_name": FULL_TOOL_NAME, "tool_input": approved() });
+    assert!(stage.hook("PreToolUse", pre).is_some(), "allowed");
+    assert_eq!(stage.open().turn().unwrap().turn, "p-1");
+    assert_eq!(stage.submit(approved())["isError"], false);
+    assert_eq!(stage.hook("Stop", stop("p-1", false, "Approved.")), None, "no block: the result is in");
+    let events = stage.inbox();
+    assert_eq!(events.len(), 1);
+    assert_eq!((events[0].turn.as_str(), events[0].outcome), ("p-1", TurnOutcome::Result));
+
+    // Neither hook seen: the tool opens the turn itself and the Stop ends it.
+    let stage = Stage::new("bridge_first_turn_tool_only", true);
+    assert_eq!(stage.submit(approved())["isError"], false);
+    assert_eq!(stage.hook("Stop", stop("p-9", false, "Approved.")), None);
+    let events = stage.inbox();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].outcome, TurnOutcome::Result);
+    assert!(!events[0].blocked);
+    // The next turn starts clean.
+    stage.hook("UserPromptSubmit", prompt("p-10"));
+    assert!(stage.hook("Stop", stop("p-10", false, "")).is_some(), "a new turn without a result is blocked");
+}
+
+#[test]
+fn a_call_to_another_tool_is_refused() {
     let stage = Stage::new("bridge_mcp_no_turn", true);
-    let reply = stage.submit(approved());
-    assert_eq!(reply["isError"], true);
     let other = mcp::handle(&stage.server(), &json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/call",
         "params": { "name": "other_tool", "arguments": {} } }))
     .unwrap();

@@ -119,11 +119,19 @@ fn call(server: &Server, params: &Value) -> Value {
             return tool_text(&format!("DCTerminal could not take this result: {why}."), true);
         }
     };
-    let Some(turn) = dir.turn() else {
-        return tool_text(
-            "DCTerminal has not seen this turn start yet, so it cannot file the result. Call submit_result again.",
-            true,
-        );
+    // No hook has started a turn yet (the startup prompt, if Claude Code
+    // sends it no UserPromptSubmit, and no PreToolUse ran): the tool opens
+    // one, and the next Stop ends it.
+    let turn = match dir.turn() {
+        Some(turn) => turn,
+        None => {
+            let turn = super::folder::TurnState::new(&super::hook::tool_turn_id());
+            if let Err(err) = dir.write_turn(&turn) {
+                dir.log(&format!("could not open a turn for a result: {err}"));
+                return tool_text(&format!("DCTerminal could not file the result ({err}). Call submit_result again."), true);
+            }
+            turn
+        }
     };
     let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
     match schema::validate(dir.info.result, &args) {

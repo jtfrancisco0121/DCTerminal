@@ -10,7 +10,9 @@
 //!   stop ends the turn as `no_result`. Every end lands in `inbox/` for the
 //!   app and in `turn.json` for Continue.
 //! - **PreToolUse** answers `allow` for `submit_result`, which plan mode
-//!   would otherwise prompt for despite `--allowedTools` (D12, V0 T6).
+//!   would otherwise prompt for despite `--allowedTools` (D12, V0 T6). When
+//!   no turn is open under its `prompt_id` (V0 did not verify that the
+//!   positional startup prompt sends UserPromptSubmit), it opens that turn.
 
 use super::folder::{BridgeTurn, StageDir, StageMode, TurnEnd, TurnOutcome, TurnState};
 use super::schema::{block_reason, FULL_TOOL_NAME};
@@ -95,6 +97,14 @@ fn new_turn_id() -> String {
     format!("turn-{}", uuid::Uuid::new_v4())
 }
 
+/// A turn `submit_result` opened because no hook had started one (the
+/// startup prompt, if Claude Code sends no UserPromptSubmit for it).
+const TOOL_TURN_PREFIX: &str = "tool-";
+
+pub(crate) fn tool_turn_id() -> String {
+    format!("{TOOL_TURN_PREFIX}{}", uuid::Uuid::new_v4())
+}
+
 /// Handle one hook event for a checked stage folder. `Ok(Some(reply))` is
 /// printed to stdout.
 pub fn handle(dir: &StageDir, event: &str, payload: &Value) -> Result<Option<Value>, String> {
@@ -108,13 +118,22 @@ pub fn handle(dir: &StageDir, event: &str, payload: &Value) -> Result<Option<Val
             Ok(None)
         }
         "Stop" => on_stop(dir, payload),
-        "PreToolUse" if text(payload, "tool_name") == Some(FULL_TOOL_NAME) => Ok(Some(json!({
+        "PreToolUse" if text(payload, "tool_name") == Some(FULL_TOOL_NAME) => {
+            // No UserPromptSubmit seen for this turn (the startup prompt was
+            // not verified to send one): the tool call's prompt_id opens it.
+            if let Some(id) = prompt_id(payload) {
+                if dir.turn().is_none_or(|open| open.turn != id) {
+                    dir.write_turn(&TurnState::new(&id)).map_err(|err| format!("write turn.json: {err}"))?;
+                }
+            }
+            Ok(Some(json!({
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "allow",
                 "permissionDecisionReason": "DCTerminal's own result tool"
             }
-        }))),
+        })))
+        }
         _ => Ok(None),
     }
 }
@@ -127,6 +146,8 @@ fn on_stop(dir: &StageDir, payload: &Value) -> Result<Option<Value>, String> {
         .unwrap_or_else(new_turn_id);
     let mut state = match open {
         Some(state) if state.turn == turn => state,
+        // A turn the tool opened (no hook had started one): this Stop ends it.
+        Some(state) if state.ended.is_none() && state.turn.starts_with(TOOL_TURN_PREFIX) => state,
         // No UserPromptSubmit seen for this turn: it starts here.
         _ => TurnState::new(&turn),
     };
