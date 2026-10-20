@@ -731,6 +731,65 @@ fn starting_chain(
         .map(|def| crate::bridge::launch::new_chain(&def, kind, chrono::Utc::now().timestamp_millis())))
 }
 
+/// Which chain this start begins (`start_chain`, on a tab in none yet) and
+/// the bridge plan for the stage it launches: that new run's first stage,
+/// else the stage at `input.chain`, else the chain step the tab already
+/// holds (a fanned-out lane's Implementer). No plan off Claude.
+fn plan_start(
+    store: &Mutex<StateStore>,
+    input: &RoleTerminalInput,
+    role_id: &str,
+    claude: bool,
+) -> Result<(Option<crate::store::ChainRef>, Option<crate::bridge::BridgePlan>), String> {
+    let starting = starting_chain(store, input)?;
+    let plan = match (&starting, claude) {
+        (_, false) => None,
+        (Some(chain), true) => crate::pipelines::find(&chain.kind)
+            .and_then(|def| crate::bridge::launch::plan_for_new_run(&def, chain, role_id)),
+        (None, true) => bridge_plan_for(store, input.chain.as_ref(), input.tab_id.as_deref(), role_id)?,
+    };
+    Ok((starting, plan))
+}
+
+/// A chain a start labelled its tab with ([`label_starting_chain`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StartedChain {
+    chain_id: String,
+    run_id: Option<String>,
+    /// The label made the run (it did not exist before).
+    made_run: bool,
+}
+
+/// Label `tab_id` with the chain this start begins, just before the spawn:
+/// its run is made here (engine 2, autopilot off), and the D24 gate decided
+/// before the launch is recorded on it. `None` when the tab joined a chain
+/// meanwhile.
+fn label_starting_chain(
+    events: &dyn crate::commands::chain_events::ChainEvents,
+    store: &Mutex<StateStore>,
+    tab_id: &str,
+    chain: crate::store::ChainRef,
+    gate: Option<(crate::bridge::gate::Gate, String)>,
+) -> Result<Option<StartedChain>, String> {
+    let mut state = store.lock().map_err(|err| err.to_string())?;
+    if !state.tab_by_id(tab_id).is_some_and(|tab| tab.chain.is_none()) {
+        return Ok(None);
+    }
+    let chain_id = chain.chain_id.clone();
+    let made_run = state.chain_run_id(&chain_id).is_none();
+    crate::commands::chain_events::set_tab_chain_and_notify(events, &mut state, tab_id, Some(chain), None)?;
+    let run_id = state.chain_run_id(&chain_id);
+    if let (Some((gate, stage_id)), Some(id)) = (gate, run_id.as_deref()) {
+        if let Some(run) = state.pipeline_run_by_id_mut(id) {
+            if crate::bridge::gate::apply(run, &gate, &stage_id).1 {
+                state.save()?;
+                events.chain_run_updated(id);
+            }
+        }
+    }
+    Ok(Some(StartedChain { chain_id, run_id, made_run }))
+}
+
 /// The bridge plan for a role terminal opened at `chain`, when that stage
 /// launches bridged (`bridge::launch::plan_for`). Without a `chain`, the
 /// chain step the tab already holds: a fanned-out lane's Implementer, or a
@@ -920,13 +979,7 @@ fn role_terminal_start_blocking(
     // Pipeline v2 (ADR-015): a bridged stage of an engine-2 run reports
     // through the bridge, and its prompt says how. A chain this start
     // begins is planned as the engine-2 run it is about to get.
-    let starting = starting_chain(&store, &input)?;
-    let bridge = match (&starting, provider.id() == ProviderId::Claude) {
-        (_, false) => None,
-        (Some(chain), true) => crate::pipelines::find(&chain.kind)
-            .and_then(|def| crate::bridge::launch::plan_for_new_run(&def, chain, &role.id)),
-        (None, true) => bridge_plan_for(&store, input.chain.as_ref(), input.tab_id.as_deref(), &role.id)?,
-    };
+    let (starting, bridge) = plan_start(&store, &input, &role.id, provider.id() == ProviderId::Claude)?;
     // D24: the CLI version and disableAllHooks, read with no lock held
     // (`claude --version` runs once per executable, then it is cached). A
     // chain this start begins has no run yet: the gate is recorded on the
@@ -1059,20 +1112,7 @@ fn role_terminal_start_blocking(
     // before the run folder below), labelled the way the frontend used to
     // label it once the terminal ran.
     if let Some(chain) = starting {
-        let mut state = store.lock().map_err(|err| err.to_string())?;
-        if state.tab_by_id(&tab_id).is_some_and(|tab| tab.chain.is_none()) {
-            let chain_id = chain.chain_id.clone();
-            crate::commands::chain_events::set_tab_chain_and_notify(&app, &mut state, &tab_id, Some(chain), None)?;
-            if let Some((gate, stage_id)) = new_run_gate {
-                let run_id = state.chain_run_id(&chain_id).unwrap_or(chain_id);
-                if let Some(run) = state.pipeline_run_by_id_mut(&run_id) {
-                    if crate::bridge::gate::apply(run, &gate, &stage_id).1 {
-                        state.save()?;
-                        crate::commands::chain_events::ChainEvents::chain_run_updated(&app, &run_id);
-                    }
-                }
-            }
-        } else {
+        if label_starting_chain(&app, &store, &tab_id, chain, new_run_gate)?.is_none() {
             // It joined a chain meanwhile: the planned run never came to be.
             bridge = None;
         }
@@ -1677,6 +1717,122 @@ mod tests {
         assert!(version < gate && hooks < gate);
         let between = &body[version..gate];
         assert!(!between.contains(".lock()"), "no lock while reading the CLI and settings");
+    }
+
+    #[derive(Default)]
+    struct Recorded(std::cell::RefCell<Vec<String>>);
+
+    impl crate::commands::chain_events::ChainEvents for Recorded {
+        fn chain_run_updated(&self, chain_id: &str) {
+            self.0.borrow_mut().push(chain_id.to_string());
+        }
+    }
+
+    fn start_input(role_id: &str, tab_id: Option<&str>, start_chain: Option<&str>) -> RoleTerminalInput {
+        serde_json::from_value(serde_json::json!({
+            "roleId": role_id, "values": { "cwd": "/repo" }, "tabId": tab_id, "handoffPlan": null,
+            "cols": 80, "rows": 24, "startChain": start_chain
+        }))
+        .unwrap()
+    }
+
+    fn draft_tab(store: &Mutex<StateStore>, role_id: &str) -> String {
+        let role = crate::test_support::role(role_id, role_id);
+        store.lock().unwrap().create_draft_tab(&role, "/repo", true, None).unwrap()
+    }
+
+    #[test]
+    fn a_lane_implementer_started_with_no_chain_is_bridged_from_the_lane_chain_its_tab_holds() {
+        let dir = crate::test_support::TempDir::new("plan_start_lane");
+        let store = store_with_engine2_run(&dir);
+        let tab = draft_tab(&store, "role_implementer");
+        {
+            let mut state = store.lock().unwrap();
+            let run = state.pipeline_run_by_id_mut("ee_1700000000000").unwrap();
+            run.lanes = serde_json::from_value(serde_json::json!([
+                { "id": "pr1", "title": "PR1", "status": "active" }
+            ]))
+            .unwrap();
+            state.data.tabs.iter_mut().find(|t| t.id == tab).unwrap().chain = Some(
+                serde_json::from_value(serde_json::json!({
+                    "chainId": "ee_1700000000000", "kind": "eagle1", "step": 3, "total": 4, "lane": "pr1"
+                }))
+                .unwrap(),
+            );
+        }
+        // As laneStartTerminal sends it: no chain, no startChain.
+        let input = start_input("role_implementer", Some(&tab), None);
+        let (starting, plan) = plan_start(&store, &input, "role_implementer", true).unwrap();
+        assert_eq!(starting, None);
+        let plan = plan.expect("the lane's Implementer launches bridged");
+        assert_eq!(plan.kind, crate::bridge::ResultKind::Implementer);
+        assert_eq!(plan.stage_key, "implementer@pr1");
+        assert_eq!(plan.lane.as_deref(), Some("pr1"));
+        assert_eq!(plan.run_id, "ee_1700000000000");
+        // Off Claude, nothing is bridged.
+        assert_eq!(plan_start(&store, &input, "role_implementer", false).unwrap().1, None);
+    }
+
+    #[test]
+    fn a_form_start_with_start_chain_plans_and_labels_its_first_stage_as_a_new_engine_2_run() {
+        let dir = crate::test_support::TempDir::new("plan_start_new_chain");
+        let store = store_with_engine2_run(&dir);
+        let tab = draft_tab(&store, "role_planner");
+        let input = start_input("role_planner", Some(&tab), Some("eagle1"));
+        let (starting, plan) = plan_start(&store, &input, "role_planner", true).unwrap();
+        let chain = starting.expect("the start begins a chain");
+        assert!(chain.chain_id.starts_with("ee_"), "{chain:?}");
+        assert_eq!((chain.kind.as_str(), chain.step), ("eagle1", 1));
+        let plan = plan.expect("the first stage launches bridged");
+        assert_eq!(plan.run_id, chain.chain_id);
+        assert_eq!(plan.kind, crate::bridge::ResultKind::Planner);
+        assert!(!plan.autopilot);
+        // Labelled before the spawn: the run exists, engine 2, autopilot off.
+        let events = Recorded::default();
+        let started = label_starting_chain(&events, &store, &tab, chain.clone(), None).unwrap().expect("labelled");
+        assert!(started.made_run);
+        let state = store.lock().unwrap();
+        let run = state.pipeline_run_by_id(&chain.chain_id).expect("run made");
+        assert_eq!(run.engine, crate::bridge::launch::ENGINE_V2);
+        assert!(!run.autopilot.as_ref().is_some_and(|a| a.enabled));
+        assert_eq!(state.tab_by_id(&tab).unwrap().chain.as_ref().map(|c| c.chain_id.clone()), Some(chain.chain_id.clone()));
+        assert_eq!(events.0.borrow().as_slice(), [chain.chain_id.clone()]);
+    }
+
+    #[test]
+    fn a_tab_already_in_a_chain_ignores_start_chain() {
+        let dir = crate::test_support::TempDir::new("plan_start_chained");
+        let store = store_with_engine2_run(&dir);
+        let tab = draft_tab(&store, "role_planner");
+        let held: crate::store::ChainRef = serde_json::from_value(serde_json::json!({
+            "chainId": "ee_1700000000000", "kind": "eagle1", "step": 1, "total": 4
+        }))
+        .unwrap();
+        store.lock().unwrap().data.tabs.iter_mut().find(|t| t.id == tab).unwrap().chain = Some(held.clone());
+        let input = start_input("role_planner", Some(&tab), Some("eagle1"));
+        let (starting, plan) = plan_start(&store, &input, "role_planner", true).unwrap();
+        assert_eq!(starting, None, "no new chain");
+        assert_eq!(plan.map(|p| p.run_id), Some("ee_1700000000000".to_string()), "its own run's Planner");
+        // A label raced in after planning: the start leaves it alone.
+        let fresh = crate::bridge::launch::new_chain(&crate::pipelines::find("eagle1").unwrap(), "eagle1", 5);
+        assert_eq!(label_starting_chain(&Recorded::default(), &store, &tab, fresh, None).unwrap(), None);
+        assert_eq!(store.lock().unwrap().tab_by_id(&tab).unwrap().chain, Some(held));
+    }
+
+    #[test]
+    fn an_older_claude_code_on_a_new_chain_records_engine_1_on_the_run_it_makes() {
+        let dir = crate::test_support::TempDir::new("label_new_chain_gate");
+        let store = store_with_engine2_run(&dir);
+        let tab = draft_tab(&store, "role_planner");
+        let chain = crate::bridge::launch::new_chain(&crate::pipelines::find("eagle1").unwrap(), "eagle1", 6);
+        let gate = crate::bridge::gate::decide(Some("2.1.200 (Claude Code)"), None);
+        label_starting_chain(&Recorded::default(), &store, &tab, chain.clone(), Some((gate, "planner".into())))
+            .unwrap()
+            .unwrap();
+        let saved = StateStore::open_path(dir.join("state.json")).unwrap();
+        let run = saved.pipeline_run_by_id(&chain.chain_id).unwrap();
+        assert_eq!(run.engine, 1);
+        assert!(run.engine_note.as_deref().unwrap().contains("2.1.200"));
     }
 
     fn copied_planner_pipeline(id: &str) -> crate::pipelines::PipelineDef {
