@@ -17,6 +17,16 @@ const CLOSED_TABS_PER_WINDOW: usize = 15;
 /// with their tabs.
 const ARCHIVED_WINDOWS_KEPT: usize = 5;
 
+/// A tab's session pointers before a new-session start overwrote them, so a
+/// start that fails after promotion can put them back (see
+/// [`StateStore::abandon_failed_start`]).
+#[derive(Debug, Clone)]
+pub struct PriorSession {
+    provider: Option<ProviderId>,
+    session: Option<TabSessionRef>,
+    provider_session: Option<String>,
+}
+
 pub struct StateStore {
     pub path: PathBuf,
     pub data: AppStateFile,
@@ -508,6 +518,31 @@ impl StateStore {
         session: TabSessionRef,
         provider: ProviderId,
     ) -> Result<String, String> {
+        self.promote_tab_to_running_with_prior(
+            preferred_tab_id,
+            role,
+            answers,
+            cwd,
+            merged_prompt,
+            session,
+            provider,
+        )
+        .map(|(tab_id, _)| tab_id)
+    }
+
+    /// [`Self::promote_tab_to_running`], also returning the session pointers
+    /// it overwrote on the tab it promoted (none for a tab it created).
+    #[allow(clippy::too_many_arguments)]
+    pub fn promote_tab_to_running_with_prior(
+        &mut self,
+        preferred_tab_id: Option<&str>,
+        role: &Role,
+        answers: &HashMap<String, String>,
+        cwd: &str,
+        merged_prompt: &str,
+        session: TabSessionRef,
+        provider: ProviderId,
+    ) -> Result<(String, PriorSession), String> {
         let reuse_id = resolve_tab_for_session_start(self, preferred_tab_id)?;
         let snapshot = RoleSnapshot {
             name: role.name.clone(),
@@ -528,6 +563,11 @@ impl StateStore {
             if tab.phase == "running" {
                 return Err("this tab is already running — stop it or open a new tab".to_string());
             }
+            let prior = PriorSession {
+                provider: tab.provider,
+                session: tab.session.clone(),
+                provider_session: tab.sessions.get(provider).map(str::to_string),
+            };
             if !tab.custom_label {
                 tab.label = label;
             }
@@ -549,7 +589,7 @@ impl StateStore {
             let window_id = tab.window_id.clone();
             self.remember_active(&window_id, Some(tab_id.clone()));
             self.save()?;
-            return Ok(tab_id);
+            return Ok((tab_id, prior));
         }
 
         let tab_id = new_tab_id();
@@ -588,7 +628,14 @@ impl StateStore {
         let window_id = self.draft_window.clone();
         self.remember_active(&window_id, Some(tab_id.clone()));
         self.save()?;
-        Ok(tab_id)
+        Ok((
+            tab_id,
+            PriorSession {
+                provider: Some(provider),
+                session: None,
+                provider_session: None,
+            },
+        ))
     }
 
     /// Keep the active tab chip label/answers in sync while the user edits the form.
@@ -651,6 +698,31 @@ impl StateStore {
             self.save()?;
         }
         Ok(())
+    }
+
+    /// A start failed after its tab was promoted and no agent runs behind it:
+    /// mark the tab awaiting input. With `prior` (a new-session start) the
+    /// session pointers go back to what they were, so Continue is not offered
+    /// for a session that never got its role prompt. Without it (a Continue)
+    /// the ref stays: it is the user's earlier session.
+    pub fn abandon_failed_start(
+        &mut self,
+        tab_id: &str,
+        provider: ProviderId,
+        prior: Option<PriorSession>,
+    ) -> Result<(), String> {
+        if let Some(prior) = prior {
+            let tab = self
+                .data
+                .tabs
+                .iter_mut()
+                .find(|t| t.id == tab_id)
+                .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
+            tab.provider = prior.provider;
+            tab.session = prior.session;
+            tab.sessions.set(provider, prior.provider_session);
+        }
+        self.mark_tab_awaiting_input(tab_id, None)
     }
 
     pub fn mark_tab_awaiting_input(
