@@ -192,7 +192,7 @@ pub struct UserOutcome {
 /// A stage terminal the actor wants started. The host turns it into the
 /// real command (`claude` with the account, model and permission mode the
 /// role is set to) and starts it with no view attached.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StageLaunch {
     pub run_id: String,
     pub tab_id: String,
@@ -202,8 +202,10 @@ pub struct StageLaunch {
     pub prompt: String,
     /// The Claude session id the terminal is pinned to (`--session-id`).
     pub session_id: String,
-    /// The bridge flags (`bridge::launch::launch_args`), placed before the prompt.
-    pub bridge_args: Vec<String>,
+    /// The bridge flags (`bridge::launch::launch_flags`): its args go before
+    /// the prompt and its hooks join the launch's one `--settings`. `None`
+    /// when the D24 gate sent the run to engine 1.
+    pub bridge: Option<crate::bridge::launch::BridgeFlags>,
 }
 
 /// What the actor needs from the app. Every method is quick except
@@ -215,6 +217,10 @@ pub trait Host: Send + Sync + 'static {
     /// The executable the bridge runs as (`dcterminal`).
     fn bridge_program(&self) -> Option<PathBuf>;
     fn role(&self, role_id: &str) -> Option<Role>;
+    /// D24 and hooks-off for a stage the actor is about to open bridged
+    /// (`stage_key` of `run_id`, in `cwd`): true to launch it bridged. An
+    /// engine-1 outcome switches the run for good, with its notice.
+    fn bridge_gate(&self, run_id: &str, stage_key: &str, cwd: &Path) -> Result<bool, String>;
     /// Start a stage terminal (see [`StageLaunch`]).
     fn spawn_stage(&self, launch: &StageLaunch) -> Result<(), String>;
     /// Resume a stage terminal's session (V4, D17): stop its program
@@ -229,6 +235,9 @@ pub trait Host: Send + Sync + 'static {
     fn run_gate(&self, gate: &GateDef, folder: &Path, pr_urls: &[String]) -> GateResult;
     /// The highest Claude usage window of the run's account, in percent, when known.
     fn usage_percent(&self, run_id: &str) -> Option<u8>;
+    /// The usage-limit error in the stage terminal's session log for its
+    /// latest turn (H5), if Claude refused it. Read with no store lock held.
+    fn rate_limit(&self, tab_id: &str) -> Option<String>;
     /// The run changed: open overviews refetch it.
     fn run_changed(&self, run_id: &str);
     /// The actor opened a terminal tab: the frontend lists it.

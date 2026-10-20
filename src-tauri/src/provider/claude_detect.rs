@@ -528,6 +528,43 @@ pub fn read_claude_version(claude: &Path, config: &ConfigDirInfo) -> Option<Stri
     (!text.is_empty()).then(|| text.lines().next().unwrap_or("").trim().to_string())
 }
 
+/// [`read_claude_version`], run once per executable for the app's life
+/// (the pipeline v2 gate, D24, reads it at a bridged launch). The cache is
+/// keyed on the file the path resolves to (symlinks followed), its size and
+/// its modification time, so an in-place update (the auto-updater switching
+/// the symlink, or a rewrite) is read again. A version that could not be
+/// read (or an error in its place) is not kept, so the next launch tries
+/// again.
+pub fn cached_claude_version(claude: &Path, config: &ConfigDirInfo) -> Option<String> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::SystemTime;
+    type Key = (PathBuf, u64, Option<SystemTime>);
+    static VERSIONS: OnceLock<Mutex<HashMap<PathBuf, (Key, String)>>> = OnceLock::new();
+    let key: Option<Key> = std::fs::canonicalize(claude).ok().and_then(|real| {
+        let meta = std::fs::metadata(&real).ok()?;
+        Some((real, meta.len(), meta.modified().ok()))
+    });
+    let cache = VERSIONS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(key) = &key {
+        let hit = cache
+            .lock()
+            .ok()
+            .and_then(|map| map.get(claude).filter(|(seen, _)| seen == key).map(|(_, v)| v.clone()));
+        if hit.is_some() {
+            return hit;
+        }
+    }
+    // Read with no lock held: `claude --version` can take a moment.
+    let found = read_claude_version(claude, config)?;
+    if let (Some(key), true) = (key, crate::bridge::gate::parse_version(&found).is_some()) {
+        if let Ok(mut map) = cache.lock() {
+            map.insert(claude.to_path_buf(), (key, found.clone()));
+        }
+    }
+    Some(found)
+}
+
 /// Parse `claude auth status --json` (CLI 2.1.236 shape, see
 /// `fixtures/claude/`). Falls back to the `--text` wording.
 pub fn parse_claude_auth_status(stdout: &str, stderr: &str) -> LoginStatus {

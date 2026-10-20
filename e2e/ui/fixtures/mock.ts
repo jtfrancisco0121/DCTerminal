@@ -528,6 +528,7 @@ export function installTauriMock(config: MockConfig): void {
     pty_input_state: () => ({ open: true, stage: false, takenOver: false, needs: false }),
     pty_stage_needs: (a) => ({ open: true, stage: false, takenOver: false, needs: !!a.needs }),
     pty_detach: () => false,
+    pty_running: () => [],
 
     get_layout: () => clone(state.layout),
     set_layout: (a) => {
@@ -568,6 +569,7 @@ export function installTauriMock(config: MockConfig): void {
     pipeline_run_tasks: () => null,
     // No mocked run is engine 2, so no button goes to a run actor.
     pipeline_actor_message: () => ({}),
+    autopilot_pending_stops: () => [],
     pipeline_run_gates: (a) => {
       const run = findRun(a.runId);
       if (!run) throw new Error(`unknown pipeline run: ${a.runId}`);
@@ -703,6 +705,11 @@ export function installTauriMock(config: MockConfig): void {
       ];
       run.round = ending + 1;
       run.stage = stages[at][0];
+      // Your send-back puts a complete run back in play (PipelineRun::reopen_after_you).
+      if (run.status === "complete") {
+        run.status = run.autopilot?.enabled ? "running" : "stopped";
+        run.stopReason = run.autopilot && !run.autopilot.enabled ? "paused_by_you" : null;
+      }
       const chain = {
         chainId,
         kind: run.kind === "execute" ? "eagle2" : "eagle1",

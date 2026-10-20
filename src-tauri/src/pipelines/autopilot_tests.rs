@@ -33,6 +33,8 @@ fn run(round: u32) -> PipelineRun {
         stop_reason: None,
         engine: 1,
         taken_over: Vec::new(),
+        engine_note: None,
+        manual_only: false,
     }
 }
 
@@ -257,6 +259,35 @@ fn a_bridge_turn_with_no_result_stops_at_once_with_no_result() {
 }
 
 #[test]
+fn a_blocked_implementer_makes_the_run_wait_with_its_reason_and_runs_on_no_further() {
+    let mut r = run(1);
+    r.stage = "implementer".into();
+    let mut rep = report("implementer", None);
+    rep.blocked = Some("The plan's API does not exist in this repository.".into());
+    rep.findings_known = true;
+    rep.turn = Some("tab|bridge|p-1".into());
+    let d = decide(&eagle1(), &mut r, &rep);
+    assert_eq!(d.action, "stop", "{}", d.reason);
+    assert_eq!(d.stage_id.as_deref(), Some("implementer"));
+    assert!(d.reason.contains("blocked") && d.reason.contains("API does not exist"), "{}", d.reason);
+    assert_eq!(r.status, RunStatus::Waiting);
+    assert_eq!(r.stop_reason, Some(StopReason::Checkpoint), "not no_result");
+}
+
+#[test]
+fn a_bridge_turn_cut_off_by_a_usage_limit_stops_as_usage_limit_not_no_result() {
+    let mut r = run(1);
+    let mut rep = report("pr_reviewer", None);
+    rep.no_result = true;
+    rep.rate_limit = Some("You've hit your limit".into());
+    rep.turn = Some("tab|bridge|p-1".into());
+    let d = decide(&eagle1(), &mut r, &rep);
+    assert_eq!(d.action, "stop");
+    assert_eq!(r.stop_reason, Some(StopReason::UsageLimit), "{}", d.reason);
+    assert!(d.reason.contains("usage limit"), "{}", d.reason);
+}
+
+#[test]
 fn bridge_verdict_words_decide_like_the_v1_words() {
     let mut r = run(1);
     let mut rep = report("pr_reviewer", Some("CHANGES_REQUIRED"));
@@ -288,6 +319,7 @@ fn a_failed_gate_is_retried_twice_then_stops() {
                 summary: "Failed (exit code 1).".into(),
                 output: "1 test failed".into(),
                 duration_ms: 10,
+                optional: false,
             }],
         },
     );
@@ -397,6 +429,7 @@ fn a_lane_counts_its_own_rounds_and_gates() {
                 summary: "Failed (exit code 101).".into(),
                 output: String::new(),
                 duration_ms: 1,
+                optional: false,
             }],
         },
     );
@@ -596,6 +629,7 @@ fn failed_gate(round: u32) -> StageGates {
             summary: "Failed (exit code 1).".into(),
             output: "1 test failed".into(),
             duration_ms: 10,
+            optional: false,
         }],
     }
 }
@@ -614,6 +648,11 @@ fn every_stop_in_decide_carries_its_reason_code() {
         let d = decide(def, &mut r, &rep);
         assert_eq!(d.action, "stop", "{}", d.reason);
         assert_eq!(r.status, RunStatus::Waiting, "{}", d.reason);
+        // The same code goes to the notification (the decision) and the ledger.
+        assert_eq!(d.stop_reason, r.stop_reason, "{}", d.reason);
+        let last = r.events.last().unwrap();
+        assert_eq!(last.kind, "stop");
+        assert_eq!(last.outcome.as_deref(), r.stop_reason.map(StopReason::as_str), "{}", d.reason);
         r.stop_reason
     };
     let mut capped = run(3);
@@ -635,6 +674,43 @@ fn every_stop_in_decide_carries_its_reason_code() {
     approved.findings_known = true;
     assert_eq!(stopped(&eagle1(), run(1), approved), Some(StopReason::BlockingFindings));
     assert_eq!(stopped(&eagle1(), run(1), report("nowhere", None)), Some(StopReason::CarryOutFailed));
+    let mut limited = report("planner", None);
+    limited.rate_limit = Some("You've hit your limit · resets 3pm".into());
+    assert_eq!(stopped(&eagle1(), run(1), limited), Some(StopReason::UsageLimit));
+    // Autopilot off (a turn racing the switch): the run is left as you set
+    // it, and the notification still names why.
+    let mut off = run(1);
+    off.autopilot.as_mut().unwrap().enabled = false;
+    let events = off.events.len();
+    let d = decide(&eagle1(), &mut off, &report("planner", None));
+    assert_eq!((d.action.as_str(), d.stop_reason), ("stop", Some(StopReason::PausedByYou)));
+    assert_eq!(off.events.len(), events);
+}
+
+#[test]
+fn unknown_usage_carries_on_but_a_rate_limit_error_stops_the_run() {
+    // Unknown usage (never read, or reset since the reading) is not 0%: the
+    // run simply carries on.
+    let unknown = report("planner", None);
+    assert_eq!(unknown.usage_percent, None);
+    assert_eq!(decide(&eagle1(), &mut run(1), &unknown).action, "advance");
+
+    // A rate-limit error in the stage's log stops it, whatever usage reads.
+    let mut limited = report("plan_reviewer", Some("APPROVED"));
+    limited.rate_limit = Some("Claude AI usage limit reached|1760000000".into());
+    let mut r = run(1);
+    let d = decide(&eagle1(), &mut r, &limited);
+    assert_eq!((d.action.as_str(), d.stop_reason), ("stop", Some(StopReason::UsageLimit)));
+    assert!(d.reason.contains("Plan Reviewer hit a Claude usage limit"), "{}", d.reason);
+    assert!(d.reason.contains("usage limit reached"), "{}", d.reason);
+    assert_eq!(d.stage_id.as_deref(), Some("plan_reviewer"));
+    // Before `no_result`: a limited turn reported nothing either.
+    limited.no_result = true;
+    assert_eq!(decide(&eagle1(), &mut run(1), &limited).stop_reason, Some(StopReason::UsageLimit));
+    // A blank error line is no error.
+    let mut blank = report("planner", None);
+    blank.rate_limit = Some("  ".into());
+    assert_eq!(decide(&eagle1(), &mut run(1), &blank).action, "advance");
 }
 
 #[test]
@@ -700,4 +776,118 @@ fn a_passing_gate_resets_the_stage_retries() {
     r.gates.insert("implementer".into(), failed_gate(1));
     let d = decide(&eagle1(), &mut r, &rep);
     assert_eq!(d.action, "retry", "{}", d.reason);
+}
+
+fn auto_gate_found_nothing(optional: bool) -> StageGates {
+    let mut skipped = GateResult::skipped("command", "auto", "No check command found.");
+    skipped.optional = optional;
+    StageGates {
+        round: 1,
+        at: "now".into(),
+        results: vec![skipped],
+    }
+}
+
+#[test]
+fn an_auto_gate_with_nothing_to_run_stops_with_no_check_found() {
+    let mut r = run(1);
+    r.gates.insert("implementer".into(), auto_gate_found_nothing(false));
+    let d = decide(&eagle1(), &mut r, &report("implementer", None));
+    assert_eq!((d.action.as_str(), d.stage_id.as_deref()), ("stop", Some("implementer")));
+    assert!(d.reason.contains("nothing to run"), "{}", d.reason);
+    assert_eq!((r.status, r.stop_reason), (RunStatus::Waiting, Some(StopReason::NoCheckFound)));
+    // A built-in pipeline cannot be edited: say what you can do instead.
+    assert!(!d.reason.contains("to the pipeline"), "{}", d.reason);
+    assert!(d.reason.contains("npm `check`"), "{}", d.reason);
+    assert!(d.reason.contains("your own pipeline in Settings › Pipelines"), "{}", d.reason);
+    // Your own pipeline can take a check command, or mark the gate optional.
+    let mut own = run(1);
+    let def = with_copied_reviewer(None);
+    own.kind = def.run_kind().to_string();
+    own.gates.insert("implementer".into(), auto_gate_found_nothing(false));
+    let d = decide(&def, &mut own, &report("implementer", None));
+    assert_eq!(own.stop_reason, Some(StopReason::NoCheckFound));
+    assert!(d.reason.contains("Add a check command to the pipeline"), "{}", d.reason);
+    assert!(d.reason.contains("mark the gate optional"), "{}", d.reason);
+}
+
+#[test]
+fn an_optional_auto_gate_with_nothing_to_run_is_skipped() {
+    let mut r = run(1);
+    r.gates.insert("implementer".into(), auto_gate_found_nothing(true));
+    r.autopilot.as_mut().unwrap().passed_checkpoints.push("implementer".into());
+    let d = decide(&eagle1(), &mut r, &report("implementer", None));
+    assert_eq!((d.action.as_str(), d.stage_id.as_deref()), ("advance", Some("pr_reviewer")));
+}
+
+#[test]
+fn an_unknown_or_disabled_pipeline_stops_the_run_with_the_reason() {
+    let mut r = run(1);
+    let d = stop_for_pipeline(&mut r, "unknown pipeline: mystery".into());
+    assert_eq!(d.action, "stop");
+    assert!(d.reason.contains("mystery"), "{}", d.reason);
+    assert_eq!((r.status, r.stop_reason), (RunStatus::Waiting, Some(StopReason::CarryOutFailed)));
+    assert_eq!(r.events.last().unwrap().kind, "stop");
+    // Autopilot off: nothing changes.
+    let mut off = run(1);
+    off.autopilot = None;
+    assert_eq!(stop_for_pipeline(&mut off, "x".into()).action, "stop");
+    assert!(off.events.is_empty());
+}
+
+/// Eagle-Eye 2 with its PR Reviewer swapped for a copy (Settings › Roles ›
+/// Duplicate), as a pipeline of your own. `kind` as written in the file.
+fn with_copied_reviewer(kind: Option<&str>) -> crate::pipelines::PipelineDef {
+    let mut review = serde_json::json!({
+        "id": "pr_reviewer", "roleId": "role_custom_7", "title": "PR Reviewer copy",
+        "loopBack": { "to": "implementer", "minSeverity": "MEDIUM" }
+    });
+    if let Some(kind) = kind {
+        review["kind"] = kind.into();
+    }
+    serde_json::from_value(serde_json::json!({
+        "id": "copied_review", "name": "Copied review",
+        "stages": [
+            { "id": "implementer", "roleId": "role_implementer", "title": "Implementer" },
+            review
+        ]
+    }))
+    .unwrap()
+}
+
+/// What autopilot does with a PR Reviewer's turns on `def`: a turn that
+/// reported no result (V6 removed the v1 re-ask for missing HANDOFF
+/// sections), then one that asks for changes with a blocking finding.
+fn reviewer_turns(def: &crate::pipelines::PipelineDef) -> Vec<(String, Option<String>, Option<StopReason>)> {
+    let mut r = run(1);
+    r.kind = def.run_kind().to_string();
+    let mut out = Vec::new();
+    let mut lacking = report("pr_reviewer", None);
+    lacking.no_result = true;
+    let d = decide(def, &mut r, &lacking);
+    out.push((d.action, d.stage_id, r.stop_reason));
+    r.resume_after_you();
+    let mut changes = report("pr_reviewer", Some("REQUEST CHANGES"));
+    changes.findings = vec![finding("MEDIUM", "null token")];
+    changes.findings_known = true;
+    let d = decide(def, &mut r, &changes);
+    out.push((d.action, d.stage_id, r.stop_reason));
+    out
+}
+
+#[test]
+fn a_duplicated_pr_reviewer_stops_and_loops_exactly_like_the_built_in_one() {
+    let built_in = reviewer_turns(&find("eagle2").unwrap());
+    assert_eq!(
+        built_in,
+        vec![
+            ("stop".to_string(), Some("pr_reviewer".to_string()), Some(StopReason::NoResult)),
+            ("loopBack".to_string(), Some("implementer".to_string()), None),
+        ]
+    );
+    for kind in [Some("reviewer"), None] {
+        let def = with_copied_reviewer(kind);
+        assert_eq!(def.stages[1].kind(), crate::pipelines::StageKind::Reviewer, "{kind:?}");
+        assert_eq!(reviewer_turns(&def), built_in, "kind {kind:?}");
+    }
 }

@@ -18,6 +18,7 @@ import { useCallback, useRef } from "react";
 import { pipelineActorMessage, pipelineTurnFinished, type TabSummary, type TerminalSessionLog } from "../bridge";
 import { parseReviewVerdict } from "../handoff/verdict";
 import { ptyExitCode } from "../terminal/live";
+import { stageKind } from "./defs";
 import { finishedTurn, stageForTab } from "./stageTurn";
 
 export type RunTurnsDeps = {
@@ -42,7 +43,7 @@ export function useRunTurns(deps: RunTurnsDeps) {
     const tab = depsRef.current.tabs().find((t) => t.id === tabId);
     if (!tab?.chain || tab.kind !== "terminal" || ptyExitCode(tabId) != null) return;
     if (tab.bridge) return;
-    const turn = finishedTurn(tab.roleId, log);
+    const turn = finishedTurn(tab.roleId, log, tab.chain.kind);
     if (log && !seen.current.has(tabId)) {
       seen.current.add(tabId);
       // Finished before this app session (a restart): not noted again.
@@ -61,7 +62,8 @@ export function useRunTurns(deps: RunTurnsDeps) {
       stageId: placed.stage.id,
       roleId: tab.roleId,
       lane: tab.chain.lane ?? null,
-      verdict: placed.stage.loopBack && !turn.awaitingPlan ? parseReviewVerdict(log.lastReply ?? "") : null,
+      // A reviewer by its stage kind (H4), so a copied reviewer too.
+      verdict: stageKind(placed.stage) === "reviewer" && !turn.awaitingPlan ? parseReviewVerdict(log.lastReply ?? "") : null,
     }).catch(() => {});
   }, []);
 

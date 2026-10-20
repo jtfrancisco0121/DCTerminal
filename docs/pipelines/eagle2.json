@@ -7,12 +7,14 @@
     {
       "id": "implementer",
       "roleId": "role_implementer",
+      "kind": "implementer",
       "title": "Implementer",
       "gates": [{ "kind": "command", "run": "auto" }, { "kind": "pullRequest" }]
     },
     {
       "id": "pr_reviewer",
       "roleId": "role_pr_reviewer",
+      "kind": "reviewer",
       "title": "PR Reviewer",
       "loopBack": { "to": "implementer", "minSeverity": "MEDIUM" }
     }

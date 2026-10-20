@@ -31,10 +31,14 @@ const EXAMPLE: PipelineDef = {
   ],
 };
 
+/**
+ * Your pipelines as the editor shows them: without the app's own fields,
+ * and an entry that could not be read as a pipeline exactly as written.
+ */
 function ownPipelines(defs: readonly PipelineDef[]): PipelineDef[] {
   return defs
     .filter((def) => !def.builtIn)
-    .map(({ builtIn: _builtIn, ...def }) => def);
+    .map(({ builtIn: _builtIn, disabled: _disabled, raw, ...def }) => (raw !== undefined ? (raw as PipelineDef) : def));
 }
 
 function asJson(defs: readonly PipelineDef[]): string {
@@ -53,7 +57,9 @@ function StageStrip({ def }: { def: PipelineDef }) {
           stage.checkpoint ? "checkpoint before" : null,
           stage.alsoReviewers?.length ? `with ${stage.alsoReviewers.join(", ")} in parallel` : null,
           stage.gates?.length
-            ? `checks: ${stage.gates.map((g) => (g.kind === "command" ? g.run : "pull request")).join(", ")}`
+            ? `checks: ${stage.gates
+                .map((g) => (g.kind === "command" ? `${g.run}${g.optional ? " (optional)" : ""}` : "pull request"))
+                .join(", ")}`
             : null,
           back
             ? `loops back to ${back} · ${roundLimitText(maxRounds(stage))}`
@@ -80,6 +86,8 @@ export function PipelinesSettings({
   onDirtyChange?: (dirty: boolean) => void;
 }) {
   const [saved, setSaved] = useState<PipelineDef[]>([]);
+  /** Your pipelines as the core listed them, with why any is disabled. */
+  const [listed, setListed] = useState<PipelineDef[]>([]);
   const [text, setText] = useState("[]");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -91,6 +99,7 @@ export function PipelinesSettings({
       .then((defs) => {
         if (cancelled) return;
         const own = ownPipelines(defs ?? []);
+        setListed((defs ?? []).filter((def) => !def.builtIn));
         setSaved(own);
         setText(asJson(own));
       })
@@ -127,6 +136,7 @@ export function PipelinesSettings({
       const all = await pipelineDefsSave(parsed as PipelineDef[]);
       setPipelineDefs(all);
       const own = ownPipelines(all);
+      setListed(all.filter((def) => !def.builtIn));
       setSaved(own);
       setText(asJson(own));
       setNotice(own.length === 1 ? "Saved 1 pipeline." : `Saved ${own.length} pipelines.`);
@@ -175,11 +185,16 @@ export function PipelinesSettings({
         ))}
       </ul>
       <h4>Your pipelines</h4>
-      {saved.length > 0 && (
+      {listed.length > 0 && (
         <ul className="pipeline-list">
-          {saved.map((def) => (
-            <li key={def.id}>
+          {listed.map((def, index) => (
+            <li key={`${def.id}-${index}`} className={def.disabled ? "pipeline-disabled" : undefined}>
               <strong>{def.name}</strong> <code>{def.id}</code>
+              {def.disabled && (
+                <p className="error" role="note">
+                  Disabled: {def.disabled} Fix it in the JSON below and save.
+                </p>
+              )}
               <StageStrip def={def} />
             </li>
           ))}
@@ -201,8 +216,10 @@ export function PipelinesSettings({
       />
       <p className="hint">
         Fields: <code>id</code>, <code>name</code>, <code>stages</code> (<code>id</code>,{" "}
-        <code>roleId</code>, <code>title</code>, optional <code>loopBack</code>,{" "}
-        <code>gates</code>, <code>checkpoint</code>). The full format is in{" "}
+        <code>roleId</code>, <code>title</code>, optional <code>kind</code>, <code>loopBack</code>,{" "}
+        <code>gates</code>, <code>checkpoint</code>). Set <code>kind</code> (<code>planner</code>,{" "}
+        <code>reviewer</code>, <code>implementer</code>, <code>generic</code>) on a stage whose role is a
+        copy, so it works like the original. The full format is in{" "}
         <code>docs/pipelines/README.md</code>.
       </p>
       {error && (

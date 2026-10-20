@@ -9,7 +9,7 @@ import type { TabSummary, TerminalSessionLog } from "../bridge";
 import type { ChainRef } from "../handoff/chains";
 import { terminalLogFields, type HandoffField, type HandoffSource } from "../handoff/map";
 import { roleDisplayName, type RoleName } from "../handoff/transitions";
-import { pipelineDef, stageRoles, type PipelineDef, type StageDef } from "./defs";
+import { pipelineDef, roleBehaviour, stageRoles, type PipelineDef, type StageDef } from "./defs";
 
 /** The stage a chain tab holds on its pipeline, if its role matches that step. */
 export function stageForTab(
@@ -39,6 +39,7 @@ export function terminalStageSource(args: {
   const { tab, log, answers, tail, roles, sourceFields, awaitingPlan } = args;
   return {
     sourceRoleId: tab.roleId,
+    sourceChainKind: tab.chain?.kind ?? null,
     sourceTabId: tab.id,
     sourceLabel: tab.label || roleDisplayName(tab.roleId, roles),
     cwd: tab.cwd,
@@ -64,10 +65,12 @@ export function terminalStageSource(args: {
  * Planner turn waiting on its plan. Null while the turn is still working or
  * waits on anything else. A turn you interrupted is not finished work, so
  * it is null too. The key changes once per turn, so each turn is handled once.
+ * `chainKind`: the tab's pipeline, where its stage's kind says it plans (H4).
  */
 export function finishedTurn(
   roleId: string,
   log: TerminalSessionLog | null | undefined,
+  chainKind?: string | null,
 ): { key: string; awaitingPlan: boolean } | null {
   if (!log) return null;
   const prompt = log.lastPromptAt ?? "";
@@ -75,7 +78,7 @@ export function finishedTurn(
     return log.interrupted ? null : { key: `${log.sessionId}|${prompt}|done`, awaitingPlan: false };
   }
   const open = log.openTool;
-  if (roleId === "role_planner" && open?.name === "ExitPlanMode" && (log.plan ?? "").trim()) {
+  if (roleBehaviour(roleId, chainKind) === "planner" && open?.name === "ExitPlanMode" && (log.plan ?? "").trim()) {
     return { key: `${log.sessionId}|${prompt}|plan|${open.id}`, awaitingPlan: true };
   }
   return null;

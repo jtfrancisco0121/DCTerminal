@@ -187,6 +187,15 @@ pub struct PipelineRun {
     /// result on them nor decides their turns until you hand them back.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub taken_over: Vec<String>,
+    /// The overview's line about the engine (D24): why the run uses engine 1
+    /// (an older Claude Code, hooks turned off), or "Claude Code version not
+    /// yet verified" for a newer one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_note: Option<String>,
+    /// A Restart or Resume switched this run from the bridge to engine 1
+    /// mid-run: it is manual for good, and autopilot cannot be turned on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub manual_only: bool,
 }
 
 fn first_engine() -> u32 {
@@ -241,6 +250,45 @@ pub enum StopReason {
     TakenOver,
     /// You turned autopilot off.
     PausedByYou,
+}
+
+impl StopReason {
+    /// Every code, in the plan's order. The frontend has a plain-English
+    /// line for each (`src/pipeline/stopReasons.ts`).
+    pub const ALL: [StopReason; 13] = [
+        StopReason::Checkpoint,
+        StopReason::GateFailed,
+        StopReason::NoCheckFound,
+        StopReason::NoResult,
+        StopReason::NoVerdict,
+        StopReason::BlockingFindings,
+        StopReason::RoundCap,
+        StopReason::UsageLimit,
+        StopReason::Stalled,
+        StopReason::AppRestarted,
+        StopReason::CarryOutFailed,
+        StopReason::TakenOver,
+        StopReason::PausedByYou,
+    ];
+
+    /// The code as saved and sent (`gate_failed`), also a stop event's `outcome`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StopReason::Checkpoint => "checkpoint",
+            StopReason::GateFailed => "gate_failed",
+            StopReason::NoCheckFound => "no_check_found",
+            StopReason::NoResult => "no_result",
+            StopReason::NoVerdict => "no_verdict",
+            StopReason::BlockingFindings => "blocking_findings",
+            StopReason::RoundCap => "round_cap",
+            StopReason::UsageLimit => "usage_limit",
+            StopReason::Stalled => "stalled",
+            StopReason::AppRestarted => "app_restarted",
+            StopReason::CarryOutFailed => "carry_out_failed",
+            StopReason::TakenOver => "taken_over",
+            StopReason::PausedByYou => "paused_by_you",
+        }
+    }
 }
 
 /// A status written by a newer build reads as `stopped`, never a failed load.
@@ -423,14 +471,31 @@ pub const MAX_DECIDED_TURNS: usize = 100;
 
 impl PipelineRun {
     /// Autopilot stops for you: `waiting`, with the reason code and the
-    /// sentence the overview shows. A complete run stays complete.
+    /// sentence the overview shows. A complete run stays complete, and a run
+    /// with autopilot off stays `stopped`: only autopilot waits for you.
     pub fn set_waiting(&mut self, reason: StopReason, why: impl Into<String>) {
-        if self.status == RunStatus::Complete {
+        let enabled = self.autopilot.as_ref().is_some_and(|a| a.enabled);
+        if self.status == RunStatus::Complete || !enabled {
             return;
         }
         self.autopilot.get_or_insert_with(RunAutopilot::default).waiting = Some(why.into());
         self.status = RunStatus::Waiting;
         self.stop_reason = Some(reason);
+    }
+
+    /// `set_waiting`, plus the ledger's `stop` line, whose `outcome` is the
+    /// reason code (the overview shows its plain-English line).
+    pub fn stop_for(
+        &mut self,
+        reason: StopReason,
+        stage_id: Option<&str>,
+        role_id: Option<&str>,
+        why: impl Into<String>,
+        detail: Option<String>,
+    ) {
+        let why = why.into();
+        self.set_waiting(reason, why.clone());
+        self.log_outcome("stop", stage_id, role_id, why, detail, Some(reason.as_str().to_string()));
     }
 
     /// Autopilot acts again: `running` while it is on. Clears what it was
@@ -456,6 +521,24 @@ impl PipelineRun {
         if self.status == RunStatus::Waiting {
             self.set_running();
         }
+    }
+
+    /// You sent work back or handed it on yourself on a complete run: it is
+    /// in play again, `running` when autopilot is on, else `stopped` (paused
+    /// by you when you had turned autopilot off). Matches `migrated_status`,
+    /// which reads a hand-off or send-back after the last `complete` event as
+    /// not complete. Late turns with no such action from you leave a complete
+    /// run complete.
+    pub fn reopen_after_you(&mut self) {
+        if self.status != RunStatus::Complete {
+            return;
+        }
+        (self.status, self.stop_reason) = match self.autopilot.as_ref() {
+            Some(a) if a.enabled => (RunStatus::Running, None),
+            // Turned off by you before: still paused by you.
+            Some(_) => (RunStatus::Stopped, Some(StopReason::PausedByYou)),
+            None => (RunStatus::Stopped, None),
+        };
     }
 
     /// Autopilot turned on (`running`) or off (`stopped`, paused by you).
@@ -645,10 +728,10 @@ pub struct StageHandoff {
 }
 
 /// `(stage id, role id)` for each stage of a run kind or chain kind, from
-/// the pipeline definitions (`crate::pipelines`). Unknown kinds read as
-/// Eagle-Eye 1 (`full`).
-pub fn pipeline_stages(kind: &str) -> Vec<(String, String)> {
-    crate::pipelines::stages(kind)
+/// the pipeline definitions (`crate::pipelines`). An unknown kind is an
+/// error that names it, never Eagle-Eye 1 (Track H4).
+pub fn pipeline_stages(kind: &str) -> Result<Vec<(String, String)>, String> {
+    crate::pipelines::stages(kind).ok_or_else(|| format!("unknown pipeline: {}", kind.trim()))
 }
 
 /// Run kind of a chain: `eagle1` → `full`, `eagle2` → `execute`, a user

@@ -26,6 +26,7 @@ pub mod roles;
 mod run_actor;
 mod session_id;
 mod shell_env;
+pub mod status_line;
 pub mod store;
 pub mod supervisor;
 pub mod template;
@@ -44,15 +45,19 @@ pub mod testing {
     pub use crate::pty::session::{PtyOutput, PtySession, SpawnSpec};
     pub use crate::pipelines::find as find_pipeline;
     pub use crate::pipelines::autopilot::{decide, FindingReport, TurnReport};
+    pub use crate::pipelines::StageKind;
     pub use crate::pipelines::recovery::{
         reconcile_run, stop_stalled, current_stage_tabs, working, turn_key, Reconciled, StallObservation,
         StallWatch,
     };
     pub use crate::store::{PipelineRun, RunStatus, StopReason};
     pub use crate::bridge::launch::{
-        launch_args, prepare_stage, read_run_tasks, read_stage_turn, runs_root, BridgePlan, BridgeTag,
+        bridged_command, launch_flags, prepare_stage, read_run_tasks, read_stage_turn, runs_root, BridgePlan, BridgeTag,
     };
     pub use crate::bridge::watch::{drain_inbox, InboxEvent};
+    pub use crate::provider::claude::claude_terminal_args;
+    pub use crate::provider::{ProgramArgs, TerminalKind, TerminalLaunch};
+    pub use crate::pty::{paste_bytes, RunMode};
     pub use crate::bridge::{BridgeNeeds, BridgeTurn, NeedsSource, ResultKind, TurnOutcome};
     pub use crate::run_actor::{ActorMsg, Host, RunActors, StageLaunch, UserAction, UserOutcome};
     pub use crate::pipelines::{GateDef, GateResult};
@@ -75,6 +80,7 @@ use commands::{
     pipeline_run_gates,
     pipeline_set_autopilot, pipeline_promote_plan, spawn_run_recovery,
     pipeline_set_candidate_plan, pipeline_run_tasks, pipeline_actor_message,
+    autopilot_pending_stops, StartupStops,
     dev_session_cancel, dev_session_live, dev_session_send, dev_session_start, dev_session_stop,
     diagnostics_read_log, diagnostics_set_capture, diagnostics_status, get_app_state,
     get_form_recall, get_layout, get_role, get_tab,
@@ -115,7 +121,7 @@ use commands::{workspace_delete, workspace_open, workspace_save, workspaces_list
 use files::{files_list, files_markdown_image, files_read, files_resolve, files_reveal, files_write};
 use models::{get_model_settings, list_models, set_model_settings, set_tab_model};
 use pty::{
-    get_terminal_settings, pty_detach, pty_input_state, pty_kill, pty_open, pty_resize, pty_set_scheme, pty_stage_needs,
+    get_terminal_settings, pty_detach, pty_input_state, pty_kill, pty_open, pty_resize, pty_running, pty_set_scheme, pty_stage_needs,
     pty_write, role_terminal_start,
     set_terminal_settings, shell_terminal_start, terminal_plan_file, PtyRegistry,
 };
@@ -166,10 +172,12 @@ pub fn run() {
         .setup(|app| {
             // First, so a panic anywhere below lands in logs/crash.log.
             crash_log::install(&data_dir::app_data_dir(app.handle()).path);
-            // User pipelines join the registry before any chain run is read.
+            // Roles first, so your pipelines are checked against the roles
+            // that exist; both before any chain run is read.
+            let store = RolesStore::load_or_seed(app.handle())?;
+            store.publish_role_ids();
             let pipeline_store =
                 store::PipelineStore::open(&data_dir::app_data_dir(app.handle()).path)?;
-            let store = RolesStore::load_or_seed(app.handle())?;
             let mut state_store = StateStore::load_or_default(app.handle())?;
             state_store.reconcile_stale_running_tabs()?;
             let forms_store = FormsStore::load_or_default(app.handle())?;
@@ -210,6 +218,7 @@ pub fn run() {
             app.manage(Mutex::new(SessionRegistry::new()));
             app.manage(Mutex::new(PtyRegistry::new()));
             app.manage(claude_session_log::reader::SessionLogReaders::new());
+            app.manage(StartupStops::default());
             windows::install_macos_menu(app)?;
             windows::restore_saved_windows(app.handle());
             // After the stores are managed, on its own thread: the window
@@ -281,6 +290,7 @@ pub fn run() {
             pipeline_defs_save,
             pipeline_run_gates,
             pipeline_set_autopilot,
+            autopilot_pending_stops,
             pipeline_turn_finished,
             pipeline_fan_out,
             pipeline_lane_status,
@@ -352,6 +362,7 @@ pub fn run() {
             pty_detach,
             pty_input_state,
             pty_stage_needs,
+            pty_running,
             pty_set_scheme,
             get_terminal_settings,
             set_terminal_settings,
