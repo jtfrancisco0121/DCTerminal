@@ -121,7 +121,7 @@ use commands::{workspace_delete, workspace_open, workspace_save, workspaces_list
 use files::{files_list, files_markdown_image, files_read, files_resolve, files_reveal, files_write};
 use models::{get_model_settings, list_models, set_model_settings, set_tab_model};
 use pty::{
-    get_terminal_settings, pty_detach, pty_input_state, pty_kill, pty_open, pty_resize, pty_set_scheme, pty_stage_needs,
+    get_terminal_settings, pty_detach, pty_input_state, pty_kill, pty_open, pty_resize, pty_running, pty_set_scheme, pty_stage_needs,
     pty_write, role_terminal_start,
     set_terminal_settings, shell_terminal_start, terminal_plan_file, PtyRegistry,
 };
@@ -367,6 +367,7 @@ pub fn run() {
             pty_detach,
             pty_input_state,
             pty_stage_needs,
+            pty_running,
             pty_set_scheme,
             get_terminal_settings,
             set_terminal_settings,

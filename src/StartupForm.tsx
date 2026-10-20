@@ -293,7 +293,7 @@ import { TabSwitcher } from "./components/TabSwitcher";
 import { launchProviders, RoleLauncher, type RoleLaunch } from "./components/RoleLauncher";
 import { useNewTab } from "./useNewTab";
 import { activeTabFolder } from "./newTab";
-import { liveTabs } from "./liveWork";
+import { liveTabsNow } from "./liveWork";
 import {
   attachStageTerminal,
   detachStageTerminal,
@@ -4095,10 +4095,11 @@ export function StartupForm({
         event.preventDefault();
         return;
       }
-      const live = liveTabs(savedTabsRef.current);
-      if (live.length === 0) return;
+      // Set before the backend is asked, so a second close meanwhile is ignored too.
       closeAskingRef.current = true;
       try {
+        const live = await liveTabsNow(savedTabsRef.current);
+        if (live.length === 0) return;
         const ok = await confirm({
           title: "Close window?",
           message:
@@ -5613,7 +5614,7 @@ export function StartupForm({
     if (fileGuard?.dirty() && !(await fileGuard.confirm())) return;
     const old = savedTabs;
     if (replace) {
-      const live = liveTabs(old);
+      const live = await liveTabsNow(old);
       if (
         live.length > 0 &&
         !(await confirm({

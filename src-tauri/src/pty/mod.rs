@@ -317,6 +317,19 @@ impl PtyRegistry {
             .count()
     }
 
+    /// Which of `ids` run a program now (V5: a hidden stage has no view,
+    /// so the frontend asks before closing its window).
+    pub fn running_of(&self, ids: &[String]) -> Vec<String> {
+        ids.iter()
+            .filter(|id| {
+                self.sessions
+                    .get(id.as_str())
+                    .is_some_and(|session| cfg!(not(unix)) || session.group().running())
+            })
+            .cloned()
+            .collect()
+    }
+
     /// How long the terminal `id` has printed nothing; `None` when it is not open.
     pub fn quiet_for(&self, id: &str) -> Option<Duration> {
         self.sessions.get(id).map(PtySession::quiet_for)
@@ -2270,6 +2283,13 @@ pub fn pty_stage_needs(id: String, needs: bool, registry: State<Mutex<PtyRegistr
     input_state(&registry, &id)
 }
 
+/// Which of `ids` run a program now, viewed or not (V5): the "Close
+/// window?" and "Replace the open tabs" questions count hidden stages too.
+#[tauri::command]
+pub fn pty_running(ids: Vec<String>, registry: State<Mutex<PtyRegistry>>) -> Result<Vec<String>, String> {
+    Ok(registry.lock().map_err(|err| err.to_string())?.running_of(&ids))
+}
+
 /// A Watch view closed (V5): the hidden stage keeps running and keeps its
 /// output for the next view. False when `id` is not a hidden stage, so the
 /// view keeps its stream.
@@ -3262,6 +3282,21 @@ mod tests {
         assert!(!old.running(), "then killed it");
         assert!(registry.lock().unwrap().running("s"), "and started the new program");
         registry.lock().unwrap().shutdown_all();
+    }
+
+    // V5: a hidden stage has no view, so "Close window?" asks the backend.
+    #[cfg(unix)]
+    #[test]
+    fn running_of_names_the_terminals_whose_program_runs_with_or_without_a_view() {
+        let dir = crate::test_support::TempDir::new("pty_running_of");
+        let registry = Mutex::new(PtyRegistry::new());
+        let (on_exit, _exits) = exit_probe();
+        open_session_to(&registry, "hidden", sh_spec(dir.path(), "sleep 5"), None, None, Output::Detached { on_exit, view: None })
+            .unwrap();
+        let ids = vec!["hidden".to_string(), "never".to_string()];
+        assert_eq!(registry.lock().unwrap().running_of(&ids), vec!["hidden".to_string()]);
+        registry.lock().unwrap().kill("hidden");
+        assert!(registry.lock().unwrap().running_of(&ids).is_empty());
     }
 
     // V5 with V4: a resumed stage reports through the stage folder it is

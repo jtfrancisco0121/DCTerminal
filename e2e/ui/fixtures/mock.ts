@@ -528,6 +528,7 @@ export function installTauriMock(config: MockConfig): void {
     pty_input_state: () => ({ open: true, stage: false, takenOver: false, needs: false }),
     pty_stage_needs: (a) => ({ open: true, stage: false, takenOver: false, needs: !!a.needs }),
     pty_detach: () => false,
+    pty_running: () => [],
 
     get_layout: () => clone(state.layout),
     set_layout: (a) => {

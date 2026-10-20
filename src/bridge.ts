@@ -2017,6 +2017,11 @@ export async function ptyStageNeeds(id: string, needs: boolean): Promise<StageIn
   return invoke<StageInput>("pty_stage_needs", { id, needs });
 }
 
+/** Which of these terminals run a program now, with a view or not (V5: hidden stages have none). */
+export async function ptyRunning(ids: string[]): Promise<string[]> {
+  return invoke<string[]>("pty_running", { ids });
+}
+
 /**
  * A Watch view closed (V5): the hidden stage keeps running and keeps its
  * output for the next view. False when the terminal is not a hidden stage
