@@ -422,14 +422,55 @@ fn open_session_to(
     claude_session: Option<String>,
     output: Output,
 ) -> Result<Option<u32>, String> {
+    open_session_claimed(registry, id, spec, claude_session, output, None)
+}
+
+/// Register an open of `id` (see [`PtyRegistry::opening`]): a `kill` from
+/// now on cancels it, and a newer open supersedes it.
+fn claim_open(registry: &mut PtyRegistry, id: &str) -> u64 {
+    registry.next_open += 1;
+    let token = registry.next_open;
+    registry.opening.insert(id.to_string(), token);
+    token
+}
+
+/// Whether the open `token` of `id` may still go ahead: `Err` when the
+/// terminal was closed meanwhile, `Ok(false)` when a newer open took over.
+fn open_still_wanted(registry: &PtyRegistry, id: &str, token: u64) -> Result<bool, String> {
+    match registry.opening.get(id) {
+        Some(latest) if *latest == token => Ok(true),
+        // A newer open of this id took over (it may have finished already).
+        Some(_) => Ok(false),
+        None if registry.sessions.contains_key(id) => Ok(false),
+        None => Err("The terminal was closed while it was starting.".to_string()),
+    }
+}
+
+/// [`open_session_to`], for an open already registered with
+/// [`claim_open`] (`claimed`) before a wait of the caller's, so closing the
+/// terminal during that wait cancels it too.
+fn open_session_claimed(
+    registry: &Mutex<PtyRegistry>,
+    id: &str,
+    spec: SpawnSpec,
+    claude_session: Option<String>,
+    output: Output,
+    claimed: Option<u64>,
+) -> Result<Option<u32>, String> {
     let (token, stopping) = {
         let mut registry = registry.lock().map_err(|err| err.to_string())?;
+        let token = match claimed {
+            Some(token) => {
+                if !open_still_wanted(&registry, id, token)? {
+                    return Ok(None);
+                }
+                token
+            }
+            None => claim_open(&mut registry, id),
+        };
         registry.claude_sessions.remove(id);
         registry.forget_detached(id);
         registry.views.remove(id);
-        registry.next_open += 1;
-        let token = registry.next_open;
-        registry.opening.insert(id.to_string(), token);
         let stopping = match registry.sessions.remove(id) {
             Some(old) => {
                 let group = old.group();
@@ -446,12 +487,8 @@ fn open_session_to(
         wait_until_stopped(&group);
     }
     let mut registry = registry.lock().map_err(|err| err.to_string())?;
-    match registry.opening.get(id) {
-        Some(latest) if *latest == token => {}
-        // A newer open of this id took over (it may have finished already).
-        Some(_) => return Ok(None),
-        None if registry.sessions.contains_key(id) => return Ok(None),
-        None => return Err("The terminal was closed while it was starting.".to_string()),
+    if !open_still_wanted(&registry, id, token)? {
+        return Ok(None);
     }
     registry.opening.remove(id);
     registry.stopping.remove(id);
@@ -502,8 +539,11 @@ fn replace_detached(
     on_exit: OnExit,
     grace: Duration,
 ) -> Result<Option<u32>, String> {
-    let (group, view) = {
-        let registry = registry.lock().map_err(|err| err.to_string())?;
+    let (token, group, view) = {
+        let mut registry = registry.lock().map_err(|err| err.to_string())?;
+        // Registered before the wait: closing the tab meanwhile cancels the
+        // resume, as it cancels any open (no `claude --resume` for a closed tab).
+        let token = claim_open(&mut registry, id);
         let group = registry.sessions.get(id).map(|session| session.group());
         // A view that heard the old program exit shows it ended; it attaches anew.
         let view = match (registry.detached.get(id), registry.views.get(id)) {
@@ -521,7 +561,7 @@ fn replace_detached(
             }
             (None, None) => None,
         };
-        (group, view)
+        (token, group, view)
     };
     if let Some(group) = group {
         group.terminate();
@@ -533,7 +573,7 @@ fn replace_detached(
             group.kill();
         }
     }
-    open_session_to(registry, id, spec, claude_session, Output::Detached { on_exit, view })
+    open_session_claimed(registry, id, spec, claude_session, Output::Detached { on_exit, view }, Some(token))
 }
 
 /// Wait until a replaced terminal's program group has exited. Its control
@@ -2905,6 +2945,42 @@ mod tests {
         assert!(!old.running(), "then killed it");
         assert!(registry.lock().unwrap().running("s"), "and started the new program");
         registry.lock().unwrap().shutdown_all();
+    }
+
+    // Closing the tab while a resume waits for the old program to stop
+    // cancels the resume: no `claude --resume` runs for a closed tab.
+    #[cfg(unix)]
+    #[test]
+    fn closing_a_stage_while_it_is_resumed_starts_nothing() {
+        let dir = crate::test_support::TempDir::new("pty_resume_closed");
+        let registry = Arc::new(Mutex::new(PtyRegistry::new()));
+        let ready = dir.join("ready");
+        let started = dir.join("started");
+        let script = format!("trap 'sleep 0.5; exit 0' TERM\ntouch '{}'\nwhile :; do sleep 0.05; done", ready.display());
+        let (old_exit, _old_exits) = exit_probe();
+        open_session_to(&registry, "s", sh_spec(dir.path(), &script), None, Output::Detached { on_exit: old_exit, view: None })
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !ready.exists() {
+            assert!(std::time::Instant::now() < deadline, "the old program is ready");
+            thread::sleep(Duration::from_millis(20));
+        }
+        let resuming = {
+            let registry = registry.clone();
+            let spec = sh_spec(dir.path(), &format!("touch '{}'; sleep 5", started.display()));
+            thread::spawn(move || {
+                let (new_exit, _new_exits) = exit_probe();
+                replace_detached(&registry, "s", spec, Some("sid".into()), new_exit, RESUME_STOP_GRACE)
+            })
+        };
+        thread::sleep(Duration::from_millis(150));
+        registry.lock().unwrap().kill("s");
+        let result = resuming.join().unwrap();
+        thread::sleep(Duration::from_millis(300));
+        assert!(result.is_err(), "closed tab got a resumed program anyway: {result:?}");
+        assert!(!started.exists(), "the resumed program never ran");
+        let registry = registry.lock().unwrap();
+        assert!(!registry.sessions.contains_key("s") && !registry.claude_sessions.contains_key("s"));
     }
 
     // A stage whose program already exited (its view showed that) is resumed
