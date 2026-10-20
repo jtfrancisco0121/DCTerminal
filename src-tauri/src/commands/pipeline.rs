@@ -1135,6 +1135,36 @@ mod tests {
     }
 
     #[test]
+    fn a_pipeline_of_copied_roles_gets_engine_2_and_keeps_autopilot() {
+        // Copies of every Eagle-Eye 1 role (Settings › Roles › Duplicate),
+        // told apart by H4's stage kind: engine 2, so not manual only (V6).
+        let id = "copied_roles_v6";
+        let copied: crate::pipelines::PipelineDef = serde_json::from_value(serde_json::json!({
+            "id": id, "name": "Copied roles",
+            "stages": [
+                { "id": "plan", "roleId": "role_custom_planner", "title": "Plan", "kind": "planner" },
+                { "id": "plan_check", "roleId": "role_custom_plan_check", "title": "Plan check",
+                  "loopBack": { "to": "plan", "minSeverity": "MEDIUM" } },
+                { "id": "build", "roleId": "role_custom_builder", "title": "Build", "kind": "implementer" },
+                { "id": "pr_check", "roleId": "role_custom_pr_check", "title": "PR check",
+                  "loopBack": { "to": "build", "minSeverity": "MEDIUM" } }
+            ]
+        }))
+        .unwrap();
+        crate::pipelines::register_for_test(copied);
+        let (_dir, mut store) = store("autopilot_copied_roles");
+        let planner = store.create_draft_tab(&role("role_custom_planner"), "/tmp/p", true, None).unwrap();
+        let chain = ChainRef { chain_id: "cr_1".into(), kind: id.into(), step: 1, total: 4, round: 1, lane: None };
+        store.set_tab_chain(&planner, Some(chain), None).unwrap();
+        let engine = store.pipeline_run_by_id("cr_1").map(|run| run.engine);
+        let result = set_autopilot(&mut store, "cr_1", true);
+        crate::pipelines::unregister_for_test(id);
+        assert_eq!(engine, Some(crate::bridge::launch::ENGINE_V2), "copied roles start on engine 2");
+        assert_eq!(result, Ok(true), "autopilot can be turned on");
+        assert!(store.pipeline_run_by_id("cr_1").unwrap().autopilot.as_ref().is_some_and(|a| a.enabled));
+    }
+
+    #[test]
     fn promoting_a_plan_records_the_round_it_was_approved_in() {
         let (_dir, mut store) = store("promote_round");
         let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
