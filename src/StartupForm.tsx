@@ -6325,6 +6325,7 @@ export function StartupForm({
           onApproveLane={approveLaneById}
           onApproveRun={(runId) => approveLaneById(runId, null)}
           onContinue={autopilot.continueRun}
+          modelSettings={modelSettings}
           usageWindows={usageSnap?.windows ?? null}
         />
       </section>,
