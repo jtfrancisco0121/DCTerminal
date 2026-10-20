@@ -175,10 +175,11 @@ pub fn command(exe: &Path, out: &Path) -> String {
     format!("{} {STATUS_LINE_FLAG} {}", quote(exe), quote(out))
 }
 
-/// `--settings <json>` setting the status line to `command`.
-pub fn settings_args(command: &str) -> Vec<String> {
-    let settings = json!({ "statusLine": { "type": "command", "command": command } });
-    vec!["--settings".to_string(), settings.to_string()]
+/// The `--settings` value setting the status line to `command`. It goes in
+/// `TerminalLaunch::settings`, so Claude's argument builder puts it with
+/// the other Claude flags.
+pub fn settings(command: &str) -> Value {
+    json!({ "statusLine": { "type": "command", "command": command } })
 }
 
 #[cfg(test)]
@@ -301,9 +302,7 @@ mod tests {
                  '/Users/me/Library/it'\\''s/status-line/tab_1.json'"
             );
         }
-        let args = settings_args(&cmd);
-        assert_eq!(args[0], "--settings");
-        let settings: Value = serde_json::from_str(&args[1]).unwrap();
-        assert_eq!(settings, json!({ "statusLine": { "type": "command", "command": cmd } }));
+        let value: Value = serde_json::from_str(&settings(&cmd).to_string()).unwrap();
+        assert_eq!(value, json!({ "statusLine": { "type": "command", "command": cmd } }));
     }
 }
