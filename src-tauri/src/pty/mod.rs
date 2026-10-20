@@ -1415,6 +1415,38 @@ pub(crate) fn clean_paste_text(text: &str) -> String {
         .collect()
 }
 
+/// The command for a stage the run actor opens: the status line (H5) and,
+/// bridged, the bridge's hooks in one `--settings` (`bridged_command`).
+fn actor_stage_command(
+    mut request: TerminalLaunch,
+    status_line: Option<serde_json::Value>,
+    bridge: Option<crate::bridge::launch::BridgeFlags>,
+    build: impl FnOnce(&TerminalLaunch) -> Result<crate::provider::ProgramArgs, String>,
+) -> Result<crate::provider::ProgramArgs, String> {
+    request.settings = status_line;
+    crate::bridge::launch::bridged_command(request, bridge, build)
+}
+
+/// D24 and hooks-off for a stage the run actor opens bridged (V3): the CLI
+/// version and the settings files are read with no lock held, then
+/// [`gate_run`] applies the outcome to the run. True to launch bridged.
+pub(crate) fn actor_stage_gate(
+    app: &AppHandle,
+    run_id: &str,
+    stage_key: &str,
+    cwd: &std::path::Path,
+) -> Result<bool, String> {
+    let store = app.state::<Mutex<StateStore>>();
+    let settings = app.state::<Mutex<SettingsStore>>();
+    let provider = {
+        let state = store.lock().map_err(|err| err.to_string())?;
+        let settings = settings.lock().map_err(|err| err.to_string())?;
+        provider_for_window(&state, settings.providers(), ProviderId::Claude, None)
+    };
+    let (version, hooks_off) = gate_inputs(provider.as_ref(), cwd);
+    gate_run(&store, run_id, stage_key, version.as_deref(), hooks_off.as_ref())
+}
+
 /// Start a stage terminal for the run actor (V3), with no view: as
 /// [`role_terminal_start`] starts a role terminal (the role's account,
 /// model and run mode, the prompt file for a long prompt), plus the bridge
@@ -1457,11 +1489,15 @@ pub(crate) fn start_actor_stage(
     )?;
     let program = provider.terminal_command(&role_launch.launch(None))?.program;
     let delivery = store_prompt(app, tab_id, &program, &launch.prompt)?;
-    let request = role_launch.launch(Some(delivery.argument.clone()));
-    // One `--settings`: the bridge's hooks join the launch's own.
-    let mut command = crate::bridge::launch::bridged_command(request, Some(launch.bridge.clone()), |req| {
-        provider.terminal_command(req)
-    })?;
+    // H5's status line, so the stage reports usage like any Claude terminal.
+    let config = provider.config_dir().map(|dir| dir.path);
+    let status = usage_status_line(app, tab_id, config.as_deref(), &launch.cwd);
+    let mut command = actor_stage_command(
+        role_launch.launch(Some(delivery.argument.clone())),
+        status,
+        launch.bridge.clone(),
+        |req| provider.terminal_command(req),
+    )?;
     command.env.push(claude_scheme_env());
     open_session_to(
         &registry,
@@ -2039,6 +2075,76 @@ mod tests {
         let helper = &helper[..helper.find("\n}\n").unwrap()];
         assert!(helper.contains("cli_version()") && helper.contains("hooks_off("));
         assert!(!helper.contains(".lock()"));
+    }
+
+    /// V3's second launch path: a stage the run actor opens gets H5's status
+    /// line merged with the bridge's hooks into one `--settings`, and the
+    /// D24 / hooks-off gate, like every other bridged start.
+    #[test]
+    fn an_actor_stage_launches_with_the_status_line_and_through_the_gate() {
+        let source = include_str!("mod.rs");
+        let body = &source[source.find("pub(crate) fn start_actor_stage(").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let status = body.find("usage_status_line(").expect("adds the status line");
+        let merged = body.find("actor_stage_command(").expect("one merged --settings");
+        assert!(status < merged);
+        let gate = &source[source.find("pub(crate) fn actor_stage_gate(").expect("an actor gate")..];
+        let gate = &gate[..gate.find("\n}\n").unwrap()];
+        let inputs = gate.find("gate_inputs(").expect("reads the version and settings");
+        let applied = gate.find("gate_run(").expect("applies the gate to the run");
+        assert!(inputs < applied);
+        assert!(!gate[inputs..applied].contains(".lock()"), "no lock while reading the CLI and settings");
+    }
+
+    #[test]
+    fn an_actor_stage_command_has_one_settings_with_the_status_line_and_the_hooks() {
+        use crate::bridge::ResultKind;
+        let flags = crate::bridge::launch::launch_flags(
+            ResultKind::Reviewer,
+            std::path::Path::new("/opt/dcterminal"),
+            std::path::Path::new("/data/runs/ee_1"),
+            "ee_1",
+            "pr_reviewer",
+            "tab_r",
+        );
+        let request = TerminalLaunch {
+            kind: TerminalKind::Role {
+                role_id: "role_custom_pr_check".into(),
+                run_mode: RunMode::Default,
+                prompt: Some("Review PR1.".into()),
+                stage_kind: Some(crate::pipelines::StageKind::Reviewer),
+            },
+            model: None,
+            session_id: Some("6a1d3b0f-2c3d-4e5f-9a51-0123456789cd".into()),
+            settings: None,
+        };
+        let status = serde_json::json!({ "statusLine": { "type": "command", "command": "dct --dct-status-line f" } });
+        let args = actor_stage_command(request, Some(status), Some(flags), |req| {
+            Ok(crate::provider::ProgramArgs::new("claude", crate::provider::claude::claude_terminal_args(req)?))
+        })
+        .unwrap()
+        .args;
+        let at: Vec<usize> = args.iter().enumerate().filter(|(_, a)| *a == "--settings").map(|(i, _)| i).collect();
+        assert_eq!(at.len(), 1, "exactly one --settings: {args:?}");
+        let settings: serde_json::Value = serde_json::from_str(&args[at[0] + 1]).unwrap();
+        assert!(settings["statusLine"]["command"].as_str().unwrap().contains("--dct-status-line"), "{settings}");
+        assert!(settings["hooks"]["Stop"].is_array(), "{settings}");
+        assert!(args.iter().any(|a| a == "--mcp-config"));
+        assert_eq!(args.last().map(String::as_str), Some("Review PR1."), "the prompt stays last");
+        // Unbridged (the gate said engine 1): the status line alone.
+        let request = TerminalLaunch {
+            kind: TerminalKind::Role { role_id: "r".into(), run_mode: RunMode::Default, prompt: Some("P".into()), stage_kind: None },
+            model: None,
+            session_id: None,
+            settings: None,
+        };
+        let args = actor_stage_command(request, Some(serde_json::json!({ "statusLine": {} })), None, |req| {
+            Ok(crate::provider::ProgramArgs::new("claude", crate::provider::claude::claude_terminal_args(req)?))
+        })
+        .unwrap()
+        .args;
+        assert!(!args.iter().any(|a| a == "--mcp-config"));
+        assert_eq!(args.iter().filter(|a| *a == "--settings").count(), 1);
     }
 
     #[derive(Default)]

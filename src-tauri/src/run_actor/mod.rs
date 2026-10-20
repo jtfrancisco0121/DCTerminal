@@ -160,8 +160,9 @@ pub struct StageLaunch {
     /// The Claude session id the terminal is pinned to (`--session-id`).
     pub session_id: String,
     /// The bridge flags (`bridge::launch::launch_flags`): its args go before
-    /// the prompt and its hooks join the launch's one `--settings`.
-    pub bridge: crate::bridge::launch::BridgeFlags,
+    /// the prompt and its hooks join the launch's one `--settings`. `None`
+    /// when the D24 gate sent the run to engine 1.
+    pub bridge: Option<crate::bridge::launch::BridgeFlags>,
 }
 
 /// What the actor needs from the app. Every method is quick except
@@ -173,6 +174,10 @@ pub trait Host: Send + Sync + 'static {
     /// The executable the bridge runs as (`dcterminal`).
     fn bridge_program(&self) -> Option<PathBuf>;
     fn role(&self, role_id: &str) -> Option<Role>;
+    /// D24 and hooks-off for a stage the actor is about to open bridged
+    /// (`stage_key` of `run_id`, in `cwd`): true to launch it bridged. An
+    /// engine-1 outcome switches the run for good, with its notice.
+    fn bridge_gate(&self, run_id: &str, stage_key: &str, cwd: &Path) -> Result<bool, String>;
     /// Start a stage terminal (see [`StageLaunch`]).
     fn spawn_stage(&self, launch: &StageLaunch) -> Result<(), String>;
     /// Paste `text` into a running terminal and press Enter.

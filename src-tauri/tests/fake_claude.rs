@@ -1592,7 +1592,7 @@ mod run_actor {
                 session_id: Some(launch.session_id.clone()),
                 settings: Some(json!({ "statusLine": { "type": "command", "command": "true" } })),
             };
-            let args = bridged_command(request, Some(launch.bridge.clone()), |req| {
+            let args = bridged_command(request, launch.bridge.clone(), |req| {
                 Ok(ProgramArgs::new("claude", claude_terminal_args(req)?))
             })
             .expect("bridged launch")
@@ -1707,6 +1707,9 @@ mod run_actor {
         }
         fn rate_limit(&self, _tab_id: &str) -> Option<String> {
             None
+        }
+        fn bridge_gate(&self, _run_id: &str, _stage_key: &str, _cwd: &Path) -> Result<bool, String> {
+            Ok(true)
         }
         fn run_changed(&self, _run_id: &str) {}
         fn tab_opened(&self, _run_id: &str, _tab_id: &str) {}
@@ -1826,7 +1829,7 @@ mod run_actor {
             cwd: host.home.cwd.path().to_path_buf(),
             prompt: "Plan the token refresh.".into(),
             session_id: PLANNER_SID.into(),
-            bridge: launch_flags(ResultKind::Planner, Path::new(DCTERMINAL), &run_dir, RUN, "planner", &planner),
+            bridge: Some(launch_flags(ResultKind::Planner, Path::new(DCTERMINAL), &run_dir, RUN, "planner", &planner)),
         };
         host.start(
             &launch,

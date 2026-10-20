@@ -658,9 +658,21 @@ impl<H: Host> Actor<H> {
             plan_for(run, &def, &open.chain, &open.role_id)
                 .ok_or_else(|| format!("{} does not report through the pipeline bridge, so autopilot cannot follow it", role.name))?
         };
+        // D24 and hooks-off, as at every bridged start: an engine-1 outcome
+        // switches the run for good, and this stage opens unbridged (the
+        // frontend's v1 path follows the run from here).
+        let plan = if self.host.bridge_gate(&plan.run_id, &plan.stage_key, &cwd)? {
+            Some(plan)
+        } else {
+            self.changed();
+            None
+        };
         let mut values = open.values.clone();
         values.insert("cwd".to_string(), cwd.display().to_string());
-        let instructions = crate::bridge::schema::result_instructions(plan.kind);
+        let instructions = plan
+            .as_ref()
+            .map(|plan| crate::bridge::schema::result_instructions(plan.kind))
+            .unwrap_or_default();
         let preview = crate::template::merge_role_prompt_with(&role, &values, &instructions);
         if !preview.errors.is_empty() {
             let problems: Vec<String> = preview.errors.iter().map(|e| e.message.clone()).collect();
@@ -709,23 +721,25 @@ impl<H: Host> Actor<H> {
             store.remember_claude_terminal_session(&tab_id, &session_id)?;
             tab_id
         };
-        let runs = self.host.runs_root();
-        let run_dir = prepare_stage(&runs, &plan, &tab_id)?;
+        let bridge = match &plan {
+            Some(plan) => {
+                let program = self
+                    .host
+                    .bridge_program()
+                    .ok_or("DCTerminal could not find its own executable for the pipeline bridge.")?;
+                let run_dir = prepare_stage(&self.host.runs_root(), plan, &tab_id)?;
+                Some(launch_flags(plan.kind, &program, &run_dir, &plan.run_id, &plan.stage_key, &tab_id))
+            }
+            None => None,
+        };
         {
             let mut store = lock(self.host.store());
-            store.set_tab_bridge(
-                &tab_id,
-                Some(BridgeTag {
-                    run_id: plan.run_id.clone(),
-                    stage: plan.stage_key.clone(),
-                }),
-            )?;
+            let tag = plan.as_ref().map(|plan| BridgeTag {
+                run_id: plan.run_id.clone(),
+                stage: plan.stage_key.clone(),
+            });
+            store.set_tab_bridge(&tab_id, tag)?;
         }
-        let program = self
-            .host
-            .bridge_program()
-            .ok_or("DCTerminal could not find its own executable for the pipeline bridge.")?;
-        let bridge = launch_flags(plan.kind, &program, &run_dir, &plan.run_id, &plan.stage_key, &tab_id);
         self.host.spawn_stage(&StageLaunch {
             run_id: self.run_id.clone(),
             tab_id: tab_id.clone(),

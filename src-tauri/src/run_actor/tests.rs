@@ -34,6 +34,8 @@ struct TestHost {
     /// Gate results handed out in order; `passed` once they run out.
     gates: Mutex<VecDeque<GateResult>>,
     panic_on_usage: AtomicBool,
+    /// The D24 gate's answer for the next bridged opens (false: engine 1).
+    gate_open: AtomicBool,
     /// Session-log usage-limit errors by tab (H5).
     rate_limits: Mutex<HashMap<String, String>>,
     stops: Mutex<Vec<(StopReason, String)>>,
@@ -53,6 +55,15 @@ impl Host for TestHost {
     }
     fn role(&self, role_id: &str) -> Option<Role> {
         self.roles.iter().find(|r| r.id == role_id).cloned()
+    }
+    fn bridge_gate(&self, run_id: &str, stage_key: &str, _cwd: &Path) -> Result<bool, String> {
+        if self.gate_open.load(Ordering::SeqCst) {
+            return Ok(true);
+        }
+        let mut store = self.store.lock().unwrap();
+        let run = store.pipeline_run_by_id_mut(run_id).unwrap();
+        let gate = crate::bridge::gate::Gate::EngineOne(format!("Claude Code is too old for {stage_key}."));
+        Ok(crate::bridge::gate::apply(run, &gate, stage_key).0)
     }
     fn spawn_stage(&self, launch: &StageLaunch) -> Result<(), String> {
         self.live.lock().unwrap().insert(launch.tab_id.clone());
@@ -180,6 +191,7 @@ impl Fixture {
             live: Mutex::new(HashSet::from([planner.clone()])),
             gates: Mutex::new(VecDeque::new()),
             panic_on_usage: AtomicBool::new(false),
+            gate_open: AtomicBool::new(true),
             rate_limits: Mutex::new(HashMap::new()),
             stops: Mutex::new(Vec::new()),
             notices: Mutex::new(Vec::new()),
@@ -304,7 +316,8 @@ fn a_planner_turn_opens_the_plan_reviewer_with_the_plan_from_the_run_folder() {
     assert!(launch.prompt.contains("1. Refresh tokens in src/auth.ts."), "the plan, from plan.md:\n{}", launch.prompt);
     assert!(launch.prompt.contains("Title: Expired tokens"), "the step-1 request as one block");
     assert!(launch.prompt.contains("mcp__dcterminal__submit_result"), "the result instructions");
-    assert!(launch.bridge.args.iter().any(|a| a == "--mcp-config"), "{:?}", launch.bridge.args);
+    let bridge = launch.bridge.as_ref().expect("bridged");
+    assert!(bridge.args.iter().any(|a| a == "--mcp-config"), "{:?}", bridge.args);
     assert!(launch.cwd.ends_with(fx.work.path().file_name().unwrap()), "{}", launch.cwd.display());
     let tab = fx.tab(&reviewer);
     assert_eq!(tab.chain.as_ref().map(|c| c.step), Some(2));
@@ -862,4 +875,23 @@ fn a_turn_cut_off_by_the_usage_limit_stops_as_usage_limit_without_checks() {
         assert!(run.events.last().unwrap().summary.contains("resets 3pm"), "{:?}", run.events.last());
     });
     assert_eq!(fx.stops().last().map(|s| s.0), Some(StopReason::UsageLimit));
+}
+
+/// D24 on the actor's launch path: a stage the gate sends to engine 1 opens
+/// without the bridge (no flags, no result instructions, no stage folder),
+/// and the run is engine 1 from then on, left to the frontend.
+#[test]
+fn a_stage_the_version_gate_refuses_opens_unbridged_and_the_run_goes_to_engine_1() {
+    let mut fx = Fixture::new("gate_refused");
+    fx.host.gate_open.store(false, Ordering::SeqCst);
+    let reviewer = fx.open_plan_reviewer();
+    let launch = fx.launches().last().cloned().unwrap();
+    assert_eq!(launch.bridge, None, "launched without the bridge");
+    assert!(!launch.prompt.contains("mcp__dcterminal__submit_result"), "no result instructions");
+    assert_eq!(fx.tab(&reviewer).bridge, None);
+    assert!(!fx.host.runs.join(RUN).join("stages/plan_reviewer").exists(), "no stage folder");
+    fx.run(|run| {
+        assert_eq!(run.engine, 1);
+        assert!(run.engine_note.as_deref().unwrap().contains("too old"));
+    });
 }

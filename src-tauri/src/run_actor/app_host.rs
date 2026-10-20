@@ -76,6 +76,10 @@ impl Host for AppHost {
         roles.role_by_id(role_id).cloned()
     }
 
+    fn bridge_gate(&self, run_id: &str, stage_key: &str, cwd: &Path) -> Result<bool, String> {
+        crate::pty::actor_stage_gate(&self.app, run_id, stage_key, cwd)
+    }
+
     fn spawn_stage(&self, launch: &StageLaunch) -> Result<(), String> {
         let app = self.app.clone();
         let (run_id, tab_id) = (launch.run_id.clone(), launch.tab_id.clone());
