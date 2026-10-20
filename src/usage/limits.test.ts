@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   autopilotUsageLine,
   contextPercent,
+  formatWindowLine,
   isStale,
   knownUsagePercent,
   limitAlerts,
@@ -79,6 +80,31 @@ describe("Claude limit display", () => {
     expect(line.text.startsWith("Claude 7d 40%")).toBe(true);
     expect(knownUsagePercent(windows, now)).toBe(40);
     expect(line.title).toContain("Claude 5h has reset since the last reading");
+  });
+
+  it("panels-usage e2e inputs: a stale 5h falls back to the current 7d; all stale is unknown", () => {
+    // The exact snapshot of e2e/ui/panels-usage.spec.ts's stale-reading tests.
+    const now = Date.UTC(2026, 9, 10, 10, 0);
+    const seen = now - 60_000;
+    const staleFive = window({
+      utilization: 97,
+      resetsAt: Date.UTC(2026, 9, 10, 9, 0) / 1000,
+      status: "allowed_warning",
+      seenAtMs: seen,
+    });
+    const sevenReset = Date.UTC(2026, 9, 14, 8, 0) / 1000;
+    const currentSeven = window({ rateLimitType: "seven_day", label: "7d", utilization: 30, resetsAt: sevenReset, seenAtMs: seen });
+    const line = statusLimit([staleFive, currentSeven], now);
+    expect(line.text).toBe(formatWindowLine(currentSeven));
+    expect(line.text.startsWith("Claude 7d 30% · resets ")).toBe(true);
+    expect(line.tone).toBe("ok");
+    expect(line.title).toContain("Claude 5h has reset since the last reading");
+
+    const staleSeven = { ...currentSeven, resetsAt: Date.UTC(2026, 9, 9, 8, 0) / 1000 };
+    const unknown = statusLimit([staleFive, staleSeven], now);
+    expect(unknown.text).toBe("Claude usage unknown · 5h reset since the last reading");
+    expect(unknown.tone).toBe("muted");
+    expect(unknown.title).toContain("Claude 5h has reset since the last reading");
   });
 
   it("a reading with no reset time is stale once its window's length has passed", () => {

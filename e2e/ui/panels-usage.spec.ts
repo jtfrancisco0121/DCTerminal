@@ -99,12 +99,27 @@ test("usage reads 'unknown' until the first reading, then shows 5h and 7d window
   await expect(page.locator(".session-terminal-subtitle .chain-label")).toHaveText("Context 100%");
 });
 
-test("a reading from before the window reset is shown as stale and does not alert", async ({ app, page }) => {
+test("a stale 5h reading falls back to the current 7d window", async ({ app, page }) => {
   await app.open({
     responses: {
       get_claude_usage: snapshot([
         win("five_hour", { utilization: 97, resetsAt: at("2026-10-10T09:00:00Z"), status: "allowed_warning" }),
         win("seven_day", { utilization: 30 }),
+      ]),
+    },
+  });
+  const sevenReset = await resetText(page, SEVEN_D_RESET);
+  await expect(usage(page)).toHaveText(`Claude 7d 30% · resets ${sevenReset}`);
+  await expect(usage(page)).toHaveClass(/status-usage-ok/);
+  await expect(usage(page)).toHaveAttribute("title", /Claude 5h has reset since the last reading/);
+});
+
+test("a reading from before the window reset is shown as stale and does not alert", async ({ app, page }) => {
+  await app.open({
+    responses: {
+      get_claude_usage: snapshot([
+        win("five_hour", { utilization: 97, resetsAt: at("2026-10-10T09:00:00Z"), status: "allowed_warning" }),
+        win("seven_day", { utilization: 30, resetsAt: at("2026-10-09T08:00:00Z") }),
       ]),
     },
   });
