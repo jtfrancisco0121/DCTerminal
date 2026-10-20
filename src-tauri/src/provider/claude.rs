@@ -13,12 +13,14 @@
 //! - `--session-id <uuid>` on fresh Plain / Role launches, so the tab knows its log
 //! - the startup prompt as the positional argument (`deliver_prompt_limited`)
 //!
-//! Never passed: `--dangerously-skip-permissions`, `--allowedTools`,
-//! `--disallowedTools`, `--cloud`, `--bg`, `--continue`. `--settings` only
-//! ever carries DCTerminal's usage status line (`TerminalLaunch::settings`,
-//! from `pty::usage_status_line`, see `status_line`), placed with the other
-//! Claude flags after any `node` script, and not when you set a status line
-//! of your own.
+//! Never passed: `--dangerously-skip-permissions`, `--disallowedTools`,
+//! `--cloud`, `--bg`, `--continue`. `--settings` is one value
+//! (`TerminalLaunch::settings`), placed with the other Claude flags after
+//! any `node` script: DCTerminal's usage status line (`pty::usage_status_line`,
+//! see `status_line`; not when you set a status line of your own) and, on a
+//! bridged pipeline stage (ADR-015), the bridge's hooks merged into it. Only
+//! a bridged stage gets `--allowedTools mcp__dcterminal__submit_result` and
+//! `--mcp-config`, right before `--settings` (`bridge::launch::bridged_command`).
 //! The Settings run-mode override is a Cursor setting and is ignored here.
 //!
 //! Chat (Phase 4) spawns `claude-agent-acp` with `CLAUDE_CODE_EXECUTABLE` set
