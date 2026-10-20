@@ -219,6 +219,7 @@ pub fn create_role(name: String, store: State<Mutex<RolesStore>>) -> Result<Role
     let role = editor::new_custom_role(&store.data, &name);
     store.data.roles.push(role.clone());
     store.save()?;
+    store.publish_role_ids();
     Ok(role)
 }
 
@@ -241,6 +242,7 @@ pub fn duplicate_role(
         .unwrap_or(store.data.roles.len());
     store.data.roles.insert(at, role.clone());
     store.save()?;
+    store.publish_role_ids();
     Ok(role)
 }
 
@@ -257,7 +259,10 @@ pub fn delete_role(
     };
     let mut store = store.lock().map_err(|e| e.to_string())?;
     editor::delete_role(&mut store.data, &role_id, &open_tab_roles)?;
-    store.save()
+    store.save()?;
+    // A pipeline that used the role is now disabled, with the reason.
+    store.publish_role_ids();
+    Ok(())
 }
 
 /// Reads a role file the user picked and adds it as a new custom role.
@@ -275,6 +280,7 @@ pub fn import_role(path: String, store: State<Mutex<RolesStore>>) -> Result<Role
     let role = editor::import_role(&store.data, &text)?;
     store.data.roles.push(role.clone());
     store.save()?;
+    store.publish_role_ids();
     Ok(role)
 }
 

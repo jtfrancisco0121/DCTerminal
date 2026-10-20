@@ -41,14 +41,19 @@ export type DialogTool = PendingTool & { promptKey: string };
  * `permission_prompt` Notification backup, with no tool) said a permission
  * dialog is up. `at`: when the app heard it; `key`: which prompt.
  */
-export type BridgeNeedsMark = { tool: string | null; at: number; key: string };
+/**
+ * The bridge's Needs you for a tab: the hooked tool (`null` from the
+ * Notification backup), when it came, its dedupe key, and `shown` once the
+ * screen drew a permission dialog after it.
+ */
+export type BridgeNeedsMark = { tool: string | null; at: number; key: string; shown?: boolean };
 
 /** Time a log read gets to catch up with the hook before it can clear it. */
 export const BRIDGE_NEEDS_GRACE_MS = 1000;
 
 export type TerminalStateInput = {
   log: LogView | null | undefined;
-  /** The bridge's Needs you for this tab, until a log read clears it (`bridgeNeedsAfterRead`). */
+  /** The bridge's Needs you for this tab, until you answer it or a log read clears it (`bridgeNeedsAfterAnswer`, `bridgeNeedsAfterDialog`, `bridgeNeedsAfterRead`). */
   bridgeNeeds?: BridgeNeedsMark | null;
   /** The unanswered tool whose permission dialog is on screen (`dialogToolFor`). */
   dialogTool: DialogTool | null;
@@ -219,6 +224,34 @@ export function bridgeNeedsAfterRead(
   const waiting = pendingToolsOf(log).filter((tool) => !OWN_PROMPT.has(tool.name));
   const asking = mark.tool ? waiting.some((tool) => tool.name === mark.tool) : waiting.length > 0;
   return asking ? mark : undefined;
+}
+
+/**
+ * A key that may answer a dialog (Enter, Esc, a digit) was sent to the tab
+ * at `answeredAt`. Approving writes nothing to the session log, and the
+ * tool_result lands only when the tool finishes, so the answer itself is
+ * what clears the hook's Needs you. A key sent before the hook named the
+ * prompt answered something else.
+ */
+export function bridgeNeedsAfterAnswer(
+  mark: BridgeNeedsMark | undefined,
+  answeredAt: number,
+): BridgeNeedsMark | undefined {
+  return mark && answeredAt >= mark.at ? undefined : mark;
+}
+
+/**
+ * The screen's permission dialog was drawn (`visible`) or went away. A
+ * dialog drawn after the hook and then gone was answered. One the detector
+ * never saw going "away" keeps the mark (the hook is the better witness).
+ */
+export function bridgeNeedsAfterDialog(
+  mark: BridgeNeedsMark | undefined,
+  visible: boolean,
+): BridgeNeedsMark | undefined {
+  if (!mark) return undefined;
+  if (visible) return mark.shown ? mark : { ...mark, shown: true };
+  return mark.shown ? undefined : mark;
 }
 
 /**

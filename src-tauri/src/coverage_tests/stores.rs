@@ -456,6 +456,67 @@ fn a_newer_pipelines_schema_is_set_aside() {
     assert_eq!(set_aside(&dir, PIPELINES_FILE, 3), original);
 }
 
+// Track H4: one entry that is not a pipeline used to fail the whole file,
+// which was set aside as damaged and every pipeline dropped.
+#[test]
+fn a_pipeline_entry_that_cannot_be_read_is_kept_and_the_others_load() {
+    use crate::store::{PipelineStore, PIPELINES_FILE};
+    let dir = TempDir::new("pipelines_lenient");
+    let original = r#"{"schemaVersion": 1, "pipelines": [
+        {"id": "fix", "name": "Fix", "stages": [{"id": "a", "roleId": "role_implementer", "title": "A"}]},
+        {"id": "odd", "name": "Odd", "stages": [{"id": "a", "roleId": "role_x", "title": "A",
+          "gates": [{"kind": "lint"}]}]}
+    ]}"#;
+    std::fs::write(dir.join(PIPELINES_FILE), original).unwrap();
+    // `load`, not `open`: open would publish to the registry other tests share.
+    let data = PipelineStore::load(&dir.join(PIPELINES_FILE)).unwrap();
+    let ids: Vec<&str> = data.pipelines.iter().map(|def| def.id.as_str()).collect();
+    assert_eq!(ids, ["fix", "odd"]);
+    assert_eq!(data.pipelines[0].disabled, None);
+    let odd = &data.pipelines[1];
+    assert!(odd.disabled.as_deref().unwrap().starts_with("It could not be read"), "{odd:?}");
+    assert_eq!(odd.raw.as_ref().unwrap()["stages"][0]["gates"][0]["kind"], "lint");
+    assert_eq!(std::fs::read_to_string(dir.join(PIPELINES_FILE)).unwrap(), original, "not set aside");
+    assert!(names_in(dir.path()).iter().all(|name| !name.contains("corrupt")));
+}
+
+// Track H4: an entry kept as written is never rewritten or dropped by a
+// save. A save while it is there is refused, and the file stays as it was.
+#[test]
+fn a_save_while_an_invalid_pipeline_entry_exists_is_refused_and_writes_nothing() {
+    use crate::pipelines::{validate_user_pipelines_with, PipelineDef};
+    use crate::store::{PipelineStore, PIPELINES_FILE};
+    let dir = TempDir::new("pipelines_save_invalid");
+    let path = dir.join(PIPELINES_FILE);
+    let original = r#"{"schemaVersion": 1, "pipelines": [
+        {"id": "fix", "name": "Fix", "stages": [{"id": "a", "roleId": "role_implementer", "title": "A"}]},
+        {"id": "odd", "name": "Odd", "stages": [{"id": "a", "roleId": "role_x", "title": "A",
+          "gates": [{"kind": "lint"}]}]}
+    ]}"#;
+    std::fs::write(&path, original).unwrap();
+    // Built by hand, not `open`: open (and a save that succeeds) would
+    // publish to the registry other tests share.
+    let mut store = PipelineStore {
+        path: path.clone(),
+        data: PipelineStore::load(&path).unwrap(),
+    };
+    // What the store lists, placeholder included.
+    let err = store.save(store.list()).unwrap_err();
+    assert!(err.contains("Odd"), "{err}");
+    // What the editor sends: the entry as written, which is not a pipeline.
+    let editor: serde_json::Value = serde_json::from_str::<serde_json::Value>(original).unwrap()["pipelines"].clone();
+    assert!(serde_json::from_value::<Vec<PipelineDef>>(editor).is_err());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), original, "nothing written");
+    assert!(store.data.pipelines[1].raw.is_some(), "the placeholder keeps the entry");
+    // A pipeline whose role was deleted does not pass a save either.
+    let gone: PipelineDef = serde_json::from_value(serde_json::json!({
+        "id": "gone", "name": "Gone", "stages": [{"id": "a", "roleId": "role_deleted", "title": "A"}]
+    }))
+    .unwrap();
+    let roles = HashSet::from(["role_implementer".to_string()]);
+    assert!(validate_user_pipelines_with(&[gone], Some(&roles)).is_err());
+}
+
 // ---------- startup sweep ----------
 
 // Regression: `fs::rename` keeps the old mtime, so the startup sweep could

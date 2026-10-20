@@ -149,7 +149,7 @@ pub struct UserOutcome {
 /// A stage terminal the actor wants started. The host turns it into the
 /// real command (`claude` with the account, model and permission mode the
 /// role is set to) and starts it with no view attached.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StageLaunch {
     pub run_id: String,
     pub tab_id: String,
@@ -159,8 +159,9 @@ pub struct StageLaunch {
     pub prompt: String,
     /// The Claude session id the terminal is pinned to (`--session-id`).
     pub session_id: String,
-    /// The bridge flags (`bridge::launch::launch_args`), placed before the prompt.
-    pub bridge_args: Vec<String>,
+    /// The bridge flags (`bridge::launch::launch_flags`): its args go before
+    /// the prompt and its hooks join the launch's one `--settings`.
+    pub bridge: crate::bridge::launch::BridgeFlags,
 }
 
 /// What the actor needs from the app. Every method is quick except

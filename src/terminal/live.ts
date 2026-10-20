@@ -65,6 +65,18 @@ export function notePtyInput(id: string, data?: string): void {
   // Without data it is a pad send or hand-off paste, which ends with Enter.
   const kind = data === undefined ? "answer" : ptyInputKind(data);
   if (kind !== "pointer") dialogDetector.input(id, undefined, kind);
+  if (kind === "answer") for (const listener of answerListeners) listener(id);
+}
+
+const answerListeners = new Set<(id: string) => void>();
+
+/**
+ * Called with the terminal id for each user key that may answer a
+ * permission dialog (Enter, Esc, a digit; a pad send). Returns unsubscribe.
+ */
+export function subscribePtyAnswer(listener: (id: string) => void): () => void {
+  answerListeners.add(listener);
+  return () => answerListeners.delete(listener);
 }
 
 /** The exit code once the process exited (-1 after a signal), else null. */

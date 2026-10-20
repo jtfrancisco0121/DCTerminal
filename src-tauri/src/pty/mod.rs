@@ -325,6 +325,32 @@ fn claude_scheme_env() -> (String, String) {
     ("COLORFGBG".to_string(), value.to_string())
 }
 
+/// The `--settings` value with DCTerminal's status line for a Claude
+/// terminal, so the tab reports Claude usage (`status_line`, plan D32), and
+/// has `UsageStore` read what it writes. It goes in
+/// `TerminalLaunch::settings`, so the flag sits with the other Claude flags
+/// (after a Windows `node` script). None when you set a status line of your
+/// own (it wins; usage from the tab stays unknown) or the config folder or
+/// the app's own path is unknown.
+fn usage_status_line(
+    app: &AppHandle,
+    tab_id: &str,
+    config_dir: Option<&str>,
+    cwd: &std::path::Path,
+) -> Option<serde_json::Value> {
+    let config = config_dir.map(str::trim).filter(|dir| !dir.is_empty())?;
+    if crate::status_line::user_has_status_line(std::path::Path::new(config), cwd) {
+        return None;
+    }
+    let exe = std::env::current_exe().ok()?;
+    let file = crate::status_line::file_for(&crate::data_dir::app_data_dir(app).path, tab_id);
+    let usage = app.try_state::<Mutex<crate::usage::UsageStore>>()?;
+    let mut usage = usage.lock().ok()?;
+    usage.watch_status_line(tab_id, config, file.clone());
+    drop(usage);
+    Some(crate::status_line::settings(&crate::status_line::command(&exe, &file)))
+}
+
 #[tauri::command]
 pub fn pty_set_scheme(light: bool) {
     LIGHT_SCHEME.store(light, Ordering::Relaxed);
@@ -546,6 +572,7 @@ pub async fn shell_terminal_start(
 ) -> Result<TerminalStartResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         shell_terminal_start_blocking(
+            app.clone(),
             input,
             on_output,
             app.state(),
@@ -559,6 +586,7 @@ pub async fn shell_terminal_start(
 }
 
 fn shell_terminal_start_blocking(
+    app: AppHandle,
     input: ShellTerminalInput,
     on_output: Channel<PtyPacket>,
     settings: State<Mutex<SettingsStore>>,
@@ -647,6 +675,7 @@ fn shell_terminal_start_blocking(
     }
     let claude_session = (launch == "claude-cli")
         .then(|| resume_id.clone().unwrap_or_else(new_claude_session_id));
+    let mut claude_launch: Option<TerminalLaunch> = None;
     let mut command = if launch == "claude-cli" {
         let provider = {
             let mut state = store.lock().map_err(|err| err.to_string())?;
@@ -672,11 +701,17 @@ fn shell_terminal_start_blocking(
             },
             None => TerminalKind::Plain,
         };
-        provider.terminal_command(&TerminalLaunch {
+        let request = TerminalLaunch {
             kind,
             model: Some(model),
             session_id: claude_session.clone(),
-        })?
+            settings: None,
+        };
+        // Fail before the tab is saved when the CLI is missing; the launch
+        // is rebuilt with the status line once the tab id is known.
+        let command = provider.terminal_command(&request)?;
+        claude_launch = Some(request);
+        command
     } else if launch == "cursor-cli" {
         let model =
             crate::models::model_for_tab(&store, &settings, input.tab_id.as_deref(), "cursor-cli")?;
@@ -690,6 +725,7 @@ fn shell_terminal_start_blocking(
             kind,
             model: Some(model),
             session_id: None,
+            settings: None,
         })?
     } else {
         let resolved = resolve_shell_for_host(&configured);
@@ -728,6 +764,8 @@ fn shell_terminal_start_blocking(
             },
         )?
     };
+    let mut claude_config: Option<String> = None;
+    let mut claude_provider = None;
     if launch == "claude-cli" {
         let mut state = store.lock().map_err(|err| err.to_string())?;
         let settings = settings.lock().map_err(|err| err.to_string())?;
@@ -737,8 +775,10 @@ fn shell_terminal_start_blocking(
             ProviderId::Claude,
             Some(&tab_id),
         );
+        claude_provider = Some(provider.clone());
         if let Some(dir) = provider.config_dir() {
             state.remember_claude_config(&tab_id, &dir.path)?;
+            claude_config = Some(dir.path);
         }
         if let Some(id) = &resume_id {
             state.remember_provider_session(&tab_id, ProviderId::Claude, Some(id.clone()))?;
@@ -748,6 +788,14 @@ fn shell_terminal_start_blocking(
         }
         if let Some(id) = &claude_session {
             state.remember_claude_terminal_session(&tab_id, id)?;
+        }
+    }
+    if let (Some(provider), Some(request)) = (claude_provider, claude_launch) {
+        let settings = usage_status_line(&app, &tab_id, claude_config.as_deref(), &cwd);
+        if settings.is_some() {
+            let env = std::mem::take(&mut command.env);
+            command = provider.terminal_command(&TerminalLaunch { settings, ..request })?;
+            command.env = env;
         }
     }
     let pid = open_session(
@@ -789,8 +837,11 @@ pub struct RoleTerminalInput {
     /// Omitted: the tab's own, or the window's new-tab provider.
     #[serde(default)]
     pub provider: Option<ProviderId>,
-    /// The pipeline step this terminal is opened for (a hand-off on a
-    /// chain). A bridged stage of an engine-2 run launches with the bridge.
+    /// The chain tag the new tab is about to join (a hand-off's next stage,
+    /// tagged after the start). Its stage kind sets the permission mode, so
+    /// a copied Planner launches in plan mode, and a bridged stage (Planner,
+    /// reviewer, Implementer) of an engine-2 run launches with the bridge.
+    /// Omitted: the tab's own chain.
     #[serde(default)]
     pub chain: Option<crate::store::ChainRef>,
     /// Eagle mode: this start begins a new chain of this kind (`eagle1`,
@@ -826,6 +877,117 @@ fn starting_chain(
         .map(|def| crate::bridge::launch::new_chain(&def, kind, chrono::Utc::now().timestamp_millis())))
 }
 
+/// Which chain this start begins (`start_chain`, on a tab in none yet) and
+/// the bridge plan for the stage it launches: that new run's first stage,
+/// else the stage at `input.chain`, else the chain step the tab already
+/// holds (a fanned-out lane's Implementer). No plan off Claude.
+fn plan_start(
+    store: &Mutex<StateStore>,
+    input: &RoleTerminalInput,
+    role_id: &str,
+    claude: bool,
+) -> Result<(Option<crate::store::ChainRef>, Option<crate::bridge::BridgePlan>), String> {
+    let starting = starting_chain(store, input)?;
+    let plan = match (&starting, claude) {
+        (_, false) => None,
+        (Some(chain), true) => crate::pipelines::find(&chain.kind)
+            .and_then(|def| crate::bridge::launch::plan_for_new_run(&def, chain, role_id)),
+        (None, true) => bridge_plan_for(store, input.chain.as_ref(), input.tab_id.as_deref(), role_id)?,
+    };
+    Ok((starting, plan))
+}
+
+/// A chain a start labelled its tab with ([`label_starting_chain`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StartedChain {
+    chain_id: String,
+    run_id: Option<String>,
+    /// The label made the run (it did not exist before).
+    made_run: bool,
+}
+
+/// Label `tab_id` with the chain this start begins, just before the spawn:
+/// its run is made here (engine 2, autopilot off), and the D24 gate decided
+/// before the launch is recorded on it. `None` when the tab joined a chain
+/// meanwhile.
+fn label_starting_chain(
+    events: &dyn crate::commands::chain_events::ChainEvents,
+    store: &Mutex<StateStore>,
+    tab_id: &str,
+    chain: crate::store::ChainRef,
+    gate: Option<(crate::bridge::gate::Gate, String)>,
+) -> Result<Option<StartedChain>, String> {
+    let mut state = store.lock().map_err(|err| err.to_string())?;
+    if !state.tab_by_id(tab_id).is_some_and(|tab| tab.chain.is_none()) {
+        return Ok(None);
+    }
+    let chain_id = chain.chain_id.clone();
+    let made_run = state.chain_run_id(&chain_id).is_none();
+    crate::commands::chain_events::set_tab_chain_and_notify(events, &mut state, tab_id, Some(chain), None)?;
+    let run_id = state.chain_run_id(&chain_id);
+    if let (Some((gate, stage_id)), Some(id)) = (gate, run_id.as_deref()) {
+        if let Some(run) = state.pipeline_run_by_id_mut(id) {
+            if crate::bridge::gate::apply(run, &gate, &stage_id).1 {
+                state.save()?;
+                events.chain_run_updated(id);
+            }
+        }
+    }
+    Ok(Some(StartedChain { chain_id, run_id, made_run }))
+}
+
+/// The rest of a start after [`label_starting_chain`] labelled `started`:
+/// when it fails, the label is undone ([`undo_starting_chain`]).
+fn after_starting_label<T>(
+    events: &dyn crate::commands::chain_events::ChainEvents,
+    store: &Mutex<StateStore>,
+    tab_id: &str,
+    started: Option<&StartedChain>,
+    runs_root: impl FnOnce() -> Option<PathBuf>,
+    rest: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let result = rest();
+    if let (Err(_), Some(started)) = (&result, started) {
+        // intentionally silent: the start's own error is what the form shows.
+        let _ = undo_starting_chain(events, store, tab_id, started, runs_root);
+    }
+    result
+}
+
+/// A start that failed after [`label_starting_chain`]: the tab leaves the
+/// chain and drops its stage tag, and the run that label made is removed,
+/// with its run folder, unless something else holds it.
+fn undo_starting_chain(
+    events: &dyn crate::commands::chain_events::ChainEvents,
+    store: &Mutex<StateStore>,
+    tab_id: &str,
+    started: &StartedChain,
+    runs_root: impl FnOnce() -> Option<PathBuf>,
+) -> Result<(), String> {
+    let mut state = store.lock().map_err(|err| err.to_string())?;
+    let labelled = state
+        .tab_by_id(tab_id)
+        .and_then(|tab| tab.chain.as_ref())
+        .is_some_and(|chain| chain.chain_id == started.chain_id);
+    if !labelled {
+        return Ok(());
+    }
+    crate::commands::chain_events::set_tab_chain_and_notify(events, &mut state, tab_id, None, None)?;
+    state.set_tab_bridge(tab_id, None)?;
+    let Some(run_id) = started.run_id.as_deref().filter(|_| started.made_run) else {
+        return Ok(());
+    };
+    if state.remove_unheld_run(run_id, &started.chain_id, tab_id)? {
+        drop(state);
+        events.chain_run_updated(run_id);
+        if let Some(dir) = runs_root().and_then(|root| crate::bridge::folder::run_dir(&root, run_id)) {
+            // intentionally silent: a folder left behind holds no run and is never read.
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+    Ok(())
+}
+
 /// The bridge plan for a role terminal opened at `chain`, when that stage
 /// launches bridged (`bridge::launch::plan_for`). Without a `chain`, the
 /// chain step the tab already holds: a fanned-out lane's Implementer, or a
@@ -853,12 +1015,138 @@ fn bridge_plan_for(
     }))
 }
 
+/// What the D24 gate reads, with no lock held: the CLI's `--version` text
+/// (run once per executable, then cached) and whether a settings file turns
+/// the hooks off for a stage in `cwd`.
+fn gate_inputs(
+    provider: &dyn crate::provider::Provider,
+    cwd: &std::path::Path,
+) -> (Option<String>, Option<crate::bridge::gate::HooksOff>) {
+    let version = provider.cli_version();
+    let config = provider.config_dir().map(|dir| PathBuf::from(dir.path));
+    let hooks = crate::bridge::gate::hooks_off(config.as_deref(), cwd, crate::bridge::gate::managed_settings_path());
+    (version, hooks)
+}
+
+/// D24 and hooks-off for an engine-2 run at a bridged start or relaunch of
+/// `stage` (a stage key; a lane suffix is dropped for the Timeline). True
+/// when it launches bridged. An engine-1 outcome switches the run for good
+/// (saved, with its notice); a run already on engine 1, or gone, is never
+/// bridged; a newer CLI leaves the overview's note.
+fn gate_run(
+    store: &Mutex<StateStore>,
+    run_id: &str,
+    stage: &str,
+    version: Option<&str>,
+    hooks_off: Option<&crate::bridge::gate::HooksOff>,
+) -> Result<bool, String> {
+    let decision = crate::bridge::gate::decide(version, hooks_off);
+    let stage_id = stage.split('@').next().unwrap_or(stage);
+    let mut state = store.lock().map_err(|err| err.to_string())?;
+    let Some(run) = state.pipeline_run_by_id_mut(run_id).filter(|run| run.engine >= crate::bridge::launch::ENGINE_V2)
+    else {
+        return Ok(false);
+    };
+    let (bridged, changed) = crate::bridge::gate::apply(run, &decision, stage_id);
+    if changed {
+        state.save()?;
+    }
+    Ok(bridged)
+}
+
+/// [`gate_run`] at a stage's first bridged start.
+fn gate_bridged_launch(
+    store: &Mutex<StateStore>,
+    plan: crate::bridge::BridgePlan,
+    version: Option<&str>,
+    hooks_off: Option<&crate::bridge::gate::HooksOff>,
+) -> Result<Option<crate::bridge::BridgePlan>, String> {
+    Ok(gate_run(store, &plan.run_id, &plan.stage_id, version, hooks_off)?.then_some(plan))
+}
+
 /// `<app data>/runs` and this executable, for a bridged launch.
 fn bridge_paths(app: &AppHandle) -> Result<(PathBuf, PathBuf), String> {
     let program = crate::bridge::launch::bridge_program()
         .ok_or_else(|| "DCTerminal could not find its own executable for the pipeline bridge.".to_string())?;
     let runs = crate::bridge::launch::runs_root(&crate::data_dir::app_data_dir(app).path);
     Ok((runs, program))
+}
+
+/// The pipeline stage kind a role terminal launches as: the chain it is
+/// about to join, else the chain its tab already has (a pipeline's first
+/// stage or a lane is tagged before it starts). `None` off a pipeline.
+pub(crate) fn launch_stage_kind(
+    store: &StateStore,
+    tab_id: Option<&str>,
+    joining: Option<&crate::store::ChainRef>,
+) -> Option<crate::pipelines::StageKind> {
+    match joining {
+        Some(chain) => crate::pipelines::stage_kind_for_chain(chain),
+        None => tab_id.and_then(|id| store.tab_stage_kind(id)),
+    }
+}
+
+/// How one role terminal start launches. Built by [`RoleLaunch::for_tab`],
+/// which looks the stage kind up, so a start, a restart and a resume all
+/// launch a pipeline stage in its kind's permission mode.
+pub(crate) struct RoleLaunch {
+    role_id: String,
+    run_mode: RunMode,
+    stage_kind: Option<crate::pipelines::StageKind>,
+    model: String,
+    session_id: Option<String>,
+    /// Resume this Claude session (`RoleResume`) instead of a fresh start.
+    resume: Option<String>,
+}
+
+impl RoleLaunch {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn for_tab(
+        store: &Mutex<StateStore>,
+        tab_id: Option<&str>,
+        joining: Option<&crate::store::ChainRef>,
+        role_id: &str,
+        run_mode: RunMode,
+        model: &str,
+        session_id: Option<String>,
+        resume: Option<String>,
+    ) -> Result<Self, String> {
+        let stage_kind = {
+            let store = store.lock().map_err(|err| err.to_string())?;
+            launch_stage_kind(&store, tab_id, joining)
+        };
+        Ok(Self {
+            role_id: role_id.to_string(),
+            run_mode,
+            stage_kind,
+            model: model.to_string(),
+            session_id,
+            resume,
+        })
+    }
+
+    pub(crate) fn launch(&self, prompt: Option<String>) -> TerminalLaunch {
+        TerminalLaunch {
+            kind: match &self.resume {
+                Some(id) => TerminalKind::RoleResume {
+                    role_id: self.role_id.clone(),
+                    run_mode: self.run_mode,
+                    session_id: id.clone(),
+                    stage_kind: self.stage_kind,
+                },
+                None => TerminalKind::Role {
+                    role_id: self.role_id.clone(),
+                    run_mode: self.run_mode,
+                    prompt,
+                    stage_kind: self.stage_kind,
+                },
+            },
+            model: Some(self.model.clone()),
+            session_id: self.session_id.clone(),
+            // H5's status line is added once the tab id is known.
+            settings: None,
+        }
+    }
 }
 
 /// Async with the work on a blocking thread, like [`shell_terminal_start`].
@@ -916,12 +1204,26 @@ fn role_terminal_start_blocking(
     // Pipeline v2 (ADR-015): a bridged stage of an engine-2 run reports
     // through the bridge, and its prompt says how. A chain this start
     // begins is planned as the engine-2 run it is about to get.
-    let starting = starting_chain(&store, &input)?;
-    let mut bridge = match (&starting, provider.id() == ProviderId::Claude) {
-        (_, false) => None,
-        (Some(chain), true) => crate::pipelines::find(&chain.kind)
-            .and_then(|def| crate::bridge::launch::plan_for_new_run(&def, chain, &role.id)),
-        (None, true) => bridge_plan_for(&store, input.chain.as_ref(), input.tab_id.as_deref(), &role.id)?,
+    let (starting, bridge) = plan_start(&store, &input, &role.id, provider.id() == ProviderId::Claude)?;
+    // D24: the CLI version and disableAllHooks, read with no lock held
+    // (`claude --version` runs once per executable, then it is cached). A
+    // chain this start begins has no run yet: the gate is recorded on the
+    // run once it is made, just before the spawn.
+    let mut new_run_gate = None;
+    let mut bridge = match bridge {
+        Some(plan) => {
+            let cwd = input.values.get("cwd").map(|value| PathBuf::from(value.trim())).unwrap_or_default();
+            let (version, hooks_off) = gate_inputs(provider.as_ref(), &cwd);
+            if starting.is_some() {
+                let gate = crate::bridge::gate::decide(version.as_deref(), hooks_off.as_ref());
+                let bridged = matches!(gate, crate::bridge::gate::Gate::Bridge { .. });
+                new_run_gate = Some((gate, plan.stage_id.clone()));
+                bridged.then_some(plan)
+            } else {
+                gate_bridged_launch(&store, plan, version.as_deref(), hooks_off.as_ref())?
+            }
+        }
+        None => None,
     };
     let instructions = bridge
         .as_ref()
@@ -973,15 +1275,17 @@ fn role_terminal_start_blocking(
         provider.id(),
     )?;
     let claude_session = (provider.id() == ProviderId::Claude).then(new_claude_session_id);
-    let role_launch = |prompt: Option<String>| TerminalLaunch {
-        kind: TerminalKind::Role {
-            role_id: role.id.clone(),
-            run_mode: mode,
-            prompt,
-        },
-        model: Some(model.clone()),
-        session_id: claude_session.clone(),
-    };
+    let launch = RoleLaunch::for_tab(
+        &store,
+        input.tab_id.as_deref(),
+        input.chain.as_ref().or(starting.as_ref()),
+        &role.id,
+        mode,
+        &model,
+        claude_session.clone(),
+        None,
+    )?;
+    let role_launch = |prompt: Option<String>| launch.launch(prompt);
     // Fail before the tab is saved when the CLI is missing.
     let program = provider.terminal_command(&role_launch(None))?.program;
     let tab_id = {
@@ -1025,69 +1329,78 @@ fn role_terminal_start_blocking(
     // The chain this start begins: its run exists before the spawn (and
     // before the run folder below), labelled the way the frontend used to
     // label it once the terminal ran.
-    if let Some(chain) = starting {
-        let mut state = store.lock().map_err(|err| err.to_string())?;
-        if state.tab_by_id(&tab_id).is_some_and(|tab| tab.chain.is_none()) {
-            crate::commands::chain_events::set_tab_chain_and_notify(&app, &mut state, &tab_id, Some(chain), None)?;
-        } else {
-            // It joined a chain meanwhile: the planned run never came to be.
-            bridge = None;
-        }
-    }
-    // The run folder is written before the launch, and the tab records the
-    // stage it holds (or that it holds none, when reused for another role).
-    let bridge_args = match &bridge {
-        Some(plan) => {
-            let (runs, program) = bridge_paths(&app)?;
-            let run_dir = crate::bridge::launch::prepare_stage(&runs, plan, &tab_id)?;
-            Some(crate::bridge::launch::launch_args(
-                plan.kind,
-                &program,
-                &run_dir,
-                &plan.run_id,
-                &plan.stage_key,
-                &tab_id,
-            ))
+    let started = match starting {
+        Some(chain) => {
+            let started = label_starting_chain(&app, &store, &tab_id, chain, new_run_gate)?;
+            if started.is_none() {
+                // It joined a chain meanwhile: the planned run never came to be.
+                bridge = None;
+            }
+            started
         }
         None => None,
     };
-    {
-        let mut state = store.lock().map_err(|err| err.to_string())?;
-        let tag = bridge.as_ref().map(|plan| crate::bridge::BridgeTag {
-            run_id: plan.run_id.clone(),
-            stage: plan.stage_key.clone(),
-        });
-        state.set_tab_bridge(&tab_id, tag)?;
-    }
-    let delivery = store_prompt(&app, &tab_id, &program, &prompt)?;
-    let mut command = provider.terminal_command(&role_launch(Some(delivery.argument.clone())))?;
-    if let Some(extra) = bridge_args {
-        let has_prompt = !delivery.argument.trim().is_empty();
-        crate::bridge::launch::insert_before_prompt(&mut command.args, has_prompt, extra);
-    }
-    if provider.id() == ProviderId::Claude {
-        command.env.push(claude_scheme_env());
-    }
-    let pid = open_session(
-        &registry,
-        &tab_id,
-        SpawnSpec {
-            program: command.program,
-            args: command.args,
-            env: command.env,
-            cwd,
-            cols: input.cols,
-            rows: input.rows,
-        },
-        claude_session,
-        on_output,
-    )?;
-    remember_folder(&projects, &recent_folder);
-    Ok(TerminalStartResult {
-        errors: Vec::new(),
-        tab_id: Some(tab_id),
-        pid,
-        used_prompt_file: delivery.stored_body.is_some(),
+    // A failure from here on undoes the chain label above (and the run it made).
+    let runs_root = || bridge_paths(&app).ok().map(|(runs, _)| runs);
+    after_starting_label(&app, &store, &tab_id, started.as_ref(), runs_root, || {
+        // The run folder is written before the launch, and the tab records the
+        // stage it holds (or that it holds none, when reused for another role).
+        let bridge_flags = match &bridge {
+            Some(plan) => {
+                let (runs, program) = bridge_paths(&app)?;
+                let run_dir = crate::bridge::launch::prepare_stage(&runs, plan, &tab_id)?;
+                Some(crate::bridge::launch::launch_flags(
+                    plan.kind,
+                    &program,
+                    &run_dir,
+                    &plan.run_id,
+                    &plan.stage_key,
+                    &tab_id,
+                ))
+            }
+            None => None,
+        };
+        {
+            let mut state = store.lock().map_err(|err| err.to_string())?;
+            let tag = bridge.as_ref().map(|plan| crate::bridge::BridgeTag {
+                run_id: plan.run_id.clone(),
+                stage: plan.stage_key.clone(),
+            });
+            state.set_tab_bridge(&tab_id, tag)?;
+        }
+        let delivery = store_prompt(&app, &tab_id, &program, &prompt)?;
+        let mut request = role_launch(Some(delivery.argument.clone()));
+        if provider.id() == ProviderId::Claude {
+            let config = provider.config_dir().map(|dir| dir.path);
+            request.settings = usage_status_line(&app, &tab_id, config.as_deref(), &cwd);
+        }
+        // One `--settings`: the bridge's hooks join the status line.
+        let mut command =
+            crate::bridge::launch::bridged_command(request, bridge_flags, |req| provider.terminal_command(req))?;
+        if provider.id() == ProviderId::Claude {
+            command.env.push(claude_scheme_env());
+        }
+        let pid = open_session(
+            &registry,
+            &tab_id,
+            SpawnSpec {
+                program: command.program,
+                args: command.args,
+                env: command.env,
+                cwd,
+                cols: input.cols,
+                rows: input.rows,
+            },
+            claude_session,
+            on_output,
+        )?;
+        remember_folder(&projects, &recent_folder);
+        Ok(TerminalStartResult {
+            errors: Vec::new(),
+            tab_id: Some(tab_id.clone()),
+            pid,
+            used_prompt_file: delivery.stored_body.is_some(),
+        })
     })
 }
 
@@ -1130,20 +1443,25 @@ pub(crate) fn start_actor_stage(
         let mut state = store.lock().map_err(|err| err.to_string())?;
         state.remember_claude_config(tab_id, &dir.path)?;
     }
-    let role_launch = |prompt: Option<String>| TerminalLaunch {
-        kind: TerminalKind::Role {
-            role_id: launch.role_id.clone(),
-            run_mode: mode,
-            prompt,
-        },
-        model: Some(model.clone()),
-        session_id: Some(launch.session_id.clone()),
-    };
-    let program = provider.terminal_command(&role_launch(None))?.program;
+    // H4: the stage's kind (from the chain its tab was saved on) picks the
+    // permission mode, so a Planner stage, a copied one included, plans.
+    let role_launch = RoleLaunch::for_tab(
+        &store,
+        Some(tab_id),
+        None,
+        &launch.role_id,
+        mode,
+        &model,
+        Some(launch.session_id.clone()),
+        None,
+    )?;
+    let program = provider.terminal_command(&role_launch.launch(None))?.program;
     let delivery = store_prompt(app, tab_id, &program, &launch.prompt)?;
-    let mut command = provider.terminal_command(&role_launch(Some(delivery.argument.clone())))?;
-    let has_prompt = !delivery.argument.trim().is_empty();
-    crate::bridge::launch::insert_before_prompt(&mut command.args, has_prompt, launch.bridge_args.clone());
+    let request = role_launch.launch(Some(delivery.argument.clone()));
+    // One `--settings`: the bridge's hooks join the launch's own.
+    let mut command = crate::bridge::launch::bridged_command(request, Some(launch.bridge.clone()), |req| {
+        provider.terminal_command(req)
+    })?;
     command.env.push(claude_scheme_env());
     open_session_to(
         &registry,
@@ -1292,6 +1610,7 @@ fn pty_open_blocking(
                 kind,
                 model: Some(model),
                 session_id: None,
+                settings: None,
             })?;
             (command.program, command.args, command.env)
         }
@@ -1323,10 +1642,12 @@ fn pty_open_blocking(
                 Some(id) => TerminalKind::Resume { session_id: id },
                 None => TerminalKind::Plain,
             };
+            let config = provider.config_dir().map(|dir| dir.path);
             let mut command = provider.terminal_command(&TerminalLaunch {
                 kind,
                 model: Some(model),
                 session_id: Some(session_id.clone()),
+                settings: usage_status_line(&app, &input.id, config.as_deref(), &cwd),
             })?;
             command.env.push(claude_scheme_env());
             remember_terminal_session(&store, &input.id, Some(&session_id))?;
@@ -1403,22 +1724,18 @@ fn pty_open_blocking(
             // the user resumes the saved session (same id, same permission mode).
             claude_session = (provider.id() == ProviderId::Claude)
                 .then(|| resume.clone().unwrap_or_else(new_claude_session_id));
-            let role_launch = |prompt: Option<String>| TerminalLaunch {
-                kind: match &resume {
-                    Some(id) => TerminalKind::RoleResume {
-                        role_id: role_id.clone(),
-                        run_mode: mode,
-                        session_id: id.clone(),
-                    },
-                    None => TerminalKind::Role {
-                        role_id: role_id.clone(),
-                        run_mode: mode,
-                        prompt,
-                    },
-                },
-                model: Some(model.clone()),
-                session_id: claude_session.clone(),
-            };
+            // A pipeline stage restarts in its kind's mode, like its first launch.
+            let launch = RoleLaunch::for_tab(
+                &store,
+                Some(&input.id),
+                None,
+                &role_id,
+                mode,
+                &model,
+                claude_session.clone(),
+                resume.clone(),
+            )?;
+            let role_launch = |prompt: Option<String>| launch.launch(prompt);
             let program = provider.terminal_command(&role_launch(None))?.program;
             let prompt = input
                 .prompt
@@ -1430,29 +1747,42 @@ fn pty_open_blocking(
                 Some(text) => Some(store_prompt(&app, &input.id, &program, text)?.argument),
                 None => None,
             };
-            let has_prompt = argument.is_some();
-            let mut command = provider.terminal_command(&role_launch(argument))?;
+            let mut request = role_launch(argument);
+            if provider.id() == ProviderId::Claude {
+                let config = provider.config_dir().map(|dir| dir.path);
+                request.settings = usage_status_line(&app, &input.id, config.as_deref(), &cwd);
+            }
             // A bridged stage relaunches with the same bridge flags while it
             // still owns its stage; otherwise it is a plain role terminal now.
             let tag = {
                 let state = store.lock().map_err(|err| err.to_string())?;
                 state.tab_by_id(&input.id).and_then(|tab| tab.bridge.clone())
             };
+            // The D24 gate again: the CLI or the hooks settings may have
+            // changed since the first launch, and a run switched to engine 1
+            // stays there. Without hooks a bridged tab would never end a turn.
+            let mut flags = None;
             if let Some(tag) = tag {
-                let extra = match (provider.id() == ProviderId::Claude).then(|| bridge_paths(&app)) {
-                    Some(Ok((runs, program))) => {
-                        crate::bridge::launch::relaunch_args(&runs, &tag, &input.id, &program)
-                    }
-                    _ => None,
+                let gated = provider.id() == ProviderId::Claude && {
+                    let (version, hooks_off) = gate_inputs(provider.as_ref(), &cwd);
+                    gate_run(&store, &tag.run_id, &tag.stage, version.as_deref(), hooks_off.as_ref())?
                 };
-                match extra {
-                    Some(extra) => crate::bridge::launch::insert_before_prompt(&mut command.args, has_prompt, extra),
-                    None => {
-                        let mut state = store.lock().map_err(|err| err.to_string())?;
-                        state.set_tab_bridge(&input.id, None)?;
-                    }
+                if gated {
+                    flags = match bridge_paths(&app) {
+                        Ok((runs, program)) => {
+                            crate::bridge::launch::relaunch_flags(&runs, &tag, &input.id, &program)
+                        }
+                        Err(_) => None,
+                    };
+                }
+                if flags.is_none() {
+                    let mut state = store.lock().map_err(|err| err.to_string())?;
+                    state.set_tab_bridge(&input.id, None)?;
                 }
             }
+            // One `--settings`: the bridge's hooks join the status line.
+            let mut command =
+                crate::bridge::launch::bridged_command(request, flags, |req| provider.terminal_command(req))?;
             if provider.id() == ProviderId::Claude {
                 command.env.push(claude_scheme_env());
             }
@@ -1635,6 +1965,443 @@ pub fn kill_tab_pty(registry: &Mutex<PtyRegistry>, tab_id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn store_with_engine2_run(dir: &crate::test_support::TempDir) -> Mutex<StateStore> {
+        let mut store = StateStore {
+            path: dir.join("state.json"),
+            data: crate::store::AppStateFile::default(),
+            new_tab_provider: ProviderId::DEFAULT,
+            draft_window: crate::store::MAIN_WINDOW_ID.to_string(),
+        };
+        let mut run: crate::store::PipelineRun = serde_json::from_value(serde_json::json!({
+            "id": "ee_1700000000000", "kind": "full", "cwd": "/repo", "stage": "pr_reviewer",
+            "tabIds": {}, "createdAt": "2026-10-19T00:00:00Z", "status": "running"
+        }))
+        .unwrap();
+        run.engine = crate::bridge::launch::ENGINE_V2;
+        store.data.pipeline_runs.push(run);
+        Mutex::new(store)
+    }
+
+    fn reviewer_plan() -> crate::bridge::BridgePlan {
+        crate::bridge::BridgePlan {
+            run_id: "ee_1700000000000".into(),
+            stage_id: "pr_reviewer".into(),
+            role_id: "role_pr_reviewer".into(),
+            lane: None,
+            stage_key: "pr_reviewer".into(),
+            kind: crate::bridge::ResultKind::Reviewer,
+            autopilot: true,
+        }
+    }
+
+    #[test]
+    fn an_older_claude_code_or_hooks_turned_off_launch_the_run_as_engine_1_and_save_it() {
+        let dir = crate::test_support::TempDir::new("gate_bridged_launch");
+        let store = store_with_engine2_run(&dir);
+        let launched = gate_bridged_launch(&store, reviewer_plan(), Some("2.1.200 (Claude Code)"), None).unwrap();
+        assert_eq!(launched, None, "an older CLI launches unbridged");
+        let saved = StateStore::open_path(dir.join("state.json")).unwrap();
+        let run = saved.pipeline_run_by_id("ee_1700000000000").unwrap();
+        assert_eq!(run.engine, 1, "saved as engine 1");
+        assert!(run.engine_note.as_deref().unwrap().contains("2.1.200"));
+
+        let dir = crate::test_support::TempDir::new("gate_bridged_launch_hooks");
+        let store = store_with_engine2_run(&dir);
+        let off = crate::bridge::gate::HooksOff { file: dir.join("managed-settings.json"), setting: "disableAllHooks" };
+        let launched =
+            gate_bridged_launch(&store, reviewer_plan(), Some("2.1.287 (Claude Code)"), Some(&off)).unwrap();
+        assert_eq!(launched, None, "hooks off launches unbridged");
+        let state = store.lock().unwrap();
+        assert_eq!(state.pipeline_run_by_id("ee_1700000000000").unwrap().engine, 1);
+
+        let dir = crate::test_support::TempDir::new("gate_bridged_launch_newer");
+        let store = store_with_engine2_run(&dir);
+        let launched = gate_bridged_launch(&store, reviewer_plan(), Some("2.1.300 (Claude Code)"), None).unwrap();
+        assert_eq!(launched, Some(reviewer_plan()), "a newer CLI is allowed");
+        let saved = StateStore::open_path(dir.join("state.json")).unwrap();
+        let run = saved.pipeline_run_by_id("ee_1700000000000").unwrap();
+        assert_eq!(run.engine, crate::bridge::launch::ENGINE_V2);
+        assert!(run.engine_note.as_deref().unwrap().starts_with("Claude Code version not yet verified"));
+    }
+
+    #[test]
+    fn the_gate_reads_the_cli_and_settings_before_it_locks_the_store() {
+        // Review rule (store/mod.rs): no store lock across a process spawn.
+        let source = include_str!("mod.rs");
+        let body = &source[source.find("fn role_terminal_start_blocking(").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let inputs = body.find("gate_inputs(").expect("reads the version and settings");
+        let gate = body.find("gate_bridged_launch(").expect("applies the gate");
+        assert!(inputs < gate);
+        assert!(!body[inputs..gate].contains(".lock()"), "no lock while reading the CLI and settings");
+        let helper = &source[source.find("fn gate_inputs(").unwrap()..];
+        let helper = &helper[..helper.find("\n}\n").unwrap()];
+        assert!(helper.contains("cli_version()") && helper.contains("hooks_off("));
+        assert!(!helper.contains(".lock()"));
+    }
+
+    #[derive(Default)]
+    struct Recorded(std::cell::RefCell<Vec<String>>);
+
+    impl crate::commands::chain_events::ChainEvents for Recorded {
+        fn chain_run_updated(&self, chain_id: &str) {
+            self.0.borrow_mut().push(chain_id.to_string());
+        }
+    }
+
+    fn start_input(role_id: &str, tab_id: Option<&str>, start_chain: Option<&str>) -> RoleTerminalInput {
+        serde_json::from_value(serde_json::json!({
+            "roleId": role_id, "values": { "cwd": "/repo" }, "tabId": tab_id, "handoffPlan": null,
+            "cols": 80, "rows": 24, "startChain": start_chain
+        }))
+        .unwrap()
+    }
+
+    fn draft_tab(store: &Mutex<StateStore>, role_id: &str) -> String {
+        let role = crate::test_support::role(role_id, role_id);
+        store.lock().unwrap().create_draft_tab(&role, "/repo", true, None).unwrap()
+    }
+
+    #[test]
+    fn a_lane_implementer_started_with_no_chain_is_bridged_from_the_lane_chain_its_tab_holds() {
+        let dir = crate::test_support::TempDir::new("plan_start_lane");
+        let store = store_with_engine2_run(&dir);
+        let tab = draft_tab(&store, "role_implementer");
+        {
+            let mut state = store.lock().unwrap();
+            let run = state.pipeline_run_by_id_mut("ee_1700000000000").unwrap();
+            run.lanes = serde_json::from_value(serde_json::json!([
+                { "id": "pr1", "title": "PR1", "status": "active" }
+            ]))
+            .unwrap();
+            state.data.tabs.iter_mut().find(|t| t.id == tab).unwrap().chain = Some(
+                serde_json::from_value(serde_json::json!({
+                    "chainId": "ee_1700000000000", "kind": "eagle1", "step": 3, "total": 4, "lane": "pr1"
+                }))
+                .unwrap(),
+            );
+        }
+        // As laneStartTerminal sends it: no chain, no startChain.
+        let input = start_input("role_implementer", Some(&tab), None);
+        let (starting, plan) = plan_start(&store, &input, "role_implementer", true).unwrap();
+        assert_eq!(starting, None);
+        let plan = plan.expect("the lane's Implementer launches bridged");
+        assert_eq!(plan.kind, crate::bridge::ResultKind::Implementer);
+        assert_eq!(plan.stage_key, "implementer@pr1");
+        assert_eq!(plan.lane.as_deref(), Some("pr1"));
+        assert_eq!(plan.run_id, "ee_1700000000000");
+        // Off Claude, nothing is bridged.
+        assert_eq!(plan_start(&store, &input, "role_implementer", false).unwrap().1, None);
+    }
+
+    #[test]
+    fn a_form_start_with_start_chain_plans_and_labels_its_first_stage_as_a_new_engine_2_run() {
+        let dir = crate::test_support::TempDir::new("plan_start_new_chain");
+        let store = store_with_engine2_run(&dir);
+        let tab = draft_tab(&store, "role_planner");
+        let input = start_input("role_planner", Some(&tab), Some("eagle1"));
+        let (starting, plan) = plan_start(&store, &input, "role_planner", true).unwrap();
+        let chain = starting.expect("the start begins a chain");
+        assert!(chain.chain_id.starts_with("ee_"), "{chain:?}");
+        assert_eq!((chain.kind.as_str(), chain.step), ("eagle1", 1));
+        let plan = plan.expect("the first stage launches bridged");
+        assert_eq!(plan.run_id, chain.chain_id);
+        assert_eq!(plan.kind, crate::bridge::ResultKind::Planner);
+        assert!(!plan.autopilot);
+        // Labelled before the spawn: the run exists, engine 2, autopilot off.
+        let events = Recorded::default();
+        let started = label_starting_chain(&events, &store, &tab, chain.clone(), None).unwrap().expect("labelled");
+        assert!(started.made_run);
+        let state = store.lock().unwrap();
+        let run = state.pipeline_run_by_id(&chain.chain_id).expect("run made");
+        assert_eq!(run.engine, crate::bridge::launch::ENGINE_V2);
+        assert!(!run.autopilot.as_ref().is_some_and(|a| a.enabled));
+        assert_eq!(state.tab_by_id(&tab).unwrap().chain.as_ref().map(|c| c.chain_id.clone()), Some(chain.chain_id.clone()));
+        assert_eq!(*events.0.borrow(), vec![chain.chain_id.clone()]);
+    }
+
+    #[test]
+    fn a_tab_already_in_a_chain_ignores_start_chain() {
+        let dir = crate::test_support::TempDir::new("plan_start_chained");
+        let store = store_with_engine2_run(&dir);
+        let tab = draft_tab(&store, "role_planner");
+        let held: crate::store::ChainRef = serde_json::from_value(serde_json::json!({
+            "chainId": "ee_1700000000000", "kind": "eagle1", "step": 1, "total": 4
+        }))
+        .unwrap();
+        store.lock().unwrap().data.tabs.iter_mut().find(|t| t.id == tab).unwrap().chain = Some(held.clone());
+        let input = start_input("role_planner", Some(&tab), Some("eagle1"));
+        let (starting, plan) = plan_start(&store, &input, "role_planner", true).unwrap();
+        assert_eq!(starting, None, "no new chain");
+        assert_eq!(plan.map(|p| p.run_id), Some("ee_1700000000000".to_string()), "its own run's Planner");
+        // A label raced in after planning: the start leaves it alone.
+        let fresh = crate::bridge::launch::new_chain(&crate::pipelines::find("eagle1").unwrap(), "eagle1", 5);
+        assert_eq!(label_starting_chain(&Recorded::default(), &store, &tab, fresh, None).unwrap(), None);
+        assert_eq!(store.lock().unwrap().tab_by_id(&tab).unwrap().chain, Some(held));
+    }
+
+    #[test]
+    fn an_older_claude_code_on_a_new_chain_records_engine_1_on_the_run_it_makes() {
+        let dir = crate::test_support::TempDir::new("label_new_chain_gate");
+        let store = store_with_engine2_run(&dir);
+        let tab = draft_tab(&store, "role_planner");
+        let chain = crate::bridge::launch::new_chain(&crate::pipelines::find("eagle1").unwrap(), "eagle1", 6);
+        let gate = crate::bridge::gate::decide(Some("2.1.200 (Claude Code)"), None);
+        label_starting_chain(&Recorded::default(), &store, &tab, chain.clone(), Some((gate, "planner".into())))
+            .unwrap()
+            .unwrap();
+        let saved = StateStore::open_path(dir.join("state.json")).unwrap();
+        let run = saved.pipeline_run_by_id(&chain.chain_id).unwrap();
+        assert_eq!(run.engine, 1);
+        assert!(run.engine_note.as_deref().unwrap().contains("2.1.200"));
+    }
+
+    #[test]
+    fn a_start_that_fails_after_labelling_a_new_chain_leaves_no_run_behind() {
+        let dir = crate::test_support::TempDir::new("failed_start_new_chain");
+        let store = store_with_engine2_run(&dir);
+        let runs = dir.join("runs");
+        let tab = draft_tab(&store, "role_planner");
+        let chain = crate::bridge::launch::new_chain(&crate::pipelines::find("eagle1").unwrap(), "eagle1", 8);
+        let events = Recorded::default();
+        let started = label_starting_chain(&events, &store, &tab, chain.clone(), None).unwrap().unwrap();
+        // The run folder was written, then the spawn failed.
+        let plan = crate::bridge::launch::plan_for_new_run(&crate::pipelines::find("eagle1").unwrap(), &chain, "role_planner")
+            .unwrap();
+        crate::bridge::launch::prepare_stage(&runs, &plan, &tab).unwrap();
+        store
+            .lock()
+            .unwrap()
+            .set_tab_bridge(&tab, Some(crate::bridge::BridgeTag { run_id: plan.run_id.clone(), stage: plan.stage_key.clone() }))
+            .unwrap();
+        let failed: Result<(), String> =
+            after_starting_label(&events, &store, &tab, Some(&started), || Some(runs.clone()), || Err("spawn failed".into()));
+        assert_eq!(failed, Err("spawn failed".to_string()));
+        let saved = StateStore::open_path(dir.join("state.json")).unwrap();
+        assert!(saved.pipeline_run_by_id(&chain.chain_id).is_none(), "no run left behind");
+        let record = saved.tab_by_id(&tab).unwrap();
+        assert_eq!(record.chain, None, "the tab left the chain");
+        assert_eq!(record.bridge, None, "and holds no stage");
+        assert!(!runs.join(&chain.chain_id).exists(), "its run folder is gone");
+        assert!(saved.pipeline_run_by_id("ee_1700000000000").is_some(), "other runs stay");
+        assert_eq!(events.0.borrow().last(), Some(&chain.chain_id), "its overview refetches");
+        // A success keeps the label.
+        let other = draft_tab(&store, "role_planner");
+        let chain = crate::bridge::launch::new_chain(&crate::pipelines::find("eagle1").unwrap(), "eagle1", 9);
+        let started = label_starting_chain(&events, &store, &other, chain.clone(), None).unwrap().unwrap();
+        after_starting_label(&events, &store, &other, Some(&started), || None, || Ok(())).unwrap();
+        assert!(store.lock().unwrap().pipeline_run_by_id(&chain.chain_id).is_some());
+    }
+
+    #[test]
+    fn role_terminal_start_runs_everything_after_the_chain_label_under_its_undo() {
+        let source = include_str!("mod.rs");
+        let body = &source[source.find("fn role_terminal_start_blocking(").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let label = body.find("label_starting_chain(").expect("labels the chain");
+        let undo = body.find("after_starting_label(").expect("undoes the label on a failure");
+        assert!(label < undo);
+        for step in ["prepare_stage(", "set_tab_bridge(", "store_prompt(", "bridged_command(", "open_session("] {
+            assert!(body.find(step).expect(step) > undo, "{step} runs under the undo");
+        }
+    }
+
+    #[test]
+    fn a_failed_start_keeps_a_run_something_else_holds() {
+        let dir = crate::test_support::TempDir::new("failed_start_held_run");
+        let store = store_with_engine2_run(&dir);
+        let tab = draft_tab(&store, "role_planner");
+        let chain = crate::bridge::launch::new_chain(&crate::pipelines::find("eagle1").unwrap(), "eagle1", 10);
+        let events = Recorded::default();
+        let started = label_starting_chain(&events, &store, &tab, chain.clone(), None).unwrap().unwrap();
+        // Another tab joined the run meanwhile.
+        let reviewer = draft_tab(&store, "role_plan_reviewer");
+        let mut step2 = chain.clone();
+        step2.step = 2;
+        store.lock().unwrap().set_tab_chain(&reviewer, Some(step2), Some("the plan")).unwrap();
+        let _ = after_starting_label(&events, &store, &tab, Some(&started), || None, || Err::<(), _>("no".into()));
+        let state = store.lock().unwrap();
+        assert!(state.pipeline_run_by_id(&chain.chain_id).is_some(), "held by the other tab");
+        assert_eq!(state.tab_by_id(&tab).unwrap().chain, None, "the failed tab still leaves it");
+        drop(state);
+        // A run that existed before the label is never removed.
+        let tab2 = draft_tab(&store, "role_planner");
+        let existing = StartedChain { chain_id: "ee_1700000000000".into(), run_id: Some("ee_1700000000000".into()), made_run: false };
+        let _ = after_starting_label(&events, &store, &tab2, Some(&existing), || None, || Err::<(), _>("no".into()));
+        assert!(store.lock().unwrap().pipeline_run_by_id("ee_1700000000000").is_some());
+    }
+
+    #[test]
+    fn a_bridged_restart_runs_the_same_gate_before_it_relaunches_bridged() {
+        let source = include_str!("mod.rs");
+        let body = &source[source.find("fn pty_open_blocking(").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let inputs = body.find("gate_inputs(").expect("restart reads the version and settings");
+        let gate = body.find("gate_run(").expect("restart applies the gate");
+        let flags = body.find("relaunch_flags(").expect("relaunch flags");
+        assert!(inputs < gate && gate < flags, "the gate decides before the bridge flags are built");
+    }
+
+    #[test]
+    fn the_relaunch_gate_respects_engine_1_and_switches_when_hooks_were_turned_off() {
+        let dir = crate::test_support::TempDir::new("gate_relaunch");
+        let store = store_with_engine2_run(&dir);
+        let run_id = "ee_1700000000000";
+        let ok = Some("2.1.287 (Claude Code)");
+        assert!(gate_run(&store, run_id, "pr_reviewer", ok, None).unwrap(), "still bridged");
+        // Hooks turned off since the first launch: engine 1, with a notice.
+        let off = crate::bridge::gate::HooksOff { file: dir.join("settings.json"), setting: "disableAllHooks" };
+        assert!(!gate_run(&store, run_id, "pr_reviewer@pr1", ok, Some(&off)).unwrap());
+        {
+            let state = store.lock().unwrap();
+            let run = state.pipeline_run_by_id(run_id).unwrap();
+            assert_eq!(run.engine, 1);
+            assert_eq!(run.events.last().unwrap().stage_id.as_deref(), Some("pr_reviewer"));
+            assert!(run.engine_note.as_deref().unwrap().contains("disableAllHooks"));
+        }
+        // An engine-1 run never relaunches bridged, whatever the CLI.
+        assert!(!gate_run(&store, run_id, "pr_reviewer", ok, None).unwrap());
+        assert!(!gate_run(&store, "ee_missing", "pr_reviewer", ok, None).unwrap());
+    }
+
+    /// A pipeline of your own: a copy of the Planner (Settings › Roles ›
+    /// Duplicate) as stage 1, then the built-in Planner on a generic stage.
+    fn copied_planner_pipeline(id: &str) -> crate::pipelines::PipelineDef {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "name": "Copied planner",
+            "stages": [
+                { "id": "plan", "roleId": "role_custom_planner", "title": "Planner copy", "kind": "planner" },
+                { "id": "notes", "roleId": "role_planner", "title": "Notes", "kind": "generic" }
+            ]
+        }))
+        .unwrap()
+    }
+
+    fn on_chain(kind: &str, step: u32) -> crate::store::ChainRef {
+        serde_json::from_value(serde_json::json!({
+            "chainId": "ee_9", "kind": kind, "step": step, "total": 2
+        }))
+        .unwrap()
+    }
+
+    fn mode_of(role_id: &str, stage_kind: Option<crate::pipelines::StageKind>) -> String {
+        let args = crate::provider::claude::claude_terminal_args(&TerminalLaunch {
+            kind: TerminalKind::Role {
+                role_id: role_id.into(),
+                run_mode: RunMode::Default,
+                prompt: None,
+                stage_kind,
+            },
+            model: None,
+            session_id: None,
+            settings: None,
+        })
+        .unwrap();
+        let at = args.iter().position(|a| a == "--permission-mode").unwrap();
+        args[at + 1].clone()
+    }
+
+    // Review H4 (MEDIUM): a copied Planner on a pipeline launched in `auto`,
+    // because the permission mode was keyed on the role id.
+    #[test]
+    fn a_pipeline_stage_launches_in_its_kind_s_permission_mode() {
+        use crate::pipelines::{register_for_test, unregister_for_test, StageKind};
+        let id = "copied_planner_launch_test";
+        register_for_test(copied_planner_pipeline(id));
+        let dir = crate::test_support::TempDir::new("stage_kind_launch");
+        let mut store = StateStore {
+            path: dir.join("state.json"),
+            data: crate::store::AppStateFile::default(),
+            new_tab_provider: ProviderId::DEFAULT,
+            draft_window: crate::store::MAIN_WINDOW_ID.to_string(),
+        };
+        let role = crate::test_support::role("role_custom_planner", "Planner copy");
+        let first = store.create_draft_tab(&role, "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&first, Some(on_chain(id, 1)), None).unwrap();
+        let plain = store.create_draft_tab(&role, "/tmp/p", true, None).unwrap();
+
+        // Stage 1 is tagged before it starts: its tab's chain says planner.
+        let first_kind = launch_stage_kind(&store, Some(&first), None);
+        // A hand-off's new tab is tagged after the start: the chain it joins says.
+        let notes_kind = launch_stage_kind(&store, None, Some(&on_chain(id, 2)));
+        let joining_wins = launch_stage_kind(&store, Some(&first), Some(&on_chain(id, 2)));
+        let off_pipeline = launch_stage_kind(&store, Some(&plain), None);
+        unregister_for_test(id);
+
+        assert_eq!(first_kind, Some(StageKind::Planner));
+        assert_eq!(notes_kind, Some(StageKind::Generic));
+        assert_eq!(joining_wins, Some(StageKind::Generic));
+        assert_eq!(off_pipeline, None);
+        assert_eq!(mode_of("role_custom_planner", first_kind), "plan", "the copy plans like the built-in");
+        assert_eq!(mode_of("role_planner", notes_kind), "auto", "the kind decides, not the role id");
+        // Off a pipeline the built-in Planner still plans, and a copy does not.
+        assert_eq!(mode_of("role_planner", None), "plan");
+        assert_eq!(mode_of("role_custom_planner", off_pipeline), "auto");
+        // Cursor follows the kind too.
+        assert_eq!(
+            crate::pty::launch::role_terminal_flags("role_custom_planner", first_kind, RunMode::Default)[0],
+            "--plan"
+        );
+        // Chat: the session mode, and the plan card for its ExitPlanMode.
+        assert_eq!(crate::provider::claude::claude_role_mode("role_custom_planner", first_kind), "plan");
+        assert_eq!(
+            crate::provider::claude::claude_role_mode("role_planner", notes_kind),
+            "bypassPermissions"
+        );
+    }
+
+    // Review H4 round 2: the start, restart and resume paths build their
+    // launch with `RoleLaunch::for_tab`, which looks the stage kind up.
+    #[test]
+    fn start_restart_and_resume_of_a_copied_planner_stage_launch_in_plan_mode() {
+        use crate::pipelines::{register_for_test, unregister_for_test};
+        const SESSION: &str = "11111111-2222-4333-8444-555555555555";
+        let id = "copied_planner_paths_test";
+        register_for_test(copied_planner_pipeline(id));
+        let dir = crate::test_support::TempDir::new("stage_kind_paths");
+        let mut state = StateStore {
+            path: dir.join("state.json"),
+            data: crate::store::AppStateFile::default(),
+            new_tab_provider: ProviderId::DEFAULT,
+            draft_window: crate::store::MAIN_WINDOW_ID.to_string(),
+        };
+        let role = crate::test_support::role("role_custom_planner", "Planner copy");
+        let tagged = state.create_draft_tab(&role, "/tmp/p", true, None).unwrap();
+        state.set_tab_chain(&tagged, Some(on_chain(id, 1)), None).unwrap();
+        let store = Mutex::new(state);
+        let mode = |tab: Option<&str>, joining: Option<&crate::store::ChainRef>, role_id: &str, resume: Option<&str>| {
+            let launch = RoleLaunch::for_tab(
+                &store,
+                tab,
+                joining,
+                role_id,
+                RunMode::Default,
+                "default",
+                Some(SESSION.to_string()),
+                resume.map(str::to_string),
+            )
+            .unwrap()
+            .launch(None);
+            let args = crate::provider::claude::claude_terminal_args(&launch).unwrap();
+            let at = args.iter().position(|a| a == "--permission-mode").unwrap();
+            (args[at + 1].clone(), args.contains(&"--resume".to_string()))
+        };
+        // A start (pipeline first stage) and a restart: the tab's own chain.
+        let started = mode(Some(&tagged), None, "role_custom_planner", None);
+        // A resume after a crash keeps the stage's mode.
+        let resumed = mode(Some(&tagged), None, "role_custom_planner", Some(SESSION));
+        // A hand-off's new tab: the chain it is about to join.
+        let handed = mode(None, Some(&on_chain(id, 1)), "role_custom_planner", None);
+        let notes = mode(None, Some(&on_chain(id, 2)), "role_planner", None);
+        let untagged = mode(None, None, "role_custom_planner", None);
+        unregister_for_test(id);
+        assert_eq!(started, ("plan".to_string(), false));
+        assert_eq!(resumed, ("plan".to_string(), true));
+        assert_eq!(handed, ("plan".to_string(), false));
+        assert_eq!(notes.0, "auto", "the built-in Planner on a generic stage");
+        assert_eq!(untagged.0, "auto", "off a pipeline a copy does not plan");
+    }
 
     #[test]
     fn a_role_resume_only_takes_the_saved_session_in_its_own_account() {

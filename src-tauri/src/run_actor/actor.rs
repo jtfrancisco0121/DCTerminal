@@ -7,7 +7,7 @@ use super::prompts::{self, StageSources};
 use super::{lock, ActorMsg, Host, StageLaunch, UserAction, UserOutcome};
 use crate::bridge::folder::{read_json, RunPrs, TASKS_FILE};
 use crate::bridge::launch::{
-    launch_args, plan_for, prepare_stage, read_stage_turn, BridgePlan,
+    launch_flags, plan_for, prepare_stage, read_stage_turn, BridgePlan,
 };
 use crate::bridge::{BridgeTag, BridgeTurn, TurnOutcome};
 use crate::commands::pipeline::{approve, note, set_lane_status, turn_finished};
@@ -224,7 +224,8 @@ impl<H: Host> Actor<H> {
         if !enabled || status == RunStatus::Complete {
             return;
         }
-        if status == RunStatus::Running && !placed.stage.gates.is_empty() {
+        // A blocked Implementer opened nothing to check: it waits for you (V2b).
+        if status == RunStatus::Running && !placed.stage.gates.is_empty() && blocked(&turn).is_none() {
             self.start_gates(&placed, turn, round);
             return;
         }
@@ -258,6 +259,7 @@ impl<H: Host> Actor<H> {
                                 summary: "The check could not run (internal error).".into(),
                                 output: String::new(),
                                 duration_ms: 0,
+                                optional: false,
                             })
                     })
                     .collect();
@@ -694,7 +696,7 @@ impl<H: Host> Actor<H> {
             .host
             .bridge_program()
             .ok_or("DCTerminal could not find its own executable for the pipeline bridge.")?;
-        let bridge_args = launch_args(plan.kind, &program, &run_dir, &plan.run_id, &plan.stage_key, &tab_id);
+        let bridge = launch_flags(plan.kind, &program, &run_dir, &plan.run_id, &plan.stage_key, &tab_id);
         self.host.spawn_stage(&StageLaunch {
             run_id: self.run_id.clone(),
             tab_id: tab_id.clone(),
@@ -702,7 +704,7 @@ impl<H: Host> Actor<H> {
             cwd,
             prompt,
             session_id,
-            bridge_args,
+            bridge,
         })?;
         self.host.tab_opened(&self.run_id, &tab_id);
         self.changed();
@@ -1088,8 +1090,23 @@ pub(super) fn turn_report(stage: &StageDef, turn: &BridgeTurn, usage: Option<u8>
         lane,
         round: None,
         turn: None,
+        rate_limit: None,
         no_result: result.is_none(),
+        blocked: blocked(turn),
     }
+}
+
+/// Why a bridged Implementer is blocked (`submit_result` `blocked`, V2b):
+/// the run waits for you with that reason (`checkpoint`) and runs no checks.
+pub(super) fn blocked(turn: &BridgeTurn) -> Option<String> {
+    let result = (turn.outcome == TurnOutcome::Result).then_some(turn.result.as_ref()).flatten()?;
+    result.get("prs")?;
+    result
+        .get("blocked")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|why| !why.is_empty())
+        .map(str::to_string)
 }
 
 /// The findings a loop-back sends, numbered (`bridgeFindingsText` before V3).

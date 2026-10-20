@@ -76,6 +76,7 @@ impl Host for TestHost {
             summary: "Passed.".into(),
             output: String::new(),
             duration_ms: 1,
+        optional: false,
         })
     }
     fn usage_percent(&self, _run_id: &str) -> Option<u8> {
@@ -286,7 +287,7 @@ fn a_planner_turn_opens_the_plan_reviewer_with_the_plan_from_the_run_folder() {
     assert!(launch.prompt.contains("1. Refresh tokens in src/auth.ts."), "the plan, from plan.md:\n{}", launch.prompt);
     assert!(launch.prompt.contains("Title: Expired tokens"), "the step-1 request as one block");
     assert!(launch.prompt.contains("mcp__dcterminal__submit_result"), "the result instructions");
-    assert!(launch.bridge_args.iter().any(|a| a == "--mcp-config"), "{:?}", launch.bridge_args);
+    assert!(launch.bridge.args.iter().any(|a| a == "--mcp-config"), "{:?}", launch.bridge.args);
     assert!(launch.cwd.ends_with(fx.work.path().file_name().unwrap()), "{}", launch.cwd.display());
     let tab = fx.tab(&reviewer);
     assert_eq!(tab.chain.as_ref().map(|c| c.step), Some(2));
@@ -422,6 +423,7 @@ fn a_failed_gate_goes_back_to_the_implementer_and_a_pass_moves_on() {
         summary: "Exited with code 1.".into(),
         output: "FAIL src/auth.test.ts".into(),
         duration_ms: 5,
+        optional: false,
     });
     let prs = json!({ "schema": 1, "prs": [{ "url": "https://github.com/acme/app/pull/12", "branch": "fix/refresh", "title": "Refresh" }],
                       "summary": "Expired tokens are refreshed once.", "checks": [{ "command": "npm test", "passed": true }] });
@@ -635,4 +637,24 @@ fn every_built_in_stage_merges_from_the_run_folder_alone() {
     let reviewer = roles.iter().find(|r| r.id == "role_pr_reviewer").unwrap();
     let values = stage_values(reviewer, true, &ee2).values;
     assert_eq!(values["originalTask"], "Title: T\n\nRequest:\nDo it.");
+}
+
+/// V2b's BLOCKED Implementer, ported to the actor: no checks run, and the
+/// run waits for you (`checkpoint`) with its reason.
+#[test]
+fn a_blocked_implementer_runs_no_checks_and_waits_with_its_reason() {
+    let mut fx = Fixture::new("blocked");
+    let implementer = to_implementer(&mut fx);
+    let blocked = json!({ "schema": 1, "prs": [], "summary": "Nothing built.", "blocked": "The plan's API does not exist." });
+    let turn = fx.end_turn(&implementer, "i-1", Some(blocked), "Blocked.");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    assert!(!fx.actor.busy(), "no checks run for a blocked turn");
+    assert!(fx.gates_done.try_recv().is_err());
+    fx.run(|run| {
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::Checkpoint)));
+        assert!(run.events.iter().all(|e| e.kind != "gate"));
+        let last = run.events.last().unwrap();
+        assert!(last.summary.contains("The plan's API does not exist"), "{}", last.summary);
+    });
+    assert_eq!(fx.stops().last().map(|s| s.0), Some(StopReason::Checkpoint));
 }

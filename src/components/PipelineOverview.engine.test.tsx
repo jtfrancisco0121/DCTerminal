@@ -19,6 +19,7 @@ import { getPipelineRun, pipelineRunGates, pipelineRunTasks, pipelineSetAutopilo
 import { emptyRuntime, type TabRuntime } from "../liveTabs";
 import { setPipelineDefs } from "../pipeline/defs";
 import type { TerminalReader } from "../pipeline/terminalText";
+import type { RateWindow } from "../usage/limits";
 import { PipelineOverview } from "./PipelineOverview";
 
 function tab(id: string, roleId: string): TabSummary {
@@ -54,7 +55,11 @@ function run(extra: Partial<PipelineRun> = {}): PipelineRun {
   };
 }
 
-function show(view: PipelineRun, runtimes: Record<string, TabRuntime> = {}) {
+function show(
+  view: PipelineRun,
+  runtimes: Record<string, TabRuntime> = {},
+  usageWindows: RateWindow[] | null = null,
+) {
   vi.mocked(getPipelineRun).mockResolvedValue({ run: view });
   render(
     <PipelineOverview
@@ -67,6 +72,7 @@ function show(view: PipelineRun, runtimes: Record<string, TabRuntime> = {}) {
       onRefreshTabs={async () => {}}
       onNotice={() => {}}
       terminalReader={noTerminal}
+      usageWindows={usageWindows}
     />,
   );
 }
@@ -85,6 +91,72 @@ describe("PipelineOverview: autopilot, checks and timeline", () => {
     );
     fireEvent.click(within(panel).getByRole("checkbox"));
     await waitFor(() => expect(pipelineSetAutopilot).toHaveBeenCalledWith("ee_1", false));
+  });
+
+  it("names why the run stopped with its reason code's plain-English line", async () => {
+    show(
+      run({
+        status: "waiting",
+        stopReason: "usage_limit",
+        autopilot: { enabled: true, waiting: "Implementer hit a Claude usage limit: resets 3pm." },
+      }),
+    );
+    const panel = await screen.findByRole("region", { name: "Autopilot" });
+    expect(within(panel).getByRole("status").textContent).toBe(
+      "Waiting for you: Claude's usage limit was reached. Implementer hit a Claude usage limit: resets 3pm.",
+    );
+  });
+
+  it("shows the engine note: Claude Code version not yet verified, or why the run uses engine 1", async () => {
+    const note = "Claude Code version not yet verified: 2.1.300 is newer than 2.1.287, the version pipeline v2 was checked against.";
+    show(run({ engine: 2, engineNote: note, autopilot: { enabled: false } }));
+    const panel = await screen.findByRole("region", { name: "Autopilot" });
+    expect(within(panel).getByTestId("engine-note").textContent).toBe(note);
+    cleanup();
+    show(run({ engine: 2, autopilot: { enabled: true } }));
+    await screen.findByRole("region", { name: "Autopilot" });
+    expect(screen.queryByTestId("engine-note")).toBeNull();
+  });
+
+  it("says when Claude usage is unknown, never 0%, and what autopilot does about it", async () => {
+    show(run({ autopilot: { enabled: true } }), {}, []);
+    const panel = await screen.findByRole("region", { name: "Autopilot" });
+    const usage = within(panel).getByTestId("autopilot-usage");
+    expect(usage.textContent).toBe(
+      "Claude usage: unknown. Autopilot keeps going, and stops if Claude reports a usage limit.",
+    );
+    expect(usage.textContent).not.toContain("0%");
+    cleanup();
+    const later = Math.floor(Date.now() / 1000) + 3600;
+    show(run({ autopilot: { enabled: true } }), {}, [
+      { rateLimitType: "five_hour", label: "5h", utilization: 42, resetsAt: later, status: "allowed", seenAtMs: Date.now() },
+    ]);
+    const known = await screen.findByTestId("autopilot-usage");
+    expect(known.textContent).toBe("Claude usage: 42% (autopilot pauses at 90%).");
+  });
+
+  it("the timeline shows each stop's reason line", async () => {
+    show(
+      run({
+        events: [
+          {
+            at: "2026-10-13T10:00:00Z",
+            kind: "stop",
+            stageId: "pr_reviewer",
+            round: 3,
+            summary: "Round cap reached (3 of 3): PR Reviewer still asks for changes.",
+            outcome: "round_cap",
+          },
+          { at: "2026-10-13T10:01:00Z", kind: "autopilot", round: 3, summary: "Autopilot off", outcome: "paused_by_you" },
+        ],
+      }),
+    );
+    const timeline = await screen.findByRole("region", { name: "Timeline" });
+    const items = within(timeline).getAllByRole("listitem");
+    expect(items.map((item) => item.querySelector(".pipeline-event-reason")?.textContent ?? null)).toEqual([
+      "You turned autopilot off.",
+      "The review reached its round cap.",
+    ]);
   });
 
   it("shows a stage's checks and round cap, and runs them against the stage tab's folder", async () => {
@@ -504,5 +576,56 @@ describe("PipelineOverview: autopilot, checks and timeline", () => {
     expect(panel.textContent).toContain("PR2 — UI · after PR1");
     expect(panel.textContent).not.toContain("Release");
     expect(pipelineRunTasks).toHaveBeenCalledWith("ee_1");
+  });
+
+  it("switching from an engine-2 run to an engine-1 run drops the first run's tasks", async () => {
+    vi.mocked(pipelineRunTasks).mockResolvedValue({
+      schema: 1,
+      runId: "ee_1",
+      stageKey: "planner",
+      turn: "p-1",
+      at: "2026-10-19T00:00:00Z",
+      tasks: [
+        { id: "pr1", title: "API", dependsOn: [], manual: false, summary: "The endpoint." },
+        { id: "pr2", title: "UI", dependsOn: ["pr1"], manual: false, summary: "The page." },
+      ],
+    });
+    const views: Record<string, PipelineRun> = {
+      ee_1: run({ stage: "plan_reviewer", engine: 2, tabIds: { role_plan_reviewer: "rev" } }),
+      ee_2: run({ id: "ee_2", chainId: "ee_2", stage: "plan_reviewer", tabIds: { role_plan_reviewer: "rev2" } }),
+    };
+    vi.mocked(getPipelineRun).mockImplementation(async (id: string) => ({ run: views[id] }));
+    const reply = (text: string) => ({
+      ...emptyRuntime(),
+      segments: [{ id: "s1", kind: "agent", text } as TabRuntime["segments"][number]],
+    });
+    const overview = (runId: string) => (
+      <PipelineOverview
+        runId={runId}
+        cwd="/p"
+        tabs={[tab("rev", "role_plan_reviewer"), tab("rev2", "role_plan_reviewer")]}
+        runtimes={{
+          rev: reply("## HANDOFF: Verdict\nAPPROVED"),
+          rev2: reply(
+            "## HANDOFF: Verdict\nAPPROVED\n\n## HANDOFF: Pull requests\n* `PR1 — Schema`: Depends on: none\n* `PR2 — Docs`: Depends on: PR1",
+          ),
+        }}
+        onJump={() => {}}
+        onWatch={() => {}}
+        onRefreshTabs={async () => {}}
+        onNotice={() => {}}
+        terminalReader={noTerminal}
+        onFanOut={async () => {}}
+        onStartLane={async () => {}}
+      />
+    );
+    const { rerender } = render(overview("ee_1"));
+    expect((await screen.findByRole("region", { name: "Fan out" })).textContent).toContain("PR2 — UI");
+    rerender(overview("ee_2"));
+    await waitFor(() =>
+      expect(screen.getByRole("region", { name: "Fan out" }).textContent).toContain("PR2 — Docs · after PR1"),
+    );
+    expect(screen.getByRole("region", { name: "Fan out" }).textContent).not.toContain("UI");
+    expect(pipelineRunTasks).not.toHaveBeenCalledWith("ee_2");
   });
 });

@@ -5,15 +5,22 @@
 //! GUI launch uses the same account as JT's `claude2` alias.
 //!
 //! Terminal flags (`claude_terminal_role_mode`):
-//! - Planner: `--permission-mode plan`
+//! - a Planner (a `planner` pipeline stage, else the built-in Planner role):
+//!   `--permission-mode plan`
 //! - every other role: `--permission-mode auto`, so Claude Code still asks
 //!   before risky actions and the tab can show "Needs you"
 //! - `--model <id>` first when a model other than `default` is set
 //! - `--session-id <uuid>` on fresh Plain / Role launches, so the tab knows its log
 //! - the startup prompt as the positional argument (`deliver_prompt_limited`)
 //!
-//! Never passed: `--dangerously-skip-permissions`, `--allowedTools`,
-//! `--disallowedTools`, `--cloud`, `--bg`, `--settings`, `--continue`.
+//! Never passed: `--dangerously-skip-permissions`, `--disallowedTools`,
+//! `--cloud`, `--bg`, `--continue`. `--settings` is one value
+//! (`TerminalLaunch::settings`), placed with the other Claude flags after
+//! any `node` script: DCTerminal's usage status line (`pty::usage_status_line`,
+//! see `status_line`; not when you set a status line of your own) and, on a
+//! bridged pipeline stage (ADR-015), the bridge's hooks merged into it. Only
+//! a bridged stage gets `--allowedTools mcp__dcterminal__submit_result` and
+//! `--mcp-config`, right before `--settings` (`bridge::launch::bridged_command`).
 //! The Settings run-mode override is a Cursor setting and is ignored here.
 //!
 //! Chat (Phase 4) spawns `claude-agent-acp` with `CLAUDE_CODE_EXECUTABLE` set
@@ -23,13 +30,14 @@
 
 use super::claude_config::{claude_env, resolve_claude_config_dir, ConfigDirInfo};
 use super::claude_detect::{
-    claude_login_status, native_executable, read_claude_version, resolve_adapter, resolve_claude,
-    unwrap_windows_shim,
+    cached_claude_version, claude_login_status, native_executable, read_claude_version, resolve_adapter, resolve_claude,
+    unwrap_windows_shim, ResolvedCli,
 };
 use super::{
-    is_extension_method, AgentRequestKind, ProgramArgs, Provider, ProviderId, ProviderStatus,
-    SessionOpts, TerminalKind, TerminalLaunch,
+    is_extension_method, plans_by_default, AgentRequestKind, ProgramArgs, Provider, ProviderId,
+    ProviderStatus, SessionOpts, TerminalKind, TerminalLaunch,
 };
+use crate::pipelines::StageKind;
 use crate::acp::request_handler::is_permission_method;
 use crate::cli_detect::LoginStatus;
 use crate::store::settings_store::ClaudeProviderSettings;
@@ -54,21 +62,27 @@ pub fn adapter_missing_message() -> String {
 pub const CLAUDE_DEFAULT_MODEL: &str = "default";
 
 /// Claude Code permission mode for a role (Decisions → per-role mode table).
-pub fn claude_role_mode(role_id: &str) -> &'static str {
+/// `stage_kind`: the tab is a pipeline stage, whose kind decides plan mode
+/// (`plans_by_default`), so a copied Planner plans and the built-in Planner
+/// on a stage of another kind does not.
+pub fn claude_role_mode(role_id: &str, stage_kind: Option<StageKind>) -> &'static str {
+    if plans_by_default(role_id, stage_kind) {
+        return "plan";
+    }
     let normalized = role_id.trim().to_ascii_lowercase().replace('-', "_");
     match normalized.as_str() {
         "role_general" | "general" => "auto",
-        "role_planner" | "planner" => "plan",
         _ => "bypassPermissions",
     }
 }
 
-/// Claude Code permission mode for a role *terminal*: plan for the Planner,
+/// Claude Code permission mode for a role *terminal*: plan for a Planner,
 /// auto for every other role. Chat keeps `claude_role_mode`.
-pub fn claude_terminal_role_mode(role_id: &str) -> &'static str {
-    match claude_role_mode(role_id) {
-        "plan" => "plan",
-        _ => "auto",
+pub fn claude_terminal_role_mode(role_id: &str, stage_kind: Option<StageKind>) -> &'static str {
+    if plans_by_default(role_id, stage_kind) {
+        "plan"
+    } else {
+        "auto"
     }
 }
 
@@ -129,6 +143,10 @@ fn valid_session_id(id: &str) -> bool {
 /// argv after `claude` for one terminal launch.
 pub fn claude_terminal_args(req: &TerminalLaunch) -> Result<Vec<String>, String> {
     let mut args = claude_model_args(req.model.as_deref());
+    if let Some(settings) = &req.settings {
+        args.push("--settings".to_string());
+        args.push(settings.to_string());
+    }
     let pin = |args: &mut Vec<String>| -> Result<(), String> {
         if let Some(id) = req.session_id.as_deref().map(str::trim) {
             if !valid_session_id(id) {
@@ -155,6 +173,7 @@ pub fn claude_terminal_args(req: &TerminalLaunch) -> Result<Vec<String>, String>
         TerminalKind::RoleResume {
             role_id,
             session_id,
+            stage_kind,
             ..
         } => {
             let id = session_id.trim();
@@ -164,20 +183,32 @@ pub fn claude_terminal_args(req: &TerminalLaunch) -> Result<Vec<String>, String>
             args.push("--resume".to_string());
             args.push(id.to_string());
             args.push("--permission-mode".to_string());
-            args.push(claude_terminal_role_mode(role_id).to_string());
+            args.push(claude_terminal_role_mode(role_id, *stage_kind).to_string());
         }
         TerminalKind::Role {
-            role_id, prompt, ..
+            role_id,
+            prompt,
+            stage_kind,
+            ..
         } => {
             pin(&mut args)?;
             args.push("--permission-mode".to_string());
-            args.push(claude_terminal_role_mode(role_id).to_string());
+            args.push(claude_terminal_role_mode(role_id, *stage_kind).to_string());
             if let Some(text) = prompt.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
                 args.push(text.to_string());
             }
         }
     }
     Ok(args)
+}
+
+/// The program and argv for one terminal launch of the resolved CLI: a
+/// `node` + script shim keeps the script first, so Claude's own flags
+/// (`--settings` among them) always follow it.
+fn claude_terminal_program(launch: ResolvedCli, req: &TerminalLaunch) -> Result<ProgramArgs, String> {
+    let mut args = launch.prefix_args;
+    args.extend(claude_terminal_args(req)?);
+    Ok(ProgramArgs::new(launch.program.display().to_string(), args))
 }
 
 #[derive(Debug, Clone)]
@@ -279,6 +310,11 @@ impl Provider for ClaudeProvider {
         }
     }
 
+    fn cli_version(&self) -> Option<String> {
+        let claude = resolve_claude(self.settings.claude_path.as_deref())?;
+        cached_claude_version(&claude, &self.config)
+    }
+
     fn login_status(&self) -> LoginStatus {
         let claude = resolve_claude(self.settings.claude_path.as_deref());
         claude_login_status(claude.as_deref(), &self.config)
@@ -314,8 +350,14 @@ impl Provider for ClaudeProvider {
 
     /// Mode from the role table; `default` when the session did not
     /// advertise it (e.g. bypass disabled), with every request auto-approved.
-    fn mode_for_role(&self, role_id: &str, _role_mode: &str, available: &[String]) -> String {
-        let wanted = claude_role_mode(role_id);
+    fn mode_for_role(
+        &self,
+        role_id: &str,
+        stage_kind: Option<StageKind>,
+        _role_mode: &str,
+        available: &[String],
+    ) -> String {
+        let wanted = claude_role_mode(role_id, stage_kind);
         if available.is_empty() || available.iter().any(|m| m == wanted) {
             wanted.to_string()
         } else {
@@ -336,10 +378,7 @@ impl Provider for ClaudeProvider {
     fn terminal_command(&self, req: &TerminalLaunch) -> Result<ProgramArgs, String> {
         let program = resolve_claude(self.settings.claude_path.as_deref())
             .ok_or_else(|| self.missing_message())?;
-        let launch = unwrap_windows_shim(&program);
-        let mut args = launch.prefix_args;
-        args.extend(claude_terminal_args(req)?);
-        let mut command = ProgramArgs::new(launch.program.display().to_string(), args);
+        let mut command = claude_terminal_program(unwrap_windows_shim(&program), req)?;
         command.env = self.env();
         Ok(command)
     }
@@ -377,6 +416,53 @@ mod tests {
     use super::*;
     use crate::pty::RunMode;
     use serde_json::json;
+
+    #[test]
+    fn usage_settings_go_with_the_claude_flags_after_a_node_script() {
+        let script = r"C:\npm\node_modules\@anthropic-ai\claude-code\cli.js".to_string();
+        let settings = crate::status_line::settings("'dct' --dct-status-line 'x'");
+        let role = TerminalLaunch {
+            kind: TerminalKind::Role {
+                role_id: "role_planner".to_string(),
+                run_mode: RunMode::Default,
+                prompt: Some("Plan it".to_string()),
+                stage_kind: None,
+            },
+            model: Some("opus".to_string()),
+            session_id: None,
+            settings: Some(settings.clone()),
+        };
+        let node = ResolvedCli {
+            program: PathBuf::from(r"C:\nodejs\node.exe"),
+            prefix_args: vec![script.clone()],
+        };
+        let command = claude_terminal_program(node, &role).unwrap();
+        let args = command.args;
+        assert_eq!(args[0], script, "node must get the script first: {args:?}");
+        let flag = args.iter().position(|a| a == "--settings").unwrap();
+        assert_eq!(args[flag + 1], settings.to_string());
+        assert!(flag < args.iter().position(|a| a == "Plan it").unwrap(), "{args:?}");
+        assert_eq!(args.iter().filter(|a| *a == "--settings").count(), 1);
+
+        // A native claude: the flag comes before the prompt, after the model.
+        let direct = ResolvedCli {
+            program: PathBuf::from("/usr/local/bin/claude"),
+            prefix_args: Vec::new(),
+        };
+        let args = claude_terminal_program(direct, &role).unwrap().args;
+        assert_eq!(&args[..3], ["--model", "opus", "--settings"]);
+        assert_eq!(args.last().map(String::as_str), Some("Plan it"));
+        // Resume keeps it too; no settings means no flag.
+        let resume = TerminalLaunch {
+            kind: TerminalKind::Resume { session_id: "685dd464-eabf-4e4c-9f6f-ac02c63aad27".into() },
+            model: None,
+            session_id: None,
+            settings: Some(settings),
+        };
+        assert_eq!(claude_terminal_args(&resume).unwrap()[0], "--settings");
+        let plain = TerminalLaunch { settings: None, ..resume };
+        assert!(!claude_terminal_args(&plain).unwrap().contains(&"--settings".to_string()));
+    }
 
     #[test]
     fn a_cursor_id_is_not_resumed_and_a_moved_config_dir_starts_fresh() {
@@ -438,10 +524,10 @@ mod tests {
         .iter()
         .map(|m| m.to_string())
         .collect();
-        assert_eq!(p.mode_for_role("role_general", "agent", &all), "auto");
-        assert_eq!(p.mode_for_role("role_planner", "plan", &all), "plan");
+        assert_eq!(p.mode_for_role("role_general", None, "agent", &all), "auto");
+        assert_eq!(p.mode_for_role("role_planner", None, "plan", &all), "plan");
         assert_eq!(
-            p.mode_for_role("role_implementer", "agent", &all),
+            p.mode_for_role("role_implementer", None, "agent", &all),
             "bypassPermissions"
         );
         let no_bypass: Vec<String> = all
@@ -450,11 +536,11 @@ mod tests {
             .cloned()
             .collect();
         assert_eq!(
-            p.mode_for_role("role_implementer", "agent", &no_bypass),
+            p.mode_for_role("role_implementer", None, "agent", &no_bypass),
             "default"
         );
         assert_eq!(
-            p.mode_for_role("role_implementer", "agent", &[]),
+            p.mode_for_role("role_implementer", None, "agent", &[]),
             "bypassPermissions"
         );
     }
@@ -474,6 +560,7 @@ mod tests {
                 kind: TerminalKind::Plain,
                 model: Some("opus[1m]".into()),
                 session_id: None,
+                settings: None,
             })
             .unwrap(),
             vec!["--model", "opus[1m]"]
@@ -503,9 +590,11 @@ mod tests {
                 role_id: role_id.to_string(),
                 run_mode,
                 prompt: prompt.map(str::to_string),
+                stage_kind: None,
             },
             model: model.map(str::to_string),
             session_id: None,
+            settings: None,
         }
     }
 
@@ -538,9 +627,11 @@ mod tests {
                 role_id: role_id.to_string(),
                 run_mode: RunMode::Default,
                 session_id: ID.to_string(),
+                stage_kind: None,
             },
             model: model.map(str::to_string),
             session_id: None,
+            settings: None,
         };
         assert_eq!(
             claude_terminal_args(&resume("role_planner", None)).unwrap(),
@@ -558,9 +649,11 @@ mod tests {
                 role_id: "role_implementer".to_string(),
                 run_mode: RunMode::Default,
                 session_id: "../etc".to_string(),
+                stage_kind: None,
             },
             model: None,
             session_id: None,
+            settings: None,
         };
         assert!(claude_terminal_args(&bad).is_err());
     }
@@ -579,7 +672,7 @@ mod tests {
             ("role_custom_1234", "bypassPermissions"),
         ];
         for (role_id, mode) in cases {
-            assert_eq!(claude_role_mode(role_id), mode, "{role_id}");
+            assert_eq!(claude_role_mode(role_id, None), mode, "{role_id}");
         }
     }
 
@@ -629,6 +722,7 @@ mod tests {
                 kind: TerminalKind::Plain,
                 model: None,
                 session_id: None,
+                settings: None,
             },
         ];
         for launch in launches {
@@ -655,6 +749,7 @@ mod tests {
             kind: TerminalKind::Plain,
             model: Some("default".into()),
             session_id: None,
+            settings: None,
         };
         assert!(claude_terminal_args(&plain).unwrap().is_empty());
         let resume = |id: &str| TerminalLaunch {
@@ -663,6 +758,7 @@ mod tests {
             },
             model: None,
             session_id: None,
+            settings: None,
         };
         assert_eq!(
             claude_terminal_args(&resume("0b6c1d2e-aaaa-bbbb-cccc-1234567890ab")).unwrap(),
@@ -680,6 +776,7 @@ mod tests {
             kind: TerminalKind::Plain,
             model: Some("opus".into()),
             session_id: Some(id.clone()),
+            settings: None,
         };
         assert_eq!(
             claude_terminal_args(&plain).unwrap(),
@@ -703,6 +800,7 @@ mod tests {
             },
             model: None,
             session_id: Some("11111111-2222-4333-8444-555555555555".into()),
+            settings: None,
         };
         let args = claude_terminal_args(&launch).unwrap();
         assert_eq!(args, vec!["--resume", "0b6c1d2e-aaaa-bbbb-cccc-1234567890ab"]);
@@ -864,6 +962,7 @@ mod tests {
                 kind: TerminalKind::Plain,
                 model: None,
                 session_id: None,
+                settings: None,
             })
             .unwrap();
         assert_eq!(terminal.program, exe.display().to_string());
@@ -959,6 +1058,7 @@ mod tests {
                     kind: TerminalKind::Plain,
                     model: None,
                     session_id: None,
+                    settings: None,
                 },
                 role("role_planner", RunMode::Default, Some("opus"), Some("hi")),
             ] {

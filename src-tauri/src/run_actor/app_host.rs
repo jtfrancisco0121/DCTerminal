@@ -101,7 +101,7 @@ impl Host for AppHost {
 
     fn run_gate(&self, gate: &GateDef, folder: &Path, pr_urls: &[String]) -> GateResult {
         match gate {
-            GateDef::Command { run, timeout_secs } => {
+            GateDef::Command { run, timeout_secs, .. } => {
                 crate::pipelines::run_command_gate(folder, run, timeout_secs.map(Duration::from_secs))
             }
             GateDef::PullRequest => crate::pipelines::run_pull_request_gate(folder, pr_urls),

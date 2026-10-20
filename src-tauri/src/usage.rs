@@ -4,8 +4,10 @@
 //! `used`/`size`), keyed by the Claude config folder. The rate windows are
 //! also saved to `usage.json` in DCTerminal's app data, so the last reading
 //! is shown after a restart; nothing is written into the config folder.
-//! Context fill stays in memory. Token totals and dollar amounts on the same
-//! event are ignored.
+//! Claude terminal tabs report the same windows through the status line
+//! DCTerminal sets (`status_line`); `fold` takes those readings in, newest
+//! first. Context fill stays in memory. Token totals and dollar amounts on
+//! the same event are ignored.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -56,6 +58,8 @@ pub struct UsageStore {
     by_config: HashMap<String, HashMap<String, RateWindow>>,
     context: HashMap<String, ContextFill>,
     tab_config: HashMap<String, String>,
+    /// Terminal tabs' status line files, by tab: (config folder, file).
+    status_lines: HashMap<String, (String, PathBuf)>,
     /// `usage.json` in app data. `None` keeps everything in memory (tests).
     path: Option<PathBuf>,
 }
@@ -65,6 +69,8 @@ impl UsageStore {
     pub fn open(data_dir: &Path) -> Self {
         let path = data_dir.join(USAGE_FILE);
         let file: UsageFile = crate::store::read_json_or_recover(&path).unwrap_or_default();
+        // Readings of the last run's terminal tabs were folded in already.
+        let _ = std::fs::remove_dir_all(data_dir.join(crate::status_line::STATUS_LINE_DIR));
         Self {
             by_config: file.by_config,
             path: Some(path),
@@ -135,14 +141,49 @@ impl UsageStore {
             rate_limit_type: rate_type.clone(),
         };
         let windows = self.by_config.entry(key).or_default();
-        let changed = windows.get(&rate_type).map(|old| {
-            old.utilization != window.utilization
-                || old.resets_at != window.resets_at
-                || old.status != window.status
-        });
-        windows.insert(rate_type, window);
         // Every turn repeats the same reading; write only when it changes.
-        if changed != Some(false) {
+        if merge_window(windows, window) {
+            self.save();
+        }
+    }
+
+    /// A Claude terminal tab under `config_dir` writes its status line
+    /// readings to `file` (`status_line::file_for`).
+    pub fn watch_status_line(&mut self, tab_id: &str, config_dir: &str, file: PathBuf) {
+        let key = config_dir.trim().to_string();
+        if key.is_empty() {
+            return;
+        }
+        self.tab_config.insert(tab_id.to_string(), key.clone());
+        self.status_lines.insert(tab_id.to_string(), (key, file));
+    }
+
+    /// The status line files of `config_dir`'s terminal tabs, to read
+    /// without holding this store's lock.
+    pub fn status_line_files(&self, config_dir: &str) -> Vec<PathBuf> {
+        let key = config_dir.trim();
+        let mut files: Vec<PathBuf> = self
+            .status_lines
+            .values()
+            .filter(|(dir, _)| dir == key)
+            .map(|(_, file)| file.clone())
+            .collect();
+        files.sort();
+        files
+    }
+
+    /// Fold readings read from status line files into `config_dir`'s windows.
+    pub fn fold(&mut self, config_dir: &str, windows: Vec<RateWindow>) {
+        let key = config_dir.trim().to_string();
+        if key.is_empty() || windows.is_empty() {
+            return;
+        }
+        let stored = self.by_config.entry(key).or_default();
+        let mut changed = false;
+        for window in windows {
+            changed |= merge_window(stored, window);
+        }
+        if changed {
             self.save();
         }
     }
@@ -167,6 +208,28 @@ impl UsageStore {
             context_by_tab,
         }
     }
+}
+
+/// Put `window` in `windows` unless the stored reading is newer. A reading
+/// without a percent keeps the stored one's while the window is the same
+/// (same reset time): chat turns report no percent, terminal tabs do.
+/// Returns whether what is saved changed.
+fn merge_window(windows: &mut HashMap<String, RateWindow>, mut window: RateWindow) -> bool {
+    let Some(old) = windows.get(&window.rate_limit_type) else {
+        windows.insert(window.rate_limit_type.clone(), window);
+        return true;
+    };
+    if window.seen_at_ms < old.seen_at_ms {
+        return false;
+    }
+    if window.utilization.is_none() && window.resets_at == old.resets_at {
+        window.utilization = old.utilization;
+    }
+    let changed = old.utilization != window.utilization
+        || old.resets_at != window.resets_at
+        || old.status != window.status;
+    windows.insert(window.rate_limit_type.clone(), window);
+    changed
 }
 
 fn json_u64(value: Option<&Value>) -> Option<u64> {
@@ -260,6 +323,72 @@ mod tests {
         std::fs::write(dir.join(USAGE_FILE), "{oops").unwrap();
         assert!(UsageStore::open(&dir).snapshot("/cfg").windows.is_empty());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn window(kind: &str, utilization: Option<f64>, resets_at: i64, seen_at_ms: i64) -> RateWindow {
+        RateWindow {
+            rate_limit_type: kind.into(),
+            label: window_label(kind),
+            utilization,
+            resets_at: Some(resets_at),
+            status: "allowed".into(),
+            seen_at_ms,
+        }
+    }
+
+    #[test]
+    fn terminal_status_line_readings_fold_in_for_their_account_only() {
+        let dir = crate::test_support::TempDir::new("usage_status_line");
+        let mut store = UsageStore::open(dir.path());
+        let file = crate::status_line::file_for(dir.path(), "tab_t");
+        store.watch_status_line("tab_t", "/cfg", file.clone());
+        assert_eq!(store.status_line_files("/cfg"), vec![file.clone()]);
+        assert!(store.status_line_files("/other").is_empty());
+
+        // Nothing written yet (the first render): usage stays unknown.
+        store.fold("/cfg", Vec::new());
+        assert!(store.snapshot("/cfg").windows.is_empty());
+
+        store.fold("/cfg", vec![window("five_hour", Some(42.0), 100, 10), window("seven_day", Some(7.0), 900, 10)]);
+        let snap = store.snapshot("/cfg");
+        assert_eq!(snap.windows.len(), 2);
+        assert_eq!(snap.windows[0].utilization, Some(42.0));
+        assert!(store.snapshot("/other").windows.is_empty());
+        // Saved like a chat reading, so it is shown after a restart.
+        assert_eq!(UsageStore::open(dir.path()).snapshot("/cfg").windows.len(), 2);
+
+        // An older reading never replaces a newer one.
+        store.fold("/cfg", vec![window("five_hour", Some(10.0), 100, 5)]);
+        assert_eq!(store.snapshot("/cfg").windows[0].utilization, Some(42.0));
+        store.fold("/cfg", vec![window("five_hour", Some(55.0), 100, 20)]);
+        assert_eq!(store.snapshot("/cfg").windows[0].utilization, Some(55.0));
+    }
+
+    #[test]
+    fn a_newer_reading_without_a_percent_keeps_the_same_windows_percent() {
+        let mut store = UsageStore::default();
+        store.fold("/cfg", vec![window("five_hour", Some(42.0), 100, 10)]);
+        // A chat turn's reading (no utilization) of the same window.
+        let params = serde_json::json!({ "update": { "sessionUpdate": "usage_update",
+            "_meta": { "_claude/rateLimit": { "status": "allowed", "resetsAt": 100, "rateLimitType": "five_hour" } } } });
+        store.note("/cfg", "chat", &params.to_string(), 20);
+        let w = &store.snapshot("/cfg").windows[0];
+        assert_eq!((w.utilization, w.seen_at_ms), (Some(42.0), 20));
+        // Once the window resets, the old percent no longer applies.
+        let params = serde_json::json!({ "update": { "sessionUpdate": "usage_update",
+            "_meta": { "_claude/rateLimit": { "status": "allowed", "resetsAt": 200, "rateLimitType": "five_hour" } } } });
+        store.note("/cfg", "chat", &params.to_string(), 30);
+        assert_eq!(store.snapshot("/cfg").windows[0].utilization, None);
+    }
+
+    #[test]
+    fn opening_clears_status_line_files_from_the_last_run() {
+        let dir = crate::test_support::TempDir::new("usage_status_line_clear");
+        let old = crate::status_line::file_for(dir.path(), "tab_gone");
+        std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+        std::fs::write(&old, "[]").unwrap();
+        let _store = UsageStore::open(dir.path());
+        assert!(!old.exists());
     }
 
     #[test]
