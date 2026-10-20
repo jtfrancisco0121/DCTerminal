@@ -739,6 +739,28 @@ fn only_a_pipeline_the_bridge_covers_whole_starts_on_engine_2() {
     assert!(launch::plan_for_new_run(&builtin, &launch::new_chain(&builtin, "eagle1", 1), "role_planner").is_some());
 }
 
+/// V3 with H4: engine 2 follows the stage kinds, so a pipeline of copied
+/// Planner, reviewer and Implementer roles gets the run actor like Eagle-Eye 1.
+#[test]
+fn a_pipeline_of_copied_roles_starts_on_engine_2_like_the_built_in_one() {
+    let copied: crate::pipelines::PipelineDef = serde_json::from_value(serde_json::json!({
+        "id": "copied_all", "name": "Copied",
+        "stages": [
+            { "id": "plan", "roleId": "role_custom_planner", "title": "Plan", "kind": "planner" },
+            { "id": "plan_check", "roleId": "role_custom_plan_check", "title": "Plan check",
+              "loopBack": { "to": "plan", "minSeverity": "MEDIUM" } },
+            { "id": "build", "roleId": "role_custom_builder", "title": "Build", "kind": "implementer" },
+            { "id": "pr_check", "roleId": "role_custom_pr_check", "title": "PR check",
+              "loopBack": { "to": "build", "minSeverity": "MEDIUM" } }
+        ]
+    }))
+    .unwrap();
+    assert_eq!(launch::engine_for(&copied), launch::ENGINE_V2);
+    let start = launch::new_chain(&copied, "copied_all", 1);
+    let plan = launch::plan_for_new_run(&copied, &start, "role_custom_planner").expect("the copied Planner is bridged");
+    assert_eq!(plan.kind, ResultKind::Planner);
+}
+
 /// A bridged role launch as `role_terminal_start` builds it, with H5's
 /// status-line settings (`status`) when it applies.
 fn bridged_launch(status: Option<Value>, prompt: Option<&str>) -> Vec<String> {
