@@ -1857,7 +1857,7 @@ mod tests {
         assert_eq!(run.engine, crate::bridge::launch::ENGINE_V2);
         assert!(!run.autopilot.as_ref().is_some_and(|a| a.enabled));
         assert_eq!(state.tab_by_id(&tab).unwrap().chain.as_ref().map(|c| c.chain_id.clone()), Some(chain.chain_id.clone()));
-        assert_eq!(events.0.borrow().as_slice(), [chain.chain_id.clone()]);
+        assert_eq!(*events.0.borrow(), vec![chain.chain_id.clone()]);
     }
 
     #[test]
