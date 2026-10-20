@@ -224,3 +224,28 @@ fn recovery_reads_logs_with_no_store_lock_held() {
         assert!(read < lock, "{name} reads logs under the store lock");
     }
 }
+
+fn stop(run_id: &str) -> AutopilotStopped {
+    AutopilotStopped {
+        run_id: run_id.into(),
+        tab_id: "impl".into(),
+        reason: StopReason::AppRestarted,
+        summary: "Implementer finished while the app was closed".into(),
+    }
+}
+
+#[test]
+fn a_stop_found_before_the_frontend_listens_is_delivered_once_when_it_asks() {
+    let stops = StartupStops::default();
+    let mut emitted = Vec::new();
+    // The startup reconcile runs before the webview has subscribed.
+    stops.deliver(vec![stop("ee_1")], |s| emitted.push(s));
+    assert!(emitted.is_empty(), "nobody is listening yet, so it is held");
+    // The frontend has attached its listener and asks for what it missed.
+    assert_eq!(stops.take(), vec![stop("ee_1")]);
+    assert!(stops.take().is_empty(), "delivered once");
+    // From then on, a stop is an event at once (a later stall, or a reloaded webview).
+    stops.deliver(vec![stop("ee_2")], |s| emitted.push(s));
+    assert_eq!(emitted, vec![stop("ee_2")]);
+    assert!(stops.take().is_empty());
+}

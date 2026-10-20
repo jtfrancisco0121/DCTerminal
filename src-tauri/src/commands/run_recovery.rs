@@ -201,12 +201,56 @@ pub(crate) fn watchdog_tick(
     Ok(outcome)
 }
 
+/// Stops the core made before the frontend listened. The startup reconcile
+/// runs while the webview is still loading, so its `autopilot-stopped`
+/// events would be lost: they are held here until the frontend, with its
+/// listener attached, asks for them (`autopilot_pending_stops`). From then
+/// on every stop is emitted at once. One lock covers both, so a stop is
+/// either held or emitted, never both and never neither.
+#[derive(Default)]
+pub struct StartupStops(Mutex<HeldStops>);
+
+#[derive(Default)]
+struct HeldStops {
+    listening: bool,
+    held: Vec<AutopilotStopped>,
+}
+
+impl StartupStops {
+    /// Emit each stop, or hold it while the frontend is not listening yet.
+    pub fn deliver(&self, stops: Vec<AutopilotStopped>, mut emit: impl FnMut(AutopilotStopped)) {
+        let mut inner = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if inner.listening {
+            stops.into_iter().for_each(&mut emit);
+        } else {
+            inner.held.extend(stops);
+        }
+    }
+
+    /// The frontend listens now: hand over what was held, once.
+    pub fn take(&self) -> Vec<AutopilotStopped> {
+        let mut inner = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        inner.listening = true;
+        std::mem::take(&mut inner.held)
+    }
+}
+
 fn announce(app: &AppHandle, outcome: RecoveryOutcome) {
     for run_id in &outcome.changed {
         app.chain_run_updated(run_id);
     }
-    for stop in outcome.stopped {
-        let _ = app.emit(AUTOPILOT_STOPPED_EVENT, stop);
+    if outcome.stopped.is_empty() {
+        return;
+    }
+    match app.try_state::<StartupStops>() {
+        Some(stops) => stops.deliver(outcome.stopped, |stop| {
+            let _ = app.emit(AUTOPILOT_STOPPED_EVENT, stop);
+        }),
+        None => {
+            for stop in outcome.stopped {
+                let _ = app.emit(AUTOPILOT_STOPPED_EVENT, stop);
+            }
+        }
     }
 }
 
@@ -268,6 +312,13 @@ pub fn pipeline_continue(
     let tabs = continue_after_restart(&mut store, &run_id)?;
     app.chain_run_updated(&run_id);
     Ok(tabs)
+}
+
+/// The stops the core made before the frontend listened (`StartupStops`).
+/// The frontend calls this once its `autopilot-stopped` listener is attached.
+#[tauri::command]
+pub fn autopilot_pending_stops(stops: State<StartupStops>) -> Vec<AutopilotStopped> {
+    stops.take()
 }
 
 #[cfg(test)]

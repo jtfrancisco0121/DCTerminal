@@ -62,6 +62,7 @@ use commands::{
     pipeline_turn_finished, pipeline_claim_handoff, pipeline_release_handoff,
     pipeline_run_gates,
     pipeline_set_autopilot, pipeline_promote_plan, pipeline_continue, spawn_run_recovery,
+    autopilot_pending_stops, StartupStops,
     pipeline_set_candidate_plan,
     dev_session_cancel, dev_session_live, dev_session_send, dev_session_start, dev_session_stop,
     diagnostics_read_log, diagnostics_set_capture, diagnostics_status, get_app_state,
@@ -197,6 +198,7 @@ pub fn run() {
             app.manage(Mutex::new(SessionRegistry::new()));
             app.manage(Mutex::new(PtyRegistry::new()));
             app.manage(claude_session_log::reader::SessionLogReaders::new());
+            app.manage(StartupStops::default());
             windows::install_macos_menu(app)?;
             windows::restore_saved_windows(app.handle());
             // After the stores are managed, on its own thread: the window
@@ -260,6 +262,7 @@ pub fn run() {
             pipeline_run_gates,
             pipeline_set_autopilot,
             pipeline_continue,
+            autopilot_pending_stops,
             pipeline_decide,
             pipeline_note,
             pipeline_turn_finished,

@@ -571,6 +571,7 @@ export function installTauriMock(config: MockConfig): void {
       run.autopilot = { ...(run.autopilot ?? {}), waiting: null };
       return Object.values(run.tabIds ?? {});
     },
+    autopilot_pending_stops: () => [],
     pipeline_run_gates: (a) => {
       const run = findRun(a.runId);
       if (!run) throw new Error(`unknown pipeline run: ${a.runId}`);

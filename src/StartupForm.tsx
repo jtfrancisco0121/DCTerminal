@@ -28,7 +28,6 @@ import {
   diagnosticsSetCapture,
   diagnosticsStatus,
   sessionAgentLogs,
-  listenAutopilotStopped,
   listenPermissionAuto,
   listenPermissionRequests,
   listenPlanRequests,
@@ -224,6 +223,7 @@ import {
 } from "./handoff/executor";
 import { pipelineDef, pipelineStages } from "./pipeline/defs";
 import { useAutopilot } from "./pipeline/useAutopilot";
+import { subscribeAutopilotStops } from "./pipeline/autopilotStops";
 import { terminalStageSource, turnId } from "./pipeline/autopilot";
 import { approveByHand, fanOutRun, planStageFor, stageTab, startLane } from "./pipeline/fanOut";
 import {
@@ -2431,23 +2431,15 @@ export function StartupForm({
   autopilotLogRef.current = autopilot.onTerminalLog;
   // The core stopped a run by itself (a stall, or a turn that finished while
   // the app was closed): tell you the way a stop autopilot made does.
-  useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | null = null;
-    void listenAutopilotStopped((event) => {
-      notifyAgent(event.tabId, { kind: "question", detail: `Autopilot: ${event.summary}` });
-    })
-      .then((stop) => {
-        if (disposed) stop();
-        else unlisten = stop;
-      })
-      // intentionally silent: the overview still shows the stop; only the toast is lost.
-      .catch(() => {});
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, [notifyAgent]);
+  // Stops made before this listener attached (the startup reconcile) are
+  // fetched once it is attached.
+  useEffect(
+    () =>
+      subscribeAutopilotStops((event) => {
+        notifyAgent(event.tabId, { kind: "question", detail: `Autopilot: ${event.summary}` });
+      }),
+    [notifyAgent],
+  );
 
   const startBlankTerminal = useCallback(
     async (launch: "shell" | CliLaunch) => {

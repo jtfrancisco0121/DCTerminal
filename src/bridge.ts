@@ -1188,6 +1188,15 @@ export type AutopilotStoppedEvent = {
   summary: string;
 };
 
+/**
+ * Stops the core made before the frontend listened (the startup reconcile
+ * runs while the window loads). Call once the `autopilot-stopped` listener
+ * is attached; each stop is handed over once.
+ */
+export async function autopilotPendingStops(): Promise<AutopilotStoppedEvent[]> {
+  return invoke("autopilot_pending_stops");
+}
+
 export function listenAutopilotStopped(
   handler: (event: AutopilotStoppedEvent) => void,
 ): Promise<UnlistenFn> {
