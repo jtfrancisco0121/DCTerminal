@@ -15,12 +15,15 @@ import {
 } from "./claudeState";
 import { subscribePtyAnswer } from "./live";
 
+/** Tools that show their own prompt (a plan, a question), never the permission dialog. */
+const OWN_PROMPT = new Set(["ExitPlanMode", "AskUserQuestion"]);
+
 type BridgedTab = { id: string; bridge?: BridgeTag | null };
 
 /**
  * The mark `event` sets on its tab, or null when it is not for a bridged
- * stage that tab holds, or is the late Notification backup while the
- * hook's mark is up.
+ * stage that tab holds, asks about a tool with its own prompt, or is the
+ * late Notification backup while the hook's mark is up.
  */
 export function markForEvent(
   tab: BridgedTab | undefined,
@@ -29,6 +32,7 @@ export function markForEvent(
   now: number,
 ): BridgeNeedsMark | null {
   if (!tab?.bridge || tab.bridge.runId !== event.runId || tab.bridge.stage !== event.stageKey) return null;
+  if (event.tool && OWN_PROMPT.has(event.tool)) return null;
   if (event.source === "permission_prompt" && current) return null;
   return { tool: event.tool ?? null, at: now, key: `${event.turn}|${event.at}` };
 }

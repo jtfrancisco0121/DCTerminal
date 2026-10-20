@@ -96,6 +96,14 @@ describe("useBridgeNeeds: the bridged Needs you lifecycle (D22)", () => {
     unmount();
   });
 
+  it("a permission event for a plan or a question is not a permission dialog: their own prompt shows", async () => {
+    const { result, unmount } = await mount();
+    act(() => emit!(needs({ tool: "ExitPlanMode" })));
+    act(() => emit!(needs({ tool: "AskUserQuestion" })));
+    expect(result.current.markOf("impl")).toBeNull();
+    unmount();
+  });
+
   it("bumps its version on each change so terminal states recompute", async () => {
     const { result, unmount } = await mount();
     const before = result.current.version;
