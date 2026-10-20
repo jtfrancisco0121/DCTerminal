@@ -1228,6 +1228,7 @@ impl StateStore {
             engine: crate::bridge::launch::ENGINE_V2,
             taken_over: Vec::new(),
             engine_note: None,
+            manual_only: false,
         };
         self.data.pipeline_runs.push(run);
         self.save()?;

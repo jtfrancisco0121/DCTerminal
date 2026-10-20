@@ -457,6 +457,12 @@ export function PipelineOverview({
             <input
               type="checkbox"
               checked={autopilotOn}
+              disabled={!!run.manualOnly && !autopilotOn}
+              title={
+                run.manualOnly && !autopilotOn
+                  ? "This run is manual from now on: it was switched from the pipeline bridge to engine 1 mid-run."
+                  : undefined
+              }
               onChange={(e) => void setAutopilot(e.currentTarget.checked)}
             />{" "}
             <strong>Autopilot</strong>

@@ -19,3 +19,17 @@ export async function showActorOutcome(
   const tabId = outcome.tabId ?? fallbackTabId;
   if (tabId) await deps.selectTab(tabId);
 }
+
+/**
+ * The run whose actor takes your terminal hand-off from `tab`: its chain's
+ * run when that run is on engine 2, else null (the hand-off works the
+ * engine-1 way). `engine` is the run's, as `getPipelineRun` reads it.
+ */
+export function actorRunFor(
+  surface: string,
+  tab: { chain?: { chainId: string } | null; bridge?: { runId: string } | null } | null | undefined,
+  engine: number | null | undefined,
+): string | null {
+  if (surface !== "terminal" || !tab?.chain) return null;
+  return (engine ?? 1) >= 2 ? tab.chain.chainId : null;
+}

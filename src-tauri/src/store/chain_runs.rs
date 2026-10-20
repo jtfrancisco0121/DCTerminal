@@ -184,6 +184,7 @@ impl StateStore {
                         .map_or(1, |def| crate::bridge::launch::engine_for(&def)),
                     taken_over: Vec::new(),
                     engine_note: None,
+                    manual_only: false,
                 });
                 chain.chain_id.clone()
             }
@@ -705,6 +706,7 @@ mod tests {
             engine: 1,
             taken_over: Vec::new(),
             engine_note: None,
+            manual_only: false,
         }
     }
 

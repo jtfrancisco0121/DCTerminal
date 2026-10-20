@@ -34,6 +34,7 @@ fn run(round: u32) -> PipelineRun {
         engine: 1,
         taken_over: Vec::new(),
         engine_note: None,
+        manual_only: false,
     }
 }
 
