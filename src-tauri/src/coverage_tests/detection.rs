@@ -178,6 +178,27 @@ fn the_pipeline_gate_reads_each_claude_version_once() {
 
 #[cfg(unix)]
 #[test]
+fn an_in_place_claude_update_is_seen_without_restarting_the_app() {
+    let bin = TempDir::new("detect_updated_version_bin");
+    let config = TempDir::new("detect_updated_version_cfg");
+    let info = config_info(config.path(), true);
+    let target = fake_binary(bin.path(), "claude-2.1.200", "printf '2.1.200 (Claude Code)\\n'");
+    let claude = bin.join("claude");
+    std::os::unix::fs::symlink(&target, &claude).unwrap();
+    assert_eq!(cached_claude_version(&claude, &info).as_deref(), Some("2.1.200 (Claude Code)"));
+    // The auto-updater points the same path at the new version.
+    let newer = fake_binary(bin.path(), "claude-2.1.300", "printf '2.1.300 (Claude Code)\\n'");
+    std::fs::remove_file(&claude).unwrap();
+    std::os::unix::fs::symlink(&newer, &claude).unwrap();
+    assert_eq!(cached_claude_version(&claude, &info).as_deref(), Some("2.1.300 (Claude Code)"));
+    // Rewritten in place (another size): seen too.
+    let longer = "printf '2.1.301 (Claude Code)\\n' # rewritten in place";
+    std::fs::write(&newer, format!("#!/bin/sh\n{longer}\n")).unwrap();
+    assert_eq!(cached_claude_version(&claude, &info).as_deref(), Some("2.1.301 (Claude Code)"));
+}
+
+#[cfg(unix)]
+#[test]
 fn auth_status_needs_a_binary_and_an_existing_config_folder() {
     let bin = TempDir::new("detect_auth_bin");
     let marker = bin.join("ran");
