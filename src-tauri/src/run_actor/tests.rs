@@ -1481,3 +1481,88 @@ fn a_switch_to_engine_1_releases_the_stages_you_took_over() {
     });
     assert_eq!(stage_mode(&fx, &planner), crate::bridge::StageMode::Manual, "the Planner is released");
 }
+
+impl Fixture {
+    /// A bridged, live tab of `role_id` at `step` of the run (in `lane`).
+    fn bridged_tab(&self, role_id: &str, stage_id: &str, step: u32, lane: Option<&str>, kind: ResultKind) -> String {
+        let mut store = self.host.store.lock().unwrap();
+        let role = self.host.roles.iter().find(|r| r.id == role_id).unwrap();
+        let cwd = self.work.path().display().to_string();
+        let tab = store.create_draft_tab(role, &cwd, true, None).unwrap();
+        store.set_tab_chain(&tab, Some(chain(step, lane)), None).unwrap();
+        let stage_key = crate::pipelines::autopilot::stage_key(stage_id, lane);
+        let plan = BridgePlan {
+            run_id: RUN.into(),
+            stage_id: stage_id.into(),
+            role_id: role_id.into(),
+            lane: lane.map(str::to_string),
+            stage_key: stage_key.clone(),
+            kind,
+            autopilot: true,
+        };
+        prepare_stage(&self.host.runs, &plan, &tab).unwrap();
+        store.set_tab_bridge(&tab, Some(BridgeTag { run_id: RUN.into(), stage: stage_key })).unwrap();
+        store.remember_claude_terminal_session(&tab, &format!("5f0c2a31-1b2c-4d3e-8f40-{:012}", step * 10 + lane.map_or(0, |l| l.len() as u32))).unwrap();
+        if let Some(lane) = lane {
+            let run = store.pipeline_run_by_id_mut(RUN).unwrap();
+            run.lanes.iter_mut().find(|l| l.id == lane).unwrap().tab_ids.insert(role_id.into(), tab.clone());
+        }
+        store.save().unwrap();
+        self.host.live.lock().unwrap().insert(tab.clone());
+        tab
+    }
+}
+
+/// D28 in a fanned-out run: a decision held for a stage you took over in
+/// one lane makes the run wait. A turn another lane finishes meanwhile is
+/// not lost: Hand back acts on it with the held round.
+#[test]
+fn a_turn_another_lane_finished_while_a_round_was_held_is_acted_on_at_hand_back() {
+    let mut fx = Fixture::new("take_over_lanes");
+    {
+        let mut store = fx.host.store.lock().unwrap();
+        let lanes = ["pr1", "pr2"]
+            .iter()
+            .map(|id| crate::commands::pipeline::LaneInput { id: id.to_string(), title: id.to_uppercase(), depends_on: vec![] })
+            .collect();
+        crate::commands::pipeline::fan_out(&mut store, RUN, "implementer", lanes).unwrap();
+        let run = store.pipeline_run_by_id_mut(RUN).unwrap();
+        run.stage = "pr_reviewer".into();
+        for lane in &mut run.lanes {
+            lane.stage = "pr_reviewer".into();
+        }
+        store.save().unwrap();
+    }
+    let impl1 = fx.bridged_tab("role_implementer", "implementer", 3, Some("pr1"), ResultKind::Implementer);
+    let rev1 = fx.bridged_tab("role_pr_reviewer", "pr_reviewer", 4, Some("pr1"), ResultKind::Reviewer);
+    let _impl2 = fx.bridged_tab("role_implementer", "implementer", 3, Some("pr2"), ResultKind::Implementer);
+    let rev2 = fx.bridged_tab("role_pr_reviewer", "pr_reviewer", 4, Some("pr2"), ResultKind::Reviewer);
+    let prs = json!({ "schema": 1, "prs": [{ "url": "https://github.com/acme/app/pull/12", "branch": "b", "title": "t" }], "summary": "s" });
+    fx.end_turn(&impl1, "i-1", Some(prs), "Done.");
+    fx.run(|run| {
+        let current: Vec<String> = crate::pipelines::recovery::current_stage_tabs(&crate::pipelines::find("eagle1").unwrap(), run)
+            .into_iter()
+            .map(|t| t.tab_id)
+            .collect();
+        assert!(current.contains(&rev1) && current.contains(&rev2), "{current:?}");
+    });
+
+    fx.user(UserAction::TakeOver { tab_id: impl1.clone() }).expect("take over");
+    let turn = fx.end_turn(&rev1, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "x" }])), "");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    fx.run(|run| assert_eq!(run.stop_reason, Some(StopReason::TakenOver), "the round is held"));
+    // PR2's reviewer approves while the run waits.
+    let turn = fx.end_turn(&rev2, "r2-1", review("APPROVED", json!([])), "Approved.");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    fx.run(|run| {
+        let decided = &run.autopilot.as_ref().unwrap().decided;
+        assert!(!decided.iter().any(|t| t.ends_with("|bridge|r2-1")), "not decided while the run waits: {decided:?}");
+    });
+
+    fx.user(UserAction::HandBack { tab_id: impl1.clone() }).expect("hand back");
+    assert_eq!(fx.resumes().iter().filter(|l| l.tab_id == impl1).count(), 1, "the held round went back");
+    fx.run(|run| {
+        let pr2 = run.lane("pr2").unwrap();
+        assert_eq!(pr2.status, "approved", "PR2's approval is acted on: {:?}", run.events.iter().map(|e| e.summary.clone()).collect::<Vec<_>>());
+    });
+}

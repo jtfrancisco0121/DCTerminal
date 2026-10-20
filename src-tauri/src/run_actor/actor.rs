@@ -239,7 +239,7 @@ impl<H: Host> Actor<H> {
             return;
         }
         let verdict = bridge_verdict(review(&turn).and_then(|r| r.get("verdict")).and_then(Value::as_str), placed.revise());
-        let (enabled, status, round, mine) = {
+        let (enabled, status, round, mine, held) = {
             let mut store = lock(self.host.store());
             // intentionally silent: the lanes only lose a bar end.
             let _ = turn_finished(
@@ -256,6 +256,7 @@ impl<H: Host> Actor<H> {
                     run.status,
                     run.round_for(placed.lane.as_deref()),
                     run.taken_over.iter().any(|id| id == &placed.tab.id),
+                    run.status == RunStatus::Waiting && run.stop_reason == Some(StopReason::TakenOver),
                 ),
                 None => return,
             }
@@ -264,6 +265,17 @@ impl<H: Host> Actor<H> {
         // You drive a stage you took over: its turns are recorded, never
         // decided (D28). Hand back decides the one that has a result.
         if !enabled || status == RunStatus::Complete || mine {
+            return;
+        }
+        // The run waits on a stage you took over (another lane's, in a
+        // fanned-out run): this turn stays undecided, and Hand back decides
+        // it with the current stages' other turns.
+        if held {
+            let summary = format!(
+                "{} finished while the run waits on a stage you took over. Autopilot acts on it when you hand that stage back.",
+                placed.tab.label
+            );
+            self.note(Some(&placed.stage.id), &summary, false);
             return;
         }
         self.take_up(&placed, turn, round, status);
