@@ -264,4 +264,33 @@ mod tests {
         let merged = merge_role_prompt(&role, &forged).merged.unwrap().text;
         assert!(!merged.contains("forged"));
     }
+
+    #[test]
+    fn a_copied_reviewer_without_the_token_still_gets_the_result_instructions() {
+        use crate::template::{merge_role_prompt, merge_role_prompt_with};
+        // A copy of the PR Reviewer made (or edited) before the token existed.
+        let mut role = reviewer_role("role_pr_reviewer");
+        role.id = "role_custom_7".into();
+        role.template_text = role
+            .template_text
+            .lines()
+            .filter(|line| !line.contains("{{result_instructions}}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!role.template_text.contains("result_instructions"));
+        let cwd = crate::test_support::TempDir::new("result_instructions_copy_cwd");
+        let values = reviewer_values(cwd.path());
+        let bridged = merge_role_prompt_with(&role, &values, "CALL submit_result NOW");
+        assert!(bridged.errors.is_empty(), "{:?}", bridged.errors);
+        let text = bridged.merged.unwrap().text;
+        assert!(text.contains("CALL submit_result NOW"), "the bridged stage must be told about the tool");
+        assert!(text.trim_end().ends_with("CALL submit_result NOW"), "appended after the template");
+        // Exactly once when the template has the token.
+        let built_in = reviewer_role("role_pr_reviewer");
+        let text = merge_role_prompt_with(&built_in, &values, "CALL submit_result NOW").merged.unwrap().text;
+        assert_eq!(text.matches("CALL submit_result NOW").count(), 1);
+        // Not bridged: nothing is added.
+        let plain = merge_role_prompt(&role, &values).merged.unwrap().text;
+        assert!(!plain.contains("submit_result"));
+    }
 }

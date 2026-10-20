@@ -30,8 +30,9 @@ pub fn merge_role_prompt(role: &Role, values: &HashMap<String, String>) -> Merge
 }
 
 /// [`merge_role_prompt`], with `{{result_instructions}}` filled with
-/// `result_instructions` (an engine-2 pipeline stage, D21). A form value of
-/// that name never fills it.
+/// `result_instructions` (an engine-2 pipeline stage, D21). A template
+/// without the token gets them appended at the end. A form value of that
+/// name never fills it.
 pub fn merge_role_prompt_with(
     role: &Role,
     values: &HashMap<String, String>,
@@ -57,7 +58,14 @@ pub fn merge_role_prompt_with(
     merge_values.insert(RESULT_INSTRUCTIONS_KEY.to_string(), result_instructions.to_string());
 
     let result = merge_template(&role.template_text, &role.fields, &merge_values);
-    let text = prepend_loose_context(&role.template_text, &result.text, &merge_values);
+    let mut text = prepend_loose_context(&role.template_text, &result.text, &merge_values);
+    // A bridged stage whose template has no token (a reviewer you edited or
+    // copied before it existed) still has to know to call `submit_result`.
+    let token = format!("{{{{{RESULT_INSTRUCTIONS_KEY}}}}}");
+    let instructions = result_instructions.trim();
+    if !instructions.is_empty() && !role.template_text.contains(&token) {
+        text = format!("{}\n\n{instructions}", text.trim_end());
+    }
     if !result.unresolved.is_empty() {
         return MergePreviewResult {
             errors: result
