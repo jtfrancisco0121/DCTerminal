@@ -694,13 +694,24 @@ fn a_stage_with_parallel_reviewers_keeps_the_v1_path() {
 /// A bridged role launch as `role_terminal_start` builds it, with H5's
 /// status-line settings (`status`) when it applies.
 fn bridged_launch(status: Option<Value>, prompt: Option<&str>) -> Vec<String> {
+    bridged_launch_as(ResultKind::Reviewer, "role_pr_reviewer", "pr_reviewer", status, prompt)
+}
+
+/// [`bridged_launch`] for a stage reporting as `kind`.
+fn bridged_launch_as(
+    kind: ResultKind,
+    role_id: &str,
+    stage_key: &str,
+    status: Option<Value>,
+    prompt: Option<&str>,
+) -> Vec<String> {
     use crate::provider::{ProgramArgs, TerminalKind, TerminalLaunch};
     let program = Path::new("/Applications/DCTerminal.app/Contents/MacOS/dcterminal");
     let run_dir = Path::new("/data/runs").join(RUN);
-    let flags = launch::launch_flags(ResultKind::Reviewer, program, &run_dir, RUN, "pr_reviewer", TAB);
+    let flags = launch::launch_flags(kind, program, &run_dir, RUN, stage_key, TAB);
     let request = TerminalLaunch {
         kind: TerminalKind::Role {
-            role_id: "role_pr_reviewer".into(),
+            role_id: role_id.into(),
             run_mode: crate::pty::RunMode::Default,
             prompt: prompt.map(str::to_string),
             stage_kind: None,
@@ -749,6 +760,30 @@ fn a_bridged_launch_merges_the_hooks_and_the_status_line_into_one_settings_flag(
     assert_eq!(server["type"], "stdio");
     assert_eq!(server["args"][0], "bridge");
     assert_eq!(server["args"][1], "mcp");
+}
+
+#[test]
+fn every_bridged_stage_type_gets_one_settings_with_the_status_line_and_all_its_hooks() {
+    let status = crate::status_line::settings("'dct' --dct-status-line '/data/usage/tab.json'");
+    for (kind, role, stage, matcher) in [
+        (ResultKind::Planner, "role_planner", "planner", "ExitPlanMode"),
+        (ResultKind::Reviewer, "role_pr_reviewer", "pr_reviewer", FULL_TOOL_NAME),
+        (ResultKind::Implementer, "role_implementer", "implementer", FULL_TOOL_NAME),
+    ] {
+        let args = bridged_launch_as(kind, role, stage, Some(status.clone()), Some("PROMPT"));
+        let settings = settings_of(&args);
+        assert_eq!(settings["statusLine"], status["statusLine"], "{kind:?}: {settings}");
+        for event in ["UserPromptSubmit", "Stop", "PreToolUse", "PermissionRequest", "Notification"] {
+            let hook = &settings["hooks"][event][0]["hooks"][0];
+            assert_eq!(hook["type"], "command", "{kind:?} {event}: {settings}");
+            assert_eq!(hook["args"].as_array().unwrap().last().unwrap(), event, "{kind:?} {event}");
+        }
+        assert_eq!(settings["hooks"]["PreToolUse"][0]["matcher"], matcher, "{kind:?}");
+        assert_eq!(args.last().map(String::as_str), Some("PROMPT"), "{kind:?}: {args:?}");
+        // The Planner reports through ExitPlanMode: no tool to allow or serve.
+        let has_tool = args.iter().any(|a| a == "--allowedTools") && args.iter().any(|a| a == "--mcp-config");
+        assert_eq!(has_tool, kind != ResultKind::Planner, "{kind:?}: {args:?}");
+    }
 }
 
 #[test]
