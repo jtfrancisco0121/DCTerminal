@@ -202,6 +202,32 @@ fn claude_scheme_env() -> (String, String) {
     ("COLORFGBG".to_string(), value.to_string())
 }
 
+/// The `--settings` value with DCTerminal's status line for a Claude
+/// terminal, so the tab reports Claude usage (`status_line`, plan D32), and
+/// has `UsageStore` read what it writes. It goes in
+/// `TerminalLaunch::settings`, so the flag sits with the other Claude flags
+/// (after a Windows `node` script). None when you set a status line of your
+/// own (it wins; usage from the tab stays unknown) or the config folder or
+/// the app's own path is unknown.
+fn usage_status_line(
+    app: &AppHandle,
+    tab_id: &str,
+    config_dir: Option<&str>,
+    cwd: &std::path::Path,
+) -> Option<serde_json::Value> {
+    let config = config_dir.map(str::trim).filter(|dir| !dir.is_empty())?;
+    if crate::status_line::user_has_status_line(std::path::Path::new(config), cwd) {
+        return None;
+    }
+    let exe = std::env::current_exe().ok()?;
+    let file = crate::status_line::file_for(&crate::data_dir::app_data_dir(app).path, tab_id);
+    let usage = app.try_state::<Mutex<crate::usage::UsageStore>>()?;
+    let mut usage = usage.lock().ok()?;
+    usage.watch_status_line(tab_id, config, file.clone());
+    drop(usage);
+    Some(crate::status_line::settings(&crate::status_line::command(&exe, &file)))
+}
+
 #[tauri::command]
 pub fn pty_set_scheme(light: bool) {
     LIGHT_SCHEME.store(light, Ordering::Relaxed);
@@ -400,6 +426,7 @@ pub async fn shell_terminal_start(
 ) -> Result<TerminalStartResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         shell_terminal_start_blocking(
+            app.clone(),
             input,
             on_output,
             app.state(),
@@ -413,6 +440,7 @@ pub async fn shell_terminal_start(
 }
 
 fn shell_terminal_start_blocking(
+    app: AppHandle,
     input: ShellTerminalInput,
     on_output: Channel<PtyPacket>,
     settings: State<Mutex<SettingsStore>>,
@@ -501,6 +529,7 @@ fn shell_terminal_start_blocking(
     }
     let claude_session = (launch == "claude-cli")
         .then(|| resume_id.clone().unwrap_or_else(new_claude_session_id));
+    let mut claude_launch: Option<TerminalLaunch> = None;
     let mut command = if launch == "claude-cli" {
         let provider = {
             let mut state = store.lock().map_err(|err| err.to_string())?;
@@ -526,11 +555,17 @@ fn shell_terminal_start_blocking(
             },
             None => TerminalKind::Plain,
         };
-        provider.terminal_command(&TerminalLaunch {
+        let request = TerminalLaunch {
             kind,
             model: Some(model),
             session_id: claude_session.clone(),
-        })?
+            settings: None,
+        };
+        // Fail before the tab is saved when the CLI is missing; the launch
+        // is rebuilt with the status line once the tab id is known.
+        let command = provider.terminal_command(&request)?;
+        claude_launch = Some(request);
+        command
     } else if launch == "cursor-cli" {
         let model =
             crate::models::model_for_tab(&store, &settings, input.tab_id.as_deref(), "cursor-cli")?;
@@ -544,6 +579,7 @@ fn shell_terminal_start_blocking(
             kind,
             model: Some(model),
             session_id: None,
+            settings: None,
         })?
     } else {
         let resolved = resolve_shell_for_host(&configured);
@@ -582,6 +618,8 @@ fn shell_terminal_start_blocking(
             },
         )?
     };
+    let mut claude_config: Option<String> = None;
+    let mut claude_provider = None;
     if launch == "claude-cli" {
         let mut state = store.lock().map_err(|err| err.to_string())?;
         let settings = settings.lock().map_err(|err| err.to_string())?;
@@ -591,8 +629,10 @@ fn shell_terminal_start_blocking(
             ProviderId::Claude,
             Some(&tab_id),
         );
+        claude_provider = Some(provider.clone());
         if let Some(dir) = provider.config_dir() {
             state.remember_claude_config(&tab_id, &dir.path)?;
+            claude_config = Some(dir.path);
         }
         if let Some(id) = &resume_id {
             state.remember_provider_session(&tab_id, ProviderId::Claude, Some(id.clone()))?;
@@ -602,6 +642,14 @@ fn shell_terminal_start_blocking(
         }
         if let Some(id) = &claude_session {
             state.remember_claude_terminal_session(&tab_id, id)?;
+        }
+    }
+    if let (Some(provider), Some(request)) = (claude_provider, claude_launch) {
+        let settings = usage_status_line(&app, &tab_id, claude_config.as_deref(), &cwd);
+        if settings.is_some() {
+            let env = std::mem::take(&mut command.env);
+            command = provider.terminal_command(&TerminalLaunch { settings, ..request })?;
+            command.env = env;
         }
     }
     let pid = open_session(
@@ -643,8 +691,10 @@ pub struct RoleTerminalInput {
     /// Omitted: the tab's own, or the window's new-tab provider.
     #[serde(default)]
     pub provider: Option<ProviderId>,
-    /// The pipeline step this terminal is opened for (a hand-off on a
-    /// chain). A reviewer stage of an engine-2 run launches with the bridge.
+    /// The chain tag the new tab is about to join (a hand-off's next stage,
+    /// tagged after the start). Its stage kind sets the permission mode, so
+    /// a copied Planner launches in plan mode, and a reviewer stage of an
+    /// engine-2 run launches with the bridge. Omitted: the tab's own chain.
     #[serde(default)]
     pub chain: Option<crate::store::ChainRef>,
 }
@@ -675,6 +725,83 @@ fn bridge_paths(app: &AppHandle) -> Result<(PathBuf, PathBuf), String> {
         .ok_or_else(|| "DCTerminal could not find its own executable for the pipeline bridge.".to_string())?;
     let runs = crate::bridge::launch::runs_root(&crate::data_dir::app_data_dir(app).path);
     Ok((runs, program))
+}
+
+/// The pipeline stage kind a role terminal launches as: the chain it is
+/// about to join, else the chain its tab already has (a pipeline's first
+/// stage or a lane is tagged before it starts). `None` off a pipeline.
+pub(crate) fn launch_stage_kind(
+    store: &StateStore,
+    tab_id: Option<&str>,
+    joining: Option<&crate::store::ChainRef>,
+) -> Option<crate::pipelines::StageKind> {
+    match joining {
+        Some(chain) => crate::pipelines::stage_kind_for_chain(chain),
+        None => tab_id.and_then(|id| store.tab_stage_kind(id)),
+    }
+}
+
+/// How one role terminal start launches. Built by [`RoleLaunch::for_tab`],
+/// which looks the stage kind up, so a start, a restart and a resume all
+/// launch a pipeline stage in its kind's permission mode.
+pub(crate) struct RoleLaunch {
+    role_id: String,
+    run_mode: RunMode,
+    stage_kind: Option<crate::pipelines::StageKind>,
+    model: String,
+    session_id: Option<String>,
+    /// Resume this Claude session (`RoleResume`) instead of a fresh start.
+    resume: Option<String>,
+}
+
+impl RoleLaunch {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn for_tab(
+        store: &Mutex<StateStore>,
+        tab_id: Option<&str>,
+        joining: Option<&crate::store::ChainRef>,
+        role_id: &str,
+        run_mode: RunMode,
+        model: &str,
+        session_id: Option<String>,
+        resume: Option<String>,
+    ) -> Result<Self, String> {
+        let stage_kind = {
+            let store = store.lock().map_err(|err| err.to_string())?;
+            launch_stage_kind(&store, tab_id, joining)
+        };
+        Ok(Self {
+            role_id: role_id.to_string(),
+            run_mode,
+            stage_kind,
+            model: model.to_string(),
+            session_id,
+            resume,
+        })
+    }
+
+    pub(crate) fn launch(&self, prompt: Option<String>) -> TerminalLaunch {
+        TerminalLaunch {
+            kind: match &self.resume {
+                Some(id) => TerminalKind::RoleResume {
+                    role_id: self.role_id.clone(),
+                    run_mode: self.run_mode,
+                    session_id: id.clone(),
+                    stage_kind: self.stage_kind,
+                },
+                None => TerminalKind::Role {
+                    role_id: self.role_id.clone(),
+                    run_mode: self.run_mode,
+                    prompt,
+                    stage_kind: self.stage_kind,
+                },
+            },
+            model: Some(self.model.clone()),
+            session_id: self.session_id.clone(),
+            // H5's status line is added once the tab id is known.
+            settings: None,
+        }
+    }
 }
 
 /// Async with the work on a blocking thread, like [`shell_terminal_start`].
@@ -786,15 +913,17 @@ fn role_terminal_start_blocking(
         provider.id(),
     )?;
     let claude_session = (provider.id() == ProviderId::Claude).then(new_claude_session_id);
-    let role_launch = |prompt: Option<String>| TerminalLaunch {
-        kind: TerminalKind::Role {
-            role_id: role.id.clone(),
-            run_mode: mode,
-            prompt,
-        },
-        model: Some(model.clone()),
-        session_id: claude_session.clone(),
-    };
+    let launch = RoleLaunch::for_tab(
+        &store,
+        input.tab_id.as_deref(),
+        input.chain.as_ref(),
+        &role.id,
+        mode,
+        &model,
+        claude_session.clone(),
+        None,
+    )?;
+    let role_launch = |prompt: Option<String>| launch.launch(prompt);
     // Fail before the tab is saved when the CLI is missing.
     let program = provider.terminal_command(&role_launch(None))?.program;
     let tab_id = {
@@ -860,7 +989,12 @@ fn role_terminal_start_blocking(
         state.set_tab_bridge(&tab_id, tag)?;
     }
     let delivery = store_prompt(&app, &tab_id, &program, &prompt)?;
-    let mut command = provider.terminal_command(&role_launch(Some(delivery.argument.clone())))?;
+    let mut request = role_launch(Some(delivery.argument.clone()));
+    if provider.id() == ProviderId::Claude {
+        let config = provider.config_dir().map(|dir| dir.path);
+        request.settings = usage_status_line(&app, &tab_id, config.as_deref(), &cwd);
+    }
+    let mut command = provider.terminal_command(&request)?;
     if let Some(extra) = bridge_args {
         let has_prompt = !delivery.argument.trim().is_empty();
         crate::bridge::launch::insert_before_prompt(&mut command.args, has_prompt, extra);
@@ -1011,6 +1145,7 @@ fn pty_open_blocking(
                 kind,
                 model: Some(model),
                 session_id: None,
+                settings: None,
             })?;
             (command.program, command.args, command.env)
         }
@@ -1042,10 +1177,12 @@ fn pty_open_blocking(
                 Some(id) => TerminalKind::Resume { session_id: id },
                 None => TerminalKind::Plain,
             };
+            let config = provider.config_dir().map(|dir| dir.path);
             let mut command = provider.terminal_command(&TerminalLaunch {
                 kind,
                 model: Some(model),
                 session_id: Some(session_id.clone()),
+                settings: usage_status_line(&app, &input.id, config.as_deref(), &cwd),
             })?;
             command.env.push(claude_scheme_env());
             remember_terminal_session(&store, &input.id, Some(&session_id))?;
@@ -1122,22 +1259,18 @@ fn pty_open_blocking(
             // the user resumes the saved session (same id, same permission mode).
             claude_session = (provider.id() == ProviderId::Claude)
                 .then(|| resume.clone().unwrap_or_else(new_claude_session_id));
-            let role_launch = |prompt: Option<String>| TerminalLaunch {
-                kind: match &resume {
-                    Some(id) => TerminalKind::RoleResume {
-                        role_id: role_id.clone(),
-                        run_mode: mode,
-                        session_id: id.clone(),
-                    },
-                    None => TerminalKind::Role {
-                        role_id: role_id.clone(),
-                        run_mode: mode,
-                        prompt,
-                    },
-                },
-                model: Some(model.clone()),
-                session_id: claude_session.clone(),
-            };
+            // A pipeline stage restarts in its kind's mode, like its first launch.
+            let launch = RoleLaunch::for_tab(
+                &store,
+                Some(&input.id),
+                None,
+                &role_id,
+                mode,
+                &model,
+                claude_session.clone(),
+                resume.clone(),
+            )?;
+            let role_launch = |prompt: Option<String>| launch.launch(prompt);
             let program = provider.terminal_command(&role_launch(None))?.program;
             let prompt = input
                 .prompt
@@ -1150,7 +1283,12 @@ fn pty_open_blocking(
                 None => None,
             };
             let has_prompt = argument.is_some();
-            let mut command = provider.terminal_command(&role_launch(argument))?;
+            let mut request = role_launch(argument);
+            if provider.id() == ProviderId::Claude {
+                let config = provider.config_dir().map(|dir| dir.path);
+                request.settings = usage_status_line(&app, &input.id, config.as_deref(), &cwd);
+            }
+            let mut command = provider.terminal_command(&request)?;
             // A bridged stage relaunches with the same bridge flags while it
             // still owns its stage; otherwise it is a plain role terminal now.
             let tag = {
@@ -1354,6 +1492,144 @@ pub fn kill_tab_pty(registry: &Mutex<PtyRegistry>, tab_id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A pipeline of your own: a copy of the Planner (Settings › Roles ›
+    /// Duplicate) as stage 1, then the built-in Planner on a generic stage.
+    fn copied_planner_pipeline(id: &str) -> crate::pipelines::PipelineDef {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "name": "Copied planner",
+            "stages": [
+                { "id": "plan", "roleId": "role_custom_planner", "title": "Planner copy", "kind": "planner" },
+                { "id": "notes", "roleId": "role_planner", "title": "Notes", "kind": "generic" }
+            ]
+        }))
+        .unwrap()
+    }
+
+    fn on_chain(kind: &str, step: u32) -> crate::store::ChainRef {
+        serde_json::from_value(serde_json::json!({
+            "chainId": "ee_9", "kind": kind, "step": step, "total": 2
+        }))
+        .unwrap()
+    }
+
+    fn mode_of(role_id: &str, stage_kind: Option<crate::pipelines::StageKind>) -> String {
+        let args = crate::provider::claude::claude_terminal_args(&TerminalLaunch {
+            kind: TerminalKind::Role {
+                role_id: role_id.into(),
+                run_mode: RunMode::Default,
+                prompt: None,
+                stage_kind,
+            },
+            model: None,
+            session_id: None,
+            settings: None,
+        })
+        .unwrap();
+        let at = args.iter().position(|a| a == "--permission-mode").unwrap();
+        args[at + 1].clone()
+    }
+
+    // Review H4 (MEDIUM): a copied Planner on a pipeline launched in `auto`,
+    // because the permission mode was keyed on the role id.
+    #[test]
+    fn a_pipeline_stage_launches_in_its_kind_s_permission_mode() {
+        use crate::pipelines::{register_for_test, unregister_for_test, StageKind};
+        let id = "copied_planner_launch_test";
+        register_for_test(copied_planner_pipeline(id));
+        let dir = crate::test_support::TempDir::new("stage_kind_launch");
+        let mut store = StateStore {
+            path: dir.join("state.json"),
+            data: crate::store::AppStateFile::default(),
+            new_tab_provider: ProviderId::DEFAULT,
+            draft_window: crate::store::MAIN_WINDOW_ID.to_string(),
+        };
+        let role = crate::test_support::role("role_custom_planner", "Planner copy");
+        let first = store.create_draft_tab(&role, "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&first, Some(on_chain(id, 1)), None).unwrap();
+        let plain = store.create_draft_tab(&role, "/tmp/p", true, None).unwrap();
+
+        // Stage 1 is tagged before it starts: its tab's chain says planner.
+        let first_kind = launch_stage_kind(&store, Some(&first), None);
+        // A hand-off's new tab is tagged after the start: the chain it joins says.
+        let notes_kind = launch_stage_kind(&store, None, Some(&on_chain(id, 2)));
+        let joining_wins = launch_stage_kind(&store, Some(&first), Some(&on_chain(id, 2)));
+        let off_pipeline = launch_stage_kind(&store, Some(&plain), None);
+        unregister_for_test(id);
+
+        assert_eq!(first_kind, Some(StageKind::Planner));
+        assert_eq!(notes_kind, Some(StageKind::Generic));
+        assert_eq!(joining_wins, Some(StageKind::Generic));
+        assert_eq!(off_pipeline, None);
+        assert_eq!(mode_of("role_custom_planner", first_kind), "plan", "the copy plans like the built-in");
+        assert_eq!(mode_of("role_planner", notes_kind), "auto", "the kind decides, not the role id");
+        // Off a pipeline the built-in Planner still plans, and a copy does not.
+        assert_eq!(mode_of("role_planner", None), "plan");
+        assert_eq!(mode_of("role_custom_planner", off_pipeline), "auto");
+        // Cursor follows the kind too.
+        assert_eq!(
+            crate::pty::launch::role_terminal_flags("role_custom_planner", first_kind, RunMode::Default)[0],
+            "--plan"
+        );
+        // Chat: the session mode, and the plan card for its ExitPlanMode.
+        assert_eq!(crate::provider::claude::claude_role_mode("role_custom_planner", first_kind), "plan");
+        assert_eq!(
+            crate::provider::claude::claude_role_mode("role_planner", notes_kind),
+            "bypassPermissions"
+        );
+    }
+
+    // Review H4 round 2: the start, restart and resume paths build their
+    // launch with `RoleLaunch::for_tab`, which looks the stage kind up.
+    #[test]
+    fn start_restart_and_resume_of_a_copied_planner_stage_launch_in_plan_mode() {
+        use crate::pipelines::{register_for_test, unregister_for_test};
+        const SESSION: &str = "11111111-2222-4333-8444-555555555555";
+        let id = "copied_planner_paths_test";
+        register_for_test(copied_planner_pipeline(id));
+        let dir = crate::test_support::TempDir::new("stage_kind_paths");
+        let mut state = StateStore {
+            path: dir.join("state.json"),
+            data: crate::store::AppStateFile::default(),
+            new_tab_provider: ProviderId::DEFAULT,
+            draft_window: crate::store::MAIN_WINDOW_ID.to_string(),
+        };
+        let role = crate::test_support::role("role_custom_planner", "Planner copy");
+        let tagged = state.create_draft_tab(&role, "/tmp/p", true, None).unwrap();
+        state.set_tab_chain(&tagged, Some(on_chain(id, 1)), None).unwrap();
+        let store = Mutex::new(state);
+        let mode = |tab: Option<&str>, joining: Option<&crate::store::ChainRef>, role_id: &str, resume: Option<&str>| {
+            let launch = RoleLaunch::for_tab(
+                &store,
+                tab,
+                joining,
+                role_id,
+                RunMode::Default,
+                "default",
+                Some(SESSION.to_string()),
+                resume.map(str::to_string),
+            )
+            .unwrap()
+            .launch(None);
+            let args = crate::provider::claude::claude_terminal_args(&launch).unwrap();
+            let at = args.iter().position(|a| a == "--permission-mode").unwrap();
+            (args[at + 1].clone(), args.contains(&"--resume".to_string()))
+        };
+        // A start (pipeline first stage) and a restart: the tab's own chain.
+        let started = mode(Some(&tagged), None, "role_custom_planner", None);
+        // A resume after a crash keeps the stage's mode.
+        let resumed = mode(Some(&tagged), None, "role_custom_planner", Some(SESSION));
+        // A hand-off's new tab: the chain it is about to join.
+        let handed = mode(None, Some(&on_chain(id, 1)), "role_custom_planner", None);
+        let notes = mode(None, Some(&on_chain(id, 2)), "role_planner", None);
+        let untagged = mode(None, None, "role_custom_planner", None);
+        unregister_for_test(id);
+        assert_eq!(started, ("plan".to_string(), false));
+        assert_eq!(resumed, ("plan".to_string(), true));
+        assert_eq!(handed, ("plan".to_string(), false));
+        assert_eq!(notes.0, "auto", "the built-in Planner on a generic stage");
+        assert_eq!(untagged.0, "auto", "off a pipeline a copy does not plan");
+    }
 
     #[test]
     fn a_role_resume_only_takes_the_saved_session_in_its_own_account() {

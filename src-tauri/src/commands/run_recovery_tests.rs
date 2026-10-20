@@ -224,3 +224,42 @@ fn recovery_reads_logs_with_no_store_lock_held() {
         assert!(read < lock, "{name} reads logs under the store lock");
     }
 }
+
+fn stop(run_id: &str, tab_id: &str) -> AutopilotStopped {
+    AutopilotStopped {
+        run_id: run_id.into(),
+        tab_id: tab_id.into(),
+        reason: StopReason::AppRestarted,
+        summary: "Implementer finished while the app was closed".into(),
+    }
+}
+
+fn ids(tabs: &[&str]) -> Vec<String> {
+    tabs.iter().map(|t| t.to_string()).collect()
+}
+
+#[test]
+fn a_stop_found_before_the_frontend_listens_is_delivered_once_when_it_asks() {
+    let stops = StartupStops::default();
+    let mut emitted = Vec::new();
+    // The startup reconcile runs before the webview has subscribed.
+    stops.deliver(vec![stop("ee_1", "impl")], |s| emitted.push(s));
+    assert!(emitted.is_empty(), "nobody is listening yet, so it is held");
+    // The frontend has attached its listener and asks for what it missed.
+    assert_eq!(stops.take(&ids(&["impl"])), vec![stop("ee_1", "impl")]);
+    assert!(stops.take(&ids(&["impl"])).is_empty(), "delivered once");
+    // From then on, a stop is an event at once (a later stall, or a reloaded webview).
+    stops.deliver(vec![stop("ee_2", "impl")], |s| emitted.push(s));
+    assert_eq!(emitted, vec![stop("ee_2", "impl")]);
+    assert!(stops.take(&ids(&["impl"])).is_empty());
+}
+
+#[test]
+fn each_window_gets_the_held_stops_for_its_own_tabs() {
+    let stops = StartupStops::default();
+    stops.deliver(vec![stop("ee_1", "impl_a"), stop("ee_2", "review_b")], |_| panic!("not listening yet"));
+    // Window A asks first and gets only its own tab's stop; B's is kept for B.
+    assert_eq!(stops.take(&ids(&["main_a", "impl_a"])), vec![stop("ee_1", "impl_a")]);
+    assert_eq!(stops.take(&ids(&["review_b"])), vec![stop("ee_2", "review_b")]);
+    assert!(stops.take(&ids(&["main_a", "impl_a", "review_b"])).is_empty());
+}

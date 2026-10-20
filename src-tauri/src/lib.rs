@@ -25,6 +25,7 @@ mod pty;
 pub mod roles;
 mod session_id;
 mod shell_env;
+pub mod status_line;
 pub mod store;
 pub mod supervisor;
 pub mod template;
@@ -42,6 +43,7 @@ pub mod testing {
     pub use crate::claude_session_log::{find_session_log, TerminalSessionLog, ToolCallStatus};
     pub use crate::pty::session::{PtyOutput, PtySession, SpawnSpec};
     pub use crate::pipelines::find as find_pipeline;
+    pub use crate::pipelines::StageKind;
     pub use crate::pipelines::recovery::{
         reconcile_run, stop_stalled, current_stage_tabs, working, turn_key, Reconciled, StallObservation,
         StallWatch,
@@ -66,6 +68,7 @@ use commands::{
     pipeline_turn_finished, pipeline_claim_handoff, pipeline_release_handoff,
     pipeline_run_gates,
     pipeline_set_autopilot, pipeline_promote_plan, pipeline_continue, spawn_run_recovery,
+    autopilot_pending_stops, StartupStops,
     pipeline_set_candidate_plan, pipeline_bridge_turn,
     dev_session_cancel, dev_session_live, dev_session_send, dev_session_start, dev_session_stop,
     diagnostics_read_log, diagnostics_set_capture, diagnostics_status, get_app_state,
@@ -157,10 +160,12 @@ pub fn run() {
         .setup(|app| {
             // First, so a panic anywhere below lands in logs/crash.log.
             crash_log::install(&data_dir::app_data_dir(app.handle()).path);
-            // User pipelines join the registry before any chain run is read.
+            // Roles first, so your pipelines are checked against the roles
+            // that exist; both before any chain run is read.
+            let store = RolesStore::load_or_seed(app.handle())?;
+            store.publish_role_ids();
             let pipeline_store =
                 store::PipelineStore::open(&data_dir::app_data_dir(app.handle()).path)?;
-            let store = RolesStore::load_or_seed(app.handle())?;
             let mut state_store = StateStore::load_or_default(app.handle())?;
             state_store.reconcile_stale_running_tabs()?;
             let forms_store = FormsStore::load_or_default(app.handle())?;
@@ -201,6 +206,7 @@ pub fn run() {
             app.manage(Mutex::new(SessionRegistry::new()));
             app.manage(Mutex::new(PtyRegistry::new()));
             app.manage(claude_session_log::reader::SessionLogReaders::new());
+            app.manage(StartupStops::default());
             windows::install_macos_menu(app)?;
             windows::restore_saved_windows(app.handle());
             // After the stores are managed, on its own thread: the window
@@ -267,6 +273,7 @@ pub fn run() {
             pipeline_run_gates,
             pipeline_set_autopilot,
             pipeline_continue,
+            autopilot_pending_stops,
             pipeline_decide,
             pipeline_note,
             pipeline_turn_finished,

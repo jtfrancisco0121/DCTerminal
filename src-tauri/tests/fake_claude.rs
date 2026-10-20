@@ -449,6 +449,28 @@ mod session_log {
     }
 
     #[test]
+    fn a_rate_limit_error_ends_the_turn_and_the_reader_names_it() {
+        let home = FakeHome::new("fc_rate_limit");
+        let limit = "You've hit your limit · resets 3pm (Europe/London)";
+        let scenario = json!({ "turns": [
+            { "steps": [ { "text": "Starting" }, { "rate_limit": limit }, { "reply": "never" } ] },
+            { "steps": [ { "reply": "Back again." } ] }
+        ]});
+        let mut fake = home.run(&scenario, &["--session-id", SID, "go"]);
+        let log = fake.wait_log(SID, |log| log.turn_done);
+        assert!(log.turn_done && !log.interrupted, "{log:?}");
+        assert_eq!(log.rate_limit.as_deref(), Some(limit), "screen:\n{}", fake.screen());
+        assert!(fake.screen().contains("hit your limit"), "screen:\n{}", fake.screen());
+
+        // The next turn is a fresh one: no limit any more.
+        fake.write(b"again\r");
+        let log = fake.wait_log(SID, |log| log.last_reply == "Back again." && log.turn_done);
+        assert_eq!(log.rate_limit, None, "{log:?}");
+        let records = log_records(&fake.log_path(SID).unwrap(), false);
+        assert!(!records.iter().any(|r| r.to_string().contains("never")), "the refused turn ended");
+    }
+
+    #[test]
     fn exit_plan_mode_is_the_open_tool_and_keep_planning_rejects_it() {
         let home = FakeHome::new("fc_plan");
         let scenario = json!({ "turns": [
@@ -838,7 +860,7 @@ mod recovery {
     use super::*;
     use dcterminal_lib::testing::{
         current_stage_tabs, find_pipeline, reconcile_run, stop_stalled, turn_key, working,
-        PipelineRun, Reconciled, RunStatus, StallObservation, StallWatch, StopReason,
+        PipelineRun, Reconciled, RunStatus, StageKind, StallObservation, StallWatch, StopReason,
     };
     use serde_json::json;
     use std::collections::HashMap;
@@ -935,7 +957,7 @@ mod recovery {
             reader.refresh();
             let log = reader.summary();
             let seen = StallObservation {
-                working: working("role_implementer", &log),
+                working: working(StageKind::Implementer, &log),
                 log_len: std::fs::metadata(reader.path()).ok().map(|m| m.len()),
                 pty_quiet: Some(fake.session.quiet_for()),
             };

@@ -85,6 +85,7 @@ describe("autopilot helpers", () => {
       findingsKnown: true,
       missingSections: [],
       usagePercent: 42,
+      rateLimit: null,
       chat: false,
       lane: null,
     });
@@ -144,6 +145,34 @@ describe("autopilot helpers", () => {
         ],
       }),
     ).toBe(92);
+    // A window that reset since its reading is unknown, not its old percent.
+    const now = Date.UTC(2026, 9, 10, 12, 0);
+    expect(
+      usagePercent(
+        {
+          configDir: "",
+          contextByTab: {},
+          windows: [
+            { rateLimitType: "five_hour", label: "5h", utilization: 97, resetsAt: now / 1000 - 60, status: "", seenAtMs: 0 },
+          ],
+        },
+        now,
+      ),
+    ).toBeNull();
+  });
+
+  it("a rate-limit error in the turn goes into the report", () => {
+    const planner = pipelineDef("eagle1")!.stages[0];
+    const limited = turnReport({
+      stage: planner,
+      reply: "",
+      chat: false,
+      usage: null,
+      rateLimit: "You've hit your limit · resets 3pm",
+    });
+    expect(limited.rateLimit).toBe("You've hit your limit · resets 3pm");
+    expect(limited.usagePercent).toBeNull();
+    expect(turnReport({ stage: planner, reply: "# Plan", chat: false, usage: null }).rateLimit).toBeNull();
   });
 });
 
@@ -248,6 +277,7 @@ describe("bridge turns (engine 2)", () => {
       usagePercent: 12,
       chat: false,
       lane: "pr1",
+      rateLimit: null,
       noResult: false,
     });
   });

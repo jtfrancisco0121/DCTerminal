@@ -66,6 +66,11 @@
 //! - `{"subagent": {"description": "…", "prompt": "…", "steps": [ … ]}}`: a
 //!   `Task` tool_use, the sub-agent's records (`isSidechain: true`; thinking,
 //!   text, reply and tool steps without permission), then the Task's result.
+//! - `{"rate_limit": "You've hit your limit · resets 3pm"}`: the request is
+//!   refused for a usage limit. Writes the synthetic assistant record Claude
+//!   Code is understood to write (`isApiErrorMessage`, `error: "rate_limit"`,
+//!   model `<synthetic>`, `stop_reason: "stop_sequence"`; not yet captured
+//!   live) and ends the turn.
 //! - `{"delay_ms": 500}`: wait.
 //! - `{"interrupt": true}`: as if Esc was pressed.
 //! - `{"crash": true}`: write half of the next record, no newline, and exit
@@ -826,6 +831,10 @@ impl Fake {
             if self.step(step) == Ended::Interrupted {
                 return Ended::Interrupted;
             }
+            if step.get("rate_limit").is_some() {
+                // A refused request ends the turn; later steps never run.
+                break;
+            }
             if self.esc_pressed() {
                 self.interrupted(INTERRUPTED);
                 return Ended::Interrupted;
@@ -851,6 +860,15 @@ impl Fake {
             self.assistant(json!({ "type": "text", "text": text }), text_of("stop"));
         } else if let Some(text) = text_of("reply") {
             self.reply(text);
+        } else if let Some(text) = text_of("rate_limit") {
+            self.draw(&format!("\r\n  ⎿  {}\r\n", screen_text(text)));
+            let mut message = message("<synthetic>", json!({ "type": "text", "text": text }), Some("stop_sequence"));
+            message["usage"] = json!({ "input_tokens": 0, "output_tokens": 0 });
+            let record = self.record(
+                "assistant",
+                json!({ "message": message, "isApiErrorMessage": true, "error": "rate_limit" }),
+            );
+            self.write(record);
         } else if let Some(name) = text_of("tool") {
             return self.tool(name, step);
         } else if let Some(tool) = text_of("mcp") {

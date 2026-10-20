@@ -7,5 +7,10 @@ fn main() {
     if let Some(code) = dcterminal_lib::bridge::main_from_args() {
         std::process::exit(code);
     }
+    // Started by Claude Code as a terminal tab's status line: record the
+    // usage it reports and exit, without starting the app.
+    if dcterminal_lib::status_line::run_if_requested() {
+        return;
+    }
     dcterminal_lib::run()
 }

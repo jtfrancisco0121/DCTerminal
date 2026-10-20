@@ -4,6 +4,7 @@
  * nothing sends on a verdict by itself.
  */
 
+import { roleBehaviour } from "../pipeline/defs";
 import { contractResult, contractVerdictText } from "./contract";
 
 export type ReviewVerdict =
@@ -171,9 +172,10 @@ export function needsRevision(verdict: ReviewVerdict | null): boolean {
   return verdict === "REQUIRES REVISION" || verdict === "REQUEST CHANGES" || verdict === "REJECTED";
 }
 
-/** Roles whose replies carry a verdict. */
-export function isReviewerRole(roleId: string): boolean {
-  return roleId === "role_plan_reviewer" || roleId === "role_pr_reviewer";
+/** Roles whose replies carry a verdict: reviewers, by their stage's kind on `chainKind`'s pipeline. */
+export function isReviewerRole(roleId: string, chainKind?: string | null): boolean {
+  const behaviour = roleBehaviour(roleId, chainKind);
+  return behaviour === "plan_reviewer" || behaviour === "pr_reviewer";
 }
 
 /**

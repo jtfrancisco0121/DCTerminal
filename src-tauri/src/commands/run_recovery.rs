@@ -165,7 +165,7 @@ pub(crate) fn watchdog_tick(
         let key = item.key();
         let log = read_log(readers, item);
         let seen = StallObservation {
-            working: log.as_ref().is_some_and(|(log, _)| working(&item.tab.role_id, log)),
+            working: log.as_ref().is_some_and(|(log, _)| working(item.tab.kind, log)),
             log_len: log.as_ref().and_then(|(_, len)| *len),
             pty_quiet: item.pty_quiet,
         };
@@ -201,12 +201,61 @@ pub(crate) fn watchdog_tick(
     Ok(outcome)
 }
 
+/// Stops the core made before the frontend listened. The startup reconcile
+/// runs while the webview is still loading, so its `autopilot-stopped`
+/// events would be lost: they are held here until a window, with its
+/// listener attached and its tabs loaded, asks for the ones on its tabs
+/// (`autopilot_pending_stops`). Stops on other windows' tabs stay held for
+/// them. After the first ask every new stop is emitted at once, to every
+/// window. One lock covers both, so a stop is either held or emitted, never
+/// both and never neither.
+#[derive(Default)]
+pub struct StartupStops(Mutex<HeldStops>);
+
+#[derive(Default)]
+struct HeldStops {
+    listening: bool,
+    held: Vec<AutopilotStopped>,
+}
+
+impl StartupStops {
+    /// Emit each stop, or hold it while the frontend is not listening yet.
+    pub fn deliver(&self, stops: Vec<AutopilotStopped>, mut emit: impl FnMut(AutopilotStopped)) {
+        let mut inner = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if inner.listening {
+            stops.into_iter().for_each(&mut emit);
+        } else {
+            inner.held.extend(stops);
+        }
+    }
+
+    /// A window listens now: hand over, once, the held stops on its tabs.
+    pub fn take(&self, tab_ids: &[String]) -> Vec<AutopilotStopped> {
+        let mut inner = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        inner.listening = true;
+        let (mine, others) =
+            std::mem::take(&mut inner.held).into_iter().partition(|stop| tab_ids.contains(&stop.tab_id));
+        inner.held = others;
+        mine
+    }
+}
+
 fn announce(app: &AppHandle, outcome: RecoveryOutcome) {
     for run_id in &outcome.changed {
         app.chain_run_updated(run_id);
     }
-    for stop in outcome.stopped {
-        let _ = app.emit(AUTOPILOT_STOPPED_EVENT, stop);
+    if outcome.stopped.is_empty() {
+        return;
+    }
+    match app.try_state::<StartupStops>() {
+        Some(stops) => stops.deliver(outcome.stopped, |stop| {
+            let _ = app.emit(AUTOPILOT_STOPPED_EVENT, stop);
+        }),
+        None => {
+            for stop in outcome.stopped {
+                let _ = app.emit(AUTOPILOT_STOPPED_EVENT, stop);
+            }
+        }
     }
 }
 
@@ -268,6 +317,14 @@ pub fn pipeline_continue(
     let tabs = continue_after_restart(&mut store, &run_id)?;
     app.chain_run_updated(&run_id);
     Ok(tabs)
+}
+
+/// The stops the core made before the frontend listened (`StartupStops`),
+/// on the calling window's tabs. The frontend calls this once its
+/// `autopilot-stopped` listener is attached and its tab list has loaded.
+#[tauri::command]
+pub fn autopilot_pending_stops(tab_ids: Vec<String>, stops: State<StartupStops>) -> Vec<AutopilotStopped> {
+    stops.take(&tab_ids)
 }
 
 #[cfg(test)]
