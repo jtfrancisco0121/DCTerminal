@@ -1370,3 +1370,27 @@ fn a_round_sent_back_to_a_stage_you_took_over_waits_and_hand_back_carries_it_out
         assert_eq!(run.round, 2);
     });
 }
+
+#[test]
+fn a_turn_on_a_run_whose_pipeline_became_disabled_stops_the_run_and_opens_nothing() {
+    // H4: autopilot stops with the reason instead of driving a disabled
+    // pipeline on (was `pipeline_decide`'s, removed in V6).
+    let id = "eagle1_disabled_v6";
+    let mut def = crate::pipelines::find("eagle1").unwrap();
+    def.id = id.into();
+    def.name = "Disabled copy".into();
+    def.run_kind = None;
+    def.built_in = false;
+    def.disabled = Some("role \"role_gone\" does not exist".into());
+    crate::pipelines::register_for_test(def);
+    let mut fx = Fixture::with_pipeline("disabled_pipeline", id, Vec::new());
+    let turn = fx.planner_turn("p-1", "# Plan\n1. Refresh tokens in src/auth.ts.");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    crate::pipelines::unregister_for_test(id);
+    assert!(fx.launches().is_empty(), "nothing opened: {:?}", fx.launches());
+    fx.run(|run| {
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::CarryOutFailed)));
+        let last = run.events.last().unwrap();
+        assert!(last.summary.contains("is disabled"), "{}", last.summary);
+    });
+}
