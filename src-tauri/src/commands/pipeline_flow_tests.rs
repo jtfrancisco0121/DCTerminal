@@ -131,7 +131,7 @@ fn exit_plan_outside_the_planner_is_auto_answered_only_when_it_offers_allow_once
         "role_codebase_audit",
     ] {
         assert_eq!(
-            claude_permission_route(role, &usual),
+            claude_permission_route(role, None, &usual),
             ClaudeRoute::AutoAllow {
                 result: json!({ "outcome": { "outcome": "selected", "optionId": "default" } }),
                 exit_plan: true
@@ -139,7 +139,7 @@ fn exit_plan_outside_the_planner_is_auto_answered_only_when_it_offers_allow_once
             "{role}"
         );
         assert_eq!(
-            claude_permission_route(role, &without_allow_once["request"]["params"]),
+            claude_permission_route(role, None, &without_allow_once["request"]["params"]),
             ClaudeRoute::Card,
             "{role}: no allow_once, so the user decides"
         );
@@ -731,13 +731,13 @@ fn every_built_in_role_starts_in_its_intended_mode_on_both_providers() {
             _ => ("bypassPermissions", "agent"),
         };
         assert_eq!(
-            claude.mode_for_role(spec.id, spec.default_mode, &claude_modes),
+            claude.mode_for_role(spec.id, None, spec.default_mode, &claude_modes),
             want_claude,
             "{} on Claude",
             spec.id
         );
         assert_eq!(
-            CursorProvider.mode_for_role(spec.id, spec.default_mode, &[]),
+            CursorProvider.mode_for_role(spec.id, None, spec.default_mode, &[]),
             want_cursor,
             "{} on Cursor",
             spec.id
@@ -747,6 +747,7 @@ fn every_built_in_role_starts_in_its_intended_mode_on_both_providers() {
     assert_eq!(
         claude.mode_for_role(
             "role_pr_reviewer",
+            None,
             "agent",
             &["default".into(), "plan".into()]
         ),
@@ -758,7 +759,7 @@ fn every_built_in_role_starts_in_its_intended_mode_on_both_providers() {
     for role in ["role_plan_reviewer", "role_pr_reviewer"] {
         let agent = fake!("reviewer-mode", claude_scenario(json!([])));
         let provider = agent.provider(ProviderId::Claude);
-        let mode = provider.mode_for_role(role, "agent", &[]);
+        let mode = provider.mode_for_role(role, None, "agent", &[]);
         let client = connect(&agent, ProviderId::Claude, &mode);
         kill(&client);
         assert_eq!(
@@ -767,4 +768,22 @@ fn every_built_in_role_starts_in_its_intended_mode_on_both_providers() {
             "{role}"
         );
     }
+}
+
+// Review H4 (MEDIUM): a copied Planner on a pipeline stage gets the plan card
+// for its ExitPlanMode, like the built-in Planner; the built-in Planner on a
+// stage of another kind does not.
+#[test]
+fn exit_plan_on_a_planner_stage_goes_to_the_plan_card_whatever_the_role_id() {
+    use crate::pipelines::StageKind;
+    let usual = exit_plan_request(1)["request"]["params"].clone();
+    assert_eq!(
+        claude_permission_route("role_custom_planner", Some(StageKind::Planner), &usual),
+        ClaudeRoute::PlanCard
+    );
+    assert_eq!(claude_permission_route("role_planner", None, &usual), ClaudeRoute::PlanCard);
+    assert!(matches!(
+        claude_permission_route("role_planner", Some(StageKind::Generic), &usual),
+        ClaudeRoute::AutoAllow { exit_plan: true, .. }
+    ));
 }

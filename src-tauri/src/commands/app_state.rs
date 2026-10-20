@@ -54,17 +54,23 @@ pub struct TabSummary {
 }
 
 /// Permission mode shown for a tab: only Claude role terminals have one.
+/// A pipeline stage's comes from its kind (`chain`), as at launch.
 pub(crate) fn tab_permission_mode(
     provider: crate::provider::ProviderId,
     kind: &str,
     terminal_launch: &str,
     role_id: &str,
+    chain: Option<&crate::store::ChainRef>,
 ) -> Option<String> {
     (provider == crate::provider::ProviderId::Claude
         && kind == "terminal"
         && terminal_launch == "role")
-        .then(|| crate::provider::claude::claude_terminal_role_mode(role_id).to_string())
+        .then(|| {
+            let stage_kind = chain.and_then(crate::pipelines::stage_kind_for_chain);
+            crate::provider::claude::claude_terminal_role_mode(role_id, stage_kind).to_string()
+        })
 }
+
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -534,6 +540,7 @@ pub(crate) fn snapshot_from_store(store: &StateStore) -> AppStateSnapshot {
                     &t.kind,
                     &t.terminal_launch,
                     &t.role_id,
+                    t.chain.as_ref(),
                 ),
                 preview_url: crate::store::preview_tabs::preview_url_of(t),
             })
@@ -742,31 +749,50 @@ mod permission_mode_tests {
     #[test]
     fn claude_role_terminals_report_their_permission_mode() {
         assert_eq!(
-            tab_permission_mode(ProviderId::Claude, "terminal", "role", "implementer").as_deref(),
+            tab_permission_mode(ProviderId::Claude, "terminal", "role", "implementer", None).as_deref(),
             Some("auto")
         );
         assert_eq!(
-            tab_permission_mode(ProviderId::Claude, "terminal", "role", "planner").as_deref(),
+            tab_permission_mode(ProviderId::Claude, "terminal", "role", "planner", None).as_deref(),
             Some("plan")
         );
     }
 
     #[test]
+    fn a_pipeline_stage_tab_reports_its_kind_s_permission_mode() {
+        use crate::pipelines::{register_for_test, unregister_for_test, PipelineDef};
+        let id = "copied_planner_mode_test";
+        let def: PipelineDef = serde_json::from_value(serde_json::json!({
+            "id": id, "name": "Copied planner",
+            "stages": [{ "id": "plan", "roleId": "role_custom_planner", "title": "Planner copy", "kind": "planner" }]
+        }))
+        .unwrap();
+        register_for_test(def);
+        let chain: crate::store::ChainRef = serde_json::from_value(serde_json::json!({
+            "chainId": "ee_8", "kind": id, "step": 1, "total": 1
+        }))
+        .unwrap();
+        let mode = tab_permission_mode(ProviderId::Claude, "terminal", "role", "role_custom_planner", Some(&chain));
+        unregister_for_test(id);
+        assert_eq!(mode.as_deref(), Some("plan"));
+    }
+
+    #[test]
     fn other_tabs_have_no_permission_mode() {
         assert_eq!(
-            tab_permission_mode(ProviderId::Claude, "chat", "", "planner"),
+            tab_permission_mode(ProviderId::Claude, "chat", "", "planner", None),
             None
         );
         assert_eq!(
-            tab_permission_mode(ProviderId::Cursor, "terminal", "role", "implementer"),
+            tab_permission_mode(ProviderId::Cursor, "terminal", "role", "implementer", None),
             None
         );
         assert_eq!(
-            tab_permission_mode(ProviderId::Claude, "terminal", "claude-cli", ""),
+            tab_permission_mode(ProviderId::Claude, "terminal", "claude-cli", "", None),
             None
         );
         assert_eq!(
-            tab_permission_mode(ProviderId::Claude, "terminal", "shell", ""),
+            tab_permission_mode(ProviderId::Claude, "terminal", "shell", "", None),
             None
         );
     }

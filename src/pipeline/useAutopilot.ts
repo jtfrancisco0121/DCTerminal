@@ -60,6 +60,8 @@ export type AutopilotDeps = {
     values: Record<string, string>;
     handoffPlan: string | null;
     provider: ProviderId;
+    /** The chain tag the new tab joins: its stage kind sets the permission mode. */
+    chain: ChainRef | null;
   }) => Promise<string | null>;
   refreshTabs: () => Promise<unknown>;
   /** Tells you autopilot stopped on `tabId` (toast and system notification). */
@@ -152,6 +154,7 @@ export function useAutopilot(deps: AutopilotDeps) {
         values: { ...terminal.values, cwd: source.cwd },
         handoffPlan: terminal.handoffPlan,
         provider: job.tab.provider ?? "claude",
+        chain: prepared.value.nextChain,
       });
       if (!tabId) return "The terminal did not start.";
       await attachHandoff({ record, tabId, prepared: prepared.value, loopBack, verdict });

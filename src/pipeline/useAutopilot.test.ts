@@ -182,8 +182,12 @@ describe("useAutopilot", () => {
       round: 1,
       turn: expect.stringMatching(/^impl\|s\|/),
     });
+    // The chain it joins goes with the start: its stage kind sets the permission mode.
     expect(deps.startTerminal).toHaveBeenCalledWith(
-      expect.objectContaining({ roleId: "role_pr_reviewer" }),
+      expect.objectContaining({
+        roleId: "role_pr_reviewer",
+        chain: expect.objectContaining({ chainId: "ee_1", kind: "eagle1", step: 4 }),
+      }),
     );
     expect(vi.mocked(handoffAttach).mock.calls[0][0]).toMatchObject({
       tabId: "tab-new",

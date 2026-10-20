@@ -212,6 +212,7 @@ import {
   loopBackChain,
   loopBackRecord,
   newChain,
+  type ChainRef,
 } from "./handoff/chains";
 import { handoffRoute, loopBackMessage } from "./handoff/routing";
 import {
@@ -2242,6 +2243,8 @@ export function StartupForm({
       quiet?: boolean;
       /** Launch as this provider (a hand-off keeps its source tab's). */
       provider?: ProviderId | null;
+      /** The chain tag a hand-off's new tab joins: its stage kind sets the permission mode. */
+      chain?: ChainRef | null;
     }) => {
       const quiet = !!options?.quiet;
       if (startLockRef.current) {
@@ -2267,6 +2270,7 @@ export function StartupForm({
           tabId: preferred,
           handoffPlan: options?.handoffPlan ?? null,
           provider: options?.provider ?? null,
+          chain: options?.chain ?? null,
           ...measuredTerminalSize(),
           onOutput: live.channel,
         });
@@ -4543,6 +4547,7 @@ export function StartupForm({
             tabId: null,
             handoffPlan: terminal.handoffPlan,
             provider: sourceProvider,
+            chain: prepared.value.nextChain,
           });
           if (!tabId) {
             setHandoffError("Terminal did not start.");

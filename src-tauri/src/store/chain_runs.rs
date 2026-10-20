@@ -79,6 +79,15 @@ impl StateStore {
             .map(|run| run.id.clone())
     }
 
+    /// The pipeline stage kind of a tab, from its chain tag: what decides
+    /// its permission mode. `None` off a pipeline (or an unknown one), where
+    /// the role id decides.
+    pub fn tab_stage_kind(&self, tab_id: &str) -> Option<crate::pipelines::StageKind> {
+        self.tab_by_id(tab_id)
+            .and_then(|tab| tab.chain.as_ref())
+            .and_then(crate::pipelines::stage_kind_for_chain)
+    }
+
     /// Put `tab_id` on its chain's run at the chain's step (creating the
     /// run at any step, so chains from before runs existed still get one).
     /// Does not save; the caller does.

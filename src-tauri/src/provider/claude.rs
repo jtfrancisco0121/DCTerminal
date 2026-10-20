@@ -5,7 +5,8 @@
 //! GUI launch uses the same account as JT's `claude2` alias.
 //!
 //! Terminal flags (`claude_terminal_role_mode`):
-//! - Planner: `--permission-mode plan`
+//! - a Planner (a `planner` pipeline stage, else the built-in Planner role):
+//!   `--permission-mode plan`
 //! - every other role: `--permission-mode auto`, so Claude Code still asks
 //!   before risky actions and the tab can show "Needs you"
 //! - `--model <id>` first when a model other than `default` is set
@@ -27,9 +28,10 @@ use super::claude_detect::{
     unwrap_windows_shim,
 };
 use super::{
-    is_extension_method, AgentRequestKind, ProgramArgs, Provider, ProviderId, ProviderStatus,
-    SessionOpts, TerminalKind, TerminalLaunch,
+    is_extension_method, plans_by_default, AgentRequestKind, ProgramArgs, Provider, ProviderId,
+    ProviderStatus, SessionOpts, TerminalKind, TerminalLaunch,
 };
+use crate::pipelines::StageKind;
 use crate::acp::request_handler::is_permission_method;
 use crate::cli_detect::LoginStatus;
 use crate::store::settings_store::ClaudeProviderSettings;
@@ -54,21 +56,27 @@ pub fn adapter_missing_message() -> String {
 pub const CLAUDE_DEFAULT_MODEL: &str = "default";
 
 /// Claude Code permission mode for a role (Decisions → per-role mode table).
-pub fn claude_role_mode(role_id: &str) -> &'static str {
+/// `stage_kind`: the tab is a pipeline stage, whose kind decides plan mode
+/// (`plans_by_default`), so a copied Planner plans and the built-in Planner
+/// on a stage of another kind does not.
+pub fn claude_role_mode(role_id: &str, stage_kind: Option<StageKind>) -> &'static str {
+    if plans_by_default(role_id, stage_kind) {
+        return "plan";
+    }
     let normalized = role_id.trim().to_ascii_lowercase().replace('-', "_");
     match normalized.as_str() {
         "role_general" | "general" => "auto",
-        "role_planner" | "planner" => "plan",
         _ => "bypassPermissions",
     }
 }
 
-/// Claude Code permission mode for a role *terminal*: plan for the Planner,
+/// Claude Code permission mode for a role *terminal*: plan for a Planner,
 /// auto for every other role. Chat keeps `claude_role_mode`.
-pub fn claude_terminal_role_mode(role_id: &str) -> &'static str {
-    match claude_role_mode(role_id) {
-        "plan" => "plan",
-        _ => "auto",
+pub fn claude_terminal_role_mode(role_id: &str, stage_kind: Option<StageKind>) -> &'static str {
+    if plans_by_default(role_id, stage_kind) {
+        "plan"
+    } else {
+        "auto"
     }
 }
 
@@ -155,6 +163,7 @@ pub fn claude_terminal_args(req: &TerminalLaunch) -> Result<Vec<String>, String>
         TerminalKind::RoleResume {
             role_id,
             session_id,
+            stage_kind,
             ..
         } => {
             let id = session_id.trim();
@@ -164,14 +173,17 @@ pub fn claude_terminal_args(req: &TerminalLaunch) -> Result<Vec<String>, String>
             args.push("--resume".to_string());
             args.push(id.to_string());
             args.push("--permission-mode".to_string());
-            args.push(claude_terminal_role_mode(role_id).to_string());
+            args.push(claude_terminal_role_mode(role_id, *stage_kind).to_string());
         }
         TerminalKind::Role {
-            role_id, prompt, ..
+            role_id,
+            prompt,
+            stage_kind,
+            ..
         } => {
             pin(&mut args)?;
             args.push("--permission-mode".to_string());
-            args.push(claude_terminal_role_mode(role_id).to_string());
+            args.push(claude_terminal_role_mode(role_id, *stage_kind).to_string());
             if let Some(text) = prompt.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
                 args.push(text.to_string());
             }
@@ -314,8 +326,14 @@ impl Provider for ClaudeProvider {
 
     /// Mode from the role table; `default` when the session did not
     /// advertise it (e.g. bypass disabled), with every request auto-approved.
-    fn mode_for_role(&self, role_id: &str, _role_mode: &str, available: &[String]) -> String {
-        let wanted = claude_role_mode(role_id);
+    fn mode_for_role(
+        &self,
+        role_id: &str,
+        stage_kind: Option<StageKind>,
+        _role_mode: &str,
+        available: &[String],
+    ) -> String {
+        let wanted = claude_role_mode(role_id, stage_kind);
         if available.is_empty() || available.iter().any(|m| m == wanted) {
             wanted.to_string()
         } else {
@@ -438,10 +456,10 @@ mod tests {
         .iter()
         .map(|m| m.to_string())
         .collect();
-        assert_eq!(p.mode_for_role("role_general", "agent", &all), "auto");
-        assert_eq!(p.mode_for_role("role_planner", "plan", &all), "plan");
+        assert_eq!(p.mode_for_role("role_general", None, "agent", &all), "auto");
+        assert_eq!(p.mode_for_role("role_planner", None, "plan", &all), "plan");
         assert_eq!(
-            p.mode_for_role("role_implementer", "agent", &all),
+            p.mode_for_role("role_implementer", None, "agent", &all),
             "bypassPermissions"
         );
         let no_bypass: Vec<String> = all
@@ -450,11 +468,11 @@ mod tests {
             .cloned()
             .collect();
         assert_eq!(
-            p.mode_for_role("role_implementer", "agent", &no_bypass),
+            p.mode_for_role("role_implementer", None, "agent", &no_bypass),
             "default"
         );
         assert_eq!(
-            p.mode_for_role("role_implementer", "agent", &[]),
+            p.mode_for_role("role_implementer", None, "agent", &[]),
             "bypassPermissions"
         );
     }
@@ -503,6 +521,7 @@ mod tests {
                 role_id: role_id.to_string(),
                 run_mode,
                 prompt: prompt.map(str::to_string),
+                stage_kind: None,
             },
             model: model.map(str::to_string),
             session_id: None,
@@ -538,6 +557,7 @@ mod tests {
                 role_id: role_id.to_string(),
                 run_mode: RunMode::Default,
                 session_id: ID.to_string(),
+                stage_kind: None,
             },
             model: model.map(str::to_string),
             session_id: None,
@@ -558,6 +578,7 @@ mod tests {
                 role_id: "role_implementer".to_string(),
                 run_mode: RunMode::Default,
                 session_id: "../etc".to_string(),
+                stage_kind: None,
             },
             model: None,
             session_id: None,
@@ -579,7 +600,7 @@ mod tests {
             ("role_custom_1234", "bypassPermissions"),
         ];
         for (role_id, mode) in cases {
-            assert_eq!(claude_role_mode(role_id), mode, "{role_id}");
+            assert_eq!(claude_role_mode(role_id, None), mode, "{role_id}");
         }
     }
 

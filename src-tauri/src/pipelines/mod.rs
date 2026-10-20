@@ -404,6 +404,15 @@ pub fn stages(kind: &str) -> Option<Vec<(String, String)>> {
     find(kind).map(|def| def.stage_pairs())
 }
 
+/// The kind of the stage a chain tag (`kind` + 1-based `step`) points at:
+/// what decides a stage tab's permission mode. `None` when the pipeline or
+/// the step is unknown.
+pub fn stage_kind_for_chain(chain: &crate::store::ChainRef) -> Option<StageKind> {
+    let def = find(&chain.kind)?;
+    let index = (chain.step as usize).checked_sub(1)?;
+    def.stages.get(index).map(StageDef::kind)
+}
+
 /// Run kind for a chain kind (`eagle1` → `full`), if the pipeline exists.
 pub fn run_kind_for_chain(chain_kind: &str) -> Option<String> {
     find(chain_kind).map(|def| def.run_kind().to_string())

@@ -185,8 +185,17 @@ pub fn role_session_start(
     };
 
     // Claude: the per-role mode table (Decisions), never the Cursor mode.
+    // On a pipeline stage (a chat hand-off's tab is tagged before it starts)
+    // the stage's kind decides plan mode.
     let mode_id = if provider.id() == ProviderId::Claude {
-        provider.mode_for_role(&role.id, &role.default_mode, &[])
+        let stage_kind = match tab_id.as_deref() {
+            Some(id) => {
+                let store = state_store.lock().map_err(|e| e.to_string())?;
+                store.tab_stage_kind(id)
+            }
+            None => None,
+        };
+        provider.mode_for_role(&role.id, stage_kind, &role.default_mode, &[])
     } else {
         load_mode_id(&state_store, tab_id.as_deref(), &bind, &role.default_mode)?
     };
@@ -466,7 +475,8 @@ fn record_claude_start(
     if let Some(dir) = provider.config_dir() {
         store.remember_claude_config(tab_id, &dir.path)?;
     }
-    let wanted = crate::provider::claude::claude_role_mode(role_id);
+    let stage_kind = store.tab_stage_kind(tab_id);
+    let wanted = crate::provider::claude::claude_role_mode(role_id, stage_kind);
     let note = (mode_id != wanted)
         .then(|| format!("the adapter did not offer {wanted} (using {mode_id})"));
     store.set_permission_note(tab_id, note)?;
