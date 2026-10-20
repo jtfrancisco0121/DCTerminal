@@ -113,15 +113,16 @@ fn stage_plan(
     })
 }
 
-/// The result a stage reports with, when it launches bridged.
+/// The result a stage reports with, when it launches bridged: by its kind
+/// (H4's `StageKind`), so a copied Planner, Implementer or reviewer role is
+/// bridged exactly like the built-in one. A reviewer stage with parallel
+/// reviewers and a generic stage keep the v1 path.
 fn stage_kind(stage: &crate::pipelines::StageDef) -> Option<ResultKind> {
-    if stage.kind() == StageKind::Reviewer {
-        return stage.also_reviewers.is_empty().then_some(ResultKind::Reviewer);
-    }
-    match stage.role_id.as_str() {
-        "role_planner" => Some(ResultKind::Planner),
-        "role_implementer" => Some(ResultKind::Implementer),
-        _ => None,
+    match stage.kind() {
+        StageKind::Planner => Some(ResultKind::Planner),
+        StageKind::Implementer => Some(ResultKind::Implementer),
+        StageKind::Reviewer => stage.also_reviewers.is_empty().then_some(ResultKind::Reviewer),
+        StageKind::Generic => None,
     }
 }
 

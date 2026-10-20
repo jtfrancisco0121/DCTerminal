@@ -646,6 +646,32 @@ fn a_copied_reviewer_is_bridged_by_its_stage_kind_like_the_built_in_one() {
 }
 
 #[test]
+fn copied_planner_and_implementer_roles_are_bridged_by_their_stage_kind() {
+    use crate::pipelines::StageKind;
+    let mut def = crate::pipelines::find("full").unwrap();
+    let run = engine2_run(true);
+    def.stages[0].role_id = "role_custom_planner".into();
+    def.stages[0].kind = Some(StageKind::Planner);
+    def.stages[2].role_id = "role_custom_impl".into();
+    def.stages[2].kind = Some(StageKind::Implementer);
+    let planner = launch::plan_for(&run, &def, &chain(1, None), "role_custom_planner").expect("copied Planner");
+    assert_eq!(planner.kind, ResultKind::Planner);
+    assert_eq!(planner.stage_key, "planner");
+    let implementer = launch::plan_for(&run, &def, &chain(3, None), "role_custom_impl").expect("copied Implementer");
+    assert_eq!(implementer.kind, ResultKind::Implementer);
+    // A form start of a pipeline whose first stage is a copied Planner.
+    let first = launch::new_chain(&def, "eagle1", 7);
+    assert_eq!(
+        launch::plan_for_new_run(&def, &first, "role_custom_planner").map(|plan| plan.kind),
+        Some(ResultKind::Planner)
+    );
+    // A built-in Planner role on a stage marked generic is not bridged.
+    let mut def = crate::pipelines::find("full").unwrap();
+    def.stages[0].kind = Some(StageKind::Generic);
+    assert_eq!(launch::plan_for(&run, &def, &chain(1, None), "role_planner"), None);
+}
+
+#[test]
 fn a_lane_names_its_own_stage_folder() {
     let def = crate::pipelines::find("full").unwrap();
     let mut run = engine2_run(true);

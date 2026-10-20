@@ -226,6 +226,7 @@ import {
   saveHandoff,
 } from "./handoff/executor";
 import { behaviourRole, pipelineDef, pipelineStages, roleBehaviour, stageBehaviour } from "./pipeline/defs";
+import { eagleStartChain } from "./pipeline/eagleStart";
 import { useAutopilot } from "./pipeline/useAutopilot";
 import { onceValue, subscribeAutopilotStops } from "./pipeline/autopilotStops";
 import { terminalStageSource, turnId } from "./pipeline/autopilot";
@@ -2176,15 +2177,9 @@ export function StartupForm({
         };
       });
       if (!pane) setPreview(null);
-      if (
-        !resumeId &&
-        eagleOnRef.current &&
-        targetId &&
-        !inChain(targetId) &&
-        (startRoleId === "role_planner" || startRoleId === "role_implementer")
-      ) {
-        const kind = startRoleId === "role_planner" ? "eagle1" : "eagle2";
-        await setTabChain(targetId, newChain(kind));
+      const eagleKind = !resumeId && eagleOnRef.current && targetId && !inChain(targetId) ? eagleStartChain(startRoleId) : null;
+      if (eagleKind && targetId) {
+        await setTabChain(targetId, newChain(eagleKind));
       }
       await refreshTabs();
     } catch (err: unknown) {
@@ -2292,14 +2287,7 @@ export function StartupForm({
       // Eagle mode: a Planner or Implementer started from the form begins a
       // chain. The core makes its run before the launch (engine 2), so the
       // stage launches with the bridge instead of being tagged once it runs.
-      const startChain =
-        !options && eagleOnRef.current && !inChain(pendingId)
-          ? roleToStart === "role_planner"
-            ? "eagle1"
-            : roleToStart === "role_implementer"
-              ? "eagle2"
-              : null
-          : null;
+      const startChain = !options && eagleOnRef.current && !inChain(pendingId) ? eagleStartChain(roleToStart) : null;
       const live = beginLivePty(pendingId);
       try {
         const result = await roleTerminalStart({
