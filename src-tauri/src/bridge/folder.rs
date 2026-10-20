@@ -144,6 +144,11 @@ pub enum TurnOutcome {
     /// The turn ended without an accepted `submit_result` (after the one
     /// block on autopilot).
     NoResult,
+    /// No Stop came (Esc or a rejected permission) and an `idle_prompt`
+    /// Notification closed the turn out (D9a). Kept in `turn.json` only:
+    /// it is never posted to `inbox/` or read back, so autopilot never
+    /// acts on it.
+    Abandoned,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

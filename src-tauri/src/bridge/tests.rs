@@ -285,6 +285,33 @@ fn an_abandoned_turn_is_replaced_by_the_next_prompt_and_never_reported() {
 }
 
 #[test]
+fn an_idle_prompt_closes_out_an_abandoned_turn_without_a_decision() {
+    let stage = Stage::new("bridge_idle_abandoned", true);
+    let tag = BridgeTag { run_id: RUN.into(), stage: "pr_reviewer".into() };
+    stage.hook("UserPromptSubmit", prompt("p-1"));
+    // A result was filed, then Esc: no Stop for p-1 (V0 T4).
+    stage.submit(approved());
+    assert_eq!(stage.hook("Notification", notification("p-1", "idle_prompt")), None);
+    let closed = stage.open().turn().unwrap();
+    assert_eq!(closed.ended.as_ref().map(|end| end.outcome), Some(TurnOutcome::Abandoned));
+    // Autopilot never acts on it: no inbox event, and Continue reads nothing back.
+    assert!(stage.events().is_empty());
+    assert_eq!(launch::read_stage_turn(&stage.runs, &tag, TAB), None);
+    // A late Stop for the closed turn reports nothing either.
+    assert_eq!(stage.hook("Stop", stop("p-1", false, "Approved.")), None);
+    assert!(stage.events().is_empty());
+    // An idle prompt for another turn, or after a turn that ended, changes nothing.
+    stage.hook("UserPromptSubmit", prompt("p-2"));
+    stage.hook("Notification", notification("p-1", "idle_prompt"));
+    assert_eq!(stage.open().turn().unwrap().ended, None, "p-2 is still open");
+    stage.submit(approved());
+    stage.hook("Stop", stop("p-2", false, "Approved."));
+    stage.hook("Notification", notification("p-2", "idle_prompt"));
+    assert_eq!(stage.open().turn().unwrap().ended.map(|end| end.outcome), Some(TurnOutcome::Result));
+    assert_eq!(stage.inbox().len(), 1);
+}
+
+#[test]
 fn a_stop_with_no_prompt_seen_starts_its_own_turn() {
     let stage = Stage::new("bridge_no_ups", true);
     assert!(stage.hook("Stop", stop("p-9", false, "")).is_some());
@@ -1233,9 +1260,14 @@ fn a_permission_request_posts_needs_you_and_leaves_the_dialog_alone() {
     // The late Notification for the same turn is not posted again.
     assert_eq!(stage.hook("Notification", notification("p-1", "permission_prompt")), None);
     assert!(stage.needs().is_empty());
-    // Idle notifications are not Needs you.
+    // An idle notification is not Needs you: it closes out the turn whose
+    // permission was rejected (no Stop came, D9a) as abandoned, with no
+    // event for autopilot. (This used to assert it did nothing at all.)
     stage.hook("Notification", notification("p-1", "idle_prompt"));
-    assert!(stage.needs().is_empty());
+    assert!(stage.events().is_empty());
+    let closed = stage.open().turn().unwrap();
+    assert_eq!(closed.turn, "p-1");
+    assert_eq!(closed.ended.map(|end| end.outcome), Some(TurnOutcome::Abandoned));
     // A turn whose PermissionRequest never came: the Notification is the backup.
     stage.hook("UserPromptSubmit", prompt("p-2"));
     stage.hook("Notification", notification("p-2", "permission_prompt"));
