@@ -412,9 +412,11 @@ pub const MAX_DECIDED_TURNS: usize = 100;
 
 impl PipelineRun {
     /// Autopilot stops for you: `waiting`, with the reason code and the
-    /// sentence the overview shows. A complete run stays complete.
+    /// sentence the overview shows. A complete run stays complete, and a run
+    /// with autopilot off stays `stopped`: only autopilot waits for you.
     pub fn set_waiting(&mut self, reason: StopReason, why: impl Into<String>) {
-        if self.status == RunStatus::Complete {
+        let enabled = self.autopilot.as_ref().is_some_and(|a| a.enabled);
+        if self.status == RunStatus::Complete || !enabled {
             return;
         }
         self.autopilot.get_or_insert_with(RunAutopilot::default).waiting = Some(why.into());
@@ -445,6 +447,20 @@ impl PipelineRun {
         if self.status == RunStatus::Waiting {
             self.set_running();
         }
+    }
+
+    /// You sent work back or handed it on yourself on a complete run: it is
+    /// in play again, `running` when autopilot is on, else `stopped`, with no
+    /// stop reason. Matches `migrated_status`, which reads a hand-off or
+    /// send-back after the last `complete` event as not complete. Late turns
+    /// with no such action from you leave a complete run complete.
+    pub fn reopen_after_you(&mut self) {
+        if self.status != RunStatus::Complete {
+            return;
+        }
+        let enabled = self.autopilot.as_ref().is_some_and(|a| a.enabled);
+        self.status = if enabled { RunStatus::Running } else { RunStatus::Stopped };
+        self.stop_reason = None;
     }
 
     /// Autopilot turned on (`running`) or off (`stopped`, paused by you).
