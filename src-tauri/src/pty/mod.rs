@@ -882,30 +882,59 @@ fn gate_inputs(
     (version, hooks)
 }
 
+/// Where the D24 gate runs: a stage's first bridged start, or a Restart /
+/// Resume of a tab that was running bridged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GateAt {
+    Start,
+    Relaunch,
+}
+
+/// What [`gate_run`] decided.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct GateRun {
+    /// Launch bridged.
+    bridged: bool,
+    /// A relaunch switched a run that was running bridged to engine 1, and
+    /// autopilot is off for it from now on.
+    manual_now: bool,
+}
+
 /// D24 and hooks-off for an engine-2 run at a bridged start or relaunch of
-/// `stage` (a stage key; a lane suffix is dropped for the Timeline). True
-/// when it launches bridged. An engine-1 outcome switches the run for good
-/// (saved, with its notice); a run already on engine 1, or gone, is never
-/// bridged; a newer CLI leaves the overview's note.
+/// `stage` (a stage key; a lane suffix is dropped for the Timeline). An
+/// engine-1 outcome switches the run for good (saved, with its notice); a
+/// run already on engine 1, or gone, is never bridged; a newer CLI leaves
+/// the overview's note.
+///
+/// At a relaunch the run was already running bridged, and the bridge has
+/// decided turns the v1 path cannot recognise (a Resume continues the same
+/// session). So a switch there also turns autopilot off: the run is manual
+/// from now on, as engine 1 runs are after V6, and the note says why.
 fn gate_run(
     store: &Mutex<StateStore>,
     run_id: &str,
     stage: &str,
     version: Option<&str>,
     hooks_off: Option<&crate::bridge::gate::HooksOff>,
-) -> Result<bool, String> {
+    at: GateAt,
+) -> Result<GateRun, String> {
     let decision = crate::bridge::gate::decide(version, hooks_off);
     let stage_id = stage.split('@').next().unwrap_or(stage);
     let mut state = store.lock().map_err(|err| err.to_string())?;
     let Some(run) = state.pipeline_run_by_id_mut(run_id).filter(|run| run.engine >= crate::bridge::launch::ENGINE_V2)
     else {
-        return Ok(false);
+        return Ok(GateRun::default());
     };
-    let (bridged, changed) = crate::bridge::gate::apply(run, &decision, stage_id);
+    let (bridged, mut changed) = crate::bridge::gate::apply(run, &decision, stage_id);
+    let manual_now = !bridged && at == GateAt::Relaunch;
+    if manual_now {
+        crate::bridge::gate::make_manual(run, stage_id);
+        changed = true;
+    }
     if changed {
         state.save()?;
     }
-    Ok(bridged)
+    Ok(GateRun { bridged, manual_now })
 }
 
 /// [`gate_run`] at a stage's first bridged start.
@@ -915,7 +944,8 @@ fn gate_bridged_launch(
     version: Option<&str>,
     hooks_off: Option<&crate::bridge::gate::HooksOff>,
 ) -> Result<Option<crate::bridge::BridgePlan>, String> {
-    Ok(gate_run(store, &plan.run_id, &plan.stage_id, version, hooks_off)?.then_some(plan))
+    let gated = gate_run(store, &plan.run_id, &plan.stage_id, version, hooks_off, GateAt::Start)?;
+    Ok(gated.bridged.then_some(plan))
 }
 
 /// `<app data>/runs` and this executable, for a bridged launch.
@@ -1531,11 +1561,25 @@ fn pty_open_blocking(
             // stays there. Without hooks a bridged tab would never end a turn.
             let mut flags = None;
             if let Some(tag) = tag {
-                let gated = provider.id() == ProviderId::Claude && {
+                let gated = if provider.id() == ProviderId::Claude {
                     let (version, hooks_off) = gate_inputs(provider.as_ref(), &cwd);
-                    gate_run(&store, &tag.run_id, &tag.stage, version.as_deref(), hooks_off.as_ref())?
+                    gate_run(&store, &tag.run_id, &tag.stage, version.as_deref(), hooks_off.as_ref(), GateAt::Relaunch)?
+                } else {
+                    GateRun::default()
                 };
-                if gated {
+                if gated.manual_now {
+                    // The run's other bridged tabs stop enforcing a result
+                    // (their hooks read `mode`), and the overview refreshes.
+                    if let Ok((runs, _)) = bridge_paths(&app) {
+                        if let Err(err) = crate::bridge::launch::set_run_mode(&runs, &tag.run_id, false) {
+                            eprintln!("DCTerminal: could not switch the run folder to manual: {err}");
+                        }
+                    }
+                    if let Ok(state) = store.lock() {
+                        crate::commands::chain_events::notify_tab(&app, &state, &input.id);
+                    }
+                }
+                if gated.bridged {
                     flags = match bridge_paths(&app) {
                         Ok((runs, program)) => {
                             crate::bridge::launch::relaunch_flags(&runs, &tag, &input.id, &program)
@@ -1747,6 +1791,7 @@ mod tests {
         }))
         .unwrap();
         run.engine = crate::bridge::launch::ENGINE_V2;
+        run.set_autopilot_enabled(true);
         store.data.pipeline_runs.push(run);
         Mutex::new(store)
     }
@@ -1772,6 +1817,7 @@ mod tests {
         let saved = StateStore::open_path(dir.join("state.json")).unwrap();
         let run = saved.pipeline_run_by_id("ee_1700000000000").unwrap();
         assert_eq!(run.engine, 1, "saved as engine 1");
+        assert!(run.autopilot.as_ref().unwrap().enabled, "a first launch keeps autopilot (on engine 1)");
         assert!(run.engine_note.as_deref().unwrap().contains("2.1.200"));
 
         let dir = crate::test_support::TempDir::new("gate_bridged_launch_hooks");
@@ -2017,20 +2063,30 @@ mod tests {
         let store = store_with_engine2_run(&dir);
         let run_id = "ee_1700000000000";
         let ok = Some("2.1.287 (Claude Code)");
-        assert!(gate_run(&store, run_id, "pr_reviewer", ok, None).unwrap(), "still bridged");
-        // Hooks turned off since the first launch: engine 1, with a notice.
+        let relaunch = GateAt::Relaunch;
+        assert!(gate_run(&store, run_id, "pr_reviewer", ok, None, relaunch).unwrap().bridged, "still bridged");
+        // Hooks turned off since the first launch (a Resume mid-run): engine
+        // 1 with a notice, and autopilot off, so the turn the bridge already
+        // decided is never decided again the v1 way.
         let off = crate::bridge::gate::HooksOff { file: dir.join("settings.json"), setting: "disableAllHooks" };
-        assert!(!gate_run(&store, run_id, "pr_reviewer@pr1", ok, Some(&off)).unwrap());
+        let gated = gate_run(&store, run_id, "pr_reviewer@pr1", ok, Some(&off), relaunch).unwrap();
+        assert_eq!(gated, GateRun { bridged: false, manual_now: true });
         {
             let state = store.lock().unwrap();
             let run = state.pipeline_run_by_id(run_id).unwrap();
             assert_eq!(run.engine, 1);
             assert_eq!(run.events.last().unwrap().stage_id.as_deref(), Some("pr_reviewer"));
-            assert!(run.engine_note.as_deref().unwrap().contains("disableAllHooks"));
+            let note = run.engine_note.as_deref().unwrap();
+            assert!(note.contains("disableAllHooks") && note.contains("manual from now on"), "{note}");
+            assert!(!run.autopilot.as_ref().unwrap().enabled, "autopilot is off");
+            assert_eq!(run.status, crate::store::RunStatus::Stopped);
+            assert_eq!(run.stop_reason, None, "not paused_by_you: the note says why");
+            let saved = StateStore::open_path(dir.join("state.json")).unwrap();
+            assert!(!saved.pipeline_run_by_id(run_id).unwrap().autopilot.as_ref().unwrap().enabled, "saved");
         }
         // An engine-1 run never relaunches bridged, whatever the CLI.
-        assert!(!gate_run(&store, run_id, "pr_reviewer", ok, None).unwrap());
-        assert!(!gate_run(&store, "ee_missing", "pr_reviewer", ok, None).unwrap());
+        assert_eq!(gate_run(&store, run_id, "pr_reviewer", ok, None, relaunch).unwrap(), GateRun::default());
+        assert_eq!(gate_run(&store, "ee_missing", "pr_reviewer", ok, None, relaunch).unwrap(), GateRun::default());
     }
 
     /// A pipeline of your own: a copy of the Planner (Settings › Roles ›

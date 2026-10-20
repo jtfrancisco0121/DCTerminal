@@ -103,6 +103,26 @@ pub fn apply(run: &mut crate::store::PipelineRun, gate: &Gate, stage_id: &str) -
     }
 }
 
+/// A run that was running bridged was just switched to engine 1 at a
+/// relaunch: autopilot goes off for good (status `stopped`, no stop reason:
+/// the engine note and the Timeline say why).
+pub fn make_manual(run: &mut crate::store::PipelineRun, stage_id: &str) {
+    run.set_autopilot_enabled(false);
+    run.stop_reason = None;
+    let why = run
+        .engine_note
+        .take()
+        .and_then(|note| note.split(", so this run uses engine 1").next().map(str::to_string))
+        .filter(|why| !why.is_empty());
+    let line = "This run was running with the pipeline bridge, so it is manual from now on: autopilot is off. Hand each stage on yourself.";
+    let note = match why {
+        Some(why) => format!("{why}. {line}"),
+        None => line.to_string(),
+    };
+    run.log("note", Some(stage_id), None, note.clone(), None);
+    run.engine_note = Some(note);
+}
+
 /// The managed settings file Claude Code reads on this OS.
 pub fn managed_settings_path() -> Option<PathBuf> {
     if cfg!(target_os = "macos") {

@@ -363,7 +363,6 @@ export function useAutopilot(deps: AutopilotDeps) {
 
   /** Itself, for a turn queued while the tab's previous turn was handled. */
   const onBridgeTurnRef = useRef<(turn: BridgeTurn) => void>(() => {});
-  const onTerminalLogRef = useRef<(tabId: string, log: TerminalSessionLog | null) => void>(() => {});
 
   /**
    * A bridged stage's finished turn (engine 2): the bridge says the turn
@@ -470,21 +469,10 @@ export function useAutopilot(deps: AutopilotDeps) {
    * waits for Continue (D29).
    */
   const readBridgeTurn = useCallback(
-    async (tabId: string, log: TerminalSessionLog | null) => {
+    async (tabId: string) => {
       // intentionally silent: the event (or Continue) still delivers the turn.
       const turn = await pipelineBridgeTurn(tabId).catch(() => null);
-      if (!turn) {
-        // The core may have dropped the tab's bridge (a Restart whose D24
-        // gate switched the run to engine 1): with fresh tabs, an unbridged
-        // tab is decided from its log, the v1 way.
-        const d = depsRef.current;
-        // intentionally silent: a failed refresh leaves the tab as it was.
-        await d.refreshTabs().catch(() => {});
-        const fresh = d.tabs().find((t) => t.id === tabId);
-        if (fresh?.chain && !fresh.bridge) onTerminalLogRef.current(tabId, log);
-        return;
-      }
-      if (handledBridge.current.get(tabId) === turn.turn) return;
+      if (!turn || handledBridge.current.get(tabId) === turn.turn) return;
       const at = Date.parse(turn.endedAt);
       if (!(Number.isFinite(at) && at >= startedAt.current - 2000)) {
         handledBridge.current.set(tabId, turn.turn);
@@ -507,10 +495,20 @@ export function useAutopilot(deps: AutopilotDeps) {
       if (!tab?.chain || tab.kind !== "terminal" || ptyExitCode(tabId) != null) return;
       if (tab.bridge) {
         // Engine 2: the bridge reports this tab's turns (onBridgeTurn).
-        if (log?.turnDone && !busy.current.has(tabId)) void readBridgeTurn(tabId, log);
+        if (log?.turnDone && !busy.current.has(tabId)) void readBridgeTurn(tabId);
         return;
       }
       const turn = finishedTurn(tab.roleId, log, tab.chain.kind);
+      if (log && handledBridge.current.has(tabId)) {
+        // The tab was bridged in this app session and lost its bridge (a
+        // relaunch of a tab that no longer owns its stage): the log's turn
+        // is the one the bridge decided, under a key v1 cannot match. The
+        // v1 path takes over from the next prompt.
+        handledBridge.current.delete(tabId);
+        seen.current.add(tabId);
+        if (turn) handled.current.set(tabId, turn.key);
+        return;
+      }
       if (log && !seen.current.has(tabId)) {
         seen.current.add(tabId);
         // Finished before this app session (a restart): never acted on again.
@@ -644,7 +642,6 @@ export function useAutopilot(deps: AutopilotDeps) {
     },
     [carryOut, readBridgeTurn, stop],
   );
-  onTerminalLogRef.current = onTerminalLog;
 
   /**
    * Overview › Continue on a run waiting after a restart: the core runs it
