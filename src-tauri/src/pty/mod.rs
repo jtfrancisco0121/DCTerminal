@@ -790,6 +790,58 @@ fn label_starting_chain(
     Ok(Some(StartedChain { chain_id, run_id, made_run }))
 }
 
+/// The rest of a start after [`label_starting_chain`] labelled `started`:
+/// when it fails, the label is undone ([`undo_starting_chain`]).
+fn after_starting_label<T>(
+    events: &dyn crate::commands::chain_events::ChainEvents,
+    store: &Mutex<StateStore>,
+    tab_id: &str,
+    started: Option<&StartedChain>,
+    runs_root: impl FnOnce() -> Option<PathBuf>,
+    rest: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let result = rest();
+    if let (Err(_), Some(started)) = (&result, started) {
+        // intentionally silent: the start's own error is what the form shows.
+        let _ = undo_starting_chain(events, store, tab_id, started, runs_root);
+    }
+    result
+}
+
+/// A start that failed after [`label_starting_chain`]: the tab leaves the
+/// chain and drops its stage tag, and the run that label made is removed,
+/// with its run folder, unless something else holds it.
+fn undo_starting_chain(
+    events: &dyn crate::commands::chain_events::ChainEvents,
+    store: &Mutex<StateStore>,
+    tab_id: &str,
+    started: &StartedChain,
+    runs_root: impl FnOnce() -> Option<PathBuf>,
+) -> Result<(), String> {
+    let mut state = store.lock().map_err(|err| err.to_string())?;
+    let labelled = state
+        .tab_by_id(tab_id)
+        .and_then(|tab| tab.chain.as_ref())
+        .is_some_and(|chain| chain.chain_id == started.chain_id);
+    if !labelled {
+        return Ok(());
+    }
+    crate::commands::chain_events::set_tab_chain_and_notify(events, &mut state, tab_id, None, None)?;
+    state.set_tab_bridge(tab_id, None)?;
+    let Some(run_id) = started.run_id.as_deref().filter(|_| started.made_run) else {
+        return Ok(());
+    };
+    if state.remove_unheld_run(run_id, &started.chain_id, tab_id)? {
+        drop(state);
+        events.chain_run_updated(run_id);
+        if let Some(dir) = runs_root().and_then(|root| crate::bridge::folder::run_dir(&root, run_id)) {
+            // intentionally silent: a folder left behind holds no run and is never read.
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+    Ok(())
+}
+
 /// The bridge plan for a role terminal opened at `chain`, when that stage
 /// launches bridged (`bridge::launch::plan_for`). Without a `chain`, the
 /// chain step the tab already holds: a fanned-out lane's Implementer, or a
@@ -1111,69 +1163,78 @@ fn role_terminal_start_blocking(
     // The chain this start begins: its run exists before the spawn (and
     // before the run folder below), labelled the way the frontend used to
     // label it once the terminal ran.
-    if let Some(chain) = starting {
-        if label_starting_chain(&app, &store, &tab_id, chain, new_run_gate)?.is_none() {
-            // It joined a chain meanwhile: the planned run never came to be.
-            bridge = None;
-        }
-    }
-    // The run folder is written before the launch, and the tab records the
-    // stage it holds (or that it holds none, when reused for another role).
-    let bridge_flags = match &bridge {
-        Some(plan) => {
-            let (runs, program) = bridge_paths(&app)?;
-            let run_dir = crate::bridge::launch::prepare_stage(&runs, plan, &tab_id)?;
-            Some(crate::bridge::launch::launch_flags(
-                plan.kind,
-                &program,
-                &run_dir,
-                &plan.run_id,
-                &plan.stage_key,
-                &tab_id,
-            ))
+    let started = match starting {
+        Some(chain) => {
+            let started = label_starting_chain(&app, &store, &tab_id, chain, new_run_gate)?;
+            if started.is_none() {
+                // It joined a chain meanwhile: the planned run never came to be.
+                bridge = None;
+            }
+            started
         }
         None => None,
     };
-    {
-        let mut state = store.lock().map_err(|err| err.to_string())?;
-        let tag = bridge.as_ref().map(|plan| crate::bridge::BridgeTag {
-            run_id: plan.run_id.clone(),
-            stage: plan.stage_key.clone(),
-        });
-        state.set_tab_bridge(&tab_id, tag)?;
-    }
-    let delivery = store_prompt(&app, &tab_id, &program, &prompt)?;
-    let mut request = role_launch(Some(delivery.argument.clone()));
-    if provider.id() == ProviderId::Claude {
-        let config = provider.config_dir().map(|dir| dir.path);
-        request.settings = usage_status_line(&app, &tab_id, config.as_deref(), &cwd);
-    }
-    // One `--settings`: the bridge's hooks join the status line.
-    let mut command =
-        crate::bridge::launch::bridged_command(request, bridge_flags, |req| provider.terminal_command(req))?;
-    if provider.id() == ProviderId::Claude {
-        command.env.push(claude_scheme_env());
-    }
-    let pid = open_session(
-        &registry,
-        &tab_id,
-        SpawnSpec {
-            program: command.program,
-            args: command.args,
-            env: command.env,
-            cwd,
-            cols: input.cols,
-            rows: input.rows,
-        },
-        claude_session,
-        on_output,
-    )?;
-    remember_folder(&projects, &recent_folder);
-    Ok(TerminalStartResult {
-        errors: Vec::new(),
-        tab_id: Some(tab_id),
-        pid,
-        used_prompt_file: delivery.stored_body.is_some(),
+    // A failure from here on undoes the chain label above (and the run it made).
+    let runs_root = || bridge_paths(&app).ok().map(|(runs, _)| runs);
+    after_starting_label(&app, &store, &tab_id, started.as_ref(), runs_root, || {
+        // The run folder is written before the launch, and the tab records the
+        // stage it holds (or that it holds none, when reused for another role).
+        let bridge_flags = match &bridge {
+            Some(plan) => {
+                let (runs, program) = bridge_paths(&app)?;
+                let run_dir = crate::bridge::launch::prepare_stage(&runs, plan, &tab_id)?;
+                Some(crate::bridge::launch::launch_flags(
+                    plan.kind,
+                    &program,
+                    &run_dir,
+                    &plan.run_id,
+                    &plan.stage_key,
+                    &tab_id,
+                ))
+            }
+            None => None,
+        };
+        {
+            let mut state = store.lock().map_err(|err| err.to_string())?;
+            let tag = bridge.as_ref().map(|plan| crate::bridge::BridgeTag {
+                run_id: plan.run_id.clone(),
+                stage: plan.stage_key.clone(),
+            });
+            state.set_tab_bridge(&tab_id, tag)?;
+        }
+        let delivery = store_prompt(&app, &tab_id, &program, &prompt)?;
+        let mut request = role_launch(Some(delivery.argument.clone()));
+        if provider.id() == ProviderId::Claude {
+            let config = provider.config_dir().map(|dir| dir.path);
+            request.settings = usage_status_line(&app, &tab_id, config.as_deref(), &cwd);
+        }
+        // One `--settings`: the bridge's hooks join the status line.
+        let mut command =
+            crate::bridge::launch::bridged_command(request, bridge_flags, |req| provider.terminal_command(req))?;
+        if provider.id() == ProviderId::Claude {
+            command.env.push(claude_scheme_env());
+        }
+        let pid = open_session(
+            &registry,
+            &tab_id,
+            SpawnSpec {
+                program: command.program,
+                args: command.args,
+                env: command.env,
+                cwd,
+                cols: input.cols,
+                rows: input.rows,
+            },
+            claude_session,
+            on_output,
+        )?;
+        remember_folder(&projects, &recent_folder);
+        Ok(TerminalStartResult {
+            errors: Vec::new(),
+            tab_id: Some(tab_id.clone()),
+            pid,
+            used_prompt_file: delivery.stored_body.is_some(),
+        })
     })
 }
 
@@ -1833,6 +1894,81 @@ mod tests {
         let run = saved.pipeline_run_by_id(&chain.chain_id).unwrap();
         assert_eq!(run.engine, 1);
         assert!(run.engine_note.as_deref().unwrap().contains("2.1.200"));
+    }
+
+    #[test]
+    fn a_start_that_fails_after_labelling_a_new_chain_leaves_no_run_behind() {
+        let dir = crate::test_support::TempDir::new("failed_start_new_chain");
+        let store = store_with_engine2_run(&dir);
+        let runs = dir.join("runs");
+        let tab = draft_tab(&store, "role_planner");
+        let chain = crate::bridge::launch::new_chain(&crate::pipelines::find("eagle1").unwrap(), "eagle1", 8);
+        let events = Recorded::default();
+        let started = label_starting_chain(&events, &store, &tab, chain.clone(), None).unwrap().unwrap();
+        // The run folder was written, then the spawn failed.
+        let plan = crate::bridge::launch::plan_for_new_run(&crate::pipelines::find("eagle1").unwrap(), &chain, "role_planner")
+            .unwrap();
+        crate::bridge::launch::prepare_stage(&runs, &plan, &tab).unwrap();
+        store
+            .lock()
+            .unwrap()
+            .set_tab_bridge(&tab, Some(crate::bridge::BridgeTag { run_id: plan.run_id.clone(), stage: plan.stage_key.clone() }))
+            .unwrap();
+        let failed: Result<(), String> =
+            after_starting_label(&events, &store, &tab, Some(&started), || Some(runs.clone()), || Err("spawn failed".into()));
+        assert_eq!(failed, Err("spawn failed".to_string()));
+        let saved = StateStore::open_path(dir.join("state.json")).unwrap();
+        assert!(saved.pipeline_run_by_id(&chain.chain_id).is_none(), "no run left behind");
+        let record = saved.tab_by_id(&tab).unwrap();
+        assert_eq!(record.chain, None, "the tab left the chain");
+        assert_eq!(record.bridge, None, "and holds no stage");
+        assert!(!runs.join(&chain.chain_id).exists(), "its run folder is gone");
+        assert!(saved.pipeline_run_by_id("ee_1700000000000").is_some(), "other runs stay");
+        assert_eq!(events.0.borrow().last(), Some(&chain.chain_id), "its overview refetches");
+        // A success keeps the label.
+        let other = draft_tab(&store, "role_planner");
+        let chain = crate::bridge::launch::new_chain(&crate::pipelines::find("eagle1").unwrap(), "eagle1", 9);
+        let started = label_starting_chain(&events, &store, &other, chain.clone(), None).unwrap().unwrap();
+        after_starting_label(&events, &store, &other, Some(&started), || None, || Ok(())).unwrap();
+        assert!(store.lock().unwrap().pipeline_run_by_id(&chain.chain_id).is_some());
+    }
+
+    #[test]
+    fn role_terminal_start_runs_everything_after_the_chain_label_under_its_undo() {
+        let source = include_str!("mod.rs");
+        let body = &source[source.find("fn role_terminal_start_blocking(").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let label = body.find("label_starting_chain(").expect("labels the chain");
+        let undo = body.find("after_starting_label(").expect("undoes the label on a failure");
+        assert!(label < undo);
+        for step in ["prepare_stage(", "set_tab_bridge(", "store_prompt(", "bridged_command(", "open_session("] {
+            assert!(body.find(step).expect(step) > undo, "{step} runs under the undo");
+        }
+    }
+
+    #[test]
+    fn a_failed_start_keeps_a_run_something_else_holds() {
+        let dir = crate::test_support::TempDir::new("failed_start_held_run");
+        let store = store_with_engine2_run(&dir);
+        let tab = draft_tab(&store, "role_planner");
+        let chain = crate::bridge::launch::new_chain(&crate::pipelines::find("eagle1").unwrap(), "eagle1", 10);
+        let events = Recorded::default();
+        let started = label_starting_chain(&events, &store, &tab, chain.clone(), None).unwrap().unwrap();
+        // Another tab joined the run meanwhile.
+        let reviewer = draft_tab(&store, "role_plan_reviewer");
+        let mut step2 = chain.clone();
+        step2.step = 2;
+        store.lock().unwrap().set_tab_chain(&reviewer, Some(step2), Some("the plan")).unwrap();
+        let _ = after_starting_label(&events, &store, &tab, Some(&started), || None, || Err::<(), _>("no".into()));
+        let state = store.lock().unwrap();
+        assert!(state.pipeline_run_by_id(&chain.chain_id).is_some(), "held by the other tab");
+        assert_eq!(state.tab_by_id(&tab).unwrap().chain, None, "the failed tab still leaves it");
+        drop(state);
+        // A run that existed before the label is never removed.
+        let tab2 = draft_tab(&store, "role_planner");
+        let existing = StartedChain { chain_id: "ee_1700000000000".into(), run_id: Some("ee_1700000000000".into()), made_run: false };
+        let _ = after_starting_label(&events, &store, &tab2, Some(&existing), || None, || Err::<(), _>("no".into()));
+        assert!(store.lock().unwrap().pipeline_run_by_id("ee_1700000000000").is_some());
     }
 
     fn copied_planner_pipeline(id: &str) -> crate::pipelines::PipelineDef {
