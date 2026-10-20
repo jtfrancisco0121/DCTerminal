@@ -7,7 +7,8 @@ use super::prompts::{self, StageSources};
 use super::{lock, ActorMsg, Host, Prefill, StageLaunch, UserAction, UserOutcome};
 use crate::bridge::folder::{read_json, RunFindings, RunPrs, TASKS_FILE};
 use crate::bridge::launch::{
-    clear_stage_turn, launch_flags, plan_for, prepare_stage, read_stage_turn, relaunch_flags, BridgePlan,
+    clear_stage_turn, launch_flags, plan_for, prepare_stage, read_stage_turn, relaunch_flags, restore_stage_turn,
+    BridgePlan,
 };
 use crate::bridge::{BridgeTag, BridgeTurn, TurnOutcome};
 use crate::commands::pipeline::{approve, note, set_lane_status, turn_finished};
@@ -641,8 +642,9 @@ impl<H: Host> Actor<H> {
             self.changed();
             None
         };
-        clear_stage_turn(&self.host.runs_root(), tag, &tab.id)?;
-        self.host.resume_stage(&StageLaunch {
+        let runs = self.host.runs_root();
+        let cleared = clear_stage_turn(&runs, tag, &tab.id)?;
+        let resumed = self.host.resume_stage(&StageLaunch {
             run_id: self.run_id.clone(),
             tab_id: tab.id.clone(),
             role_id: tab.role_id.clone(),
@@ -650,7 +652,17 @@ impl<H: Host> Actor<H> {
             prompt: prompt.to_string(),
             session_id: session_id.to_string(),
             bridge,
-        })?;
+        });
+        if let Err(err) = resumed {
+            // Its last turn stays the stage's result (idle again for a Send
+            // back by hand), unless a new one was written meanwhile.
+            if let Some(saved) = cleared {
+                if let Err(restore) = restore_stage_turn(&runs, tag, &tab.id, &saved) {
+                    eprintln!("DCTerminal: run {}: turn not restored: {restore}", self.run_id);
+                }
+            }
+            return Err(err);
+        }
         // A view that saw the old program end attaches to the new one.
         self.host.tab_opened(&self.run_id, &tab.id);
         self.changed();

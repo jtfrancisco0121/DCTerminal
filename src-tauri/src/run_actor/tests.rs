@@ -452,6 +452,13 @@ fn a_resume_that_fails_stops_the_run() {
         assert!(run.claims.iter().all(|c| !c.key.starts_with("back:")), "its hand-off record is given back: {:?}", run.claims);
     });
     assert!(fx.stops().last().unwrap().1.contains("claude would not start"), "{:?}", fx.stops());
+    // The Planner's last turn is not lost: it still reads as idle, so a Send
+    // back by hand is not refused as "still working".
+    let tag = fx.tab(&fx.planner).bridge.expect("still bridged");
+    assert!(
+        crate::bridge::launch::read_stage_turn(&fx.host.runs, &tag, &fx.planner).is_some(),
+        "a failed resume puts the stage's turn back"
+    );
 }
 
 #[test]

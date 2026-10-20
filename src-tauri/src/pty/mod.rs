@@ -573,7 +573,16 @@ fn replace_detached(
             group.kill();
         }
     }
-    open_session_claimed(registry, id, spec, claude_session, Output::Detached { on_exit, view }, Some(token))
+    let told = view.clone();
+    let opened = open_session_claimed(registry, id, spec, claude_session, Output::Detached { on_exit, view }, Some(token));
+    if opened.is_err() {
+        // The old program is gone and no new one runs: the view must not go
+        // on looking like a live terminal.
+        if let Some(channel) = told {
+            let _ = channel.send(exit_packet(None));
+        }
+    }
+    opened
 }
 
 /// Wait until a replaced terminal's program group has exited. Its control
@@ -3023,6 +3032,42 @@ mod tests {
         assert!(took < backstop, "the resume killed it at the grace, not S1's backstop: took {took:?}");
         assert!(!old.running(), "then killed it");
         assert!(registry.lock().unwrap().running("s"), "and started the new program");
+        registry.lock().unwrap().shutdown_all();
+    }
+
+    // A resume whose new program cannot start leaves no live-looking view:
+    // the view hears the stage ended.
+    #[cfg(unix)]
+    #[test]
+    fn a_resume_that_cannot_start_tells_the_view_the_program_ended() {
+        let dir = crate::test_support::TempDir::new("pty_resume_spawn_fails");
+        let missing = SpawnSpec { program: dir.join("no-such-claude").display().to_string(), ..sh_spec(dir.path(), "true") };
+        // A stage the actor started, with a view attached.
+        let registry = Mutex::new(PtyRegistry::new());
+        let (old_exit, _old_exits) = exit_probe();
+        let script = "trap 'exit 143' TERM\nprintf 'old program'\nwhile :; do sleep 0.05; done";
+        open_session_to(&registry, "s", sh_spec(dir.path(), script), None, Output::Detached { on_exit: old_exit, view: None })
+            .unwrap();
+        let (view, seen) = recording_view();
+        loop {
+            attach_detached(&registry, "s", &view).unwrap();
+            if seen.lock().unwrap().iter().any(|p| p.1.contains("old program")) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        let (new_exit, _new_exits) = exit_probe();
+        let result = replace_detached(&registry, "s", missing.clone(), None, new_exit, RESUME_STOP_GRACE);
+        assert!(result.is_err(), "{result:?}");
+        wait_seen(&seen, "the stage's view hears it ended", |p| p.0 == "exit");
+        // A terminal you opened yourself (its own view).
+        let (own, own_seen) = recording_view();
+        open_session(&registry, "p", sh_spec(dir.path(), script), None, own).unwrap();
+        wait_seen(&own_seen, "the view streams it", |p| p.1.contains("old program"));
+        let (new_exit, _new_exits) = exit_probe();
+        let result = replace_detached(&registry, "p", missing, None, new_exit, RESUME_STOP_GRACE);
+        assert!(result.is_err(), "{result:?}");
+        wait_seen(&own_seen, "your view hears it ended", |p| p.0 == "exit");
         registry.lock().unwrap().shutdown_all();
     }
 
