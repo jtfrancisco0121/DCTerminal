@@ -163,3 +163,19 @@ fn stall_minutes_default_to_30_and_are_set_per_pipeline() {
     slow.autopilot.stall_minutes = 1441;
     assert!(validate_user_pipelines(&[slow]).unwrap_err().contains("stallMinutes"));
 }
+
+#[test]
+fn a_loaded_stall_minutes_out_of_range_uses_the_default_limit() {
+    // pipelines.json loads without validation, so the watchdog must not
+    // trust a hand-edited value: 0 is not "1 minute" and 100000 is not "off".
+    let mut def = user_def("hand_edited");
+    let default = std::time::Duration::from_secs(u64::from(DEFAULT_STALL_MINUTES) * 60);
+    for bad in [0, MAX_STALL_MINUTES + 1, 100_000] {
+        def.autopilot.stall_minutes = bad;
+        assert_eq!(recovery::stall_limit(&def), default, "stallMinutes {bad}");
+    }
+    for good in [1, MAX_STALL_MINUTES] {
+        def.autopilot.stall_minutes = good;
+        assert_eq!(recovery::stall_limit(&def), std::time::Duration::from_secs(u64::from(good) * 60));
+    }
+}

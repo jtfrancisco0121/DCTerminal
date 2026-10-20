@@ -14,7 +14,7 @@
 //!   terminal output and no log growth for the pipeline's
 //!   `autopilot.stallMinutes` puts the run in `waiting` with `stalled`.
 
-use super::{PipelineDef, StageDef};
+use super::{PipelineDef, StageDef, DEFAULT_STALL_MINUTES, MAX_STALL_MINUTES};
 use crate::claude_session_log::TerminalSessionLog;
 use crate::store::{PipelineRun, RunStatus, StopReason};
 use std::collections::{HashMap, HashSet};
@@ -165,8 +165,12 @@ fn log_for(run: &mut PipelineRun, kind: &str, tab: &StageTab, summary: String) {
 }
 
 /// How long a Working stage may stay quiet: the pipeline's `stallMinutes`.
+/// pipelines.json loads without validation, so a value outside 1 to 1440
+/// (only checked on save) counts as the default of 30; the file is left as is.
 pub fn stall_limit(def: &PipelineDef) -> Duration {
-    Duration::from_secs(u64::from(def.autopilot.stall_minutes.max(1)) * 60)
+    let minutes = def.autopilot.stall_minutes;
+    let minutes = if (1..=MAX_STALL_MINUTES).contains(&minutes) { minutes } else { DEFAULT_STALL_MINUTES };
+    Duration::from_secs(u64::from(minutes) * 60)
 }
 
 /// One look at a stage terminal, for `StallWatch::observe`.

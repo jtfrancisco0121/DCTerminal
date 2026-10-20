@@ -27,7 +27,7 @@ pub const DEFAULT_PAUSE_AT_USAGE_PERCENT: u8 = 90;
 /// stall watchdog stops the run (D30).
 pub const DEFAULT_STALL_MINUTES: u32 = 30;
 /// Largest `stallMinutes`: one day.
-const MAX_STALL_MINUTES: u32 = 24 * 60;
+pub(crate) const MAX_STALL_MINUTES: u32 = 24 * 60;
 const MAX_PIPELINES: usize = 50;
 const MAX_STAGES: usize = 12;
 const MAX_ID_CHARS: usize = 64;
