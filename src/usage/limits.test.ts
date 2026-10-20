@@ -68,6 +68,19 @@ describe("Claude limit display", () => {
     expect(isStale(window({ resetsAt: null, seenAtMs: now - 60_000 }), now)).toBe(false);
   });
 
+  it("shows the current 7d window when only the 5h reading is stale, matching the usage percent", () => {
+    const now = Date.UTC(2026, 9, 10, 12, 0);
+    const windows = [
+      window({ resetsAt: Date.UTC(2026, 9, 10, 9, 0) / 1000, utilization: 91 }),
+      window({ rateLimitType: "seven_day", label: "7d", utilization: 40, resetsAt: Date.UTC(2026, 9, 14) / 1000 }),
+    ];
+    const line = statusLimit(windows, now);
+    expect(line.text).not.toMatch(/unknown/);
+    expect(line.text.startsWith("Claude 7d 40%")).toBe(true);
+    expect(knownUsagePercent(windows, now)).toBe(40);
+    expect(line.title).toContain("Claude 5h has reset since the last reading");
+  });
+
   it("a reading with no reset time is stale once its window's length has passed", () => {
     const now = Date.UTC(2026, 9, 10, 12, 0);
     const hour = 3_600_000;

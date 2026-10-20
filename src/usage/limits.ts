@@ -94,7 +94,7 @@ export function autopilotUsageLine(
   return { known: true, text: `Claude usage: ${used}% (autopilot pauses at ${pauseAt}%).` };
 }
 
-/** Status-bar line. Prefers the 5-hour window. Unknown until the first update. */
+/** Status-bar line. Prefers the current 5-hour window, then any current one. Unknown until the first update or when every reading is stale. */
 export function statusLimit(windows: RateWindow[], now = Date.now()): LimitLine {
   if (windows.length === 0) {
     return {
@@ -103,15 +103,20 @@ export function statusLimit(windows: RateWindow[], now = Date.now()): LimitLine 
       title: USAGE_NOTE,
     };
   }
-  const primary = windows.find((window) => window.rateLimitType === "five_hour") ?? windows[0];
+  const preferred = (list: RateWindow[]) =>
+    list.find((window) => window.rateLimitType === "five_hour") ?? list[0];
+  // A stale 5h reading falls back to a window still current (as the usage
+  // percent does); unknown only when every reading is stale.
+  const current = preferred(windows.filter((window) => !isStale(window, now)));
+  const primary = current ?? preferred(windows);
   const lines = windows.map((window) =>
     isStale(window, now) ? `Claude ${window.label} has reset since the last reading` : formatWindowLine(window),
   );
   const title = [USAGE_NOTE, ...lines, `Last reported ${formatSeen(primary.seenAtMs)}`].join("\n");
-  if (isStale(primary, now)) {
+  if (!current) {
     return { text: `Claude usage unknown · ${primary.label} reset since the last reading`, tone: "muted", title };
   }
-  return { text: formatWindowLine(primary), tone: limitTone(primary), title };
+  return { text: formatWindowLine(current), tone: limitTone(current), title };
 }
 
 /** A one-time heads-up about a limit window. `key` changes when the window resets. */
