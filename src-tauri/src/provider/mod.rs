@@ -172,11 +172,13 @@ pub enum TerminalKind {
     /// Reopen a CLI session by id.
     Resume { session_id: String },
     /// Reopen a Claude role terminal's session with the role's own flags
-    /// (permission mode) and no startup prompt.
+    /// (permission mode). `prompt` starts a turn at once (the run actor
+    /// resuming a stage with a loop-back, V4); `None` waits for you.
     RoleResume {
         role_id: String,
         run_mode: RunMode,
         session_id: String,
+        prompt: Option<String>,
         stage_kind: Option<StageKind>,
     },
 }

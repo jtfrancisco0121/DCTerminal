@@ -42,6 +42,7 @@ function io(overrides: Partial<HandoffIo> = {}): HandoffIo {
       record: { id: input.id, targetTabId: input.tabId } as HandoffRecord,
       chain: input.chain,
     })),
+    runFilesPrefill: vi.fn(async () => null),
     ...overrides,
   };
 }
@@ -104,6 +105,39 @@ describe("hand-off executor", () => {
       io(),
     );
     expect(out.ok && out.value.nextChain).toEqual(chain(1, 2));
+  });
+
+  it("an engine-2 Send is filled from the run folder's files, not the reply (D20)", async () => {
+    const fake = io({
+      runFilesPrefill: vi.fn(async () => ({
+        values: { plan: "# Plan from plan.md", originalTask: "Title: Login 500", additionalContext: "- Plan: /runs/ee_1/plan.md" },
+        handoffText: "# Plan from plan.md",
+      })),
+    });
+    const out = await prepareHandoff(request({ runFilesFrom: "ee_1" }), fake);
+    expect(fake.runFilesPrefill).toHaveBeenCalledWith("ee_1", "tab_planner", "role_plan_reviewer");
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.value.mapped.answers).toMatchObject({ plan: "# Plan from plan.md", cwd: "/repo" });
+    expect(out.value.mapped.answers.additionalContext).toContain("/runs/ee_1/plan.md");
+    expect(out.value.mapped.planText).toBe("# Plan from plan.md");
+    expect(out.value.mapped.inlinePlan).toBe("# Plan from plan.md");
+    // No run folder (engine 1, or the actor has nothing): the reply's mapping stays.
+    const plain = await prepareHandoff(request({ runFilesFrom: "ee_1" }), io());
+    expect(plain.ok && plain.value.mapped.planText).toContain("Check the token expiry path.");
+    // A round sent back keeps the reviewer's findings.
+    const back = io({ runFilesPrefill: vi.fn(async () => ({ values: {}, handoffText: "x" })) });
+    await prepareHandoff(
+      request({
+        source: source({ sourceRoleId: "role_plan_reviewer", sourceTabId: "tab_review" }),
+        targetRoleId: "role_planner",
+        sourceChain: chain(2),
+        loopBack: { chainId: "ee_1", next: chain(1, 2) },
+        runFilesFrom: "ee_1",
+      }),
+      back,
+    );
+    expect(back.runFilesPrefill).not.toHaveBeenCalled();
   });
 
   it("an off-chain target drops the chain tag", async () => {

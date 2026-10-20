@@ -794,8 +794,9 @@ mod pty {
         assert_eq!(prompts, vec![json!("first prompt"), json!("second prompt")]);
     }
 
-    /// The run actor pastes a round sent back as one bracketed paste and
-    /// Enter: its newlines stay in the one prompt, even split across reads.
+    /// The run actor pastes (a stage with no saved session) as one bracketed
+    /// paste and Enter: its newlines stay in the one prompt, even split
+    /// across reads.
     #[test]
     fn a_bracketed_paste_with_newlines_is_one_prompt() {
         let home = FakeHome::new("fc_paste");
@@ -823,6 +824,37 @@ mod pty {
             prompts,
             vec![json!("Review findings:\n\n1. [HIGH] It retries forever."), json!("line one\nline two")]
         );
+    }
+
+    /// D40: an Esc before any answer puts the prompt back on the input
+    /// line, so what is typed next is appended to it; Ctrl+U clears the
+    /// line first, as the run actor's paste does.
+    #[test]
+    fn an_interrupted_prompt_comes_back_until_ctrl_u_clears_it() {
+        let home = FakeHome::new("fc_restore");
+        let scenario = json!({ "turns": [
+            { "steps": [ { "delay_ms": 20000 }, { "reply": "never" } ] },
+            { "steps": [ { "delay_ms": 20000 }, { "reply": "never" } ] },
+            { "steps": [ { "reply": "Fixed." } ] }
+        ]});
+        let mut fake = home.run(&scenario, &["--session-id", SID, "first prompt"]);
+        fake.wait_log(SID, |log| log.last_prompt_at.is_some() && !log.turn_done);
+        fake.write(b"\x1b");
+        fake.wait_log(SID, |log| log.turn_done && log.interrupted);
+        fake.write(b" again\r");
+        fake.wait_log(SID, |log| !log.turn_done);
+        fake.write(b"\x1b");
+        fake.wait_log(SID, |log| log.turn_done && log.interrupted);
+        fake.write(b"\x15\x1b[200~the fix\x1b[201~\r");
+        fake.wait_log(SID, |log| log.last_reply == "Fixed." && log.turn_done);
+        fake.write(b"/exit\r");
+        assert_eq!(fake.wait_exit(), Some(0));
+        let prompts: Vec<_> = log_records(&fake.log_path(SID).unwrap(), false)
+            .iter()
+            .filter(|r| r["type"] == "user" && r["message"]["content"].is_string())
+            .map(|r| r["message"]["content"].clone())
+            .collect();
+        assert_eq!(prompts, vec![json!("first prompt"), json!("first prompt again"), json!("the fix")]);
     }
 
     /// The S1 graceful stop: SIGTERM, then up to `STOP_GRACE` before SIGKILL.
@@ -1524,19 +1556,22 @@ mod eagle_eye_1 {
     }
 }
 
-/// Pipeline v2 (V3): a whole Eagle-Eye 1 run driven by the Rust run actor,
-/// with no UI. Every stage after the Planner is opened by the actor as a
-/// `fake_claude` terminal launched with its stage's bridge flags; the
+/// Pipeline v2 (V3, V4): a whole Eagle-Eye 1 run driven by the Rust run
+/// actor, with no UI. Every stage after the Planner is opened by the actor
+/// as a `fake_claude` terminal launched with its stage's bridge flags; the
 /// actor hears each finished turn from the run's inbox, runs the gates,
 /// decides and carries the decision out: it sends a plan review round back
-/// into the running Planner, stops at the Implementer's checkpoint until
-/// your Send (an actor message too), pastes a failed check's output back
-/// into the Implementer, sends a PR review round back into the same
-/// Implementer session, and completes the run when the PR Reviewer approves.
+/// to the Planner, stops at the Implementer's checkpoint until your Send
+/// (an actor message too), sends a failed check's output back to the
+/// Implementer, sends a PR review round back to it, and completes the run
+/// when the PR Reviewer approves. Each round sent back stops the stage's
+/// `fake_claude` (SIGTERM) and resumes its session (`--resume`) with a
+/// prompt pointing at `findings-<stage>-r<N>.json` or carrying the check's
+/// output, so the session id never changes (V4).
 mod run_actor {
     use super::*;
     use dcterminal_lib::testing::{
-        bridged_command, bundled_seed, claude_terminal_args, drain_inbox, launch_flags, prepare_stage, runs_root,
+        bridged_command, bundled_seed, claude_terminal_args, drain_inbox, launch_flags, paste_bytes, prepare_stage, runs_root,
         ActorMsg, AppStateFile, BridgePlan, BridgeTag, ChainRef, GateDef, GateResult, Host, InboxEvent, PipelineRun,
         ProgramArgs, ResultKind, Role, RunActors, RunMode, RunStatus, StageLaunch, StateStore, StopReason,
         TerminalKind, TerminalLaunch, UserAction, MAIN_WINDOW_ID,
@@ -1570,6 +1605,9 @@ mod run_actor {
         scenarios: Mutex<HashMap<String, VecDeque<Value>>>,
         terminals: Mutex<HashMap<String, Terminal>>,
         launches: Mutex<Vec<StageLaunch>>,
+        resumes: Mutex<Vec<StageLaunch>>,
+        /// Resumed stages whose old program needed SIGKILL.
+        forced: AtomicUsize,
         stops: Mutex<Vec<String>>,
         notices: Mutex<Vec<String>>,
         /// The pull requests each pull-request gate was given.
@@ -1578,17 +1616,28 @@ mod run_actor {
     }
 
     impl FakeHost {
-        fn start(&self, launch: &StageLaunch, scenario: &Value) {
+        fn start(&self, launch: &StageLaunch, scenario: &Value, resume: bool) {
             let file = self.home.cwd.join(format!("scenario-{}.json", now_nanos()));
             std::fs::write(&file, serde_json::to_vec(scenario).unwrap()).expect("write scenario");
             // As `start_actor_stage` builds it: one --settings with the
-            // bridge's hooks merged into the status line, the prompt last.
+            // bridge's hooks merged into the status line, the prompt last; a
+            // resume (V4) reopens the stage's session with the same flags.
             let request = TerminalLaunch {
-                kind: TerminalKind::Role {
-                    role_id: launch.role_id.clone(),
-                    run_mode: RunMode::Default,
-                    prompt: Some(launch.prompt.clone()),
-                    stage_kind: None,
+                kind: if resume {
+                    TerminalKind::RoleResume {
+                        role_id: launch.role_id.clone(),
+                        run_mode: RunMode::Default,
+                        session_id: launch.session_id.clone(),
+                        prompt: Some(launch.prompt.clone()),
+                        stage_kind: None,
+                    }
+                } else {
+                    TerminalKind::Role {
+                        role_id: launch.role_id.clone(),
+                        run_mode: RunMode::Default,
+                        prompt: Some(launch.prompt.clone()),
+                        stage_kind: None,
+                    }
                 },
                 model: None,
                 session_id: Some(launch.session_id.clone()),
@@ -1630,6 +1679,15 @@ mod run_actor {
             self.terminals.lock().unwrap().insert(launch.tab_id.clone(), Terminal { session, screen, exited });
         }
 
+        fn next_scenario(&self, role_id: &str) -> Result<Value, String> {
+            self.scenarios
+                .lock()
+                .unwrap()
+                .get_mut(role_id)
+                .and_then(VecDeque::pop_front)
+                .ok_or_else(|| format!("no scenario left for {role_id}"))
+        }
+
         fn screens(&self) -> String {
             let terminals = self.terminals.lock().unwrap();
             terminals
@@ -1654,24 +1712,37 @@ mod run_actor {
             self.roles.iter().find(|r| r.id == role_id).cloned()
         }
         fn spawn_stage(&self, launch: &StageLaunch) -> Result<(), String> {
-            let scenario = self
-                .scenarios
-                .lock()
-                .unwrap()
-                .get_mut(&launch.role_id)
-                .and_then(VecDeque::pop_front)
-                .ok_or_else(|| format!("no scenario left for {}", launch.role_id))?;
-            self.start(launch, &scenario);
+            let scenario = self.next_scenario(&launch.role_id)?;
+            self.start(launch, &scenario, false);
             self.launches.lock().unwrap().push(launch.clone());
+            Ok(())
+        }
+        /// As the app's `pty::replace_detached`: SIGTERM, wait for the exit
+        /// (SIGKILL after 10 s), then `fake_claude --resume` in its place.
+        fn resume_stage(&self, launch: &StageLaunch) -> Result<(), String> {
+            let scenario = self.next_scenario(&launch.role_id)?;
+            let old = self.terminals.lock().unwrap().remove(&launch.tab_id);
+            if let Some(old) = old {
+                let group = old.session.group();
+                group.terminate();
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !old.exited.load(Ordering::SeqCst) && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                if !old.exited.load(Ordering::SeqCst) {
+                    self.forced.fetch_add(1, Ordering::SeqCst);
+                    group.kill();
+                }
+            }
+            self.start(launch, &scenario, true);
+            self.resumes.lock().unwrap().push(launch.clone());
             Ok(())
         }
         fn paste(&self, tab_id: &str, text: &str) -> Result<(), String> {
             let terminals = self.terminals.lock().unwrap();
             let terminal = terminals.get(tab_id).ok_or_else(|| format!("no terminal {tab_id}"))?;
-            let mut bytes = b"\x1b[200~".to_vec();
-            bytes.extend_from_slice(text.as_bytes());
-            bytes.extend_from_slice(b"\x1b[201~\r");
-            terminal.session.write(&bytes).map_err(|err| err.to_string())
+            // The app's bytes (`PtyRegistry::paste`): Ctrl+U first (D40).
+            terminal.session.write(&paste_bytes(text)).map_err(|err| err.to_string())
         }
         fn terminal_live(&self, tab_id: &str) -> bool {
             self.terminals.lock().unwrap().get(tab_id).is_some_and(|t| !t.exited.load(Ordering::SeqCst))
@@ -1747,23 +1818,32 @@ mod run_actor {
     }
 
     fn implemented(reply: &str) -> Value {
-        json!({ "steps": [
+        json!({ "turns": [{ "steps": [
             submit(json!({
                 "prs": [{ "url": "https://github.com/acme/app/pull/12", "branch": "fix/refresh", "title": "Refresh tokens" }],
                 "summary": "Expired tokens are refreshed once.",
                 "checks": [{ "command": "npm test", "passed": true }]
             })),
             { "reply": reply }
-        ] })
+        ] }] })
     }
 
     fn reviewed(verdict: &str, findings: Value) -> Value {
         json!({ "turns": [{ "steps": [submit(json!({ "verdict": verdict, "findings": findings })), { "reply": verdict }] }] })
     }
 
-    /// Every scenario, by role, in the order the actor opens terminals.
+    fn planned(version: &str, reply: &str) -> Value {
+        json!({ "turns": [{ "steps": [
+            { "tool": "ExitPlanMode", "input": { "plan": plan(version) }, "permission": true },
+            { "reply": reply }
+        ] }] })
+    }
+
+    /// Every scenario, by role, in the order the actor opens or resumes
+    /// terminals (a resumed `fake_claude` runs a scenario of its own).
     fn scenarios() -> HashMap<String, VecDeque<Value>> {
         HashMap::from([
+            ("role_planner".to_string(), VecDeque::from([planned("v2", "The plan is revised.")])),
             (
                 "role_plan_reviewer".to_string(),
                 VecDeque::from([
@@ -1773,11 +1853,11 @@ mod run_actor {
             ),
             (
                 "role_implementer".to_string(),
-                VecDeque::from([json!({ "turns": [
+                VecDeque::from([
                     implemented("Opened https://github.com/acme/app/pull/12"),
                     implemented("Fixed the failing test."),
                     implemented("Addressed the review."),
-                ] })]),
+                ]),
             ),
             (
                 "role_pr_reviewer".to_string(),
@@ -1812,6 +1892,8 @@ mod run_actor {
             assert_eq!(run.engine, 2, "Eagle-Eye 1 runs on engine 2");
             run.set_autopilot_enabled(true);
             store.set_tab_bridge(&tab, Some(BridgeTag { run_id: RUN.into(), stage: "planner".into() })).unwrap();
+            // As `role_terminal_start` does: the tab knows its session.
+            store.remember_claude_terminal_session(&tab, PLANNER_SID).unwrap();
             store.save().unwrap();
             tab
         };
@@ -1834,19 +1916,7 @@ mod run_actor {
             session_id: PLANNER_SID.into(),
             bridge: Some(launch_flags(ResultKind::Planner, Path::new(DCTERMINAL), &run_dir, RUN, "planner", &planner)),
         };
-        host.start(
-            &launch,
-            &json!({ "turns": [
-                { "steps": [
-                    { "tool": "ExitPlanMode", "input": { "plan": plan("v1") }, "permission": true },
-                    { "reply": "The plan is written." }
-                ] },
-                { "steps": [
-                    { "tool": "ExitPlanMode", "input": { "plan": plan("v2") }, "permission": true },
-                    { "reply": "The plan is revised." }
-                ] }
-            ] }),
-        );
+        host.start(&launch, &planned("v1", "The plan is written."), false);
     }
 
     fn snapshot(host: &FakeHost) -> PipelineRun {
@@ -1871,6 +1941,13 @@ mod run_actor {
             .collect()
     }
 
+    /// How many session logs `session_id` has under the fake config folder.
+    fn session_logs(host: &FakeHost, session_id: &str) -> usize {
+        std::fs::read_dir(host.home.config.path().join("projects"))
+            .map(|dirs| dirs.flatten().filter(|dir| dir.path().join(format!("{session_id}.jsonl")).is_file()).count())
+            .unwrap_or(0)
+    }
+
     #[test]
     fn a_whole_eagle_eye_1_runs_on_the_actor_with_a_loop_back_and_a_failed_gate() {
         let data = TempDir::new("actor_ee1_data");
@@ -1889,6 +1966,8 @@ mod run_actor {
             scenarios: Mutex::new(scenarios()),
             terminals: Mutex::new(HashMap::new()),
             launches: Mutex::new(Vec::new()),
+            resumes: Mutex::new(Vec::new()),
+            forced: AtomicUsize::new(0),
             stops: Mutex::new(Vec::new()),
             notices: Mutex::new(Vec::new()),
             pr_gate_urls: Mutex::new(Vec::new()),
@@ -1951,7 +2030,7 @@ mod run_actor {
         let run = snapshot(&host);
         let all = ledger(&run);
         // Every stage the actor opened, in order: the review rounds each got
-        // a new reviewer, the rounds sent back went into the running stages.
+        // a new reviewer; the rounds sent back resumed the earlier stages.
         let roles: Vec<String> = host.launches.lock().unwrap().iter().map(|l| l.role_id.clone()).collect();
         assert_eq!(
             roles,
@@ -1975,19 +2054,42 @@ mod run_actor {
         assert!(host.notices.lock().unwrap().iter().any(|n| n.starts_with("Run complete")));
         assert!(host.stops.lock().unwrap().iter().all(|s| s.starts_with("Checkpoint")), "{:?}", host.stops.lock().unwrap());
 
-        // The Planner was asked once to revise, in its own session.
+        // V4: each round sent back resumed the stage's own session in its tab.
+        let implementer = host.launches.lock().unwrap()[2].clone();
+        let resumes = host.resumes.lock().unwrap().clone();
+        let resumed: Vec<(&str, &str, &str)> =
+            resumes.iter().map(|r| (r.role_id.as_str(), r.session_id.as_str(), r.tab_id.as_str())).collect();
+        let planner_tab = run.tab_ids["role_planner"].as_str();
+        assert_eq!(
+            resumed,
+            [
+                ("role_planner", PLANNER_SID, planner_tab),
+                ("role_implementer", implementer.session_id.as_str(), implementer.tab_id.as_str()),
+                ("role_implementer", implementer.session_id.as_str(), implementer.tab_id.as_str()),
+            ],
+            "{all}"
+        );
+        assert_eq!(host.forced.load(Ordering::SeqCst), 0, "every old fake_claude exited on SIGTERM");
+        assert_eq!((session_logs(&host, PLANNER_SID), session_logs(&host, &implementer.session_id)), (1, 1), "one log each");
+
+        // The Planner was asked once to revise, in its own session, pointed at the findings file.
         let planner = prompts(&host, PLANNER_SID);
         assert_eq!(planner.len(), 2, "{planner:?}");
-        assert!(planner[1].starts_with("Review findings from the Plan Reviewer (round 1):"), "{}", planner[1]);
+        let plan_findings = host.runs.join(RUN).join("findings-plan_reviewer-r1.json");
+        assert!(planner[1].starts_with("Review findings from the Plan Reviewer (round 1)"), "{}", planner[1]);
+        assert!(planner[1].contains(&plan_findings.display().to_string()), "{}", planner[1]);
         assert!(planner[1].contains("1. [HIGH] src/auth.ts:42: It retries forever."), "{}", planner[1]);
+        let saved: Value = serde_json::from_slice(&std::fs::read(&plan_findings).expect("findings file")).unwrap();
+        assert_eq!(saved["findings"][0]["summary"], json!("It retries forever."));
         // One Implementer session: its prompt from plan.md, the check's output, the review round.
-        let implementer = host.launches.lock().unwrap()[2].clone();
         assert!(implementer.prompt.contains("(v2)"), "the revised plan from plan.md");
         assert!(implementer.prompt.contains("Bug Fix"));
+        assert!(implementer.prompt.contains(&host.runs.join(RUN).join("plan.md").display().to_string()), "points at plan.md");
         let turns = prompts(&host, &implementer.session_id);
         assert_eq!(turns.len(), 3, "{turns:?}");
         assert!(turns[1].contains("FAIL src/auth.test.ts: expected 200, got 500"), "{}", turns[1]);
-        assert!(turns[2].starts_with("Review findings from the PR Reviewer (round 1):"), "{}", turns[2]);
+        assert!(turns[2].starts_with("Review findings from the PR Reviewer (round 1)"), "{}", turns[2]);
+        assert!(turns[2].contains("findings-pr_reviewer-r1.json"), "{}", turns[2]);
         assert!(turns[2].contains("src/auth.ts:57: No test for a second expiry."), "{}", turns[2]);
         // The PR Reviewer read the pull request from prs.json.
         let reviewer = host.launches.lock().unwrap()[3].clone();

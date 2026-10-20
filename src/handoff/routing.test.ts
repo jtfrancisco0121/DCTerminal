@@ -109,6 +109,11 @@ describe("loopBackMessage", () => {
     const old = "Review findings from the PR Reviewer (round 2):\n\n- bug\n\nAddress these findings, then summarize what changed.";
     expect(loopBackFindings(old)?.findings).toBe("- bug");
     expect(loopBackFindings("## Reviewed plan\n1. x")).toBeNull();
+    // Engine 2 (V4): the run actor names the round's findings file too.
+    const resumed =
+      "Review findings from the PR Reviewer (round 3), saved in /data/runs/ee_1/findings-pr_reviewer-r3.json:\n\n1. [HIGH] x\n\n" +
+      loopBackMessage("role_pr_reviewer", "", 3).split("\n\n").pop();
+    expect(loopBackFindings(resumed)).toEqual({ from: "PR Reviewer", round: 3, findings: "1. [HIGH] x" });
   });
 });
 

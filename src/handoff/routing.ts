@@ -77,9 +77,12 @@ export function loopBackMessage(
   return `Review findings from the ${from} (round ${round}):\n\n${findings.trim()}\n\n${ask}`;
 }
 
-/** The findings and round inside a loopBackMessage, or null for any other text. */
+/**
+ * The findings and round inside a loopBackMessage, or null for any other text.
+ * The run actor's (engine 2, V4) also names the round's findings file.
+ */
 export function loopBackFindings(text: string): { from: string; round: number; findings: string } | null {
-  const head = /^Review findings from the (.+?) \(round (\d+)\):\n\n/.exec(text.trimStart());
+  const head = /^Review findings from the (.+?) \(round (\d+)\)(?:, saved in [^\n]*)?:\n\n/.exec(text.trimStart());
   if (!head) return null;
   let findings = text.trimStart().slice(head[0].length);
   for (const ask of [PLANNER_ASK, IMPLEMENTER_ASK, ...OLD_ASKS]) {

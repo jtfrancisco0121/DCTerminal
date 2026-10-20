@@ -3,7 +3,15 @@
  * live-PTY steps as opening a Cursor/Claude chat in a terminal, without resume.
  */
 import { ptyOpen, shellTerminalStart } from "../bridge";
-import { beginLivePty, clearPtyOpening, dropLivePty, livePty, markPtyOpening, rekeyLivePty } from "./live";
+import {
+  beginLivePty,
+  clearPtyOpening,
+  dropLivePty,
+  livePty,
+  markPtyOpening,
+  rekeyLivePty,
+  restartLivePty,
+} from "./live";
 import { measuredTerminalSize } from "./park";
 
 export type NewTerminalLaunch = "claude-cli" | "shell";
@@ -43,12 +51,16 @@ export async function startTerminalTab(
  * Attaches to a stage terminal the run actor started with no view (an
  * engine-2 run, V3): `pty_open` of that id hands over what it printed so
  * far and streams the rest, like a terminal started here quietly. Does
- * nothing when this app already holds the terminal. Throws when it cannot
- * attach.
+ * nothing when this app already holds the running terminal: a stage the
+ * actor resumes (V4) keeps streaming into the same view. A view that saw
+ * the old program exit attaches again, to the resumed one. Throws when it
+ * cannot attach.
  */
 export async function attachStageTerminal(tab: { id: string; cwd: string; roleId: string }): Promise<void> {
-  if (livePty(tab.id) || !markPtyOpening(tab.id)) return;
-  const live = beginLivePty(tab.id);
+  const held = livePty(tab.id);
+  if (held && !held.exited) return;
+  if (!held && !markPtyOpening(tab.id)) return;
+  const live = held ? restartLivePty(tab.id) : beginLivePty(tab.id);
   try {
     await ptyOpen({
       id: tab.id,

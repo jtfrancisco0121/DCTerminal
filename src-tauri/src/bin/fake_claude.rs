@@ -115,12 +115,15 @@
 //! prompts for MCP tools are not drawn.
 //!
 //! Esc during a turn (between steps or in a wait) interrupts it: a `[Request
-//! interrupted by user]` record, no `turn_duration`, and the turn ends.
+//! interrupted by user]` record, no `turn_duration`, and the turn ends. An
+//! interrupt before any assistant output puts the prompt back on the `❯`
+//! line, as Claude Code does (docs/claude-hooks-observed.md, T4), so the
+//! next prompt is appended to it unless the line is cleared first (Ctrl+U).
 //!
 //! # Terminal
 //!
-//! Typed text echoes on the `❯` prompt line; Enter submits it, `/exit` or
-//! Ctrl-D on an empty line exits 0. A bracketed paste (`ESC[200~` …
+//! Typed text echoes on the `❯` prompt line; Enter submits it, Ctrl+U clears
+//! it, `/exit` or Ctrl-D on an empty line exits 0. A bracketed paste (`ESC[200~` …
 //! `ESC[201~`) keeps its newlines in the prompt, as Claude Code does, so a
 //! paste then Enter is one prompt. On SIGTERM it finishes the log line it is
 //! writing and exits 143, which the S1 graceful stop relies on Claude Code
@@ -216,6 +219,8 @@ fn main() {
         mcp: HashMap::new(),
         prompt_id: String::new(),
         last_text: String::new(),
+        turn_prompt: String::new(),
+        answered: false,
     };
     fake.draw(&format!(
         "\x1b[38;5;174m✻\x1b[39m Welcome to fake_claude {VERSION}\r\n\x1b[38;5;246m  cwd: {}\x1b[39m\r\n",
@@ -531,6 +536,10 @@ struct Fake {
     prompt_id: String,
     /// The current turn's last assistant text (Stop's `last_assistant_message`).
     last_text: String,
+    /// The current turn's prompt, and whether anything answered it yet: an
+    /// interrupt before that puts the prompt back on the input line.
+    turn_prompt: String,
+    answered: bool,
 }
 
 /// What the hooks of one event answered.
@@ -1181,6 +1190,8 @@ impl Fake {
     fn start_turn(&mut self, prompt: &str) {
         self.prompt_id = uuid::Uuid::new_v4().to_string();
         self.last_text.clear();
+        self.turn_prompt = prompt.to_string();
+        self.answered = false;
         self.run_hooks("UserPromptSubmit", json!({ "prompt": prompt }), None);
         let snapshot = uuid::Uuid::new_v4().to_string();
         self.write(json!({
@@ -1205,6 +1216,7 @@ impl Fake {
     }
 
     fn assistant(&mut self, block: Value, stop: Option<&str>) {
+        self.answered = true;
         let message = message(&self.model, block, stop);
         let record = self.record(
             "assistant",
@@ -1230,6 +1242,10 @@ impl Fake {
         self.draw(
             "\r\n\x1b[38;5;246m  ⎿  Interrupted · What should Claude do instead?\x1b[39m\r\n",
         );
+        if !self.answered {
+            // Claude Code puts an unanswered prompt back in the input box (T4).
+            self.typed = self.turn_prompt.clone().into_bytes();
+        }
         let content = json!([{ "type": "text", "text": text }]);
         let record = self.record(
             "user",
@@ -1320,6 +1336,9 @@ impl Fake {
         ));
         if let Some(line) = self.queued.pop_front() {
             return self.prompt_line(line);
+        }
+        if !self.typed.is_empty() {
+            self.draw(&String::from_utf8_lossy(&self.typed).replace('\n', " "));
         }
         loop {
             match self.next_event(Duration::from_millis(50), true) {
@@ -1424,6 +1443,13 @@ impl Fake {
                     return Some(Event::Line(line));
                 }
                 0x04 if self.typed.is_empty() => return Some(Event::Eof),
+                // Ctrl+U: the line is cleared.
+                0x15 => {
+                    if echo && !self.typed.is_empty() {
+                        self.draw("\r\x1b[2K❯ ");
+                    }
+                    self.typed.clear();
+                }
                 0x7f | 0x08 => {
                     if self.typed.pop().is_some() && echo {
                         self.draw("\x08 \x08");

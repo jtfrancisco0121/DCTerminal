@@ -39,6 +39,19 @@ describe("attachStageTerminal", () => {
     expect(ptyOpen).toHaveBeenCalledTimes(1);
   });
 
+  it("attaches again when the run actor resumed a stage whose view saw it exit (V4)", async () => {
+    await attachStageTerminal({ id: "stage", cwd: "/repo", roleId: "role_implementer" });
+    const ended = livePty("stage")!;
+    ended.exited = true;
+    ended.exitCode = 143;
+    await attachStageTerminal({ id: "stage", cwd: "/repo", roleId: "role_implementer" });
+    expect(ptyOpen).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(ptyOpen).mock.calls[1][0]).toMatchObject({ id: "stage", attach: true, prompt: null });
+    const now = livePty("stage")!;
+    expect(now).not.toBe(ended);
+    expect(now.exited).toBe(false);
+  });
+
   it("lets go of the terminal when it cannot attach, so opening its tab tries again", async () => {
     vi.mocked(ptyOpen).mockRejectedValueOnce(new Error("no terminal"));
     await expect(attachStageTerminal({ id: "stage", cwd: "/repo", roleId: "role_pr_reviewer" })).rejects.toThrow(

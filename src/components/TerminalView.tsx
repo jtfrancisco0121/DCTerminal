@@ -305,6 +305,8 @@ export function TerminalView({
       exit: (code) => setExitCode(code),
     });
     if (live?.exitCode != null) setExitCode(live.exitCode);
+    // A stage the run actor resumed after its program exited runs again (V4).
+    else if (live && !live.exited) setExitCode(null);
     const platform = detectPlatform(navigator.platform);
     const newlineOnShiftEnter = shiftEnterSendsNewline(launch);
     parked.term.attachCustomKeyEventHandler((event) => {
