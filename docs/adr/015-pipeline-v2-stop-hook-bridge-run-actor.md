@@ -48,6 +48,8 @@ Every guardrail from ADR-014 §2 and its amendments still applies to engine-2 ru
 | Repeated check failures stop the run | Unchanged; gates run in the actor and stop with `gate_failed` |
 | Autopilot never merges a pull request | Unchanged. Nothing in the bridge or the actor runs a merge |
 | Each hand-off once per run, stage, round and lane, or per source turn (2026-10-16) | The actor's one-message-at-a-time loop plus turn-id dedupe (D18) |
+| A turn whose round ended while its checks ran is skipped (2026-10-16) | The actor drops a turn result or gate result whose round is no longer the run's current round, with a Timeline line, as `decide` does today ("the run is on round N now") |
+| A manual Send warns once when autopilot made the hand-off already (2026-10-16) | A manual Send on an engine-2 run is a message to the actor. The actor refuses it with the same warning when it made that hand-off already |
 | Autopilot skips a turn JT interrupted | An abandoned turn (UserPromptSubmit with no Stop) is never acted on (D9a) |
 | Default policy: advance when no finding is MEDIUM or above and no regression; LOWs go to the run report (§3) | Unchanged; findings now carry `severity` and `regression` from the schema |
 | Chat (ACP) autopilot stays out of scope; terminal roles run in `auto` (§4) | Unchanged (D23) |
