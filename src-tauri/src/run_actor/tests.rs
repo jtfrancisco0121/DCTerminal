@@ -1370,3 +1370,41 @@ fn a_round_sent_back_to_a_stage_you_took_over_waits_and_hand_back_carries_it_out
         assert_eq!(run.round, 2);
     });
 }
+
+/// D28: you revised the plan yourself in the Planner you took over while a
+/// round for it was held, then handed it back. Your newer turn is decided
+/// (the plan goes to review again); the stale findings are not sent back.
+#[test]
+fn handing_back_a_stage_you_revised_yourself_decides_your_turn_not_the_held_round() {
+    let mut fx = Fixture::new("take_over_revised");
+    let reviewer = fx.open_plan_reviewer();
+    let planner = fx.planner.clone();
+    fx.user(UserAction::TakeOver { tab_id: planner.clone() }).expect("take over");
+    let turn = fx.end_turn(&reviewer, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "x" }])), "");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    fx.run(|run| assert_eq!(run.stop_reason, Some(StopReason::TakenOver), "the round is held"));
+    // You revise the plan yourself: the Planner ends a newer turn.
+    let revised = fx.planner_turn("p-2", "# Plan\n1. Refresh tokens once, then fail.");
+    fx.actor.handle(ActorMsg::Turn(revised));
+    let reviews_before = fx.launches().iter().filter(|l| l.role_id == "role_plan_reviewer").count();
+    fx.user(UserAction::HandBack { tab_id: planner.clone() }).expect("hand back");
+    assert!(fx.resumes().is_empty() && fx.pastes().is_empty(), "the stale round is not sent back: {:?}", fx.resumes());
+    let reviews = fx.launches().iter().filter(|l| l.role_id == "role_plan_reviewer").count();
+    assert_eq!(reviews, reviews_before + 1, "your revised plan goes to review");
+    fx.run(|run| {
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Running, None));
+        assert!(
+            !run.events.iter().any(|e| e.summary.contains("already handed on")),
+            "your turn is not skipped: {:?}",
+            run.events.iter().map(|e| e.summary.clone()).collect::<Vec<_>>()
+        );
+        let decided = &run.autopilot.as_ref().unwrap().decided;
+        assert!(decided.iter().any(|t| t.ends_with("|bridge|p-2")), "your turn is decided: {decided:?}");
+    });
+    // Nothing is decided twice: handing back again changes nothing.
+    let launches = fx.launches().len();
+    fx.user(UserAction::TakeOver { tab_id: planner.clone() }).unwrap();
+    fx.user(UserAction::HandBack { tab_id: planner.clone() }).unwrap();
+    assert_eq!(fx.launches().len(), launches);
+    assert!(fx.resumes().is_empty());
+}

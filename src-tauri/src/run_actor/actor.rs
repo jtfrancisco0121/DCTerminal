@@ -80,6 +80,10 @@ pub(super) struct Actor<H: Host> {
     handled: HashMap<String, String>,
     /// Gate runs started and not yet back.
     gates_running: usize,
+    /// While Hand back re-decides held turns (D28): the handed-back tab and
+    /// when its own newest turn ended. A held round for it from an older
+    /// turn is recorded as dealt with by you, not sent.
+    revised: Option<(String, String)>,
 }
 
 impl<H: Host> Actor<H> {
@@ -90,6 +94,7 @@ impl<H: Host> Actor<H> {
             me,
             handled: HashMap::new(),
             gates_running: 0,
+            revised: None,
         }
     }
 
@@ -469,6 +474,12 @@ impl<H: Host> Actor<H> {
             }
             "loopBack" => {
                 let verdict = verdict.unwrap_or(placed.revise()).to_string();
+                if let Some(target) = self.revised_since(placed, decision, turn) {
+                    if let Err(err) = self.record_round_you_revised(placed, turn, decision, &verdict, &target) {
+                        fail(self, format!("record the round: {err}"));
+                    }
+                    return;
+                }
                 match self.loop_back(placed, turn, decision, &verdict) {
                     // The run is manual now; its Timeline note says so.
                     Err(err) if err == MANUAL_NOW => {}
@@ -618,7 +629,14 @@ impl<H: Host> Actor<H> {
         })
     }
 
-    fn loop_back(&mut self, placed: &Placed, turn: &BridgeTurn, decision: &Decision, verdict: &str) -> Result<String, String> {
+    /// The stage a reviewer's round goes back to, the text it gets and the
+    /// findings file (`findings-<stage>-r<N>.json`) it is saved in.
+    fn round_back(
+        &mut self,
+        placed: &Placed,
+        turn: &BridgeTurn,
+        decision: &Decision,
+    ) -> Result<(StageDef, String, Option<PathBuf>), String> {
         let target_id = decision.stage_id.as_deref().ok_or("the decision names no stage")?;
         let target_index = placed.def.stage_index(target_id).ok_or("that stage is not in the pipeline")?;
         let target = placed.def.stages[target_index].clone();
@@ -638,7 +656,54 @@ impl<H: Host> Actor<H> {
         let file = self.write_findings(turn, round)?;
         let reviewer_name = self.host.role(&placed.tab.role_id).map(|r| r.name).unwrap_or_else(|| placed.stage.title.clone());
         let text = loop_back_message(target.kind() == StageKind::Planner, &reviewer_name, &findings, round, file.as_deref());
+        Ok((target, text, file))
+    }
+
+    fn loop_back(&mut self, placed: &Placed, turn: &BridgeTurn, decision: &Decision, verdict: &str) -> Result<String, String> {
+        let (target, text, file) = self.round_back(placed, turn, decision)?;
         self.send_back(placed, &target, verdict, &text, None, None, Some(turn), file.as_deref())
+    }
+
+    /// The tab a held round goes back to when Hand back finds that you
+    /// revised it yourself after the round's turn ended (D28): its tab id.
+    fn revised_since(&self, placed: &Placed, decision: &Decision, turn: &BridgeTurn) -> Option<String> {
+        let (tab_id, ended) = self.revised.as_ref()?;
+        let target = {
+            let store = lock(self.host.store());
+            let run = store.pipeline_run_by_id(&self.run_id)?;
+            loop_back_tab(&placed.def, run, placed, decision)?
+        };
+        (target == *tab_id && ended_after(ended, &turn.ended_at)).then_some(target)
+    }
+
+    /// You dealt with the round yourself (D28): it is recorded (so your
+    /// newer turn counts as its reply), and nothing is sent or resumed.
+    fn record_round_you_revised(
+        &mut self,
+        placed: &Placed,
+        turn: &BridgeTurn,
+        decision: &Decision,
+        verdict: &str,
+        target_tab: &str,
+    ) -> Result<(), String> {
+        let (target, text, _) = self.round_back(placed, turn, decision)?;
+        {
+            let mut store = lock(self.host.store());
+            store.chain_loop_back_in(
+                &placed.chain.chain_id,
+                placed.lane.as_deref(),
+                &placed.tab.role_id,
+                target_tab,
+                Some(verdict),
+                Some(&text),
+            )?;
+        }
+        let summary = format!(
+            "You revised {} yourself after {}'s review, so its findings are not sent again. Autopilot decides your newest turn.",
+            target.title, placed.stage.title
+        );
+        self.note(Some(&target.id), &summary, false);
+        Ok(())
     }
 
     /// The reviewer's round as `findings-<stage>-r<N>.json` (V4), when its
@@ -1338,11 +1403,19 @@ impl<H: Host> Actor<H> {
         if !enabled || status == RunStatus::Complete {
             return Ok(UserOutcome::default());
         }
-        if let Some(turn) = turn.filter(|_| !decided) {
-            self.handled.insert(turn.tab_id.clone(), turn.turn.clone());
-            self.take_up(&placed, turn, round, status);
+        let own = turn.filter(|_| !decided);
+        if others.is_empty() {
+            if let Some(turn) = own {
+                self.handled.insert(turn.tab_id.clone(), turn.turn.clone());
+                self.take_up(&placed, turn, round, status);
+            }
+            return Ok(UserOutcome::default());
         }
+        // A held round for this stage is decided first. When your own turn
+        // here is newer than the round's, you dealt with it: the round is
+        // recorded, not sent, and your turn is decided next (D28).
         let runs = self.host.runs_root();
+        self.revised = own.as_ref().map(|turn| (tab_id.to_string(), turn.ended_at.clone()));
         for other in others {
             let tag = {
                 let store = lock(self.host.store());
@@ -1353,6 +1426,23 @@ impl<H: Host> Actor<H> {
                 self.on_turn(turn, true);
             }
         }
+        self.revised = None;
+        // Your turn, while it is still the stage's latest (a round sent back
+        // meanwhile resumed the stage) and not decided yet.
+        let Some(own) = own else {
+            return Ok(UserOutcome::default());
+        };
+        let latest = read_stage_turn(&runs, &tag, tab_id).is_some_and(|t| t.turn == own.turn);
+        if !latest || self.decided(&bridge_turn_key(&own.tab_id, &own.turn)) {
+            return Ok(UserOutcome::default());
+        }
+        let (status, round) = {
+            let store = lock(self.host.store());
+            let run = store.pipeline_run_by_id(&self.run_id).ok_or("the run is gone")?;
+            (run.status, run.round_for(placed.lane.as_deref()))
+        };
+        self.handled.insert(own.tab_id.clone(), own.turn.clone());
+        self.take_up(&placed, own, round, status);
         Ok(UserOutcome::default())
     }
 
@@ -1600,14 +1690,29 @@ fn taken_over_target(def: &PipelineDef, run: &PipelineRun, placed: &Placed, deci
     let target = match decision.action.as_str() {
         "loopBack" => {
             let stage = def.stage(decision.stage_id.as_deref()?)?;
-            let tab_ids = match placed.lane.as_deref().and_then(|id| run.lane(id)) {
-                Some(lane) => &lane.tab_ids,
-                None => &run.tab_ids,
-            };
-            (tab_ids.get(&stage.role_id)?.clone(), stage.id.clone(), stage.title.clone())
+            (loop_back_tab(def, run, placed, decision)?, stage.id.clone(), stage.title.clone())
         }
         "retry" | "reask" => (placed.tab.id.clone(), placed.stage.id.clone(), placed.stage.title.clone()),
         _ => return None,
     };
     run.taken_over.contains(&target.0).then_some(target)
+}
+
+/// The tab a loop-back `decision` sends its round to: the target stage's
+/// tab on the run, or on the turn's lane (as `send_back` looks it up).
+fn loop_back_tab(def: &PipelineDef, run: &PipelineRun, placed: &Placed, decision: &Decision) -> Option<String> {
+    let stage = def.stage(decision.stage_id.as_deref()?)?;
+    let tab_ids = match placed.lane.as_deref().and_then(|id| run.lane(id)) {
+        Some(lane) => &lane.tab_ids,
+        None => &run.tab_ids,
+    };
+    tab_ids.get(&stage.role_id).cloned()
+}
+
+/// `later` ended after `earlier` (RFC 3339 times; text order if unreadable).
+fn ended_after(later: &str, earlier: &str) -> bool {
+    match (chrono::DateTime::parse_from_rfc3339(later), chrono::DateTime::parse_from_rfc3339(earlier)) {
+        (Ok(later), Ok(earlier)) => later > earlier,
+        _ => later > earlier,
+    }
 }
