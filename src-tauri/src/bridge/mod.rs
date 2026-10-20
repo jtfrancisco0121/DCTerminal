@@ -35,7 +35,7 @@
 //! `launch` decides which tabs launch bridged and builds their flags;
 //! `gate` checks the Claude Code version and `disableAllHooks` at a bridged
 //! launch (D24) and falls back to engine 1; `watch` hands finished turns to
-//! the frontend.
+//! the run actor (`run_actor`, V3).
 
 pub mod folder;
 pub mod gate;

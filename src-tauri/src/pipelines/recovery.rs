@@ -6,7 +6,8 @@
 //! - Restart (D29): a `running` run whose current stage finished a turn that
 //!   no decision covers goes to `waiting` with `app_restarted`. Autopilot
 //!   never acts on that turn by itself: Continue (`pipeline_continue`) runs
-//!   the run again and the frontend decides the turn then. A turn the quit
+//!   the run again and the turn is decided then (by the frontend on an
+//!   engine-1 run, by the run actor on an engine-2 run). A turn the quit
 //!   cut off is only noted: the run keeps running and the stage's next
 //!   finished turn is decided as usual.
 //! - Stall (D30, D9a): while a current stage is Working (a prompt with no
@@ -96,7 +97,7 @@ pub fn turn_key(tab_id: &str, log: &TerminalSessionLog) -> String {
 }
 
 /// A bridged (engine-2) turn's key, `tab|bridge|<turn id>`, as autopilot
-/// records it (`onBridgeTurn` in `src/pipeline/useAutopilot.ts`).
+/// records it (the run actor, `src-tauri/src/run_actor/actor.rs`).
 pub fn bridge_turn_key(tab_id: &str, turn: &str) -> String {
     format!("{tab_id}|bridge|{turn}")
 }

@@ -28,7 +28,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, UNIX_EPOCH};
 use tauri::ipc::Channel;
@@ -72,6 +72,40 @@ pub struct PtyRegistry {
     /// A replaced program that may still be stopping, so every open of that
     /// id waits for it, not only the one that replaced it.
     stopping: HashMap<String, crate::process_tree::PtyGroup>,
+    /// Terminals the run actor started with no view (V3): their output, kept
+    /// until a view attaches (`pty_open` of that id).
+    detached: HashMap<String, Arc<Mutex<DetachedOutput>>>,
+}
+
+/// Output of a terminal started with no view. Bytes collect (the newest
+/// [`DETACHED_BUFFER`] of them) until a view attaches; then they stream to
+/// it like any terminal's. A view that goes away (a reload) drops back to
+/// collecting, so the next one attaches again.
+pub(crate) struct DetachedOutput {
+    channel: Option<Channel<PtyPacket>>,
+    buffer: Vec<u8>,
+    exit: Option<Option<i32>>,
+    /// Closed or replaced: its exit is nobody's news.
+    replaced: bool,
+}
+
+/// Most bytes a terminal with no view keeps for the view that attaches later.
+const DETACHED_BUFFER: usize = 2 * 1024 * 1024;
+
+fn data_packet(bytes: &[u8]) -> PtyPacket {
+    PtyPacket {
+        kind: "data".to_string(),
+        data: base64::engine::general_purpose::STANDARD.encode(bytes),
+        code: None,
+    }
+}
+
+fn exit_packet(code: Option<i32>) -> PtyPacket {
+    PtyPacket {
+        kind: "exit".to_string(),
+        data: String::new(),
+        code,
+    }
 }
 
 impl PtyRegistry {
@@ -82,12 +116,37 @@ impl PtyRegistry {
             opening: HashMap::new(),
             next_open: 0,
             stopping: HashMap::new(),
+            detached: HashMap::new(),
         }
+    }
+
+    fn forget_detached(&mut self, id: &str) {
+        if let Some(output) = self.detached.remove(id) {
+            if let Ok(mut output) = output.lock() {
+                output.replaced = true;
+            }
+        }
+    }
+
+    /// The terminal's program is running.
+    pub fn running(&self, id: &str) -> bool {
+        self.sessions.get(id).is_some_and(|session| session.group().running())
+    }
+
+    /// Paste `text` into the terminal `id` and press Enter, as the scratch
+    /// pad's Send does (`src/terminal/paste.ts`): one bracketed paste, then CR.
+    pub fn paste(&self, id: &str, text: &str) -> Result<(), String> {
+        let session = self.sessions.get(id).ok_or_else(|| format!("no terminal: {id}"))?;
+        let mut bytes = b"\x1b[200~".to_vec();
+        bytes.extend_from_slice(clean_paste_text(text).as_bytes());
+        bytes.extend_from_slice(b"\x1b[201~\r");
+        session.write(&bytes).map_err(|err| err.to_string())
     }
 
     /// Close the terminal `id`. A replaced program it was still stopping
     /// is forgotten too; its control thread kills it within the grace.
     pub fn kill(&mut self, id: &str) {
+        self.forget_detached(id);
         self.sessions.remove(id);
         self.claude_sessions.remove(id);
         self.opening.remove(id);
@@ -101,6 +160,10 @@ impl PtyRegistry {
     }
 
     pub fn shutdown_all(&mut self) {
+        let ids: Vec<String> = self.detached.keys().cloned().collect();
+        for id in ids {
+            self.forget_detached(&id);
+        }
         self.sessions.clear();
         self.claude_sessions.clear();
         self.opening.clear();
@@ -171,21 +234,81 @@ impl Drop for PtyRegistry {
 fn forward(output: Receiver<PtyOutput>, channel: Channel<PtyPacket>) {
     while let Ok(event) = output.recv() {
         let packet = match event {
-            PtyOutput::Data(bytes) => PtyPacket {
-                kind: "data".to_string(),
-                data: base64::engine::general_purpose::STANDARD.encode(bytes),
-                code: None,
-            },
-            PtyOutput::Exit { code } => PtyPacket {
-                kind: "exit".to_string(),
-                data: String::new(),
-                code,
-            },
+            PtyOutput::Data(bytes) => data_packet(&bytes),
+            PtyOutput::Exit { code } => exit_packet(code),
         };
         if channel.send(packet).is_err() {
             break;
         }
     }
+}
+
+/// [`forward`] for a terminal with no view yet (see [`DetachedOutput`]).
+/// `on_exit` hears the program's exit unless the terminal was closed or
+/// replaced first.
+fn forward_detached(output: Receiver<PtyOutput>, sink: Arc<Mutex<DetachedOutput>>, on_exit: OnExit) {
+    while let Ok(event) = output.recv() {
+        let Ok(mut out) = sink.lock() else {
+            return;
+        };
+        match event {
+            PtyOutput::Data(bytes) => {
+                let sent = out.channel.as_ref().is_some_and(|channel| channel.send(data_packet(&bytes)).is_ok());
+                if !sent {
+                    out.channel = None;
+                    out.buffer.extend_from_slice(&bytes);
+                    if out.buffer.len() > DETACHED_BUFFER {
+                        let drop = out.buffer.len() - DETACHED_BUFFER;
+                        out.buffer.drain(..drop);
+                    }
+                }
+            }
+            PtyOutput::Exit { code } => {
+                out.exit = Some(code);
+                if let Some(channel) = out.channel.as_ref() {
+                    let _ = channel.send(exit_packet(code));
+                }
+                let replaced = out.replaced;
+                drop(out);
+                if !replaced {
+                    on_exit(code);
+                }
+                return;
+            }
+        }
+    }
+}
+
+/// Called once with a detached terminal's exit code.
+pub(crate) type OnExit = Box<dyn FnOnce(Option<i32>) + Send>;
+
+/// Where a terminal's output goes.
+enum Output {
+    /// A view's channel (every terminal the frontend opens).
+    View(Channel<PtyPacket>),
+    /// Nowhere yet: kept for a view that attaches later (the run actor's stages).
+    Detached(OnExit),
+}
+
+/// A view attaching to a terminal the run actor started (`pty_open` with
+/// `attach`): what it printed since no view had it, then everything live.
+/// It replaces a view attached before (one a reload left behind). `None`
+/// when `id` is not such a terminal; `pty_open` then starts one as usual.
+fn attach_detached(registry: &Mutex<PtyRegistry>, id: &str, channel: &Channel<PtyPacket>) -> Result<Option<u32>, String> {
+    let registry = registry.lock().map_err(|err| err.to_string())?;
+    let (Some(sink), Some(session)) = (registry.detached.get(id), registry.sessions.get(id)) else {
+        return Ok(None);
+    };
+    let mut out = sink.lock().map_err(|err| err.to_string())?;
+    if !out.buffer.is_empty() {
+        let buffered = std::mem::take(&mut out.buffer);
+        channel.send(data_packet(&buffered)).map_err(|err| err.to_string())?;
+    }
+    if let Some(code) = out.exit {
+        let _ = channel.send(exit_packet(code));
+    }
+    out.channel = Some(channel.clone());
+    Ok(Some(session.pid()))
 }
 
 /// True while the app theme is a light one. Claude Code reads COLORFGBG to pick
@@ -249,9 +372,21 @@ fn open_session(
     claude_session: Option<String>,
     on_output: Channel<PtyPacket>,
 ) -> Result<Option<u32>, String> {
+    open_session_to(registry, id, spec, claude_session, Output::View(on_output))
+}
+
+/// [`open_session`] with its output going to `output`.
+fn open_session_to(
+    registry: &Mutex<PtyRegistry>,
+    id: &str,
+    spec: SpawnSpec,
+    claude_session: Option<String>,
+    output: Output,
+) -> Result<Option<u32>, String> {
     let (token, stopping) = {
         let mut registry = registry.lock().map_err(|err| err.to_string())?;
         registry.claude_sessions.remove(id);
+        registry.forget_detached(id);
         registry.next_open += 1;
         let token = registry.next_open;
         registry.opening.insert(id.to_string(), token);
@@ -283,10 +418,21 @@ fn open_session(
     let mut session = PtySession::spawn(spec).map_err(|err| err.to_string())?;
     let pid = session.pid();
     if let Some(rx) = session.take_output() {
-        thread::Builder::new()
-            .name(format!("pty-fwd-{id}"))
-            .spawn(move || forward(rx, on_output))
-            .map_err(|err| err.to_string())?;
+        let name = format!("pty-fwd-{id}");
+        match output {
+            Output::View(channel) => thread::Builder::new().name(name).spawn(move || forward(rx, channel)),
+            Output::Detached(on_exit) => {
+                let sink = Arc::new(Mutex::new(DetachedOutput {
+                    channel: None,
+                    buffer: Vec::new(),
+                    exit: None,
+                    replaced: false,
+                }));
+                registry.detached.insert(id.to_string(), sink.clone());
+                thread::Builder::new().name(name).spawn(move || forward_detached(rx, sink, on_exit))
+            }
+        }
+        .map_err(|err| err.to_string())?;
     }
     registry.sessions.insert(id.to_string(), session);
     registry.pin_claude_session(id, claude_session);
@@ -891,41 +1037,32 @@ fn last_turn_key(tab_id: &str, target: Option<&(PathBuf, String)>) -> Option<Str
     log.turn_done.then(|| crate::pipelines::recovery::turn_key(tab_id, &log))
 }
 
-/// Where the D24 gate runs: a stage's first bridged start, or a Restart /
-/// Resume of a tab that was running bridged.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GateAt {
-    Start,
-    Relaunch,
-}
-
 /// What [`gate_run`] decided.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct GateRun {
     /// Launch bridged.
     bridged: bool,
-    /// A relaunch switched a run that was running bridged to engine 1, and
+    /// The run, which was running bridged, switched to engine 1, and
     /// autopilot is off for it from now on.
     manual_now: bool,
 }
 
-/// D24 and hooks-off for an engine-2 run at a bridged start or relaunch of
-/// `stage` (a stage key; a lane suffix is dropped for the Timeline). An
-/// engine-1 outcome switches the run for good (saved, with its notice); a
-/// run already on engine 1, or gone, is never bridged; a newer CLI leaves
-/// the overview's note.
+/// D24 and hooks-off for an engine-2 run that is already running bridged,
+/// at a relaunch of `stage` or a later stage's bridged start (a stage key;
+/// a lane suffix is dropped for the Timeline). An engine-1 outcome switches
+/// the run for good (saved, with its notice); a run already on engine 1, or
+/// gone, is never bridged; a newer CLI leaves the overview's note.
 ///
-/// At a relaunch the run was already running bridged, and the bridge has
-/// decided turns the v1 path cannot recognise (a Resume continues the same
-/// session). So a switch there also turns autopilot off: the run is manual
-/// from now on, as engine 1 runs are after V6, and the note says why.
+/// The bridge has decided turns the v1 path cannot recognise (a Resume
+/// continues the same session). So a switch also turns autopilot off: the
+/// run is manual from now on, as engine 1 runs are after V6, and the note
+/// says why. (A chain's first stage gates before its run exists.)
 fn gate_run(
     store: &Mutex<StateStore>,
     run_id: &str,
     stage: &str,
     version: Option<&str>,
     hooks_off: Option<&crate::bridge::gate::HooksOff>,
-    at: GateAt,
     decided_key: Option<&str>,
 ) -> Result<GateRun, String> {
     let decision = crate::bridge::gate::decide(version, hooks_off);
@@ -935,9 +1072,8 @@ fn gate_run(
     else {
         return Ok(GateRun::default());
     };
-    let relaunch = at == GateAt::Relaunch;
-    let (bridged, mut changed) = crate::bridge::gate::apply_with(run, &decision, stage_id, !relaunch);
-    let manual_now = !bridged && relaunch;
+    let (bridged, mut changed) = crate::bridge::gate::apply_with(run, &decision, stage_id, false);
+    let manual_now = !bridged;
     if manual_now {
         crate::bridge::gate::make_manual(run, stage_id, decided_key);
         changed = true;
@@ -948,15 +1084,19 @@ fn gate_run(
     Ok(GateRun { bridged, manual_now })
 }
 
-/// [`gate_run`] at a stage's first bridged start.
+/// The gate at a stage's first bridged start on a run that exists already
+/// (Fan out, Start lane). On engine 2 the run actor has been deciding its
+/// turns, so this is mid-run: a switch to engine 1 makes the run manual,
+/// as at a relaunch ([`actor_gate_on`]).
 fn gate_bridged_launch(
     store: &Mutex<StateStore>,
+    runs_root: &std::path::Path,
     plan: crate::bridge::BridgePlan,
     version: Option<&str>,
     hooks_off: Option<&crate::bridge::gate::HooksOff>,
 ) -> Result<Option<crate::bridge::BridgePlan>, String> {
-    let gated = gate_run(store, &plan.run_id, &plan.stage_id, version, hooks_off, GateAt::Start, None)?;
-    Ok(gated.bridged.then_some(plan))
+    let bridged = actor_gate_on(store, runs_root, &plan.run_id, &plan.stage_id, version, hooks_off)?;
+    Ok(bridged.then_some(plan))
 }
 
 /// `<app data>/runs` and this executable, for a bridged launch.
@@ -1115,7 +1255,8 @@ fn role_terminal_start_blocking(
                 new_run_gate = Some((gate, plan.stage_id.clone()));
                 bridged.then_some(plan)
             } else {
-                gate_bridged_launch(&store, plan, version.as_deref(), hooks_off.as_ref())?
+                let runs = crate::bridge::launch::runs_root(&crate::data_dir::app_data_dir(&app).path);
+                gate_bridged_launch(&store, &runs, plan, version.as_deref(), hooks_off.as_ref())?
             }
         }
         None => None,
@@ -1299,6 +1440,142 @@ fn role_terminal_start_blocking(
     })
 }
 
+/// Text safe to paste (`cleanPasteText` in `src/terminal/paste.ts`):
+/// newlines as `\n`, and no control byte but `\t` and `\n`, so nothing in
+/// it can end the bracketed paste early.
+pub(crate) fn clean_paste_text(text: &str) -> String {
+    text.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .chars()
+        .filter(|&ch| ch == '\n' || ch == '\t' || !ch.is_control())
+        .collect()
+}
+
+/// The command for a stage the run actor opens: the status line (H5) and,
+/// bridged, the bridge's hooks in one `--settings` (`bridged_command`).
+fn actor_stage_command(
+    mut request: TerminalLaunch,
+    status_line: Option<serde_json::Value>,
+    bridge: Option<crate::bridge::launch::BridgeFlags>,
+    build: impl FnOnce(&TerminalLaunch) -> Result<crate::provider::ProgramArgs, String>,
+) -> Result<crate::provider::ProgramArgs, String> {
+    request.settings = status_line;
+    crate::bridge::launch::bridged_command(request, bridge, build)
+}
+
+/// D24 and hooks-off for a stage the run actor opens bridged (V3): the CLI
+/// version and the settings files are read with no lock held, then
+/// [`gate_run`] applies the outcome to the run. True to launch bridged.
+pub(crate) fn actor_stage_gate(
+    app: &AppHandle,
+    run_id: &str,
+    stage_key: &str,
+    cwd: &std::path::Path,
+) -> Result<bool, String> {
+    let store = app.state::<Mutex<StateStore>>();
+    let settings = app.state::<Mutex<SettingsStore>>();
+    let provider = {
+        let state = store.lock().map_err(|err| err.to_string())?;
+        let settings = settings.lock().map_err(|err| err.to_string())?;
+        provider_for_window(&state, settings.providers(), ProviderId::Claude, None)
+    };
+    let (version, hooks_off) = gate_inputs(provider.as_ref(), cwd);
+    let runs = crate::bridge::launch::runs_root(&crate::data_dir::app_data_dir(app).path);
+    actor_gate_on(&store, &runs, run_id, stage_key, version.as_deref(), hooks_off.as_ref())
+}
+
+/// [`actor_stage_gate`] once the CLI version and settings are read. The
+/// actor only ever opens a stage mid-run (a chain's first stage starts
+/// through `startChain`), so the bridge has decided turns already: a switch
+/// to engine 1 makes the run manual for good, as at a relaunch (V2a's
+/// `make_manual`, one Timeline note), and the run's bridged tabs stop
+/// enforcing a result (their hooks read `mode`). True to launch bridged.
+pub(crate) fn actor_gate_on(
+    store: &Mutex<StateStore>,
+    runs_root: &std::path::Path,
+    run_id: &str,
+    stage_key: &str,
+    version: Option<&str>,
+    hooks_off: Option<&crate::bridge::gate::HooksOff>,
+) -> Result<bool, String> {
+    let gated = gate_run(store, run_id, stage_key, version, hooks_off, None)?;
+    if gated.manual_now {
+        if let Err(err) = crate::bridge::launch::set_run_mode(runs_root, run_id, false) {
+            eprintln!("DCTerminal: could not switch the run folder to manual: {err}");
+        }
+    }
+    Ok(gated.bridged)
+}
+
+/// Start a stage terminal for the run actor (V3), with no view: as
+/// [`role_terminal_start`] starts a role terminal (the role's account,
+/// model and run mode, the prompt file for a long prompt), plus the bridge
+/// flags, at 120×40 (D26). A view attaches with `pty_open`. Blocking; no
+/// store lock is held across the spawn. `on_exit` hears the program exit.
+pub(crate) fn start_actor_stage(
+    app: &AppHandle,
+    launch: &crate::run_actor::StageLaunch,
+    on_exit: OnExit,
+) -> Result<(), String> {
+    let store = app.state::<Mutex<StateStore>>();
+    let settings = app.state::<Mutex<SettingsStore>>();
+    let registry = app.state::<Mutex<PtyRegistry>>();
+    let tab_id = launch.tab_id.as_str();
+    let provider = {
+        let state = store.lock().map_err(|err| err.to_string())?;
+        let settings = settings.lock().map_err(|err| err.to_string())?;
+        provider_for_window(&state, settings.providers(), ProviderId::Claude, Some(tab_id))
+    };
+    let mode = {
+        let settings = settings.lock().map_err(|err| err.to_string())?;
+        RunMode::parse(&settings.run_mode_for(&launch.role_id))
+    };
+    let model = crate::models::model_for_tab_provider(&store, &settings, Some(tab_id), &launch.role_id, ProviderId::Claude)?;
+    if let Some(dir) = provider.config_dir() {
+        let mut state = store.lock().map_err(|err| err.to_string())?;
+        state.remember_claude_config(tab_id, &dir.path)?;
+    }
+    // H4: the stage's kind (from the chain its tab was saved on) picks the
+    // permission mode, so a Planner stage, a copied one included, plans.
+    let role_launch = RoleLaunch::for_tab(
+        &store,
+        Some(tab_id),
+        None,
+        &launch.role_id,
+        mode,
+        &model,
+        Some(launch.session_id.clone()),
+        None,
+    )?;
+    let program = provider.terminal_command(&role_launch.launch(None))?.program;
+    let delivery = store_prompt(app, tab_id, &program, &launch.prompt)?;
+    // H5's status line, so the stage reports usage like any Claude terminal.
+    let config = provider.config_dir().map(|dir| dir.path);
+    let status = usage_status_line(app, tab_id, config.as_deref(), &launch.cwd);
+    let mut command = actor_stage_command(
+        role_launch.launch(Some(delivery.argument.clone())),
+        status,
+        launch.bridge.clone(),
+        |req| provider.terminal_command(req),
+    )?;
+    command.env.push(claude_scheme_env());
+    open_session_to(
+        &registry,
+        tab_id,
+        SpawnSpec {
+            program: command.program,
+            args: command.args,
+            env: command.env,
+            cwd: launch.cwd.clone(),
+            cols: 120,
+            rows: 40,
+        },
+        Some(launch.session_id.clone()),
+        Output::Detached(on_exit),
+    )?;
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PtyOpenInput {
@@ -1315,6 +1592,10 @@ pub struct PtyOpenInput {
     /// Window this terminal belongs to. Omitted means the original window.
     #[serde(default)]
     pub window_id: Option<String>,
+    /// A view opening (not restarting) the terminal: a stage the run actor
+    /// started with no view is attached to instead of started again.
+    #[serde(default)]
+    pub attach: bool,
 }
 
 fn claude_terminal_resume(
@@ -1389,6 +1670,12 @@ fn pty_open_blocking(
     store: State<Mutex<StateStore>>,
     registry: State<Mutex<PtyRegistry>>,
 ) -> Result<u32, String> {
+    // A stage the run actor started with no view: this view attaches to it.
+    if input.attach {
+        if let Some(pid) = attach_detached(&registry, &input.id, &on_output)? {
+            return Ok(pid);
+        }
+    }
     let cwd = validate_working_folder(&input.cwd).map_err(|err| err.message())?;
     let configured = {
         let settings = settings.lock().map_err(|err| err.to_string())?;
@@ -1586,7 +1873,6 @@ fn pty_open_blocking(
                         &tag.stage,
                         version.as_deref(),
                         hooks_off.as_ref(),
-                        GateAt::Relaunch,
                         decided_key.as_deref(),
                     )?
                 } else {
@@ -1837,28 +2123,42 @@ mod tests {
     fn an_older_claude_code_or_hooks_turned_off_launch_the_run_as_engine_1_and_save_it() {
         let dir = crate::test_support::TempDir::new("gate_bridged_launch");
         let store = store_with_engine2_run(&dir);
-        let launched = gate_bridged_launch(&store, reviewer_plan(), Some("2.1.200 (Claude Code)"), None).unwrap();
+        let runs = dir.join("runs");
+        let planner = crate::bridge::BridgePlan {
+            stage_id: "planner".into(),
+            role_id: "role_planner".into(),
+            stage_key: "planner".into(),
+            kind: crate::bridge::ResultKind::Planner,
+            ..reviewer_plan()
+        };
+        crate::bridge::launch::prepare_stage(&runs, &planner, "tab_planner").unwrap();
+        let launched = gate_bridged_launch(&store, &runs, reviewer_plan(), Some("2.1.200 (Claude Code)"), None).unwrap();
         assert_eq!(launched, None, "an older CLI launches unbridged");
         let saved = StateStore::open_path(dir.join("state.json")).unwrap();
         let run = saved.pipeline_run_by_id("ee_1700000000000").unwrap();
         assert_eq!(run.engine, 1, "saved as engine 1");
-        assert!(run.autopilot.as_ref().unwrap().enabled, "a first launch keeps autopilot (on engine 1)");
-        assert!(!run.manual_only);
-        assert_eq!(run.events.len(), 1, "one Timeline notice");
+        // V3: a stage started on a run that exists (Fan out, Start lane) is
+        // mid-run, so the switch makes the run manual, as at a relaunch.
+        assert!(!run.autopilot.as_ref().unwrap().enabled, "autopilot is off");
+        assert!(run.manual_only, "for good");
+        assert_eq!(run.events.len(), 1, "one Timeline notice: {:?}", run.events);
         assert!(run.engine_note.as_deref().unwrap().contains("2.1.200"));
+        assert!(run.engine_note.as_deref().unwrap().contains("manual from now on"));
+        let mode = std::fs::read_to_string(runs.join("ee_1700000000000/stages/planner/mode")).unwrap();
+        assert_eq!(mode, "manual", "the still-bridged stages stop enforcing a result");
 
         let dir = crate::test_support::TempDir::new("gate_bridged_launch_hooks");
         let store = store_with_engine2_run(&dir);
         let off = crate::bridge::gate::HooksOff { file: dir.join("managed-settings.json"), setting: "disableAllHooks" };
         let launched =
-            gate_bridged_launch(&store, reviewer_plan(), Some("2.1.287 (Claude Code)"), Some(&off)).unwrap();
+            gate_bridged_launch(&store, &dir.join("runs"), reviewer_plan(), Some("2.1.287 (Claude Code)"), Some(&off)).unwrap();
         assert_eq!(launched, None, "hooks off launches unbridged");
         let state = store.lock().unwrap();
         assert_eq!(state.pipeline_run_by_id("ee_1700000000000").unwrap().engine, 1);
 
         let dir = crate::test_support::TempDir::new("gate_bridged_launch_newer");
         let store = store_with_engine2_run(&dir);
-        let launched = gate_bridged_launch(&store, reviewer_plan(), Some("2.1.300 (Claude Code)"), None).unwrap();
+        let launched = gate_bridged_launch(&store, &dir.join("runs"), reviewer_plan(), Some("2.1.300 (Claude Code)"), None).unwrap();
         assert_eq!(launched, Some(reviewer_plan()), "a newer CLI is allowed");
         let saved = StateStore::open_path(dir.join("state.json")).unwrap();
         let run = saved.pipeline_run_by_id("ee_1700000000000").unwrap();
@@ -1880,6 +2180,76 @@ mod tests {
         let helper = &helper[..helper.find("\n}\n").unwrap()];
         assert!(helper.contains("cli_version()") && helper.contains("hooks_off("));
         assert!(!helper.contains(".lock()"));
+    }
+
+    /// V3's second launch path: a stage the run actor opens gets H5's status
+    /// line merged with the bridge's hooks into one `--settings`, and the
+    /// D24 / hooks-off gate, like every other bridged start.
+    #[test]
+    fn an_actor_stage_launches_with_the_status_line_and_through_the_gate() {
+        let source = include_str!("mod.rs");
+        let body = &source[source.find("pub(crate) fn start_actor_stage(").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let status = body.find("usage_status_line(").expect("adds the status line");
+        let merged = body.find("actor_stage_command(").expect("one merged --settings");
+        assert!(status < merged);
+        let gate = &source[source.find("pub(crate) fn actor_stage_gate(").expect("an actor gate")..];
+        let gate = &gate[..gate.find("\n}\n").unwrap()];
+        let inputs = gate.find("gate_inputs(").expect("reads the version and settings");
+        let applied = gate.find("actor_gate_on(").expect("applies the gate to the run");
+        assert!(inputs < applied);
+        assert!(!gate[inputs..applied].contains(".lock()"), "no lock while reading the CLI and settings");
+    }
+
+    #[test]
+    fn an_actor_stage_command_has_one_settings_with_the_status_line_and_the_hooks() {
+        use crate::bridge::ResultKind;
+        let flags = crate::bridge::launch::launch_flags(
+            ResultKind::Reviewer,
+            std::path::Path::new("/opt/dcterminal"),
+            std::path::Path::new("/data/runs/ee_1"),
+            "ee_1",
+            "pr_reviewer",
+            "tab_r",
+        );
+        let request = TerminalLaunch {
+            kind: TerminalKind::Role {
+                role_id: "role_custom_pr_check".into(),
+                run_mode: RunMode::Default,
+                prompt: Some("Review PR1.".into()),
+                stage_kind: Some(crate::pipelines::StageKind::Reviewer),
+            },
+            model: None,
+            session_id: Some("6a1d3b0f-2c3d-4e5f-9a51-0123456789cd".into()),
+            settings: None,
+        };
+        let status = serde_json::json!({ "statusLine": { "type": "command", "command": "dct --dct-status-line f" } });
+        let args = actor_stage_command(request, Some(status), Some(flags), |req| {
+            Ok(crate::provider::ProgramArgs::new("claude", crate::provider::claude::claude_terminal_args(req)?))
+        })
+        .unwrap()
+        .args;
+        let at: Vec<usize> = args.iter().enumerate().filter(|(_, a)| *a == "--settings").map(|(i, _)| i).collect();
+        assert_eq!(at.len(), 1, "exactly one --settings: {args:?}");
+        let settings: serde_json::Value = serde_json::from_str(&args[at[0] + 1]).unwrap();
+        assert!(settings["statusLine"]["command"].as_str().unwrap().contains("--dct-status-line"), "{settings}");
+        assert!(settings["hooks"]["Stop"].is_array(), "{settings}");
+        assert!(args.iter().any(|a| a == "--mcp-config"));
+        assert_eq!(args.last().map(String::as_str), Some("Review PR1."), "the prompt stays last");
+        // Unbridged (the gate said engine 1): the status line alone.
+        let request = TerminalLaunch {
+            kind: TerminalKind::Role { role_id: "r".into(), run_mode: RunMode::Default, prompt: Some("P".into()), stage_kind: None },
+            model: None,
+            session_id: None,
+            settings: None,
+        };
+        let args = actor_stage_command(request, Some(serde_json::json!({ "statusLine": {} })), None, |req| {
+            Ok(crate::provider::ProgramArgs::new("claude", crate::provider::claude::claude_terminal_args(req)?))
+        })
+        .unwrap()
+        .args;
+        assert!(!args.iter().any(|a| a == "--mcp-config"));
+        assert_eq!(args.iter().filter(|a| *a == "--settings").count(), 1);
     }
 
     #[derive(Default)]
@@ -2114,15 +2484,14 @@ mod tests {
         let store = store_with_engine2_run(&dir);
         let run_id = "ee_1700000000000";
         let ok = Some("2.1.287 (Claude Code)");
-        let relaunch = GateAt::Relaunch;
         let decided_key = Some("tab_r|6a1d3b0f-2c3d-4e5f-9a51-0123456789cd|2026-10-20T10:00:00Z");
-        assert!(gate_run(&store, run_id, "pr_reviewer", ok, None, relaunch, decided_key).unwrap().bridged, "still bridged");
+        assert!(gate_run(&store, run_id, "pr_reviewer", ok, None, decided_key).unwrap().bridged, "still bridged");
         let events_before = store.lock().unwrap().pipeline_run_by_id(run_id).unwrap().events.len();
         // Hooks turned off since the first launch (a Resume mid-run): engine
         // 1 with a notice, and autopilot off, so the turn the bridge already
         // decided is never decided again the v1 way.
         let off = crate::bridge::gate::HooksOff { file: dir.join("settings.json"), setting: "disableAllHooks" };
-        let gated = gate_run(&store, run_id, "pr_reviewer@pr1", ok, Some(&off), relaunch, decided_key).unwrap();
+        let gated = gate_run(&store, run_id, "pr_reviewer@pr1", ok, Some(&off), decided_key).unwrap();
         assert_eq!(gated, GateRun { bridged: false, manual_now: true });
         {
             let state = store.lock().unwrap();
@@ -2152,8 +2521,8 @@ mod tests {
             assert!(!state.pipeline_run_by_id(run_id).unwrap().autopilot.as_ref().unwrap().enabled);
         }
         // An engine-1 run never relaunches bridged, whatever the CLI.
-        assert_eq!(gate_run(&store, run_id, "pr_reviewer", ok, None, relaunch, None).unwrap(), GateRun::default());
-        assert_eq!(gate_run(&store, "ee_missing", "pr_reviewer", ok, None, relaunch, None).unwrap(), GateRun::default());
+        assert_eq!(gate_run(&store, run_id, "pr_reviewer", ok, None, None).unwrap(), GateRun::default());
+        assert_eq!(gate_run(&store, "ee_missing", "pr_reviewer", ok, None, None).unwrap(), GateRun::default());
     }
 
     /// A pipeline of your own: a copy of the Planner (Settings › Roles ›
@@ -2372,6 +2741,89 @@ mod tests {
             cols: 80,
             rows: 24,
         }
+    }
+
+    /// Every packet a view got, decoded: (kind, text, code).
+    type Seen = Arc<Mutex<Vec<(String, String, Option<i32>)>>>;
+
+    fn recording_view() -> (Channel<PtyPacket>, Seen) {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let into = seen.clone();
+        let channel = Channel::new(move |body| {
+            if let tauri::ipc::InvokeResponseBody::Json(json) = body {
+                let packet: serde_json::Value = serde_json::from_str(&json).unwrap();
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(packet["data"].as_str().unwrap_or_default())
+                    .unwrap_or_default();
+                into.lock().unwrap().push((
+                    packet["kind"].as_str().unwrap_or_default().to_string(),
+                    String::from_utf8_lossy(&bytes).into_owned(),
+                    packet["code"].as_i64().map(|c| c as i32),
+                ));
+            }
+            Ok(())
+        });
+        (channel, seen)
+    }
+
+    // V3: the run actor starts stage terminals before any view exists.
+    #[cfg(unix)]
+    #[test]
+    fn a_terminal_started_with_no_view_keeps_its_output_for_the_view_that_attaches() {
+        let dir = crate::test_support::TempDir::new("pty_detached");
+        let registry = Mutex::new(PtyRegistry::new());
+        let (exit_tx, exit_rx) = std::sync::mpsc::channel();
+        let on_exit: OnExit = Box::new(move |code| {
+            let _ = exit_tx.send(code);
+        });
+        let script = "printf 'hello from the stage'; read line; printf 'bye'; exit 3";
+        open_session_to(&registry, "s", sh_spec(dir.path(), script), None, Output::Detached(on_exit)).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let buffered = {
+                let registry = registry.lock().unwrap();
+                let out = registry.detached["s"].lock().unwrap();
+                String::from_utf8_lossy(&out.buffer).into_owned()
+            };
+            if buffered.contains("hello from the stage") {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "no output kept: {buffered:?}");
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(registry.lock().unwrap().running("s"));
+        let (view, seen) = recording_view();
+        assert!(attach_detached(&registry, "s", &view).unwrap().is_some(), "the first view attaches");
+        assert!(seen.lock().unwrap()[0].1.contains("hello from the stage"), "what it printed so far");
+        // A view after a reload takes over; what was printed meanwhile is all it gets.
+        let (other, _) = recording_view();
+        assert!(attach_detached(&registry, "s", &other).unwrap().is_some());
+        assert!(attach_detached(&registry, "s", &view).unwrap().is_some(), "back to the first view");
+        registry.lock().unwrap().sessions["s"].write(b"\r").unwrap();
+        assert_eq!(exit_rx.recv_timeout(Duration::from_secs(5)).unwrap(), Some(3), "the exit is reported");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !seen.lock().unwrap().iter().any(|p| p.0 == "exit") {
+            assert!(std::time::Instant::now() < deadline, "the view hears the exit");
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(seen.lock().unwrap().iter().any(|p| p.1.contains("bye")), "and streams live after attaching");
+
+        // A terminal closed (or replaced) before it exits reports nothing.
+        let (exit_tx, exit_rx) = std::sync::mpsc::channel();
+        let on_exit: OnExit = Box::new(move |code| {
+            let _ = exit_tx.send(code);
+        });
+        open_session_to(&registry, "t", sh_spec(dir.path(), "sleep 30"), None, Output::Detached(on_exit)).unwrap();
+        registry.lock().unwrap().kill("t");
+        assert!(exit_rx.recv_timeout(Duration::from_secs(5)).is_err(), "a closed terminal's exit is nobody's news");
+        assert!(!registry.lock().unwrap().detached.contains_key("t"), "closing forgets it");
+        registry.lock().unwrap().shutdown_all();
+    }
+
+    #[test]
+    fn a_paste_keeps_newlines_and_drops_what_could_end_it_early() {
+        assert_eq!(clean_paste_text("a\r\nb\rc\n\td"), "a\nb\nc\n\td");
+        assert_eq!(clean_paste_text("x\u{1b}[201~y\u{7}"), "x[201~y");
     }
 
     /// Open a terminal whose program takes 0.4 s to exit on SIGTERM (like

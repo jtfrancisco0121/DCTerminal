@@ -1,8 +1,8 @@
 //! The inbox watcher: a thread that reads the finished turns the Stop hook
-//! drops in `runs/*/inbox/`, deletes each file and emits it to the frontend
-//! as `pipeline-bridge-turn`, where today's executor decides on it (V2a;
-//! the run actor takes this over in V3). A Needs you the PermissionRequest
-//! hook (or its Notification backup) drops there goes out as
+//! drops in `runs/*/inbox/`, deletes each file and hands it on: in the app
+//! (`run_actor::app_host::deliver_inbox`) a finished turn goes to its run's
+//! actor (V3), and a Needs you the PermissionRequest hook (or its
+//! Notification backup) drops there goes to the frontend as
 //! `pipeline-bridge-needs` (V2b).
 //!
 //! Wake-ups come from a `notify` watcher on `runs/` (recursive), with a
@@ -16,9 +16,7 @@ use notify::{EventKind, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, RecvTimeoutError};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Runtime};
 
-pub const BRIDGE_TURN_EVENT: &str = "pipeline-bridge-turn";
 pub const BRIDGE_NEEDS_EVENT: &str = "pipeline-bridge-needs";
 
 /// One event from an inbox.
@@ -86,9 +84,9 @@ pub fn clear_inbox(runs_root: &Path) -> usize {
     drain_inbox(runs_root, &mut |_| {})
 }
 
-/// Start the watcher thread. Never returns an error: without `notify` the
-/// safety poll still reads.
-pub fn spawn<R: Runtime>(app: AppHandle<R>, runs_root: PathBuf) {
+/// Start the watcher thread; `deliver` gets every event. Never returns an
+/// error: without `notify` the safety poll still reads.
+pub fn spawn(runs_root: PathBuf, mut deliver: impl FnMut(InboxEvent) + Send + 'static) {
     std::thread::spawn(move || {
         if let Err(err) = std::fs::create_dir_all(&runs_root) {
             eprintln!("DCTerminal: run folder {} unavailable: {err}", runs_root.display());
@@ -116,12 +114,7 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>, runs_root: PathBuf) {
         .ok()
         .and_then(|mut watcher| watcher.watch(&runs_root, RecursiveMode::Recursive).ok().map(|_| watcher));
         loop {
-            drain_inbox(&runs_root, &mut |event| {
-                let _ = match event {
-                    InboxEvent::Turn(turn) => app.emit(BRIDGE_TURN_EVENT, turn),
-                    InboxEvent::Needs(needs) => app.emit(BRIDGE_NEEDS_EVENT, needs),
-                };
-            });
+            drain_inbox(&runs_root, &mut deliver);
             match wakes.recv_timeout(SAFETY_POLL) {
                 Ok(()) | Err(RecvTimeoutError::Timeout) => {}
                 // No watcher (it failed to start): poll.

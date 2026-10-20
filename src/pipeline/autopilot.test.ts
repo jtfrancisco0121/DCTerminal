@@ -1,15 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { BridgeTurn, TerminalSessionLog } from "../bridge";
+import type { TerminalSessionLog } from "../bridge";
 import { parseReviewVerdict as parseReviewVerdictOf } from "../handoff/verdict";
 import {
-  bridgeFindingsText,
-  bridgePrUrls,
-  bridgeReview,
-  bridgeBlocked,
-  bridgeTurnReport,
-  bridgeVerdict,
   finishedTurn,
-  reviseVerdict,
   loopBackText,
   mergeReviews,
   worstVerdict,
@@ -17,7 +10,7 @@ import {
   turnReport,
   usagePercent,
 } from "./autopilot";
-import { pipelineDef, type PipelineDef } from "./defs";
+import { pipelineDef } from "./defs";
 
 function log(patch: Partial<TerminalSessionLog> = {}): TerminalSessionLog {
   return {
@@ -222,131 +215,5 @@ describe("parallel reviews", () => {
     );
     expect(partial).not.toContain("HANDOFF: Result");
     expect(parseReviewVerdictOf(partial)).toBe("APPROVED");
-  });
-});
-
-function bridgeTurn(patch: Partial<BridgeTurn> = {}): BridgeTurn {
-  return {
-    schema: 1,
-    runId: "ee_1",
-    stageKey: "pr_reviewer",
-    stageId: "pr_reviewer",
-    roleId: "role_pr_reviewer",
-    tabId: "t4",
-    turn: "p-1",
-    outcome: "result",
-    endedAt: "2026-10-19T10:00:00Z",
-    lastAssistantMessage: "## HANDOFF: Verdict\nREQUEST CHANGES",
-    blocked: false,
-    result: {
-      schema: 1,
-      verdict: "CHANGES_REQUIRED",
-      findings: [
-        { severity: "HIGH", file: "src/a.ts:4", summary: "Null token." },
-        { severity: "LOW", summary: "Typo." },
-      ],
-    },
-    ...patch,
-  };
-}
-
-describe("bridge turns (engine 2)", () => {
-  const def = pipelineDef("eagle1")!;
-  const prStage = def.stages.find((s) => s.id === "pr_reviewer")!;
-
-  it("reads the bridge's verdict words as the words the rest of the pipeline uses", () => {
-    expect(bridgeVerdict("APPROVED", "REQUEST CHANGES")).toBe("APPROVED");
-    expect(bridgeVerdict("APPROVED_WITH_CHANGES", "REQUEST CHANGES")).toBe("APPROVED WITH CHANGES");
-    expect(bridgeVerdict("CHANGES_REQUIRED", "REQUIRES REVISION")).toBe("REQUIRES REVISION");
-    expect(bridgeVerdict(undefined, "REQUEST CHANGES")).toBeNull();
-    // A plan reviewer asks for revision; every other reviewer for changes.
-    const full = pipelineDef("eagle1")!;
-    const stage = (d: PipelineDef, id: string) => d.stages.find((s) => s.id === id)!;
-    expect(reviseVerdict(full, stage(full, "plan_reviewer"))).toBe("REQUIRES REVISION");
-    expect(reviseVerdict(full, stage(full, "pr_reviewer"))).toBe("REQUEST CHANGES");
-  });
-
-  it("a copied Plan Reviewer revises like the built-in one: its stage kind decides, not its role id", () => {
-    const copied: PipelineDef = {
-      id: "my_plan",
-      name: "My plan",
-      stages: [
-        { id: "planner", roleId: "role_planner", title: "Planner" },
-        { id: "plan_check", roleId: "role_custom_9", title: "Plan check", loopBack: { to: "planner", minSeverity: "MEDIUM" } },
-        { id: "implementer", roleId: "role_implementer", title: "Implementer" },
-        { id: "pr_check", roleId: "role_custom_10", title: "PR check", loopBack: { to: "implementer", minSeverity: "MEDIUM" } },
-      ],
-    };
-    expect(reviseVerdict(copied, copied.stages[1])).toBe("REQUIRES REVISION");
-    expect(reviseVerdict(copied, copied.stages[3])).toBe("REQUEST CHANGES");
-  });
-
-  it("decides on the submitted result, not on the reply's text", () => {
-    const turn = bridgeTurn({ lastAssistantMessage: "## HANDOFF: Verdict\nAPPROVED" });
-    const report = bridgeTurnReport({ stage: prStage, turn, usage: 12, lane: "pr1", revise: "REQUEST CHANGES" });
-    expect(report).toEqual({
-      stageId: "pr_reviewer",
-      verdict: "REQUEST CHANGES",
-      findings: [
-        { severity: "HIGH", summary: "Null token." },
-        { severity: "LOW", summary: "Typo." },
-      ],
-      findingsKnown: true,
-      missingSections: [],
-      usagePercent: 12,
-      chat: false,
-      lane: "pr1",
-      rateLimit: null,
-      noResult: false,
-      blocked: null,
-    });
-  });
-
-  it("reports a turn without a result as no_result", () => {
-    const report = bridgeTurnReport({
-      stage: prStage,
-      turn: bridgeTurn({ outcome: "no_result", result: null, blocked: true }),
-      usage: null,
-      lane: null,
-      revise: "REQUEST CHANGES",
-    });
-    expect(report.noResult).toBe(true);
-    expect(report.verdict).toBeNull();
-    expect(report.findingsKnown).toBe(false);
-    expect(report.findings).toEqual([]);
-  });
-
-  it("a blocked Implementer's result carries why, so the run waits instead of stopping with no_result", () => {
-    const blocked = bridgeTurn({
-      result: { schema: 1, prs: [], summary: "Nothing built.", blocked: "The plan's API does not exist." },
-    });
-    const report = bridgeTurnReport({ stage: prStage, turn: blocked, usage: null, lane: null, revise: "REQUEST CHANGES" });
-    expect(report).toMatchObject({ noResult: false, blocked: "The plan's API does not exist.", verdict: null });
-    expect(bridgeBlocked(blocked)).toBe("The plan's API does not exist.");
-    const done = bridgeTurn({ result: { schema: 1, prs: [{ url: "https://x/pull/1", branch: "b", title: "t" }], summary: "s" } });
-    expect(bridgeBlocked(done)).toBeNull();
-    expect(bridgeTurnReport({ stage: prStage, turn: done, usage: null, lane: null, revise: "x" }).blocked).toBeNull();
-    expect(bridgeBlocked(bridgeTurn({ outcome: "no_result", result: null }))).toBeNull();
-  });
-
-  it("lists the findings a loop-back sends the way the v1 path does", () => {
-    expect(bridgeFindingsText(bridgeReview(bridgeTurn())!.findings)).toBe(
-      "1. [HIGH] src/a.ts:4: Null token.\n2. [LOW] Typo.",
-    );
-    expect(bridgeFindingsText([])).toBe("");
-  });
-
-  it("a Planner's or an Implementer's result is no review: no verdict, no findings, pull requests for the checks", () => {
-    const implementer = bridgeTurn({
-      result: { schema: 1, prs: [{ url: "https://x/pull/1", branch: "b", title: "t" }], summary: "s" },
-    });
-    expect(bridgeReview(implementer)).toBeNull();
-    expect(bridgePrUrls(implementer)).toEqual(["https://x/pull/1"]);
-    const report = bridgeTurnReport({ stage: prStage, turn: implementer, usage: null, lane: null, revise: "REQUEST CHANGES" });
-    expect(report).toMatchObject({ verdict: null, findings: [], noResult: false });
-    const planner = bridgeTurn({ result: { schema: 1, tasks: [] } });
-    expect(bridgePrUrls(planner)).toBeNull();
-    expect(bridgePrUrls(bridgeTurn({ outcome: "no_result", result: null }))).toBeNull();
-    expect(bridgeReview(bridgeTurn())?.verdict).toBe("CHANGES_REQUIRED");
   });
 });

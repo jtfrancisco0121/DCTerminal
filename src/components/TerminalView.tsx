@@ -393,6 +393,8 @@ export function TerminalView({
       resumeSessionId,
       cols: size.cols,
       rows: size.rows,
+      // A stage the run actor started with no view (engine 2) is attached to, not restarted.
+      attach: true,
       onOutput: live.channel,
     }).catch((err: unknown) => {
       clearPtyOpening(ptyId);

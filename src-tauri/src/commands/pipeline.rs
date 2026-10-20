@@ -238,27 +238,6 @@ pub fn pipeline_set_autopilot(
     Ok(())
 }
 
-/// A bridged terminal's latest finished turn (its verdict and findings from
-/// `submit_result`), read from the run folder. `None` for a tab that is not
-/// bridged, or while its turn runs. Continue uses it after a restart.
-#[tauri::command]
-pub fn pipeline_bridge_turn(
-    app: tauri::AppHandle,
-    tab_id: String,
-    store: State<Mutex<StateStore>>,
-) -> Result<Option<crate::bridge::BridgeTurn>, String> {
-    let tab_id = tab_id.trim().to_string();
-    let tag = {
-        let store = store.lock().map_err(|e| e.to_string())?;
-        store.tab_by_id(&tab_id).and_then(|tab| tab.bridge.clone())
-    };
-    let Some(tag) = tag else {
-        return Ok(None);
-    };
-    let runs = crate::bridge::launch::runs_root(&crate::data_dir::app_data_dir(&app).path);
-    Ok(crate::bridge::launch::read_stage_turn(&runs, &tag, &tab_id))
-}
-
 /// The tasks of the run's Planner (its `tasks.json`, V2b): fan-out reads
 /// them directly. `None` before a bridged Planner handed a plan over (an
 /// engine-1 run, or a Planner launched without the bridge). Reads one file;
@@ -269,8 +248,28 @@ pub fn pipeline_run_tasks(app: tauri::AppHandle, run_id: String) -> Result<Optio
     Ok(crate::bridge::launch::read_run_tasks(&runs, run_id.trim()))
 }
 
+/// A button on an engine-2 run (Send, Send back, Approve, Continue): a
+/// message to the run's actor (V3, D18), which carries it out in turn with
+/// everything else about the run. Waits for its answer on a blocking thread.
+#[tauri::command]
+pub async fn pipeline_actor_message(
+    app: tauri::AppHandle,
+    run_id: String,
+    action: crate::run_actor::UserAction,
+) -> Result<crate::run_actor::UserOutcome, String> {
+    use tauri::Manager;
+    let actors = app.state::<crate::run_actor::app_host::AppActors>().inner().clone();
+    let run_id = run_id.trim().to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        actors.ask(&run_id, action, crate::run_actor::USER_REPLY_TIMEOUT)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// After a stage's turn: what autopilot does next (`decide`). Recorded in
-/// the run's ledger; the frontend carries it out.
+/// the run's ledger; the frontend carries it out (engine-1 runs; the run
+/// actor decides engine-2 runs itself).
 #[tauri::command]
 pub fn pipeline_decide(
     app: tauri::AppHandle,

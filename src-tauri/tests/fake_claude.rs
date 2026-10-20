@@ -794,6 +794,37 @@ mod pty {
         assert_eq!(prompts, vec![json!("first prompt"), json!("second prompt")]);
     }
 
+    /// The run actor pastes a round sent back as one bracketed paste and
+    /// Enter: its newlines stay in the one prompt, even split across reads.
+    #[test]
+    fn a_bracketed_paste_with_newlines_is_one_prompt() {
+        let home = FakeHome::new("fc_paste");
+        let scenario = json!({ "turns": [
+            { "steps": [ { "reply": "One." } ] },
+            { "steps": [ { "reply": "Two." } ] }
+        ]});
+        let mut fake = home.run(&scenario, &["--session-id", SID]);
+        assert!(fake.wait_screen("❯"), "screen:\n{}", fake.screen());
+        fake.write(b"\x1b[200~Review findings:\n\n1. [HIGH] It retries forever.\x1b[201~\r");
+        fake.wait_log(SID, |log| log.last_reply == "One." && log.turn_done);
+        // A marker cut in two by the PTY still counts.
+        fake.write(b"\x1b[20");
+        std::thread::sleep(Duration::from_millis(100));
+        fake.write(b"0~line one\nline two\x1b[201~\r");
+        fake.wait_log(SID, |log| log.last_reply == "Two." && log.turn_done);
+        fake.write(b"/exit\r");
+        assert_eq!(fake.wait_exit(), Some(0));
+        let prompts: Vec<_> = log_records(&fake.log_path(SID).unwrap(), false)
+            .iter()
+            .filter(|r| r["type"] == "user")
+            .map(|r| r["message"]["content"].clone())
+            .collect();
+        assert_eq!(
+            prompts,
+            vec![json!("Review findings:\n\n1. [HIGH] It retries forever."), json!("line one\nline two")]
+        );
+    }
+
     /// The S1 graceful stop: SIGTERM, then up to `STOP_GRACE` before SIGKILL.
     /// A record half written when SIGTERM lands is finished first.
     #[test]
@@ -1316,7 +1347,7 @@ mod eagle_eye_1 {
         }
     }
 
-    /// The report the executor builds from a bridge turn (`bridgeTurnReport`).
+    /// The report the run actor builds from a bridge turn (`turn_report` in `src/run_actor/actor.rs`).
     fn report(turn: &BridgeTurn) -> TurnReport {
         let result = turn.result.clone().unwrap_or(Value::Null);
         TurnReport {
@@ -1490,5 +1521,494 @@ mod eagle_eye_1 {
         assert_eq!(turn.result.as_ref().unwrap()["verdict"], "CHANGES_REQUIRED");
         let decision = decide(&def, &mut state, &report(&turn));
         assert_eq!((decision.action.as_str(), decision.stage_id.as_deref()), ("loopBack", Some("implementer")));
+    }
+}
+
+/// Pipeline v2 (V3): a whole Eagle-Eye 1 run driven by the Rust run actor,
+/// with no UI. Every stage after the Planner is opened by the actor as a
+/// `fake_claude` terminal launched with its stage's bridge flags; the
+/// actor hears each finished turn from the run's inbox, runs the gates,
+/// decides and carries the decision out: it sends a plan review round back
+/// into the running Planner, stops at the Implementer's checkpoint until
+/// your Send (an actor message too), pastes a failed check's output back
+/// into the Implementer, sends a PR review round back into the same
+/// Implementer session, and completes the run when the PR Reviewer approves.
+mod run_actor {
+    use super::*;
+    use dcterminal_lib::testing::{
+        bridged_command, bundled_seed, claude_terminal_args, drain_inbox, launch_flags, prepare_stage, runs_root,
+        ActorMsg, AppStateFile, BridgePlan, BridgeTag, ChainRef, GateDef, GateResult, Host, InboxEvent, PipelineRun,
+        ProgramArgs, ResultKind, Role, RunActors, RunMode, RunStatus, StageLaunch, StateStore, StopReason,
+        TerminalKind, TerminalLaunch, UserAction, MAIN_WINDOW_ID,
+    };
+    use serde_json::json;
+    use std::collections::{HashMap, VecDeque};
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex};
+
+    const DCTERMINAL: &str = env!("CARGO_BIN_EXE_dcterminal");
+    const RUN: &str = "ee_1760000000200";
+    const PLANNER_SID: &str = "8c3f5d21-2b3c-4d4e-9f50-000000000001";
+    /// The command gate: fails the first time it runs in a folder, then passes.
+    const FLAKY_CHECK: &str = "if [ -f .check-failed-once ]; then echo 'all 12 tests passed'; \
+        else touch .check-failed-once; echo 'FAIL src/auth.test.ts: expected 200, got 500'; exit 1; fi";
+
+    struct Terminal {
+        session: PtySession,
+        screen: Arc<Mutex<Vec<u8>>>,
+        exited: Arc<AtomicBool>,
+    }
+
+    /// The run actor's host: real `fake_claude` terminals in PTYs, a scenario
+    /// per terminal it opens (by role, in order), and the command gate run
+    /// for real with `sh` (the pull-request gate needs `gh`, so it passes).
+    struct FakeHost {
+        store: Mutex<StateStore>,
+        runs: PathBuf,
+        roles: Vec<Role>,
+        home: FakeHome,
+        scenarios: Mutex<HashMap<String, VecDeque<Value>>>,
+        terminals: Mutex<HashMap<String, Terminal>>,
+        launches: Mutex<Vec<StageLaunch>>,
+        stops: Mutex<Vec<String>>,
+        notices: Mutex<Vec<String>>,
+        /// The pull requests each pull-request gate was given.
+        pr_gate_urls: Mutex<Vec<Vec<String>>>,
+        _data: TempDir,
+    }
+
+    impl FakeHost {
+        fn start(&self, launch: &StageLaunch, scenario: &Value) {
+            let file = self.home.cwd.join(format!("scenario-{}.json", now_nanos()));
+            std::fs::write(&file, serde_json::to_vec(scenario).unwrap()).expect("write scenario");
+            // As `start_actor_stage` builds it: one --settings with the
+            // bridge's hooks merged into the status line, the prompt last.
+            let request = TerminalLaunch {
+                kind: TerminalKind::Role {
+                    role_id: launch.role_id.clone(),
+                    run_mode: RunMode::Default,
+                    prompt: Some(launch.prompt.clone()),
+                    stage_kind: None,
+                },
+                model: None,
+                session_id: Some(launch.session_id.clone()),
+                settings: Some(json!({ "statusLine": { "type": "command", "command": "true" } })),
+            };
+            let args = bridged_command(request, launch.bridge.clone(), |req| {
+                Ok(ProgramArgs::new("claude", claude_terminal_args(req)?))
+            })
+            .expect("bridged launch")
+            .args;
+            let mut session = PtySession::spawn(SpawnSpec {
+                program: FAKE_CLAUDE.into(),
+                args,
+                env: vec![
+                    ("CLAUDE_CONFIG_DIR".into(), self.home.config.path().display().to_string()),
+                    ("DCT_FAKE_CLAUDE_SCENARIO".into(), file.display().to_string()),
+                ],
+                cwd: launch.cwd.clone(),
+                cols: 120,
+                rows: 40,
+            })
+            .expect("spawn fake_claude");
+            let output = session.take_output().expect("pty output");
+            let screen = Arc::new(Mutex::new(Vec::new()));
+            let exited = Arc::new(AtomicBool::new(false));
+            let (into, done) = (screen.clone(), exited.clone());
+            // Keep reading, or a full PTY buffer would stall the stage.
+            std::thread::spawn(move || {
+                while let Ok(event) = output.recv() {
+                    match event {
+                        PtyOutput::Data(bytes) => into.lock().unwrap().extend_from_slice(&bytes),
+                        PtyOutput::Exit { .. } => {
+                            done.store(true, Ordering::SeqCst);
+                            return;
+                        }
+                    }
+                }
+            });
+            self.terminals.lock().unwrap().insert(launch.tab_id.clone(), Terminal { session, screen, exited });
+        }
+
+        fn screens(&self) -> String {
+            let terminals = self.terminals.lock().unwrap();
+            terminals
+                .iter()
+                .map(|(tab, t)| format!("--- {tab} ---\n{}", plain_screen(&t.screen.lock().unwrap())))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+    }
+
+    impl Host for FakeHost {
+        fn store(&self) -> &Mutex<StateStore> {
+            &self.store
+        }
+        fn runs_root(&self) -> PathBuf {
+            self.runs.clone()
+        }
+        fn bridge_program(&self) -> Option<PathBuf> {
+            Some(PathBuf::from(DCTERMINAL))
+        }
+        fn role(&self, role_id: &str) -> Option<Role> {
+            self.roles.iter().find(|r| r.id == role_id).cloned()
+        }
+        fn spawn_stage(&self, launch: &StageLaunch) -> Result<(), String> {
+            let scenario = self
+                .scenarios
+                .lock()
+                .unwrap()
+                .get_mut(&launch.role_id)
+                .and_then(VecDeque::pop_front)
+                .ok_or_else(|| format!("no scenario left for {}", launch.role_id))?;
+            self.start(launch, &scenario);
+            self.launches.lock().unwrap().push(launch.clone());
+            Ok(())
+        }
+        fn paste(&self, tab_id: &str, text: &str) -> Result<(), String> {
+            let terminals = self.terminals.lock().unwrap();
+            let terminal = terminals.get(tab_id).ok_or_else(|| format!("no terminal {tab_id}"))?;
+            let mut bytes = b"\x1b[200~".to_vec();
+            bytes.extend_from_slice(text.as_bytes());
+            bytes.extend_from_slice(b"\x1b[201~\r");
+            terminal.session.write(&bytes).map_err(|err| err.to_string())
+        }
+        fn terminal_live(&self, tab_id: &str) -> bool {
+            self.terminals.lock().unwrap().get(tab_id).is_some_and(|t| !t.exited.load(Ordering::SeqCst))
+        }
+        fn run_gate(&self, gate: &GateDef, folder: &Path, pr_urls: &[String]) -> GateResult {
+            let GateDef::Command { .. } = gate else {
+                self.pr_gate_urls.lock().unwrap().push(pr_urls.to_vec());
+                return GateResult {
+                    kind: "pullRequest".into(),
+                    label: "pull requests".into(),
+                    status: "passed".into(),
+                    summary: "Every pull request exists.".into(),
+                    output: String::new(),
+                    duration_ms: 0,
+                    optional: false,
+                };
+            };
+            let ran = std::process::Command::new("/bin/sh")
+                .args(["-c", FLAKY_CHECK])
+                .current_dir(folder)
+                .output()
+                .expect("run the check");
+            let passed = ran.status.success();
+            GateResult {
+                kind: "command".into(),
+                label: "npm run check".into(),
+                status: if passed { "passed" } else { "failed" }.into(),
+                summary: if passed { "Passed." } else { "Exited with code 1." }.into(),
+                output: String::from_utf8_lossy(&ran.stdout).trim().to_string(),
+                duration_ms: 1,
+                optional: false,
+            }
+        }
+        fn usage_percent(&self, _run_id: &str) -> Option<u8> {
+            None
+        }
+        fn rate_limit(&self, _tab_id: &str) -> Option<String> {
+            None
+        }
+        fn bridge_gate(&self, _run_id: &str, _stage_key: &str, _cwd: &Path) -> Result<bool, String> {
+            Ok(true)
+        }
+        fn run_changed(&self, _run_id: &str) {}
+        fn tab_opened(&self, _run_id: &str, _tab_id: &str) {}
+        fn stopped(&self, _run_id: &str, _tab_id: Option<&str>, reason: StopReason, summary: &str) {
+            self.stops.lock().unwrap().push(format!("{reason:?}: {summary}"));
+        }
+        fn notice(&self, _run_id: &str, title: &str, body: &str) {
+            self.notices.lock().unwrap().push(format!("{title}: {body}"));
+        }
+    }
+
+    impl Drop for FakeHost {
+        fn drop(&mut self) {
+            for terminal in self.terminals.lock().unwrap().values() {
+                terminal.session.kill();
+            }
+        }
+    }
+
+    fn submit(arguments: Value) -> Value {
+        json!({ "mcp": "submit_result", "arguments": arguments })
+    }
+
+    fn plan(version: &str) -> String {
+        let tasks = json!({ "tasks": [
+            { "id": "pr1", "title": "Refresh", "dependsOn": [], "manual": false, "summary": "Refresh expired tokens once." }
+        ] });
+        format!(
+            "# Plan: token refresh ({version})\n\n## HANDOFF: Plan\n1. Refresh tokens in src/auth.ts.\n\n```json\n{tasks}\n```\n\n\
+             ## HANDOFF: Open questions\nNone.\n"
+        )
+    }
+
+    fn implemented(reply: &str) -> Value {
+        json!({ "steps": [
+            submit(json!({
+                "prs": [{ "url": "https://github.com/acme/app/pull/12", "branch": "fix/refresh", "title": "Refresh tokens" }],
+                "summary": "Expired tokens are refreshed once.",
+                "checks": [{ "command": "npm test", "passed": true }]
+            })),
+            { "reply": reply }
+        ] })
+    }
+
+    fn reviewed(verdict: &str, findings: Value) -> Value {
+        json!({ "turns": [{ "steps": [submit(json!({ "verdict": verdict, "findings": findings })), { "reply": verdict }] }] })
+    }
+
+    /// Every scenario, by role, in the order the actor opens terminals.
+    fn scenarios() -> HashMap<String, VecDeque<Value>> {
+        HashMap::from([
+            (
+                "role_plan_reviewer".to_string(),
+                VecDeque::from([
+                    reviewed("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "file": "src/auth.ts:42", "summary": "It retries forever." }])),
+                    reviewed("APPROVED", json!([])),
+                ]),
+            ),
+            (
+                "role_implementer".to_string(),
+                VecDeque::from([json!({ "turns": [
+                    implemented("Opened https://github.com/acme/app/pull/12"),
+                    implemented("Fixed the failing test."),
+                    implemented("Addressed the review."),
+                ] })]),
+            ),
+            (
+                "role_pr_reviewer".to_string(),
+                VecDeque::from([
+                    reviewed("CHANGES_REQUIRED", json!([{ "severity": "MEDIUM", "file": "src/auth.ts:57", "summary": "No test for a second expiry." }])),
+                    reviewed("APPROVED", json!([])),
+                ]),
+            ),
+        ])
+    }
+
+    /// The user's own start of the Planner (the app's `role_terminal_start`):
+    /// its tab on a new engine-2 chain, its run folder, its terminal.
+    fn start_planner(host: &FakeHost) {
+        let cwd = host.home.cwd.path().display().to_string();
+        let planner = {
+            let mut store = host.store.lock().unwrap();
+            let role = host.roles.iter().find(|r| r.id == "role_planner").unwrap();
+            let tab = store.create_draft_tab(role, &cwd, true, None).unwrap();
+            let answers = HashMap::from([
+                ("cwd".to_string(), cwd.clone()),
+                ("taskType".to_string(), "Bug".to_string()),
+                ("title".to_string(), "Expired tokens".to_string()),
+                ("request".to_string(), "Refresh expired tokens instead of failing.".to_string()),
+                ("expectedBehavior".to_string(), "One retry with a fresh token.".to_string()),
+                ("currentBehavior".to_string(), "It returns 500.".to_string()),
+            ]);
+            store.data.tabs.iter_mut().find(|t| t.id == tab).unwrap().answers = answers;
+            let chain = ChainRef { chain_id: RUN.into(), kind: "eagle1".into(), step: 1, total: 4, round: 1, lane: None };
+            store.set_tab_chain(&tab, Some(chain), None).unwrap();
+            let run = store.pipeline_run_by_id_mut(RUN).expect("the run");
+            assert_eq!(run.engine, 2, "Eagle-Eye 1 runs on engine 2");
+            run.set_autopilot_enabled(true);
+            store.set_tab_bridge(&tab, Some(BridgeTag { run_id: RUN.into(), stage: "planner".into() })).unwrap();
+            store.save().unwrap();
+            tab
+        };
+        let bridge = BridgePlan {
+            run_id: RUN.into(),
+            stage_id: "planner".into(),
+            role_id: "role_planner".into(),
+            lane: None,
+            stage_key: "planner".into(),
+            kind: ResultKind::Planner,
+            autopilot: true,
+        };
+        let run_dir = prepare_stage(&host.runs, &bridge, &planner).expect("prepare the Planner");
+        let launch = StageLaunch {
+            run_id: RUN.into(),
+            tab_id: planner.clone(),
+            role_id: "role_planner".into(),
+            cwd: host.home.cwd.path().to_path_buf(),
+            prompt: "Plan the token refresh.".into(),
+            session_id: PLANNER_SID.into(),
+            bridge: Some(launch_flags(ResultKind::Planner, Path::new(DCTERMINAL), &run_dir, RUN, "planner", &planner)),
+        };
+        host.start(
+            &launch,
+            &json!({ "turns": [
+                { "steps": [
+                    { "tool": "ExitPlanMode", "input": { "plan": plan("v1") }, "permission": true },
+                    { "reply": "The plan is written." }
+                ] },
+                { "steps": [
+                    { "tool": "ExitPlanMode", "input": { "plan": plan("v2") }, "permission": true },
+                    { "reply": "The plan is revised." }
+                ] }
+            ] }),
+        );
+    }
+
+    fn snapshot(host: &FakeHost) -> PipelineRun {
+        host.store.lock().unwrap().pipeline_run_by_id(RUN).cloned().expect("the run")
+    }
+
+    fn ledger(run: &PipelineRun) -> String {
+        run.events
+            .iter()
+            .map(|e| format!("{} [{}] {}", e.kind, e.outcome.clone().unwrap_or_default(), e.summary))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The user prompts in a stage's session log, oldest first.
+    fn prompts(host: &FakeHost, session_id: &str) -> Vec<String> {
+        let path = find_session_log(host.home.config.path(), session_id).expect("session log");
+        log_records(&path, false)
+            .into_iter()
+            .filter(|r| r["type"] == "user" && r["message"]["content"].is_string())
+            .map(|r| r["message"]["content"].as_str().unwrap_or_default().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn a_whole_eagle_eye_1_runs_on_the_actor_with_a_loop_back_and_a_failed_gate() {
+        let data = TempDir::new("actor_ee1_data");
+        let home = FakeHome::new("actor_ee1");
+        let state = StateStore {
+            path: data.join("state.json"),
+            data: AppStateFile::default(),
+            new_tab_provider: dcterminal_lib::provider::ProviderId::DEFAULT,
+            draft_window: MAIN_WINDOW_ID.to_string(),
+        };
+        let host = Arc::new(FakeHost {
+            store: Mutex::new(state),
+            runs: runs_root(data.path()),
+            roles: bundled_seed().expect("roles").roles,
+            home,
+            scenarios: Mutex::new(scenarios()),
+            terminals: Mutex::new(HashMap::new()),
+            launches: Mutex::new(Vec::new()),
+            stops: Mutex::new(Vec::new()),
+            notices: Mutex::new(Vec::new()),
+            pr_gate_urls: Mutex::new(Vec::new()),
+            _data: data,
+        });
+        let actors = RunActors::new(host.clone());
+        start_planner(&host);
+
+        // The app's inbox watcher, and you at the checkpoint.
+        let deadline = Instant::now() + Duration::from_secs(90);
+        let mut sent = false;
+        loop {
+            drain_inbox(&host.runs, &mut |event| {
+                if let InboxEvent::Turn(turn) = event {
+                    let run_id = turn.run_id.clone();
+                    actors.send(&run_id, ActorMsg::Turn(turn));
+                }
+            });
+            let run = snapshot(&host);
+            match (run.status, run.stop_reason) {
+                (RunStatus::Complete, _) => break,
+                (RunStatus::Waiting, Some(StopReason::Checkpoint)) if !sent => {
+                    sent = true;
+                    let reviewer = run.tab_ids["role_plan_reviewer"].clone();
+                    let outcome = actors
+                        .ask(
+                            RUN,
+                            UserAction::Send {
+                                source_tab_id: reviewer,
+                                target_role_id: "role_implementer".into(),
+                                values: None,
+                                handoff_plan: None,
+                                handoff_text: None,
+                                force: false,
+                            },
+                            Duration::from_secs(30),
+                        )
+                        .expect("your Send");
+                    assert!(outcome.tab_id.is_some() && outcome.warning.is_none(), "{outcome:?}");
+                }
+                (RunStatus::Running, _) => {}
+                (status, reason) if !(status == RunStatus::Waiting && reason == Some(StopReason::Checkpoint)) => panic!(
+                    "the run stopped: {status:?} {reason:?}\nledger:\n{}\nstops: {:?}\n{}",
+                    ledger(&run),
+                    host.stops.lock().unwrap(),
+                    host.screens()
+                ),
+                _ => {}
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the run never completed\nledger:\n{}\n{}\nbridge.log: {}",
+                ledger(&run),
+                host.screens(),
+                std::fs::read_to_string(host.runs.join(RUN).join("bridge.log")).unwrap_or_default()
+            );
+            std::thread::sleep(Duration::from_millis(30));
+        }
+
+        let run = snapshot(&host);
+        let all = ledger(&run);
+        // Every stage the actor opened, in order: the review rounds each got
+        // a new reviewer, the rounds sent back went into the running stages.
+        let roles: Vec<String> = host.launches.lock().unwrap().iter().map(|l| l.role_id.clone()).collect();
+        assert_eq!(
+            roles,
+            ["role_plan_reviewer", "role_plan_reviewer", "role_implementer", "role_pr_reviewer", "role_pr_reviewer"],
+            "{all}"
+        );
+        // The loop-backs: the plan review round, then the PR review round.
+        let sent_back: Vec<&str> =
+            run.events.iter().filter(|e| e.kind == "loopBack").map(|e| e.summary.as_str()).collect();
+        assert_eq!(sent_back, ["Round 1 sent back (REQUIRES REVISION)", "Round 2 sent back (REQUEST CHANGES)"], "{all}");
+        // The failed gate, its retry, then passes.
+        let gates: Vec<&str> = run
+            .events
+            .iter()
+            .filter(|e| e.kind == "gate" && e.summary.starts_with("npm run check"))
+            .map(|e| e.outcome.as_deref().unwrap_or_default())
+            .collect();
+        assert_eq!(gates, ["failed", "passed", "passed"], "{all}");
+        assert!(run.events.iter().any(|e| e.outcome.as_deref() == Some("retry")), "{all}");
+        assert_eq!(run.events.last().map(|e| e.kind.as_str()), Some("complete"), "{all}");
+        assert!(host.notices.lock().unwrap().iter().any(|n| n.starts_with("Run complete")));
+        assert!(host.stops.lock().unwrap().iter().all(|s| s.starts_with("Checkpoint")), "{:?}", host.stops.lock().unwrap());
+
+        // The Planner was asked once to revise, in its own session.
+        let planner = prompts(&host, PLANNER_SID);
+        assert_eq!(planner.len(), 2, "{planner:?}");
+        assert!(planner[1].starts_with("Review findings from the Plan Reviewer (round 1):"), "{}", planner[1]);
+        assert!(planner[1].contains("1. [HIGH] src/auth.ts:42: It retries forever."), "{}", planner[1]);
+        // One Implementer session: its prompt from plan.md, the check's output, the review round.
+        let implementer = host.launches.lock().unwrap()[2].clone();
+        assert!(implementer.prompt.contains("(v2)"), "the revised plan from plan.md");
+        assert!(implementer.prompt.contains("Bug Fix"));
+        let turns = prompts(&host, &implementer.session_id);
+        assert_eq!(turns.len(), 3, "{turns:?}");
+        assert!(turns[1].contains("FAIL src/auth.test.ts: expected 200, got 500"), "{}", turns[1]);
+        assert!(turns[2].starts_with("Review findings from the PR Reviewer (round 1):"), "{}", turns[2]);
+        assert!(turns[2].contains("src/auth.ts:57: No test for a second expiry."), "{}", turns[2]);
+        // The PR Reviewer read the pull request from prs.json.
+        let reviewer = host.launches.lock().unwrap()[3].clone();
+        assert!(
+            reviewer.prompt.contains("Pull request: https://github.com/acme/app/pull/12 (branch `fix/refresh`)"),
+            "{}",
+            reviewer.prompt
+        );
+        // Each second review is told what its own first round sent back.
+        let launches = host.launches.lock().unwrap().clone();
+        assert!(launches[1].prompt.contains("It retries forever."), "{}", launches[1].prompt);
+        assert!(launches[4].prompt.contains("No test for a second expiry."), "{}", launches[4].prompt);
+        assert!(!launches[4].prompt.contains("It retries forever."), "not the plan review's findings");
+        assert_eq!(run.verdicts.len(), 2);
+        assert_eq!((run.round, run.status), (3, RunStatus::Complete));
+        // Each Implementer turn's pull-request gate checked the pull request
+        // it reported through submit_result.
+        let pr_gates = host.pr_gate_urls.lock().unwrap().clone();
+        assert!(!pr_gates.is_empty());
+        for urls in &pr_gates {
+            assert_eq!(urls, &vec!["https://github.com/acme/app/pull/12".to_string()], "{pr_gates:?}");
+        }
     }
 }

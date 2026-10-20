@@ -120,7 +120,9 @@
 //! # Terminal
 //!
 //! Typed text echoes on the `❯` prompt line; Enter submits it, `/exit` or
-//! Ctrl-D on an empty line exits 0. On SIGTERM it finishes the log line it is
+//! Ctrl-D on an empty line exits 0. A bracketed paste (`ESC[200~` …
+//! `ESC[201~`) keeps its newlines in the prompt, as Claude Code does, so a
+//! paste then Enter is one prompt. On SIGTERM it finishes the log line it is
 //! writing and exits 143, which the S1 graceful stop relies on Claude Code
 //! doing. The permission dialog uses the cursor moves Claude Code 2.1.287
 //! does, which `src/terminal/permissionDialog.ts` reads (see its fixtures).
@@ -138,6 +140,9 @@ use std::time::{Duration, Instant};
 
 const VERSION: &str = "2.1.287";
 const ESC: u8 = 0x1b;
+/// Bracketed paste markers (`ESC[200~` … `ESC[201~`).
+const PASTE_START: &[u8] = b"\x1b[200~";
+const PASTE_END: &[u8] = b"\x1b[201~";
 /// Piece size for `write_chunk_ms`.
 const CHUNK: usize = 64;
 const POLL: Duration = Duration::from_millis(10);
@@ -201,6 +206,9 @@ fn main() {
         titled: false,
         input: spawn_input(),
         typed: Vec::new(),
+        pending: Vec::new(),
+        partial: false,
+        pasting: false,
         queued: VecDeque::new(),
         tty: Tty::raw(),
         hooks: settings.get("hooks").cloned().unwrap_or(Value::Null),
@@ -504,6 +512,12 @@ struct Fake {
     titled: bool,
     input: Receiver<Vec<u8>>,
     typed: Vec<u8>,
+    /// Input bytes not taken yet: the rest of a read after Enter, or the
+    /// start of an escape sequence split across reads (`partial`).
+    pending: Vec<u8>,
+    partial: bool,
+    /// Inside a bracketed paste: newlines stay in the prompt.
+    pasting: bool,
     /// Prompts typed during a turn, taken in order once it ends.
     queued: VecDeque<String>,
     tty: Tty,
@@ -1347,30 +1361,66 @@ impl Fake {
         if terminated() {
             self.quit(143);
         }
-        let bytes = match self
-            .input
-            .recv_timeout(timeout.max(Duration::from_millis(1)))
-        {
-            Ok(bytes) => bytes,
-            Err(RecvTimeoutError::Timeout) => return None,
-            Err(RecvTimeoutError::Disconnected) => {
-                std::thread::sleep(timeout);
-                return None;
-            }
+        let bytes = if !self.pending.is_empty() && !self.partial {
+            std::mem::take(&mut self.pending)
+        } else {
+            let read = match self
+                .input
+                .recv_timeout(timeout.max(Duration::from_millis(1)))
+            {
+                Ok(bytes) => bytes,
+                Err(RecvTimeoutError::Timeout) => return None,
+                Err(RecvTimeoutError::Disconnected) => {
+                    std::thread::sleep(timeout);
+                    return None;
+                }
+            };
+            let mut bytes = std::mem::take(&mut self.pending);
+            self.partial = false;
+            bytes.extend(read);
+            bytes
         };
-        if bytes == [ESC] {
+        if bytes == [ESC] && !self.pasting {
             self.typed.clear();
             return Some(Event::Esc);
         }
-        if bytes.first() == Some(&ESC) {
-            // An arrow key or another escape sequence.
-            return None;
-        }
-        for byte in bytes {
+        let mut at = 0;
+        while at < bytes.len() {
+            let byte = bytes[at];
+            if byte == ESC {
+                let rest = &bytes[at..];
+                if rest.starts_with(PASTE_START) || rest.starts_with(PASTE_END) {
+                    self.pasting = rest.starts_with(PASTE_START);
+                    at += PASTE_START.len();
+                    continue;
+                }
+                if PASTE_START.starts_with(rest) || PASTE_END.starts_with(rest) {
+                    // A paste marker split across reads: wait for its end.
+                    self.pending = rest.to_vec();
+                    self.partial = true;
+                    return None;
+                }
+                // An arrow key or another escape sequence.
+                return None;
+            }
+            at += 1;
+            if self.pasting {
+                // Claude Code keeps a pasted newline in the prompt.
+                match byte {
+                    b'\r' | b'\n' => self.typed.push(b'\n'),
+                    b'\t' | 0x20.. => self.typed.push(byte),
+                    _ => {}
+                }
+                if echo {
+                    self.draw(&String::from_utf8_lossy(&[if byte < 0x20 { b' ' } else { byte }]));
+                }
+                continue;
+            }
             match byte {
                 b'\r' | b'\n' => {
                     let line = String::from_utf8_lossy(&self.typed).into_owned();
                     self.typed.clear();
+                    self.pending = bytes[at..].to_vec();
                     return Some(Event::Line(line));
                 }
                 0x04 if self.typed.is_empty() => return Some(Event::Eof),

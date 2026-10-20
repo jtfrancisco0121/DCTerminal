@@ -557,6 +557,20 @@ impl PipelineRun {
         }
     }
 
+    /// Autopilot stopped by itself and is off now (`stopped` with `reason`,
+    /// e.g. the run actor failed). Turning autopilot on again runs it. A
+    /// complete run stays complete.
+    pub fn set_stopped(&mut self, reason: StopReason) {
+        let autopilot = self.autopilot.get_or_insert_with(RunAutopilot::default);
+        autopilot.enabled = false;
+        autopilot.waiting = None;
+        if self.status == RunStatus::Complete {
+            return;
+        }
+        self.status = RunStatus::Stopped;
+        self.stop_reason = Some(reason);
+    }
+
     /// The run is done. Final.
     pub fn set_complete(&mut self) {
         if let Some(autopilot) = self.autopilot.as_mut() {

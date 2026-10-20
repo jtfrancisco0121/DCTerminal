@@ -16,9 +16,10 @@
 //!
 //! Bridged stages of an engine-2 run: a reviewer (a stage whose kind is
 //! `reviewer`, H4's `StageKind`, with no parallel reviewers, V2a), the
-//! Planner and the Implementer (V2b). A stage with parallel reviewers keeps
-//! the v1 path, its merge staying in the frontend until the run actor (V3),
-//! and so does any other stage.
+//! Planner and the Implementer (V2b), each by its stage kind. A pipeline
+//! with any other stage (parallel reviewers, a generic stage) gives its runs
+//! engine 1 ([`engine_for`]), so the run actor (V3) only ever drives runs it
+//! can follow end to end.
 
 use super::folder::{
     self, read_mode, read_result, read_stage, stage_dirs, write_mode, BridgeTurn, ResultKind, StageInfo,
@@ -34,6 +35,18 @@ use std::path::{Path, PathBuf};
 
 /// The engine new runs get (D19). Runs saved before it read as 1.
 pub const ENGINE_V2: u32 = 2;
+
+/// The engine a new run of `def` gets: 2 when every stage reports through
+/// the bridge, so the run actor can follow the whole run (V3); else 1, and
+/// the run keeps the v1 path (a stage with parallel reviewers, or a role
+/// that is none of Planner, reviewer and Implementer).
+pub fn engine_for(def: &PipelineDef) -> u32 {
+    if def.stages.iter().all(|stage| stage_kind(stage).is_some()) {
+        ENGINE_V2
+    } else {
+        1
+    }
+}
 
 /// A bridged stage, decided before its tab starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,8 +93,12 @@ pub fn new_chain(def: &PipelineDef, chain_kind: &str, now_ms: i64) -> ChainRef {
     }
 }
 
-/// [`plan_for`] for the first stage of a run [`new_chain`] starts.
+/// [`plan_for`] for the first stage of a run [`new_chain`] starts, when
+/// that run will be engine 2 ([`engine_for`]).
 pub fn plan_for_new_run(def: &PipelineDef, chain: &ChainRef, role_id: &str) -> Option<BridgePlan> {
+    if engine_for(def) < ENGINE_V2 {
+        return None;
+    }
     stage_plan(&chain.chain_id, def, chain, role_id, None, false)
 }
 
@@ -323,6 +340,11 @@ pub fn bridge_program() -> Option<PathBuf> {
 /// Autopilot was turned on or off: every stage of the run enforces (or
 /// stops enforcing) from its next stop. A taken-over stage is left alone.
 pub fn set_run_mode(runs_root: &Path, run_id: &str, autopilot: bool) -> Result<(), String> {
+    set_run_mode_to(runs_root, run_id, mode_for(autopilot))
+}
+
+/// [`set_run_mode`] with the mode given (the run actor stopping writes `manual`).
+pub fn set_run_mode_to(runs_root: &Path, run_id: &str, mode: StageMode) -> Result<(), String> {
     let Some(run_dir) = folder::run_dir(runs_root, run_id) else {
         return Ok(());
     };
@@ -330,7 +352,7 @@ pub fn set_run_mode(runs_root: &Path, run_id: &str, autopilot: bool) -> Result<(
         if read_mode(&dir) == StageMode::Takeover {
             continue;
         }
-        write_mode(&dir, mode_for(autopilot)).map_err(|err| format!("{}: {err}", dir.display()))?;
+        write_mode(&dir, mode).map_err(|err| format!("{}: {err}", dir.display()))?;
     }
     Ok(())
 }

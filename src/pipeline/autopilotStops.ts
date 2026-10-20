@@ -1,4 +1,5 @@
 import { autopilotPendingStops, listenAutopilotStopped, type AutopilotStoppedEvent } from "../bridge";
+import { stopNotice } from "./stopReasons";
 
 /**
  * Every stop the core made by itself (a stall, or a turn that finished while
@@ -42,4 +43,16 @@ export function onceValue<T>(): { promise: Promise<T>; resolve: (value: T) => vo
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((r) => (resolve = r));
   return { promise, resolve };
+}
+
+/**
+ * The notification for a stop the core made (the run actor on engine 2, or
+ * H3's stall and restart checks): the reason code's plain-English line, then
+ * the summary, as the engine-1 path words its own stops. H3's restart
+ * summary already says the turn finished while the app was closed, so it
+ * stands alone.
+ */
+export function autopilotStopDetail(event: Pick<AutopilotStoppedEvent, "reason" | "summary">): string {
+  if (event.reason === "app_restarted") return `Autopilot stopped. ${event.summary}`;
+  return `Autopilot stopped. ${stopNotice(event.reason, event.summary)}`;
 }
