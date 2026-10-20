@@ -629,6 +629,14 @@ fn every_stop_in_decide_carries_its_reason_code() {
     let mut limited = report("planner", None);
     limited.rate_limit = Some("You've hit your limit · resets 3pm".into());
     assert_eq!(stopped(&eagle1(), run(1), limited), Some(StopReason::UsageLimit));
+    // Autopilot off (a turn racing the switch): the run is left as you set
+    // it, and the notification still names why.
+    let mut off = run(1);
+    off.autopilot.as_mut().unwrap().enabled = false;
+    let events = off.events.len();
+    let d = decide(&eagle1(), &mut off, &report("planner", None));
+    assert_eq!((d.action.as_str(), d.stop_reason), ("stop", Some(StopReason::PausedByYou)));
+    assert_eq!(off.events.len(), events);
 }
 
 #[test]

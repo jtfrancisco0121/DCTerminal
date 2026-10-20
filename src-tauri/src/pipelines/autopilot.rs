@@ -292,7 +292,11 @@ fn advance(
 pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> Decision {
     let enabled = run.autopilot.as_ref().is_some_and(|a| a.enabled);
     if !enabled {
-        return Decision::new("stop", "Autopilot is off for this run.");
+        // Turning autopilot off already stopped the run (`paused_by_you`);
+        // only the notification needs the code.
+        let mut decision = Decision::new("stop", "Autopilot is off for this run.");
+        decision.stop_reason = Some(StopReason::PausedByYou);
+        return decision;
     }
     if run.status == RunStatus::Complete {
         // Final: a late turn (a background task reporting in) changes nothing.
