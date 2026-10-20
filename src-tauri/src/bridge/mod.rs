@@ -111,7 +111,8 @@ fn run_cli(args: &[String]) -> i32 {
         Ok(cli) => cli,
         Err(why) => {
             eprintln!("dcterminal bridge: {why}");
-            return 2;
+            // Not 2: for a hook, exit 2 blocks the stop or erases the prompt.
+            return 1;
         }
     };
     match &cli.mode {

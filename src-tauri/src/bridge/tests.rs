@@ -315,6 +315,10 @@ fn a_hook_with_a_bad_setup_exits_1_and_writes_nothing() {
     assert_eq!(super::run_hook(&cli, "Stop", &b"{}"[..], &mut out), 1);
     assert!(out.is_empty());
     assert!(!dir.exists(), "nothing created outside a prepared run folder");
+    // A command line that does not parse exits 1 too: exit 2 would block a
+    // Stop or erase a prompt.
+    let args: Vec<String> = ["hook", "--run", RUN].iter().map(|s| s.to_string()).collect();
+    assert_eq!(super::run_cli(&args), 1);
 }
 
 #[test]
