@@ -121,9 +121,20 @@ impl Fixture {
     }
 
     fn with_engine(tag: &str, engine: u32) -> Self {
+        Self::build(tag, engine, "eagle1", Vec::new())
+    }
+
+    /// An engine-2 run of your own pipeline `kind` (registered by the
+    /// test), with `extra` roles (copies of built-in ones) next to the seed's.
+    fn with_pipeline(tag: &str, kind: &str, extra: Vec<Role>) -> Self {
+        Self::build(tag, 2, kind, extra)
+    }
+
+    fn build(tag: &str, engine: u32, kind: &str, extra: Vec<Role>) -> Self {
         let dir = TempDir::new(&format!("run_actor_{tag}"));
         let work = TempDir::new(&format!("run_actor_{tag}_work"));
-        let roles = crate::store::bundled_seed().expect("seed").roles;
+        let mut roles = crate::store::bundled_seed().expect("seed").roles;
+        roles.extend(extra);
         let mut store = StateStore {
             path: dir.join("state.json"),
             data: AppStateFile::default(),
@@ -134,7 +145,7 @@ impl Fixture {
         let planner_role = roles.iter().find(|r| r.id == "role_planner").unwrap();
         let planner = store.create_draft_tab(planner_role, &cwd, true, None).unwrap();
         store.data.tabs.iter_mut().find(|t| t.id == planner).unwrap().answers = planner_answers(&cwd);
-        let chain = chain(1, None);
+        let chain = ChainRef { kind: kind.into(), ..chain(1, None) };
         store.set_tab_chain(&planner, Some(chain.clone()), None).unwrap();
         {
             let run = store.pipeline_run_by_id_mut(RUN).unwrap();
@@ -748,4 +759,79 @@ fn continue_on_a_turn_the_actor_decided_runs_no_checks() {
     assert_eq!(fx.pastes().len(), 1);
     assert_eq!(retries(&fx), Some(1));
     fx.run(|run| assert_eq!(run.status, RunStatus::Running, "the run carries on"));
+}
+
+/// A copy of a built-in role under another id (Settings › Roles › Duplicate).
+fn copied_role(of: &str, id: &str, name: &str) -> Role {
+    let mut role = crate::store::bundled_seed().unwrap().roles.into_iter().find(|r| r.id == of).unwrap();
+    role.id = id.into();
+    role.name = name.into();
+    role
+}
+
+/// Eagle-Eye 1's shape with copied reviewers: the stage kind (a loop-back
+/// to the Planner) makes "Plan check" a plan reviewer, whatever its role id.
+fn copied_reviewers_pipeline(id: &str) -> crate::pipelines::PipelineDef {
+    serde_json::from_value(json!({
+        "id": id, "name": "Copied reviewers",
+        "stages": [
+            { "id": "planner", "roleId": "role_planner", "title": "Planner" },
+            { "id": "plan_check", "roleId": "role_custom_plan_check", "title": "Plan check",
+              "loopBack": { "to": "planner", "minSeverity": "MEDIUM" } },
+            { "id": "implementer", "roleId": "role_implementer", "title": "Implementer" },
+            { "id": "pr_check", "roleId": "role_custom_pr_check", "title": "PR check",
+              "loopBack": { "to": "implementer", "minSeverity": "MEDIUM" } }
+        ]
+    }))
+    .unwrap()
+}
+
+#[test]
+fn a_copied_plan_reviewer_sends_its_round_back_with_the_planner_ask() {
+    let id = "copied_reviewers_v3";
+    crate::pipelines::register_for_test(copied_reviewers_pipeline(id));
+    let mut fx = Fixture::with_pipeline(
+        "copied_plan_reviewer",
+        id,
+        vec![
+            copied_role("role_plan_reviewer", "role_custom_plan_check", "Plan check"),
+            copied_role("role_pr_reviewer", "role_custom_pr_check", "PR check"),
+        ],
+    );
+    assert_eq!(fx.run(|run| run.engine), 2, "a copied reviewer is bridged like the built-in one");
+    let reviewer = fx.open_plan_reviewer();
+    assert_eq!(fx.tab(&reviewer).role_id, "role_custom_plan_check");
+    let turn = fx.end_turn(
+        &reviewer,
+        "r-1",
+        review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "Retries forever." }])),
+        "Changes required.",
+    );
+    fx.actor.handle(ActorMsg::Turn(turn));
+    crate::pipelines::unregister_for_test(id);
+    let pastes = fx.pastes();
+    assert_eq!(pastes.len(), 1, "{pastes:?}");
+    assert_eq!(pastes[0].0, fx.planner);
+    assert!(pastes[0].1.contains("Revise the plan"), "the Planner is asked to revise its plan:\n{}", pastes[0].1);
+    assert!(!pastes[0].1.contains("push to the same branch"), "not the Implementer's ask:\n{}", pastes[0].1);
+    fx.run(|run| {
+        assert_eq!(run.verdicts.last().and_then(|v| v.verdict.as_deref()), Some("REQUIRES REVISION"), "a plan reviewer revises");
+    });
+}
+
+#[test]
+fn plan_reviewers_and_fan_out_stages_are_known_by_their_kind() {
+    use super::actor::{implementer_stage, reviews_plan, revise_word};
+    let mut def = copied_reviewers_pipeline("copied_kinds");
+    assert!(reviews_plan(&def, &def.stages[1]));
+    assert!(!reviews_plan(&def, &def.stages[3]));
+    assert_eq!(revise_word(&def, &def.stages[1]), "REQUIRES REVISION");
+    assert_eq!(revise_word(&def, &def.stages[3]), "REQUEST CHANGES");
+    // A copied Implementer is where lanes start.
+    def.stages[2].role_id = "role_custom_builder".into();
+    def.stages[2].kind = Some(crate::pipelines::StageKind::Implementer);
+    assert_eq!(implementer_stage(&def).map(|s| s.role_id.as_str()), Some("role_custom_builder"));
+    let built_in = crate::pipelines::find("eagle1").unwrap();
+    assert!(reviews_plan(&built_in, built_in.stage("plan_reviewer").unwrap()));
+    assert_eq!(implementer_stage(&built_in).map(|s| s.role_id.as_str()), Some("role_implementer"));
 }

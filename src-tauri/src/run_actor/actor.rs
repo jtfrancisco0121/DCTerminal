@@ -13,7 +13,7 @@ use crate::bridge::{BridgeTag, BridgeTurn, TurnOutcome};
 use crate::commands::pipeline::{approve, note, set_lane_status, turn_finished};
 use crate::pipelines::autopilot::{decide, review_round, stage_key, Decision, FindingReport, TurnReport};
 use crate::pipelines::recovery::bridge_turn_key;
-use crate::pipelines::{GateResult, PipelineDef, StageDef};
+use crate::pipelines::{GateResult, PipelineDef, StageDef, StageKind};
 use crate::store::{
     claim_key, tab_label, ChainRef, RoleSnapshot, RunStatus, StageGates, StopReason, TabRecord,
     TerminalTabDraft,
@@ -42,12 +42,11 @@ struct Placed {
     tab: TabRecord,
     /// The lane, when the run has it.
     lane: Option<String>,
-    run_kind: String,
 }
 
 impl Placed {
     fn revise(&self) -> &'static str {
-        revise_word(&self.run_kind, &self.tab.role_id)
+        revise_word(&self.def, &self.stage)
     }
 }
 
@@ -157,7 +156,6 @@ impl<H: Host> Actor<H> {
             chain,
             tab,
             lane,
-            run_kind: run.kind.clone(),
         })
     }
 
@@ -512,7 +510,7 @@ impl<H: Host> Actor<H> {
         let target = placed.def.stages[target_index].clone();
         let role = self.host.role(&target.role_id).ok_or_else(|| format!("unknown role {}", target.role_id))?;
         let sources = self.sources(placed, &target, Some(turn), None);
-        let built = prompts::stage_values(&role, target.loop_back.is_some(), &sources);
+        let built = prompts::stage_values(&role, target.kind() == StageKind::Reviewer, &sources);
         let chain = ChainRef {
             chain_id: placed.chain.chain_id.clone(),
             kind: placed.chain.kind.clone(),
@@ -551,7 +549,7 @@ impl<H: Host> Actor<H> {
                 .unwrap_or(1)
         };
         let reviewer_name = self.host.role(&placed.tab.role_id).map(|r| r.name).unwrap_or_else(|| placed.stage.title.clone());
-        let text = loop_back_message(&placed.tab.role_id, &reviewer_name, &findings, round);
+        let text = loop_back_message(target.kind() == StageKind::Planner, &reviewer_name, &findings, round);
         self.send_back(placed, &target, verdict, &text, None, None, Some(turn))
     }
 
@@ -743,8 +741,9 @@ impl<H: Host> Actor<H> {
                 .fan_out_stage
                 .as_deref()
                 .and_then(|id| def.stage(id))
+                .or_else(|| implementer_stage(&def))
                 .map(|s| s.role_id.clone())
-                .unwrap_or_else(|| "role_implementer".to_string());
+                .ok_or_else(|| format!("{} has no Implementer stage to fan out at", def.name))?;
             let tab_id = lane.tab_ids.get(&role_id).cloned().ok_or_else(|| format!("{} has no {role_id} tab", lane.title))?;
             let tab = store.tab_by_id(&tab_id).cloned().ok_or_else(|| format!("{}'s tab is closed", lane.title))?;
             let title = lane.title.clone();
@@ -895,7 +894,7 @@ impl<H: Host> Actor<H> {
             }
             None => {
                 let sources = self.sources(&placed, &target, None, None);
-                let built = prompts::stage_values(&role, target.loop_back.is_some(), &sources);
+                let built = prompts::stage_values(&role, target.kind() == StageKind::Reviewer, &sources);
                 (built.values, built.handoff_plan, built.handoff_text)
             }
         };
@@ -1053,14 +1052,34 @@ impl<H: Host> Actor<H> {
 
 // ---- Pure helpers ----
 
-/// The word a reviewer's "changes required" reads as on this run (the
-/// ledger, loop-backs and hand-offs use it).
-pub(super) fn revise_word(run_kind: &str, role_id: &str) -> &'static str {
-    if run_kind == "full" && role_id == "role_plan_reviewer" {
+/// The word a reviewer stage's "changes required" reads as (the ledger,
+/// loop-backs and hand-offs use it): a plan reviewer revises, every other
+/// reviewer requests changes. By stage kind (H4, `stageBehaviour` in
+/// `src/pipeline/defs.ts`), so a copied role behaves like its original.
+pub(super) fn revise_word(def: &PipelineDef, stage: &StageDef) -> &'static str {
+    if reviews_plan(def, stage) {
         "REQUIRES REVISION"
     } else {
         "REQUEST CHANGES"
     }
+}
+
+/// A reviewer stage that reviews a plan: the stage it reviews (its loop-back
+/// target, else the stage before it) is a Planner.
+pub(super) fn reviews_plan(def: &PipelineDef, stage: &StageDef) -> bool {
+    if stage.kind() != StageKind::Reviewer {
+        return false;
+    }
+    let reviewed = match &stage.loop_back {
+        Some(back) => def.stage(&back.to),
+        None => def.stage_index(&stage.id).and_then(|i| i.checked_sub(1)).and_then(|i| def.stages.get(i)),
+    };
+    reviewed.is_some_and(|s| s.kind() == StageKind::Planner)
+}
+
+/// The pipeline's first Implementer stage (by kind): where fan-out lanes start.
+pub(super) fn implementer_stage(def: &PipelineDef) -> Option<&StageDef> {
+    def.stages.iter().find(|s| s.kind() == StageKind::Implementer)
 }
 
 /// A `submit_result` verdict in the words the ledger and `decide` use.
@@ -1140,9 +1159,11 @@ pub(super) fn findings_text(findings: &[Value]) -> String {
         .join("\n")
 }
 
-/// The follow-up a loop-back sends into the earlier stage (`loopBackMessage`).
-pub(super) fn loop_back_message(reviewer_role: &str, reviewer_name: &str, findings: &str, round: u32) -> String {
-    let ask = if reviewer_role == "role_plan_reviewer" { PLANNER_ASK } else { IMPLEMENTER_ASK };
+/// The follow-up a loop-back sends into the earlier stage (`loopBackMessage`):
+/// a Planner (by its stage kind) is asked for a revised plan, any other
+/// stage for fixes on its pull requests.
+pub(super) fn loop_back_message(to_planner: bool, reviewer_name: &str, findings: &str, round: u32) -> String {
+    let ask = if to_planner { PLANNER_ASK } else { IMPLEMENTER_ASK };
     format!("Review findings from the {reviewer_name} (round {round}):\n\n{}\n\n{ask}", findings.trim())
 }
 
