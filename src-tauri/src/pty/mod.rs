@@ -2982,7 +2982,7 @@ mod tests {
             assert!(!run.autopilot.as_ref().unwrap().enabled, "autopilot is off");
             assert_eq!(run.status, crate::store::RunStatus::Stopped);
             assert_eq!(run.stop_reason, None, "not paused_by_you: the note says why");
-            // One Timeline note, the manual one (not "autopilot reads each reply as before").
+            // One Timeline note, the manual one (not the engine-1 notice).
             let added: Vec<(&str, &str)> =
                 run.events[events_before..].iter().map(|e| (e.kind.as_str(), e.summary.as_str())).collect();
             assert_eq!(added, vec![("note", note)], "{added:?}");

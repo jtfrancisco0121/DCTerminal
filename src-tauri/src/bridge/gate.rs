@@ -58,7 +58,7 @@ pub fn decide(version: Option<&str>, hooks_off: Option<&HooksOff>) -> Gate {
     let verified = verified_text();
     if let Some(off) = hooks_off {
         return Gate::EngineOne(format!(
-            "Claude Code hooks are turned off ({} in {}), so this run uses engine 1: autopilot reads each stage's reply as before.",
+            "Claude Code hooks are turned off ({} in {}), so this run uses engine 1, which is manual only: hand each stage on yourself.",
             off.setting,
             off.file.display()
         ));
@@ -66,13 +66,13 @@ pub fn decide(version: Option<&str>, hooks_off: Option<&HooksOff>) -> Gate {
     let text = version.map(str::trim).filter(|text| !text.is_empty());
     let Some(found) = text.and_then(parse_version) else {
         return Gate::EngineOne(format!(
-            "DCTerminal could not read the Claude Code version (pipeline v2 needs {verified} or newer), so this run uses engine 1: autopilot reads each stage's reply as before."
+            "DCTerminal could not read the Claude Code version (pipeline v2 needs {verified} or newer), so this run uses engine 1, which is manual only: hand each stage on yourself."
         ));
     };
     let shown = text.and_then(|t| t.split_whitespace().next()).unwrap_or_default();
     if found < VERIFIED_CLAUDE_VERSION {
         return Gate::EngineOne(format!(
-            "Claude Code {shown} is older than {verified}, which pipeline v2 needs, so this run uses engine 1: autopilot reads each stage's reply as before. Update Claude Code for the next run."
+            "Claude Code {shown} is older than {verified}, which pipeline v2 needs, so this run uses engine 1, which is manual only: hand each stage on yourself. Update Claude Code for the next run."
         ));
     }
     Gate::Bridge {
@@ -231,6 +231,21 @@ mod tests {
             match decide(unknown, None) {
                 Gate::EngineOne(notice) => assert!(notice.contains("could not read"), "{notice}"),
                 other => panic!("an unknown version is engine 1: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn every_engine_1_notice_says_the_run_is_manual_only() {
+        let off = HooksOff { file: PathBuf::from("/x/settings.json"), setting: "disableAllHooks" };
+        for (version, hooks) in [(Some("2.1.200 (Claude Code)"), None), (None, None), (Some("2.1.287 (Claude Code)"), Some(&off))] {
+            match decide(version, hooks) {
+                Gate::EngineOne(notice) => {
+                    assert!(notice.contains(", so this run uses engine 1"), "make_manual cuts here: {notice}");
+                    assert!(notice.contains("manual only"), "{notice}");
+                    assert!(!notice.contains("autopilot reads"), "engine 1 has no autopilot since V6: {notice}");
+                }
+                other => panic!("engine 1: {other:?}"),
             }
         }
     }
