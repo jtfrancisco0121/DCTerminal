@@ -8,7 +8,12 @@
  * a chat tab or a terminal tab.
  *
  * Character limits match `handoff_store.rs`.
+ *
+ * Rules that depend on what the source or target role does read its kind
+ * on the source's pipeline (`sourceChainKind`, Track H4), never its id, so
+ * a copied role hands off like its original.
  */
+import { roleBehaviour, type RoleBehaviour } from "../pipeline/defs";
 import { contractFindings, contractImplementation, contractPlan, contractReview } from "./contract";
 import { TERMINAL_TAIL_LINES } from "../terminal/text";
 import {
@@ -77,6 +82,8 @@ export type HandoffTarget = {
 
 export type HandoffSource = {
   sourceRoleId: string;
+  /** The source tab's pipeline (chain kind), if it is on one: its stage's kind says what it does. */
+  sourceChainKind?: string | null;
   sourceTabId: string;
   sourceLabel: string;
   cwd: string;
@@ -399,6 +406,16 @@ export function handoffFromRole(sourceRoleId: string, roles?: readonly RoleName[
   return roleDisplayName(sourceRoleId, roles);
 }
 
+/** What the source role does (its stage's kind on its pipeline, else its built-in role). */
+function sourceDoes(source: HandoffSource): RoleBehaviour {
+  return roleBehaviour(source.sourceRoleId, source.sourceChainKind);
+}
+
+/** What `targetRoleId` does on the source's pipeline. */
+function targetDoes(source: HandoffSource, targetRoleId: string): RoleBehaviour {
+  return roleBehaviour(targetRoleId, source.sourceChainKind);
+}
+
 function implementerAnswersReady(answers: Record<string, string>): boolean {
   const description = (answers.description ?? "").trim();
   const plan = (answers.approvedPlan ?? "").trim();
@@ -432,7 +449,7 @@ export function handoffBlockReason(
     }
     if (source.terminalWorking) return `Wait until the ${name} finishes this turn.`;
     // The Implementer's own form carries the task; the terminal adds a summary.
-    if (roleId === "role_implementer" && implementerAnswersReady(source.answers)) return null;
+    if (sourceDoes(source) === "implementer" && implementerAnswersReady(source.answers)) return null;
     const hasTerminal =
       (source.planMarkdown ?? "").trim().length > 0 ||
       source.latestMessage.trim().length > 0 ||
@@ -445,13 +462,13 @@ export function handoffBlockReason(
   if (source.turnInFlight && !source.awaitingPlanApproval) {
     return `Wait until the ${name} finishes this turn.`;
   }
-  if (roleId === "role_implementer") {
+  if (sourceDoes(source) === "implementer") {
     if (!implementerAnswersReady(source.answers)) {
       return "Fill in the Implementer task and approved plan before sending to review.";
     }
     return null;
   }
-  if (isPlanSource(roleId)) {
+  if (isPlanSource(roleId, source.sourceChainKind)) {
     return hasChatContent(source) ? null : "There is no plan to send yet.";
   }
   if (isReportSource(roleId)) {
@@ -567,14 +584,14 @@ export function composePlanText(
   else if (scope === "terminal_tail") text = cleanText(source.terminalTail ?? "");
   else {
     const latest = cleanText(source.latestMessage);
-    const message = source.sourceRoleId === "role_planner" ? stripPlanPreamble(latest) : latest;
+    const message = sourceDoes(source) === "planner" ? stripPlanPreamble(latest) : latest;
     const card = cleanText(formatPlanCard(source.plan, source.todos));
     text = message && card ? `${message}\n\n${card}` : message || card;
   }
   if (!text) return { text: "", emptyReason: "That choice has no content." };
   // A reply that follows the hand-off contract hands on exactly its sections.
-  if (source.sourceRoleId === "role_planner") text = contractPlan(text) ?? text;
-  if (source.sourceRoleId === "role_pr_reviewer") text = contractFindings(text) || text;
+  if (sourceDoes(source) === "planner") text = contractPlan(text) ?? text;
+  if (sourceDoes(source) === "pr_reviewer") text = contractFindings(text) || text;
   return { text, emptyReason: null };
 }
 
@@ -598,11 +615,12 @@ function lastReplyChoice(source: HandoffSource): ScopeChoice {
  * reply. A plan the user answered after is skipped while a newer reply exists.
  */
 function terminalScopeOrder(source: HandoffSource): HandoffScope[] {
-  const roleId = source.sourceRoleId;
+  const does = sourceDoes(source);
+  const planSource = does === "planner" || does === "plan_reviewer";
   const order: HandoffScope[] =
-    roleId === "role_planner"
+    does === "planner"
       ? ["plan_mode", "message", "plan_file", "selection", "terminal_tail"]
-      : isPlanSource(roleId)
+      : planSource
         ? ["message", "plan_mode", "plan_file", "selection", "terminal_tail"]
         : ["message", "selection", "terminal_tail"];
   const newerReply = !!source.planMarkdownStale && !!source.latestMessage.trim();
@@ -610,7 +628,7 @@ function terminalScopeOrder(source: HandoffSource): HandoffScope[] {
     (scope) =>
       (scope !== "message" || !!source.terminalLog) &&
       (scope !== "plan_mode" || !newerReply) &&
-      (scope !== "plan_file" || isPlanSource(roleId)),
+      (scope !== "plan_file" || planSource),
   );
 }
 
@@ -634,7 +652,7 @@ export function scopeChoices(source: HandoffSource): ScopeChoice[] {
     ];
   }
   if (source.fromTerminal) {
-    const planSource = isPlanSource(source.sourceRoleId);
+    const planSource = isPlanSource(source.sourceRoleId, source.sourceChainKind);
     const fileLabel = source.planFileName
       ? `Newest plan file (${source.planFileName})`
       : "Newest plan file";
@@ -723,7 +741,7 @@ export function defaultScope(source: HandoffSource): HandoffScope {
     for (const scope of terminalScopeOrder(source)) {
       if (composePlanText(source, scope).text) return scope;
     }
-    return isPlanSource(source.sourceRoleId) ? "plan_file" : "terminal_tail";
+    return isPlanSource(source.sourceRoleId, source.sourceChainKind) ? "plan_file" : "terminal_tail";
   }
   const preferred: HandoffScope[] = [
     "plan_mode",
@@ -1393,8 +1411,8 @@ function mapPlan(
   // The reviewed plan goes in the plan field and the notes in context. With no
   // plan field (Developer, a Planner revision) the whole review stays together.
   if (
-    source.sourceRoleId === "role_plan_reviewer" &&
-    target.roleId !== "role_planner" &&
+    sourceDoes(source) === "plan_reviewer" &&
+    targetDoes(source, target.roleId) !== "planner" &&
     slots.plan &&
     composed.text
   ) {
@@ -1473,8 +1491,9 @@ function mapPlan(
 /** A required request the source never had: say where the work is, never repeat the plan. */
 function fillerRequest(source: HandoffSource, targetRoleId: string): string {
   const from = roleDisplayName(source.sourceRoleId);
-  if (targetRoleId === "role_plan_reviewer") return `Review the plan from the ${from} hand-off.`;
-  if (/review/i.test(targetRoleId)) return `Review the work from the ${from} hand-off.`;
+  const target = targetDoes(source, targetRoleId);
+  if (target === "plan_reviewer") return `Review the plan from the ${from} hand-off.`;
+  if (target === "pr_reviewer" || /review/i.test(targetRoleId)) return `Review the work from the ${from} hand-off.`;
   return `Implement the plan from the ${from} hand-off.`;
 }
 
@@ -1503,13 +1522,13 @@ export function mapHandoff(
 ): MappedHandoff {
   const visible = visibleAnswers(source);
   const fields = handoffFormFields(target.fields);
-  if (source.sourceRoleId === "role_implementer" && target.roleId === "role_pr_reviewer") {
+  if (sourceDoes(source) === "implementer" && targetDoes(source, target.roleId) === "pr_reviewer") {
     return dropHidden(
       mapImplementerToReviewer(terminalImplementerSource(visible, scope), target, limits),
       fields,
     );
   }
-  if (isReportSource(source.sourceRoleId) && target.roleId === "role_planner") {
+  if (isReportSource(source.sourceRoleId) && targetDoes(source, target.roleId) === "planner") {
     return dropHidden(mapReportToPlanner(visible, scope, target, limits), fields);
   }
   return dropHidden(mapPlan(visible, scope, target, limits), fields);

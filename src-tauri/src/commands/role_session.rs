@@ -188,7 +188,7 @@ pub fn role_session_start(
 
     // Claude: the per-role mode table (Decisions), never the Cursor mode.
     let mode_id = if provider.id() == ProviderId::Claude {
-        provider.mode_for_role(&role.id, &role.default_mode, &[])
+        claude_start_mode(provider.as_ref(), &state_store, tab_id.as_deref(), &role)?
     } else {
         load_mode_id(&state_store, tab_id.as_deref(), &bind, &role.default_mode)?
     };
@@ -554,6 +554,25 @@ fn remember_start_folder(
 
 /// Claude-only state the promoted tab records: the config dir it runs under,
 /// the permission-mode note and the provider notice.
+/// The mode a Claude chat start asks for: the per-role table, except that on
+/// a pipeline stage (a chat hand-off's tab is tagged before it starts) the
+/// stage's kind decides plan mode, so a copied Planner plans.
+fn claude_start_mode(
+    provider: &dyn crate::provider::Provider,
+    state_store: &Mutex<StateStore>,
+    tab_id: Option<&str>,
+    role: &crate::roles::Role,
+) -> Result<String, String> {
+    let stage_kind = match tab_id {
+        Some(id) => {
+            let store = state_store.lock().map_err(|e| e.to_string())?;
+            store.tab_stage_kind(id)
+        }
+        None => None,
+    };
+    Ok(provider.mode_for_role(&role.id, stage_kind, &role.default_mode, &[]))
+}
+
 fn record_claude_start(
     state_store: &Mutex<StateStore>,
     provider: &SharedProvider,
@@ -566,7 +585,8 @@ fn record_claude_start(
     if let Some(dir) = provider.config_dir() {
         store.remember_claude_config(tab_id, &dir.path)?;
     }
-    let wanted = crate::provider::claude::claude_role_mode(role_id);
+    let stage_kind = store.tab_stage_kind(tab_id);
+    let wanted = crate::provider::claude::claude_role_mode(role_id, stage_kind);
     let note = (mode_id != wanted)
         .then(|| format!("the adapter did not offer {wanted} (using {mode_id})"));
     store.set_permission_note(tab_id, note)?;
@@ -685,6 +705,52 @@ mod tests {
         let text = friendly_load_error(err);
         assert!(text.contains("Could not continue this session"));
         assert!(!text.contains("session/load"));
+    }
+
+    // Review H4 round 2: a chat start on a tab tagged as a copied Planner's
+    // stage asks for plan mode; untagged, the copy keeps its role's mode.
+    #[test]
+    fn a_chat_start_on_a_planner_stage_asks_for_plan_mode() {
+        use crate::pipelines::{register_for_test, unregister_for_test, PipelineDef};
+        use crate::provider::claude::ClaudeProvider;
+        use crate::provider::claude_config::{ConfigDirInfo, ConfigDirSource};
+        use crate::store::StateStore;
+        use crate::test_support::{role, TempDir};
+        use std::sync::Mutex;
+        let id = "copied_planner_chat_test";
+        let def: PipelineDef = serde_json::from_value(serde_json::json!({
+            "id": id, "name": "Copied planner",
+            "stages": [{ "id": "plan", "roleId": "role_custom_planner", "title": "Planner copy", "kind": "planner" }]
+        }))
+        .unwrap();
+        register_for_test(def);
+        let dir = TempDir::new("chat_stage_mode");
+        let mut store = StateStore::open_path(dir.join("state.json")).unwrap();
+        let copy = role("role_custom_planner", "Planner copy");
+        let tagged = store.create_draft_tab(&copy, "/tmp/p", true, None).unwrap();
+        let chain = serde_json::from_value(serde_json::json!({
+            "chainId": "ee_7", "kind": id, "step": 1, "total": 1
+        }))
+        .unwrap();
+        store.set_tab_chain(&tagged, Some(chain), None).unwrap();
+        let plain = store.create_draft_tab(&copy, "/tmp/p", true, None).unwrap();
+        let store = Mutex::new(store);
+        // Pinned inside the test: never the real ~/.claude.
+        let provider = ClaudeProvider::with_config(
+            &Default::default(),
+            ConfigDirInfo {
+                path: dir.join("claude").display().to_string(),
+                display: "test".into(),
+                source: ConfigDirSource::Setting,
+                exists: false,
+            },
+        );
+        assert!(provider.config.path.starts_with(&dir.path().display().to_string()));
+        let on_stage = super::claude_start_mode(&provider, &store, Some(&tagged), &copy);
+        let off_stage = super::claude_start_mode(&provider, &store, Some(&plain), &copy);
+        unregister_for_test(id);
+        assert_eq!(on_stage.unwrap(), "plan");
+        assert_eq!(off_stage.unwrap(), "bypassPermissions");
     }
 
     #[test]

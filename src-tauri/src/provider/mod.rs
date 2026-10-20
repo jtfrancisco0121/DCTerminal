@@ -12,6 +12,7 @@ pub mod claude_detect;
 pub mod cursor;
 
 use crate::cli_detect::LoginStatus;
+use crate::pipelines::StageKind;
 use crate::pty::RunMode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -164,6 +165,9 @@ pub enum TerminalKind {
         role_id: String,
         run_mode: RunMode,
         prompt: Option<String>,
+        /// Set when the tab is (or is about to be) a pipeline stage: its kind,
+        /// not the role id, decides plan mode (`plans_by_default`).
+        stage_kind: Option<StageKind>,
     },
     /// Reopen a CLI session by id.
     Resume { session_id: String },
@@ -173,7 +177,21 @@ pub enum TerminalKind {
         role_id: String,
         run_mode: RunMode,
         session_id: String,
+        stage_kind: Option<StageKind>,
     },
+}
+
+/// Whether a role starts in plan mode. On a pipeline stage the stage's kind
+/// decides (Track H4, D33), so a copied Planner plans exactly like the
+/// built-in one. Off a pipeline, only the built-in Planner role does.
+pub fn plans_by_default(role_id: &str, stage_kind: Option<StageKind>) -> bool {
+    match stage_kind {
+        Some(kind) => kind == StageKind::Planner,
+        None => matches!(
+            role_id.trim().to_ascii_lowercase().replace('-', "_").as_str(),
+            "role_planner" | "planner"
+        ),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -210,9 +228,16 @@ pub trait Provider: Send + Sync {
     fn auth_step(&self) -> Option<(String, Value)>;
     /// `_meta` for `session/new`, if any.
     fn session_new_meta(&self, opts: &SessionOpts) -> Option<Value>;
-    /// ACP mode for a role. `role_mode` is the role's saved default mode;
+    /// ACP mode for a role. `stage_kind`: the tab's pipeline stage kind, if
+    /// any (`plans_by_default`). `role_mode` is the role's saved default mode;
     /// `available` the modes the agent advertised (may be empty).
-    fn mode_for_role(&self, role_id: &str, role_mode: &str, available: &[String]) -> String;
+    fn mode_for_role(
+        &self,
+        role_id: &str,
+        stage_kind: Option<StageKind>,
+        role_mode: &str,
+        available: &[String],
+    ) -> String;
     fn classify_request(&self, method: &str, params: &Value) -> AgentRequestKind;
     fn terminal_command(&self, req: &TerminalLaunch) -> Result<ProgramArgs, String>;
     /// Read-only folder where the CLI writes plan files.
