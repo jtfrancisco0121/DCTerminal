@@ -4,8 +4,11 @@
 //!
 //! `--allowedTools mcp__dcterminal__submit_result --mcp-config <json> --settings <json>`
 //!
-//! `--allowedTools` and `--mcp-config` take several values, so they come
-//! before `--settings` (one value), and the startup prompt stays last. Hooks
+//! `--settings` is the launch's one settings value: the bridge's hooks
+//! merged with H5's usage status line when that applies (Claude Code reads
+//! only the last `--settings`). `--allowedTools` and `--mcp-config` take
+//! several values, so they come right before `--settings` (one value), and
+//! the startup prompt stays last. Hooks
 //! and the MCP server are this executable run as `dcterminal bridge`, given
 //! as an `args` array so nothing is shell-quoted (D38).
 //!
@@ -158,33 +161,74 @@ pub fn mcp_config(program: &Path, run_dir: &Path, run_id: &str, stage_key: &str,
     })
 }
 
-/// The flags added to a bridged stage's `claude`, in an order that keeps
-/// the startup prompt positional (see the module header).
-pub fn launch_args(program: &Path, run_dir: &Path, run_id: &str, stage_key: &str, tab_id: &str) -> Vec<String> {
-    vec![
-        "--allowedTools".to_string(),
-        FULL_TOOL_NAME.to_string(),
-        "--mcp-config".to_string(),
-        mcp_config(program, run_dir, run_id, stage_key, tab_id).to_string(),
-        "--settings".to_string(),
-        hook_settings(program, run_dir, run_id, stage_key, tab_id).to_string(),
-    ]
+/// What a bridged stage adds to its `claude`: `--allowedTools` and
+/// `--mcp-config` (`args`), and the hooks, which go into the launch's one
+/// `--settings` value next to H5's status line (`merge_settings`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct BridgeFlags {
+    pub args: Vec<String>,
+    pub hooks: Value,
+}
+
+/// The bridge's flags for one stage tab.
+pub fn launch_flags(program: &Path, run_dir: &Path, run_id: &str, stage_key: &str, tab_id: &str) -> BridgeFlags {
+    BridgeFlags {
+        args: vec![
+            "--allowedTools".to_string(),
+            FULL_TOOL_NAME.to_string(),
+            "--mcp-config".to_string(),
+            mcp_config(program, run_dir, run_id, stage_key, tab_id).to_string(),
+        ],
+        hooks: hook_settings(program, run_dir, run_id, stage_key, tab_id),
+    }
 }
 
 /// A bridged tab relaunching (Restart, resume): the same flags, while the
 /// tab still owns its stage. `None` when it does not, or the folder is gone.
-pub fn relaunch_args(runs_root: &Path, tag: &BridgeTag, tab_id: &str, program: &Path) -> Option<Vec<String>> {
+pub fn relaunch_flags(runs_root: &Path, tag: &BridgeTag, tab_id: &str, program: &Path) -> Option<BridgeFlags> {
     let run_dir = folder::run_dir(runs_root, &tag.run_id)?;
     let dir = folder::stage_dir_path(&run_dir, &tag.stage)?;
     let (info, _) = read_stage(&dir)?;
     (info.run_id == tag.run_id && info.tab_id == tab_id)
-        .then(|| launch_args(program, &run_dir, &tag.run_id, &tag.stage, tab_id))
+        .then(|| launch_flags(program, &run_dir, &tag.run_id, &tag.stage, tab_id))
 }
 
-/// Put `extra` before the trailing startup prompt (when there is one).
-pub fn insert_before_prompt(args: &mut Vec<String>, has_prompt: bool, extra: Vec<String>) {
-    let at = if has_prompt { args.len().saturating_sub(1) } else { args.len() };
-    args.splice(at..at, extra);
+/// One `--settings` value: the launch's own (H5's status line, when it
+/// applies) with the bridge's `hooks` added. Claude Code reads only the
+/// last `--settings`, so two flags would lose one of them.
+pub fn merge_settings(own: Option<Value>, hooks: &Value) -> Value {
+    let mut merged = match own {
+        Some(Value::Object(map)) => map,
+        _ => serde_json::Map::new(),
+    };
+    if let Some(hooks) = hooks.get("hooks") {
+        merged.insert("hooks".to_string(), hooks.clone());
+    }
+    Value::Object(merged)
+}
+
+/// The command for a launch, bridged when `flags` is set: the hooks join
+/// `request.settings` (one `--settings`), and `--allowedTools` /
+/// `--mcp-config`, which take several values, go right before `--settings`
+/// so the startup prompt stays positional and last. `build` is the
+/// provider's `terminal_command`.
+pub fn bridged_command(
+    mut request: crate::provider::TerminalLaunch,
+    flags: Option<BridgeFlags>,
+    build: impl FnOnce(&crate::provider::TerminalLaunch) -> Result<crate::provider::ProgramArgs, String>,
+) -> Result<crate::provider::ProgramArgs, String> {
+    let Some(flags) = flags else {
+        return build(&request);
+    };
+    request.settings = Some(merge_settings(request.settings.take(), &flags.hooks));
+    let mut command = build(&request)?;
+    let at = command
+        .args
+        .iter()
+        .position(|arg| arg == "--settings")
+        .ok_or_else(|| "the bridged launch lost its --settings flag".to_string())?;
+    command.args.splice(at..at, flags.args);
+    Ok(command)
 }
 
 /// The executable hooks and the MCP server run: this one (D38).

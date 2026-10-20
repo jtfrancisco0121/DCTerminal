@@ -49,8 +49,11 @@ pub mod testing {
         StallWatch,
     };
     pub use crate::store::{PipelineRun, RunStatus, StopReason};
-    pub use crate::bridge::launch::{launch_args, prepare_stage, read_stage_turn, runs_root, BridgePlan, BridgeTag};
+    pub use crate::bridge::launch::{bridged_command, launch_flags, prepare_stage, read_stage_turn, runs_root, BridgePlan, BridgeTag};
     pub use crate::bridge::watch::drain_inbox;
+    pub use crate::provider::claude::claude_terminal_args;
+    pub use crate::provider::{ProgramArgs, TerminalKind, TerminalLaunch};
+    pub use crate::pty::RunMode;
     pub use crate::bridge::{BridgeTurn, ResultKind, TurnOutcome};
 }
 #[cfg(test)]

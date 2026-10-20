@@ -966,11 +966,11 @@ fn role_terminal_start_blocking(
     }
     // The run folder is written before the launch, and the tab records the
     // stage it holds (or that it holds none, when reused for another role).
-    let bridge_args = match &bridge {
+    let bridge_flags = match &bridge {
         Some(plan) => {
             let (runs, program) = bridge_paths(&app)?;
             let run_dir = crate::bridge::launch::prepare_stage(&runs, plan, &tab_id)?;
-            Some(crate::bridge::launch::launch_args(
+            Some(crate::bridge::launch::launch_flags(
                 &program,
                 &run_dir,
                 &plan.run_id,
@@ -994,11 +994,9 @@ fn role_terminal_start_blocking(
         let config = provider.config_dir().map(|dir| dir.path);
         request.settings = usage_status_line(&app, &tab_id, config.as_deref(), &cwd);
     }
-    let mut command = provider.terminal_command(&request)?;
-    if let Some(extra) = bridge_args {
-        let has_prompt = !delivery.argument.trim().is_empty();
-        crate::bridge::launch::insert_before_prompt(&mut command.args, has_prompt, extra);
-    }
+    // One `--settings`: the bridge's hooks join the status line.
+    let mut command =
+        crate::bridge::launch::bridged_command(request, bridge_flags, |req| provider.terminal_command(req))?;
     if provider.id() == ProviderId::Claude {
         command.env.push(claude_scheme_env());
     }
@@ -1282,34 +1280,33 @@ fn pty_open_blocking(
                 Some(text) => Some(store_prompt(&app, &input.id, &program, text)?.argument),
                 None => None,
             };
-            let has_prompt = argument.is_some();
             let mut request = role_launch(argument);
             if provider.id() == ProviderId::Claude {
                 let config = provider.config_dir().map(|dir| dir.path);
                 request.settings = usage_status_line(&app, &input.id, config.as_deref(), &cwd);
             }
-            let mut command = provider.terminal_command(&request)?;
             // A bridged stage relaunches with the same bridge flags while it
             // still owns its stage; otherwise it is a plain role terminal now.
             let tag = {
                 let state = store.lock().map_err(|err| err.to_string())?;
                 state.tab_by_id(&input.id).and_then(|tab| tab.bridge.clone())
             };
+            let mut flags = None;
             if let Some(tag) = tag {
-                let extra = match (provider.id() == ProviderId::Claude).then(|| bridge_paths(&app)) {
+                flags = match (provider.id() == ProviderId::Claude).then(|| bridge_paths(&app)) {
                     Some(Ok((runs, program))) => {
-                        crate::bridge::launch::relaunch_args(&runs, &tag, &input.id, &program)
+                        crate::bridge::launch::relaunch_flags(&runs, &tag, &input.id, &program)
                     }
                     _ => None,
                 };
-                match extra {
-                    Some(extra) => crate::bridge::launch::insert_before_prompt(&mut command.args, has_prompt, extra),
-                    None => {
-                        let mut state = store.lock().map_err(|err| err.to_string())?;
-                        state.set_tab_bridge(&input.id, None)?;
-                    }
+                if flags.is_none() {
+                    let mut state = store.lock().map_err(|err| err.to_string())?;
+                    state.set_tab_bridge(&input.id, None)?;
                 }
             }
+            // One `--settings`: the bridge's hooks join the status line.
+            let mut command =
+                crate::bridge::launch::bridged_command(request, flags, |req| provider.terminal_command(req))?;
             if provider.id() == ProviderId::Claude {
                 command.env.push(claude_scheme_env());
             }

@@ -599,39 +599,74 @@ fn a_stage_with_parallel_reviewers_keeps_the_v1_path() {
     assert_eq!(launch::plan_for(&engine2_run(true), &def, &chain(4, None), "role_pr_reviewer"), None);
 }
 
-#[test]
-fn launch_flags_keep_the_prompt_last_and_use_args_arrays() {
+/// A bridged role launch as `role_terminal_start` builds it, with H5's
+/// status-line settings (`status`) when it applies.
+fn bridged_launch(status: Option<Value>, prompt: Option<&str>) -> Vec<String> {
+    use crate::provider::{ProgramArgs, TerminalKind, TerminalLaunch};
     let program = Path::new("/Applications/DCTerminal.app/Contents/MacOS/dcterminal");
     let run_dir = Path::new("/data/runs").join(RUN);
-    let extra = launch::launch_args(program, &run_dir, RUN, "pr_reviewer", TAB);
-    assert_eq!(extra[0], "--allowedTools");
-    assert_eq!(extra[1], FULL_TOOL_NAME);
-    assert_eq!(extra[2], "--mcp-config");
-    assert_eq!(extra[4], "--settings");
-    let mcp: Value = serde_json::from_str(&extra[3]).unwrap();
-    let server = &mcp["mcpServers"]["dcterminal"];
-    assert_eq!(server["type"], "stdio");
-    assert_eq!(server["command"], program.display().to_string());
-    assert_eq!(server["args"][0], "bridge");
-    assert_eq!(server["args"][1], "mcp");
-    let settings: Value = serde_json::from_str(&extra[5]).unwrap();
+    let flags = launch::launch_flags(program, &run_dir, RUN, "pr_reviewer", TAB);
+    let request = TerminalLaunch {
+        kind: TerminalKind::Role {
+            role_id: "role_pr_reviewer".into(),
+            run_mode: crate::pty::RunMode::Default,
+            prompt: prompt.map(str::to_string),
+            stage_kind: None,
+        },
+        model: Some("opus".into()),
+        session_id: Some("6a1d3b0f-2c3d-4e5f-9a51-0123456789cd".into()),
+        settings: status,
+    };
+    launch::bridged_command(request, Some(flags), |req| {
+        Ok(ProgramArgs::new("claude", crate::provider::claude::claude_terminal_args(req)?))
+    })
+    .unwrap()
+    .args
+}
+
+fn settings_of(args: &[String]) -> Value {
+    assert_eq!(args.iter().filter(|a| *a == "--settings").count(), 1, "exactly one --settings: {args:?}");
+    let at = args.iter().position(|a| a == "--settings").unwrap();
+    serde_json::from_str(&args[at + 1]).unwrap()
+}
+
+#[test]
+fn a_bridged_launch_merges_the_hooks_and_the_status_line_into_one_settings_flag() {
+    let status = crate::status_line::settings("'dct' --dct-status-line '/data/usage/tab.json'");
+    let args = bridged_launch(Some(status.clone()), Some("PROMPT"));
+    let settings = settings_of(&args);
+    assert_eq!(settings["statusLine"], status["statusLine"], "{settings}");
     for event in ["UserPromptSubmit", "Stop", "PreToolUse"] {
         let hook = &settings["hooks"][event][0]["hooks"][0];
         assert_eq!(hook["type"], "command", "{event}");
-        let args: Vec<&str> = hook["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
-        assert_eq!(&args[..2], &["bridge", "hook"], "{event}");
-        assert_eq!(args.last(), Some(&event), "{event}");
-        assert!(args.contains(&TAB) && args.contains(&RUN) && args.contains(&"pr_reviewer"));
+        let hook_args: Vec<&str> = hook["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
+        assert_eq!(&hook_args[..2], &["bridge", "hook"], "{event}");
+        assert_eq!(hook_args.last(), Some(&event), "{event}");
+        assert!(hook_args.contains(&TAB) && hook_args.contains(&RUN) && hook_args.contains(&"pr_reviewer"));
     }
     assert_eq!(settings["hooks"]["PreToolUse"][0]["matcher"], FULL_TOOL_NAME);
-
-    let mut args = vec!["--model".to_string(), "opus".to_string(), "PROMPT".to_string()];
-    launch::insert_before_prompt(&mut args, true, extra.clone());
+    // The variadic flags end at --settings (one value), so the prompt stays positional and last.
+    let tools = args.iter().position(|a| a == "--allowedTools").unwrap();
+    let mcp_at = args.iter().position(|a| a == "--mcp-config").unwrap();
+    let settings_at = args.iter().position(|a| a == "--settings").unwrap();
+    assert_eq!(args[tools + 1], FULL_TOOL_NAME);
+    assert!(tools < mcp_at && mcp_at + 2 == settings_at, "{args:?}");
     assert_eq!(args.last().map(String::as_str), Some("PROMPT"));
-    assert_eq!(args[2], "--allowedTools");
-    let mut no_prompt = vec!["--resume".to_string(), "id".to_string()];
-    launch::insert_before_prompt(&mut no_prompt, false, extra);
-    assert_eq!(no_prompt[2], "--allowedTools");
+    let mcp: Value = serde_json::from_str(&args[mcp_at + 1]).unwrap();
+    let server = &mcp["mcpServers"]["dcterminal"];
+    assert_eq!(server["type"], "stdio");
+    assert_eq!(server["args"][0], "bridge");
+    assert_eq!(server["args"][1], "mcp");
+}
+
+#[test]
+fn when_your_own_status_line_wins_the_bridged_settings_hold_only_the_hooks() {
+    let args = bridged_launch(None, None);
+    let settings = settings_of(&args);
+    assert!(settings.get("statusLine").is_none(), "{settings}");
+    assert!(settings["hooks"]["Stop"].is_array(), "{settings}");
+    let settings_at = args.iter().position(|a| a == "--settings").unwrap();
+    assert_eq!(args[settings_at - 2], "--mcp-config");
 }
 
 #[test]

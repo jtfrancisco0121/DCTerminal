@@ -1007,8 +1007,8 @@ mod recovery {
 mod bridge {
     use super::*;
     use dcterminal_lib::testing::{
-        drain_inbox, launch_args, prepare_stage, read_stage_turn, runs_root, BridgePlan, BridgeTag, BridgeTurn,
-        ResultKind, TurnOutcome,
+        bridged_command, claude_terminal_args, drain_inbox, launch_flags, prepare_stage, read_stage_turn, runs_root,
+        BridgePlan, BridgeTag, BridgeTurn, ProgramArgs, ResultKind, RunMode, TerminalKind, TerminalLaunch, TurnOutcome,
     };
     use serde_json::json;
 
@@ -1042,12 +1042,25 @@ mod bridge {
         }
 
         fn launch(&self, scenario: &Value) -> FakeClaude {
-            let mut args: Vec<String> = ["--session-id", SID, "--permission-mode", "auto"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
-            args.extend(launch_args(Path::new(DCTERMINAL), &self.run_dir, RUN, "pr_reviewer", TAB));
-            args.push("Review PR1 and report your result.".into());
+            // As role_terminal_start builds it: one --settings with the hooks
+            // merged into the status line, the prompt last.
+            let request = TerminalLaunch {
+                kind: TerminalKind::Role {
+                    role_id: "role_pr_reviewer".into(),
+                    run_mode: RunMode::Default,
+                    prompt: Some("Review PR1 and report your result.".into()),
+                    stage_kind: None,
+                },
+                model: None,
+                session_id: Some(SID.into()),
+                settings: Some(json!({ "statusLine": { "type": "command", "command": "true" } })),
+            };
+            let flags = launch_flags(Path::new(DCTERMINAL), &self.run_dir, RUN, "pr_reviewer", TAB);
+            let args = bridged_command(request, Some(flags), |req| {
+                Ok(ProgramArgs::new("claude", claude_terminal_args(req)?))
+            })
+            .expect("bridged launch")
+            .args;
             let args: Vec<&str> = args.iter().map(String::as_str).collect();
             self.home.run(scenario, &args)
         }
