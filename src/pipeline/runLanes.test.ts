@@ -136,6 +136,7 @@ describe("runLanes", () => {
 
     const waiting = runLanes(
       run([ev(5, "stop", { stageId: "plan_reviewer", summary: "No verdict" })], {
+        engine: 2,
         autopilot: { enabled: true, waiting: "No verdict" },
       }),
       stages,
@@ -144,6 +145,22 @@ describe("runLanes", () => {
     const [still] = waitsOf(waiting, "plan_reviewer");
     expect(span(still)).toEqual([5, 9]);
     expect(still.open).toBe(true);
+  });
+
+  it("an engine-1 run saved waiting for autopilot is manual only: its wait is not drawn as still open (V6)", () => {
+    // Saved before V6 waiting after a restart; nothing will ever continue it.
+    const saved = run([ev(5, "stop", { stageId: "implementer", summary: "Implementer finished while the app was closed." })], {
+      status: "waiting",
+      stopReason: "app_restarted",
+      autopilot: { enabled: true, waiting: "Implementer finished while the app was closed." },
+    });
+    const [wait] = waitsOf(runLanes(saved, stages, T0 + 30 * MIN), "implementer");
+    expect(wait.open).toBe(false);
+    expect(wait.label).not.toContain("still waiting");
+    expect(wait.label).toContain("manual only");
+    // Display only: the saved run is untouched.
+    expect(saved.status).toBe("waiting");
+    expect(saved.autopilot?.waiting).toBe("Implementer finished while the app was closed.");
   });
 
   it("gates are drawn over their run time with their outcome, falling back to the latest results", () => {
