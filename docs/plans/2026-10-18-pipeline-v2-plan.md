@@ -269,7 +269,7 @@ Seven draft PRs. V0 and V1 are docs only. Code starts only after Track S exits a
 - **Implementer:** `prs[]`, 1 to 8, each with `url`, `branch`, `title` and optionally `lane`. `summary`. Optionally `checks[]` of `{command, passed}`.
 - **Planner** (a fenced JSON block inside the ExitPlanMode plan): `tasks[]`, 1 to 8, each with `id` (`pr1`), `title`, `dependsOn[]`, `manual` and `summary`. A one-PR plan has one task.
 
-The bridge checks every field and returns a tool error that names each problem, so Claude fixes it in the same turn. Old verdict words ("REQUEST CHANGES", "REQUIRES REVISION") map to `CHANGES_REQUIRED` in the fallback parser.
+The bridge checks every field and returns a tool error that names each problem, so Claude fixes it in the same turn. Old verdict words ("REQUEST CHANGES", "REQUIRES REVISION") are rejected by `submit_result` with a tool error that names `CHANGES_REQUIRED`.
 
 ## Decision log
 
@@ -294,7 +294,7 @@ Every question I expect you to face, decided. Each has the reason and the eviden
 | D8 | HTTP endpoint or files? | Files. `command` hooks and a stdio MCP server, both `dcterminal bridge`, writing into the run folder; Rust watches it with `notify`. No port, token, firewall prompt or async runtime | T10 fails: use a small sidecar binary. Command hooks prove unreliable: use `http` hooks |
 | D9 | How is a turn identified? | UserPromptSubmit writes the turn id: Claude's `prompt_id` if T2 shows it in both payloads, else a counter | — |
 | D10 | What if Claude never calls `submit_result`? | Block once per turn. A second stop with no result ends the turn and stops the run with `no_result`. Never an endless loop | — |
-| D11 | How does the Planner report? | Through its ExitPlanMode call: a PreToolUse hook saves the plan and tasks, then answers `deny` with "Plan received", which ends the turn with no approval dialog | T7 fails: the Planner calls `submit_result` after its plan (needs T6) |
+| D11 | How does the Planner report? | Through its ExitPlanMode call: a PreToolUse hook saves the plan and tasks, then answers `deny` with "Plan received", which ends the turn with no approval dialog | T7 fails: the Planner calls `submit_result` after its plan |
 | D12 | How do Reviewers and the Implementer report? | `submit_result`, allowed up front with `--allowedTools mcp__dcterminal__submit_result` | T5 shows it still prompts: a PreToolUse hook answers `allow` for that one tool |
 | D13 | Hooks and MCP on every pipeline stage, or only autopilot? | Every pipeline stage. Autopilot only decides whether Rust acts, so turning it on mid-run just works and manual runs get structured results too. Enforcement (the block) applies only on autopilot and not while taken over | — |
 | D14 | Use `--strict-mcp-config`? | No. Your own MCP servers stay available to stages | Your servers interfere with stages |
@@ -325,7 +325,7 @@ Every question I expect you to face, decided. Each has the reason and the eviden
 | D29 | Act on a finished turn after a restart? | Never by itself. The run waits with `app_restarted` and a Continue button | — |
 | D30 | Stall limit? | 30 minutes with no output and no log growth, set per pipeline (`autopilot.stallMinutes`) | Long quiet test suites trip it: raise the default |
 | D31 | `auto` gate with nothing to run? | Stops with `no_check_found`, unless the gate is marked `optional` | — |
-| D32 | Unknown usage? | Shown as unknown, never 0%. Autopilot continues. When usage is known and at or above `autopilot.pauseAtUsagePercent`, the run stops with `usage_limit` before the next hand-off; a rate-limit error in a stage's log also stops the run | T9 gives terminal usage: pause before the limit, as chat does |
+| D32 | Unknown usage? | Shown as unknown, never 0%. Autopilot continues. When usage is known and at or above `autopilot.pauseAtUsagePercent`, the run stops with `usage_limit` before the next hand-off; a rate-limit error in a stage's log also stops the run | — |
 | D33 | How do copied roles behave? | A `kind` on each stage replaces every role-id check | — |
 
 ### Process
