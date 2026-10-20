@@ -1,7 +1,9 @@
 //! The inbox watcher: a thread that reads the finished turns the Stop hook
 //! drops in `runs/*/inbox/`, deletes each file and emits it to the frontend
 //! as `pipeline-bridge-turn`, where today's executor decides on it (V2a;
-//! the run actor takes this over in V3).
+//! the run actor takes this over in V3). A Needs you the PermissionRequest
+//! hook (or its Notification backup) drops there goes out as
+//! `pipeline-bridge-needs` (V2b).
 //!
 //! Wake-ups come from a `notify` watcher on `runs/` (recursive), with a
 //! short debounce and a safety poll in case an event was missed, like the
@@ -9,7 +11,7 @@
 //! turn that ended while the app was closed is never acted on by itself
 //! (D29); Continue reads it back from `turn.json`.
 
-use super::folder::{BridgeTurn, INBOX_DIR};
+use super::folder::{BridgeNeeds, BridgeTurn, INBOX_DIR};
 use notify::{EventKind, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, RecvTimeoutError};
@@ -17,6 +19,26 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Runtime};
 
 pub const BRIDGE_TURN_EVENT: &str = "pipeline-bridge-turn";
+pub const BRIDGE_NEEDS_EVENT: &str = "pipeline-bridge-needs";
+
+/// One event from an inbox.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InboxEvent {
+    /// A finished turn (`<stamp>-stop-<turn>.json`).
+    Turn(BridgeTurn),
+    /// A stage waiting on a permission dialog (`<stamp>-needs-<turn>.json`).
+    Needs(BridgeNeeds),
+}
+
+/// `<stamp>-<kind>-<turn>.json`: the stamp has no `-`, a turn id may.
+fn parse_event(name: &str, text: &str) -> Option<InboxEvent> {
+    if name.split_once('-').is_some_and(|(_, rest)| rest.starts_with("needs-")) {
+        serde_json::from_str(text).ok().map(InboxEvent::Needs)
+    } else {
+        serde_json::from_str(text).ok().map(InboxEvent::Turn)
+    }
+}
+
 const SAFETY_POLL: Duration = Duration::from_millis(2000);
 const DEBOUNCE: Duration = Duration::from_millis(30);
 
@@ -40,12 +62,13 @@ fn inbox_files(runs_root: &Path) -> Vec<PathBuf> {
 
 /// Read, delete and hand on every waiting event. A file that does not parse
 /// is deleted too, so it is not read again. Returns how many were handed on.
-pub fn drain_inbox(runs_root: &Path, emit: &mut dyn FnMut(BridgeTurn)) -> usize {
+pub fn drain_inbox(runs_root: &Path, emit: &mut dyn FnMut(InboxEvent)) -> usize {
     let mut count = 0;
     for path in inbox_files(runs_root) {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
         let event = std::fs::read_to_string(&path)
             .ok()
-            .and_then(|text| serde_json::from_str::<BridgeTurn>(&text).ok());
+            .and_then(|text| parse_event(&name, &text));
         if std::fs::remove_file(&path).is_err() {
             // Not ours to delete (or gone): never emit the same file twice.
             continue;
@@ -94,7 +117,10 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>, runs_root: PathBuf) {
         .and_then(|mut watcher| watcher.watch(&runs_root, RecursiveMode::Recursive).ok().map(|_| watcher));
         loop {
             drain_inbox(&runs_root, &mut |event| {
-                let _ = app.emit(BRIDGE_TURN_EVENT, event);
+                let _ = match event {
+                    InboxEvent::Turn(turn) => app.emit(BRIDGE_TURN_EVENT, turn),
+                    InboxEvent::Needs(needs) => app.emit(BRIDGE_NEEDS_EVENT, needs),
+                };
             });
             match wakes.recv_timeout(SAFETY_POLL) {
                 Ok(()) | Err(RecvTimeoutError::Timeout) => {}

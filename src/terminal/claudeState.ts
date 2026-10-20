@@ -5,7 +5,9 @@
  * Order: exited, then needs you, then working, then idle. "Needs you" comes
  * only from the session log's unanswered tools: ExitPlanMode and
  * AskUserQuestion right away, any other tool only while the PTY shows Claude
- * Code's permission dialog for it. Quiet time alone never means "needs you".
+ * Code's permission dialog for it. On a bridged pipeline stage (ADR-015,
+ * D22) the PermissionRequest hook says so first, at once; the screen stays
+ * the fallback. Quiet time alone never means "needs you".
  * A turn with no known end and no unanswered tool that stayed quiet for
  * TURN_QUIET_MS is still working, flagged `unknown` (Claude Code may have
  * changed its log format): the pill says to check the terminal, nothing
@@ -34,8 +36,20 @@ export type PendingTool = { id: string; name: string; title: string; hint?: stri
 /** The tool a permission dialog on screen asks about, and which prompt it is. */
 export type DialogTool = PendingTool & { promptKey: string };
 
+/**
+ * The bridge's Needs you for a tab: the hooked tool (`null` from the
+ * Notification backup), when it came, its dedupe key, and `shown` once the
+ * screen drew a permission dialog after it.
+ */
+export type BridgeNeedsMark = { tool: string | null; at: number; key: string; shown?: boolean };
+
+/** Time a log read gets to catch up with the hook before it can clear it. */
+export const BRIDGE_NEEDS_GRACE_MS = 1000;
+
 export type TerminalStateInput = {
   log: LogView | null | undefined;
+  /** The bridge's Needs you for this tab, until you answer it or a log read clears it (`bridgeNeedsAfterAnswer`, `bridgeNeedsAfterDialog`, `bridgeNeedsAfterRead`). */
+  bridgeNeeds?: BridgeNeedsMark | null;
   /** The unanswered tool whose permission dialog is on screen (`dialogToolFor`). */
   dialogTool: DialogTool | null;
   /** Output arrived recently (the fallback when there is no log yet). */
@@ -104,6 +118,20 @@ export function deriveTerminalState(input: TerminalStateInput): TerminalState {
     return { kind: "exited", code: input.exitCode };
   }
   const log = input.log;
+  // The bridge heard the permission prompt from Claude Code itself: it
+  // names the prompt before the screen is read, and keeps naming it.
+  const hooked = input.bridgeNeeds;
+  if (hooked) {
+    const waiting = pendingToolsOf(log).filter((tool) => !OWN_PROMPT_TOOLS.has(tool.name));
+    const tool = hooked.tool ? waiting.find((item) => item.name === hooked.tool) : waiting[0];
+    return {
+      kind: "needs",
+      needs: "permission",
+      toolId: tool?.id ?? `bridge:${hooked.key}`,
+      toolTitle: tool?.title ?? hooked.tool ?? "",
+      promptKey: `bridge:${hooked.key}`,
+    };
+  }
   // A permission dialog on screen is what Claude Code is asking now, even
   // with a plan or question queued behind it.
   const dialog = input.dialogTool;
@@ -172,8 +200,54 @@ export function pendingToolsOf(log: LogView | null | undefined): PendingTool[] {
   return log.pendingTools ?? (log.openTool ? [log.openTool] : []);
 }
 
-/** Tools that show their own prompt, never the permission dialog. */
-const OWN_PROMPT = new Set(["ExitPlanMode", "AskUserQuestion"]);
+/** Tools that show their own prompt (a plan, a question), never the permission dialog. */
+export const OWN_PROMPT_TOOLS: ReadonlySet<string> = new Set(["ExitPlanMode", "AskUserQuestion"]);
+
+/**
+ * After a session-log read that started at `readAt`: the bridge's Needs you
+ * stays until a read made at least BRIDGE_NEEDS_GRACE_MS after it shows the
+ * turn over, or no tool waiting on a dialog (none of the hooked tool's
+ * name, when it named one). An older read, or a failed one, keeps it.
+ */
+export function bridgeNeedsAfterRead(
+  mark: BridgeNeedsMark | undefined,
+  log: LogView | null,
+  readAt: number,
+): BridgeNeedsMark | undefined {
+  if (!mark || !log || readAt < mark.at + BRIDGE_NEEDS_GRACE_MS) return mark;
+  if (log.turnDone) return undefined;
+  const waiting = pendingToolsOf(log).filter((tool) => !OWN_PROMPT_TOOLS.has(tool.name));
+  const asking = mark.tool ? waiting.some((tool) => tool.name === mark.tool) : waiting.length > 0;
+  return asking ? mark : undefined;
+}
+
+/**
+ * A key that may answer a dialog (Enter, Esc, a digit) was sent to the tab
+ * at `answeredAt`. Approving writes nothing to the session log, and the
+ * tool_result lands only when the tool finishes, so the answer itself is
+ * what clears the hook's Needs you. A key sent before the hook named the
+ * prompt answered something else.
+ */
+export function bridgeNeedsAfterAnswer(
+  mark: BridgeNeedsMark | undefined,
+  answeredAt: number,
+): BridgeNeedsMark | undefined {
+  return mark && answeredAt >= mark.at ? undefined : mark;
+}
+
+/**
+ * The screen's permission dialog was drawn (`visible`) or went away. A
+ * dialog drawn after the hook and then gone was answered. One the detector
+ * never saw going "away" keeps the mark (the hook is the better witness).
+ */
+export function bridgeNeedsAfterDialog(
+  mark: BridgeNeedsMark | undefined,
+  visible: boolean,
+): BridgeNeedsMark | undefined {
+  if (!mark) return undefined;
+  if (visible) return mark.shown ? mark : { ...mark, shown: true };
+  return mark.shown ? undefined : mark;
+}
 
 /**
  * The permission dialog on screen.
@@ -240,7 +314,7 @@ function toolForPrompt(
   context: string,
   answered: string | null,
 ): PendingTool | undefined {
-  const candidates = pendingToolsOf(log).filter((tool) => !OWN_PROMPT.has(tool.name));
+  const candidates = pendingToolsOf(log).filter((tool) => !OWN_PROMPT_TOOLS.has(tool.name));
   const screen = squash(context);
   const score = (tool: PendingTool): [number, number, number] => {
     const hint = squash(tool.hint ?? "");

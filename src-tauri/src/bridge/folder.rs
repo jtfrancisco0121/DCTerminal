@@ -1,8 +1,10 @@
 //! The run folder (`<app data>/runs/<runId>/`) and the files in it. The app
 //! writes `run.json`, `stages/<key>/stage.json` and `stages/<key>/mode` when
-//! it launches a stage; the bridge writes the rest. Every write is atomic (a
-//! temp file in the same folder, then a rename) and every path is built from
-//! checked parts, so nothing lands outside the run folder (D37).
+//! it launches a stage; the bridge writes the rest, including the run-level
+//! hand-off files: the Planner's `plan.md` and `tasks.json`, and each
+//! Implementer's `prs.json` (`prs-<lane>.json` in a lane). Every write is
+//! atomic (a temp file in the same folder, then a rename) and every path is
+//! built from checked parts, so nothing lands outside the run folder (D37).
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -22,6 +24,11 @@ const TURN_FILE: &str = "turn.json";
 const RESULTS_DIR: &str = "results";
 const PAYLOADS_DIR: &str = "payloads";
 const LOG_FILE: &str = "bridge.log";
+const NEEDS_FILE: &str = "needs.json";
+/// The Planner's plan, as it handed it to ExitPlanMode.
+pub const PLAN_FILE: &str = "plan.md";
+/// The Planner's tasks (the plan's fenced JSON block); fan-out reads it.
+pub const TASKS_FILE: &str = "tasks.json";
 /// `bridge.log` stops growing past this; the bridge never needs more to be debugged.
 const MAX_LOG_BYTES: u64 = 256 * 1024;
 
@@ -75,6 +82,11 @@ pub struct RunMarker {
 pub enum ResultKind {
     /// Plan Reviewer and PR Reviewer: a verdict and findings.
     Reviewer,
+    /// Planner: its plan and tasks, taken from its ExitPlanMode call (D11),
+    /// not from `submit_result`.
+    Planner,
+    /// Implementer: its pull requests, a summary and the checks it ran.
+    Implementer,
 }
 
 /// `stages/<key>/stage.json`, written by the app when the stage's tab starts.
@@ -132,6 +144,11 @@ pub enum TurnOutcome {
     /// The turn ended without an accepted `submit_result` (after the one
     /// block on autopilot).
     NoResult,
+    /// No Stop came (Esc or a rejected permission) and an `idle_prompt`
+    /// Notification closed the turn out (D9a). Kept in `turn.json` only:
+    /// it is never posted to `inbox/` or read back, so autopilot never
+    /// acts on it.
+    Abandoned,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -228,6 +245,124 @@ impl BridgeTurn {
     }
 }
 
+/// What told the bridge a stage needs you (D22, V0 amendment).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NeedsSource {
+    /// The PermissionRequest hook: the dialog is up now.
+    PermissionRequest,
+    /// The `permission_prompt` Notification, about 6 s late: the backup.
+    PermissionPrompt,
+}
+
+/// A stage is waiting on a permission dialog: dropped in `inbox/` by the
+/// PermissionRequest hook (or the Notification backup) for the app's
+/// Needs you state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeNeeds {
+    pub schema: u32,
+    pub run_id: String,
+    pub stage_key: String,
+    pub stage_id: String,
+    pub role_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lane: Option<String>,
+    pub tab_id: String,
+    /// Claude's `prompt_id` of the turn asking ("" when the payload had none).
+    pub turn: String,
+    pub source: NeedsSource,
+    /// The tool the dialog asks about (PermissionRequest only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    /// The Notification's text (`Claude needs your permission`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub message: String,
+    pub at: String,
+}
+
+impl BridgeNeeds {
+    pub fn new(info: &StageInfo, turn: &str, source: NeedsSource, tool: Option<String>, message: String) -> Self {
+        Self {
+            schema: SCHEMA,
+            run_id: info.run_id.clone(),
+            stage_key: info.stage_key.clone(),
+            stage_id: info.stage_id.clone(),
+            role_id: info.role_id.clone(),
+            lane: info.lane.clone(),
+            tab_id: info.tab_id.clone(),
+            turn: turn.to_string(),
+            source,
+            tool,
+            message,
+            at: now(),
+        }
+    }
+}
+
+/// One task of the Planner's plan (plan "Result schemas"): one pull request,
+/// or a manual step the Implementer leaves to you.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlannedTask {
+    /// `pr1`, `pr2`, … (lower case).
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub manual: bool,
+    pub summary: String,
+}
+
+/// `tasks.json`: the tasks of the Planner's latest plan. Fan-out reads it
+/// directly instead of parsing a reply.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunTasks {
+    pub schema: u32,
+    pub run_id: String,
+    pub stage_key: String,
+    /// The Planner turn that handed the plan over.
+    pub turn: String,
+    pub at: String,
+    pub tasks: Vec<PlannedTask>,
+}
+
+/// `prs.json` (`prs-<lane>.json`): what an Implementer reported last.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunPrs {
+    pub schema: u32,
+    pub run_id: String,
+    pub stage_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lane: Option<String>,
+    pub turn: String,
+    pub at: String,
+    /// The checked `submit_result` arguments (`prs`, `summary`, `checks`).
+    pub result: Value,
+}
+
+/// `needs.json`: the last Needs you a stage posted, so the late
+/// Notification backup is not posted again for the same turn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NeedsMark {
+    pub turn: String,
+    pub source: NeedsSource,
+    pub at: String,
+}
+
+/// The file an Implementer's pull requests go in: `prs.json`, or
+/// `prs-<lane>.json` in a lane (lanes run at the same time).
+pub fn prs_file_name(lane: Option<&str>) -> String {
+    match lane.filter(|lane| id_chars(lane, 40, "")) {
+        Some(lane) => format!("prs-{lane}.json"),
+        None => "prs.json".to_string(),
+    }
+}
+
 /// Why a stage folder could not be used.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OpenError {
@@ -317,6 +452,37 @@ impl StageDir {
         let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%.6f");
         let name = format!("{stamp}-stop-{}", turn_file_name(&turn.turn));
         write_json(&folder.join(name), turn)
+    }
+
+    /// Drop a Needs you in `inbox/` for the app's watcher, and remember it.
+    pub fn post_needs(&self, needs: &BridgeNeeds) -> io::Result<()> {
+        let folder = self.run_dir.join(INBOX_DIR);
+        std::fs::create_dir_all(&folder)?;
+        let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%.6f");
+        let name = format!("{stamp}-needs-{}", turn_file_name(&needs.turn));
+        write_json(&folder.join(name), needs)?;
+        let mark = NeedsMark {
+            turn: needs.turn.clone(),
+            source: needs.source,
+            at: needs.at.clone(),
+        };
+        write_json(&self.dir.join(NEEDS_FILE), &mark)
+    }
+
+    /// The last Needs you this stage posted.
+    pub fn needs_mark(&self) -> Option<NeedsMark> {
+        read_json(&self.dir.join(NEEDS_FILE))
+    }
+
+    /// The Planner's hand-off: `plan.md` and `tasks.json` at the run's top.
+    pub fn write_plan(&self, plan: &str, tasks: &RunTasks) -> io::Result<()> {
+        write_atomic(&self.run_dir.join(PLAN_FILE), plan.as_bytes())?;
+        write_json(&self.run_dir.join(TASKS_FILE), tasks)
+    }
+
+    /// An Implementer's pull requests at the run's top.
+    pub fn write_prs(&self, prs: &RunPrs) -> io::Result<()> {
+        write_json(&self.run_dir.join(prs_file_name(prs.lane.as_deref())), prs)
     }
 
     /// Keep the newest raw payload of each hook event, so a changed payload
@@ -441,6 +607,11 @@ pub(crate) fn stage_dir_path(run_dir: &Path, stage_key: &str) -> Option<PathBuf>
 pub(crate) fn read_stage(stage_dir: &Path) -> Option<(StageInfo, Option<TurnState>)> {
     let info = read_json::<StageInfo>(&stage_dir.join(STAGE_FILE))?;
     Some((info, read_json(&stage_dir.join(TURN_FILE))))
+}
+
+/// The run's `tasks.json`, when its Planner handed a plan over.
+pub(crate) fn read_tasks(run_dir: &Path) -> Option<RunTasks> {
+    read_json(&run_dir.join(TASKS_FILE))
 }
 
 pub(crate) fn read_result(stage_dir: &Path, turn: &str) -> Option<StoredResult> {

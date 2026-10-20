@@ -6,7 +6,7 @@
  * stage's turn (engine 2, ADR-015) is reported from its `submit_result`
  * instead of its reply. Pure.
  */
-import type { BridgeFinding, BridgeTurn, TabSummary, TerminalSessionLog, TurnReport, UsageSnapshot } from "../bridge";
+import type { BridgeFinding, BridgeReviewResult, BridgeTurn, TabSummary, TerminalSessionLog, TurnReport, UsageSnapshot } from "../bridge";
 import type { ChainRef } from "../handoff/chains";
 import { contractFindings, contractResult, missingHandoffSections } from "../handoff/contract";
 import { terminalLogFields, type HandoffField, type HandoffSource } from "../handoff/map";
@@ -245,6 +245,29 @@ export function bridgeVerdict(verdict: string | null | undefined, revise: string
   }
 }
 
+/** A bridged reviewer's verdict and findings; null for another stage's result or none. */
+export function bridgeReview(turn: BridgeTurn): BridgeReviewResult | null {
+  const result = turn.outcome === "result" ? turn.result : null;
+  return result && "verdict" in result ? result : null;
+}
+
+/**
+ * The pull requests a bridged Implementer reported (`submit_result` prs[]),
+ * for its checks; null when the turn carries none (another stage, no result).
+ */
+export function bridgePrUrls(turn: BridgeTurn): string[] | null {
+  const result = turn.outcome === "result" ? turn.result : null;
+  if (!result || !("prs" in result)) return null;
+  return result.prs.map((pr) => pr.url);
+}
+
+/** Why a bridged Implementer is blocked (`submit_result` blocked); null otherwise. */
+export function bridgeBlocked(turn: BridgeTurn): string | null {
+  const result = turn.outcome === "result" ? turn.result : null;
+  if (!result || !("prs" in result)) return null;
+  return result.blocked?.trim() || null;
+}
+
 /** The findings a loop-back sends, numbered like `loopBackText` lists Result findings. */
 export function bridgeFindingsText(findings: readonly BridgeFinding[]): string {
   return findings
@@ -254,7 +277,8 @@ export function bridgeFindingsText(findings: readonly BridgeFinding[]): string {
 
 /**
  * The report a bridged stage's turn is decided on: its `submit_result`
- * (verdict and findings), or `noResult` when the turn ended without one.
+ * (verdict and findings, or an Implementer's `blocked` reason), or
+ * `noResult` when the turn ended without one.
  * HANDOFF sections are not checked: the tool replaced them as the result.
  * A usage-limit error rides along, so `decide` stops for it before `noResult`.
  */
@@ -269,10 +293,12 @@ export function bridgeTurnReport(args: {
 }): TurnReport {
   const { stage, turn, usage, lane, revise } = args;
   const result = turn.outcome === "result" ? (turn.result ?? null) : null;
+  // A reviewer's result has a verdict and findings; a Planner's or an Implementer's has neither.
+  const review = bridgeReview(turn);
   return {
     stageId: stage.id,
-    verdict: bridgeVerdict(result?.verdict, revise),
-    findings: (result?.findings ?? []).map((f) => ({ severity: f.severity, summary: f.summary })),
+    verdict: bridgeVerdict(review?.verdict, revise),
+    findings: (review?.findings ?? []).map((f) => ({ severity: f.severity, summary: f.summary })),
     findingsKnown: !!result,
     missingSections: [],
     usagePercent: usage,
@@ -280,5 +306,6 @@ export function bridgeTurnReport(args: {
     chat: false,
     lane,
     noResult: !result,
+    blocked: bridgeBlocked(turn),
   };
 }

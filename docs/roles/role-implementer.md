@@ -683,6 +683,8 @@ IMPLEMENTED WITH DEVIATIONS
 BLOCKED
 \`\`\`
 
+{{result_instructions}}
+
 ## Hand-off
 
 End your reply with these sections, using the headings exactly and in this order. DCTerminal copies them into the PR Reviewer's form, so put nothing after them.

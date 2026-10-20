@@ -94,7 +94,13 @@
 //! Hooks come from `--settings`' `hooks`, as Claude Code 2.1.287 runs them
 //! (docs/claude-hooks-observed.md): `UserPromptSubmit` when a turn starts,
 //! `Stop` when it ends normally (never after an interrupt), `PreToolUse`
-//! before an `mcp` step (matcher: empty, `*`, or `|`-separated names). Each
+//! before a `tool` or `mcp` step (matcher: empty, `*`, or `|`-separated
+//! names). A `deny` refuses the tool with its `permissionDecisionReason` as
+//! the error result and no dialog, and the turn goes on; an `allow` skips
+//! the permission dialog. A `tool` step with `permission` runs
+//! `PermissionRequest` hooks just before drawing the dialog, and the
+//! `permission_prompt` `Notification` hooks just after (Claude Code sends
+//! that one about 6 s later; matcher: the notification type). Each
 //! `command` hook runs with its `args` (or through `sh -c` without), the
 //! JSON payload on stdin (`session_id`, `transcript_path`, `cwd`,
 //! `prompt_id` (one per turn), `permission_mode`, `hook_event_name`, plus
@@ -520,6 +526,8 @@ struct HookReply {
     block: Option<String>,
     /// A PreToolUse hook's `permissionDecision`.
     permission: Option<String>,
+    /// Its `permissionDecisionReason`.
+    reason: Option<String>,
 }
 
 /// A started stdio MCP server.
@@ -772,6 +780,10 @@ impl Fake {
                     .and_then(Value::as_str)
                 {
                     reply.permission = Some(decision.to_string());
+                    reply.reason = answer
+                        .pointer("/hookSpecificOutput/permissionDecisionReason")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
                 }
             }
             Some(2) => reply.block = Some(stderr),
@@ -939,12 +951,40 @@ impl Fake {
             json!({ "type": "tool_use", "id": id, "name": name, "input": input }),
             Some("tool_use"),
         );
+        let hooks = self.run_hooks(
+            "PreToolUse",
+            json!({ "tool_name": name, "tool_input": input, "tool_use_id": id }),
+            Some(name),
+        );
+        if hooks.permission.as_deref() == Some("deny") {
+            // Refused before any dialog: the reason is the tool's error and
+            // the turn goes on (V0 T7 for ExitPlanMode).
+            let reason = hooks.reason.unwrap_or_else(|| "A PreToolUse hook denied this tool.".to_string());
+            self.draw(&format!(
+                "  ⎿  Error: PreToolUse:{name} hook error: {}\r\n",
+                screen_text(&reason)
+            ));
+            self.tool_result(&id, &reason, true);
+            return Ended::Done;
+        }
         if step.get("pending").and_then(Value::as_bool) == Some(true) {
             return Ended::Done;
         }
-        if step.get("permission").and_then(Value::as_bool) == Some(true) {
+        let allowed = hooks.permission.as_deref() == Some("allow");
+        if step.get("permission").and_then(Value::as_bool) == Some(true) && !allowed {
             let question = step.get("dialog").and_then(Value::as_str);
+            self.run_hooks(
+                "PermissionRequest",
+                json!({ "tool_name": name, "tool_input": input, "permission_suggestions": [] }),
+                Some(name),
+            );
             let options = self.draw_dialog(name, &input, question);
+            // Claude Code sends this about 6 s after the dialog; here at once.
+            self.run_hooks(
+                "Notification",
+                json!({ "message": "Claude needs your permission", "notification_type": "permission_prompt" }),
+                Some("permission_prompt"),
+            );
             let answer = loop {
                 match self.next_event(POLL, false) {
                     Some(Event::Esc) => break options,

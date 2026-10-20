@@ -6,6 +6,7 @@
  * Start in the overview).
  */
 import {
+  type PlannedTask,
   gitRepoInfo,
   getPipelineRun,
   getTab,
@@ -29,9 +30,16 @@ import {
 import { defaultScope, terminalHandoffInput, type HandoffSource } from "../handoff/map";
 import type { RoleName } from "../handoff/transitions";
 import type { PipelineDef, StageDef } from "./defs";
-import { laneBranch, laneNote, lanesFromReply } from "./prPlan";
+import { laneBranch, laneNote, lanesFromReply, lanesFromTasks } from "./prPlan";
 
-export { laneBranch, laneNote, lanesFromReply, parsePullRequestPlan, type PlannedPr } from "./prPlan";
+export {
+  laneBranch,
+  laneNote,
+  lanesFromReply,
+  lanesFromTasks,
+  parsePullRequestPlan,
+  type PlannedPr,
+} from "./prPlan";
 
 /** `mapped` with the lane note added to Additional Context (else in front of the plan). */
 export function withLaneNote(prepared: PreparedHandoff, note: string): PreparedHandoff {
@@ -58,8 +66,9 @@ export type FanOutDeps = {
 };
 
 /**
- * Splits `run` at `stage` (the Implementer's) using the plan in `source`'s
- * reply: makes one worktree tab per lane and saves each hand-off (the plan
+ * Splits `run` at `stage` (the Implementer's) using the Planner's `tasks`
+ * (engine 2, read from `tasks.json`) or else the plan in `source`'s reply:
+ * makes one worktree tab per lane and saves each hand-off (the plan
  * plus its lane note), then records the lanes, attaches the hand-offs, and
  * starts the lanes with no dependency. Everything that can fail before the
  * lanes are recorded runs first, so a failure leaves no half-recorded run.
@@ -70,11 +79,13 @@ export async function fanOutRun(
     stage: StageDef;
     source: HandoffSource;
     sourceChain: ChainRef;
+    /** The Planner's tasks (`tasks.json`); null or left out: read the reply's list. */
+    tasks?: readonly PlannedTask[] | null;
   },
   deps: FanOutDeps,
 ): Promise<{ started: string[]; waiting: string[] }> {
-  const { run, stage, source, sourceChain } = args;
-  const lanes = lanesFromReply(source.latestMessage);
+  const { run, stage, source, sourceChain, tasks } = args;
+  const lanes = tasks ? lanesFromTasks(tasks) : lanesFromReply(source.latestMessage);
   if (lanes.length < 2) {
     throw new Error("The plan lists fewer than two pull requests (manual steps do not count).");
   }

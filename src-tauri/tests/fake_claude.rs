@@ -1008,7 +1008,8 @@ mod bridge {
     use super::*;
     use dcterminal_lib::testing::{
         bridged_command, claude_terminal_args, drain_inbox, launch_flags, prepare_stage, read_stage_turn, runs_root,
-        BridgePlan, BridgeTag, BridgeTurn, ProgramArgs, ResultKind, RunMode, TerminalKind, TerminalLaunch, TurnOutcome,
+        BridgePlan, BridgeTag, BridgeTurn, InboxEvent, ProgramArgs, ResultKind, RunMode, TerminalKind, TerminalLaunch,
+        TurnOutcome,
     };
     use serde_json::json;
 
@@ -1055,7 +1056,7 @@ mod bridge {
                 session_id: Some(SID.into()),
                 settings: Some(json!({ "statusLine": { "type": "command", "command": "true" } })),
             };
-            let flags = launch_flags(Path::new(DCTERMINAL), &self.run_dir, RUN, "pr_reviewer", TAB);
+            let flags = launch_flags(ResultKind::Reviewer, Path::new(DCTERMINAL), &self.run_dir, RUN, "pr_reviewer", TAB);
             let args = bridged_command(request, Some(flags), |req| {
                 Ok(ProgramArgs::new("claude", claude_terminal_args(req)?))
             })
@@ -1085,7 +1086,11 @@ mod bridge {
 
         fn inbox(&self) -> Vec<BridgeTurn> {
             let mut events = Vec::new();
-            drain_inbox(&self.runs, &mut |event| events.push(event));
+            drain_inbox(&self.runs, &mut |event| {
+                if let InboxEvent::Turn(turn) = event {
+                    events.push(turn);
+                }
+            });
             events
         }
     }
@@ -1191,5 +1196,299 @@ mod bridge {
         assert_eq!(events[1].outcome, TurnOutcome::NoResult);
         assert_ne!(events[0].turn, events[1].turn, "each turn has its own prompt_id");
         assert!(!fake.screen().contains("never reached"));
+    }
+}
+
+/// Pipeline v2 (V2b): a whole Eagle-Eye 1 on the bridge. Each stage runs as
+/// `fake_claude` launched with its stage's bridge flags (the Planner in plan
+/// mode with ExitPlanMode capture, the reviewers and the Implementer with
+/// `submit_result`), against the real `dcterminal bridge`. Every turn end,
+/// verdict, task list and pull request comes from the bridge's inbox and run
+/// folder, and the Rust decision moves the run on from them; nothing parses
+/// a reply.
+mod eagle_eye_1 {
+    use super::*;
+    use dcterminal_lib::testing::{
+        bridged_command, claude_terminal_args, decide, drain_inbox, find_pipeline, launch_flags, prepare_stage,
+        read_run_tasks, runs_root, BridgeNeeds, BridgePlan, BridgeTurn, FindingReport, InboxEvent, NeedsSource,
+        PipelineRun, ProgramArgs, ResultKind, RunMode, TerminalKind, TerminalLaunch, TurnOutcome, TurnReport,
+    };
+    use serde_json::json;
+
+    const DCTERMINAL: &str = env!("CARGO_BIN_EXE_dcterminal");
+    const RUN: &str = "ee_1760000000001";
+    /// Planner, Plan Reviewer, Implementer, PR Reviewer.
+    const SIDS: [&str; 4] = [
+        "7b2e4c10-1a2b-4c3d-8e4f-000000000001",
+        "7b2e4c10-1a2b-4c3d-8e4f-000000000002",
+        "7b2e4c10-1a2b-4c3d-8e4f-000000000003",
+        "7b2e4c10-1a2b-4c3d-8e4f-000000000004",
+    ];
+
+    /// One run folder and the events its inbox has had.
+    struct Run {
+        home: FakeHome,
+        runs: PathBuf,
+        run_dir: PathBuf,
+        turns: Vec<BridgeTurn>,
+        needs: Vec<BridgeNeeds>,
+        _data: TempDir,
+    }
+
+    impl Run {
+        fn new() -> Self {
+            let data = TempDir::new("ee1_data");
+            let runs = runs_root(data.path());
+            let run_dir = runs.join(RUN);
+            Self { home: FakeHome::new("ee1"), runs, run_dir, turns: Vec::new(), needs: Vec::new(), _data: data }
+        }
+
+        /// Launch `stage_id`'s claude in `tab`, bridged as `kind`, with session `sid`.
+        fn launch(&self, stage_id: &str, role_id: &str, kind: ResultKind, tab: &str, sid: &str, scenario: &Value) -> FakeClaude {
+            let plan = BridgePlan {
+                run_id: RUN.into(),
+                stage_id: stage_id.into(),
+                role_id: role_id.into(),
+                lane: None,
+                stage_key: stage_id.into(),
+                kind,
+                autopilot: true,
+            };
+            let run_dir = prepare_stage(&self.runs, &plan, tab).expect("prepare stage");
+            // As role_terminal_start builds it: one --settings (the hooks
+            // merged into the status line), the role's permission mode, the
+            // prompt last.
+            let request = TerminalLaunch {
+                kind: TerminalKind::Role {
+                    role_id: role_id.into(),
+                    run_mode: RunMode::Default,
+                    prompt: Some(format!("Run the {stage_id} stage.")),
+                    stage_kind: None,
+                },
+                model: None,
+                session_id: Some(sid.into()),
+                settings: Some(json!({ "statusLine": { "type": "command", "command": "true" } })),
+            };
+            let flags = launch_flags(kind, Path::new(DCTERMINAL), &run_dir, RUN, stage_id, tab);
+            let args = bridged_command(request, Some(flags), |req| Ok(ProgramArgs::new("claude", claude_terminal_args(req)?)))
+                .expect("bridged launch")
+                .args;
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            self.home.run(scenario, &args)
+        }
+
+        fn drain(&mut self) {
+            let (turns, needs) = (&mut self.turns, &mut self.needs);
+            drain_inbox(&self.runs, &mut |event| match event {
+                InboxEvent::Turn(turn) => turns.push(turn),
+                InboxEvent::Needs(n) => needs.push(n),
+            });
+        }
+
+        /// Pump until the inbox has a Needs you (the dialog is up), then return it.
+        fn wait_needs(&mut self, fake: &mut FakeClaude) -> BridgeNeeds {
+            let deadline = Instant::now() + WAIT;
+            loop {
+                self.drain();
+                if let Some(needs) = self.needs.pop() {
+                    return needs;
+                }
+                assert!(Instant::now() < deadline, "no Needs you; screen:\n{}", fake.screen());
+                fake.pump(Duration::from_millis(30));
+            }
+        }
+
+        /// Run `fake` to its exit, then the one turn it ended.
+        fn finish(&mut self, fake: &mut FakeClaude, stage_id: &str) -> BridgeTurn {
+            let code = fake.wait_exit();
+            assert_eq!(
+                code,
+                Some(0),
+                "{stage_id} did not exit; screen:\n{}\nbridge.log: {}",
+                fake.screen(),
+                std::fs::read_to_string(self.run_dir.join("bridge.log")).unwrap_or_default()
+            );
+            self.drain();
+            let turn = self.turns.pop().unwrap_or_else(|| panic!("{stage_id}: no turn end; screen:\n{}", fake.screen()));
+            assert_eq!(turn.stage_key, stage_id);
+            assert!(self.turns.is_empty(), "{stage_id} ended one turn");
+            turn
+        }
+    }
+
+    /// The report the executor builds from a bridge turn (`bridgeTurnReport`).
+    fn report(turn: &BridgeTurn) -> TurnReport {
+        let result = turn.result.clone().unwrap_or(Value::Null);
+        TurnReport {
+            stage_id: turn.stage_id.clone(),
+            verdict: result["verdict"].as_str().map(str::to_string),
+            findings: result["findings"]
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|f| FindingReport {
+                            severity: f["severity"].as_str().unwrap_or_default().to_string(),
+                            summary: f["summary"].as_str().unwrap_or_default().to_string(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            findings_known: turn.outcome == TurnOutcome::Result,
+            no_result: turn.outcome != TurnOutcome::Result,
+            turn: Some(format!("{}|bridge|{}", turn.tab_id, turn.turn)),
+            ..TurnReport::default()
+        }
+    }
+
+    /// The tool results in a stage's session log, oldest first.
+    fn tool_results(fake: &FakeClaude, sid: &str) -> Vec<Value> {
+        let path = fake.log_path(sid).expect("log");
+        log_records(&path, false)
+            .into_iter()
+            .filter(|r| r["message"]["content"][0]["type"] == "tool_result")
+            .map(|r| r["message"]["content"][0].clone())
+            .collect()
+    }
+
+    fn plan(tasks: &Value) -> String {
+        format!(
+            "# Plan: token refresh\n\n## HANDOFF: Plan\n1. Refresh tokens in src/auth.ts.\n\n## HANDOFF: Pull requests\n\
+             * `PR1 — Refresh`: Depends on: none\n* `PR2 — Session UI`: Depends on: PR1\n\n```json\n{tasks}\n```\n\n\
+             ## HANDOFF: Open questions\nNone.\n"
+        )
+    }
+
+    #[test]
+    fn turn_ends_verdicts_and_tasks_all_come_from_the_bridge() {
+        let mut run = Run::new();
+        let def = find_pipeline("eagle1").expect("Eagle-Eye 1");
+        let mut state: PipelineRun = serde_json::from_value(json!({
+            "id": RUN, "kind": "full", "cwd": "/repo", "stage": "planner", "tabIds": {},
+            "createdAt": "2026-10-19T00:00:00Z", "status": "running",
+            "autopilot": { "enabled": true, "passedCheckpoints": ["implementer"] }
+        }))
+        .unwrap();
+
+        // 1. Planner (plan mode): a broken tasks block is sent back, the fixed
+        //    plan is taken, and no approval dialog ever shows.
+        let good = json!({ "tasks": [
+            { "id": "pr1", "title": "Refresh", "dependsOn": [], "manual": false, "summary": "Refresh expired tokens." },
+            { "id": "pr2", "title": "Session UI", "dependsOn": ["pr1"], "manual": false, "summary": "Show the session state." }
+        ] });
+        let broken = json!({ "tasks": [{ "id": "pr1", "title": "Refresh", "dependsOn": ["pr7"], "summary": "x" }] });
+        let mut planner = run.launch(
+            "planner",
+            "role_planner",
+            ResultKind::Planner,
+            "tab_planner",
+            SIDS[0],
+            &json!({ "turns": [
+                { "steps": [
+                    { "tool": "ExitPlanMode", "input": { "plan": plan(&broken) }, "permission": true },
+                    { "tool": "ExitPlanMode", "input": { "plan": plan(&good) }, "permission": true },
+                    { "reply": "The plan is written and DCTerminal received it." }
+                ] },
+                { "exit": 0 }
+            ] }),
+        );
+        let turn = run.finish(&mut planner, "planner");
+        let screen = planner.screen();
+        assert!(!screen.contains("Would you like to proceed"), "no plan dialog:\n{screen}");
+        assert!(screen.contains("PreToolUse:ExitPlanMode hook error: Plan received"), "{screen}");
+        let results = tool_results(&planner, SIDS[0]);
+        assert_eq!(results.len(), 2, "{results:?}");
+        assert_eq!(results[0]["is_error"], true);
+        assert!(results[0]["content"].as_str().unwrap().contains("pr1 depends on \"pr7\", which is not a task"));
+        assert!(results[1]["content"].as_str().unwrap().starts_with("Plan received by DCTerminal"));
+        assert_eq!(turn.outcome, TurnOutcome::Result);
+        assert!(!turn.blocked);
+        assert_eq!(turn.last_assistant_message, "The plan is written and DCTerminal received it.");
+        let tasks = read_run_tasks(&run.runs, RUN).expect("tasks.json");
+        let ids: Vec<&str> = tasks.tasks.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, ["pr1", "pr2"]);
+        assert_eq!(tasks.tasks[1].depends_on, ["pr1"]);
+        assert_eq!(turn.result.as_ref().unwrap()["tasks"][1]["id"], "pr2");
+        assert!(std::fs::read_to_string(run.run_dir.join("plan.md")).unwrap().contains("Refresh tokens in src/auth.ts"));
+        let decision = decide(&def, &mut state, &report(&turn));
+        assert_eq!((decision.action.as_str(), decision.stage_id.as_deref()), ("advance", Some("plan_reviewer")));
+
+        // 2. Plan Reviewer: its verdict through submit_result.
+        let mut reviewer = run.launch(
+            "plan_reviewer",
+            "role_plan_reviewer",
+            ResultKind::Reviewer,
+            "tab_plan_reviewer",
+            SIDS[1],
+            &json!({ "turns": [
+                { "steps": [
+                    { "mcp": "submit_result", "arguments": { "verdict": "APPROVED", "findings": [] } },
+                    { "reply": "Approved." }
+                ] },
+                { "exit": 0 }
+            ] }),
+        );
+        let turn = run.finish(&mut reviewer, "plan_reviewer");
+        assert_eq!(turn.result.as_ref().unwrap()["verdict"], "APPROVED");
+        let decision = decide(&def, &mut state, &report(&turn));
+        assert_eq!((decision.action.as_str(), decision.stage_id.as_deref()), ("advance", Some("implementer")));
+
+        // 3. Implementer: a permission dialog is Needs you at once (the
+        //    Notification backup is not posted again), then its pull requests.
+        let mut implementer = run.launch(
+            "implementer",
+            "role_implementer",
+            ResultKind::Implementer,
+            "tab_implementer",
+            SIDS[2],
+            &json!({ "turns": [
+                { "steps": [
+                    { "tool": "Bash", "input": { "command": "git push -u origin HEAD" }, "permission": true },
+                    { "mcp": "submit_result", "arguments": {
+                        "prs": [{ "url": "https://github.com/acme/app/pull/12", "branch": "feat/refresh", "title": "Refresh tokens" }],
+                        "summary": "Expired tokens are refreshed once.",
+                        "checks": [{ "command": "npm test", "passed": true }]
+                    } },
+                    { "reply": "Opened https://github.com/acme/app/pull/12" }
+                ] },
+                { "exit": 0 }
+            ] }),
+        );
+        let needs = run.wait_needs(&mut implementer);
+        assert_eq!(needs.source, NeedsSource::PermissionRequest);
+        assert_eq!(needs.tool.as_deref(), Some("Bash"));
+        assert_eq!(needs.tab_id, "tab_implementer");
+        assert!(implementer.wait_screen("Do you want to proceed?"), "the dialog is still up for you");
+        implementer.write(b"1");
+        let turn = run.finish(&mut implementer, "implementer");
+        assert!(run.needs.is_empty(), "one Needs you per prompt: {:?}", run.needs);
+        assert_eq!(turn.outcome, TurnOutcome::Result);
+        assert_eq!(turn.result.as_ref().unwrap()["prs"][0]["url"], "https://github.com/acme/app/pull/12");
+        let prs: Value = serde_json::from_str(&std::fs::read_to_string(run.run_dir.join("prs.json")).unwrap()).unwrap();
+        assert_eq!(prs["result"]["checks"][0]["command"], "npm test");
+        let decision = decide(&def, &mut state, &report(&turn));
+        assert_eq!((decision.action.as_str(), decision.stage_id.as_deref()), ("advance", Some("pr_reviewer")));
+
+        // 4. PR Reviewer: changes required, so the round goes back to the Implementer.
+        let mut reviewer = run.launch(
+            "pr_reviewer",
+            "role_pr_reviewer",
+            ResultKind::Reviewer,
+            "tab_pr_reviewer",
+            SIDS[3],
+            &json!({ "turns": [
+                { "steps": [
+                    { "mcp": "submit_result", "arguments": { "verdict": "CHANGES_REQUIRED", "findings": [
+                        { "severity": "HIGH", "file": "src/auth.ts:42", "summary": "An expired token returns 500." }
+                    ] } },
+                    { "reply": "Changes required." }
+                ] },
+                { "exit": 0 }
+            ] }),
+        );
+        let turn = run.finish(&mut reviewer, "pr_reviewer");
+        assert_eq!(turn.result.as_ref().unwrap()["verdict"], "CHANGES_REQUIRED");
+        let decision = decide(&def, &mut state, &report(&turn));
+        assert_eq!((decision.action.as_str(), decision.stage_id.as_deref()), ("loopBack", Some("implementer")));
     }
 }

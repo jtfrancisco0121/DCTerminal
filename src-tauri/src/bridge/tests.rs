@@ -1,12 +1,14 @@
 //! Bridge unit tests: hook decisions, the block-once rule, schema checks,
-//! the MCP server, and the app's side of the run folder. The fake-claude
+//! the MCP server, the Planner's ExitPlanMode capture, Needs you, and the
+//! app's side of the run folder. The fake-claude
 //! run (hooks and MCP driven by a stand-in `claude`) is in
 //! `tests/fake_claude.rs`.
 
 use super::folder::{self, OpenError, StageDir, StageInfo, TurnOutcome};
 use super::launch::{self, BridgePlan, BridgeTag};
 use super::schema::{self, FULL_TOOL_NAME};
-use super::{hook, mcp, parse_cli, stop_decision, Cli, Mode, ResultKind, StageMode, StopDecision};
+use super::watch::InboxEvent;
+use super::{hook, mcp, parse_cli, stop_decision, BridgeNeeds, Cli, Mode, NeedsSource, ResultKind, StageMode, StopDecision};
 use crate::store::{ChainRef, PipelineRun, RunAutopilot, RunStatus};
 use crate::test_support::TempDir;
 use serde_json::{json, Value};
@@ -27,23 +29,58 @@ fn plan(autopilot: bool) -> BridgePlan {
     }
 }
 
-/// A run folder with one reviewer stage owned by `TAB`.
+/// A run folder with one stage owned by `TAB` (a reviewer unless made with `of`).
 struct Stage {
     _root: TempDir,
     runs: PathBuf,
     run_dir: PathBuf,
+    key: String,
+    kind: ResultKind,
 }
 
 impl Stage {
     fn new(tag: &str, autopilot: bool) -> Self {
+        Self::of(tag, plan(autopilot))
+    }
+
+    fn of(tag: &str, plan: BridgePlan) -> Self {
         let root = TempDir::new(tag);
         let runs = launch::runs_root(root.path());
-        let run_dir = launch::prepare_stage(&runs, &plan(autopilot), TAB).expect("prepare stage");
-        Self { _root: root, runs, run_dir }
+        let run_dir = launch::prepare_stage(&runs, &plan, TAB).expect("prepare stage");
+        Self { _root: root, runs, run_dir, key: plan.stage_key, kind: plan.kind }
+    }
+
+    /// The Planner stage of an Eagle-Eye 1 run.
+    fn planner(tag: &str, autopilot: bool) -> Self {
+        Self::of(
+            tag,
+            BridgePlan {
+                stage_id: "planner".into(),
+                role_id: "role_planner".into(),
+                stage_key: "planner".into(),
+                kind: ResultKind::Planner,
+                ..plan(autopilot)
+            },
+        )
+    }
+
+    /// The Implementer stage, in `lane` when given.
+    fn implementer(tag: &str, lane: Option<&str>) -> Self {
+        Self::of(
+            tag,
+            BridgePlan {
+                stage_id: "implementer".into(),
+                role_id: "role_implementer".into(),
+                lane: lane.map(str::to_string),
+                stage_key: crate::pipelines::autopilot::stage_key("implementer", lane),
+                kind: ResultKind::Implementer,
+                ..plan(true)
+            },
+        )
     }
 
     fn open(&self) -> StageDir {
-        StageDir::open(&self.run_dir, RUN, "pr_reviewer", TAB).expect("open stage")
+        StageDir::open(&self.run_dir, RUN, &self.key, TAB).expect("open stage")
     }
 
     fn hook(&self, event: &str, payload: Value) -> Option<Value> {
@@ -54,9 +91,9 @@ impl Stage {
         mcp::Server {
             run_dir: self.run_dir.clone(),
             run_id: RUN.into(),
-            stage_key: "pr_reviewer".into(),
+            stage_key: self.key.clone(),
             tab_id: TAB.into(),
-            kind: ResultKind::Reviewer,
+            kind: self.kind,
         }
     }
 
@@ -66,10 +103,30 @@ impl Stage {
         mcp::handle(&self.server(), &call).expect("reply")["result"].clone()
     }
 
-    fn inbox(&self) -> Vec<super::BridgeTurn> {
+    fn events(&self) -> Vec<InboxEvent> {
         let mut events = Vec::new();
         super::watch::drain_inbox(&self.runs, &mut |event| events.push(event));
         events
+    }
+
+    fn inbox(&self) -> Vec<super::BridgeTurn> {
+        self.events()
+            .into_iter()
+            .filter_map(|event| match event {
+                InboxEvent::Turn(turn) => Some(turn),
+                InboxEvent::Needs(_) => None,
+            })
+            .collect()
+    }
+
+    fn needs(&self) -> Vec<BridgeNeeds> {
+        self.events()
+            .into_iter()
+            .filter_map(|event| match event {
+                InboxEvent::Needs(needs) => Some(needs),
+                InboxEvent::Turn(_) => None,
+            })
+            .collect()
     }
 }
 
@@ -225,6 +282,33 @@ fn an_abandoned_turn_is_replaced_by_the_next_prompt_and_never_reported() {
     let events = stage.inbox();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].turn, "p-2");
+}
+
+#[test]
+fn an_idle_prompt_closes_out_an_abandoned_turn_without_a_decision() {
+    let stage = Stage::new("bridge_idle_abandoned", true);
+    let tag = BridgeTag { run_id: RUN.into(), stage: "pr_reviewer".into() };
+    stage.hook("UserPromptSubmit", prompt("p-1"));
+    // A result was filed, then Esc: no Stop for p-1 (V0 T4).
+    stage.submit(approved());
+    assert_eq!(stage.hook("Notification", notification("p-1", "idle_prompt")), None);
+    let closed = stage.open().turn().unwrap();
+    assert_eq!(closed.ended.as_ref().map(|end| end.outcome), Some(TurnOutcome::Abandoned));
+    // Autopilot never acts on it: no inbox event, and Continue reads nothing back.
+    assert!(stage.events().is_empty());
+    assert_eq!(launch::read_stage_turn(&stage.runs, &tag, TAB), None);
+    // A late Stop for the closed turn reports nothing either.
+    assert_eq!(stage.hook("Stop", stop("p-1", false, "Approved.")), None);
+    assert!(stage.events().is_empty());
+    // An idle prompt for another turn, or after a turn that ended, changes nothing.
+    stage.hook("UserPromptSubmit", prompt("p-2"));
+    stage.hook("Notification", notification("p-1", "idle_prompt"));
+    assert_eq!(stage.open().turn().unwrap().ended, None, "p-2 is still open");
+    stage.submit(approved());
+    stage.hook("Stop", stop("p-2", false, "Approved."));
+    stage.hook("Notification", notification("p-2", "idle_prompt"));
+    assert_eq!(stage.open().turn().unwrap().ended.map(|end| end.outcome), Some(TurnOutcome::Result));
+    assert_eq!(stage.inbox().len(), 1);
 }
 
 #[test]
@@ -577,7 +661,7 @@ fn a_saved_run_without_an_engine_is_engine_1_and_is_never_bridged() {
 }
 
 #[test]
-fn only_reviewer_stages_of_engine_2_runs_are_bridged() {
+fn reviewer_planner_and_implementer_stages_of_engine_2_runs_are_bridged() {
     let def = crate::pipelines::find("full").unwrap();
     let run = engine2_run(true);
     let pr = launch::plan_for(&run, &def, &chain(4, None), "role_pr_reviewer").expect("PR Reviewer");
@@ -586,9 +670,12 @@ fn only_reviewer_stages_of_engine_2_runs_are_bridged() {
     assert!(pr.autopilot);
     let plan_review = launch::plan_for(&run, &def, &chain(2, None), "role_plan_reviewer").expect("Plan Reviewer");
     assert_eq!(plan_review.stage_id, "plan_reviewer");
-    // Planner and Implementer wait for V2b; a role off its step is not bridged.
-    assert_eq!(launch::plan_for(&run, &def, &chain(1, None), "role_planner"), None);
-    assert_eq!(launch::plan_for(&run, &def, &chain(3, None), "role_implementer"), None);
+    // V2b: the Planner and the Implementer too; a role off its step is not bridged.
+    let planner = launch::plan_for(&run, &def, &chain(1, None), "role_planner").expect("Planner");
+    assert_eq!(planner.kind, ResultKind::Planner);
+    let implementer = launch::plan_for(&run, &def, &chain(3, None), "role_implementer").expect("Implementer");
+    assert_eq!(implementer.kind, ResultKind::Implementer);
+    assert_eq!(launch::plan_for(&run, &def, &chain(3, None), "role_planner"), None);
     assert_eq!(launch::plan_for(&run, &def, &chain(4, None), "role_general"), None);
     assert!(!launch::plan_for(&engine2_run(false), &def, &chain(4, None), "role_pr_reviewer").unwrap().autopilot);
 }
@@ -614,6 +701,32 @@ fn a_copied_reviewer_is_bridged_by_its_stage_kind_like_the_built_in_one() {
 }
 
 #[test]
+fn copied_planner_and_implementer_roles_are_bridged_by_their_stage_kind() {
+    use crate::pipelines::StageKind;
+    let mut def = crate::pipelines::find("full").unwrap();
+    let run = engine2_run(true);
+    def.stages[0].role_id = "role_custom_planner".into();
+    def.stages[0].kind = Some(StageKind::Planner);
+    def.stages[2].role_id = "role_custom_impl".into();
+    def.stages[2].kind = Some(StageKind::Implementer);
+    let planner = launch::plan_for(&run, &def, &chain(1, None), "role_custom_planner").expect("copied Planner");
+    assert_eq!(planner.kind, ResultKind::Planner);
+    assert_eq!(planner.stage_key, "planner");
+    let implementer = launch::plan_for(&run, &def, &chain(3, None), "role_custom_impl").expect("copied Implementer");
+    assert_eq!(implementer.kind, ResultKind::Implementer);
+    // A form start of a pipeline whose first stage is a copied Planner.
+    let first = launch::new_chain(&def, "eagle1", 7);
+    assert_eq!(
+        launch::plan_for_new_run(&def, &first, "role_custom_planner").map(|plan| plan.kind),
+        Some(ResultKind::Planner)
+    );
+    // A built-in Planner role on a stage marked generic is not bridged.
+    let mut def = crate::pipelines::find("full").unwrap();
+    def.stages[0].kind = Some(StageKind::Generic);
+    assert_eq!(launch::plan_for(&run, &def, &chain(1, None), "role_planner"), None);
+}
+
+#[test]
 fn a_lane_names_its_own_stage_folder() {
     let def = crate::pipelines::find("full").unwrap();
     let mut run = engine2_run(true);
@@ -636,13 +749,24 @@ fn a_stage_with_parallel_reviewers_keeps_the_v1_path() {
 /// A bridged role launch as `role_terminal_start` builds it, with H5's
 /// status-line settings (`status`) when it applies.
 fn bridged_launch(status: Option<Value>, prompt: Option<&str>) -> Vec<String> {
+    bridged_launch_as(ResultKind::Reviewer, "role_pr_reviewer", "pr_reviewer", status, prompt)
+}
+
+/// [`bridged_launch`] for a stage reporting as `kind`.
+fn bridged_launch_as(
+    kind: ResultKind,
+    role_id: &str,
+    stage_key: &str,
+    status: Option<Value>,
+    prompt: Option<&str>,
+) -> Vec<String> {
     use crate::provider::{ProgramArgs, TerminalKind, TerminalLaunch};
     let program = Path::new("/Applications/DCTerminal.app/Contents/MacOS/dcterminal");
     let run_dir = Path::new("/data/runs").join(RUN);
-    let flags = launch::launch_flags(program, &run_dir, RUN, "pr_reviewer", TAB);
+    let flags = launch::launch_flags(kind, program, &run_dir, RUN, stage_key, TAB);
     let request = TerminalLaunch {
         kind: TerminalKind::Role {
-            role_id: "role_pr_reviewer".into(),
+            role_id: role_id.into(),
             run_mode: crate::pty::RunMode::Default,
             prompt: prompt.map(str::to_string),
             stage_kind: None,
@@ -670,7 +794,7 @@ fn a_bridged_launch_merges_the_hooks_and_the_status_line_into_one_settings_flag(
     let args = bridged_launch(Some(status.clone()), Some("PROMPT"));
     let settings = settings_of(&args);
     assert_eq!(settings["statusLine"], status["statusLine"], "{settings}");
-    for event in ["UserPromptSubmit", "Stop", "PreToolUse"] {
+    for event in ["UserPromptSubmit", "Stop", "PreToolUse", "PermissionRequest", "Notification"] {
         let hook = &settings["hooks"][event][0]["hooks"][0];
         assert_eq!(hook["type"], "command", "{event}");
         let hook_args: Vec<&str> = hook["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
@@ -691,6 +815,30 @@ fn a_bridged_launch_merges_the_hooks_and_the_status_line_into_one_settings_flag(
     assert_eq!(server["type"], "stdio");
     assert_eq!(server["args"][0], "bridge");
     assert_eq!(server["args"][1], "mcp");
+}
+
+#[test]
+fn every_bridged_stage_type_gets_one_settings_with_the_status_line_and_all_its_hooks() {
+    let status = crate::status_line::settings("'dct' --dct-status-line '/data/usage/tab.json'");
+    for (kind, role, stage, matcher) in [
+        (ResultKind::Planner, "role_planner", "planner", "ExitPlanMode"),
+        (ResultKind::Reviewer, "role_pr_reviewer", "pr_reviewer", FULL_TOOL_NAME),
+        (ResultKind::Implementer, "role_implementer", "implementer", FULL_TOOL_NAME),
+    ] {
+        let args = bridged_launch_as(kind, role, stage, Some(status.clone()), Some("PROMPT"));
+        let settings = settings_of(&args);
+        assert_eq!(settings["statusLine"], status["statusLine"], "{kind:?}: {settings}");
+        for event in ["UserPromptSubmit", "Stop", "PreToolUse", "PermissionRequest", "Notification"] {
+            let hook = &settings["hooks"][event][0]["hooks"][0];
+            assert_eq!(hook["type"], "command", "{kind:?} {event}: {settings}");
+            assert_eq!(hook["args"].as_array().unwrap().last().unwrap(), event, "{kind:?} {event}");
+        }
+        assert_eq!(settings["hooks"]["PreToolUse"][0]["matcher"], matcher, "{kind:?}");
+        assert_eq!(args.last().map(String::as_str), Some("PROMPT"), "{kind:?}: {args:?}");
+        // The Planner reports through ExitPlanMode: no tool to allow or serve.
+        let has_tool = args.iter().any(|a| a == "--allowedTools") && args.iter().any(|a| a == "--mcp-config");
+        assert_eq!(has_tool, kind != ResultKind::Planner, "{kind:?}: {args:?}");
+    }
 }
 
 #[test]
@@ -758,4 +906,435 @@ fn stage_info_round_trips_camel_case() {
     .unwrap();
     assert_eq!(info.lane.as_deref(), Some("pr1"));
     assert_eq!(serde_json::to_value(&info).unwrap()["stageKey"], "pr_reviewer@pr1");
+}
+
+// ---- the Planner: ExitPlanMode capture (D11, V2b) ---------------------------
+
+fn plan_with(tasks: &str) -> String {
+    format!(
+        "# Plan: token refresh\n\n## HANDOFF: Plan\n1. Refresh tokens.\n\n## HANDOFF: Pull requests\n\
+         * `PR1 — Refresh`: Depends on: none\n* `PR2 — UI`: Depends on: PR1\n\n```json\n{tasks}\n```\n\n\
+         ## HANDOFF: Open questions\nNone.\n"
+    )
+}
+
+const TWO_TASKS: &str = r#"{"tasks": [
+  {"id": "pr1", "title": "Refresh", "dependsOn": [], "manual": false, "summary": "Refresh expired tokens."},
+  {"id": "PR2", "title": "UI", "dependsOn": ["pr1"], "summary": "Show the session state."}
+]}"#;
+
+fn exit_plan_mode(turn: &str, plan: &str) -> Value {
+    json!({ "session_id": "s1", "prompt_id": turn, "hook_event_name": "PreToolUse",
+        "permission_mode": "plan", "tool_name": "ExitPlanMode",
+        "tool_input": { "plan": plan, "planFilePath": "/cfg/plans/x.md" }, "tool_use_id": "toolu_1" })
+}
+
+fn denial(reply: &Option<Value>) -> String {
+    let reply = reply.as_ref().expect("a reply");
+    assert_eq!(reply["hookSpecificOutput"]["hookEventName"], "PreToolUse");
+    assert_eq!(reply["hookSpecificOutput"]["permissionDecision"], "deny");
+    reply["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn a_planners_exit_plan_mode_saves_the_plan_and_tasks_and_is_denied_as_received() {
+    let stage = Stage::planner("bridge_plan_taken", true);
+    stage.hook("UserPromptSubmit", prompt("p-1"));
+    let plan = plan_with(TWO_TASKS);
+    let reason = denial(&stage.hook("PreToolUse", exit_plan_mode("p-1", &plan)));
+    assert_eq!(reason, schema::PLAN_RECEIVED);
+    assert!(reason.contains("do not start implementing"));
+    assert_eq!(std::fs::read_to_string(stage.run_dir.join("plan.md")).unwrap(), plan);
+    let tasks = launch::read_run_tasks(&stage.runs, RUN).expect("tasks.json");
+    assert_eq!(tasks.turn, "p-1");
+    assert_eq!(tasks.stage_key, "planner");
+    let ids: Vec<&str> = tasks.tasks.iter().map(|t| t.id.as_str()).collect();
+    assert_eq!(ids, ["pr1", "pr2"], "ids are lower-cased");
+    assert_eq!(tasks.tasks[1].depends_on, ["pr1"]);
+    assert!(!tasks.tasks[1].manual, "manual defaults to false");
+    // The Stop that follows (no block: the plan is the turn's result).
+    assert_eq!(stage.hook("Stop", stop("p-1", false, "The plan is written.")), None);
+    let turn = stage.inbox().pop().expect("turn ended");
+    assert_eq!(turn.outcome, TurnOutcome::Result);
+    assert!(!turn.blocked);
+    let result = turn.result.unwrap();
+    assert_eq!(result["schema"], 1);
+    assert_eq!(result["tasks"][0]["title"], "Refresh");
+    assert_eq!(result["tasks"][1]["dependsOn"][0], "pr1");
+}
+
+#[test]
+fn the_first_turn_without_a_user_prompt_submit_still_works_for_the_planner_and_the_implementer() {
+    // The Planner: ExitPlanMode's prompt_id opens the turn, the plan is
+    // captured and denied as received, and the Stop ends it with the result.
+    let stage = Stage::planner("bridge_plan_first_turn", true);
+    let reason = denial(&stage.hook("PreToolUse", exit_plan_mode("p-1", &plan_with(TWO_TASKS))));
+    assert_eq!(reason, schema::PLAN_RECEIVED);
+    assert_eq!(launch::read_run_tasks(&stage.runs, RUN).expect("tasks.json").turn, "p-1");
+    assert_eq!(stage.hook("Stop", stop("p-1", false, "Planned.")), None, "no block: the plan is the result");
+    let turn = stage.inbox().pop().expect("turn ended");
+    assert_eq!((turn.turn.as_str(), turn.outcome), ("p-1", TurnOutcome::Result));
+
+    // The Implementer, via PreToolUse for submit_result: its prs.json and result join the Stop.
+    let stage = Stage::implementer("bridge_impl_first_turn_pre_tool", None);
+    let pre = json!({ "session_id": "s1", "prompt_id": "p-1", "hook_event_name": "PreToolUse",
+        "tool_name": FULL_TOOL_NAME, "tool_input": implemented() });
+    assert!(stage.hook("PreToolUse", pre).is_some(), "allowed");
+    assert_eq!(stage.submit(implemented())["isError"], false);
+    assert_eq!(stage.hook("Stop", stop("p-1", false, "Opened PR #12.")), None);
+    let turn = stage.inbox().pop().expect("turn ended");
+    assert_eq!((turn.turn.as_str(), turn.outcome), ("p-1", TurnOutcome::Result));
+    let prs: Value = serde_json::from_str(&std::fs::read_to_string(stage.run_dir.join("prs.json")).unwrap()).unwrap();
+    assert_eq!(prs["turn"], "p-1");
+
+    // The Implementer with neither hook seen: the tool opens a turn and the Stop ends it.
+    let stage = Stage::implementer("bridge_impl_first_turn_tool_only", None);
+    assert_eq!(stage.submit(implemented())["isError"], false);
+    assert_eq!(stage.hook("Stop", stop("p-9", false, "Opened PR #12.")), None);
+    let turn = stage.inbox().pop().expect("turn ended");
+    assert_eq!(turn.outcome, TurnOutcome::Result);
+    assert_eq!(turn.result.unwrap()["prs"][0]["branch"], "feat/refresh");
+}
+
+#[test]
+fn a_plan_whose_tasks_have_problems_is_denied_naming_them_and_nothing_is_saved() {
+    let stage = Stage::planner("bridge_plan_bad", true);
+    stage.hook("UserPromptSubmit", prompt("p-1"));
+    let bad = r#"{"tasks": [{"id": "pr1", "title": "A", "summary": "x", "dependsOn": ["pr3"], "owner": "me"}]}"#;
+    let reason = denial(&stage.hook("PreToolUse", exit_plan_mode("p-1", &plan_with(bad))));
+    assert!(reason.contains("pr1 depends on \"pr3\", which is not a task"), "{reason}");
+    assert!(reason.contains("`tasks[0].owner` is not a field"), "{reason}");
+    assert!(reason.contains("call ExitPlanMode again"), "{reason}");
+    assert!(!stage.run_dir.join("plan.md").exists());
+    assert_eq!(launch::read_run_tasks(&stage.runs, RUN), None);
+    // Ending the turn without a taken plan: blocked once on autopilot, naming ExitPlanMode.
+    let block = stage.hook("Stop", stop("p-1", false, "Here is my plan.")).expect("block");
+    assert_eq!(block["decision"], "block");
+    assert!(block["reason"].as_str().unwrap().contains("ExitPlanMode"));
+    // Fixed in the same turn: taken, and the next stop ends with it.
+    denial(&stage.hook("PreToolUse", exit_plan_mode("p-1", &plan_with(TWO_TASKS))));
+    assert_eq!(stage.hook("Stop", stop("p-1", true, "Done.")), None);
+    let turn = stage.inbox().pop().unwrap();
+    assert_eq!(turn.outcome, TurnOutcome::Result);
+    assert!(turn.blocked);
+}
+
+#[test]
+fn a_taken_over_planner_gets_the_normal_dialog_and_other_stages_never_capture_plans() {
+    let stage = Stage::planner("bridge_plan_takeover", true);
+    folder::write_mode(&stage.run_dir.join("stages/planner"), StageMode::Takeover).unwrap();
+    stage.hook("UserPromptSubmit", prompt("p-1"));
+    assert_eq!(stage.hook("PreToolUse", exit_plan_mode("p-1", &plan_with(TWO_TASKS))), None);
+    assert!(!stage.run_dir.join("tasks.json").exists());
+    let reviewer = Stage::new("bridge_plan_reviewer", true);
+    reviewer.hook("UserPromptSubmit", prompt("p-1"));
+    assert_eq!(reviewer.hook("PreToolUse", exit_plan_mode("p-1", &plan_with(TWO_TASKS))), None);
+    assert!(!reviewer.run_dir.join("tasks.json").exists());
+}
+
+#[test]
+fn a_manual_planner_still_hands_its_plan_over() {
+    let stage = Stage::planner("bridge_plan_manual", false);
+    // No UserPromptSubmit seen: the plan's turn starts at the hook.
+    let reason = denial(&stage.hook("PreToolUse", exit_plan_mode("p-9", &plan_with(TWO_TASKS))));
+    assert_eq!(reason, schema::PLAN_RECEIVED);
+    assert_eq!(stage.open().turn().unwrap().turn, "p-9");
+    stage.hook("Stop", stop("p-9", false, ""));
+    assert_eq!(stage.inbox().pop().unwrap().outcome, TurnOutcome::Result);
+}
+
+#[test]
+fn planner_tasks_name_every_problem() {
+    let missing = schema::planner_tasks("# Plan\n\nNo block here.").unwrap_err();
+    assert!(missing[0].contains("no ```json block with `tasks`"), "{missing:?}");
+    let broken = schema::planner_tasks("```json\n{\"tasks\": [\n```").unwrap_err();
+    assert!(broken[0].contains("not valid JSON"), "{broken:?}");
+    assert!(schema::planner_tasks("").unwrap_err()[0].contains("empty"));
+    let problems = schema::planner_tasks(&plan_with(
+        r#"{"tasks": [
+            {"id": "pr1", "title": "", "summary": "a", "dependsOn": ["pr1"]},
+            {"id": "task-2", "title": "B", "summary": "b", "manual": "no"},
+            {"id": "pr1", "title": "C", "summary": "c"},
+            "pr4"
+        ], "extra": 1}"#,
+    ))
+    .unwrap_err();
+    let text = problems.join("\n");
+    for expected in [
+        "`extra` is not a field",
+        "`tasks[0].title` is empty",
+        "`tasks[1].id` \"task-2\" must be pr1, pr2",
+        "`tasks[1].manual` must be true or false",
+        "`tasks[3]` must be an object",
+    ] {
+        assert!(text.contains(expected), "missing {expected:?} in:\n{text}");
+    }
+    let dup = schema::planner_tasks(&plan_with(
+        r#"{"tasks": [{"id": "pr1", "title": "A", "summary": "a", "dependsOn": ["pr1"]}, {"id": "pr1", "title": "B", "summary": "b"}]}"#,
+    ))
+    .unwrap_err()
+    .join("\n");
+    assert!(dup.contains("pr1 depends on itself") && dup.contains("\"pr1\" is used twice"), "{dup}");
+    let cycle = schema::planner_tasks(&plan_with(
+        r#"{"tasks": [{"id": "pr1", "title": "A", "summary": "a", "dependsOn": ["pr2"]}, {"id": "pr2", "title": "B", "summary": "b", "dependsOn": ["pr1"]}]}"#,
+    ))
+    .unwrap_err();
+    assert!(cycle[0].contains("pr1 → pr2 → pr1"), "{cycle:?}");
+    let many: Vec<Value> = (1..=9).map(|n| json!({ "id": format!("pr{n}"), "title": "T", "summary": "s" })).collect();
+    let too_many = schema::planner_tasks(&plan_with(&json!({ "tasks": many }).to_string())).unwrap_err();
+    assert!(too_many[0].contains("at most 8"), "{too_many:?}");
+    assert!(schema::planner_tasks(&plan_with(r#"{"tasks": []}"#)).unwrap_err()[0].contains("one task"));
+}
+
+#[test]
+fn the_last_tasks_block_counts_and_other_code_blocks_are_ignored() {
+    let plan = "```rust\nfn main() {}\n```\n\n```json\n{\"tasks\": [{\"id\": \"pr1\", \"title\": \"Old\", \"summary\": \"o\"}]}\n```\n\n\
+                ```json\n{\"verdict\": \"not tasks\"}\n```\n\n````\n{\"tasks\": [{\"id\": \"pr1\", \"title\": \"New\", \"summary\": \"n\"}]}\n````\n";
+    let tasks = schema::planner_tasks(plan).unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].title, "New");
+    assert!(tasks[0].depends_on.is_empty());
+}
+
+// ---- the Implementer: prs[] (V2b) -------------------------------------------
+
+fn implemented() -> Value {
+    json!({
+        "prs": [{ "url": "https://github.com/acme/app/pull/12", "branch": "feat/refresh", "title": "Refresh tokens", "lane": "pr1" }],
+        "summary": "Expired tokens are refreshed once.",
+        "checks": [{ "command": "npm test", "passed": true }]
+    })
+}
+
+#[test]
+fn a_valid_implementer_result_is_kept_with_only_the_schema_fields() {
+    let result = schema::validate(ResultKind::Implementer, &implemented()).unwrap();
+    assert_eq!(result["schema"], 1);
+    assert_eq!(result["prs"][0]["url"], "https://github.com/acme/app/pull/12");
+    assert_eq!(result["prs"][0]["lane"], "pr1");
+    assert_eq!(result["checks"][0]["passed"], true);
+    let no_checks = schema::validate(
+        ResultKind::Implementer,
+        &json!({ "prs": [{ "url": "https://x/pull/1", "branch": "b", "title": "t" }], "summary": "s" }),
+    )
+    .unwrap();
+    assert!(no_checks.get("checks").is_none());
+    assert!(no_checks["prs"][0].get("lane").is_none());
+}
+
+#[test]
+fn implementer_results_name_every_problem() {
+    let problems = schema::validate(
+        ResultKind::Implementer,
+        &json!({
+            "prs": [
+                { "url": "github.com/acme/app/pull/12", "branch": "feat refresh", "title": "" },
+                { "url": "https://x/pull/2", "branch": "b", "title": "t", "draft": true },
+                "https://x/pull/3"
+            ],
+            "checks": [{ "command": "npm test" }, { "command": "", "passed": "yes" }],
+            "verdict": "APPROVED"
+        }),
+    )
+    .unwrap_err();
+    let text = problems.join("\n");
+    for expected in [
+        "`verdict` is not a field",
+        "`prs[0].url` \"github.com/acme/app/pull/12\" is not a link",
+        "`prs[0].branch` \"feat refresh\" has spaces",
+        "`prs[0].title` is empty",
+        "`prs[1].draft` is not a field",
+        "`prs[2]` must be an object",
+        "`summary` is missing",
+        "`checks[0].passed` is missing",
+        "`checks[1].command` is empty",
+        "`checks[1].passed` must be true or false",
+    ] {
+        assert!(text.contains(expected), "missing {expected:?} in:\n{text}");
+    }
+    let none = schema::validate(ResultKind::Implementer, &json!({ "prs": [], "summary": "s" })).unwrap_err();
+    assert!(none[0].contains("`prs` is empty"));
+    let nine: Vec<Value> = (1..=9).map(|n| json!({ "url": format!("https://x/pull/{n}"), "branch": "b", "title": "t" })).collect();
+    let many = schema::validate(ResultKind::Implementer, &json!({ "prs": nine, "summary": "s" })).unwrap_err();
+    assert!(many[0].contains("at most 8"));
+    assert!(schema::validate(ResultKind::Planner, &json!({})).unwrap_err()[0].contains("ExitPlanMode"));
+}
+
+#[test]
+fn an_implementer_submit_saves_its_pull_requests_for_the_run_and_lists_its_own_tool() {
+    let stage = Stage::implementer("bridge_impl", Some("pr1"));
+    let listed = mcp::handle(&stage.server(), &json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" })).unwrap();
+    let tool = &listed["result"]["tools"][0];
+    assert_eq!(tool["inputSchema"]["required"], json!(["summary"]));
+    stage.hook("UserPromptSubmit", prompt("p-1"));
+    let reply = stage.submit(implemented());
+    assert_eq!(reply["isError"], false, "{reply}");
+    assert!(reply["content"][0]["text"].as_str().unwrap().contains("1 pull request(s)"));
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(stage.run_dir.join("prs-pr1.json")).unwrap()).unwrap();
+    assert_eq!(saved["lane"], "pr1");
+    assert_eq!(saved["turn"], "p-1");
+    assert_eq!(saved["result"]["prs"][0]["branch"], "feat/refresh");
+    assert!(!stage.run_dir.join("prs.json").exists(), "a lane writes its own file");
+    stage.hook("Stop", stop("p-1", false, "Opened PR #12."));
+    let turn = stage.inbox().pop().unwrap();
+    assert_eq!(turn.outcome, TurnOutcome::Result);
+    assert_eq!(turn.result.unwrap()["summary"], "Expired tokens are refreshed once.");
+    // Without a lane: prs.json.
+    let single = Stage::implementer("bridge_impl_single", None);
+    single.hook("UserPromptSubmit", prompt("p-1"));
+    single.submit(implemented());
+    assert!(single.run_dir.join("prs.json").exists());
+}
+
+#[test]
+fn a_blocked_implementer_reports_why_with_no_pull_requests() {
+    // With no `prs` at all, or an empty list: `blocked` says why.
+    let result = schema::validate(
+        ResultKind::Implementer,
+        &json!({ "summary": "Nothing could be built.", "blocked": "The plan's API does not exist in this repository." }),
+    )
+    .expect("a blocked Implementer can report");
+    assert_eq!(result["blocked"], "The plan's API does not exist in this repository.");
+    assert_eq!(result["prs"], json!([]));
+    let empty = json!({ "prs": [], "summary": "s", "blocked": "No access to the remote." });
+    assert!(schema::validate(ResultKind::Implementer, &empty).is_ok());
+    // Some pull requests opened, then blocked on the rest.
+    let mut partial = implemented();
+    partial["blocked"] = json!("PR2 needs a design decision.");
+    assert_eq!(schema::validate(ResultKind::Implementer, &partial).unwrap()["prs"].as_array().unwrap().len(), 1);
+    // A blank reason is a problem; without `blocked`, an empty list still is.
+    let blank = schema::validate(ResultKind::Implementer, &json!({ "summary": "s", "blocked": "  " })).unwrap_err();
+    assert!(blank.iter().any(|p| p.contains("`blocked`")), "{blank:?}");
+    assert!(schema::validate(ResultKind::Implementer, &json!({ "prs": [], "summary": "s" })).is_err());
+    // The tool and the block both say how.
+    let stage = Stage::implementer("bridge_impl_blocked", None);
+    let listed = mcp::handle(&stage.server(), &json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" })).unwrap();
+    let input = &listed["result"]["tools"][0]["inputSchema"];
+    assert!(input["properties"]["blocked"].is_object(), "{input}");
+    assert_eq!(input["required"], json!(["summary"]));
+    assert!(schema::result_instructions(ResultKind::Implementer).contains("`blocked`"));
+    assert!(schema::block_reason(ResultKind::Implementer).contains("blocked"));
+    stage.hook("UserPromptSubmit", prompt("p-1"));
+    let reply = stage.submit(json!({ "summary": "s", "blocked": "No access to the remote." }));
+    assert_eq!(reply["isError"], false, "{reply}");
+    stage.hook("Stop", stop("p-1", false, "Blocked."));
+    let turn = stage.inbox().pop().unwrap();
+    assert_eq!(turn.outcome, TurnOutcome::Result);
+    assert_eq!(turn.result.unwrap()["blocked"], "No access to the remote.");
+}
+
+#[test]
+fn an_implementer_that_forgets_the_tool_is_told_to_report_its_pull_requests() {
+    let stage = Stage::implementer("bridge_impl_forgets", None);
+    stage.hook("UserPromptSubmit", prompt("p-1"));
+    let block = stage.hook("Stop", stop("p-1", false, "Done.")).expect("block");
+    let reason = block["reason"].as_str().unwrap();
+    assert!(reason.contains(FULL_TOOL_NAME) && reason.contains("\"prs\""), "{reason}");
+}
+
+// ---- Needs you: PermissionRequest, then the Notification backup (D22) -------
+
+fn permission_request(turn: &str, tool: &str) -> Value {
+    json!({ "session_id": "s1", "prompt_id": turn, "hook_event_name": "PermissionRequest",
+        "permission_mode": "default", "tool_name": tool, "tool_input": { "command": "git push" },
+        "permission_suggestions": [] })
+}
+
+fn notification(turn: &str, kind: &str) -> Value {
+    json!({ "session_id": "s1", "prompt_id": turn, "hook_event_name": "Notification",
+        "message": "Claude needs your permission", "notification_type": kind })
+}
+
+#[test]
+fn a_permission_request_posts_needs_you_and_leaves_the_dialog_alone() {
+    let stage = Stage::implementer("bridge_needs", None);
+    stage.hook("UserPromptSubmit", prompt("p-1"));
+    assert_eq!(stage.hook("PermissionRequest", permission_request("p-1", "Bash")), None, "no decision: the dialog stays");
+    let needs = stage.needs();
+    assert_eq!(needs.len(), 1);
+    assert_eq!(needs[0].source, NeedsSource::PermissionRequest);
+    assert_eq!(needs[0].tool.as_deref(), Some("Bash"));
+    assert_eq!(needs[0].turn, "p-1");
+    assert_eq!(needs[0].tab_id, TAB);
+    assert_eq!(needs[0].stage_key, "implementer");
+    // The late Notification for the same turn is not posted again.
+    assert_eq!(stage.hook("Notification", notification("p-1", "permission_prompt")), None);
+    assert!(stage.needs().is_empty());
+    // An idle notification is not Needs you: it closes out the turn whose
+    // permission was rejected (no Stop came, D9a) as abandoned, with no
+    // event for autopilot. (This used to assert it did nothing at all.)
+    stage.hook("Notification", notification("p-1", "idle_prompt"));
+    assert!(stage.events().is_empty());
+    let closed = stage.open().turn().unwrap();
+    assert_eq!(closed.turn, "p-1");
+    assert_eq!(closed.ended.map(|end| end.outcome), Some(TurnOutcome::Abandoned));
+    // A turn whose PermissionRequest never came: the Notification is the backup.
+    stage.hook("UserPromptSubmit", prompt("p-2"));
+    stage.hook("Notification", notification("p-2", "permission_prompt"));
+    let backup = stage.needs();
+    assert_eq!(backup.len(), 1);
+    assert_eq!(backup[0].source, NeedsSource::PermissionPrompt);
+    assert_eq!(backup[0].tool, None);
+    assert_eq!(backup[0].message, "Claude needs your permission");
+    // Needs you never ends a turn.
+    assert!(stage.inbox().is_empty());
+    let unknown = std::fs::read_to_string(stage.run_dir.join("bridge.log")).unwrap_or_default();
+    assert!(!unknown.contains("fields not seen"), "{unknown}");
+}
+
+#[test]
+fn a_turn_id_with_needs_in_it_still_ends_as_a_turn() {
+    let stage = Stage::implementer("bridge_needs_name", None);
+    stage.hook("UserPromptSubmit", prompt("p-needs-1"));
+    assert_eq!(stage.hook("Stop", stop("p-needs-1", true, "Done.")), None);
+    let events = stage.events();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert!(matches!(&events[0], InboxEvent::Turn(turn) if turn.turn == "p-needs-1"), "{events:?}");
+}
+
+#[test]
+fn planner_launch_flags_have_no_tool_and_watch_exit_plan_mode() {
+    let program = Path::new("/bin/dcterminal");
+    let run_dir = Path::new("/data/runs").join(RUN);
+    let extra = launch::launch_flags(ResultKind::Planner, program, &run_dir, RUN, "planner", TAB);
+    assert!(extra.args.is_empty(), "{extra:?}");
+    let settings = &extra.hooks;
+    assert_eq!(settings["hooks"]["PreToolUse"][0]["matcher"], "ExitPlanMode");
+    assert!(settings["hooks"]["PermissionRequest"][0].get("matcher").is_none());
+    let implementer = launch::launch_flags(ResultKind::Implementer, program, &run_dir, RUN, "implementer", TAB);
+    assert_eq!(implementer.args[0], "--allowedTools");
+    // A relaunch keeps the stage's own kind.
+    let stage = Stage::planner("bridge_plan_relaunch", true);
+    let tag = BridgeTag { run_id: RUN.into(), stage: "planner".into() };
+    let again = launch::relaunch_flags(&stage.runs, &tag, TAB, program).unwrap();
+    assert!(again.args.is_empty(), "{again:?}");
+    assert_eq!(again.hooks["hooks"]["PreToolUse"][0]["matcher"], "ExitPlanMode");
+}
+
+#[test]
+fn the_role_texts_say_how_each_stage_reports() {
+    let planner = schema::result_instructions(ResultKind::Planner);
+    assert!(planner.contains("ExitPlanMode") && planner.contains("```json") && planner.contains("dependsOn"));
+    assert!(!planner.contains(FULL_TOOL_NAME), "the Planner has no tool");
+    let implementer = schema::result_instructions(ResultKind::Implementer);
+    assert!(implementer.contains(FULL_TOOL_NAME) && implementer.contains("`prs`"));
+    assert!(schema::block_reason(ResultKind::Planner).contains("ExitPlanMode"));
+}
+
+#[test]
+fn a_chain_a_form_start_begins_plans_its_first_stage_as_an_engine_2_run() {
+    let eagle1 = crate::pipelines::find("eagle1").unwrap();
+    let chain = launch::new_chain(&eagle1, "eagle1", 1_760_000_000_123);
+    assert_eq!(chain.chain_id, "ee_1760000000123");
+    assert_eq!((chain.step, chain.total, chain.lane.as_deref()), (1, 4, None));
+    let planner = launch::plan_for_new_run(&eagle1, &chain, "role_planner").expect("Planner");
+    assert_eq!(planner.run_id, "ee_1760000000123");
+    assert_eq!(planner.kind, ResultKind::Planner);
+    assert!(!planner.autopilot, "a new run starts with autopilot off");
+    // The form's role must be the first stage's.
+    assert_eq!(launch::plan_for_new_run(&eagle1, &chain, "role_implementer"), None);
+    let eagle2 = crate::pipelines::find("eagle2").unwrap();
+    let chain = launch::new_chain(&eagle2, "eagle2", 1);
+    assert_eq!(chain.total, 2);
+    assert_eq!(launch::plan_for_new_run(&eagle2, &chain, "role_implementer").unwrap().kind, ResultKind::Implementer);
 }

@@ -3,6 +3,9 @@ import type { BridgeTurn, TerminalSessionLog } from "../bridge";
 import { parseReviewVerdict as parseReviewVerdictOf } from "../handoff/verdict";
 import {
   bridgeFindingsText,
+  bridgePrUrls,
+  bridgeReview,
+  bridgeBlocked,
   bridgeTurnReport,
   bridgeVerdict,
   finishedTurn,
@@ -295,6 +298,7 @@ describe("bridge turns (engine 2)", () => {
       lane: "pr1",
       rateLimit: null,
       noResult: false,
+      blocked: null,
     });
   });
 
@@ -312,10 +316,37 @@ describe("bridge turns (engine 2)", () => {
     expect(report.findings).toEqual([]);
   });
 
+  it("a blocked Implementer's result carries why, so the run waits instead of stopping with no_result", () => {
+    const blocked = bridgeTurn({
+      result: { schema: 1, prs: [], summary: "Nothing built.", blocked: "The plan's API does not exist." },
+    });
+    const report = bridgeTurnReport({ stage: prStage, turn: blocked, usage: null, lane: null, revise: "REQUEST CHANGES" });
+    expect(report).toMatchObject({ noResult: false, blocked: "The plan's API does not exist.", verdict: null });
+    expect(bridgeBlocked(blocked)).toBe("The plan's API does not exist.");
+    const done = bridgeTurn({ result: { schema: 1, prs: [{ url: "https://x/pull/1", branch: "b", title: "t" }], summary: "s" } });
+    expect(bridgeBlocked(done)).toBeNull();
+    expect(bridgeTurnReport({ stage: prStage, turn: done, usage: null, lane: null, revise: "x" }).blocked).toBeNull();
+    expect(bridgeBlocked(bridgeTurn({ outcome: "no_result", result: null }))).toBeNull();
+  });
+
   it("lists the findings a loop-back sends the way the v1 path does", () => {
-    expect(bridgeFindingsText(bridgeTurn().result!.findings)).toBe(
+    expect(bridgeFindingsText(bridgeReview(bridgeTurn())!.findings)).toBe(
       "1. [HIGH] src/a.ts:4: Null token.\n2. [LOW] Typo.",
     );
     expect(bridgeFindingsText([])).toBe("");
+  });
+
+  it("a Planner's or an Implementer's result is no review: no verdict, no findings, pull requests for the checks", () => {
+    const implementer = bridgeTurn({
+      result: { schema: 1, prs: [{ url: "https://x/pull/1", branch: "b", title: "t" }], summary: "s" },
+    });
+    expect(bridgeReview(implementer)).toBeNull();
+    expect(bridgePrUrls(implementer)).toEqual(["https://x/pull/1"]);
+    const report = bridgeTurnReport({ stage: prStage, turn: implementer, usage: null, lane: null, revise: "REQUEST CHANGES" });
+    expect(report).toMatchObject({ verdict: null, findings: [], noResult: false });
+    const planner = bridgeTurn({ result: { schema: 1, tasks: [] } });
+    expect(bridgePrUrls(planner)).toBeNull();
+    expect(bridgePrUrls(bridgeTurn({ outcome: "no_result", result: null }))).toBeNull();
+    expect(bridgeReview(bridgeTurn())?.verdict).toBe("CHANGES_REQUIRED");
   });
 });

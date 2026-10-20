@@ -115,6 +115,38 @@ describe("PipelineOverview", () => {
     expect(screen.queryByText("Pull from Planner")).toBeNull();
   });
 
+  it("says when a stage on Haiku runs in default instead of auto (D12a)", async () => {
+    const run = baseRun({
+      kind: "execute",
+      stage: "implementer",
+      tabIds: { role_implementer: "impl", role_pr_reviewer: "pr" },
+    });
+    const claude = { kind: "terminal", terminalLaunch: "role", provider: "claude", permissionMode: "auto" } as const;
+    const tabs = [tab("impl", "role_implementer", claude), tab("pr", "role_pr_reviewer", claude)];
+    vi.mocked(getPipelineRun).mockResolvedValue({ run });
+    render(
+      <PipelineOverview
+        runId={run.id}
+        cwd="/p"
+        tabs={tabs}
+        runtimes={{}}
+        onJump={vi.fn()}
+        onWatch={vi.fn()}
+        onRefreshTabs={async () => {}}
+        onNotice={vi.fn()}
+        terminalReader={noTerminal}
+        modelSettings={{
+          cursor: { defaultModel: "composer-2.5", roleModels: {} },
+          claude: { defaultModel: "default", roleModels: { role_implementer: "haiku" } },
+        }}
+      />,
+    );
+    const impl = await screen.findByRole("article", { name: "Implementer" });
+    expect(within(impl).getByText(/auto mode is unavailable/)).toBeTruthy();
+    const pr = screen.getByRole("article", { name: "PR Reviewer" });
+    expect(within(pr).queryByText(/auto mode is unavailable/)).toBeNull();
+  });
+
   it("shows a 4-stage Eagle-Eye 1 chain, including stages not reached yet", async () => {
     const run = baseRun({
       stage: "plan_reviewer",

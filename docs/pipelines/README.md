@@ -20,4 +20,4 @@ Built-in pipeline definitions ([ADR-014](../adr/014-pipeline-engine-opt-in-autop
 
 Every role id must exist. When the app loads your pipelines (and whenever a role is added or deleted), one that does not validate stays listed under Settings › Pipelines, **disabled**, with the reason; it is never dropped, and an entry that is not a pipeline at all is kept exactly as written. A disabled pipeline cannot be started, and autopilot stops a run whose pipeline became disabled or unknown instead of guessing one.
 
-A pipeline with an `implementer` stage can **fan out** at that stage: the stage before it (its plan) lists several pull requests, and each gets its own lane of the remaining stages in its own git worktree. See `docs/PIPELINE-REPLY-GUIDE.md`.
+A pipeline with an `implementer` stage can **fan out** at that stage: the stage before it (its plan) lists several pull requests, and each gets its own lane of the remaining stages in its own git worktree. See `docs/PIPELINE-REPLY-GUIDE.md`. On an engine-2 run whose Planner launched with the bridge, fan-out reads the Planner's tasks from the run folder's `tasks.json` instead of the reply's list.

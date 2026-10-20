@@ -18,7 +18,10 @@
 //!
 //! ```text
 //! run.json                      the run id (app)
-//! inbox/                        finished turns for the app's watcher (Stop hook)
+//! plan.md, tasks.json           the Planner's plan and tasks (ExitPlanMode hook)
+//! prs.json, prs-<lane>.json     what each Implementer reported (submit_result)
+//! inbox/                        finished turns (Stop hook) and Needs you
+//!                               (PermissionRequest, Notification) for the app
 //! bridge.log                    what went wrong, unknown payload fields
 //! stages/<stage>[@lane]/
 //!   stage.json                  stage, role, lane, owning tab, result schema (app)
@@ -26,6 +29,7 @@
 //!   turn.json                   current turn: prompt_id, start, blocked, end
 //!   results/<turn>.json         what submit_result accepted, already checked
 //!   payloads/<Event>.json       newest raw hook payload per event
+//!   needs.json                  the last Needs you posted (Notification dedupe)
 //! ```
 //!
 //! `launch` decides which tabs launch bridged and builds their flags;
@@ -43,7 +47,7 @@ pub mod watch;
 #[cfg(test)]
 mod tests;
 
-pub use folder::{BridgeTurn, ResultKind, StageMode, TurnOutcome};
+pub use folder::{BridgeNeeds, BridgeTurn, NeedsSource, PlannedTask, ResultKind, RunTasks, StageMode, TurnOutcome};
 pub use hook::{stop_decision, StopDecision};
 pub use launch::{BridgePlan, BridgeTag};
 

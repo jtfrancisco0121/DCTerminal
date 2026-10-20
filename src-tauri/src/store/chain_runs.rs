@@ -70,6 +70,32 @@ impl StateStore {
         format!("ee_{ms}")
     }
 
+    /// Remove run `run_id` (chain `chain_id`) that a failed start of
+    /// `tab_id` made, unless something else holds it: a tab on its chain, a
+    /// stage tab other than `tab_id`, a lane or an overview tab. Saves.
+    /// Returns whether it was removed.
+    pub fn remove_unheld_run(&mut self, run_id: &str, chain_id: &str, tab_id: &str) -> Result<bool, String> {
+        let on_chain = self
+            .data
+            .tabs
+            .iter()
+            .any(|tab| tab.chain.as_ref().is_some_and(|c| c.chain_id == chain_id || c.chain_id == run_id));
+        let Some(at) = self.data.pipeline_runs.iter().position(|run| run.id == run_id) else {
+            return Ok(false);
+        };
+        let run = &self.data.pipeline_runs[at];
+        let held = on_chain
+            || !run.lanes.is_empty()
+            || !run.overview_tab_id.is_empty()
+            || run.tab_ids.values().any(|id| id != tab_id);
+        if held {
+            return Ok(false);
+        }
+        self.data.pipeline_runs.remove(at);
+        self.save()?;
+        Ok(true)
+    }
+
     /// The run for a chain, if one was recorded.
     pub fn chain_run_id(&self, chain_id: &str) -> Option<String> {
         self.data

@@ -43,18 +43,21 @@ pub mod testing {
     pub use crate::claude_session_log::{find_session_log, TerminalSessionLog, ToolCallStatus};
     pub use crate::pty::session::{PtyOutput, PtySession, SpawnSpec};
     pub use crate::pipelines::find as find_pipeline;
+    pub use crate::pipelines::autopilot::{decide, FindingReport, TurnReport};
     pub use crate::pipelines::StageKind;
     pub use crate::pipelines::recovery::{
         reconcile_run, stop_stalled, current_stage_tabs, working, turn_key, Reconciled, StallObservation,
         StallWatch,
     };
     pub use crate::store::{PipelineRun, RunStatus, StopReason};
-    pub use crate::bridge::launch::{bridged_command, launch_flags, prepare_stage, read_stage_turn, runs_root, BridgePlan, BridgeTag};
-    pub use crate::bridge::watch::drain_inbox;
+    pub use crate::bridge::launch::{
+        bridged_command, launch_flags, prepare_stage, read_run_tasks, read_stage_turn, runs_root, BridgePlan, BridgeTag,
+    };
+    pub use crate::bridge::watch::{drain_inbox, InboxEvent};
     pub use crate::provider::claude::claude_terminal_args;
     pub use crate::provider::{ProgramArgs, TerminalKind, TerminalLaunch};
     pub use crate::pty::RunMode;
-    pub use crate::bridge::{BridgeTurn, ResultKind, TurnOutcome};
+    pub use crate::bridge::{BridgeNeeds, BridgeTurn, NeedsSource, ResultKind, TurnOutcome};
 }
 #[cfg(test)]
 mod coverage_tests;
@@ -71,8 +74,8 @@ use commands::{
     pipeline_turn_finished, pipeline_claim_handoff, pipeline_release_handoff,
     pipeline_run_gates,
     pipeline_set_autopilot, pipeline_promote_plan, pipeline_continue, spawn_run_recovery,
+    pipeline_set_candidate_plan, pipeline_bridge_turn, pipeline_run_tasks,
     autopilot_pending_stops, StartupStops,
-    pipeline_set_candidate_plan, pipeline_bridge_turn,
     dev_session_cancel, dev_session_live, dev_session_send, dev_session_start, dev_session_stop,
     diagnostics_read_log, diagnostics_set_capture, diagnostics_status, get_app_state,
     get_form_recall, get_layout, get_role, get_tab,
@@ -288,6 +291,7 @@ pub fn run() {
             pipeline_promote_plan,
             pipeline_set_candidate_plan,
             pipeline_bridge_turn,
+            pipeline_run_tasks,
             sync_active_tab_form,
             get_form_recall,
             save_form_draft,

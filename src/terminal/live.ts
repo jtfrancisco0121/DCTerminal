@@ -48,6 +48,18 @@ export function subscribeLivePty(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
+const beginListeners = new Set<(id: string) => void>();
+
+/**
+ * Called with the tab id whenever a new PTY begins on it (a start, Restart
+ * or Resume) or one is moved onto it: what the old process was asking is
+ * over.
+ */
+export function subscribePtyBegin(listener: (id: string) => void): () => void {
+  beginListeners.add(listener);
+  return () => beginListeners.delete(listener);
+}
+
 /** Called once per process exit with the terminal id and exit code. */
 export function subscribePtyExit(listener: (id: string, code: number) => void): () => void {
   exitListeners.add(listener);
@@ -65,6 +77,18 @@ export function notePtyInput(id: string, data?: string): void {
   // Without data it is a pad send or hand-off paste, which ends with Enter.
   const kind = data === undefined ? "answer" : ptyInputKind(data);
   if (kind !== "pointer") dialogDetector.input(id, undefined, kind);
+  if (kind === "answer") for (const listener of answerListeners) listener(id);
+}
+
+const answerListeners = new Set<(id: string) => void>();
+
+/**
+ * Called with the terminal id for each user key that may answer a
+ * permission dialog (Enter, Esc, a digit; a pad send). Returns unsubscribe.
+ */
+export function subscribePtyAnswer(listener: (id: string) => void): () => void {
+  answerListeners.add(listener);
+  return () => answerListeners.delete(listener);
 }
 
 /** The exit code once the process exited (-1 after a signal), else null. */
@@ -129,6 +153,7 @@ export function beginLivePty(id: string): LivePty {
   });
   sessions.set(id, live);
   opening.delete(id);
+  for (const listener of beginListeners) listener(id);
   notify();
   return live;
 }
@@ -154,6 +179,7 @@ export function rekeyLivePty(from: string, to: string): LivePty | undefined {
   sessions.delete(from);
   live.id = to;
   sessions.set(to, live);
+  for (const listener of beginListeners) listener(to);
   notify();
   return live;
 }

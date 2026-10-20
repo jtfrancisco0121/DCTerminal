@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
   acpSetModel,
   getPipelineRun,
+  pipelineRunTasks,
   type PipelineRun,
   type RunLane,
   closeTab,
@@ -224,6 +225,8 @@ import {
   saveHandoff,
 } from "./handoff/executor";
 import { behaviourRole, pipelineDef, pipelineStages, roleBehaviour, stageBehaviour } from "./pipeline/defs";
+import { eagleStartChain } from "./pipeline/eagleStart";
+import { useBridgeNeeds } from "./terminal/bridgeNeeds";
 import { useAutopilot } from "./pipeline/useAutopilot";
 import { onceValue, subscribeAutopilotStops } from "./pipeline/autopilotStops";
 import { terminalStageSource, turnId } from "./pipeline/autopilot";
@@ -580,6 +583,9 @@ export function StartupForm({
       setDialogOwnerVersion((value) => value + 1);
     }
   }, []);
+  /** Bridged stages' Needs you (D22): see `useBridgeNeeds`. */
+  const bridgeNeeds = useBridgeNeeds(() => savedTabsRef.current);
+  const { afterRead: bridgeNeedsAfterLogRead, afterDialog: bridgeNeedsAfterScreen } = bridgeNeeds;
   /** Tabs whose PTYs a workspace replace is stopping: their exit is not news. */
   const replacingTabs = useRef(new Set<string>());
   const [renamingTabId, setRenamingTabId] = useState<string | null>(null);
@@ -1454,6 +1460,7 @@ export function StartupForm({
         dialogDetector.answering(tabId),
       );
       setDialogOwner(tabId, next.owner);
+      bridgeNeedsAfterLogRead(tabId, log, readAt);
       // Mid-turn, the next call's dialog may be half drawn already.
       if (next.clear) dialogDetector.clear(tabId, { keepPartial: !!log && !log.turnDone });
       // New records restart the quiet minute before a turn shows as unknown.
@@ -1466,7 +1473,7 @@ export function StartupForm({
       // log with the turn it decides on, and a stale one reads as a newer prompt.
       autopilotLogRef.current?.(tabId, log);
     },
-    [isWatchingTab, notifyAgent, setDialogOwner],
+    [bridgeNeedsAfterLogRead, isWatchingTab, notifyAgent, setDialogOwner],
   );
 
   // PTY start and exit change which terminals are live and their state.
@@ -1508,6 +1515,8 @@ export function StartupForm({
             )
           : undefined,
       );
+      // The hook's Needs you: a dialog drawn after it and gone again was answered.
+      bridgeNeedsAfterScreen(id, visible);
       // Read the log now: the open tool decides what the dialog is for.
       const entry = sessionLogWatch.current.get(id);
       if (visible && entry) entry.forceRead = true;
@@ -1517,7 +1526,7 @@ export function StartupForm({
       unsubscribeExit();
       unsubscribeDialog();
     };
-  }, [isWatchingTab, notifyAgent, setDialogOwner]);
+  }, [bridgeNeedsAfterScreen, isWatchingTab, notifyAgent, setDialogOwner]);
 
   // Every live Claude role terminal, plus role terminals on screen or in a
   // chain: read their Claude session log while the PTY streams output, until
@@ -1602,6 +1611,7 @@ export function StartupForm({
       if (!isClaudeRoleTerminal(tab)) continue;
       const state = deriveTerminalState({
         log: sessionLogs[tab.id],
+        bridgeNeeds: bridgeNeeds.markOf(tab.id),
         // Only once a log read tied the dialog to one of the turn's tools.
         dialogTool: dialogTabs.includes(tab.id)
           ? dialogToolFor(dialogOwners.current.get(tab.id), sessionLogs[tab.id])
@@ -1616,9 +1626,10 @@ export function StartupForm({
     if (!changed && Object.keys(prev).length === Object.keys(next).length) return prev;
     terminalStatesRef.current = next;
     return next;
-    // ptyVersion: exit codes, dialogOwnerVersion: dialog owners live outside React state.
+    // ptyVersion: exit codes, dialogOwnerVersion and bridgeNeeds.version: dialog
+    // owners and bridge Needs you live outside React state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dialogOwnerVersion, dialogTabs, ptyVersion, quietTurnTabs, savedTabs, sessionLogs, terminalBusy]);
+  }, [bridgeNeeds.version, dialogOwnerVersion, dialogTabs, ptyVersion, quietTurnTabs, savedTabs, sessionLogs, terminalBusy]);
 
   // One toast and OS notification per prompt that needs the user.
   const needsNotified = useRef(new Set<string>());
@@ -2155,15 +2166,9 @@ export function StartupForm({
         };
       });
       if (!pane) setPreview(null);
-      if (
-        !resumeId &&
-        eagleOnRef.current &&
-        targetId &&
-        !inChain(targetId) &&
-        (startRoleId === "role_planner" || startRoleId === "role_implementer")
-      ) {
-        const kind = startRoleId === "role_planner" ? "eagle1" : "eagle2";
-        await setTabChain(targetId, newChain(kind));
+      const eagleKind = !resumeId && eagleOnRef.current && targetId && !inChain(targetId) ? eagleStartChain(startRoleId) : null;
+      if (eagleKind && targetId) {
+        await setTabChain(targetId, newChain(eagleKind));
       }
       await refreshTabs();
     } catch (err: unknown) {
@@ -2268,6 +2273,10 @@ export function StartupForm({
       const form = options?.values ?? formValues;
       const preferred = options && "tabId" in options ? options.tabId : activeTabId;
       const pendingId = preferred || `starting-${Date.now()}`;
+      // Eagle mode: a Planner or Implementer started from the form begins a
+      // chain. The core makes its run before the launch (engine 2), so the
+      // stage launches with the bridge instead of being tagged once it runs.
+      const startChain = !options && eagleOnRef.current && !inChain(pendingId) ? eagleStartChain(roleToStart) : null;
       const live = beginLivePty(pendingId);
       try {
         const result = await roleTerminalStart({
@@ -2277,6 +2286,7 @@ export function StartupForm({
           handoffPlan: options?.handoffPlan ?? null,
           provider: options?.provider ?? null,
           chain: options?.chain ?? null,
+          startChain,
           ...measuredTerminalSize(),
           onOutput: live.channel,
         });
@@ -2299,16 +2309,7 @@ export function StartupForm({
           setActiveTabId(result.tabId);
           setPreview(null);
         }
-        if (
-          !options &&
-          eagleOnRef.current &&
-          !inChain(pendingId) &&
-          !inChain(result.tabId) &&
-          (roleToStart === "role_planner" || roleToStart === "role_implementer")
-        ) {
-          const kind = roleToStart === "role_planner" ? "eagle1" : "eagle2";
-          await setTabChain(result.tabId, newChain(kind));
-        }
+        // A chain this start began (`startChain`) was labelled by the core.
         await refreshTabs();
         return result.tabId;
       } catch (err: unknown) {
@@ -2396,8 +2397,11 @@ export function StartupForm({
         throw new Error("Fan out needs this run's plan stage tab (the stage before the Implementer) to be open.");
       }
       const source = await stageSourceOf(planTab);
+      // Engine 2: the Planner's tasks.json, read directly; else the reply's list.
+      // intentionally silent: without the file the reply's list is read, as on engine 1.
+      const planned = (run.engine ?? 1) >= 2 ? await pipelineRunTasks(run.id).catch(() => null) : null;
       const result = await fanOutRun(
-        { run, stage: fanStage, source, sourceChain: planTab.chain },
+        { run, stage: fanStage, source, sourceChain: planTab.chain, tasks: planned?.tasks ?? null },
         { startTerminal: laneStartTerminal, syncForm: syncActiveTabForm, refreshTabs, roles },
       );
       showNotice(
@@ -6170,6 +6174,7 @@ export function StartupForm({
     return shell(
       <section className="status-card status-card-session-full pipeline-overview-screen">
         <PipelineOverview
+          key={activeTabSummary.pipelineRunId}
           runId={activeTabSummary.pipelineRunId}
           cwd={activeTabSummary.cwd}
           tabs={savedTabs}
@@ -6191,6 +6196,7 @@ export function StartupForm({
           onApproveLane={approveLaneById}
           onApproveRun={(runId) => approveLaneById(runId, null)}
           onContinue={autopilot.continueRun}
+          modelSettings={modelSettings}
           usageWindows={usageSnap?.windows ?? null}
         />
       </section>,

@@ -1,8 +1,10 @@
 /**
  * The pull requests a plan ships as (its `HANDOFF: Pull requests` list,
- * role-planner.md), and each lane's own note. Pure: the overview reads it
- * to offer a fan-out; `fanOut.ts` acts on it.
+ * role-planner.md, or on an engine-2 run the Planner's `tasks.json`), and
+ * each lane's own note. Pure: the overview reads it to offer a fan-out;
+ * `fanOut.ts` acts on it.
  */
+import type { PlannedTask } from "../bridge";
 import { contractPullRequestList } from "../handoff/contract";
 
 export type PlannedPr = {
@@ -13,6 +15,8 @@ export type PlannedPr = {
   dependsOn: string[];
   /** A release, deploy or config change the Implementer leaves to you. */
   manual: boolean;
+  /** What it covers (from the Planner's tasks). */
+  summary?: string;
 };
 
 const HEADER = /^[ \t]*(?:[-*+]|\d+[.)])?[ \t]*`?\**[ \t]*PR[ \t]*(\d+)\**[ \t]*(?:[—–-]+|:)[ \t]*([^`:\n]*)/i;
@@ -65,10 +69,31 @@ export function parsePullRequestPlan(list: string): PlannedPr[] {
  */
 export function lanesFromReply(reply: string): PlannedPr[] {
   const list = contractPullRequestList(reply) ?? "";
-  const prs = parsePullRequestPlan(list).filter((pr) => !pr.manual);
+  return lanesOf(parsePullRequestPlan(list));
+}
+
+/** Pull requests that are not manual steps, keeping only dependencies on each other; fewer than two: none. */
+function lanesOf(planned: PlannedPr[]): PlannedPr[] {
+  const prs = planned.filter((pr) => !pr.manual);
   const ids = new Set(prs.map((pr) => pr.id));
   const lanes = prs.map((pr) => ({ ...pr, dependsOn: pr.dependsOn.filter((dep) => ids.has(dep)) }));
   return lanes.length >= 2 ? lanes : [];
+}
+
+/**
+ * The lanes of the Planner's tasks (`tasks.json`, engine 2), the same way
+ * `lanesFromReply` reads a list: read directly, nothing parsed.
+ */
+export function lanesFromTasks(tasks: readonly PlannedTask[]): PlannedPr[] {
+  return lanesOf(
+    tasks.map((task) => ({
+      id: task.id,
+      title: `${task.id.toUpperCase()} — ${task.title}`,
+      dependsOn: [...task.dependsOn],
+      manual: task.manual,
+      summary: task.summary,
+    })),
+  );
 }
 
 /** A git branch name for a lane's worktree: `ee-1760…-pr1`. */
@@ -83,6 +108,7 @@ export function laneNote(lane: PlannedPr, all: readonly PlannedPr[], runId: stri
   const branches = deps.map((pr) => `\`${laneBranch(runId, pr.id)}\``);
   return [
     `This tab implements only ${lane.title}, in its own git worktree on branch \`${laneBranch(runId, lane.id)}\`.`,
+    lane.summary?.trim() ? `Its scope: ${lane.summary.trim()}` : "",
     others.length
       ? `${others.join("; ")} ${others.length === 1 ? "is" : "are"} built in other tabs at the same time: do not implement ${others.length === 1 ? "it" : "them"} here.`
       : "",
