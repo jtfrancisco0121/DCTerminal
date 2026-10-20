@@ -887,20 +887,18 @@ describe("useAutopilot", () => {
       vi.mocked(pipelineDecide).mockResolvedValue({ action: "skip", reason: "x" });
       vi.mocked(pipelineBridgeTurn).mockResolvedValue(bridgeTurn());
       const tabs = [bridgedReviewer()];
-      const { deps, onLog } = setup(tabs);
+      const { onLog } = setup(tabs);
       const reply = log("## HANDOFF: Verdict\nREQUEST CHANGES");
       onLog("pr", reply);
       await waitFor(() => expect(pipelineDecide).toHaveBeenCalledTimes(1));
       // The Resume's gate: the core dropped the tag and turned autopilot off.
       vi.mocked(getPipelineRun).mockResolvedValue(run(false));
       vi.mocked(pipelineBridgeTurn).mockResolvedValue(null);
-      vi.mocked(deps.refreshTabs).mockImplementation(async () => {
-        // React applies the refreshed list later, as a render would.
-        setTimeout(() => (tabs[0] = tab("pr", "role_pr_reviewer", 4)), 0);
-      });
-      // The resumed session's log still shows the same finished turn.
+      // The resumed session's log still shows the same finished turn, first
+      // while the tab list still has the tag, then after any later refresh.
       onLog("pr", reply);
       await new Promise((resolve) => setTimeout(resolve, 20));
+      tabs[0] = tab("pr", "role_pr_reviewer", 4);
       onLog("pr", reply);
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(pipelineDecide).toHaveBeenCalledTimes(1);
