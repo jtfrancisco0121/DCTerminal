@@ -1137,9 +1137,55 @@ fn a_resume_the_version_gate_refuses_makes_the_run_manual_and_resumes_nothing() 
         assert_eq!(manual.len(), 1, "one Timeline note: {notes:?}");
         assert!(manual[0].contains(&file.display().to_string()), "it says where the findings are: {}", manual[0]);
         assert!(notes.iter().all(|n| !n.contains("could not")), "no carry-out failure note: {notes:?}");
+        // Nothing was sent, so no round is recorded as sent back and
+        // autopilot's hand-off is not kept: your own Send back is a first one.
+        let sent: Vec<&str> = run.events.iter().filter(|e| e.kind == "loopBack").map(|e| e.summary.as_str()).collect();
+        assert!(sent.is_empty(), "the Timeline says the round was sent back: {sent:?}");
+        assert_eq!(run.round, 1, "the round counter stays");
+        assert!(run.claims.iter().all(|c| c.key != "back:plan_reviewer#1"), "autopilot's claim is released: {:?}", run.claims);
     });
     let mode = std::fs::read_to_string(fx.host.runs.join(RUN).join("stages/planner/mode")).unwrap();
     assert_eq!(mode, "manual", "the stages stop enforcing a result");
+}
+
+/// Your own Send back, refused by the D24 / hooks-off gate at the resume:
+/// you get the reason, nothing is recorded as sent back, your hand-off is
+/// released, and the one Timeline note talks about your Send back, not
+/// about something autopilot was sending.
+#[test]
+fn your_send_back_the_version_gate_refuses_is_not_recorded_as_sent() {
+    let mut fx = Fixture::new("gate_refused_send_back");
+    let reviewer = fx.open_plan_reviewer();
+    fx.end_turn(&reviewer, "r-1", review("APPROVED_WITH_CHANGES", json!([])), "");
+    fx.host.gate_open.store(false, Ordering::SeqCst);
+    let err = fx
+        .user(UserAction::SendBack {
+            source_tab_id: reviewer,
+            target_role_id: "role_planner".into(),
+            text: "Add a test.".into(),
+            verdict: None,
+            values: None,
+            handoff_plan: None,
+            force: false,
+        })
+        .unwrap_err();
+    assert!(err.contains("manual now"), "{err}");
+    assert!(fx.resumes().is_empty() && fx.pastes().is_empty(), "nothing sent");
+    fx.run(|run| {
+        assert!(run.manual_only);
+        assert!(run.events.iter().all(|e| e.kind != "loopBack"), "not recorded as sent back");
+        assert_eq!(run.round, 1);
+        assert!(run.claims.iter().all(|c| c.key != "back:plan_reviewer#1"), "your claim is released: {:?}", run.claims);
+        let manual: Vec<&str> = run
+            .events
+            .iter()
+            .filter(|e| e.kind == "note" && e.summary.contains("manual from now on"))
+            .map(|e| e.summary.as_str())
+            .collect();
+        assert_eq!(manual.len(), 1, "{manual:?}");
+        assert!(!manual[0].contains("autopilot was sending"), "wrong wording for your own Send back: {}", manual[0]);
+        assert!(manual[0].contains("Your Send back was not sent"), "it says your Send back was not sent: {}", manual[0]);
+    });
 }
 
 /// H4 on engine 2: an `auto` check with nothing to run stops the run with
