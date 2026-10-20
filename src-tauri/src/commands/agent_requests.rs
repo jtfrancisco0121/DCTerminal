@@ -106,6 +106,18 @@ pub(crate) fn claude_permission_route(
     }
 }
 
+/// Where a request on `tab_id` goes, and the tab's pipeline stage kind
+/// (looked up in `store`), which decides who is a Planner.
+pub(crate) fn claude_tab_route(
+    store: Option<&Mutex<crate::store::StateStore>>,
+    tab_id: &str,
+    role_id: &str,
+    params: &Value,
+) -> (ClaudeRoute, Option<crate::pipelines::StageKind>) {
+    let stage_kind = store.and_then(|store| store.lock().ok()?.tab_stage_kind(tab_id));
+    (claude_permission_route(role_id, stage_kind, params), stage_kind)
+}
+
 /// Claude tabs (Decisions 4): every permission request is answered
 /// `allow_once` without a card. A Planner's `ExitPlanMode` is the plan to
 /// approve, so it goes to the card. A request with no `allow_once` option
@@ -125,13 +137,9 @@ pub fn stage_claude_permission_request(
             None => return Ok(Some(cancelled_permission_result())),
         }
     };
-    let stage_kind = app
-        .try_state::<Mutex<crate::store::StateStore>>()
-        .and_then(|store| {
-            let store = store.lock().ok()?;
-            store.tab_stage_kind(tab_id)
-        });
-    let (result, exit_plan) = match claude_permission_route(&role_id, stage_kind, &params) {
+    let store = app.try_state::<Mutex<crate::store::StateStore>>();
+    let (route, stage_kind) = claude_tab_route(store.as_deref(), tab_id, &role_id, &params);
+    let (result, exit_plan) = match route {
         ClaudeRoute::PlanCard => {
             return stage_exit_plan_request(app, tab_id, session_id, request, state);
         }
