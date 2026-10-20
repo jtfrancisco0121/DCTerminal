@@ -96,16 +96,19 @@ function eventBlock(run: PipelineRun, event: RunEvent): string[] {
 export function formatRunReport(run: PipelineRun, now = new Date()): string {
   const def = pipelineDef(run.kind);
   const name = def?.name ?? "Pipeline";
+  // An engine-1 run is manual only (V6), as in the overview: its saved
+  // autopilot flag and wait do nothing.
+  const manualOnly = (run.engine ?? 1) < 2 || !!run.manualOnly;
   const lines: string[] = [
     `# ${name} run ${run.id}`,
     "",
     `- Folder: \`${run.cwd}\``,
     `- Started: ${eventTime(run.createdAt)}`,
     `- Stage: ${stageTitle(run, run.stage)} · round ${Math.max(1, run.round ?? 1)}`,
-    `- Autopilot: ${run.autopilot?.enabled ? "on" : "off"}`,
+    `- Autopilot: ${manualOnly ? "off (this run is manual only)" : run.autopilot?.enabled ? "on" : "off"}`,
     `- Report made: ${eventTime(now.toISOString())}`,
   ];
-  if (run.autopilot?.waiting) lines.push(`- Waiting for you: ${stopNotice(run.stopReason, run.autopilot.waiting)}`);
+  if (!manualOnly && run.autopilot?.waiting) lines.push(`- Waiting for you: ${stopNotice(run.stopReason, run.autopilot.waiting)}`);
   const request = run.originalRequest?.trim();
   if (request) lines.push("", "## Original request", "", request);
   lines.push("", "## Stages", "");
