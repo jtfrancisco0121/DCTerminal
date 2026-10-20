@@ -23,6 +23,7 @@ import {
   type HandoffRecord,
   type Role,
 } from "../bridge";
+import { roleBehaviour } from "../pipeline/defs";
 import { eventTime } from "../pipeline/runReport";
 import { advanceChain, type ChainRef } from "./chains";
 import {
@@ -130,7 +131,7 @@ async function implementerContext(
   source: HandoffSource,
   chainId: string | null,
 ): Promise<HandoffSource> {
-  if (source.sourceRoleId !== "role_implementer") return source;
+  if (roleBehaviour(source.sourceRoleId, source.sourceChainKind) !== "implementer") return source;
   // intentionally silent: each lookup only enriches the hand-off; it works without them.
   const [changes, repo, run] = await Promise.all([
     io.changesList(source.sourceTabId, "tab").catch(() => null),
@@ -138,7 +139,8 @@ async function implementerContext(
     chainId ? io.getPipelineRun(chainId).catch(() => null) : Promise.resolve(null),
   ]);
   // A send-back from the PR Reviewer: the next review checks those findings.
-  const sentBack = loopBackFindings(run?.run.handoffs?.role_implementer?.text ?? "");
+  // Hand-offs into a run are kept by the role they went to: this implementer's own.
+  const sentBack = loopBackFindings(run?.run.handoffs?.[source.sourceRoleId]?.text ?? "");
   return {
     ...source,
     changes:

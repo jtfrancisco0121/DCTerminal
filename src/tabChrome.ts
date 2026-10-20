@@ -416,7 +416,7 @@ export function buildPalette(opts: {
    */
   handoffTargets?: readonly { id: string; name: string }[];
   /** Your own pipelines: each gets "Start <name>…". Default: the registry's. */
-  pipelines?: readonly { id: string; name: string }[];
+  pipelines?: readonly { id: string; name: string; disabled?: string | null }[];
   /** The active tab is a Claude terminal tab, which can show as chat. */
   canSwitchTerminalView?: boolean;
 }): PaletteCommand[] {
@@ -736,7 +736,8 @@ export function buildPalette(opts: {
   for (const pipeline of own) {
     commands.push({
       id: `pipeline:${pipeline.id}`,
-      title: `Start ${pipeline.name}…`,
+      // Still listed: starting it says why it cannot run.
+      title: `Start ${pipeline.name}…${"disabled" in pipeline && pipeline.disabled ? " (disabled)" : ""}`,
       group: "Hand-off",
       keywords: "pipeline chain start custom",
     });

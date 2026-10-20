@@ -154,10 +154,12 @@ pub fn run() {
         .setup(|app| {
             // First, so a panic anywhere below lands in logs/crash.log.
             crash_log::install(&data_dir::app_data_dir(app.handle()).path);
-            // User pipelines join the registry before any chain run is read.
+            // Roles first, so your pipelines are checked against the roles
+            // that exist; both before any chain run is read.
+            let store = RolesStore::load_or_seed(app.handle())?;
+            store.publish_role_ids();
             let pipeline_store =
                 store::PipelineStore::open(&data_dir::app_data_dir(app.handle()).path)?;
-            let store = RolesStore::load_or_seed(app.handle())?;
             let mut state_store = StateStore::load_or_default(app.handle())?;
             state_store.reconcile_stale_running_tabs()?;
             let forms_store = FormsStore::load_or_default(app.handle())?;

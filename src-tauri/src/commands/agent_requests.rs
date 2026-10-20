@@ -78,13 +78,6 @@ pub fn allow_once_result(params: &Value) -> Option<Value> {
     Some(json!({ "outcome": { "outcome": "selected", "optionId": id } }))
 }
 
-fn is_planner(role_id: &str) -> bool {
-    matches!(
-        role_id.trim().to_ascii_lowercase().replace('-', "_").as_str(),
-        "role_planner" | "planner"
-    )
-}
-
 /// Where a Claude permission request goes (see `stage_claude_permission_request`).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ClaudeRoute {
@@ -96,9 +89,15 @@ pub(crate) enum ClaudeRoute {
     AutoAllow { result: Value, exit_plan: bool },
 }
 
-pub(crate) fn claude_permission_route(role_id: &str, params: &Value) -> ClaudeRoute {
+/// `stage_kind`: the tab's pipeline stage kind, which decides who is a
+/// Planner (`plans_by_default`), so a copied Planner gets the plan card.
+pub(crate) fn claude_permission_route(
+    role_id: &str,
+    stage_kind: Option<crate::pipelines::StageKind>,
+    params: &Value,
+) -> ClaudeRoute {
     let exit_plan = is_exit_plan_mode(params);
-    if exit_plan && is_planner(role_id) {
+    if exit_plan && crate::provider::plans_by_default(role_id, stage_kind) {
         return ClaudeRoute::PlanCard;
     }
     match allow_once_result(params) {
@@ -126,7 +125,13 @@ pub fn stage_claude_permission_request(
             None => return Ok(Some(cancelled_permission_result())),
         }
     };
-    let (result, exit_plan) = match claude_permission_route(&role_id, &params) {
+    let stage_kind = app
+        .try_state::<Mutex<crate::store::StateStore>>()
+        .and_then(|store| {
+            let store = store.lock().ok()?;
+            store.tab_stage_kind(tab_id)
+        });
+    let (result, exit_plan) = match claude_permission_route(&role_id, stage_kind, &params) {
         ClaudeRoute::PlanCard => {
             return stage_exit_plan_request(app, tab_id, session_id, request, state);
         }
@@ -160,18 +165,22 @@ pub fn stage_claude_permission_request(
         },
     );
     if exit_plan {
-        queue_role_mode(state, tab_id)?;
+        queue_role_mode(state, tab_id, stage_kind)?;
     }
     Ok(Some(result))
 }
 
 /// After a non-Planner ExitPlanMode, put the session back on the role mode.
-fn queue_role_mode(state: &Mutex<SessionRegistry>, tab_id: &str) -> Result<(), String> {
+fn queue_role_mode(
+    state: &Mutex<SessionRegistry>,
+    tab_id: &str,
+    stage_kind: Option<crate::pipelines::StageKind>,
+) -> Result<(), String> {
     let guard = state.lock().map_err(|e| e.to_string())?;
     let Some(session) = guard.get(tab_id) else {
         return Ok(());
     };
-    let mode = crate::provider::claude::claude_role_mode(&session.role_id).to_string();
+    let mode = crate::provider::claude::claude_role_mode(&session.role_id, stage_kind).to_string();
     let params = json!({
         "sessionId": session.session_id,
         "modeId": mode,
@@ -942,8 +951,8 @@ mod tests {
         assert!(is_exit_plan_mode(&json!({ "toolCall": { "kind": "switch_mode" } })));
         assert!(is_exit_plan_mode(&json!({ "toolCall": { "rawInput": { "plan": "# P" } } })));
         assert!(!is_exit_plan_mode(&json!({ "toolCall": { "title": "`ls`", "kind": "execute" } })));
-        assert!(is_planner("role_planner"));
-        assert!(!is_planner("role_plan_reviewer"));
+        assert!(crate::provider::plans_by_default("role_planner", None));
+        assert!(!crate::provider::plans_by_default("role_plan_reviewer", None));
     }
 
     #[test]
