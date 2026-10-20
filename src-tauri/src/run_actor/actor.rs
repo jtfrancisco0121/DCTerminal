@@ -21,7 +21,7 @@ use crate::store::{
 };
 use serde_json::Value;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
@@ -413,11 +413,14 @@ impl<H: Host> Actor<H> {
                 }
                 // A failed check resumes the stage's session with its output (D17).
                 let sent = match session_of(&placed.tab).filter(|_| decision.action == "retry") {
-                    Some(session) => self.resume(&placed.tab, &session, &text),
+                    Some(session) => self.resume(&placed.tab, &session, &text, None),
                     None => self.host.paste(&placed.tab.id, &text),
                 };
-                if let Err(err) = sent {
-                    fail(self, format!("send to {}: {err}", placed.tab.label));
+                match sent {
+                    // The run is manual now; its Timeline note says so.
+                    Err(err) if err == MANUAL_NOW => {}
+                    Err(err) => fail(self, format!("send to {}: {err}", placed.tab.label)),
+                    Ok(()) => {}
                 }
             }
             "advance" => {
@@ -428,8 +431,11 @@ impl<H: Host> Actor<H> {
             }
             "loopBack" => {
                 let verdict = verdict.unwrap_or(placed.revise()).to_string();
-                if let Err(err) = self.loop_back(placed, turn, decision, &verdict) {
-                    fail(self, format!("send the round back: {err}"));
+                match self.loop_back(placed, turn, decision, &verdict) {
+                    // The run is manual now; its Timeline note says so.
+                    Err(err) if err == MANUAL_NOW => {}
+                    Err(err) => fail(self, format!("send the round back: {err}")),
+                    Ok(_) => {}
                 }
             }
             other => fail(self, format!("carry out \"{other}\".")),
@@ -594,7 +600,7 @@ impl<H: Host> Actor<H> {
         let file = self.write_findings(turn, round)?;
         let reviewer_name = self.host.role(&placed.tab.role_id).map(|r| r.name).unwrap_or_else(|| placed.stage.title.clone());
         let text = loop_back_message(target.kind() == StageKind::Planner, &reviewer_name, &findings, round, file.as_deref());
-        self.send_back(placed, &target, verdict, &text, None, None, Some(turn))
+        self.send_back(placed, &target, verdict, &text, None, None, Some(turn), file.as_deref())
     }
 
     /// The reviewer's round as `findings-<stage>-r<N>.json` (V4), when its
@@ -623,7 +629,12 @@ impl<H: Host> Actor<H> {
     /// Resume `tab`'s session (V4, D17): its program is stopped, then
     /// `claude --resume <session>` starts in the same terminal with the same
     /// flags and `prompt` as its next turn. The tab and its view stay.
-    fn resume(&mut self, tab: &TabRecord, session_id: &str, prompt: &str) -> Result<(), String> {
+    ///
+    /// When the D24 / hooks-off gate now refuses the bridge, the run is
+    /// manual from then on (V2a: `actor_gate_on` → `make_manual`) and nothing
+    /// is resumed, since a resume is autopilot's own action: [`MANUAL_NOW`].
+    /// The one Timeline note says where `findings` (the round's file) is.
+    fn resume(&mut self, tab: &TabRecord, session_id: &str, prompt: &str, findings: Option<&Path>) -> Result<(), String> {
         let tag = tab.bridge.as_ref().ok_or_else(|| format!("{} does not report through the pipeline bridge", tab.label))?;
         let program = self
             .host
@@ -633,15 +644,12 @@ impl<H: Host> Actor<H> {
             .ok_or_else(|| format!("{} no longer holds its stage in the run folder", tab.label))?;
         let cwd = crate::paths::validate_working_folder(&tab.cwd).map_err(|err| err.message())?;
         // D24 and hooks-off again, as at a Restart: the CLI or the settings
-        // may have changed since the stage opened. An engine-1 outcome
-        // resumes it unbridged (the frontend's v1 path follows the run).
-        let bridge = if self.host.bridge_gate(&self.run_id, &tag.stage, &cwd)? {
-            Some(flags)
-        } else {
-            lock(self.host.store()).set_tab_bridge(&tab.id, None)?;
-            self.changed();
-            None
-        };
+        // may have changed since the stage opened.
+        if !self.host.bridge_gate(&self.run_id, &tag.stage, &cwd)? {
+            self.note_not_resumed(findings);
+            return Err(MANUAL_NOW.to_string());
+        }
+        let bridge = Some(flags);
         let runs = self.host.runs_root();
         let cleared = clear_stage_turn(&runs, tag, &tab.id)?;
         let resumed = self.host.resume_stage(&StageLaunch {
@@ -669,6 +677,30 @@ impl<H: Host> Actor<H> {
         Ok(())
     }
 
+    /// The gate made the run manual at a resume: its one Timeline note (and
+    /// engine note) also says what was not sent and where the findings are.
+    fn note_not_resumed(&mut self, findings: Option<&Path>) {
+        let extra = match findings {
+            Some(file) => format!(" This round's findings are in {}: send them back yourself.", file.display()),
+            None => " What autopilot was sending back was not sent: send it yourself.".to_string(),
+        };
+        {
+            let mut store = lock(self.host.store());
+            if let Some(run) = store.pipeline_run_by_id_mut(&self.run_id) {
+                if let Some(event) = run.events.iter_mut().rev().find(|e| e.kind == "note") {
+                    event.summary.push_str(&extra);
+                }
+                if let Some(note) = run.engine_note.as_mut() {
+                    note.push_str(&extra);
+                }
+                if let Err(err) = store.save() {
+                    eprintln!("DCTerminal: run {}: note not saved: {err}", self.run_id);
+                }
+            }
+        }
+        self.changed();
+    }
+
     /// A round goes back to `target`: its tab's session is resumed with
     /// `text` (V4: the terminal is stopped and relaunched with `--resume`,
     /// running and idle or already exited), else a new terminal of that stage
@@ -683,6 +715,7 @@ impl<H: Host> Actor<H> {
         values: Option<HashMap<String, String>>,
         handoff_plan: Option<String>,
         turn: Option<&BridgeTurn>,
+        findings: Option<&Path>,
     ) -> Result<String, String> {
         let existing = {
             let store = lock(self.host.store());
@@ -714,7 +747,7 @@ impl<H: Host> Actor<H> {
             }
             self.changed();
             match session {
-                Some(session) => self.resume(&tab, &session, text)?,
+                Some(session) => self.resume(&tab, &session, text, findings)?,
                 None => self.host.paste(&tab.id, text)?,
             }
             return Ok(tab.id);
@@ -1128,7 +1161,7 @@ impl<H: Host> Actor<H> {
         let verdict = verdict
             .filter(|v| !v.trim().is_empty())
             .unwrap_or_else(|| placed.revise().to_string());
-        match self.send_back(&placed, &target, &verdict, text, values, handoff_plan, None) {
+        match self.send_back(&placed, &target, &verdict, text, values, handoff_plan, None, None) {
             Ok(tab_id) => Ok(UserOutcome {
                 tab_id: Some(tab_id),
                 ..UserOutcome::default()
@@ -1328,6 +1361,11 @@ pub(super) fn findings_text(findings: &[Value]) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
+
+/// A resume the D24 / hooks-off gate refused: the run is manual now and its
+/// Timeline note says what to do, so this is no failure to carry out.
+pub(super) const MANUAL_NOW: &str =
+    "Claude Code can no longer use the pipeline bridge here, so this run is manual now. Send it back yourself.";
 
 /// The prompt a loop-back resumes the earlier stage with (`loopBackMessage`):
 /// where the round's findings file is (V4), the findings, and what to do. A

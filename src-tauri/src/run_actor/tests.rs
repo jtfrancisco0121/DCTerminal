@@ -1108,22 +1108,38 @@ fn a_stage_the_version_gate_refuses_opens_unbridged_and_the_run_goes_to_engine_1
     assert_eq!(mode, "manual", "the bridged Planner stops enforcing a result");
 }
 
-/// V4 with V2a/H5: a resume relaunches through the same D24 gate as a first
+/// V4 with V2a: a resume relaunches through the same D24 gate as a first
 /// launch. When the gate now refuses (Claude Code downgraded, hooks off),
-/// the stage resumes its session unbridged and the run goes to engine 1.
+/// the run is manual from then on (V2a's rule for a mid-run switch) and
+/// nothing is resumed: a loop-back is autopilot's own action. The round's
+/// findings file stays, and the one Timeline note says where it is.
 #[test]
-fn a_resume_the_version_gate_refuses_goes_on_unbridged_on_engine_1() {
+fn a_resume_the_version_gate_refuses_makes_the_run_manual_and_resumes_nothing() {
     let mut fx = Fixture::new("gate_refused_resume");
     let reviewer = fx.open_plan_reviewer();
+    let launches = fx.launches().len();
     fx.host.gate_open.store(false, Ordering::SeqCst);
     let turn = fx.end_turn(&reviewer, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "x" }])), "");
     fx.actor.handle(ActorMsg::Turn(turn));
-    let resumes = fx.resumes();
-    assert_eq!(resumes.len(), 1, "{resumes:?}");
-    assert_eq!(resumes[0].session_id, PLANNER_SID, "its own session");
-    assert_eq!(resumes[0].bridge, None, "resumed without the bridge");
-    assert_eq!(fx.tab(&fx.planner).bridge, None, "the tab no longer reports through the bridge");
-    fx.run(|run| assert_eq!(run.engine, 1));
+    assert!(fx.resumes().is_empty(), "nothing resumed: {:?}", fx.resumes());
+    assert!(fx.pastes().is_empty(), "nothing pasted");
+    assert_eq!(fx.launches().len(), launches, "no new terminal");
+    let file = fx.run_file("findings-plan_reviewer-r1.json");
+    assert!(file.exists(), "the round's findings stay in the run folder");
+    fx.run(|run| {
+        assert_eq!(run.engine, 1);
+        assert!(run.manual_only, "manual for good");
+        assert!(!run.autopilot.as_ref().unwrap().enabled, "autopilot is off");
+        assert_eq!(run.status, RunStatus::Stopped);
+        assert_ne!(run.stop_reason, Some(StopReason::CarryOutFailed), "not a failure to carry out");
+        let notes: Vec<&str> = run.events.iter().filter(|e| e.kind == "note").map(|e| e.summary.as_str()).collect();
+        let manual: Vec<&&str> = notes.iter().filter(|n| n.contains("manual from now on")).collect();
+        assert_eq!(manual.len(), 1, "one Timeline note: {notes:?}");
+        assert!(manual[0].contains(&file.display().to_string()), "it says where the findings are: {}", manual[0]);
+        assert!(notes.iter().all(|n| !n.contains("could not")), "no carry-out failure note: {notes:?}");
+    });
+    let mode = std::fs::read_to_string(fx.host.runs.join(RUN).join("stages/planner/mode")).unwrap();
+    assert_eq!(mode, "manual", "the stages stop enforcing a result");
 }
 
 /// H4 on engine 2: an `auto` check with nothing to run stops the run with
