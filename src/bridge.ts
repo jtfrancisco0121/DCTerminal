@@ -451,7 +451,6 @@ export type RunAutopilot = {
   /** Why autopilot is waiting for you, if it is. */
   waiting?: string | null;
   passedCheckpoints?: string[];
-  reasked?: string[];
   gateRetries?: Record<string, number>;
   /** Turns already decided on. */
   decided?: string[];
