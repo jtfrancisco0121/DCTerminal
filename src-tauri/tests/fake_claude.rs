@@ -851,3 +851,151 @@ mod pty {
         assert!(!std::path::Path::new("/nonexistent").exists());
     }
 }
+
+/// Track H3 over a real fake_claude: what the startup reconcile and the
+/// stall watchdog (`pipelines::recovery`) make of quitting mid-turn,
+/// quitting after the turn, and a tool that never returns. The logs are read
+/// back through the app's reader, as the app does after a restart.
+mod recovery {
+    use super::*;
+    use dcterminal_lib::testing::{
+        current_stage_tabs, find_pipeline, reconcile_run, stop_stalled, turn_key, working,
+        PipelineRun, Reconciled, RunStatus, StallObservation, StallWatch, StopReason,
+    };
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    const SID: &str = "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f";
+    const TAB: &str = "tab_impl";
+
+    /// An Eagle-Eye 1 run at the Implementer (tab `TAB`) with autopilot on,
+    /// as `state.json` holds it.
+    fn running_run() -> PipelineRun {
+        serde_json::from_value(json!({
+            "id": "ee_h3", "kind": "full", "cwd": "/tmp", "stage": "implementer",
+            "tabIds": { "role_implementer": TAB }, "createdAt": "2026-10-19T00:00:00Z",
+            "chainId": "ee_h3", "autopilot": { "enabled": true }, "status": "running"
+        }))
+        .unwrap()
+    }
+
+    /// The app quits: the terminal's program is stopped as app exit stops it.
+    fn quit(fake: &mut FakeClaude) {
+        fake.session.kill();
+        fake.wait_exit();
+    }
+
+    /// After the restart: the log as a fresh reader sees it.
+    fn reread(fake: &mut FakeClaude) -> HashMap<String, TerminalSessionLog> {
+        let path = fake.log_path(SID).expect("log");
+        let log = SessionLogReader::open(&path, SID).expect("reader").summary();
+        HashMap::from([(TAB.to_string(), log)])
+    }
+
+    #[test]
+    fn quit_mid_turn_is_noted_and_the_run_keeps_running_without_acting() {
+        let home = FakeHome::new("h3_mid_turn");
+        let scenario = json!({ "turns": [
+            { "steps": [ { "text": "Working on it" }, { "delay_ms": 20000 }, { "reply": "Done." } ] }
+        ]});
+        let mut fake = home.run(&scenario, &["--session-id", SID, "Implement the plan"]);
+        fake.wait_log(SID, |log| log.last_reply == "Working on it");
+        quit(&mut fake);
+        let logs = reread(&mut fake);
+        assert!(!logs[TAB].turn_done, "{:?}", logs[TAB]);
+
+        let def = find_pipeline("full").unwrap();
+        let mut run = running_run();
+        assert_eq!(reconcile_run(&def, &mut run, &logs), Some(Reconciled::CutOff));
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Running, None));
+        assert!(run.events.last().unwrap().summary.contains("cut off when the app closed"));
+        // Nothing was decided or handed on.
+        assert!(run.claims.is_empty());
+        assert!(run.autopilot.as_ref().unwrap().decided.is_empty());
+    }
+
+    #[test]
+    fn quit_after_the_turn_waits_with_app_restarted_unless_it_was_decided() {
+        let home = FakeHome::new("h3_after_turn");
+        let scenario = json!({ "turns": [ { "steps": [ { "reply": "Implemented. Draft PR opened." } ] } ]});
+        let mut fake = home.run(&scenario, &["--session-id", SID, "Implement the plan"]);
+        fake.wait_log(SID, |log| log.turn_done);
+        quit(&mut fake);
+        let logs = reread(&mut fake);
+        let def = find_pipeline("full").unwrap();
+
+        let mut run = running_run();
+        let found = reconcile_run(&def, &mut run, &logs);
+        let Some(Reconciled::Waiting { tab_id, why }) = found else {
+            panic!("not waiting: {found:?}");
+        };
+        assert_eq!(tab_id, TAB);
+        assert!(why.contains("Press Continue"), "{why}");
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::AppRestarted)));
+        assert!(run.claims.is_empty(), "never acts by itself");
+        assert!(run.autopilot.as_ref().unwrap().decided.is_empty());
+
+        // Decided before the quit: nothing to recover.
+        let mut decided = running_run();
+        decided.autopilot.as_mut().unwrap().decided.push(turn_key(TAB, &logs[TAB]));
+        assert_eq!(reconcile_run(&def, &mut decided, &logs), None);
+        assert_eq!(decided.status, RunStatus::Running);
+    }
+
+    /// Watch `fake` the way the watchdog does, every 50 ms, until it reports
+    /// a stall or `within` passes.
+    fn watch_for_stall(fake: &mut FakeClaude, limit: Duration, within: Duration) -> Option<(Duration, StallObservation)> {
+        let mut watch = StallWatch::new();
+        let mut reader: Option<SessionLogReader> = None;
+        let deadline = Instant::now() + within;
+        while Instant::now() < deadline {
+            fake.pump(Duration::from_millis(50));
+            if reader.is_none() {
+                reader = fake.log_path(SID).and_then(|path| SessionLogReader::open(&path, SID));
+            }
+            let Some(reader) = reader.as_mut() else { continue };
+            reader.refresh();
+            let log = reader.summary();
+            let seen = StallObservation {
+                working: working("role_implementer", &log),
+                log_len: std::fs::metadata(reader.path()).ok().map(|m| m.len()),
+                pty_quiet: Some(fake.session.quiet_for()),
+            };
+            if let Some(quiet) = watch.observe("ee_h3|tab_impl", Instant::now(), seen, limit) {
+                return Some((quiet, seen));
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn a_hung_tool_stalls_the_run_and_a_finished_turn_does_not() {
+        let limit = Duration::from_millis(800);
+        let home = FakeHome::new("h3_hung_tool");
+        let hung = json!({ "turns": [
+            { "steps": [
+                { "text": "Running the tests" },
+                { "tool": "Bash", "input": { "command": "npm test" }, "pending": true },
+                { "delay_ms": 30000 }
+            ] }
+        ]});
+        let mut fake = home.run(&hung, &["--session-id", SID, "Implement the plan"]);
+        let (quiet, seen) = watch_for_stall(&mut fake, limit, WAIT).expect("the hung tool never stalled");
+        assert!(quiet >= limit && seen.working, "{quiet:?} {seen:?}");
+        assert!(seen.pty_quiet.unwrap() >= limit, "the terminal was quiet too: {seen:?}");
+
+        let def = find_pipeline("full").unwrap();
+        let mut run = running_run();
+        let tab = current_stage_tabs(&def, &run).remove(0);
+        let why = stop_stalled(&mut run, &tab, quiet).unwrap();
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::Stalled)));
+        assert!(why.starts_with("Implementer has been quiet for"), "{why}");
+        quit(&mut fake);
+
+        let other = FakeHome::new("h3_done_turn");
+        let done = json!({ "turns": [ { "steps": [ { "reply": "Done." } ] } ]});
+        let mut fake = other.run(&done, &["--session-id", SID, "Implement the plan"]);
+        assert_eq!(watch_for_stall(&mut fake, limit, limit * 3), None, "a finished turn is not Working");
+        quit(&mut fake);
+    }
+}

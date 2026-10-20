@@ -50,8 +50,9 @@ pub fn cursor_terminal_args(req: &TerminalLaunch) -> Result<Vec<String>, String>
             role_id,
             run_mode,
             prompt,
+            stage_kind,
         } => {
-            let mut args = with_model(model, role_terminal_flags(role_id, *run_mode));
+            let mut args = with_model(model, role_terminal_flags(role_id, *stage_kind, *run_mode));
             if let Some(text) = prompt.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
                 args.push(text.to_string());
             }
@@ -59,8 +60,11 @@ pub fn cursor_terminal_args(req: &TerminalLaunch) -> Result<Vec<String>, String>
         }
         // Resume-after-crash is a Claude feature; Cursor roles relaunch fresh.
         TerminalKind::RoleResume {
-            role_id, run_mode, ..
-        } => with_model(model, role_terminal_flags(role_id, *run_mode)),
+            role_id,
+            run_mode,
+            stage_kind,
+            ..
+        } => with_model(model, role_terminal_flags(role_id, *stage_kind, *run_mode)),
     })
 }
 
@@ -102,7 +106,13 @@ impl Provider for CursorProvider {
         None
     }
 
-    fn mode_for_role(&self, _role_id: &str, role_mode: &str, _available: &[String]) -> String {
+    fn mode_for_role(
+        &self,
+        _role_id: &str,
+        _stage_kind: Option<crate::pipelines::StageKind>,
+        role_mode: &str,
+        _available: &[String],
+    ) -> String {
         role_mode.to_string()
     }
 
@@ -203,6 +213,7 @@ mod tests {
                 role_id: "role_planner".into(),
                 run_mode: RunMode::Default,
                 prompt: Some("Ship it".into()),
+                stage_kind: None,
             },
             model: Some("composer-2.5".into()),
             session_id: None,
@@ -255,7 +266,7 @@ mod tests {
     #[test]
     fn modes_are_the_role_modes() {
         assert_eq!(
-            CursorProvider.mode_for_role("role_planner", "plan", &[]),
+            CursorProvider.mode_for_role("role_planner", None, "plan", &[]),
             "plan"
         );
     }

@@ -21,6 +21,7 @@ import {
 } from "../handoff/map";
 import { ASK_FOR_HANDOFF_SECTIONS, missingHandoffSections } from "../handoff/contract";
 import { loopBackMessage } from "../handoff/routing";
+import { roleBehaviour } from "../pipeline/defs";
 import type { ChainRef } from "../handoff/chains";
 import { Dialog } from "./Dialog";
 import { InlineNotice } from "./InlineNotice";
@@ -124,7 +125,7 @@ export function HandoffDialog({
   // A terminal's last reply should end with the role's HANDOFF sections.
   const missingSections =
     source.fromTerminal && source.terminalLog && scope === "message"
-      ? missingHandoffSections(source.sourceRoleId, source.latestMessage)
+      ? missingHandoffSections(source.sourceRoleId, source.latestMessage, source.sourceChainKind)
       : [];
   const targetLabel = roleDisplayName(targetRoleId, roleNames);
   const followUp = loopBack?.live ? loopBack : null;
@@ -134,9 +135,9 @@ export function HandoffDialog({
       ? "Send for planning"
       : "Send plan";
   const scopeHint =
-    targetRoleId === "role_planner" ? reportScopeHint(source, scope) : null;
+    roleBehaviour(targetRoleId, source.sourceChainKind) === "planner" ? reportScopeHint(source, scope) : null;
   const message = followUp
-    ? loopBackMessage(source.sourceRoleId, preview, followUp.round, roleNames)
+    ? loopBackMessage(source.sourceRoleId, preview, followUp.round, roleNames, source.sourceChainKind)
     : "";
   // Required target fields the hand-off cannot fill: say so now, not at Start.
   // Visible fields only; on a chain, Start fills the task type from step 1.

@@ -7,6 +7,7 @@ vi.mock("../bridge", () => ({
   getClaudeUsage: vi.fn(async () => ({ configDir: "", windows: [], contextByTab: {} })),
   getPipelineRun: vi.fn(),
   getTab: vi.fn(async () => ({ tab: { answers: { cwd: "/repo", title: "Login 500" } } })),
+  pipelineContinue: vi.fn(async () => []),
   pipelineDecide: vi.fn(),
   pipelineNote: vi.fn(async () => {}),
   pipelineReleaseHandoff: vi.fn(async () => {}),
@@ -14,6 +15,7 @@ vi.mock("../bridge", () => ({
   pipelineTurnFinished: vi.fn(async () => {}),
   ptyWrite: vi.fn(async () => {}),
   setTabProvider: vi.fn(async () => {}),
+  terminalSessionLog: vi.fn(async () => null),
   // HandoffIo (handoff/executor)
   getRole: vi.fn(async (id: string) => ({
     id,
@@ -51,6 +53,7 @@ import {
   chainLoopBack,
   getPipelineRun,
   handoffAttach,
+  pipelineContinue,
   pipelineDecide,
   pipelineNote,
   pipelineReleaseHandoff,
@@ -58,11 +61,14 @@ import {
   pipelineTurnFinished,
   ptyWrite,
   setTabProvider,
+  terminalSessionLog,
   type PipelineRun,
   type TabSummary,
   type TerminalSessionLog,
 } from "../bridge";
+import type { RoleName } from "../handoff/transitions";
 import type { TerminalState } from "../terminal/claudeState";
+import { setPipelineDefs } from "./defs";
 import { useAutopilot, type AutopilotDeps } from "./useAutopilot";
 
 function tab(id: string, roleId: string, step: number): TabSummary {
@@ -126,10 +132,14 @@ const IMPLEMENTED = [
   "## HANDOFF: Pull requests\nPR1 — https://github.com/jt/app/pull/7",
 ].join("\n\n");
 
-function setup(tabs: TabSummary[], states: Record<string, TerminalState> = {}) {
+function setup(
+  tabs: TabSummary[],
+  states: Record<string, TerminalState> = {},
+  roles: readonly RoleName[] | null = null,
+) {
   const deps: AutopilotDeps = {
     tabs: () => tabs,
-    roles: () => null,
+    roles: () => roles,
     terminalState: (id) => states[id],
     startTerminal: vi.fn(async () => "tab-new"),
     refreshTabs: vi.fn(async () => {}),
@@ -139,7 +149,7 @@ function setup(tabs: TabSummary[], states: Record<string, TerminalState> = {}) {
     sessionLog: () => null,
   };
   const { result } = renderHook(() => useAutopilot(deps));
-  return { deps, onLog: result.current.onTerminalLog };
+  return { deps, onLog: result.current.onTerminalLog, continueRun: result.current.continueRun };
 }
 
 describe("useAutopilot", () => {
@@ -176,8 +186,12 @@ describe("useAutopilot", () => {
       round: 1,
       turn: expect.stringMatching(/^impl\|s\|/),
     });
+    // The chain it joins goes with the start: its stage kind sets the permission mode.
     expect(deps.startTerminal).toHaveBeenCalledWith(
-      expect.objectContaining({ roleId: "role_pr_reviewer" }),
+      expect.objectContaining({
+        roleId: "role_pr_reviewer",
+        chain: expect.objectContaining({ chainId: "ee_1", kind: "eagle1", step: 4 }),
+      }),
     );
     expect(vi.mocked(handoffAttach).mock.calls[0][0]).toMatchObject({
       tabId: "tab-new",
@@ -672,6 +686,64 @@ describe("useAutopilot", () => {
     expect(deps.notifyStop).not.toHaveBeenCalled();
   });
 
+  it("Continue after a restart decides the turn that finished while the app was closed", async () => {
+    vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+    vi.mocked(pipelineDecide).mockResolvedValue({
+      action: "advance",
+      stageId: "pr_reviewer",
+      roleId: "role_pr_reviewer",
+      reason: "on to PR Reviewer",
+    });
+    const before = log(IMPLEMENTED, "2026-01-01T00:00:00Z");
+    vi.mocked(pipelineContinue).mockResolvedValue(["impl"]);
+    vi.mocked(terminalSessionLog).mockResolvedValue(before);
+    const { deps, onLog, continueRun } = setup([tab("impl", "role_implementer", 3)]);
+    // First sight after the restart: never acted on by itself.
+    onLog("impl", before);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(pipelineDecide).not.toHaveBeenCalled();
+
+    await continueRun("ee_1");
+    expect(pipelineContinue).toHaveBeenCalledWith("ee_1");
+    await waitFor(() => expect(handoffAttach).toHaveBeenCalled());
+    expect(vi.mocked(pipelineDecide).mock.calls[0][1].turn).toBe("impl|s|2026-01-01T00:00:00Z");
+    expect(deps.startTerminal).toHaveBeenCalledWith(expect.objectContaining({ roleId: "role_pr_reviewer" }));
+  });
+
+  it("Continue decides a stage tab whose log was not read since the restart", async () => {
+    vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+    vi.mocked(pipelineDecide).mockResolvedValue({ action: "skip", reason: "handed on already" });
+    vi.mocked(pipelineContinue).mockResolvedValue(["impl", "gone"]);
+    vi.mocked(terminalSessionLog).mockImplementation(async (id: string) =>
+      id === "impl" ? log(IMPLEMENTED, "2026-01-01T00:00:00Z") : null,
+    );
+    const { continueRun } = setup([tab("impl", "role_implementer", 3)]);
+    await continueRun("ee_1");
+    await waitFor(() => expect(pipelineDecide).toHaveBeenCalledTimes(1));
+    expect(terminalSessionLog).toHaveBeenCalledWith("gone");
+  });
+
+  it("Continue leaves a tab with no log yet to the restart check when its log shows up", async () => {
+    vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+    vi.mocked(pipelineContinue).mockResolvedValue(["impl"]);
+    vi.mocked(terminalSessionLog).mockResolvedValue(null);
+    const { onLog, continueRun } = setup([tab("impl", "role_implementer", 3)]);
+    await continueRun("ee_1");
+    // The log read later holds a turn from before the restart: still not acted on.
+    onLog("impl", log(IMPLEMENTED, "2026-01-01T00:00:00Z"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(getPipelineRun).not.toHaveBeenCalled();
+    expect(pipelineDecide).not.toHaveBeenCalled();
+  });
+
+  it("Continue that the core refuses decides nothing and rejects", async () => {
+    vi.mocked(pipelineContinue).mockRejectedValue(new Error("This run is not waiting after a restart."));
+    const { continueRun } = setup([tab("impl", "role_implementer", 3)]);
+    await expect(continueRun("ee_1")).rejects.toThrow("not waiting after a restart");
+    expect(terminalSessionLog).not.toHaveBeenCalled();
+    expect(pipelineDecide).not.toHaveBeenCalled();
+  });
+
   it("a rate-limited turn runs no checks, reports the error and tells you it stopped for usage_limit", async () => {
     vi.mocked(getPipelineRun).mockResolvedValue(run(true));
     vi.mocked(pipelineDecide).mockResolvedValue({
@@ -715,3 +787,88 @@ describe("useAutopilot", () => {
   });
 });
 
+describe("a duplicated PR Reviewer in a pipeline of your own (Track H4)", () => {
+  const COPY = "role_custom_7";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    live.clear();
+  });
+
+  /** Eagle-Eye 2, or the same pipeline with its PR Reviewer swapped for a copy. */
+  function chainTabs(copied: boolean): { kind: string; runKind: string; tabs: TabSummary[] } {
+    const kind = copied ? "copied_review" : "eagle2";
+    if (copied) {
+      setPipelineDefs([
+        {
+          id: kind,
+          name: "Copied review",
+          stages: [
+            { id: "implementer", roleId: "role_implementer", title: "Implementer" },
+            { id: "pr_reviewer", roleId: COPY, title: "PR Reviewer", loopBack: { to: "implementer", minSeverity: "MEDIUM" } },
+          ],
+        },
+      ]);
+    }
+    const on = (t: TabSummary, step: number) => ({ ...t, chain: { chainId: "ee_1", kind, step, total: 2 } }) as TabSummary;
+    return {
+      kind,
+      runKind: copied ? kind : "execute",
+      tabs: [on(tab("impl", "role_implementer", 1), 1), on(tab("pr", copied ? COPY : "role_pr_reviewer", 2), 2)],
+    };
+  }
+
+  /** The reviewer forgets its sections, is asked again, then asks for changes. */
+  async function reviewerTurns(copied: boolean) {
+    vi.clearAllMocks();
+    live.clear();
+    const { runKind, tabs } = chainTabs(copied);
+    vi.mocked(getPipelineRun).mockResolvedValue({ run: { ...run(true).run, kind: runKind } });
+    live.set("impl", { exited: false });
+    live.set("pr", { exited: false });
+    // The copy keeps its original's name (Settings › Roles › Duplicate adds " copy"; renamed here).
+    const roles = copied ? [{ id: COPY, name: "PR Reviewer" }] : null;
+    const { onLog } = setup(tabs, { impl: { kind: "idle" }, pr: { kind: "idle" } }, roles);
+    vi.mocked(pipelineDecide).mockResolvedValueOnce({ action: "reask", stageId: "pr_reviewer", reason: "sections" });
+    onLog("pr", log("Looks risky: the token can be null.", "2099-01-01T00:00:00Z"));
+    await waitFor(() => expect(ptyWrite).toHaveBeenCalledTimes(1));
+    const reported = vi.mocked(pipelineDecide).mock.calls[0][1];
+    const reask = vi.mocked(ptyWrite).mock.calls[0];
+    vi.mocked(pipelineDecide).mockResolvedValueOnce({
+      action: "loopBack",
+      stageId: "implementer",
+      roleId: "role_implementer",
+      reason: "round 1 goes back",
+    });
+    onLog("pr", log(REVIEW_CHANGES, "2099-01-01T00:01:00Z"));
+    await waitFor(() => expect(ptyWrite).toHaveBeenCalledTimes(2));
+    const second = vi.mocked(pipelineDecide).mock.calls[1][1];
+    const back = vi.mocked(ptyWrite).mock.calls[1];
+    const recorded = vi.mocked(chainLoopBack).mock.calls[0][0];
+    if (copied) setPipelineDefs([]);
+    return {
+      missingSections: reported.missingSections,
+      reask: [reask[0], String(reask[1])],
+      verdict: second.verdict,
+      findingsKnown: second.findingsKnown,
+      back: [back[0], String(back[1])],
+      recorded: { tabId: recorded.tabId, verdict: recorded.verdict },
+    };
+  }
+
+  const REVIEW_CHANGES = [
+    "## HANDOFF: Verdict\nREQUEST CHANGES",
+    "## HANDOFF: Findings for the Implementer\n1. Guard the null token.",
+    '## HANDOFF: Result\n```json\n{"verdict": "REQUEST CHANGES", "findings": [{"severity": "MEDIUM", "summary": "Null token."}]}\n```',
+  ].join("\n\n");
+
+  it("re-asks and loops exactly like the built-in PR Reviewer", async () => {
+    const builtIn = await reviewerTurns(false);
+    expect(builtIn.missingSections).toEqual(["Verdict", "Findings for the Implementer"]);
+    expect(builtIn.reask[0]).toBe("pr");
+    expect(builtIn.reask[1]).toContain("missing the HANDOFF sections");
+    expect(builtIn.back[0]).toBe("impl");
+    expect(builtIn.back[1]).toContain("push to the same branch");
+    expect(await reviewerTurns(true)).toEqual(builtIn);
+  });
+});

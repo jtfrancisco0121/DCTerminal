@@ -4,16 +4,18 @@
   "description": "Plan, review the plan, implement it as draft pull requests, review the pull requests.",
   "runKind": "full",
   "stages": [
-    { "id": "planner", "roleId": "role_planner", "title": "Planner" },
+    { "id": "planner", "roleId": "role_planner", "kind": "planner", "title": "Planner" },
     {
       "id": "plan_reviewer",
       "roleId": "role_plan_reviewer",
+      "kind": "reviewer",
       "title": "Plan Reviewer",
       "loopBack": { "to": "planner", "minSeverity": "MEDIUM" }
     },
     {
       "id": "implementer",
       "roleId": "role_implementer",
+      "kind": "implementer",
       "title": "Implementer",
       "checkpoint": true,
       "gates": [{ "kind": "command", "run": "auto" }, { "kind": "pullRequest" }]
@@ -21,6 +23,7 @@
     {
       "id": "pr_reviewer",
       "roleId": "role_pr_reviewer",
+      "kind": "reviewer",
       "title": "PR Reviewer",
       "loopBack": { "to": "implementer", "minSeverity": "MEDIUM" }
     }

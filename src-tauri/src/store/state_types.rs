@@ -694,10 +694,10 @@ pub struct StageHandoff {
 }
 
 /// `(stage id, role id)` for each stage of a run kind or chain kind, from
-/// the pipeline definitions (`crate::pipelines`). Unknown kinds read as
-/// Eagle-Eye 1 (`full`).
-pub fn pipeline_stages(kind: &str) -> Vec<(String, String)> {
-    crate::pipelines::stages(kind)
+/// the pipeline definitions (`crate::pipelines`). An unknown kind is an
+/// error that names it, never Eagle-Eye 1 (Track H4).
+pub fn pipeline_stages(kind: &str) -> Result<Vec<(String, String)>, String> {
+    crate::pipelines::stages(kind).ok_or_else(|| format!("unknown pipeline: {}", kind.trim()))
 }
 
 /// Run kind of a chain: `eagle1` → `full`, `eagle2` → `execute`, a user

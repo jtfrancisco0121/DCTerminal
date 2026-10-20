@@ -11,7 +11,15 @@ import {
   pipelineSetAutopilot,
   pipelineSetCandidatePlan,
 } from "../bridge";
-import { DEFAULT_PAUSE_AT_USAGE_PERCENT, maxRounds, pipelineDef, pipelineStages, type StageDef } from "../pipeline/defs";
+import {
+  behaviourRole,
+  DEFAULT_PAUSE_AT_USAGE_PERCENT,
+  maxRounds,
+  pipelineDef,
+  pipelineStages,
+  stageBehaviour,
+  type StageDef,
+} from "../pipeline/defs";
 import { stopReasonText } from "../pipeline/stopReasons";
 import { autopilotUsageLine, type RateWindow } from "../usage/limits";
 import { eventLabel, eventTime, followUps, formatRunReport, reviewRound, stageTitle } from "../pipeline/runReport";
@@ -62,6 +70,8 @@ type Props = {
   onApproveLane?: (runId: string, laneId: string) => Promise<void>;
   /** Marks a run without lanes complete by hand (autopilot stopped at its last stage). */
   onApproveRun?: (runId: string) => Promise<void>;
+  /** Continue a run waiting after a restart: autopilot decides the turn that finished meanwhile. */
+  onContinue?: (runId: string) => Promise<void>;
   /** The latest Claude limit windows, for the autopilot usage line. Null: not loaded. */
   usageWindows?: RateWindow[] | null;
 };
@@ -132,6 +142,7 @@ export function PipelineOverview({
   onStartLane,
   onApproveLane,
   onApproveRun,
+  onContinue,
   usageWindows = null,
 }: Props) {
   const [run, setRun] = useState<PipelineRun | null>(null);
@@ -260,6 +271,20 @@ export function PipelineOverview({
     }
   };
 
+  const continueNow = async () => {
+    if (!run || !onContinue) return;
+    setBusy(true);
+    try {
+      await onContinue(run.id);
+      await reload();
+    } catch (err: unknown) {
+      onNotice("Run not continued", errorText(err));
+      await reload();
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const exportReport = async () => {
     if (!run) return;
     try {
@@ -308,7 +333,7 @@ export function PipelineOverview({
       await pipelinePromotePlan(runId, text);
       await reload();
       await onRefreshTabs();
-      const implId = run?.tabIds.role_implementer;
+      const implId = run ? run.tabIds[behaviourRole(run.kind, "implementer")] : undefined;
       onNotice("Approved for implementation", "Implementer form updated. Open that tab and Start.");
       if (implId) onJump(implId);
     } catch (err: unknown) {
@@ -335,7 +360,9 @@ export function PipelineOverview({
   }
 
   const stages = overviewStages(run, tabs, runtimes, terminalReader, terminalStates, sessionLogs);
-  const implementerTab = tabs.find((t) => t.id === run.tabIds.role_implementer);
+  // The implementer stage's role on this pipeline (a copied Implementer keeps its own id).
+  const implementerRole = behaviourRole(run.kind, "implementer");
+  const implementerTab = tabs.find((t) => t.id === run.tabIds[implementerRole]);
   // A chain's Implementer may already be running; promote only fills a draft form.
   const canPromote = !run.chainId || implementerTab?.phase === "draft";
   // Why promote is off: the Implementer runs already, or there is none yet
@@ -344,7 +371,7 @@ export function PipelineOverview({
     ? null
     : implementerTab
       ? "The Implementer tab already started. Use Hand off on the Plan Reviewer tab."
-      : run.tabIds.role_implementer
+      : run.tabIds[implementerRole]
         ? "The Implementer tab is closed. Use Hand off on the Plan Reviewer tab to start a new one."
         : "There is no Implementer tab yet. Use Hand off on the Plan Reviewer tab to start it.";
   const originalRequest = run.originalRequest?.trim() ?? "";
@@ -360,7 +387,7 @@ export function PipelineOverview({
   // From the fan-out stage on, rounds are per lane (shown in Pull requests).
   const fanOutIndex = run.fanOutStage ? stageDefs.findIndex((s) => s.id === run.fanOutStage) : -1;
   // Fan-out reads the pull-request list in the reply of the stage before the Implementer.
-  const fanStage = stageDefs.find((s) => s.roleId === "role_implementer") ?? null;
+  const fanStage = (def && stageDefs.find((s) => stageBehaviour(def, s) === "implementer")) ?? null;
   const planStage = fanStage ? stageDefs[stageDefs.indexOf(fanStage) - 1] ?? null : null;
   const planTab = planStage ? tabs.find((t) => t.id === run.tabIds[planStage.roleId]) : undefined;
   const plannedPrs =
@@ -420,6 +447,19 @@ export function PipelineOverview({
               {stopReasonText(run.stopReason) && <strong>{stopReasonText(run.stopReason)} </strong>}
               {run.autopilot.waiting}
             </p>
+          )}
+          {autopilotOn && run.status === "waiting" && run.stopReason === "app_restarted" && onContinue && (
+            <div className="button-row">
+              <button
+                type="button"
+                className="primary-button"
+                disabled={busy}
+                title="Let autopilot act on the turn that finished while the app was closed."
+                onClick={() => void continueNow()}
+              >
+                Continue
+              </button>
+            </div>
           )}
           {autopilotOn && run.autopilot?.waiting && lanes.length === 0 && atLastStage && onApproveRun && (
             <div className="button-row">

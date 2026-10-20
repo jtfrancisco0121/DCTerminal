@@ -473,5 +473,59 @@ describe("PipelineOverview: autopilot, checks and timeline", () => {
       done();
     }
   });
-});
 
+  it("offers Continue only on a run waiting after a restart, and reports a refused one", async () => {
+    const onContinue = vi.fn(async () => {});
+    const onNotice = vi.fn();
+    const restarted = run({
+      status: "waiting",
+      stopReason: "app_restarted",
+      autopilot: {
+        enabled: true,
+        waiting: "Implementer finished while the app was closed. Press Continue to let autopilot act on it.",
+      },
+    });
+    const view = (r: PipelineRun) => (
+      <PipelineOverview
+        runId="ee_1"
+        cwd="/p"
+        tabs={[tab("impl", "role_implementer")]}
+        runtimes={{}}
+        onJump={() => {}}
+        onWatch={() => {}}
+        onRefreshTabs={async () => {}}
+        onNotice={onNotice}
+        terminalReader={noTerminal}
+        onContinue={onContinue}
+        key={r.stopReason ?? "none"}
+      />
+    );
+    vi.mocked(getPipelineRun).mockResolvedValue({ run: restarted });
+    const { unmount } = render(view(restarted));
+    const panel = await screen.findByRole("region", { name: "Autopilot" });
+    expect(within(panel).getByRole("status").textContent).toContain("finished while the app was closed");
+    fireEvent.click(within(panel).getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(onContinue).toHaveBeenCalledWith("ee_1"));
+    expect(onNotice).not.toHaveBeenCalled();
+
+    onContinue.mockRejectedValueOnce(new Error("This run is not waiting after a restart."));
+    fireEvent.click(within(panel).getByRole("button", { name: "Continue" }));
+    await waitFor(() =>
+      expect(onNotice).toHaveBeenCalledWith("Run not continued", "This run is not waiting after a restart."),
+    );
+    unmount();
+
+    // Stalled, or waiting for another reason: no Continue (you hand on, or turn autopilot off and on).
+    for (const other of [
+      run({ status: "waiting", stopReason: "stalled", autopilot: { enabled: true, waiting: "quiet" } }),
+      run({ status: "waiting", stopReason: "checkpoint", autopilot: { enabled: true, waiting: "Checkpoint" } }),
+      run({ status: "running", autopilot: { enabled: true } }),
+    ]) {
+      vi.mocked(getPipelineRun).mockResolvedValue({ run: other });
+      const { unmount: done } = render(view(other));
+      await screen.findByRole("region", { name: "Autopilot" });
+      expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
+      done();
+    }
+  });
+});

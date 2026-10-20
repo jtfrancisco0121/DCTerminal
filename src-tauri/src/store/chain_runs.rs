@@ -79,6 +79,15 @@ impl StateStore {
             .map(|run| run.id.clone())
     }
 
+    /// The pipeline stage kind of a tab, from its chain tag: what decides
+    /// its permission mode. `None` off a pipeline (or an unknown one), where
+    /// the role id decides.
+    pub fn tab_stage_kind(&self, tab_id: &str) -> Option<crate::pipelines::StageKind> {
+        self.tab_by_id(tab_id)
+            .and_then(|tab| tab.chain.as_ref())
+            .and_then(crate::pipelines::stage_kind_for_chain)
+    }
+
     /// Put `tab_id` on its chain's run at the chain's step (creating the
     /// run at any step, so chains from before runs existed still get one).
     /// Does not save; the caller does.
@@ -91,7 +100,9 @@ impl StateStore {
         let Some(kind) = run_kind_for_chain(&chain.kind) else {
             return;
         };
-        let stages = pipeline_stages(&kind);
+        let Ok(stages) = pipeline_stages(&kind) else {
+            return;
+        };
         let Some(index) = (chain.step as usize).checked_sub(1) else {
             return;
         };
@@ -258,7 +269,9 @@ impl StateStore {
         let run = self
             .pipeline_run_by_id_mut(&run_id)
             .ok_or_else(|| format!("unknown pipeline run: {run_id}"))?;
-        let stages = pipeline_stages(&run.kind);
+        let stages = pipeline_stages(&run.kind)?;
+        let chain_kind = crate::pipelines::chain_kind_for_run(&run.kind)
+            .ok_or_else(|| format!("unknown pipeline: {}", run.kind))?;
         let position = |role: &str| stages.iter().position(|(_, id)| id == role);
         // A specialist reviewer (alsoReviewers) sits on its stage's step too.
         let reviewer_at = position(reviewer_role_id).or_else(|| {
@@ -329,7 +342,7 @@ impl StateStore {
         }
         let chain = ChainRef {
             chain_id: chain_id.to_string(),
-            kind: crate::pipelines::chain_kind_for_run(&run.kind),
+            kind: chain_kind,
             step: target as u32 + 1,
             total: stages.len() as u32,
             round: ending + 1,
@@ -377,7 +390,7 @@ impl StateStore {
         let Some(run) = self.pipeline_run_by_id_mut(&run_id) else {
             return Ok(None);
         };
-        let stages = pipeline_stages(&run.kind);
+        let stages = pipeline_stages(&run.kind)?;
         let Some((stage_id, _)) = (chain.step as usize)
             .checked_sub(1)
             .and_then(|index| stages.get(index))
@@ -430,7 +443,7 @@ impl StateStore {
     /// Form answers of the run's step-1 tab (open or closed tab).
     fn chain_first_answers(&self, run_id: &str) -> Option<&HashMap<String, String>> {
         let run = self.pipeline_run_by_id(run_id)?;
-        let (_, first_role) = pipeline_stages(&run.kind).into_iter().next()?;
+        let (_, first_role) = pipeline_stages(&run.kind).ok()?.into_iter().next()?;
         let tab_id = run.tab_ids.get(&first_role)?;
         self.tab_by_id(tab_id).map(|tab| &tab.answers).or_else(|| {
             self.data

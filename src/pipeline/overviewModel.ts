@@ -7,6 +7,7 @@ import { latestAgentMessage, latestReplyText, splitPlanReview, terminalLogFields
 import { isReviewerRole, parseReviewVerdict, type ReviewVerdict } from "../handoff/verdict";
 import type { TabRuntime } from "../liveTabs";
 import { segmentsToPlainText } from "../transcript";
+import { behaviourRole, roleBehaviour } from "./defs";
 import { stagesForKind, type PipelineKind, type PipelineStageDef } from "./stages";
 import type { TerminalNeeds, TerminalState } from "../terminal/claudeState";
 import type { TerminalReader } from "./terminalText";
@@ -62,7 +63,9 @@ export function stageReply(
   if (isTerminal(tab)) return reader.tail(tab.id).trim();
   const segments = rt?.segments.map((s) => ({ kind: s.kind, text: s.text })) ?? [];
   // Same reply the tab's hand-off reads, so the verdicts agree.
-  return tab.roleId === "role_implementer" ? latestAgentMessage(segments) : latestReplyText(segments);
+  return roleBehaviour(tab.roleId, tab.chain?.kind) === "implementer"
+    ? latestAgentMessage(segments)
+    : latestReplyText(segments);
 }
 
 export type StageView = {
@@ -89,7 +92,7 @@ export function overviewStages(
     const tabId = run.tabIds[def.roleId] ?? null;
     const tab = tabId ? byId.get(tabId) : undefined;
     const rt = tabId ? runtimes[tabId] : undefined;
-    const verdict = isReviewerRole(def.roleId)
+    const verdict = isReviewerRole(def.roleId, run.kind)
       ? parseReviewVerdict(stageReply(tab, rt, reader, logs))
       : null;
     return {
@@ -132,7 +135,7 @@ export async function pullPlannerText(
   reader: TerminalReader,
   logs?: SessionLogs,
 ): Promise<Pulled> {
-  const tab = stageTab(run, tabs, "role_planner");
+  const tab = stageTab(run, tabs, behaviourRole(run.kind, "planner"));
   if (!tab) return { text: "", reason: "This run has no open Planner tab." };
   if (isTerminal(tab)) {
     let text: string;
@@ -168,7 +171,7 @@ export function pullPlanReviewText(
   reader: TerminalReader,
   logs?: SessionLogs,
 ): Pulled {
-  const tab = stageTab(run, tabs, "role_plan_reviewer");
+  const tab = stageTab(run, tabs, behaviourRole(run.kind, "plan_reviewer"));
   if (!tab) return { text: "", reason: "This run has no open Plan Reviewer tab." };
   const reply = isTerminal(tab)
     ? reader.selection(tab.id) || stageReply(tab, runtimes[tab.id], reader, logs)

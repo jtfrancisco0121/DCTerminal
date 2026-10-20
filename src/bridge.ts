@@ -421,6 +421,8 @@ export type GateResult = {
   summary: string;
   output?: string;
   durationMs: number;
+  /** The gate is marked optional: an `auto` check with nothing to run was skipped, not a stop. */
+  optional?: boolean;
 };
 
 export type RunAutopilot = {
@@ -1173,6 +1175,41 @@ export async function pipelineSetAutopilot(runId: string, enabled: boolean): Pro
   return invoke("pipeline_set_autopilot", { runId, enabled });
 }
 
+/**
+ * Continue a run waiting with `app_restarted` (a stage finished while the
+ * app was closed): it runs again. Returns its current stage's tab ids, whose
+ * finished turn autopilot then decides.
+ */
+export async function pipelineContinue(runId: string): Promise<string[]> {
+  return invoke("pipeline_continue", { runId });
+}
+
+/** The core stopped a run by itself: a stall, or a turn that finished while the app was closed. */
+export type AutopilotStoppedEvent = {
+  runId: string;
+  tabId: string;
+  reason: StopReason;
+  summary: string;
+};
+
+/**
+ * Stops the core made before the frontend listened (the startup reconcile
+ * runs while the window loads), on the given tabs (this window's). Call once
+ * the `autopilot-stopped` listener is attached and the tab list has loaded;
+ * each stop is handed over once, and stops on other tabs stay held.
+ */
+export async function autopilotPendingStops(tabIds: string[]): Promise<AutopilotStoppedEvent[]> {
+  return invoke("autopilot_pending_stops", { tabIds });
+}
+
+export function listenAutopilotStopped(
+  handler: (event: AutopilotStoppedEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<AutopilotStoppedEvent>("autopilot-stopped", (e) => {
+    handler(e.payload);
+  });
+}
+
 /** What a stage's finished turn reported, for the autopilot decision. */
 export type TurnReport = {
   stageId: string;
@@ -1669,6 +1706,8 @@ export async function roleTerminalStart(input: {
   onOutput: Channel<PtyPacket>;
   /** Launch as this provider (a hand-off's new tab keeps its source's). Omitted: the tab's, or the window's default. */
   provider?: ProviderId | null;
+  /** The chain tag the new tab is about to join (a hand-off's next stage): its stage kind sets the permission mode. */
+  chain?: import("./handoff/chains").ChainRef | null;
 }): Promise<TerminalStartResult> {
   return invoke<TerminalStartResult>("role_terminal_start", {
     input: {
@@ -1680,6 +1719,7 @@ export async function roleTerminalStart(input: {
       rows: input.rows,
       windowId: await windowId(),
       provider: input.provider ?? null,
+      chain: input.chain ?? null,
     },
     onOutput: input.onOutput,
   });

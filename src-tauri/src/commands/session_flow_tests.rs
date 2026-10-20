@@ -136,7 +136,7 @@ pub(super) fn route(provider: &SharedProvider, role_id: &str, request: &Value) -
     let params = request.get("params").unwrap_or(&Value::Null);
     match provider.classify_request(method, params) {
         AgentRequestKind::Permission if provider.id() == ProviderId::Claude => {
-            match claude_permission_route(role_id, params) {
+            match claude_permission_route(role_id, None, params) {
                 ClaudeRoute::AutoAllow { result, .. } => Some(result),
                 ClaudeRoute::PlanCard | ClaudeRoute::Card => None,
             }
