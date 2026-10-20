@@ -872,6 +872,33 @@ describe("useAutopilot", () => {
       expect(deps.startTerminal).toHaveBeenCalledWith(expect.objectContaining({ roleId: "role_pr_reviewer" }));
     });
 
+    it("a blocked bridged Implementer runs no checks and is decided on with its reason", async () => {
+      vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+      vi.mocked(pipelineDecide).mockResolvedValue({
+        action: "stop",
+        stageId: "implementer",
+        roleId: "role_implementer",
+        reason: "Implementer is blocked: no API.",
+        stopReason: "checkpoint",
+      });
+      const impl = { ...tab("impl", "role_implementer", 3), bridge: { runId: "ee_1", stage: "implementer" } } as TabSummary;
+      const turn = bridgeTurn({
+        tabId: "impl",
+        stageKey: "implementer",
+        stageId: "implementer",
+        roleId: "role_implementer",
+        lastAssistantMessage: "Blocked.",
+        blocked: false,
+        result: { schema: 1, prs: [], summary: "Nothing built.", blocked: "No API." },
+      });
+      vi.mocked(pipelineBridgeTurn).mockResolvedValue(turn);
+      const { onBridgeTurn } = setup([impl]);
+      onBridgeTurn(turn);
+      await waitFor(() => expect(pipelineDecide).toHaveBeenCalled());
+      expect(vi.mocked(pipelineDecide).mock.calls[0][1]).toMatchObject({ noResult: false, blocked: "No API." });
+      expect(pipelineRunGates).not.toHaveBeenCalled();
+    });
+
     it("a bridged Planner's handed-over plan advances to the Plan Reviewer with the plan", async () => {
       vi.mocked(getPipelineRun).mockResolvedValue(run(true));
       vi.mocked(pipelineDecide).mockResolvedValue({

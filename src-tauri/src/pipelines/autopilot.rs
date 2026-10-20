@@ -66,6 +66,9 @@ pub struct TurnReport {
     /// `submit_result`, after its one block (D10).
     #[serde(default)]
     pub no_result: bool,
+    /// Engine 2: an Implementer's `submit_result` said it is blocked, and why.
+    #[serde(default)]
+    pub blocked: Option<String>,
 }
 
 /// Key of per-stage state (gate results, retries): `stage` or `stage@lane`.
@@ -425,6 +428,19 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             format!(
                 "{} ended its turn without reporting a result through submit_result, even after being asked once.",
                 stage.title
+            ),
+        );
+    }
+    if let Some(why) = report.blocked.as_deref().map(str::trim).filter(|why| !why.is_empty()) {
+        // An Implementer that could not finish waits for you, with its reason.
+        return stop(
+            run,
+            Some(&stage),
+            StopReason::Checkpoint,
+            format!(
+                "{} is blocked: {}. Unblock it, then hand the stage on yourself.",
+                stage.title,
+                why.trim_end_matches('.')
             ),
         );
     }

@@ -1232,6 +1232,8 @@ export type BridgeImplementerResult = {
   prs: { url: string; branch: string; title: string; lane?: string }[];
   summary: string;
   checks?: { command: string; passed: boolean }[];
+  /** Final Status BLOCKED: why it could not finish (its pull requests may be none). */
+  blocked?: string;
 };
 
 /** The run's `tasks.json`: its Planner's latest tasks, which fan-out reads. */
@@ -1357,6 +1359,8 @@ export type TurnReport = {
   turn?: string | null;
   /** Engine 2: the turn ended without `submit_result` after the bridge asked once. */
   noResult?: boolean;
+  /** Engine 2: an Implementer's `submit_result` said it is blocked, and why; the run waits. */
+  blocked?: string | null;
 };
 
 export type AutopilotDecision = {

@@ -31,7 +31,7 @@ const FINDING_FIELDS: [&str; 5] = ["severity", "summary", "pr", "file", "regress
 /// Pull requests an Implementer reports, and tasks a plan has (plan "Result schemas").
 pub const MAX_PRS: usize = 8;
 pub const MAX_TASKS: usize = 8;
-const IMPLEMENTER_FIELDS: [&str; 4] = ["schema", "prs", "summary", "checks"];
+const IMPLEMENTER_FIELDS: [&str; 5] = ["schema", "prs", "summary", "checks", "blocked"];
 const PR_FIELDS: [&str; 4] = ["url", "branch", "title", "lane"];
 const CHECK_FIELDS: [&str; 2] = ["command", "passed"];
 const TASKS_FIELDS: [&str; 2] = ["schema", "tasks"];
@@ -225,14 +225,35 @@ fn validate_implementer(args: &Value) -> Result<Value, Vec<String>> {
         Some(value) if value.as_u64() == Some(u64::from(SCHEMA)) => {}
         Some(value) => problems.push(format!("`schema` must be {SCHEMA}, not {value}")),
     }
+    // BLOCKED: `blocked` says why, and the pull requests may be none.
+    let blocked = match object.get("blocked") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(text)) if text.trim().is_empty() => {
+            problems.push("`blocked` is empty: say why you could not finish, or leave it out".to_string());
+            None
+        }
+        Some(Value::String(text)) if text.trim().chars().count() > MAX_LONG_TEXT_CHARS => {
+            problems.push(format!("`blocked` is longer than {MAX_LONG_TEXT_CHARS} characters"));
+            None
+        }
+        Some(Value::String(text)) => Some(text.trim().to_string()),
+        Some(other) => {
+            problems.push(format!("`blocked` must be a string saying why you are blocked, not {other}"));
+            None
+        }
+    };
+    let blocked_field = object.get("blocked").is_some_and(|value| !value.is_null());
     let mut prs = Vec::new();
     match object.get("prs") {
+        None if blocked_field => {}
         None => problems.push(format!(
-            "`prs` is missing: list every draft pull request you opened (1 to {MAX_PRS}), each with `url`, `branch` and `title`"
+            "`prs` is missing: list every draft pull request you opened (1 to {MAX_PRS}), each with `url`, `branch` and `title`, or say why you are blocked in `blocked`"
         )),
         Some(Value::Array(items)) => {
-            if items.is_empty() {
-                problems.push("`prs` is empty: list the draft pull request you opened".to_string());
+            if items.is_empty() && !blocked_field {
+                problems.push(
+                    "`prs` is empty: list the draft pull request you opened, or say why you are blocked in `blocked`".to_string(),
+                );
             }
             if items.len() > MAX_PRS {
                 problems.push(format!("`prs` has {} items; at most {MAX_PRS}", items.len()));
@@ -325,6 +346,9 @@ fn validate_implementer(args: &Value) -> Result<Value, Vec<String>> {
     let mut out = json!({ "schema": SCHEMA, "prs": prs, "summary": summary });
     if object.get("checks").is_some_and(Value::is_array) {
         out["checks"] = json!(checks);
+    }
+    if let Some(blocked) = blocked {
+        out["blocked"] = json!(blocked);
     }
     Ok(out)
 }
@@ -583,15 +607,15 @@ pub fn tool_definition(kind: ResultKind) -> Value {
         ResultKind::Implementer => json!({
             "name": TOOL_NAME,
             "title": "Submit result",
-            "description": "Report the draft pull requests you opened to DCTerminal. Call it once, before you finish your turn. If it returns an error, fix each problem it names and call it again.",
+            "description": "Report the draft pull requests you opened to DCTerminal, or why you are blocked. Call it once, before you finish your turn. If it returns an error, fix each problem it names and call it again.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "schema": { "type": "integer", "enum": [SCHEMA] },
                     "prs": {
                         "type": "array",
-                        "minItems": 1,
                         "maxItems": MAX_PRS,
+                        "description": "every draft pull request you opened (at least one unless you are blocked)",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -605,6 +629,11 @@ pub fn tool_definition(kind: ResultKind) -> Value {
                         }
                     },
                     "summary": { "type": "string", "maxLength": MAX_LONG_TEXT_CHARS },
+                    "blocked": {
+                        "type": "string",
+                        "maxLength": MAX_LONG_TEXT_CHARS,
+                        "description": "only when your Final Status is BLOCKED: why you could not finish"
+                    },
                     "checks": {
                         "type": "array",
                         "maxItems": MAX_CHECKS,
@@ -619,7 +648,7 @@ pub fn tool_definition(kind: ResultKind) -> Value {
                         }
                     }
                 },
-                "required": ["prs", "summary"],
+                "required": ["summary"],
                 "additionalProperties": false
             }
         }),
@@ -665,7 +694,8 @@ pub fn result_instructions(kind: ResultKind) -> String {
              (MCP server `{SERVER_NAME}`, full name `{FULL_TOOL_NAME}`) once, with:\n\n\
              - `prs`: every draft pull request you opened (1 to {MAX_PRS}), each with `url`, `branch` and `title`, and `lane` (`pr1`) when this tab implements one pull request of several.\n\
              - `summary`: what you built, in a few sentences.\n\
-             - `checks` (optional): each check you ran, as `{{\"command\": \"npm test\", \"passed\": true}}`.\n\n\
+             - `checks` (optional): each check you ran, as `{{\"command\": \"npm test\", \"passed\": true}}`.\n\
+             - `blocked` (only when your Final Status is `BLOCKED`): why you could not finish. `prs` may then be `[]`.\n\n\
              Example: `{{\"prs\": [{{\"url\": \"https://github.com/acme/app/pull/12\", \"branch\": \"feat/token-refresh\", \"title\": \"Refresh expired tokens\"}}], \"summary\": \"Expired tokens are refreshed once before a request fails.\", \"checks\": [{{\"command\": \"npm test\", \"passed\": true}}]}}`\n\n\
              If the tool answers with an error, fix each problem it names and call it again. Call it again after each later round too. Still end your reply with the HANDOFF sections."
         ),
@@ -689,6 +719,7 @@ pub fn block_reason(kind: ResultKind) -> String {
         ResultKind::Implementer => format!(
             "You have not reported your result yet. Call the `{FULL_TOOL_NAME}` tool now with the draft pull requests you opened: \
              {{\"prs\": [{{\"url\": \"https://…/pull/N\", \"branch\": \"…\", \"title\": \"…\"}}], \"summary\": \"…\", \"checks\": [{{\"command\": \"…\", \"passed\": true}}]}}. \
+             If you are blocked and opened none, say why instead: {{\"prs\": [], \"summary\": \"…\", \"blocked\": \"…\"}}. \
              Do not ask the user; then finish your turn."
         ),
     }
@@ -704,7 +735,8 @@ pub fn accepted_message(kind: ResultKind, result: &Value) -> String {
         }
         ResultKind::Implementer => {
             let count = result.get("prs").and_then(Value::as_array).map_or(0, Vec::len);
-            format!("DCTerminal received your result: {count} pull request(s). Finish your turn now.")
+            let blocked = if result.get("blocked").is_some() { ", blocked" } else { "" };
+            format!("DCTerminal received your result: {count} pull request(s){blocked}. Finish your turn now.")
         }
         ResultKind::Planner => PLAN_RECEIVED.to_string(),
     }

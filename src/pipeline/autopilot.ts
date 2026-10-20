@@ -261,6 +261,13 @@ export function bridgePrUrls(turn: BridgeTurn): string[] | null {
   return result.prs.map((pr) => pr.url);
 }
 
+/** Why a bridged Implementer is blocked (`submit_result` blocked); null otherwise. */
+export function bridgeBlocked(turn: BridgeTurn): string | null {
+  const result = turn.outcome === "result" ? turn.result : null;
+  if (!result || !("prs" in result)) return null;
+  return result.blocked?.trim() || null;
+}
+
 /** The findings a loop-back sends, numbered like `loopBackText` lists Result findings. */
 export function bridgeFindingsText(findings: readonly BridgeFinding[]): string {
   return findings
@@ -270,7 +277,8 @@ export function bridgeFindingsText(findings: readonly BridgeFinding[]): string {
 
 /**
  * The report a bridged stage's turn is decided on: its `submit_result`
- * (verdict and findings), or `noResult` when the turn ended without one.
+ * (verdict and findings, or an Implementer's `blocked` reason), or
+ * `noResult` when the turn ended without one.
  * HANDOFF sections are not checked: the tool replaced them as the result.
  * A usage-limit error rides along, so `decide` stops for it before `noResult`.
  */
@@ -298,5 +306,6 @@ export function bridgeTurnReport(args: {
     chat: false,
     lane,
     noResult: !result,
+    blocked: bridgeBlocked(turn),
   };
 }

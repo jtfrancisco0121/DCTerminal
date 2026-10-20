@@ -268,6 +268,22 @@ fn a_bridge_turn_with_no_result_stops_at_once_with_no_result() {
 }
 
 #[test]
+fn a_blocked_implementer_makes_the_run_wait_with_its_reason_and_runs_on_no_further() {
+    let mut r = run(1);
+    r.stage = "implementer".into();
+    let mut rep = report("implementer", None);
+    rep.blocked = Some("The plan's API does not exist in this repository.".into());
+    rep.findings_known = true;
+    rep.turn = Some("tab|bridge|p-1".into());
+    let d = decide(&eagle1(), &mut r, &rep);
+    assert_eq!(d.action, "stop", "{}", d.reason);
+    assert_eq!(d.stage_id.as_deref(), Some("implementer"));
+    assert!(d.reason.contains("blocked") && d.reason.contains("API does not exist"), "{}", d.reason);
+    assert_eq!(r.status, RunStatus::Waiting);
+    assert_eq!(r.stop_reason, Some(StopReason::Checkpoint), "not no_result");
+}
+
+#[test]
 fn a_bridge_turn_cut_off_by_a_usage_limit_stops_as_usage_limit_not_no_result() {
     let mut r = run(1);
     let mut rep = report("pr_reviewer", None);

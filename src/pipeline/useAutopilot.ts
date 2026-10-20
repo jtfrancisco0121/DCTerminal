@@ -56,6 +56,7 @@ import { parseReviewVerdict } from "../handoff/verdict";
 import { roleDisplayName } from "../handoff/transitions";
 import {
   bridgeFindingsText,
+  bridgeBlocked,
   bridgePrUrls,
   bridgeReview,
   bridgeTurnReport,
@@ -415,7 +416,9 @@ export function useAutopilot(deps: AutopilotDeps) {
           // A turn cut off by a usage limit ends without the tool: it stops
           // as usage_limit (H5), not no_result, and runs no checks.
           const rateLimit = fresh?.rateLimit?.trim() || null;
-          if (acting && !rateLimit && placed.stage.gates?.length) {
+          // A blocked Implementer opened nothing to check: the run waits for you.
+          const blocked = bridgeBlocked(turn);
+          if (acting && !rateLimit && !blocked && placed.stage.gates?.length) {
             // A bridged Implementer named its pull requests through submit_result.
             const prs = bridgePrUrls(turn) ?? githubPrUrls(reply);
             await pipelineRunGates(runId, placed.stage.id, tab.cwd, prs, lane, round);

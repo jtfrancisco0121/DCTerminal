@@ -1077,7 +1077,7 @@ fn an_implementer_submit_saves_its_pull_requests_for_the_run_and_lists_its_own_t
     let stage = Stage::implementer("bridge_impl", Some("pr1"));
     let listed = mcp::handle(&stage.server(), &json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" })).unwrap();
     let tool = &listed["result"]["tools"][0];
-    assert_eq!(tool["inputSchema"]["required"], json!(["prs", "summary"]));
+    assert_eq!(tool["inputSchema"]["required"], json!(["summary"]));
     stage.hook("UserPromptSubmit", prompt("p-1"));
     let reply = stage.submit(implemented());
     assert_eq!(reply["isError"], false, "{reply}");
@@ -1096,6 +1096,43 @@ fn an_implementer_submit_saves_its_pull_requests_for_the_run_and_lists_its_own_t
     single.hook("UserPromptSubmit", prompt("p-1"));
     single.submit(implemented());
     assert!(single.run_dir.join("prs.json").exists());
+}
+
+#[test]
+fn a_blocked_implementer_reports_why_with_no_pull_requests() {
+    // With no `prs` at all, or an empty list: `blocked` says why.
+    let result = schema::validate(
+        ResultKind::Implementer,
+        &json!({ "summary": "Nothing could be built.", "blocked": "The plan's API does not exist in this repository." }),
+    )
+    .expect("a blocked Implementer can report");
+    assert_eq!(result["blocked"], "The plan's API does not exist in this repository.");
+    assert_eq!(result["prs"], json!([]));
+    let empty = json!({ "prs": [], "summary": "s", "blocked": "No access to the remote." });
+    assert!(schema::validate(ResultKind::Implementer, &empty).is_ok());
+    // Some pull requests opened, then blocked on the rest.
+    let mut partial = implemented();
+    partial["blocked"] = json!("PR2 needs a design decision.");
+    assert_eq!(schema::validate(ResultKind::Implementer, &partial).unwrap()["prs"].as_array().unwrap().len(), 1);
+    // A blank reason is a problem; without `blocked`, an empty list still is.
+    let blank = schema::validate(ResultKind::Implementer, &json!({ "summary": "s", "blocked": "  " })).unwrap_err();
+    assert!(blank.iter().any(|p| p.contains("`blocked`")), "{blank:?}");
+    assert!(schema::validate(ResultKind::Implementer, &json!({ "prs": [], "summary": "s" })).is_err());
+    // The tool and the block both say how.
+    let stage = Stage::implementer("bridge_impl_blocked", None);
+    let listed = mcp::handle(&stage.server(), &json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" })).unwrap();
+    let input = &listed["result"]["tools"][0]["inputSchema"];
+    assert!(input["properties"]["blocked"].is_object(), "{input}");
+    assert_eq!(input["required"], json!(["summary"]));
+    assert!(schema::result_instructions(ResultKind::Implementer).contains("`blocked`"));
+    assert!(schema::block_reason(ResultKind::Implementer).contains("blocked"));
+    stage.hook("UserPromptSubmit", prompt("p-1"));
+    let reply = stage.submit(json!({ "summary": "s", "blocked": "No access to the remote." }));
+    assert_eq!(reply["isError"], false, "{reply}");
+    stage.hook("Stop", stop("p-1", false, "Blocked."));
+    let turn = stage.inbox().pop().unwrap();
+    assert_eq!(turn.outcome, TurnOutcome::Result);
+    assert_eq!(turn.result.unwrap()["blocked"], "No access to the remote.");
 }
 
 #[test]
