@@ -401,8 +401,15 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
     let this_round = run.gates.get(&key_of_stage).filter(|gates| gates.round == round);
     if let Some(gate) = this_round.and_then(|gates| gates.results.iter().find(|r| r.no_check_found()).cloned()) {
         // D31: an `auto` check that found nothing to run is not a pass.
+        // A built-in pipeline cannot be edited, so say what you can do.
+        let fix = if def.built_in {
+            "Add a check to the project (an npm `check` or `test` script, or a Cargo.toml) and hand the stage on yourself, \
+             or make your own pipeline in Settings › Pipelines with the same stages and mark this gate optional."
+        } else {
+            "Add a check command to the pipeline in Settings › Pipelines, or mark the gate optional."
+        };
         let reason = format!(
-            "{} finished, but its `{}` check has nothing to run: {} Add a check command to the pipeline, or mark the gate optional.",
+            "{} finished, but its `{}` check has nothing to run: {} {fix}",
             stage.title, gate.label, gate.summary
         );
         return stop(run, Some(&stage), StopReason::NoCheckFound, reason);

@@ -709,6 +709,19 @@ fn an_auto_gate_with_nothing_to_run_stops_with_no_check_found() {
     assert_eq!((d.action.as_str(), d.stage_id.as_deref()), ("stop", Some("implementer")));
     assert!(d.reason.contains("nothing to run"), "{}", d.reason);
     assert_eq!((r.status, r.stop_reason), (RunStatus::Waiting, Some(StopReason::NoCheckFound)));
+    // A built-in pipeline cannot be edited: say what you can do instead.
+    assert!(!d.reason.contains("to the pipeline"), "{}", d.reason);
+    assert!(d.reason.contains("npm `check`"), "{}", d.reason);
+    assert!(d.reason.contains("your own pipeline in Settings › Pipelines"), "{}", d.reason);
+    // Your own pipeline can take a check command, or mark the gate optional.
+    let mut own = run(1);
+    let def = with_copied_reviewer(None);
+    own.kind = def.run_kind().to_string();
+    own.gates.insert("implementer".into(), auto_gate_found_nothing(false));
+    let d = decide(&def, &mut own, &report("implementer", None));
+    assert_eq!(own.stop_reason, Some(StopReason::NoCheckFound));
+    assert!(d.reason.contains("Add a check command to the pipeline"), "{}", d.reason);
+    assert!(d.reason.contains("mark the gate optional"), "{}", d.reason);
 }
 
 #[test]
