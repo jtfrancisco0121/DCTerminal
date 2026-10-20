@@ -44,6 +44,14 @@ impl RolesStore {
     pub fn save(&mut self) -> Result<(), String> {
         write_json_atomic(&self.path, &self.data)
     }
+
+    /// Tell the pipeline registry which role ids exist, so a pipeline of
+    /// yours naming a deleted role shows as disabled (Track H4). Called at
+    /// startup and after a role is added or removed, never from tests that
+    /// share the registry.
+    pub fn publish_role_ids(&self) {
+        crate::pipelines::set_known_roles(self.data.roles.iter().map(|role| role.id.clone()));
+    }
 }
 
 /// Adds every built-in seed role whose id is missing from `file`, placed

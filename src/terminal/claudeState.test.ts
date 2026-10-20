@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   BRIDGE_NEEDS_GRACE_MS,
+  bridgeNeedsAfterAnswer,
+  bridgeNeedsAfterDialog,
   bridgeNeedsAfterRead,
   deriveTerminalState,
   dialogAfterRead,
@@ -376,7 +378,7 @@ describe("bridged Needs you (PermissionRequest hook, D22)", () => {
     expect(derive({ exitCode: 1, bridgeNeeds: mark })).toEqual({ kind: "exited", code: 1 });
   });
 
-  it("clears once a read made after it shows the tool answered or the turn over", () => {
+  it("clears once a read made after it shows the tool finished or the turn over", () => {
     const waiting = { turnDone: false, openTool: bash, pendingTools: [bash] };
     const after = mark.at + BRIDGE_NEEDS_GRACE_MS;
     // A read from before the hook (or just after it, while the log catches up) changes nothing.
@@ -391,5 +393,33 @@ describe("bridged Needs you (PermissionRequest hook, D22)", () => {
     const plan = open("ExitPlanMode", "toolu_p1");
     expect(bridgeNeedsAfterRead(backup, { turnDone: false, openTool: plan, pendingTools: [plan] }, after)).toBeUndefined();
     expect(bridgeNeedsAfterRead(undefined, waiting, after)).toBeUndefined();
+  });
+
+  it("goes back to Working once you answer the dialog, while the approved tool still runs", () => {
+    // Approving writes nothing to the log: the tool stays pending until it finishes.
+    const running = { turnDone: false, openTool: bash, pendingTools: [bash] };
+    expect(derive({ log: running, bridgeNeeds: mark })).toMatchObject({ kind: "needs", needs: "permission" });
+    // An answer key (Enter, Esc, a digit) sent after the hook answered it.
+    const answered = bridgeNeedsAfterAnswer(mark, mark.at + 10);
+    expect(answered).toBeUndefined();
+    expect(derive({ log: running, bridgeNeeds: answered })).toEqual({ kind: "working" });
+    // A key sent before the hook named the prompt answered something else.
+    expect(bridgeNeedsAfterAnswer(mark, mark.at - 1)).toBe(mark);
+    expect(bridgeNeedsAfterAnswer(undefined, mark.at + 10)).toBeUndefined();
+  });
+
+  it("goes back to Working once the screen's dialog for it is gone", () => {
+    const running = { turnDone: false, openTool: bash, pendingTools: [bash] };
+    // The dialog drawn after the hook: the mark remembers it was shown.
+    const shown = bridgeNeedsAfterDialog(mark, true);
+    expect(shown).toMatchObject({ ...mark, shown: true });
+    expect(bridgeNeedsAfterDialog(shown, true)).toBe(shown);
+    // ...then gone: answered.
+    const gone = bridgeNeedsAfterDialog(shown, false);
+    expect(gone).toBeUndefined();
+    expect(derive({ log: running, bridgeNeeds: gone })).toEqual({ kind: "working" });
+    // A dialog that was never seen going "away" (the detector missed it) keeps the hook's mark.
+    expect(bridgeNeedsAfterDialog(mark, false)).toBe(mark);
+    expect(bridgeNeedsAfterDialog(undefined, true)).toBeUndefined();
   });
 });

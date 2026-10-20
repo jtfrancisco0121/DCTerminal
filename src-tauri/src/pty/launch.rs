@@ -63,10 +63,15 @@ impl RunMode {
 pub use crate::provider::ProgramArgs;
 
 /// Mode flags for one role, then `--approve-mcps --trust`.
-/// An override replaces only the mode portion.
-pub fn role_terminal_flags(role_id: &str, mode: RunMode) -> Vec<String> {
+/// An override replaces only the mode portion. `stage_kind`: the tab's
+/// pipeline stage kind, which decides plan mode (`plans_by_default`).
+pub fn role_terminal_flags(
+    role_id: &str,
+    stage_kind: Option<crate::pipelines::StageKind>,
+    mode: RunMode,
+) -> Vec<String> {
     let mut args = Vec::new();
-    match effective_mode(role_id, mode) {
+    match effective_mode(role_id, stage_kind, mode) {
         Effective::Yolo => args.push("--yolo".to_string()),
         Effective::AutoReview => args.push("--auto-review".to_string()),
         Effective::Plan => args.push("--plan".to_string()),
@@ -176,7 +181,7 @@ pub fn role_agent_command(
     model: Option<&str>,
     prompt: Option<&str>,
 ) -> ProgramArgs {
-    let mut args = with_model(model, role_terminal_flags(role_id, mode));
+    let mut args = with_model(model, role_terminal_flags(role_id, None, mode));
     if let Some(prompt) = prompt.map(str::trim).filter(|text| !text.is_empty()) {
         args.push(prompt.to_string());
     }
@@ -191,16 +196,20 @@ enum Effective {
     Ask,
 }
 
-fn effective_mode(role_id: &str, mode: RunMode) -> Effective {
+fn effective_mode(
+    role_id: &str,
+    stage_kind: Option<crate::pipelines::StageKind>,
+    mode: RunMode,
+) -> Effective {
     match mode {
         RunMode::Yolo => Effective::Yolo,
         RunMode::AutoReview => Effective::AutoReview,
         RunMode::Plan => Effective::Plan,
         RunMode::Ask => Effective::Ask,
-        // Planner stays in plan mode. Every other role runs unrestricted.
+        // A Planner stays in plan mode. Every other role runs unrestricted.
         // A Settings override above still replaces this.
         RunMode::Default => {
-            if is_planner_role(role_id) {
+            if crate::provider::plans_by_default(role_id, stage_kind) {
                 Effective::Plan
             } else {
                 Effective::Yolo
@@ -209,16 +218,6 @@ fn effective_mode(role_id: &str, mode: RunMode) -> Effective {
     }
 }
 
-fn is_planner_role(role_id: &str) -> bool {
-    matches!(
-        role_id
-            .trim()
-            .to_ascii_lowercase()
-            .replace('-', "_")
-            .as_str(),
-        "role_planner" | "planner"
-    )
-}
 
 #[cfg(test)]
 mod tests {
@@ -229,11 +228,11 @@ mod tests {
     fn implementer_and_developer_run_everything() {
         let expected = vec!["--yolo", "--approve-mcps", "--trust"];
         assert_eq!(
-            role_terminal_flags("role_implementer", RunMode::Default),
+            role_terminal_flags("role_implementer", None, RunMode::Default),
             expected
         );
         assert_eq!(
-            role_terminal_flags("role_developer", RunMode::Default),
+            role_terminal_flags("role_developer", None, RunMode::Default),
             expected
         );
     }
@@ -241,7 +240,7 @@ mod tests {
     #[test]
     fn plan_reviewer_runs_everything_like_implementer() {
         assert_eq!(
-            role_terminal_flags("role_plan_reviewer", RunMode::Default),
+            role_terminal_flags("role_plan_reviewer", None, RunMode::Default),
             vec!["--yolo", "--approve-mcps", "--trust"]
         );
     }
@@ -250,7 +249,7 @@ mod tests {
     fn planner_uses_plan_and_everyone_else_uses_yolo() {
         let yolo = vec!["--yolo", "--approve-mcps", "--trust"];
         assert_eq!(
-            role_terminal_flags("role_planner", RunMode::Default),
+            role_terminal_flags("role_planner", None, RunMode::Default),
             vec!["--plan", "--approve-mcps", "--trust"]
         );
         for role in [
@@ -260,22 +259,22 @@ mod tests {
             "role_codebase_audit",
             "role_custom",
         ] {
-            assert_eq!(role_terminal_flags(role, RunMode::Default), yolo, "{role}");
+            assert_eq!(role_terminal_flags(role, None, RunMode::Default), yolo, "{role}");
         }
     }
 
     #[test]
     fn settings_override_replaces_only_the_mode_flag() {
         assert_eq!(
-            role_terminal_flags("role_implementer", RunMode::Plan),
+            role_terminal_flags("role_implementer", None, RunMode::Plan),
             vec!["--plan", "--approve-mcps", "--trust"]
         );
         assert_eq!(
-            role_terminal_flags("role_pr_reviewer", RunMode::AutoReview),
+            role_terminal_flags("role_pr_reviewer", None, RunMode::AutoReview),
             vec!["--auto-review", "--approve-mcps", "--trust"]
         );
         assert_eq!(
-            role_terminal_flags("role_planner", RunMode::Yolo),
+            role_terminal_flags("role_planner", None, RunMode::Yolo),
             vec!["--yolo", "--approve-mcps", "--trust"]
         );
         assert_eq!(RunMode::parse("auto-review"), RunMode::AutoReview);
@@ -286,7 +285,7 @@ mod tests {
     fn model_goes_first_and_bad_ids_are_dropped() {
         let args = with_model(
             Some("composer-2.5"),
-            role_terminal_flags("role_planner", RunMode::Default),
+            role_terminal_flags("role_planner", None, RunMode::Default),
         );
         assert_eq!(&args[..3], &["--model", "composer-2.5", "--plan"]);
         assert_eq!(with_model(Some("--yolo"), vec!["x".to_string()]), vec!["x"]);

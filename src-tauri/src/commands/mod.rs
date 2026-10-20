@@ -19,7 +19,7 @@ mod role_session;
 mod usage;
 mod roles;
 pub(crate) mod run_recovery;
-mod session_log;
+pub(crate) mod session_log;
 #[cfg(all(test, unix))]
 mod pipeline_flow_tests;
 #[cfg(all(test, unix))]
@@ -64,7 +64,7 @@ pub use pipeline::{
     pipeline_run_tasks, pipeline_actor_message,
 };
 pub use model_session::{acp_set_effort, acp_set_model};
-pub use run_recovery::{pipeline_continue, spawn_run_recovery};
+pub use run_recovery::{autopilot_pending_stops, pipeline_continue, spawn_run_recovery, StartupStops};
 pub use usage::get_claude_usage;
 pub use prompts::{
     prompt_clear_recent, prompt_delete, prompt_library_get, prompt_mark_used, prompt_record_send,

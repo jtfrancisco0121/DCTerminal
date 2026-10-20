@@ -159,6 +159,14 @@ describe("SettingsPage categories (U6)", () => {
     expect(screen.queryByLabelText("Shell program")).toBeNull();
   });
 
+  it("words missing usage as unknown, like the status bar", async () => {
+    render(<SettingsPage {...props} />);
+    openCategory("Usage");
+    const usage = screen.getByRole("region", { name: "Usage" });
+    expect(await within(usage).findByText("Claude usage unknown.")).toBeTruthy();
+    expect(within(usage).queryByText(/not reported yet/)).toBeNull();
+  });
+
   it("shows one category at a time", () => {
     render(<SettingsPage {...props} />);
     openCategory("Terminal");

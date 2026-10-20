@@ -88,6 +88,10 @@ impl Host for AppHost {
         roles.role_by_id(role_id).cloned()
     }
 
+    fn bridge_gate(&self, run_id: &str, stage_key: &str, cwd: &Path) -> Result<bool, String> {
+        crate::pty::actor_stage_gate(&self.app, run_id, stage_key, cwd)
+    }
+
     fn spawn_stage(&self, launch: &StageLaunch) -> Result<(), String> {
         crate::pty::start_actor_stage(&self.app, launch, false, self.on_exit(launch))
     }
@@ -110,9 +114,10 @@ impl Host for AppHost {
 
     fn run_gate(&self, gate: &GateDef, folder: &Path, pr_urls: &[String]) -> GateResult {
         match gate {
-            GateDef::Command { run, timeout_secs } => {
-                crate::pipelines::run_command_gate(folder, run, timeout_secs.map(Duration::from_secs))
-            }
+            GateDef::Command { run, timeout_secs, optional } => GateResult {
+                optional: *optional,
+                ..crate::pipelines::run_command_gate(folder, run, timeout_secs.map(Duration::from_secs))
+            },
             GateDef::PullRequest => crate::pipelines::run_pull_request_gate(folder, pr_urls),
         }
     }
@@ -132,13 +137,21 @@ impl Host for AppHost {
         };
         let usage = self.app.state::<Mutex<crate::usage::UsageStore>>();
         let snapshot = usage.lock().ok()?.snapshot(&dir.path);
-        snapshot
-            .windows
-            .iter()
-            .filter_map(|window| window.utilization)
-            .filter(|value| value.is_finite())
-            .fold(None, |max: Option<f64>, value| Some(max.map_or(value, |m| m.max(value))))
-            .map(|value| value.round().clamp(0.0, 255.0) as u8)
+        known_usage_percent(&snapshot.windows, chrono::Utc::now().timestamp_millis())
+    }
+
+    /// The tab's session log summary (`terminal_session_log`), read the
+    /// same way: store and PTY locks only to find the file.
+    fn rate_limit(&self, tab_id: &str) -> Option<String> {
+        crate::commands::session_log::session_log_blocking(
+            tab_id.to_string(),
+            self.app.state(),
+            self.app.state(),
+            self.app.state(),
+        )
+        .ok()
+        .flatten()
+        .and_then(|log| log.rate_limit)
     }
 
     fn run_changed(&self, run_id: &str) {
@@ -179,5 +192,71 @@ pub fn deliver_inbox(app: AppHandle) -> impl FnMut(InboxEvent) + Send + 'static 
         InboxEvent::Needs(needs) => {
             let _ = app.emit(BRIDGE_NEEDS_EVENT, needs);
         }
+    }
+}
+
+/// The highest current window in percent, `None` when unknown: no reading,
+/// no percent, or every reading stale (H5, `knownUsagePercent` and
+/// `isStale` in `src/usage/limits.ts`). Never 0 for unknown.
+pub(crate) fn known_usage_percent(windows: &[crate::usage::RateWindow], now_ms: i64) -> Option<u8> {
+    windows
+        .iter()
+        .filter(|window| !stale(window, now_ms))
+        .filter_map(|window| window.utilization)
+        .filter(|value| value.is_finite())
+        .fold(None, |max: Option<f64>, value| Some(max.map_or(value, |m| m.max(value))))
+        .map(|value| value.round().clamp(0.0, 255.0) as u8)
+}
+
+/// The window reset since this reading, or (with no reset time) the reading
+/// is older than its window's length.
+fn stale(window: &crate::usage::RateWindow, now_ms: i64) -> bool {
+    if let Some(resets_at) = window.resets_at {
+        return resets_at.saturating_mul(1000) <= now_ms;
+    }
+    let length_ms: Option<i64> = match window.rate_limit_type.as_str() {
+        "five_hour" => Some(5 * 3_600_000),
+        "seven_day" => Some(7 * 24 * 3_600_000),
+        _ => None,
+    };
+    length_ms.is_some_and(|length| now_ms - window.seen_at_ms > length)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::known_usage_percent;
+    use crate::usage::RateWindow;
+
+    fn window(kind: &str, utilization: Option<f64>, resets_at: Option<i64>, seen_at_ms: i64) -> RateWindow {
+        RateWindow {
+            rate_limit_type: kind.into(),
+            label: kind.into(),
+            utilization,
+            resets_at,
+            status: "allowed".into(),
+            seen_at_ms,
+        }
+    }
+
+    /// H5: usage that is missing or stale reads as unknown, never as a
+    /// percent that pauses the run (`knownUsagePercent` in `src/usage/limits.ts`).
+    #[test]
+    fn stale_or_missing_usage_is_unknown_to_the_run_actor() {
+        let now_ms = 1_800_000_000_000;
+        let now = now_ms / 1000;
+        let hour = 3_600_000;
+        assert_eq!(known_usage_percent(&[], now_ms), None);
+        assert_eq!(known_usage_percent(&[window("five_hour", None, Some(now + 60), now_ms)], now_ms), None);
+        // Current: the highest window counts.
+        let current = [window("five_hour", Some(42.4), Some(now + 60), now_ms), window("seven_day", Some(61.6), Some(now + 600), now_ms)];
+        assert_eq!(known_usage_percent(&current, now_ms), Some(62));
+        // The window reset since the reading: its 95% no longer applies.
+        let reset = [window("five_hour", Some(95.0), Some(now - 1), now_ms - hour), window("seven_day", Some(30.0), Some(now + 600), now_ms)];
+        assert_eq!(known_usage_percent(&reset, now_ms), Some(30));
+        // No reset time: a reading older than its window is stale.
+        let old = [window("five_hour", Some(95.0), None, now_ms - 6 * hour)];
+        assert_eq!(known_usage_percent(&old, now_ms), None);
+        let fresh = [window("five_hour", Some(95.0), None, now_ms - hour)];
+        assert_eq!(known_usage_percent(&fresh, now_ms), Some(95));
     }
 }

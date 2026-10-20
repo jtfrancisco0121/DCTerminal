@@ -190,7 +190,9 @@ fn a_reviewer_that_forgets_the_tool_is_blocked_once_then_ends_with_no_result() {
     assert!(stage.open().turn().unwrap().blocked);
     assert!(stage.inbox().is_empty(), "a blocked stop is not a turn end");
 
-    assert_eq!(stage.hook("Stop", stop("p-1", true, "Still looks good.")), None);
+    // The next Stop is another hook process (a fresh StageDir): with
+    // stop_hook_active false, only turn.json's blocked flag ends the turn.
+    assert_eq!(stage.hook("Stop", stop("p-1", false, "Still looks good.")), None);
     let events = stage.inbox();
     assert_eq!(events.len(), 1);
     let event = &events[0];
@@ -202,7 +204,7 @@ fn a_reviewer_that_forgets_the_tool_is_blocked_once_then_ends_with_no_result() {
     assert_eq!(event.last_assistant_message, "Still looks good.");
     assert!(event.result.is_none());
     // The end is reported once, even if Claude stops again.
-    assert_eq!(stage.hook("Stop", stop("p-1", true, "again")), None);
+    assert_eq!(stage.hook("Stop", stop("p-1", false, "again")), None);
     assert!(stage.inbox().is_empty());
 }
 
@@ -240,7 +242,7 @@ fn each_turn_gets_its_own_block() {
     let stage = Stage::new("bridge_block_per_turn", true);
     stage.hook("UserPromptSubmit", prompt("p-1"));
     assert!(stage.hook("Stop", stop("p-1", false, "")).is_some());
-    stage.hook("Stop", stop("p-1", true, ""));
+    assert_eq!(stage.hook("Stop", stop("p-1", false, "")), None, "blocked once per turn");
     stage.hook("UserPromptSubmit", prompt("p-2"));
     assert!(stage.hook("Stop", stop("p-2", false, "")).is_some(), "a new turn is blocked again");
 }
@@ -370,6 +372,10 @@ fn a_hook_with_a_bad_setup_exits_1_and_writes_nothing() {
     assert_eq!(super::run_hook(&cli, "Stop", &b"{}"[..], &mut out), 1);
     assert!(out.is_empty());
     assert!(!dir.exists(), "nothing created outside a prepared run folder");
+    // A command line that does not parse exits 1 too: exit 2 would block a
+    // Stop or erase a prompt.
+    let args: Vec<String> = ["hook", "--run", RUN].iter().map(|s| s.to_string()).collect();
+    assert_eq!(super::run_cli(&args), 1);
 }
 
 #[test]
@@ -535,10 +541,37 @@ fn rejected_arguments_get_a_tool_error_and_nothing_is_saved() {
 }
 
 #[test]
-fn a_result_before_any_turn_is_refused() {
+fn the_startup_prompt_turn_counts_even_without_a_user_prompt_submit() {
+    // V0 did not check that UserPromptSubmit fires for the positional
+    // startup prompt. PreToolUse for the tool carries the prompt_id: it
+    // opens the turn, so the result and the Stop join up.
+    let stage = Stage::new("bridge_first_turn_pre_tool", true);
+    let pre = json!({ "session_id": "s1", "prompt_id": "p-1", "hook_event_name": "PreToolUse",
+        "tool_name": FULL_TOOL_NAME, "tool_input": approved() });
+    assert!(stage.hook("PreToolUse", pre).is_some(), "allowed");
+    assert_eq!(stage.open().turn().unwrap().turn, "p-1");
+    assert_eq!(stage.submit(approved())["isError"], false);
+    assert_eq!(stage.hook("Stop", stop("p-1", false, "Approved.")), None, "no block: the result is in");
+    let events = stage.inbox();
+    assert_eq!(events.len(), 1);
+    assert_eq!((events[0].turn.as_str(), events[0].outcome), ("p-1", TurnOutcome::Result));
+
+    // Neither hook seen: the tool opens the turn itself and the Stop ends it.
+    let stage = Stage::new("bridge_first_turn_tool_only", true);
+    assert_eq!(stage.submit(approved())["isError"], false);
+    assert_eq!(stage.hook("Stop", stop("p-9", false, "Approved.")), None);
+    let events = stage.inbox();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].outcome, TurnOutcome::Result);
+    assert!(!events[0].blocked);
+    // The next turn starts clean.
+    stage.hook("UserPromptSubmit", prompt("p-10"));
+    assert!(stage.hook("Stop", stop("p-10", false, "")).is_some(), "a new turn without a result is blocked");
+}
+
+#[test]
+fn a_call_to_another_tool_is_refused() {
     let stage = Stage::new("bridge_mcp_no_turn", true);
-    let reply = stage.submit(approved());
-    assert_eq!(reply["isError"], true);
     let other = mcp::handle(&stage.server(), &json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/call",
         "params": { "name": "other_tool", "arguments": {} } }))
     .unwrap();
@@ -620,6 +653,52 @@ fn reviewer_planner_and_implementer_stages_of_engine_2_runs_are_bridged() {
 }
 
 #[test]
+fn a_copied_reviewer_is_bridged_by_its_stage_kind_like_the_built_in_one() {
+    let mut def = crate::pipelines::find("full").unwrap();
+    let run = engine2_run(true);
+    let built_in = launch::plan_for(&run, &def, &chain(4, None), "role_pr_reviewer").unwrap();
+    // A copy of the PR Reviewer on the same stage, its kind set explicitly.
+    def.stages[3].role_id = "role_custom_7".into();
+    def.stages[3].kind = Some(crate::pipelines::StageKind::Reviewer);
+    let copied = launch::plan_for(&run, &def, &chain(4, None), "role_custom_7").expect("copied reviewer");
+    assert_eq!(copied.kind, built_in.kind);
+    assert_eq!(copied.stage_key, built_in.stage_key);
+    // A reviewer stage with no loop-back still reports through the bridge.
+    def.stages[3].loop_back = None;
+    assert!(launch::plan_for(&run, &def, &chain(4, None), "role_custom_7").is_some());
+    // A stage marked generic is not a reviewer, even with a loop-back.
+    let mut def = crate::pipelines::find("full").unwrap();
+    def.stages[3].kind = Some(crate::pipelines::StageKind::Generic);
+    assert_eq!(launch::plan_for(&run, &def, &chain(4, None), "role_pr_reviewer"), None);
+}
+
+#[test]
+fn copied_planner_and_implementer_roles_are_bridged_by_their_stage_kind() {
+    use crate::pipelines::StageKind;
+    let mut def = crate::pipelines::find("full").unwrap();
+    let run = engine2_run(true);
+    def.stages[0].role_id = "role_custom_planner".into();
+    def.stages[0].kind = Some(StageKind::Planner);
+    def.stages[2].role_id = "role_custom_impl".into();
+    def.stages[2].kind = Some(StageKind::Implementer);
+    let planner = launch::plan_for(&run, &def, &chain(1, None), "role_custom_planner").expect("copied Planner");
+    assert_eq!(planner.kind, ResultKind::Planner);
+    assert_eq!(planner.stage_key, "planner");
+    let implementer = launch::plan_for(&run, &def, &chain(3, None), "role_custom_impl").expect("copied Implementer");
+    assert_eq!(implementer.kind, ResultKind::Implementer);
+    // A form start of a pipeline whose first stage is a copied Planner.
+    let first = launch::new_chain(&def, "eagle1", 7);
+    assert_eq!(
+        launch::plan_for_new_run(&def, &first, "role_custom_planner").map(|plan| plan.kind),
+        Some(ResultKind::Planner)
+    );
+    // A built-in Planner role on a stage marked generic is not bridged.
+    let mut def = crate::pipelines::find("full").unwrap();
+    def.stages[0].kind = Some(StageKind::Generic);
+    assert_eq!(launch::plan_for(&run, &def, &chain(1, None), "role_planner"), None);
+}
+
+#[test]
 fn a_lane_names_its_own_stage_folder() {
     let def = crate::pipelines::find("full").unwrap();
     let mut run = engine2_run(true);
@@ -649,8 +728,10 @@ fn only_a_pipeline_the_bridge_covers_whole_starts_on_engine_2() {
     let mut parallel = builtin.clone();
     parallel.stages[3].also_reviewers = vec!["role_security_reviewer".into()];
     assert_eq!(launch::engine_for(&parallel), 1);
+    // A generic stage (H4's kind, not the role id) has no bridged result.
     let mut generic = builtin.clone();
     generic.stages[0].role_id = "role_general".into();
+    generic.stages[0].kind = Some(crate::pipelines::StageKind::Generic);
     assert_eq!(launch::engine_for(&generic), 1);
     // Its first stage then starts without the bridge.
     let start = launch::new_chain(&parallel, "custom", 1);
@@ -658,39 +739,131 @@ fn only_a_pipeline_the_bridge_covers_whole_starts_on_engine_2() {
     assert!(launch::plan_for_new_run(&builtin, &launch::new_chain(&builtin, "eagle1", 1), "role_planner").is_some());
 }
 
+/// V3 with H4: engine 2 follows the stage kinds, so a pipeline of copied
+/// Planner, reviewer and Implementer roles gets the run actor like Eagle-Eye 1.
 #[test]
-fn launch_flags_keep_the_prompt_last_and_use_args_arrays() {
+fn a_pipeline_of_copied_roles_starts_on_engine_2_like_the_built_in_one() {
+    let copied: crate::pipelines::PipelineDef = serde_json::from_value(serde_json::json!({
+        "id": "copied_all", "name": "Copied",
+        "stages": [
+            { "id": "plan", "roleId": "role_custom_planner", "title": "Plan", "kind": "planner" },
+            { "id": "plan_check", "roleId": "role_custom_plan_check", "title": "Plan check",
+              "loopBack": { "to": "plan", "minSeverity": "MEDIUM" } },
+            { "id": "build", "roleId": "role_custom_builder", "title": "Build", "kind": "implementer" },
+            { "id": "pr_check", "roleId": "role_custom_pr_check", "title": "PR check",
+              "loopBack": { "to": "build", "minSeverity": "MEDIUM" } }
+        ]
+    }))
+    .unwrap();
+    assert_eq!(launch::engine_for(&copied), launch::ENGINE_V2);
+    let start = launch::new_chain(&copied, "copied_all", 1);
+    let plan = launch::plan_for_new_run(&copied, &start, "role_custom_planner").expect("the copied Planner is bridged");
+    assert_eq!(plan.kind, ResultKind::Planner);
+}
+
+/// A bridged role launch as `role_terminal_start` builds it, with H5's
+/// status-line settings (`status`) when it applies.
+fn bridged_launch(status: Option<Value>, prompt: Option<&str>) -> Vec<String> {
+    bridged_launch_as(ResultKind::Reviewer, "role_pr_reviewer", "pr_reviewer", status, prompt)
+}
+
+/// [`bridged_launch`] for a stage reporting as `kind`.
+fn bridged_launch_as(
+    kind: ResultKind,
+    role_id: &str,
+    stage_key: &str,
+    status: Option<Value>,
+    prompt: Option<&str>,
+) -> Vec<String> {
+    use crate::provider::{ProgramArgs, TerminalKind, TerminalLaunch};
     let program = Path::new("/Applications/DCTerminal.app/Contents/MacOS/dcterminal");
     let run_dir = Path::new("/data/runs").join(RUN);
-    let extra = launch::launch_args(ResultKind::Reviewer, program, &run_dir, RUN, "pr_reviewer", TAB);
-    assert_eq!(extra[0], "--allowedTools");
-    assert_eq!(extra[1], FULL_TOOL_NAME);
-    assert_eq!(extra[2], "--mcp-config");
-    assert_eq!(extra[4], "--settings");
-    let mcp: Value = serde_json::from_str(&extra[3]).unwrap();
-    let server = &mcp["mcpServers"]["dcterminal"];
-    assert_eq!(server["type"], "stdio");
-    assert_eq!(server["command"], program.display().to_string());
-    assert_eq!(server["args"][0], "bridge");
-    assert_eq!(server["args"][1], "mcp");
-    let settings: Value = serde_json::from_str(&extra[5]).unwrap();
+    let flags = launch::launch_flags(kind, program, &run_dir, RUN, stage_key, TAB);
+    let request = TerminalLaunch {
+        kind: TerminalKind::Role {
+            role_id: role_id.into(),
+            run_mode: crate::pty::RunMode::Default,
+            prompt: prompt.map(str::to_string),
+            stage_kind: None,
+        },
+        model: Some("opus".into()),
+        session_id: Some("6a1d3b0f-2c3d-4e5f-9a51-0123456789cd".into()),
+        settings: status,
+    };
+    launch::bridged_command(request, Some(flags), |req| {
+        Ok(ProgramArgs::new("claude", crate::provider::claude::claude_terminal_args(req)?))
+    })
+    .unwrap()
+    .args
+}
+
+fn settings_of(args: &[String]) -> Value {
+    assert_eq!(args.iter().filter(|a| *a == "--settings").count(), 1, "exactly one --settings: {args:?}");
+    let at = args.iter().position(|a| a == "--settings").unwrap();
+    serde_json::from_str(&args[at + 1]).unwrap()
+}
+
+#[test]
+fn a_bridged_launch_merges_the_hooks_and_the_status_line_into_one_settings_flag() {
+    let status = crate::status_line::settings("'dct' --dct-status-line '/data/usage/tab.json'");
+    let args = bridged_launch(Some(status.clone()), Some("PROMPT"));
+    let settings = settings_of(&args);
+    assert_eq!(settings["statusLine"], status["statusLine"], "{settings}");
     for event in ["UserPromptSubmit", "Stop", "PreToolUse", "PermissionRequest", "Notification"] {
         let hook = &settings["hooks"][event][0]["hooks"][0];
         assert_eq!(hook["type"], "command", "{event}");
-        let args: Vec<&str> = hook["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
-        assert_eq!(&args[..2], &["bridge", "hook"], "{event}");
-        assert_eq!(args.last(), Some(&event), "{event}");
-        assert!(args.contains(&TAB) && args.contains(&RUN) && args.contains(&"pr_reviewer"));
+        let hook_args: Vec<&str> = hook["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
+        assert_eq!(&hook_args[..2], &["bridge", "hook"], "{event}");
+        assert_eq!(hook_args.last(), Some(&event), "{event}");
+        assert!(hook_args.contains(&TAB) && hook_args.contains(&RUN) && hook_args.contains(&"pr_reviewer"));
     }
     assert_eq!(settings["hooks"]["PreToolUse"][0]["matcher"], FULL_TOOL_NAME);
-
-    let mut args = vec!["--model".to_string(), "opus".to_string(), "PROMPT".to_string()];
-    launch::insert_before_prompt(&mut args, true, extra.clone());
+    // The variadic flags end at --settings (one value), so the prompt stays positional and last.
+    let tools = args.iter().position(|a| a == "--allowedTools").unwrap();
+    let mcp_at = args.iter().position(|a| a == "--mcp-config").unwrap();
+    let settings_at = args.iter().position(|a| a == "--settings").unwrap();
+    assert_eq!(args[tools + 1], FULL_TOOL_NAME);
+    assert!(tools < mcp_at && mcp_at + 2 == settings_at, "{args:?}");
     assert_eq!(args.last().map(String::as_str), Some("PROMPT"));
-    assert_eq!(args[2], "--allowedTools");
-    let mut no_prompt = vec!["--resume".to_string(), "id".to_string()];
-    launch::insert_before_prompt(&mut no_prompt, false, extra);
-    assert_eq!(no_prompt[2], "--allowedTools");
+    let mcp: Value = serde_json::from_str(&args[mcp_at + 1]).unwrap();
+    let server = &mcp["mcpServers"]["dcterminal"];
+    assert_eq!(server["type"], "stdio");
+    assert_eq!(server["args"][0], "bridge");
+    assert_eq!(server["args"][1], "mcp");
+}
+
+#[test]
+fn every_bridged_stage_type_gets_one_settings_with_the_status_line_and_all_its_hooks() {
+    let status = crate::status_line::settings("'dct' --dct-status-line '/data/usage/tab.json'");
+    for (kind, role, stage, matcher) in [
+        (ResultKind::Planner, "role_planner", "planner", "ExitPlanMode"),
+        (ResultKind::Reviewer, "role_pr_reviewer", "pr_reviewer", FULL_TOOL_NAME),
+        (ResultKind::Implementer, "role_implementer", "implementer", FULL_TOOL_NAME),
+    ] {
+        let args = bridged_launch_as(kind, role, stage, Some(status.clone()), Some("PROMPT"));
+        let settings = settings_of(&args);
+        assert_eq!(settings["statusLine"], status["statusLine"], "{kind:?}: {settings}");
+        for event in ["UserPromptSubmit", "Stop", "PreToolUse", "PermissionRequest", "Notification"] {
+            let hook = &settings["hooks"][event][0]["hooks"][0];
+            assert_eq!(hook["type"], "command", "{kind:?} {event}: {settings}");
+            assert_eq!(hook["args"].as_array().unwrap().last().unwrap(), event, "{kind:?} {event}");
+        }
+        assert_eq!(settings["hooks"]["PreToolUse"][0]["matcher"], matcher, "{kind:?}");
+        assert_eq!(args.last().map(String::as_str), Some("PROMPT"), "{kind:?}: {args:?}");
+        // The Planner reports through ExitPlanMode: no tool to allow or serve.
+        let has_tool = args.iter().any(|a| a == "--allowedTools") && args.iter().any(|a| a == "--mcp-config");
+        assert_eq!(has_tool, kind != ResultKind::Planner, "{kind:?}: {args:?}");
+    }
+}
+
+#[test]
+fn when_your_own_status_line_wins_the_bridged_settings_hold_only_the_hooks() {
+    let args = bridged_launch(None, None);
+    let settings = settings_of(&args);
+    assert!(settings.get("statusLine").is_none(), "{settings}");
+    assert!(settings["hooks"]["Stop"].is_array(), "{settings}");
+    let settings_at = args.iter().position(|a| a == "--settings").unwrap();
+    assert_eq!(args[settings_at - 2], "--mcp-config");
 }
 
 #[test]
@@ -803,6 +976,39 @@ fn a_planners_exit_plan_mode_saves_the_plan_and_tasks_and_is_denied_as_received(
     assert_eq!(result["schema"], 1);
     assert_eq!(result["tasks"][0]["title"], "Refresh");
     assert_eq!(result["tasks"][1]["dependsOn"][0], "pr1");
+}
+
+#[test]
+fn the_first_turn_without_a_user_prompt_submit_still_works_for_the_planner_and_the_implementer() {
+    // The Planner: ExitPlanMode's prompt_id opens the turn, the plan is
+    // captured and denied as received, and the Stop ends it with the result.
+    let stage = Stage::planner("bridge_plan_first_turn", true);
+    let reason = denial(&stage.hook("PreToolUse", exit_plan_mode("p-1", &plan_with(TWO_TASKS))));
+    assert_eq!(reason, schema::PLAN_RECEIVED);
+    assert_eq!(launch::read_run_tasks(&stage.runs, RUN).expect("tasks.json").turn, "p-1");
+    assert_eq!(stage.hook("Stop", stop("p-1", false, "Planned.")), None, "no block: the plan is the result");
+    let turn = stage.inbox().pop().expect("turn ended");
+    assert_eq!((turn.turn.as_str(), turn.outcome), ("p-1", TurnOutcome::Result));
+
+    // The Implementer, via PreToolUse for submit_result: its prs.json and result join the Stop.
+    let stage = Stage::implementer("bridge_impl_first_turn_pre_tool", None);
+    let pre = json!({ "session_id": "s1", "prompt_id": "p-1", "hook_event_name": "PreToolUse",
+        "tool_name": FULL_TOOL_NAME, "tool_input": implemented() });
+    assert!(stage.hook("PreToolUse", pre).is_some(), "allowed");
+    assert_eq!(stage.submit(implemented())["isError"], false);
+    assert_eq!(stage.hook("Stop", stop("p-1", false, "Opened PR #12.")), None);
+    let turn = stage.inbox().pop().expect("turn ended");
+    assert_eq!((turn.turn.as_str(), turn.outcome), ("p-1", TurnOutcome::Result));
+    let prs: Value = serde_json::from_str(&std::fs::read_to_string(stage.run_dir.join("prs.json")).unwrap()).unwrap();
+    assert_eq!(prs["turn"], "p-1");
+
+    // The Implementer with neither hook seen: the tool opens a turn and the Stop ends it.
+    let stage = Stage::implementer("bridge_impl_first_turn_tool_only", None);
+    assert_eq!(stage.submit(implemented())["isError"], false);
+    assert_eq!(stage.hook("Stop", stop("p-9", false, "Opened PR #12.")), None);
+    let turn = stage.inbox().pop().expect("turn ended");
+    assert_eq!(turn.outcome, TurnOutcome::Result);
+    assert_eq!(turn.result.unwrap()["prs"][0]["branch"], "feat/refresh");
 }
 
 #[test]
@@ -974,7 +1180,7 @@ fn an_implementer_submit_saves_its_pull_requests_for_the_run_and_lists_its_own_t
     let stage = Stage::implementer("bridge_impl", Some("pr1"));
     let listed = mcp::handle(&stage.server(), &json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" })).unwrap();
     let tool = &listed["result"]["tools"][0];
-    assert_eq!(tool["inputSchema"]["required"], json!(["prs", "summary"]));
+    assert_eq!(tool["inputSchema"]["required"], json!(["summary"]));
     stage.hook("UserPromptSubmit", prompt("p-1"));
     let reply = stage.submit(implemented());
     assert_eq!(reply["isError"], false, "{reply}");
@@ -993,6 +1199,43 @@ fn an_implementer_submit_saves_its_pull_requests_for_the_run_and_lists_its_own_t
     single.hook("UserPromptSubmit", prompt("p-1"));
     single.submit(implemented());
     assert!(single.run_dir.join("prs.json").exists());
+}
+
+#[test]
+fn a_blocked_implementer_reports_why_with_no_pull_requests() {
+    // With no `prs` at all, or an empty list: `blocked` says why.
+    let result = schema::validate(
+        ResultKind::Implementer,
+        &json!({ "summary": "Nothing could be built.", "blocked": "The plan's API does not exist in this repository." }),
+    )
+    .expect("a blocked Implementer can report");
+    assert_eq!(result["blocked"], "The plan's API does not exist in this repository.");
+    assert_eq!(result["prs"], json!([]));
+    let empty = json!({ "prs": [], "summary": "s", "blocked": "No access to the remote." });
+    assert!(schema::validate(ResultKind::Implementer, &empty).is_ok());
+    // Some pull requests opened, then blocked on the rest.
+    let mut partial = implemented();
+    partial["blocked"] = json!("PR2 needs a design decision.");
+    assert_eq!(schema::validate(ResultKind::Implementer, &partial).unwrap()["prs"].as_array().unwrap().len(), 1);
+    // A blank reason is a problem; without `blocked`, an empty list still is.
+    let blank = schema::validate(ResultKind::Implementer, &json!({ "summary": "s", "blocked": "  " })).unwrap_err();
+    assert!(blank.iter().any(|p| p.contains("`blocked`")), "{blank:?}");
+    assert!(schema::validate(ResultKind::Implementer, &json!({ "prs": [], "summary": "s" })).is_err());
+    // The tool and the block both say how.
+    let stage = Stage::implementer("bridge_impl_blocked", None);
+    let listed = mcp::handle(&stage.server(), &json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" })).unwrap();
+    let input = &listed["result"]["tools"][0]["inputSchema"];
+    assert!(input["properties"]["blocked"].is_object(), "{input}");
+    assert_eq!(input["required"], json!(["summary"]));
+    assert!(schema::result_instructions(ResultKind::Implementer).contains("`blocked`"));
+    assert!(schema::block_reason(ResultKind::Implementer).contains("blocked"));
+    stage.hook("UserPromptSubmit", prompt("p-1"));
+    let reply = stage.submit(json!({ "summary": "s", "blocked": "No access to the remote." }));
+    assert_eq!(reply["isError"], false, "{reply}");
+    stage.hook("Stop", stop("p-1", false, "Blocked."));
+    let turn = stage.inbox().pop().unwrap();
+    assert_eq!(turn.outcome, TurnOutcome::Result);
+    assert_eq!(turn.result.unwrap()["blocked"], "No access to the remote.");
 }
 
 #[test]
@@ -1063,19 +1306,19 @@ fn a_turn_id_with_needs_in_it_still_ends_as_a_turn() {
 fn planner_launch_flags_have_no_tool_and_watch_exit_plan_mode() {
     let program = Path::new("/bin/dcterminal");
     let run_dir = Path::new("/data/runs").join(RUN);
-    let extra = launch::launch_args(ResultKind::Planner, program, &run_dir, RUN, "planner", TAB);
-    assert_eq!(extra.len(), 2, "{extra:?}");
-    assert_eq!(extra[0], "--settings");
-    let settings: Value = serde_json::from_str(&extra[1]).unwrap();
+    let extra = launch::launch_flags(ResultKind::Planner, program, &run_dir, RUN, "planner", TAB);
+    assert!(extra.args.is_empty(), "{extra:?}");
+    let settings = &extra.hooks;
     assert_eq!(settings["hooks"]["PreToolUse"][0]["matcher"], "ExitPlanMode");
     assert!(settings["hooks"]["PermissionRequest"][0].get("matcher").is_none());
-    let implementer = launch::launch_args(ResultKind::Implementer, program, &run_dir, RUN, "implementer", TAB);
-    assert_eq!(implementer[0], "--allowedTools");
+    let implementer = launch::launch_flags(ResultKind::Implementer, program, &run_dir, RUN, "implementer", TAB);
+    assert_eq!(implementer.args[0], "--allowedTools");
     // A relaunch keeps the stage's own kind.
     let stage = Stage::planner("bridge_plan_relaunch", true);
     let tag = BridgeTag { run_id: RUN.into(), stage: "planner".into() };
-    let again = launch::relaunch_args(&stage.runs, &tag, TAB, program).unwrap();
-    assert_eq!(again[0], "--settings");
+    let again = launch::relaunch_flags(&stage.runs, &tag, TAB, program).unwrap();
+    assert!(again.args.is_empty(), "{again:?}");
+    assert_eq!(again.hooks["hooks"]["PreToolUse"][0]["matcher"], "ExitPlanMode");
 }
 
 #[test]

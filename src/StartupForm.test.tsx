@@ -59,6 +59,7 @@ vi.mock("./bridge", () => {
   listenPipelineNotice: listen,
   listenStageOpened: listen,
   pipelineRunTasks: vi.fn(async () => null),
+  autopilotPendingStops: vi.fn(async () => []),
   listenPermissionAuto: listen,
   listenPermissionRequests: vi.fn(async (handler: (evt: unknown) => void) => {
     captured.permission = handler;
@@ -272,6 +273,7 @@ vi.mock("./bridge", () => {
 });
 
 import {
+  autopilotPendingStops,
   getTerminalSettings,
   changesFileDiff,
   changesList,
@@ -1332,6 +1334,42 @@ describe("background tab notifications", () => {
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: /Reviewer · PR 12 has a question/ })).toBeNull(),
     );
+  });
+  it("toasts a stop the core held at startup even when it answers before this window's tabs load", async () => {
+    let loadTabs: () => void = () => {};
+    vi.mocked(getAppState).mockReturnValue(
+      new Promise((resolve) => {
+        loadTabs = () =>
+          resolve({
+            activeTabId: "tab_a",
+            tabs: [terminalTab("tab_a", "Main"), terminalTab("tab_b", "Reviewer · PR 12")],
+            closedTabs: [],
+          } as never);
+      }) as never,
+    );
+    vi.mocked(autopilotPendingStops).mockImplementation(async (tabIds: string[]) =>
+      tabIds.includes("tab_b")
+        ? [{ runId: "ee_1", tabId: "tab_b", reason: "app_restarted", summary: "PR Reviewer finished while the app was closed" }]
+        : [],
+    );
+    render(
+      <StartupForm
+        roles={[{ id: "role_developer", name: "Developer", defaultMode: "agent", color: "#3fb950", fieldCount: 0 }]}
+        cli={{ found: true, path: "agent", version: "test", error: null }}
+        cliError={null}
+        cliFound
+        showDevTools={false}
+      />,
+    );
+    // The stops are ready long before the tab list.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    act(() => loadTabs());
+    const toast = await screen.findByRole("button", { name: /Reviewer · PR 12 has a question/ });
+    expect(toast.textContent).toContain("PR Reviewer finished while the app was closed");
+    expect(vi.mocked(autopilotPendingStops)).toHaveBeenCalledWith(["tab_a", "tab_b"]);
+    vi.mocked(autopilotPendingStops).mockReset().mockResolvedValue([]);
   });
 });
 
