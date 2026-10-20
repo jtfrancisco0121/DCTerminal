@@ -489,7 +489,7 @@ export function SettingsPage({
               <p className="hint">{USAGE_NOTE}</p>
               {usageError && <p className="error">{usageError}</p>}
               {usage && usage.windows.length === 0 && (
-                <p className="hint">Claude usage not reported yet.</p>
+                <p className="hint">Claude usage unknown.</p>
               )}
               {usage?.windows.map((window) => {
                 // A reading from before the window reset (e.g. saved before a restart) no longer applies.

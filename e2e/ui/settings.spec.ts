@@ -368,7 +368,7 @@ test.describe("Permissions and Usage", () => {
   test("Usage shows the empty and error states", async ({ app, page }) => {
     await app.open();
     let usage = await openSettings(page, "Usage");
-    await expect(usage.getByText("Claude usage not reported yet.")).toBeVisible();
+    await expect(usage.getByText("Claude usage unknown.")).toBeVisible();
 
     await app.handle("get_claude_usage", () => {
       throw new Error("usage file unreadable");
