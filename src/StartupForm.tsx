@@ -6367,6 +6367,7 @@ export function StartupForm({
           onStageControl={async (runId, tabId, kind) => {
             await pipelineActorMessage(runId, { kind, tabId });
           }}
+          modelSettings={modelSettings}
           usageWindows={usageSnap?.windows ?? null}
         />
       </section>,

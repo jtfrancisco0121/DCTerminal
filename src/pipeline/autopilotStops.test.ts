@@ -84,6 +84,17 @@ describe("autopilotStopDetail", () => {
     );
   });
 
+  it("a turn that finished while the app was closed is said once (H3's summary says it)", () => {
+    const detail = autopilotStopDetail({
+      reason: "app_restarted",
+      summary: "Implementer finished while the app was closed. Press Continue to let autopilot act on it.",
+    });
+    expect(detail.match(/finished while/g)).toHaveLength(1);
+    expect(detail).toBe(
+      "Autopilot stopped. Implementer finished while the app was closed. Press Continue to let autopilot act on it.",
+    );
+  });
+
   it("an unknown code shows the summary alone", () => {
     expect(autopilotStopDetail({ reason: "from_a_newer_build" as never, summary: "Stopped." })).toBe(
       "Autopilot stopped. Stopped.",

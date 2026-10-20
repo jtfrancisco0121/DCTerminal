@@ -883,19 +883,13 @@ fn a_turn_handed_to_a_new_actor_again_runs_no_checks_and_pastes_nothing() {
     assert_eq!(fx.run(|run| run.events.iter().filter(|e| e.kind == "gate").count()), gate_lines, "no duplicate gate lines");
 }
 
-#[test]
-fn continue_on_a_turn_the_actor_decided_runs_no_checks() {
-    let mut fx = Fixture::new("dedupe_continue");
-    let (implementer, turn) = implementer_with_a_failed_gate(&mut fx);
-    // The app restarted with the run on that turn: H3's reconcile matches
-    // the actor's key, so the decided turn does not wait for Continue...
-    // (V4's resume cleared turn.json; its id is the turn the actor decided.)
-    let bridged = HashMap::from([(implementer.clone(), turn.turn.clone())]);
-    let finished = crate::claude_session_log::TerminalSessionLog {
+/// A session log whose last turn finished (what H3's reconcile reads).
+fn finished_log() -> crate::claude_session_log::TerminalSessionLog {
+    crate::claude_session_log::TerminalSessionLog {
         session_id: "s".into(),
         path: "/tmp/x.jsonl".into(),
         turn_done: true,
-        last_reply: "Opened".into(),
+        last_reply: "Done".into(),
         plan: None,
         plan_at: None,
         last_prompt_at: Some("2026-10-20T10:00:00Z".into()),
@@ -905,20 +899,61 @@ fn continue_on_a_turn_the_actor_decided_runs_no_checks() {
         pending_tools: Vec::new(),
         permission_mode: None,
         rate_limit: None,
-    };
-    let logs = HashMap::from([(implementer.clone(), finished)]);
-    {
-        let mut store = fx.host.store.lock().unwrap();
-        let run = store.pipeline_run_by_id_mut(RUN).unwrap();
-        let def = crate::pipelines::find(&run.kind).unwrap();
-        let found = crate::pipelines::recovery::reconcile_run_with(&def, run, &logs, &bridged);
-        assert_eq!(found, None, "a turn the actor decided is not stopped as app_restarted");
-        assert_eq!(run.status, RunStatus::Running);
-        // ...and when the run waits after a restart anyway (another tab), Continue
-        // on the decided turn decides nothing again.
-        run.stop_for(StopReason::AppRestarted, Some("implementer"), None, "Waiting after a restart.".to_string(), None);
-        assert_eq!(run.stop_reason, Some(StopReason::AppRestarted));
     }
+}
+
+/// H3's startup reconcile of the run, fed the way the app feeds it: each
+/// current stage tab's turn id from its stage's `turn.json`, read now.
+fn reconcile_after_restart(fx: &Fixture, tab_id: &str) -> Option<crate::pipelines::recovery::Reconciled> {
+    let mut store = fx.host.store.lock().unwrap();
+    let tag = store.tab_by_id(tab_id).and_then(|tab| tab.bridge.clone());
+    let mut bridged = HashMap::new();
+    let mut no_turn = HashSet::new();
+    match crate::commands::run_recovery::bridge_turn_of(&fx.host.runs, tab_id, tag.as_ref()) {
+        Some(Some(turn)) => {
+            bridged.insert(tab_id.to_string(), turn);
+        }
+        Some(None) => {
+            no_turn.insert(tab_id.to_string());
+        }
+        None => {}
+    }
+    let logs = HashMap::from([(tab_id.to_string(), finished_log())]);
+    let run = store.pipeline_run_by_id_mut(RUN).unwrap();
+    let def = crate::pipelines::find(&run.kind).unwrap();
+    crate::pipelines::recovery::reconcile_run_bridged(&def, run, &logs, &bridged, &no_turn)
+}
+
+/// A turn the actor decided that keeps its `turn.json`: the Planner's plan,
+/// handed on, then a round pasted back into it (a Planner with no saved
+/// session is pasted into, not resumed, so its `turn.json` stays). After a
+/// restart before the pasted round started, H3's reconcile sees that turn
+/// as decided, and Continue on it decides nothing again.
+#[test]
+fn continue_on_a_turn_the_actor_decided_runs_no_checks() {
+    let mut fx = Fixture::new("dedupe_continue");
+    let planner = fx.planner.clone();
+    let reviewer = fx.open_plan_reviewer();
+    fx.host.store.lock().unwrap().data.tabs.iter_mut().find(|t| t.id == planner).unwrap().sessions.claude_terminal_session_id = None;
+    let turn = fx.end_turn(&reviewer, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "x" }])), "");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    assert_eq!(fx.pastes().len(), 1, "the round was pasted into the Planner");
+    assert_eq!(fx.stage_dir(&planner).turn().map(|t| t.turn), Some("p-1".to_string()), "its decided turn keeps turn.json");
+    let launches = fx.launches().len();
+    let turn_lines = fx.run(|run| run.events.iter().filter(|e| e.kind == "turn").count());
+    // The app restarted with the run on the Planner: its decided turn does
+    // not wait for Continue...
+    assert_eq!(reconcile_after_restart(&fx, &planner), None, "a turn the actor decided is not stopped as app_restarted");
+    fx.run(|run| assert_eq!(run.status, RunStatus::Running));
+    // ...and when the run waits after a restart anyway (another tab), Continue
+    // reads that turn.json again and decides nothing twice.
+    fx.host.store.lock().unwrap().pipeline_run_by_id_mut(RUN).unwrap().stop_for(
+        StopReason::AppRestarted,
+        Some("planner"),
+        None,
+        "Waiting after a restart.".to_string(),
+        None,
+    );
     let (me, gates) = channel();
     let mut fresh = Actor::new(RUN.to_string(), fx.host.clone(), me);
     let (reply, answer) = channel();
@@ -926,10 +961,31 @@ fn continue_on_a_turn_the_actor_decided_runs_no_checks() {
     answer.recv().unwrap().unwrap();
     assert!(!fresh.busy(), "Continue starts no checks for a decided turn");
     assert!(gates.try_recv().is_err());
-    assert_eq!(fx.resumes().len(), 1);
-    assert!(fx.pastes().is_empty());
-    assert_eq!(retries(&fx), Some(1));
+    assert_eq!(fx.launches().len(), launches, "Continue does not hand the decided plan on again: {:?}", fx.launches());
+    let again = fx.run(|run| run.events.iter().filter(|e| e.kind == "turn").count());
+    assert_eq!(again, turn_lines, "no second ledger line for the decided turn");
+    assert_eq!(fx.pastes().len(), 1);
+    assert!(fx.resumes().is_empty());
     fx.run(|run| assert_eq!(run.status, RunStatus::Running, "the run carries on"));
+}
+
+/// A restart right after a resume: the stage's `turn.json` was cleared and
+/// its log still ends on the turn the actor decided. That is no finished
+/// turn to Continue on: the run is not stopped as `app_restarted`, and a
+/// Timeline note says the round may not have reached the stage.
+#[test]
+fn a_restart_right_after_a_resume_is_not_stopped_as_app_restarted() {
+    let mut fx = Fixture::new("restart_after_resume");
+    let (implementer, _) = implementer_with_a_failed_gate(&mut fx);
+    assert!(fx.stage_dir(&implementer).turn().is_none(), "the resume cleared turn.json");
+    let found = reconcile_after_restart(&fx, &implementer);
+    assert!(!matches!(found, Some(crate::pipelines::recovery::Reconciled::Waiting { .. })), "a false Continue: {found:?}");
+    fx.run(|run| {
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Running, None));
+        let last = run.events.last().unwrap();
+        assert_eq!(last.kind, "note");
+        assert!(last.summary.contains("may not have reached it"), "{}", last.summary);
+    });
 }
 
 /// A copy of a built-in role under another id (Settings › Roles › Duplicate).
@@ -1137,9 +1193,55 @@ fn a_resume_the_version_gate_refuses_makes_the_run_manual_and_resumes_nothing() 
         assert_eq!(manual.len(), 1, "one Timeline note: {notes:?}");
         assert!(manual[0].contains(&file.display().to_string()), "it says where the findings are: {}", manual[0]);
         assert!(notes.iter().all(|n| !n.contains("could not")), "no carry-out failure note: {notes:?}");
+        // Nothing was sent, so no round is recorded as sent back and
+        // autopilot's hand-off is not kept: your own Send back is a first one.
+        let sent: Vec<&str> = run.events.iter().filter(|e| e.kind == "loopBack").map(|e| e.summary.as_str()).collect();
+        assert!(sent.is_empty(), "the Timeline says the round was sent back: {sent:?}");
+        assert_eq!(run.round, 1, "the round counter stays");
+        assert!(run.claims.iter().all(|c| c.key != "back:plan_reviewer#1"), "autopilot's claim is released: {:?}", run.claims);
     });
     let mode = std::fs::read_to_string(fx.host.runs.join(RUN).join("stages/planner/mode")).unwrap();
     assert_eq!(mode, "manual", "the stages stop enforcing a result");
+}
+
+/// Your own Send back, refused by the D24 / hooks-off gate at the resume:
+/// you get the reason, nothing is recorded as sent back, your hand-off is
+/// released, and the one Timeline note talks about your Send back, not
+/// about something autopilot was sending.
+#[test]
+fn your_send_back_the_version_gate_refuses_is_not_recorded_as_sent() {
+    let mut fx = Fixture::new("gate_refused_send_back");
+    let reviewer = fx.open_plan_reviewer();
+    fx.end_turn(&reviewer, "r-1", review("APPROVED_WITH_CHANGES", json!([])), "");
+    fx.host.gate_open.store(false, Ordering::SeqCst);
+    let err = fx
+        .user(UserAction::SendBack {
+            source_tab_id: reviewer,
+            target_role_id: "role_planner".into(),
+            text: "Add a test.".into(),
+            verdict: None,
+            values: None,
+            handoff_plan: None,
+            force: false,
+        })
+        .unwrap_err();
+    assert!(err.contains("manual now"), "{err}");
+    assert!(fx.resumes().is_empty() && fx.pastes().is_empty(), "nothing sent");
+    fx.run(|run| {
+        assert!(run.manual_only);
+        assert!(run.events.iter().all(|e| e.kind != "loopBack"), "not recorded as sent back");
+        assert_eq!(run.round, 1);
+        assert!(run.claims.iter().all(|c| c.key != "back:plan_reviewer#1"), "your claim is released: {:?}", run.claims);
+        let manual: Vec<&str> = run
+            .events
+            .iter()
+            .filter(|e| e.kind == "note" && e.summary.contains("manual from now on"))
+            .map(|e| e.summary.as_str())
+            .collect();
+        assert_eq!(manual.len(), 1, "{manual:?}");
+        assert!(!manual[0].contains("autopilot was sending"), "wrong wording for your own Send back: {}", manual[0]);
+        assert!(manual[0].contains("Your Send back was not sent"), "it says your Send back was not sent: {}", manual[0]);
+    });
 }
 
 /// H4 on engine 2: an `auto` check with nothing to run stops the run with
@@ -1642,5 +1744,47 @@ fn a_held_round_pasted_back_at_hand_back_leaves_your_older_turn_undecided() {
     fx.run(|run| {
         let decided = &run.autopilot.as_ref().unwrap().decided;
         assert!(!decided.iter().any(|t| t.ends_with("|bridge|p-2")), "your older turn stays undecided: {decided:?}");
+    });
+}
+
+/// When the D24 gate refuses one lane mid-run (the run goes manual on
+/// engine 1), the other lanes it unblocked are left waiting for you; the
+/// actor does not try them, fail on "does not report through the pipeline
+/// bridge" and add a `carry_out_failed` stop.
+#[test]
+fn lanes_after_a_gate_refusal_are_left_waiting_without_a_carry_out_failed_stop() {
+    let mut fx = Fixture::new("lanes_gate_refused");
+    let implementer = to_implementer(&mut fx);
+    let answers = fx.tab(&implementer).answers.clone();
+    let cwd = fx.work.path().display().to_string();
+    {
+        let mut store = fx.host.store.lock().unwrap();
+        let lane = |id: &str, deps: &[&str]| crate::commands::pipeline::LaneInput {
+            id: id.into(),
+            title: format!("PR {id}"),
+            depends_on: deps.iter().map(|d| d.to_string()).collect(),
+        };
+        crate::commands::pipeline::fan_out(&mut store, RUN, "implementer", vec![lane("pr1", &[]), lane("pr2", &["pr1"]), lane("pr3", &["pr1"])])
+            .unwrap();
+        let role = fx.host.roles.iter().find(|r| r.id == "role_implementer").unwrap().clone();
+        for id in ["pr2", "pr3"] {
+            let tab = store.create_draft_tab(&role, &cwd, false, None).unwrap();
+            store.data.tabs.iter_mut().find(|t| t.id == tab).unwrap().answers = answers.clone();
+            store.set_tab_chain(&tab, Some(chain(3, Some(id))), None).unwrap();
+            let run = store.pipeline_run_by_id_mut(RUN).unwrap();
+            run.lane_mut(id).unwrap().tab_ids.insert("role_implementer".into(), tab);
+        }
+    }
+    fx.host.gate_open.store(false, Ordering::SeqCst);
+    let before = fx.launches().len();
+    let outcome = fx.user(UserAction::Approve { lane: Some("pr1".into()) }).expect("approve");
+    assert_eq!(outcome.started.len(), 1, "the first lane opened (unbridged): {:?}", outcome.started);
+    assert_eq!(fx.launches().len(), before + 1);
+    assert!(fx.stops().iter().all(|s| s.0 != StopReason::CarryOutFailed), "{:?}", fx.stops());
+    fx.run(|run| {
+        assert!(run.manual_only);
+        assert_ne!(run.stop_reason, Some(StopReason::CarryOutFailed));
+        let waiting = run.lanes.iter().filter(|l| l.status == "waiting").count();
+        assert_eq!(waiting, 1, "the other lane waits for you: {:?}", run.lanes);
     });
 }

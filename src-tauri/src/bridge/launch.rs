@@ -23,7 +23,7 @@
 
 use super::folder::{
     self, read_mode, read_result, read_stage, stage_dirs, write_mode, BridgeTurn, ResultKind, StageInfo,
-    StageMode, SCHEMA,
+    StageMode, TurnOutcome, SCHEMA,
 };
 use super::schema::{FULL_TOOL_NAME, SERVER_NAME};
 use crate::pipelines::autopilot::stage_key;
@@ -429,8 +429,8 @@ pub fn set_stage_mode(runs_root: &Path, tag: &BridgeTag, tab_id: &str, mode: Sta
 }
 
 /// The stage's latest finished turn, read back from `turn.json` (Continue
-/// after a restart). `None` while a turn runs, before the first one, or
-/// when `tab_id` no longer owns the stage.
+/// after a restart). `None` while a turn runs, before the first one, after
+/// an abandoned one, or when `tab_id` no longer owns the stage.
 pub fn read_stage_turn(runs_root: &Path, tag: &BridgeTag, tab_id: &str) -> Option<BridgeTurn> {
     let run_dir = folder::run_dir(runs_root, &tag.run_id)?;
     let dir = folder::stage_dir_path(&run_dir, &tag.stage)?;
@@ -439,7 +439,8 @@ pub fn read_stage_turn(runs_root: &Path, tag: &BridgeTag, tab_id: &str) -> Optio
         return None;
     }
     let turn = turn?;
-    let end = turn.ended.clone()?;
+    // An abandoned turn (D9a) is never read back: autopilot never acts on it.
+    let end = turn.ended.clone().filter(|end| end.outcome != TurnOutcome::Abandoned)?;
     let result = read_result(&dir, &turn.turn).map(|stored| stored.result);
     Some(BridgeTurn::new(&info, &turn, &end, result))
 }

@@ -14,7 +14,7 @@ use crate::claude_session_log::TerminalSessionLog;
 use crate::commands::chain_events::ChainEvents;
 use crate::commands::session_log::tab_session_target;
 use crate::pipelines::recovery::{
-    current_stage_tabs, reconcile_run_with, stall_limit, stop_stalled, working, Reconciled, StageTab,
+    current_stage_tabs, reconcile_run_bridged, stall_limit, stop_stalled, working, Reconciled, StageTab,
     StallObservation, StallWatch,
 };
 use crate::pipelines::PipelineDef;
@@ -105,9 +105,21 @@ pub(crate) struct RecoveryOutcome {
     pub stopped: Vec<AutopilotStopped>,
 }
 
+/// A current stage tab's turn as the startup reconcile reads it: `None` for
+/// a tab that is not bridged, `Some(None)` for a bridged one whose stage has
+/// no `turn.json`, else its latest turn id.
+pub(crate) fn bridge_turn_of(
+    runs_root: &std::path::Path,
+    tab_id: &str,
+    tag: Option<&crate::bridge::BridgeTag>,
+) -> Option<Option<String>> {
+    tag.map(|tag| crate::bridge::launch::stage_turn_id(runs_root, tag, tab_id))
+}
+
 /// Startup: each running autopilot run against its current stage's logs
-/// (`pipelines::recovery::reconcile_run_with`). A bridged tab's decided turn
-/// is matched by its turn id from `<runs_root>/<run>/stages/<stage>/turn.json`.
+/// (`pipelines::recovery::reconcile_run_bridged`). A bridged tab's decided turn
+/// is matched by its turn id from `<runs_root>/<run>/stages/<stage>/turn.json`;
+/// one with no `turn.json` was sent its next round (a resume) and never waits.
 pub(crate) fn reconcile_on_startup(
     store: &Mutex<StateStore>,
     registry: &Mutex<PtyRegistry>,
@@ -117,16 +129,19 @@ pub(crate) fn reconcile_on_startup(
     let watched = running_stage_tabs(store, registry)?;
     let mut logs: HashMap<String, HashMap<String, TerminalSessionLog>> = HashMap::new();
     let mut bridge_turns: HashMap<String, String> = HashMap::new();
+    let mut no_turn: HashSet<String> = HashSet::new();
     for item in &watched {
         if let Some((log, _)) = read_log(readers, item) {
             logs.entry(item.run_id.clone()).or_default().insert(item.tab.tab_id.clone(), log);
         }
-        let turn = item
-            .bridge
-            .as_ref()
-            .and_then(|tag| crate::bridge::launch::stage_turn_id(runs_root, tag, &item.tab.tab_id));
-        if let Some(turn) = turn {
-            bridge_turns.insert(item.tab.tab_id.clone(), turn);
+        match bridge_turn_of(runs_root, &item.tab.tab_id, item.bridge.as_ref()) {
+            Some(Some(turn)) => {
+                bridge_turns.insert(item.tab.tab_id.clone(), turn);
+            }
+            Some(None) => {
+                no_turn.insert(item.tab.tab_id.clone());
+            }
+            None => {}
         }
     }
     let mut outcome = RecoveryOutcome::default();
@@ -141,7 +156,7 @@ pub(crate) fn reconcile_on_startup(
         let Some(run) = state.pipeline_run_by_id_mut(run_id) else {
             continue;
         };
-        match reconcile_run_with(&def, run, run_logs, &bridge_turns) {
+        match reconcile_run_bridged(&def, run, run_logs, &bridge_turns, &no_turn) {
             None => {}
             Some(Reconciled::CutOff) => outcome.changed.push(run_id.clone()),
             Some(Reconciled::Waiting { tab_id, why }) => {
