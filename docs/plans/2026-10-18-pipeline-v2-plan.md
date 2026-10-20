@@ -2,7 +2,7 @@
 
 2026-10-18 · JT
 
-> Repository copy of the approved working plan (decision D35), taken on 2026-10-19 for V1. The decisions it records are in [ADR-015](../adr/015-pipeline-v2-stop-hook-bridge-run-actor.md). The Bug ledger statuses were filled in from ClickUp on 2026-10-19; ClickUp stays the live bug list.
+> Repository copy of the approved working plan (decision D35), taken on 2026-10-19 for V1. The decisions it records are in [ADR-015](../adr/015-pipeline-v2-stop-hook-bridge-run-actor.md). The Bug ledger statuses were filled in from ClickUp on 2026-10-19; ClickUp stays the live bug list. Where the shipped V2a to V6 code refined a rule (the run folder layout, D17's paste fallback, the D24 gate, "Done when"), this copy says so and ADR-015 has the details; other decision rows are as approved on 2026-10-18, and ADR-015's decision log has the V0 amendments.
 
 Three tracks, in order: make the app and its UI something you can trust every day, harden today's autopilot, then rebuild how the orchestrator talks to each stage's `claude` terminal (Stop hook for turn ends, a `submit_result` tool for results, Rust as the only driver). Every open question is decided below so work can start without waiting on calls.
 
@@ -182,13 +182,18 @@ flowchart LR
 **Run folder** (`<app data>/runs/<runId>/`):
 
 ```
+run.json                   the run id, checked by the bridge (D37)
 plan.md, tasks.json        Planner output (tasks drive fan-out)
-prs.json                   Implementer output, per lane
-findings-<stage>-r<N>.json reviewer output per round
+prs.json, prs-<lane>.json  Implementer output (prs-<lane>.json in a lane)
+findings-<stage>-r<N>.json reviewer output per round, written by the actor (V4)
+bridge.log                 what went wrong, unknown payload fields (D24)
 stages/<stage>[@lane]/
+  stage.json               stage, role, lane, owning tab, result schema
   mode                     autopilot | manual | takeover
-  turn.json                current turn id and start time (from UserPromptSubmit)
+  turn.json                current turn: prompt_id, start, blocked, end
   results/<turn>.json      what submit_result received, already validated
+  payloads/<Event>.json    newest raw hook payload per event
+  needs.json               the last Needs you posted (Notification dedupe)
 inbox/                     events the bridge drops; the actor reads and deletes them
 ```
 
@@ -295,14 +300,14 @@ Every question I expect you to face, decided. Each has the reason and the eviden
 | D14 | Use `--strict-mcp-config`? | No. Your own MCP servers stay available to stages | Your servers interfere with stages |
 | D15 | Your own Stop hooks? | They still run (settings merge); documented in ADR-015 | One of them blocks stages: we document how to scope it |
 | D16 | Gates inside the Stop hook? | No. The hook returns at once; the actor runs gates after, and a failure resumes the session with the output. A hook that waits minutes would freeze the terminal | — |
-| D17 | How does a loop-back restart? | SIGTERM, wait for exit, SIGKILL after 10 s, then `claude --resume S` with the same flags and a short prompt pointing at the findings file. No keystrokes | T11 shows SIGTERM damages the log: send `/exit` as the one allowed keystroke and wait |
+| D17 | How does a loop-back restart? | SIGTERM, wait for exit, SIGKILL after 10 s, then `claude --resume S` with the same flags and a short prompt pointing at the findings file. No keystrokes (as shipped: a running stage with no saved Claude session still gets one paste after Ctrl+U, D40; see ADR-015 §4) | T11 shows SIGTERM damages the log: send `/exit` as the one allowed keystroke and wait |
 | D18 | Who carries decisions out? | One Rust run actor per active run. It handles one message at a time (bridge events, your buttons, gate results, exits, timers), which replaces claims. Your manual buttons on engine-2 runs go through it too | — |
 | D19 | Old runs? | `engine: 2` on new runs. Engine-1 runs keep the v1 path until V6, then become manual-only | — |
 | D20 | Hand-off content? | Next-stage prompts point at run files. A manual Send on an engine-2 run opens the form prefilled from those files, still editable. Tabs outside a pipeline are unchanged | — |
 | D21 | Keep `## HANDOFF:` prose in role templates? | Yes: you read it, and manual hand-offs use it. `{{result_instructions}}` adds the tool instructions only on engine-2 stages | — |
 | D22 | Needs you signal? | The Notification hook first; screen scraping as the fallback | T8 shows no distinct permission type: scraping stays the main signal |
 | D23 | Permission modes? | Unchanged: `plan` for the Planner, `auto` for every other role. Chat (ACP) autopilot stays out of scope | — |
-| D24 | Which Claude Code versions? | v2 needs the version V0 verified, or newer. An older version launches engine-1 runs with a notice. A newer one is allowed; the bridge logs unknown payload fields and the overview says "Claude Code version not yet verified" | A newer version breaks the bridge: pin the maximum too |
+| D24 | Which Claude Code versions? | v2 needs the version V0 verified, or newer. An older version launches engine-1 runs with a notice. A newer one is allowed; the bridge logs unknown payload fields and the overview says "Claude Code version not yet verified". As shipped: 2.1.287 or newer, an unreadable version counts as older, hooks turned off (`disableAllHooks` anywhere, managed `allowManagedHooksOnly`) also gives engine 1, the check runs at every bridged start and relaunch, and a switch mid-run makes the run manual for good (ADR-015 §6) | A newer version breaks the bridge: pin the maximum too |
 
 ### Hidden stages
 
@@ -370,7 +375,7 @@ V0 passed T1: hooks from inline `--settings` fire in the interactive TUI, so v2 
 | Risk | Likelihood | What we do |
 |---|---|---|
 | A Claude Code update changes the hook payloads | Medium | The bridge keeps raw payloads in the run folder, unknown fields are logged, and engine-1 stays as the fallback until V6 (D24) |
-| Inline hooks turned off by a managed `disableAllHooks` policy | Low on your machine | Checked at launch; such runs fall back to engine 1 with a notice |
+| Inline hooks turned off by a managed `disableAllHooks` policy | Low on your machine | Checked at every bridged start and relaunch (also a managed `allowManagedHooksOnly`); such runs fall back to engine 1, manual only since V6, with a notice |
 | The bug list from Track S turns out much longer than expected | Medium | The exit bar holds; V waits. Severity decides the order, so the worst problems go first |
 | Replaying the buffer into Watch garbles the screen | Medium | Use the headless terminal fallback (D25) |
 | Kill and resume costs time on every loop-back | Certain, small | A few seconds per round; resume keeps the conversation, and the prompt cache usually survives |
@@ -386,7 +391,7 @@ V0 passed T1: hooks from inline `--settings` fire in the interactive TUI, so v2 
 - Every turn end comes from the Stop hook, and every verdict and task list from the bridge, with no regex parsing.
 - A PR Reviewer "changes required" resumes the **same** Implementer session id.
 - A failing check resumes the Implementer with the check's output.
-- Autopilot pastes no keystrokes.
+- Autopilot pastes no keystrokes (the D40 paste after Ctrl+U is only for a stage with no saved Claude session, which this run should not have).
 - Quitting the app mid-run and reopening it shows `app_restarted` with Continue, and Continue finishes the run.
 - Take over, a typed question, and Hand back work without a block or a double hand-off.
 - Nothing was written to `~/.claude*` by DCTerminal, and no pull request was merged.
