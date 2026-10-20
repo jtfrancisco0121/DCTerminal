@@ -144,6 +144,8 @@ export function useAutopilot(deps: AutopilotDeps) {
   const startedAt = useRef(Date.now());
   /** Bridged tabs: the bridge turn (`prompt_id`) last handled. */
   const handledBridge = useRef(new Map<string, string>());
+  /** When each tab's last handled bridge turn ended (`BridgeTurn.endedAt`). */
+  const bridgeEndedAt = useRef(new Map<string, string>());
   /** Bridged tabs: a turn that ended while the previous one was still being handled. */
   const pendingBridge = useRef(new Map<string, BridgeTurn>());
 
@@ -383,6 +385,7 @@ export function useAutopilot(deps: AutopilotDeps) {
       const placed = stageForTab(tab.chain, tab.roleId);
       if (!placed) return;
       handledBridge.current.set(tab.id, turn.turn);
+      bridgeEndedAt.current.set(tab.id, turn.endedAt);
       const chain = tab.chain;
       const runId = chain.chainId;
       busy.current.add(tab.id);
@@ -476,6 +479,7 @@ export function useAutopilot(deps: AutopilotDeps) {
       const at = Date.parse(turn.endedAt);
       if (!(Number.isFinite(at) && at >= startedAt.current - 2000)) {
         handledBridge.current.set(tabId, turn.turn);
+        bridgeEndedAt.current.set(tabId, turn.endedAt);
         return;
       }
       onBridgeTurn(turn);
@@ -501,13 +505,19 @@ export function useAutopilot(deps: AutopilotDeps) {
       const turn = finishedTurn(tab.roleId, log, tab.chain.kind);
       if (log && handledBridge.current.has(tabId)) {
         // The tab was bridged in this app session and lost its bridge (a
-        // relaunch of a tab that no longer owns its stage): the log's turn
-        // is the one the bridge decided, under a key v1 cannot match. The
-        // v1 path takes over from the next prompt.
+        // relaunch of a tab that no longer owns its stage). A turn prompted
+        // no later than the bridge's last turn ended is the one the bridge
+        // decided, under a key v1 cannot match: marked handled. A newer one
+        // (a Restart's new session) is the v1 path's to decide.
+        const ended = Date.parse(bridgeEndedAt.current.get(tabId) ?? "");
+        const prompted = Date.parse(log.lastPromptAt ?? "");
         handledBridge.current.delete(tabId);
-        seen.current.add(tabId);
-        if (turn) handled.current.set(tabId, turn.key);
-        return;
+        bridgeEndedAt.current.delete(tabId);
+        if (!(Number.isFinite(ended) && Number.isFinite(prompted)) || prompted <= ended) {
+          seen.current.add(tabId);
+          if (turn) handled.current.set(tabId, turn.key);
+          return;
+        }
       }
       if (log && !seen.current.has(tabId)) {
         seen.current.add(tabId);
@@ -657,6 +667,7 @@ export function useAutopilot(deps: AutopilotDeps) {
           // intentionally silent: a stage with no finished turn has nothing to decide.
           const turn = await pipelineBridgeTurn(tabId).catch(() => null);
           handledBridge.current.delete(tabId);
+          bridgeEndedAt.current.delete(tabId);
           if (turn) onBridgeTurn(turn);
           continue;
         }

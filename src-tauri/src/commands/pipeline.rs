@@ -194,6 +194,12 @@ pub fn set_autopilot(store: &mut StateStore, run_id: &str, enabled: bool) -> Res
     if run.autopilot.as_ref().is_some_and(|a| a.enabled == enabled) {
         return Ok(false);
     }
+    if enabled && run.manual_only {
+        return Err(
+            "This run is manual from now on: it was switched from the pipeline bridge to engine 1 mid-run, so autopilot cannot be turned back on. Hand each stage on yourself, or start a new run."
+                .to_string(),
+        );
+    }
     run.set_autopilot_enabled(enabled);
     // Off is a stop too: the ledger line carries its code.
     run.log_outcome(

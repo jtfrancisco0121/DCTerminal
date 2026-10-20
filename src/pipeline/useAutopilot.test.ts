@@ -1005,20 +1005,18 @@ describe("useAutopilot", () => {
       vi.mocked(pipelineDecide).mockResolvedValue({ action: "skip", reason: "x" });
       vi.mocked(pipelineBridgeTurn).mockResolvedValue(bridgeTurn());
       const tabs = [bridgedReviewer()];
-      const { deps, onLog } = setup(tabs);
+      const { onLog } = setup(tabs);
       const reply = log("## HANDOFF: Verdict\nREQUEST CHANGES");
       onLog("pr", reply);
       await waitFor(() => expect(pipelineDecide).toHaveBeenCalledTimes(1));
       // The Resume's gate: the core dropped the tag and turned autopilot off.
       vi.mocked(getPipelineRun).mockResolvedValue(run(false));
       vi.mocked(pipelineBridgeTurn).mockResolvedValue(null);
-      vi.mocked(deps.refreshTabs).mockImplementation(async () => {
-        // React applies the refreshed list later, as a render would.
-        setTimeout(() => (tabs[0] = tab("pr", "role_pr_reviewer", 4)), 0);
-      });
-      // The resumed session's log still shows the same finished turn.
+      // The resumed session's log still shows the same finished turn, first
+      // while the tab list still has the tag, then after any later refresh.
       onLog("pr", reply);
       await new Promise((resolve) => setTimeout(resolve, 20));
+      tabs[0] = tab("pr", "role_pr_reviewer", 4);
       onLog("pr", reply);
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(pipelineDecide).toHaveBeenCalledTimes(1);
@@ -1030,7 +1028,8 @@ describe("useAutopilot", () => {
       // tag but the run stays on engine 2 with autopilot on.
       vi.mocked(getPipelineRun).mockResolvedValue(run(true));
       vi.mocked(pipelineDecide).mockResolvedValue({ action: "skip", reason: "x" });
-      vi.mocked(pipelineBridgeTurn).mockResolvedValue(bridgeTurn());
+      // The bridge's turn ended after its prompt, as a real turn does.
+      vi.mocked(pipelineBridgeTurn).mockResolvedValue(bridgeTurn({ endedAt: "2099-01-01T00:01:00Z" }));
       const tabs = [bridgedReviewer()];
       const { onLog } = setup(tabs);
       const reply = log("## HANDOFF: Verdict\nREQUEST CHANGES", "2099-01-01T00:00:00Z");
@@ -1042,6 +1041,24 @@ describe("useAutopilot", () => {
       expect(pipelineDecide).toHaveBeenCalledTimes(1);
       // A turn after that is the v1 path's to decide.
       onLog("pr", log("## HANDOFF: Verdict\nAPPROVED", "2099-01-01T00:05:00Z"));
+      await waitFor(() => expect(pipelineDecide).toHaveBeenCalledTimes(2));
+      expect(vi.mocked(pipelineDecide).mock.calls[1][1].turn).not.toContain("|bridge|");
+    });
+
+    it("after a Restart with a new session, a tab that lost its bridge still gets its first new turn decided", async () => {
+      vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+      vi.mocked(pipelineDecide).mockResolvedValue({ action: "skip", reason: "x" });
+      const ended = new Date(Date.now() + 1000);
+      vi.mocked(pipelineBridgeTurn).mockResolvedValue(bridgeTurn({ endedAt: ended.toISOString() }));
+      const tabs = [bridgedReviewer()];
+      const { onLog } = setup(tabs);
+      onLog("pr", log("## HANDOFF: Verdict\nREQUEST CHANGES", new Date(ended.getTime() - 60_000).toISOString()));
+      await waitFor(() => expect(pipelineDecide).toHaveBeenCalledTimes(1));
+      // Restarted unbridged with a new session; its first read already shows
+      // a finished turn prompted after the bridge's turn ended.
+      tabs[0] = tab("pr", "role_pr_reviewer", 4);
+      const fresh = { ...log("## HANDOFF: Verdict\nAPPROVED", new Date(ended.getTime() + 60_000).toISOString()), sessionId: "s-new" };
+      onLog("pr", fresh);
       await waitFor(() => expect(pipelineDecide).toHaveBeenCalledTimes(2));
       expect(vi.mocked(pipelineDecide).mock.calls[1][1].turn).not.toContain("|bridge|");
     });

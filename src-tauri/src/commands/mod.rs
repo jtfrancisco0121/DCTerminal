@@ -10,7 +10,7 @@ mod dev_session;
 mod forms;
 mod github;
 mod handoff;
-mod pipeline;
+pub(crate) mod pipeline;
 mod model_session;
 mod prompt_worker;
 mod prompts;
