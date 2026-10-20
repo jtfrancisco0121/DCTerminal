@@ -9,8 +9,16 @@ vi.mock("../bridge", () => ({
   },
 }));
 
-const { beginLivePty, dropLivePty, livePty, notePtyInput, ptyExitCode, restartLivePty, subscribePtyExit } =
-  await import("./live");
+const {
+  beginLivePty,
+  dropLivePty,
+  livePty,
+  notePtyInput,
+  ptyExitCode,
+  restartLivePty,
+  subscribePtyAnswer,
+  subscribePtyExit,
+} = await import("./live");
 const { dialogDetector } = await import("./permissionDialog");
 
 const last = () => handlers[handlers.length - 1];
@@ -102,5 +110,20 @@ describe("notePtyInput and the permission dialog", () => {
     notePtyInput("mouse", "\r");
     expect(dialogDetector.answering("mouse")).toBe(true);
     dialogDetector.forget("mouse");
+  });
+
+  it("tells answer listeners about keys that may answer a dialog, not typing or mouse moves", () => {
+    const seen: string[] = [];
+    const off = subscribePtyAnswer((id) => seen.push(id));
+    notePtyInput("t1", "a");
+    notePtyInput("t1", "\x1b[<35;40;12M");
+    expect(seen).toEqual([]);
+    notePtyInput("t1", "\r");
+    notePtyInput("t2", "2");
+    notePtyInput("t3");
+    expect(seen).toEqual(["t1", "t2", "t3"]);
+    off();
+    notePtyInput("t1", "\r");
+    expect(seen).toHaveLength(3);
   });
 });

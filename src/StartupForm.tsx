@@ -253,6 +253,8 @@ import {
   type SessionLogPollState,
 } from "./terminal/sessionLogPoll";
 import {
+  bridgeNeedsAfterAnswer,
+  bridgeNeedsAfterDialog,
   bridgeNeedsAfterRead,
   deriveTerminalState,
   dialogAfterRead,
@@ -296,6 +298,7 @@ import {
   ptyExitCode,
   rekeyLivePty,
   subscribeLivePty,
+  subscribePtyAnswer,
   subscribePtyExit,
 } from "./terminal/live";
 import {
@@ -587,8 +590,9 @@ export function StartupForm({
   }, []);
   /**
    * Bridged stages' Needs you (D22): the PermissionRequest hook (or its
-   * Notification backup) said a permission dialog is up. Cleared by a later
-   * log read (`bridgeNeedsAfterRead`).
+   * Notification backup) said a permission dialog is up. Cleared when you
+   * answer it (an answer key, or its screen dialog gone), or by a later log
+   * read that shows the tool finished or the turn over.
    */
   const bridgeNeeds = useRef(new Map<string, BridgeNeedsMark>());
   const [bridgeNeedsVersion, setBridgeNeedsVersion] = useState(0);
@@ -1528,16 +1532,24 @@ export function StartupForm({
             )
           : undefined,
       );
+      // The hook's Needs you: a dialog drawn after it and gone again was answered.
+      setBridgeNeeds(id, bridgeNeedsAfterDialog(bridgeNeeds.current.get(id), visible));
       // Read the log now: the open tool decides what the dialog is for.
       const entry = sessionLogWatch.current.get(id);
       if (visible && entry) entry.forceRead = true;
+    });
+    // An answer key sent after the hook answered its prompt: the approved
+    // tool may run for minutes, and the log shows nothing until it finishes.
+    const unsubscribeAnswer = subscribePtyAnswer((id) => {
+      setBridgeNeeds(id, bridgeNeedsAfterAnswer(bridgeNeeds.current.get(id), Date.now()));
     });
     return () => {
       unsubscribeLive();
       unsubscribeExit();
       unsubscribeDialog();
+      unsubscribeAnswer();
     };
-  }, [isWatchingTab, notifyAgent, setDialogOwner]);
+  }, [isWatchingTab, notifyAgent, setBridgeNeeds, setDialogOwner]);
 
   // Every live Claude role terminal, plus role terminals on screen or in a
   // chain: read their Claude session log while the PTY streams output, until
