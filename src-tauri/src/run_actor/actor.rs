@@ -269,10 +269,15 @@ impl<H: Host> Actor<H> {
     /// Act on a finished turn: its gates first (on a running run), then a
     /// decision. A blocked Implementer opened nothing to check: it waits for
     /// you (V2b). A turn Claude refused for the usage limit stops before any
-    /// check runs (H5).
+    /// check runs (H5), and so does a turn on a pipeline that became disabled.
     fn take_up(&mut self, placed: &Placed, turn: BridgeTurn, round: u32, status: RunStatus) {
         let refused = self.rate_limit(placed);
-        if status == RunStatus::Running && !placed.stage.gates.is_empty() && blocked(&turn).is_none() && refused.is_none() {
+        if status == RunStatus::Running
+            && !placed.stage.gates.is_empty()
+            && blocked(&turn).is_none()
+            && refused.is_none()
+            && placed.def.disabled.is_none()
+        {
             self.start_gates(placed, turn, round);
             return;
         }

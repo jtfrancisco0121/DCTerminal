@@ -1395,6 +1395,35 @@ fn a_turn_on_a_run_whose_pipeline_became_disabled_stops_the_run_and_opens_nothin
     });
 }
 
+#[test]
+fn an_implementer_turn_on_a_run_whose_pipeline_became_disabled_runs_no_checks() {
+    // The disabled pipeline stops the run before the stage's checks run, not
+    // after them.
+    let id = "eagle1_disabled_gates";
+    let mut def = crate::pipelines::find("eagle1").unwrap();
+    def.id = id.into();
+    def.name = "Disabled later".into();
+    def.run_kind = None;
+    def.built_in = false;
+    crate::pipelines::register_for_test(def.clone());
+    let mut fx = Fixture::with_pipeline("disabled_pipeline_gates", id, Vec::new());
+    let implementer = to_implementer(&mut fx);
+    def.disabled = Some("role \"role_gone\" does not exist".into());
+    crate::pipelines::register_for_test(def);
+    let prs = json!({ "schema": 1, "prs": [{ "url": "https://github.com/acme/app/pull/12", "title": "Refresh" }], "summary": "Opened." });
+    let turn = fx.end_turn(&implementer, "i-1", Some(prs), "Opened https://github.com/acme/app/pull/12");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    crate::pipelines::unregister_for_test(id);
+    assert!(!fx.actor.busy(), "no checks run on a disabled pipeline");
+    assert!(fx.gates_done.try_recv().is_err());
+    fx.run(|run| {
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::CarryOutFailed)));
+        assert!(run.events.iter().all(|e| e.kind != "gate"), "{:?}", run.events);
+        let last = run.events.last().unwrap();
+        assert!(last.summary.contains("is disabled"), "{}", last.summary);
+    });
+}
+
 /// D28: you revised the plan yourself in the Planner you took over while a
 /// round for it was held, then handed it back. Your newer turn is decided
 /// (the plan goes to review again); the stale findings are not sent back.
