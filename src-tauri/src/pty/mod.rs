@@ -2939,9 +2939,14 @@ mod tests {
         let old = registry.lock().unwrap().sessions["s"].group();
         let (new_exit, _new_exits) = exit_probe();
         let began = std::time::Instant::now();
-        let grace = Duration::from_millis(400);
+        let grace = Duration::from_millis(200);
         replace_detached(&registry, "s", sh_spec(dir.path(), "sleep 5"), None, new_exit, grace).unwrap();
-        assert!(began.elapsed() >= grace, "it waited the grace out first");
+        let took = began.elapsed();
+        assert!(took >= grace, "it waited the grace out first");
+        // The SIGKILL is the resume's own: S1's stop-on-drop would only kill
+        // the old program after STOP_GRACE (1.5 s) more.
+        let backstop = grace + crate::process_tree::STOP_GRACE / 2;
+        assert!(took < backstop, "the resume killed it at the grace, not S1's backstop: took {took:?}");
         assert!(!old.running(), "then killed it");
         assert!(registry.lock().unwrap().running("s"), "and started the new program");
         registry.lock().unwrap().shutdown_all();
