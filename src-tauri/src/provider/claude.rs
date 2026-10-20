@@ -419,6 +419,7 @@ mod tests {
                 role_id: "role_planner".to_string(),
                 run_mode: RunMode::Default,
                 prompt: Some("Plan it".to_string()),
+                stage_kind: None,
             },
             model: Some("opus".to_string()),
             session_id: None,
