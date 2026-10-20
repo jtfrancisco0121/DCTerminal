@@ -34,6 +34,8 @@ struct TestHost {
     /// Gate results handed out in order; `passed` once they run out.
     gates: Mutex<VecDeque<GateResult>>,
     panic_on_usage: AtomicBool,
+    /// While set, a panicking usage read first waits for this signal.
+    hold_usage: Mutex<Option<Receiver<()>>>,
     /// The pull requests each pull-request gate was given.
     pr_gate_urls: Mutex<Vec<Vec<String>>>,
     /// The D24 gate's answer for the next bridged opens (false: engine 1).
@@ -99,6 +101,10 @@ impl Host for TestHost {
     }
     fn usage_percent(&self, _run_id: &str) -> Option<u8> {
         if self.panic_on_usage.load(Ordering::SeqCst) {
+            let hold = self.hold_usage.lock().unwrap().take();
+            if let Some(hold) = hold {
+                let _ = hold.recv_timeout(Duration::from_secs(10));
+            }
             panic!("usage exploded");
         }
         None
@@ -196,6 +202,7 @@ impl Fixture {
             live: Mutex::new(HashSet::from([planner.clone()])),
             gates: Mutex::new(VecDeque::new()),
             panic_on_usage: AtomicBool::new(false),
+            hold_usage: Mutex::new(None),
             pr_gate_urls: Mutex::new(Vec::new()),
             gate_open: AtomicBool::new(true),
             rate_limits: Mutex::new(HashMap::new()),
@@ -987,4 +994,29 @@ fn the_pull_request_gate_checks_the_reported_pull_requests_else_the_links_in_the
                 https://github.com/acme/app/pull/, https://github.com/acme/pull/5";
     assert_eq!(github_pr_urls(text), vec!["https://github.com/acme/app/pull/12", "https://github.com/acme/my.app-2/pull/3"]);
     assert!(github_pr_urls("").is_empty());
+}
+
+/// D18's safety net: a message that arrives while the actor panics is
+/// handed to a fresh thread, which answers it; nothing is lost.
+#[test]
+fn a_message_queued_behind_a_panic_is_answered_by_the_next_thread() {
+    let fx = Fixture::new("panic_queue");
+    fx.host.panic_on_usage.store(true, Ordering::SeqCst);
+    let (release, hold) = channel();
+    *fx.host.hold_usage.lock().unwrap() = Some(hold);
+    let turn = fx.planner_turn("p-1", "# Plan");
+    let actors = RunActors::with_idle(fx.host.clone(), Duration::from_secs(30));
+    // The turn's handling blocks in the usage read, then panics.
+    actors.send(RUN, ActorMsg::Turn(turn));
+    let asking = actors.clone();
+    let button = std::thread::spawn(move || {
+        asking.ask(RUN, UserAction::Approve { lane: Some("pr9".into()) }, Duration::from_secs(20))
+    });
+    // The button press is queued behind the turn before the panic.
+    std::thread::sleep(Duration::from_millis(300));
+    release.send(()).unwrap();
+    let answer = button.join().unwrap();
+    let err = answer.unwrap_err();
+    assert!(err.contains("pr9"), "a new thread handled the queued press: {err}");
+    fx.run(|run| assert_eq!(run.stop_reason, Some(StopReason::CarryOutFailed)));
 }
