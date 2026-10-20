@@ -1,6 +1,8 @@
 //! Whether an engine-2 run may launch its stages bridged (plan D24, the
-//! `disableAllHooks` risk row; ADR-015 §6), checked at the first bridged
-//! launch, on the launch's blocking thread, with no store lock held:
+//! `disableAllHooks` risk row; ADR-015 §6), checked at every bridged start
+//! and every relaunch (Restart, resume) of a bridged tab, on the launch's
+//! blocking thread, with no store lock held while reading the CLI and the
+//! settings. The version is cached; the settings are read each time:
 //!
 //! - The bridge relies on what V0 verified on Claude Code 2.1.287 (command
 //!   hooks with an `args` array, `prompt_id` in the payloads, the MCP
@@ -10,7 +12,9 @@
 //!   overview says "Claude Code version not yet verified".
 //! - `disableAllHooks: true` in a settings file Claude Code would read
 //!   (the run's config folder, the project's `.claude/settings*.json`, the
-//!   managed settings) turns every hook off, so the run uses engine 1.
+//!   managed settings), or a managed `allowManagedHooksOnly: true` (which
+//!   drops `--settings` hooks too), turns the bridge's hooks off, so the run
+//!   uses engine 1.
 //!
 //! The version comes from `claude --version` (`claude_detect::read_claude_version`),
 //! read once per executable and cached (`ClaudeProvider::cli_version`).
@@ -50,12 +54,13 @@ pub enum Gate {
 
 /// D24 over the CLI's version text (`None`: it could not be read), then
 /// `hooks_off` (the settings file that turns hooks off, if any).
-pub fn decide(version: Option<&str>, hooks_off: Option<&Path>) -> Gate {
+pub fn decide(version: Option<&str>, hooks_off: Option<&HooksOff>) -> Gate {
     let verified = verified_text();
-    if let Some(file) = hooks_off {
+    if let Some(off) = hooks_off {
         return Gate::EngineOne(format!(
-            "Claude Code hooks are turned off (disableAllHooks in {}), so this run uses engine 1: autopilot reads each stage's reply as before.",
-            file.display()
+            "Claude Code hooks are turned off ({} in {}), so this run uses engine 1: autopilot reads each stage's reply as before.",
+            off.setting,
+            off.file.display()
         ));
     }
     let text = version.map(str::trim).filter(|text| !text.is_empty());
@@ -111,7 +116,7 @@ pub fn managed_settings_path() -> Option<PathBuf> {
 
 /// The settings files Claude Code would read for a stage in `cwd` under the
 /// config folder `config_dir`, then `managed`.
-pub fn settings_files(config_dir: Option<&Path>, cwd: &Path, managed: Option<PathBuf>) -> Vec<PathBuf> {
+fn settings_files(config_dir: Option<&Path>, cwd: &Path, managed: Option<PathBuf>) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = config_dir.map(|dir| dir.join("settings.json")).into_iter().collect();
     files.push(cwd.join(".claude").join("settings.json"));
     files.push(cwd.join(".claude").join("settings.local.json"));
@@ -119,18 +124,36 @@ pub fn settings_files(config_dir: Option<&Path>, cwd: &Path, managed: Option<Pat
     files
 }
 
-/// The first of `files` that sets `disableAllHooks: true`. A missing or
-/// unreadable file sets nothing. Read-only.
-pub fn hooks_disabled_in(files: &[PathBuf]) -> Option<PathBuf> {
-    files
-        .iter()
-        .find(|path| {
-            std::fs::read(path)
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-                .is_some_and(|settings| settings.get("disableAllHooks").and_then(Value::as_bool) == Some(true))
-        })
-        .cloned()
+/// Where and how Claude Code's hooks are turned off for a stage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HooksOff {
+    pub file: PathBuf,
+    /// `disableAllHooks`, or `allowManagedHooksOnly` (managed settings only;
+    /// it drops hooks given with `--settings` too).
+    pub setting: &'static str,
+}
+
+fn read_settings(path: &Path) -> Option<Value> {
+    std::fs::read(path).ok().and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+}
+
+fn is_true(settings: &Value, key: &str) -> bool {
+    settings.get(key).and_then(Value::as_bool) == Some(true)
+}
+
+/// Whether a settings file Claude Code would read turns the bridge's hooks
+/// off: `disableAllHooks: true` in any of them (`settings_files`), or a
+/// managed `allowManagedHooksOnly: true`. A missing or unreadable file sets
+/// nothing. Read-only.
+pub fn hooks_off(config_dir: Option<&Path>, cwd: &Path, managed: Option<PathBuf>) -> Option<HooksOff> {
+    let files = settings_files(config_dir, cwd, managed.clone());
+    if let Some(file) = files.into_iter().find(|path| read_settings(path).is_some_and(|s| is_true(&s, "disableAllHooks"))) {
+        return Some(HooksOff { file, setting: "disableAllHooks" });
+    }
+    let managed = managed?;
+    read_settings(&managed)
+        .is_some_and(|s| is_true(&s, "allowManagedHooksOnly"))
+        .then_some(HooksOff { file: managed, setting: "allowManagedHooksOnly" })
 }
 
 #[cfg(test)]
@@ -207,6 +230,26 @@ mod tests {
     }
 
     #[test]
+    fn managed_hooks_only_turns_the_bridge_hooks_off_but_only_in_managed_settings() {
+        let dir = TempDir::new("gate_managed_only");
+        let config = dir.join("config");
+        let cwd = dir.join("repo");
+        let managed = dir.join("managed-settings.json");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::create_dir_all(cwd.join(".claude")).unwrap();
+        // In your own settings it does nothing (only a managed policy counts).
+        std::fs::write(config.join("settings.json"), r#"{"allowManagedHooksOnly": true}"#).unwrap();
+        assert_eq!(hooks_off(Some(&config), &cwd, Some(managed.clone())), None);
+        std::fs::write(&managed, r#"{"allowManagedHooksOnly": true}"#).unwrap();
+        let off = hooks_off(Some(&config), &cwd, Some(managed.clone())).expect("managed hooks only");
+        assert_eq!((off.file.as_path(), off.setting), (managed.as_path(), "allowManagedHooksOnly"));
+        match decide(Some("2.1.287 (Claude Code)"), Some(&off)) {
+            Gate::EngineOne(notice) => assert!(notice.contains("allowManagedHooksOnly"), "{notice}"),
+            other => panic!("managed hooks only is engine 1: {other:?}"),
+        }
+    }
+
+    #[test]
     fn hooks_turned_off_anywhere_claude_reads_settings_is_engine_1() {
         let dir = TempDir::new("gate_hooks_off");
         let config = dir.join("config");
@@ -215,15 +258,13 @@ mod tests {
         std::fs::create_dir_all(cwd.join(".claude")).unwrap();
         std::fs::create_dir_all(&config).unwrap();
         std::fs::create_dir_all(managed.parent().unwrap()).unwrap();
-        let files = settings_files(Some(&config), &cwd, Some(managed.clone()));
-        assert_eq!(files.len(), 4);
-        assert!(files.iter().all(|f| f.starts_with(dir.path())), "pinned to the temp dir");
-        assert_eq!(hooks_disabled_in(&files), None, "no files: hooks on");
+        let off = || hooks_off(Some(&config), &cwd, Some(managed.clone()));
+        assert_eq!(off(), None, "no files: hooks on");
 
         // Off, false, or unreadable: hooks stay on.
         std::fs::write(config.join("settings.json"), r#"{"disableAllHooks": false, "statusLine": null}"#).unwrap();
         std::fs::write(cwd.join(".claude").join("settings.json"), "{ not json").unwrap();
-        assert_eq!(hooks_disabled_in(&files), None);
+        assert_eq!(off(), None);
 
         for file in [
             config.join("settings.json"),
@@ -231,9 +272,11 @@ mod tests {
             cwd.join(".claude").join("settings.local.json"),
             managed.clone(),
         ] {
+            assert!(file.starts_with(dir.path()), "pinned to the temp dir");
             std::fs::write(&file, r#"{"disableAllHooks": true}"#).unwrap();
-            assert_eq!(hooks_disabled_in(&files).as_deref(), Some(file.as_path()));
-            match decide(Some("2.1.287 (Claude Code)"), Some(&file)) {
+            let found = off().expect("hooks off");
+            assert_eq!((found.file.as_path(), found.setting), (file.as_path(), "disableAllHooks"));
+            match decide(Some("2.1.287 (Claude Code)"), Some(&found)) {
                 Gate::EngineOne(notice) => assert!(notice.contains("disableAllHooks"), "{notice}"),
                 other => panic!("hooks off is engine 1: {other:?}"),
             }
