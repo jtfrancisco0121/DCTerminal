@@ -658,3 +658,76 @@ fn a_blocked_implementer_runs_no_checks_and_waits_with_its_reason() {
     });
     assert_eq!(fx.stops().last().map(|s| s.0), Some(StopReason::Checkpoint));
 }
+
+/// The Implementer's turn whose check failed: the retry pasted once.
+fn implementer_with_a_failed_gate(fx: &mut Fixture) -> (String, BridgeTurn) {
+    let implementer = to_implementer(fx);
+    fx.host.gates.lock().unwrap().push_back(GateResult {
+        kind: "command".into(),
+        label: "npm run check".into(),
+        status: "failed".into(),
+        summary: "Exited with code 1.".into(),
+        output: "FAIL src/auth.test.ts".into(),
+        duration_ms: 5,
+        optional: false,
+    });
+    let prs = json!({ "schema": 1, "prs": [{ "url": "https://github.com/acme/app/pull/12", "branch": "b", "title": "t" }], "summary": "s" });
+    let turn = fx.end_turn(&implementer, "i-1", Some(prs), "Opened https://github.com/acme/app/pull/12");
+    fx.actor.handle(ActorMsg::Turn(turn.clone()));
+    fx.finish_gates();
+    assert_eq!(fx.pastes().len(), 1, "the failed check went back once");
+    (implementer, turn)
+}
+
+fn retries(fx: &Fixture) -> Option<u32> {
+    fx.run(|run| run.autopilot.as_ref().unwrap().gate_retries.get("implementer").copied())
+}
+
+#[test]
+fn continue_on_a_turn_the_actor_decided_runs_no_checks() {
+    let mut fx = Fixture::new("dedupe_continue");
+    let (implementer, _) = implementer_with_a_failed_gate(&mut fx);
+    // The app restarted with the run on that turn: H3's reconcile matches
+    // the actor's key, so the decided turn does not wait for Continue...
+    let tag = fx.tab(&implementer).bridge.unwrap();
+    let turn_id = crate::bridge::launch::stage_turn_id(&fx.host.runs, &tag, &implementer).expect("turn.json");
+    let bridged = HashMap::from([(implementer.clone(), turn_id)]);
+    let finished = crate::claude_session_log::TerminalSessionLog {
+        session_id: "s".into(),
+        path: "/tmp/x.jsonl".into(),
+        turn_done: true,
+        last_reply: "Opened".into(),
+        plan: None,
+        plan_at: None,
+        last_prompt_at: Some("2026-10-20T10:00:00Z".into()),
+        interrupted: false,
+        tool_calls: Vec::new(),
+        open_tool: None,
+        pending_tools: Vec::new(),
+        permission_mode: None,
+        rate_limit: None,
+    };
+    let logs = HashMap::from([(implementer.clone(), finished)]);
+    {
+        let mut store = fx.host.store.lock().unwrap();
+        let run = store.pipeline_run_by_id_mut(RUN).unwrap();
+        let def = crate::pipelines::find(&run.kind).unwrap();
+        let found = crate::pipelines::recovery::reconcile_run_with(&def, run, &logs, &bridged);
+        assert_eq!(found, None, "a turn the actor decided is not stopped as app_restarted");
+        assert_eq!(run.status, RunStatus::Running);
+        // ...and when the run waits after a restart anyway (another tab), Continue
+        // on the decided turn decides nothing again.
+        run.stop_for(StopReason::AppRestarted, Some("implementer"), None, "Waiting after a restart.".to_string(), None);
+        assert_eq!(run.stop_reason, Some(StopReason::AppRestarted));
+    }
+    let (me, gates) = channel();
+    let mut fresh = Actor::new(RUN.to_string(), fx.host.clone(), me);
+    let (reply, answer) = channel();
+    fresh.handle(ActorMsg::User { action: UserAction::Continue, reply: Some(reply) });
+    answer.recv().unwrap().unwrap();
+    assert!(!fresh.busy(), "Continue starts no checks for a decided turn");
+    assert!(gates.try_recv().is_err());
+    assert_eq!(fx.pastes().len(), 1);
+    assert_eq!(retries(&fx), Some(1));
+    fx.run(|run| assert_eq!(run.status, RunStatus::Running, "the run carries on"));
+}

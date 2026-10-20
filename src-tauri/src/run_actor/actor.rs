@@ -12,6 +12,7 @@ use crate::bridge::launch::{
 use crate::bridge::{BridgeTag, BridgeTurn, TurnOutcome};
 use crate::commands::pipeline::{approve, note, set_lane_status, turn_finished};
 use crate::pipelines::autopilot::{decide, review_round, stage_key, Decision, FindingReport, TurnReport};
+use crate::pipelines::recovery::bridge_turn_key;
 use crate::pipelines::{GateResult, PipelineDef, StageDef};
 use crate::store::{
     claim_key, tab_label, ChainRef, RoleSnapshot, RunStatus, StageGates, StopReason, TabRecord,
@@ -170,6 +171,15 @@ impl<H: Host> Actor<H> {
         (tag.run_id == turn.run_id && tag.stage == turn.stage_key && placed.stage.id == turn.stage_id).then_some(placed)
     }
 
+    /// `key` is on the run's decided-turn list.
+    fn decided(&self, key: &str) -> bool {
+        let store = lock(self.host.store());
+        store
+            .pipeline_run_by_id(&self.run_id)
+            .and_then(|run| run.autopilot.as_ref())
+            .is_some_and(|autopilot| autopilot.decided.iter().any(|seen| seen == key))
+    }
+
     fn round(&self, lane: Option<&str>) -> u32 {
         let store = lock(self.host.store());
         store
@@ -199,6 +209,13 @@ impl<H: Host> Actor<H> {
             return;
         }
         self.handled.insert(turn.tab_id.clone(), turn.turn.clone());
+        // Decided already (by this thread before it went idle, or before a
+        // restart): no checks, no ledger line, nothing carried out again.
+        // The key is H3's (`recovery::bridge_turn_key`), so the startup
+        // reconcile sees the same turn as decided.
+        if self.decided(&bridge_turn_key(&turn.tab_id, &turn.turn)) {
+            return;
+        }
         let verdict = bridge_verdict(review(&turn).and_then(|r| r.get("verdict")).and_then(Value::as_str), placed.revise());
         let (enabled, status, round) = {
             let mut store = lock(self.host.store());
@@ -330,7 +347,7 @@ impl<H: Host> Actor<H> {
         let usage = self.host.usage_percent(&self.run_id);
         let mut report = turn_report(&placed.stage, turn, usage, placed.lane.clone(), placed.revise());
         report.round = Some(round);
-        report.turn = Some(format!("{}|bridge|{}", turn.tab_id, turn.turn));
+        report.turn = Some(bridge_turn_key(&turn.tab_id, &turn.turn));
         let decision = {
             let mut store = lock(self.host.store());
             let Some(run) = store.pipeline_run_by_id_mut(&self.run_id) else {
