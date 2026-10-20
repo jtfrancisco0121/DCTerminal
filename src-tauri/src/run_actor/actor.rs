@@ -761,13 +761,15 @@ impl<H: Host> Actor<H> {
     }
 
     /// Start a waiting lane's stage in the tab fan-out prepared for it.
-    /// `Ok(None)` when it was not waiting any more.
+    /// `Ok(None)` when it was not waiting any more, or the run left engine 2.
     fn start_lane(&mut self, lane_id: &str) -> Result<Option<String>, String> {
         let (tab, role_id, title) = {
             let mut store = lock(self.host.store());
             let run = store.pipeline_run_by_id(&self.run_id).ok_or("the run is gone")?;
             let lane = run.lane(lane_id).ok_or_else(|| format!("no lane {lane_id}"))?;
-            if lane.status != "waiting" {
+            // A gate refusal for an earlier lane switched the run to engine 1
+            // (manual, V2a): this lane waits for you to start it.
+            if lane.status != "waiting" || run.engine < crate::bridge::launch::ENGINE_V2 {
                 return Ok(None);
             }
             let def = crate::pipelines::find(&run.kind).ok_or_else(|| format!("unknown pipeline {}", run.kind))?;
