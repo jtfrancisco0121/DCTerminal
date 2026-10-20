@@ -205,7 +205,9 @@ impl StateStore {
                 None,
             );
             // Sending into a checkpoint stage yourself passes it; autopilot
-            // carries on from the next turn.
+            // carries on from the next turn. A hand-off on a complete run
+            // puts it back in play.
+            run.reopen_after_you();
             run.resume_after_you();
             if let Some(autopilot) = run.autopilot.as_mut() {
                 if !autopilot.passed_checkpoints.contains(&stage_id) {
@@ -314,7 +316,9 @@ impl StateStore {
                 run.stage = target_stage;
             }
         }
-        // A send-back (yours, or autopilot carrying one out) resumes a waiting run.
+        // A send-back (yours, or autopilot carrying one out) resumes a waiting
+        // run, and puts a complete one back in play.
+        run.reopen_after_you();
         run.resume_after_you();
         if let Some(autopilot) = run.autopilot.as_mut() {
             let prefix = lane.as_deref().map(|id| format!("@{id}"));

@@ -648,7 +648,8 @@ export function installTauriMock(config: MockConfig): void {
     pipeline_release_handoff: () => null,
     pipeline_note: (a) => {
       const run = findRun(a.runId);
-      if (run && a.stop && run.status !== "complete") {
+      // Only autopilot waits for you: with it off a stop note just logs (PipelineRun::set_waiting).
+      if (run && a.stop && run.status !== "complete" && run.autopilot?.enabled) {
         run.status = "waiting";
         run.stopReason = a.reason ?? "carry_out_failed";
       }
@@ -713,6 +714,11 @@ export function installTauriMock(config: MockConfig): void {
       ];
       run.round = ending + 1;
       run.stage = stages[at][0];
+      // Your send-back puts a complete run back in play (PipelineRun::reopen_after_you).
+      if (run.status === "complete") {
+        run.status = run.autopilot?.enabled ? "running" : "stopped";
+        run.stopReason = null;
+      }
       const chain = {
         chainId,
         kind: run.kind === "execute" ? "eagle2" : "eagle1",
