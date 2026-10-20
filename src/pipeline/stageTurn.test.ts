@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { TerminalSessionLog } from "../bridge";
-import { finishedTurn, stageForTab } from "./stageTurn";
+import type { TabSummary, TerminalSessionLog } from "../bridge";
+import { finishedTurn, stageForTab, terminalStageSource } from "./stageTurn";
 
 function log(patch: Partial<TerminalSessionLog> = {}): TerminalSessionLog {
   return {
@@ -43,5 +43,17 @@ describe("stage turns", () => {
     expect(finishedTurn("role_implementer", log({ lastPromptAt: "later" }))?.key).not.toBe(
       finishedTurn("role_implementer", log())?.key,
     );
+  });
+  it("a manual hand-off source carries the tab's pipeline, so a copied role keeps its stage kind (H4)", () => {
+    const tab = {
+      id: "t",
+      label: "Copied Implementer",
+      roleId: "role_custom_3",
+      cwd: "/repo",
+      chain: { chainId: "cp_1", kind: "copies", step: 3, total: 4 },
+    } as TabSummary;
+    const source = terminalStageSource({ tab, log: log(), answers: {}, tail: "", awaitingPlan: false });
+    expect(source.sourceChainKind).toBe("copies");
+    expect(terminalStageSource({ tab: { ...tab, chain: null } as TabSummary, log: log(), answers: {}, tail: "", awaitingPlan: false }).sourceChainKind).toBeNull();
   });
 });

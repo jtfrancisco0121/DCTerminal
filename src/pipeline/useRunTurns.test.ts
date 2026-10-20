@@ -20,6 +20,7 @@ import {
   type TabSummary,
   type TerminalSessionLog,
 } from "../bridge";
+import { setPipelineDefs, type PipelineDef } from "./defs";
 import { useRunTurns } from "./useRunTurns";
 
 function tab(id: string, roleId: string, step: number): TabSummary {
@@ -79,6 +80,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 describe("useRunTurns", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    setPipelineDefs([]);
   });
 
   it("an engine-1 run with autopilot on is manual only: its turn is noted, nothing is carried out", async () => {
@@ -156,5 +158,45 @@ describe("useRunTurns", () => {
     );
     const { continueRun } = setup([tab("impl", "role_implementer", 3)]);
     await expect(continueRun("ee_1")).rejects.toThrow("older pipeline engine");
+  });
+  it("a copied Planner's plan-wait and a copied reviewer's verdict are noted like the built-in ones (H4 kinds)", async () => {
+    // Settings › Roles › Duplicate: the stages are told apart by kind, not role id or loop-back.
+    const copies: PipelineDef = {
+      id: "copies",
+      name: "Copies",
+      stages: [
+        { id: "plan", roleId: "role_custom_1", title: "Planner", kind: "planner" },
+        { id: "review", roleId: "role_custom_2", title: "Reviewer", kind: "reviewer" },
+      ],
+    };
+    setPipelineDefs([copies]);
+    const on = (t: TabSummary, step: number) =>
+      ({ ...t, chain: { chainId: "cp_1", kind: "copies", step, total: 2 } }) as TabSummary;
+    const planner = on(tab("plan", "role_custom_1", 1), 1);
+    const reviewer = on(tab("rev", "role_custom_2", 2), 2);
+    const { onLog } = setup([planner, reviewer]);
+    onLog("plan", {
+      ...log(""),
+      turnDone: false,
+      plan: "# The plan",
+      openTool: { id: "t1", name: "ExitPlanMode", title: "Plan" },
+    });
+    await waitFor(() =>
+      expect(pipelineTurnFinished).toHaveBeenCalledWith("cp_1", {
+        stageId: "plan",
+        roleId: "role_custom_1",
+        lane: null,
+        verdict: null,
+      }),
+    );
+    onLog("rev", log("## HANDOFF: Verdict\nREQUEST CHANGES"));
+    await waitFor(() =>
+      expect(pipelineTurnFinished).toHaveBeenCalledWith("cp_1", {
+        stageId: "review",
+        roleId: "role_custom_2",
+        lane: null,
+        verdict: "REQUEST CHANGES",
+      }),
+    );
   });
 });
