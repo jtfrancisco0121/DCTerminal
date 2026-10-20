@@ -139,7 +139,7 @@ Group HANDOFF: Findings for the Implementer by pull request: one PR<n> — <URL>
 
 ## Autopilot
 
-A run of Eagle-Eye 1 or 2 (or any pipeline whose stages are all a Planner, a reviewer or an Implementer, with no parallel reviewers) can turn on **Autopilot** in its chain overview. A Rust run actor then drives it: each stage's terminal reports through the pipeline bridge, so a turn's end comes from Claude Code's Stop hook and its result from a `submit_result` tool call (the Planner's from its plan), never from parsing the reply. Autopilot types no keystrokes. After each stage's turn:
+A run of Eagle-Eye 1 or 2 (or any pipeline whose stages are all of kind planner, reviewer or implementer, with no parallel reviewers; a copied role counts like its original) can turn on **Autopilot** in its chain overview. A Rust run actor then drives it: each stage's terminal reports through the pipeline bridge, so a turn's end comes from Claude Code's Stop hook and its result from a `submit_result` tool call (the Planner's from its plan), never from parsing the reply. Autopilot types no keystrokes, except a single paste into a stage that has no saved Claude session yet. After each stage's turn:
 
 | What happened | Autopilot does |
 | --- | --- |
@@ -154,7 +154,7 @@ It also stops when Claude needs you (a permission, a question), when usage reach
 
 Stages run hidden; open a stage's tab or **Watch** it from the overview. **Take over** lets you type in a stage while autopilot leaves it alone; **Hand back** returns it. Your **Send**, **Send back**, **Approve** and **Continue** on an autopilot run go through the same run actor, one at a time, so you and autopilot never make the same hand-off twice: when autopilot made it first, your **Send** warns you once; press it again to send anyway. A turn you interrupt (Esc) is not a finished turn: autopilot leaves it to you.
 
-**Older runs are manual only.** A run started before pipeline v2, and a run of a pipeline with parallel reviewers or another role, cannot use autopilot; its overview says so. Hand each stage on with **Send to …** and **Send back to …** as above. Its verdicts and HANDOFF sections are still read from the replies, to show them and to fill the next form.
+**Older runs are manual only.** A run started before pipeline v2, and a run of a pipeline with parallel reviewers or a stage of another kind, cannot use autopilot; its overview says so. Hand each stage on with **Send to …** and **Send back to …** as above. Its verdicts and HANDOFF sections are still read from the replies, to show them and to fill the next form.
 
 ## Fan out by pull request
 
