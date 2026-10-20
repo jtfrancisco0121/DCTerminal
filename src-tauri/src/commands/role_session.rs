@@ -297,19 +297,17 @@ pub fn role_session_start(
     let promoted = {
         let mut store = state_store.lock().map_err(|e| e.to_string())?;
         store.bind_window(window_id.as_deref());
-        // A Continue keeps its ref if the start fails; a new session puts the old one back.
-        let prior = (!loading).then(|| store.prior_session(tab_id.as_deref(), provider.id()));
-        store
-            .promote_tab_to_running(
-                tab_id.as_deref(),
-                &role,
-                &values,
-                &info.cwd,
-                &merged_text,
-                session_ref,
-                provider.id(),
-            )
-            .map(|id| (id, prior))
+        promote_start(
+            &mut store,
+            tab_id.as_deref(),
+            &role,
+            &values,
+            &info.cwd,
+            &merged_text,
+            session_ref,
+            provider.id(),
+            loading,
+        )
     };
     let (persisted_tab_id, prior_session) = promoted?;
     if let Ok(store) = state_store.lock() {
@@ -442,6 +440,34 @@ impl Drop for StartedAgent {
             LiveSession::from_client(&self.key, &self.role_id, client).shutdown();
         }
     }
+}
+
+/// Promote the start's tab to running. For a new-session start this also
+/// returns the session pointers the promotion overwrote, so a failure after
+/// it can put them back. A Continue (`loading`) returns none: if it fails,
+/// the tab keeps the ref it loaded, which is the user's own earlier session.
+#[allow(clippy::too_many_arguments)]
+fn promote_start(
+    store: &mut StateStore,
+    tab_id: Option<&str>,
+    role: &crate::roles::Role,
+    values: &HashMap<String, String>,
+    cwd: &str,
+    merged_text: &str,
+    session_ref: TabSessionRef,
+    provider: ProviderId,
+    loading: bool,
+) -> Result<(String, Option<PriorSession>), String> {
+    let (tab_id, prior) = store.promote_tab_to_running_with_prior(
+        tab_id,
+        role,
+        values,
+        cwd,
+        merged_text,
+        session_ref,
+        provider,
+    )?;
+    Ok((tab_id, (!loading).then_some(prior)))
 }
 
 /// Claude bookkeeping on the promoted tab, then the registry handover. On
@@ -838,28 +864,26 @@ mod tests {
     }
 
     /// Promote `tab_id` (or a new tab) to running on `session_id` as a Cursor
-    /// start, taking the prior pointers first the way `role_session_start` does
-    /// (`loading` = a Continue). Returns the tab id and the prior pointers.
+    /// start through `promote_start`, as `role_session_start` does (`loading` =
+    /// a Continue). Returns the tab id and the prior pointers.
     fn promote_cursor(
         store: &mut crate::store::StateStore,
         tab_id: Option<&str>,
         session_id: &str,
         loading: bool,
     ) -> (String, Option<super::PriorSession>) {
-        use crate::provider::ProviderId;
-        let prior = (!loading).then(|| store.prior_session(tab_id, ProviderId::Cursor));
-        let id = store
-            .promote_tab_to_running(
-                tab_id,
-                &crate::test_support::role("role_implementer", "Implementer"),
-                &std::collections::HashMap::new(),
-                "/w/app",
-                "merged",
-                cursor_session(session_id),
-                ProviderId::Cursor,
-            )
-            .unwrap();
-        (id, prior)
+        super::promote_start(
+            store,
+            tab_id,
+            &crate::test_support::role("role_implementer", "Implementer"),
+            &std::collections::HashMap::new(),
+            "/w/app",
+            "merged",
+            cursor_session(session_id),
+            crate::provider::ProviderId::Cursor,
+            loading,
+        )
+        .unwrap()
     }
 
     /// Run `register_promoted_start` for a Cursor start against a poisoned
@@ -1021,6 +1045,62 @@ mod tests {
         assert_eq!(session_pointers(&store, &tab_id), (old.clone(), old));
     }
 
+    /// A start with no tab id reuses the active stopped tab. If it fails, that
+    /// tab's earlier session comes back (the snapshot is of the tab promoted).
+    #[test]
+    fn a_failed_start_on_the_reused_active_tab_restores_its_session() {
+        use crate::store::StateStore;
+        use crate::test_support::TempDir;
+        use std::sync::Mutex;
+
+        let dir = TempDir::new("failed_reused_active_restores");
+        let path = dir.join("state.json");
+        let mut store = StateStore::open_path(path.clone()).unwrap();
+        let (tab_id, _) = promote_cursor(&mut store, None, "old-session", false);
+        store.mark_tab_awaiting_input(&tab_id, None).unwrap();
+        let (reused_id, prior) = promote_cursor(&mut store, None, "fake-session-1", false);
+        assert_eq!(reused_id, tab_id, "the start should reuse the active tab");
+        let store = Mutex::new(store);
+        if !fail_start_on_poisoned_registry("failed_reused_active", &store, &tab_id, prior) {
+            return;
+        }
+
+        let store = store.lock().unwrap();
+        let reopened = StateStore::open_path(path).unwrap();
+        let old = Some("old-session".to_string());
+        for (what, s) in [("in memory", &*store), ("on disk", &reopened)] {
+            assert_eq!(
+                session_pointers(s, &tab_id),
+                (old.clone(), old.clone()),
+                "the reused tab's session was not restored ({what})"
+            );
+        }
+    }
+
+    /// A failed Continue of another session (say from history) keeps the ref
+    /// it loaded: that is a real session the user chose, not a dead one.
+    #[test]
+    fn a_failed_continue_of_another_session_keeps_the_loaded_ref() {
+        use crate::store::StateStore;
+        use crate::test_support::TempDir;
+        use std::sync::Mutex;
+
+        let dir = TempDir::new("failed_continue_other");
+        let mut store = StateStore::open_path(dir.join("state.json")).unwrap();
+        let (tab_id, _) = promote_cursor(&mut store, None, "old-session", false);
+        store.mark_tab_awaiting_input(&tab_id, None).unwrap();
+        let (_, prior) = promote_cursor(&mut store, Some(&tab_id), "history-session", true);
+        let store = Mutex::new(store);
+        if !fail_start_on_poisoned_registry("failed_continue_other", &store, &tab_id, prior) {
+            return;
+        }
+
+        let store = store.lock().unwrap();
+        assert_eq!(store.tab_by_id(&tab_id).unwrap().phase, "awaitingInput");
+        let loaded = Some("history-session".to_string());
+        assert_eq!(session_pointers(&store, &tab_id), (loaded.clone(), loaded));
+    }
+
     /// The Claude-only bookkeeping failing (a state.json save) clears the
     /// running mark and the dead session in memory too, and stops the agent.
     #[test]
@@ -1047,9 +1127,8 @@ mod tests {
 
         let dir = TempDir::new("claude_record_fails_state");
         let mut store = StateStore::open_path(dir.join("state.json")).unwrap();
-        let prior = store.prior_session(None, ProviderId::Claude);
-        let tab_id = store
-            .promote_tab_to_running(
+        let (tab_id, prior) = store
+            .promote_tab_to_running_with_prior(
                 None,
                 &role("role_implementer", "Implementer"),
                 &HashMap::new(),

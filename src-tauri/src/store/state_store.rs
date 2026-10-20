@@ -518,6 +518,31 @@ impl StateStore {
         session: TabSessionRef,
         provider: ProviderId,
     ) -> Result<String, String> {
+        self.promote_tab_to_running_with_prior(
+            preferred_tab_id,
+            role,
+            answers,
+            cwd,
+            merged_prompt,
+            session,
+            provider,
+        )
+        .map(|(tab_id, _)| tab_id)
+    }
+
+    /// [`Self::promote_tab_to_running`], also returning the session pointers
+    /// it overwrote on the tab it promoted (none for a tab it created).
+    #[allow(clippy::too_many_arguments)]
+    pub fn promote_tab_to_running_with_prior(
+        &mut self,
+        preferred_tab_id: Option<&str>,
+        role: &Role,
+        answers: &HashMap<String, String>,
+        cwd: &str,
+        merged_prompt: &str,
+        session: TabSessionRef,
+        provider: ProviderId,
+    ) -> Result<(String, PriorSession), String> {
         let reuse_id = resolve_tab_for_session_start(self, preferred_tab_id)?;
         let snapshot = RoleSnapshot {
             name: role.name.clone(),
@@ -538,6 +563,11 @@ impl StateStore {
             if tab.phase == "running" {
                 return Err("this tab is already running — stop it or open a new tab".to_string());
             }
+            let prior = PriorSession {
+                provider: tab.provider,
+                session: tab.session.clone(),
+                provider_session: tab.sessions.get(provider).map(str::to_string),
+            };
             if !tab.custom_label {
                 tab.label = label;
             }
@@ -559,7 +589,7 @@ impl StateStore {
             let window_id = tab.window_id.clone();
             self.remember_active(&window_id, Some(tab_id.clone()));
             self.save()?;
-            return Ok(tab_id);
+            return Ok((tab_id, prior));
         }
 
         let tab_id = new_tab_id();
@@ -598,7 +628,14 @@ impl StateStore {
         let window_id = self.draft_window.clone();
         self.remember_active(&window_id, Some(tab_id.clone()));
         self.save()?;
-        Ok(tab_id)
+        Ok((
+            tab_id,
+            PriorSession {
+                provider: Some(provider),
+                session: None,
+                provider_session: None,
+            },
+        ))
     }
 
     /// Keep the active tab chip label/answers in sync while the user edits the form.
@@ -661,23 +698,6 @@ impl StateStore {
             self.save()?;
         }
         Ok(())
-    }
-
-    /// The session pointers `promote_tab_to_running` is about to overwrite for
-    /// `provider`. A start with no tab creates a new tab, which had none.
-    pub fn prior_session(&self, tab_id: Option<&str>, provider: ProviderId) -> PriorSession {
-        match tab_id.and_then(|id| self.tab_by_id(id)) {
-            Some(tab) => PriorSession {
-                provider: tab.provider,
-                session: tab.session.clone(),
-                provider_session: tab.sessions.get(provider).map(str::to_string),
-            },
-            None => PriorSession {
-                provider: Some(provider),
-                session: None,
-                provider_session: None,
-            },
-        }
     }
 
     /// A start failed after its tab was promoted and no agent runs behind it:
