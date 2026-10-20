@@ -575,6 +575,11 @@ fn replace_detached(
     }
     let told = view.clone();
     let opened = open_session_claimed(registry, id, spec, claude_session, Output::Detached { on_exit, view }, Some(token));
+    if let Ok(None) = opened {
+        // A newer open of this tab (your Restart) took over during the wait:
+        // nothing was resumed, and the view is that open's now.
+        return Err("The terminal was restarted while autopilot was resuming it, so the round was not sent.".to_string());
+    }
     if opened.is_err() {
         // The old program is gone and no new one runs: the view must not go
         // on looking like a live terminal.
@@ -3252,6 +3257,47 @@ mod tests {
         assert!(!started.exists(), "the resumed program never ran");
         let registry = registry.lock().unwrap();
         assert!(!registry.sessions.contains_key("s") && !registry.claude_sessions.contains_key("s"));
+    }
+
+    // Your own Restart of the tab while a resume waits for the old program to
+    // stop takes over: the resume starts nothing and says so, so the run
+    // actor puts the stage's turn back and stops the run instead of counting
+    // a round that never reached the stage.
+    #[cfg(unix)]
+    #[test]
+    fn a_restart_while_a_stage_is_resumed_makes_the_resume_fail() {
+        let dir = crate::test_support::TempDir::new("pty_resume_superseded");
+        let registry = Arc::new(Mutex::new(PtyRegistry::new()));
+        let ready = dir.join("ready");
+        let started = dir.join("started");
+        let restarted = dir.join("restarted");
+        let script = format!("trap 'sleep 0.5; exit 0' TERM\ntouch '{}'\nwhile :; do sleep 0.05; done", ready.display());
+        let (old_exit, _old_exits) = exit_probe();
+        open_session_to(&registry, "s", sh_spec(dir.path(), &script), None, Output::Detached { on_exit: old_exit, view: None })
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !ready.exists() {
+            assert!(std::time::Instant::now() < deadline, "the old program is ready");
+            thread::sleep(Duration::from_millis(20));
+        }
+        let resuming = {
+            let registry = registry.clone();
+            let spec = sh_spec(dir.path(), &format!("touch '{}'; sleep 5", started.display()));
+            thread::spawn(move || {
+                let (new_exit, _new_exits) = exit_probe();
+                replace_detached(&registry, "s", spec, Some("sid".into()), new_exit, RESUME_STOP_GRACE)
+            })
+        };
+        thread::sleep(Duration::from_millis(150));
+        let (restart_exit, _restart_exits) = exit_probe();
+        let spec = sh_spec(dir.path(), &format!("touch '{}'; sleep 5", restarted.display()));
+        open_session_to(&registry, "s", spec, None, Output::Detached { on_exit: restart_exit, view: None }).unwrap();
+        let result = resuming.join().unwrap();
+        thread::sleep(Duration::from_millis(300));
+        assert!(result.is_err(), "a resume your Restart replaced reports success: {result:?}");
+        assert!(!started.exists(), "the resumed program never ran");
+        assert!(restarted.exists(), "your Restart runs");
+        assert!(registry.lock().unwrap().sessions.contains_key("s"));
     }
 
     // A stage whose program already exited (its view showed that) is resumed
