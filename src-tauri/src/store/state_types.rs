@@ -450,17 +450,21 @@ impl PipelineRun {
     }
 
     /// You sent work back or handed it on yourself on a complete run: it is
-    /// in play again, `running` when autopilot is on, else `stopped`, with no
-    /// stop reason. Matches `migrated_status`, which reads a hand-off or
-    /// send-back after the last `complete` event as not complete. Late turns
-    /// with no such action from you leave a complete run complete.
+    /// in play again, `running` when autopilot is on, else `stopped` (paused
+    /// by you when you had turned autopilot off). Matches `migrated_status`,
+    /// which reads a hand-off or send-back after the last `complete` event as
+    /// not complete. Late turns with no such action from you leave a complete
+    /// run complete.
     pub fn reopen_after_you(&mut self) {
         if self.status != RunStatus::Complete {
             return;
         }
-        let enabled = self.autopilot.as_ref().is_some_and(|a| a.enabled);
-        self.status = if enabled { RunStatus::Running } else { RunStatus::Stopped };
-        self.stop_reason = None;
+        (self.status, self.stop_reason) = match self.autopilot.as_ref() {
+            Some(a) if a.enabled => (RunStatus::Running, None),
+            // Turned off by you before: still paused by you.
+            Some(_) => (RunStatus::Stopped, Some(StopReason::PausedByYou)),
+            None => (RunStatus::Stopped, None),
+        };
     }
 
     /// Autopilot turned on (`running`) or off (`stopped`, paused by you).

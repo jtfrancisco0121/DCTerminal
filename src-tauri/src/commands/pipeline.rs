@@ -865,13 +865,15 @@ mod tests {
         let d = decide(&def, store.pipeline_run_by_id_mut("ee_f").unwrap(), &next);
         assert!(!matches!(d.action.as_str(), "ignore" | "skip"), "{} {}", d.action, d.reason);
 
-        // With autopilot off, the reopened run is stopped, with no reason left over.
+        // With autopilot turned off, the reopened run is stopped, paused by you,
+        // as it was before it completed and as the migration reads it.
         let (_dir, mut store, impl1) = completed_lane_run("reopen_off", false);
         store
             .chain_loop_back_in("ee_f", Some("pr1"), "role_pr_reviewer", &impl1, Some("REQUEST CHANGES"), Some("fix"))
             .unwrap();
         let run = store.pipeline_run_by_id("ee_f").unwrap();
-        assert_eq!((run.status, run.stop_reason), (RunStatus::Stopped, None));
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Stopped, Some(StopReason::PausedByYou)));
+        assert_eq!(run.migrated_status(), (run.status, run.stop_reason), "live rule and migration agree");
     }
 
     #[test]
