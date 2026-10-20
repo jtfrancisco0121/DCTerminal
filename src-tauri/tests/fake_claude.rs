@@ -1347,7 +1347,7 @@ mod eagle_eye_1 {
         }
     }
 
-    /// The report the executor builds from a bridge turn (`bridgeTurnReport`).
+    /// The report the run actor builds from a bridge turn (`turn_report` in `src/run_actor/actor.rs`).
     fn report(turn: &BridgeTurn) -> TurnReport {
         let result = turn.result.clone().unwrap_or(Value::Null);
         TurnReport {
