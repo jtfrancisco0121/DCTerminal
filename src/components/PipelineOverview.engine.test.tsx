@@ -51,6 +51,8 @@ function run(extra: Partial<PipelineRun> = {}): PipelineRun {
     createdAt: "2026-10-13T00:00:00Z",
     chainId: "ee_1",
     round: 2,
+    // Autopilot drives engine-2 runs only; an engine-1 run is manual only (V6).
+    engine: 2,
     ...extra,
   };
 }
@@ -602,7 +604,7 @@ describe("PipelineOverview: autopilot, checks and timeline", () => {
     });
     const views: Record<string, PipelineRun> = {
       ee_1: run({ stage: "plan_reviewer", engine: 2, tabIds: { role_plan_reviewer: "rev" } }),
-      ee_2: run({ id: "ee_2", chainId: "ee_2", stage: "plan_reviewer", tabIds: { role_plan_reviewer: "rev2" } }),
+      ee_2: run({ id: "ee_2", chainId: "ee_2", stage: "plan_reviewer", engine: 1, tabIds: { role_plan_reviewer: "rev2" } }),
     };
     vi.mocked(getPipelineRun).mockImplementation(async (id: string) => ({ run: views[id] }));
     const reply = (text: string) => ({
@@ -668,8 +670,27 @@ describe("PipelineOverview: autopilot, checks and timeline", () => {
     expect(await within(lane).findByRole("button", { name: "Take over" })).toBeTruthy();
   });
 
+  it("an engine-1 run is manual only: autopilot cannot be turned on, and a note says why (V6)", async () => {
+    // Saved before pipeline v2 with autopilot on and waiting after a restart.
+    show(
+      run({
+        engine: 1,
+        status: "waiting",
+        stopReason: "app_restarted",
+        autopilot: { enabled: true, waiting: "Implementer finished while the app was closed." },
+      }),
+    );
+    const panel = await screen.findByRole("region", { name: "Autopilot" });
+    const toggle = within(panel).getByRole("checkbox") as HTMLInputElement;
+    expect(toggle.disabled).toBe(true);
+    expect(toggle.checked).toBe(false);
+    expect(panel.textContent).toContain("manual only");
+    expect(within(panel).queryByRole("status")).toBeNull();
+    expect(within(panel).queryByRole("button", { name: "Continue" })).toBeNull();
+  });
+
   it("offers no Take over on an engine-1 run", async () => {
-    show(run());
+    show(run({ engine: 1 }));
     const lane = await screen.findByRole("article", { name: "Implementer" });
     expect(within(lane).queryByRole("button", { name: "Take over" })).toBeNull();
   });

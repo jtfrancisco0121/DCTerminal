@@ -565,17 +565,6 @@ export function installTauriMock(config: MockConfig): void {
       }
       return null;
     },
-    pipeline_continue: (a) => {
-      const run = findRun(a.runId);
-      if (!run) throw new Error(`unknown pipeline run: ${a.runId}`);
-      if (run.status !== "waiting" || run.stopReason !== "app_restarted") {
-        throw new Error("This run is not waiting after a restart.");
-      }
-      run.status = "running";
-      run.stopReason = null;
-      run.autopilot = { ...(run.autopilot ?? {}), waiting: null };
-      return Object.values(run.tabIds ?? {});
-    },
     // No mocked run has a bridged Planner, so no tasks.json: fan-out reads the reply's list.
     pipeline_run_tasks: () => null,
     // No mocked run is engine 2, so no button goes to a run actor.
@@ -588,7 +577,6 @@ export function installTauriMock(config: MockConfig): void {
       run.gates = { ...(run.gates ?? {}), [a.stageId]: { round: run.round ?? 1, at: now(), results } };
       return results;
     },
-    pipeline_decide: () => ({ action: "stop", reason: "e2e mock: no autopilot decision" }),
     pipeline_fan_out: (a) => {
       const run = findRun(a.runId);
       if (!run) throw new Error(`unknown pipeline run: ${a.runId}`);
@@ -660,24 +648,6 @@ export function installTauriMock(config: MockConfig): void {
             summary: "Turn finished",
             outcome: a.verdict ?? null,
           },
-        ];
-      }
-      return null;
-    },
-    // No run state for claims here: every hand-off is a first one.
-    pipeline_claim_handoff: () => null,
-    pipeline_release_handoff: () => null,
-    pipeline_note: (a) => {
-      const run = findRun(a.runId);
-      // Only autopilot waits for you: with it off a stop note just logs (PipelineRun::set_waiting).
-      if (run && a.stop && run.status !== "complete" && run.autopilot?.enabled) {
-        run.status = "waiting";
-        run.stopReason = a.reason ?? "carry_out_failed";
-      }
-      if (run) {
-        run.events = [
-          ...(run.events ?? []),
-          { at: now(), kind: a.stop ? "stop" : "note", stageId: a.stageId, round: run.round ?? 1, summary: a.summary },
         ];
       }
       return null;

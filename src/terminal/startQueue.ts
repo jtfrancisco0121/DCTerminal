@@ -1,5 +1,5 @@
 /**
- * Background terminal starts (autopilot, fan-out lanes) one at a time. Each
+ * Background terminal starts (fan-out lanes) one at a time. Each
  * waits its turn in the queue, then waits while another start holds the
  * start lock (a start you clicked), instead of failing. A lock held past
  * `deadlineMs` fails the start rather than waiting forever.

@@ -49,6 +49,7 @@ function run(overrides: Partial<PipelineRun> = {}): PipelineRun {
         detail: "[LOW] rename x\n[INFO] comment wording",
       },
     ],
+    engine: 2,
     autopilot: { enabled: true },
     ...overrides,
   };
@@ -68,6 +69,15 @@ describe("run report", () => {
     // Output with backticks gets a longer fence, so the report stays valid Markdown.
     expect(report).toContain("````\n1 test failed\n```inner```\n````");
     expect(report.endsWith("\n")).toBe(true);
+  });
+
+  it("an engine-1 run is manual only: no Autopilot on or Waiting for you, even when saved that way", () => {
+    for (const overrides of [{ engine: 1 }, { engine: 2, manualOnly: true }] as Partial<PipelineRun>[]) {
+      const report = formatRunReport(run({ ...overrides, autopilot: { enabled: true, waiting: "PR Reviewer needs you." } }));
+      expect(report).toContain("- Autopilot: off (this run is manual only)");
+      expect(report).not.toContain("- Autopilot: on");
+      expect(report).not.toContain("- Waiting for you:");
+    }
   });
 
   it("follow-ups come only from autopilot decisions", () => {

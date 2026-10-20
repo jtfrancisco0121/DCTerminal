@@ -171,7 +171,9 @@ export function PipelinesSettings({
         stage hands its HANDOFF sections to the next. A reviewer stage sends its round back until
         it approves; set <code>maxRounds</code> (1 to 20) on its loop-back for a round cap, or leave it
         out for no limit (the default). Checks run after a stage's turn when you press Run checks or when
-        autopilot is on.
+        autopilot is on. Autopilot needs every stage to be of kind planner, reviewer or implementer (a copied
+        role counts like its original) with no parallel reviewers; a run of any other pipeline is
+        manual only.
       </p>
       <h4>Built in</h4>
       <ul className="pipeline-list">

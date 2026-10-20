@@ -413,7 +413,10 @@ export function PipelineOverview({
   const round = Math.max(1, run.round ?? 1);
   const def = pipelineDef(run.kind);
   const stageDefs = pipelineStages(run.kind);
-  const autopilotOn = !!run.autopilot?.enabled;
+  // An engine-1 run is manual only (V6): its saved autopilot flag does nothing.
+  // A run a mid-run engine switch made manual (`manualOnly`) is engine 1 too.
+  const manualOnly = (run.engine ?? 1) < 2 || !!run.manualOnly;
+  const autopilotOn = !manualOnly && !!run.autopilot?.enabled;
   // Mark complete is only for a run that reached its last stage.
   const atLastStage = stageDefs.length > 0 && run.stage === stageDefs[stageDefs.length - 1].id;
   const later = followUps(run);
@@ -461,9 +464,9 @@ export function PipelineOverview({
             <input
               type="checkbox"
               checked={autopilotOn}
-              disabled={!!run.manualOnly && !autopilotOn}
+              disabled={manualOnly}
               title={
-                run.manualOnly && !autopilotOn
+                run.manualOnly
                   ? "This run is manual from now on: it was switched from the pipeline bridge to engine 1 mid-run."
                   : undefined
               }
@@ -472,9 +475,13 @@ export function PipelineOverview({
             <strong>Autopilot</strong>
           </label>
           <p className="hint">
-            {autopilotOn
-              ? "After each terminal stage's turn, the checks run and the run moves on, sends a round back, or stops for you. Rounds go back until the reviewer approves (or up to a round cap, if the pipeline sets one). It stops before a checkpoint, when Claude needs you, near your usage limit, and when Claude refuses a request for a usage limit. It never merges."
-              : "Off: every hand-off waits for you. Turn it on to let terminal stages hand on by themselves."}
+            {run.manualOnly
+              ? "This run is manual from now on: it was switched from the pipeline bridge to engine 1 mid-run, so autopilot cannot be turned back on. Hand each stage on yourself; start a new run to use autopilot."
+              : manualOnly
+                ? "This run is manual only: it started before pipeline v2, or its pipeline has a stage autopilot cannot follow (parallel reviewers, or a stage that is not a planner, reviewer or implementer). Hand each stage on yourself; start a new run to use autopilot."
+                : autopilotOn
+                  ? "After each terminal stage's turn, the checks run and the run moves on, sends a round back, or stops for you. Rounds go back until the reviewer approves (or up to a round cap, if the pipeline sets one). It stops before a checkpoint, when Claude needs you, near your usage limit, and when Claude refuses a request for a usage limit. It never merges."
+                  : "Off: every hand-off waits for you. Turn it on to let terminal stages hand on by themselves."}
           </p>
           {run.engineNote && (
             <p className="hint" data-testid="engine-note">

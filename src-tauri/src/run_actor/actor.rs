@@ -12,7 +12,7 @@ use crate::bridge::launch::{
 };
 use crate::bridge::{BridgeTag, BridgeTurn, StageMode, TurnOutcome};
 use crate::commands::pipeline::{approve, note, set_lane_status, turn_finished};
-use crate::pipelines::autopilot::{decide, review_round, stage_key, Decision, FindingReport, TurnReport};
+use crate::pipelines::autopilot::{decide, review_round, stage_key, stop_for_pipeline, Decision, FindingReport, TurnReport};
 use crate::pipelines::recovery::bridge_turn_key;
 use crate::pipelines::{GateDef, GateResult, PipelineDef, StageDef, StageKind};
 use crate::store::{
@@ -25,9 +25,6 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
-/// What a re-ask pastes (engine-1 wording; a bridged stage is never re-asked
-/// for HANDOFF sections, `submit_result` is its result).
-const ASK_FOR_RESULT: &str = "Your reply is missing its result. Repeat your result, complete and self-contained, and report it as your instructions say.";
 /// What a round sent back asks of the Planner and of the Implementer
 /// (`src/handoff/routing.ts`, which reads them back).
 const PLANNER_ASK: &str = "Revise the plan to address these findings, then reply with the full revised plan, ending with the `## HANDOFF: Plan` and `## HANDOFF: Open questions` sections.";
@@ -136,7 +133,7 @@ impl<H: Host> Actor<H> {
     }
 
     /// Nothing more for this thread: the run is complete, gone, or not an
-    /// engine-2 run (the frontend drives those).
+    /// engine-2 run (an engine-1 run is manual only, V6).
     fn run_over(&self) -> bool {
         let store = lock(self.host.store());
         store.pipeline_run_by_id(&self.run_id).is_none_or(|run| {
@@ -159,7 +156,7 @@ impl<H: Host> Actor<H> {
         if store.chain_run_id(&chain.chain_id).as_deref() != Some(self.run_id.as_str()) {
             return None;
         }
-        // An engine-1 run keeps the v1 path (the frontend's autopilot).
+        // An engine-1 run is manual only (V6): nothing drives it.
         let run = store
             .pipeline_run_by_id(&self.run_id)
             .filter(|run| run.engine >= crate::bridge::launch::ENGINE_V2)?;
@@ -296,7 +293,7 @@ impl<H: Host> Actor<H> {
     /// Act on a finished turn: its gates first (on a running run), then a
     /// decision. A blocked Implementer opened nothing to check: it waits for
     /// you (V2b). A turn Claude refused for the usage limit stops before any
-    /// check runs (H5).
+    /// check runs (H5), and so does a turn on a pipeline that became disabled.
     fn take_up(&mut self, placed: &Placed, turn: BridgeTurn, round: u32, status: RunStatus) {
         let refused = self.rate_limit(placed);
         // Hand back re-deciding a held round for the handed-back tab (D28).
@@ -310,7 +307,12 @@ impl<H: Host> Actor<H> {
             Some(false) => self.round_goes_back = true,
             None => {}
         }
-        if status == RunStatus::Running && !placed.stage.gates.is_empty() && blocked(&turn).is_none() && refused.is_none() {
+        if status == RunStatus::Running
+            && !placed.stage.gates.is_empty()
+            && blocked(&turn).is_none()
+            && refused.is_none()
+            && placed.def.disabled.is_none()
+        {
             self.start_gates(placed, turn, round);
             return;
         }
@@ -458,7 +460,15 @@ impl<H: Host> Actor<H> {
             // you took over is not taken at all (D28), so Hand back decides
             // the same turn afresh.
             let mut trial = run.clone();
-            let decision = decide(&placed.def, &mut trial, &report);
+            let decision = match &placed.def.disabled {
+                // H4: a pipeline that became disabled stops the run with the
+                // reason instead of being driven on (was `pipeline_decide`'s).
+                Some(why) => stop_for_pipeline(
+                    &mut trial,
+                    format!("The pipeline \"{}\" is disabled: {why}", placed.def.name),
+                ),
+                None => decide(&placed.def, &mut trial, &report),
+            };
             let held = taken_over_target(&placed.def, run, placed, &decision);
             // A round you dealt with yourself (D28) is not sent back: its
             // decision line says so instead of "goes back to".
@@ -511,17 +521,14 @@ impl<H: Host> Actor<H> {
                     }
                 }
             }
-            "reask" | "retry" => {
-                let text = match decision.action.as_str() {
-                    "reask" => ASK_FOR_RESULT.to_string(),
-                    _ => decision.message.clone().unwrap_or_default(),
-                };
+            "retry" => {
+                let text = decision.message.clone().unwrap_or_default();
                 if !self.idle(&placed.tab) {
                     fail(self, format!("send to {}: the terminal is not open and idle.", placed.tab.label));
                     return;
                 }
                 // A failed check resumes the stage's session with its output (D17).
-                let sent = match session_of(&placed.tab).filter(|_| decision.action == "retry") {
+                let sent = match session_of(&placed.tab) {
                     Some(session) => self.resume(&placed.tab, &session, &text, None),
                     None => self.host.paste(&placed.tab.id, &text),
                 };
@@ -1175,7 +1182,7 @@ impl<H: Host> Actor<H> {
             run.engine >= crate::bridge::launch::ENGINE_V2
         };
         if !engine_2 {
-            return Err("This run uses the older pipeline engine; its buttons work as before.".into());
+            return Err("This run uses the older pipeline engine, so it is manual only: hand each stage on yourself.".into());
         }
         match action {
             UserAction::Send {
@@ -1203,6 +1210,28 @@ impl<H: Host> Actor<H> {
                 source_tab_id,
                 target_role_id,
             } => self.user_prefill(&source_tab_id, &target_role_id),
+            UserAction::RecordHandoff {
+                source_tab_id,
+                back,
+                force,
+            } => {
+                let placed = self.place_tab(&source_tab_id).ok_or("That tab is not on this run.")?;
+                match self.claim_for_you(&placed, if back { "back" } else { "advance" }, force) {
+                    Ok(_) => Ok(UserOutcome::default()),
+                    Err(outcome) => Ok(outcome),
+                }
+            }
+            UserAction::ReleaseHandoff { source_tab_id, back } => {
+                let placed = self.place_tab(&source_tab_id).ok_or("That tab is not on this run.")?;
+                let key = {
+                    let store = lock(self.host.store());
+                    let run = store.pipeline_run_by_id(&self.run_id).ok_or("unknown pipeline run")?;
+                    let lane = placed.lane.as_deref();
+                    claim_key(if back { "back" } else { "advance" }, &placed.stage.id, run.round_for(lane), lane)
+                };
+                self.release(&key);
+                Ok(UserOutcome::default())
+            }
         }
     }
 
@@ -1691,9 +1720,7 @@ pub(super) fn turn_report(stage: &StageDef, turn: &BridgeTurn, usage: Option<u8>
         verdict: bridge_verdict(review.and_then(|r| r.get("verdict")).and_then(Value::as_str), revise),
         findings,
         findings_known: result.is_some(),
-        missing_sections: Vec::new(),
         usage_percent: usage,
-        chat: false,
         lane,
         round: None,
         turn: None,
@@ -1812,15 +1839,14 @@ fn lane_note(run_dir: Option<&std::path::Path>, lane: &str) -> Option<String> {
 }
 
 /// The tab you took over that carrying `decision` out would act on (D28):
-/// the stage a round goes back to, or the turn's own stage for a retry or a
-/// re-ask. As (tab id, stage id, stage title).
+/// the stage a round goes back to, or the turn's own stage for a retry. As (tab id, stage id, stage title).
 fn taken_over_target(def: &PipelineDef, run: &PipelineRun, placed: &Placed, decision: &Decision) -> Option<(String, String, String)> {
     let target = match decision.action.as_str() {
         "loopBack" => {
             let stage = def.stage(decision.stage_id.as_deref()?)?;
             (loop_back_tab(def, run, placed, decision)?, stage.id.clone(), stage.title.clone())
         }
-        "retry" | "reask" => (placed.tab.id.clone(), placed.stage.id.clone(), placed.stage.title.clone()),
+        "retry" => (placed.tab.id.clone(), placed.stage.id.clone(), placed.stage.title.clone()),
         _ => return None,
     };
     run.taken_over.contains(&target.0).then_some(target)

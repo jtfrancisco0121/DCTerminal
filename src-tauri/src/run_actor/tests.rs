@@ -659,6 +659,41 @@ fn your_send_after_autopilot_handed_on_warns_once_then_goes_ahead_with_force() {
     assert!(fx.user(with_source(send(false), &planner)).unwrap().tab_id.is_some(), "your own earlier hand-off never warns");
 }
 
+/// A hand-off you make outside the actor (to a Chat tab) is recorded like
+/// your Send: it warns when autopilot made it first, and autopilot skips a
+/// turn you already handed on. Released when the hand-off failed.
+#[test]
+fn a_chat_hand_off_is_recorded_so_autopilot_and_you_never_both_make_it() {
+    let mut fx = Fixture::new("record_chat");
+    fx.open_plan_reviewer();
+    let planner = fx.planner.clone();
+    let record = |force| UserAction::RecordHandoff { source_tab_id: planner.clone(), back: false, force };
+    let warned = fx.user(record(false)).unwrap();
+    assert!(warned.warning.as_deref().unwrap().starts_with("Autopilot already handed this turn on"), "{warned:?}");
+    assert!(fx.user(record(true)).unwrap().warning.is_none());
+    fx.run(|run| assert_eq!(run.claims.last().map(|c| c.by.as_str()), Some("you")));
+    assert_eq!(fx.launches().len(), 1, "recording opens nothing");
+
+    // Recorded before autopilot decides: autopilot leaves the turn to you.
+    let mut fx = Fixture::new("record_chat_first");
+    let planner = fx.planner.clone();
+    let recorded = fx.user(UserAction::RecordHandoff { source_tab_id: planner.clone(), back: false, force: false }).unwrap();
+    assert!(recorded.warning.is_none());
+    let turn = fx.planner_turn("p-1", "# Plan\n1. Refresh tokens in src/auth.ts.");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    assert!(fx.launches().is_empty(), "already handed on by you: {:?}", fx.launches());
+
+    // Released after a failed hand-off: autopilot hands the turn on.
+    let mut fx = Fixture::new("record_chat_released");
+    let planner = fx.planner.clone();
+    fx.user(UserAction::RecordHandoff { source_tab_id: planner.clone(), back: false, force: false }).unwrap();
+    fx.user(UserAction::ReleaseHandoff { source_tab_id: planner.clone(), back: false }).unwrap();
+    fx.run(|run| assert!(run.claims.is_empty(), "{:?}", run.claims));
+    let turn = fx.planner_turn("p-1", "# Plan\n1. Refresh tokens in src/auth.ts.");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    assert_eq!(fx.launches().len(), 1, "autopilot opened the Plan Reviewer");
+}
+
 #[test]
 fn your_send_back_goes_into_the_running_stage() {
     let mut fx = Fixture::new("send_back");
@@ -704,14 +739,14 @@ fn a_stage_that_exits_mid_turn_stops_the_run() {
 }
 
 #[test]
-fn a_turn_on_an_engine_1_run_is_left_to_the_frontend() {
+fn a_turn_on_an_engine_1_run_is_left_alone_because_it_is_manual_only() {
     let mut fx = Fixture::with_engine("engine1", 1);
     let turn = fx.planner_turn("p-1", "# Plan");
     fx.actor.handle(ActorMsg::Turn(turn));
     assert!(fx.launches().is_empty());
     fx.run(|run| assert!(run.events.iter().all(|e| e.kind != "turn")));
     let err = fx.user(UserAction::Continue).unwrap_err();
-    assert!(err.contains("older pipeline engine"), "{err}");
+    assert!(err.contains("older pipeline engine") && err.contains("manual only"), "{err}");
 }
 
 #[test]
@@ -1470,6 +1505,59 @@ fn a_round_sent_back_to_a_stage_you_took_over_waits_and_hand_back_carries_it_out
     fx.run(|run| {
         assert_eq!((run.status, run.stop_reason), (RunStatus::Running, None));
         assert_eq!(run.round, 2);
+    });
+}
+
+#[test]
+fn a_turn_on_a_run_whose_pipeline_became_disabled_stops_the_run_and_opens_nothing() {
+    // H4: autopilot stops with the reason instead of driving a disabled
+    // pipeline on (was `pipeline_decide`'s, removed in V6).
+    let id = "eagle1_disabled_v6";
+    let mut def = crate::pipelines::find("eagle1").unwrap();
+    def.id = id.into();
+    def.name = "Disabled copy".into();
+    def.run_kind = None;
+    def.built_in = false;
+    def.disabled = Some("role \"role_gone\" does not exist".into());
+    crate::pipelines::register_for_test(def);
+    let mut fx = Fixture::with_pipeline("disabled_pipeline", id, Vec::new());
+    let turn = fx.planner_turn("p-1", "# Plan\n1. Refresh tokens in src/auth.ts.");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    crate::pipelines::unregister_for_test(id);
+    assert!(fx.launches().is_empty(), "nothing opened: {:?}", fx.launches());
+    fx.run(|run| {
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::CarryOutFailed)));
+        let last = run.events.last().unwrap();
+        assert!(last.summary.contains("is disabled"), "{}", last.summary);
+    });
+}
+
+#[test]
+fn an_implementer_turn_on_a_run_whose_pipeline_became_disabled_runs_no_checks() {
+    // The disabled pipeline stops the run before the stage's checks run, not
+    // after them.
+    let id = "eagle1_disabled_gates";
+    let mut def = crate::pipelines::find("eagle1").unwrap();
+    def.id = id.into();
+    def.name = "Disabled later".into();
+    def.run_kind = None;
+    def.built_in = false;
+    crate::pipelines::register_for_test(def.clone());
+    let mut fx = Fixture::with_pipeline("disabled_pipeline_gates", id, Vec::new());
+    let implementer = to_implementer(&mut fx);
+    def.disabled = Some("role \"role_gone\" does not exist".into());
+    crate::pipelines::register_for_test(def);
+    let prs = json!({ "schema": 1, "prs": [{ "url": "https://github.com/acme/app/pull/12", "title": "Refresh" }], "summary": "Opened." });
+    let turn = fx.end_turn(&implementer, "i-1", Some(prs), "Opened https://github.com/acme/app/pull/12");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    crate::pipelines::unregister_for_test(id);
+    assert!(!fx.actor.busy(), "no checks run on a disabled pipeline");
+    assert!(fx.gates_done.try_recv().is_err());
+    fx.run(|run| {
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::CarryOutFailed)));
+        assert!(run.events.iter().all(|e| e.kind != "gate"), "{:?}", run.events);
+        let last = run.events.last().unwrap();
+        assert!(last.summary.contains("is disabled"), "{}", last.summary);
     });
 }
 

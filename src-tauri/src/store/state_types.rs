@@ -167,7 +167,8 @@ pub struct PipelineRun {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fan_out_stage: Option<String>,
     /// Hand-offs on and send-backs already made, newest last, so the same
-    /// one is never made twice, by you or by autopilot. Capped.
+    /// one is never made twice, by you or by autopilot. The run actor keeps
+    /// them (engine 2); an engine-1 run's are only history. Capped.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub claims: Vec<HandoffClaim>,
     /// Where the run stands. Missing on files saved before it existed:
@@ -179,7 +180,7 @@ pub struct PipelineRun {
     pub stop_reason: Option<StopReason>,
     /// Pipeline engine (D19). New runs are 2: their reviewer stages report
     /// through the bridge (ADR-015). Runs saved before engines existed read
-    /// as 1 and keep the v1 path.
+    /// as 1, and an engine-1 run is manual only (V6).
     #[serde(default = "first_engine")]
     pub engine: u32,
     /// Stage tabs you took over (V5, D28): autopilot neither enforces a
@@ -363,7 +364,6 @@ impl PipelineRun {
         self.lanes.iter_mut().find(|lane| lane.id == id)
     }
 
-    /// The round a stage is on: its lane's, else the run's.
     /// The claim already made for `key`, or for the same source `turn`.
     pub fn claim_for(&self, key: &str, turn: Option<&str>) -> Option<&HandoffClaim> {
         self.claims.iter().rev().find(|claim| {
@@ -386,6 +386,7 @@ impl PipelineRun {
         }
     }
 
+    /// The round a stage is on: its lane's, else the run's.
     pub fn round_for(&self, lane: Option<&str>) -> u32 {
         lane.and_then(|id| self.lane(id))
             .map(|lane| lane.round)
@@ -456,9 +457,6 @@ pub struct RunAutopilot {
     /// Checkpoint stages you have already passed (sent into yourself).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub passed_checkpoints: Vec<String>,
-    /// `stage@round` keys already re-asked for missing HANDOFF sections.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub reasked: Vec<String>,
     /// Failed-gate retries per stage in the current round.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub gate_retries: HashMap<String, u32>,

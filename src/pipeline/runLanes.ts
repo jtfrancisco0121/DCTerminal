@@ -298,9 +298,17 @@ export function runLanes(run: PipelineRun, stages: readonly StageDef[], now: num
     bar.open = active;
   }
   if (wait) {
-    const still = active && !!run.autopilot?.waiting;
+    // An engine-1 run is manual only (V6): a run saved waiting for autopilot
+    // (say after a restart) is never continued, so its wait is not drawn as
+    // still open. Display only; the saved run is left as it is.
+    const manualOnly = (run.engine ?? 1) < 2 || !!run.manualOnly;
+    const still = active && !!run.autopilot?.waiting && !manualOnly;
     (wait as Omit<WaitBar, "track">).end = still ? end : lastAt;
     (wait as Omit<WaitBar, "track">).open = still;
+    if (active && run.autopilot?.waiting && manualOnly) {
+      const bar = wait as Omit<WaitBar, "track">;
+      bar.reason = `${bar.reason} This run is manual only now: hand it on yourself.`.trim();
+    }
   }
 
   for (const bar of turns) {

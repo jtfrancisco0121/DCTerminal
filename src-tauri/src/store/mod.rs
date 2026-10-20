@@ -66,7 +66,6 @@ pub use state_types::{
     claim_key, HandoffClaim, RunAutopilot, RunEvent, RunLane, RunStatus, StageGates, StageHandoff, StopReason,
     ArchivedWindow, TabRecord, TabSessionRef, WindowRecord, MAIN_WINDOW_ID, MAX_DECIDED_TURNS,
 };
-pub use chain_runs::ClaimOutcome;
 pub use transcript_store::{
     rotate_transcripts, truncate_transcript, RotationGuard, TranscriptFile, TranscriptStore,
 };

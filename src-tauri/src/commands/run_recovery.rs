@@ -1,7 +1,9 @@
 //! Track H3 in the app: the startup reconcile, the stall watchdog and
 //! Continue. `pipelines::recovery` holds the rules; this feeds them the
-//! running autopilot runs, their current stage terminals' session logs and
-//! how long each terminal has been quiet, and saves what they decide.
+//! running autopilot runs (engine 2: an engine-1 run is manual only since
+//! V6), their current stage terminals' session logs and how long each
+//! terminal has been quiet, and saves what they decide. Continue is the run
+//! actor's (`continue_after_restart`).
 //!
 //! Both run on one thread of their own (`spawn_run_recovery`), never the
 //! main thread: the reconcile once at startup, then a watchdog tick every
@@ -62,13 +64,17 @@ impl Watched {
     }
 }
 
-/// Every running autopilot run's current stage terminals.
+/// Every running autopilot run's current stage terminals. An engine-1 run
+/// is manual only (V6), even one saved with autopilot on, so it is skipped.
 fn running_stage_tabs(store: &Mutex<StateStore>, registry: &Mutex<PtyRegistry>) -> Result<Vec<Watched>, String> {
     let state = store.lock().map_err(|e| e.to_string())?;
     let registry = registry.lock().map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for run in &state.data.pipeline_runs {
-        if run.status != RunStatus::Running || !run.autopilot.as_ref().is_some_and(|a| a.enabled) {
+        if run.status != RunStatus::Running
+            || run.engine < crate::bridge::launch::ENGINE_V2
+            || !run.autopilot.as_ref().is_some_and(|a| a.enabled)
+        {
             continue;
         }
         let Some(def) = crate::pipelines::find(&run.kind) else {
@@ -316,11 +322,10 @@ pub fn spawn_run_recovery(app: AppHandle) {
     }
 }
 
-/// Continue after a restart: the run carries on (`running`), and the tabs of
-/// its current stage are returned so the turn they finished while the app
-/// was closed is decided (by the frontend on an engine-1 run, by the run
-/// actor on an engine-2 run). Only a run waiting with `app_restarted`
-/// continues this way.
+/// Continue after a restart (a message to the run actor): the run carries
+/// on (`running`), and the tabs of its current stage are returned so the
+/// actor decides the turn they finished while the app was closed. Only a
+/// run waiting with `app_restarted` continues this way.
 pub fn continue_after_restart(store: &mut StateStore, run_id: &str) -> Result<Vec<String>, String> {
     let run = store
         .pipeline_run_by_id_mut(run_id)
@@ -333,19 +338,6 @@ pub fn continue_after_restart(store: &mut StateStore, run_id: &str) -> Result<Ve
     run.log("autopilot", None, None, "Continued by you after the restart", None);
     let tabs = current_stage_tabs(&def, run).into_iter().map(|tab| tab.tab_id).collect();
     store.save()?;
-    Ok(tabs)
-}
-
-#[tauri::command]
-pub fn pipeline_continue(
-    app: AppHandle,
-    run_id: String,
-    store: State<Mutex<StateStore>>,
-) -> Result<Vec<String>, String> {
-    let run_id = run_id.trim().to_string();
-    let mut store = store.lock().map_err(|e| e.to_string())?;
-    let tabs = continue_after_restart(&mut store, &run_id)?;
-    app.chain_run_updated(&run_id);
     Ok(tabs)
 }
 

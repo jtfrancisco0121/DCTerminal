@@ -57,14 +57,13 @@ pub use github::{
 };
 pub use handoff::{handoff_attach, handoff_bind_tab, handoff_get, handoff_list, handoff_save};
 pub use pipeline::{
-    get_pipeline_run, pipeline_decide, pipeline_defs_list, pipeline_defs_save, pipeline_fan_out,
-    pipeline_approve, pipeline_claim_handoff, pipeline_lane_status, pipeline_note,
-    pipeline_release_handoff, pipeline_turn_finished,
+    get_pipeline_run, pipeline_defs_list, pipeline_defs_save, pipeline_fan_out,
+    pipeline_approve, pipeline_lane_status, pipeline_turn_finished,
     pipeline_promote_plan, pipeline_run_gates, pipeline_set_autopilot, pipeline_set_candidate_plan,
     pipeline_run_tasks, pipeline_actor_message,
 };
 pub use model_session::{acp_set_effort, acp_set_model};
-pub use run_recovery::{autopilot_pending_stops, pipeline_continue, spawn_run_recovery, StartupStops};
+pub use run_recovery::{autopilot_pending_stops, spawn_run_recovery, StartupStops};
 pub use usage::get_claude_usage;
 pub use prompts::{
     prompt_clear_recent, prompt_delete, prompt_library_get, prompt_mark_used, prompt_record_send,

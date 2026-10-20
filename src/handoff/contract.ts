@@ -131,8 +131,9 @@ const text = (value: unknown): string => (typeof value === "string" ? value.trim
 /**
  * A reviewer's `HANDOFF: Result` JSON (verdict and findings with severity),
  * or null when the reply has none or it does not parse. A finding without a
- * summary is dropped; one without a severity keeps an empty one, which the
- * autopilot treats as blocking.
+ * summary is dropped; one without a severity keeps an empty one. Read for
+ * manual hand-offs and to show older runs; an engine-2 run's verdict comes
+ * through the bridge's `submit_result` instead.
  */
 export function contractResult(reply: string): ContractResult | null {
   const section = handoffSection(reply, "Result");

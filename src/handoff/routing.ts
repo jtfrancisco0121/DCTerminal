@@ -1,7 +1,7 @@
 /**
  * Which hand-off button is primary, and what it says, from the reviewer's
  * verdict. Only labels and emphasis: a manual hand-off still waits for the
- * user (autopilot, when a run turns it on, is `src/pipeline/autopilot.ts`).
+ * user (autopilot, on an engine-2 run, is the Rust run actor's).
  */
 import { behaviourRole, roleBehaviour } from "../pipeline/defs";
 import { chainSteps, loopBackTarget, nextChainRole, type ChainRef } from "./chains";

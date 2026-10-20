@@ -22,8 +22,9 @@
 //! The tab and its view stay. Only a stage with no saved session gets a
 //! paste, which clears the input box first (D40).
 //! Handling one message at a time, plus the decided-turn list on the run,
-//! replaces the frontend's claims for engine-2 runs: your Send and
-//! autopilot's hand-off can no longer race, because both are messages here.
+//! replaced the frontend's claims (removed with the v1 autopilot in V6):
+//! your Send and autopilot's hand-off can no longer race, because both are
+//! messages here. An engine-1 run is manual only, so nothing races there.
 //! The run's hand-off records (`claims`) still say who made a hand-off, so
 //! a Send after autopilot made the same one warns once.
 //!
@@ -154,6 +155,25 @@ pub enum UserAction {
     /// show before you send. Changes nothing.
     #[serde(rename = "prefill", rename_all = "camelCase")]
     Prefill { source_tab_id: String, target_role_id: String },
+    /// Record a hand-off on (or, `back`, a send-back) from `source_tab_id`
+    /// that you make yourself outside the actor (to a Chat tab), as your
+    /// Send records it: a warning when autopilot made it already (`force`
+    /// records it anyway), and autopilot leaves that turn to you.
+    #[serde(rename = "recordHandoff", rename_all = "camelCase")]
+    RecordHandoff {
+        source_tab_id: String,
+        #[serde(default)]
+        back: bool,
+        #[serde(default)]
+        force: bool,
+    },
+    /// Drop the record `RecordHandoff` made, when that hand-off failed.
+    #[serde(rename = "releaseHandoff", rename_all = "camelCase")]
+    ReleaseHandoff {
+        source_tab_id: String,
+        #[serde(default)]
+        back: bool,
+    },
 }
 
 /// A hand-off form filled from the run folder (`UserAction::Prefill`).

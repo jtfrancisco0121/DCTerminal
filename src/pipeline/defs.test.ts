@@ -3,7 +3,7 @@ import { missingHandoffSections } from "../handoff/contract";
 import { handoffRoute, loopBackMessage } from "../handoff/routing";
 import { isPlanSource } from "../handoff/transitions";
 import { isReviewerRole } from "../handoff/verdict";
-import { finishedTurn } from "./autopilot";
+import { finishedTurn } from "./stageTurn";
 import {
   behaviourRole,
   pipelineDef,

@@ -1,8 +1,9 @@
-//! The autopilot decision (ADR-014): after a stage's turn ends, advance,
-//! loop back, retry after a failed gate, re-ask for missing HANDOFF
-//! sections, or stop for the user. Pure over the pipeline definition, the
-//! run and the turn report, so every rule is unit-tested. It records what it
-//! decided in the run's ledger and autopilot state; the caller saves.
+//! The autopilot decision (ADR-014, ADR-015): after a stage's turn ends,
+//! advance, loop back, retry after a failed gate, or stop for the user.
+//! Pure over the pipeline definition, the run and the turn report, so every
+//! rule is unit-tested. It records what it decided in the run's ledger and
+//! autopilot state; the caller (the run actor, engine 2) saves. Since V6
+//! nothing decides an engine-1 run: it is manual only.
 //!
 //! It acts only while the run is `running` (Track H2): a stop puts the run
 //! in `waiting` with a reason code until you act, and `complete` is final.
@@ -25,7 +26,7 @@ pub struct FindingReport {
     pub summary: String,
 }
 
-/// What the frontend read from the stage's finished turn.
+/// What the run actor read from the stage's finished turn (its bridged result).
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnReport {
@@ -38,8 +39,6 @@ pub struct TurnReport {
     /// The reply carried a structured result, so `findings` is complete.
     #[serde(default)]
     pub findings_known: bool,
-    #[serde(default)]
-    pub missing_sections: Vec<String>,
     /// Highest of the Claude 5-hour and 7-day usage, in percent. `None`
     /// when usage is unknown (never read, or the window reset since the
     /// last reading): autopilot carries on, and `rate_limit` stops it.
@@ -49,9 +48,6 @@ pub struct TurnReport {
     /// turn ("You've hit your limit · resets 3pm"), if any.
     #[serde(default)]
     pub rate_limit: Option<String>,
-    /// The stage's tab is a chat tab (autopilot drives terminals only).
-    #[serde(default)]
-    pub chat: bool,
     /// The fanned-out pull request this stage belongs to, if any.
     #[serde(default)]
     pub lane: Option<String>,
@@ -82,7 +78,7 @@ pub fn stage_key(stage_id: &str, lane: Option<&str>) -> String {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Decision {
-    /// `advance`, `loopBack`, `retry`, `reask`, `stop`, `complete`, `laneDone`,
+    /// `advance`, `loopBack`, `retry`, `stop`, `complete`, `laneDone`,
     /// `ignore` (a late turn in an approved lane, or a turn already decided
     /// on: nothing to do or tell), `skip` (a stale turn, or a hand-off made
     /// already: the ledger says so, nothing else happens).
@@ -391,14 +387,6 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             ),
         );
     }
-    if report.chat {
-        return stop(
-            run,
-            Some(&stage),
-            StopReason::CarryOutFailed,
-            format!("{} is a chat tab. Autopilot drives terminal tabs only, so hand it on yourself.", stage.title),
-        );
-    }
     if let Some(error) = report.rate_limit.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
         return stop(
             run,
@@ -443,23 +431,6 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
                 why.trim_end_matches('.')
             ),
         );
-    }
-    if !report.missing_sections.is_empty() {
-        let key = format!("{key_of_stage}#{round}");
-        let missing = report.missing_sections.join(", ");
-        if autopilot(run).reasked.contains(&key) {
-            return stop(
-                run,
-                Some(&stage),
-                StopReason::NoResult,
-                format!("{}'s reply still lacks HANDOFF sections ({missing}).", stage.title),
-            );
-        }
-        autopilot(run).reasked.push(key);
-        let mut decision = Decision::new("reask", format!("Asked {} for the missing HANDOFF sections ({missing}).", stage.title))
-            .for_stage(&stage);
-        decision.lane = lane.map(str::to_string);
-        return go(run, decision, None);
     }
     let this_round = run.gates.get(&key_of_stage).filter(|gates| gates.round == round);
     if let Some(gate) = this_round.and_then(|gates| gates.results.iter().find(|r| r.no_check_found()).cloned()) {

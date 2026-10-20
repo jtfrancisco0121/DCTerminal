@@ -175,6 +175,21 @@ fn startup_leaves_a_mid_turn_or_logless_run_running() {
 }
 
 #[test]
+fn an_engine_1_run_is_manual_only_so_neither_the_reconcile_nor_the_watchdog_touches_it() {
+    let fx = Fixture::new("recover_engine_1");
+    fx.store.lock().unwrap().pipeline_run_by_id_mut("ee_r").unwrap().engine = 1;
+    fx.write_log(&[prompt("2026-10-19T10:00:00Z"), reply("2026-10-19T10:01:00Z")]);
+    assert_eq!(fx.reconcile(), RecoveryOutcome::default());
+    fx.write_log(&[prompt("2026-10-19T10:00:00Z")]);
+    let limit = Duration::from_secs(60);
+    let t0 = Instant::now();
+    let mut watch = StallWatch::new();
+    fx.tick(&mut watch, t0, limit);
+    assert_eq!(fx.tick(&mut watch, t0 + limit * 2, limit), RecoveryOutcome::default());
+    assert_eq!(fx.status(), (RunStatus::Running, None));
+}
+
+#[test]
 fn continue_runs_the_run_again_and_names_the_tabs_to_decide() {
     let fx = Fixture::new("recover_continue");
     {

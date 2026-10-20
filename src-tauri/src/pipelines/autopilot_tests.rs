@@ -243,17 +243,6 @@ fn a_reviewer_reply_without_a_verdict_stops() {
 }
 
 #[test]
-fn missing_sections_are_asked_for_once_then_stop() {
-    let mut r = run(1);
-    let mut rep = report("plan_reviewer", Some("APPROVED"));
-    rep.missing_sections = vec!["Reviewed plan".into()];
-    assert_eq!(decide(&eagle1(), &mut r, &rep).action, "reask");
-    let d = decide(&eagle1(), &mut r, &rep);
-    assert_eq!(d.action, "stop");
-    assert!(d.reason.contains("Reviewed plan"));
-}
-
-#[test]
 fn a_bridge_turn_with_no_result_stops_at_once_with_no_result() {
     // Engine 2: the bridge already blocked the stop once (D10), so there is
     // no second ask here.
@@ -361,10 +350,7 @@ fn gate_results_from_an_earlier_round_are_ignored() {
 }
 
 #[test]
-fn chat_stages_and_high_usage_stop() {
-    let mut chat = report("planner", None);
-    chat.chat = true;
-    assert!(decide(&eagle1(), &mut run(1), &chat).reason.contains("chat tab"));
+fn high_usage_stops() {
     let mut busy = report("planner", None);
     busy.usage_percent = Some(93);
     let d = decide(&eagle1(), &mut run(1), &busy);
@@ -618,20 +604,18 @@ fn a_turn_is_decided_once() {
 #[test]
 fn a_turn_from_a_round_that_ended_is_skipped() {
     // 08:40:16 the Implementer's round-4 turn was read; its checks ran until
-    // 08:40:44, after round 5 was sent in at 08:40:22. Its missing sections
-    // must not be asked for in the middle of round 5's turn.
+    // 08:40:44, after round 5 was sent in at 08:40:22. It must not be
+    // handed on in the middle of round 5's turn.
     let mut r = run(5);
     let mut rep = report("implementer", None);
     rep.round = Some(4);
-    rep.missing_sections = vec!["Pull requests".into()];
     let d = decide(&eagle1(), &mut r, &rep);
     assert_eq!(d.action, "skip");
     assert_eq!(d.reason, "Skipped Implementer's turn from round 4: the run is on round 5 now.");
-    assert!(r.autopilot.as_ref().unwrap().reasked.is_empty(), "no re-ask");
     assert!(r.claims.is_empty());
     // A turn of the current round is decided as usual.
     rep.round = Some(5);
-    assert_eq!(decide(&eagle1(), &mut r, &rep).action, "reask");
+    assert_eq!(decide(&eagle1(), &mut r, &rep).action, "advance");
 }
 
 fn failed_gate(round: u32) -> StageGates {
@@ -678,11 +662,9 @@ fn every_stop_in_decide_carries_its_reason_code() {
     busy.usage_percent = Some(95);
     assert_eq!(stopped(&eagle1(), run(1), busy), Some(StopReason::UsageLimit));
     assert_eq!(stopped(&eagle1(), run(1), report("pr_reviewer", None)), Some(StopReason::NoVerdict));
-    let mut missing = report("plan_reviewer", Some("APPROVED"));
-    missing.missing_sections = vec!["Reviewed plan".into()];
-    let mut reasked = run(1);
-    reasked.autopilot.as_mut().unwrap().reasked.push("plan_reviewer#1".into());
-    assert_eq!(stopped(&eagle1(), reasked, missing), Some(StopReason::NoResult));
+    let mut missing = report("plan_reviewer", None);
+    missing.no_result = true;
+    assert_eq!(stopped(&eagle1(), run(1), missing), Some(StopReason::NoResult));
     let mut failing = run(1);
     failing.gates.insert("implementer".into(), failed_gate(1));
     failing.autopilot.as_mut().unwrap().gate_retries.insert("implementer".into(), MAX_GATE_RETRIES);
@@ -691,9 +673,6 @@ fn every_stop_in_decide_carries_its_reason_code() {
     approved.findings = vec![finding("HIGH", "token leaks to log")];
     approved.findings_known = true;
     assert_eq!(stopped(&eagle1(), run(1), approved), Some(StopReason::BlockingFindings));
-    let mut chat = report("planner", None);
-    chat.chat = true;
-    assert_eq!(stopped(&eagle1(), run(1), chat), Some(StopReason::CarryOutFailed));
     assert_eq!(stopped(&eagle1(), run(1), report("nowhere", None)), Some(StopReason::CarryOutFailed));
     let mut limited = report("planner", None);
     limited.rate_limit = Some("You've hit your limit · resets 3pm".into());
@@ -725,8 +704,8 @@ fn unknown_usage_carries_on_but_a_rate_limit_error_stops_the_run() {
     assert!(d.reason.contains("Plan Reviewer hit a Claude usage limit"), "{}", d.reason);
     assert!(d.reason.contains("usage limit reached"), "{}", d.reason);
     assert_eq!(d.stage_id.as_deref(), Some("plan_reviewer"));
-    // Before the missing-sections re-ask: a limited reply has no sections.
-    limited.missing_sections = vec!["Reviewed plan".into()];
+    // Before `no_result`: a limited turn reported nothing either.
+    limited.no_result = true;
     assert_eq!(decide(&eagle1(), &mut run(1), &limited).stop_reason, Some(StopReason::UsageLimit));
     // A blank error line is no error.
     let mut blank = report("planner", None);
@@ -876,18 +855,17 @@ fn with_copied_reviewer(kind: Option<&str>) -> crate::pipelines::PipelineDef {
     .unwrap()
 }
 
-/// What autopilot does with a PR Reviewer's turns on `def`: the reply lacks
-/// its sections twice, then asks for changes with a blocking finding.
+/// What autopilot does with a PR Reviewer's turns on `def`: a turn that
+/// reported no result (V6 removed the v1 re-ask for missing HANDOFF
+/// sections), then one that asks for changes with a blocking finding.
 fn reviewer_turns(def: &crate::pipelines::PipelineDef) -> Vec<(String, Option<String>, Option<StopReason>)> {
     let mut r = run(1);
     r.kind = def.run_kind().to_string();
     let mut out = Vec::new();
     let mut lacking = report("pr_reviewer", None);
-    lacking.missing_sections = vec!["Verdict".into(), "Findings for the Implementer".into()];
-    for _ in 0..2 {
-        let d = decide(def, &mut r, &lacking);
-        out.push((d.action, d.stage_id, r.stop_reason));
-    }
+    lacking.no_result = true;
+    let d = decide(def, &mut r, &lacking);
+    out.push((d.action, d.stage_id, r.stop_reason));
     r.resume_after_you();
     let mut changes = report("pr_reviewer", Some("REQUEST CHANGES"));
     changes.findings = vec![finding("MEDIUM", "null token")];
@@ -898,12 +876,11 @@ fn reviewer_turns(def: &crate::pipelines::PipelineDef) -> Vec<(String, Option<St
 }
 
 #[test]
-fn a_duplicated_pr_reviewer_re_asks_and_loops_exactly_like_the_built_in_one() {
+fn a_duplicated_pr_reviewer_stops_and_loops_exactly_like_the_built_in_one() {
     let built_in = reviewer_turns(&find("eagle2").unwrap());
     assert_eq!(
         built_in,
         vec![
-            ("reask".to_string(), Some("pr_reviewer".to_string()), None),
             ("stop".to_string(), Some("pr_reviewer".to_string()), Some(StopReason::NoResult)),
             ("loopBack".to_string(), Some("implementer".to_string()), None),
         ]
