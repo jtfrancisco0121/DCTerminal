@@ -1571,7 +1571,7 @@ mod eagle_eye_1 {
 mod run_actor {
     use super::*;
     use dcterminal_lib::testing::{
-        bridged_command, bundled_seed, claude_terminal_args, drain_inbox, launch_flags, prepare_stage, runs_root,
+        bridged_command, bundled_seed, claude_terminal_args, drain_inbox, launch_flags, paste_bytes, prepare_stage, runs_root,
         ActorMsg, AppStateFile, BridgePlan, BridgeTag, ChainRef, GateDef, GateResult, Host, InboxEvent, PipelineRun,
         ProgramArgs, ResultKind, Role, RunActors, RunMode, RunStatus, StageLaunch, StateStore, StopReason,
         TerminalKind, TerminalLaunch, UserAction, MAIN_WINDOW_ID,
@@ -1741,10 +1741,8 @@ mod run_actor {
         fn paste(&self, tab_id: &str, text: &str) -> Result<(), String> {
             let terminals = self.terminals.lock().unwrap();
             let terminal = terminals.get(tab_id).ok_or_else(|| format!("no terminal {tab_id}"))?;
-            let mut bytes = b"\x1b[200~".to_vec();
-            bytes.extend_from_slice(text.as_bytes());
-            bytes.extend_from_slice(b"\x1b[201~\r");
-            terminal.session.write(&bytes).map_err(|err| err.to_string())
+            // The app's bytes (`PtyRegistry::paste`): Ctrl+U first (D40).
+            terminal.session.write(&paste_bytes(text)).map_err(|err| err.to_string())
         }
         fn terminal_live(&self, tab_id: &str) -> bool {
             self.terminals.lock().unwrap().get(tab_id).is_some_and(|t| !t.exited.load(Ordering::SeqCst))

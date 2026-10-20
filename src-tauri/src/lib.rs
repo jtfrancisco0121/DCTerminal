@@ -57,7 +57,7 @@ pub mod testing {
     pub use crate::bridge::watch::{drain_inbox, InboxEvent};
     pub use crate::provider::claude::claude_terminal_args;
     pub use crate::provider::{ProgramArgs, TerminalKind, TerminalLaunch};
-    pub use crate::pty::RunMode;
+    pub use crate::pty::{paste_bytes, RunMode};
     pub use crate::bridge::{BridgeNeeds, BridgeTurn, NeedsSource, ResultKind, TurnOutcome};
     pub use crate::run_actor::{ActorMsg, Host, RunActors, StageLaunch, UserAction, UserOutcome};
     pub use crate::pipelines::{GateDef, GateResult};

@@ -1262,6 +1262,26 @@ impl RoleLaunch {
         })
     }
 
+    /// A stage the run actor starts (V3) or resumes (V4, D17): pinned to its
+    /// session id, and a resume reopens that same session (`--resume <id>`,
+    /// no new `--session-id`) with the stage kind's permission mode.
+    pub(crate) fn for_actor_stage(
+        launch: &crate::run_actor::StageLaunch,
+        resume: bool,
+        run_mode: RunMode,
+        stage_kind: Option<crate::pipelines::StageKind>,
+        model: &str,
+    ) -> Self {
+        Self {
+            role_id: launch.role_id.clone(),
+            run_mode,
+            stage_kind,
+            model: model.to_string(),
+            session_id: Some(launch.session_id.clone()),
+            resume: resume.then(|| launch.session_id.clone()),
+        }
+    }
+
     pub(crate) fn launch(&self, prompt: Option<String>) -> TerminalLaunch {
         TerminalLaunch {
             kind: match &self.resume {
@@ -1544,7 +1564,7 @@ fn role_terminal_start_blocking(
 
 /// What [`PtyRegistry::paste`] writes: Ctrl+U, then `text` as one
 /// bracketed paste, then Enter.
-fn paste_bytes(text: &str) -> Vec<u8> {
+pub fn paste_bytes(text: &str) -> Vec<u8> {
     let mut bytes = CLEAR_INPUT.to_vec();
     bytes.extend_from_slice(b"\x1b[200~");
     bytes.extend_from_slice(clean_paste_text(text).as_bytes());
@@ -1632,16 +1652,11 @@ pub(crate) fn start_actor_stage(
     // H4: the stage's kind (from the chain its tab was saved on) picks the
     // permission mode, so a Planner stage, a copied one included, plans. A
     // resume (V4) reopens the stage's own session with the same flags.
-    let role_launch = RoleLaunch::for_tab(
-        &store,
-        Some(tab_id),
-        None,
-        &launch.role_id,
-        mode,
-        &model,
-        Some(launch.session_id.clone()),
-        resume.then(|| launch.session_id.clone()),
-    )?;
+    let stage_kind = {
+        let state = store.lock().map_err(|err| err.to_string())?;
+        launch_stage_kind(&state, Some(tab_id), None)
+    };
+    let role_launch = RoleLaunch::for_actor_stage(launch, resume, mode, stage_kind, &model);
     let program = provider.terminal_command(&role_launch.launch(None))?.program;
     let delivery = store_prompt(app, tab_id, &program, &launch.prompt)?;
     // H5's status line, so the stage reports usage like any Claude terminal.
@@ -2243,12 +2258,71 @@ mod tests {
         let status = body.find("usage_status_line(").expect("adds the status line");
         let merged = body.find("actor_stage_command(").expect("one merged --settings");
         assert!(status < merged);
+        assert!(body.contains("RoleLaunch::for_actor_stage(launch, resume,"), "a resume reopens the stage's session");
         let gate = &source[source.find("pub(crate) fn actor_stage_gate(").expect("an actor gate")..];
         let gate = &gate[..gate.find("\n}\n").unwrap()];
         let inputs = gate.find("gate_inputs(").expect("reads the version and settings");
         let applied = gate.find("gate_run(").expect("applies the gate to the run");
         assert!(inputs < applied);
         assert!(!gate[inputs..applied].contains(".lock()"), "no lock while reading the CLI and settings");
+    }
+
+    // V4 (D17): the app's own resume launch, as `start_actor_stage` builds
+    // it: the stage's session again (`--resume`, no new `--session-id`),
+    // the same bridge flags and one merged `--settings`, the prompt last.
+    #[test]
+    fn an_actor_stage_resume_reopens_its_session_with_the_same_flags() {
+        use crate::bridge::ResultKind;
+        const SID: &str = "6a1d3b0f-2c3d-4e5f-9a51-0123456789ab";
+        let flags = crate::bridge::launch::launch_flags(
+            ResultKind::Planner,
+            std::path::Path::new("/opt/dcterminal"),
+            std::path::Path::new("/data/runs/ee_1"),
+            "ee_1",
+            "planner",
+            "tab_p",
+        );
+        let launch = crate::run_actor::StageLaunch {
+            run_id: "ee_1".into(),
+            tab_id: "tab_p".into(),
+            role_id: "role_custom_planner".into(),
+            cwd: std::path::PathBuf::from("/work"),
+            prompt: "Review findings from the Plan Reviewer (round 1), saved in /data/runs/ee_1/findings-plan_reviewer-r1.json".into(),
+            session_id: SID.into(),
+            bridge: Some(flags),
+        };
+        let build = |req: &TerminalLaunch| {
+            Ok(crate::provider::ProgramArgs::new("claude", crate::provider::claude::claude_terminal_args(req)?))
+        };
+        let status = serde_json::json!({ "statusLine": { "type": "command", "command": "dct --dct-status-line f" } });
+        let args_for = |resume: bool| {
+            let role = RoleLaunch::for_actor_stage(&launch, resume, RunMode::Default, Some(crate::pipelines::StageKind::Planner), "opus");
+            actor_stage_command(role.launch(Some(launch.prompt.clone())), Some(status.clone()), launch.bridge.clone(), build)
+                .unwrap()
+                .args
+        };
+        let args = args_for(true);
+        let resume_at = args.iter().position(|a| a == "--resume").unwrap_or_else(|| panic!("resumes its session: {args:?}"));
+        assert_eq!(args[resume_at + 1], SID, "the same session id");
+        assert!(!args.iter().any(|a| a == "--session-id"), "no new session: {args:?}");
+        let mode_at = args.iter().position(|a| a == "--permission-mode").unwrap();
+        assert_eq!(args[mode_at + 1], "plan", "the stage kind's mode, as at its first launch");
+        let at: Vec<usize> = args.iter().enumerate().filter(|(_, a)| *a == "--settings").map(|(i, _)| i).collect();
+        assert_eq!(at.len(), 1, "exactly one --settings: {args:?}");
+        let settings: serde_json::Value = serde_json::from_str(&args[at[0] + 1]).unwrap();
+        assert!(settings["statusLine"]["command"].as_str().unwrap().contains("--dct-status-line"), "{settings}");
+        assert!(settings["hooks"]["Stop"].is_array(), "the bridge's hooks: {settings}");
+        assert_eq!(args.last(), Some(&launch.prompt), "the prompt is the resumed turn, last");
+        // The same flags as its first launch, but for the session flag.
+        let first = args_for(false);
+        let strip = |args: &[String], flag: &str| {
+            let mut out = args.to_vec();
+            if let Some(i) = out.iter().position(|a| a == flag) {
+                out.drain(i..i + 2);
+            }
+            out
+        };
+        assert_eq!(strip(&args, "--resume"), strip(&first, "--session-id"));
     }
 
     #[test]
