@@ -159,7 +159,6 @@ import {
   composePlanText,
   roleDisplayName,
   selectionInside,
-  terminalHandoffInput,
   terminalLogFields,
   type HandoffField,
   type HandoffScope,
@@ -206,6 +205,7 @@ import { WorkspacesDialog } from "./components/WorkspacesDialog";
 import { FirstRunSetup, type FirstRunFinish } from "./components/FirstRunSetup";
 import { insertIntoPad, type PadSelection } from "./prompts/library";
 import { startQueue } from "./terminal/startQueue";
+import { handoffTerminalStart } from "./handoff/terminalStart";
 import {
   chainRound,
   chainTabFor,
@@ -4538,17 +4538,11 @@ export function StartupForm({
         const nextValues = { ...mapped.answers, cwd: handoffSource.cwd };
         const sourceProvider = providerOf(sourceTab ?? null);
         if (surface === "terminal") {
-          const terminal = terminalHandoffInput(mapped);
           stashActiveTab();
           // Launched as the source's provider, not switched after the CLI started.
-          const tabId = await startRoleTerminal({
-            roleId: handoffTarget,
-            values: { ...terminal.values, cwd: handoffSource.cwd },
-            tabId: null,
-            handoffPlan: terminal.handoffPlan,
-            provider: sourceProvider,
-            chain: prepared.value.nextChain,
-          });
+          const tabId = await startRoleTerminal(
+            handoffTerminalStart(prepared.value, handoffTarget, handoffSource.cwd, sourceProvider),
+          );
           if (!tabId) {
             setHandoffError("Terminal did not start.");
             return;
