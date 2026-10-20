@@ -213,7 +213,13 @@ import { FirstRunSetup, type FirstRunFinish } from "./components/FirstRunSetup";
 import { insertIntoPad, type PadSelection } from "./prompts/library";
 import { startQueue } from "./terminal/startQueue";
 import { handoffTerminalStart } from "./handoff/terminalStart";
-import { actorRunFor, showActorOutcome } from "./handoff/actorSend";
+import {
+  actorRunFor,
+  recordRunFor,
+  recordYourHandoff,
+  releaseYourHandoff,
+  showActorOutcome,
+} from "./handoff/actorSend";
 import {
   chainRound,
   chainTabFor,
@@ -4517,14 +4523,35 @@ export function StartupForm({
       // decides, not the tab: a still-bridged tab of a run switched to
       // engine 1 mid-run hands on the engine-1 way. Anything else (an
       // engine-1 run is manual only, V6) has no autopilot to race, so it
-      // goes ahead here.
+      // goes ahead here. A hand-off on an engine-2 run you make yourself
+      // (to a Chat tab, or into a live chat tab) is recorded with the
+      // actor first, so autopilot's warning works there too.
       const sourceSummary = savedTabs.find((tab) => tab.id === handoffSource.sourceTabId);
-      const sourceRun =
-        surface === "terminal" && sourceSummary?.chain
-          ? // intentionally silent: an unreadable run hands on the engine-1 way, which names the problem.
-            await getPipelineRun(sourceSummary.chain.chainId).catch(() => null)
-          : null;
+      const sourceRun = sourceSummary?.chain
+        ? // intentionally silent: an unreadable run hands on the engine-1 way, which names the problem.
+          await getPipelineRun(sourceSummary.chain.chainId).catch(() => null)
+        : null;
       const actorRun = actorRunFor(surface, sourceSummary, sourceRun?.run.engine);
+      const recordRun = recordRunFor(sourceSummary, sourceRun?.run.engine);
+      /** Records your own hand-off on an engine-2 run; false (with the warning shown) when autopilot made it already. */
+      const recordYours = async (back: boolean) => {
+        const confirm = `actor:${back ? "back" : "advance"}:${handoffSource.sourceTabId}`;
+        const force = confirmedClaimRef.current === confirm;
+        const warning = await recordYourHandoff(
+          recordRun,
+          { sourceTabId: handoffSource.sourceTabId, back, force },
+          pipelineActorMessage,
+        );
+        if (warning) {
+          confirmedClaimRef.current = confirm;
+          setHandoffError(warning);
+          return false;
+        }
+        confirmedClaimRef.current = null;
+        return true;
+      };
+      const releaseYours = (back: boolean) =>
+        releaseYourHandoff(recordRun, { sourceTabId: handoffSource.sourceTabId, back }, pipelineActorMessage);
       /** Sends one actor message; null (with the warning shown) when autopilot made the hand-off already. */
       const askActor = async (
         runId: string,
@@ -4583,7 +4610,11 @@ export function StartupForm({
         }
         setBusy(true);
         setHandoffError(null);
+        let recorded = false;
+        let sent = false;
         try {
+          if (!(await recordYours(true))) return;
+          recorded = true;
           if (loop.terminal) {
             // One paste and one Enter, like the terminal scratch pad's Send.
             notePtyInput(targetTab.id);
@@ -4601,9 +4632,11 @@ export function StartupForm({
               setHandoffError(
                 runtimesRef.current[targetTab.id]?.promptError ?? "The follow-up was not sent.",
               );
+              await releaseYours(true);
               return;
             }
           }
+          sent = true;
           // The follow-up is out: close the dialog first, so a failure below
           // cannot invite a second send of the same findings.
           setTerminalCapture(null);
@@ -4623,6 +4656,7 @@ export function StartupForm({
           await refreshTabs();
           await handleSelectTab(targetTab.id);
         } catch (err: unknown) {
+          if (recorded && !sent) await releaseYours(true);
           setHandoffError(errorText(err));
         } finally {
           setBusy(false);
@@ -4631,6 +4665,8 @@ export function StartupForm({
       }
       setBusy(true);
       setHandoffError(null);
+      /** Your own chain hand-off recorded with the actor (`back` for a send-back), until it is made. */
+      let recordedBack: boolean | null = null;
       try {
         const sourceTab = savedTabs.find((tab) => tab.id === handoffSource.sourceTabId);
         const loopStep = loop ? { chainId: loop.chain.chainId, next: loop.next } : null;
@@ -4691,6 +4727,10 @@ export function StartupForm({
           return;
         }
         const { mapped } = prepared.value;
+        if (loopStep || prepared.value.nextChain) {
+          if (!(await recordYours(!!loopStep))) return;
+          recordedBack = !!loopStep;
+        }
         const saved = await saveHandoff(prepared.value, scope);
         const attach = (tabId: string) =>
           attachHandoff({
@@ -4710,10 +4750,12 @@ export function StartupForm({
             handoffTerminalStart(prepared.value, handoffTarget, handoffSource.cwd, sourceProvider, loopStep?.next),
           );
           if (!tabId) {
+            if (recordedBack !== null) await releaseYours(recordedBack);
             setHandoffError("Terminal did not start.");
             return;
           }
           const bound = await attach(tabId);
+          recordedBack = null;
           if (mapped.usesScratchPad) {
             scratch.setContent(tabId, mapped.inlinePlan);
             await scratchSave(tabId, mapped.inlinePlan, []);
@@ -4727,6 +4769,7 @@ export function StartupForm({
         const { tab } = await newDraftTab(handoffTarget, handoffSource.cwd);
         await setTabProvider(tab.id, sourceProvider);
         const bound = await attach(tab.id);
+        recordedBack = null;
         await syncActiveTabForm(tab.id, handoffTarget, handoffSource.cwd, nextValues);
         if (mapped.usesScratchPad) {
           scratch.setContent(tab.id, mapped.inlinePlan);
@@ -4745,6 +4788,7 @@ export function StartupForm({
         setHandoffTarget(null);
         await refreshTabs();
       } catch (err: unknown) {
+        if (recordedBack !== null) await releaseYours(recordedBack);
         const message = errorText(err);
         setHandoffError(message);
       } finally {

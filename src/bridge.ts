@@ -1231,7 +1231,11 @@ export type ActorAction =
   /** You drive the stage now (V5, D28): no enforcement, no decisions, and its Watch view takes keystrokes. */
   | { kind: "takeOver"; tabId: string }
   /** Autopilot drives it again, deciding at once when its current turn already has a result. */
-  | { kind: "handBack"; tabId: string };
+  | { kind: "handBack"; tabId: string }
+  /** Record a hand-off you make yourself outside the actor (to a Chat tab); warns like Send when autopilot made it first. */
+  | { kind: "recordHandoff"; sourceTabId: string; back: boolean; force?: boolean }
+  /** Drop that record after the hand-off failed. */
+  | { kind: "releaseHandoff"; sourceTabId: string; back: boolean };
 
 /** What a button did on an engine-2 run. */
 export type ActorOutcome = {

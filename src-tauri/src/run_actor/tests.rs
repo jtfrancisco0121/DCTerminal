@@ -659,6 +659,41 @@ fn your_send_after_autopilot_handed_on_warns_once_then_goes_ahead_with_force() {
     assert!(fx.user(with_source(send(false), &planner)).unwrap().tab_id.is_some(), "your own earlier hand-off never warns");
 }
 
+/// A hand-off you make outside the actor (to a Chat tab) is recorded like
+/// your Send: it warns when autopilot made it first, and autopilot skips a
+/// turn you already handed on. Released when the hand-off failed.
+#[test]
+fn a_chat_hand_off_is_recorded_so_autopilot_and_you_never_both_make_it() {
+    let mut fx = Fixture::new("record_chat");
+    fx.open_plan_reviewer();
+    let planner = fx.planner.clone();
+    let record = |force| UserAction::RecordHandoff { source_tab_id: planner.clone(), back: false, force };
+    let warned = fx.user(record(false)).unwrap();
+    assert!(warned.warning.as_deref().unwrap().starts_with("Autopilot already handed this turn on"), "{warned:?}");
+    assert!(fx.user(record(true)).unwrap().warning.is_none());
+    fx.run(|run| assert_eq!(run.claims.last().map(|c| c.by.as_str()), Some("you")));
+    assert_eq!(fx.launches().len(), 1, "recording opens nothing");
+
+    // Recorded before autopilot decides: autopilot leaves the turn to you.
+    let mut fx = Fixture::new("record_chat_first");
+    let planner = fx.planner.clone();
+    let recorded = fx.user(UserAction::RecordHandoff { source_tab_id: planner.clone(), back: false, force: false }).unwrap();
+    assert!(recorded.warning.is_none());
+    let turn = fx.planner_turn("p-1", "# Plan\n1. Refresh tokens in src/auth.ts.");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    assert!(fx.launches().is_empty(), "already handed on by you: {:?}", fx.launches());
+
+    // Released after a failed hand-off: autopilot hands the turn on.
+    let mut fx = Fixture::new("record_chat_released");
+    let planner = fx.planner.clone();
+    fx.user(UserAction::RecordHandoff { source_tab_id: planner.clone(), back: false, force: false }).unwrap();
+    fx.user(UserAction::ReleaseHandoff { source_tab_id: planner.clone(), back: false }).unwrap();
+    fx.run(|run| assert!(run.claims.is_empty(), "{:?}", run.claims));
+    let turn = fx.planner_turn("p-1", "# Plan\n1. Refresh tokens in src/auth.ts.");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    assert_eq!(fx.launches().len(), 1, "autopilot opened the Plan Reviewer");
+}
+
 #[test]
 fn your_send_back_goes_into_the_running_stage() {
     let mut fx = Fixture::new("send_back");

@@ -155,6 +155,25 @@ pub enum UserAction {
     /// show before you send. Changes nothing.
     #[serde(rename = "prefill", rename_all = "camelCase")]
     Prefill { source_tab_id: String, target_role_id: String },
+    /// Record a hand-off on (or, `back`, a send-back) from `source_tab_id`
+    /// that you make yourself outside the actor (to a Chat tab), as your
+    /// Send records it: a warning when autopilot made it already (`force`
+    /// records it anyway), and autopilot leaves that turn to you.
+    #[serde(rename = "recordHandoff", rename_all = "camelCase")]
+    RecordHandoff {
+        source_tab_id: String,
+        #[serde(default)]
+        back: bool,
+        #[serde(default)]
+        force: bool,
+    },
+    /// Drop the record `RecordHandoff` made, when that hand-off failed.
+    #[serde(rename = "releaseHandoff", rename_all = "camelCase")]
+    ReleaseHandoff {
+        source_tab_id: String,
+        #[serde(default)]
+        back: bool,
+    },
 }
 
 /// A hand-off form filled from the run folder (`UserAction::Prefill`).

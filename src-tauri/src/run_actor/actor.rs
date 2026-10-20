@@ -1105,6 +1105,28 @@ impl<H: Host> Actor<H> {
                 source_tab_id,
                 target_role_id,
             } => self.user_prefill(&source_tab_id, &target_role_id),
+            UserAction::RecordHandoff {
+                source_tab_id,
+                back,
+                force,
+            } => {
+                let placed = self.place_tab(&source_tab_id).ok_or("That tab is not on this run.")?;
+                match self.claim_for_you(&placed, if back { "back" } else { "advance" }, force) {
+                    Ok(_) => Ok(UserOutcome::default()),
+                    Err(outcome) => Ok(outcome),
+                }
+            }
+            UserAction::ReleaseHandoff { source_tab_id, back } => {
+                let placed = self.place_tab(&source_tab_id).ok_or("That tab is not on this run.")?;
+                let key = {
+                    let store = lock(self.host.store());
+                    let run = store.pipeline_run_by_id(&self.run_id).ok_or("unknown pipeline run")?;
+                    let lane = placed.lane.as_deref();
+                    claim_key(if back { "back" } else { "advance" }, &placed.stage.id, run.round_for(lane), lane)
+                };
+                self.release(&key);
+                Ok(UserOutcome::default())
+            }
         }
     }
 
