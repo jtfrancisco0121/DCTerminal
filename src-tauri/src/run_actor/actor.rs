@@ -16,7 +16,7 @@ use crate::pipelines::autopilot::{decide, review_round, stage_key, Decision, Fin
 use crate::pipelines::recovery::bridge_turn_key;
 use crate::pipelines::{GateDef, GateResult, PipelineDef, StageDef, StageKind};
 use crate::store::{
-    claim_key, tab_label, ChainRef, PipelineRun, RoleSnapshot, RunStatus, StageGates, StopReason, TabRecord,
+    claim_key, tab_label, ChainRef, PipelineRun, RoleSnapshot, RunStatus, StageGates, StateStore, StopReason, TabRecord,
     TerminalTabDraft,
 };
 use serde_json::Value;
@@ -1332,6 +1332,12 @@ impl<H: Host> Actor<H> {
     /// on, the run waits for you (`taken_over`).
     fn user_take_over(&mut self, tab_id: &str) -> Result<UserOutcome, String> {
         let (placed, tag) = self.bridged_tab(tab_id)?;
+        let before = {
+            let store = lock(self.host.store());
+            store.pipeline_run_by_id(&self.run_id).ok_or("the run is gone")?.clone()
+        };
+        let enabled = before.autopilot.as_ref().is_some_and(|a| a.enabled);
+        let was = if enabled { StageMode::Autopilot } else { StageMode::Manual };
         if !set_stage_mode(&self.host.runs_root(), &tag, tab_id, StageMode::Takeover)? {
             return Err(format!("{} no longer holds its stage.", placed.tab.label));
         }
@@ -1352,7 +1358,10 @@ impl<H: Host> Actor<H> {
                     format!("You took over {}. Hand it back to let autopilot carry on.", placed.stage.title),
                 );
             }
-            store.save()?;
+            if let Err(err) = store.save() {
+                self.undo_mode_change(&mut store, before, &tag, tab_id, was);
+                return Err(err);
+            }
         }
         self.changed();
         Ok(UserOutcome::default())
@@ -1364,13 +1373,13 @@ impl<H: Host> Actor<H> {
     /// decided at once. A stage not taken over is left as it is.
     fn user_hand_back(&mut self, tab_id: &str) -> Result<UserOutcome, String> {
         let (placed, tag) = self.bridged_tab(tab_id)?;
-        let enabled = {
+        let (enabled, before) = {
             let store = lock(self.host.store());
             let run = store.pipeline_run_by_id(&self.run_id).ok_or("the run is gone")?;
             if !run.taken_over.iter().any(|id| id == tab_id) {
                 return Ok(UserOutcome::default());
             }
-            run.autopilot.as_ref().is_some_and(|a| a.enabled)
+            (run.autopilot.as_ref().is_some_and(|a| a.enabled), run.clone())
         };
         let mode = if enabled { StageMode::Autopilot } else { StageMode::Manual };
         set_stage_mode(&self.host.runs_root(), &tag, tab_id, mode)?;
@@ -1396,7 +1405,10 @@ impl<H: Host> Actor<H> {
                 run.autopilot.as_ref().is_some_and(|a| a.decided.contains(&key))
             });
             let state = (run.status, run.round_for(placed.lane.as_deref()), decided, others);
-            store.save()?;
+            if let Err(err) = store.save() {
+                self.undo_mode_change(&mut store, before, &tag, tab_id, StageMode::Takeover);
+                return Err(err);
+            }
             state
         };
         self.changed();
@@ -1444,6 +1456,15 @@ impl<H: Host> Actor<H> {
         self.handled.insert(own.tab_id.clone(), own.turn.clone());
         self.take_up(&placed, own, round, status);
         Ok(UserOutcome::default())
+    }
+
+    /// Take over or Hand back could not save the run: put the run and the
+    /// stage's `mode` file back as they were, so the two never disagree.
+    fn undo_mode_change(&self, store: &mut StateStore, before: PipelineRun, tag: &BridgeTag, tab_id: &str, was: StageMode) {
+        if let Some(run) = store.pipeline_run_by_id_mut(&self.run_id) {
+            *run = before;
+        }
+        let _ = set_stage_mode(&self.host.runs_root(), tag, tab_id, was);
     }
 
     /// `tab_id` on this run, with the stage it reports for.

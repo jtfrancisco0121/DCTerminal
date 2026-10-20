@@ -1408,3 +1408,32 @@ fn handing_back_a_stage_you_revised_yourself_decides_your_turn_not_the_held_roun
     assert_eq!(fx.launches().len(), launches);
     assert!(fx.resumes().is_empty());
 }
+
+/// D28: Take over and Hand back keep the stage's `mode` file and the saved
+/// run in step. When the run cannot be saved, the mode is put back and the
+/// press fails, so the bridge and the keystroke gate never disagree with it.
+#[test]
+fn take_over_and_hand_back_put_the_mode_back_when_the_run_cannot_be_saved() {
+    let mut fx = Fixture::new("take_over_save_fails");
+    let reviewer = fx.open_plan_reviewer();
+    let tmp = fx.host.store.lock().unwrap().path.with_extension("json.tmp");
+    // A directory where the save writes its temp file: every save fails.
+    std::fs::create_dir_all(&tmp).unwrap();
+    assert!(fx.user(UserAction::TakeOver { tab_id: reviewer.clone() }).is_err());
+    assert_eq!(stage_mode(&fx, &reviewer), crate::bridge::StageMode::Autopilot, "the mode is put back");
+    fx.run(|run| {
+        assert!(run.taken_over.is_empty(), "nor is the run left taken over");
+        assert_eq!(run.status, RunStatus::Running);
+    });
+
+    std::fs::remove_dir(&tmp).unwrap();
+    fx.user(UserAction::TakeOver { tab_id: reviewer.clone() }).expect("take over");
+    std::fs::create_dir_all(&tmp).unwrap();
+    assert!(fx.user(UserAction::HandBack { tab_id: reviewer.clone() }).is_err());
+    assert_eq!(stage_mode(&fx, &reviewer), crate::bridge::StageMode::Takeover, "still yours");
+    fx.run(|run| {
+        assert_eq!(run.taken_over, vec![reviewer.clone()]);
+        assert_eq!(run.stop_reason, Some(StopReason::TakenOver));
+    });
+    std::fs::remove_dir(&tmp).unwrap();
+}
