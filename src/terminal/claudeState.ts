@@ -37,11 +37,6 @@ export type PendingTool = { id: string; name: string; title: string; hint?: stri
 export type DialogTool = PendingTool & { promptKey: string };
 
 /**
- * A bridged stage's Needs you (D22): its PermissionRequest hook (or the
- * `permission_prompt` Notification backup, with no tool) said a permission
- * dialog is up. `at`: when the app heard it; `key`: which prompt.
- */
-/**
  * The bridge's Needs you for a tab: the hooked tool (`null` from the
  * Notification backup), when it came, its dedupe key, and `shown` once the
  * screen drew a permission dialog after it.

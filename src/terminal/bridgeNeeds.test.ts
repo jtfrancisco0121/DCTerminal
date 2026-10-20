@@ -105,6 +105,18 @@ describe("useBridgeNeeds: the bridged Needs you lifecycle (D22)", () => {
     act(() => emit!(needs({ tool: "ExitPlanMode" })));
     act(() => emit!(needs({ tool: "AskUserQuestion" })));
     expect(result.current.markOf("impl")).toBeNull();
+    const plan = { id: "toolu_p1", name: "ExitPlanMode", title: "Plan" };
+    const question = { id: "toolu_q1", name: "AskUserQuestion", title: "Question" };
+    const state = (tool: typeof plan) =>
+      deriveTerminalState({
+        log: { turnDone: false, openTool: tool, pendingTools: [tool] },
+        bridgeNeeds: result.current.markOf("impl"),
+        dialogTool: null,
+        ptyBusy: false,
+        exitCode: null,
+      });
+    expect(state(plan)).toMatchObject({ kind: "needs", needs: "plan" });
+    expect(state(question)).toMatchObject({ kind: "needs", needs: "question" });
     unmount();
   });
 
