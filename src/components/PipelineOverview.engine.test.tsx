@@ -106,6 +106,27 @@ describe("PipelineOverview: autopilot, checks and timeline", () => {
     );
   });
 
+  it("shows the engine note: Claude Code version not yet verified, or why the run uses engine 1", async () => {
+    const note = "Claude Code version not yet verified: 2.1.300 is newer than 2.1.287, the version pipeline v2 was checked against.";
+    show(run({ engine: 2, engineNote: note, autopilot: { enabled: false } }));
+    const panel = await screen.findByRole("region", { name: "Autopilot" });
+    expect(within(panel).getByTestId("engine-note").textContent).toBe(note);
+    cleanup();
+    show(run({ engine: 2, autopilot: { enabled: true } }));
+    await screen.findByRole("region", { name: "Autopilot" });
+    expect(screen.queryByTestId("engine-note")).toBeNull();
+  });
+
+  it("a run made manual by a mid-run engine switch cannot turn autopilot back on, and says why", async () => {
+    const note = "Claude Code hooks are turned off (disableAllHooks in /x/settings.json). This run was running with the pipeline bridge, so it is manual from now on: autopilot is off. Hand each stage on yourself.";
+    show(run({ engine: 1, engineNote: note, manualOnly: true, status: "stopped", autopilot: { enabled: false } }));
+    const panel = await screen.findByRole("region", { name: "Autopilot" });
+    const toggle = within(panel).getByRole("checkbox") as HTMLInputElement;
+    expect(toggle.disabled).toBe(true);
+    expect(toggle.title).toContain("manual from now on");
+    expect(within(panel).getByTestId("engine-note").textContent).toBe(note);
+  });
+
   it("says when Claude usage is unknown, never 0%, and what autopilot does about it", async () => {
     show(run({ autopilot: { enabled: true } }), {}, []);
     const panel = await screen.findByRole("region", { name: "Autopilot" });

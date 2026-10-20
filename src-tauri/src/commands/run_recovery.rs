@@ -14,7 +14,7 @@ use crate::claude_session_log::TerminalSessionLog;
 use crate::commands::chain_events::ChainEvents;
 use crate::commands::session_log::tab_session_target;
 use crate::pipelines::recovery::{
-    current_stage_tabs, reconcile_run, stall_limit, stop_stalled, working, Reconciled, StageTab,
+    current_stage_tabs, reconcile_run_with, stall_limit, stop_stalled, working, Reconciled, StageTab,
     StallObservation, StallWatch,
 };
 use crate::pipelines::PipelineDef;
@@ -52,6 +52,8 @@ struct Watched {
     target: Option<(PathBuf, String)>,
     pty_quiet: Option<Duration>,
     def: PipelineDef,
+    /// The run-folder stage a bridged (engine-2) tab holds.
+    bridge: Option<crate::bridge::BridgeTag>,
 }
 
 impl Watched {
@@ -78,6 +80,7 @@ fn running_stage_tabs(store: &Mutex<StateStore>, registry: &Mutex<PtyRegistry>) 
                 target: tab_session_target(&state, &registry, &tab.tab_id),
                 pty_quiet: registry.quiet_for(&tab.tab_id),
                 def: def.clone(),
+                bridge: state.tab_by_id(&tab.tab_id).and_then(|t| t.bridge.clone()),
                 tab,
             });
         }
@@ -103,17 +106,27 @@ pub(crate) struct RecoveryOutcome {
 }
 
 /// Startup: each running autopilot run against its current stage's logs
-/// (`pipelines::recovery::reconcile_run`).
+/// (`pipelines::recovery::reconcile_run_with`). A bridged tab's decided turn
+/// is matched by its turn id from `<runs_root>/<run>/stages/<stage>/turn.json`.
 pub(crate) fn reconcile_on_startup(
     store: &Mutex<StateStore>,
     registry: &Mutex<PtyRegistry>,
     readers: &SessionLogReaders,
+    runs_root: &std::path::Path,
 ) -> Result<RecoveryOutcome, String> {
     let watched = running_stage_tabs(store, registry)?;
     let mut logs: HashMap<String, HashMap<String, TerminalSessionLog>> = HashMap::new();
+    let mut bridge_turns: HashMap<String, String> = HashMap::new();
     for item in &watched {
         if let Some((log, _)) = read_log(readers, item) {
             logs.entry(item.run_id.clone()).or_default().insert(item.tab.tab_id.clone(), log);
+        }
+        let turn = item
+            .bridge
+            .as_ref()
+            .and_then(|tag| crate::bridge::launch::stage_turn_id(runs_root, tag, &item.tab.tab_id));
+        if let Some(turn) = turn {
+            bridge_turns.insert(item.tab.tab_id.clone(), turn);
         }
     }
     let mut outcome = RecoveryOutcome::default();
@@ -128,7 +141,7 @@ pub(crate) fn reconcile_on_startup(
         let Some(run) = state.pipeline_run_by_id_mut(run_id) else {
             continue;
         };
-        match reconcile_run(&def, run, run_logs) {
+        match reconcile_run_with(&def, run, run_logs, &bridge_turns) {
             None => {}
             Some(Reconciled::CutOff) => outcome.changed.push(run_id.clone()),
             Some(Reconciled::Waiting { tab_id, why }) => {
@@ -165,7 +178,7 @@ pub(crate) fn watchdog_tick(
         let key = item.key();
         let log = read_log(readers, item);
         let seen = StallObservation {
-            working: log.as_ref().is_some_and(|(log, _)| working(&item.tab.role_id, log)),
+            working: log.as_ref().is_some_and(|(log, _)| working(item.tab.kind, log)),
             log_len: log.as_ref().and_then(|(_, len)| *len),
             pty_quiet: item.pty_quiet,
         };
@@ -269,7 +282,8 @@ pub fn spawn_run_recovery(app: AppHandle) {
         ) else {
             return;
         };
-        match reconcile_on_startup(&store, &registry, &readers) {
+        let runs_root = crate::bridge::launch::runs_root(&crate::data_dir::app_data_dir(&app).path);
+        match reconcile_on_startup(&store, &registry, &readers, &runs_root) {
             Ok(outcome) => announce(&app, outcome),
             Err(err) => eprintln!("DCTerminal: restart recovery failed: {err}"),
         }

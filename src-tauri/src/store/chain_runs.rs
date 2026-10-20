@@ -154,6 +154,9 @@ impl StateStore {
                     claims: Vec::new(),
                     status: RunStatus::Stopped,
                     stop_reason: None,
+                    engine: crate::bridge::launch::ENGINE_V2,
+                    engine_note: None,
+                    manual_only: false,
                 });
                 chain.chain_id.clone()
             }
@@ -672,6 +675,9 @@ mod tests {
             claims: Vec::new(),
             status: crate::store::RunStatus::Stopped,
             stop_reason: None,
+            engine: 1,
+            engine_note: None,
+            manual_only: false,
         }
     }
 

@@ -28,6 +28,7 @@ import {
   diagnosticsSetCapture,
   diagnosticsStatus,
   sessionAgentLogs,
+  listenBridgeTurn,
   listenPermissionAuto,
   listenPermissionRequests,
   listenPlanRequests,
@@ -2248,7 +2249,7 @@ export function StartupForm({
       quiet?: boolean;
       /** Launch as this provider (a hand-off keeps its source tab's). */
       provider?: ProviderId | null;
-      /** The chain tag a hand-off's new tab joins: its stage kind sets the permission mode. */
+      /** The chain tag a hand-off's new tab joins: its stage kind sets the permission mode, and an engine-2 reviewer stage launches with the bridge. */
       chain?: ChainRef | null;
     }) => {
       const quiet = !!options?.quiet;
@@ -2441,6 +2442,24 @@ export function StartupForm({
     sessionLog: (tabId) => sessionLogsRef.current[tabId],
   });
   autopilotLogRef.current = autopilot.onTerminalLog;
+  const autopilotBridgeRef = useRef(autopilot.onBridgeTurn);
+  autopilotBridgeRef.current = autopilot.onBridgeTurn;
+  // Engine 2 (ADR-015): a bridged stage's turn ended; the core read its result.
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listenBridgeTurn((event) => autopilotBridgeRef.current(event))
+      .then((stop) => {
+        if (disposed) stop();
+        else unlisten = stop;
+      })
+      // intentionally silent: a bridged tab's log still wakes a read-back of its turn.
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
   // The core stopped a run by itself (a stall, or a turn that finished while
   // the app was closed): tell you the way a stop autopilot made does.
   // Stops made before this listener attached (the startup reconcile) are
@@ -4563,7 +4582,7 @@ export function StartupForm({
           stashActiveTab();
           // Launched as the source's provider, not switched after the CLI started.
           const tabId = await startRoleTerminal(
-            handoffTerminalStart(prepared.value, handoffTarget, handoffSource.cwd, sourceProvider),
+            handoffTerminalStart(prepared.value, handoffTarget, handoffSource.cwd, sourceProvider, loopStep?.next),
           );
           if (!tabId) {
             setHandoffError("Terminal did not start.");

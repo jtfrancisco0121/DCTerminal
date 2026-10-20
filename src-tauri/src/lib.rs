@@ -1,5 +1,6 @@
 mod acp;
 mod attachments;
+pub mod bridge;
 mod claude_history;
 mod claude_session_log;
 mod cli_detect;
@@ -42,11 +43,18 @@ pub mod testing {
     pub use crate::claude_session_log::{find_session_log, TerminalSessionLog, ToolCallStatus};
     pub use crate::pty::session::{PtyOutput, PtySession, SpawnSpec};
     pub use crate::pipelines::find as find_pipeline;
+    pub use crate::pipelines::StageKind;
     pub use crate::pipelines::recovery::{
         reconcile_run, stop_stalled, current_stage_tabs, working, turn_key, Reconciled, StallObservation,
         StallWatch,
     };
     pub use crate::store::{PipelineRun, RunStatus, StopReason};
+    pub use crate::bridge::launch::{bridged_command, launch_flags, prepare_stage, read_stage_turn, runs_root, BridgePlan, BridgeTag};
+    pub use crate::bridge::watch::drain_inbox;
+    pub use crate::provider::claude::claude_terminal_args;
+    pub use crate::provider::{ProgramArgs, TerminalKind, TerminalLaunch};
+    pub use crate::pty::RunMode;
+    pub use crate::bridge::{BridgeTurn, ResultKind, TurnOutcome};
 }
 #[cfg(test)]
 mod coverage_tests;
@@ -64,7 +72,7 @@ use commands::{
     pipeline_run_gates,
     pipeline_set_autopilot, pipeline_promote_plan, pipeline_continue, spawn_run_recovery,
     autopilot_pending_stops, StartupStops,
-    pipeline_set_candidate_plan,
+    pipeline_set_candidate_plan, pipeline_bridge_turn,
     dev_session_cancel, dev_session_live, dev_session_send, dev_session_start, dev_session_stop,
     diagnostics_read_log, diagnostics_set_capture, diagnostics_status, get_app_state,
     get_form_recall, get_layout, get_role, get_tab,
@@ -210,6 +218,9 @@ pub fn run() {
             // Track H3, on its own thread: runs that were running when the
             // app closed are checked against their logs, then watched for stalls.
             spawn_run_recovery(app.handle().clone());
+            // Pipeline v2 (ADR-015): finished turns the bridge drops in a
+            // run's inbox go to the frontend's autopilot.
+            bridge::watch::spawn(app.handle().clone(), bridge::launch::runs_root(&data_dir));
             // The env-changing steps at the start of `run()` are done, so a
             // thread may ask the login shell again (it only rewrites the
             // PATH cache, for the next launch).
@@ -276,6 +287,7 @@ pub fn run() {
             pipeline_approve,
             pipeline_promote_plan,
             pipeline_set_candidate_plan,
+            pipeline_bridge_turn,
             sync_active_tab_form,
             get_form_recall,
             save_form_draft,

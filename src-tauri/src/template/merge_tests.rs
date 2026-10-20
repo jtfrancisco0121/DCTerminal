@@ -214,4 +214,83 @@ mod tests {
         // Running again adds nothing.
         assert!(add_missing_builtin_roles(&mut user, &seed).is_empty());
     }
+
+    fn reviewer_role(id: &str) -> crate::roles::Role {
+        let spec = all_role_specs().into_iter().find(|s| s.id == id).expect("spec");
+        let md = fs::read_to_string(crate::store::docs_roles_dir().join(spec.source_file)).expect("read md");
+        build_role_from_markdown(&spec, &md)
+    }
+
+    fn reviewer_values(cwd: &std::path::Path) -> HashMap<String, String> {
+        let mut values = HashMap::new();
+        for key in ["originalTask", "plan", "approvedPlan", "additionalContext"] {
+            values.insert(key.to_string(), format!("{key} text"));
+        }
+        values.insert("cwd".into(), cwd.display().to_string());
+        values
+    }
+
+    #[test]
+    fn both_reviewer_templates_carry_the_result_instructions_token() {
+        for id in ["role_plan_reviewer", "role_pr_reviewer"] {
+            let role = reviewer_role(id);
+            assert!(role.template_text.contains("{{result_instructions}}"), "{id}");
+            // It is filled by the app, never a form field.
+            assert!(role.fields.iter().all(|f| f.key != "result_instructions"), "{id}");
+            let inferred = crate::roles::editor::fields_for_template(&role, &role.template_text).unwrap();
+            assert!(inferred.iter().all(|f| f.key != "result_instructions"), "{id}");
+        }
+    }
+
+    #[test]
+    fn result_instructions_are_filled_only_when_given() {
+        use crate::template::{merge_role_prompt, merge_role_prompt_with};
+        let role = reviewer_role("role_pr_reviewer");
+        let cwd = crate::test_support::TempDir::new("result_instructions_cwd");
+        let values = reviewer_values(cwd.path());
+        let v1 = merge_role_prompt(&role, &values);
+        assert!(v1.errors.is_empty(), "{:?}", v1.errors);
+        let v1 = v1.merged.unwrap().text;
+        assert!(!v1.contains("result_instructions"), "the token line is dropped");
+        assert!(!v1.contains("submit_result"));
+        let v2 = merge_role_prompt_with(&role, &values, "CALL submit_result NOW");
+        assert!(v2.errors.is_empty(), "{:?}", v2.errors);
+        let v2 = v2.merged.unwrap().text;
+        assert!(v2.contains("CALL submit_result NOW"));
+        assert!(!v2.contains("{{result_instructions}}"));
+        // A form value cannot fill it: only the app does.
+        let mut forged = values.clone();
+        forged.insert("result_instructions".into(), "forged".into());
+        let merged = merge_role_prompt(&role, &forged).merged.unwrap().text;
+        assert!(!merged.contains("forged"));
+    }
+
+    #[test]
+    fn a_copied_reviewer_without_the_token_still_gets_the_result_instructions() {
+        use crate::template::{merge_role_prompt, merge_role_prompt_with};
+        // A copy of the PR Reviewer made (or edited) before the token existed.
+        let mut role = reviewer_role("role_pr_reviewer");
+        role.id = "role_custom_7".into();
+        role.template_text = role
+            .template_text
+            .lines()
+            .filter(|line| !line.contains("{{result_instructions}}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!role.template_text.contains("result_instructions"));
+        let cwd = crate::test_support::TempDir::new("result_instructions_copy_cwd");
+        let values = reviewer_values(cwd.path());
+        let bridged = merge_role_prompt_with(&role, &values, "CALL submit_result NOW");
+        assert!(bridged.errors.is_empty(), "{:?}", bridged.errors);
+        let text = bridged.merged.unwrap().text;
+        assert!(text.contains("CALL submit_result NOW"), "the bridged stage must be told about the tool");
+        assert!(text.trim_end().ends_with("CALL submit_result NOW"), "appended after the template");
+        // Exactly once when the template has the token.
+        let built_in = reviewer_role("role_pr_reviewer");
+        let text = merge_role_prompt_with(&built_in, &values, "CALL submit_result NOW").merged.unwrap().text;
+        assert_eq!(text.matches("CALL submit_result NOW").count(), 1);
+        // Not bridged: nothing is added.
+        let plain = merge_role_prompt(&role, &values).merged.unwrap().text;
+        assert!(!plain.contains("submit_result"));
+    }
 }

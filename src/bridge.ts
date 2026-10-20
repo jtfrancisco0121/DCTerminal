@@ -316,7 +316,15 @@ export type TabSummary = {
   permissionMode?: string | null;
   /** Address a localhost preview tab (kind "preview") shows. */
   previewUrl?: string | null;
+  /**
+   * The bridged pipeline stage this terminal launched as (ADR-015): its turn
+   * ends and results come from `pipeline-bridge-turn`, not from its log.
+   */
+  bridge?: BridgeTag | null;
 };
+
+/** A terminal's bridged stage: `runs/<runId>/stages/<stage>` in app data. */
+export type BridgeTag = { runId: string; stage: string };
 
 export type PipelineRun = {
   id: string;
@@ -354,6 +362,12 @@ export type PipelineRun = {
   status?: RunStatus;
   /** Why the run is waiting, or `paused_by_you` when you turned autopilot off. */
   stopReason?: StopReason | null;
+  /** Pipeline engine: 2 on new runs (reviewer stages report through the bridge, ADR-015); 1 (or missing) on older runs. */
+  engine?: number;
+  /** The engine line on the overview (D24): why the run uses engine 1, or "Claude Code version not yet verified". */
+  engineNote?: string | null;
+  /** A Restart or Resume switched this run from the bridge to engine 1 mid-run: manual for good, autopilot cannot be turned on. */
+  manualOnly?: boolean;
 };
 
 /**
@@ -1184,6 +1198,56 @@ export async function pipelineContinue(runId: string): Promise<string[]> {
   return invoke("pipeline_continue", { runId });
 }
 
+/** One finding a reviewer reported through `submit_result` (plan "Result schemas"). */
+export type BridgeFinding = {
+  severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
+  summary: string;
+  pr?: string;
+  file?: string;
+  regression?: boolean;
+};
+
+/** A reviewer's `submit_result`, already checked by the bridge. */
+export type BridgeReviewResult = {
+  schema: number;
+  verdict: "APPROVED" | "APPROVED_WITH_CHANGES" | "CHANGES_REQUIRED";
+  findings: BridgeFinding[];
+};
+
+/**
+ * A bridged stage's finished turn (ADR-015): from the Stop hook, live as
+ * `pipeline-bridge-turn`, or read back with `pipelineBridgeTurn`.
+ * `no_result`: the turn ended without `submit_result`, after one block on autopilot.
+ */
+export type BridgeTurn = {
+  schema: number;
+  runId: string;
+  stageKey: string;
+  stageId: string;
+  roleId: string;
+  lane?: string | null;
+  tabId: string;
+  /** Claude's `prompt_id`. */
+  turn: string;
+  outcome: "result" | "no_result";
+  endedAt: string;
+  lastAssistantMessage: string;
+  result?: BridgeReviewResult | null;
+  /** The bridge blocked one stop of this turn before it ended. */
+  blocked: boolean;
+};
+
+export function listenBridgeTurn(handler: (event: BridgeTurn) => void): Promise<UnlistenFn> {
+  return listen<BridgeTurn>("pipeline-bridge-turn", (e) => {
+    handler(e.payload);
+  });
+}
+
+/** A bridged terminal's latest finished turn; null when it is not bridged or its turn still runs. */
+export async function pipelineBridgeTurn(tabId: string): Promise<BridgeTurn | null> {
+  return invoke<BridgeTurn | null>("pipeline_bridge_turn", { tabId });
+}
+
 /** The core stopped a run by itself: a stall, or a turn that finished while the app was closed. */
 export type AutopilotStoppedEvent = {
   runId: string;
@@ -1227,6 +1291,8 @@ export type TurnReport = {
   round?: number | null;
   /** The turn (`tab|session|prompt`); each one is decided on once. */
   turn?: string | null;
+  /** Engine 2: the turn ended without `submit_result` after the bridge asked once. */
+  noResult?: boolean;
 };
 
 export type AutopilotDecision = {
@@ -1706,7 +1772,7 @@ export async function roleTerminalStart(input: {
   onOutput: Channel<PtyPacket>;
   /** Launch as this provider (a hand-off's new tab keeps its source's). Omitted: the tab's, or the window's default. */
   provider?: ProviderId | null;
-  /** The chain tag the new tab is about to join (a hand-off's next stage): its stage kind sets the permission mode. */
+  /** The chain tag the new tab is about to join (a hand-off's next stage): its stage kind sets the permission mode, and a reviewer stage of an engine-2 run launches with the bridge. */
   chain?: import("./handoff/chains").ChainRef | null;
 }): Promise<TerminalStartResult> {
   return invoke<TerminalStartResult>("role_terminal_start", {

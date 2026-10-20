@@ -62,6 +62,10 @@ pub struct TurnReport {
     /// The turn (`tab|session|prompt`): each one is decided on once.
     #[serde(default)]
     pub turn: Option<String>,
+    /// Engine 2: the bridge ended the turn without an accepted
+    /// `submit_result`, after its one block (D10).
+    #[serde(default)]
+    pub no_result: bool,
 }
 
 /// Key of per-stage state (gate results, retries): `stage` or `stage@lane`.
@@ -131,7 +135,13 @@ impl Decision {
 }
 
 fn needs_revision(verdict: &str) -> bool {
-    matches!(verdict, "REQUIRES REVISION" | "REQUEST CHANGES" | "REJECTED")
+    matches!(verdict, "REQUIRES REVISION" | "REQUEST CHANGES" | "REJECTED" | "CHANGES REQUIRED")
+}
+
+/// The bridge's verdict words (`APPROVED_WITH_CHANGES`, `CHANGES_REQUIRED`)
+/// read as the v1 words they mean.
+fn normalize_verdict(verdict: &str) -> String {
+    verdict.trim().replace('_', " ")
 }
 
 fn autopilot(run: &mut PipelineRun) -> &mut RunAutopilot {
@@ -407,6 +417,17 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             format!("Paused: Claude usage is at {used}% (autopilot pauses at {pause}%)."),
         );
     }
+    if report.no_result {
+        return stop(
+            run,
+            Some(&stage),
+            StopReason::NoResult,
+            format!(
+                "{} ended its turn without reporting a result through submit_result, even after being asked once.",
+                stage.title
+            ),
+        );
+    }
     if !report.missing_sections.is_empty() {
         let key = format!("{key_of_stage}#{round}");
         let missing = report.missing_sections.join(", ");
@@ -475,7 +496,8 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
     }
     // Every check passed (or none ran) this round: a later failure starts counting again.
     autopilot(run).gate_retries.remove(&key_of_stage);
-    let Some(verdict) = report.verdict.as_deref().map(str::trim).filter(|v| !v.is_empty()) else {
+    let verdict = report.verdict.as_deref().map(normalize_verdict);
+    let Some(verdict) = verdict.as_deref().filter(|v| !v.is_empty()) else {
         if stage.loop_back.is_some() {
             return stop(run, Some(&stage), StopReason::NoVerdict, format!("No verdict could be read from {}'s reply.", stage.title));
         }

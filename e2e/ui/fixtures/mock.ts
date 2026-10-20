@@ -571,6 +571,8 @@ export function installTauriMock(config: MockConfig): void {
       run.autopilot = { ...(run.autopilot ?? {}), waiting: null };
       return Object.values(run.tabIds ?? {});
     },
+    // Engine 2 (ADR-015): no mocked tab is bridged, so it never has a bridge turn.
+    pipeline_bridge_turn: () => null,
     autopilot_pending_stops: () => [],
     pipeline_run_gates: (a) => {
       const run = findRun(a.runId);

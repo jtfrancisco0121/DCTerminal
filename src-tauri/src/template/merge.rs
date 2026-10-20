@@ -10,6 +10,10 @@ pub struct MergeResult {
     pub char_count: usize,
 }
 
+/// Filled by the app on engine-2 pipeline stages with the `submit_result`
+/// instructions (D21); everywhere else its line is dropped.
+pub const RESULT_INSTRUCTIONS_KEY: &str = "result_instructions";
+
 pub fn merge_template(
     template: &str,
     fields: &[RoleField],
@@ -17,6 +21,12 @@ pub fn merge_template(
 ) -> MergeResult {
     // Blank optional and hidden fields first, while only template text is present.
     let mut skeleton = template.to_string();
+    if values
+        .get(RESULT_INSTRUCTIONS_KEY)
+        .is_none_or(|text| text.trim().is_empty())
+    {
+        skeleton = remove_token_line(&skeleton, &format!("{{{{{RESULT_INSTRUCTIONS_KEY}}}}}"));
+    }
     let mut filled: HashMap<&str, &str> = HashMap::new();
     for field in fields {
         let token = format!("{{{{{}}}}}", field.key);
@@ -29,7 +39,7 @@ pub fn merge_template(
         }
         filled.insert(field.key.as_str(), raw);
     }
-    for key in ["cwd", "folderName", "date", "roleName"] {
+    for key in ["cwd", "folderName", "date", "roleName", RESULT_INSTRUCTIONS_KEY] {
         if let Some(value) = values.get(key) {
             filled.entry(key).or_insert(value.as_str());
         }

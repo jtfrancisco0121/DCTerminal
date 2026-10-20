@@ -31,6 +31,9 @@ fn run(round: u32) -> PipelineRun {
         claims: Vec::new(),
         status: RunStatus::Running,
         stop_reason: None,
+        engine: 1,
+        engine_note: None,
+        manual_only: false,
     }
 }
 
@@ -247,6 +250,52 @@ fn missing_sections_are_asked_for_once_then_stop() {
     let d = decide(&eagle1(), &mut r, &rep);
     assert_eq!(d.action, "stop");
     assert!(d.reason.contains("Reviewed plan"));
+}
+
+#[test]
+fn a_bridge_turn_with_no_result_stops_at_once_with_no_result() {
+    // Engine 2: the bridge already blocked the stop once (D10), so there is
+    // no second ask here.
+    let mut r = run(1);
+    let mut rep = report("pr_reviewer", None);
+    rep.no_result = true;
+    rep.turn = Some("tab|s|p-1".into());
+    let d = decide(&eagle1(), &mut r, &rep);
+    assert_eq!(d.action, "stop");
+    assert_eq!(d.stage_id.as_deref(), Some("pr_reviewer"));
+    assert!(d.reason.contains("submit_result"), "{}", d.reason);
+    assert_eq!(r.status, RunStatus::Waiting);
+    assert_eq!(r.stop_reason, Some(StopReason::NoResult));
+}
+
+#[test]
+fn a_bridge_turn_cut_off_by_a_usage_limit_stops_as_usage_limit_not_no_result() {
+    let mut r = run(1);
+    let mut rep = report("pr_reviewer", None);
+    rep.no_result = true;
+    rep.rate_limit = Some("You've hit your limit".into());
+    rep.turn = Some("tab|bridge|p-1".into());
+    let d = decide(&eagle1(), &mut r, &rep);
+    assert_eq!(d.action, "stop");
+    assert_eq!(r.stop_reason, Some(StopReason::UsageLimit), "{}", d.reason);
+    assert!(d.reason.contains("usage limit"), "{}", d.reason);
+}
+
+#[test]
+fn bridge_verdict_words_decide_like_the_v1_words() {
+    let mut r = run(1);
+    let mut rep = report("pr_reviewer", Some("CHANGES_REQUIRED"));
+    rep.findings = vec![finding("HIGH", "token not refreshed")];
+    rep.findings_known = true;
+    let d = decide(&eagle1(), &mut r, &rep);
+    assert_eq!((d.action.as_str(), d.stage_id.as_deref()), ("loopBack", Some("implementer")));
+    let mut r = run(1);
+    let mut rep = report("plan_reviewer", Some("APPROVED_WITH_CHANGES"));
+    rep.findings = vec![finding("HIGH", "applied already")];
+    rep.findings_known = true;
+    let d = decide(&eagle1(), &mut r, &rep);
+    assert_eq!(d.action, "stop", "the Implementer checkpoint: {}", d.reason);
+    assert!(d.reason.starts_with("Checkpoint before Implementer"), "{}", d.reason);
 }
 
 #[test]

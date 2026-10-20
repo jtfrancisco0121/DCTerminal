@@ -465,6 +465,22 @@ impl StateStore {
         self.save()
     }
 
+    /// Record the bridged stage a role terminal launched as, or clear it
+    /// (a launch without the bridge). Saves only when it changed.
+    pub fn set_tab_bridge(&mut self, tab_id: &str, bridge: Option<crate::bridge::BridgeTag>) -> Result<(), String> {
+        let tab = self
+            .data
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == tab_id)
+            .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
+        if tab.bridge == bridge {
+            return Ok(());
+        }
+        tab.bridge = bridge;
+        self.save()
+    }
+
     pub fn set_provider_notice(&mut self, tab_id: &str, notice: Option<String>) -> Result<(), String> {
         let tab = self
             .data
@@ -632,6 +648,7 @@ impl StateStore {
             chain: None,
             permission_note: None,
             window_id: self.draft_window.clone(),
+            bridge: None,
         };
         self.data.tabs.push(record);
         let window_id = self.draft_window.clone();
@@ -980,6 +997,7 @@ impl StateStore {
             } else {
                 closed.window_id.clone()
             },
+            bridge: None,
         };
         let id = record.id.clone();
         let window_id = record.window_id.clone();
@@ -1158,6 +1176,7 @@ impl StateStore {
             chain: None,
             permission_note: None,
             window_id: self.draft_window.clone(),
+            bridge: None,
         };
         self.data.tabs.push(record);
         if make_active {
@@ -1219,6 +1238,7 @@ impl StateStore {
             chain: None,
             permission_note: None,
             window_id: self.draft_window.clone(),
+            bridge: None,
         };
         self.data.tabs.push(record);
         let window_id = self.draft_window.clone();
@@ -1277,6 +1297,9 @@ impl StateStore {
             claims: Vec::new(),
             status: crate::store::RunStatus::Stopped,
             stop_reason: None,
+            engine: crate::bridge::launch::ENGINE_V2,
+            engine_note: None,
+            manual_only: false,
         };
         self.data.pipeline_runs.push(run);
         self.save()?;
@@ -1403,6 +1426,7 @@ impl StateStore {
             chain: None,
             permission_note: None,
             window_id: self.draft_window.clone(),
+            bridge: None,
         };
         apply_terminal_draft(&mut record, &draft);
         self.data.tabs.push(record);
@@ -1504,6 +1528,7 @@ impl StateStore {
                 chain: None,
                 permission_note: None,
                 window_id: self.draft_window.clone(),
+                bridge: None,
             };
             self.data.tabs.push(record);
             ids.push(tab_id);
