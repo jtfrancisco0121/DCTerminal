@@ -171,6 +171,9 @@ export function PipelineOverview({
           // intentionally silent: without tasks.json the offer reads the plan stage's reply.
         }
         setRunTasks(planned);
+      } else {
+        // Engine 1 fans out from the plan stage's reply, never another run's tasks.
+        setRunTasks(null);
       }
       setCandidateDraft((prev) => prev || view.run.candidatePlan || "");
       setApprovedDraft((prev) => prev || view.run.approvedPlan || "");

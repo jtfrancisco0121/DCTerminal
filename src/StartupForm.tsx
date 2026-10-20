@@ -6208,6 +6208,7 @@ export function StartupForm({
     return shell(
       <section className="status-card status-card-session-full pipeline-overview-screen">
         <PipelineOverview
+          key={activeTabSummary.pipelineRunId}
           runId={activeTabSummary.pipelineRunId}
           cwd={activeTabSummary.cwd}
           tabs={savedTabs}

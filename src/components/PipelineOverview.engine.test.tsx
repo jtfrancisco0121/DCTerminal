@@ -577,4 +577,55 @@ describe("PipelineOverview: autopilot, checks and timeline", () => {
     expect(panel.textContent).not.toContain("Release");
     expect(pipelineRunTasks).toHaveBeenCalledWith("ee_1");
   });
+
+  it("switching from an engine-2 run to an engine-1 run drops the first run's tasks", async () => {
+    vi.mocked(pipelineRunTasks).mockResolvedValue({
+      schema: 1,
+      runId: "ee_1",
+      stageKey: "planner",
+      turn: "p-1",
+      at: "2026-10-19T00:00:00Z",
+      tasks: [
+        { id: "pr1", title: "API", dependsOn: [], manual: false, summary: "The endpoint." },
+        { id: "pr2", title: "UI", dependsOn: ["pr1"], manual: false, summary: "The page." },
+      ],
+    });
+    const views: Record<string, PipelineRun> = {
+      ee_1: run({ stage: "plan_reviewer", engine: 2, tabIds: { role_plan_reviewer: "rev" } }),
+      ee_2: run({ id: "ee_2", chainId: "ee_2", stage: "plan_reviewer", tabIds: { role_plan_reviewer: "rev2" } }),
+    };
+    vi.mocked(getPipelineRun).mockImplementation(async (id: string) => ({ run: views[id] }));
+    const reply = (text: string) => ({
+      ...emptyRuntime(),
+      segments: [{ id: "s1", kind: "agent", text } as TabRuntime["segments"][number]],
+    });
+    const overview = (runId: string) => (
+      <PipelineOverview
+        runId={runId}
+        cwd="/p"
+        tabs={[tab("rev", "role_plan_reviewer"), tab("rev2", "role_plan_reviewer")]}
+        runtimes={{
+          rev: reply("## HANDOFF: Verdict\nAPPROVED"),
+          rev2: reply(
+            "## HANDOFF: Verdict\nAPPROVED\n\n## HANDOFF: Pull requests\n* `PR1 — Schema`: Depends on: none\n* `PR2 — Docs`: Depends on: PR1",
+          ),
+        }}
+        onJump={() => {}}
+        onWatch={() => {}}
+        onRefreshTabs={async () => {}}
+        onNotice={() => {}}
+        terminalReader={noTerminal}
+        onFanOut={async () => {}}
+        onStartLane={async () => {}}
+      />
+    );
+    const { rerender } = render(overview("ee_1"));
+    expect((await screen.findByRole("region", { name: "Fan out" })).textContent).toContain("PR2 — UI");
+    rerender(overview("ee_2"));
+    await waitFor(() =>
+      expect(screen.getByRole("region", { name: "Fan out" }).textContent).toContain("PR2 — Docs · after PR1"),
+    );
+    expect(screen.getByRole("region", { name: "Fan out" }).textContent).not.toContain("UI");
+    expect(pipelineRunTasks).not.toHaveBeenCalledWith("ee_2");
+  });
 });
