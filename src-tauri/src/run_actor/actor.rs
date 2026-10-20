@@ -1007,7 +1007,7 @@ impl<H: Host> Actor<H> {
             run.engine >= crate::bridge::launch::ENGINE_V2
         };
         if !engine_2 {
-            return Err("This run uses the older pipeline engine; its buttons work as before.".into());
+            return Err("This run uses the older pipeline engine, so it is manual only: hand each stage on yourself.".into());
         }
         match action {
             UserAction::Send {

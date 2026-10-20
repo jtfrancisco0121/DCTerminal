@@ -154,7 +154,7 @@ describe("useRunTurns", () => {
 
   it("Continue that the actor refuses (an engine-1 run) rejects", async () => {
     vi.mocked(pipelineActorMessage).mockRejectedValueOnce(
-      new Error("This run uses the older pipeline engine; its buttons work as before."),
+      new Error("This run uses the older pipeline engine, so it is manual only: hand each stage on yourself."),
     );
     const { continueRun } = setup([tab("impl", "role_implementer", 3)]);
     await expect(continueRun("ee_1")).rejects.toThrow("older pipeline engine");

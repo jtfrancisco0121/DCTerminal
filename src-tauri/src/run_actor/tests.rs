@@ -711,7 +711,7 @@ fn a_turn_on_an_engine_1_run_is_left_alone_because_it_is_manual_only() {
     assert!(fx.launches().is_empty());
     fx.run(|run| assert!(run.events.iter().all(|e| e.kind != "turn")));
     let err = fx.user(UserAction::Continue).unwrap_err();
-    assert!(err.contains("older pipeline engine"), "{err}");
+    assert!(err.contains("older pipeline engine") && err.contains("manual only"), "{err}");
 }
 
 #[test]
