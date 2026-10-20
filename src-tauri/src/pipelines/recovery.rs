@@ -139,7 +139,11 @@ pub fn reconcile_run_with(
         .as_ref()
         .map(|a| a.decided.iter().map(String::as_str).collect())
         .unwrap_or_default();
-    let tabs = current_stage_tabs(def, run);
+    // A stage you took over (V5, D28) is yours: its turns are not autopilot's.
+    let tabs: Vec<StageTab> = current_stage_tabs(def, run)
+        .into_iter()
+        .filter(|tab| !run.taken_over.contains(&tab.tab_id))
+        .collect();
     let finished = tabs.iter().find(|tab| {
         tab.own
             && logs.get(&tab.tab_id).is_some_and(|log| {

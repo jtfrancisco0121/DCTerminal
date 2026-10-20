@@ -310,3 +310,20 @@ fn a_taken_over_stage_never_stalls_the_run() {
     assert_eq!(stop_stalled(&mut run, &tab, Duration::from_secs(3600)), None);
     assert_eq!(run.status, RunStatus::Running);
 }
+
+// V5 (D28): a turn you finished in a stage you took over is yours to hand
+// on; the startup reconcile neither stops the run for it nor notes it cut off.
+#[test]
+fn the_startup_reconcile_skips_a_stage_you_took_over() {
+    let def = eagle1();
+    let mut finished = run("implementer", &[("role_implementer", "tab_i")]);
+    finished.taken_over.push("tab_i".into());
+    assert_eq!(reconcile_run(&def, &mut finished, &logs(&[("tab_i", log(true))])), None);
+    assert_eq!((finished.status, finished.stop_reason), (RunStatus::Running, None));
+    assert!(finished.events.is_empty());
+
+    let mut cut_off = run("implementer", &[("role_implementer", "tab_i")]);
+    cut_off.taken_over.push("tab_i".into());
+    assert_eq!(reconcile_run(&def, &mut cut_off, &logs(&[("tab_i", log(false))])), None);
+    assert!(cut_off.events.is_empty());
+}
