@@ -981,7 +981,7 @@ impl<H: Host> Actor<H> {
             .as_ref()
             .and_then(|tag| read_stage_turn(&self.host.runs_root(), tag, &placed.tab.id));
         let sources = self.sources(&placed, &target, turn.as_ref(), None);
-        let mut built = prompts::stage_values(&role, target.loop_back.is_some(), &sources);
+        let mut built = prompts::stage_values(&role, target.kind() == StageKind::Reviewer, &sources);
         built.values.remove("cwd");
         Ok(UserOutcome {
             prefill: Some(Box::new(Prefill {

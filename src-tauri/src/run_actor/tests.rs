@@ -994,6 +994,42 @@ fn a_copied_plan_reviewer_sends_its_round_back_with_the_planner_ask() {
     });
 }
 
+/// H4: your Send's prefill fills a reviewer's form by the stage's kind, so
+/// a copied reviewer with no loop-back of its own still gets the pull
+/// requests in its context.
+#[test]
+fn a_prefill_for_a_copied_reviewer_with_no_loop_back_carries_the_pull_requests() {
+    let id = "copied_final_check_v4";
+    // Eagle-Eye 1 with its PR Reviewer swapped for a copied reviewer that
+    // sends nothing back.
+    let mut def = crate::pipelines::find("eagle1").unwrap();
+    def.id = id.into();
+    def.run_kind = None;
+    def.built_in = false;
+    let last = def.stages.last_mut().unwrap();
+    last.role_id = "role_custom_final_check".into();
+    last.kind = Some(crate::pipelines::StageKind::Reviewer);
+    last.loop_back = None;
+    crate::pipelines::register_for_test(def);
+    let mut fx = Fixture::with_pipeline(
+        "prefill_copied_reviewer",
+        id,
+        vec![copied_role("role_pr_reviewer", "role_custom_final_check", "Final check")],
+    );
+    let implementer = to_implementer(&mut fx);
+    let prs = json!({ "schema": 1, "prs": [{ "url": "https://github.com/acme/app/pull/12", "branch": "fix/refresh", "title": "Refresh" }],
+                      "summary": "Expired tokens are refreshed once." });
+    fx.stage_dir(&implementer)
+        .write_prs(&RunPrs { schema: 1, run_id: RUN.into(), stage_key: "implementer".into(), lane: None, turn: "i-1".into(), at: "now".into(), result: prs.clone() })
+        .unwrap();
+    fx.end_turn(&implementer, "i-1", Some(prs), "Opened https://github.com/acme/app/pull/12");
+    let outcome = fx.user(UserAction::Prefill { source_tab_id: implementer, target_role_id: "role_custom_final_check".into() });
+    crate::pipelines::unregister_for_test(id);
+    let prefill = outcome.unwrap().prefill.expect("values");
+    let context = prefill.values.values().cloned().collect::<Vec<_>>().join("\n");
+    assert!(context.contains("https://github.com/acme/app/pull/12"), "a reviewer's form names the pull requests:\n{context}");
+}
+
 #[test]
 fn plan_reviewers_and_fan_out_stages_are_known_by_their_kind() {
     use super::actor::{implementer_stage, reviews_plan, revise_word};
