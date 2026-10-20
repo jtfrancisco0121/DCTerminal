@@ -81,6 +81,8 @@ export type TerminalViewProps = {
   onMenuOpen?: () => void;
   /** A pipeline stage being watched: typing follows its rules (`StageWatch`). */
   watch?: StageWatch | null;
+  /** The terminal this view opened (or restarted) is up. */
+  onOpened?: () => void;
 };
 
 /** What a keystroke into a watch-only stage shows. */
@@ -167,8 +169,11 @@ export function TerminalView({
   menuActions = [],
   onMenuOpen,
   watch = null,
+  onOpened,
 }: TerminalViewProps) {
   const slotRef = useRef<HTMLDivElement>(null);
+  const onOpenedRef = useRef(onOpened);
+  onOpenedRef.current = onOpened;
   // Read by the keystroke handlers, which outlive a render.
   const canTypeRef = useRef(true);
   canTypeRef.current = !watch || watch.canType;
@@ -433,10 +438,12 @@ export function TerminalView({
       // A stage the run actor started with no view (engine 2) is attached to, not restarted.
       attach: true,
       onOutput: live.channel,
-    }).catch((err: unknown) => {
-      clearPtyOpening(ptyId);
-      setFailed(err instanceof Error ? err.message : String(err));
-    });
+    })
+      .then(() => onOpenedRef.current?.())
+      .catch((err: unknown) => {
+        clearPtyOpening(ptyId);
+        setFailed(err instanceof Error ? err.message : String(err));
+      });
   }, [autoOpen, cwd, fontSize, launch, prompt, ptyId, resumeSessionId, roleId]);
 
   const restart = (resume?: string | null) => {
@@ -456,9 +463,11 @@ export function TerminalView({
       cols: openSize(parked).cols,
       rows: openSize(parked).rows,
       onOutput: live.channel,
-    }).catch((err: unknown) => {
-      setFailed(err instanceof Error ? err.message : String(err));
-    });
+    })
+      .then(() => onOpenedRef.current?.())
+      .catch((err: unknown) => {
+        setFailed(err instanceof Error ? err.message : String(err));
+      });
   };
 
   const mac = detectPlatform(navigator.platform) === "mac";

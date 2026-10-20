@@ -176,8 +176,30 @@ pub fn handle(dir: &StageDir, event: &str, payload: &Value) -> Result<Option<Val
             }
             Ok(None)
         }
+        "Notification" if text(payload, "notification_type") == Some("idle_prompt") => close_abandoned(dir, payload),
         _ => Ok(None),
     }
+}
+
+/// D9a: Claude sits idle while its turn has a start and no end (Esc or a
+/// rejected permission fires no Stop). The turn is closed out as abandoned
+/// in `turn.json` only: nothing goes to `inbox/`, so autopilot never acts
+/// on it, whatever result it filed. An idle prompt naming another turn, or
+/// one after a turn that ended, changes nothing.
+fn close_abandoned(dir: &StageDir, payload: &Value) -> Result<Option<Value>, String> {
+    let Some(mut state) = dir.turn().filter(|t| t.ended.is_none()) else {
+        return Ok(None);
+    };
+    if prompt_id(payload).is_some_and(|id| id != state.turn) {
+        return Ok(None);
+    }
+    state.ended = Some(TurnEnd {
+        at: super::folder::now(),
+        outcome: TurnOutcome::Abandoned,
+        last_assistant_message: String::new(),
+    });
+    dir.write_turn(&state).map_err(|err| format!("write turn.json: {err}"))?;
+    Ok(None)
 }
 
 fn post_needs(

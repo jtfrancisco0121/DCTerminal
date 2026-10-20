@@ -4,6 +4,7 @@
  * needs you or you took it over, with Take over and Hand back on its bar.
  * Any other terminal renders exactly as `TerminalView`.
  */
+import { useCallback, useState } from "react";
 import type { BridgeTag } from "../bridge";
 import { TerminalView, type TerminalViewProps } from "../components/TerminalView";
 import { useStageWatch } from "../terminal/useStageWatch";
@@ -16,6 +17,8 @@ type Props = Omit<TerminalViewProps, "watch"> & {
 };
 
 export function StageTerminalView({ tab, needsYou, onNotice, ...props }: Props) {
-  const watch = useStageWatch(tab, needsYou, onNotice);
-  return <TerminalView {...props} watch={watch} />;
+  const [opened, setOpened] = useState(0);
+  const noteOpened = useCallback(() => setOpened((count) => count + 1), []);
+  const watch = useStageWatch(tab, needsYou, onNotice, opened);
+  return <TerminalView {...props} watch={watch} onOpened={noteOpened} />;
 }

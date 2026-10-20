@@ -117,6 +117,8 @@ pub fn apply_with(run: &mut crate::store::PipelineRun, gate: &Gate, stage_id: &s
 /// (`manual_only`).
 pub fn make_manual(run: &mut crate::store::PipelineRun, stage_id: &str, decided_key: Option<&str>) {
     run.manual_only = true;
+    // Nothing is taken over on a manual run (V5): every stage is yours.
+    run.taken_over.clear();
     // Belt and braces for restart recovery and Continue: the relaunched
     // tab's current turn (decided by the bridge) under its v1 key too.
     if let Some(key) = decided_key.map(str::trim).filter(|key| !key.is_empty()) {

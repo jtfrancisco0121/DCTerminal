@@ -56,7 +56,7 @@ pub use settings_store::{
     TerminalSettings,
     UiSettings,
 };
-pub use state_store::StateStore;
+pub use state_store::{PriorSession, StateStore};
 pub(crate) use state_store::{
     displayed_acp_session, displayed_resume_session, tab_label, TerminalTabDraft,
 };

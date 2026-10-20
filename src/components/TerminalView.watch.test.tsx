@@ -48,6 +48,8 @@ vi.mock("../terminal/park", () => {
     copyTerminalSelection: vi.fn(),
     focusParkedTerminal: vi.fn(),
     isParkedHost: vi.fn(() => false),
+    measuredTerminalSize: vi.fn(() => ({ cols: 80, rows: 24 })),
+    noteTerminalSize: vi.fn(),
     pasteIntoTerminal: vi.fn(),
     pasteTerminalText: vi.fn(),
     releaseParkedTerminal: vi.fn(),
@@ -59,7 +61,8 @@ vi.mock("../terminal/park", () => {
   };
 });
 
-import { ptyWrite } from "../bridge";
+import { ptyOpen, ptyWrite } from "../bridge";
+import { beginLivePty, livePty, markPtyOpening } from "../terminal/live";
 import { TerminalView, type StageWatch } from "./TerminalView";
 
 class NoopResizeObserver {
@@ -118,5 +121,22 @@ describe("TerminalView watching a pipeline stage (V5, D27)", () => {
     act(() => dataHandler!("ls\r"));
     expect(ptyWrite).toHaveBeenCalledWith("stage-1", "ls\r");
     expect(screen.queryByRole("button", { name: "Take over" })).toBeNull();
+  });
+
+  it("says when the terminal it opened is up, so a stage's typing rules are read again", async () => {
+    // After a restart the backend records a relaunched stage's folder while
+    // it opens the terminal; the watch reads its rules again then.
+    const shown = vi.mocked(livePty).getMockImplementation();
+    vi.mocked(livePty).mockImplementation(() => undefined);
+    vi.mocked(markPtyOpening).mockReturnValueOnce(true);
+    vi.mocked(beginLivePty).mockReturnValueOnce({ channel: {} } as unknown as ReturnType<typeof beginLivePty>);
+    const onOpened = vi.fn();
+    render(
+      <TerminalView ptyId="stage-1" cwd="/repo" launch="role" fontSize={13} claudeSession autoOpen onOpened={onOpened} />,
+    );
+    expect(ptyOpen).toHaveBeenCalled();
+    await act(async () => {});
+    vi.mocked(livePty).mockImplementation(shown!);
+    expect(onOpened).toHaveBeenCalledTimes(1);
   });
 });

@@ -8,7 +8,7 @@ use super::{lock, ActorMsg, Host, Prefill, StageLaunch, UserAction, UserOutcome}
 use crate::bridge::folder::{read_json, RunFindings, RunPrs, TASKS_FILE};
 use crate::bridge::launch::{
     clear_stage_turn, launch_flags, plan_for, prepare_stage, read_stage_turn, relaunch_flags, restore_stage_turn,
-    set_stage_mode, BridgePlan,
+    set_stage_mode, BridgeFlags, BridgePlan,
 };
 use crate::bridge::{BridgeTag, BridgeTurn, StageMode, TurnOutcome};
 use crate::commands::pipeline::{approve, note, set_lane_status, turn_finished};
@@ -16,7 +16,7 @@ use crate::pipelines::autopilot::{decide, review_round, stage_key, stop_for_pipe
 use crate::pipelines::recovery::bridge_turn_key;
 use crate::pipelines::{GateDef, GateResult, PipelineDef, StageDef, StageKind};
 use crate::store::{
-    claim_key, tab_label, ChainRef, PipelineRun, RoleSnapshot, RunStatus, StageGates, StopReason, TabRecord,
+    claim_key, tab_label, ChainRef, PipelineRun, RoleSnapshot, RunStatus, StageGates, StateStore, StopReason, TabRecord,
     TerminalTabDraft,
 };
 use serde_json::Value;
@@ -69,6 +69,13 @@ struct Open {
     tagging: Tagging,
 }
 
+/// A resume the D24 / hooks-off gate let through (`Actor::resume_gate`).
+struct ResumeReady {
+    tag: BridgeTag,
+    flags: BridgeFlags,
+    cwd: PathBuf,
+}
+
 pub(super) struct Actor<H: Host> {
     run_id: String,
     host: Arc<H>,
@@ -81,6 +88,10 @@ pub(super) struct Actor<H: Host> {
     /// when its own newest turn ended. A held round for it from an older
     /// turn is recorded as dealt with by you, not sent.
     revised: Option<(String, String)>,
+    /// Set while Hand back re-decides when a held round goes back to the
+    /// handed-back tab (now, or once its checks pass): your own older turn
+    /// there is then not decided.
+    round_goes_back: bool,
 }
 
 impl<H: Host> Actor<H> {
@@ -92,6 +103,7 @@ impl<H: Host> Actor<H> {
             handled: HashMap::new(),
             gates_running: 0,
             revised: None,
+            round_goes_back: false,
         }
     }
 
@@ -236,7 +248,7 @@ impl<H: Host> Actor<H> {
             return;
         }
         let verdict = bridge_verdict(review(&turn).and_then(|r| r.get("verdict")).and_then(Value::as_str), placed.revise());
-        let (enabled, status, round, mine) = {
+        let (enabled, status, round, mine, held) = {
             let mut store = lock(self.host.store());
             // intentionally silent: the lanes only lose a bar end.
             let _ = turn_finished(
@@ -253,6 +265,7 @@ impl<H: Host> Actor<H> {
                     run.status,
                     run.round_for(placed.lane.as_deref()),
                     run.taken_over.iter().any(|id| id == &placed.tab.id),
+                    run.status == RunStatus::Waiting && run.stop_reason == Some(StopReason::TakenOver),
                 ),
                 None => return,
             }
@@ -261,6 +274,17 @@ impl<H: Host> Actor<H> {
         // You drive a stage you took over: its turns are recorded, never
         // decided (D28). Hand back decides the one that has a result.
         if !enabled || status == RunStatus::Complete || mine {
+            return;
+        }
+        // The run waits on a stage you took over (another lane's, in a
+        // fanned-out run): this turn stays undecided, and Hand back decides
+        // it with the current stages' other turns.
+        if held {
+            let summary = format!(
+                "{} finished while the run waits on a stage you took over. Autopilot acts on it when you hand that stage back.",
+                placed.tab.label
+            );
+            self.note(Some(&placed.stage.id), &summary, false);
             return;
         }
         self.take_up(&placed, turn, round, status);
@@ -272,6 +296,17 @@ impl<H: Host> Actor<H> {
     /// check runs (H5), and so does a turn on a pipeline that became disabled.
     fn take_up(&mut self, placed: &Placed, turn: BridgeTurn, round: u32, status: RunStatus) {
         let refused = self.rate_limit(placed);
+        // Hand back re-deciding a held round for the handed-back tab (D28).
+        match self.held_round_for_revised(placed, &turn, round) {
+            // You revised that stage since: the round is recorded now, with
+            // no checks on a review of what you have replaced.
+            Some(true) => {
+                self.decide_and_carry_out(placed, &turn, round);
+                return;
+            }
+            Some(false) => self.round_goes_back = true,
+            None => {}
+        }
         if status == RunStatus::Running
             && !placed.stage.gates.is_empty()
             && blocked(&turn).is_none()
@@ -388,13 +423,34 @@ impl<H: Host> Actor<H> {
         self.decide_and_carry_out(&placed, &turn, round);
     }
 
-    fn decide_and_carry_out(&mut self, placed: &Placed, turn: &BridgeTurn, round: u32) {
+    /// What `decide` is given for `turn`.
+    fn report(&self, placed: &Placed, turn: &BridgeTurn, round: u32) -> TurnReport {
         let usage = self.host.usage_percent(&self.run_id);
         let mut report = turn_report(&placed.stage, turn, usage, placed.lane.clone(), placed.revise());
         // H5: `decide` stops with `usage_limit` for it, ahead of `no_result`.
         report.rate_limit = self.rate_limit(placed);
         report.round = Some(round);
         report.turn = Some(bridge_turn_key(&turn.tab_id, &turn.turn));
+        report
+    }
+
+    /// While Hand back re-decides (D28): when `turn`'s decision would send a
+    /// round back to the handed-back tab, whether you revised that stage
+    /// since (decided on a copy of the run; nothing is recorded).
+    fn held_round_for_revised(&self, placed: &Placed, turn: &BridgeTurn, round: u32) -> Option<bool> {
+        let (tab_id, _) = self.revised.as_ref()?;
+        let report = self.report(placed, turn, round);
+        let store = lock(self.host.store());
+        let run = store.pipeline_run_by_id(&self.run_id)?;
+        let decision = decide(&placed.def, &mut run.clone(), &report);
+        if decision.action != "loopBack" || loop_back_tab(&placed.def, run, placed, &decision).as_ref() != Some(tab_id) {
+            return None;
+        }
+        Some(self.revised_target(run, placed, &decision, turn).is_some())
+    }
+
+    fn decide_and_carry_out(&mut self, placed: &Placed, turn: &BridgeTurn, round: u32) {
+        let report = self.report(placed, turn, round);
         let (decision, held) = {
             let mut store = lock(self.host.store());
             let Some(run) = store.pipeline_run_by_id_mut(&self.run_id) else {
@@ -414,6 +470,16 @@ impl<H: Host> Actor<H> {
                 None => decide(&placed.def, &mut trial, &report),
             };
             let held = taken_over_target(&placed.def, run, placed, &decision);
+            // A round you dealt with yourself (D28) is not sent back: its
+            // decision line says so instead of "goes back to".
+            if held.is_none() && decision.action == "loopBack" && self.revised_target(&trial, placed, &decision, turn).is_some() {
+                if let Some(event) = trial.events.last_mut().filter(|e| e.outcome.as_deref() == Some("loopBack")) {
+                    event.summary = format!(
+                        "{}, which you revised yourself, so nothing was sent.",
+                        event.summary.replace(" goes back to ", " was for ").trim_end_matches('.')
+                    );
+                }
+            }
             if held.is_some() {
                 (decision, held)
             } else {
@@ -482,14 +548,19 @@ impl<H: Host> Actor<H> {
             "loopBack" => {
                 let verdict = verdict.unwrap_or(placed.revise()).to_string();
                 if let Some(target) = self.revised_since(placed, decision, turn) {
-                    if let Err(err) = self.record_round_you_revised(placed, turn, decision, &verdict, &target) {
+                    if let Err(err) = self.record_round_you_revised(placed, decision, &verdict, &target) {
                         fail(self, format!("record the round: {err}"));
                     }
                     return;
                 }
                 match self.loop_back(placed, turn, decision, &verdict) {
-                    // The run is manual now; its Timeline note says so.
-                    Err(err) if err == MANUAL_NOW => {}
+                    // The run is manual now; its Timeline note says so. Nothing
+                    // was sent, so autopilot's hand-off record goes back.
+                    Err(err) if err == MANUAL_NOW => {
+                        if let Some(key) = decision.claim.as_deref() {
+                            self.release(key);
+                        }
+                    }
                     Err(err) => fail(self, format!("send the round back: {err}")),
                     Ok(_) => {}
                 }
@@ -668,18 +739,21 @@ impl<H: Host> Actor<H> {
 
     fn loop_back(&mut self, placed: &Placed, turn: &BridgeTurn, decision: &Decision, verdict: &str) -> Result<String, String> {
         let (target, text, file) = self.round_back(placed, turn, decision)?;
-        self.send_back(placed, &target, verdict, &text, None, None, Some(turn), file.as_deref())
+        self.send_back(placed, &target, verdict, &text, None, None, Some(turn), file.as_deref(), false)
     }
 
     /// The tab a held round goes back to when Hand back finds that you
     /// revised it yourself after the round's turn ended (D28): its tab id.
     fn revised_since(&self, placed: &Placed, decision: &Decision, turn: &BridgeTurn) -> Option<String> {
+        let store = lock(self.host.store());
+        let run = store.pipeline_run_by_id(&self.run_id)?;
+        self.revised_target(run, placed, decision, turn)
+    }
+
+    /// [`Self::revised_since`] over `run`, with the store already locked.
+    fn revised_target(&self, run: &PipelineRun, placed: &Placed, decision: &Decision, turn: &BridgeTurn) -> Option<String> {
         let (tab_id, ended) = self.revised.as_ref()?;
-        let target = {
-            let store = lock(self.host.store());
-            let run = store.pipeline_run_by_id(&self.run_id)?;
-            loop_back_tab(&placed.def, run, placed, decision)?
-        };
+        let target = loop_back_tab(&placed.def, run, placed, decision)?;
         (target == *tab_id && ended_after(ended, &turn.ended_at)).then_some(target)
     }
 
@@ -688,13 +762,14 @@ impl<H: Host> Actor<H> {
     fn record_round_you_revised(
         &mut self,
         placed: &Placed,
-        turn: &BridgeTurn,
         decision: &Decision,
         verdict: &str,
         target_tab: &str,
     ) -> Result<(), String> {
-        let (target, text, _) = self.round_back(placed, turn, decision)?;
+        let target_id = decision.stage_id.as_deref().ok_or("the decision names no stage")?;
+        let target = placed.def.stage(target_id).ok_or("that stage is not in the pipeline")?.clone();
         {
+            // No hand-off text and no findings file: nothing went to the stage.
             let mut store = lock(self.host.store());
             store.chain_loop_back_in(
                 &placed.chain.chain_id,
@@ -702,8 +777,13 @@ impl<H: Host> Actor<H> {
                 &placed.tab.role_id,
                 target_tab,
                 Some(verdict),
-                Some(&text),
+                None,
             )?;
+            let run = store.pipeline_run_by_id_mut(&self.run_id).ok_or("the run is gone")?;
+            if let Some(event) = run.events.last_mut().filter(|e| e.kind == "loopBack") {
+                event.summary = event.summary.replace(" sent back (", " dealt with by you (");
+            }
+            store.save()?;
         }
         let summary = format!(
             "You revised {} yourself after {}'s review, so its findings are not sent again. Autopilot decides your newest turn.",
@@ -745,20 +825,35 @@ impl<H: Host> Actor<H> {
     /// is resumed, since a resume is autopilot's own action: [`MANUAL_NOW`].
     /// The one Timeline note says where `findings` (the round's file) is.
     fn resume(&mut self, tab: &TabRecord, session_id: &str, prompt: &str, findings: Option<&Path>) -> Result<(), String> {
-        let tag = tab.bridge.as_ref().ok_or_else(|| format!("{} does not report through the pipeline bridge", tab.label))?;
+        let ready = self.resume_gate(tab, findings, false)?;
+        self.resume_ready(tab, ready, session_id, prompt)
+    }
+
+    /// What a resume of `tab` needs, after the D24 / hooks-off gate let it
+    /// through. Run before a round is recorded as sent back, so a refused
+    /// resume records nothing ([`MANUAL_NOW`]; `by_you`: your Send back).
+    fn resume_gate(&mut self, tab: &TabRecord, findings: Option<&Path>, by_you: bool) -> Result<ResumeReady, String> {
+        let tag = tab.bridge.clone().ok_or_else(|| format!("{} does not report through the pipeline bridge", tab.label))?;
         let program = self
             .host
             .bridge_program()
             .ok_or("DCTerminal could not find its own executable for the pipeline bridge.")?;
-        let flags = relaunch_flags(&self.host.runs_root(), tag, &tab.id, &program)
+        let flags = relaunch_flags(&self.host.runs_root(), &tag, &tab.id, &program)
             .ok_or_else(|| format!("{} no longer holds its stage in the run folder", tab.label))?;
         let cwd = crate::paths::validate_working_folder(&tab.cwd).map_err(|err| err.message())?;
         // D24 and hooks-off again, as at a Restart: the CLI or the settings
         // may have changed since the stage opened.
         if !self.host.bridge_gate(&self.run_id, &tag.stage, &cwd)? {
-            self.note_not_resumed(findings);
+            self.note_not_resumed(findings, by_you);
             return Err(MANUAL_NOW.to_string());
         }
+        Ok(ResumeReady { tag, flags, cwd })
+    }
+
+    /// The resume itself, once [`Self::resume_gate`] let it through.
+    fn resume_ready(&mut self, tab: &TabRecord, ready: ResumeReady, session_id: &str, prompt: &str) -> Result<(), String> {
+        let ResumeReady { tag, flags, cwd } = ready;
+        let tag = &tag;
         let bridge = Some(flags);
         let runs = self.host.runs_root();
         let cleared = clear_stage_turn(&runs, tag, &tab.id)?;
@@ -789,9 +884,10 @@ impl<H: Host> Actor<H> {
 
     /// The gate made the run manual at a resume: its one Timeline note (and
     /// engine note) also says what was not sent and where the findings are.
-    fn note_not_resumed(&mut self, findings: Option<&Path>) {
+    fn note_not_resumed(&mut self, findings: Option<&Path>, by_you: bool) {
         let extra = match findings {
             Some(file) => format!(" This round's findings are in {}: send them back yourself.", file.display()),
+            None if by_you => " Your Send back was not sent: press it again to send it.".to_string(),
             None => " What autopilot was sending back was not sent: send it yourself.".to_string(),
         };
         {
@@ -826,6 +922,7 @@ impl<H: Host> Actor<H> {
         handoff_plan: Option<String>,
         turn: Option<&BridgeTurn>,
         findings: Option<&Path>,
+        by_you: bool,
     ) -> Result<String, String> {
         let existing = {
             let store = lock(self.host.store());
@@ -842,8 +939,14 @@ impl<H: Host> Actor<H> {
             if live && !self.idle(&tab) {
                 return Err(format!("{} is still working. Send the findings back when its turn ends.", tab.label));
             }
-            // Record the round first: sent into an unrecorded round, the
-            // stage's next turn would be skipped as handed on already.
+            // The gate first: a resume it refuses sends nothing, so no round
+            // is recorded as sent back.
+            let ready = match session {
+                Some(_) => Some(self.resume_gate(&tab, findings, by_you)?),
+                None => None,
+            };
+            // Record the round before sending: sent into an unrecorded round,
+            // the stage's next turn would be skipped as handed on already.
             {
                 let mut store = lock(self.host.store());
                 store.chain_loop_back_in(
@@ -856,9 +959,9 @@ impl<H: Host> Actor<H> {
                 )?;
             }
             self.changed();
-            match session {
-                Some(session) => self.resume(&tab, &session, text, findings)?,
-                None => self.host.paste(&tab.id, text)?,
+            match (session, ready) {
+                (Some(session), Some(ready)) => self.resume_ready(&tab, ready, &session, text)?,
+                _ => self.host.paste(&tab.id, text)?,
             }
             return Ok(tab.id);
         }
@@ -1007,13 +1110,15 @@ impl<H: Host> Actor<H> {
     }
 
     /// Start a waiting lane's stage in the tab fan-out prepared for it.
-    /// `Ok(None)` when it was not waiting any more.
+    /// `Ok(None)` when it was not waiting any more, or the run left engine 2.
     fn start_lane(&mut self, lane_id: &str) -> Result<Option<String>, String> {
         let (tab, role_id, title) = {
             let mut store = lock(self.host.store());
             let run = store.pipeline_run_by_id(&self.run_id).ok_or("the run is gone")?;
             let lane = run.lane(lane_id).ok_or_else(|| format!("no lane {lane_id}"))?;
-            if lane.status != "waiting" {
+            // A gate refusal for an earlier lane switched the run to engine 1
+            // (manual, V2a): this lane waits for you to start it.
+            if lane.status != "waiting" || run.engine < crate::bridge::launch::ENGINE_V2 {
                 return Ok(None);
             }
             let def = crate::pipelines::find(&run.kind).ok_or_else(|| format!("unknown pipeline {}", run.kind))?;
@@ -1295,7 +1400,7 @@ impl<H: Host> Actor<H> {
         let verdict = verdict
             .filter(|v| !v.trim().is_empty())
             .unwrap_or_else(|| placed.revise().to_string());
-        match self.send_back(&placed, &target, &verdict, text, values, handoff_plan, None, None) {
+        match self.send_back(&placed, &target, &verdict, text, values, handoff_plan, None, None, true) {
             Ok(tab_id) => Ok(UserOutcome {
                 tab_id: Some(tab_id),
                 ..UserOutcome::default()
@@ -1361,6 +1466,12 @@ impl<H: Host> Actor<H> {
     /// on, the run waits for you (`taken_over`).
     fn user_take_over(&mut self, tab_id: &str) -> Result<UserOutcome, String> {
         let (placed, tag) = self.bridged_tab(tab_id)?;
+        let before = {
+            let store = lock(self.host.store());
+            store.pipeline_run_by_id(&self.run_id).ok_or("the run is gone")?.clone()
+        };
+        let enabled = before.autopilot.as_ref().is_some_and(|a| a.enabled);
+        let was = if enabled { StageMode::Autopilot } else { StageMode::Manual };
         if !set_stage_mode(&self.host.runs_root(), &tag, tab_id, StageMode::Takeover)? {
             return Err(format!("{} no longer holds its stage.", placed.tab.label));
         }
@@ -1372,16 +1483,18 @@ impl<H: Host> Actor<H> {
             }
             let summary = format!("You took over {}. Autopilot leaves it alone until you hand it back.", placed.stage.title);
             run.log("note", Some(&placed.stage.id), Some(&placed.tab.role_id), summary, None);
-            let all_yours = crate::pipelines::recovery::current_stage_tabs(&placed.def, run)
-                .iter()
-                .all(|stage| run.taken_over.contains(&stage.tab_id));
+            let current = crate::pipelines::recovery::current_stage_tabs(&placed.def, run);
+            let all_yours = !current.is_empty() && current.iter().all(|stage| run.taken_over.contains(&stage.tab_id));
             if run.status == RunStatus::Running && all_yours {
                 run.set_waiting(
                     StopReason::TakenOver,
                     format!("You took over {}. Hand it back to let autopilot carry on.", placed.stage.title),
                 );
             }
-            store.save()?;
+            if let Err(err) = store.save() {
+                self.undo_mode_change(&mut store, before, &tag, tab_id, was);
+                return Err(err);
+            }
         }
         self.changed();
         Ok(UserOutcome::default())
@@ -1393,13 +1506,13 @@ impl<H: Host> Actor<H> {
     /// decided at once. A stage not taken over is left as it is.
     fn user_hand_back(&mut self, tab_id: &str) -> Result<UserOutcome, String> {
         let (placed, tag) = self.bridged_tab(tab_id)?;
-        let enabled = {
+        let (enabled, before) = {
             let store = lock(self.host.store());
             let run = store.pipeline_run_by_id(&self.run_id).ok_or("the run is gone")?;
             if !run.taken_over.iter().any(|id| id == tab_id) {
                 return Ok(UserOutcome::default());
             }
-            run.autopilot.as_ref().is_some_and(|a| a.enabled)
+            (run.autopilot.as_ref().is_some_and(|a| a.enabled), run.clone())
         };
         let mode = if enabled { StageMode::Autopilot } else { StageMode::Manual };
         set_stage_mode(&self.host.runs_root(), &tag, tab_id, mode)?;
@@ -1425,7 +1538,10 @@ impl<H: Host> Actor<H> {
                 run.autopilot.as_ref().is_some_and(|a| a.decided.contains(&key))
             });
             let state = (run.status, run.round_for(placed.lane.as_deref()), decided, others);
-            store.save()?;
+            if let Err(err) = store.save() {
+                self.undo_mode_change(&mut store, before, &tag, tab_id, StageMode::Takeover);
+                return Err(err);
+            }
             state
         };
         self.changed();
@@ -1445,6 +1561,7 @@ impl<H: Host> Actor<H> {
         // recorded, not sent, and your turn is decided next (D28).
         let runs = self.host.runs_root();
         self.revised = own.as_ref().map(|turn| (tab_id.to_string(), turn.ended_at.clone()));
+        self.round_goes_back = false;
         for other in others {
             let tag = {
                 let store = lock(self.host.store());
@@ -1456,13 +1573,15 @@ impl<H: Host> Actor<H> {
             }
         }
         self.revised = None;
+        let sent_back = std::mem::take(&mut self.round_goes_back);
         // Your turn, while it is still the stage's latest (a round sent back
-        // meanwhile resumed the stage) and not decided yet.
+        // meanwhile resumed the stage), no round goes back to it (pasted, in
+        // a new terminal, or after its checks) and it is not decided yet.
         let Some(own) = own else {
             return Ok(UserOutcome::default());
         };
         let latest = read_stage_turn(&runs, &tag, tab_id).is_some_and(|t| t.turn == own.turn);
-        if !latest || self.decided(&bridge_turn_key(&own.tab_id, &own.turn)) {
+        if sent_back || !latest || self.decided(&bridge_turn_key(&own.tab_id, &own.turn)) {
             return Ok(UserOutcome::default());
         }
         let (status, round) = {
@@ -1473,6 +1592,15 @@ impl<H: Host> Actor<H> {
         self.handled.insert(own.tab_id.clone(), own.turn.clone());
         self.take_up(&placed, own, round, status);
         Ok(UserOutcome::default())
+    }
+
+    /// Take over or Hand back could not save the run: put the run and the
+    /// stage's `mode` file back as they were, so the two never disagree.
+    fn undo_mode_change(&self, store: &mut StateStore, before: PipelineRun, tag: &BridgeTag, tab_id: &str, was: StageMode) {
+        if let Some(run) = store.pipeline_run_by_id_mut(&self.run_id) {
+            *run = before;
+        }
+        let _ = set_stage_mode(&self.host.runs_root(), tag, tab_id, was);
     }
 
     /// `tab_id` on this run, with the stage it reports for.

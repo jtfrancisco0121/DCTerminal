@@ -23,7 +23,7 @@
 
 use super::folder::{
     self, read_mode, read_result, read_stage, stage_dirs, write_mode, BridgeTurn, ResultKind, StageInfo,
-    StageMode, SCHEMA,
+    StageMode, TurnOutcome, SCHEMA,
 };
 use super::schema::{FULL_TOOL_NAME, SERVER_NAME};
 use crate::pipelines::autopilot::stage_key;
@@ -393,6 +393,19 @@ pub fn set_run_mode_to(runs_root: &Path, run_id: &str, mode: StageMode) -> Resul
     Ok(())
 }
 
+/// The run went to engine 1 mid-run and is manual for good (V2a's
+/// `make_manual`): every stage folder says `manual`, a stage you took over
+/// too (V5), since nothing is taken over on a manual run.
+pub fn set_run_manual_for_good(runs_root: &Path, run_id: &str) -> Result<(), String> {
+    let Some(run_dir) = folder::run_dir(runs_root, run_id) else {
+        return Ok(());
+    };
+    for dir in stage_dirs(&run_dir) {
+        write_mode(&dir, StageMode::Manual).map_err(|err| format!("{}: {err}", dir.display()))?;
+    }
+    Ok(())
+}
+
 /// A bridged tab's stage folder (`runs/<run>/stages/<stage>`), when the ids are valid.
 pub fn stage_dir_of(runs_root: &Path, tag: &BridgeTag) -> Option<PathBuf> {
     let run_dir = folder::run_dir(runs_root, &tag.run_id)?;
@@ -416,8 +429,8 @@ pub fn set_stage_mode(runs_root: &Path, tag: &BridgeTag, tab_id: &str, mode: Sta
 }
 
 /// The stage's latest finished turn, read back from `turn.json` (Continue
-/// after a restart). `None` while a turn runs, before the first one, or
-/// when `tab_id` no longer owns the stage.
+/// after a restart). `None` while a turn runs, before the first one, after
+/// an abandoned one, or when `tab_id` no longer owns the stage.
 pub fn read_stage_turn(runs_root: &Path, tag: &BridgeTag, tab_id: &str) -> Option<BridgeTurn> {
     let run_dir = folder::run_dir(runs_root, &tag.run_id)?;
     let dir = folder::stage_dir_path(&run_dir, &tag.stage)?;
@@ -426,7 +439,8 @@ pub fn read_stage_turn(runs_root: &Path, tag: &BridgeTag, tab_id: &str) -> Optio
         return None;
     }
     let turn = turn?;
-    let end = turn.ended.clone()?;
+    // An abandoned turn (D9a) is never read back: autopilot never acts on it.
+    let end = turn.ended.clone().filter(|end| end.outcome != TurnOutcome::Abandoned)?;
     let result = read_result(&dir, &turn.turn).map(|stored| stored.result);
     Some(BridgeTurn::new(&info, &turn, &end, result))
 }
