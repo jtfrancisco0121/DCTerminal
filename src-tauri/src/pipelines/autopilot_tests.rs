@@ -33,6 +33,7 @@ fn run(round: u32) -> PipelineRun {
         stop_reason: None,
         engine: 1,
         engine_note: None,
+        manual_only: false,
     }
 }
 

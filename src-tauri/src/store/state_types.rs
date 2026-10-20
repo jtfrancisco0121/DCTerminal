@@ -187,6 +187,10 @@ pub struct PipelineRun {
     /// yet verified" for a newer one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub engine_note: Option<String>,
+    /// A Restart or Resume switched this run from the bridge to engine 1
+    /// mid-run: it is manual for good, and autopilot cannot be turned on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub manual_only: bool,
 }
 
 fn first_engine() -> u32 {
