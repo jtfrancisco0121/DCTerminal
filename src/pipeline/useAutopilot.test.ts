@@ -907,6 +907,27 @@ describe("useAutopilot", () => {
       expect(vi.mocked(pipelineDecide).mock.calls[0][1].turn).toBe("pr|bridge|p-1");
     });
 
+    it("a tab that lost its bridge with autopilot still on never decides the bridge's turn again, only its next one", async () => {
+      // A Resume of a tab that no longer owns its stage: the core drops the
+      // tag but the run stays on engine 2 with autopilot on.
+      vi.mocked(getPipelineRun).mockResolvedValue(run(true));
+      vi.mocked(pipelineDecide).mockResolvedValue({ action: "skip", reason: "x" });
+      vi.mocked(pipelineBridgeTurn).mockResolvedValue(bridgeTurn());
+      const tabs = [bridgedReviewer()];
+      const { onLog } = setup(tabs);
+      const reply = log("## HANDOFF: Verdict\nREQUEST CHANGES", "2099-01-01T00:00:00Z");
+      onLog("pr", reply);
+      await waitFor(() => expect(pipelineDecide).toHaveBeenCalledTimes(1));
+      tabs[0] = tab("pr", "role_pr_reviewer", 4);
+      onLog("pr", reply);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(pipelineDecide).toHaveBeenCalledTimes(1);
+      // A turn after that is the v1 path's to decide.
+      onLog("pr", log("## HANDOFF: Verdict\nAPPROVED", "2099-01-01T00:05:00Z"));
+      await waitFor(() => expect(pipelineDecide).toHaveBeenCalledTimes(2));
+      expect(vi.mocked(pipelineDecide).mock.calls[1][1].turn).not.toContain("|bridge|");
+    });
+
     it("a bridge turn that ended before the app started waits for Continue", async () => {
       vi.mocked(getPipelineRun).mockResolvedValue(run(true));
       vi.mocked(pipelineDecide).mockResolvedValue({ action: "skip", reason: "x" });

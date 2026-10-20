@@ -492,6 +492,16 @@ export function useAutopilot(deps: AutopilotDeps) {
         return;
       }
       const turn = finishedTurn(tab.roleId, log, tab.chain.kind);
+      if (log && handledBridge.current.has(tabId)) {
+        // The tab was bridged in this app session and lost its bridge (a
+        // relaunch of a tab that no longer owns its stage): the log's turn
+        // is the one the bridge decided, under a key v1 cannot match. The
+        // v1 path takes over from the next prompt.
+        handledBridge.current.delete(tabId);
+        seen.current.add(tabId);
+        if (turn) handled.current.set(tabId, turn.key);
+        return;
+      }
       if (log && !seen.current.has(tabId)) {
         seen.current.add(tabId);
         // Finished before this app session (a restart): never acted on again.
