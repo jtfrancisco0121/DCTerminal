@@ -717,7 +717,7 @@ export function installTauriMock(config: MockConfig): void {
       // Your send-back puts a complete run back in play (PipelineRun::reopen_after_you).
       if (run.status === "complete") {
         run.status = run.autopilot?.enabled ? "running" : "stopped";
-        run.stopReason = null;
+        run.stopReason = run.autopilot && !run.autopilot.enabled ? "paused_by_you" : null;
       }
       const chain = {
         chainId,
