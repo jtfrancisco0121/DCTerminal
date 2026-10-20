@@ -12,12 +12,10 @@ import {
   bridgeNeedsAfterAnswer,
   bridgeNeedsAfterDialog,
   bridgeNeedsAfterRead,
+  OWN_PROMPT_TOOLS,
   type BridgeNeedsMark,
 } from "./claudeState";
 import { subscribePtyAnswer, subscribePtyBegin, subscribePtyExit } from "./live";
-
-/** Tools that show their own prompt (a plan, a question), never the permission dialog. */
-const OWN_PROMPT = new Set(["ExitPlanMode", "AskUserQuestion"]);
 
 type BridgedTab = { id: string; bridge?: BridgeTag | null };
 
@@ -33,7 +31,7 @@ export function markForEvent(
   now: number,
 ): BridgeNeedsMark | null {
   if (!tab?.bridge || tab.bridge.runId !== event.runId || tab.bridge.stage !== event.stageKey) return null;
-  if (event.tool && OWN_PROMPT.has(event.tool)) return null;
+  if (event.tool && OWN_PROMPT_TOOLS.has(event.tool)) return null;
   if (event.source === "permission_prompt" && current) return null;
   return { tool: event.tool ?? null, at: now, key: `${event.turn}|${event.at}` };
 }

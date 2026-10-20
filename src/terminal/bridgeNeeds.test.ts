@@ -18,9 +18,9 @@ vi.mock("../bridge", () => ({
 }));
 const channels: ((packet: { kind: string; data: string; code: number | null }) => void)[] = [];
 
-const { useBridgeNeeds } = await import("./bridgeNeeds");
+const { markForEvent, useBridgeNeeds } = await import("./bridgeNeeds");
 const { beginLivePty, dropLivePty, notePtyInput, restartLivePty } = await import("./live");
-const { deriveTerminalState, BRIDGE_NEEDS_GRACE_MS } = await import("./claudeState");
+const { deriveTerminalState, BRIDGE_NEEDS_GRACE_MS, OWN_PROMPT_TOOLS } = await import("./claudeState");
 
 const TAB = { id: "impl", bridge: { runId: "ee_1", stage: "implementer" } };
 const bash = { id: "toolu_b1", name: "Bash", title: "Bash: npm run check" };
@@ -125,6 +125,12 @@ describe("useBridgeNeeds: the bridged Needs you lifecycle (D22)", () => {
     expect(pill(result.current.markOf("impl"))).toEqual({ kind: "working" });
     dropLivePty("impl");
     unmount();
+  });
+
+  it("ignores the same own-prompt tools the terminal state does (one list)", () => {
+    expect([...OWN_PROMPT_TOOLS].sort()).toEqual(["AskUserQuestion", "ExitPlanMode"]);
+    for (const tool of OWN_PROMPT_TOOLS) expect(markForEvent(TAB, undefined, needs({ tool }), 1)).toBeNull();
+    expect(markForEvent(TAB, undefined, needs({ tool: "Bash" }), 1)).toMatchObject({ tool: "Bash" });
   });
 
   it("bumps its version on each change so terminal states recompute", async () => {

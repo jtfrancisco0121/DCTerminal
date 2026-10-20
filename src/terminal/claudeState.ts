@@ -127,7 +127,7 @@ export function deriveTerminalState(input: TerminalStateInput): TerminalState {
   // names the prompt before the screen is read, and keeps naming it.
   const hooked = input.bridgeNeeds;
   if (hooked) {
-    const waiting = pendingToolsOf(log).filter((tool) => !OWN_PROMPT.has(tool.name));
+    const waiting = pendingToolsOf(log).filter((tool) => !OWN_PROMPT_TOOLS.has(tool.name));
     const tool = hooked.tool ? waiting.find((item) => item.name === hooked.tool) : waiting[0];
     return {
       kind: "needs",
@@ -205,8 +205,8 @@ export function pendingToolsOf(log: LogView | null | undefined): PendingTool[] {
   return log.pendingTools ?? (log.openTool ? [log.openTool] : []);
 }
 
-/** Tools that show their own prompt, never the permission dialog. */
-const OWN_PROMPT = new Set(["ExitPlanMode", "AskUserQuestion"]);
+/** Tools that show their own prompt (a plan, a question), never the permission dialog. */
+export const OWN_PROMPT_TOOLS: ReadonlySet<string> = new Set(["ExitPlanMode", "AskUserQuestion"]);
 
 /**
  * After a session-log read that started at `readAt`: the bridge's Needs you
@@ -221,7 +221,7 @@ export function bridgeNeedsAfterRead(
 ): BridgeNeedsMark | undefined {
   if (!mark || !log || readAt < mark.at + BRIDGE_NEEDS_GRACE_MS) return mark;
   if (log.turnDone) return undefined;
-  const waiting = pendingToolsOf(log).filter((tool) => !OWN_PROMPT.has(tool.name));
+  const waiting = pendingToolsOf(log).filter((tool) => !OWN_PROMPT_TOOLS.has(tool.name));
   const asking = mark.tool ? waiting.some((tool) => tool.name === mark.tool) : waiting.length > 0;
   return asking ? mark : undefined;
 }
@@ -319,7 +319,7 @@ function toolForPrompt(
   context: string,
   answered: string | null,
 ): PendingTool | undefined {
-  const candidates = pendingToolsOf(log).filter((tool) => !OWN_PROMPT.has(tool.name));
+  const candidates = pendingToolsOf(log).filter((tool) => !OWN_PROMPT_TOOLS.has(tool.name));
   const screen = squash(context);
   const score = (tool: PendingTool): [number, number, number] => {
     const hint = squash(tool.hint ?? "");
