@@ -379,6 +379,8 @@ export type PipelineRun = {
   manualOnly?: boolean;
   /** L2: your answers to verify gates, oldest first, one per answer. A lane is verified when its latest says so. */
   verifications?: VerifyRecord[];
+  /** F3: the size picked at start (S, M or L), for a run of a sized pipeline. */
+  size?: "S" | "M" | "L" | null;
   /** L3: one record per story of each pull request built in stories, in order (a lane's, or the run's own with no lane). */
   stories?: RunStory[];
 };
@@ -2204,6 +2206,8 @@ export async function roleTerminalStart(input: {
    * engine-2 run's first stage gets them as the run's `tickets.json`.
    */
   intakeId?: string | null;
+  /** F3: the size (S, M or L) the start screen picked for the run `startChain` begins; kept on the run. */
+  size?: import("./pipeline/sizes").RunSize | null;
 }): Promise<TerminalStartResult> {
   return invoke<TerminalStartResult>("role_terminal_start", {
     input: {
@@ -2218,6 +2222,7 @@ export async function roleTerminalStart(input: {
       chain: input.chain ?? null,
       startChain: input.startChain ?? null,
       intakeId: input.intakeId ?? null,
+      size: input.size ?? null,
     },
     onOutput: input.onOutput,
   });

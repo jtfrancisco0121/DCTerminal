@@ -1,4 +1,4 @@
-import type { MutableRefObject, ReactNode, RefObject } from "react";
+import { useState, type MutableRefObject, type ReactNode, type RefObject } from "react";
 import {
   setTabModel,
   setTabProvider,
@@ -13,6 +13,11 @@ import {
   type ValidatePreviewResult,
 } from "../bridge";
 import { ClickUpIntake } from "../components/ClickUpIntake";
+import { SizePicker } from "../components/SizePicker";
+import { eagleStartChain } from "../pipeline/eagleStart";
+import { pipelineDef } from "../pipeline/defs";
+import { roleForSize, startSizeView } from "../pipeline/sizes";
+import { tickedTickets } from "../clickup/intakeModel";
 import type { IntakeDraft } from "../clickup/intakeModel";
 import { CursorHistoryList } from "../components/CursorHistoryList";
 import { FolderPicker } from "../components/FolderPicker";
@@ -201,6 +206,8 @@ export function StartScreen({
   scrollPositions,
 }: StartScreenProps) {
   const showFields = showStartupFields({ surface, newSessionOpen });
+  // F3: the tickets ticked in the ClickUp box, for the size suggestion.
+  const [intakeTickets, setIntakeTickets] = useState(() => tickedTickets(intakeDraftRef.current).length);
   const displayedFolder = folderForTab(values.cwd);
   const folderNotice = folderTabNotice({
     status: activeTabSummary?.folderStatus ?? "",
@@ -405,11 +412,10 @@ export function StartScreen({
       </RadioGroup>
     ) : null;
 
+  // The Eagle-Eye chain this role begins (F2: the Analyst begins Eagle-Eye L).
+  const eagleChain = eagleStartChain(roleId);
   const eagleToggle =
-    showFields &&
-    activeTabSummary?.phase === "draft" &&
-    !activeTabSummary.chain &&
-    (roleId === "role_planner" || roleId === "role_implementer") ? (
+    showFields && activeTabSummary?.phase === "draft" && !activeTabSummary.chain && eagleChain ? (
       <label className="eagle-toggle">
         <input
           type="checkbox"
@@ -419,9 +425,22 @@ export function StartScreen({
             setEagleOn(event.target.checked);
           }}
         />
-        {roleId === "role_planner" ? "Eagle-Eye 1" : "Eagle-Eye 2"}
+        {pipelineDef(eagleChain)?.name ?? eagleChain}
       </label>
     ) : null;
+  // F3: with Eagle-Eye ticked, S / M / L picks the pipeline (by its first role).
+  const sizeView = eagleToggle ? startSizeView(eagleChain, eagleOn, formValues, intakeTickets) : null;
+  const sizePicker = sizeView ? (
+    <SizePicker
+      value={sizeView.value}
+      suggestion={sizeView.suggestion}
+      disabled={busy}
+      onPick={(size) => {
+        const next = roleForSize(size, roleId);
+        if (next) chooseRole(next);
+      }}
+    />
+  ) : null;
 
   // Start is always on screen. Until it can run it says why.
   const folderBlocked = folderNotice?.tone === "error";
@@ -608,12 +627,14 @@ export function StartScreen({
                 </>
               )}
             </div>
+            {sizePicker}
             {eagleToggle && eagleOn && rememberedSurface(roleId) === "terminal" && (
               <ClickUpIntake
                 key={activeTabId ?? ""}
                 draftRef={intakeDraftRef}
                 onOpenIntegrations={openIntegrations}
                 disabled={busy}
+                onDraftChange={(draft) => setIntakeTickets(tickedTickets(draft).length)}
               />
             )}
             {startHint && (

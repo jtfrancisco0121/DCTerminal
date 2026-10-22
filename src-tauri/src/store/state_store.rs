@@ -1303,6 +1303,7 @@ impl StateStore {
             manual_only: false,
             verifications: Vec::new(),
             stories: Vec::new(),
+            size: None,
         };
         self.data.pipeline_runs.push(run);
         self.save()?;
