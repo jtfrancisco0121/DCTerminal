@@ -1120,6 +1120,8 @@ export type ClickUpAccountStatus = {
   source: ClickUpTokenSource;
   workspaceId?: string;
   workspaceName?: string;
+  /** DCT_CLICKUP_TOKEN was set at startup but was not a token, so it is not used. */
+  envRejected?: boolean;
 };
 
 export type ClickUpWorkspaceOption = { id: string; name: string };
