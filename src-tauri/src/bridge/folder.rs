@@ -5,7 +5,9 @@
 //! updates (C3), and the run actor writes each review round it sends
 //! back as `findings-<stage>-r<N>.json` (V4); the bridge writes the rest,
 //! including the run-level hand-off files: the Planner's `plan.md` and
-//! `tasks.json`, and each Implementer's `prs.json` (`prs-<lane>.json` in a lane). Every write is
+//! `tasks.json`, and each Implementer's `prs.json` (`prs-<lane>.json` in a lane); the app keeps
+//! an Implementer's `stages/<key>/story.json` current while its pull request is built in
+//! stories (L3). Every write is
 //! atomic (a temp file in the same folder, then a rename) and every path is
 //! built from checked parts, so nothing lands outside the run folder (D37).
 
@@ -28,6 +30,8 @@ const RESULTS_DIR: &str = "results";
 const PAYLOADS_DIR: &str = "payloads";
 const LOG_FILE: &str = "bridge.log";
 const NEEDS_FILE: &str = "needs.json";
+/// The story a stage is on (L3), in its stage folder; the app writes it.
+pub(crate) const STORY_FILE: &str = "story.json";
 /// The Planner's plan, as it handed it to ExitPlanMode.
 pub const PLAN_FILE: &str = "plan.md";
 /// The Planner's tasks (the plan's fenced JSON block); fan-out reads it.
@@ -330,6 +334,62 @@ pub struct PlannedTask {
     /// (L1). Left out: the run's own folder, as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
+    /// The stories the task's pull request is built in, in order, in one
+    /// Implementer session and one branch (L3). Empty: one turn, as before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stories: Vec<PlannedStory>,
+}
+
+/// One story of a task (L3): a step of its pull request with its own
+/// check, reported through `submit_result` with `story` set.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlannedStory {
+    /// `s1`, `s2`, … (lower case, unique in its task).
+    pub id: String,
+    pub title: String,
+    /// ClickUp ticket ids (or custom ids) from the run's `tickets.json` (C2).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tickets: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub done_when: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub planned_tests: Vec<String>,
+    /// What you do and report before the next story starts: the run waits
+    /// with `checkpoint` once this story's checks pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<String>,
+}
+
+impl RunTasks {
+    /// The task a stage builds (L3): the lane's own task, or with no lane
+    /// the plan's one pull request (a plan of one task never fans out).
+    pub fn task_for(&self, lane: Option<&str>) -> Option<&PlannedTask> {
+        match lane {
+            Some(lane) => self.tasks.iter().find(|task| task.id == lane),
+            None => {
+                let mut built = self.tasks.iter().filter(|task| !task.manual);
+                let only = built.next()?;
+                built.next().is_none().then_some(only)
+            }
+        }
+    }
+}
+
+/// `stages/<key>/story.json` (L3): the story the stage's Implementer is
+/// on, written by the app as the story loop moves on, so `submit_result`
+/// takes a result for that story only. `current` is `None` once every
+/// story is done (a review round after that reports no story).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoryMark {
+    pub schema: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current: Option<String>,
+    #[serde(default)]
+    pub current_title: String,
+    /// Every story id, in order.
+    pub ids: Vec<String>,
 }
 
 /// `tasks.json`: the tasks of the Planner's latest plan. Fan-out reads it
@@ -548,6 +608,25 @@ impl StageDir {
         write_json(&self.run_dir.join(TASKS_FILE), tasks)
     }
 
+    /// The story this stage is on (L3); none when its task has no stories.
+    pub fn story(&self) -> Option<StoryMark> {
+        read_story(&self.dir)
+    }
+
+    /// The ticket ids (and custom ids) of the run's `tickets.json` (C2), for
+    /// the stories' `tickets` check (L3); `None` when the run has no tickets.
+    pub fn ticket_ids(&self) -> Option<Vec<String>> {
+        let snapshot: Value = read_json(&self.run_dir.join(TICKETS_FILE))?;
+        let tickets = snapshot.get("tickets")?.as_array()?;
+        Some(
+            tickets
+                .iter()
+                .flat_map(|ticket| ["id", "customId"].map(|key| ticket.get(key).and_then(Value::as_str).map(str::to_string)))
+                .flatten()
+                .collect(),
+        )
+    }
+
     /// The repo names the Planner's tasks may use (`repos.json`); none when
     /// the app wrote no file (a run folder from before L1).
     pub fn repo_names(&self) -> Vec<String> {
@@ -716,4 +795,20 @@ pub(crate) fn read_tasks(run_dir: &Path) -> Option<RunTasks> {
 
 pub(crate) fn read_result(stage_dir: &Path, turn: &str) -> Option<StoredResult> {
     read_json(&stage_dir.join(RESULTS_DIR).join(turn_file_name(turn)))
+}
+
+/// The stage's story mark (L3), when it has one.
+pub(crate) fn read_story(stage_dir: &Path) -> Option<StoryMark> {
+    read_json(&stage_dir.join(STORY_FILE))
+}
+
+/// Write the stage's story mark (L3); `None` removes it.
+pub(crate) fn write_story(stage_dir: &Path, mark: Option<&StoryMark>) -> io::Result<()> {
+    match mark {
+        Some(mark) => write_json(&stage_dir.join(STORY_FILE), mark),
+        None => match std::fs::remove_file(stage_dir.join(STORY_FILE)) {
+            Err(err) if err.kind() != io::ErrorKind::NotFound => Err(err),
+            _ => Ok(()),
+        },
+    }
 }

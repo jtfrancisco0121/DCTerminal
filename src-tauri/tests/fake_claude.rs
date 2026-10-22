@@ -1573,7 +1573,7 @@ mod run_actor {
     use dcterminal_lib::testing::{
         bridged_command, bundled_seed, claude_terminal_args, drain_inbox, fan_out, launch_flags, paste_bytes, prepare_stage,
         runs_root, write_run_repos, ActorMsg, LaneInput, AppStateFile, BridgePlan, BridgeTag, ChainRef, GateDef, GateResult, Host, InboxEvent, PipelineRun,
-        ProgramArgs, RepoEntry, ResultKind, Role, RunActors, RunMode, RunStatus, StageLaunch, StateStore, StopReason,
+        ProgramArgs, RepoEntry, ResultKind, Role, RunActors, RunMode, RunStatus, StageLaunch, StateStore, StopReason, StoryStatus,
         TerminalKind, TerminalLaunch, UserAction, MAIN_WINDOW_ID,
     };
     use serde_json::json;
@@ -3097,5 +3097,269 @@ mod run_actor {
         });
         assert!(told.is_some_and(|e| e.summary.starts_with("PR2 — Audit log: Implementer finished while the run waited")), "{all}");
         assert!(run.verifications.is_empty(), "nothing was verified\n{all}");
+    }
+
+    // ---- L3: the story loop -------------------------------------------------
+
+    const R5_NOTE: &str = "JT's finding from the Windows rerun: the 7,839-file walk stalls 40 s on the lock file.";
+
+    /// Plan 5's shape: one pull request in koneksi-engine, built in four
+    /// stories. R5 instrumentation is a checkpoint story (you rerun it on
+    /// Windows and read the log); then the three T14 fixes.
+    fn plan5() -> String {
+        let tasks = json!({ "tasks": [{
+            "id": "pr1", "title": "Engine QA fixes", "dependsOn": [], "manual": false,
+            "summary": "R5 instrumentation, then T14-4, T14-2 and T14-1.",
+            "stories": [
+                { "id": "s1", "title": "R5 instrumentation", "tickets": ["86c0r5"],
+                  "checkpoint": "Rerun the 7,839-file case on Windows and read the log" },
+                { "id": "s2", "title": "T14-4 log dedupe", "doneWhen": ["Each line is written once"], "plannedTests": ["TestLogDedupe"] },
+                { "id": "s3", "title": "T14-2 lock-file filter" },
+                { "id": "s4", "title": "T14-1 folder name", "tickets": ["QA-141"] }
+            ]
+        }] });
+        format!(
+            "# Plan 5: engine QA fixes\n\n## HANDOFF: Plan\n1. R5 instrumentation.\n2. T14-4, T14-2, T14-1.\n\n```json\n{tasks}\n```\n\n\
+             ## HANDOFF: Open questions\nNone.\n"
+        )
+    }
+
+    /// The Implementer finishing `story`; the last one reports the pull request.
+    fn story_done(story: &str, last: bool) -> Value {
+        let prs = if last {
+            json!([{ "url": "https://github.com/acme/koneksi-engine/pull/77", "branch": "fix/qa-128", "title": "Engine QA fixes" }])
+        } else {
+            json!([])
+        };
+        json!({ "turns": [{ "steps": [
+            submit(json!({ "story": story, "prs": prs, "summary": format!("Story {story} is built.") })),
+            { "reply": format!("Story {story} is done.") }
+        ] }] })
+    }
+
+    /// The Planner of Plan 5, started in `repo` (a git repo) as
+    /// `role_terminal_start` launches it.
+    fn start_plan5_planner(host: &FakeHost, repo: &Path) {
+        let cwd = repo.display().to_string();
+        let planner = {
+            let mut store = host.store.lock().unwrap();
+            let role = host.roles.iter().find(|r| r.id == "role_planner").unwrap();
+            let tab = store.create_draft_tab(role, &cwd, true, None).unwrap();
+            store.data.tabs.iter_mut().find(|t| t.id == tab).unwrap().answers = HashMap::from([
+                ("cwd".to_string(), cwd.clone()),
+                ("taskType".to_string(), "Bug".to_string()),
+                ("title".to_string(), "Engine QA fixes".to_string()),
+                ("request".to_string(), "R5 instrumentation and the T14 fixes, in one pull request.".to_string()),
+                ("expectedBehavior".to_string(), "The QA 1.2.8 engine cases pass.".to_string()),
+                ("currentBehavior".to_string(), "R5 stalls; T14 cases fail.".to_string()),
+            ]);
+            let chain = ChainRef { chain_id: RUN.into(), kind: "eagle1".into(), step: 1, total: 4, round: 1, lane: None };
+            store.set_tab_chain(&tab, Some(chain), None).unwrap();
+            store.pipeline_run_by_id_mut(RUN).expect("the run").set_autopilot_enabled(true);
+            store.set_tab_bridge(&tab, Some(BridgeTag { run_id: RUN.into(), stage: "planner".into() })).unwrap();
+            store.remember_claude_terminal_session(&tab, PLANNER_SID).unwrap();
+            store.save().unwrap();
+            tab
+        };
+        let bridge = BridgePlan {
+            run_id: RUN.into(),
+            stage_id: "planner".into(),
+            role_id: "role_planner".into(),
+            lane: None,
+            stage_key: "planner".into(),
+            kind: ResultKind::Planner,
+            autopilot: true,
+        };
+        let run_dir = prepare_stage(&host.runs, &bridge, &planner).expect("prepare the Planner");
+        let plan_turn = json!({ "turns": [{ "steps": [
+            { "tool": "ExitPlanMode", "input": { "plan": plan5() }, "permission": true },
+            { "reply": "Plan 5 is one pull request in four stories." }
+        ] }] });
+        host.start(
+            &StageLaunch {
+                run_id: RUN.into(),
+                tab_id: planner.clone(),
+                role_id: "role_planner".into(),
+                cwd: repo.to_path_buf(),
+                prompt: "Plan the engine QA fixes.".into(),
+                session_id: PLANNER_SID.into(),
+                bridge: Some(launch_flags(ResultKind::Planner, Path::new(DCTERMINAL), &run_dir, RUN, "planner", &planner)),
+            },
+            &plan_turn,
+            false,
+        );
+    }
+
+    /// L3 end to end on the actor with `fake_claude` terminals, in a temp git
+    /// repo: Plan 5's one pull request in four stories. s1 is a checkpoint
+    /// story: once its check passes the run waits, and your Continue with
+    /// the Windows finding resumes the same session with s2 and the note.
+    /// s2's check fails once and goes back for s2; then s3 and s4 (which
+    /// reports the pull request and is the only story to run the
+    /// pull-request gate); then one PR review approves and the run is done.
+    #[test]
+    fn plan_5_runs_four_stories_in_one_session_with_a_checkpoint_and_a_failed_check_then_one_review() {
+        let data = TempDir::new("actor_l3_data");
+        let home = FakeHome::new("actor_l3");
+        let parent = TempDir::new("actor_l3_repos");
+        let engine = repo(&parent, "koneksi-engine");
+        let scenarios = HashMap::from([
+            ("role_plan_reviewer".to_string(), VecDeque::from([reviewed("APPROVED", json!([]))])),
+            (
+                "role_implementer".to_string(),
+                VecDeque::from([
+                    story_done("s1", false),
+                    story_done("s2", false),
+                    // s2 again, after its check failed.
+                    story_done("s2", false),
+                    story_done("s3", false),
+                    story_done("s4", true),
+                ]),
+            ),
+            ("role_pr_reviewer".to_string(), VecDeque::from([reviewed("APPROVED", json!([]))])),
+        ]);
+        let host = host_with(data, home, Vec::new(), scenarios);
+        // Never the real ~/.claude: every terminal gets this test's config folder.
+        assert!(host.home.config.path().starts_with(test_root()), "{}", host.home.config.path().display());
+        // The stage's `auto` check (FLAKY_CHECK) fails the first time it runs
+        // in a folder: marked as run already, it passes for s1.
+        let marker = engine.join(".check-failed-once");
+        std::fs::write(&marker, "").unwrap();
+        let actors = RunActors::new(host.clone());
+        start_plan5_planner(&host, &engine);
+
+        let deadline = Instant::now() + Duration::from_secs(120);
+        let (mut sent, mut continued) = (false, false);
+        loop {
+            drain_inbox(&host.runs, &mut |event| {
+                if let InboxEvent::Turn(turn) = event {
+                    let run_id = turn.run_id.clone();
+                    actors.send(&run_id, ActorMsg::Turn(turn));
+                }
+            });
+            let run = snapshot(&host);
+            let story_wait = run.autopilot.as_ref().and_then(|a| a.story_wait.clone());
+            match (run.status, run.stop_reason) {
+                (RunStatus::Complete, _) => break,
+                // The plan's checkpoint before the Implementer: your Send.
+                (RunStatus::Waiting, Some(StopReason::Checkpoint)) if !sent && story_wait.is_none() => {
+                    sent = true;
+                    let reviewer = run.tab_ids["role_plan_reviewer"].clone();
+                    actors
+                        .ask(
+                            RUN,
+                            UserAction::Send {
+                                source_tab_id: reviewer,
+                                target_role_id: "role_implementer".into(),
+                                values: None,
+                                handoff_plan: None,
+                                handoff_text: None,
+                                force: false,
+                            },
+                            Duration::from_secs(30),
+                        )
+                        .expect("your Send");
+                }
+                // s1's checkpoint: you rerun on Windows, then Continue. The
+                // check is fresh again, so s2's first run fails.
+                (RunStatus::Waiting, Some(StopReason::Checkpoint)) if story_wait.is_some() && !continued => {
+                    let wait = story_wait.unwrap();
+                    assert_eq!((wait.story.as_str(), wait.lane.as_deref()), ("s1", None), "{}", ledger(&run));
+                    assert_eq!(wait.checkpoint, "Rerun the 7,839-file case on Windows and read the log");
+                    std::fs::remove_file(&marker).unwrap();
+                    continued = true;
+                    actors
+                        .ask(
+                            RUN,
+                            UserAction::ContinueStory { lane: None, story: "s1".into(), note: Some(R5_NOTE.into()), add: None },
+                            Duration::from_secs(60),
+                        )
+                        .expect("your Continue");
+                }
+                (RunStatus::Running, _) | (RunStatus::Waiting, Some(StopReason::Checkpoint)) => {}
+                (status, reason) => panic!(
+                    "the run stopped: {status:?} {reason:?}\nledger:\n{}\nstops: {:?}\n{}",
+                    ledger(&run),
+                    host.stops.lock().unwrap(),
+                    host.screens()
+                ),
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the run never completed\nledger:\n{}\n{}\nbridge.log: {}",
+                ledger(&run),
+                host.screens(),
+                std::fs::read_to_string(host.runs.join(RUN).join("bridge.log")).unwrap_or_default()
+            );
+            std::thread::sleep(Duration::from_millis(30));
+        }
+
+        let run = snapshot(&host);
+        let all = ledger(&run);
+        assert!(run.lanes.is_empty(), "one pull request: no fan-out");
+        // The actor opened the Plan Reviewer, the Implementer (in the repo) and one PR Reviewer.
+        let launches = host.launches.lock().unwrap().clone();
+        let roles: Vec<&str> = launches.iter().map(|l| l.role_id.as_str()).collect();
+        assert_eq!(roles, ["role_plan_reviewer", "role_implementer", "role_pr_reviewer"], "{all}");
+        let implementer = launches[1].clone();
+        assert_eq!(canonical(&implementer.cwd), canonical(&engine));
+        assert!(implementer.prompt.contains("This pull request (PR1) is built in 4 stories"), "{}", implementer.prompt);
+        assert!(implementer.prompt.contains("Do story s1 now (1 of 4)"), "{}", implementer.prompt);
+
+        // One Claude session throughout: every story was a resume of it.
+        let resumes = host.resumes.lock().unwrap().clone();
+        assert_eq!(resumes.len(), 4, "{all}");
+        for resume in &resumes {
+            assert_eq!((resume.tab_id.as_str(), resume.session_id.as_str()), (implementer.tab_id.as_str(), implementer.session_id.as_str()));
+        }
+        assert_eq!(session_logs(&host, &implementer.session_id), 1, "one session log");
+        assert_eq!(host.forced.load(Ordering::SeqCst), 0, "every old fake_claude exited on SIGTERM");
+
+        // Its prompts name each story in order: s1 (the startup prompt), s2
+        // with your note, s2's failed check, s3, s4.
+        let turns = prompts(&host, &implementer.session_id);
+        assert_eq!(turns.len(), 5, "{turns:?}");
+        assert!(turns[0].contains("Do story s1 now"), "{}", turns[0]);
+        assert!(turns[1].starts_with("Story 2 of 4: T14-4 log dedupe") && turns[1].contains(R5_NOTE), "{}", turns[1]);
+        assert!(turns[2].contains("FAIL src/auth.test.ts") && turns[2].contains("This is still story s2 (2 of 4)"), "{}", turns[2]);
+        assert!(turns[3].starts_with("Story 3 of 4: T14-2 lock-file filter"), "{}", turns[3]);
+        assert!(turns[4].starts_with("Story 4 of 4: T14-1 folder name") && turns[4].contains("This is the last story"), "{}", turns[4]);
+
+        // The check ran after every story; it failed once, on s2.
+        let checks: Vec<&str> = run
+            .events
+            .iter()
+            .filter(|e| e.kind == "gate" && e.summary.starts_with("npm run check"))
+            .map(|e| e.outcome.as_deref().unwrap_or_default())
+            .collect();
+        assert_eq!(checks, ["passed", "failed", "passed", "passed", "passed"], "{all}");
+        // Only the last story ran the pull-request gate, with its pull request.
+        let pr_gates = host.pr_gate_urls.lock().unwrap().clone();
+        assert_eq!(pr_gates, vec![vec!["https://github.com/acme/koneksi-engine/pull/77".to_string()]], "{all}");
+        let steps: Vec<&str> =
+            run.events.iter().filter_map(|e| e.outcome.as_deref()).filter(|o| ["nextStory", "storyContinue", "retry"].contains(o)).collect();
+        assert_eq!(steps, ["storyContinue", "retry", "nextStory", "nextStory"], "{all}");
+
+        // Every story is recorded, done, with its summary, tickets and turn.
+        let stories: Vec<(String, StoryStatus, u32, Option<String>)> =
+            run.stories.iter().map(|s| (s.id.clone(), s.status, s.attempt, s.summary.clone())).collect();
+        assert_eq!(
+            stories,
+            [
+                ("s1".to_string(), StoryStatus::Done, 0, Some("Story s1 is built.".to_string())),
+                ("s2".into(), StoryStatus::Done, 1, Some("Story s2 is built.".into())),
+                ("s3".into(), StoryStatus::Done, 0, Some("Story s3 is built.".into())),
+                ("s4".into(), StoryStatus::Done, 0, Some("Story s4 is built.".into())),
+            ],
+            "{all}"
+        );
+        assert_eq!(run.stories[0].note.as_deref(), Some(R5_NOTE));
+        assert_eq!((run.stories[0].tickets.clone(), run.stories[3].tickets.clone()), (vec!["86c0r5".to_string()], vec!["QA-141".to_string()]));
+        assert!(run.stories.iter().all(|s| s.turn.as_deref().is_some_and(|t| t.starts_with(&implementer.tab_id))), "{all}");
+        // One PR review, of the whole pull request, then the run is complete.
+        let reviewer = launches[2].clone();
+        assert!(reviewer.prompt.contains("https://github.com/acme/koneksi-engine/pull/77"), "{}", reviewer.prompt);
+        assert_eq!(run.status, RunStatus::Complete);
+        assert!(host.stops.lock().unwrap().iter().all(|s| s.starts_with("Checkpoint")), "{:?}", host.stops.lock().unwrap());
     }
 }

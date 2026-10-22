@@ -178,6 +178,39 @@ pub fn prepare_stage(runs_root: &Path, plan: &BridgePlan, tab_id: &str) -> Resul
     Ok(run_dir)
 }
 
+/// L3: at an Implementer stage's launch, record its task's stories on `run`
+/// (from the run folder's `tasks.json`, once) and give the stories section
+/// of its first prompt. Empty for any other stage, or a task with no stories.
+/// The caller saves the run when it returns true in `.1`.
+pub fn launch_stories(runs_root: &Path, run: &mut PipelineRun, plan: &BridgePlan) -> (String, bool) {
+    if plan.kind != ResultKind::Implementer {
+        return (String::new(), false);
+    }
+    let lane = plan.lane.as_deref();
+    let tasks = folder::run_dir(runs_root, &plan.run_id).and_then(|dir| folder::read_tasks(&dir));
+    let seeded = match tasks.as_ref().and_then(|tasks| tasks.task_for(lane)) {
+        Some(task) => crate::pipelines::stories::seed(run, lane, task),
+        None => false,
+    };
+    (crate::pipelines::stories::first_prompt(run, lane), seeded)
+}
+
+/// L3: the stage's `story.json` from `run`'s story records for its lane,
+/// after [`prepare_stage`], so the bridge takes a result for the current
+/// story only. Nothing is written for a stage with no stories.
+pub fn write_story_mark(runs_root: &Path, run: &PipelineRun, stage_key: &str, lane: Option<&str>) -> Result<(), String> {
+    let Some(mark) = crate::pipelines::stories::mark(run, lane) else {
+        return Ok(());
+    };
+    let dir = folder::run_dir(runs_root, &run.id)
+        .and_then(|dir| folder::stage_dir_path(&dir, stage_key))
+        .ok_or_else(|| format!("not a stage of run {}: {stage_key:?}", run.id))?;
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    folder::write_story(&dir, Some(&mark)).map_err(|err| format!("could not write {}: {err}", dir.join(folder::STORY_FILE).display()))
+}
+
 /// Write Settings › Repos into the run folder (`repos.json`, L1) as a
 /// stage launches, after [`prepare_stage`]: the bridge checks a Planner
 /// task's `repo` against these names, and it only sees the run folder.

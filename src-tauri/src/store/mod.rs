@@ -67,6 +67,7 @@ pub use state_types::{
     window_matches, AppStateFile, ChainRef, LayoutState, Migrations, PipelineRun, RoleSnapshot,
     claim_key, HandoffClaim, HeldEnd, HeldTurn, RunAutopilot, RunEvent, RunLane, RunStatus, StageGates, StageHandoff, StopReason,
     ArchivedWindow, TabRecord, TabSessionRef, VerifyRecord, VerifyWait, WindowRecord, MAIN_WINDOW_ID, MAX_DECIDED_TURNS,
+    RunStory, StoryStatus, StoryWait,
 };
 pub use transcript_store::{
     rotate_transcripts, truncate_transcript, RotationGuard, TranscriptFile, TranscriptStore,

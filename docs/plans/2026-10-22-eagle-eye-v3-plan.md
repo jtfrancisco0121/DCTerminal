@@ -187,7 +187,7 @@ Wave 1 needs none of the new code, because each of its plans touches one repo.
 | Triage groups tickets badly | The Plan Reviewer checks it and you approve it at the checkpoint. You can edit `round.md`, or start from your own doc (E8) |
 | Plans that touch the same files conflict at merge | Triage orders them into waves, and the merge queue warns about rebases. Plan 7's locale sweep goes last, as in the QA doc |
 | Many runs at once use up Claude usage | Cap on runs at once (default 2), plus the existing `pauseAtUsagePercent` |
-| The story loop makes a lane's session very long | One session per lane keeps context. If it grows too long, a story can be set to start a fresh session that reads the previous stories' summaries (decided in L3) |
+| The story loop makes a lane's session very long | One session per lane keeps context. If it grows too long, a story can be set to start a fresh session that reads the previous stories' summaries (decided in L3) **Decided in L3:** one session per lane, with no fresh-session split for now; each story's summary is kept on the run, so a split can be added later if a session grows too long |
 
 ## Done when
 

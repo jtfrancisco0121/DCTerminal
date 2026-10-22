@@ -1649,10 +1649,28 @@ fn role_terminal_start_blocking(
     // Settings › Repos (L1): the Planner's prompt lists them, and the run
     // folder gets them for the bridge's tasks check.
     let repos = settings.lock().map_err(|err| err.to_string())?.repos().to_vec();
-    let instructions = bridge
+    let mut instructions = bridge
         .as_ref()
         .map(|plan| crate::bridge::schema::stage_instructions(plan.kind, &repos))
         .unwrap_or_default();
+    // L3: a lane's Implementer whose task has stories gets their list, and
+    // the run records them.
+    if let Some(plan) = bridge.as_ref() {
+        let mut state = store.lock().map_err(|err| err.to_string())?;
+        let section = match state.pipeline_run_by_id_mut(&plan.run_id) {
+            Some(run) => {
+                let (section, seeded) = crate::bridge::launch::launch_stories(&runs_root(&app), run, plan);
+                if seeded {
+                    state.save()?;
+                }
+                section
+            }
+            None => String::new(),
+        };
+        if !section.is_empty() {
+            instructions = format!("{instructions}\n\n{section}");
+        }
+    }
     let preview = merge_role_prompt_with(&role, &input.values, &instructions);
     if !preview.errors.is_empty() {
         return Ok(TerminalStartResult {
@@ -1785,6 +1803,13 @@ fn role_terminal_start_blocking(
                 let (runs, program) = bridge_paths(&app)?;
                 let run_dir = crate::bridge::launch::prepare_stage(&runs, plan, &tab_id)?;
                 crate::bridge::launch::write_run_repos(&run_dir, &repos)?;
+                // L3: the story the stage starts on, for the bridge's check.
+                {
+                    let state = store.lock().map_err(|err| err.to_string())?;
+                    if let Some(run) = state.pipeline_run_by_id(&plan.run_id) {
+                        crate::bridge::launch::write_story_mark(&runs, run, &plan.stage_key, plan.lane.as_deref())?;
+                    }
+                }
                 // C2: the run's intake snapshot, before the stage that reads it starts.
                 if let Some(snapshot) = intake.as_ref().and_then(|i| i.write.as_ref()) {
                     crate::commands::clickup_intake::write_snapshot(&run_dir, snapshot)?;

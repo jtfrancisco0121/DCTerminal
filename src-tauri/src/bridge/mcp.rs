@@ -7,6 +7,8 @@
 //! An accepted result is written to `results/<turn>.json` for the turn in
 //! `turn.json` before the tool answers, so the Stop that follows finds it.
 //! An Implementer's also goes to the run's `prs.json` (`prs-<lane>.json`).
+//! An Implementer's result for a pull request built in stories (L3) must
+//! name the story in its stage's `story.json`.
 //! Rejected arguments get a tool error naming each problem; nothing is
 //! written. The stage folder is checked again on every call, so a tab that
 //! lost its stage to a newer one cannot report into it.
@@ -135,7 +137,13 @@ fn call(server: &Server, params: &Value) -> Value {
         }
     };
     let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
-    match schema::validate(dir.info.result, &args) {
+    // L3: an Implementer's result is also checked against the story its
+    // stage is on (`story.json`), so a result for another story is refused.
+    let checked = schema::validate(dir.info.result, &args).and_then(|result| match dir.info.result {
+        ResultKind::Implementer => schema::check_story(&result, dir.story().as_ref()).map(|()| result),
+        _ => Ok(result),
+    });
+    match checked {
         Err(problems) => tool_text(&schema::rejected_message(&problems), true),
         Ok(result) => {
             let stored = StoredResult {
@@ -144,9 +152,13 @@ fn call(server: &Server, params: &Value) -> Value {
                 at: super::folder::now(),
                 result: result.clone(),
             };
+            // L3: a story's result with no pull request yet leaves prs.json
+            // (the pull request reported last) as it is.
+            let story_without_prs = result.get("story").is_some()
+                && result.get("prs").and_then(Value::as_array).is_none_or(Vec::is_empty);
             let saved = match dir.info.result {
                 // The run-level copy first: the result is what ends the turn.
-                ResultKind::Implementer => dir
+                ResultKind::Implementer if !story_without_prs => dir
                     .write_prs(&RunPrs {
                         schema: SCHEMA,
                         run_id: dir.info.run_id.clone(),

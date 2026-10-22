@@ -65,6 +65,12 @@ pub struct TurnReport {
     /// Engine 2: an Implementer's `submit_result` said it is blocked, and why.
     #[serde(default)]
     pub blocked: Option<String>,
+    /// L3: the story this Implementer turn finished (`submit_result` `story`).
+    #[serde(default)]
+    pub story: Option<String>,
+    /// L3: the Implementer's `summary`, kept on the story it finished.
+    #[serde(default)]
+    pub summary: Option<String>,
 }
 
 /// Key of per-stage state (gate results, retries): `stage` or `stage@lane`.
@@ -78,7 +84,8 @@ pub fn stage_key(stage_id: &str, lane: Option<&str>) -> String {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Decision {
-    /// `advance`, `loopBack`, `retry`, `stop`, `complete`, `laneDone`,
+    /// `advance`, `loopBack`, `retry`, `nextStory` (L3: resume the stage's
+    /// session with its next story, `message`), `stop`, `complete`, `laneDone`,
     /// `ignore` (a late turn in an approved lane, or a turn already decided
     /// on: nothing to do or tell), `skip` (a stale turn, or a hand-off made
     /// already: the ledger says so, nothing else happens).
@@ -387,13 +394,18 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             ),
         );
     }
+    // L3: a usage stop mid-loop says how to pick the story up again.
+    let resend_hint = super::stories::current(run, lane)
+        .filter(|_| stage.kind() == super::StageKind::Implementer)
+        .map(|now| format!(" Then press Resend story in the chain overview to send story {} again.", now.id))
+        .unwrap_or_default();
     if let Some(error) = report.rate_limit.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
         return stop(
             run,
             Some(&stage),
             StopReason::UsageLimit,
             format!(
-                "{} hit a Claude usage limit: {}. Carry on yourself once it resets.",
+                "{} hit a Claude usage limit: {}. Carry on yourself once it resets.{resend_hint}",
                 stage.title,
                 error.trim_end_matches('.')
             ),
@@ -405,7 +417,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             run,
             Some(&stage),
             StopReason::UsageLimit,
-            format!("Paused: Claude usage is at {used}% (autopilot pauses at {pause}%)."),
+            format!("Paused: Claude usage is at {used}% (autopilot pauses at {pause}%).{resend_hint}"),
         );
     }
     if report.no_result {
@@ -431,6 +443,28 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
                 why.trim_end_matches('.')
             ),
         );
+    }
+    // L3: the story this turn finished, when it is the lane's current one (a
+    // story already done, such as the last one named again in a review
+    // round, decides as a plain turn).
+    let story = report
+        .story
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| super::stories::is_current(run, lane, id))
+        .map(str::to_string);
+    // The bridge takes a result for the current story only (`story.json`),
+    // so an Implementer turn mid-loop that names none means the two
+    // disagree: stop rather than hand an unfinished pull request on.
+    if stage.kind() == super::StageKind::Implementer && story.is_none() {
+        if let Some(now) = super::stories::current(run, lane) {
+            let reported = report.story.as_deref().map(|id| format!("story {id}")).unwrap_or_else(|| "no story".to_string());
+            let reason = format!(
+                "{} reported {reported}, but its pull request is on story {} ({}). Press Resend story in the chain overview to send it that story again, or hand the stage on.",
+                stage.title, now.id, now.title
+            );
+            return stop(run, Some(&stage), StopReason::NoResult, reason);
+        }
     }
     let this_round = run.gates.get(&key_of_stage).filter(|gates| gates.round == round);
     if let Some(gate) = this_round.and_then(|gates| gates.results.iter().find(|r| r.no_check_found()).cloned()) {
@@ -469,9 +503,24 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             } else {
                 format!("The {} check failed {} times in a row. {}", gate.label, retries + 1, gate.summary)
             };
+            let why = match story.as_deref() {
+                Some(id) => {
+                    super::stories::set_failed(run, lane, id, retries + 1);
+                    format!("{why} Once you have looked, press Resend story in the chain overview to send story {id} again.")
+                }
+                None => why,
+            };
             return stop(run, Some(&stage), StopReason::GateFailed, why);
         }
         autopilot(run).gate_retries.insert(key_of_stage.clone(), retries + 1);
+        // L3: the output goes back for the same story, which says so.
+        let story_note = match story.as_deref() {
+            Some(id) => {
+                super::stories::set_failed(run, lane, id, retries + 1);
+                super::stories::retry_note(run, lane, id)
+            }
+            None => String::new(),
+        };
         if gate.kind == "verify" {
             // L2: Failed with a note goes back to the stage as a round, as a
             // failed check's output does, and counts toward its retries.
@@ -481,7 +530,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             )
             .for_stage(&stage);
             decision.lane = lane.map(str::to_string);
-            decision.message = Some(super::verify::failed_message(&gate.summary, &gate.output));
+            decision.message = Some(format!("{}{story_note}", super::verify::failed_message(&gate.summary, &gate.output)));
             return go(run, decision, Some(gate.output.clone()));
         }
         let mut decision = Decision::new(
@@ -496,7 +545,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             format!("\n\n```\n{}\n```", gate.output.trim())
         };
         decision.message = Some(format!(
-            "The `{}` check failed after your last turn: {}{}\n\nFix the cause, push to the same branch, then end your reply with the same HANDOFF sections as before.",
+            "The `{}` check failed after your last turn: {}{}\n\nFix the cause, push to the same branch, then end your reply with the same HANDOFF sections as before.{story_note}",
             gate.label, gate.summary, output
         ));
         return go(run, decision, Some(gate.output.clone()));
@@ -511,11 +560,24 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
         .and_then(|gates| gates.results.iter().find(|r| r.waiting_verify()).cloned());
     if let Some(gate) = waiting {
         let mut decision = super::verify::wait_for_you(run, &stage, lane, &gate, turn);
+        // L3: the last story waits on your verification too (set after the
+        // stop, which ends any earlier wait and its story's state).
+        if let Some(id) = story.as_deref() {
+            super::stories::set_status(run, lane, id, crate::store::StoryStatus::Verifying);
+        }
         decision.lane = lane.map(str::to_string);
         return decision;
     }
     // Every check passed (or none ran) this round: a later failure starts counting again.
     autopilot(run).gate_retries.remove(&key_of_stage);
+    // L3: a story's checks passed: the next story, your checkpoint, or (the
+    // last story) the pull request goes on below as a plain turn would.
+    if let Some(id) = story.as_deref() {
+        let finished = super::stories::finish(run, lane, id, turn, report.summary.as_deref());
+        if let Some(decision) = story_passed(run, &stage, lane, id, finished, turn) {
+            return decision;
+        }
+    }
     let verdict = report.verdict.as_deref().map(normalize_verdict);
     let Some(verdict) = verdict.as_deref().filter(|v| !v.is_empty()) else {
         if stage.loop_back.is_some() {
@@ -647,6 +709,54 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
     }
     let applied = if report.findings_known { blocking } else { Vec::new() };
     advance(def, run, index, verdict, follow_ups, applied, lane, turn)
+}
+
+/// L3: what follows a story whose checks passed. `None` for the last story
+/// (the turn then decides as any Implementer turn: on to the PR Reviewer).
+fn story_passed(
+    run: &mut PipelineRun,
+    stage: &StageDef,
+    lane: Option<&str>,
+    id: &str,
+    finished: Option<super::stories::Finished>,
+    turn: Option<&str>,
+) -> Option<Decision> {
+    use super::stories::Finished;
+    let (number, total) = super::stories::position(run, lane, id).unwrap_or((1, 1));
+    match finished? {
+        Finished::Last => None,
+        Finished::Next(next) => {
+            let (next_number, _) = super::stories::position(run, lane, &next).unwrap_or((number + 1, total));
+            let mut decision = Decision::new(
+                "nextStory",
+                format!(
+                    "Story {id} ({number} of {total}) passed its checks; story {next} ({next_number} of {total}) goes to {}.",
+                    stage.title
+                ),
+            )
+            .for_stage(stage);
+            decision.lane = lane.map(str::to_string);
+            decision.message = Some(super::stories::story_message(run, lane, &next));
+            Some(go(run, decision, None))
+        }
+        Finished::Checkpoint(checkpoint) => {
+            let title = lane.and_then(|l| run.lane(l)).map(|l| format!("{}: ", l.title)).unwrap_or_default();
+            let reason = format!(
+                "{title}story {id} ({number} of {total}) passed its checks, and its checkpoint waits for you: {}. \
+                 Do it, then press Continue in the chain overview with what you found; the next story goes on with your note.",
+                checkpoint.trim().trim_end_matches('.')
+            );
+            // Turns held for an earlier wait stay held for this one, as for
+            // a verify gate (L2): your Continue decides them.
+            let held = std::mem::take(&mut autopilot(run).held);
+            let mut decision = stop(run, Some(stage), StopReason::Checkpoint, reason);
+            super::stories::set_status(run, lane, id, crate::store::StoryStatus::Waiting);
+            autopilot(run).held = held;
+            autopilot(run).story_wait = Some(super::stories::wait(&stage.id, lane, id, &checkpoint, turn));
+            decision.lane = lane.map(str::to_string);
+            Some(decision)
+        }
+    }
 }
 
 /// The round a reviewer stage is on along its loop-back edge: the recorded

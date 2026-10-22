@@ -9,7 +9,7 @@
 //! every-problem-at-once rule. A task may name a `repo` from Settings ›
 //! Repos (L1); the names come from the run folder's `repos.json`.
 
-use super::folder::{PlannedTask, ResultKind, SCHEMA};
+use super::folder::{PlannedStory, PlannedTask, ResultKind, StoryMark, SCHEMA};
 use serde_json::{json, Map, Value};
 
 /// The tool's name on the `dcterminal` server.
@@ -32,11 +32,18 @@ const FINDING_FIELDS: [&str; 5] = ["severity", "summary", "pr", "file", "regress
 /// Pull requests an Implementer reports, and tasks a plan has (plan "Result schemas").
 pub const MAX_PRS: usize = 8;
 pub const MAX_TASKS: usize = 8;
-const IMPLEMENTER_FIELDS: [&str; 5] = ["schema", "prs", "summary", "checks", "blocked"];
+const IMPLEMENTER_FIELDS: [&str; 6] = ["schema", "prs", "summary", "checks", "blocked", "story"];
 const PR_FIELDS: [&str; 4] = ["url", "branch", "title", "lane"];
 const CHECK_FIELDS: [&str; 2] = ["command", "passed"];
 const TASKS_FIELDS: [&str; 2] = ["schema", "tasks"];
-const TASK_FIELDS: [&str; 6] = ["id", "title", "dependsOn", "manual", "summary", "repo"];
+const TASK_FIELDS: [&str; 7] = ["id", "title", "dependsOn", "manual", "summary", "repo", "stories"];
+/// Stories a task may list (L3), and the fields of one.
+pub const MAX_STORIES: usize = 20;
+const STORY_FIELDS: [&str; 6] = ["id", "title", "tickets", "doneWhen", "plannedTests", "checkpoint"];
+/// Items of a story's `tickets`, `doneWhen` and `plannedTests` lists.
+const MAX_STORY_ITEMS: usize = 20;
+/// A story id (`s1`) is short: a reference, not a title.
+const MAX_STORY_ID_CHARS: usize = 20;
 /// An Implementer's summary and a task's summary may be a paragraph or two.
 const MAX_LONG_TEXT_CHARS: usize = 4000;
 const MAX_CHECKS: usize = 50;
@@ -244,14 +251,30 @@ fn validate_implementer(args: &Value) -> Result<Value, Vec<String>> {
         }
     };
     let blocked_field = object.get("blocked").is_some_and(|value| !value.is_null());
+    // L3: a story's turn may open no pull request yet; whether this story is
+    // the one that must is checked against the stage's story (`check_story`).
+    let story = match object.get("story") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(text)) if text.trim().is_empty() => None,
+        Some(Value::String(text)) if text.trim().chars().count() > MAX_STORY_ID_CHARS => {
+            problems.push(format!("`story` is longer than {MAX_STORY_ID_CHARS} characters: give the story's id, such as \"s1\""));
+            None
+        }
+        Some(Value::String(text)) => Some(text.trim().to_lowercase()),
+        Some(other) => {
+            problems.push(format!("`story` must be the id of the story you finished, such as \"s1\", not {other}"));
+            None
+        }
+    };
+    let may_skip_prs = blocked_field || story.is_some();
     let mut prs = Vec::new();
     match object.get("prs") {
-        None if blocked_field => {}
+        None if may_skip_prs => {}
         None => problems.push(format!(
             "`prs` is missing: list every draft pull request you opened (1 to {MAX_PRS}), each with `url`, `branch` and `title`, or say why you are blocked in `blocked`"
         )),
         Some(Value::Array(items)) => {
-            if items.is_empty() && !blocked_field {
+            if items.is_empty() && !may_skip_prs {
                 problems.push(
                     "`prs` is empty: list the draft pull request you opened, or say why you are blocked in `blocked`".to_string(),
                 );
@@ -351,7 +374,71 @@ fn validate_implementer(args: &Value) -> Result<Value, Vec<String>> {
     if let Some(blocked) = blocked {
         out["blocked"] = json!(blocked);
     }
+    if let Some(story) = story {
+        out["story"] = json!(story);
+    }
     Ok(out)
+}
+
+/// An accepted Implementer result against the stage's story (L3, `mark`:
+/// its `story.json`). While a story is current, the result must name it,
+/// and the last story must list its pull request (unless blocked); a result
+/// naming another story is refused with the current one named. Once every
+/// story is done (a review round), `story` may be left out or name the last
+/// one. With no stories, `story` must be left out. `Err` names each problem.
+pub fn check_story(result: &Value, mark: Option<&StoryMark>) -> Result<(), Vec<String>> {
+    let story = result.get("story").and_then(Value::as_str);
+    let blocked = result.get("blocked").is_some();
+    let no_prs = result.get("prs").and_then(Value::as_array).is_none_or(Vec::is_empty);
+    let Some(mark) = mark.filter(|mark| !mark.ids.is_empty()) else {
+        return match story {
+            Some(story) => Err(vec![format!(
+                "`story` {story:?}: this pull request has no stories, so leave `story` out"
+            )]),
+            None => Ok(()),
+        };
+    };
+    let total = mark.ids.len();
+    let Some(current) = mark.current.as_deref() else {
+        let last = mark.ids.last().map(String::as_str);
+        return match story {
+            Some(story) if Some(story) != last => Err(vec![format!(
+                "`story` {story:?}: every story of this pull request is done, so leave `story` out"
+            )]),
+            // A review round reports the pull request, never an empty list.
+            _ if no_prs && !blocked => Err(vec![
+                "`prs` is empty: every story is done, so list the draft pull request (each with `url`, `branch` and `title`)".to_string(),
+            ]),
+            _ => Ok(()),
+        };
+    };
+    let number = mark.ids.iter().position(|id| id == current).map_or(0, |at| at + 1);
+    let title = if mark.current_title.trim().is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", mark.current_title.trim())
+    };
+    let mut problems = Vec::new();
+    match story {
+        None if blocked => {}
+        None => problems.push(format!(
+            "`story` is missing: you are on story {current}{title}, {number} of {total}; set `story` to \"{current}\""
+        )),
+        Some(story) if story != current => problems.push(format!(
+            "`story` {story:?} is not the current story: the current story is {current}{title}, {number} of {total}. Finish it and report it with `story` set to \"{current}\""
+        )),
+        Some(_) => {}
+    }
+    if number == total && no_prs && !blocked && story == Some(current) {
+        problems.push(format!(
+            "`prs` is empty: {current} is the last story, so list the draft pull request you opened (each with `url`, `branch` and `title`)"
+        ));
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems)
+    }
 }
 
 /// The fenced code blocks of a markdown text: each block's info string
@@ -395,6 +482,12 @@ pub fn planner_tasks(plan: &str) -> Result<Vec<PlannedTask>, Vec<String>> {
 /// [`planner_tasks`], where a task's `repo` must be one of `repos` (the
 /// names in Settings › Repos, any case; kept as Settings spells it).
 pub fn planner_tasks_with(plan: &str, repos: &[String]) -> Result<Vec<PlannedTask>, Vec<String>> {
+    planner_tasks_checked(plan, repos, None)
+}
+
+/// [`planner_tasks_with`], where a story's `tickets` must be ids (or
+/// custom ids, any case) of the run's `tickets.json` when it has one (L3).
+pub fn planner_tasks_checked(plan: &str, repos: &[String], tickets: Option<&[String]>) -> Result<Vec<PlannedTask>, Vec<String>> {
     if plan.trim().is_empty() {
         return Err(vec!["the plan is empty".to_string()]);
     }
@@ -420,10 +513,10 @@ pub fn planner_tasks_with(plan: &str, repos: &[String]) -> Result<Vec<PlannedTas
         ));
         return Err(problems);
     };
-    check_tasks(&value, repos)
+    check_tasks(&value, repos, tickets)
 }
 
-fn check_tasks(value: &Value, repos: &[String]) -> Result<Vec<PlannedTask>, Vec<String>> {
+fn check_tasks(value: &Value, repos: &[String], tickets: Option<&[String]>) -> Result<Vec<PlannedTask>, Vec<String>> {
     let Some(object) = value.as_object() else {
         return Err(vec!["the tasks block must be a JSON object with `tasks`".to_string()]);
     };
@@ -490,6 +583,7 @@ fn check_tasks(value: &Value, repos: &[String]) -> Result<Vec<PlannedTask>, Vec<
             }
         };
         let repo = task_repo(task.get("repo"), &at, repos, &mut problems);
+        let stories = task_stories(task.get("stories"), &at, manual, tickets, &mut problems);
         if let Some(id) = id.clone().filter(|id| valid_task_id(id)) {
             linked.push((id, depends_on.clone()));
         }
@@ -501,6 +595,7 @@ fn check_tasks(value: &Value, repos: &[String]) -> Result<Vec<PlannedTask>, Vec<
                 manual,
                 summary: summary.unwrap_or_default(),
                 repo,
+                stories,
             });
         }
     }
@@ -526,6 +621,130 @@ fn check_tasks(value: &Value, repos: &[String]) -> Result<Vec<PlannedTask>, Vec<
         return Err(problems);
     }
     Ok(tasks)
+}
+
+/// A task's `stories` (L3): left out or `[]` for a pull request built in
+/// one turn; else 1 to [`MAX_STORIES`] stories with unique ids. A manual
+/// task has none, and the last story has no `checkpoint` (there is no next
+/// story to wait for). Every problem is named, as for the tasks.
+fn task_stories(
+    value: Option<&Value>,
+    at: &str,
+    manual: bool,
+    tickets: Option<&[String]>,
+    problems: &mut Vec<String>,
+) -> Vec<PlannedStory> {
+    let items = match value {
+        None | Some(Value::Null) => return Vec::new(),
+        Some(Value::Array(items)) if items.is_empty() => return Vec::new(),
+        Some(Value::Array(items)) => items,
+        Some(other) => {
+            problems.push(format!("`{at}.stories` must be a list of stories, not {other}"));
+            return Vec::new();
+        }
+    };
+    if manual {
+        problems.push(format!(
+            "`{at}.stories`: a manual task is not built by an Implementer, so it has no stories; leave `stories` out or set `manual` to false"
+        ));
+        return Vec::new();
+    }
+    if items.len() > MAX_STORIES {
+        problems.push(format!("`{at}.stories` has {} items; at most {MAX_STORIES}", items.len()));
+    }
+    let mut stories = Vec::new();
+    let mut ids: Vec<String> = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        let at = format!("{at}.stories[{index}]");
+        let Some(story) = item.as_object() else {
+            problems.push(format!("`{at}` must be an object with `id` and `title`"));
+            continue;
+        };
+        let before = problems.len();
+        unknown_fields(story, &format!("{at}."), &STORY_FIELDS, problems);
+        let id = required_text(story, &format!("{at}."), "id", MAX_STORY_ID_CHARS, problems).map(|id| id.to_lowercase());
+        if let Some(id) = id.as_deref() {
+            if !id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_') {
+                problems.push(format!("`{at}.id` {id:?} must be letters and digits, such as \"s1\""));
+            } else if ids.iter().any(|seen| seen == id) {
+                problems.push(format!("story id {id:?} is used twice in {}", at.split(".stories").next().unwrap_or(&at)));
+            } else {
+                ids.push(id.to_string());
+            }
+        }
+        let title = required_text(story, &format!("{at}."), "title", MAX_SUMMARY_CHARS, problems);
+        let story_tickets = text_list(story.get("tickets"), &format!("{at}.tickets"), MAX_REF_CHARS, problems);
+        for ticket in &story_tickets {
+            if ticket.chars().any(char::is_whitespace) {
+                problems.push(format!("`{at}.tickets` {ticket:?} has spaces in it: use the ticket id, such as \"86c0abc12\" or \"QA-129\""));
+            } else if let Some(known) = tickets.filter(|known| !known.iter().any(|k| k.eq_ignore_ascii_case(ticket))) {
+                let shown: Vec<&str> = known.iter().map(String::as_str).take(12).collect();
+                problems.push(format!(
+                    "`{at}.tickets` {ticket:?} is not a ticket of this run's tickets.json (it has {})",
+                    if shown.is_empty() { "none".to_string() } else { list(&shown) }
+                ));
+            }
+        }
+        let done_when = text_list(story.get("doneWhen"), &format!("{at}.doneWhen"), MAX_SUMMARY_CHARS, problems);
+        let planned_tests = text_list(story.get("plannedTests"), &format!("{at}.plannedTests"), MAX_SUMMARY_CHARS, problems);
+        let checkpoint = match story.get("checkpoint") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(text)) if text.trim().is_empty() => None,
+            Some(Value::String(text)) if text.trim().chars().count() > MAX_LONG_TEXT_CHARS => {
+                problems.push(format!("`{at}.checkpoint` is longer than {MAX_LONG_TEXT_CHARS} characters"));
+                None
+            }
+            Some(Value::String(text)) => Some(text.trim().to_string()),
+            Some(other) => {
+                problems.push(format!("`{at}.checkpoint` must say what you do before the next story, not {other}"));
+                None
+            }
+        };
+        if checkpoint.is_some() && index + 1 == items.len() {
+            problems.push(format!(
+                "`{at}.checkpoint`: the last story has no next story to wait for; put the step in its `doneWhen` instead"
+            ));
+        }
+        if problems.len() == before {
+            stories.push(PlannedStory {
+                id: id.unwrap_or_default(),
+                title: title.unwrap_or_default(),
+                tickets: story_tickets,
+                done_when,
+                planned_tests,
+                checkpoint,
+            });
+        }
+    }
+    stories
+}
+
+/// An optional list of short texts (a story's tickets, done-when lines,
+/// planned tests): trimmed, empty ones dropped, at most [`MAX_STORY_ITEMS`].
+fn text_list(value: Option<&Value>, at: &str, max: usize, problems: &mut Vec<String>) -> Vec<String> {
+    let items = match value {
+        None | Some(Value::Null) => return Vec::new(),
+        Some(Value::Array(items)) => items,
+        Some(other) => {
+            problems.push(format!("`{at}` must be a list of strings, not {other}"));
+            return Vec::new();
+        }
+    };
+    if items.len() > MAX_STORY_ITEMS {
+        problems.push(format!("`{at}` has {} items; at most {MAX_STORY_ITEMS}", items.len()));
+    }
+    let mut out = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        match item {
+            Value::String(text) if text.trim().is_empty() => {}
+            Value::String(text) if text.trim().chars().count() > max => {
+                problems.push(format!("`{at}[{index}]` is longer than {max} characters"));
+            }
+            Value::String(text) => out.push(text.trim().to_string()),
+            other => problems.push(format!("`{at}[{index}]` must be a string, not {other}")),
+        }
+    }
+    out
 }
 
 /// A task's `repo` (L1): left out, `null` or `""` for the run's own folder;
@@ -607,6 +826,16 @@ pub fn plan_rejected_message(problems: &[String]) -> String {
     )
 }
 
+/// How a Planner splits a pull request into stories (L3).
+const STORIES_GUIDE: &str = "A task may also list `stories`: the steps its one pull request is built in, in order, in one Implementer session \
+on one branch, with the checks run after each. Use them for a pull request with several separate parts, and especially when \
+the run has a tickets.json (one story per ticket or small group of tickets). Each story has `id` (`s1`, `s2`, …), `title`, and \
+optionally `tickets` (ids from tickets.json), `doneWhen` and `plannedTests` (short lines), and `checkpoint`: what the user must \
+do and report before the next story starts (for example a rerun on another machine). At most 20 stories; the last story has no \
+`checkpoint`. Example task: {\"id\": \"pr1\", \"title\": \"Log fixes\", \"dependsOn\": [], \"manual\": false, \"summary\": \"…\", \
+\"stories\": [{\"id\": \"s1\", \"title\": \"Add timing logs\", \"tickets\": [\"QA-12\"], \"checkpoint\": \"Rerun the 7,839-file case on Windows and report the log\"}, \
+{\"id\": \"s2\", \"title\": \"Dedupe log lines\", \"doneWhen\": [\"Each line is written once\"], \"plannedTests\": [\"TestDedupe\"]}]}.";
+
 const TASKS_EXAMPLE: &str = "Example: ```json\n{\"tasks\": [{\"id\": \"pr1\", \"title\": \"Token refresh\", \"dependsOn\": [], \"manual\": false, \"summary\": \"Refresh expired tokens in src/auth.ts.\"}]}\n```";
 
 /// The tool as `tools/list` describes it.
@@ -667,6 +896,11 @@ pub fn tool_definition(kind: ResultKind) -> Value {
                         }
                     },
                     "summary": { "type": "string", "maxLength": MAX_LONG_TEXT_CHARS },
+                    "story": {
+                        "type": "string",
+                        "maxLength": MAX_STORY_ID_CHARS,
+                        "description": "only when your pull request is built in stories: the id of the story this turn finished (`prs` may be [] until the last story)"
+                    },
                     "blocked": {
                         "type": "string",
                         "maxLength": MAX_LONG_TEXT_CHARS,
@@ -723,6 +957,7 @@ pub fn result_instructions(kind: ResultKind) -> String {
              - `manual`: `true` for a step that is not a pull request (a release, a deploy, a configuration change).\n\
              - `summary`: what the unit covers, in a sentence or two.\n\n\
              A plan that ships as one pull request has one task. {TASKS_EXAMPLE}\n\n\
+             {STORIES_GUIDE}\n\n\
              DCTerminal answers ExitPlanMode with \"Plan received\": stop there and end your turn with a short summary; do not start implementing. \
              If it answers with problems instead, fix each one and call ExitPlanMode again."
         ),
@@ -797,7 +1032,13 @@ pub fn accepted_message(kind: ResultKind, result: &Value) -> String {
         ResultKind::Implementer => {
             let count = result.get("prs").and_then(Value::as_array).map_or(0, Vec::len);
             let blocked = if result.get("blocked").is_some() { ", blocked" } else { "" };
-            format!("DCTerminal received your result: {count} pull request(s){blocked}. Finish your turn now.")
+            // L3: a story's result says which story it was.
+            let story = result
+                .get("story")
+                .and_then(Value::as_str)
+                .map(|story| format!(" for story {story}"))
+                .unwrap_or_default();
+            format!("DCTerminal received your result{story}: {count} pull request(s){blocked}. Finish your turn now.")
         }
         ResultKind::Planner => PLAN_RECEIVED.to_string(),
     }

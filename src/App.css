@@ -5622,6 +5622,45 @@ mark.search-hit-current {
   overflow-wrap: anywhere;
 }
 
+/* L3: a pull request's stories, and the checkpoint story the run waits on. */
+.pipeline-story-checkpoint .field-label {
+  margin-top: 0.4rem;
+}
+
+.pipeline-stories {
+  margin-bottom: 1rem;
+}
+
+.pipeline-stories h3 {
+  margin: 0 0 0.25rem;
+  font-size: var(--text-sm);
+}
+
+.pipeline-story-list {
+  margin: 0.25rem 0 0.4rem;
+  padding-left: 1.4rem;
+  font-size: var(--text-sm);
+}
+
+.pipeline-story-list code {
+  font-size: var(--text-xs);
+}
+
+.pipeline-story-done {
+  color: var(--fg-muted);
+}
+
+.pipeline-story-active .pipeline-story-status,
+.pipeline-story-checking .pipeline-story-status {
+  font-weight: 600;
+}
+
+.pipeline-story-failed .pipeline-story-status,
+.pipeline-story-waiting .pipeline-story-status {
+  color: var(--attention);
+  font-weight: 600;
+}
+
 .pipeline-followups {
   margin-bottom: 1rem;
 }

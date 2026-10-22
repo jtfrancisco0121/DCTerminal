@@ -379,6 +379,49 @@ export type PipelineRun = {
   manualOnly?: boolean;
   /** L2: your answers to verify gates, oldest first, one per answer. A lane is verified when its latest says so. */
   verifications?: VerifyRecord[];
+  /** L3: one record per story of each pull request built in stories, in order (a lane's, or the run's own with no lane). */
+  stories?: RunStory[];
+};
+
+/** L3: where a story stands. */
+export type StoryStatus = "pending" | "active" | "checking" | "failed" | "waiting" | "verifying" | "done" | "skipped";
+
+/** L3: one story of a pull request built in stories, as the run records it. */
+export type RunStory = {
+  /** The lane (pull request); absent for the run's own Implementer. */
+  lane?: string | null;
+  /** The task (`pr1`) it belongs to. */
+  task?: string;
+  /** `s1`. */
+  id: string;
+  title: string;
+  tickets?: string[];
+  doneWhen?: string[];
+  plannedTests?: string[];
+  /** What you do and report before the next story. */
+  checkpoint?: string | null;
+  status?: StoryStatus;
+  /** Failed check rounds of this story so far. */
+  attempt?: number;
+  /** The decided turn that reported it. */
+  turn?: string | null;
+  /** What the Implementer reported for it. */
+  summary?: string | null;
+  /** Your note at its checkpoint, passed on to the next story. */
+  note?: string | null;
+  /** You added it at a checkpoint. */
+  added?: boolean;
+  at?: string | null;
+};
+
+/** L3: the checkpoint story a run waits on (`autopilot.storyWait`), while it waits with `checkpoint`. */
+export type StoryWait = {
+  stageId: string;
+  lane?: string | null;
+  story: string;
+  checkpoint: string;
+  turn?: string | null;
+  at: string;
 };
 
 /** L2: the verify gate a run waits on (`autopilot.verify`), while it waits with `checkpoint`. */
@@ -496,6 +539,8 @@ export type RunAutopilot = {
   decided?: string[];
   /** L2: the verify gate the run waits on, while it does. */
   verify?: VerifyWait | null;
+  /** L3: the checkpoint story the run waits on, while it does. */
+  storyWait?: StoryWait | null;
 };
 
 export type ClosedTabSummary = {
@@ -1550,7 +1595,11 @@ export type ActorAction =
   /** Drop that record after the hand-off failed. */
   | { kind: "releaseHandoff"; sourceTabId: string; back: boolean }
   /** L2: answer the verify gate the run waits on: verified passes it; failed sends `note` back to the stage as a round. */
-  | { kind: "verify"; stageId: string; lane: string | null; verified: boolean; note?: string | null };
+  | { kind: "verify"; stageId: string; lane: string | null; verified: boolean; note?: string | null }
+  /** L3: Continue after a checkpoint story: `note` goes on to the next story; `add` holds stories to add after it, one per line. */
+  | { kind: "storyContinue"; lane: string | null; story: string; note?: string | null; add?: string | null }
+  /** L3: send the current story again to a run stopped mid-loop. */
+  | { kind: "storyResend"; lane: string | null };
 
 /** What a button did on an engine-2 run. */
 export type ActorOutcome = {
@@ -1618,6 +1667,8 @@ export type PlannedTask = {
   summary: string;
   /** L1: a Settings › Repos name; absent for the run's own folder. */
   repo?: string | null;
+  /** L3: the stories its one pull request is built in, in order. */
+  stories?: { id: string; title: string; tickets?: string[]; doneWhen?: string[]; plannedTests?: string[]; checkpoint?: string | null }[];
 };
 
 /** The Planner's result: the tasks the bridge took from its ExitPlanMode plan. */
@@ -1631,6 +1682,8 @@ export type BridgeImplementerResult = {
   checks?: { command: string; passed: boolean }[];
   /** Final Status BLOCKED: why it could not finish (its pull requests may be none). */
   blocked?: string;
+  /** L3: the story this turn finished, when the pull request is built in stories. */
+  story?: string;
 };
 
 /** The run's `tasks.json`: its Planner's latest tasks, which fan-out reads. */

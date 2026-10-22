@@ -30,6 +30,7 @@
 //!   results/<turn>.json         what submit_result accepted, already checked
 //!   payloads/<Event>.json       newest raw hook payload per event
 //!   needs.json                  the last Needs you posted (Notification dedupe)
+//!   story.json                  the story an Implementer is on (L3, app)
 //! ```
 //!
 //! `launch` decides which tabs launch bridged and builds their flags;

@@ -197,13 +197,13 @@ pub fn manual_results(
         results.extend(waiting);
         return results;
     }
-    let waits_here = run.status == RunStatus::Waiting
-        && run.stop_reason == Some(StopReason::Checkpoint)
-        && run
-            .autopilot
-            .as_ref()
-            .and_then(|a| a.verify.as_ref())
-            .is_some_and(|wait| wait.stage_id == stage_id && wait.lane.as_deref() == lane);
+    // Whatever the run's status: the wait is kept while autopilot is off
+    // (L3 review fix), and a failed check ends it then too.
+    let waits_here = run
+        .autopilot
+        .as_ref()
+        .and_then(|a| a.verify.as_ref())
+        .is_some_and(|wait| wait.stage_id == stage_id && wait.lane.as_deref() == lane);
     if waits_here {
         let failed = results.iter().find(|r| r.failed() || r.no_check_found()).map(|r| r.label.clone()).unwrap_or_default();
         let title = lane.and_then(|id| run.lane(id)).map(|l| format!("{}: ", l.title)).unwrap_or_default();

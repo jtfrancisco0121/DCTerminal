@@ -30,6 +30,10 @@ import { errorText } from "./InlineNotice";
 import { RunLanes } from "./RunLanes";
 import { VerifyWaitPanel } from "./VerifyWaitPanel";
 import { verifyWaitKey } from "../pipeline/verify";
+import { StoryCheckpointPanel } from "./StoryCheckpointPanel";
+import { StoryList } from "./StoryList";
+import { StoryResendButton } from "./StoryResendButton";
+import { laneStories, storyProgress, storyWaitKey } from "../pipeline/stories";
 import {
   coalescedReload,
   isForRun,
@@ -511,6 +515,7 @@ export function PipelineOverview({
             </p>
           )}
           {autopilotOn && <VerifyWaitPanel key={verifyWaitKey(run)} run={run} onDone={reload} onNotice={onNotice} />}
+          {autopilotOn && <StoryCheckpointPanel key={storyWaitKey(run)} run={run} onDone={reload} onNotice={onNotice} />}
           {autopilotOn && run.status === "waiting" && run.stopReason === "app_restarted" && onContinue && (
             <div className="button-row">
               <button
@@ -710,6 +715,14 @@ export function PipelineOverview({
         </section>
       )}
 
+      {laneStories(run, null).length > 0 && (
+        <section className="pipeline-stories" aria-label="Stories">
+          <h3>Stories · {storyProgress(run, null)}</h3>
+          <StoryList run={run} lane={null} label="Stories of the pull request" />
+          {autopilotOn && <StoryResendButton run={run} lane={null} onDone={reload} onNotice={onNotice} />}
+        </section>
+      )}
+
       {lanes.length > 0 && (
         <section className="pipeline-pr-lanes" aria-label="Pull requests">
           <h3>Pull requests</h3>
@@ -724,7 +737,10 @@ export function PipelineOverview({
               return (
                 <li key={lane.id} className={`pipeline-pr-lane pipeline-pr-lane-${lane.status}`} aria-label={lane.title}>
                   <div className="pipeline-lane-head">
-                    <strong>{laneLabel(lane)}</strong>
+                    <strong>
+                      {laneLabel(lane)}
+                      {storyProgress(run, lane.id) ? ` · ${storyProgress(run, lane.id)}` : ""}
+                    </strong>
                     <span className={`pipeline-lane-status pipeline-pr-lane-status`}>{lane.status}</span>
                   </div>
                   <p className="hint">
@@ -735,6 +751,8 @@ export function PipelineOverview({
                     {lastVerdict ? ` · last verdict ${lastVerdict}` : ""}
                     {lane.dependsOn?.length ? ` · after ${lane.dependsOn.map((d) => d.toUpperCase()).join(", ")}` : ""}
                   </p>
+                  <StoryList run={run} lane={lane.id} label={`Stories of ${lane.title}`} />
+                  {autopilotOn && <StoryResendButton run={run} lane={lane.id} onDone={reload} onNotice={onNotice} />}
                   <div className="button-row">
                     {tabsOfLane.map(({ roleId, tab }) => (
                       <button key={roleId} type="button" className="secondary-button" onClick={() => onJump(tab!.id)}>

@@ -130,6 +130,19 @@ pub async fn pipeline_run_gates(
             .pipeline_run_by_id(&run_id)
             .and_then(|run| lane.as_deref().and_then(|id| run.lane(id)))
             .and_then(|lane| lane.repo.clone());
+        // L3: mid-loop, an Implementer's checks are its command checks only,
+        // as the run actor runs them before the last story.
+        let mid_loop = store.pipeline_run_by_id(&run_id).is_some_and(|run| {
+            let implementer = crate::pipelines::find(&run.kind)
+                .and_then(|def| def.stage(&stage_id).map(|s| s.kind() == crate::pipelines::StageKind::Implementer))
+                .unwrap_or(false);
+            implementer && crate::pipelines::stories::mid_loop(run, lane.as_deref())
+        });
+        let gates = if mid_loop {
+            gates.into_iter().filter(|gate| matches!(gate, GateDef::Command { .. })).collect()
+        } else {
+            gates
+        };
         (gates, folder, lane_repo)
     };
     // L2: a lane's repo check replaces the stage's command gates, as on

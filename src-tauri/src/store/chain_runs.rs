@@ -172,6 +172,7 @@ impl StateStore {
                     engine_note: None,
                     manual_only: false,
                     verifications: Vec::new(),
+                    stories: Vec::new(),
                 });
                 chain.chain_id.clone()
             }
@@ -233,6 +234,33 @@ impl StateStore {
                 Some(text.to_string()),
                 None,
             );
+            // L3: a hand-on past the Implementer (yours or autopilot's, by
+            // Send, a Chat tab or a startup form) is where the pull request
+            // goes on: stories not finished by then are skipped, so a later
+            // review round is never taken for a story.
+            let past_implementer = crate::pipelines::find(&kind).is_some_and(|def| {
+                def.stages
+                    .iter()
+                    .position(|stage| stage.kind() == crate::pipelines::StageKind::Implementer)
+                    .is_some_and(|at| index > at)
+            });
+            if past_implementer {
+                let skipped = crate::pipelines::stories::skip_unfinished(run, lane_id);
+                if !skipped.is_empty() {
+                    run.log_in_lane(
+                        "note",
+                        Some(&stage_id),
+                        None,
+                        lane_id,
+                        format!(
+                            "{lane_tag}Stories {} were not done before the pull request went on to {title}; they are marked skipped.",
+                            skipped.join(", ")
+                        ),
+                        None,
+                        Some("storySkipped".to_string()),
+                    );
+                }
+            }
             // Sending into a checkpoint stage yourself passes it; autopilot
             // carries on from the next turn. A hand-off on a complete run
             // puts it back in play.
@@ -651,6 +679,7 @@ mod tests {
             engine_note: None,
             manual_only: false,
             verifications: Vec::new(),
+            stories: Vec::new(),
         }
     }
 
