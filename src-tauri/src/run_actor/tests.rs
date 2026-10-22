@@ -1920,3 +1920,97 @@ fn a_lane_whose_repo_left_settings_stops_the_run_naming_the_repo() {
         assert_eq!(run.lane("pr2").unwrap().status, "waiting", "left for you to start once the repo is back");
     });
 }
+
+/// Eagle-Eye 1 with a verify gate after the Implementer's check (L2).
+fn verify_pipeline(id: &str) -> crate::pipelines::PipelineDef {
+    serde_json::from_value(json!({
+        "id": id, "name": "Verified",
+        "stages": [
+            { "id": "planner", "roleId": "role_planner", "kind": "planner", "title": "Planner" },
+            { "id": "plan_reviewer", "roleId": "role_plan_reviewer", "kind": "reviewer", "title": "Plan Reviewer",
+              "loopBack": { "to": "planner", "minSeverity": "MEDIUM" } },
+            { "id": "implementer", "roleId": "role_implementer", "kind": "implementer", "title": "Implementer", "checkpoint": true,
+              "gates": [{ "kind": "command", "run": "auto" }, { "kind": "verify", "steps": "Run qa128-ml on Windows." }] },
+            { "id": "pr_reviewer", "roleId": "role_pr_reviewer", "kind": "reviewer", "title": "PR Reviewer",
+              "loopBack": { "to": "implementer", "minSeverity": "MEDIUM" } }
+        ]
+    }))
+    .unwrap()
+}
+
+/// The Implementer's turn on [`verify_pipeline`], checked: the run waits on the verify gate.
+fn implementer_waiting_on_verify(fx: &mut Fixture) -> String {
+    let implementer = to_implementer(fx);
+    let prs = json!({ "schema": 1, "prs": [{ "url": "https://github.com/acme/app/pull/12", "branch": "fix/refresh", "title": "Refresh" }],
+                      "summary": "Expired tokens are refreshed once." });
+    let turn = fx.end_turn(&implementer, "i-1", Some(prs), "Opened https://github.com/acme/app/pull/12");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    fx.finish_gates();
+    fx.run(|run| {
+        let wait = run.autopilot.as_ref().and_then(|a| a.verify.clone()).expect("waiting on the verify gate");
+        assert_eq!(wait.prs, ["https://github.com/acme/app/pull/12"]);
+    });
+    implementer
+}
+
+/// Review fix (L2): your answer and the decision it leads to are saved
+/// together, under the turn's `#verify` key; a refused answer changes nothing.
+#[test]
+fn a_verify_answer_is_saved_with_its_decision_and_a_refused_one_changes_nothing() {
+    let id = "verify_actor_l2";
+    crate::pipelines::register_for_test(verify_pipeline(id));
+    let mut fx = Fixture::with_pipeline("verify_answer", id, Vec::new());
+    let implementer = implementer_waiting_on_verify(&mut fx);
+    let before = fx.run(|run| run.clone());
+    let verify = |verified: bool, note: Option<&str>| UserAction::Verify {
+        stage_id: "implementer".into(),
+        lane: None,
+        verified,
+        note: note.map(str::to_string),
+    };
+    let err = fx.user(verify(false, Some("  "))).unwrap_err();
+    assert!(err.contains("Say what failed"), "{err}");
+    fx.run(|run| assert_eq!(run, &before, "nothing changed"));
+    let launches = fx.launches().len();
+
+    let outcome = fx.user(verify(true, None)).unwrap();
+    assert_eq!(outcome.tab_id.as_deref(), Some(implementer.as_str()));
+    assert_eq!(fx.launches().len(), launches + 1);
+    assert_eq!(fx.launches().last().unwrap().role_id, "role_pr_reviewer");
+    // Saved: the record and the decision under its key, read back from disk.
+    let saved = StateStore::open_path(fx.host.store.lock().unwrap().path.clone()).expect("reload");
+    let run = saved.pipeline_run_by_id(RUN).unwrap();
+    let key = format!("{implementer}|bridge|i-1#verify1");
+    assert_eq!(run.verifications.len(), 1);
+    assert!(run.autopilot.as_ref().unwrap().decided.contains(&key), "{:?}", run.autopilot);
+    assert_eq!(run.decision_key(&format!("{implementer}|bridge|i-1")), key);
+    crate::pipelines::unregister_for_test(id);
+}
+
+/// Review fix (L2): a turn whose verification you answered, left undecided
+/// while you held its stage (its decision waited on a stage you took over),
+/// is decided by Hand back under its `#verify` key, with no checks run again.
+#[test]
+fn hand_back_decides_an_answered_turn_under_its_verify_key() {
+    let id = "verify_hand_back_l2";
+    crate::pipelines::register_for_test(verify_pipeline(id));
+    let mut fx = Fixture::with_pipeline("verify_hand_back", id, Vec::new());
+    let implementer = implementer_waiting_on_verify(&mut fx);
+    fx.user(UserAction::TakeOver { tab_id: implementer.clone() }).unwrap();
+    {
+        // As a held decision leaves it: your answer saved, nothing decided.
+        let mut store = fx.host.store.lock().unwrap();
+        let run = store.pipeline_run_by_id_mut(RUN).unwrap();
+        crate::pipelines::verify::answer(run, "implementer", None, true, None, "now").unwrap();
+        run.stop_for(StopReason::TakenOver, Some("implementer"), None, "Held for you.", None);
+        store.save().unwrap();
+    }
+    let launches = fx.launches().len();
+    fx.user(UserAction::HandBack { tab_id: implementer.clone() }).unwrap();
+    assert!(fx.gates_done.try_recv().is_err(), "no checks run again");
+    assert_eq!(fx.launches().len(), launches + 1);
+    assert_eq!(fx.launches().last().unwrap().role_id, "role_pr_reviewer");
+    let key = format!("{implementer}|bridge|i-1#verify1");
+    fx.run(|run| assert!(run.autopilot.as_ref().unwrap().decided.contains(&key), "{:?}", run.events.last()));
+    crate::pipelines::unregister_for_test(id);
+}

@@ -437,10 +437,12 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
         // D31: an `auto` check that found nothing to run is not a pass.
         // A built-in pipeline cannot be edited, so say what you can do.
         let fix = if def.built_in {
-            "Add a check to the project (an npm `check` or `test` script, or a Cargo.toml) and hand the stage on yourself, \
+            "Add a check to the project (an npm `check` or `test` script, a Cargo.toml or a go.mod) or set a check for its repo \
+             in Settings › Repos, and hand the stage on yourself, \
              or make your own pipeline in Settings › Pipelines with the same stages and mark this gate optional."
         } else {
-            "Add a check command to the pipeline in Settings › Pipelines, or mark the gate optional."
+            "Add a check command to the pipeline in Settings › Pipelines or a check for its repo in Settings › Repos, \
+             or mark the gate optional."
         };
         let reason = format!(
             "{} finished, but its `{}` check has nothing to run: {} {fix}",

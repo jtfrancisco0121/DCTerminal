@@ -187,12 +187,14 @@ pub async fn pipeline_run_gates(
     }
     // The round as it is now: a loop-back may have started while the checks ran.
     let round = run.round_for(lane.as_deref());
+    // L2: a verify gate still waiting this round stays answerable.
+    let kept = crate::pipelines::verify::manual_results(run, &stage_id, lane.as_deref(), round, results.clone());
     run.gates.insert(
         crate::pipelines::autopilot::stage_key(&stage_id, lane.as_deref()),
         StageGates {
             round,
             at: chrono::Utc::now().to_rfc3339(),
-            results: results.clone(),
+            results: kept,
         },
     );
     store.save()?;

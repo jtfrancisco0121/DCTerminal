@@ -253,6 +253,23 @@ pub struct VerifyRecord {
     pub at: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prs: Vec<String>,
+    /// The decided turn (`tab|bridge|prompt`) this answer is for: the run
+    /// actor decides that turn again under [`VerifyRecord::decision_key`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<String>,
+}
+
+impl PipelineRun {
+    /// The key a turn (`tab|bridge|prompt`) is decided under: its own, or,
+    /// once you answered a verify gate for it, `<turn>#verify<n>` for the
+    /// latest such answer (`n` counts the run's answers from 1). The run
+    /// actor decides an answered turn again under that key (L2).
+    pub fn decision_key(&self, turn_key: &str) -> String {
+        match self.verifications.iter().rposition(|record| record.turn.as_deref() == Some(turn_key)) {
+            Some(index) => format!("{turn_key}#verify{}", index + 1),
+            None => turn_key.to_string(),
+        }
+    }
 }
 
 impl VerifyRecord {

@@ -189,3 +189,96 @@ fn any_other_stop_or_turning_autopilot_off_clears_the_wait() {
     assert!(r.autopilot.as_ref().unwrap().verify.is_none());
     assert!(answer(&mut r, "implementer", None, true, None, "now").is_err());
 }
+
+/// Review fix: Run checks by hand during a verify wait keeps the wait
+/// answerable when every check passed, and ends it the normal way when one
+/// failed.
+#[test]
+fn run_checks_by_hand_keeps_a_waiting_verify_or_ends_the_wait_on_a_failure() {
+    let mut r = run(true);
+    gates_waiting(&mut r, Some("pr1"), "backend verify");
+    decide(&eagle1(), &mut r, &report(Some("pr1"), "tab|bridge|t1"));
+    let kept = manual_results(&mut r, "implementer", Some("pr1"), 1, vec![passed("backend check: go test ./...")]);
+    assert_eq!(kept.len(), 2);
+    assert!(kept[1].waiting_verify() && kept[1].label == "backend verify");
+    assert!(r.autopilot.as_ref().unwrap().verify.is_some(), "still waiting on you");
+    r.gates.get_mut("implementer@pr1").unwrap().results = kept;
+    answer(&mut r, "implementer", Some("pr1"), true, None, "now").expect("answerable after Run checks");
+
+    // A failed check by hand: the wait ends, the run waits for you with the failure.
+    let mut r = run(true);
+    gates_waiting(&mut r, Some("pr1"), "backend verify");
+    decide(&eagle1(), &mut r, &report(Some("pr1"), "tab|bridge|t1"));
+    let mut failed = passed("backend check: go test ./...");
+    failed.status = "failed".into();
+    let kept = manual_results(&mut r, "implementer", Some("pr1"), 1, vec![failed]);
+    assert_eq!(kept.len(), 1, "no waiting verify is kept beside a failure");
+    assert!(r.autopilot.as_ref().unwrap().verify.is_none());
+    assert_eq!((r.status, r.stop_reason), (RunStatus::Waiting, Some(StopReason::Checkpoint)));
+    let why = r.autopilot.as_ref().unwrap().waiting.clone().unwrap();
+    assert!(why.contains("the backend check: go test ./... check failed when you ran the checks"), "{why}");
+    assert!(answer(&mut r, "implementer", Some("pr1"), true, None, "now").is_err());
+    // Another stage's checks, or a run waiting on nothing, are left alone.
+    let mut idle = run(true);
+    let kept = manual_results(&mut idle, "implementer", Some("pr2"), 1, vec![passed("npm run check")]);
+    assert_eq!(kept.len(), 1);
+    assert_eq!(idle.status, RunStatus::Running);
+}
+
+/// Review fix: a wait whose waiting result is gone (an older build's Run
+/// checks overwrote it) is rebuilt from the wait when you answer.
+#[test]
+fn an_answer_rebuilds_a_waiting_result_that_is_gone() {
+    let mut r = run(true);
+    gates_waiting(&mut r, Some("pr1"), "backend verify");
+    decide(&eagle1(), &mut r, &report(Some("pr1"), "tab|bridge|t1"));
+    r.gates.get_mut("implementer@pr1").unwrap().results = vec![passed("backend check: go test ./...")];
+    answer(&mut r, "implementer", Some("pr1"), false, Some("Blank page."), "now").unwrap();
+    let results = &r.gates["implementer@pr1"].results;
+    assert_eq!(results.len(), 2);
+    assert_eq!((results[1].kind.as_str(), results[1].label.as_str(), results[1].status.as_str()), ("verify", "backend verify", "failed"));
+    assert_eq!((results[1].summary.as_str(), results[1].output.as_str()), (STEPS, "Blank page."));
+    // And with no gate results at all.
+    let mut r = run(false);
+    gates_waiting(&mut r, None, "verify");
+    decide(&eagle1(), &mut r, &report(None, "tab|bridge|t1"));
+    r.gates.clear();
+    answer(&mut r, "implementer", None, true, None, "now").unwrap();
+    assert_eq!(r.gates["implementer"].results[0].status, "passed");
+    assert_eq!(decide(&eagle1(), &mut r, &report(None, "tab|bridge|t1#verify1")).action, "advance");
+}
+
+/// Review fix: an answered turn is decided again under `<turn>#verify<n>`,
+/// and a wait records the turn's own key even when it was decided under one.
+#[test]
+fn an_answered_turn_has_its_own_decision_key() {
+    let mut r = run(false);
+    assert_eq!(r.decision_key("tab|bridge|t1"), "tab|bridge|t1");
+    gates_waiting(&mut r, None, "verify");
+    decide(&eagle1(), &mut r, &report(None, "tab|bridge|t1"));
+    answer(&mut r, "implementer", None, false, Some("No."), "now").unwrap();
+    assert_eq!(r.decision_key("tab|bridge|t1"), "tab|bridge|t1#verify1");
+    assert_eq!(r.verifications[0].turn.as_deref(), Some("tab|bridge|t1"));
+    assert_eq!(r.decision_key("tab|bridge|t2"), "tab|bridge|t2");
+    // A second waiting gate on the same turn, decided under its verify key, keeps the plain key.
+    r.gates.insert(
+        "implementer".into(),
+        StageGates { round: 1, at: "now".into(), results: vec![waiting_verify("backend verify".into(), STEPS)] },
+    );
+    decide(&eagle1(), &mut r, &report(None, "tab|bridge|t1#verify1"));
+    assert_eq!(r.autopilot.as_ref().unwrap().verify.as_ref().unwrap().turn.as_deref(), Some("tab|bridge|t1"));
+}
+
+/// Review fix: an `auto` gate with nothing to run names go.mod and Settings › Repos.
+#[test]
+fn nothing_to_run_advice_names_go_mod_and_a_repo_check() {
+    let mut r = run(false);
+    r.gates.insert(
+        "implementer".into(),
+        StageGates { round: 1, at: "now".into(), results: vec![GateResult::skipped("command", "auto", "No check command found.")] },
+    );
+    let d = decide(&eagle1(), &mut r, &report(None, "tab|bridge|t1"));
+    assert_eq!(d.stop_reason, Some(StopReason::NoCheckFound));
+    assert!(d.reason.contains("a Cargo.toml or a go.mod") && d.reason.contains("a check for its repo"), "{}", d.reason);
+    assert!(d.reason.contains("in Settings › Repos"), "{}", d.reason);
+}
