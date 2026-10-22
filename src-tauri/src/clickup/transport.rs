@@ -65,8 +65,11 @@ pub struct Reply {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoReply {
     Timeout,
+    /// Nothing was sent: the name did not resolve or the connection was
+    /// never made.
     Offline,
-    /// TLS, a reply too large to read, or anything else.
+    /// The call broke after it started (a reset, a broken read), TLS, a
+    /// reply too large to read, or anything else. A write may have landed.
     Failed,
 }
 
@@ -115,29 +118,39 @@ fn reply_head(status: u16, headers: &ureq::http::HeaderMap) -> Reply {
     }
 }
 
+/// Why no reply came back. `Offline` is only for errors before anything was
+/// sent (the name did not resolve, the connection was never made), so a
+/// write that is `Offline` was certainly not received. Any error mid-call (a
+/// reset, a broken read) is `Failed`: ClickUp may have acted on it (C3).
 fn no_reply(err: &ureq::Error) -> NoReply {
     match err {
         ureq::Error::Timeout(_) => NoReply::Timeout,
-        ureq::Error::HostNotFound | ureq::Error::ConnectionFailed | ureq::Error::Io(_) => {
-            NoReply::Offline
-        }
+        ureq::Error::HostNotFound | ureq::Error::ConnectionFailed => NoReply::Offline,
         _ => NoReply::Failed,
     }
+}
+
+/// A reply from its status line and the body read. A write whose 2xx status
+/// line arrived is done, even when its body then failed to read: ClickUp
+/// accepted it, and a write's body is never used.
+fn finish(mut head: Reply, body: Result<String, ureq::Error>, write: bool) -> Result<Reply, NoReply> {
+    match body {
+        Ok(body) => head.body = body,
+        Err(_) if write && (200..300).contains(&head.status) => {}
+        Err(err) => return Err(no_reply(&err)),
+    }
+    Ok(head)
 }
 
 /// The reply's status, rate-limit headers and body, read up to the cap.
 fn read_reply(
     response: Result<ureq::http::Response<ureq::Body>, ureq::Error>,
+    write: bool,
 ) -> Result<Reply, NoReply> {
     let mut response = response.map_err(|err| no_reply(&err))?;
-    let mut reply = reply_head(response.status().as_u16(), response.headers());
-    reply.body = response
-        .body_mut()
-        .with_config()
-        .limit(MAX_BODY_BYTES)
-        .read_to_string()
-        .map_err(|err| no_reply(&err))?;
-    Ok(reply)
+    let head = reply_head(response.status().as_u16(), response.headers());
+    let body = response.body_mut().with_config().limit(MAX_BODY_BYTES).read_to_string();
+    finish(head, body, write)
 }
 
 impl Transport for UreqTransport {
@@ -148,6 +161,7 @@ impl Transport for UreqTransport {
                 .header("Authorization", token.expose())
                 .header("Accept", "application/json")
                 .call(),
+            false,
         )
     }
 
@@ -169,6 +183,7 @@ impl Transport for UreqTransport {
                 .header("Accept", "application/json")
                 .header("Content-Type", "application/json")
                 .send(body),
+            true,
         )
     }
 }
@@ -197,6 +212,33 @@ mod tests {
         assert_eq!(reply.rate_reset, Some(1_790_000_060));
         assert_eq!(reply.retry_after, Some(12));
         assert_eq!(reply_head(200, &HeaderMap::new()).rate_remaining, None);
+    }
+
+    #[test]
+    fn only_errors_before_anything_was_sent_count_as_offline() {
+        assert_eq!(no_reply(&ureq::Error::HostNotFound), NoReply::Offline);
+        assert_eq!(no_reply(&ureq::Error::ConnectionFailed), NoReply::Offline);
+        assert_eq!(no_reply(&ureq::Error::Timeout(ureq::Timeout::Global)), NoReply::Timeout);
+        // A reset or a broken read mid-call: the request may have landed.
+        for kind in [
+            std::io::ErrorKind::ConnectionReset,
+            std::io::ErrorKind::BrokenPipe,
+            std::io::ErrorKind::UnexpectedEof,
+        ] {
+            assert_eq!(no_reply(&ureq::Error::Io(std::io::Error::from(kind))), NoReply::Failed, "{kind:?}");
+        }
+        assert_eq!(no_reply(&ureq::Error::BodyExceedsLimit(1)), NoReply::Failed);
+    }
+
+    #[test]
+    fn a_write_whose_2xx_arrived_is_done_even_if_its_body_breaks() {
+        let head = |status| Reply { status, ..Reply::default() };
+        let reset = || Err(ureq::Error::Io(std::io::Error::from(std::io::ErrorKind::ConnectionReset)));
+        assert_eq!(finish(head(200), reset(), true), Ok(head(200)), "ClickUp accepted the write");
+        assert_eq!(finish(head(200), reset(), false), Err(NoReply::Failed), "a read needs its body");
+        assert_eq!(finish(head(502), reset(), true), Err(NoReply::Failed), "not a 2xx: may have landed");
+        let read = finish(head(200), Ok("{}".into()), false).unwrap();
+        assert_eq!(read.body, "{}");
     }
 
     #[test]

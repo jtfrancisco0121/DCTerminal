@@ -45,7 +45,9 @@ pub struct WritebackState {
     /// Per run: the ticks you gave and the comments that may have been
     /// posted, kept here because anything that can write the run folder
     /// could forge them in `writeback.json`. Locked after `file`, never
-    /// before it. Lost on restart, on purpose: you tick again.
+    /// before it. Lost on restart, on purpose: you tick again. Entries are
+    /// small and not dropped while the app runs; runs have no delete path
+    /// yet to drop them from.
     memory: Mutex<HashMap<String, RunMemory>>,
 }
 

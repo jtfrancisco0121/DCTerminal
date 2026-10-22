@@ -440,12 +440,15 @@ pub fn list_label(list: &TicketList) -> &str {
 /// The hash a remembered tick is kept under: the comment and status you
 /// ticked.
 fn tick_key(comment: &str, status: Option<&str>) -> String {
+    // Each field is length-prefixed, so no two (comment, status) pairs share
+    // a byte stream.
     let mut hash = Sha256::new();
+    hash.update((comment.len() as u64).to_le_bytes());
     hash.update(comment.as_bytes());
-    hash.update([0]);
     match status {
         Some(status) => {
             hash.update([1]);
+            hash.update((status.len() as u64).to_le_bytes());
             hash.update(status.as_bytes());
         }
         None => hash.update([0]),
@@ -501,6 +504,11 @@ impl RunMemory {
 /// stays marked so, whatever the file says.
 pub fn sanitize(rows: &mut [Proposal], memory: &mut RunMemory) {
     for row in rows.iter_mut() {
+        // Latched both ways: a mark in the file (say, from before a
+        // restart) is remembered, and only your confirmed resend clears it.
+        if row.sent_maybe {
+            memory.set_maybe(&row.ticket.id, true);
+        }
         if memory.maybe_posted(&row.ticket.id) {
             row.sent_maybe = true;
         }
@@ -751,8 +759,10 @@ pub fn check_request(
 }
 
 /// An error after which ClickUp may still have acted on the POST: no clean
-/// answer came back (timed out, or the connection broke mid-call), or the
-/// server failed while handling it.
+/// answer came back (timed out, or the connection broke mid-call: a reset,
+/// a broken read), or the server failed while handling it. Only `Offline`
+/// (the name did not resolve, the connection was never made) and ClickUp's
+/// own refusals mean the comment was certainly not posted.
 fn may_have_posted(err: &ClickUpError) -> bool {
     matches!(
         err,
@@ -936,9 +946,14 @@ pub fn send_requests(
                         Some(stored) => {
                             stored.sent_maybe = false;
                             stored.error = Some(message.clone());
-                            // Not posted: ticked again, as you left it, to retry.
-                            stored.ticked = true;
-                            memory.remember(stored);
+                            // Not posted: ticked again to retry, but only
+                            // when the row is still what you ticked.
+                            if stored.comment == row.comment && stored.status == row.status {
+                                stored.ticked = true;
+                                memory
+                                    .ticks
+                                    .insert(id.clone(), tick_key(&row.comment, row.status.as_deref()));
+                            }
                             true
                         }
                         None => false,
@@ -1464,6 +1479,7 @@ pub(crate) mod tests {
             (Err(NoReply::Timeout), "timeout"),
             (Err(NoReply::Failed), "broken connection"),
             (status(502), "server error"),
+            (status(418), "unexpected answer"),
         ] {
             let mut rows = Rows::new(built());
             rows.edit("t2", RowEdit { set_status: true, status: None, ticked: Some(true), ..Default::default() }).unwrap();
@@ -1487,7 +1503,82 @@ pub(crate) mod tests {
         }
     }
 
-    /// A store that saves `ok` times, then fails.
+    #[test]
+    fn a_comment_that_certainly_did_not_go_stays_ticked_without_a_mark() {
+        let mut rows = Rows::new(built());
+        rows.edit("t2", RowEdit { set_status: true, status: None, ticked: Some(true), ..Default::default() }).unwrap();
+        let api = Recorded::default()
+            .on("POST /task/t2/comment", Err(NoReply::Offline))
+            .on("POST /task/t2/comment", ok("{}".into()));
+        let first = send(&api, &mut rows, &["t2"]);
+        assert_eq!(first.failed[0].1, "Could not reach ClickUp. Check your connection.");
+        assert!(rows.row("t2").ticked && !rows.row("t2").sent_maybe && !rows.memory.maybe_posted("t2"));
+        assert_eq!(send(&api, &mut rows, &["t2"]).sent.len(), 1, "retried without a confirmation");
+    }
+
+    #[test]
+    fn a_maybe_posted_mark_in_the_file_is_latched_until_you_confirm() {
+        // As after a restart: the file has the mark, the memory is new.
+        let mut rows = Rows::new(built());
+        rows.row_mut("t1").sent_maybe = true;
+        let tick = RowEdit { ticked: Some(true), ..Default::default() };
+        assert_eq!(rows.edit("t1", tick.clone()).unwrap_err(), RESEND_NEEDS_CONFIRM);
+        assert!(rows.memory.maybe_posted("t1"), "latched");
+        rows.row_mut("t1").sent_maybe = false;
+        assert_eq!(rows.edit("t1", tick.clone()).unwrap_err(), RESEND_NEEDS_CONFIRM, "clearing the file is not enough");
+        rows.edit("t1", RowEdit { confirm_resend: true, ..tick }).unwrap();
+        assert!(!rows.memory.maybe_posted("t1") && rows.row("t1").ticked);
+    }
+
+    /// Changes `t2`'s comment in the file just before the `at`th step.
+    struct Meddling {
+        rows: Rows,
+        calls: usize,
+        at: usize,
+    }
+
+    impl RowStore for Meddling {
+        fn with(&mut self, f: &mut dyn FnMut(&mut Writeback, &mut RunMemory) -> bool) -> Result<(), String> {
+            self.calls += 1;
+            if self.calls == self.at {
+                self.rows.row_mut("t2").comment = "Rewritten meanwhile.".into();
+            }
+            f(&mut self.rows.wb, &mut self.rows.memory);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_refused_comment_is_ticked_again_only_if_the_row_is_still_what_you_ticked() {
+        let mut rows = Rows::new(built());
+        rows.edit("t2", RowEdit { set_status: true, status: None, ticked: Some(true), ..Default::default() }).unwrap();
+        let requests = shown(&rows);
+        // Steps: the check, the mark before the POST, then the result.
+        let mut store = Meddling { rows, calls: 0, at: 3 };
+        let api = Recorded::default().on("POST /task/t2/comment", status(400));
+        let (gate, clock, token) = (Gate::new(), FakeClock::at(1_790_000_000), token());
+        let report = send_requests(&ClickUp::with(&api, &token, &gate, &clock), &mut store, &ids(&["t2"]), &requests, &|| NOW.to_string()).unwrap();
+        assert_eq!(report.failed.len(), 1);
+        let row = store.rows.row("t2");
+        assert!(!row.ticked, "the file changed: not ticked again");
+        assert!(!store.rows.memory.has_tick("t2", &row.comment, None));
+        assert!(!row.sent_maybe, "a refusal was not posted");
+    }
+
+    #[test]
+    fn a_follow_up_keeps_your_skip() {
+        let mut rows = Rows::new(t3_build(false));
+        rows.tick("t3");
+        let api = Recorded::default().on("POST /task/t3/comment", ok("{}".into()));
+        send(&api, &mut rows, &["t3"]);
+        rows.edit("t3", RowEdit { skipped: Some(true), ..Default::default() }).unwrap();
+        rows.rebuild(t3_build(true));
+        let row = rows.row("t3");
+        assert!(row.follow_up && row.skipped && !row.ticked);
+    }
+
+    /// A store that saves `ok` times, then fails. Like the real one, the
+    /// memory changes in place before the file is written.
     struct Failing {
         rows: Rows,
         ok: usize,
@@ -1496,15 +1587,13 @@ pub(crate) mod tests {
     impl RowStore for Failing {
         fn with(&mut self, f: &mut dyn FnMut(&mut Writeback, &mut RunMemory) -> bool) -> Result<(), String> {
             let mut wb = self.rows.wb.clone();
-            let mut memory = self.rows.memory.clone();
-            if f(&mut wb, &mut memory) {
+            if f(&mut wb, &mut self.rows.memory) {
                 if self.ok == 0 {
                     return Err("disk full".into());
                 }
                 self.ok -= 1;
                 self.rows.wb = wb;
             }
-            self.rows.memory = memory;
             Ok(())
         }
     }
