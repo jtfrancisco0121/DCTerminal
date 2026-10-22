@@ -62,6 +62,10 @@ type ListStatuses = { statuses: ClickUpListStatus[] } | { error: string };
 export function ClickUpUpdates({ runId, refreshKey }: Props) {
   const confirm = useConfirm();
   const [view, setView] = useState<ClickUpWritebackView | null>(null);
+  // The latest view, for a Send queued behind a comment saved on blur:
+  // set as soon as each load or edit returns, before React renders it.
+  const viewRef = useRef(view);
+  viewRef.current = view;
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -79,7 +83,9 @@ export function ClickUpUpdates({ runId, refreshKey }: Props) {
 
   const load = useCallback(async () => {
     try {
-      setView(await clickupWritebackLoad(runId));
+      const next = await clickupWritebackLoad(runId);
+      viewRef.current = next;
+      setView(next);
       setError(null);
     } catch (err) {
       setError(errorText(err));
@@ -111,7 +117,9 @@ export function ClickUpUpdates({ runId, refreshKey }: Props) {
       setError(null);
       setNotice(null);
       try {
-        setView(await clickupWritebackEdit(runId, ticketId, change));
+        const next = await clickupWritebackEdit(runId, ticketId, change);
+        viewRef.current = next;
+        setView(next);
         if (change.comment !== undefined) {
           setDrafts((prev) => {
             const next = { ...prev };
@@ -129,10 +137,6 @@ export function ClickUpUpdates({ runId, refreshKey }: Props) {
     const draft = drafts[p.ticket.id];
     return draft !== undefined && draft.trim() !== p.comment ? draft : undefined;
   };
-
-  // The latest view, for a Send queued behind a comment saved on blur.
-  const viewRef = useRef(view);
-  viewRef.current = view;
 
   const tick = async (p: ClickUpProposal, ticked: boolean) => {
     const comment = pendingComment(p);
@@ -159,6 +163,7 @@ export function ClickUpUpdates({ runId, refreshKey }: Props) {
       setNotice(null);
       try {
         const result = await clickupWritebackSend(runId, rows);
+        viewRef.current = result.view;
         setView(result.view);
         setNotice(sendResultText(result.sent, result.failed, result.notSent));
       } catch (err) {

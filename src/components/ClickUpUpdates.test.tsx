@@ -199,6 +199,23 @@ describe("ClickUp updates on the chain overview (C3)", () => {
     ).toBeTruthy();
   });
 
+  it("a Send clicked right after editing a comment carries the saved edit", async () => {
+    vi.mocked(clickupWritebackLoad).mockResolvedValue(view([proposal("t1", { ticked: true })]));
+    vi.mocked(clickupWritebackEdit).mockResolvedValue(
+      view([proposal("t1", { ticked: true, comment: "Mine.", edited: true })]),
+    );
+    vi.mocked(clickupWritebackSend).mockResolvedValue({ view: view([proposal("t1")]), sent: 1, failed: 0, notSent: [] });
+    render(<ClickUpUpdates runId="ee_1" refreshKey="a" />);
+    await screen.findByRole("region", { name: "ClickUp updates" });
+    const comment = screen.getByLabelText("Comment for t1");
+    fireEvent.change(comment, { target: { value: "Mine." } });
+    fireEvent.blur(comment);
+    fireEvent.click(screen.getByRole("button", { name: "Send ticked (1)" }));
+    await waitFor(() =>
+      expect(clickupWritebackSend).toHaveBeenCalledWith("ee_1", [{ ticketId: "t1", comment: "Mine.", status: "QA PASSED" }]),
+    );
+  });
+
   it("counts rows to send and says results in words", () => {
     const sent = proposal("t1", { ticked: true, sent: { at: "t", comment: "Update from DCTerminal for t1.", status: "QA PASSED" } });
     expect(sentAsIs(sent)).toBe(true);

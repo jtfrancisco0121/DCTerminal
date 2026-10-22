@@ -15,16 +15,23 @@
 //!   (`tasks[].tickets`, or `tasks[].stories[].tickets` once stories exist);
 //!   otherwise a run with one lane (or none) gives every ticket to it, and a
 //!   run with several gives no status change and says why.
+//! - Ticks live in the app's memory ([`RunMemory`]), not in the file: a
+//!   stage can write the run folder, so a tick in `writeback.json` counts
+//!   only when you gave it in this app session, with that exact comment and
+//!   status. Ticks do not survive a restart.
 //! - A rebuild ([`merge`]) never carries a tick onto content you did not
 //!   see: a row whose comment or status changed is unticked. A row already
-//!   sent stays as sent; when a later verification adds to it, it becomes
-//!   an unticked follow-up.
+//!   sent stays as sent; when a later verification makes its ticket newly
+//!   verified (or, unless you picked the status, adds its mapped status),
+//!   it becomes an unticked follow-up. A verification answered again, or a
+//!   later failure, makes no follow-up.
 //! - [`send_requests`] sends only what you saw and ticked (plan decision
 //!   E4): the UI names each row with its comment and status, and a row is
-//!   sent only when the file still says exactly that, the row is ticked,
-//!   and its ticket is in `tickets.json`. A tick or a row written straight
-//!   into the file never sends anything. Each row's result is saved as soon
-//!   as it is known, so a quit mid-send never makes a later send repeat it.
+//!   sent only when the file and the memory both say exactly that and its
+//!   ticket is in `tickets.json`. Each step is saved before the next call.
+//!   A comment whose POST did not finish cleanly (a quit or crash mid-call,
+//!   a timeout, a broken connection, a server error) is marked as maybe
+//!   posted, and sending it again needs your confirmation.
 //!   Nothing here holds a token: the [`ClickUp`] client keeps it.
 
 use super::client::{ClickUp, ClickUpError, TaskRef};
@@ -32,7 +39,8 @@ use super::intake::{TicketList, TicketsSnapshot};
 use super::transport::NoReply;
 use crate::store::settings_store::ClickUpStatusMap;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// The version of `writeback.json`.
 pub const WRITEBACK_SCHEMA: u32 = 1;
@@ -44,8 +52,10 @@ const MAX_STATUS_CHARS: usize = 100;
 const CUT_NOTE: &str = "\n\n(Cut to fit ClickUp's comment limit. The run's files have the rest.)";
 /// Why a row you ticked was not sent: the file no longer says what you saw.
 pub const CHANGED_SINCE_TICK: &str = "Changed since you ticked it. Review it and tick it again.";
-/// A comment POST that timed out may still have been posted.
-pub const MAYBE_POSTED: &str = "ClickUp did not answer in time, so it may have posted the comment anyway. Check the ticket in ClickUp before sending it again.";
+/// Follows the error of a comment POST that ClickUp may still have acted on.
+pub const MAYBE_POSTED: &str = "ClickUp may have posted the comment anyway, so check the ticket in ClickUp before sending it again.";
+/// Why a row whose comment may have been posted is not sent without you.
+pub const RESEND_NEEDS_CONFIRM: &str = "ClickUp may already have this comment: its last send did not finish cleanly. Check the ticket in ClickUp, then confirm to send it again.";
 
 /// The ticket a proposal is for, as the snapshot has it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,7 +122,7 @@ pub struct Proposal {
     pub follow_up: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sent: Option<Sent>,
-    /// The last comment POST timed out, so ClickUp may have it: ticking
+    /// The last comment POST did not finish cleanly, so ClickUp may have it: ticking
     /// again needs you to confirm.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub sent_maybe: bool,
@@ -427,25 +437,110 @@ pub fn list_label(list: &TicketList) -> &str {
     }
 }
 
+/// The hash a remembered tick is kept under: the comment and status you
+/// ticked.
+fn tick_key(comment: &str, status: Option<&str>) -> String {
+    let mut hash = Sha256::new();
+    hash.update(comment.as_bytes());
+    hash.update([0]);
+    match status {
+        Some(status) => {
+            hash.update([1]);
+            hash.update(status.as_bytes());
+        }
+        None => hash.update([0]),
+    }
+    hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// What the app remembers about one run's rows for as long as it runs, out
+/// of reach of anything that can write the run folder: the ticks you gave
+/// (each with the comment and status you ticked) and the comments that may
+/// have been posted. A tick in `writeback.json` counts only when it is
+/// remembered here, so a tick written into the file by anything else (a
+/// stage can write the run folder) never sends. Ticks are not kept across
+/// a restart, on purpose.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunMemory {
+    /// Ticket id → the [`tick_key`] of what you ticked.
+    ticks: HashMap<String, String>,
+    /// Tickets whose comment may have been posted.
+    maybe: HashSet<String>,
+}
+
+impl RunMemory {
+    /// You ticked `ticket_id` with exactly this comment and status.
+    pub fn has_tick(&self, ticket_id: &str, comment: &str, status: Option<&str>) -> bool {
+        self.ticks.get(ticket_id) == Some(&tick_key(comment, status))
+    }
+
+    fn remember(&mut self, row: &Proposal) {
+        if row.ticked {
+            self.ticks
+                .insert(row.ticket.id.clone(), tick_key(&row.comment, row.status.as_deref()));
+        } else {
+            self.ticks.remove(&row.ticket.id);
+        }
+    }
+
+    pub fn maybe_posted(&self, ticket_id: &str) -> bool {
+        self.maybe.contains(ticket_id)
+    }
+
+    fn set_maybe(&mut self, ticket_id: &str, maybe: bool) {
+        if maybe {
+            self.maybe.insert(ticket_id.to_string());
+        } else {
+            self.maybe.remove(ticket_id);
+        }
+    }
+}
+
+/// Puts the app's memory over rows read from the file: a tick you did not
+/// give here is dropped, and a comment the app knows may have been posted
+/// stays marked so, whatever the file says.
+pub fn sanitize(rows: &mut [Proposal], memory: &mut RunMemory) {
+    for row in rows.iter_mut() {
+        if memory.maybe_posted(&row.ticket.id) {
+            row.sent_maybe = true;
+        }
+        if row.ticked && !memory.has_tick(&row.ticket.id, &row.comment, row.status.as_deref()) {
+            row.ticked = false;
+        }
+        if !row.ticked {
+            memory.ticks.remove(&row.ticket.id);
+        }
+    }
+}
+
 /// A sent row has something new to say: a status it has not set yet, or a
-/// verification it did not have.
+/// verification it did not have. When you picked the status yourself, only
+/// a new verification counts: the mapped status never overrides yours.
 fn needs_follow_up(prev: &Proposal, next: &Proposal) -> bool {
+    let newly_verified = next.verified && !prev.verified;
+    if prev.status_edited {
+        return newly_verified;
+    }
     let set = prev.sent.as_ref().and_then(|s| s.status.as_ref());
-    (next.status.is_some() && next.status.as_ref() != set) || (next.verified && !prev.verified)
+    (next.status.is_some() && next.status.as_ref() != set) || newly_verified
 }
 
 /// `fresh` proposals with what you did to the `old` ones kept: skips,
 /// edits, and what was sent. A row you edited keeps your text. A tick is
-/// kept only while the row's comment and status are what they were, so it
-/// never carries onto content you did not see. A row sent as it is stays
-/// so, unless the new build adds to it: then it becomes an unticked
-/// follow-up. Rows for tickets no longer in the snapshot are dropped.
-pub fn merge(old: Option<&Writeback>, fresh: Vec<Proposal>) -> Vec<Proposal> {
-    fresh
+/// kept only while it is one you gave in this app session ([`RunMemory`])
+/// and the row's comment and status are what they were, so it never
+/// carries onto content you did not see. A row sent as it is stays so,
+/// unless the new build adds to it: then it becomes an unticked follow-up
+/// that keeps your own status choice and your skip. Rows for tickets no
+/// longer in the snapshot are dropped.
+pub fn merge(old: Option<&Writeback>, fresh: Vec<Proposal>, memory: &mut RunMemory) -> Vec<Proposal> {
+    let mut old_rows: Vec<Proposal> = old.map(|old| old.proposals.clone()).unwrap_or_default();
+    sanitize(&mut old_rows, memory);
+    let rows: Vec<Proposal> = fresh
         .into_iter()
         .map(|mut next| {
             let follow = next.follow_up_comment.take();
-            let Some(prev) = old.and_then(|old| old.proposals.iter().find(|p| p.ticket.id == next.ticket.id)) else {
+            let Some(prev) = old_rows.iter().find(|p| p.ticket.id == next.ticket.id) else {
                 return next;
             };
             if prev.sent_as_is() && !prev.sent_maybe {
@@ -455,12 +550,19 @@ pub fn merge(old: Option<&Writeback>, fresh: Vec<Proposal>) -> Vec<Proposal> {
                     kept.ticked = false;
                     return kept;
                 }
-                return Proposal {
+                let mut follow_up = Proposal {
                     comment: follow.unwrap_or(next.comment),
                     follow_up: true,
                     sent: prev.sent.clone(),
+                    skipped: prev.skipped,
                     ..next
                 };
+                if prev.status_edited {
+                    follow_up.status = prev.status.clone();
+                    follow_up.status_note = prev.status_note.clone();
+                    follow_up.status_edited = true;
+                }
+                return follow_up;
             }
             let generated = match (prev.follow_up, follow) {
                 (true, Some(follow)) => follow,
@@ -481,7 +583,13 @@ pub fn merge(old: Option<&Writeback>, fresh: Vec<Proposal>) -> Vec<Proposal> {
             next.ticked = prev.ticked && next.comment == prev.comment && next.status == prev.status;
             next
         })
-        .collect()
+        .collect();
+    for row in &rows {
+        if !row.ticked {
+            memory.ticks.remove(&row.ticket.id);
+        }
+    }
+    rows
 }
 
 /// A change you make to one row.
@@ -560,7 +668,7 @@ pub fn apply_edit(wb: &mut Writeback, ticket_id: &str, edit: &RowEdit) -> Result
         }
         if ticked && next.sent_maybe {
             if !edit.confirm_resend {
-                return Err("ClickUp may already have this comment: its last send timed out. Check the ticket in ClickUp, then confirm to send it again.".into());
+                return Err(RESEND_NEEDS_CONFIRM.into());
             }
             next.sent_maybe = false;
         }
@@ -593,11 +701,33 @@ pub struct SendReport {
     pub not_sent: Vec<(String, String)>,
 }
 
+/// Your edit to one row, with the app's memory: a tick you give is
+/// remembered with the comment and status you ticked, an untick forgets
+/// it, and a confirmed resend forgets that the comment may have been
+/// posted. The file's own ticks and flags are put under the memory first.
+pub fn edit_row(wb: &mut Writeback, memory: &mut RunMemory, ticket_id: &str, edit: &RowEdit) -> Result<(), String> {
+    sanitize(&mut wb.proposals, memory);
+    apply_edit(wb, ticket_id, edit)?;
+    if let Some(row) = wb.proposals.iter().find(|p| p.ticket.id == ticket_id) {
+        if edit.confirm_resend && row.ticked {
+            memory.set_maybe(ticket_id, false);
+        }
+        memory.remember(row);
+    }
+    Ok(())
+}
+
 /// The file's row for `request`, when it may be sent: its ticket is in
-/// `tickets.json` (`tickets`), it is ticked and not skipped, its comment
-/// and status are exactly what you saw, it was not sent as it is (or maybe
-/// sent), and its content passes the caps.
-pub fn check_request(wb: &Writeback, tickets: &HashSet<String>, request: &SendRequest) -> Result<Proposal, String> {
+/// `tickets.json` (`tickets`), you ticked it in this app session with this
+/// exact comment and status (`memory`), the file says the same and is not
+/// skipped, it was not sent as it is, its comment is not one that may have
+/// been posted, and its content passes the caps.
+pub fn check_request(
+    wb: &Writeback,
+    memory: &RunMemory,
+    tickets: &HashSet<String>,
+    request: &SendRequest,
+) -> Result<Proposal, String> {
     if !tickets.contains(&request.ticket_id) {
         return Err("This ticket is not in the run's tickets.json, so nothing was sent.".into());
     }
@@ -606,11 +736,12 @@ pub fn check_request(wb: &Writeback, tickets: &HashSet<String>, request: &SendRe
         .iter()
         .find(|p| p.ticket.id == request.ticket_id)
         .ok_or(CHANGED_SINCE_TICK)?;
-    if !row.ticked || row.skipped || row.comment != request.comment || row.status != request.status {
+    let remembered = memory.has_tick(&request.ticket_id, &request.comment, request.status.as_deref());
+    if !remembered || !row.ticked || row.skipped || row.comment != request.comment || row.status != request.status {
         return Err(CHANGED_SINCE_TICK.into());
     }
-    if row.sent_maybe {
-        return Err(MAYBE_POSTED.into());
+    if row.sent_maybe || memory.maybe_posted(&row.ticket.id) {
+        return Err(RESEND_NEEDS_CONFIRM.into());
     }
     if row.sent_as_is() {
         return Err("Already sent.".into());
@@ -619,99 +750,55 @@ pub fn check_request(wb: &Writeback, tickets: &HashSet<String>, request: &SendRe
     Ok(row.clone())
 }
 
-/// What sending one row did.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RowOutcome {
-    pub status_set: Option<String>,
-    pub comment_posted: Option<String>,
-    pub error: Option<String>,
-    /// The comment POST timed out: ClickUp may have it.
-    pub maybe_posted: bool,
+/// An error after which ClickUp may still have acted on the POST: no clean
+/// answer came back (timed out, or the connection broke mid-call), or the
+/// server failed while handling it.
+fn may_have_posted(err: &ClickUpError) -> bool {
+    matches!(
+        err,
+        ClickUpError::NoReply(NoReply::Timeout | NoReply::Failed)
+            | ClickUpError::Server(_)
+            | ClickUpError::Unexpected(_)
+    )
 }
 
-impl RowOutcome {
-    fn what(&self) -> String {
-        match (&self.comment_posted, &self.status_set) {
-            (Some(_), Some(status)) => format!("comment, status {status}"),
-            (Some(_), None) => "comment".to_string(),
-            (None, Some(status)) => format!("status {status}"),
-            (None, None) => "nothing new".to_string(),
-        }
-    }
+/// What ClickUp now has from `row`, at `now`.
+fn sent_mut<'r>(row: &'r mut Proposal, now: &str) -> &'r mut Sent {
+    let sent = row.sent.get_or_insert(Sent { at: now.to_string(), comment: None, status: None });
+    sent.at = now.to_string();
+    sent
 }
 
-/// Sends one checked row: its status first, unless already set, then its
-/// comment, unless that exact comment was posted already.
-pub fn send_one(client: &ClickUp, row: &Proposal) -> RowOutcome {
-    let task = TaskRef::Id(row.ticket.id.clone());
-    let sent = row.sent.as_ref();
-    let mut outcome = RowOutcome::default();
-    if let Some(status) = &row.status {
-        if sent.and_then(|s| s.status.as_ref()) != Some(status) {
-            if let Err(err) = client.set_status(&task, status) {
-                outcome.error = Some(err.to_string());
-                return outcome;
-            }
-            outcome.status_set = Some(status.clone());
-        }
-    }
-    if sent.and_then(|s| s.comment.as_deref()) != Some(row.comment.as_str()) {
-        match client.post_comment(&task, &row.comment) {
-            Ok(()) => outcome.comment_posted = Some(row.comment.clone()),
-            Err(ClickUpError::NoReply(NoReply::Timeout)) => {
-                outcome.error = Some(MAYBE_POSTED.to_string());
-                outcome.maybe_posted = true;
-            }
-            Err(err) => outcome.error = Some(err.to_string()),
-        }
-    }
-    outcome
-}
-
-/// Puts `outcome` on its row: what ClickUp now has (a status set counts
-/// even when the comment after it failed), and the row unticked when it
-/// all went, or kept ticked with its error to retry. A comment that may
-/// have been posted unticks the row and asks you to confirm a resend.
-pub fn record(row: &mut Proposal, outcome: &RowOutcome, now: &str) {
-    if outcome.status_set.is_some() || outcome.comment_posted.is_some() {
-        let sent = row.sent.get_or_insert(Sent { at: now.to_string(), comment: None, status: None });
-        sent.at = now.to_string();
-        if let Some(status) = &outcome.status_set {
-            sent.status = Some(status.clone());
-        }
-        if let Some(comment) = &outcome.comment_posted {
-            sent.comment = Some(comment.clone());
-            row.sent_maybe = false;
-        }
-    }
-    row.error = outcome.error.clone();
-    if outcome.error.is_none() {
-        row.ticked = false;
-        row.follow_up = false;
-    }
-    if outcome.maybe_posted {
-        row.ticked = false;
-        row.sent_maybe = true;
+/// `what` for the report: `comment, status QA PASSED`.
+fn what_went(comment: bool, status: Option<&str>) -> String {
+    match (comment, status) {
+        (true, Some(status)) => format!("comment, status {status}"),
+        (true, None) => "comment".to_string(),
+        (false, Some(status)) => format!("status {status}"),
+        (false, None) => "nothing new".to_string(),
     }
 }
 
-/// Where a send reads and saves `writeback.json`: [`RowStore::with`] runs
-/// `f` on the file as it is now, and saves it when `f` returns true.
+/// Where a send reads and saves `writeback.json` and the app's memory of
+/// the run: [`RowStore::with`] runs `f` on both as they are now, and saves
+/// the file when `f` returns true.
 pub trait RowStore {
-    fn with(&mut self, f: &mut dyn FnMut(&mut Writeback) -> bool) -> Result<(), String>;
-}
-
-impl RowStore for Writeback {
-    fn with(&mut self, f: &mut dyn FnMut(&mut Writeback) -> bool) -> Result<(), String> {
-        f(self);
-        Ok(())
-    }
+    fn with(&mut self, f: &mut dyn FnMut(&mut Writeback, &mut RunMemory) -> bool) -> Result<(), String>;
 }
 
 /// Sends each of `requests` that [`check_request`] allows, one at a time,
-/// saving each row's result before the next is sent. Nothing outside
-/// `requests` is ever sent, whatever the file's ticks say. On a save
-/// failure it stops and returns what it did with the error.
+/// saving each step before the next call:
+///
+/// 1. the status, unless already set, and then that it was set;
+/// 2. before the comment POST, the row is marked as maybe posted and
+///    unticked (in the file and in memory), so a send cut short there (a
+///    quit, a crash) never posts it again without your confirmation;
+/// 3. the POST's result: posted (the mark is cleared), maybe posted (a
+///    timeout, a broken connection or a server error: the mark stays), or
+///    not posted (the mark is cleared and the row is ticked again to retry).
+///
+/// Nothing outside `requests` is ever sent, whatever the file's ticks say.
+/// On a save failure it stops and returns what it did with the error.
 pub fn send_requests(
     client: &ClickUp,
     store: &mut dyn RowStore,
@@ -721,17 +808,22 @@ pub fn send_requests(
 ) -> Result<SendReport, (SendReport, String)> {
     let mut report = SendReport::default();
     let mut seen = HashSet::new();
+    macro_rules! save {
+        ($f:expr) => {
+            if let Err(err) = store.with(&mut $f) {
+                return Err((report, err));
+            }
+        };
+    }
     for request in requests {
         if !seen.insert(request.ticket_id.clone()) {
             continue;
         }
         let mut checked = Err(CHANGED_SINCE_TICK.to_string());
-        if let Err(err) = store.with(&mut |wb| {
-            checked = check_request(wb, tickets, request);
+        save!(|wb: &mut Writeback, memory: &mut RunMemory| {
+            checked = check_request(wb, memory, tickets, request);
             false
-        }) {
-            return Err((report, err));
-        }
+        });
         let row = match checked {
             Ok(row) => row,
             Err(why) => {
@@ -739,28 +831,120 @@ pub fn send_requests(
                 continue;
             }
         };
-        let outcome = send_one(client, &row);
-        match &outcome.error {
-            None => report.sent.push((row.ticket.id.clone(), outcome.what())),
-            Some(err) => {
-                let err = match &outcome.status_set {
-                    Some(status) => format!("{err} (Its status was set to {status}.)"),
-                    None => err.clone(),
-                };
-                report.failed.push((row.ticket.id.clone(), err));
+        let id = row.ticket.id.clone();
+        let task = TaskRef::Id(id.clone());
+        let sent_before = row.sent.clone();
+        let mut status_set: Option<String> = None;
+        if let Some(status) = &row.status {
+            if sent_before.as_ref().and_then(|s| s.status.as_ref()) != Some(status) {
+                if let Err(err) = client.set_status(&task, status) {
+                    let err = err.to_string();
+                    report.failed.push((id.clone(), err.clone()));
+                    save!(|wb: &mut Writeback, _: &mut RunMemory| {
+                        match wb.proposals.iter_mut().find(|p| p.ticket.id == id) {
+                            Some(stored) => {
+                                stored.error = Some(err.clone());
+                                true
+                            }
+                            None => false,
+                        }
+                    });
+                    continue;
+                }
+                status_set = Some(status.clone());
+                let at = now();
+                save!(|wb: &mut Writeback, _: &mut RunMemory| {
+                    match wb.proposals.iter_mut().find(|p| p.ticket.id == id) {
+                        Some(stored) => {
+                            sent_mut(stored, &at).status = Some(status.clone());
+                            true
+                        }
+                        None => false,
+                    }
+                });
             }
         }
-        let at = now();
-        if let Err(err) = store.with(&mut |wb| {
-            match wb.proposals.iter_mut().find(|p| p.ticket.id == row.ticket.id) {
+        let posted_before = sent_before.as_ref().and_then(|s| s.comment.as_deref()) == Some(row.comment.as_str());
+        if posted_before {
+            report.sent.push((id.clone(), what_went(false, status_set.as_deref())));
+            save!(|wb: &mut Writeback, memory: &mut RunMemory| {
+                memory.ticks.remove(&id);
+                match wb.proposals.iter_mut().find(|p| p.ticket.id == id) {
+                    Some(stored) => {
+                        stored.ticked = false;
+                        stored.error = None;
+                        stored.follow_up = false;
+                        true
+                    }
+                    None => false,
+                }
+            });
+            continue;
+        }
+        // From here on, until ClickUp answers cleanly, the comment may be posted.
+        save!(|wb: &mut Writeback, memory: &mut RunMemory| {
+            memory.ticks.remove(&id);
+            memory.set_maybe(&id, true);
+            match wb.proposals.iter_mut().find(|p| p.ticket.id == id) {
                 Some(stored) => {
-                    record(stored, &outcome, &at);
+                    stored.sent_maybe = true;
+                    stored.ticked = false;
                     true
                 }
                 None => false,
             }
-        }) {
-            return Err((report, err));
+        });
+        let posted = client.post_comment(&task, &row.comment);
+        let at = now();
+        let suffix = status_set.as_ref().map(|s| format!(" (Its status was set to {s}.)")).unwrap_or_default();
+        match posted {
+            Ok(()) => {
+                report.sent.push((id.clone(), what_went(true, status_set.as_deref())));
+                save!(|wb: &mut Writeback, memory: &mut RunMemory| {
+                    memory.set_maybe(&id, false);
+                    match wb.proposals.iter_mut().find(|p| p.ticket.id == id) {
+                        Some(stored) => {
+                            sent_mut(stored, &at).comment = Some(row.comment.clone());
+                            stored.sent_maybe = false;
+                            stored.error = None;
+                            stored.follow_up = false;
+                            true
+                        }
+                        None => false,
+                    }
+                });
+            }
+            Err(err) if may_have_posted(&err) => {
+                let message = format!("{err} {MAYBE_POSTED}");
+                report.failed.push((id.clone(), format!("{message}{suffix}")));
+                save!(|wb: &mut Writeback, _: &mut RunMemory| {
+                    match wb.proposals.iter_mut().find(|p| p.ticket.id == id) {
+                        Some(stored) => {
+                            stored.error = Some(message.clone());
+                            true
+                        }
+                        None => false,
+                    }
+                });
+            }
+            Err(err) => {
+                let message = err.to_string();
+                report.failed.push((id.clone(), format!("{message}{suffix}")));
+                save!(|wb: &mut Writeback, memory: &mut RunMemory| {
+                    memory.set_maybe(&id, false);
+                    match wb.proposals.iter_mut().find(|p| p.ticket.id == id) {
+                        Some(stored) => {
+                            stored.sent_maybe = false;
+                            stored.error = Some(message.clone());
+                            // Not posted: ticked again, as you left it, to retry.
+                            stored.ticked = true;
+                            memory.remember(stored);
+                            true
+                        }
+                        None => false,
+                    }
+                });
+            }
         }
     }
     Ok(report)
@@ -844,6 +1028,79 @@ pub(crate) mod tests {
         RunFacts { run_id: RUN.into(), complete: false, lanes, own, task_tickets: BTreeMap::new() }
     }
 
+    /// A run's file and the app's memory of it, as the commands keep them.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct Rows {
+        wb: Writeback,
+        memory: RunMemory,
+    }
+
+    impl RowStore for Rows {
+        fn with(&mut self, f: &mut dyn FnMut(&mut Writeback, &mut RunMemory) -> bool) -> Result<(), String> {
+            f(&mut self.wb, &mut self.memory);
+            Ok(())
+        }
+    }
+
+    impl Rows {
+        fn new(proposals: Vec<Proposal>) -> Self {
+            let mut memory = RunMemory::default();
+            let proposals = merge(None, proposals, &mut memory);
+            Rows { wb: Writeback { schema: WRITEBACK_SCHEMA, run_id: RUN.into(), proposals }, memory }
+        }
+
+        fn edit(&mut self, id: &str, edit: RowEdit) -> Result<(), String> {
+            edit_row(&mut self.wb, &mut self.memory, id, &edit)
+        }
+
+        fn tick(&mut self, id: &str) {
+            self.edit(id, RowEdit { ticked: Some(true), ..Default::default() }).unwrap();
+        }
+
+        fn rebuild(&mut self, fresh: Vec<Proposal>) {
+            let old = self.wb.clone();
+            self.wb.proposals = merge(Some(&old), fresh, &mut self.memory);
+        }
+
+        fn row(&self, id: &str) -> &Proposal {
+            self.wb.proposals.iter().find(|p| p.ticket.id == id).unwrap()
+        }
+
+        fn row_mut(&mut self, id: &str) -> &mut Proposal {
+            self.wb.proposals.iter_mut().find(|p| p.ticket.id == id).unwrap()
+        }
+    }
+
+    fn ids(list: &[&str]) -> HashSet<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// What the UI sends for a row it shows ticked.
+    fn req(p: &Proposal) -> SendRequest {
+        SendRequest { ticket_id: p.ticket.id.clone(), comment: p.comment.clone(), status: p.status.clone() }
+    }
+
+    fn shown(rows: &Rows) -> Vec<SendRequest> {
+        let mut view = rows.wb.proposals.clone();
+        sanitize(&mut view, &mut rows.memory.clone());
+        view.iter().filter(|p| p.ticked && !p.skipped).map(req).collect()
+    }
+
+    fn token() -> ClickUpToken {
+        ClickUpToken::parse("pk_test_WRITEBACK").unwrap()
+    }
+
+    /// Sends what the UI shows ticked, for tickets `in_snapshot`.
+    fn send(api: &Recorded, rows: &mut Rows, in_snapshot: &[&str]) -> SendReport {
+        let requests = shown(rows);
+        send_with(api, rows, in_snapshot, &requests)
+    }
+
+    fn send_with(api: &Recorded, rows: &mut Rows, in_snapshot: &[&str], requests: &[SendRequest]) -> SendReport {
+        let (gate, clock, token) = (Gate::new(), FakeClock::at(1_790_000_000), token());
+        send_requests(&ClickUp::with(api, &token, &gate, &clock), rows, &ids(in_snapshot), requests, &|| NOW.to_string()).unwrap()
+    }
+
     #[test]
     fn nothing_is_proposed_before_a_verification_or_the_run_s_end() {
         let snap = snapshot(vec![ticket("t1", None, Some("901800112233"))]);
@@ -876,7 +1133,6 @@ pub(crate) mod tests {
                 "Update from DCTerminal (run {RUN}).\n\nPull requests:\n- Fix pr1: https://github.com/o/r/pull/3\n\nWhat changed:\nChanged pr1.\n\nHow it was verified:\nRun the qa128 Playwright project on Windows staging.\nMarked verified on 2026-10-22.\nNote: All green."
             )
         );
-        // A run that never fanned out: its own stages are the lane.
         let own = facts(vec![], lane(None, Some(true)));
         let proposals = build(&snap, &own, &maps());
         assert!(proposals[0].lanes.is_empty());
@@ -924,7 +1180,6 @@ pub(crate) mod tests {
         let mut run = facts(vec![lane(Some("pr1"), Some(true)), lane(Some("pr2"), None)], lane(None, None));
         run.task_tickets = BTreeMap::from([
             ("pr1".to_string(), vec!["t1".to_string(), "t3".to_string()]),
-            // A custom id matches too; t3 is in both lanes.
             ("pr2".to_string(), vec!["QA-2".to_string(), "t3".to_string()]),
         ]);
         let by_id = |id: &str| build(&snap, &run, &maps()).into_iter().find(|p| p.ticket.id == id).unwrap();
@@ -962,57 +1217,63 @@ pub(crate) mod tests {
         let snap = snapshot(vec![ticket("t1", None, Some("901800112233"))]);
         let mut own = lane(None, Some(true));
         own.summary = Some("x".repeat(MAX_COMMENT_CHARS * 2));
-        let p = &build(&snap, &facts(vec![], own), &maps())[0];
+        let p = build(&snap, &facts(vec![], own), &maps()).remove(0);
         assert_eq!(p.comment.chars().count(), MAX_COMMENT_CHARS);
         assert!(p.comment.ends_with("(Cut to fit ClickUp's comment limit. The run's files have the rest.)"));
-        let mut w = wb(vec![p.clone()]);
-        apply_edit(&mut w, "t1", &RowEdit { ticked: Some(true), ..Default::default() }).unwrap();
-        assert!(check_request(&w, &ids(&["t1"]), &req(&w.proposals[0])).is_ok(), "still sendable");
-    }
-
-    fn wb(proposals: Vec<Proposal>) -> Writeback {
-        Writeback { schema: WRITEBACK_SCHEMA, run_id: RUN.into(), proposals }
+        let mut rows = Rows::new(vec![p]);
+        rows.tick("t1");
+        assert!(check_request(&rows.wb, &rows.memory, &ids(&["t1"]), &req(rows.row("t1"))).is_ok(), "still sendable");
     }
 
     /// Proposals as a load writes them (the follow-up text is never kept).
     fn built() -> Vec<Proposal> {
         let snap = snapshot(vec![ticket("t1", None, Some("901800112233")), ticket("t2", None, Some("901800112233"))]);
-        merge(None, build(&snap, &facts(vec![], lane(None, Some(true))), &maps()))
-    }
-
-    fn ids(list: &[&str]) -> HashSet<String> {
-        list.iter().map(|s| s.to_string()).collect()
-    }
-
-    /// What the UI sends for a row it shows ticked.
-    fn req(p: &Proposal) -> SendRequest {
-        SendRequest { ticket_id: p.ticket.id.clone(), comment: p.comment.clone(), status: p.status.clone() }
-    }
-
-    fn ticked_reqs(w: &Writeback) -> Vec<SendRequest> {
-        w.proposals.iter().filter(|p| p.ticked).map(req).collect()
+        build(&snap, &facts(vec![], lane(None, Some(true))), &maps())
     }
 
     #[test]
     fn a_rebuild_keeps_your_edits_and_a_tick_only_on_unchanged_content() {
-        let mut old = wb(built());
-        apply_edit(&mut old, "t1", &RowEdit { comment: Some("Mine.".into()), ticked: Some(true), ..Default::default() }).unwrap();
-        apply_edit(&mut old, "t2", &RowEdit { set_status: true, status: None, skipped: Some(true), ..Default::default() }).unwrap();
-        let merged = merge(Some(&old), built());
-        assert_eq!((merged[0].comment.as_str(), merged[0].ticked, merged[0].edited), ("Mine.", true, true));
-        assert_eq!((merged[1].status.clone(), merged[1].skipped), (None, true));
+        let mut rows = Rows::new(built());
+        rows.edit("t1", RowEdit { comment: Some("Mine.".into()), ticked: Some(true), ..Default::default() }).unwrap();
+        rows.edit("t2", RowEdit { set_status: true, status: None, skipped: Some(true), ..Default::default() }).unwrap();
+        rows.rebuild(built());
+        assert_eq!((rows.row("t1").comment.as_str(), rows.row("t1").ticked, rows.row("t1").edited), ("Mine.", true, true));
+        assert_eq!((rows.row("t2").status.clone(), rows.row("t2").skipped), (None, true));
         let mut fresh = built();
         for p in &mut fresh {
             p.comment.push_str("\nMore.");
         }
-        let merged = merge(Some(&old), fresh);
-        assert!(merged[0].ticked, "your own text did not change");
-        assert!(merged[1].comment.ends_with("More."), "not edited: rebuilt");
-        assert_eq!(merge(None, built()), built());
+        rows.rebuild(fresh);
+        assert!(rows.row("t1").ticked, "your own text did not change");
+        assert!(rows.row("t2").comment.ends_with("More."), "not edited: rebuilt");
+    }
+
+    #[test]
+    fn a_tick_forged_into_the_file_is_dropped_and_never_sent() {
+        let mut rows = Rows::new(built());
+        // A stage rewrites the row: your-edit flag, its own comment, a tick.
+        let forged = rows.row_mut("t1");
+        forged.comment = "Approved by QA, close it.".into();
+        forged.edited = true;
+        forged.ticked = true;
+        let echoed = req(rows.row("t1"));
+        rows.rebuild(built());
+        assert!(!rows.row("t1").ticked, "no tick you gave: unticked on load");
+        assert_eq!(rows.row("t1").comment, "Approved by QA, close it.", "the text stays, for you to see");
+        // Even if the UI echoed it back as ticked, it is not sent.
+        rows.row_mut("t1").ticked = true;
+        let api = Recorded::default();
+        let report = send_with(&api, &mut rows, &["t1", "t2"], &[echoed]);
+        assert_eq!(report.not_sent, [("t1".to_string(), CHANGED_SINCE_TICK.to_string())]);
+        assert!(api.writes.lock().unwrap().is_empty());
+        // Once you tick it yourself, it is yours to send.
+        rows.row_mut("t1").ticked = false;
+        rows.tick("t1");
+        assert!(check_request(&rows.wb, &rows.memory, &ids(&["t1"]), &req(rows.row("t1"))).is_ok());
     }
 
     /// t3 is in pr1 and pr2: pr1 verified first, pr2 later.
-    fn t3_run(pr2_verified: bool) -> (TicketsSnapshot, RunFacts) {
+    fn t3_build(pr2_verified: bool) -> Vec<Proposal> {
         let snap = snapshot(vec![ticket("t3", None, Some("901800112233"))]);
         let mut run = facts(
             vec![lane(Some("pr1"), Some(true)), lane(Some("pr2"), pr2_verified.then_some(true))],
@@ -1022,247 +1283,273 @@ pub(crate) mod tests {
             ("pr1".to_string(), vec!["t3".to_string()]),
             ("pr2".to_string(), vec!["t3".to_string()]),
         ]);
-        (snap, run)
+        build(&snap, &run, &maps())
     }
 
     #[test]
     fn a_tick_on_an_interim_row_does_not_survive_a_rebuild_that_adds_a_status() {
-        let (snap, run) = t3_run(false);
-        let mut old = wb(merge(None, build(&snap, &run, &maps())));
-        assert_eq!(old.proposals[0].status, None, "interim: no status yet");
-        apply_edit(&mut old, "t3", &RowEdit { ticked: Some(true), ..Default::default() }).unwrap();
-        let seen = req(&old.proposals[0]);
-        let (snap, run) = t3_run(true);
-        let next = wb(merge(Some(&old), build(&snap, &run, &maps())));
-        assert_eq!(next.proposals[0].status.as_deref(), Some("QA PASSED"));
-        assert!(!next.proposals[0].ticked, "changed content is unticked");
-        // Even with the tick forced back in, what you saw no longer matches.
-        let mut forced = next.clone();
-        forced.proposals[0].ticked = true;
-        assert_eq!(check_request(&forced, &ids(&["t3"]), &seen).unwrap_err(), CHANGED_SINCE_TICK);
+        let mut rows = Rows::new(t3_build(false));
+        assert_eq!(rows.row("t3").status, None, "interim: no status yet");
+        rows.tick("t3");
+        let seen = req(rows.row("t3"));
+        rows.rebuild(t3_build(true));
+        assert_eq!(rows.row("t3").status.as_deref(), Some("QA PASSED"));
+        assert!(!rows.row("t3").ticked, "changed content is unticked");
+        rows.row_mut("t3").ticked = true;
+        assert_eq!(check_request(&rows.wb, &rows.memory, &ids(&["t3"]), &seen).unwrap_err(), CHANGED_SINCE_TICK);
     }
 
     #[test]
     fn a_sent_row_gets_an_unticked_follow_up_when_a_later_lane_is_verified() {
-        let (snap, run) = t3_run(false);
-        let mut w = wb(merge(None, build(&snap, &run, &maps())));
-        apply_edit(&mut w, "t3", &RowEdit { ticked: Some(true), ..Default::default() }).unwrap();
+        let mut rows = Rows::new(t3_build(false));
+        rows.tick("t3");
         let api = Recorded::default()
             .on("POST /task/t3/comment", ok("{}".into()))
             .on("PUT /task/t3", ok("{}".into()))
             .on("POST /task/t3/comment", ok("{}".into()));
-        let report = send(&api, &mut w, &["t3"]);
-        assert_eq!(report.sent, [("t3".to_string(), "comment".to_string())]);
-        let interim = w.proposals[0].comment.clone();
-        // pr2 is verified now.
-        let (snap, run) = t3_run(true);
-        let next = wb(merge(Some(&w), build(&snap, &run, &maps())));
-        let row = &next.proposals[0];
+        assert_eq!(send(&api, &mut rows, &["t3"]).sent, [("t3".to_string(), "comment".to_string())]);
+        let interim = rows.row("t3").comment.clone();
+        rows.rebuild(t3_build(true));
+        let row = rows.row("t3").clone();
         assert!(row.follow_up && !row.ticked);
         assert!(row.verified && row.status_note.is_none());
         assert_eq!(row.status.as_deref(), Some("QA PASSED"));
         assert_eq!(row.sent.as_ref().and_then(|s| s.comment.as_deref()), Some(interim.as_str()), "what was sent stays");
         assert!(row.comment.contains("PR2 — Work was marked verified on 2026-10-22."), "{}", row.comment);
         assert!(!row.comment.contains("Pull requests:"), "a short follow-up: {}", row.comment);
-        // A second rebuild keeps the follow-up as it is.
-        assert_eq!(merge(Some(&next), build(&snap, &run, &maps())), next.proposals);
-        // Tick and send it: the status and the follow-up comment go.
-        let mut w = next;
-        apply_edit(&mut w, "t3", &RowEdit { ticked: Some(true), ..Default::default() }).unwrap();
-        assert_eq!(send(&api, &mut w, &["t3"]).sent, [("t3".to_string(), "comment, status QA PASSED".to_string())]);
-        assert!(!w.proposals[0].follow_up);
-        // Nothing new to say after that.
-        let again = merge(Some(&w), build(&snap, &run, &maps()));
-        assert_eq!(again, w.proposals);
+        let before = rows.clone();
+        rows.rebuild(t3_build(true));
+        assert_eq!(rows, before, "a second rebuild keeps the follow-up as it is");
+        rows.tick("t3");
+        assert_eq!(send(&api, &mut rows, &["t3"]).sent, [("t3".to_string(), "comment, status QA PASSED".to_string())]);
+        assert!(!rows.row("t3").follow_up);
+        let before = rows.clone();
+        rows.rebuild(t3_build(true));
+        assert_eq!(rows, before, "nothing new to say after that");
+    }
+
+    #[test]
+    fn your_own_status_choice_is_never_overridden_by_a_follow_up() {
+        // Verified, but you chose no status change: sent, and no follow-up for the mapped status.
+        let mut rows = Rows::new(built());
+        rows.edit("t1", RowEdit { set_status: true, status: None, ticked: Some(true), ..Default::default() }).unwrap();
+        let api = Recorded::default()
+            .on("POST /task/t1/comment", ok("{}".into()))
+            .on("PUT /task/t3", ok("{}".into()))
+            .on("POST /task/t3/comment", ok("{}".into()))
+            .on("POST /task/t3/comment", ok("{}".into()));
+        send(&api, &mut rows, &["t1", "t2"]);
+        let before = rows.clone();
+        rows.rebuild(built());
+        assert_eq!(rows, before, "no follow-up: you chose no status change");
+        // Your own status on an interim row, then a newly verified lane: a follow-up that keeps your status.
+        let mut rows = Rows::new(t3_build(false));
+        rows.edit("t3", RowEdit { set_status: true, status: Some("in review".into()), ticked: Some(true), ..Default::default() }).unwrap();
+        send(&api, &mut rows, &["t3"]);
+        rows.rebuild(t3_build(false));
+        assert!(!rows.row("t3").follow_up, "the mapped status alone is no reason");
+        rows.rebuild(t3_build(true));
+        let row = rows.row("t3");
+        assert!(row.follow_up && !row.ticked);
+        assert_eq!(row.status.as_deref(), Some("in review"));
+        assert!(row.status_edited);
     }
 
     #[test]
     fn edits_are_checked() {
-        let mut w = wb(built());
+        let mut rows = Rows::new(built());
         let long = "x".repeat(MAX_COMMENT_CHARS + 1);
         for (edit, err) in [
             (RowEdit { comment: Some("  ".into()), ..Default::default() }, "A comment cannot be empty."),
             (RowEdit { comment: Some(long), ..Default::default() }, "A comment can be at most 10000 characters."),
             (RowEdit { set_status: true, status: Some("a\nb".into()), ..Default::default() }, "That is not a ClickUp status name."),
         ] {
-            assert_eq!(apply_edit(&mut w, "t1", &edit).unwrap_err(), err);
+            assert_eq!(rows.edit("t1", edit).unwrap_err(), err);
         }
-        assert_eq!(apply_edit(&mut w, "nope", &RowEdit::default()).unwrap_err(), "That ticket has no proposal in this run.");
-        apply_edit(&mut w, "t1", &RowEdit { skipped: Some(true), ..Default::default() }).unwrap();
-        assert!(apply_edit(&mut w, "t1", &RowEdit { ticked: Some(true), ..Default::default() }).unwrap_err().contains("skipped"));
-        assert_eq!(w, wb({
-            let mut rows = built();
-            rows[0].skipped = true;
-            rows
-        }));
-    }
-
-    fn token() -> ClickUpToken {
-        ClickUpToken::parse("pk_test_WRITEBACK").unwrap()
-    }
-
-    /// Sends what the UI shows ticked, for tickets `in_snapshot`.
-    fn send(api: &Recorded, w: &mut Writeback, in_snapshot: &[&str]) -> SendReport {
-        let requests = ticked_reqs(w);
-        send_with(api, w, in_snapshot, &requests)
-    }
-
-    fn send_with(api: &Recorded, w: &mut Writeback, in_snapshot: &[&str], requests: &[SendRequest]) -> SendReport {
-        let (gate, clock, token) = (Gate::new(), FakeClock::at(1_790_000_000), token());
-        send_requests(&ClickUp::with(api, &token, &gate, &clock), w, &ids(in_snapshot), requests, &|| NOW.to_string()).unwrap()
+        assert_eq!(rows.edit("nope", RowEdit::default()).unwrap_err(), "That ticket has no proposal in this run.");
+        rows.edit("t1", RowEdit { skipped: Some(true), ..Default::default() }).unwrap();
+        assert!(rows.edit("t1", RowEdit { ticked: Some(true), ..Default::default() }).unwrap_err().contains("skipped"));
+        let mut expected = Rows::new(built());
+        expected.row_mut("t1").skipped = true;
+        assert_eq!(rows, expected);
     }
 
     #[test]
     fn unticked_rows_and_ticks_written_into_the_file_make_no_call() {
-        let mut w = wb(built());
-        apply_edit(&mut w, "t2", &RowEdit { ticked: Some(true), ..Default::default() }).unwrap();
-        apply_edit(&mut w, "t2", &RowEdit { ticked: Some(false), skipped: Some(true), ..Default::default() }).unwrap();
+        let mut rows = Rows::new(built());
+        rows.tick("t2");
+        rows.edit("t2", RowEdit { ticked: Some(false), skipped: Some(true), ..Default::default() }).unwrap();
         let api = Recorded::default();
-        assert_eq!(send(&api, &mut w, &["t1", "t2"]), SendReport::default());
-        // A tick put straight into the file, with nothing from you, sends nothing.
-        w.proposals[0].ticked = true;
-        assert_eq!(send_with(&api, &mut w, &["t1", "t2"], &[]), SendReport::default());
-        // Naming an unticked or skipped row sends nothing either.
-        let skipped = req(&w.proposals[1]);
-        let report = send_with(&api, &mut w, &["t1", "t2"], &[skipped]);
+        assert_eq!(send(&api, &mut rows, &["t1", "t2"]), SendReport::default());
+        rows.row_mut("t1").ticked = true;
+        assert_eq!(send_with(&api, &mut rows, &["t1", "t2"], &[]), SendReport::default());
+        let skipped = req(rows.row("t2"));
+        let report = send_with(&api, &mut rows, &["t1", "t2"], &[skipped]);
         assert_eq!(report.not_sent, [("t2".to_string(), CHANGED_SINCE_TICK.to_string())]);
         assert!(api.calls.lock().unwrap().is_empty() && api.writes.lock().unwrap().is_empty());
-        assert!(w.proposals.iter().all(|p| p.sent.is_none()));
     }
 
     #[test]
     fn a_row_injected_into_the_file_or_content_you_did_not_see_is_never_sent() {
-        let mut w = wb(built());
-        let mut foreign = w.proposals[0].clone();
+        let mut rows = Rows::new(built());
+        let mut foreign = rows.row("t1").clone();
         foreign.ticket.id = "evil1".into();
         foreign.ticked = true;
-        w.proposals.push(foreign.clone());
-        apply_edit(&mut w, "t1", &RowEdit { ticked: Some(true), ..Default::default() }).unwrap();
-        let mut seen = req(&w.proposals[0]);
-        // The file's comment changed after you looked.
-        w.proposals[0].comment = "Something else.".into();
-        let over = { let mut p = w.proposals[1].clone(); p.ticked = true; p.comment = "x".repeat(MAX_COMMENT_CHARS + 1); p };
-        w.proposals[1] = over.clone();
+        rows.wb.proposals.push(foreign.clone());
+        rows.tick("t1");
+        rows.tick("t2");
+        let seen = req(rows.row("t1"));
+        rows.row_mut("t1").comment = "Something else.".into();
+        rows.row_mut("t2").comment = "x".repeat(MAX_COMMENT_CHARS + 1);
+        let over = req(rows.row("t2"));
         let api = Recorded::default();
-        let report = send_with(&api, &mut w, &["t1", "t2"], &[seen.clone(), req(&foreign), req(&over)]);
+        let report = send_with(&api, &mut rows, &["t1", "t2"], &[seen, req(&foreign), over]);
         assert_eq!(report.not_sent.len(), 3, "{report:?}");
         assert_eq!(report.not_sent[0].1, CHANGED_SINCE_TICK);
         assert!(report.not_sent[1].1.contains("not in the run's tickets.json"));
-        assert_eq!(report.not_sent[2].1, "A comment can be at most 10000 characters.");
-        assert!(api.writes.lock().unwrap().is_empty());
-        // What you saw and what the file says must match exactly, status too.
-        w.proposals[0].comment = seen.comment.clone();
-        seen.status = None;
-        assert_eq!(send_with(&api, &mut w, &["t1"], &[seen]).not_sent[0].1, CHANGED_SINCE_TICK);
+        assert_eq!(report.not_sent[2].1, CHANGED_SINCE_TICK, "not what you ticked");
         assert!(api.writes.lock().unwrap().is_empty());
     }
 
     #[test]
     fn a_ticked_row_sends_its_status_then_its_comment_and_is_recorded() {
-        let mut w = wb(built());
-        apply_edit(&mut w, "t1", &RowEdit { ticked: Some(true), ..Default::default() }).unwrap();
+        let mut rows = Rows::new(built());
+        rows.tick("t1");
         let api = Recorded::default()
             .on("PUT /task/t1", ok("{}".into()))
             .on("POST /task/t1/comment", ok("{}".into()));
-        let report = send(&api, &mut w, &["t1", "t2"]);
+        let report = send(&api, &mut rows, &["t1", "t2"]);
         assert_eq!(report.sent, [("t1".to_string(), "comment, status QA PASSED".to_string())]);
         let writes = api.writes.lock().unwrap().clone();
         assert_eq!(writes.len(), 2, "t2 was not ticked");
         assert_eq!((writes[0].method, writes[0].path.as_str()), ("PUT", "/task/t1"));
         assert_eq!(writes[0].body, serde_json::json!({ "status": "QA PASSED" }));
         assert_eq!((writes[1].method, writes[1].path.as_str()), ("POST", "/task/t1/comment"));
-        assert_eq!(writes[1].body["comment_text"], serde_json::json!(w.proposals[0].comment));
+        assert_eq!(writes[1].body["comment_text"], serde_json::json!(rows.row("t1").comment));
         assert_eq!(writes[1].body["notify_all"], serde_json::json!(false));
-        let row = &w.proposals[0];
+        let row = rows.row("t1");
         assert_eq!(row.sent, Some(Sent { at: NOW.into(), comment: Some(row.comment.clone()), status: Some("QA PASSED".into()) }));
-        assert!(!row.ticked && row.error.is_none());
+        assert!(!row.ticked && row.error.is_none() && !row.sent_maybe);
+        assert!(!rows.memory.has_tick("t1", &row.comment, row.status.as_deref()), "the tick is spent");
     }
 
     #[test]
     fn a_failed_row_keeps_its_error_and_its_tick_and_a_retry_sends_it() {
-        let mut w = wb(built());
-        apply_edit(&mut w, "t1", &RowEdit { ticked: Some(true), ..Default::default() }).unwrap();
+        let mut rows = Rows::new(built());
+        rows.tick("t1");
         let api = Recorded::default()
             .on("PUT /task/t1", status(400))
             .on("PUT /task/t1", ok("{}".into()))
-            .on("POST /task/t1/comment", ok("{}".into()));
-        let first = send(&api, &mut w, &["t1"]);
-        assert_eq!(first.failed.len(), 1);
-        let err = w.proposals[0].error.clone().unwrap();
-        assert!(err.starts_with("ClickUp refused the change (HTTP 400)"), "{err}");
-        assert!(w.proposals[0].ticked && w.proposals[0].sent.is_none());
-        assert_eq!(api.writes.lock().unwrap().len(), 1, "no comment after the status failed");
-        let again = send(&api, &mut w, &["t1"]);
-        assert_eq!(again.sent.len(), 1);
-        assert!(w.proposals[0].error.is_none() && w.proposals[0].sent.is_some());
-    }
-
-    #[test]
-    fn a_status_set_before_a_failed_comment_is_recorded_and_not_set_again() {
-        let mut w = wb(built());
-        apply_edit(&mut w, "t1", &RowEdit { ticked: Some(true), ..Default::default() }).unwrap();
-        let api = Recorded::default()
+            .on("POST /task/t1/comment", status(400))
             .on("PUT /task/t1", ok("{}".into()))
-            .on("POST /task/t1/comment", status(502))
             .on("POST /task/t1/comment", ok("{}".into()));
-        let first = send(&api, &mut w, &["t1"]);
-        assert!(first.failed[0].1.ends_with("(Its status was set to QA PASSED.)"), "{:?}", first.failed);
-        let row = &w.proposals[0];
-        assert_eq!(row.sent.as_ref().map(|s| (s.comment.clone(), s.status.clone())), Some((None, Some("QA PASSED".into()))));
-        assert!(row.ticked);
-        send(&api, &mut w, &["t1"]);
-        let writes = api.writes.lock().unwrap().clone();
-        assert_eq!(writes.iter().filter(|w| w.method == "PUT").count(), 1, "the status went once");
-        assert_eq!(writes.len(), 3);
+        let first = send(&api, &mut rows, &["t1"]);
+        assert!(first.failed[0].1.starts_with("ClickUp refused the change (HTTP 400)"), "{first:?}");
+        assert!(rows.row("t1").ticked && rows.row("t1").sent.is_none());
+        assert_eq!(api.writes.lock().unwrap().len(), 1, "no comment after the status failed");
+        // A comment ClickUp refused was not posted: still ticked, no confirm needed.
+        let second = send(&api, &mut rows, &["t1"]);
+        assert!(second.failed[0].1.ends_with("(Its status was set to QA PASSED.)"), "{second:?}");
+        assert!(rows.row("t1").ticked && !rows.row("t1").sent_maybe);
+        let third = send(&api, &mut rows, &["t1"]);
+        assert_eq!(third.sent.len(), 1);
+        assert!(rows.row("t1").error.is_none());
+        let puts = api.writes.lock().unwrap().iter().filter(|w| w.method == "PUT").count();
+        assert_eq!(puts, 2, "the status recorded as set is not set again");
     }
 
     #[test]
-    fn a_timed_out_comment_may_have_been_posted_so_a_resend_needs_you_to_confirm() {
-        let mut w = wb(built());
-        apply_edit(&mut w, "t2", &RowEdit { set_status: true, status: None, ticked: Some(true), ..Default::default() }).unwrap();
-        let api = Recorded::default()
-            .on("POST /task/t2/comment", Err(NoReply::Timeout))
-            .on("POST /task/t2/comment", ok("{}".into()));
-        let first = send(&api, &mut w, &["t2"]);
-        assert_eq!(first.failed[0].1, MAYBE_POSTED);
-        let row = &w.proposals[1];
-        assert!(row.sent_maybe && !row.ticked);
-        let tick = RowEdit { ticked: Some(true), ..Default::default() };
-        assert!(apply_edit(&mut w, "t2", &tick).unwrap_err().contains("confirm"));
-        // Even a forced tick is refused while it may have been posted.
-        let mut forced = w.clone();
-        forced.proposals[1].ticked = true;
-        assert_eq!(check_request(&forced, &ids(&["t2"]), &req(&forced.proposals[1])).unwrap_err(), MAYBE_POSTED);
-        apply_edit(&mut w, "t2", &RowEdit { confirm_resend: true, ..tick }).unwrap();
-        assert_eq!(send(&api, &mut w, &["t2"]).sent.len(), 1);
-        assert!(!w.proposals[1].sent_maybe);
+    fn a_comment_post_that_did_not_finish_cleanly_needs_your_confirmation_to_resend() {
+        for (reply, label) in [
+            (Err(NoReply::Timeout), "timeout"),
+            (Err(NoReply::Failed), "broken connection"),
+            (status(502), "server error"),
+        ] {
+            let mut rows = Rows::new(built());
+            rows.edit("t2", RowEdit { set_status: true, status: None, ticked: Some(true), ..Default::default() }).unwrap();
+            let api = Recorded::default()
+                .on("POST /task/t2/comment", reply)
+                .on("POST /task/t2/comment", ok("{}".into()));
+            let first = send(&api, &mut rows, &["t2"]);
+            assert!(first.failed[0].1.ends_with(MAYBE_POSTED), "{label}: {first:?}");
+            assert!(rows.row("t2").sent_maybe && !rows.row("t2").ticked, "{label}");
+            let tick = RowEdit { ticked: Some(true), ..Default::default() };
+            assert_eq!(rows.edit("t2", tick.clone()).unwrap_err(), RESEND_NEEDS_CONFIRM, "{label}");
+            // A file rewritten to clear the mark and tick the row is not enough while the app runs.
+            rows.row_mut("t2").sent_maybe = false;
+            rows.row_mut("t2").ticked = true;
+            assert_eq!(rows.edit("t2", tick.clone()).unwrap_err(), RESEND_NEEDS_CONFIRM, "{label}");
+            assert_eq!(send(&api, &mut rows, &["t2"]).not_sent.len(), 0, "{label}: not shown ticked");
+            assert_eq!(api.writes.lock().unwrap().len(), 1, "{label}");
+            rows.edit("t2", RowEdit { confirm_resend: true, ..tick }).unwrap();
+            assert_eq!(send(&api, &mut rows, &["t2"]).sent.len(), 1, "{label}");
+            assert!(!rows.row("t2").sent_maybe && !rows.memory.maybe_posted("t2"), "{label}");
+        }
+    }
+
+    /// A store that saves `ok` times, then fails.
+    struct Failing {
+        rows: Rows,
+        ok: usize,
+    }
+
+    impl RowStore for Failing {
+        fn with(&mut self, f: &mut dyn FnMut(&mut Writeback, &mut RunMemory) -> bool) -> Result<(), String> {
+            let mut wb = self.rows.wb.clone();
+            let mut memory = self.rows.memory.clone();
+            if f(&mut wb, &mut memory) {
+                if self.ok == 0 {
+                    return Err("disk full".into());
+                }
+                self.ok -= 1;
+                self.rows.wb = wb;
+            }
+            self.rows.memory = memory;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_save_failure_stops_the_send_and_reports_what_went() {
+        let mut rows = Rows::new(built());
+        rows.edit("t1", RowEdit { set_status: true, status: None, ticked: Some(true), ..Default::default() }).unwrap();
+        rows.edit("t2", RowEdit { set_status: true, status: None, ticked: Some(true), ..Default::default() }).unwrap();
+        let requests = shown(&rows);
+        // The mark before t1's POST saves, the result after it does not.
+        let mut store = Failing { rows, ok: 1 };
+        let api = Recorded::default().on("POST /task/t1/comment", ok("{}".into()));
+        let (gate, clock, token) = (Gate::new(), FakeClock::at(1_790_000_000), token());
+        let (report, err) = send_requests(&ClickUp::with(&api, &token, &gate, &clock), &mut store, &ids(&["t1", "t2"]), &requests, &|| NOW.to_string())
+            .unwrap_err();
+        assert_eq!(err, "disk full");
+        assert_eq!(report.sent, [("t1".to_string(), "comment".to_string())], "what went is reported");
+        assert_eq!(api.writes.lock().unwrap().len(), 1, "t2 was not sent after the failure");
+        // The file still marks t1 as maybe posted: a later send asks you first.
+        assert!(store.rows.row("t1").sent_maybe && !store.rows.row("t1").ticked);
     }
 
     #[test]
     fn a_sent_row_is_never_sent_twice_unless_you_edit_and_tick_it_again() {
-        let mut w = wb(built());
-        apply_edit(&mut w, "t1", &RowEdit { ticked: Some(true), ..Default::default() }).unwrap();
+        let mut rows = Rows::new(built());
+        rows.tick("t1");
         let api = Recorded::default()
             .on("PUT /task/t1", ok("{}".into()))
             .on("POST /task/t1/comment", ok("{}".into()))
             .on("POST /task/t1/comment", ok("{}".into()));
-        let seen = ticked_reqs(&w);
-        send(&api, &mut w, &["t1"]);
+        let seen = shown(&rows);
+        send(&api, &mut rows, &["t1"]);
         assert_eq!(
-            apply_edit(&mut w, "t1", &RowEdit { ticked: Some(true), ..Default::default() }).unwrap_err(),
+            rows.edit("t1", RowEdit { ticked: Some(true), ..Default::default() }).unwrap_err(),
             "Already sent. Edit the comment or the status to send it again."
         );
-        // Even a tick forced into the file, with the same request again, sends nothing.
-        w.proposals[0].ticked = true;
-        assert_eq!(send_with(&api, &mut w, &["t1"], &seen).not_sent[0].1, "Already sent.");
+        rows.row_mut("t1").ticked = true;
+        assert_eq!(send_with(&api, &mut rows, &["t1"], &seen).not_sent[0].1, CHANGED_SINCE_TICK);
         assert_eq!(api.writes.lock().unwrap().len(), 2);
-        // A rebuild keeps what was sent, unticked.
-        let merged = merge(Some(&w), built());
-        assert_eq!(merged[0].comment, w.proposals[0].comment);
-        assert!(!merged[0].ticked);
-        // Edit, tick, send: only the new comment goes, the status was set already.
-        apply_edit(&mut w, "t1", &RowEdit { comment: Some("Follow-up.".into()), ticked: Some(true), ..Default::default() }).unwrap();
-        assert_eq!(send(&api, &mut w, &["t1"]).sent, [("t1".to_string(), "comment".to_string())]);
+        rows.row_mut("t1").ticked = false;
+        rows.rebuild(built().into_iter().map(|mut p| { p.comment = "new".into(); p }).collect());
+        assert_ne!(rows.row("t1").comment, "new", "a sent row keeps what it sent");
+        rows.edit("t1", RowEdit { comment: Some("Follow-up.".into()), ticked: Some(true), ..Default::default() }).unwrap();
+        assert_eq!(send(&api, &mut rows, &["t1"]).sent, [("t1".to_string(), "comment".to_string())]);
         let writes = api.writes.lock().unwrap().clone();
         assert_eq!(writes.len(), 3);
         assert_eq!(writes[2].body["comment_text"], "Follow-up.");
@@ -1270,12 +1557,12 @@ pub(crate) mod tests {
 
     #[test]
     fn writeback_json_reads_back_as_written_and_older_rows_default() {
-        let mut w = wb(built());
-        w.proposals[0].sent = Some(Sent { at: NOW.into(), comment: Some("c".into()), status: None });
-        w.proposals[1].error = Some("Could not reach ClickUp. Check your connection.".into());
-        let text = serde_json::to_string_pretty(&w).unwrap();
+        let mut rows = Rows::new(built());
+        rows.row_mut("t1").sent = Some(Sent { at: NOW.into(), comment: Some("c".into()), status: None });
+        rows.row_mut("t2").error = Some("Could not reach ClickUp. Check your connection.".into());
+        let text = serde_json::to_string_pretty(&rows.wb).unwrap();
         let back: Writeback = serde_json::from_str(&text).unwrap();
-        assert_eq!(back, w);
+        assert_eq!(back, rows.wb);
         let json: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(json["schema"], 1);
         let first = &json["proposals"][0];
@@ -1291,3 +1578,4 @@ pub(crate) mod tests {
         assert!(!bare.proposals[0].ticked && bare.proposals[0].sent.is_none());
     }
 }
+

@@ -21,7 +21,7 @@ use super::clickup_intake::{access, lock, now_text, read_snapshot, window_accoun
 use crate::bridge::folder::{self, RunPrs, TASKS_FILE, WRITEBACK_FILE};
 use crate::clickup::intake::TicketsSnapshot;
 use crate::clickup::writeback::{
-    self, LaneFacts, PrLink, Proposal, RowEdit, RowStore, RunFacts, SendReport, SendRequest,
+    self, LaneFacts, PrLink, Proposal, RowEdit, RowStore, RunFacts, RunMemory, SendReport, SendRequest,
     VerifyFacts, Writeback, WRITEBACK_SCHEMA,
 };
 use crate::clickup::{valid_id, ClickUp};
@@ -29,7 +29,7 @@ use crate::commands::chain_events::ChainEvents;
 use crate::store::settings_store::ClickUpStatusMap;
 use crate::store::{PipelineRun, RunLane, RunStatus, SettingsStore, StateStore};
 use serde::Serialize;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
@@ -42,6 +42,11 @@ pub struct WritebackState {
     file: Mutex<()>,
     /// Runs whose send is under way: edits wait for it.
     sending: Mutex<HashSet<String>>,
+    /// Per run: the ticks you gave and the comments that may have been
+    /// posted, kept here because anything that can write the run folder
+    /// could forge them in `writeback.json`. Locked after `file`, never
+    /// before it. Lost on restart, on purpose: you tick again.
+    memory: Mutex<HashMap<String, RunMemory>>,
 }
 
 /// One list's mapping, to show.
@@ -291,15 +296,28 @@ pub(crate) fn load(
         let _file = lock(&state.file)?;
         let old = read_writeback(&run_dir)?;
         let sending = lock(&state.sending)?.contains(run_id);
+        let mut memories = lock(&state.memory)?;
+        let memory = memories.entry(run_id.to_string()).or_default();
         match old {
             None if fresh.is_empty() => return Ok(None),
-            // While a send is under way, the file is the send's.
-            Some(old) if fresh.is_empty() || sending => old,
+            // While a send is under way, the file is the send's; what you
+            // see still carries only the ticks you gave.
+            Some(mut old) if sending => {
+                writeback::sanitize(&mut old.proposals, &mut memory.clone());
+                old
+            }
             old => {
+                let proposals = if fresh.is_empty() {
+                    let mut rows = old.as_ref().map(|o| o.proposals.clone()).unwrap_or_default();
+                    writeback::sanitize(&mut rows, memory);
+                    rows
+                } else {
+                    writeback::merge(old.as_ref(), fresh, memory)
+                };
                 let next = Writeback {
                     schema: WRITEBACK_SCHEMA,
                     run_id: run_id.to_string(),
-                    proposals: writeback::merge(old.as_ref(), fresh),
+                    proposals,
                 };
                 if old.as_ref() != Some(&next) {
                     write_writeback(&run_dir, &next)?;
@@ -332,7 +350,9 @@ pub(crate) fn edit(
             return Err("The ClickUp updates are being sent. Wait for that to finish.".into());
         }
         let mut wb = read_writeback(&run_dir)?.ok_or("This run has no ClickUp updates yet.")?;
-        writeback::apply_edit(&mut wb, ticket_id, change)?;
+        let mut memories = lock(&state.memory)?;
+        let memory = memories.entry(run_id.to_string()).or_default();
+        writeback::edit_row(&mut wb, memory, ticket_id, change)?;
         write_writeback(&run_dir, &wb)?;
         wb
     };
@@ -363,13 +383,16 @@ fn claim_send<'a>(state: &'a WritebackState, run_id: &str) -> Result<Sending<'a>
 struct FileRows<'a> {
     state: &'a WritebackState,
     run_dir: &'a Path,
+    run_id: &'a str,
 }
 
 impl RowStore for FileRows<'_> {
-    fn with(&mut self, f: &mut dyn FnMut(&mut Writeback) -> bool) -> Result<(), String> {
+    fn with(&mut self, f: &mut dyn FnMut(&mut Writeback, &mut RunMemory) -> bool) -> Result<(), String> {
         let _file = lock(&self.state.file)?;
         let mut wb = read_writeback(self.run_dir)?.ok_or("This run has no ClickUp updates yet.")?;
-        if f(&mut wb) {
+        let mut memories = lock(&self.state.memory)?;
+        let memory = memories.entry(self.run_id.to_string()).or_default();
+        if f(&mut wb, memory) {
             write_writeback(self.run_dir, &wb)?;
         }
         Ok(())
@@ -444,7 +467,7 @@ pub(crate) fn send(
     let tickets: HashSet<String> = snapshot.tickets.iter().map(|t| t.row.id.clone()).collect();
     let sending = claim_send(state, run_id)?;
     let client = ClickUp::with(deps.transport, &token, deps.gate, deps.clock);
-    let mut rows = FileRows { state, run_dir: &run_dir };
+    let mut rows = FileRows { state, run_dir: &run_dir, run_id };
     let (report, saved) = match writeback::send_requests(&client, &mut rows, &tickets, requests, &now_text) {
         Ok(report) => (report, Ok(())),
         Err((report, err)) => (report, Err(err)),

@@ -517,16 +517,113 @@ fn a_send_that_dies_after_row_1_of_3_leaves_row_1_recorded_and_a_later_send_does
     assert!(died.is_err());
     let saved = env.saved();
     assert!(saved.proposals[0].sent.is_some() && !saved.proposals[0].ticked, "row 1 was saved as soon as it went");
-    assert!(saved.proposals[1].sent.is_none() && saved.proposals[2].sent.is_none());
+    // Row 2 died mid-POST: ClickUp may have it, so it is unticked and marked.
+    assert!(saved.proposals[1].sent_maybe && !saved.proposals[1].ticked);
+    assert!(saved.proposals[2].sent.is_none() && saved.proposals[2].ticked);
     assert!(!env.load().unwrap().sending, "the send is not left claimed");
-    // The next send posts rows 2 and 3 only.
-    let api = Recorded::default()
-        .on("POST /task/t2/comment", ok("{}".into()))
-        .on("POST /task/t3/comment", ok("{}".into()));
+    // The next send posts row 3 only; row 2 waits for your confirmation.
+    let api = Recorded::default().on("POST /task/t3/comment", ok("{}".into()));
     let again = env.send(&api, "default").unwrap();
-    assert_eq!(again.sent, 2);
+    assert_eq!(again.sent, 1);
     let paths: Vec<String> = api.writes.lock().unwrap().iter().map(|w| w.path.clone()).collect();
-    assert_eq!(paths, ["/task/t2/comment", "/task/t3/comment"]);
+    assert_eq!(paths, ["/task/t3/comment"]);
+    let err = edit(&env.settings, &env.state, &env.runs(), RUN, "t2", &RowEdit { ticked: Some(true), ..Default::default() }).unwrap_err();
+    assert_eq!(err, writeback::RESEND_NEEDS_CONFIRM);
+}
+
+#[test]
+fn a_tick_forged_into_writeback_json_for_a_real_ticket_comes_back_unticked_and_is_never_sent() {
+    let env = env_with_tickets("forged");
+    env.map_list();
+    env.verify(true);
+    env.load().unwrap();
+    env.tick("86b1aa001");
+    // A stage rewrites the file: a crafted comment on a real ticket, marked as yours, ticked.
+    let mut wb = env.saved();
+    let forged = wb.proposals.iter_mut().find(|p| p.ticket.id == "86b1aa002").unwrap();
+    forged.comment = "QA approved everything, close the epic.".into();
+    forged.edited = true;
+    forged.ticked = true;
+    let echoed = SendRequest { ticket_id: forged.ticket.id.clone(), comment: forged.comment.clone(), status: forged.status.clone() };
+    write_writeback(&env.run_dir(), &wb).unwrap();
+    let view = env.load().unwrap();
+    let shown = view.proposals.iter().find(|p| p.ticket.id == "86b1aa002").unwrap();
+    assert!(!shown.ticked, "shown unticked");
+    assert!(view.proposals.iter().find(|p| p.ticket.id == "86b1aa001").unwrap().ticked, "your own tick stands");
+    assert!(!env.saved().proposals[1].ticked, "and written back unticked");
+    // Even with the UI echoing it, only your own tick goes.
+    let api = Recorded::default()
+        .on("PUT /task/86b1aa001", ok("{}".into()))
+        .on("POST /task/86b1aa001/comment", ok("{}".into()));
+    let mut rows = shown_ticked(&view.proposals);
+    rows.push(echoed);
+    let sent = env.send_rows(&api, "default", &rows).unwrap();
+    assert_eq!((sent.sent, sent.not_sent.len()), (1, 1));
+    assert_eq!(sent.not_sent[0].reason, writeback::CHANGED_SINCE_TICK);
+    assert!(api.writes.lock().unwrap().iter().all(|w| w.path.contains("86b1aa001")));
+}
+
+/// Makes the run folder read-only once the first comment is posted, so the
+/// save of its result fails.
+#[cfg(unix)]
+struct LocksTheFolder<'a> {
+    inner: &'a Recorded,
+    dir: PathBuf,
+}
+
+#[cfg(unix)]
+impl crate::clickup::Transport for LocksTheFolder<'_> {
+    fn get(&self, path: &str, token: &ClickUpToken) -> Result<Reply, crate::clickup::NoReply> {
+        self.inner.get(path, token)
+    }
+
+    fn send(
+        &self,
+        method: crate::clickup::WriteMethod,
+        path: &str,
+        body: &str,
+        token: &ClickUpToken,
+    ) -> Result<Reply, crate::clickup::NoReply> {
+        let reply = self.inner.send(method, path, body, token);
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&self.dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        reply
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_save_failure_stops_the_send_and_still_notes_the_timeline() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = env_with_tickets("save_fails");
+    env.verify(true);
+    env.load().unwrap();
+    env.tick("86b1aa001");
+    env.tick("86b1aa002");
+    let rows = shown_ticked(&env.load().unwrap().proposals);
+    let recorded = Recorded::default().on("POST /task/86b1aa001/comment", ok("{}".into()));
+    let api = LocksTheFolder { inner: &recorded, dir: env.run_dir() };
+    let deps = Deps {
+        settings: &env.settings,
+        secrets: &env.secrets,
+        env: None,
+        env_rejected: false,
+        transport: &api,
+        gate: &env.gate,
+        clock: &env.clock,
+    };
+    let result = send(&deps, &env.state, &env.store, &Events::default(), &env.runs(), RUN, "default", &rows);
+    std::fs::set_permissions(env.run_dir(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let err = result.unwrap_err();
+    assert!(err.starts_with("Could not save the ClickUp results"), "{err}");
+    assert_eq!(recorded.writes.lock().unwrap().len(), 1, "sending stopped after the failed save");
+    let store = env.store.lock().unwrap();
+    let run = store.pipeline_run_by_id(RUN).unwrap();
+    assert!(run.events.iter().any(|e| e.summary == "Sent 1 ClickUp update: 86b1aa001 (comment)"), "{:?}", run.events);
+    drop(store);
+    // The file marks it as maybe posted, so a later send asks you first.
+    assert!(env.saved().proposals[0].sent_maybe);
+    assert!(!env.load().unwrap().sending);
 }
 
 #[test]
