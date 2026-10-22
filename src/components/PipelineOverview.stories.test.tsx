@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("../bridge", () => ({
@@ -91,6 +91,39 @@ describe("PipelineOverview stories (L3)", () => {
     const pr2 = within(lanes).getByRole("listitem", { name: "PR2 — Docs" });
     expect(pr2.textContent).not.toContain("story");
     expect(screen.queryByRole("region", { name: "Stories" })).toBeNull();
+  });
+
+  it("a last story waiting on its verification shows only the Verify panel; a stopped story offers Resend", async () => {
+    const verifying = stories(null).map((s) =>
+      s.id === "s4" ? { ...s, status: "verifying" as const } : { ...s, status: "done" as const },
+    );
+    show(
+      run({
+        status: "waiting",
+        stopReason: "checkpoint",
+        stories: verifying,
+        autopilot: {
+          enabled: true,
+          waiting: "Implementer passed its checks, and verify waits for you.",
+          verify: { stageId: "implementer", label: "verify", steps: "Run qa128 on Windows.", turn: "impl|bridge|t4", at: "now" },
+        },
+      }),
+    );
+    expect(await screen.findByRole("region", { name: "Verification" })).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Story checkpoint" })).toBeNull();
+    expect(screen.getByRole("list", { name: "Stories of the pull request" }).textContent).toContain("waiting on your verification");
+    expect(screen.queryByRole("button", { name: /Resend story/ })).toBeNull();
+    cleanup();
+
+    show(
+      run({
+        status: "waiting",
+        stopReason: "gate_failed",
+        stories: stories(null).map((s) => (s.id === "s2" ? { ...s, status: "failed" as const, attempt: 3 } : s)),
+        autopilot: { enabled: true, waiting: "The check failed 3 times in a row." },
+      }),
+    );
+    expect(await screen.findByRole("button", { name: "Resend story s2" })).toBeTruthy();
   });
 
   it("shows the run's own pull request's stories and the checkpoint it waits on", async () => {

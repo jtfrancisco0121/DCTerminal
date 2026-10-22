@@ -60,6 +60,8 @@ export function storyStatusText(story: RunStory): string {
       return `checks failed (attempt ${story.attempt ?? 1})`;
     case "waiting":
       return "waiting on you";
+    case "verifying":
+      return "waiting on your verification";
     case "done":
       return "done";
     case "skipped":
@@ -82,33 +84,17 @@ export type PendingStoryCheckpoint = {
   next: RunStory | null;
 };
 
-/** The lanes (null: the run's own) of `run` that have stories, in order. */
-function storyLanes(run: PipelineRun): (string | null)[] {
-  const lanes: (string | null)[] = [];
-  for (const story of run.stories ?? []) {
-    const lane = story.lane ?? null;
-    if (!lanes.includes(lane)) lanes.push(lane);
-  }
-  return lanes;
-}
-
 /**
- * The checkpoint story `run` waits on, or null when it waits on none: the
- * run's wait, or a current story still waiting on you after the run's wait
- * ended another way (autopilot turned off and on), so Continue stays.
+ * The checkpoint story `run` waits on, or null when it waits on none. The
+ * wait survives turning autopilot off and on (the run waits again).
  */
 export function pendingStoryCheckpoint(run: PipelineRun): PendingStoryCheckpoint | null {
-  if (run.status === "complete") return null;
   const wait = run.autopilot?.storyWait;
-  const lane =
-    wait && run.status === "waiting" && run.stopReason === "checkpoint"
-      ? (wait.lane ?? null)
-      : storyLanes(run).find((id) => currentStory(run, id)?.status === "waiting");
-  if (lane === undefined) return null;
+  if (!wait || run.status !== "waiting" || run.stopReason !== "checkpoint") return null;
+  const lane = wait.lane ?? null;
   const stories = laneStories(run, lane);
-  const now = currentStory(run, lane);
-  if (!now || now.status !== "waiting") return null;
-  const at = stories.indexOf(now);
+  const at = stories.findIndex((story) => story.id === wait.story);
+  if (at < 0) return null;
   const laneRecord = lane ? run.lanes?.find((l) => l.id === lane) : undefined;
   return {
     lane,
@@ -117,28 +103,32 @@ export function pendingStoryCheckpoint(run: PipelineRun): PendingStoryCheckpoint
     story: stories[at],
     number: at + 1,
     total: stories.length,
-    checkpoint: wait && (wait.lane ?? null) === lane && wait.story === now.id ? wait.checkpoint : (now.checkpoint ?? ""),
+    checkpoint: wait.checkpoint,
     next: stories[at + 1] ?? null,
   };
 }
 
 /** One wait from another; "" when the run waits on no checkpoint story. */
 export function storyWaitKey(run: PipelineRun): string {
-  const pending = pendingStoryCheckpoint(run);
-  if (!pending) return "";
-  return `${pending.lane ?? ""}@${pending.story.id}@${pending.story.at ?? ""}`;
+  const wait = run.autopilot?.storyWait;
+  if (!wait || !pendingStoryCheckpoint(run)) return "";
+  return `${wait.lane ?? ""}@${wait.story}@${wait.at}`;
 }
 
 /**
- * The lane whose current story can be sent again (**Resend story**): the
- * run stopped mid-loop (not running, not complete, not waiting on your
- * answer) and the story is not waiting on its checkpoint. Null otherwise.
+ * The current story of `lane` that can be sent again (**Resend story**),
+ * or null. Autopilot must be on and the run not waiting on your answer.
+ * A stopped run offers any story not at a checkpoint or verification; a
+ * running run (turned on again after a stop) offers a story whose checks
+ * failed, since nothing else will send it. The run actor checks the rest.
  */
 export function resendableStory(run: PipelineRun, lane: string | null): RunStory | null {
-  if (run.status === "running" || run.status === "complete" || !run.status) return null;
-  if (run.autopilot?.verify || run.autopilot?.storyWait) return null;
+  if (!run.autopilot?.enabled || run.status === "complete" || !run.status) return null;
+  if (run.autopilot.verify || run.autopilot.storyWait) return null;
   const now = currentStory(run, lane);
-  return now && now.status !== "waiting" ? now : null;
+  if (!now || now.status === "waiting" || now.status === "verifying") return null;
+  if (run.status === "running") return now.status === "failed" ? now : null;
+  return now;
 }
 
 /** The run actor message for Resend story. */

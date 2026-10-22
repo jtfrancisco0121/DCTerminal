@@ -394,13 +394,18 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             ),
         );
     }
+    // L3: a usage stop mid-loop says how to pick the story up again.
+    let resend_hint = super::stories::current(run, lane)
+        .filter(|_| stage.kind() == super::StageKind::Implementer)
+        .map(|now| format!(" Then press Resend story in the chain overview to send story {} again.", now.id))
+        .unwrap_or_default();
     if let Some(error) = report.rate_limit.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
         return stop(
             run,
             Some(&stage),
             StopReason::UsageLimit,
             format!(
-                "{} hit a Claude usage limit: {}. Carry on yourself once it resets.",
+                "{} hit a Claude usage limit: {}. Carry on yourself once it resets.{resend_hint}",
                 stage.title,
                 error.trim_end_matches('.')
             ),
@@ -412,7 +417,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             run,
             Some(&stage),
             StopReason::UsageLimit,
-            format!("Paused: Claude usage is at {used}% (autopilot pauses at {pause}%)."),
+            format!("Paused: Claude usage is at {used}% (autopilot pauses at {pause}%).{resend_hint}"),
         );
     }
     if report.no_result {
@@ -556,7 +561,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
     if let Some(gate) = waiting {
         // L3: the last story waits on your verification too.
         if let Some(id) = story.as_deref() {
-            super::stories::set_status(run, lane, id, crate::store::StoryStatus::Waiting);
+            super::stories::set_status(run, lane, id, crate::store::StoryStatus::Verifying);
         }
         let mut decision = super::verify::wait_for_you(run, &stage, lane, &gate, turn);
         decision.lane = lane.map(str::to_string);

@@ -286,8 +286,11 @@ fn skipped_stories_end_the_loop_and_a_story_left_checking_is_active_again() {
     seed(&mut r, None, &plan5(false));
     assert!(mid_loop(&r, None), "s1 of 4: command checks only");
     set_status(&mut r, None, "s1", StoryStatus::Checking);
-    settle_checking(&mut r, None);
+    set_status(&mut r, None, "s2", StoryStatus::Checking);
+    settle_checking(&mut r, None, "s1");
     assert_eq!(r.stories[0].status, StoryStatus::Active);
+    assert_eq!(r.stories[1].status, StoryStatus::Checking, "another story's checks are left alone");
+    r.stories[1].status = StoryStatus::Pending;
     r.stories[0].status = StoryStatus::Done;
     assert_eq!(skip_unfinished(&mut r, None), ["s2", "s3", "s4"]);
     assert!(current(&r, None).is_none() && !mid_loop(&r, None));
@@ -309,15 +312,51 @@ fn resend_makes_the_current_story_active_with_its_retries_started_over() {
     assert!(resend(&mut r, None, "implementer").unwrap_err().contains("press Continue"));
 }
 
+/// Review fix (root cause): a checkpoint story's wait survives turning
+/// autopilot off and on, and Continue needs that wait (no fallback on the
+/// story record alone).
 #[test]
-fn continue_takes_a_waiting_story_even_after_the_runs_wait_ended() {
+fn a_story_wait_survives_an_autopilot_toggle_and_continue_needs_it() {
     let def = eagle1();
     let mut r = run(None);
     seed(&mut r, None, &plan5(true));
     let report = story_turn(&mut r, None, "s1", "t-1", "passed");
     decide(&def, &mut r, &report);
     r.set_autopilot_enabled(false);
+    assert_eq!((r.status, r.stop_reason), (RunStatus::Stopped, Some(StopReason::PausedByYou)));
+    assert!(r.autopilot.as_ref().unwrap().story_wait.is_some(), "kept while off");
     r.set_autopilot_enabled(true);
-    assert!(r.autopilot.as_ref().unwrap().story_wait.is_none());
+    assert_eq!((r.status, r.stop_reason), (RunStatus::Waiting, Some(StopReason::Checkpoint)), "waits again");
+    assert!(r.autopilot.as_ref().unwrap().waiting.as_deref().unwrap().contains("story s1"));
+    let mut no_wait = r.clone();
+    no_wait.autopilot.as_mut().unwrap().story_wait = None;
+    assert!(continue_after(&mut no_wait, None, "s1", None, &[]).is_err(), "no Continue without the wait");
     assert_eq!(continue_after(&mut r, None, "s1", Some("ok"), &[]).unwrap(), "s2");
+}
+
+/// Review fix (MEDIUM 2): the last story waiting on its verify gate is
+/// `verifying`, not a checkpoint story: Continue and Resend do not apply.
+#[test]
+fn the_last_story_waiting_on_verify_is_verifying_not_at_a_checkpoint() {
+    let def = eagle1();
+    let mut r = run(None);
+    seed(&mut r, None, &plan5(true));
+    for story in r.stories.iter_mut().take(3) {
+        story.status = StoryStatus::Done;
+    }
+    r.stories[3].status = StoryStatus::Active;
+    let report = story_turn(&mut r, None, "s4", "t-4", "passed");
+    r.gates.get_mut("implementer").unwrap().results.push(crate::pipelines::lane_gates::waiting_verify("verify".into(), "Run qa128 on Windows."));
+    let d = decide(&def, &mut r, &report);
+    assert_eq!(d.stop_reason, Some(StopReason::Checkpoint));
+    assert!(r.autopilot.as_ref().unwrap().verify.is_some() && r.autopilot.as_ref().unwrap().story_wait.is_none());
+    assert_eq!(r.stories[3].status, StoryStatus::Verifying);
+    assert!(continue_after(&mut r.clone(), None, "s4", None, &[]).is_err());
+    assert!(resend(&mut r.clone(), None, "implementer").unwrap_err().contains("verification"));
+    // Marked verified: the last story is done and the PR Reviewer is next.
+    crate::pipelines::verify::answer(&mut r, "implementer", None, true, None, "now").unwrap();
+    let mut again = report.clone();
+    again.turn = Some("t-4#verify1".into());
+    assert_eq!(decide(&def, &mut r, &again).stage_id.as_deref(), Some("pr_reviewer"));
+    assert_eq!(r.stories[3].status, StoryStatus::Done);
 }

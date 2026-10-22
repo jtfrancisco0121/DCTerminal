@@ -384,7 +384,7 @@ export type PipelineRun = {
 };
 
 /** L3: where a story stands. */
-export type StoryStatus = "pending" | "active" | "checking" | "failed" | "waiting" | "done" | "skipped";
+export type StoryStatus = "pending" | "active" | "checking" | "failed" | "waiting" | "verifying" | "done" | "skipped";
 
 /** L3: one story of a pull request built in stories, as the run records it. */
 export type RunStory = {

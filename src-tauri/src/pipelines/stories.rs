@@ -63,13 +63,13 @@ pub fn mid_loop(run: &PipelineRun, lane: Option<&str>) -> bool {
     current(run, lane).is_some_and(|now| before_last(run, lane, &now.id))
 }
 
-/// A story whose result came in but whose checks were neither passed nor
-/// failed (the turn was skipped, held or stopped): active again.
-pub fn settle_checking(run: &mut PipelineRun, lane: Option<&str>) {
-    let at = now();
-    for story in run.stories.iter_mut().filter(|s| s.lane.as_deref() == lane && s.status == StoryStatus::Checking) {
+/// Story `id`, whose own turn's checks were neither passed nor failed (the
+/// turn was skipped, held or stopped), is active again; left `checking`
+/// only while those checks still run. Any other story is left alone.
+pub fn settle_checking(run: &mut PipelineRun, lane: Option<&str>, id: &str) {
+    if let Some(story) = story_mut(run, lane, id).filter(|s| s.status == StoryStatus::Checking) {
         story.status = StoryStatus::Active;
-        story.at = Some(at.clone());
+        story.at = Some(now());
     }
 }
 
@@ -95,6 +95,9 @@ pub fn resend(run: &mut PipelineRun, lane: Option<&str>, stage_key: &str) -> Res
     let now_story = current(run, lane).ok_or("Every story of this pull request is finished: there is none to send again.")?;
     if now_story.status == StoryStatus::Waiting {
         return Err(format!("Story {} waits on its checkpoint: press Continue instead.", now_story.id));
+    }
+    if now_story.status == StoryStatus::Verifying {
+        return Err(format!("Story {} waits on your verification: mark it verified or failed instead.", now_story.id));
     }
     let id = now_story.id.clone();
     set_status(run, lane, &id, StoryStatus::Active);
@@ -256,10 +259,12 @@ pub fn continue_after(
     note: Option<&str>,
     added: &[String],
 ) -> Result<String, String> {
-    // The story record says it waits: the run's wait may have ended another
-    // way (autopilot turned off and on), and Continue still sends the next.
-    let waiting = current(run, lane).is_some_and(|now| now.id == story && now.status == StoryStatus::Waiting);
-    if !waiting {
+    let waiting = run
+        .autopilot
+        .as_ref()
+        .and_then(|a| a.story_wait.as_ref())
+        .is_some_and(|wait| wait.lane.as_deref() == lane && wait.story == story);
+    if !waiting || !current(run, lane).is_some_and(|now| now.id == story && now.status == StoryStatus::Waiting) {
         return Err("The run is not waiting on that story's checkpoint any more. Reload the overview.".into());
     }
     let note = note.map(str::trim).filter(|note| !note.is_empty());

@@ -2430,23 +2430,25 @@ fn failed_check() -> GateResult {
     }
 }
 
-/// L3 review fix (MEDIUM): turning autopilot off and on during a story
-/// checkpoint clears the run's wait, but s1 still waits on you: Continue
-/// still sends s2.
+fn set_autopilot(fx: &Fixture, enabled: bool) {
+    let mut store = fx.host.store.lock().unwrap();
+    crate::commands::pipeline::set_autopilot(&mut store, RUN, enabled).unwrap();
+}
+
+/// L3 review fix (root cause): turning autopilot off and on during a story
+/// checkpoint keeps the wait: the run waits again, Continue is refused
+/// while autopilot is off and sends s2 once it is on.
 #[test]
 fn continue_still_works_after_autopilot_is_turned_off_and_on_during_a_story_wait() {
     let mut fx = Fixture::new("story_toggle");
     let implementer = to_story_wait(&mut fx);
-    {
-        let mut store = fx.host.store.lock().unwrap();
-        let run = store.pipeline_run_by_id_mut(RUN).unwrap();
-        run.set_autopilot_enabled(false);
-        run.set_autopilot_enabled(true);
-        store.save().unwrap();
-    }
+    set_autopilot(&fx, false);
+    let off = fx.user(UserAction::ContinueStory { lane: None, story: "s1".into(), note: None, add: None }).unwrap_err();
+    assert!(off.contains("Autopilot is off"), "{off}");
+    set_autopilot(&fx, true);
     fx.run(|run| {
-        assert_eq!(run.status, RunStatus::Running);
-        assert!(run.autopilot.as_ref().unwrap().story_wait.is_none());
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::Checkpoint)));
+        assert!(run.autopilot.as_ref().unwrap().story_wait.is_some());
         assert_eq!(run.stories[0].status, crate::store::StoryStatus::Waiting);
     });
     let outcome = fx
@@ -2467,7 +2469,7 @@ fn resend_story_sends_the_current_story_again_after_a_stop() {
     let implementer = to_story_wait(&mut fx);
     fx.user(UserAction::ContinueStory { lane: None, story: "s1".into(), note: None, add: None }).unwrap();
     let refused = fx.user(UserAction::ResendStory { lane: None }).unwrap_err();
-    assert!(refused.contains("not stopped"), "{refused}");
+    assert!(refused.contains("under way"), "{refused}");
     for n in 0..=crate::pipelines::autopilot::MAX_GATE_RETRIES {
         fx.host.gates.lock().unwrap().push_back(failed_check());
         fx.actor.handle(ActorMsg::Turn(fx.end_turn(&implementer, &format!("i-2-{n}"), Some(story_result("s2", false)), "s2.")));
@@ -2538,4 +2540,111 @@ fn handing_on_with_unfinished_stories_skips_them_and_a_review_round_is_not_a_sto
     fx.finish_gates();
     assert_eq!(fx.launches().last().unwrap().role_id, "role_pr_reviewer", "the next review round");
     fx.run(|run| assert!(!run.events.iter().any(|e| e.outcome.as_deref() == Some("nextStory")), "no story was sent"));
+}
+
+/// To s2 with its checks failed past the retry limit: the run waits with `gate_failed`.
+fn story_gate_failed(fx: &mut Fixture) -> String {
+    let implementer = to_story_wait(fx);
+    fx.user(UserAction::ContinueStory { lane: None, story: "s1".into(), note: None, add: None }).unwrap();
+    for n in 0..=crate::pipelines::autopilot::MAX_GATE_RETRIES {
+        fx.host.gates.lock().unwrap().push_back(failed_check());
+        fx.actor.handle(ActorMsg::Turn(fx.end_turn(&implementer, &format!("g-{n}"), Some(story_result("s2", false)), "s2.")));
+        fx.finish_gates();
+    }
+    fx.run(|run| assert_eq!(run.stop_reason, Some(StopReason::GateFailed)));
+    implementer
+}
+
+/// L3 review fix (MEDIUM 3): turning autopilot on runs a stopped run, as
+/// for any stop. With the failed story's turn decided and nothing running,
+/// Resend story still sends it again.
+#[test]
+fn resend_story_works_after_autopilot_is_turned_off_and_on_after_a_stop() {
+    let mut fx = Fixture::new("story_resend_toggle");
+    let implementer = story_gate_failed(&mut fx);
+    set_autopilot(&fx, false);
+    let off = fx.user(UserAction::ResendStory { lane: None }).unwrap_err();
+    assert!(off.contains("Autopilot is off"), "{off}");
+    set_autopilot(&fx, true);
+    fx.run(|run| {
+        assert_eq!(run.status, RunStatus::Running);
+        assert_eq!(run.stories[1].status, crate::store::StoryStatus::Failed);
+    });
+    let before = fx.resumes().len();
+    fx.user(UserAction::ResendStory { lane: None }).expect("resent on a running run");
+    let sent = fx.resumes();
+    assert_eq!(sent.len(), before + 1);
+    assert_eq!(sent.last().unwrap().tab_id, implementer);
+    assert!(sent.last().unwrap().prompt.starts_with("Story 2 of 3"));
+    // Now the story is under way: a second Resend is refused.
+    let busy = fx.user(UserAction::ResendStory { lane: None }).unwrap_err();
+    assert!(busy.contains("under way"), "{busy}");
+}
+
+/// L3 review fix: Resend story is refused for a stage you took over and
+/// while the run waits on a verification.
+#[test]
+fn resend_story_is_refused_when_taken_over_or_waiting_on_a_verification() {
+    let mut fx = Fixture::new("story_resend_refused");
+    let implementer = story_gate_failed(&mut fx);
+    {
+        let mut store = fx.host.store.lock().unwrap();
+        let run = store.pipeline_run_by_id_mut(RUN).unwrap();
+        run.autopilot.as_mut().unwrap().verify = Some(crate::store::VerifyWait {
+            stage_id: "implementer".into(),
+            label: "verify".into(),
+            steps: "Run it on Windows.".into(),
+            at: "now".into(),
+            ..Default::default()
+        });
+    }
+    let waits = fx.user(UserAction::ResendStory { lane: None }).unwrap_err();
+    assert!(waits.contains("waits on your answer"), "{waits}");
+    fx.host.store.lock().unwrap().pipeline_run_by_id_mut(RUN).unwrap().autopilot.as_mut().unwrap().verify = None;
+    fx.user(UserAction::TakeOver { tab_id: implementer.clone() }).unwrap();
+    let mine = fx.user(UserAction::ResendStory { lane: None }).unwrap_err();
+    assert!(mine.contains("You took"), "{mine}");
+    fx.run(|run| assert_eq!(run.stories[1].status, crate::store::StoryStatus::Failed, "nothing changed"));
+}
+
+/// L3 review fix: approving the pull request with stories left marks them
+/// skipped, with a Timeline line, and `story.json` says every story is finished.
+#[test]
+fn approving_with_unfinished_stories_skips_them_and_clears_the_story_mark() {
+    let mut fx = Fixture::new("story_approve");
+    let (impl1, _impl2) = two_lanes_at_the_implementer(&mut fx);
+    {
+        let mut store = fx.host.store.lock().unwrap();
+        let run = store.pipeline_run_by_id_mut(RUN).unwrap();
+        crate::pipelines::stories::seed(run, Some("pr1"), &story_task("pr1"));
+        store.save().unwrap();
+    }
+    let tag = fx.tab(&impl1).bridge.unwrap();
+    {
+        let store = fx.host.store.lock().unwrap();
+        crate::bridge::launch::write_story_mark(&fx.host.runs, store.pipeline_run_by_id(RUN).unwrap(), &tag.stage, Some("pr1")).unwrap();
+    }
+    assert_eq!(story_mark_of(&fx, "implementer@pr1").and_then(|m| m.current), Some("s1".into()));
+    fx.user(UserAction::Approve { lane: Some("pr1".into()) }).expect("approved");
+    use crate::store::StoryStatus::Skipped;
+    assert_eq!(story_states(&fx, Some("pr1")), [("s1".to_string(), Skipped), ("s2".into(), Skipped), ("s3".into(), Skipped)]);
+    fx.run(|run| {
+        let line = run.events.iter().find(|e| e.outcome.as_deref() == Some("storySkipped")).expect("a Timeline line");
+        assert!(line.summary.contains("Stories s1, s2, s3 were not done when you approved it"), "{}", line.summary);
+    });
+    assert_eq!(story_mark_of(&fx, "implementer@pr1").map(|m| m.current), Some(None));
+}
+
+/// L3 review fix: a hand-on you record yourself (to a Chat tab) skips the stories left too.
+#[test]
+fn a_hand_on_you_record_yourself_skips_the_stories_left() {
+    let mut fx = Fixture::new("story_record");
+    let implementer = to_story_wait(&mut fx);
+    fx.user(UserAction::ContinueStory { lane: None, story: "s1".into(), note: None, add: None }).unwrap();
+    fx.user(UserAction::RecordHandoff { source_tab_id: implementer, back: false, force: false }).unwrap();
+    fx.run(|run| {
+        let line = run.events.iter().find(|e| e.outcome.as_deref() == Some("storySkipped")).expect("a Timeline line");
+        assert!(line.summary.contains("went on to PR Reviewer"), "{}", line.summary);
+    });
+    assert_eq!(story_mark_of(&fx, "implementer").map(|m| m.current), Some(None));
 }

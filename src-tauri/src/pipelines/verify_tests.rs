@@ -185,9 +185,13 @@ fn any_other_stop_or_turning_autopilot_off_clears_the_wait() {
     r.set_running();
     gates_waiting(&mut r, None, "verify");
     decide(&eagle1(), &mut r, &report(None, "tab|bridge|t3"));
+    // L3 review fix: a wait for your answer survives an autopilot toggle.
     r.set_autopilot_enabled(false);
-    assert!(r.autopilot.as_ref().unwrap().verify.is_none());
-    assert!(answer(&mut r, "implementer", None, true, None, "now").is_err());
+    assert!(r.autopilot.as_ref().unwrap().verify.is_some(), "kept while autopilot is off");
+    assert!(answer(&mut r.clone(), "implementer", None, true, None, "now").is_err(), "no answer while off");
+    r.set_autopilot_enabled(true);
+    assert_eq!((r.status, r.stop_reason), (RunStatus::Waiting, Some(StopReason::Checkpoint)), "it waits again");
+    assert!(answer(&mut r, "implementer", None, true, None, "now").is_ok(), "and your answer works");
 }
 
 /// Review fix: Run checks by hand during a verify wait keeps the wait
@@ -321,7 +325,6 @@ fn held_turns_are_released_to_you_whenever_the_wait_ends_without_an_answer() {
     type End = Box<dyn Fn(&mut PipelineRun)>;
     let ends: Vec<(&str, End)> = vec![
         ("hand on yourself", Box::new(|r| r.resume_after_you())),
-        ("autopilot off", Box::new(|r| r.set_autopilot_enabled(false))),
         ("stopped", Box::new(|r| r.set_stopped(StopReason::CarryOutFailed))),
         ("another stop", Box::new(|r| r.set_waiting(StopReason::Stalled, "It stalled."))),
         ("running again", Box::new(|r| r.set_running())),
@@ -340,6 +343,12 @@ fn held_turns_are_released_to_you_whenever_the_wait_ends_without_an_answer() {
         assert!(r.autopilot.as_ref().unwrap().held.is_empty(), "{what}");
         assert!(told_b(&r), "{what}: {:?}", r.events.last());
     }
+    // L3 review fix: autopilot off and on keeps the wait, and its held turns.
+    let mut r = waiting_with_b_held();
+    r.set_autopilot_enabled(false);
+    r.set_autopilot_enabled(true);
+    assert_eq!(r.autopilot.as_ref().unwrap().held, [held_b()]);
+    assert!(!told_b(&r));
     // Your answer keeps them, untold, for the actor.
     let mut r = waiting_with_b_held();
     answer(&mut r, "implementer", Some("pr1"), true, None, "now").unwrap();

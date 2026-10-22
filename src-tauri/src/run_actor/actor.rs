@@ -486,7 +486,7 @@ impl<H: Host> Actor<H> {
         self.changed();
         // You took the stage over while its checks ran: Hand back decides.
         if self.taken_over(&placed.tab.id) {
-            self.settle_story(&placed);
+            self.settle_story(&placed, &turn);
             return;
         }
         // L2: another lane's verification started to wait while these checks
@@ -498,7 +498,7 @@ impl<H: Host> Actor<H> {
                 .is_some_and(|run| holds_for_verify(&placed.def, run, &placed.tab.id))
         };
         if held_by_verify && self.hold_for_verify(&placed, &turn) {
-            self.settle_story(&placed);
+            self.settle_story(&placed, &turn);
             return;
         }
         // The checks take a while: a turn started since is the stage's result now.
@@ -512,7 +512,7 @@ impl<H: Host> Actor<H> {
                 "Skipped {}'s turn: {} got a newer prompt while its checks ran.",
                 placed.stage.title, placed.tab.label
             );
-            self.settle_story(&placed);
+            self.settle_story(&placed, &turn);
             self.note(Some(&placed.stage.id), &summary, false);
             return;
         }
@@ -600,7 +600,9 @@ impl<H: Host> Actor<H> {
             };
             // L3: a story's turn decided without passing or failing its
             // checks (skipped, stopped) does not stay `checking`.
-            crate::pipelines::stories::settle_checking(&mut trial, placed.lane.as_deref());
+            if let Some(id) = report.story.as_deref() {
+                crate::pipelines::stories::settle_checking(&mut trial, placed.lane.as_deref(), id);
+            }
             // L2: a verify wait shows the pull requests this turn reported.
             if let Some(wait) = trial
                 .autopilot
@@ -1484,13 +1486,16 @@ impl<H: Host> Actor<H> {
         }
     }
 
-    /// A story left `checking` by a turn whose checks were neither passed
-    /// nor failed (taken over, held, overtaken): active again.
-    fn settle_story(&self, placed: &Placed) {
+    /// The story `turn` finished, left `checking` though its checks were
+    /// neither passed nor failed (taken over, held, overtaken): active again.
+    fn settle_story(&self, placed: &Placed, turn: &BridgeTurn) {
+        let Some(id) = implementer_text(turn, "story") else {
+            return;
+        };
         let mut store = lock(self.host.store());
         if let Some(run) = store.pipeline_run_by_id_mut(&self.run_id) {
             let before = run.stories.clone();
-            crate::pipelines::stories::settle_checking(run, placed.lane.as_deref());
+            crate::pipelines::stories::settle_checking(run, placed.lane.as_deref(), &id);
             if run.stories != before {
                 if let Err(err) = store.save() {
                     eprintln!("DCTerminal: run {}: story status not saved: {err}", self.run_id);
@@ -1502,19 +1507,36 @@ impl<H: Host> Actor<H> {
     /// **Resend story** (L3): the run stopped mid-loop (its retries used up,
     /// a usage pause, a turn that named no story). The current story is
     /// active again, its retries start over, the run runs, and the
-    /// Implementer's session is resumed with the story's prompt. Refused,
-    /// with nothing changed, while the run waits on a verification or a
-    /// checkpoint story (answer those), runs already, or the stage works.
+    /// Implementer's session is resumed with the story's prompt.
+    ///
+    /// Turning autopilot on again runs a stopped run (as for any stop), so
+    /// a running run is resent too when nothing is under way for the
+    /// story: it failed or is active, no checks run, and the Implementer's
+    /// latest turn was decided already. Refused, with nothing changed, with
+    /// autopilot off, while the run waits on a verification or a checkpoint
+    /// story (answer those), or while the stage works.
     fn user_resend_story(&mut self, lane: Option<&str>) -> Result<UserOutcome, String> {
         let lane = lane.map(str::trim).filter(|id| !id.is_empty());
-        let (tab_id, key) = {
+        let not_stopped = "Resend story is for a run that stopped mid-story; this one is under way.";
+        let (tab_id, key, running) = {
             let store = lock(self.host.store());
             let run = store.pipeline_run_by_id(&self.run_id).ok_or("unknown pipeline run")?;
-            if run.status == RunStatus::Running || run.status == RunStatus::Complete {
-                return Err("Resend story is for a run that stopped mid-story; this one is not stopped.".into());
+            if !run.autopilot.as_ref().is_some_and(|a| a.enabled) {
+                return Err("Autopilot is off for this run: turn it on to resend the story, or send it yourself.".into());
+            }
+            if run.status == RunStatus::Complete {
+                return Err("The run is complete.".into());
             }
             if run.autopilot.as_ref().is_some_and(|a| a.verify.is_some() || a.story_wait.is_some()) {
                 return Err("The run waits on your answer: mark the verification or continue the checkpoint story.".into());
+            }
+            let running = run.status == RunStatus::Running;
+            if running {
+                let idle_story = crate::pipelines::stories::current(run, lane)
+                    .is_some_and(|now| matches!(now.status, crate::store::StoryStatus::Failed | crate::store::StoryStatus::Active));
+                if !idle_story || self.gates_running > 0 {
+                    return Err(not_stopped.into());
+                }
             }
             let def = crate::pipelines::find(&run.kind).ok_or_else(|| format!("unknown pipeline {}", run.kind))?;
             let stage = implementer_stage(&def).ok_or("this pipeline has no Implementer stage")?;
@@ -1525,11 +1547,19 @@ impl<H: Host> Actor<H> {
                 None => &run.tab_ids,
             };
             let tab_id = tab_ids.get(&stage.role_id).cloned().ok_or("the Implementer's tab is not on the run")?;
-            (tab_id, key)
+            (tab_id, key, running)
         };
-        let (placed, _) = self.bridged_tab(&tab_id)?;
+        let (placed, tag) = self.bridged_tab(&tab_id)?;
         if self.taken_over(&tab_id) {
             return Err(format!("You took {} over: hand it back first, then resend the story.", placed.tab.label));
+        }
+        if running {
+            // Running: only when its latest turn was decided already, so
+            // no decision for the story is still to come.
+            let decided = read_stage_turn(&self.host.runs_root(), &tag, &tab_id).is_some_and(|turn| self.decided(&self.decision_key(&turn)));
+            if !decided {
+                return Err(not_stopped.into());
+            }
         }
         let session = session_of(&placed.tab)
             .ok_or_else(|| format!("{} has no saved Claude session to send the story into.", placed.tab.label))?;
@@ -1577,29 +1607,32 @@ impl<H: Host> Actor<H> {
     fn user_continue_story(&mut self, lane: Option<&str>, story: &str, note: Option<&str>, add: Option<&str>) -> Result<UserOutcome, String> {
         let not_waiting = "The run is not waiting on that story's checkpoint any more. Reload the overview.";
         let lane = lane.map(str::trim).filter(|id| !id.is_empty());
-        // The run's wait, or (when it ended another way, such as autopilot
-        // turned off and on) the story record that still waits.
-        let (turn_key, stage_id) = {
+        // The run's wait on that story (it survives an autopilot toggle),
+        // and the lane's Implementer tab, found through its tab ids.
+        let (tab_id, stage_id) = {
             let store = lock(self.host.store());
             let run = store.pipeline_run_by_id(&self.run_id).ok_or("unknown pipeline run")?;
-            let record = crate::pipelines::stories::current(run, lane)
-                .filter(|now| now.id == story && now.status == crate::store::StoryStatus::Waiting)
-                .ok_or(not_waiting)?;
+            if run.status == RunStatus::Complete {
+                return Err("The run is complete.".into());
+            }
+            if !run.autopilot.as_ref().is_some_and(|a| a.enabled) {
+                return Err("Autopilot is off for this run: turn it on to continue, or send the next story yourself.".into());
+            }
             let wait = run
                 .autopilot
                 .as_ref()
                 .and_then(|a| a.story_wait.clone())
-                .filter(|wait| wait.lane.as_deref() == lane && wait.story == story);
-            let stage_id = match &wait {
-                Some(wait) => wait.stage_id.clone(),
-                None => crate::pipelines::find(&run.kind)
-                    .and_then(|def| implementer_stage(&def).map(|s| s.id.clone()))
-                    .ok_or(not_waiting)?,
+                .filter(|_| run.status == RunStatus::Waiting && run.stop_reason == Some(StopReason::Checkpoint))
+                .filter(|wait| wait.lane.as_deref() == lane && wait.story == story)
+                .ok_or(not_waiting)?;
+            let def = crate::pipelines::find(&run.kind).ok_or(not_waiting)?;
+            let stage = def.stage(&wait.stage_id).ok_or(not_waiting)?;
+            let tab_ids = match lane.and_then(|id| run.lane(id)) {
+                Some(l) => &l.tab_ids,
+                None => &run.tab_ids,
             };
-            let turn = wait.and_then(|w| w.turn).or_else(|| record.turn.clone()).ok_or(not_waiting)?;
-            (turn, stage_id)
+            (tab_ids.get(&stage.role_id).cloned().ok_or(not_waiting)?, wait.stage_id)
         };
-        let tab_id = turn_key.split('|').next().unwrap_or_default().to_string();
         let (placed, _) = self.bridged_tab(&tab_id)?;
         if placed.stage.id != stage_id {
             return Err(not_waiting.into());
@@ -1704,7 +1737,14 @@ impl<H: Host> Actor<H> {
             } => {
                 let placed = self.place_tab(&source_tab_id).ok_or("That tab is not on this run.")?;
                 match self.claim_for_you(&placed, if back { "back" } else { "advance" }, force) {
-                    Ok(_) => Ok(UserOutcome::default()),
+                    Ok(_) => {
+                        // L3: a hand-on you make yourself skips the stories left.
+                        if !back {
+                            let onto = placed.def.stages.get(placed.index + 1).map(|s| s.title.clone()).unwrap_or_else(|| "the next stage".into());
+                            self.skip_unfinished_stories(&placed, &onto);
+                        }
+                        Ok(UserOutcome::default())
+                    }
                     Err(outcome) => Ok(outcome),
                 }
             }
@@ -1819,8 +1859,6 @@ impl<H: Host> Actor<H> {
             Ok(key) => key,
             Err(outcome) => return Ok(outcome),
         };
-        // L3: your hand-on of an unfinished pull request skips its other stories.
-        self.skip_unfinished_stories(&placed, &target.title);
         let (values, plan, text) = match values {
             Some(values) => {
                 let text = handoff_text
@@ -1854,10 +1892,15 @@ impl<H: Host> Actor<H> {
             tagging: Tagging::Advance { text },
         });
         match opened {
-            Ok(tab_id) => Ok(UserOutcome {
-                tab_id: Some(tab_id),
-                ..UserOutcome::default()
-            }),
+            Ok(tab_id) => {
+                // L3: your hand-on of an unfinished pull request skips its
+                // other stories, once the next stage has opened.
+                self.skip_unfinished_stories(&placed, &target.title);
+                Ok(UserOutcome {
+                    tab_id: Some(tab_id),
+                    ..UserOutcome::default()
+                })
+            }
             Err(err) => {
                 self.release(&key);
                 Err(err)
@@ -1908,6 +1951,7 @@ impl<H: Host> Actor<H> {
     }
 
     fn user_approve(&mut self, lane: Option<&str>) -> Result<UserOutcome, String> {
+        let mut marks = Vec::new();
         let result = {
             let mut store = lock(self.host.store());
             let result = approve(&mut store, &self.run_id, lane)?;
@@ -1918,11 +1962,18 @@ impl<H: Host> Actor<H> {
                     let tag = lane.and_then(|id| run.lane(id)).map(|l| format!("{}: ", l.title)).unwrap_or_default();
                     let summary = format!("{tag}Stories {} were not done when you approved it; they are marked skipped.", skipped.join(", "));
                     run.log_in_lane("note", None, None, lane, summary, None, Some("storySkipped".to_string()));
+                    // The bridge learns every story is finished.
+                    if let Some(stage) = crate::pipelines::find(&run.kind).and_then(|def| implementer_stage(&def).map(|s| s.id.clone())) {
+                        marks.push(stage_key(&stage, lane));
+                    }
                     store.save()?;
                 }
             }
             result
         };
+        for key in marks {
+            self.write_story_mark(&key, lane);
+        }
         self.changed();
         let mut started = Vec::new();
         let mut failed = Vec::new();

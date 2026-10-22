@@ -225,6 +225,8 @@ pub enum StoryStatus {
     Failed,
     /// A checkpoint story whose checks passed: the run waits for your Continue.
     Waiting,
+    /// The last story's checks passed and its verify gate waits for you (L2).
+    Verifying,
     Done,
     /// The pull request went on (your hand-on or approval) before it was done.
     Skipped,
@@ -834,17 +836,29 @@ impl PipelineRun {
 
     /// Autopilot turned on (`running`) or off (`stopped`, paused by you).
     /// A complete run stays complete.
+    ///
+    /// A wait for your answer (L2's verify gate, L3's checkpoint story)
+    /// survives the toggle with its held turns: turned on again, the run
+    /// waits on it as before (`checkpoint`), so your answer or Continue
+    /// still applies. Only your answer, your hand-on, Send back, Approve or
+    /// a different stop end it.
     pub fn set_autopilot_enabled(&mut self, enabled: bool) {
-        self.release_held();
+        let answer_wait = self.autopilot.as_ref().is_some_and(|a| a.verify.is_some() || a.story_wait.is_some());
+        if !answer_wait {
+            self.release_held();
+        }
         let autopilot = self.autopilot.get_or_insert_with(RunAutopilot::default);
         autopilot.enabled = enabled;
-        autopilot.waiting = None;
-        autopilot.verify = None;
-        autopilot.story_wait = None;
+        if !answer_wait {
+            autopilot.waiting = None;
+        }
         if self.status == RunStatus::Complete {
             return;
         }
-        if enabled {
+        if enabled && answer_wait {
+            self.status = RunStatus::Waiting;
+            self.stop_reason = Some(StopReason::Checkpoint);
+        } else if enabled {
             self.status = RunStatus::Running;
             self.stop_reason = None;
         } else {

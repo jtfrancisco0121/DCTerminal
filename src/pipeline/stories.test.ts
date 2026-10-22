@@ -54,7 +54,14 @@ describe("stories (L3)", () => {
     const stopped = run({ status: "waiting", stopReason: "gate_failed", stories: stories(null), autopilot: { enabled: true } });
     expect(resendableStory(stopped, null)?.id).toBe("s2");
     expect(storyResendAction(null)).toEqual({ kind: "storyResend", lane: null });
-    expect(resendableStory({ ...stopped, status: "running" }, null)).toBeNull();
+    // Running again after a stop: a failed story can be resent; an active one is under way.
+    expect(resendableStory({ ...stopped, status: "running" }, null)?.id).toBe("s2");
+    const active = { ...stopped, status: "running" as const, stories: stories(null).map((s) => (s.id === "s2" ? { ...s, status: "active" as const } : s)) };
+    expect(resendableStory(active, null)).toBeNull();
+    expect(resendableStory({ ...stopped, autopilot: { enabled: false } }, null)).toBeNull();
+    const verifying = { ...stopped, stories: stories(null).map((s) => (s.id === "s2" ? { ...s, status: "verifying" as const } : s)) };
+    expect(resendableStory(verifying, null)).toBeNull();
+    expect(storyStatusText({ id: "s4", title: "x", status: "verifying" })).toBe("waiting on your verification");
     expect(resendableStory({ ...stopped, autopilot: { enabled: true, verify: { stageId: "implementer", label: "verify", steps: "x", at: "now" } } }, null)).toBeNull();
     const skipped = { ...stopped, stories: stories(null).map((s) => ({ ...s, status: "skipped" as const })) };
     expect(resendableStory(skipped, null)).toBeNull();
@@ -88,15 +95,13 @@ describe("stories (L3)", () => {
     const pending = pendingStoryCheckpoint(waitingRun);
     expect(pending).toMatchObject({ lane: "pr1", laneTitle: "PR1 — Engine fixes", repo: "engine", number: 1, total: 4, checkpoint: "Rerun on Windows" });
     expect(pending?.next?.id).toBe("s2");
-    expect(storyWaitKey(waitingRun)).toBe("pr1@s1@");
-    // The run's wait ended another way (autopilot off and on): s1 still
-    // waits on you, so Continue stays, with the story's own checkpoint text.
-    const toggled = { ...waitingRun, status: "running" as const, stopReason: null, autopilot: { enabled: true } };
-    expect(pendingStoryCheckpoint(toggled)).toMatchObject({ lane: "pr1", number: 1, checkpoint: "Rerun on Windows" });
-    const moved = { ...toggled, stories: stories("pr1").map((s) => ({ ...s, status: "pending" as const })) };
-    expect(pendingStoryCheckpoint(moved)).toBeNull();
-    expect(storyWaitKey(moved)).toBe("");
-    expect(pendingStoryCheckpoint({ ...waitingRun, status: "complete" })).toBeNull();
+    expect(storyWaitKey(waitingRun)).toBe("pr1@s1@2026-10-22T10:00:00Z");
+    // Continue needs the run's wait; a waiting record alone is not enough.
+    const noWait = { ...waitingRun, status: "running" as const, stopReason: null, autopilot: { enabled: true } };
+    expect(pendingStoryCheckpoint(noWait)).toBeNull();
+    expect(storyWaitKey(noWait)).toBe("");
+    // While autopilot is off the run is stopped: the panel waits until it is on again.
+    expect(pendingStoryCheckpoint({ ...waitingRun, status: "stopped", stopReason: "paused_by_you" })).toBeNull();
 
     expect(parseAddedStories("- Fix the stall\n\n * Tidy the log \n1. Numbered\n2) Also\n-flag stays\n2024 plan")).toEqual([
       "Fix the stall",
