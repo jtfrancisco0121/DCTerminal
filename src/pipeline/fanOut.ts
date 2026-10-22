@@ -3,12 +3,15 @@
  * gets one lane per pull request, each with its own Implementer in its own
  * git worktree. Lanes with no dependency start at once; the others wait
  * until the lanes they depend on are approved (the run actor starts them on
- * an engine-2 run, or Start in the overview).
+ * an engine-2 run, or Start in the overview). A task that names a repo
+ * from Settings › Repos (L1) gets its worktree in that repo; the others in
+ * the run's own.
  */
 import {
   type PlannedTask,
   gitRepoInfo,
   getPipelineRun,
+  getReposSettings,
   getTab,
   handoffGet,
   handoffList,
@@ -31,6 +34,7 @@ import { defaultScope, terminalHandoffInput, type HandoffSource } from "../hando
 import type { RoleName } from "../handoff/transitions";
 import type { PipelineDef, StageDef } from "./defs";
 import { laneBranch, laneNote, lanesFromReply, lanesFromTasks } from "./prPlan";
+import { laneFolders } from "./repos";
 
 export {
   laneBranch,
@@ -89,8 +93,23 @@ export async function fanOutRun(
   if (lanes.length < 2) {
     throw new Error("The plan lists fewer than two pull requests (manual steps do not count).");
   }
-  const repo = await gitRepoInfo(run.cwd).catch(() => null);
-  if (!repo) throw new Error(`${run.cwd} is not a git repository, so there is nowhere to make worktrees.`);
+  // L1: a lane whose task names a repo gets its worktree in that repo's
+  // folder; the others in the run's own. Settings are read only when a
+  // lane names one, and a repo no longer there stops fan-out before git.
+  const repos = lanes.some((lane) => lane.repo) ? await getReposSettings() : [];
+  const placed = laneFolders(lanes, repos, run.cwd);
+  if ("error" in placed) throw new Error(placed.error);
+  const folderOf = new Map(placed.folders.map((item) => [item.laneId, item]));
+  for (const item of placed.folders.filter((f, i, all) => all.findIndex((o) => o.folder === f.folder) === i)) {
+    const repo = await gitRepoInfo(item.folder).catch(() => null);
+    if (!repo) {
+      throw new Error(
+        item.repo
+          ? `The ${item.repo} repo's folder ${item.folder} is not a git repository, so there is nowhere to make its worktrees. Check it in Settings › Repos.`
+          : `${run.cwd} is not a git repository, so there is nowhere to make worktrees.`,
+      );
+    }
+  }
   const scope = defaultScope(source);
   const ready: {
     lane: (typeof lanes)[number];
@@ -106,7 +125,7 @@ export async function fanOutRun(
       const branch = laneBranch(run.id, lane.id);
       const { tab } = await worktreeTabNew({
         roleId: stage.roleId,
-        repoPath: run.cwd,
+        repoPath: folderOf.get(lane.id)?.folder ?? run.cwd,
         branch,
         createBranch: true,
         base: null,
@@ -148,7 +167,10 @@ export async function fanOutRun(
   await pipelineFanOut(
     run.id,
     stage.id,
-    lanes.map((lane) => ({ id: lane.id, title: lane.title, dependsOn: lane.dependsOn })),
+    lanes.map((lane) => {
+      const repo = folderOf.get(lane.id)?.repo;
+      return { id: lane.id, title: lane.title, dependsOn: lane.dependsOn, ...(repo ? { repo } : {}) };
+    }),
   );
   for (const item of ready) {
     await attachHandoff({ record: item.record, tabId: item.tabId, prepared: item.value, loopBack: null, verdict: null });
