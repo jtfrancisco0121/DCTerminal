@@ -124,7 +124,7 @@ export function storyWaitKey(run: PipelineRun): string {
  */
 export function resendableStory(run: PipelineRun, lane: string | null): RunStory | null {
   if (!run.autopilot?.enabled || run.status === "complete" || !run.status) return null;
-  if (run.autopilot.verify || run.autopilot.storyWait) return null;
+  if (run.autopilot.verify || run.autopilot.storyWait || run.autopilot.artifactWait) return null;
   const now = currentStory(run, lane);
   if (!now) return null;
   if (run.status !== "running") return now;

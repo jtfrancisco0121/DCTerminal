@@ -139,7 +139,12 @@ fn call(server: &Server, params: &Value) -> Value {
     let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
     // L3: an Implementer's result is also checked against the story its
     // stage is on (`story.json`), so a result for another story is refused.
-    let checked = schema::validate(dir.info.result, &args).and_then(|result| match dir.info.result {
+    let checked = match dir.info.result {
+        // F1: each document must be a file inside this run's folder.
+        ResultKind::Artifact => super::artifact::validate(&args, Some(dir.run_dir())),
+        kind => schema::validate(kind, &args),
+    }
+    .and_then(|result| match dir.info.result {
         ResultKind::Implementer => schema::check_story(&result, dir.story().as_ref()).map(|()| result),
         _ => Ok(result),
     });
@@ -167,6 +172,22 @@ fn call(server: &Server, params: &Value) -> Value {
                         turn: stored.turn.clone(),
                         at: stored.at.clone(),
                         result: result.clone(),
+                    })
+                    .and_then(|_| dir.write_result(&stored)),
+                // F1: the run-level list the next stages' prompts read.
+                ResultKind::Artifact => dir
+                    .write_artifacts(super::folder::StageArtifacts {
+                        stage_key: dir.info.stage_key.clone(),
+                        stage_id: dir.info.stage_id.clone(),
+                        role_id: dir.info.role_id.clone(),
+                        turn: stored.turn.clone(),
+                        at: stored.at.clone(),
+                        status: result.get("status").and_then(Value::as_str).unwrap_or_default().to_string(),
+                        artifacts: result
+                            .get("artifacts")
+                            .and_then(Value::as_array)
+                            .map(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                            .unwrap_or_default(),
                     })
                     .and_then(|_| dir.write_result(&stored)),
                 _ => dir.write_result(&stored),

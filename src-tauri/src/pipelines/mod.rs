@@ -20,6 +20,7 @@ pub mod lane_gates;
 pub mod verify;
 pub mod stories;
 pub mod recovery;
+pub mod artifacts;
 #[cfg(test)]
 mod tests;
 
@@ -145,6 +146,10 @@ pub enum StageKind {
     Reviewer,
     Implementer,
     Generic,
+    /// F1: writes documents into the run folder (a brief, a PRD, an
+    /// architecture) and reports them through `submit_result`; runs in
+    /// `auto` mode and comes before the Implementer.
+    Artifact,
 }
 
 impl StageKind {
@@ -155,6 +160,7 @@ impl StageKind {
             StageKind::Reviewer => "reviewer",
             StageKind::Implementer => "implementer",
             StageKind::Generic => "generic",
+            StageKind::Artifact => "artifact",
         }
     }
 
@@ -523,6 +529,16 @@ pub fn validate_user_pipelines_with(defs: &[PipelineDef], roles: Option<&HashSet
     }
 }
 
+/// [`check_pipeline`] for one pipeline of yours, role ids not checked (tests).
+#[cfg(test)]
+pub(crate) fn check_pipeline_for_test(def: &PipelineDef) -> Result<(), String> {
+    let builtin_keys: HashSet<String> = builtins()
+        .iter()
+        .flat_map(|def| [def.id.clone(), def.run_kind().to_string()])
+        .collect();
+    check_pipeline(def, &builtin_keys, None)
+}
+
 /// The first problem of one pipeline, on its own.
 fn check_pipeline(
     def: &PipelineDef,
@@ -611,6 +627,10 @@ fn check_pipeline(
                     ));
                 }
             }
+        }
+        // F1: an artifact stage writes documents for the whole run.
+        if let Some(problem) = artifacts::stage_problem(def, index) {
+            return Err(problem);
         }
         if let Some(back) = &stage.loop_back {
             let earlier = def.stages[..index].iter().any(|s| s.id == back.to);

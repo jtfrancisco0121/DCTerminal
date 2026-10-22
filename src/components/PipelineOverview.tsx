@@ -31,6 +31,8 @@ import { RunLanes } from "./RunLanes";
 import { VerifyWaitPanel } from "./VerifyWaitPanel";
 import { verifyWaitKey } from "../pipeline/verify";
 import { StoryCheckpointPanel } from "./StoryCheckpointPanel";
+import { ArtifactWaitPanel } from "./ArtifactWaitPanel";
+import { artifactWaitKey } from "../pipeline/artifacts";
 import { StoryList } from "./StoryList";
 import { StoryResendButton } from "./StoryResendButton";
 import { laneStories, storyProgress, storyWaitKey } from "../pipeline/stories";
@@ -516,6 +518,7 @@ export function PipelineOverview({
           )}
           {autopilotOn && <VerifyWaitPanel key={verifyWaitKey(run)} run={run} onDone={reload} onNotice={onNotice} />}
           {autopilotOn && <StoryCheckpointPanel key={storyWaitKey(run)} run={run} onDone={reload} onNotice={onNotice} />}
+          {autopilotOn && <ArtifactWaitPanel key={artifactWaitKey(run)} run={run} onDone={reload} onNotice={onNotice} />}
           {autopilotOn && run.status === "waiting" && run.stopReason === "app_restarted" && onContinue && (
             <div className="button-row">
               <button

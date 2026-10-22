@@ -298,6 +298,30 @@ pub struct StoryWait {
     pub at: String,
 }
 
+/// F1: an artifact stage the run waits on: it reported `partial` with open
+/// questions, or `blocked` with a reason. Your **Answer** (or Continue)
+/// resumes its session with what you wrote. Set by `decide`; cleared when the
+/// run moves on or stops for anything else, as a verify wait is.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactWait {
+    pub stage_id: String,
+    pub stage_title: String,
+    /// `partial` or `blocked`.
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub questions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The documents it reported so far (relative to the run folder).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<String>,
+    /// The decided turn (`tab|bridge|prompt`) that reported it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<String>,
+    pub at: String,
+}
+
 /// A `verify` gate the run waits on (L2): the steps you carry out, where,
 /// and the turn whose other gates passed. Set by `decide` when it stops for
 /// it; cleared when the run moves on or stops for anything else.
@@ -663,6 +687,17 @@ pub struct RunAutopilot {
     /// stages finish meanwhile are held for your Continue, as for a verify wait.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub story_wait: Option<StoryWait>,
+    /// F1: the artifact stage whose questions (or block) the run waits on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_wait: Option<ArtifactWait>,
+}
+
+impl RunAutopilot {
+    /// The run waits for your answer: a verify gate (L2), a checkpoint story
+    /// (L3) or an artifact stage's questions (F1).
+    pub fn waits_on_answer(&self) -> bool {
+        self.verify.is_some() || self.story_wait.is_some() || self.artifact_wait.is_some()
+    }
 }
 
 /// Why held turns are handed to you (L2, `PipelineRun::release_held_because`).
@@ -690,6 +725,9 @@ pub struct HeldTurn {
     /// L3: held while the run waited on a checkpoint story, not a verification.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub for_story: bool,
+    /// F1: held while the run waited on an artifact stage's questions.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub for_document: bool,
 }
 
 /// Most decided turns autopilot remembers per run.
@@ -710,7 +748,7 @@ impl PipelineRun {
     /// no answer; after your answer, the run stopped before autopilot could
     /// act on them.
     pub fn release_held(&mut self) {
-        let why = if self.autopilot.as_ref().is_some_and(|a| a.verify.is_some() || a.story_wait.is_some()) {
+        let why = if self.autopilot.as_ref().is_some_and(RunAutopilot::waits_on_answer) {
             HeldEnd::Unanswered
         } else {
             HeldEnd::Stopped
@@ -731,7 +769,13 @@ impl PipelineRun {
         };
         for turn in held {
             // L3: each turn says which wait held it.
-            let waited_on = if turn.for_story { "a story checkpoint" } else { "a verification" };
+            let waited_on = if turn.for_story {
+                "a story checkpoint"
+            } else if turn.for_document {
+                "your answer to a document's questions"
+            } else {
+                "a verification"
+            };
             let lane = turn.lane.as_deref().filter(|id| self.lane(id).is_some());
             let tag = lane.and_then(|id| self.lane(id)).map(|l| format!("{}: ", l.title)).unwrap_or_default();
             let summary = format!(
@@ -773,6 +817,8 @@ impl PipelineRun {
         };
         let verify = autopilot.verify.take();
         let story_wait = autopilot.story_wait.take();
+        // F1: an artifact stage's wait has no story to free.
+        autopilot.artifact_wait = None;
         let at = chrono::Utc::now().to_rfc3339();
         for story in &mut self.stories {
             let verifying = story.status == StoryStatus::Verifying
@@ -822,7 +868,7 @@ impl PipelineRun {
     pub fn set_running(&mut self) {
         // L2: running again with no answer to a verify wait: its held turns
         // are yours. L3: the same for a story checkpoint.
-        if self.autopilot.as_ref().is_some_and(|a| a.verify.is_some() || a.story_wait.is_some()) {
+        if self.autopilot.as_ref().is_some_and(RunAutopilot::waits_on_answer) {
             self.release_held();
         }
         self.end_answer_waits();
@@ -841,7 +887,7 @@ impl PipelineRun {
     pub fn resume_after_you(&mut self) {
         // L2: your hand-on ends a verify wait with no answer: its held turns
         // are yours. (A hand-off the actor makes after your answer is not.)
-        if self.autopilot.as_ref().is_some_and(|a| a.verify.is_some() || a.story_wait.is_some()) {
+        if self.autopilot.as_ref().is_some_and(RunAutopilot::waits_on_answer) {
             self.release_held();
         }
         self.end_answer_waits();
@@ -880,7 +926,7 @@ impl PipelineRun {
     /// still applies. Only your answer, your hand-on, Send back, Approve or
     /// a different stop end it.
     pub fn set_autopilot_enabled(&mut self, enabled: bool) {
-        let answer_wait = self.autopilot.as_ref().is_some_and(|a| a.verify.is_some() || a.story_wait.is_some());
+        let answer_wait = self.autopilot.as_ref().is_some_and(RunAutopilot::waits_on_answer);
         if !answer_wait {
             self.release_held();
         }

@@ -1651,7 +1651,11 @@ fn role_terminal_start_blocking(
     let repos = settings.lock().map_err(|err| err.to_string())?.repos().to_vec();
     let mut instructions = bridge
         .as_ref()
-        .map(|plan| crate::bridge::schema::stage_instructions(plan.kind, &repos))
+        .map(|plan| {
+            // F1: an artifact stage is told the run folder its documents go in.
+            let run_dir = crate::bridge::folder::run_dir(&runs_root(&app), &plan.run_id);
+            crate::bridge::schema::stage_instructions_in(plan.kind, &repos, run_dir.as_deref())
+        })
         .unwrap_or_default();
     // L3: a lane's Implementer whose task has stories gets their list, and
     // the run records them.

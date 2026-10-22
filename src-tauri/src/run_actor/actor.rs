@@ -322,6 +322,7 @@ impl<H: Host> Actor<H> {
     /// the actor): the caller then takes the turn up as usual.
     fn hold_for_verify(&mut self, placed: &Placed, turn: &BridgeTurn) -> bool {
         let for_story;
+        let for_document;
         {
             let mut store = lock(self.host.store());
             let Some(run) = store.pipeline_run_by_id_mut(&self.run_id) else {
@@ -332,6 +333,11 @@ impl<H: Host> Actor<H> {
             }
             // L3: held for a checkpoint story's Continue, or for a verify answer.
             for_story = run.autopilot.as_ref().is_some_and(|a| a.verify.is_none() && a.story_wait.is_some());
+            // F1: or for your answer to an artifact stage's questions.
+            for_document = run
+                .autopilot
+                .as_ref()
+                .is_some_and(|a| a.verify.is_none() && a.story_wait.is_none() && a.artifact_wait.is_some());
             {
                 run.hold_turn(crate::store::HeldTurn {
                     turn: bridge_turn_key(&turn.tab_id, &turn.turn),
@@ -340,13 +346,14 @@ impl<H: Host> Actor<H> {
                     stage_title: placed.stage.title.clone(),
                     lane: placed.lane.clone(),
                     for_story,
+                    for_document,
                 });
                 if let Err(err) = store.save() {
                     eprintln!("DCTerminal: run {}: held turn not saved: {err}", self.run_id);
                 }
             }
         }
-        self.note(Some(&placed.stage.id), &held_for_verify(placed, for_story), false);
+        self.note(Some(&placed.stage.id), &held_for_verify(placed, for_story, for_document), false);
         true
     }
 
@@ -794,6 +801,7 @@ impl<H: Host> Actor<H> {
                 .map(|(what, name)| (what.to_string(), dir.join(name)))
                 .filter(|(_, path)| path.is_file())
                 .map(|(what, path)| (what, path.display().to_string()))
+                .chain(crate::pipelines::artifacts::run_documents(dir, &placed.def))
                 .collect()
             })
             .unwrap_or_default();
@@ -1190,9 +1198,14 @@ impl<H: Host> Actor<H> {
         values.insert("cwd".to_string(), cwd.display().to_string());
         // Settings › Repos (L1), for a Planner's prompt and `repos.json`.
         let repos = self.host.repos();
+        // F1: an artifact stage is told the run folder its documents go in.
+        let runs_root = self.host.runs_root();
         let mut instructions = plan
             .as_ref()
-            .map(|plan| crate::bridge::schema::stage_instructions(plan.kind, &repos))
+            .map(|plan| {
+                let run_dir = crate::bridge::folder::run_dir(&runs_root, &plan.run_id);
+                crate::bridge::schema::stage_instructions_in(plan.kind, &repos, run_dir.as_deref())
+            })
             .unwrap_or_default();
         // L3: an Implementer whose task has stories gets their list.
         if let Some(plan) = plan.as_ref() {
@@ -1520,8 +1533,8 @@ impl<H: Host> Actor<H> {
             if run.status == RunStatus::Complete {
                 return Err("The run is complete.".into());
             }
-            if run.autopilot.as_ref().is_some_and(|a| a.verify.is_some() || a.story_wait.is_some()) {
-                return Err("The run waits on your answer: mark the verification or continue the checkpoint story.".into());
+            if run.autopilot.as_ref().is_some_and(crate::store::RunAutopilot::waits_on_answer) {
+                return Err("The run waits on your answer: mark the verification, continue the checkpoint story or answer the document's questions.".into());
             }
             let running = run.status == RunStatus::Running;
             if running {
@@ -1680,6 +1693,82 @@ impl<H: Host> Actor<H> {
         })
     }
 
+    /// Your **Answer** to an artifact stage's open questions, or **Continue**
+    /// with a note after it reported blocked (F1): the run's wait ends, it
+    /// runs again, and the stage's session is resumed with what you wrote,
+    /// as a checkpoint story's Continue resumes its Implementer. The turns
+    /// other stages finished meanwhile are decided next. Refused, with
+    /// nothing changed, when the run waits on no such stage, autopilot is
+    /// off, you took the stage over, or it is still working.
+    fn user_artifact_answer(&mut self, stage_id: &str, answer: Option<&str>) -> Result<UserOutcome, String> {
+        let not_waiting = "The run is not waiting on that stage's questions any more. Reload the overview.";
+        let (tab_id, wait) = {
+            let store = lock(self.host.store());
+            let run = store.pipeline_run_by_id(&self.run_id).ok_or("unknown pipeline run")?;
+            if run.status == RunStatus::Complete {
+                return Err("The run is complete.".into());
+            }
+            if !run.autopilot.as_ref().is_some_and(|a| a.enabled) {
+                return Err("Autopilot is off for this run: turn it on to send your answer, or type it into the stage yourself.".into());
+            }
+            let wait = run
+                .autopilot
+                .as_ref()
+                .and_then(|a| a.artifact_wait.clone())
+                .filter(|_| run.status == RunStatus::Waiting && run.stop_reason == Some(StopReason::Checkpoint))
+                .filter(|wait| wait.stage_id == stage_id)
+                .ok_or(not_waiting)?;
+            let def = crate::pipelines::find(&run.kind).ok_or(not_waiting)?;
+            let stage = def.stage(&wait.stage_id).ok_or(not_waiting)?;
+            (run.tab_ids.get(&stage.role_id).cloned().ok_or(not_waiting)?, wait)
+        };
+        let answer = crate::pipelines::artifacts::checked_answer(&wait, answer)?;
+        let (placed, _) = self.bridged_tab(&tab_id)?;
+        if placed.stage.id != wait.stage_id {
+            return Err(not_waiting.into());
+        }
+        if self.taken_over(&tab_id) {
+            return Err(format!("You took {} over: hand it back first, then send your answer.", placed.tab.label));
+        }
+        let session = session_of(&placed.tab)
+            .ok_or_else(|| format!("{} has no saved Claude session to send your answer into.", placed.tab.label))?;
+        if self.host.terminal_live(&tab_id) && !self.idle(&placed.tab) {
+            return Err(format!("{} is still working. Answer when its turn ends.", placed.tab.label));
+        }
+        // The D24 / hooks-off gate before anything is recorded.
+        let ready = self.resume_gate(&placed.tab, None, false)?;
+        let text = crate::pipelines::artifacts::answer_message(&wait, &answer);
+        {
+            let mut store = lock(self.host.store());
+            let run = store.pipeline_run_by_id_mut(&self.run_id).ok_or("unknown pipeline run")?;
+            let what = if wait.status == "partial" { "answered its questions" } else { "let it continue" };
+            let noted = if answer.is_empty() { String::new() } else { format!(" Your answer: {answer}") };
+            let summary = format!("You {what}: {} goes on in the same session.{noted}", placed.stage.title);
+            run.log("note", Some(&placed.stage.id), Some(&placed.tab.role_id), summary, None);
+            if let Some(event) = run.events.last_mut() {
+                event.outcome = Some("artifactAnswer".to_string());
+            }
+            // Running again: the turns held meanwhile stay held, for the
+            // actor to decide below (not released to you).
+            let held = run.autopilot.as_mut().map(|a| std::mem::take(&mut a.held)).unwrap_or_default();
+            run.set_running();
+            if let Some(autopilot) = run.autopilot.as_mut() {
+                autopilot.held = held;
+            }
+            store.save()?;
+        }
+        self.changed();
+        if let Err(err) = self.resume_ready(&placed.tab, ready, &session, &text) {
+            self.stop_run(Some(&placed.stage.id), Some(&tab_id), &format!("Autopilot could not send your answer: {err}"), None);
+            return Err(err);
+        }
+        self.decide_held_turns(&tab_id);
+        Ok(UserOutcome {
+            tab_id: Some(tab_id),
+            ..UserOutcome::default()
+        })
+    }
+
     // ---- Your buttons ----
 
     fn on_user(&mut self, action: UserAction) -> Result<UserOutcome, String> {
@@ -1717,6 +1806,7 @@ impl<H: Host> Actor<H> {
                 self.user_continue_story(lane.as_deref(), &story, note.as_deref(), add.as_deref())
             }
             UserAction::ResendStory { lane } => self.user_resend_story(lane.as_deref()),
+            UserAction::ArtifactAnswer { stage_id, answer } => self.user_artifact_answer(&stage_id, answer.as_deref()),
             UserAction::TakeOver { tab_id } => self.user_take_over(&tab_id),
             UserAction::HandBack { tab_id } => self.user_hand_back(&tab_id),
             UserAction::Prefill {
@@ -2351,7 +2441,8 @@ fn waits_on_verify(run: &PipelineRun) -> bool {
     run.status == RunStatus::Waiting
         && run.stop_reason == Some(StopReason::Checkpoint)
         // L3: a checkpoint story's wait holds them the same way.
-        && run.autopilot.as_ref().is_some_and(|a| a.verify.is_some() || a.story_wait.is_some())
+        // F1: and an artifact stage's questions.
+        && run.autopilot.as_ref().is_some_and(crate::store::RunAutopilot::waits_on_answer)
 }
 
 /// A turn of `tab_id` is held for your verify answer (L2): the run waits on
@@ -2370,6 +2461,7 @@ fn holds_for_verify(def: &PipelineDef, run: &PipelineRun, tab_id: &str) -> bool 
                 .as_ref()
                 .and_then(|wait| wait.turn.as_deref())
                 .or_else(|| a.story_wait.as_ref().and_then(|wait| wait.turn.as_deref()))
+                .or_else(|| a.artifact_wait.as_ref().and_then(|wait| wait.turn.as_deref()))
         })
         .and_then(|turn| turn.split('|').next())
         .unwrap_or_default();
@@ -2380,7 +2472,14 @@ fn holds_for_verify(def: &PipelineDef, run: &PipelineRun, tab_id: &str) -> bool 
 }
 
 /// The Timeline line for a turn held while the run waits on a verification.
-fn held_for_verify(placed: &Placed, for_story: bool) -> String {
+fn held_for_verify(placed: &Placed, for_story: bool, for_document: bool) -> String {
+    if for_document {
+        // F1: the wait is an artifact stage's questions.
+        return format!(
+            "{} finished while the run waits on your answer to a document's questions. Autopilot acts on it, checks first, once you answer.",
+            placed.tab.label
+        );
+    }
     if for_story {
         // L3: the wait is a checkpoint story's.
         return format!(
@@ -2472,6 +2571,8 @@ pub(super) fn turn_report(stage: &StageDef, turn: &BridgeTurn, usage: Option<u8>
         // L3: the story an Implementer's turn finished, and what it said.
         story: implementer_text(turn, "story"),
         summary: implementer_text(turn, "summary"),
+        // F1: an artifact stage's status, documents and questions.
+        artifact: result.and_then(crate::pipelines::artifacts::report_of),
     }
 }
 
