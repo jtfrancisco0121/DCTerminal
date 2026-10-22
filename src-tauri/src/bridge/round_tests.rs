@@ -291,3 +291,19 @@ fn every_problem_is_named_at_once() {
         assert!(has(&found, needle), "{needle}: {found:?}");
     }
 }
+
+/// W1: in a workspace folder, an active plan with no repos is sent back
+/// naming the repos; outside one, as before.
+#[test]
+fn in_a_workspace_every_active_plan_names_a_repo() {
+    let mut block = example();
+    block["round"]["plans"][4]["repos"] = json!([]);
+    block["round"]["mergeOrder"]["engine"] = json!(["plan2", "plan3"]);
+    let problems = super::round::triage_round_in(&doc(&block), &repos(), Some(&tickets()), true).unwrap_err();
+    assert!(
+        problems.iter().any(|p| p.contains("lists no repos: this run's folder is a workspace") && p.contains("backend, engine, desktop, web")),
+        "{problems:?}"
+    );
+    assert!(super::round::triage_round_in(&doc(&block), &repos(), Some(&tickets()), false).is_ok(), "outside a workspace: as before");
+    assert!(super::round::triage_round_in(&doc(&example()), &repos(), Some(&tickets()), true).is_ok());
+}

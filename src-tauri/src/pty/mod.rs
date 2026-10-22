@@ -1661,14 +1661,39 @@ fn role_terminal_start_blocking(
         None => None,
     };
     // Settings › Repos (L1): the Planner's prompt lists them, and the run
-    // folder gets them for the bridge's tasks check.
-    let repos = settings.lock().map_err(|err| err.to_string())?.repos().to_vec();
+    // folder gets them for the bridge's tasks check. W1: merged with the
+    // repos of the run's start folder when it is a workspace (the run's own
+    // folder once it exists, else the folder this start is in).
+    let repos = {
+        let settings_repos = settings.lock().map_err(|err| err.to_string())?.repos().to_vec();
+        let start_folder = match bridge.as_ref() {
+            Some(plan) => {
+                let state = store.lock().map_err(|err| err.to_string())?;
+                state.pipeline_run_by_id(&plan.run_id).map(|run| run.cwd.clone())
+            }
+            None => None,
+        }
+        .or_else(|| input.values.get("cwd").cloned())
+        .unwrap_or_default();
+        if bridge.is_some() {
+            crate::workspace_repos::workspace_repos(std::path::Path::new(start_folder.trim()), &settings_repos)
+        } else {
+            crate::workspace_repos::WorkspaceRepos { workspace: false, repos: settings_repos }
+        }
+    };
+    // W1: an Implementer never starts in a workspace folder itself.
+    if bridge.as_ref().is_some_and(|plan| plan.kind == crate::bridge::ResultKind::Implementer) {
+        let cwd = input.values.get("cwd").map(|value| PathBuf::from(value.trim())).unwrap_or_default();
+        if let Some(problem) = crate::workspace_repos::implementer_folder_problem(repos.workspace, &cwd) {
+            return Err(problem);
+        }
+    }
     let mut instructions = bridge
         .as_ref()
         .map(|plan| {
             // F1: an artifact stage is told the run folder its documents go in.
             let run_dir = crate::bridge::folder::run_dir(&runs_root(&app), &plan.run_id);
-            crate::bridge::schema::stage_instructions_in(plan.kind, &repos, run_dir.as_deref())
+            crate::bridge::schema::stage_instructions_for(plan.kind, &repos, run_dir.as_deref())
         })
         .unwrap_or_default();
     // L3: a lane's Implementer whose task has stories gets their list, and
@@ -1824,7 +1849,7 @@ fn role_terminal_start_blocking(
             Some(plan) => {
                 let (runs, program) = bridge_paths(&app)?;
                 let run_dir = crate::bridge::launch::prepare_stage(&runs, plan, &tab_id)?;
-                crate::bridge::launch::write_run_repos(&run_dir, &repos)?;
+                crate::bridge::launch::write_workspace_repos(&run_dir, &repos)?;
                 // L3: the story the stage starts on, for the bridge's check.
                 {
                     let state = store.lock().map_err(|err| err.to_string())?;

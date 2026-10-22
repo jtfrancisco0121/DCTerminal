@@ -3,12 +3,14 @@
 //! drops the lock, then does the slow part (a gate, a spawn, a resume), and
 //! locks again only to write the result back (`store/mod.rs`).
 
+mod workspace_lane;
+
 use super::prompts::{self, StageSources};
 use super::{lock, ActorMsg, Host, Prefill, StageLaunch, UserAction, UserOutcome};
 use crate::bridge::folder::{read_json, RunFindings, RunPrs, TASKS_FILE};
 use crate::bridge::launch::{
     clear_stage_turn, launch_flags, plan_for, prepare_stage, read_stage_turn, relaunch_flags, restore_stage_turn,
-    set_stage_mode, write_run_repos, BridgeFlags, BridgePlan,
+    set_stage_mode, write_workspace_repos, BridgeFlags, BridgePlan,
 };
 use crate::bridge::{BridgeTag, BridgeTurn, StageMode, TurnOutcome};
 use crate::commands::pipeline::{approve, note, note_in_lane, set_lane_status, turn_finished};
@@ -406,7 +408,8 @@ impl<H: Host> Actor<H> {
     fn start_gates(&mut self, placed: &Placed, turn: BridgeTurn, round: u32) {
         // L2: in a lane whose repo has a check, that check replaces the
         // stage's command gates, and the repo's verify steps join them.
-        let repos = self.host.repos();
+        // W1: in a workspace, the repos found in the run's folder too.
+        let repos = self.run_repos().repos;
         let (folder, lane_repo) = {
             let store = lock(self.host.store());
             let run = store.pipeline_run_by_id(&self.run_id);
@@ -888,12 +891,14 @@ impl<H: Host> Actor<H> {
             round: self.round(placed.lane.as_deref()),
             lane: placed.lane.clone(),
         };
+        // W1: a one-task plan in a workspace folder opens in its repo's worktree.
+        let (chain, cwd, preferred_tab) = self.in_workspace_lane(placed, &target, chain)?;
         let opened = self.open_stage(Open {
             role_id: target.role_id.clone(),
             chain,
-            cwd: placed.tab.cwd.clone(),
+            cwd,
             window_id: placed.tab.window_id.clone(),
-            preferred_tab: None,
+            preferred_tab,
             values: built.values,
             handoff_plan: built.handoff_plan,
             tagging: Tagging::Advance { text: built.handoff_text },
@@ -1209,6 +1214,15 @@ impl<H: Host> Actor<H> {
             plan_for(run, &def, &open.chain, &open.role_id)
                 .ok_or_else(|| format!("{} does not report through the pipeline bridge, so autopilot cannot follow it", role.name))?
         };
+        // Settings › Repos (L1), for a Planner's prompt and `repos.json`;
+        // W1: with the repos of a workspace folder, where an Implementer
+        // never runs in the folder itself.
+        let repos = self.run_repos();
+        if plan.kind == crate::bridge::ResultKind::Implementer {
+            if let Some(problem) = crate::workspace_repos::implementer_folder_problem(repos.workspace, &cwd) {
+                return Err(problem);
+            }
+        }
         // D24 and hooks-off, as at every bridged start: an engine-1 outcome
         // switches the run for good and, mid-run, makes it manual (autopilot
         // off, V2a); this stage opens unbridged for you to hand on.
@@ -1220,15 +1234,13 @@ impl<H: Host> Actor<H> {
         };
         let mut values = open.values.clone();
         values.insert("cwd".to_string(), cwd.display().to_string());
-        // Settings › Repos (L1), for a Planner's prompt and `repos.json`.
-        let repos = self.host.repos();
         // F1: an artifact stage is told the run folder its documents go in.
         let runs_root = self.host.runs_root();
         let mut instructions = plan
             .as_ref()
             .map(|plan| {
                 let run_dir = crate::bridge::folder::run_dir(&runs_root, &plan.run_id);
-                crate::bridge::schema::stage_instructions_in(plan.kind, &repos, run_dir.as_deref())
+                crate::bridge::schema::stage_instructions_for(plan.kind, &repos, run_dir.as_deref())
             })
             .unwrap_or_default();
         // L3: an Implementer whose task has stories gets their list.
@@ -1298,7 +1310,7 @@ impl<H: Host> Actor<H> {
                     .bridge_program()
                     .ok_or("DCTerminal could not find its own executable for the pipeline bridge.")?;
                 let run_dir = prepare_stage(&self.host.runs_root(), plan, &tab_id)?;
-                write_run_repos(&run_dir, &repos)?;
+                write_workspace_repos(&run_dir, &repos)?;
                 self.write_story_mark(&plan.stage_key, plan.lane.as_deref());
                 Some(launch_flags(plan.kind, &program, &run_dir, &plan.run_id, &plan.stage_key, &tab_id))
             }
@@ -1332,7 +1344,7 @@ impl<H: Host> Actor<H> {
     /// Settings › Repos: removed since the plan was accepted, it is an
     /// error naming the repo, and no folder is guessed.
     fn start_lane(&mut self, lane_id: &str) -> Result<Option<String>, String> {
-        let repos = self.host.repos();
+        let repos = self.run_repos().repos;
         let (tab, role_id, title) = {
             let mut store = lock(self.host.store());
             let run = store.pipeline_run_by_id(&self.run_id).ok_or("the run is gone")?;
@@ -1983,12 +1995,20 @@ impl<H: Host> Actor<H> {
             round: self.round(placed.lane.as_deref()),
             lane: placed.lane.clone(),
         };
+        // W1: a one-task plan in a workspace folder opens in its repo's worktree.
+        let (chain, cwd, preferred_tab) = match self.in_workspace_lane(&placed, &target, chain) {
+            Ok(found) => found,
+            Err(err) => {
+                self.release(&key);
+                return Err(err);
+            }
+        };
         let opened = self.open_stage(Open {
             role_id: target.role_id.clone(),
             chain,
-            cwd: placed.tab.cwd.clone(),
+            cwd,
             window_id: placed.tab.window_id.clone(),
-            preferred_tab: None,
+            preferred_tab,
             values,
             handoff_plan: plan,
             tagging: Tagging::Advance { text },
@@ -2711,6 +2731,10 @@ fn lane_note(run_dir: Option<&std::path::Path>, lane: &str) -> Option<String> {
     let task = tasks.tasks.iter().find(|t| t.id == lane)?;
     // L1: a lane made in another repo says which, so its stages know.
     let repo = task.repo.as_deref().map(|repo| format!(" in the {repo} repo")).unwrap_or_default();
+    // W1: a one-task plan in a workspace folder has one lane.
+    if tasks.tasks.iter().filter(|t| !t.manual).count() == 1 {
+        return Some(format!("This run ships as one pull request, {} ({}){repo}: {}", task.id.to_uppercase(), task.title, task.summary));
+    }
     Some(format!(
         "This run ships as several pull requests. Implement only {} ({}){repo}: {}",
         task.id.to_uppercase(),

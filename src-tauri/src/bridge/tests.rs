@@ -1652,3 +1652,70 @@ fn the_server_refuses_a_result_for_a_story_that_is_not_current() {
     let turn = stage.inbox().pop().unwrap();
     assert_eq!(turn.result.unwrap()["story"], "s2");
 }
+
+// ---- W1: a workspace folder of repos ----------------------------------------
+
+#[test]
+fn in_a_workspace_every_pull_request_task_names_its_repo_and_the_names_are_listed() {
+    let names = repos(&["koneksi-backend", "koneksi-engine"]);
+    let block = r#"{"tasks": [
+      {"id": "pr1", "title": "API", "summary": "a"},
+      {"id": "pr2", "title": "Client", "summary": "b", "repo": ""},
+      {"id": "pr3", "title": "Engine", "summary": "c", "repo": "koneksi-engine"},
+      {"id": "pr4", "title": "Rerun QA", "summary": "d", "manual": true}
+    ]}"#;
+    let problems = schema::planner_tasks_in(&plan_with(block), &names, None, true).unwrap_err();
+    assert_eq!(problems.len(), 2, "{problems:?}");
+    for (at, problem) in ["tasks[0]", "tasks[1]"].iter().zip(&problems) {
+        assert!(problem.starts_with(&format!("`{at}.repo` is missing: this run's folder is a workspace of repos")), "{problem}");
+        assert!(problem.ends_with("one of koneksi-backend, koneksi-engine"), "{problem}");
+    }
+    // A one-task plan too; with its repo it passes.
+    let one = r#"{"tasks": [{"id": "pr1", "title": "API", "summary": "a"}]}"#;
+    assert!(schema::planner_tasks_in(&plan_with(one), &names, None, true).is_err());
+    let named = r#"{"tasks": [{"id": "pr1", "title": "API", "summary": "a", "repo": "Koneksi-Backend"}]}"#;
+    let tasks = schema::planner_tasks_in(&plan_with(named), &names, None, true).unwrap();
+    assert_eq!(tasks[0].repo.as_deref(), Some("koneksi-backend"));
+    // Outside a workspace: unchanged.
+    assert_eq!(
+        schema::planner_tasks_in(&plan_with(TWO_TASKS), &names, None, false).unwrap(),
+        schema::planner_tasks_with(&plan_with(TWO_TASKS), &names).unwrap()
+    );
+    assert!(schema::planner_tasks_in(&plan_with(one), &names, None, false).is_ok());
+}
+
+#[test]
+fn the_planners_hook_requires_repos_when_repos_json_says_workspace() {
+    let stage = Stage::planner("bridge_plan_workspace", true);
+    stage.hook("UserPromptSubmit", prompt("p-1"));
+    let one = r#"{"tasks": [{"id": "pr1", "title": "API", "summary": "a"}]}"#;
+    let entry = |name: &str| crate::store::RepoEntry { name: name.into(), folder: format!("/ws/{name}"), ..Default::default() };
+    let found = crate::workspace_repos::WorkspaceRepos { workspace: true, repos: vec![entry("koneksi-backend"), entry("koneksi-engine")] };
+    launch::write_workspace_repos(&stage.run_dir, &found).unwrap();
+    let file: Value = serde_json::from_str(&std::fs::read_to_string(stage.run_dir.join("repos.json")).unwrap()).unwrap();
+    assert_eq!(file["workspace"], json!(true));
+    let reason = denial(&stage.hook("PreToolUse", exit_plan_mode("p-1", &plan_with(one))));
+    assert!(reason.contains("`tasks[0].repo` is missing") && reason.contains("koneksi-backend, koneksi-engine"), "{reason}");
+    // A run in a repo folder: no `workspace` in the file, and no repo needed.
+    launch::write_run_repos(&stage.run_dir, &found.repos).unwrap();
+    let file: Value = serde_json::from_str(&std::fs::read_to_string(stage.run_dir.join("repos.json")).unwrap()).unwrap();
+    assert!(file.get("workspace").is_none(), "{file}");
+    let reason = denial(&stage.hook("PreToolUse", exit_plan_mode("p-1", &plan_with(one))));
+    assert_eq!(reason, schema::PLAN_RECEIVED);
+}
+
+#[test]
+fn the_planner_and_triage_are_told_a_workspace_has_no_home_repo() {
+    let entry = |name: &str| crate::store::RepoEntry { name: name.into(), folder: format!("/ws/{name}"), ..Default::default() };
+    let found = crate::workspace_repos::WorkspaceRepos { workspace: true, repos: vec![entry("koneksi-backend"), entry("koneksi-engine")] };
+    let planner = schema::stage_instructions_for(ResultKind::Planner, &found, None);
+    assert!(planner.contains("workspace of repos, not a git repo"), "{planner}");
+    assert!(planner.contains("- `koneksi-backend`: /ws/koneksi-backend"), "{planner}");
+    assert!(planner.contains("Every task that opens a pull request must set `repo`") && planner.contains("even when the plan has one task"));
+    let triage = schema::stage_instructions_for(ResultKind::Round, &found, None);
+    assert!(triage.contains("Every active plan lists at least one of them in `repos`"), "{triage}");
+    // Not a workspace: exactly as before.
+    let plain = crate::workspace_repos::WorkspaceRepos { workspace: false, repos: found.repos.clone() };
+    assert_eq!(schema::stage_instructions_for(ResultKind::Planner, &plain, None), schema::stage_instructions(ResultKind::Planner, &found.repos));
+    assert_eq!(schema::stage_instructions_for(ResultKind::Round, &plain, None), schema::stage_instructions(ResultKind::Round, &found.repos));
+}

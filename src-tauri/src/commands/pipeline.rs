@@ -151,6 +151,17 @@ pub async fn pipeline_run_gates(
         Some(name) => {
             let settings = app.state::<Mutex<crate::store::SettingsStore>>();
             let repos = settings.lock().map_err(|e| e.to_string())?.repos().to_vec();
+            // W1: a lane in a repo of the run's workspace folder runs its detected check.
+            let run_cwd = {
+                let state = app.state::<Mutex<StateStore>>();
+                let store = state.lock().map_err(|e| e.to_string())?;
+                store.pipeline_run_by_id(&run_id).map(|run| run.cwd.clone()).unwrap_or_default()
+            };
+            let repos = tauri::async_runtime::spawn_blocking(move || {
+                crate::workspace_repos::workspace_repos(std::path::Path::new(run_cwd.trim()), &repos).repos
+            })
+            .await
+            .map_err(|e| e.to_string())?;
             crate::store::repos_settings::find_repo(&repos, &name).cloned()
         }
         None => None,
@@ -473,6 +484,14 @@ pub struct LaneInput {
 /// wait for theirs. The frontend then opens each lane's tabs. Refused once
 /// the run has lanes, or for a dependency that is not a lane.
 pub fn fan_out(store: &mut StateStore, run_id: &str, stage_id: &str, lanes: Vec<LaneInput>) -> Result<(), String> {
+    fan_out_lanes(store, run_id, stage_id, lanes, 2)
+}
+
+/// [`fan_out`] with at least `min_lanes` lanes (1 or 2). W1: a run whose
+/// folder is a workspace of repos fans a one-task plan out into one lane,
+/// so its Implementer gets a worktree in the task's repo.
+pub fn fan_out_lanes(store: &mut StateStore, run_id: &str, stage_id: &str, lanes: Vec<LaneInput>, min_lanes: usize) -> Result<(), String> {
+    let min_lanes = min_lanes.clamp(1, 2);
     let run = store
         .pipeline_run_by_id_mut(run_id)
         .ok_or_else(|| format!("unknown pipeline run: {run_id}"))?;
@@ -483,8 +502,8 @@ pub fn fan_out(store: &mut StateStore, run_id: &str, stage_id: &str, lanes: Vec<
     if def.stage(stage_id).is_none() {
         return Err(format!("{} has no stage \"{stage_id}\"", def.name));
     }
-    if lanes.len() < 2 || lanes.len() > 8 {
-        return Err("Fan out needs 2 to 8 pull requests.".into());
+    if lanes.len() < min_lanes || lanes.len() > 8 {
+        return Err(format!("Fan out needs {min_lanes} to 8 pull requests."));
     }
     let ids: std::collections::HashSet<&str> = lanes.iter().map(|l| l.id.as_str()).collect();
     if ids.len() != lanes.len() {
@@ -543,7 +562,11 @@ pub fn fan_out(store: &mut StateStore, run_id: &str, stage_id: &str, lanes: Vec<
         "note",
         Some(stage_id),
         None,
-        format!("Fanned out into {} pull requests", titles.len()),
+        if titles.len() == 1 {
+            "Fanned out into 1 pull request, in its repo's worktree".to_string()
+        } else {
+            format!("Fanned out into {} pull requests", titles.len())
+        },
         Some(titles.join("\n")),
     );
     store.save()
@@ -578,16 +601,23 @@ pub fn pipeline_fan_out(
 ) -> Result<(), String> {
     let run_id = run_id.trim().to_string();
     // L1: a lane's repo must still be in Settings › Repos (the frontend made
-    // its worktree there a moment ago). Read before the store is locked.
-    let repos = {
+    // its worktree there a moment ago); W1: or in the run's workspace
+    // folder. Read before the store is locked, copied out of each lock.
+    let settings_repos = {
         use tauri::Manager;
         let settings = app.state::<Mutex<crate::store::SettingsStore>>();
         let repos = settings.lock().map_err(|e| e.to_string())?.repos().to_vec();
         repos
     };
-    let lanes = lanes_in_repos(lanes, &repos)?;
+    let run_cwd = {
+        let store = store.lock().map_err(|e| e.to_string())?;
+        store.pipeline_run_by_id(&run_id).map(|run| run.cwd.clone()).unwrap_or_default()
+    };
+    let repos = crate::workspace_repos::workspace_repos(std::path::Path::new(run_cwd.trim()), &settings_repos);
+    let lanes = lanes_in_repos(lanes, &repos.repos)?;
+    let min_lanes = if repos.workspace { 1 } else { 2 };
     let mut store = store.lock().map_err(|e| e.to_string())?;
-    fan_out(&mut store, &run_id, &stage_id, lanes)?;
+    fan_out_lanes(&mut store, &run_id, &stage_id, lanes, min_lanes)?;
     app.chain_run_updated(&run_id);
     Ok(())
 }

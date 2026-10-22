@@ -25,7 +25,7 @@ pub mod sizes;
 #[cfg(test)]
 mod tests;
 
-pub use gates::{run_command_gate, run_pull_request_gate, GateResult};
+pub use gates::{auto_check_command, run_command_gate, run_pull_request_gate, GateResult};
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
