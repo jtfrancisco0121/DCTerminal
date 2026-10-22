@@ -239,6 +239,7 @@ import {
 } from "./handoff/executor";
 import { behaviourRole, pipelineDef, pipelineStages, roleBehaviour, stageBehaviour } from "./pipeline/defs";
 import { eagleStartChain } from "./pipeline/eagleStart";
+import { startRunSize } from "./pipeline/sizes";
 import { useBridgeNeeds } from "./terminal/bridgeNeeds";
 import { useRunTurns } from "./pipeline/useRunTurns";
 import { autopilotStopDetail, onceValue, subscribeAutopilotStops } from "./pipeline/autopilotStops";
@@ -2353,6 +2354,8 @@ export function StartupForm({
           chain: options?.chain ?? null,
           startChain,
           intakeId,
+          // F3: the size the picker shows is the chain's; the run keeps it.
+          size: startRunSize(startChain),
           ...measuredTerminalSize(),
           onOutput: live.channel,
         });

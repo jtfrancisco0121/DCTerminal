@@ -33,6 +33,7 @@ import { verifyWaitKey } from "../pipeline/verify";
 import { StoryCheckpointPanel } from "./StoryCheckpointPanel";
 import { ArtifactWaitPanel } from "./ArtifactWaitPanel";
 import { artifactWaitKey } from "../pipeline/artifacts";
+import { sizeMeta } from "../pipeline/sizes";
 import { StoryList } from "./StoryList";
 import { StoryResendButton } from "./StoryResendButton";
 import { laneStories, storyProgress, storyWaitKey } from "../pipeline/stories";
@@ -460,7 +461,9 @@ export function PipelineOverview({
         <div>
           <h2 className="pipeline-overview-title">{overviewTitle(run, kind)}</h2>
           <p className="hint pipeline-overview-meta">
-            {overviewMeta(kind)} · <span className="pipeline-overview-cwd">{cwd || run.cwd}</span>
+            {overviewMeta(kind)}
+            {sizeMeta(run) && <span className="pipeline-overview-size"> · {sizeMeta(run)}</span>} ·{" "}
+            <span className="pipeline-overview-cwd">{cwd || run.cwd}</span>
           </p>
         </div>
         <p className="hint">

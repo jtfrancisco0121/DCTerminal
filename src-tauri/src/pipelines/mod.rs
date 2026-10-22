@@ -21,6 +21,7 @@ pub mod verify;
 pub mod stories;
 pub mod recovery;
 pub mod artifacts;
+pub mod sizes;
 #[cfg(test)]
 mod tests;
 

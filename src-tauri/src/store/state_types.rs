@@ -208,6 +208,10 @@ pub struct PipelineRun {
     /// story's summary and tickets from here.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stories: Vec<RunStory>,
+    /// F3: the size picked at start (`S`, `M` or `L`, `pipelines::sizes`),
+    /// for the overview. None for a run started any other way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<String>,
 }
 
 /// Where a story stands (L3).

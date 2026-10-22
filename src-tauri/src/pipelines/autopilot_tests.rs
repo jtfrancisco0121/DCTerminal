@@ -37,6 +37,7 @@ fn run(round: u32) -> PipelineRun {
         manual_only: false,
         verifications: Vec::new(),
         stories: Vec::new(),
+        size: None,
     }
 }
 

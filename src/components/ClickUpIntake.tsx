@@ -27,6 +27,8 @@ type Props = {
   /** Opens Settings › Integrations, where this window's account gets a ClickUp token. */
   onOpenIntegrations: () => void;
   disabled?: boolean;
+  /** F3: the box changed (the start screen counts the ticked tickets for its size suggestion). */
+  onDraftChange?: (draft: IntakeDraft) => void;
 };
 
 /**
@@ -36,7 +38,7 @@ type Props = {
  * with this window's Claude account only; Claude never sees the token.
  * The task text above stays as it is, so dictating still works.
  */
-export function ClickUpIntake({ draftRef, onOpenIntegrations, disabled = false }: Props) {
+export function ClickUpIntake({ draftRef, onOpenIntegrations, disabled = false, onDraftChange }: Props) {
   const [status, setStatus] = useState<ClickUpIntakeStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [draft, setDraftState] = useState<IntakeDraft>(() => draftRef.current);
@@ -76,6 +78,7 @@ export function ClickUpIntake({ draftRef, onOpenIntegrations, disabled = false }
   const setDraft = (next: IntakeDraft) => {
     draftRef.current = next;
     setDraftState(next);
+    onDraftChange?.(next);
   };
 
   if (statusError) return <InlineNotice tone="error">{statusError}</InlineNotice>;

@@ -173,6 +173,7 @@ impl StateStore {
                     manual_only: false,
                     verifications: Vec::new(),
                     stories: Vec::new(),
+                    size: None,
                 });
                 chain.chain_id.clone()
             }
@@ -680,6 +681,7 @@ mod tests {
             manual_only: false,
             verifications: Vec::new(),
             stories: Vec::new(),
+            size: None,
         }
     }
 
