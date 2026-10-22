@@ -100,6 +100,7 @@ impl Host for TestHost {
         let label = match gate {
             GateDef::Command { .. } => "npm run check",
             GateDef::PullRequest => "pull requests",
+            GateDef::Verify { .. } => "verify",
         };
         self.gates.lock().unwrap().pop_front().unwrap_or(GateResult {
             kind: "command".into(),

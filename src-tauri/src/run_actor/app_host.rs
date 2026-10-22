@@ -127,6 +127,8 @@ impl Host for AppHost {
                 ..crate::pipelines::run_command_gate(folder, run, timeout_secs.map(Duration::from_secs))
             },
             GateDef::PullRequest => crate::pipelines::run_pull_request_gate(folder, pr_urls),
+            // L2: never run (`lane_gates::run_planned` waits for you instead).
+            GateDef::Verify { .. } => GateResult::skipped("verify", "verify", "A verify gate waits for you; the app does not run it."),
         }
     }
 

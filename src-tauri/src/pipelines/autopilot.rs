@@ -143,11 +143,11 @@ fn normalize_verdict(verdict: &str) -> String {
     verdict.trim().replace('_', " ")
 }
 
-fn autopilot(run: &mut PipelineRun) -> &mut RunAutopilot {
+pub(super) fn autopilot(run: &mut PipelineRun) -> &mut RunAutopilot {
     run.autopilot.get_or_insert_with(RunAutopilot::default)
 }
 
-fn stop(run: &mut PipelineRun, stage: Option<&StageDef>, code: StopReason, reason: String) -> Decision {
+pub(super) fn stop(run: &mut PipelineRun, stage: Option<&StageDef>, code: StopReason, reason: String) -> Decision {
     run.stop_for(
         code,
         stage.map(|s| s.id.as_str()),
@@ -456,14 +456,32 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
     if let Some(gate) = failed_gate {
         let retries = *autopilot(run).gate_retries.get(&key_of_stage).unwrap_or(&0);
         if retries >= MAX_GATE_RETRIES {
-            return stop(
-                run,
-                Some(&stage),
-                StopReason::GateFailed,
-                format!("The {} check failed {} times in a row. {}", gate.label, retries + 1, gate.summary),
-            );
+            let why = if gate.kind == "verify" {
+                // L2: your failed verification counts like a failed check.
+                format!(
+                    "The {} gate failed {} times in a row (checks and verification together). Your last note: {}",
+                    gate.label,
+                    retries + 1,
+                    gate.output.trim()
+                )
+            } else {
+                format!("The {} check failed {} times in a row. {}", gate.label, retries + 1, gate.summary)
+            };
+            return stop(run, Some(&stage), StopReason::GateFailed, why);
         }
         autopilot(run).gate_retries.insert(key_of_stage.clone(), retries + 1);
+        if gate.kind == "verify" {
+            // L2: Failed with a note goes back to the stage as a round, as a
+            // failed check's output does, and counts toward its retries.
+            let mut decision = Decision::new(
+                "retry",
+                format!("{} failed: your note went back to {}.", gate.label, stage.title),
+            )
+            .for_stage(&stage);
+            decision.lane = lane.map(str::to_string);
+            decision.message = Some(super::verify::failed_message(&gate.summary, &gate.output));
+            return go(run, decision, Some(gate.output.clone()));
+        }
         let mut decision = Decision::new(
             "retry",
             format!("The {} check failed; sent the output back to {}.", gate.label, stage.title),
@@ -480,6 +498,19 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             gate.label, gate.summary, output
         ));
         return go(run, decision, Some(gate.output.clone()));
+    }
+    // L2: every other gate passed and a verify gate waits for you. Its
+    // retries are kept: a verification that keeps failing still ends in
+    // `gate_failed`.
+    let waiting = run
+        .gates
+        .get(&key_of_stage)
+        .filter(|gates| gates.round == round)
+        .and_then(|gates| gates.results.iter().find(|r| r.waiting_verify()).cloned());
+    if let Some(gate) = waiting {
+        let mut decision = super::verify::wait_for_you(run, &stage, lane, &gate, turn);
+        decision.lane = lane.map(str::to_string);
+        return decision;
     }
     // Every check passed (or none ran) this round: a later failure starts counting again.
     autopilot(run).gate_retries.remove(&key_of_stage);

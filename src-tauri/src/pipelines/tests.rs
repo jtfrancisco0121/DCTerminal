@@ -314,3 +314,24 @@ fn an_optional_gate_round_trips_and_defaults_off() {
     let json = serde_json::to_value(&optional).unwrap();
     assert_eq!(json, serde_json::json!({ "kind": "command", "run": "auto", "optional": true }));
 }
+
+/// L2: a `verify` gate reads as `{ "kind": "verify", "steps": "…" }`, and
+/// `check_pipeline` wants steps of 1 to 2000 characters.
+#[test]
+fn a_verify_gate_round_trips_and_needs_steps_of_at_most_2000_characters() {
+    let gate: GateDef = serde_json::from_value(serde_json::json!({ "kind": "verify", "steps": "Run qa128-ml on Windows." })).unwrap();
+    assert_eq!(gate, GateDef::Verify { steps: "Run qa128-ml on Windows.".into() });
+    assert_eq!(serde_json::to_value(&gate).unwrap(), serde_json::json!({ "kind": "verify", "steps": "Run qa128-ml on Windows." }));
+    assert!(serde_json::from_value::<GateDef>(serde_json::json!({ "kind": "verify" })).is_err(), "steps are required");
+
+    let err = |def: PipelineDef| validate_user_pipelines_with(&[def], None).unwrap_err();
+    let with = |steps: String| {
+        let mut def = user_def("verified");
+        def.stages[0].gates = vec![GateDef::Command { run: "auto".into(), timeout_secs: None, optional: false }, GateDef::Verify { steps }];
+        def
+    };
+    assert_eq!(validate_user_pipelines_with(&[with("Run it.\nThen check the log.".into())], None), Ok(()));
+    assert_eq!(validate_user_pipelines_with(&[with("x".repeat(MAX_VERIFY_STEPS_CHARS))], None), Ok(()));
+    assert!(err(with(" \n ".into())).contains("a verify gate needs steps (1 to 2000 characters)"));
+    assert!(err(with("x".repeat(MAX_VERIFY_STEPS_CHARS + 1))).contains("a verify gate needs steps"));
+}

@@ -2184,8 +2184,8 @@ mod run_actor {
         let backend = repo(&parent, "backend");
         let engine = repo(&parent, "engine");
         let repos = vec![
-            RepoEntry { name: "backend".into(), folder: backend.display().to_string() },
-            RepoEntry { name: "engine".into(), folder: engine.display().to_string() },
+            RepoEntry { name: "backend".into(), folder: backend.display().to_string(), ..RepoEntry::default() },
+            RepoEntry { name: "engine".into(), folder: engine.display().to_string(), ..RepoEntry::default() },
         ];
         let state = StateStore {
             path: data.join("state.json"),

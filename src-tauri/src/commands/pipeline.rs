@@ -122,24 +122,41 @@ pub async fn pipeline_run_gates(
 ) -> Result<Vec<GateResult>, String> {
     use tauri::Manager;
     let run_id = run_id.trim().to_string();
-    let (gates, folder, _) = {
+    let (gates, folder, lane_repo) = {
         let state = app.state::<Mutex<StateStore>>();
         let store = state.lock().map_err(|e| e.to_string())?;
-        stage_gates(&store, &run_id, &stage_id, cwd.as_deref())?
+        let (gates, folder, _) = stage_gates(&store, &run_id, &stage_id, cwd.as_deref())?;
+        let lane_repo = store
+            .pipeline_run_by_id(&run_id)
+            .and_then(|run| lane.as_deref().and_then(|id| run.lane(id)))
+            .and_then(|lane| lane.repo.clone());
+        (gates, folder, lane_repo)
     };
+    // L2: a lane's repo check replaces the stage's command gates, as on
+    // autopilot. Verify gates are yours to carry out by hand here.
+    let repo = match lane_repo {
+        Some(name) => {
+            let settings = app.state::<Mutex<crate::store::SettingsStore>>();
+            let repos = settings.lock().map_err(|e| e.to_string())?.repos().to_vec();
+            crate::store::repos_settings::find_repo(&repos, &name).cloned()
+        }
+        None => None,
+    };
+    let planned: Vec<_> = crate::pipelines::lane_gates::lane_gates(&gates, repo.as_ref())
+        .into_iter()
+        .filter(|planned| !matches!(planned.gate, GateDef::Verify { .. }))
+        .collect();
     // Checks can run for many minutes: the blocking pool, never a runtime worker.
     let results: Vec<GateResult> = tauri::async_runtime::spawn_blocking(move || {
-        gates
-            .iter()
-            .map(|gate| match gate {
-                GateDef::Command { run, timeout_secs, optional } => GateResult {
-                    // `decide` stops on an `auto` gate with nothing to run unless it is optional.
-                    optional: *optional,
-                    ..crate::pipelines::run_command_gate(&folder, run, timeout_secs.map(Duration::from_secs))
-                },
-                GateDef::PullRequest => crate::pipelines::run_pull_request_gate(&folder, &pr_urls),
-            })
-            .collect()
+        // `run_planned` keeps each gate's `optional` flag: `decide` stops on
+        // an `auto` gate with nothing to run unless it is optional.
+        crate::pipelines::lane_gates::run_planned(&planned, |gate| match gate {
+            GateDef::Command { run, timeout_secs, .. } => {
+                crate::pipelines::run_command_gate(&folder, run, timeout_secs.map(Duration::from_secs))
+            }
+            GateDef::PullRequest => crate::pipelines::run_pull_request_gate(&folder, &pr_urls),
+            GateDef::Verify { .. } => GateResult::skipped("verify", "verify", "Verify it yourself."),
+        })
     })
     .await
     .map_err(|e| e.to_string())?;
@@ -770,8 +787,8 @@ mod tests {
         use super::lanes_in_repos;
         use crate::store::RepoEntry;
         let repos = [
-            RepoEntry { name: "backend".into(), folder: "/src/backend".into() },
-            RepoEntry { name: "engine".into(), folder: "/src/engine".into() },
+            RepoEntry { name: "backend".into(), folder: "/src/backend".into(), ..RepoEntry::default() },
+            RepoEntry { name: "engine".into(), folder: "/src/engine".into(), ..RepoEntry::default() },
         ];
         let mut spans = lanes();
         spans[0].repo = Some("Backend".into());

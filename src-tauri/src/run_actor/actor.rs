@@ -14,7 +14,7 @@ use crate::bridge::{BridgeTag, BridgeTurn, StageMode, TurnOutcome};
 use crate::commands::pipeline::{approve, note, set_lane_status, turn_finished};
 use crate::pipelines::autopilot::{decide, review_round, stage_key, stop_for_pipeline, Decision, FindingReport, TurnReport};
 use crate::pipelines::recovery::bridge_turn_key;
-use crate::pipelines::{GateDef, GateResult, PipelineDef, StageDef, StageKind};
+use crate::pipelines::{GateResult, PipelineDef, StageDef, StageKind};
 use crate::store::{
     claim_key, tab_label, ChainRef, PipelineRun, RoleSnapshot, RunStatus, StageGates, StateStore, StopReason, TabRecord,
     TerminalTabDraft,
@@ -322,12 +322,22 @@ impl<H: Host> Actor<H> {
     /// Run the stage's gates on a thread of their own; the results come
     /// back as `GatesDone`.
     fn start_gates(&mut self, placed: &Placed, turn: BridgeTurn, round: u32) {
-        let gates = placed.stage.gates.clone();
-        let folder = {
+        // L2: in a lane whose repo has a check, that check replaces the
+        // stage's command gates, and the repo's verify steps join them.
+        let repos = self.host.repos();
+        let (folder, lane_repo) = {
             let store = lock(self.host.store());
-            let run_cwd = store.pipeline_run_by_id(&self.run_id).map(|r| r.cwd.clone()).unwrap_or_default();
-            PathBuf::from(if placed.tab.cwd.trim().is_empty() { run_cwd } else { placed.tab.cwd.clone() })
+            let run = store.pipeline_run_by_id(&self.run_id);
+            let run_cwd = run.map(|r| r.cwd.clone()).unwrap_or_default();
+            let lane_repo = run
+                .zip(placed.lane.as_deref())
+                .and_then(|(run, lane)| run.lane(lane))
+                .and_then(|lane| lane.repo.clone());
+            let folder = PathBuf::from(if placed.tab.cwd.trim().is_empty() { run_cwd } else { placed.tab.cwd.clone() });
+            (folder, lane_repo)
         };
+        let repo = lane_repo.and_then(|name| crate::store::repos_settings::find_repo(&repos, &name).cloned());
+        let planned = crate::pipelines::lane_gates::lane_gates(&placed.stage.gates, repo.as_ref());
         let prs = pr_urls(&turn);
         let host = self.host.clone();
         let me = self.me.clone();
@@ -335,27 +345,21 @@ impl<H: Host> Actor<H> {
         let spawned = std::thread::Builder::new()
             .name(format!("run-gates-{}", self.run_id))
             .spawn(move || {
-                let results = gates
-                    .iter()
-                    .map(|gate| {
-                        // H4: `decide` stops on an `auto` check with nothing
-                        // to run unless the gate is optional, so the result
-                        // carries the gate's flag (as `pipeline_run_gates`).
-                        let optional = matches!(gate, GateDef::Command { optional: true, .. });
-                        let result =
-                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| host.run_gate(gate, &folder, &prs)))
-                                .unwrap_or_else(|_| GateResult {
-                                    kind: "command".into(),
-                                    label: "check".into(),
-                                    status: "failed".into(),
-                                    summary: "The check could not run (internal error).".into(),
-                                    output: String::new(),
-                                    duration_ms: 0,
-                                    optional: false,
-                                });
-                        GateResult { optional, ..result }
-                    })
-                    .collect();
+                // H4: `decide` stops on an `auto` check with nothing to run
+                // unless the gate is optional, so each result carries the
+                // gate's flag (`run_planned`, as `pipeline_run_gates`).
+                let results = crate::pipelines::lane_gates::run_planned(&planned, |gate| {
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| host.run_gate(gate, &folder, &prs)))
+                        .unwrap_or_else(|_| GateResult {
+                            kind: "command".into(),
+                            label: "check".into(),
+                            status: "failed".into(),
+                            summary: "The check could not run (internal error).".into(),
+                            output: String::new(),
+                            duration_ms: 0,
+                            optional: false,
+                        })
+                });
                 let _ = me.send(ActorMsg::GatesDone { turn, round, results });
             });
         if let Err(err) = spawned {
@@ -451,6 +455,11 @@ impl<H: Host> Actor<H> {
 
     fn decide_and_carry_out(&mut self, placed: &Placed, turn: &BridgeTurn, round: u32) {
         let report = self.report(placed, turn, round);
+        self.decide_report_and_carry_out(placed, turn, report);
+    }
+
+    /// Decide `report` (for `turn`) and carry the decision out.
+    fn decide_report_and_carry_out(&mut self, placed: &Placed, turn: &BridgeTurn, report: TurnReport) {
         let (decision, held) = {
             let mut store = lock(self.host.store());
             let Some(run) = store.pipeline_run_by_id_mut(&self.run_id) else {
@@ -469,6 +478,15 @@ impl<H: Host> Actor<H> {
                 ),
                 None => decide(&placed.def, &mut trial, &report),
             };
+            // L2: a verify wait shows the pull requests this turn reported.
+            if let Some(wait) = trial
+                .autopilot
+                .as_mut()
+                .and_then(|a| a.verify.as_mut())
+                .filter(|wait| wait.turn.is_some() && wait.turn == report.turn)
+            {
+                wait.prs = pr_urls(turn);
+            }
             let held = taken_over_target(&placed.def, run, placed, &decision);
             // A round you dealt with yourself (D28) is not sent back: its
             // decision line says so instead of "goes back to".
@@ -1236,6 +1254,12 @@ impl<H: Host> Actor<H> {
                     Err(outcome) => Ok(outcome),
                 }
             }
+            UserAction::Verify {
+                stage_id,
+                lane,
+                verified,
+                note,
+            } => self.user_verify(&stage_id, lane.as_deref(), verified, note.as_deref()),
             UserAction::ReleaseHandoff { source_tab_id, back } => {
                 let placed = self.place_tab(&source_tab_id).ok_or("That tab is not on this run.")?;
                 let key = {
@@ -1448,6 +1472,54 @@ impl<H: Host> Actor<H> {
         Ok(UserOutcome {
             complete: result.complete,
             started,
+            ..UserOutcome::default()
+        })
+    }
+
+    /// Your answer to the verify gate the run waits on (L2): recorded on the
+    /// run (`pipelines::verify::answer`), then the stage's turn whose checks
+    /// passed is decided again, under a key of its own, so a pass moves on
+    /// as a passed gate does and a failure resumes the stage with your note.
+    /// Refused, with nothing changed, when the stage has had a newer prompt
+    /// since, or you took it over.
+    fn user_verify(&mut self, stage_id: &str, lane: Option<&str>, verified: bool, note: Option<&str>) -> Result<UserOutcome, String> {
+        let not_waiting = "The run is not waiting on that verification any more. Reload the overview.";
+        let turn_key = {
+            let store = lock(self.host.store());
+            let run = store.pipeline_run_by_id(&self.run_id).ok_or("unknown pipeline run")?;
+            let wait = run.autopilot.as_ref().and_then(|a| a.verify.clone()).ok_or(not_waiting)?;
+            if wait.stage_id != stage_id || wait.lane.as_deref() != lane {
+                return Err(not_waiting.into());
+            }
+            wait.turn.ok_or(not_waiting)?
+        };
+        let tab_id = turn_key.split('|').next().unwrap_or_default().to_string();
+        let (placed, tag) = self.bridged_tab(&tab_id)?;
+        if self.taken_over(&tab_id) {
+            return Err(format!("You took {} over: hand it back first, then answer the verification.", placed.tab.label));
+        }
+        let latest = read_stage_turn(&self.host.runs_root(), &tag, &tab_id)
+            .filter(|latest| bridge_turn_key(&tab_id, &latest.turn) == turn_key)
+            .ok_or_else(|| {
+                format!(
+                    "{} got a newer prompt after its checks passed, so this verification is not for its latest turn.",
+                    placed.tab.label
+                )
+            })?;
+        let (round, answers) = {
+            let mut store = lock(self.host.store());
+            let run = store.pipeline_run_by_id_mut(&self.run_id).ok_or("unknown pipeline run")?;
+            crate::pipelines::verify::answer(run, stage_id, lane, verified, note, &chrono::Utc::now().to_rfc3339())?;
+            let found = (run.round_for(lane), run.verifications.len());
+            store.save()?;
+            found
+        };
+        self.changed();
+        let mut report = self.report(&placed, &latest, round);
+        report.turn = Some(format!("{turn_key}#verify{answers}"));
+        self.decide_report_and_carry_out(&placed, &latest, report);
+        Ok(UserOutcome {
+            tab_id: Some(tab_id),
             ..UserOutcome::default()
         })
     }

@@ -16,6 +16,8 @@
 
 pub mod autopilot;
 mod gates;
+pub mod lane_gates;
+pub mod verify;
 pub mod recovery;
 #[cfg(test)]
 mod tests;
@@ -40,6 +42,8 @@ const MAX_STAGES: usize = 12;
 const MAX_ID_CHARS: usize = 64;
 const MAX_TEXT_CHARS: usize = 200;
 const MAX_COMMAND_CHARS: usize = 2_000;
+/// A `verify` gate's steps (L2).
+pub const MAX_VERIFY_STEPS_CHARS: usize = 2_000;
 
 /// Finding severity, most severe first. Matches the Codebase Audit tags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -123,6 +127,12 @@ pub enum GateDef {
     /// Every pull request the stage reported exists (`gh pr view`).
     #[serde(rename = "pullRequest")]
     PullRequest,
+    /// A check the app cannot run itself (L2, E9), such as a Playwright run
+    /// on a Windows staging build: once the stage's other gates pass, the
+    /// run waits (`checkpoint`) with these steps until you mark them
+    /// verified or failed with a note.
+    #[serde(rename = "verify")]
+    Verify { steps: String },
 }
 
 /// What a stage does, whatever its role is called (D33). Read by every rule
@@ -617,6 +627,15 @@ fn check_pipeline(
             }
         }
         for gate in &stage.gates {
+            if let GateDef::Verify { steps } = gate {
+                // L2: the steps are what the overview shows you while the run waits.
+                if steps.trim().is_empty() || steps.trim().chars().count() > MAX_VERIFY_STEPS_CHARS {
+                    return Err(format!(
+                        "stage \"{}\": a verify gate needs steps (1 to {MAX_VERIFY_STEPS_CHARS} characters).",
+                        stage.id
+                    ));
+                }
+            }
             if let GateDef::Command { run, timeout_secs, .. } = gate {
                 if run.trim().is_empty() || run.chars().count() > MAX_COMMAND_CHARS {
                     return Err(format!(
