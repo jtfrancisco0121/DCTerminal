@@ -267,6 +267,7 @@ pub(crate) fn intake_for_start(
     run_dir: Option<&Path>,
 ) -> IntakeLaunch {
     use crate::run_actor::prompts::{place_intake_note, IntakeSlot};
+    let titles: Vec<String> = snapshot.tickets.iter().map(|t| t.row.title.trim().to_string()).collect();
     let (note, slots, write) = match run_dir {
         Some(dir) => {
             let path = dir.join(TICKETS_FILE).display().to_string();
@@ -275,8 +276,43 @@ pub(crate) fn intake_for_start(
         None => (intake::request_note(&snapshot), &[IntakeSlot::Request, IntakeSlot::Context][..], None),
     };
     let placed = place_intake_note(role, values, &note, slots);
+    fill_required_from_tickets(role, values, &titles);
     let note = note.trim().to_string();
     IntakeLaunch { tail: if placed { String::new() } else { note.clone() }, write, note }
+}
+
+/// The tickets answer the form: each required field you left empty, and
+/// can see, gets a value, so Start needs no typing once tickets are
+/// fetched. A choice takes its first option (before the other fields, as
+/// it can show more), the title names the tickets, and any other field
+/// points at them. What you typed stays as it is.
+fn fill_required_from_tickets(role: &crate::roles::Role, values: &mut HashMap<String, String>, titles: &[String]) {
+    use crate::roles::FieldType;
+    use crate::template::field_visible;
+    let Some(first) = titles.first() else { return };
+    let empty = |values: &HashMap<String, String>, key: &str| values.get(key).is_none_or(|v| v.trim().is_empty());
+    for field in role.fields.iter().filter(|f| f.required && f.field_type == FieldType::Select) {
+        if field_visible(field, values) && empty(values, &field.key) {
+            if let Some(option) = field.options.as_ref().and_then(|o| o.first()) {
+                values.insert(field.key.clone(), option.clone());
+            }
+        }
+    }
+    let title = match titles.len() {
+        1 => first.clone(),
+        n => format!("{first} (+{} more ClickUp tickets)", n - 1),
+    };
+    for field in role.fields.iter().filter(|f| f.required) {
+        if !field_visible(field, values) || !empty(values, &field.key) {
+            continue;
+        }
+        let value = match field.field_type {
+            FieldType::Select | FieldType::Folder => continue,
+            _ if field.key == "title" => title.clone(),
+            _ => "As the ClickUp tickets in this prompt say.".to_string(),
+        };
+        values.insert(field.key.clone(), value);
+    }
 }
 
 pub(crate) fn read_snapshot(runs_root: &Path, run_id: &str) -> Result<Option<(PathBuf, TicketsSnapshot)>, String> {
@@ -737,6 +773,30 @@ mod tests {
     }
 
     #[test]
+    fn fetched_tickets_answer_the_required_fields_left_empty_and_keep_what_you_typed() {
+        let env = env("start_empty");
+        let planner = seed_role("role_planner");
+        let run_dir = env.runs().join(RUN);
+        let mut values = HashMap::from([("cwd".to_string(), env.dir.path().display().to_string())]);
+        intake_for_start(&planner, &mut values, staged_snapshot(&env), Some(&run_dir));
+        assert_eq!(values["taskType"], "Feature");
+        assert_eq!(values["title"], "Sync stalls on a folder of 7,839 files (+1 more ClickUp tickets)");
+        assert!(!values["request"].is_empty() && !values["expectedBehavior"].is_empty());
+        let merged = crate::template::merge_role_prompt_with(&planner, &values, "");
+        assert!(merged.errors.is_empty(), "Start needs no typing: {:?}", merged.errors);
+        // A Bug shows Current Behavior: it is answered too; typed fields stay.
+        let mut values = HashMap::from([
+            ("cwd".to_string(), env.dir.path().display().to_string()),
+            ("taskType".to_string(), "Bug".to_string()),
+            ("title".to_string(), "QA 1.2.8".to_string()),
+        ]);
+        intake_for_start(&planner, &mut values, staged_snapshot(&env), Some(&run_dir));
+        assert_eq!((values["taskType"].as_str(), values["title"].as_str()), ("Bug", "QA 1.2.8"));
+        assert!(!values["currentBehavior"].is_empty());
+        assert!(crate::template::merge_role_prompt_with(&planner, &values, "").errors.is_empty());
+    }
+
+    #[test]
     fn any_other_start_gets_the_summary_in_its_request_and_writes_no_file() {
         let env = env("start_e1");
         let planner = seed_role("role_planner");
@@ -754,7 +814,7 @@ mod tests {
         let mut values = HashMap::new();
         let launch = intake_for_start(&bare, &mut values, staged_snapshot(&env), None);
         assert!(launch.tail.starts_with("Tickets from ClickUp (2):"));
-        assert!(values.is_empty());
+        assert!(values.values().all(|v| !v.contains("Tickets from ClickUp")), "{values:?}");
     }
 
 
