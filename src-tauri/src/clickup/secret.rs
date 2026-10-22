@@ -13,6 +13,7 @@
 //! `claude` stage or `gh` call inherits it.
 
 use super::ClickUpToken;
+use std::ffi::OsStr;
 use std::sync::OnceLock;
 
 /// The env override. Read once at startup, then removed from the env.
@@ -129,27 +130,58 @@ impl TokenSource {
     }
 }
 
-static ENV_TOKEN: OnceLock<Option<ClickUpToken>> = OnceLock::new();
+/// What `DCT_CLICKUP_TOKEN` held at startup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnvToken {
+    Absent,
+    Token(ClickUpToken),
+    /// Set, but not a token (not UTF-8, empty, or not token-shaped). It is
+    /// not used, and Settings says so rather than showing "No token yet".
+    Rejected,
+}
 
-/// Reads `name` into a token and removes it from this process's env.
-fn take_env_var(name: &str) -> Option<ClickUpToken> {
-    let raw = std::env::var(name).ok();
+static ENV_TOKEN: OnceLock<EnvToken> = OnceLock::new();
+
+/// What an env value means as a token. Pure, so tests need no `set_var`.
+fn classify_env_value(raw: Option<&OsStr>) -> EnvToken {
+    match raw {
+        None => EnvToken::Absent,
+        Some(raw) => raw
+            .to_str()
+            .and_then(|raw| ClickUpToken::parse(raw).ok())
+            .map_or(EnvToken::Rejected, EnvToken::Token),
+    }
+}
+
+/// Reads `name` and removes it from this process's env whenever it is set,
+/// a value that is not UTF-8 or not a token included: a rejected value can
+/// still be a real token with a stray byte, so no child may inherit it.
+fn take_env_var(name: &str) -> EnvToken {
+    let raw = std::env::var_os(name);
     if raw.is_some() {
         std::env::remove_var(name);
     }
-    raw.and_then(|raw| ClickUpToken::parse(&raw).ok())
+    classify_env_value(raw.as_deref())
 }
 
 /// Moves `DCT_CLICKUP_TOKEN` out of the env, so children never inherit it.
-/// Must run on the main thread before any other thread exists, like
-/// `shell_env::scrub_parent_claude_session`.
+/// Must run on the main thread before any other thread or child process
+/// exists: it is the first of `STARTUP_ENV_STEPS` in `lib.rs`.
 pub fn take_env_token() {
     let _ = ENV_TOKEN.set(take_env_var(TOKEN_ENV));
 }
 
 /// The env override taken at startup, if any.
 pub fn env_token() -> Option<ClickUpToken> {
-    ENV_TOKEN.get().cloned().flatten()
+    match ENV_TOKEN.get() {
+        Some(EnvToken::Token(token)) => Some(token.clone()),
+        _ => None,
+    }
+}
+
+/// Whether `DCT_CLICKUP_TOKEN` was set at startup but was not a token.
+pub fn env_token_rejected() -> bool {
+    matches!(ENV_TOKEN.get(), Some(EnvToken::Rejected))
 }
 
 /// The token `account_id` uses and where it came from: the env override
@@ -223,13 +255,81 @@ mod tests {
     }
 
     #[test]
+    fn an_env_value_that_is_not_a_token_is_rejected_not_used() {
+        assert_eq!(classify_env_value(None), EnvToken::Absent);
+        assert_eq!(
+            classify_env_value(Some(OsStr::new(" pk_from_env "))),
+            EnvToken::Token(ClickUpToken::parse("pk_from_env").unwrap())
+        );
+        for bad in ["", "  ", "pk_1 2", "pk_é"] {
+            assert_eq!(
+                classify_env_value(Some(OsStr::new(bad))),
+                EnvToken::Rejected,
+                "{bad:?}"
+            );
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            assert_eq!(
+                classify_env_value(Some(OsStr::from_bytes(b"pk_\xff"))),
+                EnvToken::Rejected
+            );
+        }
+    }
+
+    /// Set by [`the_env_token_is_removed_so_children_cannot_inherit_it`] for
+    /// the copy of this test binary it starts.
+    const CHILD_MARKER: &str = "DCT_CLICKUP_SECRET_TEST_CHILD";
+    /// A name of its own, so a real `DCT_CLICKUP_TOKEN` is never involved.
+    const CHILD_VAR: &str = "DCT_CLICKUP_TOKEN_TEST_TAKE";
+
+    /// Runs `child_takes_the_env_var` in a fresh copy of this test binary,
+    /// with `value` in its env. Changing the env of this process would race
+    /// the other tests' threads, so only the child's env is set, by `Command`.
+    fn run_child(value: &OsStr) {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "clickup::secret::tests::child_takes_the_env_var",
+                "--ignored",
+                "--test-threads=1",
+                "--nocapture",
+            ])
+            .env(CHILD_MARKER, "1")
+            .env(CHILD_VAR, value)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success() && stdout.contains("1 passed"),
+            "child failed: {stdout}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    #[test]
     fn the_env_token_is_removed_so_children_cannot_inherit_it() {
-        // A name of its own, so no other test sees it come and go.
-        let name = "DCT_CLICKUP_TOKEN_TEST_TAKE";
-        std::env::set_var(name, " pk_from_env ");
-        let token = take_env_var(name).unwrap();
-        assert_eq!(token.expose(), "pk_from_env");
-        assert!(std::env::var_os(name).is_none());
+        run_child(OsStr::new(" pk_from_env "));
+        run_child(OsStr::new("not a token"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            run_child(OsStr::from_bytes(b"pk_from_env\xff"));
+        }
+    }
+
+    /// Only does anything inside [`run_child`]'s child, which runs this one
+    /// test on one thread, so `take_env_var`'s `remove_var` races nothing.
+    #[test]
+    #[ignore = "run by the_env_token_is_removed_so_children_cannot_inherit_it"]
+    fn child_takes_the_env_var() {
+        if std::env::var_os(CHILD_MARKER).is_none() {
+            return;
+        }
+        let taken = take_env_var(CHILD_VAR);
+        assert_ne!(taken, EnvToken::Absent);
+        assert!(std::env::var_os(CHILD_VAR).is_none());
         let child = std::process::Command::new(if cfg!(windows) { "cmd" } else { "sh" })
             .args(if cfg!(windows) {
                 vec!["/C", "set"]
@@ -238,8 +338,9 @@ mod tests {
             })
             .output()
             .unwrap();
-        assert!(!String::from_utf8_lossy(&child.stdout).contains("pk_from_env"));
-        assert!(take_env_var(name).is_none());
+        let env = String::from_utf8_lossy(&child.stdout);
+        assert!(!env.contains(CHILD_VAR) && !env.contains("pk_from_env"));
+        assert_eq!(take_env_var(CHILD_VAR), EnvToken::Absent);
     }
 
     #[test]
