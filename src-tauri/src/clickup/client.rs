@@ -1,7 +1,14 @@
-//! The ClickUp read calls. Each one is a GET through a [`Transport`], with
-//! the rules the GitHub poller follows: at most 4 calls in flight across the
-//! app, the rate-limit headers honoured, a 429 backed off and retried, and
-//! errors in plain English. Nothing here writes to ClickUp.
+//! The ClickUp calls. Each one goes through a [`Transport`], with the rules
+//! the GitHub poller follows: at most 4 calls in flight across the app, the
+//! rate-limit headers honoured, a 429 backed off and retried, and errors in
+//! plain English.
+//!
+//! There are exactly two writes (C3, plan decision E4), and both go through
+//! [`ClickUp::write`] under the same rules: [`ClickUp::post_comment`] and
+//! [`ClickUp::set_status`]. Nothing here creates, deletes, assigns or edits
+//! a description; a test reads this file to keep it that way. A 429 on a
+//! write is retried like a read's, since ClickUp did not act on it; any
+//! other failure is returned, never retried.
 //!
 //! ClickUp counts calls per token per minute, so each token has its own
 //! rate-limit window: one account's spent limit never stalls another's
@@ -10,7 +17,7 @@
 //! [`MAX_WAIT_SECS`] is returned as an error instead, so a command never
 //! hangs on it.
 
-use super::transport::{NoReply, Reply, Transport, REQUEST_TIMEOUT};
+use super::transport::{NoReply, Reply, Transport, WriteMethod, REQUEST_TIMEOUT};
 use super::types::{Comment, Comments, List, Task, TaskPage, Team, Teams};
 use super::{valid_id, ClickUpToken};
 use serde::de::DeserializeOwned;
@@ -48,6 +55,9 @@ pub enum ClickUpError {
     /// Seconds until the limit resets, when known.
     RateLimited(u64),
     Server(u16),
+    /// 400 or 422: ClickUp would not make a change (C3), such as a status
+    /// the task's list does not have.
+    Refused(u16),
     Unexpected(u16),
     Unreadable,
     NoReply(NoReply),
@@ -74,6 +84,10 @@ impl fmt::Display for ClickUpError {
             Self::Server(status) => write!(
                 f,
                 "ClickUp is having trouble (HTTP {status}). Try again in a minute."
+            ),
+            Self::Refused(status) => write!(
+                f,
+                "ClickUp refused the change (HTTP {status}). Check that the status still exists in the ticket's list and the comment is not empty."
             ),
             Self::Unexpected(status) => write!(f, "ClickUp answered with HTTP {status}."),
             Self::Unreadable => f.write_str("ClickUp sent a reply DCTerminal could not read."),
@@ -286,7 +300,14 @@ impl TaskRef {
     }
 }
 
-/// One token's read access to ClickUp.
+/// One request: a read, or (C3) a write with its JSON body.
+#[derive(Clone, Copy)]
+enum Call<'r> {
+    Get(&'r str),
+    Write(WriteMethod, &'r str, &'r str),
+}
+
+/// One token's access to ClickUp: the reads, and the two writes.
 pub struct ClickUp<'a> {
     transport: &'a dyn Transport,
     token: &'a ClickUpToken,
@@ -318,6 +339,25 @@ impl<'a> ClickUp<'a> {
 
     /// GET `path` and read the JSON. `what` names the thing for a 404.
     fn get<T: DeserializeOwned>(&self, path: &str, what: &'static str) -> Result<T, ClickUpError> {
+        let body = self.call(Call::Get(path), what)?;
+        serde_json::from_str(&body).map_err(|_| ClickUpError::Unreadable)
+    }
+
+    /// One of the two writes (C3): `method` `path` with `body` as JSON. A
+    /// 2xx is success whatever its body says.
+    fn write(
+        &self,
+        method: WriteMethod,
+        path: &str,
+        body: &serde_json::Value,
+        what: &'static str,
+    ) -> Result<(), ClickUpError> {
+        self.call(Call::Write(method, path, &body.to_string()), what)
+            .map(|_| ())
+    }
+
+    /// Sends one call through the gate and returns a 2xx reply's body.
+    fn call(&self, call: Call<'_>, what: &'static str) -> Result<String, ClickUpError> {
         let mut retries = 0;
         loop {
             let wait = self.gate.wait_needed(&self.key, self.clock.now());
@@ -335,16 +375,19 @@ impl<'a> ClickUp<'a> {
                 drop(permit);
                 continue;
             }
-            let reply = self.transport.get(path, self.token);
+            let reply = match call {
+                Call::Get(path) => self.transport.get(path, self.token),
+                Call::Write(method, path, body) => {
+                    self.transport.send(method, path, body, self.token)
+                }
+            };
             drop(permit);
             let reply = reply.map_err(ClickUpError::NoReply)?;
             let now = self.clock.now();
             let wait_429 = (reply.status == 429).then(|| wait_after_429(&reply, now));
             self.gate.note(&self.key, &reply, now, wait_429);
             return match reply.status {
-                200..=299 => {
-                    serde_json::from_str(&reply.body).map_err(|_| ClickUpError::Unreadable)
-                }
+                200..=299 => Ok(reply.body),
                 429 => {
                     let wait = wait_429.unwrap_or(DEFAULT_429_WAIT);
                     if retries < RETRIES_ON_429 && wait <= MAX_WAIT_SECS {
@@ -357,6 +400,7 @@ impl<'a> ClickUp<'a> {
                 401 | 403 if not_visible(&reply.body) => Err(ClickUpError::NotFound(what)),
                 401 | 403 => Err(ClickUpError::Rejected),
                 404 => Err(ClickUpError::NotFound(what)),
+                400 | 422 => Err(ClickUpError::Refused(reply.status)),
                 500..=599 => Err(ClickUpError::Server(reply.status)),
                 status => Err(ClickUpError::Unexpected(status)),
             };
@@ -433,6 +477,36 @@ impl<'a> ClickUp<'a> {
         }
         self.get(&format!("/list/{list_id}"), "list")
     }
+
+    /// `path` for `task`, with the custom-id query when it needs one.
+    fn task_path(task: &TaskRef, tail: &str) -> String {
+        let mut path = format!("/task/{}{tail}", task.id());
+        if let Some(custom) = task.custom_query() {
+            path.push('?');
+            path.push_str(&custom);
+        }
+        path
+    }
+
+    /// Write 1 of 2 (C3): adds `text` as a comment on `task`
+    /// (`POST /task/{id}/comment`), notifying nobody.
+    pub fn post_comment(&self, task: &TaskRef, text: &str) -> Result<(), ClickUpError> {
+        if !task.valid() {
+            return Err(ClickUpError::BadId);
+        }
+        let body = serde_json::json!({ "comment_text": text, "notify_all": false });
+        self.write(WriteMethod::Post, &Self::task_path(task, "/comment"), &body, "task")
+    }
+
+    /// Write 2 of 2 (C3): moves `task` to `status` (`PUT /task/{id}`). The
+    /// body holds the status and nothing else.
+    pub fn set_status(&self, task: &TaskRef, status: &str) -> Result<(), ClickUpError> {
+        if !task.valid() {
+            return Err(ClickUpError::BadId);
+        }
+        let body = serde_json::json!({ "status": status });
+        self.write(WriteMethod::Put, &Self::task_path(task, ""), &body, "task")
+    }
 }
 
 #[cfg(test)]
@@ -466,12 +540,24 @@ pub(crate) mod tests {
         })
     }
 
+    /// One write a test transport was asked to send (C3).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(crate) struct SentWrite {
+        pub method: &'static str,
+        pub path: String,
+        pub body: serde_json::Value,
+        pub auth: String,
+    }
+
     /// Recorded replies by path, served in order; every request is logged
-    /// with the `Authorization` value it carried.
+    /// with the `Authorization` value it carried. A write's reply is keyed
+    /// `"POST /path"` or `"PUT /path"`, and it is logged in `calls` under
+    /// that key and in `writes` with its body.
     #[derive(Default)]
     pub(crate) struct Recorded {
         pub replies: Mutex<HashMap<String, VecDeque<Result<Reply, NoReply>>>>,
         pub calls: Mutex<Vec<(String, String)>>,
+        pub writes: Mutex<Vec<SentWrite>>,
     }
 
     impl Recorded {
@@ -507,6 +593,23 @@ pub(crate) mod tests {
                 .get_mut(path)
                 .and_then(VecDeque::pop_front)
                 .unwrap_or_else(|| panic!("no recorded reply for {path}"))
+        }
+
+        fn send(
+            &self,
+            method: WriteMethod,
+            path: &str,
+            body: &str,
+            token: &ClickUpToken,
+        ) -> Result<Reply, NoReply> {
+            let key = format!("{} {path}", method.as_str());
+            self.writes.lock().unwrap().push(SentWrite {
+                method: method.as_str(),
+                path: path.to_string(),
+                body: serde_json::from_str(body).expect("a write's body is JSON"),
+                auth: token.expose().to_string(),
+            });
+            self.get(&key, token)
         }
     }
 
@@ -921,6 +1024,160 @@ pub(crate) mod tests {
         assert_eq!(api.paths().len(), 1);
     }
 
+    #[test]
+    fn the_two_writes_send_their_paths_and_bodies_with_the_token_header() {
+        let api = Recorded::default()
+            .on("POST /task/86b1aa001/comment", ok(r#"{"id":"458","date":1790000000000}"#.into()))
+            .on("PUT /task/86b1aa001", ok(String::new()))
+            .on(
+                "POST /task/QA-129/comment?custom_task_ids=true&team_id=9012345678",
+                ok("{}".into()),
+            );
+        let (gate, clock, token) = (Gate::new(), FakeClock::at(NOW), token());
+        let client = ClickUp::with(&api, &token, &gate, &clock);
+        let task = TaskRef::Id("86b1aa001".into());
+        client.post_comment(&task, "Fixed in PR #12.").unwrap();
+        // A 2xx is success, whatever its body.
+        client.set_status(&task, "QA PASSED").unwrap();
+        let custom = TaskRef::Custom {
+            id: "QA-129".into(),
+            team_id: "9012345678".into(),
+        };
+        client.post_comment(&custom, "x").unwrap();
+        let writes = api.writes.lock().unwrap().clone();
+        assert_eq!(
+            writes,
+            vec![
+                SentWrite {
+                    method: "POST",
+                    path: "/task/86b1aa001/comment".into(),
+                    body: serde_json::json!({ "comment_text": "Fixed in PR #12.", "notify_all": false }),
+                    auth: "pk_test_TOKEN".into(),
+                },
+                SentWrite {
+                    method: "PUT",
+                    path: "/task/86b1aa001".into(),
+                    body: serde_json::json!({ "status": "QA PASSED" }),
+                    auth: "pk_test_TOKEN".into(),
+                },
+                SentWrite {
+                    method: "POST",
+                    path: "/task/QA-129/comment?custom_task_ids=true&team_id=9012345678".into(),
+                    body: serde_json::json!({ "comment_text": "x", "notify_all": false }),
+                    auth: "pk_test_TOKEN".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn writes_share_the_error_mapping_the_rate_limit_and_the_id_check() {
+        let limited = Ok(Reply {
+            status: 429,
+            retry_after: Some(4),
+            ..Reply::default()
+        });
+        let refused = Ok(Reply {
+            status: 400,
+            body: r#"{"err":"Status does not exist","ECODE":"ITEM_114"}"#.into(),
+            ..Reply::default()
+        });
+        let api = Recorded::default()
+            .on("PUT /task/abc", limited)
+            .on("PUT /task/abc", ok("{}".into()))
+            .on("PUT /task/abc", refused)
+            .on("POST /task/abc/comment", status(401))
+            .on("POST /task/abc/comment", Err(NoReply::Timeout));
+        let (gate, clock, token) = (Gate::new(), FakeClock::at(NOW), token());
+        let client = ClickUp::with(&api, &token, &gate, &clock);
+        let task = TaskRef::Id("abc".into());
+        client.set_status(&task, "done").unwrap();
+        assert_eq!(*clock.slept.lock().unwrap(), vec![4], "the 429 waited, then retried");
+        let err = client.set_status(&task, "nope").unwrap_err();
+        assert_eq!(err, ClickUpError::Refused(400));
+        assert!(!err.to_string().contains("ITEM_114") && !err.to_string().contains("does not exist"));
+        assert_eq!(
+            client.post_comment(&task, "x").unwrap_err().to_string(),
+            "ClickUp rejected the token. Check it under Settings › Integrations."
+        );
+        assert_eq!(
+            client.post_comment(&task, "x").unwrap_err(),
+            ClickUpError::NoReply(NoReply::Timeout)
+        );
+        let before = api.writes.lock().unwrap().len();
+        assert_eq!(
+            client.post_comment(&TaskRef::Id("a/../team".into()), "x"),
+            Err(ClickUpError::BadId)
+        );
+        assert_eq!(client.set_status(&TaskRef::Id("a?b".into()), "x"), Err(ClickUpError::BadId));
+        assert_eq!(api.writes.lock().unwrap().len(), before, "no call for a bad id");
+    }
+
+    /// The client's code, without its tests.
+    fn client_source() -> &'static str {
+        let text = include_str!("client.rs");
+        let end = text.find("#[cfg(test)]").expect("the test module");
+        &text[..end]
+    }
+
+    #[test]
+    fn the_client_has_exactly_two_writes_and_nothing_else_reaches_send() {
+        let source = client_source();
+        // Every write goes through `self.write(`, and there are two.
+        let writes: Vec<&str> = source
+            .lines()
+            .filter(|line| line.contains("self.write("))
+            .map(str::trim)
+            .collect();
+        assert_eq!(
+            writes,
+            [
+                r#"self.write(WriteMethod::Post, &Self::task_path(task, "/comment"), &body, "task")"#,
+                r#"self.write(WriteMethod::Put, &Self::task_path(task, ""), &body, "task")"#,
+            ]
+        );
+        // Only `call` reaches the transport's send, and only through `write`.
+        assert_eq!(source.matches("transport.send(").count(), 1);
+        assert_eq!(source.matches("Call::Write(").count(), 2, "the match arm and `write`");
+        for banned in ["Delete", "Patch", "assignees", "description\":", "/attachment", "/checklist"] {
+            assert!(!source.contains(banned), "{banned} in client.rs");
+        }
+        // Every method that sends: reads are GETs, the rest are these two.
+        let api = Recorded::default()
+            .on("/team", ok(r#"{"teams":[]}"#.into()))
+            .on("/task/t1?include_subtasks=true&include_markdown_description=true", ok(r#"{"id":"t1"}"#.into()))
+            .on("/task/t1/comment", ok(r#"{"comments":[]}"#.into()))
+            .on("/list/l1", ok(r#"{"id":"l1"}"#.into()))
+            .on("/list/l1/task?page=0&subtasks=true&include_closed=true", ok(r#"{"tasks":[]}"#.into()))
+            .on("POST /task/t1/comment", ok("{}".into()))
+            .on("PUT /task/t1", ok("{}".into()));
+        let (gate, clock, token) = (Gate::new(), FakeClock::at(NOW), token());
+        let client = ClickUp::with(&api, &token, &gate, &clock);
+        let task = TaskRef::Id("t1".into());
+        client.teams().unwrap();
+        client.task(&task).unwrap();
+        client.comments(&task).unwrap();
+        client.list("l1").unwrap();
+        client.list_tasks("l1").unwrap();
+        client.post_comment(&task, "c").unwrap();
+        client.set_status(&task, "s").unwrap();
+        let writes: Vec<(String, String)> = api
+            .writes
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|w| (w.method.to_string(), w.path.clone()))
+            .collect();
+        assert_eq!(
+            writes,
+            [
+                ("POST".to_string(), "/task/t1/comment".to_string()),
+                ("PUT".to_string(), "/task/t1".to_string()),
+            ]
+        );
+        assert_eq!(api.paths().len(), 7);
+    }
+
     /// Counts calls in flight; each one takes a moment.
     struct Slow {
         now: AtomicUsize,
@@ -934,6 +1191,16 @@ pub(crate) mod tests {
             std::thread::sleep(Duration::from_millis(30));
             self.now.fetch_sub(1, Ordering::SeqCst);
             ok(r#"{"teams":[]}"#.into())
+        }
+
+        fn send(
+            &self,
+            _method: WriteMethod,
+            _path: &str,
+            _body: &str,
+            _token: &ClickUpToken,
+        ) -> Result<Reply, NoReply> {
+            Err(NoReply::Failed)
         }
     }
 

@@ -1,5 +1,7 @@
-//! One HTTPS GET to ClickUp with a deadline, behind [`Transport`] so tests
-//! feed recorded replies and never use the network.
+//! One HTTPS call to ClickUp with a deadline, behind [`Transport`] so tests
+//! feed recorded replies and never use the network: a GET, or (C3) a POST or
+//! PUT with a JSON body. Every call has the same rules: https only, no
+//! redirects, the same reply size cap.
 //!
 //! Blocking on purpose: the app has no async runtime of its own, and every
 //! caller is already on a worker thread (`spawn_blocking`).
@@ -12,11 +14,38 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(25);
 /// Replies past this size are refused. A page of 100 tasks is well under it.
 const MAX_BODY_BYTES: u64 = 16 * 1024 * 1024;
 
+/// The only write methods there are (C3, plan decision E4): a POST adds a
+/// comment, a PUT sets a status. There is no DELETE or PATCH to send.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteMethod {
+    Post,
+    Put,
+}
+
+impl WriteMethod {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Post => "POST",
+            Self::Put => "PUT",
+        }
+    }
+}
+
 /// What the client needs from HTTP.
 pub trait Transport: Sync {
     /// GET `API_BASE` + `path` (which starts with `/` and may carry a query)
     /// with `Authorization: <token>`. `Err` means no HTTP reply came back.
     fn get(&self, path: &str, token: &ClickUpToken) -> Result<Reply, NoReply>;
+
+    /// `method` `API_BASE` + `path` with `body` as JSON, and the same
+    /// header (C3). `Err` means no HTTP reply came back.
+    fn send(
+        &self,
+        method: WriteMethod,
+        path: &str,
+        body: &str,
+        token: &ClickUpToken,
+    ) -> Result<Reply, NoReply>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -96,23 +125,51 @@ fn no_reply(err: &ureq::Error) -> NoReply {
     }
 }
 
+/// The reply's status, rate-limit headers and body, read up to the cap.
+fn read_reply(
+    response: Result<ureq::http::Response<ureq::Body>, ureq::Error>,
+) -> Result<Reply, NoReply> {
+    let mut response = response.map_err(|err| no_reply(&err))?;
+    let mut reply = reply_head(response.status().as_u16(), response.headers());
+    reply.body = response
+        .body_mut()
+        .with_config()
+        .limit(MAX_BODY_BYTES)
+        .read_to_string()
+        .map_err(|err| no_reply(&err))?;
+    Ok(reply)
+}
+
 impl Transport for UreqTransport {
     fn get(&self, path: &str, token: &ClickUpToken) -> Result<Reply, NoReply> {
-        let mut response = self
-            .agent
-            .get(format!("{API_BASE}{path}"))
-            .header("Authorization", token.expose())
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|err| no_reply(&err))?;
-        let mut reply = reply_head(response.status().as_u16(), response.headers());
-        reply.body = response
-            .body_mut()
-            .with_config()
-            .limit(MAX_BODY_BYTES)
-            .read_to_string()
-            .map_err(|err| no_reply(&err))?;
-        Ok(reply)
+        read_reply(
+            self.agent
+                .get(format!("{API_BASE}{path}"))
+                .header("Authorization", token.expose())
+                .header("Accept", "application/json")
+                .call(),
+        )
+    }
+
+    fn send(
+        &self,
+        method: WriteMethod,
+        path: &str,
+        body: &str,
+        token: &ClickUpToken,
+    ) -> Result<Reply, NoReply> {
+        let url = format!("{API_BASE}{path}");
+        let request = match method {
+            WriteMethod::Post => self.agent.post(url),
+            WriteMethod::Put => self.agent.put(url),
+        };
+        read_reply(
+            request
+                .header("Authorization", token.expose())
+                .header("Accept", "application/json")
+                .header("Content-Type", "application/json")
+                .send(body),
+        )
     }
 }
 
@@ -140,6 +197,18 @@ mod tests {
         assert_eq!(reply.rate_reset, Some(1_790_000_060));
         assert_eq!(reply.retry_after, Some(12));
         assert_eq!(reply_head(200, &HeaderMap::new()).rate_remaining, None);
+    }
+
+    #[test]
+    fn post_and_put_are_the_only_write_methods() {
+        // An exhaustive match: a new variant fails to build here first.
+        for method in [WriteMethod::Post, WriteMethod::Put] {
+            let name = match method {
+                WriteMethod::Post => "POST",
+                WriteMethod::Put => "PUT",
+            };
+            assert_eq!(method.as_str(), name);
+        }
     }
 
     #[test]
