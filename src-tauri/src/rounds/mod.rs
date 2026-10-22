@@ -6,8 +6,12 @@
 //! - `schedule`: the pure rules (a plan's state from its run, what starts next, why a plan waits).
 //! - `files`: `rounds/<roundId>/` and the files a plan run's folder gets.
 //! - `runner`: the one owner of round state (a thread taking one message at a time).
+//! - `merge_queue` (R3): each repo's pull requests in merge order, read-only.
 
 pub mod files;
+pub mod merge_queue;
+#[cfg(test)]
+mod merge_queue_tests;
 pub mod runner;
 pub mod schedule;
 pub mod types;

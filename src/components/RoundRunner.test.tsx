@@ -8,6 +8,8 @@ vi.mock("../bridge", () => ({
   roundAction: vi.fn(),
   pipelineActorMessage: vi.fn(async () => ({ tabId: "tab_impl" })),
   listenChainRunUpdated: vi.fn(async () => () => {}),
+  // R3: the merge queue under the round.
+  roundMergeQueue: vi.fn(async () => null),
 }));
 
 import { pipelineActorMessage, roundAction, roundGet } from "../bridge";
