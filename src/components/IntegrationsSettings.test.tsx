@@ -138,4 +138,16 @@ describe("Settings › Integrations › ClickUp", () => {
     expect(screen.getByLabelText("ClickUp token for Work")).toHaveProperty("disabled", true);
     expect(within(row("Work")).getByRole("button", { name: "Test" })).toHaveProperty("disabled", false);
   });
+
+  it("says when DCT_CLICKUP_TOKEN is set but is not a token", async () => {
+    vi.mocked(clickupStatus).mockResolvedValue([{ ...work, envRejected: true }, personal]);
+    render(<IntegrationsSettings />);
+    await screen.findByRole("group", { name: "ClickUp for Work" });
+    expect(
+      within(row("Work")).getByText(/DCT_CLICKUP_TOKEN is set but is not a valid token/),
+    ).toBeTruthy();
+    expect(within(row("Personal")).queryByText(/is not a valid token/)).toBeNull();
+    // The keychain field stays usable.
+    expect(screen.getByLabelText("ClickUp token for Work")).toHaveProperty("disabled", false);
+  });
 });

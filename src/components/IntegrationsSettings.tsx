@@ -98,6 +98,11 @@ function ClickUpAccountRow({
             ? "No workspace yet: Test picks one."
             : ""}
       </p>
+      {status.envRejected && (
+        <InlineNotice tone="error">
+          DCT_CLICKUP_TOKEN is set but is not a valid token, so it is not used.
+        </InlineNotice>
+      )}
       <form
         className="button-row"
         onSubmit={(event) => {
