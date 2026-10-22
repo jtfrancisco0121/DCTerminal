@@ -58,7 +58,9 @@ describe("Settings › Pipelines", () => {
     expect(onDirtyChange).toHaveBeenLastCalledWith(true);
     fireEvent.click(screen.getByRole("button", { name: "Save pipelines" }));
     await waitFor(() => expect(screen.getByText("Saved 1 pipeline.")).toBeTruthy());
-    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+    // The dirty flag is reported from an effect, which can run after the save's
+    // text is on screen when the machine is busy, so wait for it as well.
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false));
 
     fireEvent.change(editor, { target: { value: "[]" } });
     expect(onDirtyChange).toHaveBeenLastCalledWith(true);
