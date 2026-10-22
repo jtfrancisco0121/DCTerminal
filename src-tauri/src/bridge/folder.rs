@@ -4,7 +4,9 @@
 //! starts from ClickUp tickets (C2), and the run actor writes each review round it sends
 //! back as `findings-<stage>-r<N>.json` (V4); the bridge writes the rest,
 //! including the run-level hand-off files: the Planner's `plan.md` and
-//! `tasks.json`, and each Implementer's `prs.json` (`prs-<lane>.json` in a lane). Every write is
+//! `tasks.json`, and each Implementer's `prs.json` (`prs-<lane>.json` in a lane); the app keeps
+//! an Implementer's `stages/<key>/story.json` current while its pull request is built in
+//! stories (L3). Every write is
 //! atomic (a temp file in the same folder, then a rename) and every path is
 //! built from checked parts, so nothing lands outside the run folder (D37).
 
