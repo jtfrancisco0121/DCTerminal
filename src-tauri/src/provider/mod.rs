@@ -185,13 +185,13 @@ pub enum TerminalKind {
 
 /// Whether a role starts in plan mode. On a pipeline stage the stage's kind
 /// decides (Track H4, D33), so a copied Planner plans exactly like the
-/// built-in one. Off a pipeline, only the built-in Planner role does.
+/// built-in one. Off a pipeline, only the built-in Planner and Triage (R1) roles do.
 pub fn plans_by_default(role_id: &str, stage_kind: Option<StageKind>) -> bool {
     match stage_kind {
         Some(kind) => kind == StageKind::Planner,
         None => matches!(
             role_id.trim().to_ascii_lowercase().replace('-', "_").as_str(),
-            "role_planner" | "planner"
+            "role_planner" | "planner" | "role_triage" | "triage"
         ),
     }
 }

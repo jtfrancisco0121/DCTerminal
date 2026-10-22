@@ -33,6 +33,8 @@ use std::sync::{OnceLock, RwLock};
 
 const EAGLE1_JSON: &str = include_str!("../../../docs/pipelines/eagle1.json");
 const EAGLE2_JSON: &str = include_str!("../../../docs/pipelines/eagle2.json");
+/// The QA round (R1): Triage, its Plan Reviewer, then your approval.
+const ROUND_JSON: &str = include_str!("../../../docs/pipelines/round.json");
 /// F2: Analyst → PM → Architect, then Eagle-Eye 1's stages.
 const EAGLE_L_JSON: &str = include_str!("../../../docs/pipelines/eagle-eye-l.json");
 
@@ -170,7 +172,8 @@ impl StageKind {
     /// The kind of a built-in role, if `role_id` is one.
     pub fn of_builtin_role(role_id: &str) -> Option<StageKind> {
         match role_id.trim() {
-            "role_planner" => Some(StageKind::Planner),
+            // R1: Triage plans a round in plan mode, as the Planner plans.
+            "role_planner" | "role_triage" => Some(StageKind::Planner),
             "role_plan_reviewer" | "role_pr_reviewer" => Some(StageKind::Reviewer),
             "role_implementer" => Some(StageKind::Implementer),
             // F2: the document roles write into the run folder.
@@ -201,6 +204,10 @@ pub struct StageDef {
     /// parallel with this stage's role; their findings merge into one verdict.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub also_reviewers: Vec<String>,
+    /// R1: a Triage stage. A `planner` stage that hands over a QA round
+    /// (`round.json`: plans, waves, merge order) instead of tasks.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub round: bool,
 }
 
 impl StageDef {
@@ -257,6 +264,10 @@ pub struct PipelineDef {
     pub stages: Vec<StageDef>,
     #[serde(default)]
     pub autopilot: AutopilotPolicy,
+    /// R1: autopilot never completes the run by itself. When its last stage
+    /// approves, the run waits with `checkpoint` until you approve it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub approve_at_end: bool,
     /// Set by the app, never read from a file.
     #[serde(default)]
     pub built_in: bool,
@@ -315,6 +326,7 @@ pub fn parse_user_entry(value: serde_json::Value, index: usize) -> PipelineDef {
                 run_kind: None,
                 stages: Vec::new(),
                 autopilot: AutopilotPolicy::default(),
+                approve_at_end: false,
                 built_in: false,
                 disabled: Some(format!("It could not be read: {err}.")),
                 raw: Some(value),
@@ -331,7 +343,14 @@ fn parse_builtin(json: &str) -> PipelineDef {
 
 pub fn builtins() -> &'static [PipelineDef] {
     static BUILTINS: OnceLock<Vec<PipelineDef>> = OnceLock::new();
-    BUILTINS.get_or_init(|| vec![parse_builtin(EAGLE1_JSON), parse_builtin(EAGLE2_JSON), parse_builtin(EAGLE_L_JSON)])
+    BUILTINS.get_or_init(|| {
+        vec![
+            parse_builtin(EAGLE1_JSON),
+            parse_builtin(EAGLE2_JSON),
+            parse_builtin(EAGLE_L_JSON),
+            parse_builtin(ROUND_JSON),
+        ]
+    })
 }
 
 fn user_registry() -> &'static RwLock<Vec<PipelineDef>> {
@@ -633,6 +652,14 @@ fn check_pipeline(
                 }
             }
         }
+        // R1: a round is handed over through ExitPlanMode, as a plan is.
+        if stage.round && stage.kind() != StageKind::Planner {
+            return Err(format!(
+                "stage \"{}\" hands over a round, so its kind is planner (it is {}).",
+                stage.id,
+                stage.kind().label()
+            ));
+        }
         // F1: an artifact stage writes documents for the whole run.
         if let Some(problem) = artifacts::stage_problem(def, index) {
             return Err(problem);
@@ -677,6 +704,10 @@ fn check_pipeline(
                 }
             }
         }
+    }
+    // R1: a round run has no tasks.json, so nothing can fan out of it.
+    if def.stages.iter().any(|s| s.round) && def.stages.iter().any(|s| s.kind() == StageKind::Implementer) {
+        return Err("a pipeline with a round stage has no implementer stage: each plan of the round gets a run of its own.".into());
     }
     if def.autopilot.pause_at_usage_percent == 0 || def.autopilot.pause_at_usage_percent > 100 {
         return Err("autopilot.pauseAtUsagePercent is 1 to 100.".into());

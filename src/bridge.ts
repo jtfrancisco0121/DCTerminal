@@ -1772,6 +1772,47 @@ export async function pipelineRunTasks(runId: string): Promise<RunTasks | null> 
   return invoke<RunTasks | null>("pipeline_run_tasks", { runId });
 }
 
+/** R1: what a plan of a QA round is. */
+export type RoundPlanStatus = "active" | "deferred" | "parked";
+
+/** R1: one plan of a QA round (`round.json`). */
+export type RoundPlan = {
+  id: string;
+  title: string;
+  tickets: string[];
+  repos: string[];
+  status: RoundPlanStatus;
+  reason?: string | null;
+  wave?: number | null;
+  summary: string;
+};
+
+/** R1: a Triage run's `round.json`. */
+export type RunRound = {
+  schema: number;
+  runId: string;
+  stageKey: string;
+  turn: string;
+  at: string;
+  plans: RoundPlan[];
+  waves: { n: number; why: string }[];
+  /** Plan ids per repo, in merge order. */
+  mergeOrder: Record<string, string[]>;
+  excluded: { ticket: string; reason: string }[];
+};
+
+/** R1: a Triage run's round and its round document (`round.md`). */
+export type RunRoundView = {
+  round: RunRound;
+  markdown: string;
+  markdownPath: string;
+};
+
+/** R1: the round a Triage run handed over; null for any other run. */
+export async function pipelineRunRound(runId: string): Promise<RunRoundView | null> {
+  return invoke<RunRoundView | null>("pipeline_run_round", { runId });
+}
+
 /** The core stopped a run by itself: a stall, or a turn that finished while the app was closed. */
 export type AutopilotStoppedEvent = {
   runId: string;

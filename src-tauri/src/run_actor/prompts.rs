@@ -98,6 +98,12 @@ pub fn document_note(documents: &[(String, String)], planner: bool, plan_review:
     })
 }
 
+/// R1: what a reviewer of a QA round checks, besides its template.
+pub const ROUND_REVIEW_NOTE: &str = "This plan is a QA round from Triage: the tickets grouped into plans, the plans ordered into merge waves, \
+and the merge order per repo (round.md, with round.json). Check that each ticket's claim was confirmed against the code, that each plan \
+groups tickets that share a contract, that plans touching the same repos and files are in waves that do not clash, that deferred and \
+parked plans say why, and that the merge order per repo follows the waves. Your findings go back to Triage.";
+
 /// The `run_files` entry for the run's `tickets.json` (C2).
 pub const TICKETS_LABEL: &str = "Tickets";
 

@@ -154,10 +154,14 @@ pub fn handle(dir: &StageDir, event: &str, payload: &Value) -> Result<Option<Val
         }
         "PreToolUse"
             if text(payload, "tool_name") == Some("ExitPlanMode")
-                && dir.info.result == ResultKind::Planner
+                && matches!(dir.info.result, ResultKind::Planner | ResultKind::Round)
                 && dir.mode() != StageMode::Takeover =>
         {
-            on_plan(dir, payload)
+            if dir.info.result == ResultKind::Round {
+                on_round(dir, payload)
+            } else {
+                on_plan(dir, payload)
+            }
         }
         "PermissionRequest" => {
             let tool = text(payload, "tool_name").map(str::to_string);
@@ -272,6 +276,41 @@ fn on_plan(dir: &StageDir, payload: &Value) -> Result<Option<Value>, String> {
         result: schema::planner_result(&file.tasks),
     };
     dir.write_result(&stored).map_err(|err| format!("write the plan's result: {err}"))?;
+    Ok(Some(deny(schema::PLAN_RECEIVED)))
+}
+
+/// PreToolUse(ExitPlanMode) on a Triage stage (R1): a valid `round` block
+/// saves `round.md`, `round.json` and the turn's result and answers "Plan
+/// received"; with problems it answers `deny` naming each one.
+fn on_round(dir: &StageDir, payload: &Value) -> Result<Option<Value>, String> {
+    use super::round;
+    let plan = payload
+        .pointer("/tool_input/plan")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let tickets = round::known_tickets(dir.run_folder());
+    let checked = match round::triage_round(plan, &dir.repo_names(), tickets.as_deref()) {
+        Ok(checked) => checked,
+        Err(problems) => return Ok(Some(deny(&round::round_rejected_message(&problems)))),
+    };
+    let state = current_turn(dir, payload)?;
+    let at = super::folder::now();
+    let file = round::RunRound {
+        schema: SCHEMA,
+        run_id: dir.info.run_id.clone(),
+        stage_key: dir.info.stage_key.clone(),
+        turn: state.turn.clone(),
+        at: at.clone(),
+        round: checked,
+    };
+    round::write_round(dir.run_folder(), plan, &file).map_err(|err| format!("write round.md and round.json: {err}"))?;
+    let stored = StoredResult {
+        schema: SCHEMA,
+        turn: state.turn.clone(),
+        at,
+        result: round::round_result(&file.round),
+    };
+    dir.write_result(&stored).map_err(|err| format!("write the round's result: {err}"))?;
     Ok(Some(deny(schema::PLAN_RECEIVED)))
 }
 

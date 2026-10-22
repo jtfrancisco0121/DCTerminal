@@ -725,7 +725,7 @@ fn every_built_in_role_starts_in_its_intended_mode_on_both_providers() {
     );
     for spec in crate::template::all_role_specs() {
         let (want_claude, want_cursor) = match spec.id {
-            "role_planner" => ("plan", "plan"),
+            "role_planner" | "role_triage" => ("plan", "plan"),
             "role_general" => ("auto", "ask"),
             "role_recommendation" => ("bypassPermissions", "plan"),
             _ => ("bypassPermissions", "agent"),

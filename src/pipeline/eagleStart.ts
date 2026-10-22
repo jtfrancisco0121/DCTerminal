@@ -1,13 +1,15 @@
 import { pipelineDef, stageBehaviour, type PipelineDef, type RoleBehaviour } from "./defs";
 
-/** The Eagle-mode chains a form start can begin: Planner first, Implementer first, and (F2) Analyst first. */
-const EAGLE_CHAINS = ["eagle1", "eagle2", "eagle-eye-l"] as const;
+/** The Eagle-mode chains a form start can begin: Planner first, Implementer first, (F2) Analyst first and (R1) Triage first. */
+const EAGLE_CHAINS = ["eagle1", "eagle2", "eagle-eye-l", "round"] as const;
 export type EagleChain = (typeof EAGLE_CHAINS)[number];
 
 const OPENS_WITH: Readonly<Record<EagleChain, RoleBehaviour>> = {
   eagle1: "planner",
   eagle2: "implementer",
   "eagle-eye-l": "artifact",
+  // R1: the QA round opens with Triage, a planner stage.
+  round: "planner",
 };
 
 /**

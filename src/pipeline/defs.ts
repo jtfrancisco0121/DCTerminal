@@ -12,6 +12,7 @@
 import eagle1 from "../../docs/pipelines/eagle1.json";
 import eagle2 from "../../docs/pipelines/eagle2.json";
 import eagleL from "../../docs/pipelines/eagle-eye-l.json";
+import round from "../../docs/pipelines/round.json";
 
 export type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
 
@@ -52,6 +53,8 @@ export type StageDef = {
   checkpoint?: boolean;
   /** Specialist reviewers (role ids) reviewing the same work in parallel; findings merge. */
   alsoReviewers?: string[];
+  /** R1: a Triage stage (a planner) that hands over a QA round (`round.json`) instead of tasks. */
+  round?: boolean;
 };
 
 export type PipelineDef = {
@@ -63,6 +66,8 @@ export type PipelineDef = {
   stages: StageDef[];
   /** `stallMinutes`: quiet minutes while Working before the run stops with `stalled` (default 30). */
   autopilot?: { pauseAtUsagePercent?: number; stallMinutes?: number };
+  /** R1: the run waits for your approval after its last stage instead of completing by itself. */
+  approveAtEnd?: boolean;
   builtIn?: boolean;
   /** Why this pipeline of yours cannot run (set by the core when it does not validate). */
   disabled?: string | null;
@@ -77,6 +82,8 @@ export const BUILT_IN_PIPELINES: readonly PipelineDef[] = [
   { ...(eagle2 as PipelineDef), builtIn: true },
   // F2: a brief, a PRD and an architecture first.
   { ...(eagleL as PipelineDef), builtIn: true },
+  // R1: the QA round (Triage, its Plan Reviewer, then your approval).
+  { ...(round as PipelineDef), builtIn: true },
 ];
 
 let userPipelines: PipelineDef[] = [];
@@ -131,6 +138,8 @@ export function loopBackRole(def: PipelineDef, sourceRoleId: string): string | n
 /** Built-in roles and what they do; any other role id does nothing special off a pipeline. */
 const BUILT_IN_BEHAVIOUR: Readonly<Record<string, RoleBehaviour>> = {
   role_planner: "planner",
+  // R1: Triage plans a QA round in plan mode, as the Planner plans.
+  role_triage: "planner",
   role_plan_reviewer: "plan_reviewer",
   role_implementer: "implementer",
   role_pr_reviewer: "pr_reviewer",

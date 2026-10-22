@@ -289,6 +289,10 @@ pub(crate) fn load(
     let Some((run_dir, snapshot)) = read_snapshot(runs_root, run_id)? else {
         return Ok(None);
     };
+    // R1: a Triage run fixes nothing; each plan's own run proposes its updates.
+    if run_dir.join(crate::bridge::round::ROUND_FILE).is_file() {
+        return Ok(None);
+    }
     let Some(run) = lock(store)?.pipeline_run_by_id(run_id).cloned() else {
         return Ok(None);
     };

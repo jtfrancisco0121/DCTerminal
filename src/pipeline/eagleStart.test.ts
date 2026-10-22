@@ -48,4 +48,9 @@ describe("eagleStartChain", () => {
     const generic: PipelineDef = { ...eagle1, stages: [{ ...eagle1.stages[0], kind: "generic" }, ...eagle1.stages.slice(1)] };
     expect(eagleStartChain("role_planner", [generic, eagle2])).toBeNull();
   });
+
+  it("a Triage start from the form begins a QA round (R1)", () => {
+    expect(eagleStartChain("role_triage")).toBe("round");
+    expect(eagleStartChain("role_planner")).toBe("eagle1");
+  });
 });

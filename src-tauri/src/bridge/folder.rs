@@ -108,6 +108,9 @@ pub enum ResultKind {
     Planner,
     /// Implementer: its pull requests, a summary and the checks it ran.
     Implementer,
+    /// Triage (R1): a QA round, taken from its ExitPlanMode call like the
+    /// Planner's plan (`round.md`, `round.json`), not from `submit_result`.
+    Round,
     /// F1: an artifact stage (Analyst, PM, Architect): the documents it
     /// wrote into the run folder, `complete`, `partial` with open
     /// questions, or `blocked` with a reason.
@@ -668,6 +671,11 @@ impl StageDir {
 
     /// The repo names the Planner's tasks may use (`repos.json`); none when
     /// the app wrote no file (a run folder from before L1).
+    /// The run folder this stage belongs to (R1: `round.json` goes at its top).
+    pub fn run_folder(&self) -> &Path {
+        &self.run_dir
+    }
+
     pub fn repo_names(&self) -> Vec<String> {
         read_repos(&self.run_dir).into_iter().map(|repo| repo.name).collect()
     }
