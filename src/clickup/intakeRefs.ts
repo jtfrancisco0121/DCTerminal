@@ -11,6 +11,8 @@
  * - `https://app.clickup.com/<teamId>/v/li/<listId>`: a list.
  * - `https://app.clickup.com/<teamId>/v/l/6-<listId>-<n>`: a list's view,
  *   as ClickUp's address bar shows it (`6` marks a list view).
+ * - Any of these links inside a Markdown link `[text](url)` or a Slack
+ *   link `<url|text>`, as a copy from a doc or a chat gives them.
  * - `86b1aa001` or `#86b1aa001`: a task id (five or more letters and
  *   digits, with a digit). With a dash (`QA-128`) it is a custom task id
  *   in the window account's workspace.
@@ -83,6 +85,13 @@ function readUrl(text: string, line: number): IntakeRef | null {
   return null;
 }
 
+/** `[text](url)` and `<url|text>` as their url, so the text is not read as refs. */
+function unwrapLinks(line: string): string {
+  return line
+    .replace(/\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/g, " $1 ")
+    .replace(/<(https?:\/\/[^|>\s]+)\|[^>]*>/g, " $1 ");
+}
+
 function sameRef(a: IntakeRef, b: IntakeRef): boolean {
   return a.kind === b.kind && a.id === b.id && (a.teamId ?? "") === (b.teamId ?? "");
 }
@@ -97,7 +106,7 @@ export function parseIntakeRefs(text: string): ParsedRefs {
   const problems: RefProblem[] = [];
   text.split(/\r?\n/).forEach((raw, index) => {
     const line = index + 1;
-    const tokens = raw
+    const tokens = unwrapLinks(raw)
       .split(/[\s,]+/)
       .map((token) => token.trim().replace(/[)>\].;]+$/, "").replace(/^[<(]+/, ""))
       .filter(Boolean);

@@ -63,15 +63,50 @@ pub struct IntakeFilters {
     /// Keep only these priorities; empty keeps every one.
     #[serde(default)]
     pub priorities: Vec<String>,
+    /// Keep only tickets in one of these statuses (by name, any case);
+    /// empty keeps every open status.
+    #[serde(default)]
+    pub statuses: Vec<String>,
+    /// Keep only tickets with at least one of these tags (any case); empty
+    /// keeps tickets with or without tags.
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+/// The most names a status or tag filter holds, and the longest name.
+const MAX_FILTER_NAMES: usize = 50;
+const MAX_FILTER_NAME_CHARS: usize = 100;
+
+fn has_name(names: &[String], name: &str) -> bool {
+    let name = name.trim();
+    names.iter().any(|n| n.trim().eq_ignore_ascii_case(name))
 }
 
 impl IntakeFilters {
     fn check(&self) -> Result<(), String> {
-        match self.priorities.iter().find(|p| !PRIORITIES.contains(&p.as_str())) {
-            Some(bad) => Err(format!("\"{bad}\" is not a ClickUp priority.")),
-            None => Ok(()),
+        if let Some(bad) = self.priorities.iter().find(|p| !PRIORITIES.contains(&p.as_str())) {
+            return Err(format!("\"{bad}\" is not a ClickUp priority."));
         }
+        for (what, names) in [("status", &self.statuses), ("tag", &self.tags)] {
+            if names.len() > MAX_FILTER_NAMES {
+                return Err(format!("A {what} filter takes at most {MAX_FILTER_NAMES} names."));
+            }
+            if names.iter().any(|n| n.trim().is_empty() || n.chars().count() > MAX_FILTER_NAME_CHARS) {
+                return Err(format!("A {what} filter name is empty or too long."));
+            }
+        }
+        Ok(())
     }
+}
+
+/// The most tickets one intake keeps (M1): a big list would otherwise cost
+/// two ClickUp calls per ticket at Start and a prompt nobody can read.
+pub const MAX_TICKETS: usize = 100;
+
+fn over_cap(count: usize) -> String {
+    format!(
+        "{count} tickets match, more than the {MAX_TICKETS} one intake takes. Narrow the filters (priority, status or tags) or paste a smaller parent."
+    )
 }
 
 /// A ref that could not be read, by line. The rest of the intake goes on.
@@ -124,6 +159,10 @@ pub struct IntakePreview {
     pub tickets: Vec<TicketRow>,
     pub excluded: Vec<ExcludedTicket>,
     pub problems: Vec<RefProblem>,
+    /// The open statuses the fetched tickets are in, for the status filter.
+    pub seen_statuses: Vec<String>,
+    /// The tags the fetched tickets carry, for the tag filter.
+    pub seen_tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -274,7 +313,30 @@ fn exclusion(task: &Task, filters: &IntakeFilters) -> Option<String> {
             filters.priorities.join(", ")
         ));
     }
+    if !filters.statuses.is_empty() && !has_name(&filters.statuses, &task.status.status) {
+        return Some(format!(
+            "Status is \"{}\"; the filter keeps {}",
+            task.status.status,
+            filters.statuses.join(", ")
+        ));
+    }
+    if !filters.tags.is_empty() && !task.tags.iter().any(|t| has_name(&filters.tags, &t.name)) {
+        let tags: Vec<&str> = task.tags.iter().map(|t| t.name.trim()).filter(|t| !t.is_empty()).collect();
+        let has = if tags.is_empty() { "No tags".to_string() } else { format!("Tags are {}", tags.join(", ")) };
+        return Some(format!("{has}; the filter keeps {}", filters.tags.join(", ")));
+    }
     None
+}
+
+/// Names in first-seen order, once each (any case).
+fn unique(names: impl Iterator<Item = String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for name in names.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()) {
+        if !has_name(&out, &name) {
+            out.push(name);
+        }
+    }
+    out
 }
 
 /// What one fetch read: the parents, and every task once, in paste order.
@@ -419,12 +481,21 @@ pub fn preview(
 ) -> Result<IntakePreview, String> {
     filters.check()?;
     let fetched = fetch(client, refs, workspace_id)?;
+    let seen_statuses = unique(
+        fetched.tasks.iter().filter(|t| !t.status.is_closed()).map(|t| t.status.status.clone()),
+    );
+    let seen_tags = unique(fetched.tasks.iter().flat_map(|t| t.tags.iter().map(|tag| tag.name.clone())));
     let (kept, excluded) = split(fetched.tasks, filters);
+    if kept.len() > MAX_TICKETS {
+        return Err(over_cap(kept.len()));
+    }
     Ok(IntakePreview {
         parents: fetched.parents,
         tickets: kept.iter().map(row_of).collect(),
         excluded,
         problems: fetched.problems,
+        seen_statuses,
+        seen_tags,
     })
 }
 
@@ -492,12 +563,24 @@ fn own_ref(id: &str) -> TaskRef {
 }
 
 /// Reads each task's comments; the first error stops the intake.
-fn with_comments(client: &ClickUp, tasks: &[Task], limits: &Limits) -> Result<Vec<Ticket>, String> {
-    each_parallel(tasks, |task| {
-        client
-            .comments(&own_ref(&task.id))
-            .map(|comments| ticket_of(task, &comments, limits))
-            .map_err(String::from)
+/// Reads each kept ticket in full and its comments; the first error stops
+/// the intake. A parent's `include_subtasks` payload carries no subtask
+/// descriptions (seen live on 2026-10-22), so every ticket is fetched again
+/// on its own for its Markdown description and tags. A ticket ClickUp no
+/// longer finds keeps what the parent or list sent.
+fn in_full(client: &ClickUp, tasks: &[Task], limits: &Limits) -> Result<Vec<Ticket>, String> {
+    each_parallel(tasks, |task| -> Result<Ticket, String> {
+        let mut full = match client.task(&own_ref(&task.id)) {
+            Ok(full) => full,
+            Err(ClickUpError::NotFound(_)) => task.clone(),
+            Err(err) => return Err(err.to_string()),
+        };
+        full.subtasks.clear();
+        if full.parent.is_none() {
+            full.parent = task.parent.clone();
+        }
+        let comments = client.comments(&own_ref(&task.id)).map_err(String::from)?;
+        Ok(ticket_of(&full, &comments, limits))
     })
     .into_iter()
     .collect()
@@ -530,7 +613,10 @@ pub fn snapshot(
     if kept.is_empty() {
         return Err("No tickets are left to start with. Tick at least one.".into());
     }
-    let tickets = with_comments(client, &kept, &LIMITS)?;
+    if kept.len() > MAX_TICKETS {
+        return Err(over_cap(kept.len()));
+    }
+    let tickets = in_full(client, &kept, &LIMITS)?;
     Ok((
         TicketsSnapshot {
             schema: TICKETS_SCHEMA,
@@ -742,7 +828,7 @@ mod tests {
         let api = Recorded::default()
             .on(LIST0, ok(fixture("list-tasks-page0.json")))
             .on(LIST1, ok(fixture("list-tasks-page1.json")));
-        let filters = IntakeFilters { priorities: vec!["urgent".into(), "high".into()] };
+        let filters = IntakeFilters { priorities: vec!["urgent".into(), "high".into()], ..Default::default() };
         let preview =
             with_client(&api, |c| preview(c, &[task_ref("list", "901800112233", 1)], &filters, "9012345678"))
                 .unwrap();
@@ -839,7 +925,7 @@ mod tests {
     #[test]
     fn bad_filters_and_empty_or_huge_pastes_are_refused_before_any_call() {
         let api = Recorded::default();
-        let bad = IntakeFilters { priorities: vec!["p1".into()] };
+        let bad = IntakeFilters { priorities: vec!["p1".into()], ..Default::default() };
         with_client(&api, |c| {
             assert!(preview(c, &[task_ref("task", "a1", 1)], &bad, "w").unwrap_err().contains("p1"));
             assert!(preview(c, &[], &IntakeFilters::default(), "w").is_err());
@@ -852,6 +938,8 @@ mod tests {
     fn epic_snapshot(ticked: Option<&[String]>) -> (TicketsSnapshot, Recorded) {
         let api = Recorded::default()
             .on(EPIC, ok(fixture("task-with-subtasks.json")))
+            .on(&task_path("86b1aa001"), ok(fixture("task-86b1aa001.json")))
+            .on(&task_path("86b1aa002"), ok(fixture("task-86b1aa002.json")))
             .on("/task/86b1aa001/comment", ok(fixture("comments.json")))
             .on("/task/86b1aa002/comment", ok(r#"{"comments":[]}"#.into()));
         let (snap, problems) = with_client(&api, |c| {
@@ -879,7 +967,7 @@ mod tests {
         assert_eq!(json["source"]["accountId"], "default");
         assert_eq!(json["source"]["workspaceId"], "9012345678");
         assert_eq!(json["source"]["refs"][0], serde_json::json!({ "kind": "task", "id": "7xk2epic01", "line": 1 }));
-        assert_eq!(json["source"]["filters"], serde_json::json!({ "priorities": [] }));
+        assert_eq!(json["source"]["filters"], serde_json::json!({ "priorities": [], "statuses": [], "tags": [] }));
         assert_eq!(json["fetchedAt"], "2026-10-22T09:00:00.000Z");
         assert_eq!(json["limits"]["descriptionChars"], 20_000);
         assert!(json["limits"]["note"].as_str().unwrap().contains("truncated: true"));
@@ -891,8 +979,14 @@ mod tests {
         assert_eq!(first["status"], "to do");
         assert_eq!(first["statusType"], "open");
         assert_eq!(first["url"], "https://app.clickup.com/t/86b1aa001");
-        assert_eq!(first["description"], "Upload of a large folder stops at 61% on Windows.");
-        assert_eq!(first["tags"], serde_json::json!(["desktop"]));
+        // From the ticket's own fetch: its Markdown and all its tags.
+        assert_eq!(
+            first["description"],
+            "Upload of a large folder stops at **61%** on Windows.\n\n## Steps\n1. Pick a folder of 7,839 files.\n2. Start sync."
+        );
+        assert_eq!(first["tags"], serde_json::json!(["desktop", "windows"]));
+        // No Markdown: the plain text.
+        assert_eq!(json["tickets"][1]["description"], "Every sync line is written twice to engine.log.");
         assert_eq!(first["parentId"], "7xk2epic01");
         assert_eq!(first["dateUpdated"], "2026-09-21T00:20:00.000Z");
         assert_eq!(first["comments"][0]["author"], "Dana Reyes");
@@ -918,6 +1012,7 @@ mod tests {
         let ticked = vec!["86b1aa001".to_string()];
         let api = Recorded::default()
             .on(EPIC, ok(fixture("task-with-subtasks.json")))
+            .on(&task_path("86b1aa001"), ok(fixture("task-86b1aa001.json")))
             .on("/task/86b1aa001/comment", ok(fixture("comments.json")));
         let (snap, _) = with_client(&api, |c| {
             snapshot(c, "default", "w1", &[task_ref("task", "7xk2epic01", 1)], &IntakeFilters::default(), Some(&ticked), "t")
@@ -948,6 +1043,7 @@ mod tests {
             .map(|n| format!(r#"{{"id":"c{n}","comment_text":"{comment}","user":{{"username":"Kim"}},"date":"1789950000000"}}"#))
             .collect();
         let api = Recorded::default()
+            .on(&task_path("a1"), ok(task.clone()))
             .on(&task_path("a1"), ok(task))
             .on("/task/a1/comment", ok(format!(r#"{{"comments":[{}]}}"#, many.join(","))));
         let (snap, _) = with_client(&api, |c| {
@@ -1048,4 +1144,93 @@ mod tests {
         assert_eq!(cap("abc", 2), ("ab".to_string(), true));
         assert_eq!(cap(" abc ", 3), ("abc".to_string(), false));
     }
+
+    #[test]
+    fn start_fetches_each_kept_ticket_in_full_because_subtasks_carry_no_description() {
+        // The epic's embedded subtasks have no description at all, as ClickUp sends them.
+        let epic = fixture("task-with-subtasks.json").replace(
+            "\"text_content\": \"Upload of a large folder stops at 61% on Windows.\",",
+            "\"text_content\": \"\",",
+        );
+        let api = Recorded::default()
+            .on(EPIC, ok(epic))
+            .on(&task_path("86b1aa001"), ok(fixture("task-86b1aa001.json")))
+            .on("/task/86b1aa001/comment", ok(r#"{"comments":[]}"#.into()))
+            // Gone since the epic was read: the embedded object is kept.
+            .on(&task_path("86b1aa002"), status(404))
+            .on("/task/86b1aa002/comment", ok(r#"{"comments":[]}"#.into()));
+        let (snap, _) = with_client(&api, |c| {
+            snapshot(c, "default", "w1", &[task_ref("task", "7xk2epic01", 1)], &IntakeFilters::default(), None, "t")
+        })
+        .unwrap();
+        assert!(snap.tickets[0].description.contains("## Steps"), "{}", snap.tickets[0].description);
+        assert_eq!(snap.tickets[0].tags, ["desktop", "windows"]);
+        assert_eq!(snap.tickets[0].parent_id.as_deref(), Some("7xk2epic01"));
+        assert_eq!(snap.tickets[1].row.title, "Duplicate lines in the engine log");
+        // The ticket call went through the client (and so the Gate) next to the comment call.
+        let paths = api.paths();
+        assert!(paths.contains(&task_path("86b1aa001")) && paths.contains(&"/task/86b1aa001/comment".to_string()));
+    }
+
+    fn many_tasks(n: usize) -> String {
+        let tasks: Vec<String> = (0..n)
+            .map(|i| format!(r#"{{"id":"t{i:05}","name":"Ticket {i}","status":{{"status":"to do","type":"open"}},"priority":{{"priority":"{}"}}}}"#, if i % 2 == 0 { "high" } else { "low" }))
+            .collect();
+        format!(r#"{{"tasks":[{}],"last_page":true}}"#, tasks.join(","))
+    }
+
+    #[test]
+    fn more_than_a_hundred_kept_tickets_is_an_error_that_names_the_count() {
+        let list = "/list/901800112299/task?page=0&subtasks=true&include_closed=true";
+        let refs = [task_ref("list", "901800112299", 1)];
+        let api = Recorded::default().on(list, ok(many_tasks(150)));
+        let err = with_client(&api, |c| preview(c, &refs, &IntakeFilters::default(), "w1")).unwrap_err();
+        assert_eq!(
+            err,
+            "150 tickets match, more than the 100 one intake takes. Narrow the filters (priority, status or tags) or paste a smaller parent."
+        );
+        let api = Recorded::default().on(list, ok(many_tasks(150)));
+        let err = with_client(&api, |c| snapshot(c, "default", "w1", &refs, &IntakeFilters::default(), None, "t")).unwrap_err();
+        assert!(err.starts_with("150 tickets match"), "{err}");
+        assert_eq!(api.paths().len(), 1, "no ticket or comment call over the cap");
+        // Narrowed under the cap, it reads.
+        let api = Recorded::default().on(list, ok(many_tasks(150)));
+        let high = IntakeFilters { priorities: vec!["high".into()], ..Default::default() };
+        let narrowed = with_client(&api, |c| preview(c, &refs, &high, "w1")).unwrap();
+        assert_eq!((narrowed.tickets.len(), narrowed.excluded.len()), (75, 75));
+    }
+
+    #[test]
+    fn status_and_tag_filters_exclude_with_their_own_reasons_and_the_preview_lists_what_it_saw() {
+        let api = Recorded::default()
+            .on(LIST0, ok(fixture("list-tasks-page0.json")))
+            .on(LIST1, ok(fixture("list-tasks-page1.json")));
+        let refs = [task_ref("list", "901800112233", 1)];
+        let all = with_client(&api, |c| preview(c, &refs, &IntakeFilters::default(), "w1")).unwrap();
+        // Closed statuses are never offered: closed tickets are always left out.
+        assert_eq!(all.seen_statuses, ["to do", "qa failed"]);
+        assert_eq!(all.seen_tags, ["desktop"]);
+
+        let api = Recorded::default()
+            .on(LIST0, ok(fixture("list-tasks-page0.json")))
+            .on(LIST1, ok(fixture("list-tasks-page1.json")));
+        let by_status = IntakeFilters { statuses: vec!["QA Failed".into()], ..Default::default() };
+        let shown = with_client(&api, |c| preview(c, &refs, &by_status, "w1")).unwrap();
+        assert_eq!(ids(&shown.tickets), ["86b1aa002"], "any case");
+        assert_eq!(shown.excluded[0].reason, "Status is \"to do\"; the filter keeps QA Failed");
+
+        let api = Recorded::default()
+            .on(LIST0, ok(fixture("list-tasks-page0.json")))
+            .on(LIST1, ok(fixture("list-tasks-page1.json")));
+        let by_tag = IntakeFilters { tags: vec!["Desktop".into(), "web".into()], ..Default::default() };
+        let shown = with_client(&api, |c| preview(c, &refs, &by_tag, "w1")).unwrap();
+        assert_eq!(ids(&shown.tickets), ["86b1aa001"]);
+        assert_eq!(shown.excluded[0].reason, "No tags; the filter keeps Desktop, web");
+
+        let api = Recorded::default();
+        let empty = IntakeFilters { tags: vec!["  ".into()], ..Default::default() };
+        assert!(with_client(&api, |c| preview(c, &refs, &empty, "w1")).is_err());
+        assert!(api.paths().is_empty());
+    }
+
 }

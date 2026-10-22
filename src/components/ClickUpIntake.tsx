@@ -1,11 +1,15 @@
-import { useEffect, useId, useState, type MutableRefObject } from "react";
+import { useCallback, useEffect, useId, useState, type MutableRefObject } from "react";
 import { clickupIntakePreview, clickupIntakeStatus, type ClickUpIntakeStatus } from "../bridge";
 import {
   PRIORITY_OPTIONS,
+  filterChoices,
+  filtersOf,
   isCurrent,
   parsedDraft,
   previewSummary,
   togglePriority,
+  toggleStatus,
+  toggleTag,
   toggleTicket,
   type IntakeDraft,
 } from "../clickup/intakeModel";
@@ -40,19 +44,33 @@ export function ClickUpIntake({ draftRef, onOpenIntegrations, disabled = false }
   const [fetchProblems, setFetchProblems] = useState<RefProblem[]>([]);
   const boxId = useId();
 
+  const loadStatus = useCallback(
+    (alive: () => boolean) =>
+      clickupIntakeStatus()
+        .then((next) => {
+          if (!alive()) return;
+          setStatus(next);
+          setStatusError(null);
+        })
+        .catch((err: unknown) => {
+          if (alive()) setStatusError(errorText(err));
+        }),
+    [],
+  );
+  // Asked again when the window comes back, so setting ClickUp up (in
+  // Settings, which remounts this box when it closes, or in another
+  // window) shows here without a restart.
   useEffect(() => {
-    let cancelled = false;
-    clickupIntakeStatus()
-      .then((next) => {
-        if (!cancelled) setStatus(next);
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) setStatusError(errorText(err));
-      });
+    let alive = true;
+    const isAlive = () => alive;
+    void loadStatus(isAlive);
+    const again = () => void loadStatus(isAlive);
+    window.addEventListener("focus", again);
     return () => {
-      cancelled = true;
+      alive = false;
+      window.removeEventListener("focus", again);
     };
-  }, []);
+  }, [loadStatus]);
 
   const setDraft = (next: IntakeDraft) => {
     draftRef.current = next;
@@ -73,6 +91,7 @@ export function ClickUpIntake({ draftRef, onOpenIntegrations, disabled = false }
   }
 
   const parsed = parsedDraft(draft);
+  const choices = filterChoices(draft);
   const current = isCurrent(draft);
   const preview = current ? draft.fetched?.preview : null;
   const problems = [...parsed.problems, ...(current ? fetchProblems : [])];
@@ -83,7 +102,7 @@ export function ClickUpIntake({ draftRef, onOpenIntegrations, disabled = false }
     if (parsed.refs.length === 0) return;
     setFetching(true);
     try {
-      const filters = { priorities: draft.priorities };
+      const filters = filtersOf(draft);
       const next = await clickupIntakePreview(parsed.refs, filters);
       setDraft({ ...draftRef.current, fetched: { key: parsed.key, preview: next }, dropped: [] });
       setFetchProblems(next.problems);
@@ -127,6 +146,38 @@ export function ClickUpIntake({ draftRef, onOpenIntegrations, disabled = false }
           ))}
           <span className="hint">None ticked: every priority.</span>
         </fieldset>
+        {choices.statuses.length > 0 && (
+          <fieldset className="clickup-intake-priorities">
+            <legend>Status</legend>
+            {choices.statuses.map((name) => (
+              <label key={name}>
+                <input
+                  type="checkbox"
+                  checked={draft.statuses.includes(name)}
+                  disabled={disabled || fetching}
+                  onChange={(event) => setDraft(toggleStatus(draft, name, event.target.checked))}
+                />
+                {name}
+              </label>
+            ))}
+          </fieldset>
+        )}
+        {choices.tags.length > 0 && (
+          <fieldset className="clickup-intake-priorities">
+            <legend>Tags</legend>
+            {choices.tags.map((name) => (
+              <label key={name}>
+                <input
+                  type="checkbox"
+                  checked={draft.tags.includes(name)}
+                  disabled={disabled || fetching}
+                  onChange={(event) => setDraft(toggleTag(draft, name, event.target.checked))}
+                />
+                {name}
+              </label>
+            ))}
+          </fieldset>
+        )}
         <button
           type="button"
           className="secondary-button"

@@ -1624,7 +1624,7 @@ fn role_terminal_start_blocking(
     // C2: tickets from ClickUp, taken for this window's account only. Only
     // a start that begins an engine-2 run, launching bridged, gets the run
     // folder's `tickets.json`; the note goes into the form before it merges.
-    let intake = match input.intake_id.as_deref().map(str::trim).filter(|id| !id.is_empty()) {
+    let mut intake = match input.intake_id.as_deref().map(str::trim).filter(|id| !id.is_empty()) {
         Some(intake_id) => {
             let account = {
                 let mut state = store.lock().map_err(|err| err.to_string())?;
@@ -1762,6 +1762,13 @@ fn role_terminal_start_blocking(
             if started.is_none() {
                 // It joined a chain meanwhile: the planned run never came to be.
                 bridge = None;
+                // C2 (L1): so no tickets.json either; the request summary
+                // takes the place of the note that named it.
+                if let Some((from, to)) = intake.as_mut().and_then(|i| i.without_run()) {
+                    prompt = prompt.replacen(&from, &to, 1);
+                    let mut state = store.lock().map_err(|err| err.to_string())?;
+                    crate::commands::clickup_intake::swap_tab_note(&mut state, &tab_id, &from, &to)?;
+                }
             }
             started
         }
@@ -2957,6 +2964,10 @@ mod tests {
         // Only a bridged start of a new run gets a run folder for it.
         let run_dir = &body[take..merge];
         assert!(run_dir.contains("(Some(plan), Some(_))"), "{run_dir}");
+        // L1: a start that joined a chain meanwhile swaps the note for the request summary.
+        let label = body.find("label_starting_chain(").unwrap();
+        let swap = body.find("without_run()").expect("swaps the note when no run is made");
+        assert!(label < swap && swap < undo && body[swap..undo].contains("swap_tab_note("));
     }
 
     #[test]

@@ -1165,8 +1165,12 @@ export type { IntakeRef as ClickUpIntakeRef, RefProblem as ClickUpRefProblem } f
 
 export type ClickUpPriority = "urgent" | "high" | "normal" | "low" | "none";
 
-/** Which tickets a round takes. Closed and done tickets are always left out. */
-export type ClickUpIntakeFilters = { priorities: ClickUpPriority[] };
+/**
+ * Which tickets a round takes. Closed and done tickets are always left out.
+ * Each empty list keeps everything: `statuses` match a ticket's status name
+ * (any case), `tags` keep a ticket with any of them.
+ */
+export type ClickUpIntakeFilters = { priorities: ClickUpPriority[]; statuses: string[]; tags: string[] };
 
 export type ClickUpTicketRow = {
   id: string;
@@ -1195,6 +1199,10 @@ export type ClickUpIntakePreview = {
   tickets: ClickUpTicketRow[];
   excluded: ClickUpExcludedTicket[];
   problems: ClickUpRefProblemIn[];
+  /** The open statuses the fetched tickets are in, for the status filter. */
+  seenStatuses: string[];
+  /** The tags the fetched tickets carry, for the tag filter. */
+  seenTags: string[];
 };
 
 /** A snapshot Start fetched, waiting for the start that passes its `intakeId`. */

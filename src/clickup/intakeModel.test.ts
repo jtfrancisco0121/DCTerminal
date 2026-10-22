@@ -9,7 +9,10 @@ import {
   parsedDraft,
   previewSummary,
   tickedTickets,
+  filterChoices,
   togglePriority,
+  toggleStatus,
+  toggleTag,
   toggleTicket,
   type IntakeDraft,
 } from "./intakeModel";
@@ -24,6 +27,8 @@ const preview: ClickUpIntakePreview = {
     { id: "86b1aa003", title: "Lock files", priority: "none", status: "closed", statusType: "closed", url: "u3", reason: "Status is \"closed\" (closed)" },
   ],
   problems: [],
+  seenStatuses: ["to do", "qa failed"],
+  seenTags: ["desktop"],
 };
 
 function fetched(text: string, extra: Partial<IntakeDraft> = {}): IntakeDraft {
@@ -63,7 +68,7 @@ describe("intake model (C2)", () => {
     expect(intakeStart(draft)).toEqual({
       kind: "ready",
       refs: [{ kind: "task", id: "7xk2epic01", line: 1 }],
-      filters: { priorities: [] },
+      filters: { priorities: [], statuses: [], tags: [] },
       ticketIds: ["86b1aa001"],
     });
     const none = toggleTicket(draft, "86b1aa001", false);
@@ -73,8 +78,23 @@ describe("intake model (C2)", () => {
 
   it("keeps the priority filter in ClickUp's order whatever order you ticked it in", () => {
     const draft = togglePriority(togglePriority(EMPTY_INTAKE, "low", true), "urgent", true);
-    expect(filtersOf(draft)).toEqual({ priorities: ["urgent", "low"] });
-    expect(filtersOf(togglePriority(draft, "low", false))).toEqual({ priorities: ["urgent"] });
-    expect(fetchKey([], { priorities: ["urgent"] })).not.toBe(fetchKey([], { priorities: [] }));
+    expect(filtersOf(draft).priorities).toEqual(["urgent", "low"]);
+    expect(filtersOf(togglePriority(draft, "low", false)).priorities).toEqual(["urgent"]);
+    const none = { priorities: [], statuses: [], tags: [] };
+    expect(fetchKey([], { ...none, priorities: ["urgent"] })).not.toBe(fetchKey([], none));
+    expect(fetchKey([], { ...none, statuses: ["to do"] })).not.toBe(fetchKey([], none));
+    expect(fetchKey([], { ...none, tags: ["desktop"] })).not.toBe(fetchKey([], none));
+  });
+
+  it("offers the statuses and tags the last Fetch saw, and keeps ticked ones it no longer saw", () => {
+    expect(filterChoices(EMPTY_INTAKE)).toEqual({ statuses: [], tags: [] });
+    let draft = fetched("https://app.clickup.com/t/7xk2epic01");
+    expect(filterChoices(draft)).toEqual({ statuses: ["to do", "qa failed"], tags: ["desktop"] });
+    draft = toggleTag(toggleStatus(draft, "qa failed", true), "web", true);
+    expect(filtersOf(draft)).toEqual({ priorities: [], statuses: ["qa failed"], tags: ["web"] });
+    expect(filterChoices(draft).tags).toEqual(["desktop", "web"]);
+    // A status or tag change makes the Fetch stale, like the links do.
+    expect(intakeStart(draft).kind).toBe("blocked");
+    expect(filtersOf(toggleStatus(draft, "qa failed", false)).statuses).toEqual([]);
   });
 });

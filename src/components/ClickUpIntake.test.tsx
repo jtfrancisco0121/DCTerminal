@@ -22,6 +22,8 @@ const preview: ClickUpIntakePreview = {
     { id: "86b1aa003", title: "Lock files", priority: "none", status: "closed", statusType: "closed", url: "u3", reason: "Status is \"closed\" (closed)" },
   ],
   problems: [{ line: 2, message: "ClickUp has no task with that id, or this account can't see it." }],
+  seenStatuses: ["to do", "qa failed"],
+  seenTags: ["desktop"],
 };
 
 function renderBox(onOpenIntegrations = vi.fn()) {
@@ -66,7 +68,7 @@ describe("Tickets from ClickUp (C2)", () => {
         { kind: "task", id: "7xk2epic01", line: 1 },
         { kind: "task", id: "86zzzz999", line: 2 },
       ],
-      { priorities: ["high"] },
+      { priorities: ["high"], statuses: [], tags: [] },
     );
     expect(screen.getByText("Line 2: ClickUp has no task with that id, or this account can't see it.")).toBeTruthy();
     const excluded = screen.getByRole("list", { name: "Excluded tickets" });
@@ -92,6 +94,38 @@ describe("Tickets from ClickUp (C2)", () => {
     expect(screen.queryByRole("table")).toBeNull();
     expect(screen.getByText(/changed since Fetch/)).toBeTruthy();
     expect(intakeStart(draftRef.current).kind).toBe("blocked");
+  });
+
+  it("offers the statuses and tags Fetch saw as filters, and sends them on the next Fetch", async () => {
+    vi.mocked(clickupIntakeStatus).mockResolvedValue({ accountId: "default", accountName: "Work", configured: true });
+    vi.mocked(clickupIntakePreview).mockResolvedValue({ ...preview, problems: [] });
+    renderBox();
+    fireEvent.change(await screen.findByRole("textbox", { name: /Tickets from ClickUp/ }), {
+      target: { value: "https://app.clickup.com/t/7xk2epic01" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Fetch" }));
+    await screen.findByRole("table", { name: "Tickets to start with" });
+    fireEvent.click(screen.getByRole("checkbox", { name: "qa failed" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "desktop" }));
+    expect(screen.getByText(/changed since Fetch/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Fetch" }));
+    await vi.waitFor(() =>
+      expect(clickupIntakePreview).toHaveBeenLastCalledWith([{ kind: "task", id: "7xk2epic01", line: 1 }], {
+        priorities: [],
+        statuses: ["qa failed"],
+        tags: ["desktop"],
+      }),
+    );
+  });
+
+  it("asks again when the window comes back, so setting ClickUp up shows at once", async () => {
+    vi.mocked(clickupIntakeStatus).mockResolvedValueOnce({ accountId: "default", accountName: "Work", configured: false });
+    vi.mocked(clickupIntakeStatus).mockResolvedValue({ accountId: "default", accountName: "Work", configured: true });
+    renderBox();
+    await screen.findByRole("button", { name: "Open Settings › Integrations" });
+    window.dispatchEvent(new Event("focus"));
+    expect(await screen.findByRole("textbox", { name: /Tickets from ClickUp/ })).toBeTruthy();
+    expect(clickupIntakeStatus).toHaveBeenCalledTimes(2);
   });
 
   it("shows a Fetch error as ClickUp said it", async () => {

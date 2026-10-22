@@ -1,6 +1,6 @@
 /**
  * The start screen's "Tickets from ClickUp" box as data (C2): what you
- * pasted, the priority filter, the last Fetch and the tickets you unticked,
+ * pasted, the priority, status and tag filters, the last Fetch and the tickets you unticked,
  * and what Start does with them. Pure, so the rules are tested without the
  * UI: Start only uses a Fetch whose links and filters still match the box,
  * and never starts with no ticket ticked.
@@ -25,13 +25,24 @@ export type IntakeDraft = {
   text: string;
   /** Empty keeps every priority. */
   priorities: ClickUpPriority[];
+  /** Status names to keep; empty keeps every open status. */
+  statuses: string[];
+  /** Tags to keep (any one of them); empty keeps every ticket. */
+  tags: string[];
   /** The last Fetch and the links and filters it was for. */
   fetched: { key: string; preview: ClickUpIntakePreview } | null;
   /** Ticket ids you unticked in the preview. */
   dropped: string[];
 };
 
-export const EMPTY_INTAKE: IntakeDraft = { text: "", priorities: [], fetched: null, dropped: [] };
+export const EMPTY_INTAKE: IntakeDraft = {
+  text: "",
+  priorities: [],
+  statuses: [],
+  tags: [],
+  fetched: null,
+  dropped: [],
+};
 
 /** What Start does with the box. */
 export type IntakeStart =
@@ -40,12 +51,21 @@ export type IntakeStart =
   | { kind: "ready"; refs: IntakeRef[]; filters: ClickUpIntakeFilters; ticketIds: string[] };
 
 export function filtersOf(draft: IntakeDraft): ClickUpIntakeFilters {
-  return { priorities: PRIORITY_OPTIONS.map((p) => p.id).filter((id) => draft.priorities.includes(id)) };
+  return {
+    priorities: PRIORITY_OPTIONS.map((p) => p.id).filter((id) => draft.priorities.includes(id)),
+    statuses: [...draft.statuses].sort(),
+    tags: [...draft.tags].sort(),
+  };
 }
 
 /** Same links and filters, same key: a Fetch for another box state is stale. */
 export function fetchKey(refs: IntakeRef[], filters: ClickUpIntakeFilters): string {
-  return JSON.stringify([refs.map((r) => [r.kind, r.id, r.teamId ?? "", !!r.custom]), filters.priorities]);
+  return JSON.stringify([
+    refs.map((r) => [r.kind, r.id, r.teamId ?? "", !!r.custom]),
+    filters.priorities,
+    filters.statuses,
+    filters.tags,
+  ]);
 }
 
 export function parsedDraft(draft: IntakeDraft): { refs: IntakeRef[]; problems: RefProblem[]; key: string } {
@@ -70,6 +90,32 @@ export function toggleTicket(draft: IntakeDraft, id: string, ticked: boolean): I
 export function togglePriority(draft: IntakeDraft, id: ClickUpPriority, on: boolean): IntakeDraft {
   const rest = draft.priorities.filter((p) => p !== id);
   return { ...draft, priorities: on ? [...rest, id] : rest };
+}
+
+function toggleName(names: string[], name: string, on: boolean): string[] {
+  const rest = names.filter((n) => n !== name);
+  return on ? [...rest, name] : rest;
+}
+
+export function toggleStatus(draft: IntakeDraft, name: string, on: boolean): IntakeDraft {
+  return { ...draft, statuses: toggleName(draft.statuses, name, on) };
+}
+
+export function toggleTag(draft: IntakeDraft, name: string, on: boolean): IntakeDraft {
+  return { ...draft, tags: toggleName(draft.tags, name, on) };
+}
+
+/**
+ * The status and tag names to offer: what the last Fetch saw, plus any you
+ * ticked that it no longer saw, so a ticked filter can always be unticked.
+ */
+export function filterChoices(draft: IntakeDraft): { statuses: string[]; tags: string[] } {
+  const merge = (seen: string[], ticked: string[]) => [...seen, ...ticked.filter((t) => !seen.includes(t))];
+  const preview = draft.fetched?.preview;
+  return {
+    statuses: merge(preview?.seenStatuses ?? [], draft.statuses),
+    tags: merge(preview?.seenTags ?? [], draft.tags),
+  };
 }
 
 /** "2 of 3 tickets ticked · 1 excluded". */

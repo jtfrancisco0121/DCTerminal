@@ -66,6 +66,25 @@ describe("parseIntakeRefs (C2)", () => {
     ]);
   });
 
+  it("reads Markdown and Slack links by their url, not their text", () => {
+    const text = [
+      "See [QA-129 sync stalls](https://app.clickup.com/t/86b1aa001) and [the list](https://app.clickup.com/9012345678/v/li/901800112233).",
+      "<https://app.clickup.com/t/86b1aa002|Duplicate log lines>",
+    ].join("\n");
+    const parsed = parseIntakeRefs(text);
+    expect(parsed.refs).toEqual([
+      { kind: "task", id: "86b1aa001", line: 1 },
+      { kind: "list", id: "901800112233", line: 1 },
+      { kind: "task", id: "86b1aa002", line: 2 },
+    ]);
+    // "See" and "and" are words on line 1, so it says so; the links still read.
+    expect(parsed.problems).toEqual([{ line: 1, message: "Line 1 is not a ClickUp task or list link." }]);
+    expect(parseIntakeRefs("[ticket](https://app.clickup.com/t/86b1aa001)")).toEqual({
+      refs: [{ kind: "task", id: "86b1aa001", line: 1 }],
+      problems: [],
+    });
+  });
+
   it("reads nothing from an empty box", () => {
     expect(parseIntakeRefs("  \n\n")).toEqual({ refs: [], problems: [] });
   });

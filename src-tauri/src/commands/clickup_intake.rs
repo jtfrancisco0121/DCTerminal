@@ -219,6 +219,39 @@ pub(crate) struct IntakeLaunch {
     pub tail: String,
     /// The snapshot to write as the run's `tickets.json` before the launch.
     pub write: Option<TicketsSnapshot>,
+    /// The note put in the form (or the tail), as written.
+    note: String,
+}
+
+impl IntakeLaunch {
+    /// L1: the start did not begin its run after all (the tab joined a
+    /// chain meanwhile), so no `tickets.json` will be written. Returns the
+    /// note that names it and the request summary to put in its place, and
+    /// drops the file.
+    pub(crate) fn without_run(&mut self) -> Option<(String, String)> {
+        let snapshot = self.write.take()?;
+        Some((self.note.clone(), intake::request_note(&snapshot)))
+    }
+}
+
+/// Swaps `from` for `to` in a saved tab's form and merged prompt (L1).
+pub(crate) fn swap_tab_note(store: &mut StateStore, tab_id: &str, from: &str, to: &str) -> Result<(), String> {
+    let tab = store
+        .data
+        .tabs
+        .iter_mut()
+        .find(|tab| tab.id == tab_id)
+        .ok_or_else(|| format!("unknown tab: {tab_id}"))?;
+    for value in tab.answers.values_mut() {
+        if value.contains(from) {
+            *value = value.replacen(from, to, 1);
+        }
+    }
+    if tab.merged_prompt.contains(from) {
+        tab.merged_prompt = tab.merged_prompt.replacen(from, to, 1);
+        tab.merged_prompt_hash = crate::template::template_hash(&tab.merged_prompt);
+    }
+    store.save()
 }
 
 /// Puts the tickets into a starting stage's form. `run_dir`: the new
@@ -242,7 +275,7 @@ pub(crate) fn intake_for_start(
         None => (intake::request_note(&snapshot), &[IntakeSlot::Request, IntakeSlot::Context][..], None),
     };
     let placed = place_intake_note(role, values, &note, slots);
-    IntakeLaunch { tail: if placed { String::new() } else { note }, write }
+    IntakeLaunch { tail: if placed { String::new() } else { note.clone() }, write, note }
 }
 
 fn read_snapshot(runs_root: &Path, run_id: &str) -> Result<Option<(PathBuf, TicketsSnapshot)>, String> {
@@ -268,6 +301,10 @@ pub(crate) fn check(
     runs_root: &Path,
     run_id: &str,
 ) -> Result<Option<IntakeCheck>, String> {
+    // Runs whose folder or snapshot is gone keep no check (L10).
+    lock(&state.checks)?.retain(|id, _| {
+        folder::run_dir(runs_root, id).is_some_and(|dir| dir.join(TICKETS_FILE).is_file())
+    });
     let Some((_, snapshot)) = read_snapshot(runs_root, run_id)? else {
         return Ok(None);
     };
@@ -486,6 +523,8 @@ mod tests {
     fn epic_api() -> Recorded {
         Recorded::default()
             .on(EPIC, ok(fixture("task-with-subtasks.json")))
+            .on("/task/86b1aa001?include_subtasks=true&include_markdown_description=true", ok(fixture("task-86b1aa001.json")))
+            .on("/task/86b1aa002?include_subtasks=true&include_markdown_description=true", ok(fixture("task-86b1aa002.json")))
             .on("/task/86b1aa001/comment", ok(fixture("comments.json")))
             .on("/task/86b1aa002/comment", ok(r#"{"comments":[]}"#.into()))
     }
@@ -715,6 +754,50 @@ mod tests {
         let launch = intake_for_start(&bare, &mut values, staged_snapshot(&env), None);
         assert!(launch.tail.starts_with("Tickets from ClickUp (2):"));
         assert!(values.is_empty());
+    }
+
+
+    #[test]
+    fn a_start_that_never_began_its_run_swaps_the_tickets_json_note_for_the_request_summary() {
+        let env = env("no_run");
+        let planner = seed_role("role_planner");
+        let mut values = HashMap::from([("request".to_string(), "Fix these.".to_string())]);
+        let run_dir = env.runs().join(RUN);
+        let mut launch = intake_for_start(&planner, &mut values, staged_snapshot(&env), Some(&run_dir));
+        let store = state_store(env.dir.path());
+        let tab = {
+            let mut s = store.lock().unwrap();
+            let tab = s.create_draft_tab(&planner, "/tmp", true, None).unwrap();
+            let record = s.data.tabs.iter_mut().find(|t| t.id == tab).unwrap();
+            record.answers = values.clone();
+            record.merged_prompt = format!("Plan this.\n\n{}", values["additionalContext"]);
+            tab
+        };
+        let (from, to) = launch.without_run().expect("it had a file to write");
+        assert!(launch.write.is_none(), "no tickets.json now");
+        assert!(launch.without_run().is_none(), "once");
+        assert!(from.contains("tickets.json") && !to.contains("tickets.json"));
+        assert!(to.contains("<https://app.clickup.com/t/86b1aa001>"));
+        swap_tab_note(&mut store.lock().unwrap(), &tab, &from, &to).unwrap();
+        let s = store.lock().unwrap();
+        let record = s.tab_by_id(&tab).unwrap();
+        assert!(!record.merged_prompt.contains("tickets.json"), "{}", record.merged_prompt);
+        assert!(record.merged_prompt.contains("Tickets from ClickUp (2):"));
+        assert!(!record.answers["additionalContext"].contains("tickets.json"));
+        assert_eq!(record.answers["request"], "Fix these.");
+        assert_eq!(record.merged_prompt_hash, crate::template::template_hash(&record.merged_prompt));
+    }
+
+    #[test]
+    fn checks_for_runs_that_are_gone_are_pruned() {
+        let env = env("prune");
+        let (state, _store) = run_with_snapshot(&env);
+        check(&env.deps(&edited_api()), &state, &env.runs(), RUN).unwrap();
+        assert!(state.checks.lock().unwrap().contains_key(RUN));
+        std::fs::remove_dir_all(env.runs().join(RUN)).unwrap();
+        let idle = Recorded::default();
+        assert_eq!(check(&env.deps(&idle), &state, &env.runs(), "ee_other").unwrap(), None);
+        assert!(state.checks.lock().unwrap().is_empty());
     }
 
 }
