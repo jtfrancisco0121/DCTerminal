@@ -174,6 +174,19 @@ pub enum UserAction {
         #[serde(default)]
         back: bool,
     },
+    /// Your answer to the `verify` gate the run waits on (L2), for
+    /// `stage_id` in `lane`: **Mark verified** (`verified`) passes it and the
+    /// run goes on as after a passed gate; **Failed** sends `note` back to
+    /// that stage as a round, counted toward its gate retries.
+    #[serde(rename = "verify", rename_all = "camelCase")]
+    Verify {
+        stage_id: String,
+        #[serde(default)]
+        lane: Option<String>,
+        verified: bool,
+        #[serde(default)]
+        note: Option<String>,
+    },
 }
 
 /// A hand-off form filled from the run folder (`UserAction::Prefill`).

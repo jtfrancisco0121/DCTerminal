@@ -1301,6 +1301,7 @@ impl StateStore {
             taken_over: Vec::new(),
             engine_note: None,
             manual_only: false,
+            verifications: Vec::new(),
         };
         self.data.pipeline_runs.push(run);
         self.save()?;

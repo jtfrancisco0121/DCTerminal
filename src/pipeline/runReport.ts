@@ -16,6 +16,8 @@ const EVENT_LABEL: Record<string, string> = {
   complete: "Complete",
   note: "Note",
   turn: "Turn finished",
+  // L2: your answer to a verify gate.
+  verify: "Verification",
 };
 
 export function eventLabel(kind: string): string {

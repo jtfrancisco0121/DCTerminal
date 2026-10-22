@@ -8,7 +8,13 @@
 //! read (a bad name, a duplicate) is dropped on load so one hand edit never
 //! resets the whole file. Saving checks every entry: the name, and that the
 //! folder exists and is inside a git work tree (the working-folder check and
-//! `worktree::repo_info`). L2 adds per-repo checks next to `folder`.
+//! `worktree::repo_info`).
+//!
+//! L2 adds two optional texts per repo. `check` is the command that checks a
+//! lane made in that repo (`cd server && go test ./...`): it replaces the
+//! stage's command gates there (`pipelines::lane_gates`). `verify` is steps
+//! you carry out yourself (a Playwright run on another machine): after the
+//! check passes, the run waits for you to mark them verified or failed.
 
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
@@ -17,15 +23,50 @@ use std::sync::Mutex;
 pub const MAX_REPOS: usize = 20;
 pub const MAX_REPO_NAME_CHARS: usize = 40;
 const MAX_REPO_FOLDER_CHARS: usize = 1024;
+/// As a pipeline's command gate (L2).
+pub const MAX_REPO_CHECK_CHARS: usize = 2_000;
+/// As a pipeline's `verify` gate steps (L2).
+pub const MAX_REPO_VERIFY_CHARS: usize = 2_000;
 
 /// One named repo.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoEntry {
     /// `backend`: letters, digits, `-` and `_`.
     pub name: String,
     /// The repo's folder (its main working tree, or any folder inside it).
     pub folder: String,
+    /// The command that checks a lane in this repo (L2): it replaces the
+    /// stage's command gates there. One line, at most 2000 characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check: Option<String>,
+    /// Steps you verify yourself for a lane in this repo, after its check
+    /// passes (L2): the run waits until you mark them verified or failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify: Option<String>,
+}
+
+/// What is wrong with a repo's `check` (L2), as for a pipeline's command
+/// gate: one line, at most 2000 characters. Blank is no check.
+pub fn check_problem(name: &str, check: &str) -> Option<String> {
+    let check = check.trim();
+    if check.contains(['\n', '\r']) {
+        return Some(format!("The check of {name} is one line: no line breaks."));
+    }
+    (check.chars().count() > MAX_REPO_CHECK_CHARS)
+        .then(|| format!("The check of {name} is longer than {MAX_REPO_CHECK_CHARS} characters."))
+}
+
+/// What is wrong with a repo's `verify` steps (L2): at most 2000
+/// characters. Blank is nothing to verify.
+pub fn verify_problem(name: &str, verify: &str) -> Option<String> {
+    (verify.trim().chars().count() > MAX_REPO_VERIFY_CHARS)
+        .then(|| format!("The verify steps of {name} are longer than {MAX_REPO_VERIFY_CHARS} characters."))
+}
+
+/// A trimmed optional text; blank is none.
+fn some_text(text: Option<&str>) -> Option<String> {
+    text.map(str::trim).filter(|text| !text.is_empty()).map(str::to_string)
 }
 
 /// A repo name is one word a task can carry: letters, digits, `-` and `_`.
@@ -60,7 +101,11 @@ pub(crate) fn deserialize_repos<'de, D: serde::Deserializer<'de>>(deserializer: 
         let folder = entry.folder.trim().to_string();
         let taken = out.iter().any(|seen| seen.name.eq_ignore_ascii_case(&name));
         if valid_repo_name(&name) && !folder.is_empty() && !taken && out.len() < MAX_REPOS {
-            out.push(RepoEntry { name, folder });
+            // L2: a hand-edited check or verify text that would not save is
+            // dropped on its own; the repo stays.
+            let check = some_text(entry.check.as_deref()).filter(|check| check_problem(&name, check).is_none());
+            let verify = some_text(entry.verify.as_deref()).filter(|verify| verify_problem(&name, verify).is_none());
+            out.push(RepoEntry { name, folder, check, verify });
         }
     }
     Ok(out)
@@ -89,7 +134,15 @@ pub fn check_repos(repos: Vec<RepoEntry>) -> Result<Vec<RepoEntry>, String> {
             return Err(format!("There is already a repo named {name}."));
         }
         let folder = check_folder(&name, &entry.folder)?;
-        out.push(RepoEntry { name, folder });
+        let check = some_text(entry.check.as_deref());
+        if let Some(problem) = check.as_deref().and_then(|check| check_problem(&name, check)) {
+            return Err(problem);
+        }
+        let verify = some_text(entry.verify.as_deref());
+        if let Some(problem) = verify.as_deref().and_then(|verify| verify_problem(&name, verify)) {
+            return Err(problem);
+        }
+        out.push(RepoEntry { name, folder, check, verify });
     }
     Ok(out)
 }
@@ -169,7 +222,7 @@ mod tests {
     }
 
     fn entry(name: &str, folder: &str) -> RepoEntry {
-        RepoEntry { name: name.into(), folder: folder.into() }
+        RepoEntry { name: name.into(), folder: folder.into(), ..RepoEntry::default() }
     }
 
     #[test]
@@ -227,5 +280,54 @@ mod tests {
         let again = SettingsStore::open(&dir.join("app")).unwrap();
         assert_eq!(again.repos(), [entry("backend", &backend)], "kept in settings.json");
         assert_eq!(find_repo(again.repos(), "Backend").map(|r| r.name.as_str()), Some("backend"));
+    }
+
+    /// L2: a repo's check and verify texts are trimmed, blank is none, and
+    /// they are checked as a pipeline's command gate is (one line, at most
+    /// 2000 characters). A bad text in a hand-edited file drops that text,
+    /// never the repo.
+    #[test]
+    fn a_repos_check_and_verify_are_one_checked_line_and_free_steps() {
+        let dir = TempDir::new("repos_settings_l2");
+        let backend = repo(&dir, "backend");
+        let with = |check: &str, verify: &str| RepoEntry {
+            check: Some(check.into()),
+            verify: Some(verify.into()),
+            ..entry("backend", &backend)
+        };
+        let saved = check_repos(vec![with("  cd server && go test ./...  ", " Run qa128-ml on the\nWindows staging build. ")]).unwrap();
+        assert_eq!(saved[0].check.as_deref(), Some("cd server && go test ./..."));
+        assert_eq!(saved[0].verify.as_deref(), Some("Run qa128-ml on the\nWindows staging build."), "steps may span lines");
+        let blank = check_repos(vec![with("  ", "\n")]).unwrap();
+        assert_eq!((blank[0].check.clone(), blank[0].verify.clone()), (None, None), "blank is none");
+        let two_lines = check_repos(vec![with("go vet ./...\ngo test ./...", "")]).unwrap_err();
+        assert!(two_lines.contains("The check of backend is one line"), "{two_lines}");
+        let long = "x".repeat(MAX_REPO_CHECK_CHARS + 1);
+        assert!(check_repos(vec![with(&long, "")]).unwrap_err().contains("longer than 2000 characters"));
+        assert!(check_repos(vec![with(&"x".repeat(MAX_REPO_CHECK_CHARS), "")]).is_ok(), "2000 is allowed");
+        let steps = check_repos(vec![with("", &long)]).unwrap_err();
+        assert!(steps.contains("The verify steps of backend are longer than 2000"), "{steps}");
+
+        // Kept in settings.json, and a file from L1 (no check) loads as before.
+        let mut store = SettingsStore::open(&dir.join("app")).unwrap();
+        store.set_repos(saved.clone()).unwrap();
+        assert_eq!(SettingsStore::open(&dir.join("app")).unwrap().repos(), saved.as_slice());
+        let text = std::fs::read_to_string(dir.join("app").join("settings.json")).unwrap();
+        assert!(text.contains("\"check\": \"cd server && go test ./...\""), "{text}");
+
+        let hand = TempDir::new("repos_settings_l2_hand");
+        std::fs::write(
+            hand.join("settings.json"),
+            r#"{"schemaVersion": 1, "repos": [
+                {"name": "backend", "folder": "/src/backend", "check": "a\nb", "verify": " Steps. "},
+                {"name": "engine", "folder": "/src/engine", "check": " go test ./... "}
+            ]}"#,
+        )
+        .unwrap();
+        let store = SettingsStore::open(hand.path()).unwrap();
+        let repos = store.repos();
+        assert_eq!(repos.len(), 2, "both repos stay");
+        assert_eq!((repos[0].check.as_deref(), repos[0].verify.as_deref()), (None, Some("Steps.")));
+        assert_eq!(repos[1].check.as_deref(), Some("go test ./..."));
     }
 }

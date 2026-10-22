@@ -1444,7 +1444,7 @@ fn the_planners_hook_checks_repos_against_the_run_folders_repos_json() {
     assert!(reason.contains("`tasks[0].repo` \"backend\" is not a repo: none are set up"), "{reason}");
     assert_eq!(launch::read_run_tasks(&stage.runs, RUN), None);
     // The app writes repos.json at launch; the bridge only reads it.
-    let entry = |name: &str| crate::store::RepoEntry { name: name.into(), folder: format!("/src/{name}") };
+    let entry = |name: &str| crate::store::RepoEntry { name: name.into(), folder: format!("/src/{name}"), ..Default::default() };
     launch::write_run_repos(&stage.run_dir, &[entry("backend")]).unwrap();
     let reason = denial(&stage.hook("PreToolUse", exit_plan_mode("p-1", &plan_with(spans))));
     assert!(reason.contains("`tasks[1].repo` \"engine\" is not one of the repos in Settings › Repos (backend)"), "{reason}");
@@ -1460,7 +1460,7 @@ fn the_planners_hook_checks_repos_against_the_run_folders_repos_json() {
 
 #[test]
 fn the_planners_prompt_lists_the_repos_only_when_there_are_some() {
-    let entry = |name: &str, folder: &str| crate::store::RepoEntry { name: name.into(), folder: folder.into() };
+    let entry = |name: &str, folder: &str| crate::store::RepoEntry { name: name.into(), folder: folder.into(), ..Default::default() };
     let repos = [entry("backend", "/src/koneksi-backend"), entry("engine", "/src/koneksi-engine")];
     let planner = schema::stage_instructions(ResultKind::Planner, &repos);
     assert!(planner.starts_with(&schema::result_instructions(ResultKind::Planner)));

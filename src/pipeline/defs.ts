@@ -26,7 +26,9 @@ export type LoopBackDef = {
 export type GateDef =
   /** `optional`: an `auto` check with nothing to run is skipped instead of stopping the run. */
   | { kind: "command"; run: string; timeoutSecs?: number; optional?: boolean }
-  | { kind: "pullRequest" };
+  | { kind: "pullRequest" }
+  /** L2: steps you carry out yourself; the run waits for Mark verified or Failed once the other gates pass. */
+  | { kind: "verify"; steps: string };
 
 /** What a stage does, whatever its role is called. */
 export type StageKind = "planner" | "reviewer" | "implementer" | "generic";

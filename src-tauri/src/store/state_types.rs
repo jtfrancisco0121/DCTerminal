@@ -196,6 +196,94 @@ pub struct PipelineRun {
     /// mid-run: it is manual for good, and autopilot cannot be turned on.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub manual_only: bool,
+    /// Your answers to `verify` gates (L2, E5), oldest first: one record
+    /// each time you mark a lane's (or stage's) verify steps verified or
+    /// failed. A ticket is verified when its lane's latest record says so
+    /// ([`PipelineRun::latest_verification`]); C3 reads it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verifications: Vec<VerifyRecord>,
+}
+
+/// A `verify` gate the run waits on (L2): the steps you carry out, where,
+/// and the turn whose other gates passed. Set by `decide` when it stops for
+/// it; cleared when the run moves on or stops for anything else.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyWait {
+    pub stage_id: String,
+    /// The lane (pull request), when the run fanned out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lane: Option<String>,
+    /// The gate's label: `verify`, or `backend verify` for a repo's steps.
+    pub label: String,
+    pub steps: String,
+    /// The decided turn (`tab|bridge|prompt`) the answer is decided on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<String>,
+    /// The pull requests the stage reported that turn.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prs: Vec<String>,
+    pub at: String,
+}
+
+/// One answer to a `verify` gate (L2): who, when, verified or failed, and
+/// your note. `round` is the lane's (or run's) round and `attempt` counts
+/// the answers in it from 1, so each record has its own (lane, stage,
+/// round, attempt).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyRecord {
+    pub stage_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lane: Option<String>,
+    /// The lane's repo (Settings › Repos), when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    pub round: u32,
+    pub attempt: u32,
+    pub label: String,
+    pub steps: String,
+    /// `verified` or `failed`.
+    pub result: String,
+    /// Why it failed (required then), or what you noted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// Who answered: `you` (the app has one user).
+    pub by: String,
+    pub at: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prs: Vec<String>,
+    /// The decided turn (`tab|bridge|prompt`) this answer is for: the run
+    /// actor decides that turn again under [`VerifyRecord::decision_key`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<String>,
+}
+
+impl PipelineRun {
+    /// The key a turn (`tab|bridge|prompt`) is decided under: its own, or,
+    /// once you answered a verify gate for it, `<turn>#verify<n>` for the
+    /// latest such answer (`n` counts the run's answers from 1). The run
+    /// actor decides an answered turn again under that key (L2).
+    pub fn decision_key(&self, turn_key: &str) -> String {
+        match self.verifications.iter().rposition(|record| record.turn.as_deref() == Some(turn_key)) {
+            Some(index) => format!("{turn_key}#verify{}", index + 1),
+            None => turn_key.to_string(),
+        }
+    }
+}
+
+impl VerifyRecord {
+    pub fn verified(&self) -> bool {
+        self.result == "verified"
+    }
+}
+
+impl PipelineRun {
+    /// The latest verify answer for `lane` (`None`: the run's own stages),
+    /// if there is one (L2). C3 reads it to say a ticket is verified.
+    pub fn latest_verification(&self, lane: Option<&str>) -> Option<&VerifyRecord> {
+        self.verifications.iter().rev().find(|record| record.lane.as_deref() == lane)
+    }
 }
 
 fn first_engine() -> u32 {
@@ -468,21 +556,103 @@ pub struct RunAutopilot {
     /// reply is acted on once even when it is read again. Capped.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub decided: Vec<String>,
+    /// The `verify` gate the run waits on (L2), while it does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify: Option<VerifyWait>,
+    /// Other stages' turns that finished while the run waited on a
+    /// verification (L2), held for your answer. A successful answer decides
+    /// them; any other end of the wait gives each one the ledger's "hand it
+    /// on yourself" line ([`PipelineRun::release_held`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub held: Vec<HeldTurn>,
+}
+
+/// Why held turns are handed to you (L2, `PipelineRun::release_held_because`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeldEnd {
+    /// The verify wait ended with no answer.
+    Unanswered,
+    /// You answered, and the run stopped before they were decided.
+    Stopped,
+    /// The held turn's tab or turn could not be read again.
+    Unreadable,
+}
+
+/// A turn held while the run waits on a verification (L2).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HeldTurn {
+    /// `tab|bridge|prompt`.
+    pub turn: String,
+    pub tab_id: String,
+    pub stage_id: String,
+    pub stage_title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lane: Option<String>,
 }
 
 /// Most decided turns autopilot remembers per run.
 pub const MAX_DECIDED_TURNS: usize = 100;
 
 impl PipelineRun {
+    /// Hold `turn` for your verify answer (L2), once.
+    pub fn hold_turn(&mut self, turn: HeldTurn) {
+        let held = &mut self.autopilot.get_or_insert_with(RunAutopilot::default).held;
+        if !held.iter().any(|seen| seen.turn == turn.turn) {
+            held.push(turn);
+        }
+    }
+
+    /// The held turns are yours now (L2): each gets the line a turn
+    /// finishing while the run waits for you always got, saying why, and
+    /// the list is cleared. While a verify wait is still set it ended with
+    /// no answer; after your answer, the run stopped before autopilot could
+    /// act on them.
+    pub fn release_held(&mut self) {
+        let why = if self.autopilot.as_ref().is_some_and(|a| a.verify.is_some()) {
+            HeldEnd::Unanswered
+        } else {
+            HeldEnd::Stopped
+        };
+        self.release_held_because(why);
+    }
+
+    /// [`release_held`](Self::release_held) with the reason given.
+    pub fn release_held_because(&mut self, why: HeldEnd) {
+        let held = match self.autopilot.as_mut() {
+            Some(autopilot) => std::mem::take(&mut autopilot.held),
+            None => return,
+        };
+        let because = match why {
+            HeldEnd::Unanswered => "which ended without your answer",
+            HeldEnd::Stopped => "and the run stopped before autopilot could act on it",
+            HeldEnd::Unreadable => "and its turn could not be read again",
+        };
+        for turn in held {
+            let lane = turn.lane.as_deref().filter(|id| self.lane(id).is_some());
+            let tag = lane.and_then(|id| self.lane(id)).map(|l| format!("{}: ", l.title)).unwrap_or_default();
+            let summary = format!(
+                "{tag}{} finished while the run waited on a verification, {because}. Hand it on yourself.",
+                turn.stage_title
+            );
+            let lane = lane.map(str::to_string);
+            self.log_in_lane("autopilot", Some(&turn.stage_id), None, lane.as_deref(), summary, None, Some("skip".to_string()));
+        }
+    }
+
     /// Autopilot stops for you: `waiting`, with the reason code and the
     /// sentence the overview shows. A complete run stays complete, and a run
     /// with autopilot off stays `stopped`: only autopilot waits for you.
     pub fn set_waiting(&mut self, reason: StopReason, why: impl Into<String>) {
+        self.release_held();
         let enabled = self.autopilot.as_ref().is_some_and(|a| a.enabled);
         if self.status == RunStatus::Complete || !enabled {
             return;
         }
-        self.autopilot.get_or_insert_with(RunAutopilot::default).waiting = Some(why.into());
+        let autopilot = self.autopilot.get_or_insert_with(RunAutopilot::default);
+        autopilot.waiting = Some(why.into());
+        // L2: a stop for anything else is not the verify wait it may replace.
+        autopilot.verify = None;
         self.status = RunStatus::Waiting;
         self.stop_reason = Some(reason);
     }
@@ -506,8 +676,13 @@ impl PipelineRun {
     /// waiting for. A complete run stays complete; a run with autopilot off
     /// stays stopped.
     pub fn set_running(&mut self) {
+        // L2: running again with no answer to a verify wait: its held turns are yours.
+        if self.autopilot.as_ref().is_some_and(|a| a.verify.is_some()) {
+            self.release_held();
+        }
         if let Some(autopilot) = self.autopilot.as_mut() {
             autopilot.waiting = None;
+            autopilot.verify = None;
         }
         let enabled = self.autopilot.as_ref().is_some_and(|a| a.enabled);
         if enabled && self.status != RunStatus::Complete {
@@ -519,8 +694,14 @@ impl PipelineRun {
     /// You acted on the run (a hand-off, a send-back, an approval): a
     /// waiting run carries on from the next turn.
     pub fn resume_after_you(&mut self) {
+        // L2: your hand-on ends a verify wait with no answer: its held turns
+        // are yours. (A hand-off the actor makes after your answer is not.)
+        if self.autopilot.as_ref().is_some_and(|a| a.verify.is_some()) {
+            self.release_held();
+        }
         if let Some(autopilot) = self.autopilot.as_mut() {
             autopilot.waiting = None;
+            autopilot.verify = None;
         }
         if self.status == RunStatus::Waiting {
             self.set_running();
@@ -548,9 +729,11 @@ impl PipelineRun {
     /// Autopilot turned on (`running`) or off (`stopped`, paused by you).
     /// A complete run stays complete.
     pub fn set_autopilot_enabled(&mut self, enabled: bool) {
+        self.release_held();
         let autopilot = self.autopilot.get_or_insert_with(RunAutopilot::default);
         autopilot.enabled = enabled;
         autopilot.waiting = None;
+        autopilot.verify = None;
         if self.status == RunStatus::Complete {
             return;
         }
@@ -567,9 +750,11 @@ impl PipelineRun {
     /// e.g. the run actor failed). Turning autopilot on again runs it. A
     /// complete run stays complete.
     pub fn set_stopped(&mut self, reason: StopReason) {
+        self.release_held();
         let autopilot = self.autopilot.get_or_insert_with(RunAutopilot::default);
         autopilot.enabled = false;
         autopilot.waiting = None;
+        autopilot.verify = None;
         if self.status == RunStatus::Complete {
             return;
         }
@@ -579,8 +764,10 @@ impl PipelineRun {
 
     /// The run is done. Final.
     pub fn set_complete(&mut self) {
+        self.release_held();
         if let Some(autopilot) = self.autopilot.as_mut() {
             autopilot.waiting = None;
+            autopilot.verify = None;
         }
         self.status = RunStatus::Complete;
         self.stop_reason = None;

@@ -14,7 +14,7 @@ use crate::bridge::{BridgeTag, BridgeTurn, StageMode, TurnOutcome};
 use crate::commands::pipeline::{approve, note, set_lane_status, turn_finished};
 use crate::pipelines::autopilot::{decide, review_round, stage_key, stop_for_pipeline, Decision, FindingReport, TurnReport};
 use crate::pipelines::recovery::bridge_turn_key;
-use crate::pipelines::{GateDef, GateResult, PipelineDef, StageDef, StageKind};
+use crate::pipelines::{GateResult, PipelineDef, StageDef, StageKind};
 use crate::store::{
     claim_key, tab_label, ChainRef, PipelineRun, RoleSnapshot, RunStatus, StageGates, StateStore, StopReason, TabRecord,
     TerminalTabDraft,
@@ -244,11 +244,13 @@ impl<H: Host> Actor<H> {
         // restart): no checks, no ledger line, nothing carried out again.
         // The key is H3's (`recovery::bridge_turn_key`), so the startup
         // reconcile sees the same turn as decided.
-        if self.decided(&bridge_turn_key(&turn.tab_id, &turn.turn)) {
+        // L2: a turn whose verify gate you answered is decided again under
+        // its `#verify` key.
+        if self.decided(&self.decision_key(&turn)) {
             return;
         }
         let verdict = bridge_verdict(review(&turn).and_then(|r| r.get("verdict")).and_then(Value::as_str), placed.revise());
-        let (enabled, status, round, mine, held) = {
+        let (enabled, status, round, mine, held, held_by_verify) = {
             let mut store = lock(self.host.store());
             // intentionally silent: the lanes only lose a bar end.
             let _ = turn_finished(
@@ -266,6 +268,7 @@ impl<H: Host> Actor<H> {
                     run.round_for(placed.lane.as_deref()),
                     run.taken_over.iter().any(|id| id == &placed.tab.id),
                     run.status == RunStatus::Waiting && run.stop_reason == Some(StopReason::TakenOver),
+                    holds_for_verify(&placed.def, run, &placed.tab.id),
                 ),
                 None => return,
             }
@@ -287,7 +290,67 @@ impl<H: Host> Actor<H> {
             self.note(Some(&placed.stage.id), &summary, false);
             return;
         }
+        // L2: the same while the run waits on your verification (another
+        // lane's): your answer decides this turn too, checks first.
+        if held_by_verify {
+            if self.hold_for_verify(&placed, &turn) {
+                return;
+            }
+            // The wait ended meanwhile: take the turn up as the run stands now.
+            let (status, round) = {
+                let store = lock(self.host.store());
+                match store.pipeline_run_by_id(&self.run_id) {
+                    Some(run) => (run.status, run.round_for(placed.lane.as_deref())),
+                    None => return,
+                }
+            };
+            self.take_up(&placed, turn, round, status);
+            return;
+        }
         self.take_up(&placed, turn, round, status);
+    }
+
+    /// Hold `turn` for your verify answer (L2): kept on the run
+    /// (`autopilot.held`) with a Timeline line, so it is decided after a
+    /// successful answer, or told to you as yours if the wait ends otherwise.
+    /// False, with nothing held, when the wait has ended meanwhile (a
+    /// command such as Run checks or Autopilot off changed the run outside
+    /// the actor): the caller then takes the turn up as usual.
+    fn hold_for_verify(&mut self, placed: &Placed, turn: &BridgeTurn) -> bool {
+        {
+            let mut store = lock(self.host.store());
+            let Some(run) = store.pipeline_run_by_id_mut(&self.run_id) else {
+                return false;
+            };
+            if !holds_for_verify(&placed.def, run, &placed.tab.id) {
+                return false;
+            }
+            {
+                run.hold_turn(crate::store::HeldTurn {
+                    turn: bridge_turn_key(&turn.tab_id, &turn.turn),
+                    tab_id: placed.tab.id.clone(),
+                    stage_id: placed.stage.id.clone(),
+                    stage_title: placed.stage.title.clone(),
+                    lane: placed.lane.clone(),
+                });
+                if let Err(err) = store.save() {
+                    eprintln!("DCTerminal: run {}: held turn not saved: {err}", self.run_id);
+                }
+            }
+        }
+        self.note(Some(&placed.stage.id), &held_for_verify(placed), false);
+        true
+    }
+
+    /// The key `turn` is decided under (L2): its own, or its `#verify` key
+    /// once you answered a verify gate for it (`PipelineRun::decision_key`).
+    fn decision_key(&self, turn: &BridgeTurn) -> String {
+        let key = bridge_turn_key(&turn.tab_id, &turn.turn);
+        let store = lock(self.host.store());
+        match store.pipeline_run_by_id(&self.run_id) {
+            Some(run) => run.decision_key(&key),
+            None => key,
+        }
     }
 
     /// Act on a finished turn: its gates first (on a running run), then a
@@ -307,7 +370,11 @@ impl<H: Host> Actor<H> {
             Some(false) => self.round_goes_back = true,
             None => {}
         }
+        // L2: a turn whose verify gate you answered keeps its gate results
+        // (your answer is one of them): it is decided, not checked again.
+        let answered = self.decision_key(&turn) != bridge_turn_key(&turn.tab_id, &turn.turn);
         if status == RunStatus::Running
+            && !answered
             && !placed.stage.gates.is_empty()
             && blocked(&turn).is_none()
             && refused.is_none()
@@ -322,12 +389,22 @@ impl<H: Host> Actor<H> {
     /// Run the stage's gates on a thread of their own; the results come
     /// back as `GatesDone`.
     fn start_gates(&mut self, placed: &Placed, turn: BridgeTurn, round: u32) {
-        let gates = placed.stage.gates.clone();
-        let folder = {
+        // L2: in a lane whose repo has a check, that check replaces the
+        // stage's command gates, and the repo's verify steps join them.
+        let repos = self.host.repos();
+        let (folder, lane_repo) = {
             let store = lock(self.host.store());
-            let run_cwd = store.pipeline_run_by_id(&self.run_id).map(|r| r.cwd.clone()).unwrap_or_default();
-            PathBuf::from(if placed.tab.cwd.trim().is_empty() { run_cwd } else { placed.tab.cwd.clone() })
+            let run = store.pipeline_run_by_id(&self.run_id);
+            let run_cwd = run.map(|r| r.cwd.clone()).unwrap_or_default();
+            let lane_repo = run
+                .zip(placed.lane.as_deref())
+                .and_then(|(run, lane)| run.lane(lane))
+                .and_then(|lane| lane.repo.clone());
+            let folder = PathBuf::from(if placed.tab.cwd.trim().is_empty() { run_cwd } else { placed.tab.cwd.clone() });
+            (folder, lane_repo)
         };
+        let repo = lane_repo.and_then(|name| crate::store::repos_settings::find_repo(&repos, &name).cloned());
+        let planned = crate::pipelines::lane_gates::lane_gates(&placed.stage.gates, repo.as_ref());
         let prs = pr_urls(&turn);
         let host = self.host.clone();
         let me = self.me.clone();
@@ -335,27 +412,21 @@ impl<H: Host> Actor<H> {
         let spawned = std::thread::Builder::new()
             .name(format!("run-gates-{}", self.run_id))
             .spawn(move || {
-                let results = gates
-                    .iter()
-                    .map(|gate| {
-                        // H4: `decide` stops on an `auto` check with nothing
-                        // to run unless the gate is optional, so the result
-                        // carries the gate's flag (as `pipeline_run_gates`).
-                        let optional = matches!(gate, GateDef::Command { optional: true, .. });
-                        let result =
-                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| host.run_gate(gate, &folder, &prs)))
-                                .unwrap_or_else(|_| GateResult {
-                                    kind: "command".into(),
-                                    label: "check".into(),
-                                    status: "failed".into(),
-                                    summary: "The check could not run (internal error).".into(),
-                                    output: String::new(),
-                                    duration_ms: 0,
-                                    optional: false,
-                                });
-                        GateResult { optional, ..result }
-                    })
-                    .collect();
+                // H4: `decide` stops on an `auto` check with nothing to run
+                // unless the gate is optional, so each result carries the
+                // gate's flag (`run_planned`, as `pipeline_run_gates`).
+                let results = crate::pipelines::lane_gates::run_planned(&planned, |gate| {
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| host.run_gate(gate, &folder, &prs)))
+                        .unwrap_or_else(|_| GateResult {
+                            kind: "command".into(),
+                            label: "check".into(),
+                            status: "failed".into(),
+                            summary: "The check could not run (internal error).".into(),
+                            output: String::new(),
+                            duration_ms: 0,
+                            optional: false,
+                        })
+                });
                 let _ = me.send(ActorMsg::GatesDone { turn, round, results });
             });
         if let Err(err) = spawned {
@@ -406,6 +477,17 @@ impl<H: Host> Actor<H> {
         if self.taken_over(&placed.tab.id) {
             return;
         }
+        // L2: another lane's verification started to wait while these checks
+        // ran: your answer decides this turn, and runs its checks again.
+        let held_by_verify = {
+            let store = lock(self.host.store());
+            store
+                .pipeline_run_by_id(&self.run_id)
+                .is_some_and(|run| holds_for_verify(&placed.def, run, &placed.tab.id))
+        };
+        if held_by_verify && self.hold_for_verify(&placed, &turn) {
+            return;
+        }
         // The checks take a while: a turn started since is the stage's result now.
         let tag = placed.tab.bridge.clone().unwrap_or(BridgeTag {
             run_id: self.run_id.clone(),
@@ -430,7 +512,7 @@ impl<H: Host> Actor<H> {
         // H5: `decide` stops with `usage_limit` for it, ahead of `no_result`.
         report.rate_limit = self.rate_limit(placed);
         report.round = Some(round);
-        report.turn = Some(bridge_turn_key(&turn.tab_id, &turn.turn));
+        report.turn = Some(self.decision_key(turn));
         report
     }
 
@@ -451,15 +533,48 @@ impl<H: Host> Actor<H> {
 
     fn decide_and_carry_out(&mut self, placed: &Placed, turn: &BridgeTurn, round: u32) {
         let report = self.report(placed, turn, round);
+        self.decide_report_and_carry_out(placed, turn, report);
+    }
+
+    /// Decide `report` (for `turn`) and carry the decision out.
+    fn decide_report_and_carry_out(&mut self, placed: &Placed, turn: &BridgeTurn, report: TurnReport) {
+        // intentionally silent: with no answer to apply nothing can be refused.
+        let _ = self.answer_decide_and_carry_out(placed, turn, report, None);
+    }
+
+    /// [`decide_report_and_carry_out`](Self::decide_report_and_carry_out),
+    /// with your verify answer (L2) applied first on the same copy of the
+    /// run, so the answer and the decision under its `#verify` key are saved
+    /// together. `Err` (nothing changed) when the answer is refused. When the
+    /// decision is held for a stage you took over, the answer alone is
+    /// saved, and Hand back decides the turn under its `#verify` key.
+    fn answer_decide_and_carry_out(
+        &mut self,
+        placed: &Placed,
+        turn: &BridgeTurn,
+        report: TurnReport,
+        answer: Option<&VerifyAnswer>,
+    ) -> Result<(), String> {
         let (decision, held) = {
             let mut store = lock(self.host.store());
             let Some(run) = store.pipeline_run_by_id_mut(&self.run_id) else {
-                return;
+                return Ok(());
             };
+            let mut base = run.clone();
+            if let Some(answer) = answer {
+                crate::pipelines::verify::answer(
+                    &mut base,
+                    &answer.stage_id,
+                    answer.lane.as_deref(),
+                    answer.verified,
+                    answer.note.as_deref(),
+                    &chrono::Utc::now().to_rfc3339(),
+                )?;
+            }
             // Decided on a copy first: a decision that would act on a stage
             // you took over is not taken at all (D28), so Hand back decides
             // the same turn afresh.
-            let mut trial = run.clone();
+            let mut trial = base.clone();
             let decision = match &placed.def.disabled {
                 // H4: a pipeline that became disabled stops the run with the
                 // reason instead of being driven on (was `pipeline_decide`'s).
@@ -469,7 +584,18 @@ impl<H: Host> Actor<H> {
                 ),
                 None => decide(&placed.def, &mut trial, &report),
             };
-            let held = taken_over_target(&placed.def, run, placed, &decision);
+            // L2: a verify wait shows the pull requests this turn reported.
+            if let Some(wait) = trial
+                .autopilot
+                .as_mut()
+                .and_then(|a| a.verify.as_mut())
+                .filter(|wait| {
+                    wait.turn.is_some() && wait.turn.as_deref() == report.turn.as_deref().map(crate::pipelines::verify::plain_turn_key)
+                })
+            {
+                wait.prs = pr_urls(turn);
+            }
+            let held = taken_over_target(&placed.def, &base, placed, &decision);
             // A round you dealt with yourself (D28) is not sent back: its
             // decision line says so instead of "goes back to".
             if held.is_none() && decision.action == "loopBack" && self.revised_target(&trial, placed, &decision, turn).is_some() {
@@ -481,6 +607,13 @@ impl<H: Host> Actor<H> {
                 }
             }
             if held.is_some() {
+                if answer.is_some() {
+                    // Your answer stands; Hand back decides under its key.
+                    *run = base;
+                    if let Err(err) = store.save() {
+                        eprintln!("DCTerminal: run {}: verify answer not saved: {err}", self.run_id);
+                    }
+                }
                 (decision, held)
             } else {
                 *run = trial;
@@ -496,10 +629,11 @@ impl<H: Host> Actor<H> {
                 placed.stage.title
             );
             self.stop_run(Some(&stage_id), Some(&tab_id), &summary, Some(StopReason::TakenOver));
-            return;
+            return Ok(());
         }
         self.changed();
         self.carry_out(placed, turn, &decision, report.verdict.as_deref());
+        Ok(())
     }
 
     // ---- Carrying a decision out ----
@@ -1237,6 +1371,12 @@ impl<H: Host> Actor<H> {
                     Err(outcome) => Ok(outcome),
                 }
             }
+            UserAction::Verify {
+                stage_id,
+                lane,
+                verified,
+                note,
+            } => self.user_verify(&stage_id, lane.as_deref(), verified, note.as_deref()),
             UserAction::ReleaseHandoff { source_tab_id, back } => {
                 let placed = self.place_tab(&source_tab_id).ok_or("That tab is not on this run.")?;
                 let key = {
@@ -1453,6 +1593,146 @@ impl<H: Host> Actor<H> {
         })
     }
 
+    /// Your answer to the verify gate the run waits on (L2): recorded on the
+    /// run (`pipelines::verify::answer`), then the stage's turn whose checks
+    /// passed is decided again, under a key of its own, so a pass moves on
+    /// as a passed gate does and a failure resumes the stage with your note.
+    /// Refused, with nothing changed, when the stage has had a newer prompt
+    /// since, or you took it over.
+    fn user_verify(&mut self, stage_id: &str, lane: Option<&str>, verified: bool, note: Option<&str>) -> Result<UserOutcome, String> {
+        let not_waiting = "The run is not waiting on that verification any more. Reload the overview.";
+        let turn_key = {
+            let store = lock(self.host.store());
+            let run = store.pipeline_run_by_id(&self.run_id).ok_or("unknown pipeline run")?;
+            let wait = run.autopilot.as_ref().and_then(|a| a.verify.clone()).ok_or(not_waiting)?;
+            if wait.stage_id != stage_id || wait.lane.as_deref() != lane {
+                return Err(not_waiting.into());
+            }
+            wait.turn.ok_or(not_waiting)?
+        };
+        let tab_id = turn_key.split('|').next().unwrap_or_default().to_string();
+        let (placed, tag) = self.bridged_tab(&tab_id)?;
+        if self.taken_over(&tab_id) {
+            return Err(format!("You took {} over: hand it back first, then answer the verification.", placed.tab.label));
+        }
+        let latest = read_stage_turn(&self.host.runs_root(), &tag, &tab_id)
+            .filter(|latest| bridge_turn_key(&tab_id, &latest.turn) == turn_key)
+            .ok_or_else(|| {
+                format!(
+                    "{} got a newer prompt after its checks passed, so this verification is not for its latest turn.",
+                    placed.tab.label
+                )
+            })?;
+        let (round, answers) = {
+            let store = lock(self.host.store());
+            let run = store.pipeline_run_by_id(&self.run_id).ok_or("unknown pipeline run")?;
+            (run.round_for(lane), run.verifications.len() + 1)
+        };
+        // The key `PipelineRun::decision_key` gives this turn once the answer
+        // is recorded, saved with the decision.
+        let mut report = self.report(&placed, &latest, round);
+        report.turn = Some(format!("{turn_key}#verify{answers}"));
+        let answer = VerifyAnswer {
+            stage_id: stage_id.to_string(),
+            lane: lane.map(str::to_string),
+            verified,
+            note: note.map(str::to_string),
+        };
+        self.answer_decide_and_carry_out(&placed, &latest, report, Some(&answer))?;
+        // The other lanes' turns that finished while the run waited on you
+        // were held, not decided: now they are, checks first.
+        self.decide_held_turns(&tab_id);
+        Ok(UserOutcome {
+            tab_id: Some(tab_id),
+            ..UserOutcome::default()
+        })
+    }
+
+    /// After your verify answer (L2): decide the turns held while the run
+    /// waited (`autopilot.held`, other than `answered_tab`'s), checks first,
+    /// as Hand back does. The list is cleared as they are taken up. When the
+    /// run is not running (the answer's decision, or one of these, stopped
+    /// it), the rest get the "hand it on yourself" line instead.
+    fn decide_held_turns(&mut self, answered_tab: &str) {
+        let mut held: std::collections::VecDeque<crate::store::HeldTurn> = {
+            let mut store = lock(self.host.store());
+            let Some(run) = store.pipeline_run_by_id_mut(&self.run_id) else {
+                return;
+            };
+            let taken = run.autopilot.as_mut().map(|a| std::mem::take(&mut a.held)).unwrap_or_default();
+            if !taken.is_empty() {
+                if let Err(err) = store.save() {
+                    eprintln!("DCTerminal: run {}: held turns not saved: {err}", self.run_id);
+                }
+            }
+            taken.into()
+        };
+        let runs = self.host.runs_root();
+        while let Some(next) = held.pop_front() {
+            let running = {
+                let mut store = lock(self.host.store());
+                match store.pipeline_run_by_id_mut(&self.run_id) {
+                    Some(run) if run.status == RunStatus::Running => true,
+                    Some(run) => {
+                        // A decision opened a new verify wait: the turns it can
+                        // hold stay held for that answer; the rest are yours.
+                        let def = crate::pipelines::find(&run.kind);
+                        let (keep, release): (Vec<_>, Vec<_>) = std::iter::once(next.clone())
+                            .chain(held.drain(..))
+                            .partition(|turn| def.as_ref().is_some_and(|def| holds_for_verify(def, run, &turn.tab_id)));
+                        let kept = run.autopilot.as_mut().map(|a| std::mem::take(&mut a.held)).unwrap_or_default();
+                        for turn in release {
+                            run.hold_turn(turn);
+                        }
+                        run.release_held_because(crate::store::HeldEnd::Stopped);
+                        for turn in kept.into_iter().chain(keep) {
+                            run.hold_turn(turn);
+                        }
+                        if let Err(err) = store.save() {
+                            eprintln!("DCTerminal: run {}: held turns not released: {err}", self.run_id);
+                        }
+                        false
+                    }
+                    None => false,
+                }
+            };
+            if !running {
+                self.changed();
+                return;
+            }
+            if next.tab_id == answered_tab {
+                continue;
+            }
+            let tag = {
+                let store = lock(self.host.store());
+                store.tab_by_id(&next.tab_id).and_then(|tab| tab.bridge.clone())
+            };
+            match tag.and_then(|tag| read_stage_turn(&runs, &tag, &next.tab_id)) {
+                Some(turn) if bridge_turn_key(&turn.tab_id, &turn.turn) == next.turn => self.on_turn(turn, true),
+                // Only the turn that was held: a newer one is taken up on its own.
+                Some(_) => {}
+                // Its tab or turn is gone: tell you, as for any turn left to you.
+                None => {
+                    {
+                        let mut store = lock(self.host.store());
+                        if let Some(run) = store.pipeline_run_by_id_mut(&self.run_id) {
+                            let kept = run.autopilot.as_mut().map(|a| std::mem::take(&mut a.held)).unwrap_or_default();
+                            run.hold_turn(next.clone());
+                            run.release_held_because(crate::store::HeldEnd::Unreadable);
+                            if let Some(autopilot) = run.autopilot.as_mut() {
+                                autopilot.held = kept;
+                            }
+                            if let Err(err) = store.save() {
+                                eprintln!("DCTerminal: run {}: held turn not released: {err}", self.run_id);
+                            }
+                        }
+                    }
+                    self.changed();
+                }
+            }
+        }
+    }
+
     /// Continue after a restart: the run runs again, then each current
     /// stage terminal's finished turn is decided as if it had just ended
     /// (one decided before the quit is ignored by `decide`).
@@ -1550,7 +1830,8 @@ impl<H: Host> Actor<H> {
             }
             // A turn decided before you took over is not decided (or checked) again.
             let decided = turn.as_ref().is_some_and(|turn| {
-                let key = format!("{}|bridge|{}", turn.tab_id, turn.turn);
+                // L2: under its `#verify` key once you answered its verification.
+                let key = run.decision_key(&format!("{}|bridge|{}", turn.tab_id, turn.turn));
                 run.autopilot.as_ref().is_some_and(|a| a.decided.contains(&key))
             });
             let state = (run.status, run.round_for(placed.lane.as_deref()), decided, others);
@@ -1597,7 +1878,7 @@ impl<H: Host> Actor<H> {
             return Ok(UserOutcome::default());
         };
         let latest = read_stage_turn(&runs, &tag, tab_id).is_some_and(|t| t.turn == own.turn);
-        if sent_back || !latest || self.decided(&bridge_turn_key(&own.tab_id, &own.turn)) {
+        if sent_back || !latest || self.decided(&self.decision_key(&own)) {
             return Ok(UserOutcome::default());
         }
         let (status, round) = {
@@ -1667,6 +1948,51 @@ impl<H: Host> Actor<H> {
 }
 
 // ---- Pure helpers ----
+
+/// Your answer to a verify gate (L2), applied with its decision.
+struct VerifyAnswer {
+    stage_id: String,
+    lane: Option<String>,
+    verified: bool,
+    note: Option<String>,
+}
+
+/// The run waits on your verification (L2): turns other stages finish
+/// meanwhile are held for your answer, not decided.
+fn waits_on_verify(run: &PipelineRun) -> bool {
+    run.status == RunStatus::Waiting
+        && run.stop_reason == Some(StopReason::Checkpoint)
+        && run.autopilot.as_ref().is_some_and(|a| a.verify.is_some())
+}
+
+/// A turn of `tab_id` is held for your verify answer (L2): the run waits on
+/// a verification, and the tab is one of the current stages' other than
+/// the waiting one. A late turn from any other tab is decided as before
+/// (skipped while the run waits for you).
+fn holds_for_verify(def: &PipelineDef, run: &PipelineRun, tab_id: &str) -> bool {
+    if !waits_on_verify(run) {
+        return false;
+    }
+    let waiting_tab = run
+        .autopilot
+        .as_ref()
+        .and_then(|a| a.verify.as_ref())
+        .and_then(|wait| wait.turn.as_deref())
+        .and_then(|turn| turn.split('|').next())
+        .unwrap_or_default();
+    tab_id != waiting_tab
+        && crate::pipelines::recovery::current_stage_tabs(def, run)
+            .iter()
+            .any(|stage| stage.tab_id == tab_id)
+}
+
+/// The Timeline line for a turn held while the run waits on a verification.
+fn held_for_verify(placed: &Placed) -> String {
+    format!(
+        "{} finished while the run waits on your verification. Autopilot acts on it, checks first, once you answer.",
+        placed.tab.label
+    )
+}
 
 /// The word a reviewer stage's "changes required" reads as (the ledger,
 /// loop-backs and hand-offs use it): a plan reviewer revises, every other

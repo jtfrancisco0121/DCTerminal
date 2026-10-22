@@ -171,6 +171,7 @@ impl StateStore {
                     taken_over: Vec::new(),
                     engine_note: None,
                     manual_only: false,
+                    verifications: Vec::new(),
                 });
                 chain.chain_id.clone()
             }
@@ -649,6 +650,7 @@ mod tests {
             taken_over: Vec::new(),
             engine_note: None,
             manual_only: false,
+            verifications: Vec::new(),
         }
     }
 

@@ -1750,7 +1750,7 @@ mod run_actor {
             self.terminals.lock().unwrap().get(tab_id).is_some_and(|t| !t.exited.load(Ordering::SeqCst))
         }
         fn run_gate(&self, gate: &GateDef, folder: &Path, pr_urls: &[String]) -> GateResult {
-            let GateDef::Command { .. } = gate else {
+            let GateDef::Command { run, .. } = gate else {
                 self.pr_gate_urls.lock().unwrap().push(pr_urls.to_vec());
                 return GateResult {
                     kind: "pullRequest".into(),
@@ -1762,15 +1762,18 @@ mod run_actor {
                     optional: false,
                 };
             };
+            // `auto` (the built-ins' gate) is the flaky check; any other
+            // command (L2: a repo's check) runs as written.
+            let (script, label) = if run == "auto" { (FLAKY_CHECK, "npm run check") } else { (run.as_str(), run.as_str()) };
             let ran = std::process::Command::new("/bin/sh")
-                .args(["-c", FLAKY_CHECK])
+                .args(["-c", script])
                 .current_dir(folder)
                 .output()
                 .expect("run the check");
             let passed = ran.status.success();
             GateResult {
                 kind: "command".into(),
-                label: "npm run check".into(),
+                label: label.into(),
                 status: if passed { "passed" } else { "failed" }.into(),
                 summary: if passed { "Passed." } else { "Exited with code 1." }.into(),
                 output: String::from_utf8_lossy(&ran.stdout).trim().to_string(),
@@ -2184,8 +2187,8 @@ mod run_actor {
         let backend = repo(&parent, "backend");
         let engine = repo(&parent, "engine");
         let repos = vec![
-            RepoEntry { name: "backend".into(), folder: backend.display().to_string() },
-            RepoEntry { name: "engine".into(), folder: engine.display().to_string() },
+            RepoEntry { name: "backend".into(), folder: backend.display().to_string(), ..RepoEntry::default() },
+            RepoEntry { name: "engine".into(), folder: engine.display().to_string(), ..RepoEntry::default() },
         ];
         let state = StateStore {
             path: data.join("state.json"),
@@ -2456,5 +2459,643 @@ mod run_actor {
             false,
         );
         made.into_iter().map(|(lane, _, _, wt)| (lane.to_string(), wt)).collect()
+    }
+
+    // ---- L2: checks per repo and verified checkpoints -----------------------
+
+    /// The backend repo's check (Settings › Repos): fails the first time it
+    /// runs in a folder, then passes. It leaves its own mark, so it is told
+    /// apart from the stage's `auto` check (`FLAKY_CHECK`).
+    const BACKEND_CHECK: &str = "if [ -f .backend-check-failed-once ]; then echo 'ok server/session 0.2s'; \
+        else touch .backend-check-failed-once; echo 'FAIL server/session_test.go:31: want 201, got 500'; exit 1; fi";
+    const BACKEND_VERIFY: &str = "Run the qa128-ml Playwright project on the Windows staging build.";
+    const VERIFY_NOTE: &str = "qa128-ml: the session list stays empty after sign-in on Windows.";
+
+    /// A [`FakeHost`] with `repos` and `scenarios`, and nothing run yet.
+    fn host_with(data: TempDir, home: FakeHome, repos: Vec<RepoEntry>, scenarios: HashMap<String, VecDeque<Value>>) -> Arc<FakeHost> {
+        let state = StateStore {
+            path: data.join("state.json"),
+            data: AppStateFile::default(),
+            new_tab_provider: dcterminal_lib::provider::ProviderId::DEFAULT,
+            draft_window: MAIN_WINDOW_ID.to_string(),
+        };
+        Arc::new(FakeHost {
+            store: Mutex::new(state),
+            runs: runs_root(data.path()),
+            roles: bundled_seed().expect("roles").roles,
+            home,
+            scenarios: Mutex::new(scenarios),
+            terminals: Mutex::new(HashMap::new()),
+            launches: Mutex::new(Vec::new()),
+            resumes: Mutex::new(Vec::new()),
+            forced: AtomicUsize::new(0),
+            stops: Mutex::new(Vec::new()),
+            notices: Mutex::new(Vec::new()),
+            pr_gate_urls: Mutex::new(Vec::new()),
+            repos,
+            _data: data,
+        })
+    }
+
+    /// The Planner of a plan across the repos, as `role_terminal_start`
+    /// launches it, with `repos.json` in its run folder.
+    fn start_planner_across_repos(host: &FakeHost) {
+        let cwd = host.home.cwd.path().display().to_string();
+        let planner = {
+            let mut store = host.store.lock().unwrap();
+            let role = host.roles.iter().find(|r| r.id == "role_planner").unwrap();
+            let tab = store.create_draft_tab(role, &cwd, true, None).unwrap();
+            store.data.tabs.iter_mut().find(|t| t.id == tab).unwrap().answers = HashMap::from([
+                ("cwd".to_string(), cwd.clone()),
+                ("taskType".to_string(), "Feature".to_string()),
+                ("title".to_string(), "Sessions".to_string()),
+                ("request".to_string(), "Add sessions to the backend and the engine.".to_string()),
+            ]);
+            let chain = ChainRef { chain_id: RUN.into(), kind: "eagle1".into(), step: 1, total: 4, round: 1, lane: None };
+            store.set_tab_chain(&tab, Some(chain), None).unwrap();
+            store.pipeline_run_by_id_mut(RUN).expect("the run").set_autopilot_enabled(true);
+            store.set_tab_bridge(&tab, Some(BridgeTag { run_id: RUN.into(), stage: "planner".into() })).unwrap();
+            store.remember_claude_terminal_session(&tab, PLANNER_SID).unwrap();
+            store.save().unwrap();
+            tab
+        };
+        let bridge = BridgePlan {
+            run_id: RUN.into(),
+            stage_id: "planner".into(),
+            role_id: "role_planner".into(),
+            lane: None,
+            stage_key: "planner".into(),
+            kind: ResultKind::Planner,
+            autopilot: true,
+        };
+        let run_dir = prepare_stage(&host.runs, &bridge, &planner).expect("prepare the Planner");
+        write_run_repos(&run_dir, &host.repos).expect("repos.json");
+        let plan_turn = json!({ "turns": [{ "steps": [
+            { "tool": "ExitPlanMode", "input": { "plan": plan_across_repos() }, "permission": true },
+            { "reply": "The plan spans backend and engine." }
+        ] }] });
+        host.start(
+            &StageLaunch {
+                run_id: RUN.into(),
+                tab_id: planner.clone(),
+                role_id: "role_planner".into(),
+                cwd: host.home.cwd.path().to_path_buf(),
+                prompt: "Plan sessions across the repos.".into(),
+                session_id: PLANNER_SID.into(),
+                bridge: Some(launch_flags(ResultKind::Planner, Path::new(DCTERMINAL), &run_dir, RUN, "planner", &planner)),
+            },
+            &plan_turn,
+            false,
+        );
+    }
+
+    /// L2, end to end on the actor with `fake_claude` terminals and two
+    /// temporary git repos. The backend repo has its own check and verify
+    /// steps in Settings › Repos; the engine repo has neither. The backend
+    /// lane's repo check (not the stage's `auto`) fails once, and its output
+    /// resumes the Implementer; it then passes and the run waits on the
+    /// backend verify steps with the lane's pull request. **Failed** with a
+    /// note resumes the same session with the note; once its check passes
+    /// again the run waits again, and **Mark verified** sends the lane on to
+    /// its PR Reviewer. The engine lane runs the stage's own gates and never
+    /// waits for a verification.
+    #[test]
+    fn a_repos_check_fails_once_then_a_verify_gate_fails_with_a_note_and_is_marked_verified() {
+        let data = TempDir::new("actor_l2_data");
+        let home = FakeHome::new("actor_l2");
+        let parent = TempDir::new("actor_l2_repos");
+        let backend = repo(&parent, "backend");
+        let engine = repo(&parent, "engine");
+        let repos = vec![
+            RepoEntry {
+                name: "backend".into(),
+                folder: backend.display().to_string(),
+                check: Some(BACKEND_CHECK.into()),
+                verify: Some(BACKEND_VERIFY.into()),
+            },
+            RepoEntry { name: "engine".into(), folder: engine.display().to_string(), ..RepoEntry::default() },
+        ];
+        let scenarios = HashMap::from([
+            ("role_plan_reviewer".to_string(), VecDeque::from([reviewed("APPROVED", json!([]))])),
+            (
+                "role_implementer".to_string(),
+                VecDeque::from([
+                    // Backend: resumed after its check failed, then after your failed verification.
+                    implemented_in("pr1", "https://github.com/acme/backend/pull/1"),
+                    implemented_in("pr1", "https://github.com/acme/backend/pull/1"),
+                    // Engine: opened by the actor, then resumed after its `auto` check failed.
+                    implemented_in("pr2", "https://github.com/acme/engine/pull/2"),
+                    implemented_in("pr2", "https://github.com/acme/engine/pull/2"),
+                ]),
+            ),
+            ("role_pr_reviewer".to_string(), VecDeque::from([reviewed("APPROVED", json!([])), reviewed("APPROVED", json!([]))])),
+        ]);
+        let host = host_with(data, home, repos.clone(), scenarios);
+        // Never the real ~/.claude: every terminal gets this test's config folder.
+        assert!(host.home.config.path().starts_with(test_root()), "{}", host.home.config.path().display());
+        let actors = RunActors::new(host.clone());
+        start_planner_across_repos(&host);
+
+        let deadline = Instant::now() + Duration::from_secs(120);
+        let mut worktrees: HashMap<String, PathBuf> = HashMap::new();
+        let mut answers: Vec<(bool, Vec<String>, String)> = Vec::new();
+        loop {
+            drain_inbox(&host.runs, &mut |event| {
+                if let InboxEvent::Turn(turn) = event {
+                    let run_id = turn.run_id.clone();
+                    actors.send(&run_id, ActorMsg::Turn(turn));
+                }
+            });
+            let run = snapshot(&host);
+            let wait = run.autopilot.as_ref().and_then(|a| a.verify.clone());
+            match (run.status, run.stop_reason) {
+                (RunStatus::Complete, _) => break,
+                (RunStatus::Waiting, Some(StopReason::Checkpoint)) if worktrees.is_empty() => {
+                    worktrees = fan_out_across_repos(&host, &run, &actors, &repos);
+                }
+                (RunStatus::Waiting, Some(StopReason::Checkpoint)) if wait.is_some() => {
+                    let wait = wait.unwrap();
+                    assert_eq!((wait.stage_id.as_str(), wait.lane.as_deref()), ("implementer", Some("pr1")), "{}", ledger(&run));
+                    assert_eq!((wait.label.as_str(), wait.steps.as_str()), ("backend verify", BACKEND_VERIFY));
+                    // Your first answer fails it with a note; the second marks it verified.
+                    let verified = !answers.is_empty();
+                    let outcome = actors
+                        .ask(
+                            RUN,
+                            UserAction::Verify {
+                                stage_id: "implementer".into(),
+                                lane: Some("pr1".into()),
+                                verified,
+                                note: (!verified).then(|| VERIFY_NOTE.to_string()),
+                            },
+                            Duration::from_secs(60),
+                        )
+                        .expect("the verify answer");
+                    answers.push((verified, wait.prs.clone(), outcome.tab_id.unwrap_or_default()));
+                }
+                (RunStatus::Running, _) | (RunStatus::Waiting, Some(StopReason::Checkpoint)) => {}
+                (status, reason) => panic!(
+                    "the run stopped: {status:?} {reason:?}\nledger:\n{}\nstops: {:?}\n{}",
+                    ledger(&run),
+                    host.stops.lock().unwrap(),
+                    host.screens()
+                ),
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the run never completed\nledger:\n{}\n{}\nbridge.log: {}",
+                ledger(&run),
+                host.screens(),
+                std::fs::read_to_string(host.runs.join(RUN).join("bridge.log")).unwrap_or_default()
+            );
+            std::thread::sleep(Duration::from_millis(30));
+        }
+
+        let run = snapshot(&host);
+        let all = ledger(&run);
+        let (backend_wt, engine_wt) = (canonical(&worktrees["pr1"]), canonical(&worktrees["pr2"]));
+        // You answered twice, each time with the backend lane's pull request on show.
+        assert_eq!(answers.iter().map(|a| a.0).collect::<Vec<_>>(), [false, true], "{all}");
+        for (_, prs, _) in &answers {
+            assert_eq!(prs, &["https://github.com/acme/backend/pull/1".to_string()], "{all}");
+        }
+
+        // The backend lane ran its repo's check (in its worktree), never `auto`;
+        // the engine lane ran the stage's `auto` check.
+        assert!(backend_wt.join(".backend-check-failed-once").is_file());
+        assert!(!backend_wt.join(".check-failed-once").exists(), "the stage's own check never ran in the backend lane");
+        assert!(engine_wt.join(".check-failed-once").is_file() && !engine_wt.join(".backend-check-failed-once").exists());
+        let gates = |lane: &str| -> Vec<(String, String)> {
+            run.events
+                .iter()
+                .filter(|e| e.kind == "gate" && e.lane_id.as_deref() == Some(lane))
+                .map(|e| (e.summary.clone(), e.outcome.clone().unwrap_or_default()))
+                .collect()
+        };
+        let backend_gates = gates("pr1");
+        let checks: Vec<&str> = backend_gates
+            .iter()
+            .filter(|(summary, _)| summary.contains(&format!("backend check: {BACKEND_CHECK}")))
+            .map(|(_, outcome)| outcome.as_str())
+            .collect();
+        assert_eq!(checks, ["failed", "passed", "passed"], "the check fails once, then passes before each wait\n{all}");
+        let waits = backend_gates.iter().filter(|(summary, outcome)| outcome == "waiting" && summary.contains(BACKEND_VERIFY)).count();
+        assert_eq!(waits, 2, "{all}");
+        assert!(backend_gates.iter().all(|(summary, _)| !summary.contains("npm run check")), "{all}");
+        let engine_gates = gates("pr2");
+        let engine_checks: Vec<&str> = engine_gates
+            .iter()
+            .filter(|(summary, _)| summary.contains("npm run check"))
+            .map(|(_, outcome)| outcome.as_str())
+            .collect();
+        assert_eq!(engine_checks, ["failed", "passed"], "{all}");
+        assert!(engine_gates.iter().all(|(_, outcome)| outcome != "waiting"), "no verify in the engine lane\n{all}");
+
+        // Failed + note resumed the backend Implementer's session with the note.
+        let backend_session = "8c3f5d21-2b3c-4d4e-9f50-000000000101";
+        let sent = prompts(&host, backend_session);
+        let note_prompt = sent
+            .iter()
+            .find(|p| p.contains("Verification failed after your last turn"))
+            .unwrap_or_else(|| panic!("no verification prompt: {sent:?}"));
+        assert!(note_prompt.contains(VERIFY_NOTE) && note_prompt.contains(BACKEND_VERIFY), "{note_prompt}");
+        assert!(sent.iter().any(|p| p.contains("server/session_test.go:31")), "the check's output went back first: {sent:?}");
+        let resumes: Vec<(String, PathBuf)> =
+            host.resumes.lock().unwrap().iter().map(|l| (l.role_id.clone(), canonical(&l.cwd))).collect();
+        assert_eq!(
+            resumes,
+            [
+                ("role_implementer".to_string(), backend_wt.clone()),
+                ("role_implementer".to_string(), backend_wt.clone()),
+                ("role_implementer".to_string(), engine_wt.clone()),
+            ],
+            "{all}"
+        );
+        assert_eq!(answers[0].2, answers[1].2, "both answers name the backend Implementer's tab");
+
+        // Each answer is one record on the run, and the lane's latest says verified.
+        let records: Vec<String> = run
+            .verifications
+            .iter()
+            .map(|v| format!("{} {:?} {:?} r{} a{} {:?}", v.result, v.lane, v.repo, v.round, v.attempt, v.note))
+            .collect();
+        assert_eq!(
+            records,
+            [
+                format!("failed Some(\"pr1\") Some(\"backend\") r1 a1 Some({VERIFY_NOTE:?})"),
+                "verified Some(\"pr1\") Some(\"backend\") r1 a2 None".to_string(),
+            ]
+        );
+        assert!(run.latest_verification(Some("pr1")).is_some_and(|v| v.verified() && v.by == "you"));
+        assert!(run.latest_verification(Some("pr2")).is_none());
+        let verify_events: Vec<&str> =
+            run.events.iter().filter(|e| e.kind == "verify").map(|e| e.outcome.as_deref().unwrap_or_default()).collect();
+        assert_eq!(verify_events, ["failed", "verified"], "{all}");
+
+        // The lane went on to its PR Reviewer only after Mark verified, then the engine lane ran.
+        let opened: Vec<(String, PathBuf)> =
+            host.launches.lock().unwrap().iter().map(|l| (l.role_id.clone(), canonical(&l.cwd))).collect();
+        let home_dir = canonical(host.home.cwd.path());
+        assert_eq!(
+            opened,
+            [
+                ("role_plan_reviewer".to_string(), home_dir),
+                ("role_pr_reviewer".to_string(), backend_wt),
+                ("role_implementer".to_string(), engine_wt.clone()),
+                ("role_pr_reviewer".to_string(), engine_wt),
+            ],
+            "{all}"
+        );
+        let verified_at = run.events.iter().position(|e| e.kind == "verify" && e.outcome.as_deref() == Some("verified")).unwrap();
+        let reviewer_at = run
+            .events
+            .iter()
+            .position(|e| e.outcome.as_deref() == Some("advance") && e.summary.contains("on to PR Reviewer") && e.lane_id.as_deref() == Some("pr1"))
+            .expect("the backend lane moved on");
+        assert!(verified_at < reviewer_at, "{all}");
+        assert_eq!(run.status, RunStatus::Complete);
+        assert!(host.stops.lock().unwrap().iter().all(|s| s.starts_with("Checkpoint")), "{:?}", host.stops.lock().unwrap());
+    }
+
+    /// A plan of two independent tasks, both in the backend repo.
+    fn plan_two_backend_lanes() -> String {
+        let tasks = json!({ "tasks": [
+            { "id": "pr1", "title": "Session API", "dependsOn": [], "manual": false, "summary": "Add the session endpoint.", "repo": "backend" },
+            { "id": "pr2", "title": "Audit log", "dependsOn": [], "manual": false, "summary": "Log session events.", "repo": "backend" }
+        ] });
+        format!(
+            "# Plan: two backend changes\n\n## HANDOFF: Plan\n1. Session endpoint.\n2. Audit log.\n\n```json\n{tasks}\n```\n\n\
+             ## HANDOFF: Open questions\nNone.\n"
+        )
+    }
+
+    /// Overview › Fan out for `plan_two_backend_lanes`: a worktree and a
+    /// draft Implementer tab per lane in the backend repo, the lanes
+    /// recorded, nothing started. Returns `(lane, tab, worktree)`.
+    fn fan_out_two_backend_lanes(
+        host: &Arc<FakeHost>,
+        run: &PipelineRun,
+        actors: &RunActors<FakeHost>,
+        backend: &Path,
+    ) -> Vec<(String, String, PathBuf)> {
+        let reviewer = run.tab_ids["role_plan_reviewer"].clone();
+        let prefill = actors
+            .ask(
+                RUN,
+                UserAction::Prefill { source_tab_id: reviewer, target_role_id: "role_implementer".into() },
+                Duration::from_secs(30),
+            )
+            .expect("the hand-off form")
+            .prefill
+            .expect("prefilled");
+        let role = host.roles.iter().find(|r| r.id == "role_implementer").unwrap().clone();
+        let mut made = Vec::new();
+        for lane in ["pr1", "pr2"] {
+            let wt = dcterminal_lib::worktree::add_worktree(backend, &format!("{RUN}-{lane}"), true, None).expect("worktree");
+            let mut store = host.store.lock().unwrap();
+            let tab = store.create_worktree_tab(&role, wt.clone()).unwrap();
+            let mut values = prefill.values.clone();
+            values.insert("cwd".into(), wt.path.clone());
+            store.data.tabs.iter_mut().find(|t| t.id == tab).unwrap().answers = values;
+            made.push((lane.to_string(), tab, PathBuf::from(&wt.path)));
+        }
+        let mut store = host.store.lock().unwrap();
+        let lanes = vec![
+            LaneInput { id: "pr1".into(), title: "PR1 — Session API".into(), depends_on: vec![], repo: Some("backend".into()) },
+            LaneInput { id: "pr2".into(), title: "PR2 — Audit log".into(), depends_on: vec![], repo: Some("backend".into()) },
+        ];
+        fan_out(&mut store, RUN, "implementer", lanes).expect("fan out");
+        for (lane, tab, _) in &made {
+            let chain = ChainRef { chain_id: RUN.into(), kind: "eagle1".into(), step: 3, total: 4, round: 1, lane: Some(lane.clone()) };
+            store.set_tab_chain(tab, Some(chain), Some(&prefill.handoff_text)).unwrap();
+        }
+        store.save().unwrap();
+        made
+    }
+
+    /// Start a lane's Implementer terminal, as `laneStartTerminal` does.
+    fn start_lane_terminal(host: &FakeHost, lane: &str, tab: &str, wt: &Path, session: &str) {
+        let stage_key = format!("implementer@{lane}");
+        let bridge = BridgePlan {
+            run_id: RUN.into(),
+            stage_id: "implementer".into(),
+            role_id: "role_implementer".into(),
+            lane: Some(lane.into()),
+            stage_key: stage_key.clone(),
+            kind: ResultKind::Implementer,
+            autopilot: true,
+        };
+        {
+            let mut store = host.store.lock().unwrap();
+            store.set_tab_bridge(tab, Some(BridgeTag { run_id: RUN.into(), stage: stage_key.clone() })).unwrap();
+            store.remember_claude_terminal_session(tab, session).unwrap();
+            store.save().unwrap();
+        }
+        let run_dir = prepare_stage(&host.runs, &bridge, tab).expect("prepare the lane");
+        write_run_repos(&run_dir, &host.repos).expect("repos.json");
+        host.start(
+            &StageLaunch {
+                run_id: RUN.into(),
+                tab_id: tab.into(),
+                role_id: "role_implementer".into(),
+                cwd: wt.to_path_buf(),
+                prompt: format!("Implement {lane} in its worktree."),
+                session_id: session.into(),
+                bridge: Some(launch_flags(ResultKind::Implementer, Path::new(DCTERMINAL), &run_dir, RUN, &stage_key, tab)),
+            },
+            &implemented_in(lane, &format!("https://github.com/acme/backend/pull/{}", &lane[2..])),
+            false,
+        );
+    }
+
+    /// The Planner of `plan_two_backend_lanes`, started with its run folder.
+    fn start_two_lane_planner(host: &FakeHost) {
+        let cwd = host.home.cwd.path().display().to_string();
+        let planner = {
+            let mut store = host.store.lock().unwrap();
+            let role = host.roles.iter().find(|r| r.id == "role_planner").unwrap();
+            let tab = store.create_draft_tab(role, &cwd, true, None).unwrap();
+            store.data.tabs.iter_mut().find(|t| t.id == tab).unwrap().answers = HashMap::from([
+                ("cwd".to_string(), cwd.clone()),
+                ("taskType".to_string(), "Feature".to_string()),
+                ("title".to_string(), "Sessions".to_string()),
+                ("request".to_string(), "Add sessions and an audit log.".to_string()),
+            ]);
+            let chain = ChainRef { chain_id: RUN.into(), kind: "eagle1".into(), step: 1, total: 4, round: 1, lane: None };
+            store.set_tab_chain(&tab, Some(chain), None).unwrap();
+            store.pipeline_run_by_id_mut(RUN).expect("the run").set_autopilot_enabled(true);
+            store.set_tab_bridge(&tab, Some(BridgeTag { run_id: RUN.into(), stage: "planner".into() })).unwrap();
+            store.remember_claude_terminal_session(&tab, PLANNER_SID).unwrap();
+            store.save().unwrap();
+            tab
+        };
+        let bridge = BridgePlan {
+            run_id: RUN.into(),
+            stage_id: "planner".into(),
+            role_id: "role_planner".into(),
+            lane: None,
+            stage_key: "planner".into(),
+            kind: ResultKind::Planner,
+            autopilot: true,
+        };
+        let run_dir = prepare_stage(&host.runs, &bridge, &planner).expect("prepare the Planner");
+        write_run_repos(&run_dir, &host.repos).expect("repos.json");
+        host.start(
+            &StageLaunch {
+                run_id: RUN.into(),
+                tab_id: planner.clone(),
+                role_id: "role_planner".into(),
+                cwd: host.home.cwd.path().to_path_buf(),
+                prompt: "Plan the two backend changes.".into(),
+                session_id: PLANNER_SID.into(),
+                bridge: Some(launch_flags(ResultKind::Planner, Path::new(DCTERMINAL), &run_dir, RUN, "planner", &planner)),
+            },
+            &json!({ "turns": [{ "steps": [
+                { "tool": "ExitPlanMode", "input": { "plan": plan_two_backend_lanes() }, "permission": true },
+                { "reply": "Two independent backend lanes." }
+            ] }] }),
+            false,
+        );
+    }
+
+    /// Review fix (L2): two independent lanes in a repo with verify steps.
+    /// Lane A waits on its verification; lane B's Implementer finishes
+    /// during that wait and is held, not decided. Once A is marked
+    /// verified, B's turn is taken up (its check runs), B waits on its own
+    /// verification, and only once that is marked verified does B go on to
+    /// its PR Reviewer.
+    #[test]
+    fn a_lane_that_finishes_during_another_lanes_verify_wait_gets_its_own_verification() {
+        let data = TempDir::new("actor_l2_two_data");
+        let home = FakeHome::new("actor_l2_two");
+        let parent = TempDir::new("actor_l2_two_repos");
+        let backend = repo(&parent, "backend");
+        let repos = vec![RepoEntry {
+            name: "backend".into(),
+            folder: backend.display().to_string(),
+            check: Some("echo 'ok server/session 0.2s'".into()),
+            verify: Some(BACKEND_VERIFY.into()),
+        }];
+        let scenarios = HashMap::from([
+            ("role_plan_reviewer".to_string(), VecDeque::from([reviewed("APPROVED", json!([]))])),
+            ("role_implementer".to_string(), VecDeque::new()),
+            ("role_pr_reviewer".to_string(), VecDeque::from([reviewed("APPROVED", json!([])), reviewed("APPROVED", json!([]))])),
+        ]);
+        let host = host_with(data, home, repos, scenarios);
+        assert!(host.home.config.path().starts_with(test_root()), "{}", host.home.config.path().display());
+        let actors = RunActors::new(host.clone());
+
+        start_two_lane_planner(&host);
+
+        let deadline = Instant::now() + Duration::from_secs(120);
+        let mut lanes: Vec<(String, String, PathBuf)> = Vec::new();
+        let mut b_started = false;
+        let mut answered: Vec<String> = Vec::new();
+        loop {
+            drain_inbox(&host.runs, &mut |event| {
+                if let InboxEvent::Turn(turn) = event {
+                    let run_id = turn.run_id.clone();
+                    actors.send(&run_id, ActorMsg::Turn(turn));
+                }
+            });
+            let run = snapshot(&host);
+            let wait = run.autopilot.as_ref().and_then(|a| a.verify.clone());
+            let held_b = run.events.iter().any(|e| {
+                e.stage_id.as_deref() == Some("implementer") && e.summary.contains("finished while the run waits on your verification")
+            });
+            match (run.status, run.stop_reason) {
+                (RunStatus::Complete, _) => break,
+                (RunStatus::Waiting, Some(StopReason::Checkpoint)) if lanes.is_empty() => {
+                    lanes = fan_out_two_backend_lanes(&host, &run, &actors, &backend);
+                    let (lane, tab, wt) = &lanes[0];
+                    start_lane_terminal(&host, lane, tab, wt, "8c3f5d21-2b3c-4d4e-9f50-000000000201");
+                }
+                (RunStatus::Waiting, Some(StopReason::Checkpoint)) if wait.is_some() => {
+                    let wait = wait.unwrap();
+                    let lane = wait.lane.clone().expect("a lane");
+                    if lane == "pr1" && !b_started {
+                        // Lane B finishes its turn while A waits on you.
+                        let (lane_b, tab, wt) = &lanes[1];
+                        start_lane_terminal(&host, lane_b, tab, wt, "8c3f5d21-2b3c-4d4e-9f50-000000000202");
+                        b_started = true;
+                    } else if lane == "pr1" && !held_b {
+                        // Not yet: wait for B's turn to be held.
+                    } else {
+                        actors
+                            .ask(
+                                RUN,
+                                UserAction::Verify { stage_id: "implementer".into(), lane: Some(lane.clone()), verified: true, note: None },
+                                Duration::from_secs(60),
+                            )
+                            .expect("the verify answer");
+                        answered.push(lane);
+                    }
+                }
+                (RunStatus::Running, _) | (RunStatus::Waiting, Some(StopReason::Checkpoint)) => {}
+                (status, reason) => panic!(
+                    "the run stopped: {status:?} {reason:?}\nledger:\n{}\nstops: {:?}\n{}",
+                    ledger(&run),
+                    host.stops.lock().unwrap(),
+                    host.screens()
+                ),
+            }
+            assert!(Instant::now() < deadline, "the run never completed\nledger:\n{}\n{}", ledger(&run), host.screens());
+            std::thread::sleep(Duration::from_millis(30));
+        }
+
+        let run = snapshot(&host);
+        let all = ledger(&run);
+        // A first, then B: each lane was verified, once.
+        assert_eq!(answered, ["pr1", "pr2"], "{all}");
+        let records: Vec<(Option<&str>, &str)> = run.verifications.iter().map(|v| (v.lane.as_deref(), v.result.as_str())).collect();
+        assert_eq!(records, [(Some("pr1"), "verified"), (Some("pr2"), "verified")], "{all}");
+        let events = &run.events;
+        let held = events
+            .iter()
+            .position(|e| e.summary.contains("finished while the run waits on your verification"))
+            .expect("B was held");
+        let a_verified = events.iter().position(|e| e.kind == "verify" && e.lane_id.as_deref() == Some("pr1")).unwrap();
+        let b_check = run
+            .events
+            .iter()
+            .rposition(|e| e.kind == "gate" && e.lane_id.as_deref() == Some("pr2") && e.outcome.as_deref() == Some("passed"))
+            .expect("B's check ran");
+        let b_verified = events.iter().position(|e| e.kind == "verify" && e.lane_id.as_deref() == Some("pr2")).unwrap();
+        let b_review = events
+            .iter()
+            .position(|e| e.outcome.as_deref() == Some("advance") && e.lane_id.as_deref() == Some("pr2"))
+            .expect("B moved on");
+        assert!(held < a_verified, "B finished during A's wait\n{all}");
+        assert!(a_verified < b_check && b_check < b_verified && b_verified < b_review, "{all}");
+        assert!(run.events.iter().all(|e| !(e.lane_id.as_deref() == Some("pr2") && e.outcome.as_deref() == Some("skip"))), "{all}");
+        // Each lane's PR Reviewer opened in its own worktree.
+        let reviewers = host.launches.lock().unwrap().iter().filter(|l| l.role_id == "role_pr_reviewer").count();
+        assert_eq!(reviewers, 2, "{all}");
+        // Nothing is left held, and no turn was handed to you.
+        assert!(run.autopilot.as_ref().unwrap().held.is_empty(), "{:?}", run.autopilot);
+        assert!(run.events.iter().all(|e| !e.summary.ends_with("Hand it on yourself.")), "{all}");
+        assert_eq!(run.status, RunStatus::Complete);
+    }
+
+    /// Review fix (L2, M1): lane B's turn is held while A waits on its
+    /// verification; you then hand A on yourself instead of answering. The
+    /// wait ends with no answer, so B's held turn is not stranded: it gets
+    /// the "hand it on yourself" line and the held list is empty.
+    #[test]
+    fn a_verify_wait_you_hand_on_yourself_tells_you_about_the_held_turn() {
+        let data = TempDir::new("actor_l2_handon_data");
+        let home = FakeHome::new("actor_l2_handon");
+        let parent = TempDir::new("actor_l2_handon_repos");
+        let backend = repo(&parent, "backend");
+        let repos = vec![RepoEntry {
+            name: "backend".into(),
+            folder: backend.display().to_string(),
+            check: Some("echo ok".into()),
+            verify: Some(BACKEND_VERIFY.into()),
+        }];
+        let scenarios = HashMap::from([
+            ("role_plan_reviewer".to_string(), VecDeque::from([reviewed("APPROVED", json!([]))])),
+            ("role_implementer".to_string(), VecDeque::new()),
+            ("role_pr_reviewer".to_string(), VecDeque::from([reviewed("APPROVED", json!([]))])),
+        ]);
+        let host = host_with(data, home, repos, scenarios);
+        assert!(host.home.config.path().starts_with(test_root()), "{}", host.home.config.path().display());
+        let actors = RunActors::new(host.clone());
+        start_two_lane_planner(&host);
+
+        let deadline = Instant::now() + Duration::from_secs(90);
+        let mut lanes: Vec<(String, String, PathBuf)> = Vec::new();
+        let mut b_started = false;
+        loop {
+            drain_inbox(&host.runs, &mut |event| {
+                if let InboxEvent::Turn(turn) = event {
+                    let run_id = turn.run_id.clone();
+                    actors.send(&run_id, ActorMsg::Turn(turn));
+                }
+            });
+            let run = snapshot(&host);
+            let waiting_a = run.autopilot.as_ref().and_then(|a| a.verify.as_ref()).is_some_and(|w| w.lane.as_deref() == Some("pr1"));
+            let b_held = run.autopilot.as_ref().is_some_and(|a| a.held.iter().any(|h| h.lane.as_deref() == Some("pr2")));
+            if run.status == RunStatus::Waiting && lanes.is_empty() {
+                lanes = fan_out_two_backend_lanes(&host, &run, &actors, &backend);
+                let (lane, tab, wt) = &lanes[0];
+                start_lane_terminal(&host, lane, tab, wt, "8c3f5d21-2b3c-4d4e-9f50-000000000301");
+            } else if waiting_a && !b_started {
+                let (lane, tab, wt) = &lanes[1];
+                start_lane_terminal(&host, lane, tab, wt, "8c3f5d21-2b3c-4d4e-9f50-000000000302");
+                b_started = true;
+            } else if waiting_a && b_held {
+                break;
+            }
+            assert!(Instant::now() < deadline, "B was never held\nledger:\n{}\n{}", ledger(&run), host.screens());
+            std::thread::sleep(Duration::from_millis(30));
+        }
+
+        // You hand A on to its PR Reviewer yourself, without answering.
+        let a_tab = lanes[0].1.clone();
+        actors
+            .ask(
+                RUN,
+                UserAction::Send {
+                    source_tab_id: a_tab,
+                    target_role_id: "role_pr_reviewer".into(),
+                    values: None,
+                    handoff_plan: None,
+                    handoff_text: None,
+                    force: false,
+                },
+                Duration::from_secs(60),
+            )
+            .expect("your hand-on");
+        let run = snapshot(&host);
+        let all = ledger(&run);
+        let autopilot = run.autopilot.as_ref().unwrap();
+        assert!(autopilot.held.is_empty(), "{:?}", autopilot.held);
+        assert!(autopilot.verify.is_none());
+        let told = run.events.iter().find(|e| {
+            e.lane_id.as_deref() == Some("pr2") && e.outcome.as_deref() == Some("skip") && e.summary.ends_with("Hand it on yourself.")
+        });
+        assert!(told.is_some_and(|e| e.summary.starts_with("PR2 — Audit log: Implementer finished while the run waited")), "{all}");
+        assert!(run.verifications.is_empty(), "nothing was verified\n{all}");
     }
 }

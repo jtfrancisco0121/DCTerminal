@@ -22,11 +22,13 @@ const OUTPUT_CHARS: usize = 12_000;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GateResult {
-    /// `command`, `pullRequest` or `contract`.
+    /// `command`, `pullRequest`, `contract` or (L2) `verify`.
     pub kind: String,
-    /// What ran, e.g. `npm run check`.
+    /// What ran, e.g. `npm run check`; `backend check: …` for a repo's
+    /// check, `verify` or `backend verify` for verify steps (L2).
     pub label: String,
-    /// `passed`, `failed` or `skipped`.
+    /// `passed`, `failed` or `skipped`; a verify gate is `waiting` until
+    /// you answer it, and its summary is its steps (L2).
     pub status: String,
     pub summary: String,
     /// Last lines of the output (failures only carry what is useful).
@@ -46,6 +48,11 @@ impl GateResult {
 
     pub fn failed(&self) -> bool {
         self.status == "failed"
+    }
+
+    /// A `verify` gate (L2) waiting for you to mark it verified or failed.
+    pub fn waiting_verify(&self) -> bool {
+        self.kind == "verify" && self.status == "waiting"
     }
 
     /// An `auto` command check that found nothing to run, on a gate not
@@ -68,7 +75,8 @@ impl GateResult {
 }
 
 /// The folder's own check command for `"run": "auto"`: `npm run check`,
-/// then `cargo test`, then a real `npm test`. None when the folder has none.
+/// then `cargo test`, then a real `npm test`, then (L2) `go test ./...` for
+/// a Go module (`go.mod` at the folder's root). None when the folder has none.
 pub fn auto_check_command(cwd: &Path) -> Option<String> {
     let scripts = std::fs::read_to_string(cwd.join("package.json"))
         .ok()
@@ -90,6 +98,8 @@ pub fn auto_check_command(cwd: &Path) -> Option<String> {
     // `npm init` writes a test script that only fails.
     match script("test") {
         Some(test) if !test.contains("no test specified") => Some("npm test".into()),
+        // L2: a Go module with no npm check of its own (`koneksi-engine`).
+        _ if cwd.join("go.mod").is_file() => Some("go test ./...".into()),
         _ => None,
     }
 }
@@ -222,7 +232,7 @@ pub fn run_command_gate(cwd: &Path, run: &str, timeout: Option<Duration>) -> Gat
                 return GateResult::skipped(
                     "command",
                     "auto",
-                    "No check command found (no npm `check` or `test` script, no Cargo.toml).",
+                    "No check command found (no npm `check` or `test` script, no Cargo.toml, no go.mod).",
                 )
             }
         }
@@ -375,6 +385,40 @@ mod tests {
         )
         .unwrap();
         assert_eq!(auto_check_command(dir.path()).as_deref(), Some("npm run check"));
+    }
+
+    /// L2: a Go module's root picks `go test ./...`, after every check the
+    /// order already had: an npm `check` or a real npm `test`, and Cargo.
+    #[test]
+    fn auto_picks_go_test_for_a_go_module_only_when_nothing_before_it_applies() {
+        let dir = TempDir::new("gate_auto_go");
+        std::fs::write(dir.path().join("go.mod"), "module example.com/engine\n\ngo 1.22\n").unwrap();
+        assert_eq!(auto_check_command(dir.path()).as_deref(), Some("go test ./..."));
+        // `npm init`'s failing test script is not a check, so Go still applies.
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"scripts":{"test":"echo \"Error: no test specified\" && exit 1"}}"#,
+        )
+        .unwrap();
+        assert_eq!(auto_check_command(dir.path()).as_deref(), Some("go test ./..."));
+        std::fs::write(dir.path().join("package.json"), r#"{"scripts":{"test":"vitest"}}"#).unwrap();
+        assert_eq!(auto_check_command(dir.path()).as_deref(), Some("npm test"));
+        std::fs::write(dir.path().join("package.json"), r#"{"scripts":{"check":"node check.mjs"}}"#).unwrap();
+        assert_eq!(auto_check_command(dir.path()).as_deref(), Some("npm run check"));
+        std::fs::remove_file(dir.path().join("package.json")).unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\n").unwrap();
+        assert_eq!(auto_check_command(dir.path()).as_deref(), Some("cargo test"));
+
+        // Only the folder's root counts: a nested module is not this folder's check.
+        let nested = TempDir::new("gate_auto_go_nested");
+        std::fs::create_dir_all(nested.path().join("server")).unwrap();
+        std::fs::write(nested.path().join("server").join("go.mod"), "module x\n").unwrap();
+        assert_eq!(auto_check_command(nested.path()), None);
+        // A folder named go.mod is not a module file.
+        let odd = TempDir::new("gate_auto_go_dir");
+        std::fs::create_dir_all(odd.path().join("go.mod")).unwrap();
+        assert_eq!(auto_check_command(odd.path()), None);
+        assert_eq!(run_command_gate(odd.path(), "auto", None).status, "skipped");
     }
 
     #[test]
