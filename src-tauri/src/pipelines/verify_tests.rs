@@ -317,7 +317,8 @@ fn told_b(r: &PipelineRun) -> bool {
 /// them for the actor to decide.
 #[test]
 fn held_turns_are_released_to_you_whenever_the_wait_ends_without_an_answer() {
-    let ends: Vec<(&str, Box<dyn Fn(&mut PipelineRun)>)> = vec![
+    type End = Box<dyn Fn(&mut PipelineRun)>;
+    let ends: Vec<(&str, End)> = vec![
         ("hand on yourself", Box::new(|r| r.resume_after_you())),
         ("autopilot off", Box::new(|r| r.set_autopilot_enabled(false))),
         ("stopped", Box::new(|r| r.set_stopped(StopReason::CarryOutFailed))),
