@@ -36,8 +36,8 @@ Tracks C, L and R are what the QA 1.2.8 round needs. Track F is for new-feature 
 |---|---|
 | Final pipeline | Eagle-Eye only |
 | Source of tickets | ClickUp, or dictated |
-| ClickUp access | Your ClickUp token (no MCP server) |
-| Claude account for a run | Either account; it depends on the window |
+| ClickUp access | Your ClickUp token (no MCP server), **one ClickUp workspace per Claude account** (work and personal) |
+| Claude account for a run | Either account; it depends on the window. The window's account also picks the ClickUp token and workspace |
 | Write-back | Comments and status changes |
 | BMAD | Not installed, never run. Three ideas built into Eagle-Eye (E12) |
 | PR shape | One PR per repo per plan, stories inside it (E7) |
@@ -88,7 +88,7 @@ Live, on whichever account the window uses, in scratch clones. The answers go in
 
 | PR | What | Done when |
 |---|---|---|
-| **C1: ClickUp client and token** | A Rust module `clickup/` with blocking HTTPS calls on worker threads (the app has no async runtime). The token is stored in the OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service). It is never written to any JSON file, log or the run folder, and never passed to a `claude` process. **Settings › Integrations › ClickUp**: paste the token, **Test** (shows your workspace name), **Remove**. The workspace id is kept in `settings.json`. Rate limits: honour the limit headers, back off on 429, and run at most 4 calls at once (the same rule the GitHub poller uses) | Unit tests on recorded responses. A test fails if the token ever shows up in a store file, log line or launch argument |
+| **C1: ClickUp client and token** | A Rust module `clickup/` with blocking HTTPS calls on worker threads (the app has no async runtime). Tokens are stored **per Claude account** in the OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service), keyed by the account id. They are never written to any JSON file, log or the run folder, and never passed to a `claude` process. **Settings › Integrations › ClickUp** has one row per Claude account: paste the token, **Test** (shows that account's workspace), **Remove**. Each account's workspace id is kept in `settings.json`. A window only ever uses its own account's token. `DCT_CLICKUP_TOKEN` overrides the first account only, like `DCT_CLAUDE_CONFIG_DIR`. Rate limits: honour the limit headers, back off on 429, and run at most 4 calls at once (the same rule the GitHub poller uses) | Unit tests on recorded responses. A test fails if the token ever shows up in a store file, log line or launch argument |
 | **C2: Intake** | **Start round…** or **Start pipeline…** takes either a ClickUp source (an epic or task id with subtasks, or a list id, plus filters for priority, status and tags) or dictated text. ClickUp: Rust fetches the tasks and their comments and writes `tickets.json`. Dictated: the first stage gets the text, and Triage normalises it into the same shape. Tickets already closed are listed under "Excluded" with their status, as the QA doc does. A ticket edited after intake shows "changed since intake" on the overview, with **Pull again** | `tickets.json` for the QA 1.2.8 epic holds 29 open tickets and 3 excluded. Intake costs no Claude usage |
 | **C3: Write-back** | At the end of each run, and when you mark a ticket verified, the overview shows one proposal per ticket: a comment (the PR links, what changed, how it was verified) and a status change. The status comes from a mapping you set once per list (for example "verified" → `QA PASSED`), read from that list's real statuses. You tick, edit or skip each proposal, then **Send**. The app posts only the ticked ones and records each result (sent, failed with reason) in the run's ledger. Nothing is ever sent without a tick. No other writes: no creating tickets, no deleting, no reassigning | A test proves an unticked proposal is never sent. A failed post shows the ClickUp error and can be retried |
 
@@ -130,7 +130,7 @@ A round has its own folder, `rounds/<roundId>/`, holding `tickets.json`, `round.
 
 ## Schemas (`schema: 1`)
 
-- **tickets.json:** `source` (`clickup` with the epic or list id and the filters, or `dictated`), `fetchedAt`, `tickets[]` with `id`, `customId?`, `title`, `priority`, `status`, `url`, `description`, `comments[]` (author, date, text), `tags[]`, and `excluded[]` with the reason.
+- **tickets.json:** `source` (`clickup` with the Claude account id, the workspace id, the epic or list id and the filters, or `dictated`), `fetchedAt`, `tickets[]` with `id`, `customId?`, `title`, `priority`, `status`, `url`, `description`, `comments[]` (author, date, text), `tags[]`, and `excluded[]` with the reason.
 - **round.json:** `plans[]` with `id`, `title`, `tickets[]`, `repos[]`, `status` (`active`, `deferred`, `parked`), `reason?` and `wave`; `waves[]` with `n` and `why`; `mergeOrder` per repo. The bridge checks that every ticket is in a plan or excluded, every plan's repos are known, and waves have no cycles.
 - **tasks.json (extended):** each task adds optional `repo`, `stories[]` (`id`, `title`, `tickets[]`, `checkpoint?`) and `tickets[]`. A task without these fields behaves as today.
 - **Implementer result (extended):** an optional `story` (the story id this turn finished).
@@ -143,6 +143,7 @@ Rows marked **(needs JT)** wait for your OK; the rest proceed as written.
 | # | Question | Decision and why | Reverse if |
 |---|---|---|---|
 | E1 | Who calls ClickUp: the app, or Claude through an MCP server or `curl`? | The app. A token given to a stage would end up in prompts, transcripts and the session log. The app also cannot block an MCP server's write tools: the project rule is to never pass `--disallowedTools` (`provider/claude.rs:16`). An app-side client works the same for both Claude accounts | ClickUp ships an official read-only scope for tokens |
+| E2a | One ClickUp for the app, or one per Claude account? | **Decided by JT 2026-10-22:** one per Claude account (work and personal use different workspaces). Intake, the round and write-back all use the account of the window the round started in, recorded in `tickets.json` | — |
 | E2 | Where is the token kept? | The OS keychain, entered in Settings. Not in `settings.json`, not in an env var by default. This is the app's first secret, so C1 adds the test that it never leaks | You'd rather set `DCT_CLICKUP_TOKEN` yourself (supported as an override) |
 | E3 | Intake live, or a snapshot? | A snapshot per run, so the plan doesn't change under you mid-round. "Changed since intake" plus **Pull again** covers edits | — |
 | E4 | Which ClickUp writes are allowed? | Comments and status changes only, each ticked by you. Never create, delete, reassign or edit descriptions | — |
