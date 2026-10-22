@@ -165,20 +165,21 @@ fn isolate_webview_data_dir() {
 ///   start a child: on a first run, or with a stale PATH cache,
 ///   `apply_login_path` runs `$SHELL -l -i -c …`, and that shell (and
 ///   anything its rc files start) would inherit the token.
-/// - The login PATH replaces the inherited one. A cached login PATH is
-///   refreshed from `setup`, never from a thread started here.
 /// - The scrub drops a parent Claude Code session's variables, so Claude tabs
 ///   (and a `claude` typed in a shell tab) don't take themselves for nested
-///   sessions and skip their session log. The per-command
-///   `CLAUDE_CONFIG_DIR` and `CLAUDE_CODE_EXECUTABLE` are applied later and
-///   are untouched.
+///   sessions and skip their session log. It also runs before the login
+///   shell, so that shell never sees a parent session's tokens either. The
+///   per-command `CLAUDE_CONFIG_DIR` and `CLAUDE_CODE_EXECUTABLE` are applied
+///   later and are untouched.
+/// - The login PATH replaces the inherited one. A cached login PATH is
+///   refreshed from `setup`, never from a thread started here.
 const STARTUP_ENV_STEPS: [(&str, fn()); 4] = [
     ("take_clickup_token", clickup::secret::take_env_token),
-    ("apply_login_path", shell_env::apply_login_path),
     (
         "scrub_parent_claude_session",
         shell_env::scrub_parent_claude_session,
     ),
+    ("apply_login_path", shell_env::apply_login_path),
     ("isolate_webview_data_dir", isolate_webview_data_dir),
 ];
 
@@ -454,15 +455,17 @@ mod startup_tests {
             names,
             [
                 "take_clickup_token",
-                "apply_login_path",
                 "scrub_parent_claude_session",
+                "apply_login_path",
                 "isolate_webview_data_dir",
             ]
         );
         // The names match the functions, so a reorder cannot hide behind them.
         let first: fn() = clickup::secret::take_env_token;
         assert!(std::ptr::fn_addr_eq(STARTUP_ENV_STEPS[0].1, first));
+        let scrub: fn() = shell_env::scrub_parent_claude_session;
+        assert!(std::ptr::fn_addr_eq(STARTUP_ENV_STEPS[1].1, scrub));
         let shell: fn() = shell_env::apply_login_path;
-        assert!(std::ptr::fn_addr_eq(STARTUP_ENV_STEPS[1].1, shell));
+        assert!(std::ptr::fn_addr_eq(STARTUP_ENV_STEPS[2].1, shell));
     }
 }
