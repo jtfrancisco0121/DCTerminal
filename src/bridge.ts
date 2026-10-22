@@ -376,6 +376,41 @@ export type PipelineRun = {
   engineNote?: string | null;
   /** A Restart or Resume switched this run from the bridge to engine 1 mid-run: manual for good, autopilot cannot be turned on. */
   manualOnly?: boolean;
+  /** L2: your answers to verify gates, oldest first, one per answer. A lane is verified when its latest says so. */
+  verifications?: VerifyRecord[];
+};
+
+/** L2: the verify gate a run waits on (`autopilot.verify`), while it waits with `checkpoint`. */
+export type VerifyWait = {
+  stageId: string;
+  /** The lane (pull request); absent for a run that did not fan out. */
+  lane?: string | null;
+  /** `verify`, or `backend verify` for a repo's steps. */
+  label: string;
+  steps: string;
+  /** The decided turn the answer is for. */
+  turn?: string | null;
+  /** The pull requests the stage reported that turn. */
+  prs?: string[];
+  at: string;
+};
+
+/** L2: one answer to a verify gate. */
+export type VerifyRecord = {
+  stageId: string;
+  lane?: string | null;
+  repo?: string | null;
+  round: number;
+  /** Counts the answers in that round from 1. */
+  attempt: number;
+  label: string;
+  steps: string;
+  result: "verified" | "failed";
+  note?: string | null;
+  /** `you`. */
+  by: string;
+  at: string;
+  prs?: string[];
 };
 
 /**
@@ -437,10 +472,11 @@ export type RunEvent = {
 };
 
 export type GateResult = {
-  /** `command`, `pullRequest` or `contract`. */
+  /** `command`, `pullRequest`, `contract` or (L2) `verify`. */
   kind: string;
+  /** What ran; `backend check: <command>` for a repo's check (L2). */
   label: string;
-  /** `passed`, `failed` or `skipped`. */
+  /** `passed`, `failed` or `skipped`; a verify gate is `waiting` until you answer it, and its summary is its steps (L2). */
   status: string;
   summary: string;
   output?: string;
@@ -457,6 +493,8 @@ export type RunAutopilot = {
   gateRetries?: Record<string, number>;
   /** Turns already decided on. */
   decided?: string[];
+  /** L2: the verify gate the run waits on, while it does. */
+  verify?: VerifyWait | null;
 };
 
 export type ClosedTabSummary = {
@@ -1281,7 +1319,9 @@ export type ActorAction =
   /** Record a hand-off you make yourself outside the actor (to a Chat tab); warns like Send when autopilot made it first. */
   | { kind: "recordHandoff"; sourceTabId: string; back: boolean; force?: boolean }
   /** Drop that record after the hand-off failed. */
-  | { kind: "releaseHandoff"; sourceTabId: string; back: boolean };
+  | { kind: "releaseHandoff"; sourceTabId: string; back: boolean }
+  /** L2: answer the verify gate the run waits on: verified passes it; failed sends `note` back to the stage as a round. */
+  | { kind: "verify"; stageId: string; lane: string | null; verified: boolean; note?: string | null };
 
 /** What a button did on an engine-2 run. */
 export type ActorOutcome = {
@@ -2235,6 +2275,10 @@ export type RepoEntry = {
   /** `backend`: letters, digits, `-` and `_`. */
   name: string;
   folder: string;
+  /** L2: the command that checks a lane in this repo; replaces the stage's command gates there. One line, at most 2000 characters. */
+  check?: string | null;
+  /** L2: steps you verify yourself for a lane in this repo, after its check passes. At most 2000 characters. */
+  verify?: string | null;
 };
 
 export async function getReposSettings(): Promise<RepoEntry[]> {

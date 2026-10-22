@@ -58,7 +58,13 @@ function StageStrip({ def }: { def: PipelineDef }) {
           stage.alsoReviewers?.length ? `with ${stage.alsoReviewers.join(", ")} in parallel` : null,
           stage.gates?.length
             ? `checks: ${stage.gates
-                .map((g) => (g.kind === "command" ? `${g.run}${g.optional ? " (optional)" : ""}` : "pull request"))
+                .map((g) =>
+                  g.kind === "command"
+                    ? `${g.run}${g.optional ? " (optional)" : ""}`
+                    : g.kind === "verify"
+                      ? "verified by you"
+                      : "pull request",
+                )
                 .join(", ")}`
             : null,
           back

@@ -4903,6 +4903,15 @@ mark.search-hit-current {
   overflow-wrap: anywhere;
 }
 
+/* L2: a repo's check and verify steps under its name. */
+.repos-list .repos-gates {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .settings-inline-field {
   display: grid;
   grid-template-columns: 11rem minmax(0, 20rem);
@@ -5441,6 +5450,35 @@ mark.search-hit-current {
   color: var(--attention);
   font-weight: 600;
   font-size: var(--text-sm);
+}
+
+/* L2: a verify gate the run waits on. */
+.pipeline-verify {
+  margin: 0.6rem 0 0;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--attention);
+  border-radius: 6px;
+}
+
+.pipeline-verify h3 {
+  margin: 0 0 0.25rem;
+  font-size: var(--text-sm);
+}
+
+.pipeline-verify-steps {
+  margin: 0.4rem 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: var(--text-sm);
+}
+
+.pipeline-verify-prs {
+  margin: 0.25rem 0 0.5rem;
+  padding-left: 1.1rem;
+}
+
+.pipeline-verify-prs code {
+  overflow-wrap: anywhere;
 }
 
 .pipeline-followups {
