@@ -3,23 +3,31 @@
 //! app, the rate-limit headers honoured, a 429 backed off and retried, and
 //! errors in plain English. Nothing here writes to ClickUp.
 //!
-//! ClickUp counts calls per token per minute. When a reply says none are
-//! left, later calls wait for the reset instead of spending a 429 each; a
-//! wait longer than [`MAX_WAIT_SECS`] is returned as an error instead, so a
-//! command never hangs on it.
+//! ClickUp counts calls per token per minute, so each token has its own
+//! rate-limit window: one account's spent limit never stalls another's
+//! calls. When a reply says none are left, later calls with that token wait
+//! for the reset instead of spending a 429 each; a wait longer than
+//! [`MAX_WAIT_SECS`] is returned as an error instead, so a command never
+//! hangs on it.
 
 use super::transport::{NoReply, Reply, Transport, REQUEST_TIMEOUT};
 use super::types::{Comment, Comments, List, Task, TaskPage, Team, Teams};
 use super::{valid_id, ClickUpToken};
 use serde::de::DeserializeOwned;
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::fmt;
-use std::sync::{Condvar, Mutex};
+use std::sync::{Condvar, LazyLock, Mutex};
 use std::time::Duration;
 
 /// ClickUp calls in flight at once, app-wide (the GitHub poller's rule).
 pub const MAX_IN_FLIGHT: usize = 4;
 /// The longest a call waits for the rate limit before giving up.
 const MAX_WAIT_SECS: u64 = 60;
+/// The longest wait a rate-limit header is taken to ask for. ClickUp's window
+/// is a minute, so more is a bad header; the cap also keeps the time
+/// arithmetic in range whatever the header says.
+const MAX_HEADER_WAIT_SECS: u64 = 3_600;
 /// A 429 is retried this many times.
 const RETRIES_ON_429: u32 = 2;
 /// The wait after a 429 that names no reset time.
@@ -116,11 +124,24 @@ struct Window {
     reset_at: Option<i64>,
 }
 
-/// Shared by every call: the in-flight cap and the rate-limit window.
+/// Which token a window belongs to: the first 8 bytes of the token's
+/// SHA-256, so the token itself is not kept here. It is a lookup key only,
+/// never logged or printed.
+type TokenKey = [u8; 8];
+
+fn token_key(token: &ClickUpToken) -> TokenKey {
+    let digest = Sha256::digest(token.expose().as_bytes());
+    let mut key = [0; 8];
+    key.copy_from_slice(&digest[..8]);
+    key
+}
+
+/// Shared by every call: the in-flight cap, app-wide, and one rate-limit
+/// window per token, since ClickUp counts each token on its own.
 pub struct Gate {
     in_flight: Mutex<usize>,
     freed: Condvar,
-    window: Mutex<Window>,
+    windows: Mutex<HashMap<TokenKey, Window>>,
 }
 
 impl Default for Gate {
@@ -130,20 +151,17 @@ impl Default for Gate {
 }
 
 impl Gate {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             in_flight: Mutex::new(0),
             freed: Condvar::new(),
-            window: Mutex::new(Window {
-                remaining: None,
-                reset_at: None,
-            }),
+            windows: Mutex::new(HashMap::new()),
         }
     }
 
     /// The app's one gate.
     pub fn shared() -> &'static Gate {
-        static GATE: Gate = Gate::new();
+        static GATE: LazyLock<Gate> = LazyLock::new(Gate::new);
         &GATE
     }
 
@@ -156,30 +174,49 @@ impl Gate {
         Permit(self)
     }
 
-    /// Seconds to wait before the next call, when no calls are left.
-    fn wait_needed(&self, now: i64) -> u64 {
-        let mut window = self.window.lock().unwrap_or_else(|e| e.into_inner());
+    /// Seconds to wait before `key`'s next call, when it has no calls left.
+    fn wait_needed(&self, key: &TokenKey, now: i64) -> u64 {
+        let mut windows = self.windows.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(window) = windows.get(key) else {
+            return 0;
+        };
         match (window.remaining, window.reset_at) {
-            (Some(0), Some(reset)) if reset > now => (reset - now) as u64,
+            (Some(0), Some(reset)) if reset > now => secs_until(reset, now),
             (Some(0), _) => {
-                *window = Window::default();
+                // The reset has passed: forget the window until a reply says more.
+                windows.remove(key);
                 0
             }
             _ => 0,
         }
     }
 
-    fn note(&self, reply: &Reply, now: i64, wait_429: Option<u64>) {
-        let mut window = self.window.lock().unwrap_or_else(|e| e.into_inner());
+    fn note(&self, key: &TokenKey, reply: &Reply, now: i64, wait_429: Option<u64>) {
+        if reply.rate_remaining.is_none() && wait_429.is_none() {
+            return;
+        }
+        let mut windows = self.windows.lock().unwrap_or_else(|e| e.into_inner());
+        let window = windows.entry(*key).or_default();
         if let Some(remaining) = reply.rate_remaining {
             window.remaining = Some(remaining);
             window.reset_at = reply.rate_reset;
         }
         if let Some(wait) = wait_429 {
             window.remaining = Some(0);
-            window.reset_at = Some(now + wait as i64);
+            window.reset_at = Some(now.saturating_add(clamp_wait(wait) as i64));
         }
     }
+}
+
+/// A header's wait, capped at [`MAX_HEADER_WAIT_SECS`].
+fn clamp_wait(secs: u64) -> u64 {
+    secs.min(MAX_HEADER_WAIT_SECS)
+}
+
+/// Whole seconds from `now` to `reset` (0 when it has passed), capped, so an
+/// absurd reset time cannot overflow.
+fn secs_until(reset: i64, now: i64) -> u64 {
+    clamp_wait(u64::try_from(reset.saturating_sub(now)).unwrap_or(0))
 }
 
 struct Permit<'a>(&'a Gate);
@@ -197,7 +234,8 @@ impl Drop for Permit<'_> {
 fn wait_after_429(reply: &Reply, now: i64) -> u64 {
     reply
         .retry_after
-        .or_else(|| reply.rate_reset.map(|reset| (reset - now).max(1) as u64))
+        .map(clamp_wait)
+        .or_else(|| reply.rate_reset.map(|reset| secs_until(reset, now).max(1)))
         .unwrap_or(DEFAULT_429_WAIT)
 }
 
@@ -252,6 +290,8 @@ impl TaskRef {
 pub struct ClickUp<'a> {
     transport: &'a dyn Transport,
     token: &'a ClickUpToken,
+    /// The token's rate-limit window in the gate.
+    key: TokenKey,
     gate: &'a Gate,
     clock: &'a dyn Clock,
 }
@@ -270,6 +310,7 @@ impl<'a> ClickUp<'a> {
         Self {
             transport,
             token,
+            key: token_key(token),
             gate,
             clock,
         }
@@ -279,21 +320,27 @@ impl<'a> ClickUp<'a> {
     fn get<T: DeserializeOwned>(&self, path: &str, what: &'static str) -> Result<T, ClickUpError> {
         let mut retries = 0;
         loop {
-            let wait = self.gate.wait_needed(self.clock.now());
+            let wait = self.gate.wait_needed(&self.key, self.clock.now());
             if wait > MAX_WAIT_SECS {
                 return Err(ClickUpError::RateLimited(wait));
             }
             if wait > 0 {
                 self.clock.sleep(wait);
             }
-            let reply = {
-                let _permit = self.gate.acquire();
-                self.transport.get(path, self.token)
+            let permit = self.gate.acquire();
+            // Waiting for a permit takes time, and a call that finished
+            // meanwhile may have spent the window: check again, and wait
+            // without holding the permit.
+            if self.gate.wait_needed(&self.key, self.clock.now()) > 0 {
+                drop(permit);
+                continue;
             }
-            .map_err(ClickUpError::NoReply)?;
+            let reply = self.transport.get(path, self.token);
+            drop(permit);
+            let reply = reply.map_err(ClickUpError::NoReply)?;
             let now = self.clock.now();
             let wait_429 = (reply.status == 429).then(|| wait_after_429(&reply, now));
-            self.gate.note(&reply, now, wait_429);
+            self.gate.note(&self.key, &reply, now, wait_429);
             return match reply.status {
                 200..=299 => {
                     serde_json::from_str(&reply.body).map_err(|_| ClickUpError::Unreadable)
@@ -766,6 +813,7 @@ pub(crate) mod tests {
 
         let far = Gate::new();
         far.note(
+            &token_key(&token),
             &Reply {
                 rate_remaining: Some(0),
                 rate_reset: Some(NOW + 600),
@@ -781,6 +829,98 @@ pub(crate) mod tests {
         assert_eq!(err, ClickUpError::RateLimited(600));
         assert!(idle.paths().is_empty(), "no call is spent on a known 429");
     }
+
+    fn spent(reset: i64) -> Reply {
+        Reply {
+            status: 200,
+            rate_remaining: Some(0),
+            rate_reset: Some(reset),
+            body: r#"{"teams":[]}"#.into(),
+            ..Reply::default()
+        }
+    }
+
+    #[test]
+    fn one_tokens_spent_limit_does_not_delay_another() {
+        let (a, b) = (token(), ClickUpToken::parse("pk_test_OTHER").unwrap());
+        let api = Recorded::default()
+            .on("/team", Ok(spent(NOW + 30)))
+            .on("/team", ok(r#"{"teams":[]}"#.into()))
+            .on("/team", ok(r#"{"teams":[]}"#.into()));
+        let (gate, clock) = (Gate::new(), FakeClock::at(NOW));
+        ClickUp::with(&api, &a, &gate, &clock).teams().unwrap();
+        assert_eq!(gate.wait_needed(&token_key(&a), NOW), 30);
+        // B has its own window: no wait, and its reply leaves A's alone.
+        ClickUp::with(&api, &b, &gate, &clock).teams().unwrap();
+        assert!(clock.slept.lock().unwrap().is_empty());
+        assert_eq!(gate.wait_needed(&token_key(&b), NOW), 0);
+        assert_eq!(gate.wait_needed(&token_key(&a), NOW), 30);
+        // A still waits for its own reset.
+        ClickUp::with(&api, &a, &gate, &clock).teams().unwrap();
+        assert_eq!(*clock.slept.lock().unwrap(), vec![30]);
+        let auth: Vec<String> = api.calls.lock().unwrap().iter().map(|c| c.1.clone()).collect();
+        assert_eq!(auth, ["pk_test_TOKEN", "pk_test_OTHER", "pk_test_TOKEN"]);
+    }
+
+    #[test]
+    fn absurd_rate_limit_headers_do_not_overflow() {
+        let key = token_key(&token());
+        let gate = Gate::new();
+        gate.note(&key, &spent(i64::MAX), i64::MIN + 1, None);
+        assert_eq!(gate.wait_needed(&key, i64::MIN + 1), MAX_HEADER_WAIT_SECS);
+        gate.note(&key, &Reply::default(), i64::MAX - 1, Some(u64::MAX));
+        assert_eq!(gate.wait_needed(&key, i64::MAX - 2), 2);
+        let reply = Reply {
+            retry_after: Some(u64::MAX),
+            ..Reply::default()
+        };
+        assert_eq!(wait_after_429(&reply, NOW), MAX_HEADER_WAIT_SECS);
+        let reply = Reply {
+            rate_reset: Some(i64::MIN),
+            ..Reply::default()
+        };
+        assert_eq!(wait_after_429(&reply, i64::MAX), 1);
+    }
+
+    /// A clock whose second reading comes after another call spent the
+    /// window, as happens while a call waits for a permit.
+    struct SpentWhileQueued<'a> {
+        inner: FakeClock,
+        gate: &'a Gate,
+        key: TokenKey,
+        reads: AtomicUsize,
+    }
+
+    impl Clock for SpentWhileQueued<'_> {
+        fn now(&self) -> i64 {
+            if self.reads.fetch_add(1, Ordering::SeqCst) == 1 {
+                self.gate.note(&self.key, &spent(NOW + 5), NOW, None);
+            }
+            self.inner.now()
+        }
+
+        fn sleep(&self, secs: u64) {
+            self.inner.sleep(secs);
+        }
+    }
+
+    #[test]
+    fn a_call_that_waited_for_a_permit_checks_the_window_again() {
+        let token = token();
+        let gate = Gate::new();
+        let clock = SpentWhileQueued {
+            inner: FakeClock::at(NOW),
+            gate: &gate,
+            key: token_key(&token),
+            reads: AtomicUsize::new(0),
+        };
+        let api = Recorded::default().on("/team", ok(r#"{"teams":[]}"#.into()));
+        ClickUp::with(&api, &token, &gate, &clock).teams().unwrap();
+        // It waited for the reset instead of sending into a spent window.
+        assert_eq!(*clock.inner.slept.lock().unwrap(), vec![5]);
+        assert_eq!(api.paths().len(), 1);
+    }
+
 
     /// Counts calls in flight; each one takes a moment.
     struct Slow {
