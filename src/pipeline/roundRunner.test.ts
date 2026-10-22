@@ -15,7 +15,7 @@ describe("round runner rules (R2)", () => {
     };
     const disabled: PipelineDef = { ...BUILT_IN_PIPELINES[1], id: "off", disabled: "A role is gone." };
     const ids = planPipelines([...BUILT_IN_PIPELINES, parallel, disabled]).map((def) => def.id);
-    expect(ids).toEqual(["eagle1", "eagle2"]);
+    expect(ids).toEqual(["eagle1", "eagle2", "eagle-eye-l"]);
   });
 
   it("counts done plans against the plans in the round", () => {

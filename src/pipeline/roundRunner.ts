@@ -11,8 +11,8 @@ export const MAX_RUNS_AT_ONCE = 8;
 
 /**
  * Pipelines a round can run each plan with: enabled, on engine 2 (every
- * stage a planner, a reviewer with no parallel reviewers, or an
- * implementer), and not a round's own pipeline.
+ * stage a planner, a reviewer with no parallel reviewers, an implementer,
+ * or an artifact stage, F1), and not a round's own pipeline.
  */
 export function planPipelines(defs: readonly PipelineDef[]): PipelineDef[] {
   return defs.filter(
@@ -22,7 +22,12 @@ export function planPipelines(defs: readonly PipelineDef[]): PipelineDef[] {
       !def.stages.some((stage) => stage.round) &&
       def.stages.every((stage) => {
         const kind = stageKind(stage);
-        return kind === "planner" || kind === "implementer" || (kind === "reviewer" && !(stage.alsoReviewers ?? []).length);
+        return (
+          kind === "planner" ||
+          kind === "implementer" ||
+          kind === "artifact" ||
+          (kind === "reviewer" && !(stage.alsoReviewers ?? []).length)
+        );
       }),
   );
 }
