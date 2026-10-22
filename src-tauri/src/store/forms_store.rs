@@ -6,7 +6,9 @@
 //! folder (`lastUsed.cwd`) is still used.
 
 use crate::store::forms_types::{FormSnapshot, FormsFile, FORMS_SCHEMA_VERSION};
-use crate::store::json_io::{read_json_or_recover_with, set_aside_other_version, write_json_atomic};
+use crate::store::json_io::{
+    read_json_or_recover_with, set_aside_other_version, write_json_atomic,
+};
 use chrono::Utc;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

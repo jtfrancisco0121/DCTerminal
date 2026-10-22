@@ -55,8 +55,15 @@ fn legacy_state_migrates_to_claude_and_keeps_the_cursor_id() {
         Some("11111111-2222-3333-4444-555555555555")
     );
     assert_eq!(chat.sessions.claude, None);
-    assert!(chat.session.is_none(), "a Cursor id must not resume under Claude");
-    assert!(chat.provider_notice.as_deref().unwrap().contains("Now using Claude"));
+    assert!(
+        chat.session.is_none(),
+        "a Cursor id must not resume under Claude"
+    );
+    assert!(chat
+        .provider_notice
+        .as_deref()
+        .unwrap()
+        .contains("Now using Claude"));
     let term = store.tab_by_id("tab_term").unwrap();
     assert_eq!(term.provider, Some(ProviderId::Claude));
     assert!(term.sessions.claude.is_none());
@@ -74,7 +81,12 @@ fn legacy_state_migrates_to_claude_and_keeps_the_cursor_id() {
     let again = StateStore::open_path(path).unwrap();
     assert!(again.data.migrations.claude_first);
     assert_eq!(
-        again.tab_by_id("tab_chat").unwrap().sessions.cursor.as_deref(),
+        again
+            .tab_by_id("tab_chat")
+            .unwrap()
+            .sessions
+            .cursor
+            .as_deref(),
         Some("11111111-2222-3333-4444-555555555555")
     );
     let _ = std::fs::remove_dir_all(dir);
@@ -161,11 +173,19 @@ fn a_start_that_names_its_provider_launches_with_it() {
     let dir = temp_dir("start_as");
     let mut store = StateStore::open_path(dir.join("state.json")).unwrap();
     assert_eq!(store.new_tab_provider, ProviderId::Claude);
-    assert_eq!(store.provider_for_start_as(None, Some(ProviderId::Cursor)), ProviderId::Cursor);
+    assert_eq!(
+        store.provider_for_start_as(None, Some(ProviderId::Cursor)),
+        ProviderId::Cursor
+    );
     assert_eq!(store.provider_for_start_as(None, None), ProviderId::Claude);
-    let id = store.create_draft_tab(&role(), "/w/app", true, None).unwrap();
+    let id = store
+        .create_draft_tab(&role(), "/w/app", true, None)
+        .unwrap();
     store.set_tab_provider(&id, ProviderId::Cursor).unwrap();
-    assert_eq!(store.provider_for_start_as(Some(&id), None), ProviderId::Cursor);
+    assert_eq!(
+        store.provider_for_start_as(Some(&id), None),
+        ProviderId::Cursor
+    );
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -296,7 +316,10 @@ fn claude_accounts_migrate_from_config_dir_and_env_is_only_the_first() {
     assert_eq!(accounts.len(), 1);
     assert_eq!(accounts[0].id, "default");
     assert_eq!(accounts[0].name, "Personal");
-    assert_eq!(accounts[0].config_dir.as_deref(), Some("~/.claude-account2"));
+    assert_eq!(
+        accounts[0].config_dir.as_deref(),
+        Some("~/.claude-account2")
+    );
 
     let mut named = store.providers().clone();
     named.claude.accounts.push(ClaudeAccount {

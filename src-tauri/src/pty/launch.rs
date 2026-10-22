@@ -218,7 +218,6 @@ fn effective_mode(
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,7 +258,11 @@ mod tests {
             "role_codebase_audit",
             "role_custom",
         ] {
-            assert_eq!(role_terminal_flags(role, None, RunMode::Default), yolo, "{role}");
+            assert_eq!(
+                role_terminal_flags(role, None, RunMode::Default),
+                yolo,
+                "{role}"
+            );
         }
     }
 

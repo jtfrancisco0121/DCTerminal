@@ -36,7 +36,8 @@ pub struct TabSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pipeline_run_id: Option<String>,    /// Provider this tab uses (`claude` | `cursor`).
+    pub pipeline_run_id: Option<String>,
+    /// Provider this tab uses (`claude` | `cursor`).
     pub provider: crate::provider::ProviderId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_notice: Option<String>,
@@ -73,7 +74,6 @@ pub(crate) fn tab_permission_mode(
             crate::provider::claude::claude_terminal_role_mode(role_id, stage_kind).to_string()
         })
 }
-
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -191,10 +191,7 @@ pub fn new_draft_tab(
 
 /// Clear the one-line provider notice after the user has seen it.
 #[tauri::command]
-pub fn ack_provider_notice(
-    tab_id: String,
-    store: State<Mutex<StateStore>>,
-) -> Result<(), String> {
+pub fn ack_provider_notice(tab_id: String, store: State<Mutex<StateStore>>) -> Result<(), String> {
     let mut store = store.lock().map_err(|e| e.to_string())?;
     store.set_provider_notice(&tab_id, None)
 }
@@ -685,11 +682,12 @@ mod pipeline_tests {
         let overview_id = store
             .create_pipeline_workspace(&roles, cwd, "full", &FULL_PIPELINE_ROLE_IDS, "planner")
             .unwrap();
-        let active = store
-            .tab_by_id(&overview_id)
-            .expect("overview tab record");
+        let active = store.tab_by_id(&overview_id).expect("overview tab record");
         assert_eq!(active.kind, "pipeline_overview");
-        assert_eq!(store.data.active_tab_id.as_deref(), Some(overview_id.as_str()));
+        assert_eq!(
+            store.data.active_tab_id.as_deref(),
+            Some(overview_id.as_str())
+        );
         assert_eq!(store.data.pipeline_runs.len(), 1);
         assert_eq!(store.data.pipeline_runs[0].tab_ids.len(), 4);
         for role_id in [
@@ -735,9 +733,7 @@ mod pipeline_tests {
                 "implementer",
             )
             .unwrap();
-        let active = store
-            .tab_by_id(&overview_id)
-            .expect("overview tab record");
+        let active = store.tab_by_id(&overview_id).expect("overview tab record");
         assert_eq!(active.kind, "pipeline_overview");
         assert_eq!(store.data.pipeline_runs[0].kind, "execute");
         assert_eq!(store.data.pipeline_runs[0].tab_ids.len(), 2);
@@ -753,7 +749,8 @@ mod permission_mode_tests {
     #[test]
     fn claude_role_terminals_report_their_permission_mode() {
         assert_eq!(
-            tab_permission_mode(ProviderId::Claude, "terminal", "role", "implementer", None).as_deref(),
+            tab_permission_mode(ProviderId::Claude, "terminal", "role", "implementer", None)
+                .as_deref(),
             Some("auto")
         );
         assert_eq!(
@@ -776,7 +773,13 @@ mod permission_mode_tests {
             "chainId": "ee_8", "kind": id, "step": 1, "total": 1
         }))
         .unwrap();
-        let mode = tab_permission_mode(ProviderId::Claude, "terminal", "role", "role_custom_planner", Some(&chain));
+        let mode = tab_permission_mode(
+            ProviderId::Claude,
+            "terminal",
+            "role",
+            "role_custom_planner",
+            Some(&chain),
+        );
         unregister_for_test(id);
         assert_eq!(mode.as_deref(), Some("plan"));
     }
@@ -830,10 +833,14 @@ mod first_stage_tests {
             "stages": [{ "id": "a", "roleId": "role_gone", "title": "A" }]
         }))
         .unwrap();
-        def.disabled = Some("stage \"a\" uses the role \"role_gone\", which does not exist.".into());
+        def.disabled =
+            Some("stage \"a\" uses the role \"role_gone\", which does not exist.".into());
         register_for_test(def);
         let err = first_stage("user_disabled").unwrap_err();
         unregister_for_test("user_disabled");
-        assert!(err.contains("Lost role") && err.contains("role_gone"), "{err}");
+        assert!(
+            err.contains("Lost role") && err.contains("role_gone"),
+            "{err}"
+        );
     }
 }

@@ -547,10 +547,11 @@ pub fn cached_claude_version(claude: &Path, config: &ConfigDirInfo) -> Option<St
     });
     let cache = VERSIONS.get_or_init(|| Mutex::new(HashMap::new()));
     if let Some(key) = &key {
-        let hit = cache
-            .lock()
-            .ok()
-            .and_then(|map| map.get(claude).filter(|(seen, _)| seen == key).map(|(_, v)| v.clone()));
+        let hit = cache.lock().ok().and_then(|map| {
+            map.get(claude)
+                .filter(|(seen, _)| seen == key)
+                .map(|(_, v)| v.clone())
+        });
         if hit.is_some() {
             return hit;
         }

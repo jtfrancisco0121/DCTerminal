@@ -409,13 +409,19 @@ mod tests {
         assert_eq!(store.data.handoffs.len(), MAX_HANDOFFS);
         let kept = store.get(&bound.id).unwrap().expect("bound record kept");
         assert_eq!(kept.target_tab_id.as_deref(), Some("tab_live"));
-        assert_eq!(kept.plan_text.chars().count(), JSON_PLAN_CHARS + 1, "sidecar kept");
+        assert_eq!(
+            kept.plan_text.chars().count(),
+            JSON_PLAN_CHARS + 1,
+            "sidecar kept"
+        );
         assert_eq!(store.for_target_tab("tab_live").unwrap().id, bound.id);
         // The oldest unbound ones went instead.
         assert!(store.list().iter().all(|item| item.title != "Plan 0"));
 
         // Once its tab is gone, it is dropped like any other.
-        store.insert_keeping(draft("one more"), &HashSet::new()).unwrap();
+        store
+            .insert_keeping(draft("one more"), &HashSet::new())
+            .unwrap();
         assert!(store.get(&bound.id).unwrap().is_none());
         let sidecar = kept.plan_file.expect("sidecar name");
         assert!(!store.plans_dir.join(sidecar).exists());

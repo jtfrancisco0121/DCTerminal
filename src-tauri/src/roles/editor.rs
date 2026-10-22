@@ -50,7 +50,10 @@ pub fn new_custom_role_id(file: &RolesFile) -> String {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         hasher.write_u128(nanos);
-        let id = format!("{CUSTOM_ROLE_PREFIX}{:012x}", hasher.finish() & 0xffff_ffff_ffff);
+        let id = format!(
+            "{CUSTOM_ROLE_PREFIX}{:012x}",
+            hasher.finish() & 0xffff_ffff_ffff
+        );
         if !file.roles.iter().any(|role| role.id == id) {
             return id;
         }
@@ -77,7 +80,11 @@ pub fn new_custom_role(file: &RolesFile, name: &str) -> Role {
     let hash = template_hash(NEW_ROLE_TEMPLATE);
     Role {
         id: new_custom_role_id(file),
-        name: if name.is_empty() { "New role".into() } else { name.into() },
+        name: if name.is_empty() {
+            "New role".into()
+        } else {
+            name.into()
+        },
         template_text: NEW_ROLE_TEMPLATE.into(),
         template_version: 1,
         template_hash: hash.clone(),
@@ -179,7 +186,10 @@ pub fn validate_mode(mode: &str) -> Result<(), String> {
     if ROLE_MODES.contains(&mode) {
         Ok(())
     } else {
-        Err(format!("Default mode must be one of {}.", ROLE_MODES.join(", ")))
+        Err(format!(
+            "Default mode must be one of {}.",
+            ROLE_MODES.join(", ")
+        ))
     }
 }
 
@@ -188,7 +198,9 @@ pub fn validate_color(color: &str) -> Result<(), String> {
     if (hex.len() == 6 || hex.len() == 3) && hex.chars().all(|c| c.is_ascii_hexdigit()) {
         Ok(())
     } else {
-        Err(format!("Color must be a hex value like #58a6ff, not {color}."))
+        Err(format!(
+            "Color must be a hex value like #58a6ff, not {color}."
+        ))
     }
 }
 
@@ -242,7 +254,10 @@ pub fn fields_for_template(role: &Role, template: &str) -> Result<Vec<RoleField>
     let tokens = template_tokens(template);
     let bad: Vec<&String> = tokens.iter().filter(|key| !valid_token(key)).collect();
     if !bad.is_empty() {
-        let names = bad.iter().map(|k| format!("{{{{{k}}}}}")).collect::<Vec<_>>();
+        let names = bad
+            .iter()
+            .map(|k| format!("{{{{{k}}}}}"))
+            .collect::<Vec<_>>();
         return Err(format!(
             "Placeholder names use letters, digits and _ only: {}",
             names.join(", ")
@@ -256,7 +271,11 @@ pub fn fields_for_template(role: &Role, template: &str) -> Result<Vec<RoleField>
             .filter(|field| {
                 tokens.contains(&field.key)
                     || role.fields.iter().any(|other| {
-                        other.show_when.as_ref().map(|w| w.field_key == field.key).unwrap_or(false)
+                        other
+                            .show_when
+                            .as_ref()
+                            .map(|w| w.field_key == field.key)
+                            .unwrap_or(false)
                             && tokens.contains(&other.key)
                     })
             })
@@ -386,7 +405,11 @@ pub fn import_role(file: &RolesFile, text: &str) -> Result<Role, String> {
     if !keep_id {
         role.id = new_custom_role_id(file);
     }
-    if file.roles.iter().any(|r| r.name.eq_ignore_ascii_case(&name)) {
+    if file
+        .roles
+        .iter()
+        .any(|r| r.name.eq_ignore_ascii_case(&name))
+    {
         role.name = format!("{name} (imported)");
     } else {
         role.name = name;
@@ -430,7 +453,12 @@ mod tests {
         RolesFile {
             schema_version: 1,
             roles: vec![
-                role("role_planner", true, "Plan {{title}}", vec![text_field("title", "Title", FieldType::Text, true)]),
+                role(
+                    "role_planner",
+                    true,
+                    "Plan {{title}}",
+                    vec![text_field("title", "Title", FieldType::Text, true)],
+                ),
                 role("role_developer", true, "Build it", vec![]),
             ],
         }
@@ -458,7 +486,10 @@ mod tests {
         assert_eq!(copy.name, "planner copy");
         assert!(!copy.is_built_in);
         assert_eq!(copy.fields.len(), 1);
-        assert_eq!(copy.handoff_targets, Some(vec!["role_developer".to_string()]));
+        assert_eq!(
+            copy.handoff_targets,
+            Some(vec!["role_developer".to_string()])
+        );
         let plain = duplicate_role(&f, "role_developer", None).unwrap();
         assert_eq!(plain.handoff_targets, Some(vec![]));
         assert!(duplicate_role(&f, "role_missing", None).is_err());
@@ -492,7 +523,10 @@ mod tests {
         f.roles[0].handoff_targets = Some(vec!["role_developer".into(), id.clone()]);
         delete_role(&mut f, &id, &["role_planner".into()]).unwrap();
         assert!(f.roles.iter().all(|r| r.id != id));
-        assert_eq!(f.roles[0].handoff_targets, Some(vec!["role_developer".to_string()]));
+        assert_eq!(
+            f.roles[0].handoff_targets,
+            Some(vec!["role_developer".to_string()])
+        );
     }
 
     #[test]
@@ -536,7 +570,10 @@ mod tests {
         let mut gate = text_field("kind", "Kind", FieldType::Text, true);
         gate.show_when = None;
         let mut gated = text_field("details", "Details", FieldType::Multiline, true);
-        gated.show_when = Some(ShowWhen { field_key: "kind".into(), equals: vec!["x".into()] });
+        gated.show_when = Some(ShowWhen {
+            field_key: "kind".into(),
+            equals: vec!["x".into()],
+        });
         let fields = vec![
             text_field("title", "Title", FieldType::Text, true),
             gate,
@@ -579,15 +616,21 @@ mod tests {
     fn import_refuses_unknown_schemas_and_bad_templates() {
         let f = file();
         assert!(import_role(&f, "not json").is_err());
-        assert!(import_role(&f, r#"{"kind":"other","schemaVersion":1,"role":{}}"#)
-            .unwrap_err()
-            .contains("Not a DCTerminal role file"));
+        assert!(
+            import_role(&f, r#"{"kind":"other","schemaVersion":1,"role":{}}"#)
+                .unwrap_err()
+                .contains("Not a DCTerminal role file")
+        );
         let custom = new_custom_role(&f, "Docs");
         let text = export_role_json(&custom).unwrap();
         let v2 = text.replace("\"schemaVersion\": 1", "\"schemaVersion\": 2");
-        assert!(import_role(&f, &v2).unwrap_err().contains("Unsupported role file version 2"));
+        assert!(import_role(&f, &v2)
+            .unwrap_err()
+            .contains("Unsupported role file version 2"));
         let unresolved = text.replace("{{request}}", "{{request}} {{missing}}");
-        assert!(import_role(&f, &unresolved).unwrap_err().contains("Unresolved"));
+        assert!(import_role(&f, &unresolved)
+            .unwrap_err()
+            .contains("Unresolved"));
         let bad_mode = text.replace("\"defaultMode\": \"agent\"", "\"defaultMode\": \"yolo\"");
         assert!(import_role(&f, &bad_mode).is_err());
     }
@@ -601,6 +644,9 @@ mod tests {
         let parsed: RolesFile = serde_json::from_str(json).unwrap();
         assert_eq!(parsed.roles[0].handoff_targets, None);
         let out = serde_json::to_string(&parsed).unwrap();
-        assert!(!out.contains("handoffTargets"), "absent stays absent on save");
+        assert!(
+            !out.contains("handoffTargets"),
+            "absent stays absent on save"
+        );
     }
 }

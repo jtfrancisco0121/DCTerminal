@@ -3,9 +3,9 @@
 //! Output is delivered on a channel. The master stays on a control thread so
 //! resize and write do not race the reader.
 
-use crate::process_tree::{PidGuard, PtyGroup};
 #[cfg(unix)]
 use crate::process_tree::STOP_GRACE;
+use crate::process_tree::{PidGuard, PtyGroup};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -41,7 +41,10 @@ enum Ctrl {
     /// A cursor-position report we generated. Does not mean the frontend is listening.
     Reply(Vec<u8>),
     /// Not acknowledged: the control thread may be blocked in `write_all`.
-    Resize { cols: u16, rows: u16 },
+    Resize {
+        cols: u16,
+        rows: u16,
+    },
     #[cfg(test)]
     Size(Sender<io::Result<(u16, u16)>>),
     Kill,
@@ -407,9 +410,7 @@ fn finish(
                     status = Some(done);
                 }
             }
-            if (status.is_some() && !guard.group_alive())
-                || std::time::Instant::now() >= deadline
-            {
+            if (status.is_some() && !guard.group_alive()) || std::time::Instant::now() >= deadline {
                 break;
             }
             thread::sleep(Duration::from_millis(50));
@@ -528,7 +529,10 @@ mod tests {
     fn quiet_for_restarts_on_each_output() {
         let mut session = PtySession::spawn(SpawnSpec {
             program: "/bin/sh".into(),
-            args: vec!["-c".into(), "echo first; sleep 0.6; echo second; sleep 5".into()],
+            args: vec![
+                "-c".into(),
+                "echo first; sleep 0.6; echo second; sleep 5".into(),
+            ],
             env: Vec::new(),
             cwd: std::env::temp_dir(),
             cols: 80,
@@ -551,9 +555,17 @@ mod tests {
         };
         assert!(wait("first"));
         thread::sleep(Duration::from_millis(300));
-        assert!(session.quiet_for() >= Duration::from_millis(250), "{:?}", session.quiet_for());
+        assert!(
+            session.quiet_for() >= Duration::from_millis(250),
+            "{:?}",
+            session.quiet_for()
+        );
         assert!(wait("second"));
-        assert!(session.quiet_for() < Duration::from_millis(250), "{:?}", session.quiet_for());
+        assert!(
+            session.quiet_for() < Duration::from_millis(250),
+            "{:?}",
+            session.quiet_for()
+        );
         session.kill();
     }
 

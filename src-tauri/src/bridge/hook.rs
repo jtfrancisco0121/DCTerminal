@@ -27,8 +27,8 @@
 //!   was posted for that turn. Other notifications are kept, not acted on.
 
 use super::folder::{
-    BridgeNeeds, BridgeTurn, NeedsSource, RunTasks, StageDir, StageMode, StoredResult, TurnEnd, TurnOutcome,
-    TurnState, SCHEMA,
+    BridgeNeeds, BridgeTurn, NeedsSource, RunTasks, StageDir, StageMode, StoredResult, TurnEnd,
+    TurnOutcome, TurnState, SCHEMA,
 };
 use super::schema::{self, block_reason, FULL_TOOL_NAME};
 use super::ResultKind;
@@ -45,7 +45,12 @@ pub enum StopDecision {
 
 /// D10: block at most once per turn, only on autopilot, and never when
 /// Claude is already continuing because of a Stop hook.
-pub fn stop_decision(mode: StageMode, stop_hook_active: bool, has_result: bool, blocked: bool) -> StopDecision {
+pub fn stop_decision(
+    mode: StageMode,
+    stop_hook_active: bool,
+    has_result: bool,
+    blocked: bool,
+) -> StopDecision {
     if has_result {
         return StopDecision::End(TurnOutcome::Result);
     }
@@ -77,8 +82,20 @@ fn known_fields(event: &str) -> &'static [&'static str] {
             "session_crons",
             "effort",
         ],
-        "PreToolUse" => &["permission_mode", "tool_name", "tool_input", "tool_use_id", "mcp_server"],
-        "PermissionRequest" => &["permission_mode", "tool_name", "tool_input", "permission_suggestions", "mcp_server"],
+        "PreToolUse" => &[
+            "permission_mode",
+            "tool_name",
+            "tool_input",
+            "tool_use_id",
+            "mcp_server",
+        ],
+        "PermissionRequest" => &[
+            "permission_mode",
+            "tool_name",
+            "tool_input",
+            "permission_suggestions",
+            "mcp_server",
+        ],
         "Notification" => &["message", "notification_type"],
         _ => &[],
     }
@@ -95,7 +112,10 @@ fn note_unknown_fields(dir: &StageDir, event: &str, payload: &Value) {
         .filter(|key| !COMMON_FIELDS.contains(key) && !known.contains(key))
         .collect();
     if !unknown.is_empty() {
-        dir.log(&format!("{event} payload has fields not seen on 2.1.287: {}", unknown.join(", ")));
+        dir.log(&format!(
+            "{event} payload has fields not seen on 2.1.287: {}",
+            unknown.join(", ")
+        ));
     }
 }
 
@@ -132,7 +152,8 @@ pub fn handle(dir: &StageDir, event: &str, payload: &Value) -> Result<Option<Val
         "UserPromptSubmit" => {
             // Without a `prompt_id` the turn gets an id of its own (D9's fallback).
             let state = TurnState::new(&prompt_id(payload).unwrap_or_else(new_turn_id));
-            dir.write_turn(&state).map_err(|err| format!("write turn.json: {err}"))?;
+            dir.write_turn(&state)
+                .map_err(|err| format!("write turn.json: {err}"))?;
             Ok(None)
         }
         "Stop" => on_stop(dir, payload),
@@ -141,16 +162,17 @@ pub fn handle(dir: &StageDir, event: &str, payload: &Value) -> Result<Option<Val
             // not verified to send one): the tool call's prompt_id opens it.
             if let Some(id) = prompt_id(payload) {
                 if dir.turn().is_none_or(|open| open.turn != id) {
-                    dir.write_turn(&TurnState::new(&id)).map_err(|err| format!("write turn.json: {err}"))?;
+                    dir.write_turn(&TurnState::new(&id))
+                        .map_err(|err| format!("write turn.json: {err}"))?;
                 }
             }
             Ok(Some(json!({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "allow",
-                "permissionDecisionReason": "DCTerminal's own result tool"
-            }
-        })))
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": "DCTerminal's own result tool"
+                }
+            })))
         }
         "PreToolUse"
             if text(payload, "tool_name") == Some("ExitPlanMode")
@@ -161,22 +183,30 @@ pub fn handle(dir: &StageDir, event: &str, payload: &Value) -> Result<Option<Val
         }
         "PermissionRequest" => {
             let tool = text(payload, "tool_name").map(str::to_string);
-            post_needs(dir, payload, NeedsSource::PermissionRequest, tool, String::new())?;
+            post_needs(
+                dir,
+                payload,
+                NeedsSource::PermissionRequest,
+                tool,
+                String::new(),
+            )?;
             Ok(None)
         }
         "Notification" if text(payload, "notification_type") == Some("permission_prompt") => {
             let turn = prompt_id(payload).unwrap_or_default();
             // The backup: the PermissionRequest of this turn said so already.
-            let told = dir
-                .needs_mark()
-                .is_some_and(|mark| mark.turn == turn && mark.source == NeedsSource::PermissionRequest);
+            let told = dir.needs_mark().is_some_and(|mark| {
+                mark.turn == turn && mark.source == NeedsSource::PermissionRequest
+            });
             if !told {
                 let message = text(payload, "message").unwrap_or_default().to_string();
                 post_needs(dir, payload, NeedsSource::PermissionPrompt, None, message)?;
             }
             Ok(None)
         }
-        "Notification" if text(payload, "notification_type") == Some("idle_prompt") => close_abandoned(dir, payload),
+        "Notification" if text(payload, "notification_type") == Some("idle_prompt") => {
+            close_abandoned(dir, payload)
+        }
         _ => Ok(None),
     }
 }
@@ -198,7 +228,8 @@ fn close_abandoned(dir: &StageDir, payload: &Value) -> Result<Option<Value>, Str
         outcome: TurnOutcome::Abandoned,
         last_assistant_message: String::new(),
     });
-    dir.write_turn(&state).map_err(|err| format!("write turn.json: {err}"))?;
+    dir.write_turn(&state)
+        .map_err(|err| format!("write turn.json: {err}"))?;
     Ok(None)
 }
 
@@ -211,7 +242,8 @@ fn post_needs(
 ) -> Result<(), String> {
     let turn = prompt_id(payload).unwrap_or_default();
     let needs = BridgeNeeds::new(&dir.info, &turn, source, tool, message);
-    dir.post_needs(&needs).map_err(|err| format!("write inbox: {err}"))
+    dir.post_needs(&needs)
+        .map_err(|err| format!("write inbox: {err}"))
 }
 
 fn deny(reason: &str) -> Value {
@@ -235,7 +267,8 @@ fn current_turn(dir: &StageDir, payload: &Value) -> Result<TurnState, String> {
         Some(state) if state.turn == turn => Ok(state),
         _ => {
             let state = TurnState::new(&turn);
-            dir.write_turn(&state).map_err(|err| format!("write turn.json: {err}"))?;
+            dir.write_turn(&state)
+                .map_err(|err| format!("write turn.json: {err}"))?;
             Ok(state)
         }
     }
@@ -262,14 +295,16 @@ fn on_plan(dir: &StageDir, payload: &Value) -> Result<Option<Value>, String> {
         at: at.clone(),
         tasks,
     };
-    dir.write_plan(plan, &file).map_err(|err| format!("write plan.md and tasks.json: {err}"))?;
+    dir.write_plan(plan, &file)
+        .map_err(|err| format!("write plan.md and tasks.json: {err}"))?;
     let stored = StoredResult {
         schema: SCHEMA,
         turn: state.turn.clone(),
         at,
         result: schema::planner_result(&file.tasks),
     };
-    dir.write_result(&stored).map_err(|err| format!("write the plan's result: {err}"))?;
+    dir.write_result(&stored)
+        .map_err(|err| format!("write the plan's result: {err}"))?;
     Ok(Some(deny(schema::PLAN_RECEIVED)))
 }
 
@@ -277,7 +312,11 @@ fn on_stop(dir: &StageDir, payload: &Value) -> Result<Option<Value>, String> {
     let open = dir.turn();
     // Without a `prompt_id` the Stop belongs to the turn still open.
     let turn = prompt_id(payload)
-        .or_else(|| open.as_ref().filter(|t| t.ended.is_none()).map(|t| t.turn.clone()))
+        .or_else(|| {
+            open.as_ref()
+                .filter(|t| t.ended.is_none())
+                .map(|t| t.turn.clone())
+        })
         .unwrap_or_else(new_turn_id);
     let mut state = match open {
         Some(state) if state.turn == turn => state,
@@ -291,24 +330,34 @@ fn on_stop(dir: &StageDir, payload: &Value) -> Result<Option<Value>, String> {
         // it): the end was reported already, once is enough.
         return Ok(None);
     }
-    let active = payload.get("stop_hook_active").and_then(Value::as_bool).unwrap_or(false);
+    let active = payload
+        .get("stop_hook_active")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let result = dir.result(&state.turn);
     match stop_decision(dir.mode(), active, result.is_some(), state.blocked) {
         StopDecision::Block => {
             state.blocked = true;
-            dir.write_turn(&state).map_err(|err| format!("write turn.json: {err}"))?;
-            Ok(Some(json!({ "decision": "block", "reason": block_reason(dir.info.result) })))
+            dir.write_turn(&state)
+                .map_err(|err| format!("write turn.json: {err}"))?;
+            Ok(Some(
+                json!({ "decision": "block", "reason": block_reason(dir.info.result) }),
+            ))
         }
         StopDecision::End(outcome) => {
             let end = TurnEnd {
                 at: super::folder::now(),
                 outcome,
-                last_assistant_message: text(payload, "last_assistant_message").unwrap_or_default().to_string(),
+                last_assistant_message: text(payload, "last_assistant_message")
+                    .unwrap_or_default()
+                    .to_string(),
             };
             state.ended = Some(end.clone());
-            dir.write_turn(&state).map_err(|err| format!("write turn.json: {err}"))?;
+            dir.write_turn(&state)
+                .map_err(|err| format!("write turn.json: {err}"))?;
             let event = BridgeTurn::new(&dir.info, &state, &end, result.map(|r| r.result));
-            dir.post(&event).map_err(|err| format!("write inbox: {err}"))?;
+            dir.post(&event)
+                .map_err(|err| format!("write inbox: {err}"))?;
             Ok(None)
         }
     }

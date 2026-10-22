@@ -195,11 +195,7 @@ mod tests {
         );
         assert_eq!(unrestricted.kind, ApprovalModeKind::Unrestricted);
         assert!(!unrestricted.role_rules_off);
-        assert!(unrestricted
-            .note
-            .as_deref()
-            .unwrap()
-            .contains("allow-once"));
+        assert!(unrestricted.note.as_deref().unwrap().contains("allow-once"));
 
         let allowlist = status_from_value(
             &serde_json::from_str(
@@ -210,11 +206,7 @@ mod tests {
         );
         assert_eq!(allowlist.kind, ApprovalModeKind::Allowlist);
         assert!(!allowlist.role_rules_off);
-        assert!(allowlist
-            .note
-            .as_deref()
-            .unwrap()
-            .contains("allow-once"));
+        assert!(allowlist.note.as_deref().unwrap().contains("allow-once"));
     }
 
     #[test]

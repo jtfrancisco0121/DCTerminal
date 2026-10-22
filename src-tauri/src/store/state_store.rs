@@ -1,10 +1,10 @@
 use crate::orchestrator::TabPhase;
+use crate::provider::ProviderId;
 use crate::roles::Role;
 use crate::store::json_io::{read_json_or_recover, set_aside_other_version, write_json_atomic};
 use crate::store::state_types::{
     AppStateFile, PipelineRun, RoleSnapshot, TabRecord, TabSessionRef, STATE_SCHEMA_VERSION,
 };
-use crate::provider::ProviderId;
 use crate::template::template_hash;
 use chrono::Utc;
 use std::collections::HashMap;
@@ -123,7 +123,12 @@ impl StateStore {
     }
 
     pub fn active_for_window(&self, window_id: &str) -> Option<String> {
-        if let Some(window) = self.data.windows.iter().find(|window| window.id == window_id) {
+        if let Some(window) = self
+            .data
+            .windows
+            .iter()
+            .find(|window| window.id == window_id)
+        {
             if window.active_tab_id.is_some() {
                 return window.active_tab_id.clone();
             }
@@ -315,7 +320,11 @@ impl StateStore {
                     .archived_windows
                     .iter()
                     .any(|archived| archived.window.id == label)
-                || self.data.closed_tabs.iter().any(|tab| tab.window_id == label)
+                || self
+                    .data
+                    .closed_tabs
+                    .iter()
+                    .any(|tab| tab.window_id == label)
         };
         let mut n = 2u32;
         loop {
@@ -404,7 +413,11 @@ impl StateStore {
     /// `provider_for_start`, unless the start names its provider (a
     /// hand-off's new tab keeps its source tab's), so the CLI launches as
     /// that provider instead of being switched after it started.
-    pub fn provider_for_start_as(&self, tab_id: Option<&str>, requested: Option<ProviderId>) -> ProviderId {
+    pub fn provider_for_start_as(
+        &self,
+        tab_id: Option<&str>,
+        requested: Option<ProviderId>,
+    ) -> ProviderId {
         requested.unwrap_or_else(|| self.provider_for_start(tab_id))
     }
 
@@ -467,7 +480,11 @@ impl StateStore {
 
     /// Record the bridged stage a role terminal launched as, or clear it
     /// (a launch without the bridge). Saves only when it changed.
-    pub fn set_tab_bridge(&mut self, tab_id: &str, bridge: Option<crate::bridge::BridgeTag>) -> Result<(), String> {
+    pub fn set_tab_bridge(
+        &mut self,
+        tab_id: &str,
+        bridge: Option<crate::bridge::BridgeTag>,
+    ) -> Result<(), String> {
         let tab = self
             .data
             .tabs
@@ -481,7 +498,11 @@ impl StateStore {
         self.save()
     }
 
-    pub fn set_provider_notice(&mut self, tab_id: &str, notice: Option<String>) -> Result<(), String> {
+    pub fn set_provider_notice(
+        &mut self,
+        tab_id: &str,
+        notice: Option<String>,
+    ) -> Result<(), String> {
         let tab = self
             .data
             .tabs
@@ -492,7 +513,11 @@ impl StateStore {
         self.save()
     }
 
-    pub fn set_permission_note(&mut self, tab_id: &str, note: Option<String>) -> Result<(), String> {
+    pub fn set_permission_note(
+        &mut self,
+        tab_id: &str,
+        note: Option<String>,
+    ) -> Result<(), String> {
         let tab = self
             .data
             .tabs
@@ -808,10 +833,7 @@ impl StateStore {
 
     /// Remove the tab at `idx` from the open tabs and its window's layout and
     /// return its closed record. No save and no trim: callers do both.
-    pub fn close_tab_record(
-        &mut self,
-        idx: usize,
-    ) -> crate::store::state_types::ClosedTabRecord {
+    pub fn close_tab_record(&mut self, idx: usize) -> crate::store::state_types::ClosedTabRecord {
         let tab = self.data.tabs.remove(idx);
         let closed = crate::store::state_types::ClosedTabRecord {
             id: tab.id.clone(),
@@ -915,9 +937,7 @@ impl StateStore {
                 .data
                 .closed_tabs
                 .iter()
-                .position(|tab| {
-                    crate::store::state_types::window_matches(&tab.window_id, &focus)
-                })
+                .position(|tab| crate::store::state_types::window_matches(&tab.window_id, &focus))
                 .ok_or_else(|| "no closed tab to reopen".to_string())?,
         };
         let closed = self.data.closed_tabs.remove(index);
@@ -1048,7 +1068,8 @@ impl StateStore {
         }
         if !next.grid_tab_ids.is_empty() {
             let tabs = &self.data.tabs;
-            next.grid_tab_ids.retain(|id| tabs.iter().any(|t| &t.id == id));
+            next.grid_tab_ids
+                .retain(|id| tabs.iter().any(|t| &t.id == id));
             next = next.sanitized();
         }
         let window_id = self.draft_window.clone();
@@ -1349,7 +1370,8 @@ impl StateStore {
             .iter_mut()
             .find(|t| t.id == implementer_tab_id)
             .ok_or_else(|| "implementer tab missing".to_string())?;
-        tab.answers.insert("approvedPlan".to_string(), plan.to_string());
+        tab.answers
+            .insert("approvedPlan".to_string(), plan.to_string());
         if let Some(request) = original_request {
             if !request.trim().is_empty() {
                 tab.answers
@@ -1949,12 +1971,21 @@ mod tests {
             .set_layout(crate::store::LayoutState {
                 split_mode: "grid".to_string(),
                 secondary_tab_id: Some(b.clone()),
-                grid_tab_ids: vec![a.clone(), b.clone(), "gone".to_string(), b.clone(), c.clone()],
+                grid_tab_ids: vec![
+                    a.clone(),
+                    b.clone(),
+                    "gone".to_string(),
+                    b.clone(),
+                    c.clone(),
+                ],
                 ..crate::store::LayoutState::default()
             })
             .unwrap();
         assert_eq!(store.layout().split_mode, "grid");
-        assert_eq!(store.layout().grid_tab_ids, vec![a.clone(), b.clone(), c.clone()]);
+        assert_eq!(
+            store.layout().grid_tab_ids,
+            vec![a.clone(), b.clone(), c.clone()]
+        );
         assert!(store.layout().secondary_tab_id.is_none());
         store.close_tab(&c).unwrap();
         assert_eq!(store.layout().grid_tab_ids, vec![a.clone(), b.clone()]);
@@ -2033,7 +2064,9 @@ mod tests {
             path: "/r/app-worktrees/feat-x".to_string(),
             branch: "feat/x".to_string(),
         };
-        let plain = store.create_draft_tab(&role, "/r/app", false, None).unwrap();
+        let plain = store
+            .create_draft_tab(&role, "/r/app", false, None)
+            .unwrap();
         let id = store.create_worktree_tab(&role, wt.clone()).unwrap();
         let tab = store.tab_by_id(&id).unwrap();
         assert_eq!(tab.cwd, "/r/app-worktrees/feat-x");
@@ -2082,7 +2115,9 @@ mod tests {
             new_tab_provider: crate::provider::ProviderId::DEFAULT,
             draft_window: crate::store::state_types::MAIN_WINDOW_ID.to_string(),
         };
-        let id = store.create_draft_tab(&role, "/tmp/app", true, None).unwrap();
+        let id = store
+            .create_draft_tab(&role, "/tmp/app", true, None)
+            .unwrap();
         store.set_tab_label(&id, "  Auth bug  ").unwrap();
         let answers = HashMap::from([
             ("cwd".to_string(), "/tmp/app".to_string()),
@@ -2151,7 +2186,9 @@ mod tests {
             new_tab_provider: crate::provider::ProviderId::DEFAULT,
             draft_window: crate::store::state_types::MAIN_WINDOW_ID.to_string(),
         };
-        let draft_id = store.create_draft_tab(&role, "/tmp/proj", true, None).unwrap();
+        let draft_id = store
+            .create_draft_tab(&role, "/tmp/proj", true, None)
+            .unwrap();
         let answers = HashMap::from([
             ("cwd".to_string(), "/tmp/proj".to_string()),
             ("title".to_string(), "Onboarding".to_string()),
@@ -2208,7 +2245,9 @@ mod tests {
             new_tab_provider: crate::provider::ProviderId::DEFAULT,
             draft_window: crate::store::state_types::MAIN_WINDOW_ID.to_string(),
         };
-        let id = store.create_draft_tab(&role, r"C:\Work\App", true, None).unwrap();
+        let id = store
+            .create_draft_tab(&role, r"C:\Work\App", true, None)
+            .unwrap();
         store.close_tab(&id).unwrap();
         assert!(store.data.tabs.is_empty());
         let restored = store
@@ -2291,7 +2330,9 @@ mod tests {
             new_tab_provider: crate::provider::ProviderId::DEFAULT,
             draft_window: crate::store::state_types::MAIN_WINDOW_ID.to_string(),
         };
-        let id = store.create_draft_tab(&role, r"C:\Work\App", true, None).unwrap();
+        let id = store
+            .create_draft_tab(&role, r"C:\Work\App", true, None)
+            .unwrap();
         store
             .promote_tab_to_running(
                 Some(&id),

@@ -71,7 +71,14 @@ impl Host for TestHost {
             return Ok(true);
         }
         // The app's gate with an older Claude Code read (`actor_stage_gate`).
-        crate::pty::actor_gate_on(&self.store, &self.runs, run_id, stage_key, Some("2.1.200 (Claude Code)"), None)
+        crate::pty::actor_gate_on(
+            &self.store,
+            &self.runs,
+            run_id,
+            stage_key,
+            Some("2.1.200 (Claude Code)"),
+            None,
+        )
     }
     fn spawn_stage(&self, launch: &StageLaunch) -> Result<(), String> {
         self.live.lock().unwrap().insert(launch.tab_id.clone());
@@ -87,7 +94,10 @@ impl Host for TestHost {
         Ok(())
     }
     fn paste(&self, tab_id: &str, text: &str) -> Result<(), String> {
-        self.pastes.lock().unwrap().push((tab_id.to_string(), text.to_string()));
+        self.pastes
+            .lock()
+            .unwrap()
+            .push((tab_id.to_string(), text.to_string()));
         Ok(())
     }
     fn terminal_live(&self, tab_id: &str) -> bool {
@@ -101,15 +111,19 @@ impl Host for TestHost {
             GateDef::Command { .. } => "npm run check",
             GateDef::PullRequest => "pull requests",
         };
-        self.gates.lock().unwrap().pop_front().unwrap_or(GateResult {
-            kind: "command".into(),
-            label: label.into(),
-            status: "passed".into(),
-            summary: "Passed.".into(),
-            output: String::new(),
-            duration_ms: 1,
-        optional: false,
-        })
+        self.gates
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(GateResult {
+                kind: "command".into(),
+                label: label.into(),
+                status: "passed".into(),
+                summary: "Passed.".into(),
+                output: String::new(),
+                duration_ms: 1,
+                optional: false,
+            })
     }
     fn usage_percent(&self, _run_id: &str) -> Option<u8> {
         if self.panic_on_usage.load(Ordering::SeqCst) {
@@ -127,7 +141,10 @@ impl Host for TestHost {
     fn run_changed(&self, _run_id: &str) {}
     fn tab_opened(&self, _run_id: &str, _tab_id: &str) {}
     fn stopped(&self, _run_id: &str, _tab_id: Option<&str>, reason: StopReason, summary: &str) {
-        self.stops.lock().unwrap().push((reason, summary.to_string()));
+        self.stops
+            .lock()
+            .unwrap()
+            .push((reason, summary.to_string()));
     }
     fn notice(&self, _run_id: &str, title: &str, _body: &str) {
         self.notices.lock().unwrap().push(title.to_string());
@@ -148,8 +165,14 @@ fn planner_answers(cwd: &str) -> HashMap<String, String> {
         ("cwd".into(), cwd.into()),
         ("taskType".into(), "Bug".into()),
         ("title".into(), "Expired tokens".into()),
-        ("request".into(), "Refresh expired tokens instead of failing.".into()),
-        ("expectedBehavior".into(), "A request with an expired token is retried once.".into()),
+        (
+            "request".into(),
+            "Refresh expired tokens instead of failing.".into(),
+        ),
+        (
+            "expectedBehavior".into(),
+            "A request with an expired token is retried once.".into(),
+        ),
         ("currentBehavior".into(), "It returns 500.".into()),
     ])
 }
@@ -182,10 +205,23 @@ impl Fixture {
         };
         let cwd = work.path().display().to_string();
         let planner_role = roles.iter().find(|r| r.id == "role_planner").unwrap();
-        let planner = store.create_draft_tab(planner_role, &cwd, true, None).unwrap();
-        store.data.tabs.iter_mut().find(|t| t.id == planner).unwrap().answers = planner_answers(&cwd);
-        let chain = ChainRef { kind: kind.into(), ..chain(1, None) };
-        store.set_tab_chain(&planner, Some(chain.clone()), None).unwrap();
+        let planner = store
+            .create_draft_tab(planner_role, &cwd, true, None)
+            .unwrap();
+        store
+            .data
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == planner)
+            .unwrap()
+            .answers = planner_answers(&cwd);
+        let chain = ChainRef {
+            kind: kind.into(),
+            ..chain(1, None)
+        };
+        store
+            .set_tab_chain(&planner, Some(chain.clone()), None)
+            .unwrap();
         {
             let run = store.pipeline_run_by_id_mut(RUN).unwrap();
             run.set_autopilot_enabled(true);
@@ -203,9 +239,17 @@ impl Fixture {
         };
         prepare_stage(&runs, &plan, &planner).unwrap();
         store
-            .set_tab_bridge(&planner, Some(BridgeTag { run_id: RUN.into(), stage: "planner".into() }))
+            .set_tab_bridge(
+                &planner,
+                Some(BridgeTag {
+                    run_id: RUN.into(),
+                    stage: "planner".into(),
+                }),
+            )
             .unwrap();
-        store.remember_claude_terminal_session(&planner, PLANNER_SID).unwrap();
+        store
+            .remember_claude_terminal_session(&planner, PLANNER_SID)
+            .unwrap();
         let host = Arc::new(TestHost {
             store: Mutex::new(store),
             runs,
@@ -227,7 +271,13 @@ impl Fixture {
         });
         let (me, gates_done) = channel();
         let actor = Actor::new(RUN.to_string(), host.clone(), me);
-        Self { host, actor, gates_done, planner, work }
+        Self {
+            host,
+            actor,
+            gates_done,
+            planner,
+            work,
+        }
     }
 
     fn run<T>(&self, read: impl FnOnce(&crate::store::PipelineRun) -> T) -> T {
@@ -236,7 +286,13 @@ impl Fixture {
     }
 
     fn tab(&self, tab_id: &str) -> crate::store::TabRecord {
-        self.host.store.lock().unwrap().tab_by_id(tab_id).unwrap().clone()
+        self.host
+            .store
+            .lock()
+            .unwrap()
+            .tab_by_id(tab_id)
+            .unwrap()
+            .clone()
     }
 
     fn stage_dir(&self, tab_id: &str) -> StageDir {
@@ -246,24 +302,41 @@ impl Fixture {
 
     /// The tab's stage started a turn and has not ended it (Working).
     fn start_turn(&self, tab_id: &str, turn: &str) {
-        self.stage_dir(tab_id).write_turn(&TurnState::new(turn)).unwrap();
+        self.stage_dir(tab_id)
+            .write_turn(&TurnState::new(turn))
+            .unwrap();
     }
 
     /// The tab's stage ended `turn` with `result` (the hook's files), as the
     /// inbox event delivers it.
-    fn end_turn(&self, tab_id: &str, turn: &str, result: Option<Value>, message: &str) -> BridgeTurn {
+    fn end_turn(
+        &self,
+        tab_id: &str,
+        turn: &str,
+        result: Option<Value>,
+        message: &str,
+    ) -> BridgeTurn {
         let dir = self.stage_dir(tab_id);
         let mut state = TurnState::new(turn);
         let end = TurnEnd {
             at: chrono::Utc::now().to_rfc3339(),
-            outcome: if result.is_some() { TurnOutcome::Result } else { TurnOutcome::NoResult },
+            outcome: if result.is_some() {
+                TurnOutcome::Result
+            } else {
+                TurnOutcome::NoResult
+            },
             last_assistant_message: message.to_string(),
         };
         state.ended = Some(end.clone());
         dir.write_turn(&state).unwrap();
         if let Some(result) = &result {
-            dir.write_result(&StoredResult { schema: 1, turn: turn.into(), at: end.at.clone(), result: result.clone() })
-                .unwrap();
+            dir.write_result(&StoredResult {
+                schema: 1,
+                turn: turn.into(),
+                at: end.at.clone(),
+                result: result.clone(),
+            })
+            .unwrap();
         }
         BridgeTurn::new(&dir.info, &state, &end, result)
     }
@@ -280,10 +353,22 @@ impl Fixture {
         let dir = self.stage_dir(&self.planner);
         dir.write_plan(
             plan,
-            &RunTasks { schema: 1, run_id: RUN.into(), stage_key: "planner".into(), turn: turn.into(), at: "now".into(), tasks },
+            &RunTasks {
+                schema: 1,
+                run_id: RUN.into(),
+                stage_key: "planner".into(),
+                turn: turn.into(),
+                at: "now".into(),
+                tasks,
+            },
         )
         .unwrap();
-        self.end_turn(&self.planner, turn, Some(json!({ "schema": 1, "tasks": [{ "id": "pr1" }] })), "Plan received.")
+        self.end_turn(
+            &self.planner,
+            turn,
+            Some(json!({ "schema": 1, "tasks": [{ "id": "pr1" }] })),
+            "Plan received.",
+        )
     }
 
     fn launches(&self) -> Vec<StageLaunch> {
@@ -308,13 +393,19 @@ impl Fixture {
 
     fn user(&mut self, action: UserAction) -> Result<UserOutcome, String> {
         let (reply, answer) = channel();
-        self.actor.handle(ActorMsg::User { action, reply: Some(reply) });
+        self.actor.handle(ActorMsg::User {
+            action,
+            reply: Some(reply),
+        });
         answer.recv().unwrap()
     }
 
     /// Hand the actor the gate results its gate thread sends back.
     fn finish_gates(&mut self) {
-        let msg = self.gates_done.recv_timeout(Duration::from_secs(10)).expect("gates finished");
+        let msg = self
+            .gates_done
+            .recv_timeout(Duration::from_secs(10))
+            .expect("gates finished");
         assert!(matches!(msg, ActorMsg::GatesDone { .. }));
         self.actor.handle(msg);
     }
@@ -323,7 +414,11 @@ impl Fixture {
     fn open_plan_reviewer(&mut self) -> String {
         let turn = self.planner_turn("p-1", "# Plan\n1. Refresh tokens in src/auth.ts.");
         self.actor.handle(ActorMsg::Turn(turn));
-        self.launches().last().expect("plan reviewer opened").tab_id.clone()
+        self.launches()
+            .last()
+            .expect("plan reviewer opened")
+            .tab_id
+            .clone()
     }
 }
 
@@ -350,26 +445,66 @@ fn a_planner_turn_opens_the_plan_reviewer_with_the_plan_from_the_run_folder() {
     assert_eq!(launches.len(), 1);
     let launch = &launches[0];
     assert_eq!(launch.role_id, "role_plan_reviewer");
-    assert!(launch.prompt.contains("1. Refresh tokens in src/auth.ts."), "the plan, from plan.md:\n{}", launch.prompt);
-    assert!(launch.prompt.contains("Title: Expired tokens"), "the step-1 request as one block");
-    assert!(launch.prompt.contains("mcp__dcterminal__submit_result"), "the result instructions");
+    assert!(
+        launch.prompt.contains("1. Refresh tokens in src/auth.ts."),
+        "the plan, from plan.md:\n{}",
+        launch.prompt
+    );
+    assert!(
+        launch.prompt.contains("Title: Expired tokens"),
+        "the step-1 request as one block"
+    );
+    assert!(
+        launch.prompt.contains("mcp__dcterminal__submit_result"),
+        "the result instructions"
+    );
     // It points at the run's hand-off files (D20).
-    assert!(launch.prompt.contains(&fx.run_file("plan.md").display().to_string()), "plan.md: {}", launch.prompt);
-    assert!(launch.prompt.contains(&fx.run_file("tasks.json").display().to_string()), "tasks.json");
+    assert!(
+        launch
+            .prompt
+            .contains(&fx.run_file("plan.md").display().to_string()),
+        "plan.md: {}",
+        launch.prompt
+    );
+    assert!(
+        launch
+            .prompt
+            .contains(&fx.run_file("tasks.json").display().to_string()),
+        "tasks.json"
+    );
     assert!(!launch.prompt.contains("prs.json"), "no pull requests yet");
     let bridge = launch.bridge.as_ref().expect("bridged");
-    assert!(bridge.args.iter().any(|a| a == "--mcp-config"), "{:?}", bridge.args);
-    assert!(launch.cwd.ends_with(fx.work.path().file_name().unwrap()), "{}", launch.cwd.display());
+    assert!(
+        bridge.args.iter().any(|a| a == "--mcp-config"),
+        "{:?}",
+        bridge.args
+    );
+    assert!(
+        launch.cwd.ends_with(fx.work.path().file_name().unwrap()),
+        "{}",
+        launch.cwd.display()
+    );
     let tab = fx.tab(&reviewer);
     assert_eq!(tab.chain.as_ref().map(|c| c.step), Some(2));
-    assert_eq!(tab.bridge.as_ref().map(|b| b.stage.as_str()), Some("plan_reviewer"));
-    assert_eq!(tab.sessions.claude_terminal_session_id.as_deref(), Some(launch.session_id.as_str()));
+    assert_eq!(
+        tab.bridge.as_ref().map(|b| b.stage.as_str()),
+        Some("plan_reviewer")
+    );
+    assert_eq!(
+        tab.sessions.claude_terminal_session_id.as_deref(),
+        Some(launch.session_id.as_str())
+    );
     fx.run(|run| {
         assert_eq!(run.tab_ids.get("role_plan_reviewer"), Some(&reviewer));
         assert_eq!(run.stage, "plan_reviewer");
-        assert!(run.handoffs["role_plan_reviewer"].text.contains("Refresh tokens"));
-        let kinds: Vec<(&str, Option<&str>)> =
-            run.events.iter().map(|e| (e.kind.as_str(), e.outcome.as_deref())).collect();
+        assert!(run.handoffs["role_plan_reviewer"]
+            .text
+            .contains("Refresh tokens"));
+        let kinds: Vec<(&str, Option<&str>)> = run
+            .events
+            .iter()
+            .map(|e| (e.kind.as_str(), e.outcome.as_deref()))
+            .collect();
         assert!(kinds.contains(&("turn", None)), "{kinds:?}");
         assert!(kinds.contains(&("autopilot", Some("advance"))), "{kinds:?}");
         assert!(kinds.contains(&("handoff", None)), "{kinds:?}");
@@ -400,16 +535,26 @@ fn changes_required_resumes_the_planner_session_pointing_at_the_findings_file() 
         "Changes required.",
     );
     fx.actor.handle(ActorMsg::Turn(turn));
-    assert!(fx.pastes().is_empty(), "no keystrokes (D17): {:?}", fx.pastes());
+    assert!(
+        fx.pastes().is_empty(),
+        "no keystrokes (D17): {:?}",
+        fx.pastes()
+    );
     let resumes = fx.resumes();
     assert_eq!(resumes.len(), 1, "{resumes:?}");
     let resumed = &resumes[0];
-    assert_eq!((resumed.tab_id.as_str(), resumed.role_id.as_str()), (fx.planner.as_str(), "role_planner"));
+    assert_eq!(
+        (resumed.tab_id.as_str(), resumed.role_id.as_str()),
+        (fx.planner.as_str(), "role_planner")
+    );
     assert_eq!(resumed.session_id, PLANNER_SID, "the same session");
     // The same flags it was launched with.
     let expected = crate::bridge::launch::relaunch_flags(
         &fx.host.runs,
-        &BridgeTag { run_id: RUN.into(), stage: "planner".into() },
+        &BridgeTag {
+            run_id: RUN.into(),
+            stage: "planner".into(),
+        },
         &fx.planner,
         Path::new("/opt/dcterminal"),
     )
@@ -417,25 +562,57 @@ fn changes_required_resumes_the_planner_session_pointing_at_the_findings_file() 
     assert_eq!(resumed.bridge.as_ref(), Some(&expected));
     // A short prompt pointing at the findings file, which holds the round.
     let file = fx.run_file("findings-plan_reviewer-r1.json");
-    assert!(resumed.prompt.starts_with("Review findings from the Plan Reviewer (round 1)"), "{}", resumed.prompt);
-    assert!(resumed.prompt.contains(&file.display().to_string()), "{}", resumed.prompt);
-    assert!(resumed.prompt.contains("1. [HIGH] src/auth.ts:42: Retries forever."), "{}", resumed.prompt);
-    let saved: Value = serde_json::from_slice(&std::fs::read(&file).expect("findings file")).unwrap();
+    assert!(
+        resumed
+            .prompt
+            .starts_with("Review findings from the Plan Reviewer (round 1)"),
+        "{}",
+        resumed.prompt
+    );
+    assert!(
+        resumed.prompt.contains(&file.display().to_string()),
+        "{}",
+        resumed.prompt
+    );
+    assert!(
+        resumed
+            .prompt
+            .contains("1. [HIGH] src/auth.ts:42: Retries forever."),
+        "{}",
+        resumed.prompt
+    );
+    let saved: Value =
+        serde_json::from_slice(&std::fs::read(&file).expect("findings file")).unwrap();
     assert_eq!(saved["round"], json!(1));
     assert_eq!(saved["stageKey"], json!("plan_reviewer"));
     assert_eq!(saved["verdict"], json!("CHANGES_REQUIRED"));
     assert_eq!(saved["findings"][0]["summary"], json!("Retries forever."));
     fx.run(|run| {
         assert_eq!(run.round, 2);
-        assert_eq!(run.verdicts.last().and_then(|v| v.verdict.as_deref()), Some("REQUIRES REVISION"));
+        assert_eq!(
+            run.verdicts.last().and_then(|v| v.verdict.as_deref()),
+            Some("REQUIRES REVISION")
+        );
         assert_eq!(run.stage, "planner");
-        assert_eq!(run.tab_ids.get("role_planner"), Some(&fx.planner), "the view stays on the Planner's tab");
+        assert_eq!(
+            run.tab_ids.get("role_planner"),
+            Some(&fx.planner),
+            "the view stays on the Planner's tab"
+        );
     });
     assert_eq!(fx.launches().len(), 1, "no new Planner tab");
     // Until the resumed session's first prompt, the Planner reads as working:
     // its old turn was handed on, and an exit now would be news.
-    assert!(!fx.host.runs.join(RUN).join("stages/planner/turn.json").exists());
-    fx.actor.handle(ActorMsg::Exited { tab_id: fx.planner.clone(), code: Some(1) });
+    assert!(!fx
+        .host
+        .runs
+        .join(RUN)
+        .join("stages/planner/turn.json")
+        .exists());
+    fx.actor.handle(ActorMsg::Exited {
+        tab_id: fx.planner.clone(),
+        code: Some(1),
+    });
     fx.run(|run| assert_eq!(run.stop_reason, Some(StopReason::CarryOutFailed)));
 }
 
@@ -444,13 +621,36 @@ fn a_resume_that_fails_stops_the_run() {
     let mut fx = Fixture::new("resume_fails");
     let reviewer = fx.open_plan_reviewer();
     *fx.host.resume_error.lock().unwrap() = Some("claude would not start".into());
-    let turn = fx.end_turn(&reviewer, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "x" }])), "");
+    let turn = fx.end_turn(
+        &reviewer,
+        "r-1",
+        review(
+            "CHANGES_REQUIRED",
+            json!([{ "severity": "HIGH", "summary": "x" }]),
+        ),
+        "",
+    );
     fx.actor.handle(ActorMsg::Turn(turn));
     fx.run(|run| {
-        assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::CarryOutFailed)));
-        assert!(run.claims.iter().all(|c| !c.key.starts_with("back:")), "its hand-off record is given back: {:?}", run.claims);
+        assert_eq!(
+            (run.status, run.stop_reason),
+            (RunStatus::Waiting, Some(StopReason::CarryOutFailed))
+        );
+        assert!(
+            run.claims.iter().all(|c| !c.key.starts_with("back:")),
+            "its hand-off record is given back: {:?}",
+            run.claims
+        );
     });
-    assert!(fx.stops().last().unwrap().1.contains("claude would not start"), "{:?}", fx.stops());
+    assert!(
+        fx.stops()
+            .last()
+            .unwrap()
+            .1
+            .contains("claude would not start"),
+        "{:?}",
+        fx.stops()
+    );
     // The Planner's last turn is not lost: it still reads as idle, so a Send
     // back by hand is not refused as "still working".
     let tag = fx.tab(&fx.planner).bridge.expect("still bridged");
@@ -464,13 +664,35 @@ fn a_resume_that_fails_stops_the_run() {
 fn a_stage_with_no_saved_session_gets_the_round_pasted_after_clearing_its_input() {
     let mut fx = Fixture::new("no_session");
     let reviewer = fx.open_plan_reviewer();
-    fx.host.store.lock().unwrap().data.tabs.iter_mut().find(|t| t.id == fx.planner).unwrap().sessions.claude_terminal_session_id = None;
-    let turn = fx.end_turn(&reviewer, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "Retries forever." }])), "");
+    fx.host
+        .store
+        .lock()
+        .unwrap()
+        .data
+        .tabs
+        .iter_mut()
+        .find(|t| t.id == fx.planner)
+        .unwrap()
+        .sessions
+        .claude_terminal_session_id = None;
+    let turn = fx.end_turn(
+        &reviewer,
+        "r-1",
+        review(
+            "CHANGES_REQUIRED",
+            json!([{ "severity": "HIGH", "summary": "Retries forever." }]),
+        ),
+        "",
+    );
     fx.actor.handle(ActorMsg::Turn(turn));
     assert!(fx.resumes().is_empty());
     let pastes = fx.pastes();
     assert_eq!(pastes.len(), 1, "{pastes:?}");
-    assert!(pastes[0].1.contains("findings-plan_reviewer-r1.json"), "{}", pastes[0].1);
+    assert!(
+        pastes[0].1.contains("findings-plan_reviewer-r1.json"),
+        "{}",
+        pastes[0].1
+    );
 }
 
 #[test]
@@ -478,16 +700,34 @@ fn a_round_sent_back_while_the_stage_still_works_stops_the_run() {
     let mut fx = Fixture::new("busy");
     let reviewer = fx.open_plan_reviewer();
     fx.start_turn(&fx.planner.clone(), "p-2");
-    let turn = fx.end_turn(&reviewer, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "x" }])), "");
+    let turn = fx.end_turn(
+        &reviewer,
+        "r-1",
+        review(
+            "CHANGES_REQUIRED",
+            json!([{ "severity": "HIGH", "summary": "x" }]),
+        ),
+        "",
+    );
     fx.actor.handle(ActorMsg::Turn(turn));
     assert!(fx.pastes().is_empty());
     fx.run(|run| {
-        assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::CarryOutFailed)));
+        assert_eq!(
+            (run.status, run.stop_reason),
+            (RunStatus::Waiting, Some(StopReason::CarryOutFailed))
+        );
         assert_eq!(run.round, 1, "the round is not recorded");
-        assert!(run.claims.iter().all(|c| !c.key.starts_with("back:")), "its hand-off record is given back: {:?}", run.claims);
+        assert!(
+            run.claims.iter().all(|c| !c.key.starts_with("back:")),
+            "its hand-off record is given back: {:?}",
+            run.claims
+        );
     });
     let stops = fx.stops();
-    assert!(stops.last().unwrap().1.contains("still working"), "{stops:?}");
+    assert!(
+        stops.last().unwrap().1.contains("still working"),
+        "{stops:?}"
+    );
 }
 
 #[test]
@@ -495,11 +735,22 @@ fn an_exited_planner_is_resumed_in_its_own_tab() {
     let mut fx = Fixture::new("exited_planner");
     let reviewer = fx.open_plan_reviewer();
     fx.host.live.lock().unwrap().remove(&fx.planner.clone());
-    let turn = fx.end_turn(&reviewer, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "Retries forever." }])), "");
+    let turn = fx.end_turn(
+        &reviewer,
+        "r-1",
+        review(
+            "CHANGES_REQUIRED",
+            json!([{ "severity": "HIGH", "summary": "Retries forever." }]),
+        ),
+        "",
+    );
     fx.actor.handle(ActorMsg::Turn(turn));
     let resumes = fx.resumes();
     assert_eq!(resumes.len(), 1, "{resumes:?}");
-    assert_eq!((resumes[0].tab_id.as_str(), resumes[0].session_id.as_str()), (fx.planner.as_str(), PLANNER_SID));
+    assert_eq!(
+        (resumes[0].tab_id.as_str(), resumes[0].session_id.as_str()),
+        (fx.planner.as_str(), PLANNER_SID)
+    );
     assert_eq!(fx.launches().len(), 1, "no new tab");
 }
 
@@ -508,17 +759,46 @@ fn an_exited_planner_with_no_session_gets_a_new_terminal_with_its_form_and_the_f
     let mut fx = Fixture::new("new_planner");
     let reviewer = fx.open_plan_reviewer();
     fx.host.live.lock().unwrap().remove(&fx.planner.clone());
-    fx.host.store.lock().unwrap().data.tabs.iter_mut().find(|t| t.id == fx.planner).unwrap().sessions.claude_terminal_session_id = None;
-    let turn = fx.end_turn(&reviewer, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "Retries forever." }])), "");
+    fx.host
+        .store
+        .lock()
+        .unwrap()
+        .data
+        .tabs
+        .iter_mut()
+        .find(|t| t.id == fx.planner)
+        .unwrap()
+        .sessions
+        .claude_terminal_session_id = None;
+    let turn = fx.end_turn(
+        &reviewer,
+        "r-1",
+        review(
+            "CHANGES_REQUIRED",
+            json!([{ "severity": "HIGH", "summary": "Retries forever." }]),
+        ),
+        "",
+    );
     fx.actor.handle(ActorMsg::Turn(turn));
     assert!(fx.resumes().is_empty());
     let launches = fx.launches();
     assert_eq!(launches.len(), 2, "{:?}", fx.stops());
     let planner = &launches[1];
     assert_eq!(planner.role_id, "role_planner");
-    assert!(planner.prompt.contains("Refresh expired tokens instead of failing."), "its own form");
-    assert!(planner.prompt.contains("Retries forever."), "and the findings");
-    assert!(planner.prompt.contains("findings-plan_reviewer-r1.json"), "and where they are");
+    assert!(
+        planner
+            .prompt
+            .contains("Refresh expired tokens instead of failing."),
+        "its own form"
+    );
+    assert!(
+        planner.prompt.contains("Retries forever."),
+        "and the findings"
+    );
+    assert!(
+        planner.prompt.contains("findings-plan_reviewer-r1.json"),
+        "and where they are"
+    );
     let tab = fx.tab(&planner.tab_id);
     assert_eq!(tab.chain.as_ref().map(|c| (c.step, c.round)), Some((1, 2)));
     fx.run(|run| assert_eq!(run.tab_ids.get("role_planner"), Some(&planner.tab_id)));
@@ -530,7 +810,14 @@ fn to_implementer(fx: &mut Fixture) -> String {
     let reviewer = fx.open_plan_reviewer();
     let turn = fx.end_turn(&reviewer, "r-1", review("APPROVED", json!([])), "Approved.");
     fx.actor.handle(ActorMsg::Turn(turn));
-    fx.run(|run| assert_eq!(run.stop_reason, Some(StopReason::Checkpoint), "{:?}", run.events.last()));
+    fx.run(|run| {
+        assert_eq!(
+            run.stop_reason,
+            Some(StopReason::Checkpoint),
+            "{:?}",
+            run.events.last()
+        )
+    });
     let sent = fx
         .user(UserAction::Send {
             source_tab_id: reviewer,
@@ -549,12 +836,26 @@ fn your_send_at_a_checkpoint_opens_the_next_stage_and_passes_it() {
     let mut fx = Fixture::new("checkpoint");
     let implementer = to_implementer(&mut fx);
     let launch = fx.launches().last().cloned().unwrap();
-    assert_eq!((launch.tab_id.as_str(), launch.role_id.as_str()), (implementer.as_str(), "role_implementer"));
-    assert!(launch.prompt.contains("Bug Fix"), "the Planner's Bug is the Implementer's Bug Fix");
-    assert!(launch.prompt.contains("1. Refresh tokens in src/auth.ts."), "the approved plan");
+    assert_eq!(
+        (launch.tab_id.as_str(), launch.role_id.as_str()),
+        (implementer.as_str(), "role_implementer")
+    );
+    assert!(
+        launch.prompt.contains("Bug Fix"),
+        "the Planner's Bug is the Implementer's Bug Fix"
+    );
+    assert!(
+        launch.prompt.contains("1. Refresh tokens in src/auth.ts."),
+        "the approved plan"
+    );
     fx.run(|run| {
         assert_eq!(run.status, RunStatus::Running, "autopilot carries on");
-        assert!(run.autopilot.as_ref().unwrap().passed_checkpoints.contains(&"implementer".to_string()));
+        assert!(run
+            .autopilot
+            .as_ref()
+            .unwrap()
+            .passed_checkpoints
+            .contains(&"implementer".to_string()));
         assert_eq!(run.claims.last().map(|c| c.by.as_str()), Some("you"));
     });
 }
@@ -575,9 +876,22 @@ fn a_failed_gate_goes_back_to_the_implementer_and_a_pass_moves_on() {
     let prs = json!({ "schema": 1, "prs": [{ "url": "https://github.com/acme/app/pull/12", "branch": "fix/refresh", "title": "Refresh" }],
                       "summary": "Expired tokens are refreshed once.", "checks": [{ "command": "npm test", "passed": true }] });
     let dir = fx.stage_dir(&implementer);
-    dir.write_prs(&RunPrs { schema: 1, run_id: RUN.into(), stage_key: "implementer".into(), lane: None, turn: "i-1".into(), at: "now".into(), result: prs.clone() })
-        .unwrap();
-    let turn = fx.end_turn(&implementer, "i-1", Some(prs.clone()), "Opened https://github.com/acme/app/pull/12 (see https://github.com/acme/app/pull/1)");
+    dir.write_prs(&RunPrs {
+        schema: 1,
+        run_id: RUN.into(),
+        stage_key: "implementer".into(),
+        lane: None,
+        turn: "i-1".into(),
+        at: "now".into(),
+        result: prs.clone(),
+    })
+    .unwrap();
+    let turn = fx.end_turn(
+        &implementer,
+        "i-1",
+        Some(prs.clone()),
+        "Opened https://github.com/acme/app/pull/12 (see https://github.com/acme/app/pull/1)",
+    );
     fx.actor.handle(ActorMsg::Turn(turn));
     assert!(fx.actor.busy(), "the gates run on their own thread");
     fx.finish_gates();
@@ -590,12 +904,33 @@ fn a_failed_gate_goes_back_to_the_implementer_and_a_pass_moves_on() {
     let resumes = fx.resumes();
     assert_eq!(resumes.len(), 1, "{resumes:?}");
     assert_eq!(resumes[0].tab_id, implementer);
-    let first = fx.launches().into_iter().find(|l| l.tab_id == implementer).unwrap();
-    assert_eq!(resumes[0].session_id, first.session_id, "the Implementer's own session");
-    assert!(resumes[0].prompt.contains("FAIL src/auth.test.ts"), "the gate output: {}", resumes[0].prompt);
+    let first = fx
+        .launches()
+        .into_iter()
+        .find(|l| l.tab_id == implementer)
+        .unwrap();
+    assert_eq!(
+        resumes[0].session_id, first.session_id,
+        "the Implementer's own session"
+    );
+    assert!(
+        resumes[0].prompt.contains("FAIL src/auth.test.ts"),
+        "the gate output: {}",
+        resumes[0].prompt
+    );
     fx.run(|run| {
-        assert_eq!(run.autopilot.as_ref().unwrap().gate_retries.get("implementer"), Some(&1));
-        assert!(run.events.iter().any(|e| e.kind == "gate" && e.outcome.as_deref() == Some("failed")));
+        assert_eq!(
+            run.autopilot
+                .as_ref()
+                .unwrap()
+                .gate_retries
+                .get("implementer"),
+            Some(&1)
+        );
+        assert!(run
+            .events
+            .iter()
+            .any(|e| e.kind == "gate" && e.outcome.as_deref() == Some("failed")));
     });
     // The fix: the next turn's gates pass, and the PR Reviewer opens with the pull request.
     let turn = fx.end_turn(&implementer, "i-2", Some(prs), "Fixed.");
@@ -603,17 +938,39 @@ fn a_failed_gate_goes_back_to_the_implementer_and_a_pass_moves_on() {
     fx.finish_gates();
     let launch = fx.launches().last().cloned().unwrap();
     assert_eq!(launch.role_id, "role_pr_reviewer");
-    assert!(launch.prompt.contains("Pull request: https://github.com/acme/app/pull/12 (branch `fix/refresh`): Refresh"), "{}", launch.prompt);
+    assert!(
+        launch.prompt.contains(
+            "Pull request: https://github.com/acme/app/pull/12 (branch `fix/refresh`): Refresh"
+        ),
+        "{}",
+        launch.prompt
+    );
     assert!(launch.prompt.contains("npm test: passed"));
-    assert!(launch.prompt.contains(&fx.run_file("prs.json").display().to_string()), "points at prs.json: {}", launch.prompt);
-    fx.run(|run| assert!(run.autopilot.as_ref().unwrap().gate_retries.is_empty(), "a pass resets the retries"));
+    assert!(
+        launch
+            .prompt
+            .contains(&fx.run_file("prs.json").display().to_string()),
+        "points at prs.json: {}",
+        launch.prompt
+    );
+    fx.run(|run| {
+        assert!(
+            run.autopilot.as_ref().unwrap().gate_retries.is_empty(),
+            "a pass resets the retries"
+        )
+    });
 }
 
 #[test]
 fn gate_results_for_a_turn_overtaken_by_a_newer_prompt_are_not_acted_on() {
     let mut fx = Fixture::new("stale_gates");
     let implementer = to_implementer(&mut fx);
-    let turn = fx.end_turn(&implementer, "i-1", Some(json!({ "schema": 1, "prs": [], "summary": "x" })), "");
+    let turn = fx.end_turn(
+        &implementer,
+        "i-1",
+        Some(json!({ "schema": 1, "prs": [], "summary": "x" })),
+        "",
+    );
     fx.actor.handle(ActorMsg::Turn(turn));
     // You typed into the Implementer while its checks ran.
     fx.start_turn(&implementer, "i-2");
@@ -621,7 +978,12 @@ fn gate_results_for_a_turn_overtaken_by_a_newer_prompt_are_not_acted_on() {
     assert_eq!(fx.launches().len(), 2, "no PR Reviewer");
     fx.run(|run| {
         let last = run.events.last().unwrap();
-        assert!(last.summary.contains("got a newer prompt while its checks ran"), "{}", last.summary);
+        assert!(
+            last.summary
+                .contains("got a newer prompt while its checks ran"),
+            "{}",
+            last.summary
+        );
         assert_eq!(run.status, RunStatus::Running);
     });
 }
@@ -639,7 +1001,14 @@ fn your_send_after_autopilot_handed_on_warns_once_then_goes_ahead_with_force() {
         force,
     };
     let with_source = |action: UserAction, tab: &str| match action {
-        UserAction::Send { target_role_id, values, handoff_plan, handoff_text, force, .. } => UserAction::Send {
+        UserAction::Send {
+            target_role_id,
+            values,
+            handoff_plan,
+            handoff_text,
+            force,
+            ..
+        } => UserAction::Send {
             source_tab_id: tab.to_string(),
             target_role_id,
             values,
@@ -652,12 +1021,25 @@ fn your_send_after_autopilot_handed_on_warns_once_then_goes_ahead_with_force() {
     let planner = fx.planner.clone();
     let warned = fx.user(with_source(send(false), &planner)).unwrap();
     assert!(warned.tab_id.is_none());
-    assert!(warned.warning.as_deref().unwrap().starts_with("Autopilot already handed this turn on"), "{warned:?}");
+    assert!(
+        warned
+            .warning
+            .as_deref()
+            .unwrap()
+            .starts_with("Autopilot already handed this turn on"),
+        "{warned:?}"
+    );
     assert_eq!(fx.launches().len(), 1, "nothing opened");
     let forced = fx.user(with_source(send(true), &planner)).unwrap();
     assert!(forced.tab_id.is_some());
     assert_eq!(fx.launches().len(), 2);
-    assert!(fx.user(with_source(send(false), &planner)).unwrap().tab_id.is_some(), "your own earlier hand-off never warns");
+    assert!(
+        fx.user(with_source(send(false), &planner))
+            .unwrap()
+            .tab_id
+            .is_some(),
+        "your own earlier hand-off never warns"
+    );
 }
 
 /// A hand-off you make outside the actor (to a Chat tab) is recorded like
@@ -668,9 +1050,20 @@ fn a_chat_hand_off_is_recorded_so_autopilot_and_you_never_both_make_it() {
     let mut fx = Fixture::new("record_chat");
     fx.open_plan_reviewer();
     let planner = fx.planner.clone();
-    let record = |force| UserAction::RecordHandoff { source_tab_id: planner.clone(), back: false, force };
+    let record = |force| UserAction::RecordHandoff {
+        source_tab_id: planner.clone(),
+        back: false,
+        force,
+    };
     let warned = fx.user(record(false)).unwrap();
-    assert!(warned.warning.as_deref().unwrap().starts_with("Autopilot already handed this turn on"), "{warned:?}");
+    assert!(
+        warned
+            .warning
+            .as_deref()
+            .unwrap()
+            .starts_with("Autopilot already handed this turn on"),
+        "{warned:?}"
+    );
     assert!(fx.user(record(true)).unwrap().warning.is_none());
     fx.run(|run| assert_eq!(run.claims.last().map(|c| c.by.as_str()), Some("you")));
     assert_eq!(fx.launches().len(), 1, "recording opens nothing");
@@ -678,17 +1071,36 @@ fn a_chat_hand_off_is_recorded_so_autopilot_and_you_never_both_make_it() {
     // Recorded before autopilot decides: autopilot leaves the turn to you.
     let mut fx = Fixture::new("record_chat_first");
     let planner = fx.planner.clone();
-    let recorded = fx.user(UserAction::RecordHandoff { source_tab_id: planner.clone(), back: false, force: false }).unwrap();
+    let recorded = fx
+        .user(UserAction::RecordHandoff {
+            source_tab_id: planner.clone(),
+            back: false,
+            force: false,
+        })
+        .unwrap();
     assert!(recorded.warning.is_none());
     let turn = fx.planner_turn("p-1", "# Plan\n1. Refresh tokens in src/auth.ts.");
     fx.actor.handle(ActorMsg::Turn(turn));
-    assert!(fx.launches().is_empty(), "already handed on by you: {:?}", fx.launches());
+    assert!(
+        fx.launches().is_empty(),
+        "already handed on by you: {:?}",
+        fx.launches()
+    );
 
     // Released after a failed hand-off: autopilot hands the turn on.
     let mut fx = Fixture::new("record_chat_released");
     let planner = fx.planner.clone();
-    fx.user(UserAction::RecordHandoff { source_tab_id: planner.clone(), back: false, force: false }).unwrap();
-    fx.user(UserAction::ReleaseHandoff { source_tab_id: planner.clone(), back: false }).unwrap();
+    fx.user(UserAction::RecordHandoff {
+        source_tab_id: planner.clone(),
+        back: false,
+        force: false,
+    })
+    .unwrap();
+    fx.user(UserAction::ReleaseHandoff {
+        source_tab_id: planner.clone(),
+        back: false,
+    })
+    .unwrap();
     fx.run(|run| assert!(run.claims.is_empty(), "{:?}", run.claims));
     let turn = fx.planner_turn("p-1", "# Plan\n1. Refresh tokens in src/auth.ts.");
     fx.actor.handle(ActorMsg::Turn(turn));
@@ -699,7 +1111,12 @@ fn a_chat_hand_off_is_recorded_so_autopilot_and_you_never_both_make_it() {
 fn your_send_back_goes_into_the_running_stage() {
     let mut fx = Fixture::new("send_back");
     let reviewer = fx.open_plan_reviewer();
-    fx.end_turn(&reviewer, "r-1", review("APPROVED_WITH_CHANGES", json!([])), "");
+    fx.end_turn(
+        &reviewer,
+        "r-1",
+        review("APPROVED_WITH_CHANGES", json!([])),
+        "",
+    );
     let outcome = fx
         .user(UserAction::SendBack {
             source_tab_id: reviewer,
@@ -716,10 +1133,19 @@ fn your_send_back_goes_into_the_running_stage() {
     let resumes = fx.resumes();
     assert_eq!(resumes.len(), 1);
     assert_eq!(resumes[0].session_id, PLANNER_SID);
-    assert!(resumes[0].prompt.starts_with("Review findings from the Plan Reviewer (round 1):\n\nAdd a test."), "your text: {}", resumes[0].prompt);
+    assert!(
+        resumes[0]
+            .prompt
+            .starts_with("Review findings from the Plan Reviewer (round 1):\n\nAdd a test."),
+        "your text: {}",
+        resumes[0].prompt
+    );
     fx.run(|run| {
         assert_eq!(run.round, 2);
-        assert_eq!(run.claims.last().map(|c| (c.key.as_str(), c.by.as_str())), Some(("back:plan_reviewer#1", "you")));
+        assert_eq!(
+            run.claims.last().map(|c| (c.key.as_str(), c.by.as_str())),
+            Some(("back:plan_reviewer#1", "you"))
+        );
     });
 }
 
@@ -728,14 +1154,30 @@ fn a_stage_that_exits_mid_turn_stops_the_run() {
     let mut fx = Fixture::new("exited");
     let reviewer = fx.open_plan_reviewer();
     fx.start_turn(&reviewer, "r-1");
-    fx.actor.handle(ActorMsg::Exited { tab_id: reviewer.clone(), code: Some(1) });
-    fx.run(|run| assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::CarryOutFailed))));
-    assert!(fx.stops().last().unwrap().1.contains("exited (exit code 1) before it finished its turn"));
+    fx.actor.handle(ActorMsg::Exited {
+        tab_id: reviewer.clone(),
+        code: Some(1),
+    });
+    fx.run(|run| {
+        assert_eq!(
+            (run.status, run.stop_reason),
+            (RunStatus::Waiting, Some(StopReason::CarryOutFailed))
+        )
+    });
+    assert!(fx
+        .stops()
+        .last()
+        .unwrap()
+        .1
+        .contains("exited (exit code 1) before it finished its turn"));
     // An exit after the turn ended is nobody's news.
     let mut fx = Fixture::new("exited_after");
     let reviewer = fx.open_plan_reviewer();
     fx.end_turn(&reviewer, "r-1", None, "");
-    fx.actor.handle(ActorMsg::Exited { tab_id: reviewer, code: Some(0) });
+    fx.actor.handle(ActorMsg::Exited {
+        tab_id: reviewer,
+        code: Some(0),
+    });
     fx.run(|run| assert_eq!(run.status, RunStatus::Running));
 }
 
@@ -747,13 +1189,22 @@ fn a_turn_on_an_engine_1_run_is_left_alone_because_it_is_manual_only() {
     assert!(fx.launches().is_empty());
     fx.run(|run| assert!(run.events.iter().all(|e| e.kind != "turn")));
     let err = fx.user(UserAction::Continue).unwrap_err();
-    assert!(err.contains("older pipeline engine") && err.contains("manual only"), "{err}");
+    assert!(
+        err.contains("older pipeline engine") && err.contains("manual only"),
+        "{err}"
+    );
 }
 
 #[test]
 fn autopilot_off_records_the_turn_and_does_nothing_else() {
     let mut fx = Fixture::new("manual");
-    fx.host.store.lock().unwrap().pipeline_run_by_id_mut(RUN).unwrap().set_autopilot_enabled(false);
+    fx.host
+        .store
+        .lock()
+        .unwrap()
+        .pipeline_run_by_id_mut(RUN)
+        .unwrap()
+        .set_autopilot_enabled(false);
     let turn = fx.planner_turn("p-1", "# Plan");
     fx.actor.handle(ActorMsg::Turn(turn));
     assert!(fx.launches().is_empty());
@@ -772,18 +1223,37 @@ fn a_panic_stops_the_run_with_carry_out_failed_and_leaves_the_store_usable() {
         assert!(Instant::now() < deadline, "the actor thread never ended");
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert!(!fx.host.store.is_poisoned(), "the store keeps working for the rest of the app");
+    assert!(
+        !fx.host.store.is_poisoned(),
+        "the store keeps working for the rest of the app"
+    );
     fx.run(|run| {
-        assert_eq!((run.status, run.stop_reason), (RunStatus::Stopped, Some(StopReason::CarryOutFailed)));
+        assert_eq!(
+            (run.status, run.stop_reason),
+            (RunStatus::Stopped, Some(StopReason::CarryOutFailed))
+        );
         assert!(!run.autopilot.as_ref().unwrap().enabled);
-        assert!(run.events.last().unwrap().summary.contains("usage exploded"), "{:?}", run.events.last());
+        assert!(
+            run.events
+                .last()
+                .unwrap()
+                .summary
+                .contains("usage exploded"),
+            "{:?}",
+            run.events.last()
+        );
     });
-    assert_eq!(fx.stops().last().map(|s| s.0), Some(StopReason::CarryOutFailed));
+    assert_eq!(
+        fx.stops().last().map(|s| s.0),
+        Some(StopReason::CarryOutFailed)
+    );
     let mode = std::fs::read_to_string(fx.host.runs.join(RUN).join("stages/planner/mode")).unwrap();
     assert_eq!(mode, "manual", "the stages stop enforcing a result");
     // The next message starts a new thread, which answers.
     fx.host.panic_on_usage.store(false, Ordering::SeqCst);
-    let err = actors.ask(RUN, UserAction::Continue, Duration::from_secs(10)).unwrap_err();
+    let err = actors
+        .ask(RUN, UserAction::Continue, Duration::from_secs(10))
+        .unwrap_err();
     assert!(err.contains("not waiting after a restart"), "{err}");
 }
 
@@ -791,13 +1261,27 @@ fn a_panic_stops_the_run_with_carry_out_failed_and_leaves_the_store_usable() {
 fn an_idle_actor_ends_and_the_next_message_starts_another() {
     let fx = Fixture::new("idle");
     let actors = RunActors::with_idle(fx.host.clone(), Duration::from_millis(50));
-    let _ = actors.ask(RUN, UserAction::Approve { lane: Some("pr9".into()) }, Duration::from_secs(10));
+    let _ = actors.ask(
+        RUN,
+        UserAction::Approve {
+            lane: Some("pr9".into()),
+        },
+        Duration::from_secs(10),
+    );
     let deadline = Instant::now() + Duration::from_secs(10);
     while actors.running(RUN) {
         assert!(Instant::now() < deadline, "the idle actor never ended");
         std::thread::sleep(Duration::from_millis(10));
     }
-    let err = actors.ask(RUN, UserAction::Approve { lane: Some("pr9".into()) }, Duration::from_secs(10)).unwrap_err();
+    let err = actors
+        .ask(
+            RUN,
+            UserAction::Approve {
+                lane: Some("pr9".into()),
+            },
+            Duration::from_secs(10),
+        )
+        .unwrap_err();
     assert!(err.contains("pr9"), "a new thread answered: {err}");
 }
 
@@ -808,11 +1292,17 @@ fn every_built_in_stage_merges_from_the_run_folder_alone() {
         first_answers: planner_answers("/tmp"),
         first_role: "role_planner".into(),
         plan: Some("# Plan".into()),
-        prs: Some(json!({ "prs": [{ "url": "https://github.com/a/b/pull/1" }], "summary": "Done." })),
+        prs: Some(
+            json!({ "prs": [{ "url": "https://github.com/a/b/pull/1" }], "summary": "Done." }),
+        ),
         cwd: "/tmp".into(),
         ..StageSources::default()
     };
-    for (role_id, reviews) in [("role_plan_reviewer", true), ("role_implementer", false), ("role_pr_reviewer", true)] {
+    for (role_id, reviews) in [
+        ("role_plan_reviewer", true),
+        ("role_implementer", false),
+        ("role_pr_reviewer", true),
+    ] {
         let role = roles.iter().find(|r| r.id == role_id).unwrap();
         let built = stage_values(role, reviews, &sources);
         let merged = crate::template::merge_role_prompt_with(role, &built.values, "");
@@ -821,11 +1311,18 @@ fn every_built_in_stage_merges_from_the_run_folder_alone() {
     }
     // A lane's Implementer is told which task is its own.
     let role = roles.iter().find(|r| r.id == "role_implementer").unwrap();
-    let lane = StageSources { lane_note: Some("Implement only PR2 (UI)".into()), ..sources.clone() };
-    assert!(stage_values(role, false, &lane).values["additionalContext"].starts_with("Implement only PR2"));
+    let lane = StageSources {
+        lane_note: Some("Implement only PR2 (UI)".into()),
+        ..sources.clone()
+    };
+    assert!(stage_values(role, false, &lane).values["additionalContext"]
+        .starts_with("Implement only PR2"));
     // Eagle-Eye 2: the Implementer is step 1, and its reviewer reads its form.
     let ee2 = StageSources {
-        first_answers: HashMap::from([("title".into(), "T".into()), ("description".into(), "Do it.".into())]),
+        first_answers: HashMap::from([
+            ("title".into(), "T".into()),
+            ("description".into(), "Do it.".into()),
+        ]),
         first_role: "role_implementer".into(),
         ..sources
     };
@@ -840,17 +1337,34 @@ fn a_prefill_for_your_send_comes_from_the_run_files() {
     let reviewer = fx.open_plan_reviewer();
     fx.end_turn(&reviewer, "r-1", review("APPROVED", json!([])), "Approved.");
     let outcome = fx
-        .user(UserAction::Prefill { source_tab_id: reviewer.clone(), target_role_id: "role_implementer".into() })
+        .user(UserAction::Prefill {
+            source_tab_id: reviewer.clone(),
+            target_role_id: "role_implementer".into(),
+        })
         .unwrap();
     let prefill = outcome.prefill.expect("values");
-    assert_eq!(prefill.values["approvedPlan"], "# Plan\n1. Refresh tokens in src/auth.ts.", "from plan.md");
+    assert_eq!(
+        prefill.values["approvedPlan"], "# Plan\n1. Refresh tokens in src/auth.ts.",
+        "from plan.md"
+    );
     assert_eq!(prefill.values["taskType"], "Bug Fix");
-    assert!(prefill.values["additionalContext"].contains(&fx.run_file("plan.md").display().to_string()));
-    assert_eq!(prefill.handoff_text, "# Plan\n1. Refresh tokens in src/auth.ts.");
-    assert!(fx.launches().len() == 1 && fx.run(|run| run.claims.iter().all(|c| c.by != "you")), "nothing happens");
+    assert!(
+        prefill.values["additionalContext"].contains(&fx.run_file("plan.md").display().to_string())
+    );
+    assert_eq!(
+        prefill.handoff_text,
+        "# Plan\n1. Refresh tokens in src/auth.ts."
+    );
+    assert!(
+        fx.launches().len() == 1 && fx.run(|run| run.claims.iter().all(|c| c.by != "you")),
+        "nothing happens"
+    );
     // Not the next stage: no prefill.
     let err = fx
-        .user(UserAction::Prefill { source_tab_id: reviewer, target_role_id: "role_pr_reviewer".into() })
+        .user(UserAction::Prefill {
+            source_tab_id: reviewer,
+            target_role_id: "role_pr_reviewer".into(),
+        })
         .unwrap_err();
     assert!(err.contains("not the stage after"), "{err}");
 }
@@ -867,10 +1381,17 @@ fn a_blocked_implementer_runs_no_checks_and_waits_with_its_reason() {
     assert!(!fx.actor.busy(), "no checks run for a blocked turn");
     assert!(fx.gates_done.try_recv().is_err());
     fx.run(|run| {
-        assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::Checkpoint)));
+        assert_eq!(
+            (run.status, run.stop_reason),
+            (RunStatus::Waiting, Some(StopReason::Checkpoint))
+        );
         assert!(run.events.iter().all(|e| e.kind != "gate"));
         let last = run.events.last().unwrap();
-        assert!(last.summary.contains("The plan's API does not exist"), "{}", last.summary);
+        assert!(
+            last.summary.contains("The plan's API does not exist"),
+            "{}",
+            last.summary
+        );
     });
     assert_eq!(fx.stops().last().map(|s| s.0), Some(StopReason::Checkpoint));
 }
@@ -888,7 +1409,12 @@ fn implementer_with_a_failed_gate(fx: &mut Fixture) -> (String, BridgeTurn) {
         optional: false,
     });
     let prs = json!({ "schema": 1, "prs": [{ "url": "https://github.com/acme/app/pull/12", "branch": "b", "title": "t" }], "summary": "s" });
-    let turn = fx.end_turn(&implementer, "i-1", Some(prs), "Opened https://github.com/acme/app/pull/12");
+    let turn = fx.end_turn(
+        &implementer,
+        "i-1",
+        Some(prs),
+        "Opened https://github.com/acme/app/pull/12",
+    );
     fx.actor.handle(ActorMsg::Turn(turn.clone()));
     fx.finish_gates();
     assert_eq!(fx.resumes().len(), 1, "the failed check went back once");
@@ -897,7 +1423,14 @@ fn implementer_with_a_failed_gate(fx: &mut Fixture) -> (String, BridgeTurn) {
 }
 
 fn retries(fx: &Fixture) -> Option<u32> {
-    fx.run(|run| run.autopilot.as_ref().unwrap().gate_retries.get("implementer").copied())
+    fx.run(|run| {
+        run.autopilot
+            .as_ref()
+            .unwrap()
+            .gate_retries
+            .get("implementer")
+            .copied()
+    })
 }
 
 #[test]
@@ -913,10 +1446,18 @@ fn a_turn_handed_to_a_new_actor_again_runs_no_checks_and_pastes_nothing() {
         again.handle(msg);
     }
     assert!(!again.busy(), "no checks for a turn decided already");
-    assert_eq!(fx.resumes().len(), 1, "the check's output is not sent twice");
+    assert_eq!(
+        fx.resumes().len(),
+        1,
+        "the check's output is not sent twice"
+    );
     assert!(fx.pastes().is_empty());
     assert_eq!(retries(&fx), Some(1), "no extra retry is counted");
-    assert_eq!(fx.run(|run| run.events.iter().filter(|e| e.kind == "gate").count()), gate_lines, "no duplicate gate lines");
+    assert_eq!(
+        fx.run(|run| run.events.iter().filter(|e| e.kind == "gate").count()),
+        gate_lines,
+        "no duplicate gate lines"
+    );
 }
 
 /// A session log whose last turn finished (what H3's reconcile reads).
@@ -940,7 +1481,10 @@ fn finished_log() -> crate::claude_session_log::TerminalSessionLog {
 
 /// H3's startup reconcile of the run, fed the way the app feeds it: each
 /// current stage tab's turn id from its stage's `turn.json`, read now.
-fn reconcile_after_restart(fx: &Fixture, tab_id: &str) -> Option<crate::pipelines::recovery::Reconciled> {
+fn reconcile_after_restart(
+    fx: &Fixture,
+    tab_id: &str,
+) -> Option<crate::pipelines::recovery::Reconciled> {
     let mut store = fx.host.store.lock().unwrap();
     let tag = store.tab_by_id(tab_id).and_then(|tab| tab.bridge.clone());
     let mut bridged = HashMap::new();
@@ -970,36 +1514,86 @@ fn continue_on_a_turn_the_actor_decided_runs_no_checks() {
     let mut fx = Fixture::new("dedupe_continue");
     let planner = fx.planner.clone();
     let reviewer = fx.open_plan_reviewer();
-    fx.host.store.lock().unwrap().data.tabs.iter_mut().find(|t| t.id == planner).unwrap().sessions.claude_terminal_session_id = None;
-    let turn = fx.end_turn(&reviewer, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "x" }])), "");
+    fx.host
+        .store
+        .lock()
+        .unwrap()
+        .data
+        .tabs
+        .iter_mut()
+        .find(|t| t.id == planner)
+        .unwrap()
+        .sessions
+        .claude_terminal_session_id = None;
+    let turn = fx.end_turn(
+        &reviewer,
+        "r-1",
+        review(
+            "CHANGES_REQUIRED",
+            json!([{ "severity": "HIGH", "summary": "x" }]),
+        ),
+        "",
+    );
     fx.actor.handle(ActorMsg::Turn(turn));
-    assert_eq!(fx.pastes().len(), 1, "the round was pasted into the Planner");
-    assert_eq!(fx.stage_dir(&planner).turn().map(|t| t.turn), Some("p-1".to_string()), "its decided turn keeps turn.json");
+    assert_eq!(
+        fx.pastes().len(),
+        1,
+        "the round was pasted into the Planner"
+    );
+    assert_eq!(
+        fx.stage_dir(&planner).turn().map(|t| t.turn),
+        Some("p-1".to_string()),
+        "its decided turn keeps turn.json"
+    );
     let launches = fx.launches().len();
     let turn_lines = fx.run(|run| run.events.iter().filter(|e| e.kind == "turn").count());
     // The app restarted with the run on the Planner: its decided turn does
     // not wait for Continue...
-    assert_eq!(reconcile_after_restart(&fx, &planner), None, "a turn the actor decided is not stopped as app_restarted");
+    assert_eq!(
+        reconcile_after_restart(&fx, &planner),
+        None,
+        "a turn the actor decided is not stopped as app_restarted"
+    );
     fx.run(|run| assert_eq!(run.status, RunStatus::Running));
     // ...and when the run waits after a restart anyway (another tab), Continue
     // reads that turn.json again and decides nothing twice.
-    fx.host.store.lock().unwrap().pipeline_run_by_id_mut(RUN).unwrap().stop_for(
-        StopReason::AppRestarted,
-        Some("planner"),
-        None,
-        "Waiting after a restart.".to_string(),
-        None,
-    );
+    fx.host
+        .store
+        .lock()
+        .unwrap()
+        .pipeline_run_by_id_mut(RUN)
+        .unwrap()
+        .stop_for(
+            StopReason::AppRestarted,
+            Some("planner"),
+            None,
+            "Waiting after a restart.".to_string(),
+            None,
+        );
     let (me, gates) = channel();
     let mut fresh = Actor::new(RUN.to_string(), fx.host.clone(), me);
     let (reply, answer) = channel();
-    fresh.handle(ActorMsg::User { action: UserAction::Continue, reply: Some(reply) });
+    fresh.handle(ActorMsg::User {
+        action: UserAction::Continue,
+        reply: Some(reply),
+    });
     answer.recv().unwrap().unwrap();
-    assert!(!fresh.busy(), "Continue starts no checks for a decided turn");
+    assert!(
+        !fresh.busy(),
+        "Continue starts no checks for a decided turn"
+    );
     assert!(gates.try_recv().is_err());
-    assert_eq!(fx.launches().len(), launches, "Continue does not hand the decided plan on again: {:?}", fx.launches());
+    assert_eq!(
+        fx.launches().len(),
+        launches,
+        "Continue does not hand the decided plan on again: {:?}",
+        fx.launches()
+    );
     let again = fx.run(|run| run.events.iter().filter(|e| e.kind == "turn").count());
-    assert_eq!(again, turn_lines, "no second ledger line for the decided turn");
+    assert_eq!(
+        again, turn_lines,
+        "no second ledger line for the decided turn"
+    );
     assert_eq!(fx.pastes().len(), 1);
     assert!(fx.resumes().is_empty());
     fx.run(|run| assert_eq!(run.status, RunStatus::Running, "the run carries on"));
@@ -1013,20 +1607,38 @@ fn continue_on_a_turn_the_actor_decided_runs_no_checks() {
 fn a_restart_right_after_a_resume_is_not_stopped_as_app_restarted() {
     let mut fx = Fixture::new("restart_after_resume");
     let (implementer, _) = implementer_with_a_failed_gate(&mut fx);
-    assert!(fx.stage_dir(&implementer).turn().is_none(), "the resume cleared turn.json");
+    assert!(
+        fx.stage_dir(&implementer).turn().is_none(),
+        "the resume cleared turn.json"
+    );
     let found = reconcile_after_restart(&fx, &implementer);
-    assert!(!matches!(found, Some(crate::pipelines::recovery::Reconciled::Waiting { .. })), "a false Continue: {found:?}");
+    assert!(
+        !matches!(
+            found,
+            Some(crate::pipelines::recovery::Reconciled::Waiting { .. })
+        ),
+        "a false Continue: {found:?}"
+    );
     fx.run(|run| {
         assert_eq!((run.status, run.stop_reason), (RunStatus::Running, None));
         let last = run.events.last().unwrap();
         assert_eq!(last.kind, "note");
-        assert!(last.summary.contains("may not have reached it"), "{}", last.summary);
+        assert!(
+            last.summary.contains("may not have reached it"),
+            "{}",
+            last.summary
+        );
     });
 }
 
 /// A copy of a built-in role under another id (Settings › Roles › Duplicate).
 fn copied_role(of: &str, id: &str, name: &str) -> Role {
-    let mut role = crate::store::bundled_seed().unwrap().roles.into_iter().find(|r| r.id == of).unwrap();
+    let mut role = crate::store::bundled_seed()
+        .unwrap()
+        .roles
+        .into_iter()
+        .find(|r| r.id == of)
+        .unwrap();
     role.id = id.into();
     role.name = name.into();
     role
@@ -1061,13 +1673,20 @@ fn a_copied_plan_reviewer_sends_its_round_back_with_the_planner_ask() {
             copied_role("role_pr_reviewer", "role_custom_pr_check", "PR check"),
         ],
     );
-    assert_eq!(fx.run(|run| run.engine), 2, "a copied reviewer is bridged like the built-in one");
+    assert_eq!(
+        fx.run(|run| run.engine),
+        2,
+        "a copied reviewer is bridged like the built-in one"
+    );
     let reviewer = fx.open_plan_reviewer();
     assert_eq!(fx.tab(&reviewer).role_id, "role_custom_plan_check");
     let turn = fx.end_turn(
         &reviewer,
         "r-1",
-        review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "Retries forever." }])),
+        review(
+            "CHANGES_REQUIRED",
+            json!([{ "severity": "HIGH", "summary": "Retries forever." }]),
+        ),
         "Changes required.",
     );
     fx.actor.handle(ActorMsg::Turn(turn));
@@ -1077,10 +1696,20 @@ fn a_copied_plan_reviewer_sends_its_round_back_with_the_planner_ask() {
     assert_eq!(resumes.len(), 1, "{resumes:?}");
     assert_eq!(resumes[0].tab_id, fx.planner);
     let prompt = &resumes[0].prompt;
-    assert!(prompt.contains("Revise the plan"), "the Planner is asked to revise its plan:\n{prompt}");
-    assert!(!prompt.contains("push to the same branch"), "not the Implementer's ask:\n{prompt}");
+    assert!(
+        prompt.contains("Revise the plan"),
+        "the Planner is asked to revise its plan:\n{prompt}"
+    );
+    assert!(
+        !prompt.contains("push to the same branch"),
+        "not the Implementer's ask:\n{prompt}"
+    );
     fx.run(|run| {
-        assert_eq!(run.verdicts.last().and_then(|v| v.verdict.as_deref()), Some("REQUIRES REVISION"), "a plan reviewer revises");
+        assert_eq!(
+            run.verdicts.last().and_then(|v| v.verdict.as_deref()),
+            Some("REQUIRES REVISION"),
+            "a plan reviewer revises"
+        );
     });
 }
 
@@ -1104,20 +1733,48 @@ fn a_prefill_for_a_copied_reviewer_with_no_loop_back_carries_the_pull_requests()
     let mut fx = Fixture::with_pipeline(
         "prefill_copied_reviewer",
         id,
-        vec![copied_role("role_pr_reviewer", "role_custom_final_check", "Final check")],
+        vec![copied_role(
+            "role_pr_reviewer",
+            "role_custom_final_check",
+            "Final check",
+        )],
     );
     let implementer = to_implementer(&mut fx);
     let prs = json!({ "schema": 1, "prs": [{ "url": "https://github.com/acme/app/pull/12", "branch": "fix/refresh", "title": "Refresh" }],
                       "summary": "Expired tokens are refreshed once." });
     fx.stage_dir(&implementer)
-        .write_prs(&RunPrs { schema: 1, run_id: RUN.into(), stage_key: "implementer".into(), lane: None, turn: "i-1".into(), at: "now".into(), result: prs.clone() })
+        .write_prs(&RunPrs {
+            schema: 1,
+            run_id: RUN.into(),
+            stage_key: "implementer".into(),
+            lane: None,
+            turn: "i-1".into(),
+            at: "now".into(),
+            result: prs.clone(),
+        })
         .unwrap();
-    fx.end_turn(&implementer, "i-1", Some(prs), "Opened https://github.com/acme/app/pull/12");
-    let outcome = fx.user(UserAction::Prefill { source_tab_id: implementer, target_role_id: "role_custom_final_check".into() });
+    fx.end_turn(
+        &implementer,
+        "i-1",
+        Some(prs),
+        "Opened https://github.com/acme/app/pull/12",
+    );
+    let outcome = fx.user(UserAction::Prefill {
+        source_tab_id: implementer,
+        target_role_id: "role_custom_final_check".into(),
+    });
     crate::pipelines::unregister_for_test(id);
     let prefill = outcome.unwrap().prefill.expect("values");
-    let context = prefill.values.values().cloned().collect::<Vec<_>>().join("\n");
-    assert!(context.contains("https://github.com/acme/app/pull/12"), "a reviewer's form names the pull requests:\n{context}");
+    let context = prefill
+        .values
+        .values()
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        context.contains("https://github.com/acme/app/pull/12"),
+        "a reviewer's form names the pull requests:\n{context}"
+    );
 }
 
 #[test]
@@ -1131,10 +1788,19 @@ fn plan_reviewers_and_fan_out_stages_are_known_by_their_kind() {
     // A copied Implementer is where lanes start.
     def.stages[2].role_id = "role_custom_builder".into();
     def.stages[2].kind = Some(crate::pipelines::StageKind::Implementer);
-    assert_eq!(implementer_stage(&def).map(|s| s.role_id.as_str()), Some("role_custom_builder"));
+    assert_eq!(
+        implementer_stage(&def).map(|s| s.role_id.as_str()),
+        Some("role_custom_builder")
+    );
     let built_in = crate::pipelines::find("eagle1").unwrap();
-    assert!(reviews_plan(&built_in, built_in.stage("plan_reviewer").unwrap()));
-    assert_eq!(implementer_stage(&built_in).map(|s| s.role_id.as_str()), Some("role_implementer"));
+    assert!(reviews_plan(
+        &built_in,
+        built_in.stage("plan_reviewer").unwrap()
+    ));
+    assert_eq!(
+        implementer_stage(&built_in).map(|s| s.role_id.as_str()),
+        Some("role_implementer")
+    );
 }
 
 /// H5 on engine 2: a turn Claude refused for the usage limit ends without
@@ -1143,18 +1809,24 @@ fn plan_reviewers_and_fan_out_stages_are_known_by_their_kind() {
 fn a_turn_cut_off_by_the_usage_limit_stops_as_usage_limit_without_checks() {
     let mut fx = Fixture::new("rate_limit");
     let implementer = to_implementer(&mut fx);
-    fx.host
-        .rate_limits
-        .lock()
-        .unwrap()
-        .insert(implementer.clone(), "You've hit your limit · resets 3pm".into());
+    fx.host.rate_limits.lock().unwrap().insert(
+        implementer.clone(),
+        "You've hit your limit · resets 3pm".into(),
+    );
     let turn = fx.end_turn(&implementer, "i-1", None, "");
     fx.actor.handle(ActorMsg::Turn(turn));
     assert!(!fx.actor.busy(), "no checks for a refused turn");
     fx.run(|run| {
-        assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::UsageLimit)));
+        assert_eq!(
+            (run.status, run.stop_reason),
+            (RunStatus::Waiting, Some(StopReason::UsageLimit))
+        );
         assert!(run.events.iter().all(|e| e.kind != "gate"));
-        assert!(run.events.last().unwrap().summary.contains("resets 3pm"), "{:?}", run.events.last());
+        assert!(
+            run.events.last().unwrap().summary.contains("resets 3pm"),
+            "{:?}",
+            run.events.last()
+        );
     });
     assert_eq!(fx.stops().last().map(|s| s.0), Some(StopReason::UsageLimit));
 }
@@ -1165,11 +1837,31 @@ fn a_turn_cut_off_by_the_usage_limit_stops_as_usage_limit_without_checks() {
 fn a_review_cut_off_by_the_usage_limit_resumes_nothing() {
     let mut fx = Fixture::new("rate_limit_resume");
     let reviewer = fx.open_plan_reviewer();
-    fx.host.rate_limits.lock().unwrap().insert(reviewer.clone(), "You've hit your limit · resets 3pm".into());
-    let turn = fx.end_turn(&reviewer, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "x" }])), "");
+    fx.host.rate_limits.lock().unwrap().insert(
+        reviewer.clone(),
+        "You've hit your limit · resets 3pm".into(),
+    );
+    let turn = fx.end_turn(
+        &reviewer,
+        "r-1",
+        review(
+            "CHANGES_REQUIRED",
+            json!([{ "severity": "HIGH", "summary": "x" }]),
+        ),
+        "",
+    );
     fx.actor.handle(ActorMsg::Turn(turn));
-    assert!(fx.resumes().is_empty() && fx.pastes().is_empty(), "nothing sent back: {:?}", fx.resumes());
-    fx.run(|run| assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::UsageLimit))));
+    assert!(
+        fx.resumes().is_empty() && fx.pastes().is_empty(),
+        "nothing sent back: {:?}",
+        fx.resumes()
+    );
+    fx.run(|run| {
+        assert_eq!(
+            (run.status, run.stop_reason),
+            (RunStatus::Waiting, Some(StopReason::UsageLimit))
+        )
+    });
 }
 
 /// D24 on the actor's launch path (always mid-run): a stage the gate sends
@@ -1184,20 +1876,40 @@ fn a_stage_the_version_gate_refuses_opens_unbridged_and_the_run_goes_to_engine_1
     let reviewer = fx.open_plan_reviewer();
     let launch = fx.launches().last().cloned().unwrap();
     assert_eq!(launch.bridge, None, "launched without the bridge");
-    assert!(!launch.prompt.contains("mcp__dcterminal__submit_result"), "no result instructions");
+    assert!(
+        !launch.prompt.contains("mcp__dcterminal__submit_result"),
+        "no result instructions"
+    );
     assert_eq!(fx.tab(&reviewer).bridge, None);
-    assert!(!fx.host.runs.join(RUN).join("stages/plan_reviewer").exists(), "no stage folder");
+    assert!(
+        !fx.host.runs.join(RUN).join("stages/plan_reviewer").exists(),
+        "no stage folder"
+    );
     fx.run(|run| {
         assert_eq!(run.engine, 1);
-        assert!(run.engine_note.as_deref().unwrap().contains("manual from now on"), "{:?}", run.engine_note);
+        assert!(
+            run.engine_note
+                .as_deref()
+                .unwrap()
+                .contains("manual from now on"),
+            "{:?}",
+            run.engine_note
+        );
         assert!(!run.autopilot.as_ref().unwrap().enabled, "autopilot is off");
         assert!(run.manual_only, "for good");
         assert_eq!(run.status, RunStatus::Stopped);
-        let notes = run.events.iter().filter(|e| e.kind == "note" && e.summary.contains("Claude Code 2.1.200")).count();
+        let notes = run
+            .events
+            .iter()
+            .filter(|e| e.kind == "note" && e.summary.contains("Claude Code 2.1.200"))
+            .count();
         assert_eq!(notes, 1, "one Timeline note: {:?}", run.events);
     });
     let mode = std::fs::read_to_string(fx.host.runs.join(RUN).join("stages/planner/mode")).unwrap();
-    assert_eq!(mode, "manual", "the bridged Planner stops enforcing a result");
+    assert_eq!(
+        mode, "manual",
+        "the bridged Planner stops enforcing a result"
+    );
 }
 
 /// V4 with V2a: a resume relaunches through the same D24 gate as a first
@@ -1211,9 +1923,21 @@ fn a_resume_the_version_gate_refuses_makes_the_run_manual_and_resumes_nothing() 
     let reviewer = fx.open_plan_reviewer();
     let launches = fx.launches().len();
     fx.host.gate_open.store(false, Ordering::SeqCst);
-    let turn = fx.end_turn(&reviewer, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "x" }])), "");
+    let turn = fx.end_turn(
+        &reviewer,
+        "r-1",
+        review(
+            "CHANGES_REQUIRED",
+            json!([{ "severity": "HIGH", "summary": "x" }]),
+        ),
+        "",
+    );
     fx.actor.handle(ActorMsg::Turn(turn));
-    assert!(fx.resumes().is_empty(), "nothing resumed: {:?}", fx.resumes());
+    assert!(
+        fx.resumes().is_empty(),
+        "nothing resumed: {:?}",
+        fx.resumes()
+    );
     assert!(fx.pastes().is_empty(), "nothing pasted");
     assert_eq!(fx.launches().len(), launches, "no new terminal");
     let file = fx.run_file("findings-plan_reviewer-r1.json");
@@ -1223,18 +1947,49 @@ fn a_resume_the_version_gate_refuses_makes_the_run_manual_and_resumes_nothing() 
         assert!(run.manual_only, "manual for good");
         assert!(!run.autopilot.as_ref().unwrap().enabled, "autopilot is off");
         assert_eq!(run.status, RunStatus::Stopped);
-        assert_ne!(run.stop_reason, Some(StopReason::CarryOutFailed), "not a failure to carry out");
-        let notes: Vec<&str> = run.events.iter().filter(|e| e.kind == "note").map(|e| e.summary.as_str()).collect();
-        let manual: Vec<&&str> = notes.iter().filter(|n| n.contains("manual from now on")).collect();
+        assert_ne!(
+            run.stop_reason,
+            Some(StopReason::CarryOutFailed),
+            "not a failure to carry out"
+        );
+        let notes: Vec<&str> = run
+            .events
+            .iter()
+            .filter(|e| e.kind == "note")
+            .map(|e| e.summary.as_str())
+            .collect();
+        let manual: Vec<&&str> = notes
+            .iter()
+            .filter(|n| n.contains("manual from now on"))
+            .collect();
         assert_eq!(manual.len(), 1, "one Timeline note: {notes:?}");
-        assert!(manual[0].contains(&file.display().to_string()), "it says where the findings are: {}", manual[0]);
-        assert!(notes.iter().all(|n| !n.contains("could not")), "no carry-out failure note: {notes:?}");
+        assert!(
+            manual[0].contains(&file.display().to_string()),
+            "it says where the findings are: {}",
+            manual[0]
+        );
+        assert!(
+            notes.iter().all(|n| !n.contains("could not")),
+            "no carry-out failure note: {notes:?}"
+        );
         // Nothing was sent, so no round is recorded as sent back and
         // autopilot's hand-off is not kept: your own Send back is a first one.
-        let sent: Vec<&str> = run.events.iter().filter(|e| e.kind == "loopBack").map(|e| e.summary.as_str()).collect();
-        assert!(sent.is_empty(), "the Timeline says the round was sent back: {sent:?}");
+        let sent: Vec<&str> = run
+            .events
+            .iter()
+            .filter(|e| e.kind == "loopBack")
+            .map(|e| e.summary.as_str())
+            .collect();
+        assert!(
+            sent.is_empty(),
+            "the Timeline says the round was sent back: {sent:?}"
+        );
         assert_eq!(run.round, 1, "the round counter stays");
-        assert!(run.claims.iter().all(|c| c.key != "back:plan_reviewer#1"), "autopilot's claim is released: {:?}", run.claims);
+        assert!(
+            run.claims.iter().all(|c| c.key != "back:plan_reviewer#1"),
+            "autopilot's claim is released: {:?}",
+            run.claims
+        );
     });
     let mode = std::fs::read_to_string(fx.host.runs.join(RUN).join("stages/planner/mode")).unwrap();
     assert_eq!(mode, "manual", "the stages stop enforcing a result");
@@ -1248,7 +2003,12 @@ fn a_resume_the_version_gate_refuses_makes_the_run_manual_and_resumes_nothing() 
 fn your_send_back_the_version_gate_refuses_is_not_recorded_as_sent() {
     let mut fx = Fixture::new("gate_refused_send_back");
     let reviewer = fx.open_plan_reviewer();
-    fx.end_turn(&reviewer, "r-1", review("APPROVED_WITH_CHANGES", json!([])), "");
+    fx.end_turn(
+        &reviewer,
+        "r-1",
+        review("APPROVED_WITH_CHANGES", json!([])),
+        "",
+    );
     fx.host.gate_open.store(false, Ordering::SeqCst);
     let err = fx
         .user(UserAction::SendBack {
@@ -1262,12 +2022,22 @@ fn your_send_back_the_version_gate_refuses_is_not_recorded_as_sent() {
         })
         .unwrap_err();
     assert!(err.contains("manual now"), "{err}");
-    assert!(fx.resumes().is_empty() && fx.pastes().is_empty(), "nothing sent");
+    assert!(
+        fx.resumes().is_empty() && fx.pastes().is_empty(),
+        "nothing sent"
+    );
     fx.run(|run| {
         assert!(run.manual_only);
-        assert!(run.events.iter().all(|e| e.kind != "loopBack"), "not recorded as sent back");
+        assert!(
+            run.events.iter().all(|e| e.kind != "loopBack"),
+            "not recorded as sent back"
+        );
         assert_eq!(run.round, 1);
-        assert!(run.claims.iter().all(|c| c.key != "back:plan_reviewer#1"), "your claim is released: {:?}", run.claims);
+        assert!(
+            run.claims.iter().all(|c| c.key != "back:plan_reviewer#1"),
+            "your claim is released: {:?}",
+            run.claims
+        );
         let manual: Vec<&str> = run
             .events
             .iter()
@@ -1275,8 +2045,16 @@ fn your_send_back_the_version_gate_refuses_is_not_recorded_as_sent() {
             .map(|e| e.summary.as_str())
             .collect();
         assert_eq!(manual.len(), 1, "{manual:?}");
-        assert!(!manual[0].contains("autopilot was sending"), "wrong wording for your own Send back: {}", manual[0]);
-        assert!(manual[0].contains("Your Send back was not sent"), "it says your Send back was not sent: {}", manual[0]);
+        assert!(
+            !manual[0].contains("autopilot was sending"),
+            "wrong wording for your own Send back: {}",
+            manual[0]
+        );
+        assert!(
+            manual[0].contains("Your Send back was not sent"),
+            "it says your Send back was not sent: {}",
+            manual[0]
+        );
     });
 }
 
@@ -1295,7 +2073,12 @@ fn an_optional_gate_with_no_check_lets_the_run_go_on_and_a_required_one_stops_it
     let turn = fx.end_turn(&implementer, "i-1", Some(prs.clone()), "Done.");
     fx.actor.handle(ActorMsg::Turn(turn));
     fx.finish_gates();
-    fx.run(|run| assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::NoCheckFound))));
+    fx.run(|run| {
+        assert_eq!(
+            (run.status, run.stop_reason),
+            (RunStatus::Waiting, Some(StopReason::NoCheckFound))
+        )
+    });
 
     // Optional, on a pipeline of your own: the run moves on to the PR Reviewer.
     let id = "eagle1_optional_gate_v3";
@@ -1304,8 +2087,16 @@ fn an_optional_gate_with_no_check_lets_the_run_go_on_and_a_required_one_stops_it
     def.name = "Optional gate".into();
     def.run_kind = None;
     def.built_in = false;
-    let implementer_stage = def.stages.iter_mut().find(|s| s.id == "implementer").unwrap();
-    implementer_stage.gates = vec![crate::pipelines::GateDef::Command { run: "auto".into(), timeout_secs: None, optional: true }];
+    let implementer_stage = def
+        .stages
+        .iter_mut()
+        .find(|s| s.id == "implementer")
+        .unwrap();
+    implementer_stage.gates = vec![crate::pipelines::GateDef::Command {
+        run: "auto".into(),
+        timeout_secs: None,
+        optional: true,
+    }];
     crate::pipelines::register_for_test(def);
     let mut fx = Fixture::with_pipeline("gate_optional", id, Vec::new());
     let implementer = to_implementer(&mut fx);
@@ -1316,9 +2107,15 @@ fn an_optional_gate_with_no_check_lets_the_run_go_on_and_a_required_one_stops_it
     crate::pipelines::unregister_for_test(id);
     fx.run(|run| {
         assert_eq!(run.status, RunStatus::Running, "{:?}", run.events.last());
-        assert!(run.gates["implementer"].results[0].optional, "the result says the gate is optional");
+        assert!(
+            run.gates["implementer"].results[0].optional,
+            "the result says the gate is optional"
+        );
     });
-    assert_eq!(fx.launches().last().map(|l| l.role_id.as_str()), Some("role_pr_reviewer"));
+    assert_eq!(
+        fx.launches().last().map(|l| l.role_id.as_str()),
+        Some("role_pr_reviewer")
+    );
 }
 
 fn turn_with(result: Option<Value>, message: &str) -> BridgeTurn {
@@ -1331,7 +2128,11 @@ fn turn_with(result: Option<Value>, message: &str) -> BridgeTurn {
         lane: None,
         tab_id: "tab_i".into(),
         turn: "i-1".into(),
-        outcome: if result.is_some() { TurnOutcome::Result } else { TurnOutcome::NoResult },
+        outcome: if result.is_some() {
+            TurnOutcome::Result
+        } else {
+            TurnOutcome::NoResult
+        },
         ended_at: "2026-10-20T10:00:00Z".into(),
         last_assistant_message: message.into(),
         blocked: false,
@@ -1344,21 +2145,38 @@ fn the_pull_request_gate_checks_the_reported_pull_requests_else_the_links_in_the
     use super::actor::{github_pr_urls, pr_urls};
     // submit_result's prs[] wins over the reply's links.
     let reported = turn_with(
-        Some(json!({ "schema": 1, "prs": [{ "url": "https://github.com/acme/app/pull/12" }, { "url": "https://github.com/acme/app/pull/13" }], "summary": "s" })),
+        Some(
+            json!({ "schema": 1, "prs": [{ "url": "https://github.com/acme/app/pull/12" }, { "url": "https://github.com/acme/app/pull/13" }], "summary": "s" }),
+        ),
         "See https://github.com/other/repo/pull/99",
     );
-    assert_eq!(pr_urls(&reported), vec!["https://github.com/acme/app/pull/12", "https://github.com/acme/app/pull/13"]);
+    assert_eq!(
+        pr_urls(&reported),
+        vec![
+            "https://github.com/acme/app/pull/12",
+            "https://github.com/acme/app/pull/13"
+        ]
+    );
     // No prs[] (no result, or an empty list): every pull-request link in the reply.
     let none = turn_with(None, "Opened https://github.com/acme/app/pull/12.");
     assert_eq!(pr_urls(&none), vec!["https://github.com/acme/app/pull/12"]);
-    let empty = turn_with(Some(json!({ "schema": 1, "prs": [], "summary": "s" })), "https://github.com/acme/app/pull/7");
+    let empty = turn_with(
+        Some(json!({ "schema": 1, "prs": [], "summary": "s" })),
+        "https://github.com/acme/app/pull/7",
+    );
     assert_eq!(pr_urls(&empty), vec!["https://github.com/acme/app/pull/7"]);
     // Trailing paths, anchors and punctuation are cut; repeats count once.
     let text = "PRs: (https://github.com/acme/app/pull/12), https://github.com/acme/app/pull/12/files, \
                 https://github.com/acme/app/pull/12#issuecomment-1, [x](https://github.com/acme/my.app-2/pull/3).\n\
                 Not these: https://github.com/acme/app/pulls, https://github.com/acme/app/issues/4, \
                 https://github.com/acme/app/pull/, https://github.com/acme/pull/5";
-    assert_eq!(github_pr_urls(text), vec!["https://github.com/acme/app/pull/12", "https://github.com/acme/my.app-2/pull/3"]);
+    assert_eq!(
+        github_pr_urls(text),
+        vec![
+            "https://github.com/acme/app/pull/12",
+            "https://github.com/acme/my.app-2/pull/3"
+        ]
+    );
     assert!(github_pr_urls("").is_empty());
 }
 
@@ -1376,14 +2194,23 @@ fn a_message_queued_behind_a_panic_is_answered_by_the_next_thread() {
     actors.send(RUN, ActorMsg::Turn(turn));
     let asking = actors.clone();
     let button = std::thread::spawn(move || {
-        asking.ask(RUN, UserAction::Approve { lane: Some("pr9".into()) }, Duration::from_secs(20))
+        asking.ask(
+            RUN,
+            UserAction::Approve {
+                lane: Some("pr9".into()),
+            },
+            Duration::from_secs(20),
+        )
     });
     // The button press is queued behind the turn before the panic.
     std::thread::sleep(Duration::from_millis(300));
     release.send(()).unwrap();
     let answer = button.join().unwrap();
     let err = answer.unwrap_err();
-    assert!(err.contains("pr9"), "a new thread handled the queued press: {err}");
+    assert!(
+        err.contains("pr9"),
+        "a new thread handled the queued press: {err}"
+    );
     fx.run(|run| assert_eq!(run.stop_reason, Some(StopReason::CarryOutFailed)));
 }
 
@@ -1397,43 +2224,86 @@ fn stage_mode(fx: &Fixture, tab_id: &str) -> crate::bridge::StageMode {
 fn a_taken_over_stage_is_never_decided_and_hand_back_decides_its_result_at_once() {
     let mut fx = Fixture::new("take_over");
     let reviewer = fx.open_plan_reviewer();
-    fx.user(UserAction::TakeOver { tab_id: reviewer.clone() }).expect("take over");
-    assert_eq!(stage_mode(&fx, &reviewer), crate::bridge::StageMode::Takeover, "the bridge stops enforcing");
+    fx.user(UserAction::TakeOver {
+        tab_id: reviewer.clone(),
+    })
+    .expect("take over");
+    assert_eq!(
+        stage_mode(&fx, &reviewer),
+        crate::bridge::StageMode::Takeover,
+        "the bridge stops enforcing"
+    );
     fx.run(|run| {
         assert_eq!(run.taken_over, vec![reviewer.clone()]);
-        assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::TakenOver)));
+        assert_eq!(
+            (run.status, run.stop_reason),
+            (RunStatus::Waiting, Some(StopReason::TakenOver))
+        );
     });
     // You and the reviewer reach a verdict while you drive it: nothing acts on it.
     let turn = fx.end_turn(
         &reviewer,
         "r-1",
-        review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "Retries forever." }])),
+        review(
+            "CHANGES_REQUIRED",
+            json!([{ "severity": "HIGH", "summary": "Retries forever." }]),
+        ),
         "Changes required.",
     );
     fx.actor.handle(ActorMsg::Turn(turn));
-    assert!(fx.resumes().is_empty() && fx.pastes().is_empty(), "no decision while taken over");
+    assert!(
+        fx.resumes().is_empty() && fx.pastes().is_empty(),
+        "no decision while taken over"
+    );
     fx.run(|run| {
-        assert!(run.events.iter().any(|e| e.kind == "turn"), "the turn is still recorded");
+        assert!(
+            run.events.iter().any(|e| e.kind == "turn"),
+            "the turn is still recorded"
+        );
         let decided = &run.autopilot.as_ref().unwrap().decided;
-        assert!(!decided.iter().any(|t| t.ends_with("|bridge|r-1")), "and left undecided: {decided:?}");
+        assert!(
+            !decided.iter().any(|t| t.ends_with("|bridge|r-1")),
+            "and left undecided: {decided:?}"
+        );
     });
     // Hand back: enforcement and decisions are on again, and the turn that
     // already has a result is decided at once.
-    fx.user(UserAction::HandBack { tab_id: reviewer.clone() }).expect("hand back");
-    assert_eq!(stage_mode(&fx, &reviewer), crate::bridge::StageMode::Autopilot);
+    fx.user(UserAction::HandBack {
+        tab_id: reviewer.clone(),
+    })
+    .expect("hand back");
+    assert_eq!(
+        stage_mode(&fx, &reviewer),
+        crate::bridge::StageMode::Autopilot
+    );
     assert_eq!(fx.resumes().len(), 1, "the round went back to the Planner");
     assert_eq!(fx.resumes()[0].tab_id, fx.planner);
     fx.run(|run| {
         assert!(run.taken_over.is_empty());
         assert_eq!(run.round, 2);
-        assert!(run.events.iter().any(|e| e.summary.contains("handed") && e.summary.contains("back")), "{:?}", run.events);
+        assert!(
+            run.events
+                .iter()
+                .any(|e| e.summary.contains("handed") && e.summary.contains("back")),
+            "{:?}",
+            run.events
+        );
     });
     // A second Hand back changes nothing.
-    fx.user(UserAction::HandBack { tab_id: reviewer.clone() }).expect("hand back again");
+    fx.user(UserAction::HandBack {
+        tab_id: reviewer.clone(),
+    })
+    .expect("hand back again");
     assert_eq!(fx.resumes().len(), 1);
     // Nor does taking over and handing back again: that turn was decided.
-    fx.user(UserAction::TakeOver { tab_id: reviewer.clone() }).unwrap();
-    fx.user(UserAction::HandBack { tab_id: reviewer.clone() }).unwrap();
+    fx.user(UserAction::TakeOver {
+        tab_id: reviewer.clone(),
+    })
+    .unwrap();
+    fx.user(UserAction::HandBack {
+        tab_id: reviewer.clone(),
+    })
+    .unwrap();
     assert_eq!(fx.resumes().len(), 1);
     fx.run(|run| assert_eq!(run.round, 2));
 }
@@ -1442,15 +2312,33 @@ fn a_taken_over_stage_is_never_decided_and_hand_back_decides_its_result_at_once(
 fn handing_back_a_turn_with_no_result_waits_for_the_next_turn() {
     let mut fx = Fixture::new("hand_back_no_result");
     let reviewer = fx.open_plan_reviewer();
-    fx.user(UserAction::TakeOver { tab_id: reviewer.clone() }).unwrap();
+    fx.user(UserAction::TakeOver {
+        tab_id: reviewer.clone(),
+    })
+    .unwrap();
     let turn = fx.end_turn(&reviewer, "r-1", None, "What should I look at first?");
     fx.actor.handle(ActorMsg::Turn(turn));
-    fx.user(UserAction::HandBack { tab_id: reviewer.clone() }).unwrap();
+    fx.user(UserAction::HandBack {
+        tab_id: reviewer.clone(),
+    })
+    .unwrap();
     assert!(fx.resumes().is_empty() && fx.pastes().is_empty());
-    assert!(fx.stops().is_empty(), "no stop for a turn you drove: {:?}", fx.stops());
+    assert!(
+        fx.stops().is_empty(),
+        "no stop for a turn you drove: {:?}",
+        fx.stops()
+    );
     fx.run(|run| assert_eq!((run.status, run.stop_reason), (RunStatus::Running, None)));
     // The next turn, on autopilot again, is decided as usual.
-    let turn = fx.end_turn(&reviewer, "r-2", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "x" }])), "");
+    let turn = fx.end_turn(
+        &reviewer,
+        "r-2",
+        review(
+            "CHANGES_REQUIRED",
+            json!([{ "severity": "HIGH", "summary": "x" }]),
+        ),
+        "",
+    );
     fx.actor.handle(ActorMsg::Turn(turn));
     assert_eq!(fx.resumes().len(), 1);
 }
@@ -1460,8 +2348,14 @@ fn a_taken_over_stage_may_exit_without_stopping_the_run() {
     let mut fx = Fixture::new("take_over_exit");
     let reviewer = fx.open_plan_reviewer();
     fx.start_turn(&reviewer, "r-1");
-    fx.user(UserAction::TakeOver { tab_id: reviewer.clone() }).unwrap();
-    fx.actor.handle(ActorMsg::Exited { tab_id: reviewer.clone(), code: Some(0) });
+    fx.user(UserAction::TakeOver {
+        tab_id: reviewer.clone(),
+    })
+    .unwrap();
+    fx.actor.handle(ActorMsg::Exited {
+        tab_id: reviewer.clone(),
+        code: Some(0),
+    });
     assert!(fx.stops().is_empty(), "{:?}", fx.stops());
 }
 
@@ -1469,13 +2363,34 @@ fn a_taken_over_stage_may_exit_without_stopping_the_run() {
 fn take_over_with_autopilot_off_keeps_the_run_stopped_and_hand_back_leaves_it_manual() {
     let mut fx = Fixture::new("take_over_manual");
     let reviewer = fx.open_plan_reviewer();
-    fx.host.store.lock().unwrap().pipeline_run_by_id_mut(RUN).unwrap().set_autopilot_enabled(false);
-    fx.user(UserAction::TakeOver { tab_id: reviewer.clone() }).unwrap();
-    fx.run(|run| assert_eq!((run.status, run.stop_reason), (RunStatus::Stopped, Some(StopReason::PausedByYou))));
-    fx.user(UserAction::HandBack { tab_id: reviewer.clone() }).unwrap();
+    fx.host
+        .store
+        .lock()
+        .unwrap()
+        .pipeline_run_by_id_mut(RUN)
+        .unwrap()
+        .set_autopilot_enabled(false);
+    fx.user(UserAction::TakeOver {
+        tab_id: reviewer.clone(),
+    })
+    .unwrap();
+    fx.run(|run| {
+        assert_eq!(
+            (run.status, run.stop_reason),
+            (RunStatus::Stopped, Some(StopReason::PausedByYou))
+        )
+    });
+    fx.user(UserAction::HandBack {
+        tab_id: reviewer.clone(),
+    })
+    .unwrap();
     assert_eq!(stage_mode(&fx, &reviewer), crate::bridge::StageMode::Manual);
     // Only a tab of this run can be taken over.
-    assert!(fx.user(UserAction::TakeOver { tab_id: "tab_elsewhere".into() }).is_err());
+    assert!(fx
+        .user(UserAction::TakeOver {
+            tab_id: "tab_elsewhere".into()
+        })
+        .is_err());
 }
 
 /// D28: a decision whose carry-out lands on a stage you took over (here a
@@ -1486,20 +2401,48 @@ fn a_round_sent_back_to_a_stage_you_took_over_waits_and_hand_back_carries_it_out
     let mut fx = Fixture::new("take_over_target");
     let reviewer = fx.open_plan_reviewer();
     let planner = fx.planner.clone();
-    fx.user(UserAction::TakeOver { tab_id: planner.clone() }).expect("take over");
+    fx.user(UserAction::TakeOver {
+        tab_id: planner.clone(),
+    })
+    .expect("take over");
     fx.run(|run| assert_eq!(run.status, RunStatus::Running, "the reviewer still works"));
-    let turn = fx.end_turn(&reviewer, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "x" }])), "");
+    let turn = fx.end_turn(
+        &reviewer,
+        "r-1",
+        review(
+            "CHANGES_REQUIRED",
+            json!([{ "severity": "HIGH", "summary": "x" }]),
+        ),
+        "",
+    );
     fx.actor.handle(ActorMsg::Turn(turn));
-    assert!(fx.resumes().is_empty() && fx.pastes().is_empty(), "autopilot resumed a stage you took over: {:?}", fx.resumes());
-    assert_eq!(stage_mode(&fx, &planner), crate::bridge::StageMode::Takeover);
+    assert!(
+        fx.resumes().is_empty() && fx.pastes().is_empty(),
+        "autopilot resumed a stage you took over: {:?}",
+        fx.resumes()
+    );
+    assert_eq!(
+        stage_mode(&fx, &planner),
+        crate::bridge::StageMode::Takeover
+    );
     fx.run(|run| {
-        assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::TakenOver)));
-        let why = run.autopilot.as_ref().and_then(|a| a.waiting.clone()).unwrap_or_default();
+        assert_eq!(
+            (run.status, run.stop_reason),
+            (RunStatus::Waiting, Some(StopReason::TakenOver))
+        );
+        let why = run
+            .autopilot
+            .as_ref()
+            .and_then(|a| a.waiting.clone())
+            .unwrap_or_default();
         assert!(why.contains("Planner"), "names the stage: {why}");
         assert_eq!(run.round, 1, "no round sent back yet");
     });
     // Hand back: the round goes back to the Planner now.
-    fx.user(UserAction::HandBack { tab_id: planner.clone() }).expect("hand back");
+    fx.user(UserAction::HandBack {
+        tab_id: planner.clone(),
+    })
+    .expect("hand back");
     let resumes = fx.resumes();
     assert_eq!(resumes.len(), 1, "{resumes:?}");
     assert_eq!(resumes[0].tab_id, planner);
@@ -1525,9 +2468,16 @@ fn a_turn_on_a_run_whose_pipeline_became_disabled_stops_the_run_and_opens_nothin
     let turn = fx.planner_turn("p-1", "# Plan\n1. Refresh tokens in src/auth.ts.");
     fx.actor.handle(ActorMsg::Turn(turn));
     crate::pipelines::unregister_for_test(id);
-    assert!(fx.launches().is_empty(), "nothing opened: {:?}", fx.launches());
+    assert!(
+        fx.launches().is_empty(),
+        "nothing opened: {:?}",
+        fx.launches()
+    );
     fx.run(|run| {
-        assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::CarryOutFailed)));
+        assert_eq!(
+            (run.status, run.stop_reason),
+            (RunStatus::Waiting, Some(StopReason::CarryOutFailed))
+        );
         let last = run.events.last().unwrap();
         assert!(last.summary.contains("is disabled"), "{}", last.summary);
     });
@@ -1549,14 +2499,26 @@ fn an_implementer_turn_on_a_run_whose_pipeline_became_disabled_runs_no_checks() 
     def.disabled = Some("role \"role_gone\" does not exist".into());
     crate::pipelines::register_for_test(def);
     let prs = json!({ "schema": 1, "prs": [{ "url": "https://github.com/acme/app/pull/12", "title": "Refresh" }], "summary": "Opened." });
-    let turn = fx.end_turn(&implementer, "i-1", Some(prs), "Opened https://github.com/acme/app/pull/12");
+    let turn = fx.end_turn(
+        &implementer,
+        "i-1",
+        Some(prs),
+        "Opened https://github.com/acme/app/pull/12",
+    );
     fx.actor.handle(ActorMsg::Turn(turn));
     crate::pipelines::unregister_for_test(id);
     assert!(!fx.actor.busy(), "no checks run on a disabled pipeline");
     assert!(fx.gates_done.try_recv().is_err());
     fx.run(|run| {
-        assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::CarryOutFailed)));
-        assert!(run.events.iter().all(|e| e.kind != "gate"), "{:?}", run.events);
+        assert_eq!(
+            (run.status, run.stop_reason),
+            (RunStatus::Waiting, Some(StopReason::CarryOutFailed))
+        );
+        assert!(
+            run.events.iter().all(|e| e.kind != "gate"),
+            "{:?}",
+            run.events
+        );
         let last = run.events.last().unwrap();
         assert!(last.summary.contains("is disabled"), "{}", last.summary);
     });
@@ -1570,43 +2532,108 @@ fn handing_back_a_stage_you_revised_yourself_decides_your_turn_not_the_held_roun
     let mut fx = Fixture::new("take_over_revised");
     let reviewer = fx.open_plan_reviewer();
     let planner = fx.planner.clone();
-    fx.user(UserAction::TakeOver { tab_id: planner.clone() }).expect("take over");
-    let turn = fx.end_turn(&reviewer, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "x" }])), "");
+    fx.user(UserAction::TakeOver {
+        tab_id: planner.clone(),
+    })
+    .expect("take over");
+    let turn = fx.end_turn(
+        &reviewer,
+        "r-1",
+        review(
+            "CHANGES_REQUIRED",
+            json!([{ "severity": "HIGH", "summary": "x" }]),
+        ),
+        "",
+    );
     fx.actor.handle(ActorMsg::Turn(turn));
-    fx.run(|run| assert_eq!(run.stop_reason, Some(StopReason::TakenOver), "the round is held"));
+    fx.run(|run| {
+        assert_eq!(
+            run.stop_reason,
+            Some(StopReason::TakenOver),
+            "the round is held"
+        )
+    });
     // You revise the plan yourself: the Planner ends a newer turn.
     let revised = fx.planner_turn("p-2", "# Plan\n1. Refresh tokens once, then fail.");
     fx.actor.handle(ActorMsg::Turn(revised));
-    let reviews_before = fx.launches().iter().filter(|l| l.role_id == "role_plan_reviewer").count();
-    fx.user(UserAction::HandBack { tab_id: planner.clone() }).expect("hand back");
-    assert!(fx.resumes().is_empty() && fx.pastes().is_empty(), "the stale round is not sent back: {:?}", fx.resumes());
-    let reviews = fx.launches().iter().filter(|l| l.role_id == "role_plan_reviewer").count();
-    assert_eq!(reviews, reviews_before + 1, "your revised plan goes to review");
+    let reviews_before = fx
+        .launches()
+        .iter()
+        .filter(|l| l.role_id == "role_plan_reviewer")
+        .count();
+    fx.user(UserAction::HandBack {
+        tab_id: planner.clone(),
+    })
+    .expect("hand back");
+    assert!(
+        fx.resumes().is_empty() && fx.pastes().is_empty(),
+        "the stale round is not sent back: {:?}",
+        fx.resumes()
+    );
+    let reviews = fx
+        .launches()
+        .iter()
+        .filter(|l| l.role_id == "role_plan_reviewer")
+        .count();
+    assert_eq!(
+        reviews,
+        reviews_before + 1,
+        "your revised plan goes to review"
+    );
     fx.run(|run| {
         assert_eq!((run.status, run.stop_reason), (RunStatus::Running, None));
         assert!(
-            !run.events.iter().any(|e| e.summary.contains("already handed on")),
+            !run.events
+                .iter()
+                .any(|e| e.summary.contains("already handed on")),
             "your turn is not skipped: {:?}",
-            run.events.iter().map(|e| e.summary.clone()).collect::<Vec<_>>()
+            run.events
+                .iter()
+                .map(|e| e.summary.clone())
+                .collect::<Vec<_>>()
         );
         let decided = &run.autopilot.as_ref().unwrap().decided;
-        assert!(decided.iter().any(|t| t.ends_with("|bridge|p-2")), "your turn is decided: {decided:?}");
+        assert!(
+            decided.iter().any(|t| t.ends_with("|bridge|p-2")),
+            "your turn is decided: {decided:?}"
+        );
         // The Timeline never says the round went back: nothing was sent.
         let lines: Vec<&str> = run.events.iter().map(|e| e.summary.as_str()).collect();
         assert!(
-            !lines.iter().any(|l| l.contains("goes back to") || l.contains("sent back") || l.contains("Handed to Planner")),
+            !lines.iter().any(|l| l.contains("goes back to")
+                || l.contains("sent back")
+                || l.contains("Handed to Planner")),
             "{lines:?}"
         );
-        assert!(lines.iter().any(|l| l.contains("revised Planner yourself")), "{lines:?}");
+        assert!(
+            lines.iter().any(|l| l.contains("revised Planner yourself")),
+            "{lines:?}"
+        );
         // Nor is the review stored as the Planner's hand-off.
-        let handoff = run.handoffs.get("role_planner").map(|h| h.text.clone()).unwrap_or_default();
-        assert!(!handoff.starts_with("Review findings from the"), "{handoff}");
+        let handoff = run
+            .handoffs
+            .get("role_planner")
+            .map(|h| h.text.clone())
+            .unwrap_or_default();
+        assert!(
+            !handoff.starts_with("Review findings from the"),
+            "{handoff}"
+        );
     });
-    assert!(!fx.run_file("findings-plan_reviewer-r1.json").exists(), "no findings file nothing points to");
+    assert!(
+        !fx.run_file("findings-plan_reviewer-r1.json").exists(),
+        "no findings file nothing points to"
+    );
     // Nothing is decided twice: handing back again changes nothing.
     let launches = fx.launches().len();
-    fx.user(UserAction::TakeOver { tab_id: planner.clone() }).unwrap();
-    fx.user(UserAction::HandBack { tab_id: planner.clone() }).unwrap();
+    fx.user(UserAction::TakeOver {
+        tab_id: planner.clone(),
+    })
+    .unwrap();
+    fx.user(UserAction::HandBack {
+        tab_id: planner.clone(),
+    })
+    .unwrap();
     assert_eq!(fx.launches().len(), launches);
     assert!(fx.resumes().is_empty());
 }
@@ -1618,21 +2645,46 @@ fn handing_back_a_stage_you_revised_yourself_decides_your_turn_not_the_held_roun
 fn take_over_and_hand_back_put_the_mode_back_when_the_run_cannot_be_saved() {
     let mut fx = Fixture::new("take_over_save_fails");
     let reviewer = fx.open_plan_reviewer();
-    let tmp = fx.host.store.lock().unwrap().path.with_extension("json.tmp");
+    let tmp = fx
+        .host
+        .store
+        .lock()
+        .unwrap()
+        .path
+        .with_extension("json.tmp");
     // A directory where the save writes its temp file: every save fails.
     std::fs::create_dir_all(&tmp).unwrap();
-    assert!(fx.user(UserAction::TakeOver { tab_id: reviewer.clone() }).is_err());
-    assert_eq!(stage_mode(&fx, &reviewer), crate::bridge::StageMode::Autopilot, "the mode is put back");
+    assert!(fx
+        .user(UserAction::TakeOver {
+            tab_id: reviewer.clone()
+        })
+        .is_err());
+    assert_eq!(
+        stage_mode(&fx, &reviewer),
+        crate::bridge::StageMode::Autopilot,
+        "the mode is put back"
+    );
     fx.run(|run| {
         assert!(run.taken_over.is_empty(), "nor is the run left taken over");
         assert_eq!(run.status, RunStatus::Running);
     });
 
     std::fs::remove_dir(&tmp).unwrap();
-    fx.user(UserAction::TakeOver { tab_id: reviewer.clone() }).expect("take over");
+    fx.user(UserAction::TakeOver {
+        tab_id: reviewer.clone(),
+    })
+    .expect("take over");
     std::fs::create_dir_all(&tmp).unwrap();
-    assert!(fx.user(UserAction::HandBack { tab_id: reviewer.clone() }).is_err());
-    assert_eq!(stage_mode(&fx, &reviewer), crate::bridge::StageMode::Takeover, "still yours");
+    assert!(fx
+        .user(UserAction::HandBack {
+            tab_id: reviewer.clone()
+        })
+        .is_err());
+    assert_eq!(
+        stage_mode(&fx, &reviewer),
+        crate::bridge::StageMode::Takeover,
+        "still yours"
+    );
     fx.run(|run| {
         assert_eq!(run.taken_over, vec![reviewer.clone()]);
         assert_eq!(run.stop_reason, Some(StopReason::TakenOver));
@@ -1647,8 +2699,18 @@ fn take_over_and_hand_back_put_the_mode_back_when_the_run_cannot_be_saved() {
 fn take_over_never_waits_on_a_run_with_no_current_stage_tabs() {
     let mut fx = Fixture::new("take_over_no_current");
     let planner = fx.planner.clone();
-    fx.host.store.lock().unwrap().pipeline_run_by_id_mut(RUN).unwrap().tab_ids.clear();
-    fx.user(UserAction::TakeOver { tab_id: planner.clone() }).expect("take over");
+    fx.host
+        .store
+        .lock()
+        .unwrap()
+        .pipeline_run_by_id_mut(RUN)
+        .unwrap()
+        .tab_ids
+        .clear();
+    fx.user(UserAction::TakeOver {
+        tab_id: planner.clone(),
+    })
+    .expect("take over");
     fx.run(|run| {
         assert_eq!(run.taken_over, vec![planner.clone()]);
         assert_eq!((run.status, run.stop_reason), (RunStatus::Running, None));
@@ -1664,7 +2726,10 @@ fn a_switch_to_engine_1_releases_the_stages_you_took_over() {
     let mut fx = Fixture::new("take_over_engine_1");
     let reviewer = fx.open_plan_reviewer();
     let planner = fx.planner.clone();
-    fx.user(UserAction::TakeOver { tab_id: planner.clone() }).expect("take over");
+    fx.user(UserAction::TakeOver {
+        tab_id: planner.clone(),
+    })
+    .expect("take over");
     let turn = fx.end_turn(&reviewer, "r-1", review("APPROVED", json!([])), "Approved.");
     fx.actor.handle(ActorMsg::Turn(turn));
     fx.host.gate_open.store(false, Ordering::SeqCst);
@@ -1679,19 +2744,36 @@ fn a_switch_to_engine_1_releases_the_stages_you_took_over() {
     .expect("send");
     fx.run(|run| {
         assert_eq!(run.engine, 1);
-        assert!(run.taken_over.is_empty(), "nothing is taken over on a manual run: {:?}", run.taken_over);
+        assert!(
+            run.taken_over.is_empty(),
+            "nothing is taken over on a manual run: {:?}",
+            run.taken_over
+        );
     });
-    assert_eq!(stage_mode(&fx, &planner), crate::bridge::StageMode::Manual, "the Planner is released");
+    assert_eq!(
+        stage_mode(&fx, &planner),
+        crate::bridge::StageMode::Manual,
+        "the Planner is released"
+    );
 }
 
 impl Fixture {
     /// A bridged, live tab of `role_id` at `step` of the run (in `lane`).
-    fn bridged_tab(&self, role_id: &str, stage_id: &str, step: u32, lane: Option<&str>, kind: ResultKind) -> String {
+    fn bridged_tab(
+        &self,
+        role_id: &str,
+        stage_id: &str,
+        step: u32,
+        lane: Option<&str>,
+        kind: ResultKind,
+    ) -> String {
         let mut store = self.host.store.lock().unwrap();
         let role = self.host.roles.iter().find(|r| r.id == role_id).unwrap();
         let cwd = self.work.path().display().to_string();
         let tab = store.create_draft_tab(role, &cwd, true, None).unwrap();
-        store.set_tab_chain(&tab, Some(chain(step, lane)), None).unwrap();
+        store
+            .set_tab_chain(&tab, Some(chain(step, lane)), None)
+            .unwrap();
         let stage_key = crate::pipelines::autopilot::stage_key(stage_id, lane);
         let plan = BridgePlan {
             run_id: RUN.into(),
@@ -1703,11 +2785,32 @@ impl Fixture {
             autopilot: true,
         };
         prepare_stage(&self.host.runs, &plan, &tab).unwrap();
-        store.set_tab_bridge(&tab, Some(BridgeTag { run_id: RUN.into(), stage: stage_key })).unwrap();
-        store.remember_claude_terminal_session(&tab, &format!("5f0c2a31-1b2c-4d3e-8f40-{:012}", step * 10 + lane.map_or(0, |l| l.len() as u32))).unwrap();
+        store
+            .set_tab_bridge(
+                &tab,
+                Some(BridgeTag {
+                    run_id: RUN.into(),
+                    stage: stage_key,
+                }),
+            )
+            .unwrap();
+        store
+            .remember_claude_terminal_session(
+                &tab,
+                &format!(
+                    "5f0c2a31-1b2c-4d3e-8f40-{:012}",
+                    step * 10 + lane.map_or(0, |l| l.len() as u32)
+                ),
+            )
+            .unwrap();
         if let Some(lane) = lane {
             let run = store.pipeline_run_by_id_mut(RUN).unwrap();
-            run.lanes.iter_mut().find(|l| l.id == lane).unwrap().tab_ids.insert(role_id.into(), tab.clone());
+            run.lanes
+                .iter_mut()
+                .find(|l| l.id == lane)
+                .unwrap()
+                .tab_ids
+                .insert(role_id.into(), tab.clone());
         }
         store.save().unwrap();
         self.host.live.lock().unwrap().insert(tab.clone());
@@ -1725,7 +2828,12 @@ fn a_turn_another_lane_finished_while_a_round_was_held_is_acted_on_at_hand_back(
         let mut store = fx.host.store.lock().unwrap();
         let lanes = ["pr1", "pr2"]
             .iter()
-            .map(|id| crate::commands::pipeline::LaneInput { id: id.to_string(), title: id.to_uppercase(), depends_on: vec![], repo: None })
+            .map(|id| crate::commands::pipeline::LaneInput {
+                id: id.to_string(),
+                title: id.to_uppercase(),
+                depends_on: vec![],
+                repo: None,
+            })
             .collect();
         crate::commands::pipeline::fan_out(&mut store, RUN, "implementer", lanes).unwrap();
         let run = store.pipeline_run_by_id_mut(RUN).unwrap();
@@ -1735,37 +2843,102 @@ fn a_turn_another_lane_finished_while_a_round_was_held_is_acted_on_at_hand_back(
         }
         store.save().unwrap();
     }
-    let impl1 = fx.bridged_tab("role_implementer", "implementer", 3, Some("pr1"), ResultKind::Implementer);
-    let rev1 = fx.bridged_tab("role_pr_reviewer", "pr_reviewer", 4, Some("pr1"), ResultKind::Reviewer);
-    let _impl2 = fx.bridged_tab("role_implementer", "implementer", 3, Some("pr2"), ResultKind::Implementer);
-    let rev2 = fx.bridged_tab("role_pr_reviewer", "pr_reviewer", 4, Some("pr2"), ResultKind::Reviewer);
+    let impl1 = fx.bridged_tab(
+        "role_implementer",
+        "implementer",
+        3,
+        Some("pr1"),
+        ResultKind::Implementer,
+    );
+    let rev1 = fx.bridged_tab(
+        "role_pr_reviewer",
+        "pr_reviewer",
+        4,
+        Some("pr1"),
+        ResultKind::Reviewer,
+    );
+    let _impl2 = fx.bridged_tab(
+        "role_implementer",
+        "implementer",
+        3,
+        Some("pr2"),
+        ResultKind::Implementer,
+    );
+    let rev2 = fx.bridged_tab(
+        "role_pr_reviewer",
+        "pr_reviewer",
+        4,
+        Some("pr2"),
+        ResultKind::Reviewer,
+    );
     let prs = json!({ "schema": 1, "prs": [{ "url": "https://github.com/acme/app/pull/12", "branch": "b", "title": "t" }], "summary": "s" });
     fx.end_turn(&impl1, "i-1", Some(prs), "Done.");
     fx.run(|run| {
-        let current: Vec<String> = crate::pipelines::recovery::current_stage_tabs(&crate::pipelines::find("eagle1").unwrap(), run)
-            .into_iter()
-            .map(|t| t.tab_id)
-            .collect();
-        assert!(current.contains(&rev1) && current.contains(&rev2), "{current:?}");
+        let current: Vec<String> = crate::pipelines::recovery::current_stage_tabs(
+            &crate::pipelines::find("eagle1").unwrap(),
+            run,
+        )
+        .into_iter()
+        .map(|t| t.tab_id)
+        .collect();
+        assert!(
+            current.contains(&rev1) && current.contains(&rev2),
+            "{current:?}"
+        );
     });
 
-    fx.user(UserAction::TakeOver { tab_id: impl1.clone() }).expect("take over");
-    let turn = fx.end_turn(&rev1, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "x" }])), "");
+    fx.user(UserAction::TakeOver {
+        tab_id: impl1.clone(),
+    })
+    .expect("take over");
+    let turn = fx.end_turn(
+        &rev1,
+        "r-1",
+        review(
+            "CHANGES_REQUIRED",
+            json!([{ "severity": "HIGH", "summary": "x" }]),
+        ),
+        "",
+    );
     fx.actor.handle(ActorMsg::Turn(turn));
-    fx.run(|run| assert_eq!(run.stop_reason, Some(StopReason::TakenOver), "the round is held"));
+    fx.run(|run| {
+        assert_eq!(
+            run.stop_reason,
+            Some(StopReason::TakenOver),
+            "the round is held"
+        )
+    });
     // PR2's reviewer approves while the run waits.
     let turn = fx.end_turn(&rev2, "r2-1", review("APPROVED", json!([])), "Approved.");
     fx.actor.handle(ActorMsg::Turn(turn));
     fx.run(|run| {
         let decided = &run.autopilot.as_ref().unwrap().decided;
-        assert!(!decided.iter().any(|t| t.ends_with("|bridge|r2-1")), "not decided while the run waits: {decided:?}");
+        assert!(
+            !decided.iter().any(|t| t.ends_with("|bridge|r2-1")),
+            "not decided while the run waits: {decided:?}"
+        );
     });
 
-    fx.user(UserAction::HandBack { tab_id: impl1.clone() }).expect("hand back");
-    assert_eq!(fx.resumes().iter().filter(|l| l.tab_id == impl1).count(), 1, "the held round went back");
+    fx.user(UserAction::HandBack {
+        tab_id: impl1.clone(),
+    })
+    .expect("hand back");
+    assert_eq!(
+        fx.resumes().iter().filter(|l| l.tab_id == impl1).count(),
+        1,
+        "the held round went back"
+    );
     fx.run(|run| {
         let pr2 = run.lane("pr2").unwrap();
-        assert_eq!(pr2.status, "approved", "PR2's approval is acted on: {:?}", run.events.iter().map(|e| e.summary.clone()).collect::<Vec<_>>());
+        assert_eq!(
+            pr2.status,
+            "approved",
+            "PR2's approval is acted on: {:?}",
+            run.events
+                .iter()
+                .map(|e| e.summary.clone())
+                .collect::<Vec<_>>()
+        );
     });
 }
 
@@ -1781,29 +2954,63 @@ fn a_held_round_with_checks_you_revised_yourself_is_not_sent_after_the_checks() 
     def.name = "Reviewer with checks".into();
     def.run_kind = None;
     def.built_in = false;
-    def.stages.iter_mut().find(|s| s.id == "plan_reviewer").unwrap().gates =
-        vec![crate::pipelines::GateDef::Command { run: "npm run check".into(), timeout_secs: None, optional: false }];
+    def.stages
+        .iter_mut()
+        .find(|s| s.id == "plan_reviewer")
+        .unwrap()
+        .gates = vec![crate::pipelines::GateDef::Command {
+        run: "npm run check".into(),
+        timeout_secs: None,
+        optional: false,
+    }];
     crate::pipelines::register_for_test(def);
     let mut fx = Fixture::with_pipeline("take_over_revised_gates", id, Vec::new());
     let reviewer = fx.open_plan_reviewer();
     let planner = fx.planner.clone();
-    fx.user(UserAction::TakeOver { tab_id: planner.clone() }).expect("take over");
-    let turn = fx.end_turn(&reviewer, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "x" }])), "");
+    fx.user(UserAction::TakeOver {
+        tab_id: planner.clone(),
+    })
+    .expect("take over");
+    let turn = fx.end_turn(
+        &reviewer,
+        "r-1",
+        review(
+            "CHANGES_REQUIRED",
+            json!([{ "severity": "HIGH", "summary": "x" }]),
+        ),
+        "",
+    );
     fx.actor.handle(ActorMsg::Turn(turn));
     fx.finish_gates();
-    fx.run(|run| assert_eq!(run.stop_reason, Some(StopReason::TakenOver), "the round is held"));
+    fx.run(|run| {
+        assert_eq!(
+            run.stop_reason,
+            Some(StopReason::TakenOver),
+            "the round is held"
+        )
+    });
     let revised = fx.planner_turn("p-2", "# Plan\n1. Refresh tokens once, then fail.");
     fx.actor.handle(ActorMsg::Turn(revised));
-    fx.user(UserAction::HandBack { tab_id: planner.clone() }).expect("hand back");
+    fx.user(UserAction::HandBack {
+        tab_id: planner.clone(),
+    })
+    .expect("hand back");
     // Any checks Hand back started come back now.
     while let Ok(msg) = fx.gates_done.recv_timeout(Duration::from_millis(500)) {
         fx.actor.handle(msg);
     }
     crate::pipelines::unregister_for_test(id);
-    assert!(fx.resumes().is_empty() && fx.pastes().is_empty(), "the stale round is not sent back: {:?}", fx.resumes());
+    assert!(
+        fx.resumes().is_empty() && fx.pastes().is_empty(),
+        "the stale round is not sent back: {:?}",
+        fx.resumes()
+    );
     fx.run(|run| {
         let decided = &run.autopilot.as_ref().unwrap().decided;
-        assert!(decided.iter().any(|t| t.ends_with("|bridge|p-2")), "your turn is decided: {decided:?}");
+        assert!(
+            decided.iter().any(|t| t.ends_with("|bridge|p-2")),
+            "your turn is decided: {decided:?}"
+        );
     });
 }
 
@@ -1816,23 +3023,68 @@ fn a_held_round_pasted_back_at_hand_back_leaves_your_older_turn_undecided() {
     let mut fx = Fixture::new("take_over_pasted");
     let reviewer = fx.open_plan_reviewer();
     let planner = fx.planner.clone();
-    fx.user(UserAction::TakeOver { tab_id: planner.clone() }).expect("take over");
+    fx.user(UserAction::TakeOver {
+        tab_id: planner.clone(),
+    })
+    .expect("take over");
     // You revise the plan first; the reviewer's round ends after it.
     let yours = fx.planner_turn("p-2", "# Plan\n1. Refresh tokens once, then fail.");
     fx.actor.handle(ActorMsg::Turn(yours));
     std::thread::sleep(Duration::from_millis(5));
-    let turn = fx.end_turn(&reviewer, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "x" }])), "");
+    let turn = fx.end_turn(
+        &reviewer,
+        "r-1",
+        review(
+            "CHANGES_REQUIRED",
+            json!([{ "severity": "HIGH", "summary": "x" }]),
+        ),
+        "",
+    );
     fx.actor.handle(ActorMsg::Turn(turn));
-    fx.run(|run| assert_eq!(run.stop_reason, Some(StopReason::TakenOver), "the round is held"));
+    fx.run(|run| {
+        assert_eq!(
+            run.stop_reason,
+            Some(StopReason::TakenOver),
+            "the round is held"
+        )
+    });
     // No session to resume: the round is pasted into the Planner.
-    fx.host.store.lock().unwrap().data.tabs.iter_mut().find(|t| t.id == planner).unwrap().sessions.claude_terminal_session_id = None;
+    fx.host
+        .store
+        .lock()
+        .unwrap()
+        .data
+        .tabs
+        .iter_mut()
+        .find(|t| t.id == planner)
+        .unwrap()
+        .sessions
+        .claude_terminal_session_id = None;
     let launches = fx.launches().len();
-    fx.user(UserAction::HandBack { tab_id: planner.clone() }).expect("hand back");
-    assert_eq!(fx.pastes().iter().filter(|(tab, _)| *tab == planner).count(), 1, "the round went back");
-    assert_eq!(fx.launches().len(), launches, "your older plan is not sent to review: {:?}", fx.launches());
+    fx.user(UserAction::HandBack {
+        tab_id: planner.clone(),
+    })
+    .expect("hand back");
+    assert_eq!(
+        fx.pastes()
+            .iter()
+            .filter(|(tab, _)| *tab == planner)
+            .count(),
+        1,
+        "the round went back"
+    );
+    assert_eq!(
+        fx.launches().len(),
+        launches,
+        "your older plan is not sent to review: {:?}",
+        fx.launches()
+    );
     fx.run(|run| {
         let decided = &run.autopilot.as_ref().unwrap().decided;
-        assert!(!decided.iter().any(|t| t.ends_with("|bridge|p-2")), "your older turn stays undecided: {decided:?}");
+        assert!(
+            !decided.iter().any(|t| t.ends_with("|bridge|p-2")),
+            "your older turn stays undecided: {decided:?}"
+        );
     });
 }
 
@@ -1854,23 +3106,62 @@ fn lanes_after_a_gate_refusal_are_left_waiting_without_a_carry_out_failed_stop()
             depends_on: deps.iter().map(|d| d.to_string()).collect(),
             repo: None,
         };
-        crate::commands::pipeline::fan_out(&mut store, RUN, "implementer", vec![lane("pr1", &[]), lane("pr2", &["pr1"]), lane("pr3", &["pr1"])])
-            .unwrap();
-        let role = fx.host.roles.iter().find(|r| r.id == "role_implementer").unwrap().clone();
+        crate::commands::pipeline::fan_out(
+            &mut store,
+            RUN,
+            "implementer",
+            vec![
+                lane("pr1", &[]),
+                lane("pr2", &["pr1"]),
+                lane("pr3", &["pr1"]),
+            ],
+        )
+        .unwrap();
+        let role = fx
+            .host
+            .roles
+            .iter()
+            .find(|r| r.id == "role_implementer")
+            .unwrap()
+            .clone();
         for id in ["pr2", "pr3"] {
             let tab = store.create_draft_tab(&role, &cwd, false, None).unwrap();
-            store.data.tabs.iter_mut().find(|t| t.id == tab).unwrap().answers = answers.clone();
-            store.set_tab_chain(&tab, Some(chain(3, Some(id))), None).unwrap();
+            store
+                .data
+                .tabs
+                .iter_mut()
+                .find(|t| t.id == tab)
+                .unwrap()
+                .answers = answers.clone();
+            store
+                .set_tab_chain(&tab, Some(chain(3, Some(id))), None)
+                .unwrap();
             let run = store.pipeline_run_by_id_mut(RUN).unwrap();
-            run.lane_mut(id).unwrap().tab_ids.insert("role_implementer".into(), tab);
+            run.lane_mut(id)
+                .unwrap()
+                .tab_ids
+                .insert("role_implementer".into(), tab);
         }
     }
     fx.host.gate_open.store(false, Ordering::SeqCst);
     let before = fx.launches().len();
-    let outcome = fx.user(UserAction::Approve { lane: Some("pr1".into()) }).expect("approve");
-    assert_eq!(outcome.started.len(), 1, "the first lane opened (unbridged): {:?}", outcome.started);
+    let outcome = fx
+        .user(UserAction::Approve {
+            lane: Some("pr1".into()),
+        })
+        .expect("approve");
+    assert_eq!(
+        outcome.started.len(),
+        1,
+        "the first lane opened (unbridged): {:?}",
+        outcome.started
+    );
     assert_eq!(fx.launches().len(), before + 1);
-    assert!(fx.stops().iter().all(|s| s.0 != StopReason::CarryOutFailed), "{:?}", fx.stops());
+    assert!(
+        fx.stops().iter().all(|s| s.0 != StopReason::CarryOutFailed),
+        "{:?}",
+        fx.stops()
+    );
     fx.run(|run| {
         assert!(run.manual_only);
         assert_ne!(run.stop_reason, Some(StopReason::CarryOutFailed));
@@ -1894,15 +3185,30 @@ fn a_lane_whose_repo_left_settings_stops_the_run_naming_the_repo() {
             depends_on: deps.iter().map(|d| d.to_string()).collect(),
             repo: Some(repo.into()),
         };
-        crate::commands::pipeline::fan_out(&mut store, RUN, "implementer", vec![lane("pr1", &[], "backend"), lane("pr2", &["pr1"], "engine")])
-            .unwrap();
+        crate::commands::pipeline::fan_out(
+            &mut store,
+            RUN,
+            "implementer",
+            vec![lane("pr1", &[], "backend"), lane("pr2", &["pr1"], "engine")],
+        )
+        .unwrap();
         let run = store.pipeline_run_by_id_mut(RUN).unwrap();
-        assert_eq!(run.lane("pr2").unwrap().repo.as_deref(), Some("engine"), "the lane keeps its repo");
+        assert_eq!(
+            run.lane("pr2").unwrap().repo.as_deref(),
+            Some("engine"),
+            "the lane keeps its repo"
+        );
         run.stage = "pr_reviewer".into();
         run.lane_mut("pr1").unwrap().stage = "pr_reviewer".into();
         store.save().unwrap();
     }
-    let reviewer = fx.bridged_tab("role_pr_reviewer", "pr_reviewer", 4, Some("pr1"), ResultKind::Reviewer);
+    let reviewer = fx.bridged_tab(
+        "role_pr_reviewer",
+        "pr_reviewer",
+        4,
+        Some("pr1"),
+        ResultKind::Reviewer,
+    );
     // The test host has no repos: `engine` is gone from Settings.
     assert!(fx.host.repos().is_empty());
     let launches = fx.launches().len();
@@ -1912,10 +3218,17 @@ fn a_lane_whose_repo_left_settings_stops_the_run_naming_the_repo() {
     let stops = fx.stops();
     let (reason, summary) = stops.last().expect("the run stopped");
     assert_eq!(*reason, StopReason::CarryOutFailed);
-    assert!(summary.contains("the repo \"engine\", which is no longer in Settings › Repos"), "{summary}");
+    assert!(
+        summary.contains("the repo \"engine\", which is no longer in Settings › Repos"),
+        "{summary}"
+    );
     fx.run(|run| {
         assert_eq!(run.stop_reason, Some(StopReason::CarryOutFailed));
         assert_eq!(run.lane("pr1").unwrap().status, "approved");
-        assert_eq!(run.lane("pr2").unwrap().status, "waiting", "left for you to start once the repo is back");
+        assert_eq!(
+            run.lane("pr2").unwrap().status,
+            "waiting",
+            "left for you to start once the repo is back"
+        );
     });
 }

@@ -249,7 +249,9 @@ impl PtyRegistry {
 
     /// The terminal's program is running.
     pub fn running(&self, id: &str) -> bool {
-        self.sessions.get(id).is_some_and(|session| session.group().running())
+        self.sessions
+            .get(id)
+            .is_some_and(|session| session.group().running())
     }
 
     /// Paste `text` into the terminal `id` and press Enter, as the scratch
@@ -257,8 +259,13 @@ impl PtyRegistry {
     /// CR. The input box is cleared first (D40): an interrupted prompt Claude
     /// put back there would otherwise be sent along.
     pub fn paste(&self, id: &str, text: &str) -> Result<(), String> {
-        let session = self.sessions.get(id).ok_or_else(|| format!("no terminal: {id}"))?;
-        session.write(&paste_bytes(text)).map_err(|err| err.to_string())
+        let session = self
+            .sessions
+            .get(id)
+            .ok_or_else(|| format!("no terminal: {id}"))?;
+        session
+            .write(&paste_bytes(text))
+            .map_err(|err| err.to_string())
     }
 
     /// Close the terminal `id`. A replaced program it was still stopping
@@ -409,7 +416,11 @@ fn forward(output: Receiver<PtyOutput>, view: ViewOutput) {
 /// [`forward`] for a terminal with no view yet (see [`DetachedOutput`]).
 /// `on_exit` hears the program's exit unless the terminal was closed or
 /// replaced first.
-fn forward_detached(output: Receiver<PtyOutput>, sink: Arc<Mutex<DetachedOutput>>, on_exit: OnExit) {
+fn forward_detached(
+    output: Receiver<PtyOutput>,
+    sink: Arc<Mutex<DetachedOutput>>,
+    on_exit: OnExit,
+) {
     while let Ok(event) = output.recv() {
         let Ok(mut out) = sink.lock() else {
             return;
@@ -417,7 +428,10 @@ fn forward_detached(output: Receiver<PtyOutput>, sink: Arc<Mutex<DetachedOutput>
         match event {
             PtyOutput::Data(bytes) => {
                 out.keep(&bytes);
-                let sent = out.channel.as_ref().is_some_and(|channel| channel.send(data_packet(&bytes)).is_ok());
+                let sent = out
+                    .channel
+                    .as_ref()
+                    .is_some_and(|channel| channel.send(data_packet(&bytes)).is_ok());
                 if !sent {
                     out.channel = None;
                 }
@@ -448,7 +462,10 @@ enum Output {
     /// The run actor's stages: to `view` when one is attached (a resumed
     /// stage keeps its old process's view, V4), else kept for a view that
     /// attaches later.
-    Detached { on_exit: OnExit, view: Option<Channel<PtyPacket>> },
+    Detached {
+        on_exit: OnExit,
+        view: Option<Channel<PtyPacket>>,
+    },
 }
 
 /// A view attaching to a terminal the run actor started (`pty_open` with
@@ -465,13 +482,16 @@ fn attach_detached(
 ) -> Result<Option<u32>, String> {
     let (pid, handle, steps) = {
         let registry = registry.lock().map_err(|err| err.to_string())?;
-        let (Some(sink), Some(session)) = (registry.detached.get(id), registry.sessions.get(id)) else {
+        let (Some(sink), Some(session)) = (registry.detached.get(id), registry.sessions.get(id))
+        else {
             return Ok(None);
         };
         let mut out = sink.lock().map_err(|err| err.to_string())?;
         // Sent under the lock, so no live packet goes ahead of the replay.
         if !out.buffer.is_empty() {
-            channel.send(data_packet(out.buffer.make_contiguous())).map_err(|err| err.to_string())?;
+            channel
+                .send(data_packet(out.buffer.make_contiguous()))
+                .map_err(|err| err.to_string())?;
         }
         if let Some(code) = out.exit {
             let _ = channel.send(exit_packet(code));
@@ -509,7 +529,10 @@ fn detach_view(registry: &Mutex<PtyRegistry>, id: &str) -> Result<bool, String> 
 /// Whether you may type into `id` now ([`StageInput`]). The stage's `mode`
 /// file is read with no lock held.
 fn input_state(registry: &Mutex<PtyRegistry>, id: &str) -> Result<StageInput, String> {
-    let (stage_dir, needs) = registry.lock().map_err(|err| err.to_string())?.input_gate(id);
+    let (stage_dir, needs) = registry
+        .lock()
+        .map_err(|err| err.to_string())?
+        .input_gate(id);
     let mode = stage_dir.map(|dir| crate::bridge::folder::read_mode(&dir));
     Ok(stage_input(mode, needs))
 }
@@ -551,7 +574,9 @@ fn usage_status_line(
     let mut usage = usage.lock().ok()?;
     usage.watch_status_line(tab_id, config, file.clone());
     drop(usage);
-    Some(crate::status_line::settings(&crate::status_line::command(&exe, &file)))
+    Some(crate::status_line::settings(&crate::status_line::command(
+        &exe, &file,
+    )))
 }
 
 #[tauri::command]
@@ -575,7 +600,14 @@ fn open_session(
     claude_session: Option<String>,
     on_output: Channel<PtyPacket>,
 ) -> Result<Option<u32>, String> {
-    open_session_to(registry, id, spec, claude_session, None, Output::View(on_output))
+    open_session_to(
+        registry,
+        id,
+        spec,
+        claude_session,
+        None,
+        Output::View(on_output),
+    )
 }
 
 /// [`open_session`] with its output going to `output`. `stage_dir`: the
@@ -672,12 +704,16 @@ fn open_session_claimed(
                     state: Arc::new(Mutex::new(ViewState::default())),
                 };
                 registry.views.insert(id.to_string(), view.clone());
-                thread::Builder::new().name(name).spawn(move || forward(rx, view))
+                thread::Builder::new()
+                    .name(name)
+                    .spawn(move || forward(rx, view))
             }
             Output::Detached { on_exit, view } => {
                 let sink = Arc::new(Mutex::new(DetachedOutput::new(view, size)));
                 registry.detached.insert(id.to_string(), sink.clone());
-                thread::Builder::new().name(name).spawn(move || forward_detached(rx, sink, on_exit))
+                thread::Builder::new()
+                    .name(name)
+                    .spawn(move || forward_detached(rx, sink, on_exit))
             }
         }
         .map_err(|err| err.to_string())?;
@@ -1002,8 +1038,8 @@ fn shell_terminal_start_blocking(
         resume_id = id;
         claude_notice = notice;
     }
-    let claude_session = (launch == "claude-cli")
-        .then(|| resume_id.clone().unwrap_or_else(new_claude_session_id));
+    let claude_session =
+        (launch == "claude-cli").then(|| resume_id.clone().unwrap_or_else(new_claude_session_id));
     let mut claude_launch: Option<TerminalLaunch> = None;
     let mut command = if launch == "claude-cli" {
         let provider = {
@@ -1123,7 +1159,10 @@ fn shell_terminal_start_blocking(
         let settings = usage_status_line(&app, &tab_id, claude_config.as_deref(), &cwd);
         if settings.is_some() {
             let env = std::mem::take(&mut command.env);
-            command = provider.terminal_command(&TerminalLaunch { settings, ..request })?;
+            command = provider.terminal_command(&TerminalLaunch {
+                settings,
+                ..request
+            })?;
             command.env = env;
         }
     }
@@ -1186,7 +1225,12 @@ fn starting_chain(
     store: &Mutex<StateStore>,
     input: &RoleTerminalInput,
 ) -> Result<Option<crate::store::ChainRef>, String> {
-    let Some(kind) = input.start_chain.as_deref().map(str::trim).filter(|k| !k.is_empty()) else {
+    let Some(kind) = input
+        .start_chain
+        .as_deref()
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+    else {
         return Ok(None);
     };
     if input.chain.is_some() {
@@ -1202,8 +1246,9 @@ fn starting_chain(
     if chained {
         return Ok(None);
     }
-    Ok(crate::pipelines::find(kind)
-        .map(|def| crate::bridge::launch::new_chain(&def, kind, chrono::Utc::now().timestamp_millis())))
+    Ok(crate::pipelines::find(kind).map(|def| {
+        crate::bridge::launch::new_chain(&def, kind, chrono::Utc::now().timestamp_millis())
+    }))
 }
 
 /// Which chain this start begins (`start_chain`, on a tab in none yet) and
@@ -1215,13 +1260,24 @@ fn plan_start(
     input: &RoleTerminalInput,
     role_id: &str,
     claude: bool,
-) -> Result<(Option<crate::store::ChainRef>, Option<crate::bridge::BridgePlan>), String> {
+) -> Result<
+    (
+        Option<crate::store::ChainRef>,
+        Option<crate::bridge::BridgePlan>,
+    ),
+    String,
+> {
     let starting = starting_chain(store, input)?;
     let plan = match (&starting, claude) {
         (_, false) => None,
         (Some(chain), true) => crate::pipelines::find(&chain.kind)
             .and_then(|def| crate::bridge::launch::plan_for_new_run(&def, chain, role_id)),
-        (None, true) => bridge_plan_for(store, input.chain.as_ref(), input.tab_id.as_deref(), role_id)?,
+        (None, true) => bridge_plan_for(
+            store,
+            input.chain.as_ref(),
+            input.tab_id.as_deref(),
+            role_id,
+        )?,
     };
     Ok((starting, plan))
 }
@@ -1247,12 +1303,21 @@ fn label_starting_chain(
     gate: Option<(crate::bridge::gate::Gate, String)>,
 ) -> Result<Option<StartedChain>, String> {
     let mut state = store.lock().map_err(|err| err.to_string())?;
-    if !state.tab_by_id(tab_id).is_some_and(|tab| tab.chain.is_none()) {
+    if !state
+        .tab_by_id(tab_id)
+        .is_some_and(|tab| tab.chain.is_none())
+    {
         return Ok(None);
     }
     let chain_id = chain.chain_id.clone();
     let made_run = state.chain_run_id(&chain_id).is_none();
-    crate::commands::chain_events::set_tab_chain_and_notify(events, &mut state, tab_id, Some(chain), None)?;
+    crate::commands::chain_events::set_tab_chain_and_notify(
+        events,
+        &mut state,
+        tab_id,
+        Some(chain),
+        None,
+    )?;
     let run_id = state.chain_run_id(&chain_id);
     if let (Some((gate, stage_id)), Some(id)) = (gate, run_id.as_deref()) {
         if let Some(run) = state.pipeline_run_by_id_mut(id) {
@@ -1262,7 +1327,11 @@ fn label_starting_chain(
             }
         }
     }
-    Ok(Some(StartedChain { chain_id, run_id, made_run }))
+    Ok(Some(StartedChain {
+        chain_id,
+        run_id,
+        made_run,
+    }))
 }
 
 /// The rest of a start after [`label_starting_chain`] labelled `started`:
@@ -1301,7 +1370,9 @@ fn undo_starting_chain(
     if !labelled {
         return Ok(());
     }
-    crate::commands::chain_events::set_tab_chain_and_notify(events, &mut state, tab_id, None, None)?;
+    crate::commands::chain_events::set_tab_chain_and_notify(
+        events, &mut state, tab_id, None, None,
+    )?;
     state.set_tab_bridge(tab_id, None)?;
     let Some(run_id) = started.run_id.as_deref().filter(|_| started.made_run) else {
         return Ok(());
@@ -1309,7 +1380,9 @@ fn undo_starting_chain(
     if state.remove_unheld_run(run_id, &started.chain_id, tab_id)? {
         drop(state);
         events.chain_run_updated(run_id);
-        if let Some(dir) = runs_root().and_then(|root| crate::bridge::folder::run_dir(&root, run_id)) {
+        if let Some(dir) =
+            runs_root().and_then(|root| crate::bridge::folder::run_dir(&root, run_id))
+        {
             // intentionally silent: a folder left behind holds no run and is never read.
             let _ = std::fs::remove_dir_all(dir);
         }
@@ -1358,7 +1431,11 @@ fn gate_inputs(
 ) -> (Option<String>, Option<crate::bridge::gate::HooksOff>) {
     let version = provider.cli_version();
     let config = provider.config_dir().map(|dir| PathBuf::from(dir.path));
-    let hooks = crate::bridge::gate::hooks_off(config.as_deref(), cwd, crate::bridge::gate::managed_settings_path());
+    let hooks = crate::bridge::gate::hooks_off(
+        config.as_deref(),
+        cwd,
+        crate::bridge::gate::managed_settings_path(),
+    );
     (version, hooks)
 }
 
@@ -1368,7 +1445,8 @@ fn last_turn_key(tab_id: &str, target: Option<&(PathBuf, String)>) -> Option<Str
     let (dir, session) = target?;
     let path = crate::claude_session_log::find_session_log(dir, session)?;
     let log = crate::claude_session_log::reader::SessionLogReader::open(&path, session)?.summary();
-    log.turn_done.then(|| crate::pipelines::recovery::turn_key(tab_id, &log))
+    log.turn_done
+        .then(|| crate::pipelines::recovery::turn_key(tab_id, &log))
 }
 
 /// What [`gate_run`] decided.
@@ -1402,7 +1480,9 @@ fn gate_run(
     let decision = crate::bridge::gate::decide(version, hooks_off);
     let stage_id = stage.split('@').next().unwrap_or(stage);
     let mut state = store.lock().map_err(|err| err.to_string())?;
-    let Some(run) = state.pipeline_run_by_id_mut(run_id).filter(|run| run.engine >= crate::bridge::launch::ENGINE_V2)
+    let Some(run) = state
+        .pipeline_run_by_id_mut(run_id)
+        .filter(|run| run.engine >= crate::bridge::launch::ENGINE_V2)
     else {
         return Ok(GateRun::default());
     };
@@ -1415,7 +1495,10 @@ fn gate_run(
     if changed {
         state.save()?;
     }
-    Ok(GateRun { bridged, manual_now })
+    Ok(GateRun {
+        bridged,
+        manual_now,
+    })
 }
 
 /// The gate at a stage's first bridged start on a run that exists already
@@ -1429,14 +1512,22 @@ fn gate_bridged_launch(
     version: Option<&str>,
     hooks_off: Option<&crate::bridge::gate::HooksOff>,
 ) -> Result<Option<crate::bridge::BridgePlan>, String> {
-    let bridged = actor_gate_on(store, runs_root, &plan.run_id, &plan.stage_id, version, hooks_off)?;
+    let bridged = actor_gate_on(
+        store,
+        runs_root,
+        &plan.run_id,
+        &plan.stage_id,
+        version,
+        hooks_off,
+    )?;
     Ok(bridged.then_some(plan))
 }
 
 /// `<app data>/runs` and this executable, for a bridged launch.
 fn bridge_paths(app: &AppHandle) -> Result<(PathBuf, PathBuf), String> {
-    let program = crate::bridge::launch::bridge_program()
-        .ok_or_else(|| "DCTerminal could not find its own executable for the pipeline bridge.".to_string())?;
+    let program = crate::bridge::launch::bridge_program().ok_or_else(|| {
+        "DCTerminal could not find its own executable for the pipeline bridge.".to_string()
+    })?;
     Ok((runs_root(app), program))
 }
 
@@ -1593,7 +1684,12 @@ fn role_terminal_start_blocking(
     // Pipeline v2 (ADR-015): a bridged stage of an engine-2 run reports
     // through the bridge, and its prompt says how. A chain this start
     // begins is planned as the engine-2 run it is about to get.
-    let (starting, bridge) = plan_start(&store, &input, &role.id, provider.id() == ProviderId::Claude)?;
+    let (starting, bridge) = plan_start(
+        &store,
+        &input,
+        &role.id,
+        provider.id() == ProviderId::Claude,
+    )?;
     // D24: the CLI version and disableAllHooks, read with no lock held
     // (`claude --version` runs once per executable, then it is cached). A
     // chain this start begins has no run yet: the gate is recorded on the
@@ -1601,7 +1697,11 @@ fn role_terminal_start_blocking(
     let mut new_run_gate = None;
     let mut bridge = match bridge {
         Some(plan) => {
-            let cwd = input.values.get("cwd").map(|value| PathBuf::from(value.trim())).unwrap_or_default();
+            let cwd = input
+                .values
+                .get("cwd")
+                .map(|value| PathBuf::from(value.trim()))
+                .unwrap_or_default();
             let (version, hooks_off) = gate_inputs(provider.as_ref(), &cwd);
             if starting.is_some() {
                 let gate = crate::bridge::gate::decide(version.as_deref(), hooks_off.as_ref());
@@ -1609,7 +1709,8 @@ fn role_terminal_start_blocking(
                 new_run_gate = Some((gate, plan.stage_id.clone()));
                 bridged.then_some(plan)
             } else {
-                let runs = crate::bridge::launch::runs_root(&crate::data_dir::app_data_dir(&app).path);
+                let runs =
+                    crate::bridge::launch::runs_root(&crate::data_dir::app_data_dir(&app).path);
                 gate_bridged_launch(&store, &runs, plan, version.as_deref(), hooks_off.as_ref())?
             }
         }
@@ -1617,7 +1718,11 @@ fn role_terminal_start_blocking(
     };
     // Settings › Repos (L1): the Planner's prompt lists them, and the run
     // folder gets them for the bridge's tasks check.
-    let repos = settings.lock().map_err(|err| err.to_string())?.repos().to_vec();
+    let repos = settings
+        .lock()
+        .map_err(|err| err.to_string())?
+        .repos()
+        .to_vec();
     let instructions = bridge
         .as_ref()
         .map(|plan| crate::bridge::schema::stage_instructions(plan.kind, &repos))
@@ -1756,7 +1861,10 @@ fn role_terminal_start_blocking(
                     run_id: plan.run_id.clone(),
                     stage: plan.stage_key.clone(),
                 };
-                (Some(flags), crate::bridge::launch::stage_dir_of(&runs, &tag))
+                (
+                    Some(flags),
+                    crate::bridge::launch::stage_dir_of(&runs, &tag),
+                )
             }
             None => (None, None),
         };
@@ -1775,8 +1883,9 @@ fn role_terminal_start_blocking(
             request.settings = usage_status_line(&app, &tab_id, config.as_deref(), &cwd);
         }
         // One `--settings`: the bridge's hooks join the status line.
-        let mut command =
-            crate::bridge::launch::bridged_command(request, bridge_flags, |req| provider.terminal_command(req))?;
+        let mut command = crate::bridge::launch::bridged_command(request, bridge_flags, |req| {
+            provider.terminal_command(req)
+        })?;
         if provider.id() == ProviderId::Claude {
             command.env.push(claude_scheme_env());
         }
@@ -1856,7 +1965,14 @@ pub(crate) fn actor_stage_gate(
     };
     let (version, hooks_off) = gate_inputs(provider.as_ref(), cwd);
     let runs = crate::bridge::launch::runs_root(&crate::data_dir::app_data_dir(app).path);
-    actor_gate_on(&store, &runs, run_id, stage_key, version.as_deref(), hooks_off.as_ref())
+    actor_gate_on(
+        &store,
+        &runs,
+        run_id,
+        stage_key,
+        version.as_deref(),
+        hooks_off.as_ref(),
+    )
 }
 
 /// [`actor_stage_gate`] once the CLI version and settings are read. The
@@ -1905,13 +2021,24 @@ pub(crate) fn start_actor_stage(
     let provider = {
         let state = store.lock().map_err(|err| err.to_string())?;
         let settings = settings.lock().map_err(|err| err.to_string())?;
-        provider_for_window(&state, settings.providers(), ProviderId::Claude, Some(tab_id))
+        provider_for_window(
+            &state,
+            settings.providers(),
+            ProviderId::Claude,
+            Some(tab_id),
+        )
     };
     let mode = {
         let settings = settings.lock().map_err(|err| err.to_string())?;
         RunMode::parse(&settings.run_mode_for(&launch.role_id))
     };
-    let model = crate::models::model_for_tab_provider(&store, &settings, Some(tab_id), &launch.role_id, ProviderId::Claude)?;
+    let model = crate::models::model_for_tab_provider(
+        &store,
+        &settings,
+        Some(tab_id),
+        &launch.role_id,
+        ProviderId::Claude,
+    )?;
     let tag = {
         let mut state = store.lock().map_err(|err| err.to_string())?;
         if let Some(dir) = provider.config_dir() {
@@ -1932,7 +2059,9 @@ pub(crate) fn start_actor_stage(
         launch_stage_kind(&state, Some(tab_id), None)
     };
     let role_launch = RoleLaunch::for_actor_stage(launch, resume, mode, stage_kind, &model);
-    let program = provider.terminal_command(&role_launch.launch(None))?.program;
+    let program = provider
+        .terminal_command(&role_launch.launch(None))?
+        .program;
     let delivery = store_prompt(app, tab_id, &program, &launch.prompt)?;
     // H5's status line, so the stage reports usage like any Claude terminal.
     let config = provider.config_dir().map(|dir| dir.path);
@@ -1954,9 +2083,27 @@ pub(crate) fn start_actor_stage(
     };
     let session = Some(launch.session_id.clone());
     if resume {
-        replace_detached(&registry, tab_id, spec, session, stage_dir, on_exit, RESUME_STOP_GRACE)?;
+        replace_detached(
+            &registry,
+            tab_id,
+            spec,
+            session,
+            stage_dir,
+            on_exit,
+            RESUME_STOP_GRACE,
+        )?;
     } else {
-        open_session_to(&registry, tab_id, spec, session, stage_dir, Output::Detached { on_exit, view: None })?;
+        open_session_to(
+            &registry,
+            tab_id,
+            spec,
+            session,
+            stage_dir,
+            Output::Detached {
+                on_exit,
+                view: None,
+            },
+        )?;
     }
     Ok(())
 }
@@ -2014,7 +2161,9 @@ fn role_resume_id(
         return Ok(None);
     };
     if saved_session != Some(id) {
-        return Err("This terminal has no saved session with that id. Start fresh instead.".to_string());
+        return Err(
+            "This terminal has no saved session with that id. Start fresh instead.".to_string(),
+        );
     }
     if let Some(saved) = saved_config {
         if !crate::provider::claude::same_config_dir(saved, current_config) {
@@ -2057,7 +2206,12 @@ fn pty_open_blocking(
 ) -> Result<u32, String> {
     // A stage the run actor started with no view: this view attaches to it.
     if input.attach {
-        if let Some(pid) = attach_detached(&registry, &input.id, &on_output, Some((input.cols, input.rows)))? {
+        if let Some(pid) = attach_detached(
+            &registry,
+            &input.id,
+            &on_output,
+            Some((input.cols, input.rows)),
+        )? {
             return Ok(pid);
         }
     }
@@ -2101,7 +2255,12 @@ fn pty_open_blocking(
                 let mut state = store.lock().map_err(|err| err.to_string())?;
                 state.bind_window(input.window_id.as_deref());
                 let settings = settings.lock().map_err(|err| err.to_string())?;
-                provider_for_window(&state, settings.providers(), ProviderId::Claude, Some(&input.id))
+                provider_for_window(
+                    &state,
+                    settings.providers(),
+                    ProviderId::Claude,
+                    Some(&input.id),
+                )
             };
             let resume = claude_terminal_resume(
                 &store,
@@ -2241,7 +2400,10 @@ fn pty_open_blocking(
                 let tab = state.tab_by_id(&input.id);
                 let last_log = tab.and_then(|tab| {
                     let dir = tab.sessions.claude_config_dir.clone()?;
-                    Some((PathBuf::from(dir), tab.sessions.claude_terminal_session_id.clone()?))
+                    Some((
+                        PathBuf::from(dir),
+                        tab.sessions.claude_terminal_session_id.clone()?,
+                    ))
                 });
                 (tab.and_then(|tab| tab.bridge.clone()), last_log)
             };
@@ -2268,8 +2430,12 @@ fn pty_open_blocking(
                     // The run's other bridged tabs stop enforcing a result
                     // (their hooks read `mode`), and the overview refreshes.
                     if let Ok((runs, _)) = bridge_paths(&app) {
-                        if let Err(err) = crate::bridge::launch::set_run_manual_for_good(&runs, &tag.run_id) {
-                            eprintln!("DCTerminal: could not switch the run folder to manual: {err}");
+                        if let Err(err) =
+                            crate::bridge::launch::set_run_manual_for_good(&runs, &tag.run_id)
+                        {
+                            eprintln!(
+                                "DCTerminal: could not switch the run folder to manual: {err}"
+                            );
                         }
                     }
                     if let Ok(state) = store.lock() {
@@ -2293,8 +2459,9 @@ fn pty_open_blocking(
                 }
             }
             // One `--settings`: the bridge's hooks join the status line.
-            let mut command =
-                crate::bridge::launch::bridged_command(request, flags, |req| provider.terminal_command(req))?;
+            let mut command = crate::bridge::launch::bridged_command(request, flags, |req| {
+                provider.terminal_command(req)
+            })?;
             if provider.id() == ProviderId::Claude {
                 command.env.push(claude_scheme_env());
             }
@@ -2366,7 +2533,10 @@ fn write_input(registry: &Mutex<PtyRegistry>, id: &str, data: &[u8]) -> Result<(
 /// Whether you may type into the terminal `id` now (V5, D27): the Watch
 /// view shows it read-only while you may not. Reads one small file.
 #[tauri::command]
-pub fn pty_input_state(id: String, registry: State<Mutex<PtyRegistry>>) -> Result<StageInput, String> {
+pub fn pty_input_state(
+    id: String,
+    registry: State<Mutex<PtyRegistry>>,
+) -> Result<StageInput, String> {
     input_state(&registry, &id)
 }
 
@@ -2374,16 +2544,29 @@ pub fn pty_input_state(id: String, registry: State<Mutex<PtyRegistry>>) -> Resul
 /// or a permission dialog it read from the session log or the screen; the
 /// bridge's PermissionRequest sets it too). Returns what typing allows now.
 #[tauri::command]
-pub fn pty_stage_needs(id: String, needs: bool, registry: State<Mutex<PtyRegistry>>) -> Result<StageInput, String> {
-    registry.lock().map_err(|err| err.to_string())?.set_needs(&id, needs);
+pub fn pty_stage_needs(
+    id: String,
+    needs: bool,
+    registry: State<Mutex<PtyRegistry>>,
+) -> Result<StageInput, String> {
+    registry
+        .lock()
+        .map_err(|err| err.to_string())?
+        .set_needs(&id, needs);
     input_state(&registry, &id)
 }
 
 /// Which of `ids` run a program now, viewed or not (V5): the "Close
 /// window?" and "Replace the open tabs" questions count hidden stages too.
 #[tauri::command]
-pub fn pty_running(ids: Vec<String>, registry: State<Mutex<PtyRegistry>>) -> Result<Vec<String>, String> {
-    Ok(registry.lock().map_err(|err| err.to_string())?.running_of(&ids))
+pub fn pty_running(
+    ids: Vec<String>,
+    registry: State<Mutex<PtyRegistry>>,
+) -> Result<Vec<String>, String> {
+    Ok(registry
+        .lock()
+        .map_err(|err| err.to_string())?
+        .running_of(&ids))
 }
 
 /// A Watch view closed (V5): the hidden stage keeps running and keeps its
@@ -2568,7 +2751,14 @@ mod tests {
             ..reviewer_plan()
         };
         crate::bridge::launch::prepare_stage(&runs, &planner, "tab_planner").unwrap();
-        let launched = gate_bridged_launch(&store, &runs, reviewer_plan(), Some("2.1.200 (Claude Code)"), None).unwrap();
+        let launched = gate_bridged_launch(
+            &store,
+            &runs,
+            reviewer_plan(),
+            Some("2.1.200 (Claude Code)"),
+            None,
+        )
+        .unwrap();
         assert_eq!(launched, None, "an older CLI launches unbridged");
         let saved = StateStore::open_path(dir.join("state.json")).unwrap();
         let run = saved.pipeline_run_by_id("ee_1700000000000").unwrap();
@@ -2579,27 +2769,58 @@ mod tests {
         assert!(run.manual_only, "for good");
         assert_eq!(run.events.len(), 1, "one Timeline notice: {:?}", run.events);
         assert!(run.engine_note.as_deref().unwrap().contains("2.1.200"));
-        assert!(run.engine_note.as_deref().unwrap().contains("manual from now on"));
-        let mode = std::fs::read_to_string(runs.join("ee_1700000000000/stages/planner/mode")).unwrap();
-        assert_eq!(mode, "manual", "the still-bridged stages stop enforcing a result");
+        assert!(run
+            .engine_note
+            .as_deref()
+            .unwrap()
+            .contains("manual from now on"));
+        let mode =
+            std::fs::read_to_string(runs.join("ee_1700000000000/stages/planner/mode")).unwrap();
+        assert_eq!(
+            mode, "manual",
+            "the still-bridged stages stop enforcing a result"
+        );
 
         let dir = crate::test_support::TempDir::new("gate_bridged_launch_hooks");
         let store = store_with_engine2_run(&dir);
-        let off = crate::bridge::gate::HooksOff { file: dir.join("managed-settings.json"), setting: "disableAllHooks" };
-        let launched =
-            gate_bridged_launch(&store, &dir.join("runs"), reviewer_plan(), Some("2.1.287 (Claude Code)"), Some(&off)).unwrap();
+        let off = crate::bridge::gate::HooksOff {
+            file: dir.join("managed-settings.json"),
+            setting: "disableAllHooks",
+        };
+        let launched = gate_bridged_launch(
+            &store,
+            &dir.join("runs"),
+            reviewer_plan(),
+            Some("2.1.287 (Claude Code)"),
+            Some(&off),
+        )
+        .unwrap();
         assert_eq!(launched, None, "hooks off launches unbridged");
         let state = store.lock().unwrap();
-        assert_eq!(state.pipeline_run_by_id("ee_1700000000000").unwrap().engine, 1);
+        assert_eq!(
+            state.pipeline_run_by_id("ee_1700000000000").unwrap().engine,
+            1
+        );
 
         let dir = crate::test_support::TempDir::new("gate_bridged_launch_newer");
         let store = store_with_engine2_run(&dir);
-        let launched = gate_bridged_launch(&store, &dir.join("runs"), reviewer_plan(), Some("2.1.300 (Claude Code)"), None).unwrap();
+        let launched = gate_bridged_launch(
+            &store,
+            &dir.join("runs"),
+            reviewer_plan(),
+            Some("2.1.300 (Claude Code)"),
+            None,
+        )
+        .unwrap();
         assert_eq!(launched, Some(reviewer_plan()), "a newer CLI is allowed");
         let saved = StateStore::open_path(dir.join("state.json")).unwrap();
         let run = saved.pipeline_run_by_id("ee_1700000000000").unwrap();
         assert_eq!(run.engine, crate::bridge::launch::ENGINE_V2);
-        assert!(run.engine_note.as_deref().unwrap().starts_with("Claude Code version not yet verified"));
+        assert!(run
+            .engine_note
+            .as_deref()
+            .unwrap()
+            .starts_with("Claude Code version not yet verified"));
     }
 
     #[test]
@@ -2608,10 +2829,15 @@ mod tests {
         let source = include_str!("mod.rs");
         let body = &source[source.find("fn role_terminal_start_blocking(").unwrap()..];
         let body = &body[..body.find("\n}\n").unwrap()];
-        let inputs = body.find("gate_inputs(").expect("reads the version and settings");
+        let inputs = body
+            .find("gate_inputs(")
+            .expect("reads the version and settings");
         let gate = body.find("gate_bridged_launch(").expect("applies the gate");
         assert!(inputs < gate);
-        assert!(!body[inputs..gate].contains(".lock()"), "no lock while reading the CLI and settings");
+        assert!(
+            !body[inputs..gate].contains(".lock()"),
+            "no lock while reading the CLI and settings"
+        );
         let helper = &source[source.find("fn gate_inputs(").unwrap()..];
         let helper = &helper[..helper.find("\n}\n").unwrap()];
         assert!(helper.contains("cli_version()") && helper.contains("hooks_off("));
@@ -2626,16 +2852,32 @@ mod tests {
         let source = include_str!("mod.rs");
         let body = &source[source.find("pub(crate) fn start_actor_stage(").unwrap()..];
         let body = &body[..body.find("\n}\n").unwrap()];
-        let status = body.find("usage_status_line(").expect("adds the status line");
-        let merged = body.find("actor_stage_command(").expect("one merged --settings");
+        let status = body
+            .find("usage_status_line(")
+            .expect("adds the status line");
+        let merged = body
+            .find("actor_stage_command(")
+            .expect("one merged --settings");
         assert!(status < merged);
-        assert!(body.contains("RoleLaunch::for_actor_stage(launch, resume,"), "a resume reopens the stage's session");
-        let gate = &source[source.find("pub(crate) fn actor_stage_gate(").expect("an actor gate")..];
+        assert!(
+            body.contains("RoleLaunch::for_actor_stage(launch, resume,"),
+            "a resume reopens the stage's session"
+        );
+        let gate = &source[source
+            .find("pub(crate) fn actor_stage_gate(")
+            .expect("an actor gate")..];
         let gate = &gate[..gate.find("\n}\n").unwrap()];
-        let inputs = gate.find("gate_inputs(").expect("reads the version and settings");
-        let applied = gate.find("actor_gate_on(").expect("applies the gate to the run");
+        let inputs = gate
+            .find("gate_inputs(")
+            .expect("reads the version and settings");
+        let applied = gate
+            .find("actor_gate_on(")
+            .expect("applies the gate to the run");
         assert!(inputs < applied);
-        assert!(!gate[inputs..applied].contains(".lock()"), "no lock while reading the CLI and settings");
+        assert!(
+            !gate[inputs..applied].contains(".lock()"),
+            "no lock while reading the CLI and settings"
+        );
     }
 
     // V4 (D17): the app's own resume launch, as `start_actor_stage` builds
@@ -2663,27 +2905,69 @@ mod tests {
             bridge: Some(flags),
         };
         let build = |req: &TerminalLaunch| {
-            Ok(crate::provider::ProgramArgs::new("claude", crate::provider::claude::claude_terminal_args(req)?))
+            Ok(crate::provider::ProgramArgs::new(
+                "claude",
+                crate::provider::claude::claude_terminal_args(req)?,
+            ))
         };
         let status = serde_json::json!({ "statusLine": { "type": "command", "command": "dct --dct-status-line f" } });
         let args_for = |resume: bool| {
-            let role = RoleLaunch::for_actor_stage(&launch, resume, RunMode::Default, Some(crate::pipelines::StageKind::Planner), "opus");
-            actor_stage_command(role.launch(Some(launch.prompt.clone())), Some(status.clone()), launch.bridge.clone(), build)
-                .unwrap()
-                .args
+            let role = RoleLaunch::for_actor_stage(
+                &launch,
+                resume,
+                RunMode::Default,
+                Some(crate::pipelines::StageKind::Planner),
+                "opus",
+            );
+            actor_stage_command(
+                role.launch(Some(launch.prompt.clone())),
+                Some(status.clone()),
+                launch.bridge.clone(),
+                build,
+            )
+            .unwrap()
+            .args
         };
         let args = args_for(true);
-        let resume_at = args.iter().position(|a| a == "--resume").unwrap_or_else(|| panic!("resumes its session: {args:?}"));
+        let resume_at = args
+            .iter()
+            .position(|a| a == "--resume")
+            .unwrap_or_else(|| panic!("resumes its session: {args:?}"));
         assert_eq!(args[resume_at + 1], SID, "the same session id");
-        assert!(!args.iter().any(|a| a == "--session-id"), "no new session: {args:?}");
+        assert!(
+            !args.iter().any(|a| a == "--session-id"),
+            "no new session: {args:?}"
+        );
         let mode_at = args.iter().position(|a| a == "--permission-mode").unwrap();
-        assert_eq!(args[mode_at + 1], "plan", "the stage kind's mode, as at its first launch");
-        let at: Vec<usize> = args.iter().enumerate().filter(|(_, a)| *a == "--settings").map(|(i, _)| i).collect();
+        assert_eq!(
+            args[mode_at + 1],
+            "plan",
+            "the stage kind's mode, as at its first launch"
+        );
+        let at: Vec<usize> = args
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| *a == "--settings")
+            .map(|(i, _)| i)
+            .collect();
         assert_eq!(at.len(), 1, "exactly one --settings: {args:?}");
         let settings: serde_json::Value = serde_json::from_str(&args[at[0] + 1]).unwrap();
-        assert!(settings["statusLine"]["command"].as_str().unwrap().contains("--dct-status-line"), "{settings}");
-        assert!(settings["hooks"]["Stop"].is_array(), "the bridge's hooks: {settings}");
-        assert_eq!(args.last(), Some(&launch.prompt), "the prompt is the resumed turn, last");
+        assert!(
+            settings["statusLine"]["command"]
+                .as_str()
+                .unwrap()
+                .contains("--dct-status-line"),
+            "{settings}"
+        );
+        assert!(
+            settings["hooks"]["Stop"].is_array(),
+            "the bridge's hooks: {settings}"
+        );
+        assert_eq!(
+            args.last(),
+            Some(&launch.prompt),
+            "the prompt is the resumed turn, last"
+        );
         // The same flags as its first launch, but for the session flag.
         let first = args_for(false);
         let strip = |args: &[String], flag: &str| {
@@ -2720,27 +3004,58 @@ mod tests {
         };
         let status = serde_json::json!({ "statusLine": { "type": "command", "command": "dct --dct-status-line f" } });
         let args = actor_stage_command(request, Some(status), Some(flags), |req| {
-            Ok(crate::provider::ProgramArgs::new("claude", crate::provider::claude::claude_terminal_args(req)?))
+            Ok(crate::provider::ProgramArgs::new(
+                "claude",
+                crate::provider::claude::claude_terminal_args(req)?,
+            ))
         })
         .unwrap()
         .args;
-        let at: Vec<usize> = args.iter().enumerate().filter(|(_, a)| *a == "--settings").map(|(i, _)| i).collect();
+        let at: Vec<usize> = args
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| *a == "--settings")
+            .map(|(i, _)| i)
+            .collect();
         assert_eq!(at.len(), 1, "exactly one --settings: {args:?}");
         let settings: serde_json::Value = serde_json::from_str(&args[at[0] + 1]).unwrap();
-        assert!(settings["statusLine"]["command"].as_str().unwrap().contains("--dct-status-line"), "{settings}");
+        assert!(
+            settings["statusLine"]["command"]
+                .as_str()
+                .unwrap()
+                .contains("--dct-status-line"),
+            "{settings}"
+        );
         assert!(settings["hooks"]["Stop"].is_array(), "{settings}");
         assert!(args.iter().any(|a| a == "--mcp-config"));
-        assert_eq!(args.last().map(String::as_str), Some("Review PR1."), "the prompt stays last");
+        assert_eq!(
+            args.last().map(String::as_str),
+            Some("Review PR1."),
+            "the prompt stays last"
+        );
         // Unbridged (the gate said engine 1): the status line alone.
         let request = TerminalLaunch {
-            kind: TerminalKind::Role { role_id: "r".into(), run_mode: RunMode::Default, prompt: Some("P".into()), stage_kind: None },
+            kind: TerminalKind::Role {
+                role_id: "r".into(),
+                run_mode: RunMode::Default,
+                prompt: Some("P".into()),
+                stage_kind: None,
+            },
             model: None,
             session_id: None,
             settings: None,
         };
-        let args = actor_stage_command(request, Some(serde_json::json!({ "statusLine": {} })), None, |req| {
-            Ok(crate::provider::ProgramArgs::new("claude", crate::provider::claude::claude_terminal_args(req)?))
-        })
+        let args = actor_stage_command(
+            request,
+            Some(serde_json::json!({ "statusLine": {} })),
+            None,
+            |req| {
+                Ok(crate::provider::ProgramArgs::new(
+                    "claude",
+                    crate::provider::claude::claude_terminal_args(req)?,
+                ))
+            },
+        )
         .unwrap()
         .args;
         assert!(!args.iter().any(|a| a == "--mcp-config"));
@@ -2756,7 +3071,11 @@ mod tests {
         }
     }
 
-    fn start_input(role_id: &str, tab_id: Option<&str>, start_chain: Option<&str>) -> RoleTerminalInput {
+    fn start_input(
+        role_id: &str,
+        tab_id: Option<&str>,
+        start_chain: Option<&str>,
+    ) -> RoleTerminalInput {
         serde_json::from_value(serde_json::json!({
             "roleId": role_id, "values": { "cwd": "/repo" }, "tabId": tab_id, "handoffPlan": null,
             "cols": 80, "rows": 24, "startChain": start_chain
@@ -2766,7 +3085,11 @@ mod tests {
 
     fn draft_tab(store: &Mutex<StateStore>, role_id: &str) -> String {
         let role = crate::test_support::role(role_id, role_id);
-        store.lock().unwrap().create_draft_tab(&role, "/repo", true, None).unwrap()
+        store
+            .lock()
+            .unwrap()
+            .create_draft_tab(&role, "/repo", true, None)
+            .unwrap()
     }
 
     #[test]
@@ -2798,7 +3121,12 @@ mod tests {
         assert_eq!(plan.lane.as_deref(), Some("pr1"));
         assert_eq!(plan.run_id, "ee_1700000000000");
         // Off Claude, nothing is bridged.
-        assert_eq!(plan_start(&store, &input, "role_implementer", false).unwrap().1, None);
+        assert_eq!(
+            plan_start(&store, &input, "role_implementer", false)
+                .unwrap()
+                .1,
+            None
+        );
     }
 
     #[test]
@@ -2817,13 +3145,23 @@ mod tests {
         assert!(!plan.autopilot);
         // Labelled before the spawn: the run exists, engine 2, autopilot off.
         let events = Recorded::default();
-        let started = label_starting_chain(&events, &store, &tab, chain.clone(), None).unwrap().expect("labelled");
+        let started = label_starting_chain(&events, &store, &tab, chain.clone(), None)
+            .unwrap()
+            .expect("labelled");
         assert!(started.made_run);
         let state = store.lock().unwrap();
         let run = state.pipeline_run_by_id(&chain.chain_id).expect("run made");
         assert_eq!(run.engine, crate::bridge::launch::ENGINE_V2);
         assert!(!run.autopilot.as_ref().is_some_and(|a| a.enabled));
-        assert_eq!(state.tab_by_id(&tab).unwrap().chain.as_ref().map(|c| c.chain_id.clone()), Some(chain.chain_id.clone()));
+        assert_eq!(
+            state
+                .tab_by_id(&tab)
+                .unwrap()
+                .chain
+                .as_ref()
+                .map(|c| c.chain_id.clone()),
+            Some(chain.chain_id.clone())
+        );
         assert_eq!(*events.0.borrow(), vec![chain.chain_id.clone()]);
     }
 
@@ -2836,15 +3174,37 @@ mod tests {
             "chainId": "ee_1700000000000", "kind": "eagle1", "step": 1, "total": 4
         }))
         .unwrap();
-        store.lock().unwrap().data.tabs.iter_mut().find(|t| t.id == tab).unwrap().chain = Some(held.clone());
+        store
+            .lock()
+            .unwrap()
+            .data
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == tab)
+            .unwrap()
+            .chain = Some(held.clone());
         let input = start_input("role_planner", Some(&tab), Some("eagle1"));
         let (starting, plan) = plan_start(&store, &input, "role_planner", true).unwrap();
         assert_eq!(starting, None, "no new chain");
-        assert_eq!(plan.map(|p| p.run_id), Some("ee_1700000000000".to_string()), "its own run's Planner");
+        assert_eq!(
+            plan.map(|p| p.run_id),
+            Some("ee_1700000000000".to_string()),
+            "its own run's Planner"
+        );
         // A label raced in after planning: the start leaves it alone.
-        let fresh = crate::bridge::launch::new_chain(&crate::pipelines::find("eagle1").unwrap(), "eagle1", 5);
-        assert_eq!(label_starting_chain(&Recorded::default(), &store, &tab, fresh, None).unwrap(), None);
-        assert_eq!(store.lock().unwrap().tab_by_id(&tab).unwrap().chain, Some(held));
+        let fresh = crate::bridge::launch::new_chain(
+            &crate::pipelines::find("eagle1").unwrap(),
+            "eagle1",
+            5,
+        );
+        assert_eq!(
+            label_starting_chain(&Recorded::default(), &store, &tab, fresh, None).unwrap(),
+            None
+        );
+        assert_eq!(
+            store.lock().unwrap().tab_by_id(&tab).unwrap().chain,
+            Some(held)
+        );
     }
 
     #[test]
@@ -2852,11 +3212,21 @@ mod tests {
         let dir = crate::test_support::TempDir::new("label_new_chain_gate");
         let store = store_with_engine2_run(&dir);
         let tab = draft_tab(&store, "role_planner");
-        let chain = crate::bridge::launch::new_chain(&crate::pipelines::find("eagle1").unwrap(), "eagle1", 6);
+        let chain = crate::bridge::launch::new_chain(
+            &crate::pipelines::find("eagle1").unwrap(),
+            "eagle1",
+            6,
+        );
         let gate = crate::bridge::gate::decide(Some("2.1.200 (Claude Code)"), None);
-        label_starting_chain(&Recorded::default(), &store, &tab, chain.clone(), Some((gate, "planner".into())))
-            .unwrap()
-            .unwrap();
+        label_starting_chain(
+            &Recorded::default(),
+            &store,
+            &tab,
+            chain.clone(),
+            Some((gate, "planner".into())),
+        )
+        .unwrap()
+        .unwrap();
         let saved = StateStore::open_path(dir.join("state.json")).unwrap();
         let run = saved.pipeline_run_by_id(&chain.chain_id).unwrap();
         assert_eq!(run.engine, 1);
@@ -2869,35 +3239,80 @@ mod tests {
         let store = store_with_engine2_run(&dir);
         let runs = dir.join("runs");
         let tab = draft_tab(&store, "role_planner");
-        let chain = crate::bridge::launch::new_chain(&crate::pipelines::find("eagle1").unwrap(), "eagle1", 8);
+        let chain = crate::bridge::launch::new_chain(
+            &crate::pipelines::find("eagle1").unwrap(),
+            "eagle1",
+            8,
+        );
         let events = Recorded::default();
-        let started = label_starting_chain(&events, &store, &tab, chain.clone(), None).unwrap().unwrap();
-        // The run folder was written, then the spawn failed.
-        let plan = crate::bridge::launch::plan_for_new_run(&crate::pipelines::find("eagle1").unwrap(), &chain, "role_planner")
+        let started = label_starting_chain(&events, &store, &tab, chain.clone(), None)
+            .unwrap()
             .unwrap();
+        // The run folder was written, then the spawn failed.
+        let plan = crate::bridge::launch::plan_for_new_run(
+            &crate::pipelines::find("eagle1").unwrap(),
+            &chain,
+            "role_planner",
+        )
+        .unwrap();
         crate::bridge::launch::prepare_stage(&runs, &plan, &tab).unwrap();
         store
             .lock()
             .unwrap()
-            .set_tab_bridge(&tab, Some(crate::bridge::BridgeTag { run_id: plan.run_id.clone(), stage: plan.stage_key.clone() }))
+            .set_tab_bridge(
+                &tab,
+                Some(crate::bridge::BridgeTag {
+                    run_id: plan.run_id.clone(),
+                    stage: plan.stage_key.clone(),
+                }),
+            )
             .unwrap();
-        let failed: Result<(), String> =
-            after_starting_label(&events, &store, &tab, Some(&started), || Some(runs.clone()), || Err("spawn failed".into()));
+        let failed: Result<(), String> = after_starting_label(
+            &events,
+            &store,
+            &tab,
+            Some(&started),
+            || Some(runs.clone()),
+            || Err("spawn failed".into()),
+        );
         assert_eq!(failed, Err("spawn failed".to_string()));
         let saved = StateStore::open_path(dir.join("state.json")).unwrap();
-        assert!(saved.pipeline_run_by_id(&chain.chain_id).is_none(), "no run left behind");
+        assert!(
+            saved.pipeline_run_by_id(&chain.chain_id).is_none(),
+            "no run left behind"
+        );
         let record = saved.tab_by_id(&tab).unwrap();
         assert_eq!(record.chain, None, "the tab left the chain");
         assert_eq!(record.bridge, None, "and holds no stage");
-        assert!(!runs.join(&chain.chain_id).exists(), "its run folder is gone");
-        assert!(saved.pipeline_run_by_id("ee_1700000000000").is_some(), "other runs stay");
-        assert_eq!(events.0.borrow().last(), Some(&chain.chain_id), "its overview refetches");
+        assert!(
+            !runs.join(&chain.chain_id).exists(),
+            "its run folder is gone"
+        );
+        assert!(
+            saved.pipeline_run_by_id("ee_1700000000000").is_some(),
+            "other runs stay"
+        );
+        assert_eq!(
+            events.0.borrow().last(),
+            Some(&chain.chain_id),
+            "its overview refetches"
+        );
         // A success keeps the label.
         let other = draft_tab(&store, "role_planner");
-        let chain = crate::bridge::launch::new_chain(&crate::pipelines::find("eagle1").unwrap(), "eagle1", 9);
-        let started = label_starting_chain(&events, &store, &other, chain.clone(), None).unwrap().unwrap();
+        let chain = crate::bridge::launch::new_chain(
+            &crate::pipelines::find("eagle1").unwrap(),
+            "eagle1",
+            9,
+        );
+        let started = label_starting_chain(&events, &store, &other, chain.clone(), None)
+            .unwrap()
+            .unwrap();
         after_starting_label(&events, &store, &other, Some(&started), || None, || Ok(())).unwrap();
-        assert!(store.lock().unwrap().pipeline_run_by_id(&chain.chain_id).is_some());
+        assert!(store
+            .lock()
+            .unwrap()
+            .pipeline_run_by_id(&chain.chain_id)
+            .is_some());
     }
 
     #[test]
@@ -2905,11 +3320,24 @@ mod tests {
         let source = include_str!("mod.rs");
         let body = &source[source.find("fn role_terminal_start_blocking(").unwrap()..];
         let body = &body[..body.find("\n}\n").unwrap()];
-        let label = body.find("label_starting_chain(").expect("labels the chain");
-        let undo = body.find("after_starting_label(").expect("undoes the label on a failure");
+        let label = body
+            .find("label_starting_chain(")
+            .expect("labels the chain");
+        let undo = body
+            .find("after_starting_label(")
+            .expect("undoes the label on a failure");
         assert!(label < undo);
-        for step in ["prepare_stage(", "set_tab_bridge(", "store_prompt(", "bridged_command(", "open_session_to("] {
-            assert!(body.find(step).expect(step) > undo, "{step} runs under the undo");
+        for step in [
+            "prepare_stage(",
+            "set_tab_bridge(",
+            "store_prompt(",
+            "bridged_command(",
+            "open_session_to(",
+        ] {
+            assert!(
+                body.find(step).expect(step) > undo,
+                "{step} runs under the undo"
+            );
         }
     }
 
@@ -2918,24 +3346,63 @@ mod tests {
         let dir = crate::test_support::TempDir::new("failed_start_held_run");
         let store = store_with_engine2_run(&dir);
         let tab = draft_tab(&store, "role_planner");
-        let chain = crate::bridge::launch::new_chain(&crate::pipelines::find("eagle1").unwrap(), "eagle1", 10);
+        let chain = crate::bridge::launch::new_chain(
+            &crate::pipelines::find("eagle1").unwrap(),
+            "eagle1",
+            10,
+        );
         let events = Recorded::default();
-        let started = label_starting_chain(&events, &store, &tab, chain.clone(), None).unwrap().unwrap();
+        let started = label_starting_chain(&events, &store, &tab, chain.clone(), None)
+            .unwrap()
+            .unwrap();
         // Another tab joined the run meanwhile.
         let reviewer = draft_tab(&store, "role_plan_reviewer");
         let mut step2 = chain.clone();
         step2.step = 2;
-        store.lock().unwrap().set_tab_chain(&reviewer, Some(step2), Some("the plan")).unwrap();
-        let _ = after_starting_label(&events, &store, &tab, Some(&started), || None, || Err::<(), _>("no".into()));
+        store
+            .lock()
+            .unwrap()
+            .set_tab_chain(&reviewer, Some(step2), Some("the plan"))
+            .unwrap();
+        let _ = after_starting_label(
+            &events,
+            &store,
+            &tab,
+            Some(&started),
+            || None,
+            || Err::<(), _>("no".into()),
+        );
         let state = store.lock().unwrap();
-        assert!(state.pipeline_run_by_id(&chain.chain_id).is_some(), "held by the other tab");
-        assert_eq!(state.tab_by_id(&tab).unwrap().chain, None, "the failed tab still leaves it");
+        assert!(
+            state.pipeline_run_by_id(&chain.chain_id).is_some(),
+            "held by the other tab"
+        );
+        assert_eq!(
+            state.tab_by_id(&tab).unwrap().chain,
+            None,
+            "the failed tab still leaves it"
+        );
         drop(state);
         // A run that existed before the label is never removed.
         let tab2 = draft_tab(&store, "role_planner");
-        let existing = StartedChain { chain_id: "ee_1700000000000".into(), run_id: Some("ee_1700000000000".into()), made_run: false };
-        let _ = after_starting_label(&events, &store, &tab2, Some(&existing), || None, || Err::<(), _>("no".into()));
-        assert!(store.lock().unwrap().pipeline_run_by_id("ee_1700000000000").is_some());
+        let existing = StartedChain {
+            chain_id: "ee_1700000000000".into(),
+            run_id: Some("ee_1700000000000".into()),
+            made_run: false,
+        };
+        let _ = after_starting_label(
+            &events,
+            &store,
+            &tab2,
+            Some(&existing),
+            || None,
+            || Err::<(), _>("no".into()),
+        );
+        assert!(store
+            .lock()
+            .unwrap()
+            .pipeline_run_by_id("ee_1700000000000")
+            .is_some());
     }
 
     #[test]
@@ -2943,10 +3410,15 @@ mod tests {
         let source = include_str!("mod.rs");
         let body = &source[source.find("fn pty_open_blocking(").unwrap()..];
         let body = &body[..body.find("\n}\n").unwrap()];
-        let inputs = body.find("gate_inputs(").expect("restart reads the version and settings");
+        let inputs = body
+            .find("gate_inputs(")
+            .expect("restart reads the version and settings");
         let gate = body.find("gate_run(").expect("restart applies the gate");
         let flags = body.find("relaunch_flags(").expect("relaunch flags");
-        assert!(inputs < gate && gate < flags, "the gate decides before the bridge flags are built");
+        assert!(
+            inputs < gate && gate < flags,
+            "the gate decides before the bridge flags are built"
+        );
     }
 
     #[test]
@@ -2961,13 +3433,29 @@ mod tests {
             serde_json::json!({ "parentUuid": null, "isSidechain": false, "type": kind, "uuid": format!("u-{at}"),
                 "timestamp": at, "cwd": "/tmp/p", "sessionId": sid, "version": "2.1.0", "message": message })
         };
-        let prompt = record("user", "2026-10-19T10:00:00Z", serde_json::json!({ "role": "user", "content": "Review" }));
-        let reply = record("assistant", "2026-10-19T10:01:00Z", serde_json::json!({ "id": "m1", "type": "message",
-            "role": "assistant", "model": "t", "content": [{ "type": "text", "text": "Done." }], "stop_reason": "end_turn" }));
+        let prompt = record(
+            "user",
+            "2026-10-19T10:00:00Z",
+            serde_json::json!({ "role": "user", "content": "Review" }),
+        );
+        let reply = record(
+            "assistant",
+            "2026-10-19T10:01:00Z",
+            serde_json::json!({ "id": "m1", "type": "message",
+            "role": "assistant", "model": "t", "content": [{ "type": "text", "text": "Done." }], "stop_reason": "end_turn" }),
+        );
         let target = (config.clone(), sid.to_string());
         std::fs::write(folder.join(format!("{sid}.jsonl")), format!("{prompt}\n")).unwrap();
-        assert_eq!(last_turn_key("tab_r", Some(&target)), None, "a turn still running is not decided");
-        std::fs::write(folder.join(format!("{sid}.jsonl")), format!("{prompt}\n{reply}\n")).unwrap();
+        assert_eq!(
+            last_turn_key("tab_r", Some(&target)),
+            None,
+            "a turn still running is not decided"
+        );
+        std::fs::write(
+            folder.join(format!("{sid}.jsonl")),
+            format!("{prompt}\n{reply}\n"),
+        )
+        .unwrap();
         let key = last_turn_key("tab_r", Some(&target)).expect("finished turn");
         assert!(key.starts_with(&format!("tab_r|{sid}|")), "{key}");
         assert_eq!(last_turn_key("tab_r", None), None);
@@ -2980,44 +3468,113 @@ mod tests {
         let run_id = "ee_1700000000000";
         let ok = Some("2.1.287 (Claude Code)");
         let decided_key = Some("tab_r|6a1d3b0f-2c3d-4e5f-9a51-0123456789cd|2026-10-20T10:00:00Z");
-        assert!(gate_run(&store, run_id, "pr_reviewer", ok, None, decided_key).unwrap().bridged, "still bridged");
-        let events_before = store.lock().unwrap().pipeline_run_by_id(run_id).unwrap().events.len();
+        assert!(
+            gate_run(&store, run_id, "pr_reviewer", ok, None, decided_key)
+                .unwrap()
+                .bridged,
+            "still bridged"
+        );
+        let events_before = store
+            .lock()
+            .unwrap()
+            .pipeline_run_by_id(run_id)
+            .unwrap()
+            .events
+            .len();
         // Hooks turned off since the first launch (a Resume mid-run): engine
         // 1 with a notice, and autopilot off, so the turn the bridge already
         // decided is never decided again the v1 way.
-        let off = crate::bridge::gate::HooksOff { file: dir.join("settings.json"), setting: "disableAllHooks" };
-        let gated = gate_run(&store, run_id, "pr_reviewer@pr1", ok, Some(&off), decided_key).unwrap();
-        assert_eq!(gated, GateRun { bridged: false, manual_now: true });
+        let off = crate::bridge::gate::HooksOff {
+            file: dir.join("settings.json"),
+            setting: "disableAllHooks",
+        };
+        let gated = gate_run(
+            &store,
+            run_id,
+            "pr_reviewer@pr1",
+            ok,
+            Some(&off),
+            decided_key,
+        )
+        .unwrap();
+        assert_eq!(
+            gated,
+            GateRun {
+                bridged: false,
+                manual_now: true
+            }
+        );
         {
             let state = store.lock().unwrap();
             let run = state.pipeline_run_by_id(run_id).unwrap();
             assert_eq!(run.engine, 1);
-            assert_eq!(run.events.last().unwrap().stage_id.as_deref(), Some("pr_reviewer"));
+            assert_eq!(
+                run.events.last().unwrap().stage_id.as_deref(),
+                Some("pr_reviewer")
+            );
             let note = run.engine_note.as_deref().unwrap();
-            assert!(note.contains("disableAllHooks") && note.contains("manual from now on"), "{note}");
+            assert!(
+                note.contains("disableAllHooks") && note.contains("manual from now on"),
+                "{note}"
+            );
             assert!(!run.autopilot.as_ref().unwrap().enabled, "autopilot is off");
             assert_eq!(run.status, crate::store::RunStatus::Stopped);
-            assert_eq!(run.stop_reason, None, "not paused_by_you: the note says why");
+            assert_eq!(
+                run.stop_reason, None,
+                "not paused_by_you: the note says why"
+            );
             // One Timeline note, the manual one (not the engine-1 notice).
-            let added: Vec<(&str, &str)> =
-                run.events[events_before..].iter().map(|e| (e.kind.as_str(), e.summary.as_str())).collect();
+            let added: Vec<(&str, &str)> = run.events[events_before..]
+                .iter()
+                .map(|e| (e.kind.as_str(), e.summary.as_str()))
+                .collect();
             assert_eq!(added, vec![("note", note)], "{added:?}");
             assert!(run.manual_only, "manual for good");
             // Belt and braces: the tab's current turn counts as decided under its v1 key too.
-            assert!(run.autopilot.as_ref().unwrap().decided.iter().any(|k| Some(k.as_str()) == decided_key));
+            assert!(run
+                .autopilot
+                .as_ref()
+                .unwrap()
+                .decided
+                .iter()
+                .any(|k| Some(k.as_str()) == decided_key));
             let saved = StateStore::open_path(dir.join("state.json")).unwrap();
-            assert!(!saved.pipeline_run_by_id(run_id).unwrap().autopilot.as_ref().unwrap().enabled, "saved");
+            assert!(
+                !saved
+                    .pipeline_run_by_id(run_id)
+                    .unwrap()
+                    .autopilot
+                    .as_ref()
+                    .unwrap()
+                    .enabled,
+                "saved"
+            );
         }
         // Autopilot cannot be turned back on for a run made manual this way.
         {
             let mut state = store.lock().unwrap();
-            let err = crate::commands::pipeline::set_autopilot(&mut state, run_id, true).unwrap_err();
+            let err =
+                crate::commands::pipeline::set_autopilot(&mut state, run_id, true).unwrap_err();
             assert!(err.contains("manual from now on"), "{err}");
-            assert!(!state.pipeline_run_by_id(run_id).unwrap().autopilot.as_ref().unwrap().enabled);
+            assert!(
+                !state
+                    .pipeline_run_by_id(run_id)
+                    .unwrap()
+                    .autopilot
+                    .as_ref()
+                    .unwrap()
+                    .enabled
+            );
         }
         // An engine-1 run never relaunches bridged, whatever the CLI.
-        assert_eq!(gate_run(&store, run_id, "pr_reviewer", ok, None, None).unwrap(), GateRun::default());
-        assert_eq!(gate_run(&store, "ee_missing", "pr_reviewer", ok, None, None).unwrap(), GateRun::default());
+        assert_eq!(
+            gate_run(&store, run_id, "pr_reviewer", ok, None, None).unwrap(),
+            GateRun::default()
+        );
+        assert_eq!(
+            gate_run(&store, "ee_missing", "pr_reviewer", ok, None, None).unwrap(),
+            GateRun::default()
+        );
     }
 
     /// A pipeline of your own: a copy of the Planner (Settings › Roles ›
@@ -3073,7 +3630,9 @@ mod tests {
         };
         let role = crate::test_support::role("role_custom_planner", "Planner copy");
         let first = store.create_draft_tab(&role, "/tmp/p", true, None).unwrap();
-        store.set_tab_chain(&first, Some(on_chain(id, 1)), None).unwrap();
+        store
+            .set_tab_chain(&first, Some(on_chain(id, 1)), None)
+            .unwrap();
         let plain = store.create_draft_tab(&role, "/tmp/p", true, None).unwrap();
 
         // Stage 1 is tagged before it starts: its tab's chain says planner.
@@ -3088,18 +3647,33 @@ mod tests {
         assert_eq!(notes_kind, Some(StageKind::Generic));
         assert_eq!(joining_wins, Some(StageKind::Generic));
         assert_eq!(off_pipeline, None);
-        assert_eq!(mode_of("role_custom_planner", first_kind), "plan", "the copy plans like the built-in");
-        assert_eq!(mode_of("role_planner", notes_kind), "auto", "the kind decides, not the role id");
+        assert_eq!(
+            mode_of("role_custom_planner", first_kind),
+            "plan",
+            "the copy plans like the built-in"
+        );
+        assert_eq!(
+            mode_of("role_planner", notes_kind),
+            "auto",
+            "the kind decides, not the role id"
+        );
         // Off a pipeline the built-in Planner still plans, and a copy does not.
         assert_eq!(mode_of("role_planner", None), "plan");
         assert_eq!(mode_of("role_custom_planner", off_pipeline), "auto");
         // Cursor follows the kind too.
         assert_eq!(
-            crate::pty::launch::role_terminal_flags("role_custom_planner", first_kind, RunMode::Default)[0],
+            crate::pty::launch::role_terminal_flags(
+                "role_custom_planner",
+                first_kind,
+                RunMode::Default
+            )[0],
             "--plan"
         );
         // Chat: the session mode, and the plan card for its ExitPlanMode.
-        assert_eq!(crate::provider::claude::claude_role_mode("role_custom_planner", first_kind), "plan");
+        assert_eq!(
+            crate::provider::claude::claude_role_mode("role_custom_planner", first_kind),
+            "plan"
+        );
         assert_eq!(
             crate::provider::claude::claude_role_mode("role_planner", notes_kind),
             "bypassPermissions"
@@ -3123,9 +3697,14 @@ mod tests {
         };
         let role = crate::test_support::role("role_custom_planner", "Planner copy");
         let tagged = state.create_draft_tab(&role, "/tmp/p", true, None).unwrap();
-        state.set_tab_chain(&tagged, Some(on_chain(id, 1)), None).unwrap();
+        state
+            .set_tab_chain(&tagged, Some(on_chain(id, 1)), None)
+            .unwrap();
         let store = Mutex::new(state);
-        let mode = |tab: Option<&str>, joining: Option<&crate::store::ChainRef>, role_id: &str, resume: Option<&str>| {
+        let mode = |tab: Option<&str>,
+                    joining: Option<&crate::store::ChainRef>,
+                    role_id: &str,
+                    resume: Option<&str>| {
             let launch = RoleLaunch::for_tab(
                 &store,
                 tab,
@@ -3222,7 +3801,10 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
             left = registry.running_groups();
         }
-        assert!(left.is_empty(), "an exited, reaped terminal is not signalled or waited on");
+        assert!(
+            left.is_empty(),
+            "an exited, reaped terminal is not signalled or waited on"
+        );
     }
 
     /// `sh -c script` in a PTY under `dir`.
@@ -3272,46 +3854,103 @@ mod tests {
             let _ = exit_tx.send(code);
         });
         let script = "printf 'hello from the stage'; read line; printf 'bye'; exit 3";
-        open_session_to(&registry, "s", sh_spec(dir.path(), script), None, None, Output::Detached { on_exit, view: None }).unwrap();
+        open_session_to(
+            &registry,
+            "s",
+            sh_spec(dir.path(), script),
+            None,
+            None,
+            Output::Detached {
+                on_exit,
+                view: None,
+            },
+        )
+        .unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             let buffered = {
                 let registry = registry.lock().unwrap();
                 let out = registry.detached["s"].lock().unwrap();
-                String::from_utf8_lossy(&out.buffer.iter().copied().collect::<Vec<u8>>()).into_owned()
+                String::from_utf8_lossy(&out.buffer.iter().copied().collect::<Vec<u8>>())
+                    .into_owned()
             };
             if buffered.contains("hello from the stage") {
                 break;
             }
-            assert!(std::time::Instant::now() < deadline, "no output kept: {buffered:?}");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no output kept: {buffered:?}"
+            );
             thread::sleep(Duration::from_millis(20));
         }
         assert!(registry.lock().unwrap().running("s"));
         let (view, seen) = recording_view();
-        assert!(attach_detached(&registry, "s", &view, None).unwrap().is_some(), "the first view attaches");
-        assert!(seen.lock().unwrap()[0].1.contains("hello from the stage"), "what it printed so far");
+        assert!(
+            attach_detached(&registry, "s", &view, None)
+                .unwrap()
+                .is_some(),
+            "the first view attaches"
+        );
+        assert!(
+            seen.lock().unwrap()[0].1.contains("hello from the stage"),
+            "what it printed so far"
+        );
         // A view after a reload takes over (the ring replayed again, V5).
         let (other, _) = recording_view();
-        assert!(attach_detached(&registry, "s", &other, None).unwrap().is_some());
-        assert!(attach_detached(&registry, "s", &view, None).unwrap().is_some(), "back to the first view");
+        assert!(attach_detached(&registry, "s", &other, None)
+            .unwrap()
+            .is_some());
+        assert!(
+            attach_detached(&registry, "s", &view, None)
+                .unwrap()
+                .is_some(),
+            "back to the first view"
+        );
         registry.lock().unwrap().sessions["s"].write(b"\r").unwrap();
-        assert_eq!(exit_rx.recv_timeout(Duration::from_secs(5)).unwrap(), Some(3), "the exit is reported");
+        assert_eq!(
+            exit_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Some(3),
+            "the exit is reported"
+        );
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while !seen.lock().unwrap().iter().any(|p| p.0 == "exit") {
-            assert!(std::time::Instant::now() < deadline, "the view hears the exit");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the view hears the exit"
+            );
             thread::sleep(Duration::from_millis(20));
         }
-        assert!(seen.lock().unwrap().iter().any(|p| p.1.contains("bye")), "and streams live after attaching");
+        assert!(
+            seen.lock().unwrap().iter().any(|p| p.1.contains("bye")),
+            "and streams live after attaching"
+        );
 
         // A terminal closed (or replaced) before it exits reports nothing.
         let (exit_tx, exit_rx) = std::sync::mpsc::channel();
         let on_exit: OnExit = Box::new(move |code| {
             let _ = exit_tx.send(code);
         });
-        open_session_to(&registry, "t", sh_spec(dir.path(), "sleep 30"), None, None, Output::Detached { on_exit, view: None }).unwrap();
+        open_session_to(
+            &registry,
+            "t",
+            sh_spec(dir.path(), "sleep 30"),
+            None,
+            None,
+            Output::Detached {
+                on_exit,
+                view: None,
+            },
+        )
+        .unwrap();
         registry.lock().unwrap().kill("t");
-        assert!(exit_rx.recv_timeout(Duration::from_secs(5)).is_err(), "a closed terminal's exit is nobody's news");
-        assert!(!registry.lock().unwrap().detached.contains_key("t"), "closing forgets it");
+        assert!(
+            exit_rx.recv_timeout(Duration::from_secs(5)).is_err(),
+            "a closed terminal's exit is nobody's news"
+        );
+        assert!(
+            !registry.lock().unwrap().detached.contains_key("t"),
+            "closing forgets it"
+        );
         registry.lock().unwrap().shutdown_all();
     }
 
@@ -3325,14 +3964,21 @@ mod tests {
     // input box; a paste that did not clear it first would be appended to it.
     #[test]
     fn a_paste_clears_the_input_box_first() {
-        assert_eq!(paste_bytes("fix it"), b"\x15\x1b[200~fix it\x1b[201~\r".to_vec());
+        assert_eq!(
+            paste_bytes("fix it"),
+            b"\x15\x1b[200~fix it\x1b[201~\r".to_vec()
+        );
     }
 
     /// Wait until `seen` has a packet that `found` accepts.
     fn wait_seen(seen: &Seen, what: &str, found: impl Fn(&(String, String, Option<i32>)) -> bool) {
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while !seen.lock().unwrap().iter().any(&found) {
-            assert!(std::time::Instant::now() < deadline, "{what}: {:?}", seen.lock().unwrap());
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what}: {:?}",
+                seen.lock().unwrap()
+            );
             thread::sleep(Duration::from_millis(20));
         }
     }
@@ -3360,13 +4006,28 @@ mod tests {
             stopped.display()
         );
         let (old_exit, old_exits) = exit_probe();
-        open_session_to(&registry, "s", sh_spec(dir.path(), &script), None, None, Output::Detached { on_exit: old_exit, view: None })
-            .unwrap();
+        open_session_to(
+            &registry,
+            "s",
+            sh_spec(dir.path(), &script),
+            None,
+            None,
+            Output::Detached {
+                on_exit: old_exit,
+                view: None,
+            },
+        )
+        .unwrap();
         let (view, seen) = recording_view();
         // The view attaches once the old program has printed.
         loop {
             attach_detached(&registry, "s", &view, None).unwrap();
-            if seen.lock().unwrap().iter().any(|p| p.1.contains("old program")) {
+            if seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|p| p.1.contains("old program"))
+            {
                 break;
             }
             thread::sleep(Duration::from_millis(20));
@@ -3382,13 +4043,36 @@ mod tests {
             RESUME_STOP_GRACE,
         )
         .unwrap();
-        assert!(stopped.exists(), "SIGTERM first, and the new program waited for the old one to finish");
-        wait_seen(&seen, "the same view streams the resumed program", |p| p.1.contains("resumed program"));
-        assert!(old_exits.recv_timeout(Duration::from_millis(300)).is_err(), "the old exit is nobody's news");
-        assert!(!seen.lock().unwrap().iter().any(|p| p.0 == "exit"), "the view never hears the old program end");
-        assert_eq!(registry.lock().unwrap().claude_sessions.get("s").map(String::as_str), Some("sid"));
+        assert!(
+            stopped.exists(),
+            "SIGTERM first, and the new program waited for the old one to finish"
+        );
+        wait_seen(&seen, "the same view streams the resumed program", |p| {
+            p.1.contains("resumed program")
+        });
+        assert!(
+            old_exits.recv_timeout(Duration::from_millis(300)).is_err(),
+            "the old exit is nobody's news"
+        );
+        assert!(
+            !seen.lock().unwrap().iter().any(|p| p.0 == "exit"),
+            "the view never hears the old program end"
+        );
+        assert_eq!(
+            registry
+                .lock()
+                .unwrap()
+                .claude_sessions
+                .get("s")
+                .map(String::as_str),
+            Some("sid")
+        );
         registry.lock().unwrap().sessions["s"].write(b"\r").unwrap();
-        assert_eq!(new_exits.recv_timeout(Duration::from_secs(5)).unwrap(), Some(4), "the new exit is reported");
+        assert_eq!(
+            new_exits.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Some(4),
+            "the new exit is reported"
+        );
         wait_seen(&seen, "and the view hears it", |p| p.0 == "exit");
         registry.lock().unwrap().shutdown_all();
     }
@@ -3403,15 +4087,35 @@ mod tests {
         let (view, seen) = recording_view();
         let script = "trap 'exit 143' TERM\nprintf 'your planner'\nwhile :; do sleep 0.05; done";
         open_session(&registry, "p", sh_spec(dir.path(), script), None, view).unwrap();
-        wait_seen(&seen, "the view streams it", |p| p.1.contains("your planner"));
+        wait_seen(&seen, "the view streams it", |p| {
+            p.1.contains("your planner")
+        });
         let (new_exit, new_exits) = exit_probe();
-        replace_detached(&registry, "p", sh_spec(dir.path(), "printf 'resumed planner'; read line; exit 5"), None, None, new_exit, RESUME_STOP_GRACE)
-            .unwrap();
-        wait_seen(&seen, "the same view streams the resumed program", |p| p.1.contains("resumed planner"));
-        assert!(!seen.lock().unwrap().iter().any(|p| p.0 == "exit"), "the view never hears the old program end");
+        replace_detached(
+            &registry,
+            "p",
+            sh_spec(dir.path(), "printf 'resumed planner'; read line; exit 5"),
+            None,
+            None,
+            new_exit,
+            RESUME_STOP_GRACE,
+        )
+        .unwrap();
+        wait_seen(&seen, "the same view streams the resumed program", |p| {
+            p.1.contains("resumed planner")
+        });
+        assert!(
+            !seen.lock().unwrap().iter().any(|p| p.0 == "exit"),
+            "the view never hears the old program end"
+        );
         registry.lock().unwrap().sessions["p"].write(b"\r").unwrap();
-        assert_eq!(new_exits.recv_timeout(Duration::from_secs(5)).unwrap(), Some(5));
-        wait_seen(&seen, "and the view hears the new one end", |p| p.0 == "exit" && p.2 == Some(5));
+        assert_eq!(
+            new_exits.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Some(5)
+        );
+        wait_seen(&seen, "and the view hears the new one end", |p| {
+            p.0 == "exit" && p.2 == Some(5)
+        });
         registry.lock().unwrap().shutdown_all();
     }
 
@@ -3422,28 +4126,59 @@ mod tests {
         let dir = crate::test_support::TempDir::new("pty_resume_kill");
         let registry = Mutex::new(PtyRegistry::new());
         let ready = dir.join("ready");
-        let script = format!("trap '' TERM\ntouch '{}'\nwhile :; do sleep 0.05; done", ready.display());
+        let script = format!(
+            "trap '' TERM\ntouch '{}'\nwhile :; do sleep 0.05; done",
+            ready.display()
+        );
         let (old_exit, _old_exits) = exit_probe();
-        open_session_to(&registry, "s", sh_spec(dir.path(), &script), None, None, Output::Detached { on_exit: old_exit, view: None })
-            .unwrap();
+        open_session_to(
+            &registry,
+            "s",
+            sh_spec(dir.path(), &script),
+            None,
+            None,
+            Output::Detached {
+                on_exit: old_exit,
+                view: None,
+            },
+        )
+        .unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while !ready.exists() {
-            assert!(std::time::Instant::now() < deadline, "the old program is ready");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the old program is ready"
+            );
             thread::sleep(Duration::from_millis(20));
         }
         let old = registry.lock().unwrap().sessions["s"].group();
         let (new_exit, _new_exits) = exit_probe();
         let began = std::time::Instant::now();
         let grace = Duration::from_millis(200);
-        replace_detached(&registry, "s", sh_spec(dir.path(), "sleep 5"), None, None, new_exit, grace).unwrap();
+        replace_detached(
+            &registry,
+            "s",
+            sh_spec(dir.path(), "sleep 5"),
+            None,
+            None,
+            new_exit,
+            grace,
+        )
+        .unwrap();
         let took = began.elapsed();
         assert!(took >= grace, "it waited the grace out first");
         // The SIGKILL is the resume's own: S1's stop-on-drop would only kill
         // the old program after STOP_GRACE (1.5 s) more.
         let backstop = grace + crate::process_tree::STOP_GRACE / 2;
-        assert!(took < backstop, "the resume killed it at the grace, not S1's backstop: took {took:?}");
+        assert!(
+            took < backstop,
+            "the resume killed it at the grace, not S1's backstop: took {took:?}"
+        );
         assert!(!old.running(), "then killed it");
-        assert!(registry.lock().unwrap().running("s"), "and started the new program");
+        assert!(
+            registry.lock().unwrap().running("s"),
+            "and started the new program"
+        );
         registry.lock().unwrap().shutdown_all();
     }
 
@@ -3454,10 +4189,23 @@ mod tests {
         let dir = crate::test_support::TempDir::new("pty_running_of");
         let registry = Mutex::new(PtyRegistry::new());
         let (on_exit, _exits) = exit_probe();
-        open_session_to(&registry, "hidden", sh_spec(dir.path(), "sleep 5"), None, None, Output::Detached { on_exit, view: None })
-            .unwrap();
+        open_session_to(
+            &registry,
+            "hidden",
+            sh_spec(dir.path(), "sleep 5"),
+            None,
+            None,
+            Output::Detached {
+                on_exit,
+                view: None,
+            },
+        )
+        .unwrap();
         let ids = vec!["hidden".to_string(), "never".to_string()];
-        assert_eq!(registry.lock().unwrap().running_of(&ids), vec!["hidden".to_string()]);
+        assert_eq!(
+            registry.lock().unwrap().running_of(&ids),
+            vec!["hidden".to_string()]
+        );
         registry.lock().unwrap().kill("hidden");
         assert!(registry.lock().unwrap().running_of(&ids).is_empty());
     }
@@ -3472,17 +4220,54 @@ mod tests {
         let stage = dir.join("stage");
         let registry = Mutex::new(PtyRegistry::new());
         let (old_exit, _old) = exit_probe();
-        open_session_to(&registry, "s", sh_spec(dir.path(), "sleep 5"), None, Some(stage.clone()), Output::Detached { on_exit: old_exit, view: None })
-            .unwrap();
-        assert_eq!(registry.lock().unwrap().input_gate("s").0, Some(stage.clone()));
+        open_session_to(
+            &registry,
+            "s",
+            sh_spec(dir.path(), "sleep 5"),
+            None,
+            Some(stage.clone()),
+            Output::Detached {
+                on_exit: old_exit,
+                view: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            registry.lock().unwrap().input_gate("s").0,
+            Some(stage.clone())
+        );
         let (again, _again) = exit_probe();
-        replace_detached(&registry, "s", sh_spec(dir.path(), "sleep 5"), None, Some(stage.clone()), again, Duration::from_millis(200))
-            .unwrap();
-        assert_eq!(registry.lock().unwrap().input_gate("s").0, Some(stage), "a bridged resume keeps its stage folder");
+        replace_detached(
+            &registry,
+            "s",
+            sh_spec(dir.path(), "sleep 5"),
+            None,
+            Some(stage.clone()),
+            again,
+            Duration::from_millis(200),
+        )
+        .unwrap();
+        assert_eq!(
+            registry.lock().unwrap().input_gate("s").0,
+            Some(stage),
+            "a bridged resume keeps its stage folder"
+        );
         let (unbridged, _unbridged) = exit_probe();
-        replace_detached(&registry, "s", sh_spec(dir.path(), "sleep 5"), None, None, unbridged, Duration::from_millis(200))
-            .unwrap();
-        assert_eq!(registry.lock().unwrap().input_gate("s").0, None, "an unbridged resume has none");
+        replace_detached(
+            &registry,
+            "s",
+            sh_spec(dir.path(), "sleep 5"),
+            None,
+            None,
+            unbridged,
+            Duration::from_millis(200),
+        )
+        .unwrap();
+        assert_eq!(
+            registry.lock().unwrap().input_gate("s").0,
+            None,
+            "an unbridged resume has none"
+        );
         registry.lock().unwrap().kill("s");
     }
 
@@ -3494,13 +4279,27 @@ mod tests {
             body[..body.find("\n}\n").unwrap()].to_string()
         };
         let start = body("fn role_terminal_start_blocking(");
-        assert!(start.contains("stage_dir_of(") && start.contains("stage_dir,\n            Output::View(on_output)"), "a role terminal's start");
+        assert!(
+            start.contains("stage_dir_of(")
+                && start.contains("stage_dir,\n            Output::View(on_output)"),
+            "a role terminal's start"
+        );
         let actor = body("pub(crate) fn start_actor_stage(");
         assert!(actor.contains("stage_dir_of("), "an actor stage");
-        assert!(actor.contains("replace_detached(&registry, tab_id, spec, session, stage_dir,"), "an actor stage's resume");
-        assert!(actor.contains("open_session_to(&registry, tab_id, spec, session, stage_dir,"), "an actor stage's first launch");
+        assert!(
+            actor.contains("replace_detached(&registry, tab_id, spec, session, stage_dir,"),
+            "an actor stage's resume"
+        );
+        assert!(
+            actor.contains("open_session_to(&registry, tab_id, spec, session, stage_dir,"),
+            "an actor stage's first launch"
+        );
         let open = body("fn pty_open_blocking(");
-        assert!(open.contains("stage_dir = crate::bridge::launch::stage_dir_of(") && open.contains("stage_dir,\n        Output::View(on_output)"), "a relaunch");
+        assert!(
+            open.contains("stage_dir = crate::bridge::launch::stage_dir_of(")
+                && open.contains("stage_dir,\n        Output::View(on_output)"),
+            "a relaunch"
+        );
     }
 
     // A resume whose new program cannot start leaves no live-looking view:
@@ -3509,31 +4308,67 @@ mod tests {
     #[test]
     fn a_resume_that_cannot_start_tells_the_view_the_program_ended() {
         let dir = crate::test_support::TempDir::new("pty_resume_spawn_fails");
-        let missing = SpawnSpec { program: dir.join("no-such-claude").display().to_string(), ..sh_spec(dir.path(), "true") };
+        let missing = SpawnSpec {
+            program: dir.join("no-such-claude").display().to_string(),
+            ..sh_spec(dir.path(), "true")
+        };
         // A stage the actor started, with a view attached.
         let registry = Mutex::new(PtyRegistry::new());
         let (old_exit, _old_exits) = exit_probe();
         let script = "trap 'exit 143' TERM\nprintf 'old program'\nwhile :; do sleep 0.05; done";
-        open_session_to(&registry, "s", sh_spec(dir.path(), script), None, None, Output::Detached { on_exit: old_exit, view: None })
-            .unwrap();
+        open_session_to(
+            &registry,
+            "s",
+            sh_spec(dir.path(), script),
+            None,
+            None,
+            Output::Detached {
+                on_exit: old_exit,
+                view: None,
+            },
+        )
+        .unwrap();
         let (view, seen) = recording_view();
         loop {
             attach_detached(&registry, "s", &view, None).unwrap();
-            if seen.lock().unwrap().iter().any(|p| p.1.contains("old program")) {
+            if seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|p| p.1.contains("old program"))
+            {
                 break;
             }
             thread::sleep(Duration::from_millis(20));
         }
         let (new_exit, _new_exits) = exit_probe();
-        let result = replace_detached(&registry, "s", missing.clone(), None, None, new_exit, RESUME_STOP_GRACE);
+        let result = replace_detached(
+            &registry,
+            "s",
+            missing.clone(),
+            None,
+            None,
+            new_exit,
+            RESUME_STOP_GRACE,
+        );
         assert!(result.is_err(), "{result:?}");
         wait_seen(&seen, "the stage's view hears it ended", |p| p.0 == "exit");
         // A terminal you opened yourself (its own view).
         let (own, own_seen) = recording_view();
         open_session(&registry, "p", sh_spec(dir.path(), script), None, own).unwrap();
-        wait_seen(&own_seen, "the view streams it", |p| p.1.contains("old program"));
+        wait_seen(&own_seen, "the view streams it", |p| {
+            p.1.contains("old program")
+        });
         let (new_exit, _new_exits) = exit_probe();
-        let result = replace_detached(&registry, "p", missing, None, None, new_exit, RESUME_STOP_GRACE);
+        let result = replace_detached(
+            &registry,
+            "p",
+            missing,
+            None,
+            None,
+            new_exit,
+            RESUME_STOP_GRACE,
+        );
         assert!(result.is_err(), "{result:?}");
         wait_seen(&own_seen, "your view hears it ended", |p| p.0 == "exit");
         registry.lock().unwrap().shutdown_all();
@@ -3548,31 +4383,63 @@ mod tests {
         let registry = Arc::new(Mutex::new(PtyRegistry::new()));
         let ready = dir.join("ready");
         let started = dir.join("started");
-        let script = format!("trap 'sleep 0.5; exit 0' TERM\ntouch '{}'\nwhile :; do sleep 0.05; done", ready.display());
+        let script = format!(
+            "trap 'sleep 0.5; exit 0' TERM\ntouch '{}'\nwhile :; do sleep 0.05; done",
+            ready.display()
+        );
         let (old_exit, _old_exits) = exit_probe();
-        open_session_to(&registry, "s", sh_spec(dir.path(), &script), None, None, Output::Detached { on_exit: old_exit, view: None })
-            .unwrap();
+        open_session_to(
+            &registry,
+            "s",
+            sh_spec(dir.path(), &script),
+            None,
+            None,
+            Output::Detached {
+                on_exit: old_exit,
+                view: None,
+            },
+        )
+        .unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while !ready.exists() {
-            assert!(std::time::Instant::now() < deadline, "the old program is ready");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the old program is ready"
+            );
             thread::sleep(Duration::from_millis(20));
         }
         let resuming = {
             let registry = registry.clone();
-            let spec = sh_spec(dir.path(), &format!("touch '{}'; sleep 5", started.display()));
+            let spec = sh_spec(
+                dir.path(),
+                &format!("touch '{}'; sleep 5", started.display()),
+            );
             thread::spawn(move || {
                 let (new_exit, _new_exits) = exit_probe();
-                replace_detached(&registry, "s", spec, Some("sid".into()), None, new_exit, RESUME_STOP_GRACE)
+                replace_detached(
+                    &registry,
+                    "s",
+                    spec,
+                    Some("sid".into()),
+                    None,
+                    new_exit,
+                    RESUME_STOP_GRACE,
+                )
             })
         };
         thread::sleep(Duration::from_millis(150));
         registry.lock().unwrap().kill("s");
         let result = resuming.join().unwrap();
         thread::sleep(Duration::from_millis(300));
-        assert!(result.is_err(), "closed tab got a resumed program anyway: {result:?}");
+        assert!(
+            result.is_err(),
+            "closed tab got a resumed program anyway: {result:?}"
+        );
         assert!(!started.exists(), "the resumed program never ran");
         let registry = registry.lock().unwrap();
-        assert!(!registry.sessions.contains_key("s") && !registry.claude_sessions.contains_key("s"));
+        assert!(
+            !registry.sessions.contains_key("s") && !registry.claude_sessions.contains_key("s")
+        );
     }
 
     // Your own Restart of the tab while a resume waits for the old program to
@@ -3587,30 +4454,74 @@ mod tests {
         let ready = dir.join("ready");
         let started = dir.join("started");
         let restarted = dir.join("restarted");
-        let script = format!("trap 'sleep 0.5; exit 0' TERM\ntouch '{}'\nwhile :; do sleep 0.05; done", ready.display());
+        let script = format!(
+            "trap 'sleep 0.5; exit 0' TERM\ntouch '{}'\nwhile :; do sleep 0.05; done",
+            ready.display()
+        );
         let (old_exit, _old_exits) = exit_probe();
-        open_session_to(&registry, "s", sh_spec(dir.path(), &script), None, None, Output::Detached { on_exit: old_exit, view: None })
-            .unwrap();
+        open_session_to(
+            &registry,
+            "s",
+            sh_spec(dir.path(), &script),
+            None,
+            None,
+            Output::Detached {
+                on_exit: old_exit,
+                view: None,
+            },
+        )
+        .unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while !ready.exists() {
-            assert!(std::time::Instant::now() < deadline, "the old program is ready");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the old program is ready"
+            );
             thread::sleep(Duration::from_millis(20));
         }
         let resuming = {
             let registry = registry.clone();
-            let spec = sh_spec(dir.path(), &format!("touch '{}'; sleep 5", started.display()));
+            let spec = sh_spec(
+                dir.path(),
+                &format!("touch '{}'; sleep 5", started.display()),
+            );
             thread::spawn(move || {
                 let (new_exit, _new_exits) = exit_probe();
-                replace_detached(&registry, "s", spec, Some("sid".into()), None, new_exit, RESUME_STOP_GRACE)
+                replace_detached(
+                    &registry,
+                    "s",
+                    spec,
+                    Some("sid".into()),
+                    None,
+                    new_exit,
+                    RESUME_STOP_GRACE,
+                )
             })
         };
         thread::sleep(Duration::from_millis(150));
         let (restart_exit, _restart_exits) = exit_probe();
-        let spec = sh_spec(dir.path(), &format!("touch '{}'; sleep 5", restarted.display()));
-        open_session_to(&registry, "s", spec, None, None, Output::Detached { on_exit: restart_exit, view: None }).unwrap();
+        let spec = sh_spec(
+            dir.path(),
+            &format!("touch '{}'; sleep 5", restarted.display()),
+        );
+        open_session_to(
+            &registry,
+            "s",
+            spec,
+            None,
+            None,
+            Output::Detached {
+                on_exit: restart_exit,
+                view: None,
+            },
+        )
+        .unwrap();
         let result = resuming.join().unwrap();
         thread::sleep(Duration::from_millis(300));
-        assert!(result.is_err(), "a resume your Restart replaced reports success: {result:?}");
+        assert!(
+            result.is_err(),
+            "a resume your Restart replaced reports success: {result:?}"
+        );
         assert!(!started.exists(), "the resumed program never ran");
         assert!(restarted.exists(), "your Restart runs");
         assert!(registry.lock().unwrap().sessions.contains_key("s"));
@@ -3624,25 +4535,61 @@ mod tests {
         let dir = crate::test_support::TempDir::new("pty_resume_exited");
         let registry = Mutex::new(PtyRegistry::new());
         let (old_exit, old_exits) = exit_probe();
-        open_session_to(&registry, "s", sh_spec(dir.path(), "exit 1"), None, None, Output::Detached { on_exit: old_exit, view: None })
-            .unwrap();
+        open_session_to(
+            &registry,
+            "s",
+            sh_spec(dir.path(), "exit 1"),
+            None,
+            None,
+            Output::Detached {
+                on_exit: old_exit,
+                view: None,
+            },
+        )
+        .unwrap();
         let (view, seen) = recording_view();
         attach_detached(&registry, "s", &view, None).unwrap();
-        assert_eq!(old_exits.recv_timeout(Duration::from_secs(5)).unwrap(), Some(1));
+        assert_eq!(
+            old_exits.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Some(1)
+        );
         wait_seen(&seen, "the view saw it exit", |p| p.0 == "exit");
         let (new_exit, _new_exits) = exit_probe();
-        replace_detached(&registry, "s", sh_spec(dir.path(), "printf 'back again'; sleep 5"), None, None, new_exit, RESUME_STOP_GRACE)
-            .unwrap();
+        replace_detached(
+            &registry,
+            "s",
+            sh_spec(dir.path(), "printf 'back again'; sleep 5"),
+            None,
+            None,
+            new_exit,
+            RESUME_STOP_GRACE,
+        )
+        .unwrap();
         thread::sleep(Duration::from_millis(300));
-        assert!(!seen.lock().unwrap().iter().any(|p| p.1.contains("back again")), "not into the ended view");
+        assert!(
+            !seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|p| p.1.contains("back again")),
+            "not into the ended view"
+        );
         let (next, next_seen) = recording_view();
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             attach_detached(&registry, "s", &next, None).unwrap();
-            if next_seen.lock().unwrap().iter().any(|p| p.1.contains("back again")) {
+            if next_seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|p| p.1.contains("back again"))
+            {
                 break;
             }
-            assert!(std::time::Instant::now() < deadline, "the next view gets it");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the next view gets it"
+            );
             thread::sleep(Duration::from_millis(20));
         }
         registry.lock().unwrap().shutdown_all();
@@ -3662,8 +4609,14 @@ mod tests {
             "trap 'sleep 0.4; exit 0' TERM\ntouch '{}'\nwhile :; do sleep 0.05; done",
             ready.display()
         );
-        open_session(registry, id, sh_spec(dir, &script), None, Channel::new(|_| Ok(())))
-            .expect("open old terminal");
+        open_session(
+            registry,
+            id,
+            sh_spec(dir, &script),
+            None,
+            Channel::new(|_| Ok(())),
+        )
+        .expect("open old terminal");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while !ready.exists() {
             assert!(std::time::Instant::now() < deadline, "old terminal ready");
@@ -3689,7 +4642,10 @@ mod tests {
             Channel::new(|_| Ok(())),
         )
         .expect("reopen");
-        assert!(!old.running(), "the old program exited before the new one started");
+        assert!(
+            !old.running(),
+            "the old program exited before the new one started"
+        );
         assert!(registry.lock().unwrap().sessions.contains_key("t"));
         registry.lock().unwrap().shutdown_all();
     }
@@ -3708,7 +4664,10 @@ mod tests {
                 open_session(
                     &registry,
                     "t",
-                    sh_spec(dir.path(), &format!("touch '{}'; sleep 5", started.display())),
+                    sh_spec(
+                        dir.path(),
+                        &format!("touch '{}'; sleep 5", started.display()),
+                    ),
                     None,
                     Channel::new(|_| Ok(())),
                 )
@@ -3755,8 +4714,14 @@ mod tests {
             (first.join().unwrap(), second.join().unwrap())
         });
         let (second, old_running) = second;
-        assert!(!old_running, "the second open also waited for the old program");
-        assert!(matches!(second, Ok(Some(_))), "the newer open runs: {second:?}");
+        assert!(
+            !old_running,
+            "the second open also waited for the old program"
+        );
+        assert!(
+            matches!(second, Ok(Some(_))),
+            "the newer open runs: {second:?}"
+        );
         assert_eq!(first, Ok(None), "the older open yields quietly");
         let registry = registry.lock().unwrap();
         assert_eq!(
@@ -3790,7 +4755,10 @@ mod tests {
                 )
             });
             std::thread::sleep(std::time::Duration::from_millis(100));
-            assert!(!registry.lock().unwrap().stopping.is_empty(), "old program is stopping");
+            assert!(
+                !registry.lock().unwrap().stopping.is_empty(),
+                "old program is stopping"
+            );
             registry.lock().unwrap().kill_tab("t");
             assert!(empty(&registry), "nothing left after a kill");
             assert!(reopen.join().unwrap().is_err());
@@ -3819,14 +4787,28 @@ mod tests {
         open_slow_stopper(&registry, dir.path(), "b");
         assert_eq!(registry.lock().unwrap().live_count(), 2);
         registry.lock().unwrap().kill_tab("a");
-        assert_eq!(registry.lock().unwrap().live_count(), 1, "a closed terminal is not live");
-        open_session(&registry, "c", sh_spec(dir.path(), "exit 0"), None, Channel::new(|_| Ok(())))
-            .expect("open short terminal");
+        assert_eq!(
+            registry.lock().unwrap().live_count(),
+            1,
+            "a closed terminal is not live"
+        );
+        open_session(
+            &registry,
+            "c",
+            sh_spec(dir.path(), "exit 0"),
+            None,
+            Channel::new(|_| Ok(())),
+        )
+        .expect("open short terminal");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while registry.lock().unwrap().live_count() != 1 && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        assert_eq!(registry.lock().unwrap().live_count(), 1, "an ended program is not live");
+        assert_eq!(
+            registry.lock().unwrap().live_count(),
+            1,
+            "an ended program is not live"
+        );
         registry.lock().unwrap().kill_tab("b");
     }
 
@@ -3864,7 +4846,11 @@ mod tests {
     fn a_resize_on_a_stuck_terminal_does_not_hold_the_registry() {
         let registry = Mutex::new(PtyRegistry::new());
         let (stuck, resizes) = PtySession::stalled_for_test();
-        registry.lock().unwrap().sessions.insert("stuck".into(), stuck);
+        registry
+            .lock()
+            .unwrap()
+            .sessions
+            .insert("stuck".into(), stuck);
         std::thread::scope(|scope| {
             let resize = scope.spawn(|| {
                 let start = std::time::Instant::now();
@@ -3877,7 +4863,10 @@ mod tests {
             let (result, took) = resize.join().unwrap();
             assert!(free, "registry is free while the terminal is busy");
             assert_eq!(result, Ok(()));
-            assert!(took < std::time::Duration::from_millis(200), "resize took {took:?}");
+            assert!(
+                took < std::time::Duration::from_millis(200),
+                "resize took {took:?}"
+            );
         });
     }
 
@@ -3890,20 +4879,45 @@ mod tests {
         let registry = Mutex::new(PtyRegistry::new());
         let (on_exit, exits) = exit_probe();
         let script = "printf 'planning'; read line; printf 'reviewing'; read line; exit 0";
-        open_session_to(&registry, "s", sh_spec(dir.path(), script), None, None, Output::Detached { on_exit, view: None })
-            .unwrap();
+        open_session_to(
+            &registry,
+            "s",
+            sh_spec(dir.path(), script),
+            None,
+            None,
+            Output::Detached {
+                on_exit,
+                view: None,
+            },
+        )
+        .unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         let (first, first_seen) = recording_view();
         loop {
             attach_detached(&registry, "s", &first, None).unwrap();
-            if first_seen.lock().unwrap().iter().any(|p| p.1.contains("planning")) {
+            if first_seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|p| p.1.contains("planning"))
+            {
                 break;
             }
-            assert!(std::time::Instant::now() < deadline, "the first Watch sees the stage");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the first Watch sees the stage"
+            );
             thread::sleep(Duration::from_millis(20));
         }
-        assert_eq!(detach_view(&registry, "s"), Ok(true), "closing the Watch view detaches it");
-        assert!(registry.lock().unwrap().running("s"), "the stage keeps running");
+        assert_eq!(
+            detach_view(&registry, "s"),
+            Ok(true),
+            "closing the Watch view detaches it"
+        );
+        assert!(
+            registry.lock().unwrap().running("s"),
+            "the stage keeps running"
+        );
         let packets_before = first_seen.lock().unwrap().len();
         registry.lock().unwrap().sessions["s"].write(b"\r").unwrap();
         // A second Watch replays everything, including what ran while nobody watched.
@@ -3911,7 +4925,12 @@ mod tests {
         let (second, second_seen) = recording_view();
         loop {
             attach_detached(&registry, "s", &second, None).unwrap();
-            let replay = second_seen.lock().unwrap().last().map(|p| p.1.clone()).unwrap_or_default();
+            let replay = second_seen
+                .lock()
+                .unwrap()
+                .last()
+                .map(|p| p.1.clone())
+                .unwrap_or_default();
             if replay.contains("planning") && replay.contains("reviewing") {
                 break;
             }
@@ -3922,12 +4941,26 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(20));
         }
-        assert_eq!(first_seen.lock().unwrap().len(), packets_before, "a closed view gets nothing more");
-        assert!(exits.recv_timeout(Duration::from_millis(100)).is_err(), "nothing stopped the stage");
+        assert_eq!(
+            first_seen.lock().unwrap().len(),
+            packets_before,
+            "a closed view gets nothing more"
+        );
+        assert!(
+            exits.recv_timeout(Duration::from_millis(100)).is_err(),
+            "nothing stopped the stage"
+        );
         registry.lock().unwrap().sessions["s"].write(b"\r").unwrap();
         assert_eq!(exits.recv_timeout(Duration::from_secs(5)).unwrap(), Some(0));
         // A terminal a view started streams to it for as long as it runs.
-        open_session(&registry, "v", sh_spec(dir.path(), "sleep 5"), None, Channel::new(|_| Ok(()))).unwrap();
+        open_session(
+            &registry,
+            "v",
+            sh_spec(dir.path(), "sleep 5"),
+            None,
+            Channel::new(|_| Ok(())),
+        )
+        .unwrap();
         assert_eq!(detach_view(&registry, "v"), Ok(false));
         registry.lock().unwrap().shutdown_all();
     }
@@ -3948,7 +4981,10 @@ mod tests {
     #[test]
     fn a_watch_resizes_the_hidden_stage_once_to_redraw_it() {
         assert_eq!(redraw_sizes((120, 40), (100, 30)), vec![(100, 30)]);
-        assert_eq!(redraw_sizes((120, 40), (120, 40)), vec![(120, 39), (120, 40)]);
+        assert_eq!(
+            redraw_sizes((120, 40), (120, 40)),
+            vec![(120, 39), (120, 40)]
+        );
         assert_eq!(redraw_sizes((80, 1), (80, 1)), vec![(80, 2), (80, 1)]);
 
         let registry = Mutex::new(PtyRegistry::new());
@@ -3956,12 +4992,18 @@ mod tests {
         {
             let mut registry = registry.lock().unwrap();
             registry.sessions.insert("s".into(), stuck);
-            registry.detached.insert("s".into(), Arc::new(Mutex::new(DetachedOutput::new(None, (120, 40)))));
+            registry.detached.insert(
+                "s".into(),
+                Arc::new(Mutex::new(DetachedOutput::new(None, (120, 40)))),
+            );
         }
         let (view, _) = recording_view();
         attach_detached(&registry, "s", &view, Some((100, 30))).unwrap();
         assert_eq!(resizes.recv_timeout(Duration::from_secs(1)), Ok((100, 30)));
-        assert!(resizes.recv_timeout(Duration::from_millis(100)).is_err(), "once");
+        assert!(
+            resizes.recv_timeout(Duration::from_millis(100)).is_err(),
+            "once"
+        );
         // The view's own fits keep the size known, so the next Watch at the
         // same size still forces a redraw.
         resize_terminal(&registry, "s", 90, 20).unwrap();
@@ -3981,7 +5023,10 @@ mod tests {
         assert!(stage_input(Some(Autopilot), true).open, "needs you");
         assert!(stage_input(Some(Takeover), false).open, "taken over");
         assert!(stage_input(Some(Takeover), false).taken_over);
-        assert!(stage_input(Some(Manual), false).open, "autopilot off: every stage is yours");
+        assert!(
+            stage_input(Some(Manual), false).open,
+            "autopilot off: every stage is yours"
+        );
 
         let dir = crate::test_support::TempDir::new("pty_watch_input");
         let stage = dir.join("stages/pr_review");
@@ -3996,10 +5041,17 @@ mod tests {
             registry.stage_dirs.insert("s".into(), stage.clone());
             registry.sessions.insert("plain".into(), plain);
         }
-        assert_eq!(write_input(&registry, "s", b"y"), Err(WATCH_ONLY.to_string()));
+        assert_eq!(
+            write_input(&registry, "s", b"y"),
+            Err(WATCH_ONLY.to_string())
+        );
         assert_eq!(write_input(&registry, "plain", b"y"), Ok(()));
         registry.lock().unwrap().set_needs("s", true);
-        assert_eq!(write_input(&registry, "s", b"1"), Ok(()), "a permission dialog is up");
+        assert_eq!(
+            write_input(&registry, "s", b"1"),
+            Ok(()),
+            "a permission dialog is up"
+        );
         registry.lock().unwrap().set_needs("s", false);
         assert!(write_input(&registry, "s", b"y").is_err());
         crate::bridge::folder::write_mode(&stage, Takeover).unwrap();

@@ -132,10 +132,18 @@ pub async fn pipeline_run_gates(
         gates
             .iter()
             .map(|gate| match gate {
-                GateDef::Command { run, timeout_secs, optional } => GateResult {
+                GateDef::Command {
+                    run,
+                    timeout_secs,
+                    optional,
+                } => GateResult {
                     // `decide` stops on an `auto` gate with nothing to run unless it is optional.
                     optional: *optional,
-                    ..crate::pipelines::run_command_gate(&folder, run, timeout_secs.map(Duration::from_secs))
+                    ..crate::pipelines::run_command_gate(
+                        &folder,
+                        run,
+                        timeout_secs.map(Duration::from_secs),
+                    )
                 },
                 GateDef::PullRequest => crate::pipelines::run_pull_request_gate(&folder, &pr_urls),
             })
@@ -210,7 +218,11 @@ pub fn set_autopilot(store: &mut StateStore, run_id: &str, enabled: bool) -> Res
         "autopilot",
         None,
         None,
-        if enabled { "Autopilot on" } else { "Autopilot off" },
+        if enabled {
+            "Autopilot on"
+        } else {
+            "Autopilot off"
+        },
         None,
         (!enabled).then(|| StopReason::PausedByYou.as_str().to_string()),
     );
@@ -250,7 +262,10 @@ pub fn pipeline_set_autopilot(
 /// engine-1 run, or a Planner launched without the bridge). Reads one file;
 /// takes no lock.
 #[tauri::command]
-pub fn pipeline_run_tasks(app: tauri::AppHandle, run_id: String) -> Result<Option<crate::bridge::RunTasks>, String> {
+pub fn pipeline_run_tasks(
+    app: tauri::AppHandle,
+    run_id: String,
+) -> Result<Option<crate::bridge::RunTasks>, String> {
     let runs = crate::bridge::launch::runs_root(&crate::data_dir::app_data_dir(&app).path);
     Ok(crate::bridge::launch::read_run_tasks(&runs, run_id.trim()))
 }
@@ -265,7 +280,10 @@ pub async fn pipeline_actor_message(
     action: crate::run_actor::UserAction,
 ) -> Result<crate::run_actor::UserOutcome, String> {
     use tauri::Manager;
-    let actors = app.state::<crate::run_actor::app_host::AppActors>().inner().clone();
+    let actors = app
+        .state::<crate::run_actor::app_host::AppActors>()
+        .inner()
+        .clone();
     let run_id = run_id.trim().to_string();
     tauri::async_runtime::spawn_blocking(move || {
         actors.ask(&run_id, action, crate::run_actor::USER_REPLY_TIMEOUT)
@@ -295,7 +313,13 @@ pub fn note(
         .pipeline_run_by_id_mut(run_id)
         .ok_or_else(|| format!("unknown pipeline run: {run_id}"))?;
     if stop {
-        run.stop_for(reason.unwrap_or(StopReason::CarryOutFailed), stage_id, None, summary, detail);
+        run.stop_for(
+            reason.unwrap_or(StopReason::CarryOutFailed),
+            stage_id,
+            None,
+            summary,
+            detail,
+        );
     } else {
         run.log("note", stage_id, None, summary, detail);
     }
@@ -335,7 +359,10 @@ pub fn turn_finished(
         Some(verdict) => format!("{lane_tag}{title} finished its turn ({verdict})"),
         None => format!("{lane_tag}{title} finished its turn"),
     };
-    let verdict = verdict.map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
+    let verdict = verdict
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string);
     let round = run.round.max(1);
     let same_turn = run.events.last().is_some_and(|last| {
         last.kind == "turn"
@@ -346,7 +373,15 @@ pub fn turn_finished(
     });
     if !same_turn {
         let summary = summary_for(verdict.as_deref());
-        run.log_in_lane("turn", Some(stage_id), Some(role_id), lane, summary, None, verdict);
+        run.log_in_lane(
+            "turn",
+            Some(stage_id),
+            Some(role_id),
+            lane,
+            summary,
+            None,
+            verdict,
+        );
         store.save()?;
         return Ok(true);
     }
@@ -424,7 +459,12 @@ pub struct LaneInput {
 /// Implementer's). Lanes with no dependency start as active, the others
 /// wait for theirs. The frontend then opens each lane's tabs. Refused once
 /// the run has lanes, or for a dependency that is not a lane.
-pub fn fan_out(store: &mut StateStore, run_id: &str, stage_id: &str, lanes: Vec<LaneInput>) -> Result<(), String> {
+pub fn fan_out(
+    store: &mut StateStore,
+    run_id: &str,
+    stage_id: &str,
+    lanes: Vec<LaneInput>,
+) -> Result<(), String> {
     let run = store
         .pipeline_run_by_id_mut(run_id)
         .ok_or_else(|| format!("unknown pipeline run: {run_id}"))?;
@@ -445,15 +485,35 @@ pub fn fan_out(store: &mut StateStore, run_id: &str, stage_id: &str, lanes: Vec<
     for lane in &lanes {
         let ok_id = !lane.id.is_empty()
             && lane.id.len() <= 16
-            && lane.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+            && lane
+                .id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
         if !ok_id || lane.title.trim().is_empty() {
-            return Err(format!("Pull request \"{}\" needs an id and a title.", lane.id));
+            return Err(format!(
+                "Pull request \"{}\" needs an id and a title.",
+                lane.id
+            ));
         }
-        if let Some(repo) = lane.repo.as_deref().filter(|repo| !crate::store::repos_settings::valid_repo_name(repo)) {
-            return Err(format!("{} names the repo \"{repo}\", which is not a repo name.", lane.title));
+        if let Some(repo) = lane
+            .repo
+            .as_deref()
+            .filter(|repo| !crate::store::repos_settings::valid_repo_name(repo))
+        {
+            return Err(format!(
+                "{} names the repo \"{repo}\", which is not a repo name.",
+                lane.title
+            ));
         }
-        if let Some(missing) = lane.depends_on.iter().find(|d| !ids.contains(d.as_str()) || *d == &lane.id) {
-            return Err(format!("{} depends on \"{missing}\", which is not another pull request here.", lane.title));
+        if let Some(missing) = lane
+            .depends_on
+            .iter()
+            .find(|d| !ids.contains(d.as_str()) || *d == &lane.id)
+        {
+            return Err(format!(
+                "{} depends on \"{missing}\", which is not another pull request here.",
+                lane.title
+            ));
         }
     }
     // Every lane must be reachable: no dependency cycle.
@@ -470,13 +530,21 @@ pub fn fan_out(store: &mut StateStore, run_id: &str, stage_id: &str, lanes: Vec<
         done.extend(ready);
     }
     if done.len() != lanes.len() {
-        return Err("The pull requests depend on each other in a cycle, so none of them could start.".into());
+        return Err(
+            "The pull requests depend on each other in a cycle, so none of them could start."
+                .into(),
+        );
     }
     let round = 1;
     run.lanes = lanes
         .into_iter()
         .map(|lane| crate::store::RunLane {
-            status: if lane.depends_on.is_empty() { "active" } else { "waiting" }.to_string(),
+            status: if lane.depends_on.is_empty() {
+                "active"
+            } else {
+                "waiting"
+            }
+            .to_string(),
             id: lane.id,
             title: lane.title.trim().to_string(),
             depends_on: lane.depends_on,
@@ -503,16 +571,29 @@ pub fn fan_out(store: &mut StateStore, run_id: &str, stage_id: &str, lanes: Vec<
 
 /// `lanes` with each `repo` spelt as Settings › Repos spells it; an error
 /// naming a repo that is not there.
-pub fn lanes_in_repos(lanes: Vec<LaneInput>, repos: &[crate::store::RepoEntry]) -> Result<Vec<LaneInput>, String> {
+pub fn lanes_in_repos(
+    lanes: Vec<LaneInput>,
+    repos: &[crate::store::RepoEntry],
+) -> Result<Vec<LaneInput>, String> {
     lanes
         .into_iter()
         .map(|mut lane| {
-            lane.repo = match lane.repo.as_deref().map(str::trim).filter(|repo| !repo.is_empty()) {
+            lane.repo = match lane
+                .repo
+                .as_deref()
+                .map(str::trim)
+                .filter(|repo| !repo.is_empty())
+            {
                 None => None,
                 Some(name) => Some(
                     crate::store::repos_settings::find_repo(repos, name)
                         .map(|repo| repo.name.clone())
-                        .ok_or_else(|| format!("{} is in the repo \"{name}\", which is not in Settings › Repos.", lane.title))?,
+                        .ok_or_else(|| {
+                            format!(
+                                "{} is in the repo \"{name}\", which is not in Settings › Repos.",
+                                lane.title
+                            )
+                        })?,
                 ),
             };
             Ok(lane)
@@ -545,7 +626,12 @@ pub fn pipeline_fan_out(
 }
 
 /// Mark a lane `waiting`, `active` (its Implementer started) or `approved`.
-pub fn set_lane_status(store: &mut StateStore, run_id: &str, lane: &str, status: &str) -> Result<(), String> {
+pub fn set_lane_status(
+    store: &mut StateStore,
+    run_id: &str,
+    lane: &str,
+    status: &str,
+) -> Result<(), String> {
     if !matches!(status, "waiting" | "active" | "approved") {
         return Err(format!("not a lane status: {status}"));
     }
@@ -553,14 +639,24 @@ pub fn set_lane_status(store: &mut StateStore, run_id: &str, lane: &str, status:
         .pipeline_run_by_id_mut(run_id)
         .ok_or_else(|| format!("unknown pipeline run: {run_id}"))?;
     let title = {
-        let l = run.lane_mut(lane).ok_or_else(|| format!("unknown lane: {lane}"))?;
+        let l = run
+            .lane_mut(lane)
+            .ok_or_else(|| format!("unknown lane: {lane}"))?;
         if l.status == status {
             return Ok(());
         }
         l.status = status.to_string();
         l.title.clone()
     };
-    run.log_in_lane("note", None, None, Some(lane), format!("{title}: {status}"), None, None);
+    run.log_in_lane(
+        "note",
+        None,
+        None,
+        Some(lane),
+        format!("{title}: {status}"),
+        None,
+        None,
+    );
     store.save()
 }
 
@@ -591,16 +687,25 @@ pub struct ApproveResult {
 /// Approve a lane (or, with no lane, the run) by hand, e.g. when its last
 /// reviewer approved it but listed findings. Clears what autopilot was
 /// waiting for and completes the run once every lane is approved.
-pub fn approve(store: &mut StateStore, run_id: &str, lane: Option<&str>) -> Result<ApproveResult, String> {
+pub fn approve(
+    store: &mut StateStore,
+    run_id: &str,
+    lane: Option<&str>,
+) -> Result<ApproveResult, String> {
     let run = store
         .pipeline_run_by_id_mut(run_id)
         .ok_or_else(|| format!("unknown pipeline run: {run_id}"))?;
     let summary = match lane {
         Some(lane) => {
-            let l = run.lane_mut(lane).ok_or_else(|| format!("unknown lane: {lane}"))?;
+            let l = run
+                .lane_mut(lane)
+                .ok_or_else(|| format!("unknown lane: {lane}"))?;
             if l.status == "approved" {
                 // Already approved (e.g. by autopilot): nothing to log again.
-                return Ok(ApproveResult { complete: false, unblocked: Vec::new() });
+                return Ok(ApproveResult {
+                    complete: false,
+                    unblocked: Vec::new(),
+                });
             }
             l.status = "approved".to_string();
             format!("{}: approved by you", l.title)
@@ -617,7 +722,9 @@ pub fn approve(store: &mut StateStore, run_id: &str, lane: Option<&str>) -> Resu
                         .iter()
                         .find(|s| s.id == run.stage)
                         .map_or(run.stage.as_str(), |s| s.title.as_str());
-                    return Err(format!("Mark complete is for the last stage; this run is at {title}."));
+                    return Err(format!(
+                        "Mark complete is for the last stage; this run is at {title}."
+                    ));
                 }
             }
             "Approved by you".to_string()
@@ -631,9 +738,16 @@ pub fn approve(store: &mut StateStore, run_id: &str, lane: Option<&str>) -> Resu
     } else {
         run.resume_after_you();
     }
-    let unblocked = if complete { Vec::new() } else { run.unblocked_lanes() };
+    let unblocked = if complete {
+        Vec::new()
+    } else {
+        run.unblocked_lanes()
+    };
     store.save()?;
-    Ok(ApproveResult { complete, unblocked })
+    Ok(ApproveResult {
+        complete,
+        unblocked,
+    })
 }
 
 #[tauri::command]
@@ -653,11 +767,14 @@ pub fn pipeline_approve(
 
 #[cfg(test)]
 mod tests {
-    use super::{approve, fan_out, note, set_autopilot, set_lane_status, turn_finished, ApproveResult, LaneInput};
+    use super::{
+        approve, fan_out, note, set_autopilot, set_lane_status, turn_finished, ApproveResult,
+        LaneInput,
+    };
     use crate::pipelines::autopilot::{decide, TurnReport};
-    use crate::store::{RunStatus, StopReason};
     use crate::roles::Role;
     use crate::store::{AppStateFile, ChainRef, StateStore, MAIN_WINDOW_ID};
+    use crate::store::{RunStatus, StopReason};
 
     fn store(name: &str) -> (crate::test_support::TempDir, StateStore) {
         let dir = crate::test_support::TempDir::new(name);
@@ -701,64 +818,154 @@ mod tests {
 
     fn lanes() -> Vec<LaneInput> {
         vec![
-            LaneInput { id: "pr1".into(), title: "PR1 — API".into(), depends_on: vec![], repo: None },
-            LaneInput { id: "pr2".into(), title: "PR2 — UI".into(), depends_on: vec!["pr1".into()], repo: None },
+            LaneInput {
+                id: "pr1".into(),
+                title: "PR1 — API".into(),
+                depends_on: vec![],
+                repo: None,
+            },
+            LaneInput {
+                id: "pr2".into(),
+                title: "PR2 — UI".into(),
+                depends_on: vec!["pr1".into()],
+                repo: None,
+            },
         ]
     }
 
     #[test]
     fn a_fan_out_makes_lanes_that_record_their_own_tabs_and_rounds() {
         let (_dir, mut store) = store("fan_out");
-        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
-        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        let planner = store
+            .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&planner, Some(chain(1, None)), None)
+            .unwrap();
         fan_out(&mut store, "ee_f", "implementer", lanes()).unwrap();
         let run = store.pipeline_run_by_id("ee_f").unwrap();
         assert_eq!(run.lane("pr1").unwrap().status, "active");
         assert_eq!(run.lane("pr2").unwrap().status, "waiting");
         assert_eq!(run.fan_out_stage.as_deref(), Some("implementer"));
-        assert!(fan_out(&mut store, "ee_f", "implementer", lanes()).is_err(), "only once");
+        assert!(
+            fan_out(&mut store, "ee_f", "implementer", lanes()).is_err(),
+            "only once"
+        );
 
-        let impl1 = store.create_draft_tab(&role("role_implementer"), "/tmp/wt1", true, None).unwrap();
-        store.set_tab_chain(&impl1, Some(chain(3, Some("pr1"))), Some("plan for PR1")).unwrap();
-        let review1 = store.create_draft_tab(&role("role_pr_reviewer"), "/tmp/wt1", true, None).unwrap();
-        store.set_tab_chain(&review1, Some(chain(4, Some("pr1"))), Some("summary")).unwrap();
+        let impl1 = store
+            .create_draft_tab(&role("role_implementer"), "/tmp/wt1", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&impl1, Some(chain(3, Some("pr1"))), Some("plan for PR1"))
+            .unwrap();
+        let review1 = store
+            .create_draft_tab(&role("role_pr_reviewer"), "/tmp/wt1", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&review1, Some(chain(4, Some("pr1"))), Some("summary"))
+            .unwrap();
         let run = store.pipeline_run_by_id("ee_f").unwrap();
         let lane = run.lane("pr1").unwrap();
         assert_eq!(lane.tab_ids.get("role_implementer"), Some(&impl1));
         assert_eq!(lane.stage, "pr_reviewer");
-        assert!(!run.tab_ids.contains_key("role_implementer"), "lane tabs stay in the lane");
-        assert!(run.events.last().unwrap().summary.starts_with("PR1 — API: Handed to PR Reviewer"));
-        let impl2 = store.create_draft_tab(&role("role_implementer"), "/tmp/wt2", true, None).unwrap();
-        store.set_tab_chain(&impl2, Some(chain(3, Some("pr2"))), Some("plan for PR2")).unwrap();
+        assert!(
+            !run.tab_ids.contains_key("role_implementer"),
+            "lane tabs stay in the lane"
+        );
+        assert!(run
+            .events
+            .last()
+            .unwrap()
+            .summary
+            .starts_with("PR1 — API: Handed to PR Reviewer"));
+        let impl2 = store
+            .create_draft_tab(&role("role_implementer"), "/tmp/wt2", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&impl2, Some(chain(3, Some("pr2"))), Some("plan for PR2"))
+            .unwrap();
         let run = store.pipeline_run_by_id("ee_f").unwrap();
-        assert_eq!(run.lane("pr2").unwrap().status, "waiting", "tagging does not start a lane");
+        assert_eq!(
+            run.lane("pr2").unwrap().status,
+            "waiting",
+            "tagging does not start a lane"
+        );
         set_lane_status(&mut store, "ee_f", "pr2", "active").unwrap();
-        assert_eq!(store.pipeline_run_by_id("ee_f").unwrap().lane("pr2").unwrap().status, "active");
+        assert_eq!(
+            store
+                .pipeline_run_by_id("ee_f")
+                .unwrap()
+                .lane("pr2")
+                .unwrap()
+                .status,
+            "active"
+        );
         assert!(set_lane_status(&mut store, "ee_f", "pr2", "done").is_err());
 
         let chain = store
-            .chain_loop_back_in("ee_f", Some("pr1"), "role_pr_reviewer", &impl1, Some("REQUEST CHANGES"), Some("fix"))
+            .chain_loop_back_in(
+                "ee_f",
+                Some("pr1"),
+                "role_pr_reviewer",
+                &impl1,
+                Some("REQUEST CHANGES"),
+                Some("fix"),
+            )
             .unwrap();
-        assert_eq!((chain.step, chain.round, chain.lane.as_deref()), (3, 2, Some("pr1")));
+        assert_eq!(
+            (chain.step, chain.round, chain.lane.as_deref()),
+            (3, 2, Some("pr1"))
+        );
         let run = store.pipeline_run_by_id("ee_f").unwrap();
         assert_eq!(run.lane("pr1").unwrap().round, 2);
         assert_eq!(run.round, 1, "the run's own round is untouched");
         assert_eq!(run.lane("pr1").unwrap().verdicts.len(), 1);
         assert!(run.verdicts.is_empty());
-        assert_eq!(store.tab_by_id(&review1).unwrap().chain.as_ref().unwrap().round, 2);
-        assert_eq!(store.tab_by_id(&planner).unwrap().chain.as_ref().unwrap().round, 1);
+        assert_eq!(
+            store
+                .tab_by_id(&review1)
+                .unwrap()
+                .chain
+                .as_ref()
+                .unwrap()
+                .round,
+            2
+        );
+        assert_eq!(
+            store
+                .tab_by_id(&planner)
+                .unwrap()
+                .chain
+                .as_ref()
+                .unwrap()
+                .round,
+            1
+        );
     }
 
     #[test]
     fn a_fan_out_refuses_bad_lanes() {
         let (_dir, mut store) = store("fan_out_bad");
-        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
-        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
-        let one = vec![LaneInput { id: "pr1".into(), title: "PR1".into(), depends_on: vec![], repo: None }];
-        assert!(fan_out(&mut store, "ee_f", "implementer", one).unwrap_err().contains("2 to 8"));
+        let planner = store
+            .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&planner, Some(chain(1, None)), None)
+            .unwrap();
+        let one = vec![LaneInput {
+            id: "pr1".into(),
+            title: "PR1".into(),
+            depends_on: vec![],
+            repo: None,
+        }];
+        assert!(fan_out(&mut store, "ee_f", "implementer", one)
+            .unwrap_err()
+            .contains("2 to 8"));
         let mut bad = lanes();
         bad[1].depends_on = vec!["pr9".into()];
-        assert!(fan_out(&mut store, "ee_f", "implementer", bad).unwrap_err().contains("pr9"));
+        assert!(fan_out(&mut store, "ee_f", "implementer", bad)
+            .unwrap_err()
+            .contains("pr9"));
         assert!(fan_out(&mut store, "ee_f", "nowhere", lanes()).is_err());
         assert!(store.pipeline_run_by_id("ee_f").unwrap().lanes.is_empty());
     }
@@ -770,8 +977,14 @@ mod tests {
         use super::lanes_in_repos;
         use crate::store::RepoEntry;
         let repos = [
-            RepoEntry { name: "backend".into(), folder: "/src/backend".into() },
-            RepoEntry { name: "engine".into(), folder: "/src/engine".into() },
+            RepoEntry {
+                name: "backend".into(),
+                folder: "/src/backend".into(),
+            },
+            RepoEntry {
+                name: "engine".into(),
+                folder: "/src/engine".into(),
+            },
         ];
         let mut spans = lanes();
         spans[0].repo = Some("Backend".into());
@@ -779,18 +992,33 @@ mod tests {
         let spans = lanes_in_repos(spans, &repos).unwrap();
         let mut home = lanes();
         home[1].repo = Some("  ".into());
-        assert!(lanes_in_repos(home, &repos).unwrap().iter().all(|l| l.repo.is_none()), "blank is the run's own folder");
+        assert!(
+            lanes_in_repos(home, &repos)
+                .unwrap()
+                .iter()
+                .all(|l| l.repo.is_none()),
+            "blank is the run's own folder"
+        );
         let mut gone = lanes();
         gone[1].repo = Some("web".into());
         let err = lanes_in_repos(gone, &repos).unwrap_err();
-        assert!(err.contains("PR2 — UI is in the repo \"web\", which is not in Settings › Repos"), "{err}");
+        assert!(
+            err.contains("PR2 — UI is in the repo \"web\", which is not in Settings › Repos"),
+            "{err}"
+        );
 
         let (_dir, mut store) = store("fan_out_repos");
-        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
-        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        let planner = store
+            .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&planner, Some(chain(1, None)), None)
+            .unwrap();
         let mut odd = spans.clone();
         odd[0].repo = Some("../x".into());
-        assert!(fan_out(&mut store, "ee_f", "implementer", odd).unwrap_err().contains("not a repo name"));
+        assert!(fan_out(&mut store, "ee_f", "implementer", odd)
+            .unwrap_err()
+            .contains("not a repo name"));
         fan_out(&mut store, "ee_f", "implementer", spans).unwrap();
         let run = store.pipeline_run_by_id("ee_f").unwrap();
         assert_eq!(run.lane("pr1").unwrap().repo.as_deref(), Some("backend"));
@@ -807,11 +1035,17 @@ mod tests {
     #[test]
     fn a_fan_out_refuses_a_dependency_cycle() {
         let (_dir, mut store) = store("fan_out_cycle");
-        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
-        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        let planner = store
+            .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&planner, Some(chain(1, None)), None)
+            .unwrap();
         let mut cycle = lanes();
         cycle[0].depends_on = vec!["pr2".into()];
-        assert!(fan_out(&mut store, "ee_f", "implementer", cycle).unwrap_err().contains("cycle"));
+        assert!(fan_out(&mut store, "ee_f", "implementer", cycle)
+            .unwrap_err()
+            .contains("cycle"));
         let run = store.pipeline_run_by_id("ee_f").unwrap();
         assert!(run.lanes.is_empty());
         assert!(run.fan_out_stage.is_none());
@@ -826,73 +1060,164 @@ mod tests {
     #[test]
     fn approving_a_lane_by_hand_unblocks_its_dependents_then_completes_the_run() {
         let (_dir, mut store) = store("approve_lanes");
-        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
-        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        let planner = store
+            .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&planner, Some(chain(1, None)), None)
+            .unwrap();
         fan_out(&mut store, "ee_f", "implementer", lanes()).unwrap();
-        waiting_on(&mut store, "PR Reviewer said APPROVED but lists 1 finding(s)");
+        waiting_on(
+            &mut store,
+            "PR Reviewer said APPROVED but lists 1 finding(s)",
+        );
 
         let first = approve(&mut store, "ee_f", Some("pr1")).unwrap();
-        assert_eq!(first, ApproveResult { complete: false, unblocked: vec!["pr2".into()] });
+        assert_eq!(
+            first,
+            ApproveResult {
+                complete: false,
+                unblocked: vec!["pr2".into()]
+            }
+        );
         let run = store.pipeline_run_by_id("ee_f").unwrap();
         assert_eq!(run.lane("pr1").unwrap().status, "approved");
-        assert!(run.autopilot.as_ref().unwrap().waiting.is_none(), "no longer waiting");
-        assert_eq!((run.status, run.stop_reason), (RunStatus::Running, None), "autopilot carries on");
+        assert!(
+            run.autopilot.as_ref().unwrap().waiting.is_none(),
+            "no longer waiting"
+        );
+        assert_eq!(
+            (run.status, run.stop_reason),
+            (RunStatus::Running, None),
+            "autopilot carries on"
+        );
         let last = run.events.last().unwrap();
-        assert_eq!((last.kind.as_str(), last.summary.as_str()), ("note", "PR1 — API: approved by you"));
+        assert_eq!(
+            (last.kind.as_str(), last.summary.as_str()),
+            ("note", "PR1 — API: approved by you")
+        );
 
         assert_eq!(
             approve(&mut store, "ee_f", Some("pr1")).unwrap(),
-            ApproveResult { complete: false, unblocked: vec![] },
+            ApproveResult {
+                complete: false,
+                unblocked: vec![]
+            },
             "approving twice does nothing"
         );
         set_lane_status(&mut store, "ee_f", "pr2", "active").unwrap();
         let done = approve(&mut store, "ee_f", Some("pr2")).unwrap();
-        assert_eq!(done, ApproveResult { complete: true, unblocked: vec![] });
+        assert_eq!(
+            done,
+            ApproveResult {
+                complete: true,
+                unblocked: vec![]
+            }
+        );
         let run = store.pipeline_run_by_id("ee_f").unwrap();
         assert_eq!(run.status, RunStatus::Complete);
         let last = run.events.last().unwrap();
-        assert_eq!((last.kind.as_str(), last.summary.as_str()), ("complete", "Complete: approved by you."));
+        assert_eq!(
+            (last.kind.as_str(), last.summary.as_str()),
+            ("complete", "Complete: approved by you.")
+        );
         assert!(approve(&mut store, "ee_f", Some("pr9")).is_err());
-        assert!(approve(&mut store, "ee_f", None).is_err(), "a fanned-out run is approved per lane");
+        assert!(
+            approve(&mut store, "ee_f", None).is_err(),
+            "a fanned-out run is approved per lane"
+        );
     }
 
     #[test]
     fn sending_an_approved_lane_back_by_hand_makes_it_active_again() {
         let (_dir, mut store) = store("approved_send_back");
-        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
-        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        let planner = store
+            .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&planner, Some(chain(1, None)), None)
+            .unwrap();
         fan_out(&mut store, "ee_f", "implementer", lanes()).unwrap();
-        let impl1 = store.create_draft_tab(&role("role_implementer"), "/tmp/wt1", true, None).unwrap();
-        store.set_tab_chain(&impl1, Some(chain(3, Some("pr1"))), Some("plan")).unwrap();
-        let review1 = store.create_draft_tab(&role("role_pr_reviewer"), "/tmp/wt1", true, None).unwrap();
-        store.set_tab_chain(&review1, Some(chain(4, Some("pr1"))), Some("summary")).unwrap();
+        let impl1 = store
+            .create_draft_tab(&role("role_implementer"), "/tmp/wt1", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&impl1, Some(chain(3, Some("pr1"))), Some("plan"))
+            .unwrap();
+        let review1 = store
+            .create_draft_tab(&role("role_pr_reviewer"), "/tmp/wt1", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&review1, Some(chain(4, Some("pr1"))), Some("summary"))
+            .unwrap();
         approve(&mut store, "ee_f", Some("pr1")).unwrap();
-        assert_eq!(store.pipeline_run_by_id("ee_f").unwrap().lane("pr1").unwrap().status, "approved");
+        assert_eq!(
+            store
+                .pipeline_run_by_id("ee_f")
+                .unwrap()
+                .lane("pr1")
+                .unwrap()
+                .status,
+            "approved"
+        );
 
         store
-            .chain_loop_back_in("ee_f", Some("pr1"), "role_pr_reviewer", &impl1, Some("REQUEST CHANGES"), Some("fix"))
+            .chain_loop_back_in(
+                "ee_f",
+                Some("pr1"),
+                "role_pr_reviewer",
+                &impl1,
+                Some("REQUEST CHANGES"),
+                Some("fix"),
+            )
             .unwrap();
         let run = store.pipeline_run_by_id("ee_f").unwrap();
-        assert_eq!(run.lane("pr1").unwrap().status, "active", "autopilot follows its turns again");
-        assert_eq!(run.lane("pr2").unwrap().status, "waiting", "other lanes untouched");
+        assert_eq!(
+            run.lane("pr1").unwrap().status,
+            "active",
+            "autopilot follows its turns again"
+        );
+        assert_eq!(
+            run.lane("pr2").unwrap().status,
+            "waiting",
+            "other lanes untouched"
+        );
     }
 
     /// A fanned-out run with both lanes approved by hand (complete); returns
     /// PR1's Implementer tab.
-    fn completed_lane_run(name: &str, autopilot: bool) -> (crate::test_support::TempDir, StateStore, String) {
+    fn completed_lane_run(
+        name: &str,
+        autopilot: bool,
+    ) -> (crate::test_support::TempDir, StateStore, String) {
         let (dir, mut store) = store(name);
-        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
-        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        let planner = store
+            .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&planner, Some(chain(1, None)), None)
+            .unwrap();
         fan_out(&mut store, "ee_f", "implementer", lanes()).unwrap();
-        let impl1 = store.create_draft_tab(&role("role_implementer"), "/tmp/wt1", true, None).unwrap();
-        store.set_tab_chain(&impl1, Some(chain(3, Some("pr1"))), Some("plan")).unwrap();
-        let review1 = store.create_draft_tab(&role("role_pr_reviewer"), "/tmp/wt1", true, None).unwrap();
-        store.set_tab_chain(&review1, Some(chain(4, Some("pr1"))), Some("summary")).unwrap();
+        let impl1 = store
+            .create_draft_tab(&role("role_implementer"), "/tmp/wt1", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&impl1, Some(chain(3, Some("pr1"))), Some("plan"))
+            .unwrap();
+        let review1 = store
+            .create_draft_tab(&role("role_pr_reviewer"), "/tmp/wt1", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&review1, Some(chain(4, Some("pr1"))), Some("summary"))
+            .unwrap();
         set_autopilot(&mut store, "ee_f", autopilot).unwrap();
         approve(&mut store, "ee_f", Some("pr1")).unwrap();
         set_lane_status(&mut store, "ee_f", "pr2", "active").unwrap();
         approve(&mut store, "ee_f", Some("pr2")).unwrap();
-        assert_eq!(store.pipeline_run_by_id("ee_f").unwrap().status, RunStatus::Complete);
+        assert_eq!(
+            store.pipeline_run_by_id("ee_f").unwrap().status,
+            RunStatus::Complete
+        );
         (dir, store, impl1)
     }
 
@@ -908,14 +1233,32 @@ mod tests {
             turn: Some("rev2|s|late".into()),
             ..TurnReport::default()
         };
-        assert_eq!(decide(&def, store.pipeline_run_by_id_mut("ee_f").unwrap(), &late).action, "ignore");
+        assert_eq!(
+            decide(&def, store.pipeline_run_by_id_mut("ee_f").unwrap(), &late).action,
+            "ignore"
+        );
 
         store
-            .chain_loop_back_in("ee_f", Some("pr1"), "role_pr_reviewer", &impl1, Some("REQUEST CHANGES"), Some("fix"))
+            .chain_loop_back_in(
+                "ee_f",
+                Some("pr1"),
+                "role_pr_reviewer",
+                &impl1,
+                Some("REQUEST CHANGES"),
+                Some("fix"),
+            )
             .unwrap();
         let run = store.pipeline_run_by_id("ee_f").unwrap();
-        assert_eq!((run.status, run.stop_reason), (RunStatus::Running, None), "in play again, autopilot on");
-        assert_eq!(run.migrated_status(), (run.status, run.stop_reason), "live rule and migration agree");
+        assert_eq!(
+            (run.status, run.stop_reason),
+            (RunStatus::Running, None),
+            "in play again, autopilot on"
+        );
+        assert_eq!(
+            run.migrated_status(),
+            (run.status, run.stop_reason),
+            "live rule and migration agree"
+        );
         // The Implementer's next turn in the reopened lane is decided.
         let next = TurnReport {
             stage_id: "implementer".into(),
@@ -924,31 +1267,67 @@ mod tests {
             ..TurnReport::default()
         };
         let d = decide(&def, store.pipeline_run_by_id_mut("ee_f").unwrap(), &next);
-        assert!(!matches!(d.action.as_str(), "ignore" | "skip"), "{} {}", d.action, d.reason);
+        assert!(
+            !matches!(d.action.as_str(), "ignore" | "skip"),
+            "{} {}",
+            d.action,
+            d.reason
+        );
 
         // With autopilot turned off, the reopened run is stopped, paused by you,
         // as it was before it completed and as the migration reads it.
         let (_dir, mut store, impl1) = completed_lane_run("reopen_off", false);
         store
-            .chain_loop_back_in("ee_f", Some("pr1"), "role_pr_reviewer", &impl1, Some("REQUEST CHANGES"), Some("fix"))
+            .chain_loop_back_in(
+                "ee_f",
+                Some("pr1"),
+                "role_pr_reviewer",
+                &impl1,
+                Some("REQUEST CHANGES"),
+                Some("fix"),
+            )
             .unwrap();
         let run = store.pipeline_run_by_id("ee_f").unwrap();
-        assert_eq!((run.status, run.stop_reason), (RunStatus::Stopped, Some(StopReason::PausedByYou)));
-        assert_eq!(run.migrated_status(), (run.status, run.stop_reason), "live rule and migration agree");
+        assert_eq!(
+            (run.status, run.stop_reason),
+            (RunStatus::Stopped, Some(StopReason::PausedByYou))
+        );
+        assert_eq!(
+            run.migrated_status(),
+            (run.status, run.stop_reason),
+            "live rule and migration agree"
+        );
     }
 
     #[test]
     fn a_run_without_lanes_sent_back_or_handed_on_after_completion_is_reopened() {
         let (_dir, mut store) = store("reopen_run");
-        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
-        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
-        let reviewer = store.create_draft_tab(&role("role_pr_reviewer"), "/tmp/p", true, None).unwrap();
-        store.set_tab_chain(&reviewer, Some(chain(4, None)), Some("summary")).unwrap();
+        let planner = store
+            .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&planner, Some(chain(1, None)), None)
+            .unwrap();
+        let reviewer = store
+            .create_draft_tab(&role("role_pr_reviewer"), "/tmp/p", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&reviewer, Some(chain(4, None)), Some("summary"))
+            .unwrap();
         set_autopilot(&mut store, "ee_f", true).unwrap();
         approve(&mut store, "ee_f", None).unwrap();
-        assert_eq!(store.pipeline_run_by_id("ee_f").unwrap().status, RunStatus::Complete);
+        assert_eq!(
+            store.pipeline_run_by_id("ee_f").unwrap().status,
+            RunStatus::Complete
+        );
         store
-            .chain_loop_back("ee_f", "role_pr_reviewer", &planner, Some("REQUEST CHANGES"), Some("again"))
+            .chain_loop_back(
+                "ee_f",
+                "role_pr_reviewer",
+                &planner,
+                Some("REQUEST CHANGES"),
+                Some("again"),
+            )
             .unwrap();
         let run = store.pipeline_run_by_id("ee_f").unwrap();
         assert_eq!((run.status, run.stop_reason), (RunStatus::Running, None));
@@ -958,7 +1337,9 @@ mod tests {
         let run = store.pipeline_run_by_id_mut("ee_f").unwrap();
         run.set_complete();
         run.log("complete", None, None, "Complete.", None);
-        store.set_tab_chain(&reviewer, Some(chain(4, None)), Some("summary v2")).unwrap();
+        store
+            .set_tab_chain(&reviewer, Some(chain(4, None)), Some("summary v2"))
+            .unwrap();
         let run = store.pipeline_run_by_id("ee_f").unwrap();
         assert_eq!((run.status, run.stop_reason), (RunStatus::Running, None));
         assert_eq!(run.migrated_status(), (run.status, run.stop_reason));
@@ -967,26 +1348,57 @@ mod tests {
     #[test]
     fn mark_complete_is_refused_before_the_last_stage() {
         let (_dir, mut store) = store("approve_early");
-        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
-        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        let planner = store
+            .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&planner, Some(chain(1, None)), None)
+            .unwrap();
         waiting_on(&mut store, "waiting");
         let before = store.pipeline_run_by_id("ee_f").unwrap().clone();
         let err = approve(&mut store, "ee_f", None).unwrap_err();
-        assert_eq!(err, "Mark complete is for the last stage; this run is at Planner.");
-        assert_eq!(store.pipeline_run_by_id("ee_f").unwrap(), &before, "nothing logged or changed");
+        assert_eq!(
+            err,
+            "Mark complete is for the last stage; this run is at Planner."
+        );
+        assert_eq!(
+            store.pipeline_run_by_id("ee_f").unwrap(),
+            &before,
+            "nothing logged or changed"
+        );
     }
 
     #[test]
     fn approving_a_run_without_lanes_completes_it() {
         let (_dir, mut store) = store("approve_run");
-        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
-        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
-        let reviewer = store.create_draft_tab(&role("role_pr_reviewer"), "/tmp/p", true, None).unwrap();
-        store.set_tab_chain(&reviewer, Some(chain(4, None)), Some("summary")).unwrap();
-        assert_eq!(store.pipeline_run_by_id("ee_f").unwrap().stage, "pr_reviewer");
-        waiting_on(&mut store, "Send it back, or press Mark complete in the chain overview.");
+        let planner = store
+            .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&planner, Some(chain(1, None)), None)
+            .unwrap();
+        let reviewer = store
+            .create_draft_tab(&role("role_pr_reviewer"), "/tmp/p", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&reviewer, Some(chain(4, None)), Some("summary"))
+            .unwrap();
+        assert_eq!(
+            store.pipeline_run_by_id("ee_f").unwrap().stage,
+            "pr_reviewer"
+        );
+        waiting_on(
+            &mut store,
+            "Send it back, or press Mark complete in the chain overview.",
+        );
         let done = approve(&mut store, "ee_f", None).unwrap();
-        assert_eq!(done, ApproveResult { complete: true, unblocked: vec![] });
+        assert_eq!(
+            done,
+            ApproveResult {
+                complete: true,
+                unblocked: vec![]
+            }
+        );
         let run = store.pipeline_run_by_id("ee_f").unwrap();
         assert!(run.autopilot.as_ref().unwrap().waiting.is_none());
         assert_eq!((run.status, run.stop_reason), (RunStatus::Complete, None));
@@ -997,16 +1409,34 @@ mod tests {
             .take(2)
             .map(|e| (e.kind.as_str(), e.summary.as_str()))
             .collect();
-        assert_eq!(kinds, vec![("complete", "Complete: approved by you."), ("note", "Approved by you")]);
+        assert_eq!(
+            kinds,
+            vec![
+                ("complete", "Complete: approved by you."),
+                ("note", "Approved by you")
+            ]
+        );
     }
 
     #[test]
     fn a_finished_turn_is_recorded_with_its_verdict_and_lane() {
         let (_dir, mut store) = store("turn_finished");
-        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
-        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        let planner = store
+            .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&planner, Some(chain(1, None)), None)
+            .unwrap();
         turn_finished(&mut store, "ee_f", "planner", "role_planner", None, None).unwrap();
-        turn_finished(&mut store, "ee_f", "plan_reviewer", "role_plan_reviewer", None, Some(" APPROVED ")).unwrap();
+        turn_finished(
+            &mut store,
+            "ee_f",
+            "plan_reviewer",
+            "role_plan_reviewer",
+            None,
+            Some(" APPROVED "),
+        )
+        .unwrap();
         let run = store.pipeline_run_by_id("ee_f").unwrap();
         let events: Vec<_> = run.events.iter().filter(|e| e.kind == "turn").collect();
         assert_eq!(events.len(), 2);
@@ -1018,54 +1448,147 @@ mod tests {
         assert!(events[1].summary.ends_with("finished its turn (APPROVED)"));
 
         fan_out(&mut store, "ee_f", "implementer", lanes()).unwrap();
-        turn_finished(&mut store, "ee_f", "implementer", "role_implementer", Some("pr1"), None).unwrap();
-        let last = store.pipeline_run_by_id("ee_f").unwrap().events.last().cloned().unwrap();
+        turn_finished(
+            &mut store,
+            "ee_f",
+            "implementer",
+            "role_implementer",
+            Some("pr1"),
+            None,
+        )
+        .unwrap();
+        let last = store
+            .pipeline_run_by_id("ee_f")
+            .unwrap()
+            .events
+            .last()
+            .cloned()
+            .unwrap();
         assert!(last.summary.starts_with("PR1 — API: "), "{}", last.summary);
         // A lane the run does not have only loses its tag.
-        turn_finished(&mut store, "ee_f", "implementer", "role_implementer", Some("pr9"), None).unwrap();
-        let last = store.pipeline_run_by_id("ee_f").unwrap().events.last().cloned().unwrap();
+        turn_finished(
+            &mut store,
+            "ee_f",
+            "implementer",
+            "role_implementer",
+            Some("pr9"),
+            None,
+        )
+        .unwrap();
+        let last = store
+            .pipeline_run_by_id("ee_f")
+            .unwrap()
+            .events
+            .last()
+            .cloned()
+            .unwrap();
         assert!(last.summary.starts_with("Implementer"), "{}", last.summary);
     }
 
     #[test]
     fn lane_events_carry_their_lane_id() {
         let (_dir, mut store) = store("lane_ids");
-        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
-        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        let planner = store
+            .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&planner, Some(chain(1, None)), None)
+            .unwrap();
         // "PR1: Auth" starts with "PR1: ", so the text alone names the wrong lane.
         let lanes = vec![
-            LaneInput { id: "pr1".into(), title: "PR1".into(), depends_on: vec![], repo: None },
-            LaneInput { id: "pr1b".into(), title: "PR1: Auth".into(), depends_on: vec![], repo: None },
+            LaneInput {
+                id: "pr1".into(),
+                title: "PR1".into(),
+                depends_on: vec![],
+                repo: None,
+            },
+            LaneInput {
+                id: "pr1b".into(),
+                title: "PR1: Auth".into(),
+                depends_on: vec![],
+                repo: None,
+            },
         ];
         fan_out(&mut store, "ee_f", "implementer", lanes).unwrap();
         let last_lane = |store: &StateStore| {
-            store.pipeline_run_by_id("ee_f").unwrap().events.last().unwrap().lane_id.clone()
+            store
+                .pipeline_run_by_id("ee_f")
+                .unwrap()
+                .events
+                .last()
+                .unwrap()
+                .lane_id
+                .clone()
         };
-        let impl1b = store.create_draft_tab(&role("role_implementer"), "/tmp/wt", true, None).unwrap();
-        store.set_tab_chain(&impl1b, Some(chain(3, Some("pr1b"))), Some("plan")).unwrap();
+        let impl1b = store
+            .create_draft_tab(&role("role_implementer"), "/tmp/wt", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&impl1b, Some(chain(3, Some("pr1b"))), Some("plan"))
+            .unwrap();
         assert_eq!(last_lane(&store).as_deref(), Some("pr1b"), "handoff");
         store
-            .chain_loop_back_in("ee_f", Some("pr1b"), "role_pr_reviewer", &impl1b, Some("REQUEST CHANGES"), Some("fix"))
+            .chain_loop_back_in(
+                "ee_f",
+                Some("pr1b"),
+                "role_pr_reviewer",
+                &impl1b,
+                Some("REQUEST CHANGES"),
+                Some("fix"),
+            )
             .unwrap();
         assert_eq!(last_lane(&store).as_deref(), Some("pr1b"), "loopBack");
         set_lane_status(&mut store, "ee_f", "pr1", "waiting").unwrap();
-        assert_eq!(last_lane(&store).as_deref(), Some("pr1"), "lane status note");
+        assert_eq!(
+            last_lane(&store).as_deref(),
+            Some("pr1"),
+            "lane status note"
+        );
         approve(&mut store, "ee_f", Some("pr1b")).unwrap();
         assert_eq!(last_lane(&store).as_deref(), Some("pr1b"), "approval note");
 
         // Turns of the two lanes keep their own lines, though one's text
         // starts with the other's title.
         store.pipeline_run_by_id_mut("ee_f").unwrap().round = 2;
-        turn_finished(&mut store, "ee_f", "implementer", "role_implementer", Some("pr1b"), None).unwrap();
+        turn_finished(
+            &mut store,
+            "ee_f",
+            "implementer",
+            "role_implementer",
+            Some("pr1b"),
+            None,
+        )
+        .unwrap();
         assert_eq!(last_lane(&store).as_deref(), Some("pr1b"), "turn");
-        turn_finished(&mut store, "ee_f", "implementer", "role_implementer", Some("pr1"), None).unwrap();
+        turn_finished(
+            &mut store,
+            "ee_f",
+            "implementer",
+            "role_implementer",
+            Some("pr1"),
+            None,
+        )
+        .unwrap();
         let run = store.pipeline_run_by_id("ee_f").unwrap();
-        let turns: Vec<_> = run.events.iter().filter(|e| e.kind == "turn").map(|e| e.lane_id.as_deref()).collect();
+        let turns: Vec<_> = run
+            .events
+            .iter()
+            .filter(|e| e.kind == "turn")
+            .map(|e| e.lane_id.as_deref())
+            .collect();
         assert_eq!(turns, vec![Some("pr1b"), Some("pr1")]);
         // Off a lane, no lane id is written.
         turn_finished(&mut store, "ee_f", "planner", "role_planner", None, None).unwrap();
         assert_eq!(last_lane(&store), None);
-        let json = serde_json::to_string(store.pipeline_run_by_id("ee_f").unwrap().events.last().unwrap()).unwrap();
+        let json = serde_json::to_string(
+            store
+                .pipeline_run_by_id("ee_f")
+                .unwrap()
+                .events
+                .last()
+                .unwrap(),
+        )
+        .unwrap();
         assert!(!json.contains("laneId"), "{json}");
     }
 
@@ -1074,7 +1597,8 @@ mod tests {
         let old = r#"{"at":"2026-10-01T00:00:00Z","kind":"turn","round":1,"summary":"PR1: Implementer finished its turn"}"#;
         let event: crate::store::RunEvent = serde_json::from_str(old).unwrap();
         assert_eq!(event.lane_id, None);
-        let new = r#"{"at":"2026-10-01T00:00:00Z","kind":"turn","round":1,"summary":"x","laneId":"pr1"}"#;
+        let new =
+            r#"{"at":"2026-10-01T00:00:00Z","kind":"turn","round":1,"summary":"x","laneId":"pr1"}"#;
         let event: crate::store::RunEvent = serde_json::from_str(new).unwrap();
         assert_eq!(event.lane_id.as_deref(), Some("pr1"));
     }
@@ -1082,26 +1606,76 @@ mod tests {
     #[test]
     fn back_and_forth_in_one_turn_updates_its_turn_line_in_place() {
         let (_dir, mut store) = store("turn_coalesce");
-        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
-        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        let planner = store
+            .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&planner, Some(chain(1, None)), None)
+            .unwrap();
         let turns = |store: &StateStore| -> Vec<crate::store::RunEvent> {
             let run = store.pipeline_run_by_id("ee_f").unwrap();
-            run.events.iter().filter(|e| e.kind == "turn").cloned().collect()
+            run.events
+                .iter()
+                .filter(|e| e.kind == "turn")
+                .cloned()
+                .collect()
         };
-        assert!(turn_finished(&mut store, "ee_f", "plan_reviewer", "role_plan_reviewer", None, Some("REQUEST CHANGES")).unwrap());
+        assert!(turn_finished(
+            &mut store,
+            "ee_f",
+            "plan_reviewer",
+            "role_plan_reviewer",
+            None,
+            Some("REQUEST CHANGES")
+        )
+        .unwrap());
         let first_at = "2000-01-01T00:00:00+00:00";
-        store.pipeline_run_by_id_mut("ee_f").unwrap().events.last_mut().unwrap().at = first_at.into();
+        store
+            .pipeline_run_by_id_mut("ee_f")
+            .unwrap()
+            .events
+            .last_mut()
+            .unwrap()
+            .at = first_at.into();
         // Another reply in the same turn, without a verdict: moved, verdict kept.
-        assert!(turn_finished(&mut store, "ee_f", "plan_reviewer", "role_plan_reviewer", None, None).unwrap());
+        assert!(turn_finished(
+            &mut store,
+            "ee_f",
+            "plan_reviewer",
+            "role_plan_reviewer",
+            None,
+            None
+        )
+        .unwrap());
         let now = turns(&store);
         assert_eq!(now.len(), 1);
         assert_ne!(now[0].at, first_at);
         assert_eq!(now[0].outcome.as_deref(), Some("REQUEST CHANGES"));
-        assert!(now[0].summary.ends_with("(REQUEST CHANGES)"), "{}", now[0].summary);
+        assert!(
+            now[0].summary.ends_with("(REQUEST CHANGES)"),
+            "{}",
+            now[0].summary
+        );
         // A repeat right away changes nothing: not saved, not emitted.
-        assert!(!turn_finished(&mut store, "ee_f", "plan_reviewer", "role_plan_reviewer", None, None).unwrap());
+        assert!(!turn_finished(
+            &mut store,
+            "ee_f",
+            "plan_reviewer",
+            "role_plan_reviewer",
+            None,
+            None
+        )
+        .unwrap());
         // A new verdict replaces the old one.
-        assert!(turn_finished(&mut store, "ee_f", "plan_reviewer", "role_plan_reviewer", None, Some("APPROVED")).unwrap());
+        assert!(turn_finished(
+            &mut store,
+            "ee_f",
+            "plan_reviewer",
+            "role_plan_reviewer",
+            None,
+            Some("APPROVED")
+        )
+        .unwrap());
         assert_eq!(turns(&store).len(), 1);
         assert_eq!(turns(&store)[0].outcome.as_deref(), Some("APPROVED"));
         // Another stage, another round or any event in between: a new line.
@@ -1110,14 +1684,41 @@ mod tests {
         store.pipeline_run_by_id_mut("ee_f").unwrap().round = 2;
         turn_finished(&mut store, "ee_f", "planner", "role_planner", None, None).unwrap();
         assert_eq!(turns(&store).len(), 3);
-        store.pipeline_run_by_id_mut("ee_f").unwrap().log("note", None, None, "hi", None);
+        store
+            .pipeline_run_by_id_mut("ee_f")
+            .unwrap()
+            .log("note", None, None, "hi", None);
         turn_finished(&mut store, "ee_f", "planner", "role_planner", None, None).unwrap();
         assert_eq!(turns(&store).len(), 4);
         // Lanes keep their own lines.
         fan_out(&mut store, "ee_f", "implementer", lanes()).unwrap();
-        turn_finished(&mut store, "ee_f", "implementer", "role_implementer", Some("pr1"), None).unwrap();
-        turn_finished(&mut store, "ee_f", "implementer", "role_implementer", Some("pr2"), None).unwrap();
-        turn_finished(&mut store, "ee_f", "implementer", "role_implementer", Some("pr2"), None).unwrap();
+        turn_finished(
+            &mut store,
+            "ee_f",
+            "implementer",
+            "role_implementer",
+            Some("pr1"),
+            None,
+        )
+        .unwrap();
+        turn_finished(
+            &mut store,
+            "ee_f",
+            "implementer",
+            "role_implementer",
+            Some("pr2"),
+            None,
+        )
+        .unwrap();
+        turn_finished(
+            &mut store,
+            "ee_f",
+            "implementer",
+            "role_implementer",
+            Some("pr2"),
+            None,
+        )
+        .unwrap();
         assert_eq!(turns(&store).len(), 6);
     }
 
@@ -1125,54 +1726,143 @@ mod tests {
     fn a_finished_turn_on_an_unknown_run_or_stage_is_refused() {
         let (_dir, mut store) = store("turn_finished_bad");
         assert!(turn_finished(&mut store, "nope", "planner", "role_planner", None, None).is_err());
-        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
-        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        let planner = store
+            .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&planner, Some(chain(1, None)), None)
+            .unwrap();
         let before = store.pipeline_run_by_id("ee_f").unwrap().events.len();
-        assert!(turn_finished(&mut store, "ee_f", "nowhere", "role_planner", None, None)
-            .unwrap_err()
-            .contains("unknown stage"));
-        assert_eq!(store.pipeline_run_by_id("ee_f").unwrap().events.len(), before);
+        assert!(
+            turn_finished(&mut store, "ee_f", "nowhere", "role_planner", None, None)
+                .unwrap_err()
+                .contains("unknown stage")
+        );
+        assert_eq!(
+            store.pipeline_run_by_id("ee_f").unwrap().events.len(),
+            before
+        );
     }
 
     #[test]
     fn a_stop_note_puts_the_run_in_waiting_with_its_reason() {
         let (_dir, mut store) = store("note_stop");
-        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
-        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        let planner = store
+            .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&planner, Some(chain(1, None)), None)
+            .unwrap();
         set_autopilot(&mut store, "ee_f", true).unwrap();
-        note(&mut store, "ee_f", None, "Tab 2 is still working.", None, false, None).unwrap();
-        assert_eq!(store.pipeline_run_by_id("ee_f").unwrap().status, RunStatus::Running, "a plain note");
-        note(&mut store, "ee_f", Some("planner"), "Autopilot could not open plan_reviewer", None, true, None).unwrap();
+        note(
+            &mut store,
+            "ee_f",
+            None,
+            "Tab 2 is still working.",
+            None,
+            false,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            store.pipeline_run_by_id("ee_f").unwrap().status,
+            RunStatus::Running,
+            "a plain note"
+        );
+        note(
+            &mut store,
+            "ee_f",
+            Some("planner"),
+            "Autopilot could not open plan_reviewer",
+            None,
+            true,
+            None,
+        )
+        .unwrap();
         let run = store.pipeline_run_by_id("ee_f").unwrap();
-        assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::CarryOutFailed)));
+        assert_eq!(
+            (run.status, run.stop_reason),
+            (RunStatus::Waiting, Some(StopReason::CarryOutFailed))
+        );
         assert_eq!(run.events.last().unwrap().kind, "stop");
         // The ledger line carries the code, for its plain-English line.
-        assert_eq!(run.events.last().unwrap().outcome.as_deref(), Some("carry_out_failed"));
-        note(&mut store, "ee_f", None, "Quiet for 30 minutes", None, true, Some(StopReason::Stalled)).unwrap();
+        assert_eq!(
+            run.events.last().unwrap().outcome.as_deref(),
+            Some("carry_out_failed")
+        );
+        note(
+            &mut store,
+            "ee_f",
+            None,
+            "Quiet for 30 minutes",
+            None,
+            true,
+            Some(StopReason::Stalled),
+        )
+        .unwrap();
         let run = store.pipeline_run_by_id("ee_f").unwrap();
         assert_eq!(run.stop_reason, Some(StopReason::Stalled));
-        assert_eq!(run.events.last().unwrap().outcome.as_deref(), Some("stalled"));
+        assert_eq!(
+            run.events.last().unwrap().outcome.as_deref(),
+            Some("stalled")
+        );
         assert!(note(&mut store, "ee_f", None, "  ", None, true, None).is_err());
     }
 
     #[test]
     fn a_stop_note_with_autopilot_off_logs_the_line_and_leaves_the_run_stopped() {
         let (_dir, mut store) = store("note_stop_off");
-        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
-        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        let planner = store
+            .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&planner, Some(chain(1, None)), None)
+            .unwrap();
         set_autopilot(&mut store, "ee_f", true).unwrap();
         // You turned autopilot off while it was opening a terminal; the hand-off then failed.
         set_autopilot(&mut store, "ee_f", false).unwrap();
-        note(&mut store, "ee_f", Some("planner"), "Autopilot could not open plan_reviewer", None, true, None).unwrap();
+        note(
+            &mut store,
+            "ee_f",
+            Some("planner"),
+            "Autopilot could not open plan_reviewer",
+            None,
+            true,
+            None,
+        )
+        .unwrap();
         let run = store.pipeline_run_by_id("ee_f").unwrap();
-        assert_eq!((run.status, run.stop_reason), (RunStatus::Stopped, Some(StopReason::PausedByYou)));
-        assert!(run.autopilot.as_ref().unwrap().waiting.is_none(), "no waiting sentence while off");
-        assert_eq!(run.events.last().unwrap().kind, "stop", "the line is still logged");
+        assert_eq!(
+            (run.status, run.stop_reason),
+            (RunStatus::Stopped, Some(StopReason::PausedByYou))
+        );
+        assert!(
+            run.autopilot.as_ref().unwrap().waiting.is_none(),
+            "no waiting sentence while off"
+        );
+        assert_eq!(
+            run.events.last().unwrap().kind,
+            "stop",
+            "the line is still logged"
+        );
         // A manual run that never had autopilot stays stopped too.
         let (_dir2, mut manual) = self::store("note_stop_manual");
-        let planner = manual.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
-        manual.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
-        note(&mut manual, "ee_f", None, "Autopilot stopped", None, true, None).unwrap();
+        let planner = manual
+            .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
+            .unwrap();
+        manual
+            .set_tab_chain(&planner, Some(chain(1, None)), None)
+            .unwrap();
+        note(
+            &mut manual,
+            "ee_f",
+            None,
+            "Autopilot stopped",
+            None,
+            true,
+            None,
+        )
+        .unwrap();
         let run = manual.pipeline_run_by_id("ee_f").unwrap();
         assert_eq!((run.status, run.stop_reason), (RunStatus::Stopped, None));
     }
@@ -1180,26 +1870,43 @@ mod tests {
     #[test]
     fn turning_autopilot_off_stops_the_run_and_on_runs_it() {
         let (_dir, mut store) = store("autopilot_toggle");
-        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
-        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        let planner = store
+            .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&planner, Some(chain(1, None)), None)
+            .unwrap();
         assert!(set_autopilot(&mut store, "ee_f", true).unwrap());
-        assert!(!set_autopilot(&mut store, "ee_f", true).unwrap(), "already on: nothing to do");
+        assert!(
+            !set_autopilot(&mut store, "ee_f", true).unwrap(),
+            "already on: nothing to do"
+        );
         let run = store.pipeline_run_by_id("ee_f").unwrap();
         assert_eq!((run.status, run.stop_reason), (RunStatus::Running, None));
         waiting_on(&mut store, "waiting");
         assert!(set_autopilot(&mut store, "ee_f", false).unwrap());
         let run = store.pipeline_run_by_id("ee_f").unwrap();
-        assert_eq!((run.status, run.stop_reason), (RunStatus::Stopped, Some(StopReason::PausedByYou)));
+        assert_eq!(
+            (run.status, run.stop_reason),
+            (RunStatus::Stopped, Some(StopReason::PausedByYou))
+        );
         assert!(run.autopilot.as_ref().unwrap().waiting.is_none());
         assert_eq!(run.events.last().unwrap().summary, "Autopilot off");
-        assert_eq!(run.events.last().unwrap().outcome.as_deref(), Some("paused_by_you"));
+        assert_eq!(
+            run.events.last().unwrap().outcome.as_deref(),
+            Some("paused_by_you")
+        );
     }
 
     #[test]
     fn an_engine_1_run_is_manual_only_and_autopilot_cannot_be_turned_on() {
         let (_dir, mut store) = store("autopilot_engine_1");
-        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
-        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        let planner = store
+            .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&planner, Some(chain(1, None)), None)
+            .unwrap();
         store.pipeline_run_by_id_mut("ee_f").unwrap().engine = 1;
         let err = set_autopilot(&mut store, "ee_f", true).unwrap_err();
         assert!(err.contains("manual only"), "{err}");
@@ -1207,7 +1914,10 @@ mod tests {
         assert!(!run.autopilot.as_ref().is_some_and(|a| a.enabled));
         assert!(run.events.iter().all(|e| e.summary != "Autopilot on"));
         // Saved before v2 with autopilot on: it can still be turned off.
-        store.pipeline_run_by_id_mut("ee_f").unwrap().set_autopilot_enabled(true);
+        store
+            .pipeline_run_by_id_mut("ee_f")
+            .unwrap()
+            .set_autopilot_enabled(true);
         assert!(set_autopilot(&mut store, "ee_f", false).unwrap());
     }
 
@@ -1230,24 +1940,50 @@ mod tests {
         .unwrap();
         crate::pipelines::register_for_test(copied);
         let (_dir, mut store) = store("autopilot_copied_roles");
-        let planner = store.create_draft_tab(&role("role_custom_planner"), "/tmp/p", true, None).unwrap();
-        let chain = ChainRef { chain_id: "cr_1".into(), kind: id.into(), step: 1, total: 4, round: 1, lane: None };
+        let planner = store
+            .create_draft_tab(&role("role_custom_planner"), "/tmp/p", true, None)
+            .unwrap();
+        let chain = ChainRef {
+            chain_id: "cr_1".into(),
+            kind: id.into(),
+            step: 1,
+            total: 4,
+            round: 1,
+            lane: None,
+        };
         store.set_tab_chain(&planner, Some(chain), None).unwrap();
         let engine = store.pipeline_run_by_id("cr_1").map(|run| run.engine);
         let result = set_autopilot(&mut store, "cr_1", true);
         crate::pipelines::unregister_for_test(id);
-        assert_eq!(engine, Some(crate::bridge::launch::ENGINE_V2), "copied roles start on engine 2");
+        assert_eq!(
+            engine,
+            Some(crate::bridge::launch::ENGINE_V2),
+            "copied roles start on engine 2"
+        );
         assert_eq!(result, Ok(true), "autopilot can be turned on");
-        assert!(store.pipeline_run_by_id("cr_1").unwrap().autopilot.as_ref().is_some_and(|a| a.enabled));
+        assert!(store
+            .pipeline_run_by_id("cr_1")
+            .unwrap()
+            .autopilot
+            .as_ref()
+            .is_some_and(|a| a.enabled));
     }
 
     #[test]
     fn promoting_a_plan_records_the_round_it_was_approved_in() {
         let (_dir, mut store) = store("promote_round");
-        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
-        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
-        let implementer = store.create_draft_tab(&role("role_implementer"), "/tmp/p", true, None).unwrap();
-        store.set_tab_chain(&implementer, Some(chain(3, None)), Some("plan")).unwrap();
+        let planner = store
+            .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&planner, Some(chain(1, None)), None)
+            .unwrap();
+        let implementer = store
+            .create_draft_tab(&role("role_implementer"), "/tmp/p", true, None)
+            .unwrap();
+        store
+            .set_tab_chain(&implementer, Some(chain(3, None)), Some("plan"))
+            .unwrap();
         store.pipeline_run_by_id_mut("ee_f").unwrap().round = 2;
         store.pipeline_promote_plan("ee_f", "the plan").unwrap();
         let run = store.pipeline_run_by_id("ee_f").unwrap();

@@ -73,7 +73,11 @@ fn eagle1() -> crate::pipelines::PipelineDef {
 /// Eagle-Eye 1 with a round cap on every loop-back, as set in Settings › Pipelines.
 fn eagle1_capped(cap: u32) -> crate::pipelines::PipelineDef {
     let mut def = eagle1();
-    for back in def.stages.iter_mut().filter_map(|stage| stage.loop_back.as_mut()) {
+    for back in def
+        .stages
+        .iter_mut()
+        .filter_map(|stage| stage.loop_back.as_mut())
+    {
         back.max_rounds = Some(cap);
     }
     def
@@ -92,23 +96,45 @@ fn off_means_no_decision_and_nothing_logged() {
 fn a_planner_turn_advances_to_the_plan_reviewer() {
     let mut r = run(1);
     let d = decide(&eagle1(), &mut r, &report("planner", None));
-    assert_eq!((d.action.as_str(), d.stage_id.as_deref()), ("advance", Some("plan_reviewer")));
+    assert_eq!(
+        (d.action.as_str(), d.stage_id.as_deref()),
+        ("advance", Some("plan_reviewer"))
+    );
     let logged = r.events.last().unwrap();
     assert_eq!(logged.kind, "autopilot");
-    assert_eq!(logged.outcome.as_deref(), Some("advance"), "the lanes read the action");
+    assert_eq!(
+        logged.outcome.as_deref(),
+        Some("advance"),
+        "the lanes read the action"
+    );
 }
 
 #[test]
 fn an_approved_plan_stops_at_the_implementer_checkpoint_until_passed() {
     let mut r = run(1);
-    let d = decide(&eagle1(), &mut r, &report("plan_reviewer", Some("APPROVED")));
-    assert_eq!((d.action.as_str(), d.stage_id.as_deref()), ("stop", Some("implementer")));
+    let d = decide(
+        &eagle1(),
+        &mut r,
+        &report("plan_reviewer", Some("APPROVED")),
+    );
+    assert_eq!(
+        (d.action.as_str(), d.stage_id.as_deref()),
+        ("stop", Some("implementer"))
+    );
     assert!(d.reason.starts_with("Checkpoint before Implementer"));
     assert!(r.autopilot.as_ref().unwrap().waiting.is_some());
     // You pass it (send into the Implementer yourself): the run carries on.
-    r.autopilot.as_mut().unwrap().passed_checkpoints.push("implementer".into());
+    r.autopilot
+        .as_mut()
+        .unwrap()
+        .passed_checkpoints
+        .push("implementer".into());
     r.resume_after_you();
-    let d = decide(&eagle1(), &mut r, &report("plan_reviewer", Some("APPROVED WITH CHANGES")));
+    let d = decide(
+        &eagle1(),
+        &mut r,
+        &report("plan_reviewer", Some("APPROVED WITH CHANGES")),
+    );
     assert_eq!(d.action, "advance");
     assert!(r.autopilot.as_ref().unwrap().waiting.is_none());
 }
@@ -120,13 +146,20 @@ fn changes_with_a_medium_finding_loop_back_until_a_set_round_cap() {
     rep.findings = vec![finding("MEDIUM", "null token"), finding("LOW", "typo")];
     rep.findings_known = true;
     let d = decide(&eagle1(), &mut r, &rep);
-    assert_eq!((d.action.as_str(), d.stage_id.as_deref()), ("loopBack", Some("implementer")));
+    assert_eq!(
+        (d.action.as_str(), d.stage_id.as_deref()),
+        ("loopBack", Some("implementer"))
+    );
     // Two earlier PR Reviewer send-backs: this is its third round on the edge.
     let mut capped = run(3);
     capped.verdicts = sent_back(&["role_pr_reviewer", "role_pr_reviewer"]);
     let d = decide(&eagle1_capped(3), &mut capped, &rep);
     assert_eq!(d.action, "stop");
-    assert!(d.reason.starts_with("Round cap reached (3 of 3)"), "{}", d.reason);
+    assert!(
+        d.reason.starts_with("Round cap reached (3 of 3)"),
+        "{}",
+        d.reason
+    );
 }
 
 #[test]
@@ -139,7 +172,12 @@ fn the_round_cap_counts_each_loop_back_edge_on_its_own() {
     rep.findings_known = true;
     // ... but this is the PR Reviewer's first send-back: it loops back.
     let d = decide(&eagle1(), &mut r, &rep);
-    assert_eq!((d.action.as_str(), d.stage_id.as_deref()), ("loopBack", Some("implementer")), "{}", d.reason);
+    assert_eq!(
+        (d.action.as_str(), d.stage_id.as_deref()),
+        ("loopBack", Some("implementer")),
+        "{}",
+        d.reason
+    );
     assert!(d.reason.contains("round 1"), "{}", d.reason);
     // Two PR Reviewer send-backs of its own: the third hits the cap.
     let mut capped = run(3);
@@ -153,17 +191,32 @@ fn the_round_cap_counts_each_loop_back_edge_on_its_own() {
 fn a_plain_approval_with_findings_at_the_threshold_stops_instead_of_advancing() {
     let mut r = run(1);
     let mut rep = report("pr_reviewer", Some("APPROVED"));
-    rep.findings = vec![finding("HIGH", "token leaks to log"), finding("LOW", "typo")];
+    rep.findings = vec![
+        finding("HIGH", "token leaks to log"),
+        finding("LOW", "typo"),
+    ];
     rep.findings_known = true;
     let d = decide(&eagle1(), &mut r, &rep);
-    assert_eq!((d.action.as_str(), d.stage_id.as_deref()), ("stop", Some("pr_reviewer")));
+    assert_eq!(
+        (d.action.as_str(), d.stage_id.as_deref()),
+        ("stop", Some("pr_reviewer"))
+    );
     assert!(d.reason.contains("1 finding(s)"), "{}", d.reason);
     // The last stage has nothing to send it on to: say how to get past it.
-    assert!(d.reason.ends_with("Send it back, or press Mark complete in the chain overview."), "{}", d.reason);
+    assert!(
+        d.reason
+            .ends_with("Send it back, or press Mark complete in the chain overview."),
+        "{}",
+        d.reason
+    );
     assert!(r.autopilot.as_ref().unwrap().waiting.is_some());
     let logged = r.events.last().unwrap();
     assert_eq!(logged.kind, "stop");
-    assert!(logged.detail.as_deref().unwrap_or("").contains("[HIGH] token leaks to log"));
+    assert!(logged
+        .detail
+        .as_deref()
+        .unwrap_or("")
+        .contains("[HIGH] token leaks to log"));
     // Only LOW findings: a clean approval that completes, with follow-ups.
     let mut low = report("pr_reviewer", Some("APPROVED"));
     low.findings = vec![finding("LOW", "typo")];
@@ -176,16 +229,31 @@ fn a_plain_approval_with_findings_at_the_threshold_stops_instead_of_advancing() 
 #[test]
 fn approved_with_changes_advances_and_logs_the_applied_findings() {
     let mut r = run(1);
-    r.autopilot.as_mut().unwrap().passed_checkpoints.push("implementer".into());
+    r.autopilot
+        .as_mut()
+        .unwrap()
+        .passed_checkpoints
+        .push("implementer".into());
     let mut rep = report("plan_reviewer", Some("APPROVED WITH CHANGES"));
-    rep.findings = vec![finding("MEDIUM", "missing rollback step"), finding("LOW", "typo")];
+    rep.findings = vec![
+        finding("MEDIUM", "missing rollback step"),
+        finding("LOW", "typo"),
+    ];
     rep.findings_known = true;
     let d = decide(&eagle1(), &mut r, &rep);
-    assert_eq!((d.action.as_str(), d.stage_id.as_deref()), ("advance", Some("implementer")), "{}", d.reason);
+    assert_eq!(
+        (d.action.as_str(), d.stage_id.as_deref()),
+        ("advance", Some("implementer")),
+        "{}",
+        d.reason
+    );
     // Applied findings are in the event detail, not the follow-ups.
     assert_eq!(d.follow_ups, vec!["[LOW] typo"]);
     let detail = r.events.last().unwrap().detail.clone().unwrap_or_default();
-    assert!(detail.contains("[MEDIUM] missing rollback step"), "{detail}");
+    assert!(
+        detail.contains("[MEDIUM] missing rollback step"),
+        "{detail}"
+    );
     assert!(detail.contains("[LOW] typo"), "{detail}");
 }
 
@@ -209,11 +277,17 @@ fn a_specialist_send_back_counts_toward_its_stage_round() {
 fn only_low_findings_finish_the_run_and_become_follow_ups() {
     let mut r = run(2);
     let mut rep = report("pr_reviewer", Some("REQUEST CHANGES"));
-    rep.findings = vec![finding("LOW", "rename x"), finding("info", "comment wording")];
+    rep.findings = vec![
+        finding("LOW", "rename x"),
+        finding("info", "comment wording"),
+    ];
     rep.findings_known = true;
     let d = decide(&eagle1(), &mut r, &rep);
     assert_eq!(d.action, "complete");
-    assert_eq!(d.follow_ups, vec!["[LOW] rename x", "[INFO] comment wording"]);
+    assert_eq!(
+        d.follow_ups,
+        vec!["[LOW] rename x", "[INFO] comment wording"]
+    );
     assert_eq!(r.events.last().unwrap().kind, "complete");
 }
 
@@ -225,7 +299,10 @@ fn findings_without_a_structured_result_count_as_blocking() {
     let mut unlabelled = report("pr_reviewer", Some("REQUEST CHANGES"));
     unlabelled.findings = vec![finding("someday", "unclear")];
     unlabelled.findings_known = true;
-    assert_eq!(decide(&eagle1(), &mut run(1), &unlabelled).action, "loopBack");
+    assert_eq!(
+        decide(&eagle1(), &mut run(1), &unlabelled).action,
+        "loopBack"
+    );
 }
 
 #[test]
@@ -269,7 +346,11 @@ fn a_blocked_implementer_makes_the_run_wait_with_its_reason_and_runs_on_no_furth
     let d = decide(&eagle1(), &mut r, &rep);
     assert_eq!(d.action, "stop", "{}", d.reason);
     assert_eq!(d.stage_id.as_deref(), Some("implementer"));
-    assert!(d.reason.contains("blocked") && d.reason.contains("API does not exist"), "{}", d.reason);
+    assert!(
+        d.reason.contains("blocked") && d.reason.contains("API does not exist"),
+        "{}",
+        d.reason
+    );
     assert_eq!(r.status, RunStatus::Waiting);
     assert_eq!(r.stop_reason, Some(StopReason::Checkpoint), "not no_result");
 }
@@ -294,14 +375,21 @@ fn bridge_verdict_words_decide_like_the_v1_words() {
     rep.findings = vec![finding("HIGH", "token not refreshed")];
     rep.findings_known = true;
     let d = decide(&eagle1(), &mut r, &rep);
-    assert_eq!((d.action.as_str(), d.stage_id.as_deref()), ("loopBack", Some("implementer")));
+    assert_eq!(
+        (d.action.as_str(), d.stage_id.as_deref()),
+        ("loopBack", Some("implementer"))
+    );
     let mut r = run(1);
     let mut rep = report("plan_reviewer", Some("APPROVED_WITH_CHANGES"));
     rep.findings = vec![finding("HIGH", "applied already")];
     rep.findings_known = true;
     let d = decide(&eagle1(), &mut r, &rep);
     assert_eq!(d.action, "stop", "the Implementer checkpoint: {}", d.reason);
-    assert!(d.reason.starts_with("Checkpoint before Implementer"), "{}", d.reason);
+    assert!(
+        d.reason.starts_with("Checkpoint before Implementer"),
+        "{}",
+        d.reason
+    );
 }
 
 #[test]
@@ -325,7 +413,10 @@ fn a_failed_gate_is_retried_twice_then_stops() {
     );
     let rep = report("implementer", None);
     let first = decide(&eagle1(), &mut r, &rep);
-    assert_eq!((first.action.as_str(), first.stage_id.as_deref()), ("retry", Some("implementer")));
+    assert_eq!(
+        (first.action.as_str(), first.stage_id.as_deref()),
+        ("retry", Some("implementer"))
+    );
     assert!(first.message.unwrap().contains("1 test failed"));
     assert_eq!(decide(&eagle1(), &mut r, &rep).action, "retry");
     let third = decide(&eagle1(), &mut r, &rep);
@@ -346,7 +437,10 @@ fn gate_results_from_an_earlier_round_are_ignored() {
     );
     r.gates.get_mut("implementer").unwrap().results[0].status = "failed".into();
     let d = decide(&eagle1(), &mut r, &report("implementer", None));
-    assert_eq!((d.action.as_str(), d.stage_id.as_deref()), ("advance", Some("pr_reviewer")));
+    assert_eq!(
+        (d.action.as_str(), d.stage_id.as_deref()),
+        ("advance", Some("pr_reviewer"))
+    );
 }
 
 #[test]
@@ -390,14 +484,22 @@ fn an_approved_lane_unblocks_the_lanes_waiting_on_it() {
         lane("pr2", &["pr1"], "waiting", 1),
         lane("pr3", &[], "active", 1),
     ];
-    let d = decide(&eagle1(), &mut r, &in_lane("pr_reviewer", Some("APPROVED"), "pr1"));
+    let d = decide(
+        &eagle1(),
+        &mut r,
+        &in_lane("pr_reviewer", Some("APPROVED"), "pr1"),
+    );
     assert_eq!(d.action, "laneDone");
     assert_eq!(d.unblocked, vec!["pr2"]);
     assert_eq!(d.lane.as_deref(), Some("pr1"));
     assert_eq!(r.lane("pr1").unwrap().status, "approved");
     // The last lane approved completes the run.
     r.lane_mut("pr2").unwrap().status = "approved".into();
-    let d = decide(&eagle1(), &mut r, &in_lane("pr_reviewer", Some("APPROVED"), "pr3"));
+    let d = decide(
+        &eagle1(),
+        &mut r,
+        &in_lane("pr_reviewer", Some("APPROVED"), "pr3"),
+    );
     assert_eq!(d.action, "complete");
 }
 
@@ -415,8 +517,15 @@ fn a_lane_counts_its_own_rounds_and_gates() {
     assert!(capped.reason.contains("3 of 3"), "{}", capped.reason);
     // The run waits for you until you act on pr1 (here: you did).
     r.resume_after_you();
-    let other = decide(&eagle1_capped(3), &mut r, &in_lane("pr_reviewer", Some("REQUEST CHANGES"), "pr2"));
-    assert_eq!((other.action.as_str(), other.lane.as_deref()), ("loopBack", Some("pr2")));
+    let other = decide(
+        &eagle1_capped(3),
+        &mut r,
+        &in_lane("pr_reviewer", Some("REQUEST CHANGES"), "pr2"),
+    );
+    assert_eq!(
+        (other.action.as_str(), other.lane.as_deref()),
+        ("loopBack", Some("pr2"))
+    );
     // A failed check on one lane does not hold up the other.
     r.gates.insert(
         "implementer@pr2".into(),
@@ -434,9 +543,15 @@ fn a_lane_counts_its_own_rounds_and_gates() {
             }],
         },
     );
-    assert_eq!(decide(&eagle1(), &mut r, &in_lane("implementer", None, "pr2")).action, "retry");
+    assert_eq!(
+        decide(&eagle1(), &mut r, &in_lane("implementer", None, "pr2")).action,
+        "retry"
+    );
     let pr1 = decide(&eagle1(), &mut r, &in_lane("implementer", None, "pr1"));
-    assert_eq!((pr1.action.as_str(), pr1.stage_id.as_deref()), ("advance", Some("pr_reviewer")));
+    assert_eq!(
+        (pr1.action.as_str(), pr1.stage_id.as_deref()),
+        ("advance", Some("pr_reviewer"))
+    );
     assert_eq!(pr1.lane.as_deref(), Some("pr1"));
     assert!(r.events.last().unwrap().summary.starts_with("PR1: "));
     assert_eq!(r.events.last().unwrap().lane_id.as_deref(), Some("pr1"));
@@ -449,8 +564,18 @@ fn approved_with_changes_at_the_last_stage_stops_on_blocking_findings() {
     rep.findings = vec![finding("HIGH", "token leaks to log")];
     rep.findings_known = true;
     let d = decide(&eagle1(), &mut r, &rep);
-    assert_eq!((d.action.as_str(), d.stage_id.as_deref()), ("stop", Some("pr_reviewer")), "{}", d.reason);
-    assert!(d.reason.ends_with("Send it back, or press Mark complete in the chain overview."), "{}", d.reason);
+    assert_eq!(
+        (d.action.as_str(), d.stage_id.as_deref()),
+        ("stop", Some("pr_reviewer")),
+        "{}",
+        d.reason
+    );
+    assert!(
+        d.reason
+            .ends_with("Send it back, or press Mark complete in the chain overview."),
+        "{}",
+        d.reason
+    );
     assert!(r.autopilot.as_ref().unwrap().waiting.is_some());
     // In a lane, the way past it is that lane's Mark approved.
     let mut r = run(1);
@@ -459,27 +584,45 @@ fn approved_with_changes_at_the_last_stage_stops_on_blocking_findings() {
     rep.findings = vec![finding("MEDIUM", "null token")];
     rep.findings_known = true;
     let d = decide(&eagle1(), &mut r, &rep);
-    assert_eq!((d.action.as_str(), d.lane.as_deref()), ("stop", Some("pr1")));
+    assert_eq!(
+        (d.action.as_str(), d.lane.as_deref()),
+        ("stop", Some("pr1"))
+    );
     assert!(
-        d.reason.ends_with("Send it back, or mark it approved in the chain overview's Pull requests list."),
+        d.reason.ends_with(
+            "Send it back, or mark it approved in the chain overview's Pull requests list."
+        ),
         "{}",
         d.reason
     );
-    assert_eq!(r.lane("pr1").unwrap().status, "active", "not approved by the stop");
+    assert_eq!(
+        r.lane("pr1").unwrap().status,
+        "active",
+        "not approved by the stop"
+    );
 }
 
 #[test]
 fn a_turn_in_an_approved_lane_changes_nothing() {
     let mut r = run(1);
-    r.lanes = vec![lane("pr1", &[], "approved", 1), lane("pr2", &[], "active", 1)];
+    r.lanes = vec![
+        lane("pr1", &[], "approved", 1),
+        lane("pr2", &[], "active", 1),
+    ];
     let mut rep = in_lane("pr_reviewer", Some("REQUEST CHANGES"), "pr1");
     rep.findings = vec![finding("HIGH", "late finding")];
     rep.findings_known = true;
     let d = decide(&eagle1(), &mut r, &rep);
-    assert_eq!((d.action.as_str(), d.lane.as_deref()), ("ignore", Some("pr1")));
+    assert_eq!(
+        (d.action.as_str(), d.lane.as_deref()),
+        ("ignore", Some("pr1"))
+    );
     assert_eq!(d.reason, "That pull request is already approved.");
     assert!(r.events.is_empty(), "nothing logged");
-    assert!(r.autopilot.as_ref().unwrap().waiting.is_none(), "not waiting");
+    assert!(
+        r.autopilot.as_ref().unwrap().waiting.is_none(),
+        "not waiting"
+    );
     assert_eq!(r.lane("pr1").unwrap().status, "approved");
 }
 
@@ -498,7 +641,12 @@ fn with_no_round_cap_rounds_go_back_until_the_reviewer_approves() {
     let mut r = run(6);
     r.verdicts = sent_back(&["role_pr_reviewer"; 5]);
     let d = decide(&eagle1(), &mut r, &changes_asked());
-    assert_eq!((d.action.as_str(), d.stage_id.as_deref()), ("loopBack", Some("implementer")), "{}", d.reason);
+    assert_eq!(
+        (d.action.as_str(), d.stage_id.as_deref()),
+        ("loopBack", Some("implementer")),
+        "{}",
+        d.reason
+    );
     assert!(d.reason.contains("round 6"), "{}", d.reason);
     // Approved, or only LOW findings left: the run completes.
     let mut r = run(7);
@@ -521,7 +669,11 @@ fn a_set_round_cap_still_stops_and_never_starts_the_next_round() {
     r.verdicts = sent_back(&["role_pr_reviewer"; 2]);
     let d = decide(&def, &mut r, &changes_asked());
     assert_eq!(d.action, "stop");
-    assert!(d.reason.starts_with("Round cap reached (3 of 3)"), "{}", d.reason);
+    assert!(
+        d.reason.starts_with("Round cap reached (3 of 3)"),
+        "{}",
+        d.reason
+    );
     assert!(r.claims.is_empty(), "no send-back was claimed");
     // You sent round 3 back yourself anyway: round 4's verdict stops again.
     let mut r = run(4);
@@ -536,8 +688,16 @@ fn a_hand_off_you_made_is_not_made_again_by_autopilot() {
     // 08:42:41 you sent the Implementer's round-5 turn to the PR Reviewer;
     // 08:42:44 autopilot's checks for that turn finished.
     let mut r = run(5);
-    r.autopilot.as_mut().unwrap().passed_checkpoints.push("implementer".into());
-    r.add_claim(claim_key("advance", "implementer", 5, None), Some("impl|s|t5".into()), "you");
+    r.autopilot
+        .as_mut()
+        .unwrap()
+        .passed_checkpoints
+        .push("implementer".into());
+    r.add_claim(
+        claim_key("advance", "implementer", 5, None),
+        Some("impl|s|t5".into()),
+        "you",
+    );
     let mut rep = report("implementer", None);
     rep.turn = Some("impl|s|t5".into());
     rep.round = Some(5);
@@ -545,12 +705,18 @@ fn a_hand_off_you_made_is_not_made_again_by_autopilot() {
     assert_eq!(d.action, "skip", "{}", d.reason);
     assert_eq!(d.reason, "Implementer finished: already handed on by you.");
     let logged = r.events.last().unwrap();
-    assert_eq!((logged.kind.as_str(), logged.outcome.as_deref()), ("autopilot", Some("skip")));
+    assert_eq!(
+        (logged.kind.as_str(), logged.outcome.as_deref()),
+        ("autopilot", Some("skip"))
+    );
     assert_eq!(r.claims.len(), 1, "no second claim");
     // Matched by stage and round alone too (a chat source has no turn).
     let mut r2 = run(5);
     r2.add_claim(claim_key("advance", "implementer", 5, None), None, "you");
-    assert_eq!(decide(&eagle1(), &mut r2, &report("implementer", None)).action, "skip");
+    assert_eq!(
+        decide(&eagle1(), &mut r2, &report("implementer", None)).action,
+        "skip"
+    );
 }
 
 #[test]
@@ -568,11 +734,17 @@ fn autopilot_hands_a_stage_on_once_per_round() {
     second.turn = Some("planner|s|t2".into());
     let d = decide(&eagle1(), &mut r, &second);
     assert_eq!(d.action, "skip");
-    assert_eq!(d.reason, "Planner finished: already handed on by autopilot.");
+    assert_eq!(
+        d.reason,
+        "Planner finished: already handed on by autopilot."
+    );
     // A round sent back starts a fresh claim.
     let mut r = run(2);
     r.add_claim("advance:planner#1".into(), None, "autopilot");
-    assert_eq!(decide(&eagle1(), &mut r, &report("planner", None)).action, "advance");
+    assert_eq!(
+        decide(&eagle1(), &mut r, &report("planner", None)).action,
+        "advance"
+    );
 }
 
 #[test]
@@ -587,7 +759,10 @@ fn a_send_back_is_claimed_once() {
     let mut r = run(1);
     r.add_claim("back:pr_reviewer#1".into(), None, "you");
     let d = decide(&eagle1(), &mut r, &changes_asked());
-    assert_eq!((d.action.as_str(), d.reason.as_str()), ("skip", "PR Reviewer finished: already sent back by you."));
+    assert_eq!(
+        (d.action.as_str(), d.reason.as_str()),
+        ("skip", "PR Reviewer finished: already sent back by you.")
+    );
 }
 
 #[test]
@@ -612,7 +787,10 @@ fn a_turn_from_a_round_that_ended_is_skipped() {
     rep.round = Some(4);
     let d = decide(&eagle1(), &mut r, &rep);
     assert_eq!(d.action, "skip");
-    assert_eq!(d.reason, "Skipped Implementer's turn from round 4: the run is on round 5 now.");
+    assert_eq!(
+        d.reason,
+        "Skipped Implementer's turn from round 4: the run is on round 5 now."
+    );
     assert!(r.claims.is_empty());
     // A turn of the current round is decided as usual.
     rep.round = Some(5);
@@ -638,9 +816,19 @@ fn failed_gate(round: u32) -> StageGates {
 #[test]
 fn a_stop_puts_the_run_in_waiting_with_its_reason_code() {
     let mut r = run(1);
-    decide(&eagle1(), &mut r, &report("plan_reviewer", Some("APPROVED")));
-    assert_eq!((r.status, r.stop_reason), (RunStatus::Waiting, Some(StopReason::Checkpoint)));
-    assert!(r.autopilot.as_ref().unwrap().waiting.is_some(), "the sentence is kept for the overview");
+    decide(
+        &eagle1(),
+        &mut r,
+        &report("plan_reviewer", Some("APPROVED")),
+    );
+    assert_eq!(
+        (r.status, r.stop_reason),
+        (RunStatus::Waiting, Some(StopReason::Checkpoint))
+    );
+    assert!(
+        r.autopilot.as_ref().unwrap().waiting.is_some(),
+        "the sentence is kept for the overview"
+    );
 }
 
 #[test]
@@ -653,38 +841,75 @@ fn every_stop_in_decide_carries_its_reason_code() {
         assert_eq!(d.stop_reason, r.stop_reason, "{}", d.reason);
         let last = r.events.last().unwrap();
         assert_eq!(last.kind, "stop");
-        assert_eq!(last.outcome.as_deref(), r.stop_reason.map(StopReason::as_str), "{}", d.reason);
+        assert_eq!(
+            last.outcome.as_deref(),
+            r.stop_reason.map(StopReason::as_str),
+            "{}",
+            d.reason
+        );
         r.stop_reason
     };
     let mut capped = run(3);
     capped.verdicts = sent_back(&["role_pr_reviewer"; 2]);
-    assert_eq!(stopped(&eagle1_capped(3), capped, changes_asked()), Some(StopReason::RoundCap));
+    assert_eq!(
+        stopped(&eagle1_capped(3), capped, changes_asked()),
+        Some(StopReason::RoundCap)
+    );
     let mut busy = report("planner", None);
     busy.usage_percent = Some(95);
-    assert_eq!(stopped(&eagle1(), run(1), busy), Some(StopReason::UsageLimit));
-    assert_eq!(stopped(&eagle1(), run(1), report("pr_reviewer", None)), Some(StopReason::NoVerdict));
+    assert_eq!(
+        stopped(&eagle1(), run(1), busy),
+        Some(StopReason::UsageLimit)
+    );
+    assert_eq!(
+        stopped(&eagle1(), run(1), report("pr_reviewer", None)),
+        Some(StopReason::NoVerdict)
+    );
     let mut missing = report("plan_reviewer", None);
     missing.no_result = true;
-    assert_eq!(stopped(&eagle1(), run(1), missing), Some(StopReason::NoResult));
+    assert_eq!(
+        stopped(&eagle1(), run(1), missing),
+        Some(StopReason::NoResult)
+    );
     let mut failing = run(1);
     failing.gates.insert("implementer".into(), failed_gate(1));
-    failing.autopilot.as_mut().unwrap().gate_retries.insert("implementer".into(), MAX_GATE_RETRIES);
-    assert_eq!(stopped(&eagle1(), failing, report("implementer", None)), Some(StopReason::GateFailed));
+    failing
+        .autopilot
+        .as_mut()
+        .unwrap()
+        .gate_retries
+        .insert("implementer".into(), MAX_GATE_RETRIES);
+    assert_eq!(
+        stopped(&eagle1(), failing, report("implementer", None)),
+        Some(StopReason::GateFailed)
+    );
     let mut approved = report("pr_reviewer", Some("APPROVED"));
     approved.findings = vec![finding("HIGH", "token leaks to log")];
     approved.findings_known = true;
-    assert_eq!(stopped(&eagle1(), run(1), approved), Some(StopReason::BlockingFindings));
-    assert_eq!(stopped(&eagle1(), run(1), report("nowhere", None)), Some(StopReason::CarryOutFailed));
+    assert_eq!(
+        stopped(&eagle1(), run(1), approved),
+        Some(StopReason::BlockingFindings)
+    );
+    assert_eq!(
+        stopped(&eagle1(), run(1), report("nowhere", None)),
+        Some(StopReason::CarryOutFailed)
+    );
     let mut limited = report("planner", None);
     limited.rate_limit = Some("You've hit your limit · resets 3pm".into());
-    assert_eq!(stopped(&eagle1(), run(1), limited), Some(StopReason::UsageLimit));
+    assert_eq!(
+        stopped(&eagle1(), run(1), limited),
+        Some(StopReason::UsageLimit)
+    );
     // Autopilot off (a turn racing the switch): the run is left as you set
     // it, and the notification still names why.
     let mut off = run(1);
     off.autopilot.as_mut().unwrap().enabled = false;
     let events = off.events.len();
     let d = decide(&eagle1(), &mut off, &report("planner", None));
-    assert_eq!((d.action.as_str(), d.stop_reason), ("stop", Some(StopReason::PausedByYou)));
+    assert_eq!(
+        (d.action.as_str(), d.stop_reason),
+        ("stop", Some(StopReason::PausedByYou))
+    );
     assert_eq!(off.events.len(), events);
 }
 
@@ -701,13 +926,23 @@ fn unknown_usage_carries_on_but_a_rate_limit_error_stops_the_run() {
     limited.rate_limit = Some("Claude AI usage limit reached|1760000000".into());
     let mut r = run(1);
     let d = decide(&eagle1(), &mut r, &limited);
-    assert_eq!((d.action.as_str(), d.stop_reason), ("stop", Some(StopReason::UsageLimit)));
-    assert!(d.reason.contains("Plan Reviewer hit a Claude usage limit"), "{}", d.reason);
+    assert_eq!(
+        (d.action.as_str(), d.stop_reason),
+        ("stop", Some(StopReason::UsageLimit))
+    );
+    assert!(
+        d.reason.contains("Plan Reviewer hit a Claude usage limit"),
+        "{}",
+        d.reason
+    );
     assert!(d.reason.contains("usage limit reached"), "{}", d.reason);
     assert_eq!(d.stage_id.as_deref(), Some("plan_reviewer"));
     // Before `no_result`: a limited turn reported nothing either.
     limited.no_result = true;
-    assert_eq!(decide(&eagle1(), &mut run(1), &limited).stop_reason, Some(StopReason::UsageLimit));
+    assert_eq!(
+        decide(&eagle1(), &mut run(1), &limited).stop_reason,
+        Some(StopReason::UsageLimit)
+    );
     // A blank error line is no error.
     let mut blank = report("planner", None);
     blank.rate_limit = Some("  ".into());
@@ -724,7 +959,10 @@ fn decide_acts_only_while_running() {
     assert_eq!(d.action, "skip", "{}", d.reason);
     assert!(d.reason.contains("waiting for you"), "{}", d.reason);
     assert!(r.claims.is_empty(), "nothing handed on");
-    assert_eq!((r.status, r.stop_reason), (RunStatus::Waiting, Some(StopReason::Checkpoint)));
+    assert_eq!(
+        (r.status, r.stop_reason),
+        (RunStatus::Waiting, Some(StopReason::Checkpoint))
+    );
     // You acted (a hand-off, say): the next turn is decided again.
     r.resume_after_you();
     assert_eq!(r.status, RunStatus::Running);
@@ -757,7 +995,11 @@ fn complete_is_final_and_late_turns_after_it_are_ignored() {
     // The last lane approved completes a fanned-out run the same way.
     let mut r = run(1);
     r.lanes = vec![lane("pr1", &[], "active", 1)];
-    decide(&eagle1(), &mut r, &in_lane("pr_reviewer", Some("APPROVED"), "pr1"));
+    decide(
+        &eagle1(),
+        &mut r,
+        &in_lane("pr_reviewer", Some("APPROVED"), "pr1"),
+    );
     assert_eq!(r.status, RunStatus::Complete);
 }
 
@@ -770,9 +1012,18 @@ fn a_passing_gate_resets_the_stage_retries() {
     assert_eq!(decide(&eagle1(), &mut r, &rep).action, "retry");
     // The fix worked: the check passes and the stage hands on.
     r.gates.get_mut("implementer").unwrap().results[0].status = "passed".into();
-    r.autopilot.as_mut().unwrap().passed_checkpoints.push("implementer".into());
+    r.autopilot
+        .as_mut()
+        .unwrap()
+        .passed_checkpoints
+        .push("implementer".into());
     assert_eq!(decide(&eagle1(), &mut r, &rep).action, "advance");
-    assert!(!r.autopilot.as_ref().unwrap().gate_retries.contains_key("implementer"));
+    assert!(!r
+        .autopilot
+        .as_ref()
+        .unwrap()
+        .gate_retries
+        .contains_key("implementer"));
     // A later failure in the same round starts counting again.
     r.gates.insert("implementer".into(), failed_gate(1));
     let d = decide(&eagle1(), &mut r, &rep);
@@ -792,33 +1043,58 @@ fn auto_gate_found_nothing(optional: bool) -> StageGates {
 #[test]
 fn an_auto_gate_with_nothing_to_run_stops_with_no_check_found() {
     let mut r = run(1);
-    r.gates.insert("implementer".into(), auto_gate_found_nothing(false));
+    r.gates
+        .insert("implementer".into(), auto_gate_found_nothing(false));
     let d = decide(&eagle1(), &mut r, &report("implementer", None));
-    assert_eq!((d.action.as_str(), d.stage_id.as_deref()), ("stop", Some("implementer")));
+    assert_eq!(
+        (d.action.as_str(), d.stage_id.as_deref()),
+        ("stop", Some("implementer"))
+    );
     assert!(d.reason.contains("nothing to run"), "{}", d.reason);
-    assert_eq!((r.status, r.stop_reason), (RunStatus::Waiting, Some(StopReason::NoCheckFound)));
+    assert_eq!(
+        (r.status, r.stop_reason),
+        (RunStatus::Waiting, Some(StopReason::NoCheckFound))
+    );
     // A built-in pipeline cannot be edited: say what you can do instead.
     assert!(!d.reason.contains("to the pipeline"), "{}", d.reason);
     assert!(d.reason.contains("npm `check`"), "{}", d.reason);
-    assert!(d.reason.contains("your own pipeline in Settings › Pipelines"), "{}", d.reason);
+    assert!(
+        d.reason
+            .contains("your own pipeline in Settings › Pipelines"),
+        "{}",
+        d.reason
+    );
     // Your own pipeline can take a check command, or mark the gate optional.
     let mut own = run(1);
     let def = with_copied_reviewer(None);
     own.kind = def.run_kind().to_string();
-    own.gates.insert("implementer".into(), auto_gate_found_nothing(false));
+    own.gates
+        .insert("implementer".into(), auto_gate_found_nothing(false));
     let d = decide(&def, &mut own, &report("implementer", None));
     assert_eq!(own.stop_reason, Some(StopReason::NoCheckFound));
-    assert!(d.reason.contains("Add a check command to the pipeline"), "{}", d.reason);
+    assert!(
+        d.reason.contains("Add a check command to the pipeline"),
+        "{}",
+        d.reason
+    );
     assert!(d.reason.contains("mark the gate optional"), "{}", d.reason);
 }
 
 #[test]
 fn an_optional_auto_gate_with_nothing_to_run_is_skipped() {
     let mut r = run(1);
-    r.gates.insert("implementer".into(), auto_gate_found_nothing(true));
-    r.autopilot.as_mut().unwrap().passed_checkpoints.push("implementer".into());
+    r.gates
+        .insert("implementer".into(), auto_gate_found_nothing(true));
+    r.autopilot
+        .as_mut()
+        .unwrap()
+        .passed_checkpoints
+        .push("implementer".into());
     let d = decide(&eagle1(), &mut r, &report("implementer", None));
-    assert_eq!((d.action.as_str(), d.stage_id.as_deref()), ("advance", Some("pr_reviewer")));
+    assert_eq!(
+        (d.action.as_str(), d.stage_id.as_deref()),
+        ("advance", Some("pr_reviewer"))
+    );
 }
 
 #[test]
@@ -827,7 +1103,10 @@ fn an_unknown_or_disabled_pipeline_stops_the_run_with_the_reason() {
     let d = stop_for_pipeline(&mut r, "unknown pipeline: mystery".into());
     assert_eq!(d.action, "stop");
     assert!(d.reason.contains("mystery"), "{}", d.reason);
-    assert_eq!((r.status, r.stop_reason), (RunStatus::Waiting, Some(StopReason::CarryOutFailed)));
+    assert_eq!(
+        (r.status, r.stop_reason),
+        (RunStatus::Waiting, Some(StopReason::CarryOutFailed))
+    );
     assert_eq!(r.events.last().unwrap().kind, "stop");
     // Autopilot off: nothing changes.
     let mut off = run(1);
@@ -859,7 +1138,9 @@ fn with_copied_reviewer(kind: Option<&str>) -> crate::pipelines::PipelineDef {
 /// What autopilot does with a PR Reviewer's turns on `def`: a turn that
 /// reported no result (V6 removed the v1 re-ask for missing HANDOFF
 /// sections), then one that asks for changes with a blocking finding.
-fn reviewer_turns(def: &crate::pipelines::PipelineDef) -> Vec<(String, Option<String>, Option<StopReason>)> {
+fn reviewer_turns(
+    def: &crate::pipelines::PipelineDef,
+) -> Vec<(String, Option<String>, Option<StopReason>)> {
     let mut r = run(1);
     r.kind = def.run_kind().to_string();
     let mut out = Vec::new();
@@ -882,13 +1163,25 @@ fn a_duplicated_pr_reviewer_stops_and_loops_exactly_like_the_built_in_one() {
     assert_eq!(
         built_in,
         vec![
-            ("stop".to_string(), Some("pr_reviewer".to_string()), Some(StopReason::NoResult)),
-            ("loopBack".to_string(), Some("implementer".to_string()), None),
+            (
+                "stop".to_string(),
+                Some("pr_reviewer".to_string()),
+                Some(StopReason::NoResult)
+            ),
+            (
+                "loopBack".to_string(),
+                Some("implementer".to_string()),
+                None
+            ),
         ]
     );
     for kind in [Some("reviewer"), None] {
         let def = with_copied_reviewer(kind);
-        assert_eq!(def.stages[1].kind(), crate::pipelines::StageKind::Reviewer, "{kind:?}");
+        assert_eq!(
+            def.stages[1].kind(),
+            crate::pipelines::StageKind::Reviewer,
+            "{kind:?}"
+        );
         assert_eq!(reviewer_turns(&def), built_in, "kind {kind:?}");
     }
 }

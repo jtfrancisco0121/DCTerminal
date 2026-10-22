@@ -134,9 +134,9 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, IsTerminal, Read, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::path::{Path, PathBuf};
 use std::process::exit;
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
@@ -260,7 +260,8 @@ fn json_flag(value: Option<&str>, flag: &str) -> Value {
     let text = if value.starts_with('{') {
         value.to_string()
     } else {
-        std::fs::read_to_string(value).unwrap_or_else(|err| refuse(&format!("{flag} {value}: {err}")))
+        std::fs::read_to_string(value)
+            .unwrap_or_else(|err| refuse(&format!("{flag} {value}: {err}")))
     };
     serde_json::from_str(&text).unwrap_or_else(|err| refuse(&format!("{flag}: {err}")))
 }
@@ -570,7 +571,12 @@ impl McpClient {
         let args: Vec<String> = config
             .get("args")
             .and_then(Value::as_array)
-            .map(|args| args.iter().filter_map(Value::as_str).map(str::to_string).collect())
+            .map(|args| {
+                args.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
             .unwrap_or_default();
         let mut child = Command::new(command)
             .args(&args)
@@ -581,7 +587,12 @@ impl McpClient {
             .map_err(|err| format!("start {command}: {err}"))?;
         let stdin = child.stdin.take().ok_or("no stdin")?;
         let stdout = BufReader::new(child.stdout.take().ok_or("no stdout")?);
-        let mut client = Self { child, stdin, stdout, next_id: 0 };
+        let mut client = Self {
+            child,
+            stdin,
+            stdout,
+            next_id: 0,
+        };
         client.request(
             "initialize",
             json!({ "protocolVersion": "2025-11-25", "capabilities": {},
@@ -731,7 +742,10 @@ impl Fake {
         };
         if let Some(fields) = payload.as_object_mut() {
             fields.insert("session_id".into(), json!(self.session_id));
-            fields.insert("transcript_path".into(), json!(self.log_path.display().to_string()));
+            fields.insert(
+                "transcript_path".into(),
+                json!(self.log_path.display().to_string()),
+            );
             fields.insert("cwd".into(), json!(self.cwd));
             fields.insert("prompt_id".into(), json!(self.prompt_id));
             fields.insert("permission_mode".into(), json!(self.mode));
@@ -744,8 +758,15 @@ impl Fake {
                     continue;
                 }
             }
-            let hooks = group.get("hooks").and_then(Value::as_array).cloned().unwrap_or_default();
-            for hook in hooks.iter().filter(|h| h.get("type").and_then(Value::as_str) == Some("command")) {
+            let hooks = group
+                .get("hooks")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            for hook in hooks
+                .iter()
+                .filter(|h| h.get("type").and_then(Value::as_str) == Some("command"))
+            {
                 self.run_hook(event, hook, &payload, &mut reply);
             }
         }
@@ -795,7 +816,10 @@ impl Fake {
                     return;
                 };
                 if answer.get("decision").and_then(Value::as_str) == Some("block") {
-                    let reason = answer.get("reason").and_then(Value::as_str).unwrap_or_default();
+                    let reason = answer
+                        .get("reason")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
                     reply.block = Some(reason.to_string());
                 }
                 if let Some(decision) = answer
@@ -820,11 +844,18 @@ impl Fake {
 
     /// An `mcp` step: the tool_use, PreToolUse hooks, the call, its result.
     fn mcp_step(&mut self, tool: &str, step: &Value) -> Ended {
-        let server = step.get("server").and_then(Value::as_str).unwrap_or("dcterminal").to_string();
+        let server = step
+            .get("server")
+            .and_then(Value::as_str)
+            .unwrap_or("dcterminal")
+            .to_string();
         let name = format!("mcp__{server}__{tool}");
         let input = step.get("arguments").cloned().unwrap_or_else(|| json!({}));
         let id = self.next_tool_id();
-        self.draw(&format!("\r\n⏺ {name}({})\r\n", screen_text(&input.to_string())));
+        self.draw(&format!(
+            "\r\n⏺ {name}({})\r\n",
+            screen_text(&input.to_string())
+        ));
         self.assistant(
             json!({ "type": "tool_use", "id": id, "name": name, "input": input }),
             Some("tool_use"),
@@ -848,7 +879,12 @@ impl Fake {
     }
 
     /// `tools/call` on `server`, started on first use: the text and `isError`.
-    fn mcp_call(&mut self, server: &str, tool: &str, input: &Value) -> Result<(String, bool), String> {
+    fn mcp_call(
+        &mut self,
+        server: &str,
+        tool: &str,
+        input: &Value,
+    ) -> Result<(String, bool), String> {
         if !self.mcp.contains_key(server) {
             let config = self
                 .mcp_servers
@@ -864,7 +900,10 @@ impl Fake {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        let error = result.get("isError").and_then(Value::as_bool).unwrap_or(false);
+        let error = result
+            .get("isError")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         Ok((text, error))
     }
 
@@ -904,7 +943,11 @@ impl Fake {
             self.reply(text);
         } else if let Some(text) = text_of("rate_limit") {
             self.draw(&format!("\r\n  ⎿  {}\r\n", screen_text(text)));
-            let mut message = message("<synthetic>", json!({ "type": "text", "text": text }), Some("stop_sequence"));
+            let mut message = message(
+                "<synthetic>",
+                json!({ "type": "text", "text": text }),
+                Some("stop_sequence"),
+            );
             message["usage"] = json!({ "input_tokens": 0, "output_tokens": 0 });
             let record = self.record(
                 "assistant",
@@ -982,7 +1025,9 @@ impl Fake {
         if hooks.permission.as_deref() == Some("deny") {
             // Refused before any dialog: the reason is the tool's error and
             // the turn goes on (V0 T7 for ExitPlanMode).
-            let reason = hooks.reason.unwrap_or_else(|| "A PreToolUse hook denied this tool.".to_string());
+            let reason = hooks
+                .reason
+                .unwrap_or_else(|| "A PreToolUse hook denied this tool.".to_string());
             self.draw(&format!(
                 "  ⎿  Error: PreToolUse:{name} hook error: {}\r\n",
                 screen_text(&reason)
@@ -1431,7 +1476,11 @@ impl Fake {
                     _ => {}
                 }
                 if echo {
-                    self.draw(&String::from_utf8_lossy(&[if byte < 0x20 { b' ' } else { byte }]));
+                    self.draw(&String::from_utf8_lossy(&[if byte < 0x20 {
+                        b' '
+                    } else {
+                        byte
+                    }]));
                 }
                 continue;
             }

@@ -115,7 +115,10 @@ pub(crate) fn claude_tab_route(
     params: &Value,
 ) -> (ClaudeRoute, Option<crate::pipelines::StageKind>) {
     let stage_kind = store.and_then(|store| store.lock().ok()?.tab_stage_kind(tab_id));
-    (claude_permission_route(role_id, stage_kind, params), stage_kind)
+    (
+        claude_permission_route(role_id, stage_kind, params),
+        stage_kind,
+    )
 }
 
 /// Claude tabs (Decisions 4): every permission request is answered
@@ -328,8 +331,8 @@ fn stage_exit_plan_request(
     request: &Value,
     state: &Mutex<SessionRegistry>,
 ) -> Result<Option<Value>, String> {
-    let json_rpc_id = RequestId::from_message(request)
-        .ok_or_else(|| "plan request missing id".to_string())?;
+    let json_rpc_id =
+        RequestId::from_message(request).ok_or_else(|| "plan request missing id".to_string())?;
     let params = request.get("params").cloned().unwrap_or(Value::Null);
     let reject = reject_option_id(&params);
     let (plan_path, plans_dir) = {
@@ -599,8 +602,8 @@ pub fn stage_plan_request(
     request: &Value,
     state: &Mutex<SessionRegistry>,
 ) -> Result<Option<Value>, String> {
-    let json_rpc_id = RequestId::from_message(request)
-        .ok_or_else(|| "plan request missing id".to_string())?;
+    let json_rpc_id =
+        RequestId::from_message(request).ok_or_else(|| "plan request missing id".to_string())?;
     let params = request.get("params").cloned().unwrap_or(Value::Null);
     {
         let mut guard = state.lock().map_err(|e| e.to_string())?;
@@ -759,7 +762,8 @@ pub fn respond_question_request(
     }
     let result = match outcome.as_str() {
         "answered" => {
-            let id = choice_id.ok_or_else(|| "choiceId required for answered outcome".to_string())?;
+            let id =
+                choice_id.ok_or_else(|| "choiceId required for answered outcome".to_string())?;
             json!({
                 "outcome": "answered",
                 "choiceId": id
@@ -806,7 +810,11 @@ fn question_choices(params: &Value) -> Vec<QuestionChoiceDto> {
                 return None;
             }
             let resolved_id = if id.is_empty() { label.clone() } else { id };
-            let resolved_label = if label.is_empty() { resolved_id.clone() } else { label };
+            let resolved_label = if label.is_empty() {
+                resolved_id.clone()
+            } else {
+                label
+            };
             Some(QuestionChoiceDto {
                 id: resolved_id,
                 label: resolved_label,
@@ -955,12 +963,23 @@ mod tests {
 
     #[test]
     fn detects_exit_plan_mode() {
-        assert!(is_exit_plan_mode(&json!({ "toolCall": { "title": "Ready to code?" } })));
-        assert!(is_exit_plan_mode(&json!({ "toolCall": { "kind": "switch_mode" } })));
-        assert!(is_exit_plan_mode(&json!({ "toolCall": { "rawInput": { "plan": "# P" } } })));
-        assert!(!is_exit_plan_mode(&json!({ "toolCall": { "title": "`ls`", "kind": "execute" } })));
+        assert!(is_exit_plan_mode(
+            &json!({ "toolCall": { "title": "Ready to code?" } })
+        ));
+        assert!(is_exit_plan_mode(
+            &json!({ "toolCall": { "kind": "switch_mode" } })
+        ));
+        assert!(is_exit_plan_mode(
+            &json!({ "toolCall": { "rawInput": { "plan": "# P" } } })
+        ));
+        assert!(!is_exit_plan_mode(
+            &json!({ "toolCall": { "title": "`ls`", "kind": "execute" } })
+        ));
         assert!(crate::provider::plans_by_default("role_planner", None));
-        assert!(!crate::provider::plans_by_default("role_plan_reviewer", None));
+        assert!(!crate::provider::plans_by_default(
+            "role_plan_reviewer",
+            None
+        ));
     }
 
     #[test]

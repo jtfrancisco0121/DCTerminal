@@ -54,7 +54,13 @@ pub fn plan_file_in_update(update: &Value) -> Option<String> {
     let mut candidates: Vec<&Value> = Vec::new();
     for tool in std::iter::once(update).chain(nested) {
         if let Some(raw) = tool.get("rawInput").or_else(|| tool.get("raw_input")) {
-            for key in ["file_path", "filePath", "path", "planFilePath", "plan_file_path"] {
+            for key in [
+                "file_path",
+                "filePath",
+                "path",
+                "planFilePath",
+                "plan_file_path",
+            ] {
                 if let Some(value) = raw.get(key) {
                     candidates.push(value);
                 }
@@ -398,22 +404,37 @@ mod tests {
     #[test]
     fn remembers_the_newest_plan_file_a_tool_wrote_but_not_reads() {
         let mut cache = ToolCallCache::new();
-        let note = |update: Value| json!({ "method": "session/update", "params": { "update": update } });
-        cache.observe_notification(&note(json!({ "sessionUpdate": "tool_call", "toolCallId": "r1",
-            "kind": "read", "rawInput": { "file_path": "/h/.claude/plans/old.md" } })));
+        let note =
+            |update: Value| json!({ "method": "session/update", "params": { "update": update } });
+        cache.observe_notification(&note(
+            json!({ "sessionUpdate": "tool_call", "toolCallId": "r1",
+            "kind": "read", "rawInput": { "file_path": "/h/.claude/plans/old.md" } }),
+        ));
         // A status-only update of the read keeps it a read.
-        cache.observe_notification(&note(json!({ "sessionUpdate": "tool_call_update", "toolCallId": "r1",
-            "rawInput": { "file_path": "/h/.claude/plans/old.md" } })));
+        cache.observe_notification(&note(
+            json!({ "sessionUpdate": "tool_call_update", "toolCallId": "r1",
+            "rawInput": { "file_path": "/h/.claude/plans/old.md" } }),
+        ));
         assert_eq!(cache.last_plan_file(), None);
-        cache.observe_notification(&note(json!({ "sessionUpdate": "tool_call", "toolCallId": "w1",
-            "kind": "edit", "rawInput": {} })));
+        cache.observe_notification(&note(
+            json!({ "sessionUpdate": "tool_call", "toolCallId": "w1",
+            "kind": "edit", "rawInput": {} }),
+        ));
         cache.observe_notification(&note(json!({ "sessionUpdate": "tool_call_update", "toolCallId": "w1",
             "rawInput": { "file_path": "/h/.claude-account2/plans/fix-login.md", "content": "# P" } })));
-        assert_eq!(cache.last_plan_file(), Some("/h/.claude-account2/plans/fix-login.md"));
+        assert_eq!(
+            cache.last_plan_file(),
+            Some("/h/.claude-account2/plans/fix-login.md")
+        );
         // Writing an ordinary markdown file is not a plan.
-        cache.observe_notification(&note(json!({ "sessionUpdate": "tool_call", "toolCallId": "w2",
-            "kind": "edit", "locations": [{ "path": "/repo/docs/plans.md" }] })));
-        assert_eq!(cache.last_plan_file(), Some("/h/.claude-account2/plans/fix-login.md"));
+        cache.observe_notification(&note(
+            json!({ "sessionUpdate": "tool_call", "toolCallId": "w2",
+            "kind": "edit", "locations": [{ "path": "/repo/docs/plans.md" }] }),
+        ));
+        assert_eq!(
+            cache.last_plan_file(),
+            Some("/h/.claude-account2/plans/fix-login.md")
+        );
         assert!(is_plan_file_path("/x/plans/a.MD"));
         assert!(!is_plan_file_path("plans/a.md"));
         assert!(!is_plan_file_path("/x/plans/a.txt"));

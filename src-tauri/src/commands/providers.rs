@@ -1,8 +1,8 @@
 //! Provider settings and the per-tab provider (Claude-first plan, Phase 2).
 
+use crate::cli_detect::LoginStatus;
 use crate::provider::claude_config::{ConfigDirInfo, CONFIG_DIR_ENV};
 use crate::provider::claude_detect::{claude_login_status, resolve_claude};
-use crate::cli_detect::LoginStatus;
 use crate::provider::ProviderId;
 use crate::store::settings_store::{
     resolved_account_config, ClaudeProviderSettings, ProvidersSettings,
@@ -290,7 +290,10 @@ mod tests {
             // join never waits out the fake's loop.
             let _release = ReleaseOnDrop(&release);
             let check = scope.spawn(|| account_logins_from(&settings));
-            assert!(wait_for(&started, Duration::from_secs(5)), "fake claude started");
+            assert!(
+                wait_for(&started, Duration::from_secs(5)),
+                "fake claude started"
+            );
             let free = settings.try_lock().is_ok();
             std::fs::write(&release, b"").unwrap();
             let logins = check.join().unwrap().unwrap();

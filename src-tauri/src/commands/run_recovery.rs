@@ -16,8 +16,8 @@ use crate::claude_session_log::TerminalSessionLog;
 use crate::commands::chain_events::ChainEvents;
 use crate::commands::session_log::tab_session_target;
 use crate::pipelines::recovery::{
-    current_stage_tabs, reconcile_run_bridged, stall_limit, stop_stalled, working, Reconciled, StageTab,
-    StallObservation, StallWatch,
+    current_stage_tabs, reconcile_run_bridged, stall_limit, stop_stalled, working, Reconciled,
+    StageTab, StallObservation, StallWatch,
 };
 use crate::pipelines::PipelineDef;
 use crate::pty::PtyRegistry;
@@ -66,7 +66,10 @@ impl Watched {
 
 /// Every running autopilot run's current stage terminals. An engine-1 run
 /// is manual only (V6), even one saved with autopilot on, so it is skipped.
-fn running_stage_tabs(store: &Mutex<StateStore>, registry: &Mutex<PtyRegistry>) -> Result<Vec<Watched>, String> {
+fn running_stage_tabs(
+    store: &Mutex<StateStore>,
+    registry: &Mutex<PtyRegistry>,
+) -> Result<Vec<Watched>, String> {
     let state = store.lock().map_err(|e| e.to_string())?;
     let registry = registry.lock().map_err(|e| e.to_string())?;
     let mut out = Vec::new();
@@ -95,7 +98,10 @@ fn running_stage_tabs(store: &Mutex<StateStore>, registry: &Mutex<PtyRegistry>) 
 }
 
 /// The tab's session log and the file's size, read with no store lock held.
-fn read_log(readers: &SessionLogReaders, watched: &Watched) -> Option<(TerminalSessionLog, Option<u64>)> {
+fn read_log(
+    readers: &SessionLogReaders,
+    watched: &Watched,
+) -> Option<(TerminalSessionLog, Option<u64>)> {
     let (dir, session) = watched.target.as_ref()?;
     let reader = readers.tab_reader(&watched.tab.tab_id, dir, session)?;
     let reader = reader.lock().ok()?;
@@ -138,7 +144,9 @@ pub(crate) fn reconcile_on_startup(
     let mut no_turn: HashSet<String> = HashSet::new();
     for item in &watched {
         if let Some((log, _)) = read_log(readers, item) {
-            logs.entry(item.run_id.clone()).or_default().insert(item.tab.tab_id.clone(), log);
+            logs.entry(item.run_id.clone())
+                .or_default()
+                .insert(item.tab.tab_id.clone(), log);
         }
         match bridge_turn_of(runs_root, &item.tab.tab_id, item.bridge.as_ref()) {
             Some(Some(turn)) => {
@@ -156,7 +164,11 @@ pub(crate) fn reconcile_on_startup(
     }
     let mut state = store.lock().map_err(|e| e.to_string())?;
     for (run_id, run_logs) in &logs {
-        let Some(def) = watched.iter().find(|w| &w.run_id == run_id).map(|w| w.def.clone()) else {
+        let Some(def) = watched
+            .iter()
+            .find(|w| &w.run_id == run_id)
+            .map(|w| w.def.clone())
+        else {
             continue;
         };
         let Some(run) = state.pipeline_run_by_id_mut(run_id) else {
@@ -199,7 +211,9 @@ pub(crate) fn watchdog_tick(
         let key = item.key();
         let log = read_log(readers, item);
         let seen = StallObservation {
-            working: log.as_ref().is_some_and(|(log, _)| working(item.tab.kind, log)),
+            working: log
+                .as_ref()
+                .is_some_and(|(log, _)| working(item.tab.kind, log)),
             log_len: log.as_ref().and_then(|(_, len)| *len),
             pty_quiet: item.pty_quiet,
         };
@@ -267,8 +281,9 @@ impl StartupStops {
     pub fn take(&self, tab_ids: &[String]) -> Vec<AutopilotStopped> {
         let mut inner = self.0.lock().unwrap_or_else(|e| e.into_inner());
         inner.listening = true;
-        let (mine, others) =
-            std::mem::take(&mut inner.held).into_iter().partition(|stop| tab_ids.contains(&stop.tab_id));
+        let (mine, others) = std::mem::take(&mut inner.held)
+            .into_iter()
+            .partition(|stop| tab_ids.contains(&stop.tab_id));
         inner.held = others;
         mine
     }
@@ -295,28 +310,38 @@ fn announce(app: &AppHandle, outcome: RecoveryOutcome) {
 
 /// The startup reconcile, then the stall watchdog, on a thread of their own.
 pub fn spawn_run_recovery(app: AppHandle) {
-    let spawned = std::thread::Builder::new().name("run-recovery".into()).spawn(move || {
-        let (Some(store), Some(registry), Some(readers)) = (
-            app.try_state::<Mutex<StateStore>>(),
-            app.try_state::<Mutex<PtyRegistry>>(),
-            app.try_state::<SessionLogReaders>(),
-        ) else {
-            return;
-        };
-        let runs_root = crate::bridge::launch::runs_root(&crate::data_dir::app_data_dir(&app).path);
-        match reconcile_on_startup(&store, &registry, &readers, &runs_root) {
-            Ok(outcome) => announce(&app, outcome),
-            Err(err) => eprintln!("DCTerminal: restart recovery failed: {err}"),
-        }
-        let mut watch = StallWatch::new();
-        loop {
-            std::thread::sleep(WATCHDOG_TICK);
-            match watchdog_tick(&store, &registry, &readers, &mut watch, Instant::now(), &stall_limit) {
+    let spawned = std::thread::Builder::new()
+        .name("run-recovery".into())
+        .spawn(move || {
+            let (Some(store), Some(registry), Some(readers)) = (
+                app.try_state::<Mutex<StateStore>>(),
+                app.try_state::<Mutex<PtyRegistry>>(),
+                app.try_state::<SessionLogReaders>(),
+            ) else {
+                return;
+            };
+            let runs_root =
+                crate::bridge::launch::runs_root(&crate::data_dir::app_data_dir(&app).path);
+            match reconcile_on_startup(&store, &registry, &readers, &runs_root) {
                 Ok(outcome) => announce(&app, outcome),
-                Err(err) => eprintln!("DCTerminal: stall watchdog: {err}"),
+                Err(err) => eprintln!("DCTerminal: restart recovery failed: {err}"),
             }
-        }
-    });
+            let mut watch = StallWatch::new();
+            loop {
+                std::thread::sleep(WATCHDOG_TICK);
+                match watchdog_tick(
+                    &store,
+                    &registry,
+                    &readers,
+                    &mut watch,
+                    Instant::now(),
+                    &stall_limit,
+                ) {
+                    Ok(outcome) => announce(&app, outcome),
+                    Err(err) => eprintln!("DCTerminal: stall watchdog: {err}"),
+                }
+            }
+        });
     if let Err(err) = spawned {
         eprintln!("DCTerminal: could not start restart recovery: {err}");
     }
@@ -333,10 +358,20 @@ pub fn continue_after_restart(store: &mut StateStore, run_id: &str) -> Result<Ve
     if run.status != RunStatus::Waiting || run.stop_reason != Some(StopReason::AppRestarted) {
         return Err("This run is not waiting after a restart.".into());
     }
-    let def = crate::pipelines::find(&run.kind).ok_or_else(|| format!("unknown pipeline: {}", run.kind))?;
+    let def = crate::pipelines::find(&run.kind)
+        .ok_or_else(|| format!("unknown pipeline: {}", run.kind))?;
     run.resume_after_you();
-    run.log("autopilot", None, None, "Continued by you after the restart", None);
-    let tabs = current_stage_tabs(&def, run).into_iter().map(|tab| tab.tab_id).collect();
+    run.log(
+        "autopilot",
+        None,
+        None,
+        "Continued by you after the restart",
+        None,
+    );
+    let tabs = current_stage_tabs(&def, run)
+        .into_iter()
+        .map(|tab| tab.tab_id)
+        .collect();
     store.save()?;
     Ok(tabs)
 }
@@ -345,7 +380,10 @@ pub fn continue_after_restart(store: &mut StateStore, run_id: &str) -> Result<Ve
 /// on the calling window's tabs. The frontend calls this once its
 /// `autopilot-stopped` listener is attached and its tab list has loaded.
 #[tauri::command]
-pub fn autopilot_pending_stops(tab_ids: Vec<String>, stops: State<StartupStops>) -> Vec<AutopilotStopped> {
+pub fn autopilot_pending_stops(
+    tab_ids: Vec<String>,
+    stops: State<StartupStops>,
+) -> Vec<AutopilotStopped> {
     stops.take(&tab_ids)
 }
 

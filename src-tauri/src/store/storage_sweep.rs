@@ -161,8 +161,16 @@ mod tests {
         let month = Duration::from_secs(31 * 24 * 60 * 60);
         let hour = Duration::from_secs(60 * 60);
         write_aged(&dir.join("scratch.json.corrupt-20200101"), b"xx", month);
-        write_aged(&dir.join("prompts.json.corrupt-20261018T000000000"), b"x", hour);
-        write_aged(&dir.join("settings.json.from-v7-20200101T000000000"), b"x", month);
+        write_aged(
+            &dir.join("prompts.json.corrupt-20261018T000000000"),
+            b"x",
+            hour,
+        );
+        write_aged(
+            &dir.join("settings.json.from-v7-20200101T000000000"),
+            b"x",
+            month,
+        );
         write_aged(&transcripts.join("tab_1.json.corrupt-1"), b"xxx", month);
         write_aged(&transcripts.join("tab_gone.json.bak"), b"xxxx", month);
         write_aged(&transcripts.join("tab_2.json"), b"{}", month);
@@ -172,9 +180,13 @@ mod tests {
         let freed = sweep_leftovers(&dir, SystemTime::now(), STALE_AFTER);
         assert_eq!(freed, 2 + 3 + 4);
         assert!(!dir.join("scratch.json.corrupt-20200101").exists());
-        assert!(dir.join("prompts.json.corrupt-20261018T000000000").exists(), "too new");
         assert!(
-            dir.join("settings.json.from-v7-20200101T000000000").exists(),
+            dir.join("prompts.json.corrupt-20261018T000000000").exists(),
+            "too new"
+        );
+        assert!(
+            dir.join("settings.json.from-v7-20200101T000000000")
+                .exists(),
             "a file from another version is never swept"
         );
         assert!(!transcripts.join("tab_1.json.corrupt-1").exists());

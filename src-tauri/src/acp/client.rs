@@ -259,7 +259,12 @@ impl AcpClient {
         let Some(config_id) = self.models.effort_config_id.clone() else {
             return Err("This agent does not offer an effort setting.".to_string());
         };
-        if !self.models.effort_available.iter().any(|value| value == effort) {
+        if !self
+            .models
+            .effort_available
+            .iter()
+            .any(|value| value == effort)
+        {
             return Err(format!("not an effort level: {effort}"));
         }
         if self.models.effort_current.as_deref() == Some(effort) {
@@ -362,9 +367,7 @@ impl AcpClient {
             return Err("prompt text is empty".to_string());
         }
         if !images.is_empty() && !self.supports_images() {
-            return Err(
-                "This chat's agent does not accept images — send text only.".to_string(),
-            );
+            return Err("This chat's agent does not accept images — send text only.".to_string());
         }
         crate::attachments::validate_count(images.len())?;
         // A cancel that arrived before this turn is stale.

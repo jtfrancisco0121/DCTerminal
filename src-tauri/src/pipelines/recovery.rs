@@ -36,7 +36,11 @@ pub struct StageTab {
     pub own: bool,
 }
 
-fn stage_tabs_of(stage: &StageDef, tab_ids: &HashMap<String, String>, lane: Option<&str>) -> Vec<StageTab> {
+fn stage_tabs_of(
+    stage: &StageDef,
+    tab_ids: &HashMap<String, String>,
+    lane: Option<&str>,
+) -> Vec<StageTab> {
     stage
         .roles()
         .into_iter()
@@ -63,7 +67,13 @@ pub fn current_stage_tabs(def: &PipelineDef, run: &PipelineRun) -> Vec<StageTab>
             .lanes
             .iter()
             .filter(|lane| lane.status == "active")
-            .filter_map(|lane| Some(stage_tabs_of(def.stage(&lane.stage)?, &lane.tab_ids, Some(&lane.id))))
+            .filter_map(|lane| {
+                Some(stage_tabs_of(
+                    def.stage(&lane.stage)?,
+                    &lane.tab_ids,
+                    Some(&lane.id),
+                ))
+            })
             .flatten()
             .collect();
     }
@@ -80,8 +90,14 @@ pub fn finished_turn(kind: StageKind, log: &TerminalSessionLog) -> bool {
         return !log.interrupted;
     }
     kind == StageKind::Planner
-        && log.open_tool.as_ref().is_some_and(|tool| tool.name == "ExitPlanMode")
-        && log.plan.as_deref().is_some_and(|plan| !plan.trim().is_empty())
+        && log
+            .open_tool
+            .as_ref()
+            .is_some_and(|tool| tool.name == "ExitPlanMode")
+        && log
+            .plan
+            .as_deref()
+            .is_some_and(|plan| !plan.trim().is_empty())
 }
 
 /// A prompt was sent and its turn has not finished (or been interrupted).
@@ -94,7 +110,11 @@ pub fn working(kind: StageKind, log: &TerminalSessionLog) -> bool {
 /// removed in V6), and a mid-run switch to engine 1 records the relaunched
 /// tab's last finished turn under it (`last_turn_key` in `pty`).
 pub fn turn_key(tab_id: &str, log: &TerminalSessionLog) -> String {
-    format!("{tab_id}|{}|{}", log.session_id, log.last_prompt_at.as_deref().unwrap_or(""))
+    format!(
+        "{tab_id}|{}|{}",
+        log.session_id,
+        log.last_prompt_at.as_deref().unwrap_or("")
+    )
 }
 
 /// A bridged (engine-2) turn's key, `tab|bridge|<turn id>`, as the run
@@ -179,11 +199,17 @@ pub fn reconcile_run_bridged(
         );
         run.set_waiting(StopReason::AppRestarted, why.clone());
         log_for(run, "stop", &tab, why.clone());
-        return Some(Reconciled::Waiting { tab_id: tab.tab_id, why });
+        return Some(Reconciled::Waiting {
+            tab_id: tab.tab_id,
+            why,
+        });
     }
-    let pending = tabs
-        .iter()
-        .find(|tab| no_turn.contains(&tab.tab_id) && logs.get(&tab.tab_id).is_some_and(|log| finished_turn(tab.kind, log)));
+    let pending = tabs.iter().find(|tab| {
+        no_turn.contains(&tab.tab_id)
+            && logs
+                .get(&tab.tab_id)
+                .is_some_and(|log| finished_turn(tab.kind, log))
+    });
     if let Some(tab) = pending.cloned() {
         let note = format!(
             "{} was being sent its next round when the app closed, and the round may not have reached it. \
@@ -195,7 +221,10 @@ pub fn reconcile_run_bridged(
     }
     let cut_off = tabs
         .iter()
-        .find(|tab| logs.get(&tab.tab_id).is_some_and(|log| working(tab.kind, log)))
+        .find(|tab| {
+            logs.get(&tab.tab_id)
+                .is_some_and(|log| working(tab.kind, log))
+        })
         .cloned()?;
     let note = format!(
         "{}'s turn was cut off when the app closed. Autopilot acts on its next finished turn.",
@@ -230,7 +259,11 @@ fn log_for(run: &mut PipelineRun, kind: &str, tab: &StageTab, summary: String) {
 /// (only checked on save) counts as the default of 30; the file is left as is.
 pub fn stall_limit(def: &PipelineDef) -> Duration {
     let minutes = def.autopilot.stall_minutes;
-    let minutes = if (1..=MAX_STALL_MINUTES).contains(&minutes) { minutes } else { DEFAULT_STALL_MINUTES };
+    let minutes = if (1..=MAX_STALL_MINUTES).contains(&minutes) {
+        minutes
+    } else {
+        DEFAULT_STALL_MINUTES
+    };
     Duration::from_secs(u64::from(minutes) * 60)
 }
 
@@ -269,7 +302,13 @@ impl StallWatch {
 
     /// Record one look at `key` (`run|tab`). How long it has been quiet,
     /// once that reaches `limit` while it is Working.
-    pub fn observe(&mut self, key: &str, now: Instant, seen: StallObservation, limit: Duration) -> Option<Duration> {
+    pub fn observe(
+        &mut self,
+        key: &str,
+        now: Instant,
+        seen: StallObservation,
+        limit: Duration,
+    ) -> Option<Duration> {
         if !seen.working {
             self.tabs.remove(key);
             return None;
@@ -285,7 +324,9 @@ impl StallWatch {
         }
         let since_first = now.saturating_duration_since(watched.since);
         let log_quiet = now.saturating_duration_since(watched.log_changed);
-        let pty_quiet = seen.pty_quiet.map_or(since_first, |quiet| quiet.min(since_first));
+        let pty_quiet = seen
+            .pty_quiet
+            .map_or(since_first, |quiet| quiet.min(since_first));
         let quiet = log_quiet.min(pty_quiet);
         (quiet >= limit).then_some(quiet)
     }

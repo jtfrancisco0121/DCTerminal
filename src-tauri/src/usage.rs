@@ -108,13 +108,12 @@ impl UsageStore {
             return;
         }
         self.tab_config.insert(tab_id.to_string(), key.clone());
-        if let (Some(used), Some(size)) = (json_u64(update.get("used")), json_u64(update.get("size")))
+        if let (Some(used), Some(size)) =
+            (json_u64(update.get("used")), json_u64(update.get("size")))
         {
             if size > 0 {
-                self.context.insert(
-                    tab_id.to_string(),
-                    ContextFill { used, size },
-                );
+                self.context
+                    .insert(tab_id.to_string(), ContextFill { used, size });
             }
         }
         let Some(limit) = update
@@ -200,7 +199,11 @@ impl UsageStore {
             .tab_config
             .iter()
             .filter(|(_, dir)| dir.as_str() == key)
-            .filter_map(|(tab, _)| self.context.get(tab).map(|fill| (tab.clone(), fill.clone())))
+            .filter_map(|(tab, _)| {
+                self.context
+                    .get(tab)
+                    .map(|fill| (tab.clone(), fill.clone()))
+            })
             .collect();
         UsageSnapshot {
             config_dir: key.to_string(),
@@ -236,7 +239,11 @@ fn json_u64(value: Option<&Value>) -> Option<u64> {
     value.and_then(|v| {
         v.as_u64()
             .or_else(|| v.as_i64().filter(|n| *n >= 0).map(|n| n as u64))
-            .or_else(|| v.as_f64().filter(|n| n.is_finite() && *n >= 0.0).map(|n| n as u64))
+            .or_else(|| {
+                v.as_f64()
+                    .filter(|n| n.is_finite() && *n >= 0.0)
+                    .map(|n| n as u64)
+            })
     })
 }
 
@@ -277,8 +284,16 @@ mod tests {
         let lines = file["messages"].as_array().cloned().unwrap_or_default();
         let mut store = UsageStore::default();
         for line in &lines {
-            let params = line.get("params").cloned().unwrap_or(serde_json::Value::Null);
-            store.note("/tmp/claude-account2", "tab_1", &params.to_string(), 1_700_000_000_000);
+            let params = line
+                .get("params")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            store.note(
+                "/tmp/claude-account2",
+                "tab_1",
+                &params.to_string(),
+                1_700_000_000_000,
+            );
         }
         let snap = store.snapshot("/tmp/claude-account2");
         assert_eq!(snap.windows.len(), 1);
@@ -349,13 +364,22 @@ mod tests {
         store.fold("/cfg", Vec::new());
         assert!(store.snapshot("/cfg").windows.is_empty());
 
-        store.fold("/cfg", vec![window("five_hour", Some(42.0), 100, 10), window("seven_day", Some(7.0), 900, 10)]);
+        store.fold(
+            "/cfg",
+            vec![
+                window("five_hour", Some(42.0), 100, 10),
+                window("seven_day", Some(7.0), 900, 10),
+            ],
+        );
         let snap = store.snapshot("/cfg");
         assert_eq!(snap.windows.len(), 2);
         assert_eq!(snap.windows[0].utilization, Some(42.0));
         assert!(store.snapshot("/other").windows.is_empty());
         // Saved like a chat reading, so it is shown after a restart.
-        assert_eq!(UsageStore::open(dir.path()).snapshot("/cfg").windows.len(), 2);
+        assert_eq!(
+            UsageStore::open(dir.path()).snapshot("/cfg").windows.len(),
+            2
+        );
 
         // An older reading never replaces a newer one.
         store.fold("/cfg", vec![window("five_hour", Some(10.0), 100, 5)]);

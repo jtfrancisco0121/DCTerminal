@@ -32,7 +32,9 @@ pub struct RepoEntry {
 pub fn valid_repo_name(name: &str) -> bool {
     !name.is_empty()
         && name.chars().count() <= MAX_REPO_NAME_CHARS
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 /// What is wrong with a name, in the words the settings form shows.
@@ -41,15 +43,20 @@ fn name_problem(name: &str) -> Option<String> {
         return Some("Give the repo a name, such as backend.".to_string());
     }
     if name.chars().count() > MAX_REPO_NAME_CHARS {
-        return Some(format!("The name {name:?} is longer than {MAX_REPO_NAME_CHARS} characters."));
+        return Some(format!(
+            "The name {name:?} is longer than {MAX_REPO_NAME_CHARS} characters."
+        ));
     }
-    (!valid_repo_name(name)).then(|| format!("The name {name:?} may use only letters, digits, - and _."))
+    (!valid_repo_name(name))
+        .then(|| format!("The name {name:?} may use only letters, digits, - and _."))
 }
 
 /// `repos` as `settings.json` holds it: entries that do not read as a repo,
 /// and later duplicates of a name, are dropped. Folders are not checked
 /// here: a folder on a drive that is not mounted yet stays listed.
-pub(crate) fn deserialize_repos<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<RepoEntry>, D::Error> {
+pub(crate) fn deserialize_repos<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<RepoEntry>, D::Error> {
     let value = serde_json::Value::deserialize(deserializer)?;
     let mut out: Vec<RepoEntry> = Vec::new();
     for item in value.as_array().into_iter().flatten() {
@@ -68,7 +75,9 @@ pub(crate) fn deserialize_repos<'de, D: serde::Deserializer<'de>>(deserializer: 
 
 /// The repo named `name` (any case), when it is set up.
 pub fn find_repo<'a>(repos: &'a [RepoEntry], name: &str) -> Option<&'a RepoEntry> {
-    repos.iter().find(|repo| repo.name.eq_ignore_ascii_case(name.trim()))
+    repos
+        .iter()
+        .find(|repo| repo.name.eq_ignore_ascii_case(name.trim()))
 }
 
 /// Check a whole list before it is saved: trimmed, every name valid and
@@ -102,9 +111,13 @@ fn check_folder(name: &str, raw: &str) -> Result<String, String> {
     if folder.contains(['\n', '\r']) || folder.chars().count() > MAX_REPO_FOLDER_CHARS {
         return Err(format!("The folder of {name} is not a folder path."));
     }
-    let path = crate::paths::validate_working_folder(folder).map_err(|err| format!("{name}: {}", err.message()))?;
+    let path = crate::paths::validate_working_folder(folder)
+        .map_err(|err| format!("{name}: {}", err.message()))?;
     crate::worktree::repo_info(&path).map_err(|_| {
-        format!("{name}: {} is not a git repository, so fan-out could not make worktrees there.", path.display())
+        format!(
+            "{name}: {} is not a git repository, so fan-out could not make worktrees there.",
+            path.display()
+        )
     })?;
     Ok(folder.to_string())
 }
@@ -123,7 +136,9 @@ impl super::SettingsStore {
 
 /// Read Settings › Repos.
 #[tauri::command]
-pub fn get_repos_settings(settings: tauri::State<Mutex<super::SettingsStore>>) -> Result<Vec<RepoEntry>, String> {
+pub fn get_repos_settings(
+    settings: tauri::State<Mutex<super::SettingsStore>>,
+) -> Result<Vec<RepoEntry>, String> {
     let settings = settings.lock().map_err(|err| err.to_string())?;
     Ok(settings.repos().to_vec())
 }
@@ -131,7 +146,10 @@ pub fn get_repos_settings(settings: tauri::State<Mutex<super::SettingsStore>>) -
 /// Save Settings › Repos: checked first (folders run `git`, so with no lock
 /// held), then written. Returns the list as saved.
 #[tauri::command]
-pub async fn set_repos_settings(app: tauri::AppHandle, repos: Vec<RepoEntry>) -> Result<Vec<RepoEntry>, String> {
+pub async fn set_repos_settings(
+    app: tauri::AppHandle,
+    repos: Vec<RepoEntry>,
+) -> Result<Vec<RepoEntry>, String> {
     use tauri::Manager;
     let checked = tauri::async_runtime::spawn_blocking(move || check_repos(repos))
         .await
@@ -153,11 +171,22 @@ mod tests {
         let out = std::process::Command::new("git")
             .arg("-C")
             .arg(dir)
-            .args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "init.defaultBranch=main"])
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.com",
+                "-c",
+                "init.defaultBranch=main",
+            ])
             .args(args)
             .output()
             .unwrap();
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     fn repo(dir: &TempDir, name: &str) -> String {
@@ -169,13 +198,20 @@ mod tests {
     }
 
     fn entry(name: &str, folder: &str) -> RepoEntry {
-        RepoEntry { name: name.into(), folder: folder.into() }
+        RepoEntry {
+            name: name.into(),
+            folder: folder.into(),
+        }
     }
 
     #[test]
     fn a_settings_file_from_before_repos_loads_with_none_and_bad_entries_are_dropped() {
         let dir = TempDir::new("repos_settings_old");
-        std::fs::write(dir.join("settings.json"), r#"{"schemaVersion": 1, "ui": {"theme": "nord"}}"#).unwrap();
+        std::fs::write(
+            dir.join("settings.json"),
+            r#"{"schemaVersion": 1, "ui": {"theme": "nord"}}"#,
+        )
+        .unwrap();
         let store = SettingsStore::open(dir.path()).unwrap();
         assert!(store.repos().is_empty());
         assert_eq!(store.ui().theme, "nord", "the rest of the file is kept");
@@ -194,7 +230,13 @@ mod tests {
         )
         .unwrap();
         let store = SettingsStore::open(dir.path()).unwrap();
-        assert_eq!(store.repos(), [entry("backend", "/src/backend"), entry("engine", "/src/engine")]);
+        assert_eq!(
+            store.repos(),
+            [
+                entry("backend", "/src/backend"),
+                entry("engine", "/src/engine")
+            ]
+        );
         assert_eq!(store.ui().theme, "nord");
     }
 
@@ -208,24 +250,46 @@ mod tests {
 
         let saved = check_repos(vec![entry(" backend ", &format!(" {backend} "))]).unwrap();
         assert_eq!(saved, [entry("backend", &backend)], "trimmed");
-        assert!(check_repos(vec![entry("", &backend)]).unwrap_err().contains("Give the repo a name"));
-        assert!(check_repos(vec![entry("my repo", &backend)]).unwrap_err().contains("only letters, digits, - and _"));
+        assert!(check_repos(vec![entry("", &backend)])
+            .unwrap_err()
+            .contains("Give the repo a name"));
+        assert!(check_repos(vec![entry("my repo", &backend)])
+            .unwrap_err()
+            .contains("only letters, digits, - and _"));
         let long = "a".repeat(MAX_REPO_NAME_CHARS + 1);
-        assert!(check_repos(vec![entry(&long, &backend)]).unwrap_err().contains("longer than"));
-        let dup = check_repos(vec![entry("backend", &backend), entry("BACKEND", &backend)]).unwrap_err();
+        assert!(check_repos(vec![entry(&long, &backend)])
+            .unwrap_err()
+            .contains("longer than"));
+        let dup =
+            check_repos(vec![entry("backend", &backend), entry("BACKEND", &backend)]).unwrap_err();
         assert!(dup.contains("already a repo named BACKEND"), "{dup}");
-        assert!(check_repos(vec![entry("web", "  ")]).unwrap_err().contains("Choose the folder of web"));
-        let missing = check_repos(vec![entry("web", &dir.join("gone").display().to_string())]).unwrap_err();
-        assert!(missing.starts_with("web: Working folder was not found"), "{missing}");
+        assert!(check_repos(vec![entry("web", "  ")])
+            .unwrap_err()
+            .contains("Choose the folder of web"));
+        let missing =
+            check_repos(vec![entry("web", &dir.join("gone").display().to_string())]).unwrap_err();
+        assert!(
+            missing.starts_with("web: Working folder was not found"),
+            "{missing}"
+        );
         let not_git = check_repos(vec![entry("web", &plain)]).unwrap_err();
         assert!(not_git.contains("is not a git repository"), "{not_git}");
-        let many: Vec<RepoEntry> = (0..=MAX_REPOS).map(|n| entry(&format!("r{n}"), &backend)).collect();
+        let many: Vec<RepoEntry> = (0..=MAX_REPOS)
+            .map(|n| entry(&format!("r{n}"), &backend))
+            .collect();
         assert!(check_repos(many).unwrap_err().contains("At most"));
 
         let mut store = SettingsStore::open(&dir.join("app")).unwrap();
         store.set_repos(saved).unwrap();
         let again = SettingsStore::open(&dir.join("app")).unwrap();
-        assert_eq!(again.repos(), [entry("backend", &backend)], "kept in settings.json");
-        assert_eq!(find_repo(again.repos(), "Backend").map(|r| r.name.as_str()), Some("backend"));
+        assert_eq!(
+            again.repos(),
+            [entry("backend", &backend)],
+            "kept in settings.json"
+        );
+        assert_eq!(
+            find_repo(again.repos(), "Backend").map(|r| r.name.as_str()),
+            Some("backend")
+        );
     }
 }

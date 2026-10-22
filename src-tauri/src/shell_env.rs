@@ -239,7 +239,12 @@ fn refresh_for(
 
 #[cfg(unix)]
 fn refresh_cache(refresh: &Refresh, timeout: Duration, slot: &std::sync::Mutex<RefreshChild>) {
-    match shell_path(&refresh.shell, Some(&refresh.inherited), timeout, Some(slot)) {
+    match shell_path(
+        &refresh.shell,
+        Some(&refresh.inherited),
+        timeout,
+        Some(slot),
+    ) {
         Some(login) => write_cache(&refresh.cache, &refresh.shell, &login),
         // Keep the old cache: one slow or failed run says little.
         None => eprintln!(
@@ -685,7 +690,9 @@ mod tests {
         let dir = TempDir::new("shell_env_printed_then_hung");
         let shell = fake_shell(
             &dir,
-            &format!("echo {START_MARKER}\necho /printed/bin:/usr/bin\necho {END_MARKER}\nsleep 30"),
+            &format!(
+                "echo {START_MARKER}\necho /printed/bin:/usr/bin\necho {END_MARKER}\nsleep 30"
+            ),
         );
         // Long enough for a freshly written script's first launch (macOS
         // checks a new executable before it runs), far below the sleep.
@@ -752,7 +759,11 @@ mod tests {
             Duration::from_secs(5),
         );
         assert_eq!(resolved.source, Source::LoginShell);
-        assert!(resolved.path.starts_with("/fresh/bin:/usr/bin"), "{}", resolved.path);
+        assert!(
+            resolved.path.starts_with("/fresh/bin:/usr/bin"),
+            "{}",
+            resolved.path
+        );
         assert_eq!(read_cache(&cache, &shell).as_deref(), Some("/fresh/bin"));
         assert_eq!(read_cache(&cache, Path::new("/bin/other-shell")), None);
     }
@@ -772,7 +783,11 @@ mod tests {
             inherited: "/inherited/bin:/usr/bin:/bin".into(),
             cache: cache.clone(),
         };
-        refresh_cache(&refresh, Duration::from_secs(5), &std::sync::Mutex::new(RefreshChild::NEW));
+        refresh_cache(
+            &refresh,
+            Duration::from_secs(5),
+            &std::sync::Mutex::new(RefreshChild::NEW),
+        );
         assert_eq!(
             read_cache(&cache, &shell).as_deref(),
             Some("/inherited/bin:/usr/bin:/bin")
@@ -784,8 +799,15 @@ mod tests {
             cache: cache.clone(),
         };
         write_cache(&cache, &broken.shell, "/kept/bin");
-        refresh_cache(&broken, Duration::from_secs(1), &std::sync::Mutex::new(RefreshChild::NEW));
-        assert_eq!(read_cache(&cache, &broken.shell).as_deref(), Some("/kept/bin"));
+        refresh_cache(
+            &broken,
+            Duration::from_secs(1),
+            &std::sync::Mutex::new(RefreshChild::NEW),
+        );
+        assert_eq!(
+            read_cache(&cache, &broken.shell).as_deref(),
+            Some("/kept/bin")
+        );
     }
 
     #[test]
@@ -815,7 +837,11 @@ mod tests {
             Some(cache.clone()),
         )
         .expect("an unanswered startup shell arms the refresh");
-        refresh_cache(&refresh, Duration::from_secs(10), &std::sync::Mutex::new(RefreshChild::NEW));
+        refresh_cache(
+            &refresh,
+            Duration::from_secs(10),
+            &std::sync::Mutex::new(RefreshChild::NEW),
+        );
 
         let next = startup_path(
             &shell,
@@ -868,7 +894,10 @@ mod tests {
                 if let Some(running) = slot.lock().unwrap().running.clone() {
                     break running;
                 }
-                assert!(Instant::now() < deadline, "the refresh never started its shell");
+                assert!(
+                    Instant::now() < deadline,
+                    "the refresh never started its shell"
+                );
                 std::thread::sleep(Duration::from_millis(10));
             };
             assert!(tmp.exists());
@@ -892,7 +921,11 @@ mod tests {
         // A refresh that starts after the stop runs no shell.
         let started = Instant::now();
         refresh_cache(&refresh, Duration::from_secs(15), &slot);
-        assert!(started.elapsed() < Duration::from_millis(500), "{:?}", started.elapsed());
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "{:?}",
+            started.elapsed()
+        );
         assert_eq!(read_cache(&cache, &shell), None);
     }
 

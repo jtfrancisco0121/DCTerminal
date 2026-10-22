@@ -40,7 +40,11 @@ pub fn migrate_windows(data: &mut AppStateFile) -> bool {
             closed.window_id = MAIN_WINDOW_ID.to_string();
         }
     }
-    if !data.windows.iter().any(|window| window.id == MAIN_WINDOW_ID) {
+    if !data
+        .windows
+        .iter()
+        .any(|window| window.id == MAIN_WINDOW_ID)
+    {
         data.windows.insert(
             0,
             WindowRecord {

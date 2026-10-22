@@ -11,8 +11,8 @@ use crate::models::{
 };
 use crate::provider::claude_config::{resolve_with, ConfigDirInfo, ConfigDirSource};
 use crate::provider::claude_detect::{
-    cached_claude_version, claude_login_status, parse_claude_auth_status, read_claude_version, resolve_adapter_with,
-    resolve_claude_with, Lookup,
+    cached_claude_version, claude_login_status, parse_claude_auth_status, read_claude_version,
+    resolve_adapter_with, resolve_claude_with, Lookup,
 };
 use crate::pty::plans::newest_plan_since;
 use crate::test_support::{names_in, TempDir};
@@ -153,27 +153,56 @@ fn the_pipeline_gate_reads_each_claude_version_once() {
     let claude = fake_binary(
         bin.path(),
         "claude",
-        &format!("echo x >> '{}'\nprintf '2.1.287 (Claude Code)\\n'", runs.display()),
+        &format!(
+            "echo x >> '{}'\nprintf '2.1.287 (Claude Code)\\n'",
+            runs.display()
+        ),
     );
     let info = config_info(config.path(), true);
-    assert_eq!(cached_claude_version(&claude, &info).as_deref(), Some("2.1.287 (Claude Code)"));
-    assert_eq!(cached_claude_version(&claude, &info).as_deref(), Some("2.1.287 (Claude Code)"));
+    assert_eq!(
+        cached_claude_version(&claude, &info).as_deref(),
+        Some("2.1.287 (Claude Code)")
+    );
+    assert_eq!(
+        cached_claude_version(&claude, &info).as_deref(),
+        Some("2.1.287 (Claude Code)")
+    );
     let count = std::fs::read_to_string(&runs).unwrap().lines().count();
     assert_eq!(count, 1, "claude --version ran once");
     // An unreadable version is not cached: the next launch tries again.
-    let silent = fake_binary(bin.path(), "claude_silent", &format!("echo x >> '{}'", runs.display()));
+    let silent = fake_binary(
+        bin.path(),
+        "claude_silent",
+        &format!("echo x >> '{}'", runs.display()),
+    );
     assert_eq!(cached_claude_version(&silent, &info), None);
     assert_eq!(cached_claude_version(&silent, &info), None);
     assert_eq!(std::fs::read_to_string(&runs).unwrap().lines().count(), 3);
     let failing = fake_binary(
         bin.path(),
         "claude_fail",
-        &format!("echo x >> '{}'\necho 'boom: bad install' >&2\nexit 3", runs.display()),
+        &format!(
+            "echo x >> '{}'\necho 'boom: bad install' >&2\nexit 3",
+            runs.display()
+        ),
     );
-    assert_eq!(cached_claude_version(&failing, &info).as_deref(), Some("boom: bad install"));
-    assert_eq!(cached_claude_version(&failing, &info).as_deref(), Some("boom: bad install"));
-    assert_eq!(std::fs::read_to_string(&runs).unwrap().lines().count(), 5, "an error is not a version");
-    assert!(names_in(config.path()).is_empty(), "nothing written to the config dir");
+    assert_eq!(
+        cached_claude_version(&failing, &info).as_deref(),
+        Some("boom: bad install")
+    );
+    assert_eq!(
+        cached_claude_version(&failing, &info).as_deref(),
+        Some("boom: bad install")
+    );
+    assert_eq!(
+        std::fs::read_to_string(&runs).unwrap().lines().count(),
+        5,
+        "an error is not a version"
+    );
+    assert!(
+        names_in(config.path()).is_empty(),
+        "nothing written to the config dir"
+    );
 }
 
 #[cfg(unix)]
@@ -182,19 +211,36 @@ fn an_in_place_claude_update_is_seen_without_restarting_the_app() {
     let bin = TempDir::new("detect_updated_version_bin");
     let config = TempDir::new("detect_updated_version_cfg");
     let info = config_info(config.path(), true);
-    let target = fake_binary(bin.path(), "claude-2.1.200", "printf '2.1.200 (Claude Code)\\n'");
+    let target = fake_binary(
+        bin.path(),
+        "claude-2.1.200",
+        "printf '2.1.200 (Claude Code)\\n'",
+    );
     let claude = bin.join("claude");
     std::os::unix::fs::symlink(&target, &claude).unwrap();
-    assert_eq!(cached_claude_version(&claude, &info).as_deref(), Some("2.1.200 (Claude Code)"));
+    assert_eq!(
+        cached_claude_version(&claude, &info).as_deref(),
+        Some("2.1.200 (Claude Code)")
+    );
     // The auto-updater points the same path at the new version.
-    let newer = fake_binary(bin.path(), "claude-2.1.300", "printf '2.1.300 (Claude Code)\\n'");
+    let newer = fake_binary(
+        bin.path(),
+        "claude-2.1.300",
+        "printf '2.1.300 (Claude Code)\\n'",
+    );
     std::fs::remove_file(&claude).unwrap();
     std::os::unix::fs::symlink(&newer, &claude).unwrap();
-    assert_eq!(cached_claude_version(&claude, &info).as_deref(), Some("2.1.300 (Claude Code)"));
+    assert_eq!(
+        cached_claude_version(&claude, &info).as_deref(),
+        Some("2.1.300 (Claude Code)")
+    );
     // Rewritten in place (another size): seen too.
     let longer = "printf '2.1.301 (Claude Code)\\n' # rewritten in place";
     std::fs::write(&newer, format!("#!/bin/sh\n{longer}\n")).unwrap();
-    assert_eq!(cached_claude_version(&claude, &info).as_deref(), Some("2.1.301 (Claude Code)"));
+    assert_eq!(
+        cached_claude_version(&claude, &info).as_deref(),
+        Some("2.1.301 (Claude Code)")
+    );
 }
 
 #[cfg(unix)]

@@ -703,7 +703,12 @@ mod tests {
         assert_eq!(outcome.decision, PolicyDecision::AllowOnce);
         let result = outcome.auto_result.expect("auto");
         assert_eq!(result["outcome"]["optionId"], "allow-once");
-        for class in [ToolClass::Write, ToolClass::Shell, ToolClass::Mcp, ToolClass::Unknown] {
+        for class in [
+            ToolClass::Write,
+            ToolClass::Shell,
+            ToolClass::Mcp,
+            ToolClass::Unknown,
+        ] {
             assert_eq!(
                 decide_for_role("role_plan_reviewer", class),
                 PolicyDecision::AllowOnce,
@@ -763,7 +768,10 @@ mod tests {
         });
         let outcome = evaluate_permission("role_planner", &params);
         assert_eq!(outcome.decision, PolicyDecision::AllowOnce);
-        assert_eq!(outcome.auto_result.unwrap()["outcome"]["optionId"], "allow-once");
+        assert_eq!(
+            outcome.auto_result.unwrap()["outcome"]["optionId"],
+            "allow-once"
+        );
     }
 
     fn fixture_params(name: &str) -> (Value, Option<Value>) {

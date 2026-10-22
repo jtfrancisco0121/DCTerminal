@@ -858,7 +858,13 @@ pub(crate) mod tests {
         // A still waits for its own reset.
         ClickUp::with(&api, &a, &gate, &clock).teams().unwrap();
         assert_eq!(*clock.slept.lock().unwrap(), vec![30]);
-        let auth: Vec<String> = api.calls.lock().unwrap().iter().map(|c| c.1.clone()).collect();
+        let auth: Vec<String> = api
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|c| c.1.clone())
+            .collect();
         assert_eq!(auth, ["pk_test_TOKEN", "pk_test_OTHER", "pk_test_TOKEN"]);
     }
 
@@ -920,7 +926,6 @@ pub(crate) mod tests {
         assert_eq!(*clock.inner.slept.lock().unwrap(), vec![5]);
         assert_eq!(api.paths().len(), 1);
     }
-
 
     /// Counts calls in flight; each one takes a moment.
     struct Slow {

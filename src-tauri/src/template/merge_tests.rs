@@ -154,7 +154,11 @@ mod tests {
             .find(|r| r.id == "role_plan_reviewer")
             .expect("plan reviewer in seed");
         assert_eq!(reviewer.name, "Plan Reviewer");
-        let pr = seed.roles.iter().find(|r| r.id == "role_pr_reviewer").unwrap();
+        let pr = seed
+            .roles
+            .iter()
+            .find(|r| r.id == "role_pr_reviewer")
+            .unwrap();
         assert_ne!(reviewer.color, pr.color);
         let keys: Vec<&str> = reviewer.fields.iter().map(|f| f.key.as_str()).collect();
         assert_eq!(keys, vec!["originalTask", "plan", "additionalContext"]);
@@ -178,7 +182,11 @@ mod tests {
         values.insert("originalTask".into(), "Add login".into());
         values.insert("plan".into(), "1. Add form".into());
         let merged = merge_template(&role.template_text, &role.fields, &values);
-        assert!(merged.unresolved.is_empty(), "{}", merged.unresolved.join(", "));
+        assert!(
+            merged.unresolved.is_empty(),
+            "{}",
+            merged.unresolved.join(", ")
+        );
         assert!(merged.text.contains("Add login"));
         assert!(merged.text.contains("1. Add form"));
         assert!(merged.text.contains("None provided"));
@@ -191,7 +199,11 @@ mod tests {
         let seed: RolesFile = read_json(&seed_output_path()).expect("roles seed");
         let mut user = seed.clone();
         user.roles.retain(|r| r.id != "role_plan_reviewer");
-        let planner = user.roles.iter_mut().find(|r| r.id == "role_planner").unwrap();
+        let planner = user
+            .roles
+            .iter_mut()
+            .find(|r| r.id == "role_planner")
+            .unwrap();
         planner.template_text = "My own planner prompt".into();
         planner.name = "My Planner".into();
         let custom = {
@@ -216,8 +228,12 @@ mod tests {
     }
 
     fn reviewer_role(id: &str) -> crate::roles::Role {
-        let spec = all_role_specs().into_iter().find(|s| s.id == id).expect("spec");
-        let md = fs::read_to_string(crate::store::docs_roles_dir().join(spec.source_file)).expect("read md");
+        let spec = all_role_specs()
+            .into_iter()
+            .find(|s| s.id == id)
+            .expect("spec");
+        let md = fs::read_to_string(crate::store::docs_roles_dir().join(spec.source_file))
+            .expect("read md");
         build_role_from_markdown(&spec, &md)
     }
 
@@ -233,13 +249,28 @@ mod tests {
     #[test]
     fn bridged_role_templates_carry_the_result_instructions_token() {
         // V2a: the reviewers; V2b: the Planner and the Implementer.
-        for id in ["role_plan_reviewer", "role_pr_reviewer", "role_planner", "role_implementer"] {
+        for id in [
+            "role_plan_reviewer",
+            "role_pr_reviewer",
+            "role_planner",
+            "role_implementer",
+        ] {
             let role = reviewer_role(id);
-            assert!(role.template_text.contains("{{result_instructions}}"), "{id}");
+            assert!(
+                role.template_text.contains("{{result_instructions}}"),
+                "{id}"
+            );
             // It is filled by the app, never a form field.
-            assert!(role.fields.iter().all(|f| f.key != "result_instructions"), "{id}");
-            let inferred = crate::roles::editor::fields_for_template(&role, &role.template_text).unwrap();
-            assert!(inferred.iter().all(|f| f.key != "result_instructions"), "{id}");
+            assert!(
+                role.fields.iter().all(|f| f.key != "result_instructions"),
+                "{id}"
+            );
+            let inferred =
+                crate::roles::editor::fields_for_template(&role, &role.template_text).unwrap();
+            assert!(
+                inferred.iter().all(|f| f.key != "result_instructions"),
+                "{id}"
+            );
         }
     }
 
@@ -252,7 +283,10 @@ mod tests {
         let v1 = merge_role_prompt(&role, &values);
         assert!(v1.errors.is_empty(), "{:?}", v1.errors);
         let v1 = v1.merged.unwrap().text;
-        assert!(!v1.contains("result_instructions"), "the token line is dropped");
+        assert!(
+            !v1.contains("result_instructions"),
+            "the token line is dropped"
+        );
         assert!(!v1.contains("submit_result"));
         let v2 = merge_role_prompt_with(&role, &values, "CALL submit_result NOW");
         assert!(v2.errors.is_empty(), "{:?}", v2.errors);
@@ -284,11 +318,20 @@ mod tests {
         let bridged = merge_role_prompt_with(&role, &values, "CALL submit_result NOW");
         assert!(bridged.errors.is_empty(), "{:?}", bridged.errors);
         let text = bridged.merged.unwrap().text;
-        assert!(text.contains("CALL submit_result NOW"), "the bridged stage must be told about the tool");
-        assert!(text.trim_end().ends_with("CALL submit_result NOW"), "appended after the template");
+        assert!(
+            text.contains("CALL submit_result NOW"),
+            "the bridged stage must be told about the tool"
+        );
+        assert!(
+            text.trim_end().ends_with("CALL submit_result NOW"),
+            "appended after the template"
+        );
         // Exactly once when the template has the token.
         let built_in = reviewer_role("role_pr_reviewer");
-        let text = merge_role_prompt_with(&built_in, &values, "CALL submit_result NOW").merged.unwrap().text;
+        let text = merge_role_prompt_with(&built_in, &values, "CALL submit_result NOW")
+            .merged
+            .unwrap()
+            .text;
         assert_eq!(text.matches("CALL submit_result NOW").count(), 1);
         // Not bridged: nothing is added.
         let plain = merge_role_prompt(&role, &values).merged.unwrap().text;

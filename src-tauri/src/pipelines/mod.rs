@@ -331,7 +331,10 @@ fn known_roles_now() -> Option<HashSet<String>> {
 /// Each pipeline with `disabled` set from its own problem (`roles`: the role
 /// ids that exist, `None` to skip that check). An entry that could not be
 /// read at all keeps its reason.
-pub fn checked_user_pipelines(mut defs: Vec<PipelineDef>, roles: Option<&HashSet<String>>) -> Vec<PipelineDef> {
+pub fn checked_user_pipelines(
+    mut defs: Vec<PipelineDef>,
+    roles: Option<&HashSet<String>>,
+) -> Vec<PipelineDef> {
     for def in defs.iter_mut() {
         def.built_in = false;
         if def.raw.is_none() {
@@ -452,7 +455,9 @@ fn check_text(what: &str, value: &str) -> Result<(), String> {
         return Err(format!("{what} is empty."));
     }
     if value.chars().count() > MAX_TEXT_CHARS {
-        return Err(format!("{what} is longer than {MAX_TEXT_CHARS} characters."));
+        return Err(format!(
+            "{what} is longer than {MAX_TEXT_CHARS} characters."
+        ));
     }
     Ok(())
 }
@@ -468,7 +473,10 @@ fn label_of(def: &PipelineDef) -> String {
 /// Problems a person can fix in Settings: the first one for each pipeline,
 /// in order, or `None` when it is fine. `roles` are the role ids that exist
 /// (`None`: not checked). A later pipeline reusing an id is the one at fault.
-pub fn pipeline_problems(defs: &[PipelineDef], roles: Option<&HashSet<String>>) -> Vec<Option<String>> {
+pub fn pipeline_problems(
+    defs: &[PipelineDef],
+    roles: Option<&HashSet<String>>,
+) -> Vec<Option<String>> {
     let builtin_keys: HashSet<String> = builtins()
         .iter()
         .flat_map(|def| [def.id.clone(), def.run_kind().to_string()])
@@ -498,7 +506,10 @@ pub fn validate_user_pipelines(defs: &[PipelineDef]) -> Result<(), String> {
     validate_user_pipelines_with(defs, known_roles_now().as_ref())
 }
 
-pub fn validate_user_pipelines_with(defs: &[PipelineDef], roles: Option<&HashSet<String>>) -> Result<(), String> {
+pub fn validate_user_pipelines_with(
+    defs: &[PipelineDef],
+    roles: Option<&HashSet<String>>,
+) -> Result<(), String> {
     if defs.len() > MAX_PIPELINES {
         return Err(format!("At most {MAX_PIPELINES} pipelines."));
     }
@@ -548,7 +559,10 @@ fn check_pipeline(
     }
     for (index, stage) in def.stages.iter().enumerate() {
         if !valid_id(&stage.id) {
-            return Err(format!("stage {} needs an id of letters, digits, _ and -.", index + 1));
+            return Err(format!(
+                "stage {} needs an id of letters, digits, _ and -.",
+                index + 1
+            ));
         }
         if !stage_ids.insert(stage.id.clone()) {
             return Err(format!("two stages use the id \"{}\".", stage.id));
@@ -556,7 +570,9 @@ fn check_pipeline(
         if !valid_id(&stage.role_id) {
             return Err(format!("stage \"{}\" needs a role id.", stage.id));
         }
-        if let Some(missing) = roles.and_then(|roles| stage.roles().into_iter().find(|role| !roles.contains(role))) {
+        if let Some(missing) =
+            roles.and_then(|roles| stage.roles().into_iter().find(|role| !roles.contains(role)))
+        {
             return Err(format!(
                 "stage \"{}\" uses the role \"{missing}\", which does not exist (deleted or renamed?).",
                 stage.id
@@ -617,7 +633,10 @@ fn check_pipeline(
             }
         }
         for gate in &stage.gates {
-            if let GateDef::Command { run, timeout_secs, .. } = gate {
+            if let GateDef::Command {
+                run, timeout_secs, ..
+            } = gate
+            {
                 if run.trim().is_empty() || run.chars().count() > MAX_COMMAND_CHARS {
                     return Err(format!(
                         "stage \"{}\": a command gate needs a command (at most {MAX_COMMAND_CHARS} characters).",
@@ -637,7 +656,9 @@ fn check_pipeline(
         return Err("autopilot.pauseAtUsagePercent is 1 to 100.".into());
     }
     if def.autopilot.stall_minutes == 0 || def.autopilot.stall_minutes > MAX_STALL_MINUTES {
-        return Err(format!("autopilot.stallMinutes is 1 to {MAX_STALL_MINUTES}."));
+        return Err(format!(
+            "autopilot.stallMinutes is 1 to {MAX_STALL_MINUTES}."
+        ));
     }
     Ok(())
 }

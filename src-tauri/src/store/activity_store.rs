@@ -153,8 +153,8 @@ impl ActivityStore {
         let mut lines: Vec<String> = Vec::new();
         let mut bytes = 0u64;
         for entry in entries.iter().rev() {
-            let mut entry_lines = vec![serde_json::to_string(&entry_patch(entry, false))
-                .map_err(|e| e.to_string())?];
+            let mut entry_lines =
+                vec![serde_json::to_string(&entry_patch(entry, false)).map_err(|e| e.to_string())?];
             if entry.updated_at != entry.time {
                 entry_lines.push(
                     serde_json::to_string(&entry_patch(entry, true)).map_err(|e| e.to_string())?,
@@ -540,7 +540,9 @@ mod tests {
         assert_eq!(entries.len(), 4);
         // Both files stay near the limit.
         for name in ["tab_a.jsonl", "tab_a.jsonl.1"] {
-            let len = std::fs::metadata(root.join(name)).map(|m| m.len()).unwrap_or(0);
+            let len = std::fs::metadata(root.join(name))
+                .map(|m| m.len())
+                .unwrap_or(0);
             assert!(len <= 2_000 + 400, "{name}: {len}");
         }
         let _ = std::fs::remove_dir_all(root);

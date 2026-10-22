@@ -37,7 +37,11 @@ pub fn parse_version(text: &str) -> Option<[u32; 3]> {
     let mut parts = first.split('.');
     let mut out = [0u32; 3];
     for slot in &mut out {
-        let digits: String = parts.next()?.chars().take_while(char::is_ascii_digit).collect();
+        let digits: String = parts
+            .next()?
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
         *slot = digits.parse().ok()?;
     }
     Some(out)
@@ -69,7 +73,9 @@ pub fn decide(version: Option<&str>, hooks_off: Option<&HooksOff>) -> Gate {
             "DCTerminal could not read the Claude Code version (pipeline v2 needs {verified} or newer), so this run uses engine 1, which is manual only: hand each stage on yourself."
         ));
     };
-    let shown = text.and_then(|t| t.split_whitespace().next()).unwrap_or_default();
+    let shown = text
+        .and_then(|t| t.split_whitespace().next())
+        .unwrap_or_default();
     if found < VERIFIED_CLAUDE_VERSION {
         return Gate::EngineOne(format!(
             "Claude Code {shown} is older than {verified}, which pipeline v2 needs, so this run uses engine 1, which is manual only: hand each stage on yourself. Update Claude Code for the next run."
@@ -91,7 +97,12 @@ pub fn apply(run: &mut crate::store::PipelineRun, gate: &Gate, stage_id: &str) -
 
 /// [`apply`]; `timeline: false` leaves the engine-1 notice off the Timeline
 /// (a relaunch's switch logs its own "manual from now on" line instead).
-pub fn apply_with(run: &mut crate::store::PipelineRun, gate: &Gate, stage_id: &str, timeline: bool) -> (bool, bool) {
+pub fn apply_with(
+    run: &mut crate::store::PipelineRun,
+    gate: &Gate,
+    stage_id: &str,
+    timeline: bool,
+) -> (bool, bool) {
     match gate {
         Gate::EngineOne(notice) => {
             run.engine = 1;
@@ -136,7 +147,11 @@ pub fn make_manual(run: &mut crate::store::PipelineRun, stage_id: &str, decided_
     let why = run
         .engine_note
         .take()
-        .and_then(|note| note.split(", so this run uses engine 1").next().map(str::to_string))
+        .and_then(|note| {
+            note.split(", so this run uses engine 1")
+                .next()
+                .map(str::to_string)
+        })
         .filter(|why| !why.is_empty());
     let line = "This run was running with the pipeline bridge, so it is manual from now on: autopilot is off. Hand each stage on yourself.";
     let note = match why {
@@ -150,9 +165,13 @@ pub fn make_manual(run: &mut crate::store::PipelineRun, stage_id: &str, decided_
 /// The managed settings file Claude Code reads on this OS.
 pub fn managed_settings_path() -> Option<PathBuf> {
     if cfg!(target_os = "macos") {
-        Some(PathBuf::from("/Library/Application Support/ClaudeCode/managed-settings.json"))
+        Some(PathBuf::from(
+            "/Library/Application Support/ClaudeCode/managed-settings.json",
+        ))
     } else if cfg!(windows) {
-        Some(PathBuf::from(r"C:\Program Files\ClaudeCode\managed-settings.json"))
+        Some(PathBuf::from(
+            r"C:\Program Files\ClaudeCode\managed-settings.json",
+        ))
     } else {
         Some(PathBuf::from("/etc/claude-code/managed-settings.json"))
     }
@@ -161,7 +180,10 @@ pub fn managed_settings_path() -> Option<PathBuf> {
 /// The settings files Claude Code would read for a stage in `cwd` under the
 /// config folder `config_dir`, then `managed`.
 fn settings_files(config_dir: Option<&Path>, cwd: &Path, managed: Option<PathBuf>) -> Vec<PathBuf> {
-    let mut files: Vec<PathBuf> = config_dir.map(|dir| dir.join("settings.json")).into_iter().collect();
+    let mut files: Vec<PathBuf> = config_dir
+        .map(|dir| dir.join("settings.json"))
+        .into_iter()
+        .collect();
     files.push(cwd.join(".claude").join("settings.json"));
     files.push(cwd.join(".claude").join("settings.local.json"));
     files.extend(managed);
@@ -178,7 +200,9 @@ pub struct HooksOff {
 }
 
 fn read_settings(path: &Path) -> Option<Value> {
-    std::fs::read(path).ok().and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
 }
 
 fn is_true(settings: &Value, key: &str) -> bool {
@@ -189,15 +213,28 @@ fn is_true(settings: &Value, key: &str) -> bool {
 /// off: `disableAllHooks: true` in any of them (`settings_files`), or a
 /// managed `allowManagedHooksOnly: true`. A missing or unreadable file sets
 /// nothing. Read-only.
-pub fn hooks_off(config_dir: Option<&Path>, cwd: &Path, managed: Option<PathBuf>) -> Option<HooksOff> {
+pub fn hooks_off(
+    config_dir: Option<&Path>,
+    cwd: &Path,
+    managed: Option<PathBuf>,
+) -> Option<HooksOff> {
     let files = settings_files(config_dir, cwd, managed.clone());
-    if let Some(file) = files.into_iter().find(|path| read_settings(path).is_some_and(|s| is_true(&s, "disableAllHooks"))) {
-        return Some(HooksOff { file, setting: "disableAllHooks" });
+    if let Some(file) = files
+        .into_iter()
+        .find(|path| read_settings(path).is_some_and(|s| is_true(&s, "disableAllHooks")))
+    {
+        return Some(HooksOff {
+            file,
+            setting: "disableAllHooks",
+        });
     }
     let managed = managed?;
     read_settings(&managed)
         .is_some_and(|s| is_true(&s, "allowManagedHooksOnly"))
-        .then_some(HooksOff { file: managed, setting: "allowManagedHooksOnly" })
+        .then_some(HooksOff {
+            file: managed,
+            setting: "allowManagedHooksOnly",
+        })
 }
 
 #[cfg(test)]
@@ -217,16 +254,30 @@ mod tests {
 
     #[test]
     fn the_verified_version_or_newer_bridges_and_older_or_unknown_is_engine_1() {
-        assert_eq!(decide(Some("2.1.287 (Claude Code)"), None), Gate::Bridge { unverified: None });
+        assert_eq!(
+            decide(Some("2.1.287 (Claude Code)"), None),
+            Gate::Bridge { unverified: None }
+        );
         match decide(Some("2.1.300 (Claude Code)"), None) {
-            Gate::Bridge { unverified: Some(note) } => {
-                assert!(note.starts_with("Claude Code version not yet verified"), "{note}");
-                assert!(note.contains("2.1.300") && note.contains("2.1.287"), "{note}");
+            Gate::Bridge {
+                unverified: Some(note),
+            } => {
+                assert!(
+                    note.starts_with("Claude Code version not yet verified"),
+                    "{note}"
+                );
+                assert!(
+                    note.contains("2.1.300") && note.contains("2.1.287"),
+                    "{note}"
+                );
             }
             other => panic!("a newer CLI is allowed with a note: {other:?}"),
         }
         match decide(Some("2.1.200 (Claude Code)"), None) {
-            Gate::EngineOne(notice) => assert!(notice.contains("2.1.200") && notice.contains("engine 1"), "{notice}"),
+            Gate::EngineOne(notice) => assert!(
+                notice.contains("2.1.200") && notice.contains("engine 1"),
+                "{notice}"
+            ),
             other => panic!("an older CLI is engine 1: {other:?}"),
         }
         for unknown in [None, Some(""), Some("boom: bad install")] {
@@ -239,13 +290,26 @@ mod tests {
 
     #[test]
     fn every_engine_1_notice_says_the_run_is_manual_only() {
-        let off = HooksOff { file: PathBuf::from("/x/settings.json"), setting: "disableAllHooks" };
-        for (version, hooks) in [(Some("2.1.200 (Claude Code)"), None), (None, None), (Some("2.1.287 (Claude Code)"), Some(&off))] {
+        let off = HooksOff {
+            file: PathBuf::from("/x/settings.json"),
+            setting: "disableAllHooks",
+        };
+        for (version, hooks) in [
+            (Some("2.1.200 (Claude Code)"), None),
+            (None, None),
+            (Some("2.1.287 (Claude Code)"), Some(&off)),
+        ] {
             match decide(version, hooks) {
                 Gate::EngineOne(notice) => {
-                    assert!(notice.contains(", so this run uses engine 1"), "make_manual cuts here: {notice}");
+                    assert!(
+                        notice.contains(", so this run uses engine 1"),
+                        "make_manual cuts here: {notice}"
+                    );
                     assert!(notice.contains("manual only"), "{notice}");
-                    assert!(!notice.contains("autopilot reads"), "engine 1 has no autopilot since V6: {notice}");
+                    assert!(
+                        !notice.contains("autopilot reads"),
+                        "engine 1 has no autopilot since V6: {notice}"
+                    );
                 }
                 other => panic!("engine 1: {other:?}"),
             }
@@ -278,12 +342,23 @@ mod tests {
         let gate = decide(Some("2.1.300 (Claude Code)"), None);
         assert_eq!(apply(&mut run, &gate, "plan_reviewer"), (true, true));
         assert_eq!(run.engine, super::super::launch::ENGINE_V2);
-        assert!(run.engine_note.as_deref().unwrap().starts_with("Claude Code version not yet verified"));
+        assert!(run
+            .engine_note
+            .as_deref()
+            .unwrap()
+            .starts_with("Claude Code version not yet verified"));
         // The same note again changes nothing.
         assert_eq!(apply(&mut run, &gate, "pr_reviewer"), (true, false));
 
         let mut run = engine2_run();
-        assert_eq!(apply(&mut run, &decide(Some("2.1.287 (Claude Code)"), None), "plan_reviewer"), (true, false));
+        assert_eq!(
+            apply(
+                &mut run,
+                &decide(Some("2.1.287 (Claude Code)"), None),
+                "plan_reviewer"
+            ),
+            (true, false)
+        );
         assert_eq!(run.engine_note, None);
         assert!(run.events.is_empty());
     }
@@ -297,13 +372,23 @@ mod tests {
         std::fs::create_dir_all(&config).unwrap();
         std::fs::create_dir_all(cwd.join(".claude")).unwrap();
         // In your own settings it does nothing (only a managed policy counts).
-        std::fs::write(config.join("settings.json"), r#"{"allowManagedHooksOnly": true}"#).unwrap();
+        std::fs::write(
+            config.join("settings.json"),
+            r#"{"allowManagedHooksOnly": true}"#,
+        )
+        .unwrap();
         assert_eq!(hooks_off(Some(&config), &cwd, Some(managed.clone())), None);
         std::fs::write(&managed, r#"{"allowManagedHooksOnly": true}"#).unwrap();
-        let off = hooks_off(Some(&config), &cwd, Some(managed.clone())).expect("managed hooks only");
-        assert_eq!((off.file.as_path(), off.setting), (managed.as_path(), "allowManagedHooksOnly"));
+        let off =
+            hooks_off(Some(&config), &cwd, Some(managed.clone())).expect("managed hooks only");
+        assert_eq!(
+            (off.file.as_path(), off.setting),
+            (managed.as_path(), "allowManagedHooksOnly")
+        );
         match decide(Some("2.1.287 (Claude Code)"), Some(&off)) {
-            Gate::EngineOne(notice) => assert!(notice.contains("allowManagedHooksOnly"), "{notice}"),
+            Gate::EngineOne(notice) => {
+                assert!(notice.contains("allowManagedHooksOnly"), "{notice}")
+            }
             other => panic!("managed hooks only is engine 1: {other:?}"),
         }
     }
@@ -321,7 +406,11 @@ mod tests {
         assert_eq!(off(), None, "no files: hooks on");
 
         // Off, false, or unreadable: hooks stay on.
-        std::fs::write(config.join("settings.json"), r#"{"disableAllHooks": false, "statusLine": null}"#).unwrap();
+        std::fs::write(
+            config.join("settings.json"),
+            r#"{"disableAllHooks": false, "statusLine": null}"#,
+        )
+        .unwrap();
         std::fs::write(cwd.join(".claude").join("settings.json"), "{ not json").unwrap();
         assert_eq!(off(), None);
 
@@ -334,7 +423,10 @@ mod tests {
             assert!(file.starts_with(dir.path()), "pinned to the temp dir");
             std::fs::write(&file, r#"{"disableAllHooks": true}"#).unwrap();
             let found = off().expect("hooks off");
-            assert_eq!((found.file.as_path(), found.setting), (file.as_path(), "disableAllHooks"));
+            assert_eq!(
+                (found.file.as_path(), found.setting),
+                (file.as_path(), "disableAllHooks")
+            );
             match decide(Some("2.1.287 (Claude Code)"), Some(&found)) {
                 Gate::EngineOne(notice) => assert!(notice.contains("disableAllHooks"), "{notice}"),
                 other => panic!("hooks off is engine 1: {other:?}"),

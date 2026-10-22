@@ -180,8 +180,16 @@ fn a_newer_settings_file_and_its_backup_are_both_kept_aside_on_every_launch() {
     for launch in 1..=2 {
         let store = SettingsStore::open(dir.path()).unwrap();
         assert_eq!(store.ui().theme, "github-dark", "launch {launch}");
-        assert_eq!(set_aside(&dir, "settings.json", 7), newer, "launch {launch}");
-        assert_eq!(set_aside(&dir, "settings.json", 1), backup, "launch {launch}");
+        assert_eq!(
+            set_aside(&dir, "settings.json", 7),
+            newer,
+            "launch {launch}"
+        );
+        assert_eq!(
+            set_aside(&dir, "settings.json", 1),
+            backup,
+            "launch {launch}"
+        );
         assert!(!dir.join("settings.json.bak").exists(), "launch {launch}");
     }
 }
@@ -474,10 +482,25 @@ fn a_pipeline_entry_that_cannot_be_read_is_kept_and_the_others_load() {
     assert_eq!(ids, ["fix", "odd"]);
     assert_eq!(data.pipelines[0].disabled, None);
     let odd = &data.pipelines[1];
-    assert!(odd.disabled.as_deref().unwrap().starts_with("It could not be read"), "{odd:?}");
-    assert_eq!(odd.raw.as_ref().unwrap()["stages"][0]["gates"][0]["kind"], "lint");
-    assert_eq!(std::fs::read_to_string(dir.join(PIPELINES_FILE)).unwrap(), original, "not set aside");
-    assert!(names_in(dir.path()).iter().all(|name| !name.contains("corrupt")));
+    assert!(
+        odd.disabled
+            .as_deref()
+            .unwrap()
+            .starts_with("It could not be read"),
+        "{odd:?}"
+    );
+    assert_eq!(
+        odd.raw.as_ref().unwrap()["stages"][0]["gates"][0]["kind"],
+        "lint"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join(PIPELINES_FILE)).unwrap(),
+        original,
+        "not set aside"
+    );
+    assert!(names_in(dir.path())
+        .iter()
+        .all(|name| !name.contains("corrupt")));
 }
 
 // Track H4: an entry kept as written is never rewritten or dropped by a
@@ -504,10 +527,18 @@ fn a_save_while_an_invalid_pipeline_entry_exists_is_refused_and_writes_nothing()
     let err = store.save(store.list()).unwrap_err();
     assert!(err.contains("Odd"), "{err}");
     // What the editor sends: the entry as written, which is not a pipeline.
-    let editor: serde_json::Value = serde_json::from_str::<serde_json::Value>(original).unwrap()["pipelines"].clone();
+    let editor: serde_json::Value =
+        serde_json::from_str::<serde_json::Value>(original).unwrap()["pipelines"].clone();
     assert!(serde_json::from_value::<Vec<PipelineDef>>(editor).is_err());
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), original, "nothing written");
-    assert!(store.data.pipelines[1].raw.is_some(), "the placeholder keeps the entry");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        original,
+        "nothing written"
+    );
+    assert!(
+        store.data.pipelines[1].raw.is_some(),
+        "the placeholder keeps the entry"
+    );
     // A pipeline whose role was deleted does not pass a save either.
     let gone: PipelineDef = serde_json::from_value(serde_json::json!({
         "id": "gone", "name": "Gone", "stages": [{"id": "a", "roleId": "role_deleted", "title": "A"}]

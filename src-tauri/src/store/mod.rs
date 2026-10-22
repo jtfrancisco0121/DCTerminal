@@ -21,21 +21,22 @@ mod json_io;
 mod pipelines_store;
 pub(crate) mod preview_tabs;
 mod projects_store;
-pub(crate) mod repos_settings;
+mod prompt_store;
 #[cfg(test)]
 mod provider_tests;
-mod prompt_store;
+pub(crate) mod repos_settings;
 mod roles_store;
 mod scratch_store;
 pub(crate) mod settings_store;
 mod state_store;
 mod state_types;
 pub mod storage_sweep;
-mod window_migration;
 mod transcript_store;
+mod window_migration;
 mod workspace_store;
 
 pub use activity_store::{merge_patches, ActivityEntry, ActivityPatch, ActivityStore};
+pub use claude_migration::{backup_pre_claude_first, migrate_state, CLAUDE_MIGRATION_NOTICE};
 pub use forms_store::FormsStore;
 pub use forms_types::FormSnapshot;
 pub use handoff_store::{HandoffRecord, HandoffStore, NewHandoff};
@@ -46,31 +47,30 @@ pub use json_io::{
 pub use pipelines_store::{PipelineStore, PIPELINES_FILE};
 pub use projects_store::{ListedProject, ProjectsStore};
 pub use prompt_store::{PromptStore, RecentSend, SavedPrompt};
+pub use repos_settings::RepoEntry;
 pub use roles_store::{
     add_missing_builtin_roles, bundled_seed, docs_roles_dir, seed_output_path, write_seed_file,
     RolesStore,
 };
-pub use repos_settings::RepoEntry;
 pub use scratch_store::ScratchStore;
 pub use settings_store::{
     first_run_needed, get_notification_settings, get_ui_settings, set_notification_settings,
     set_ui_settings, ModelSettings, NotificationSettings, ProviderModels, SettingsStore,
-    TerminalSettings,
-    UiSettings,
+    TerminalSettings, UiSettings,
 };
-pub use state_store::{PriorSession, StateStore};
 pub(crate) use state_store::{
     displayed_acp_session, displayed_resume_session, tab_label, TerminalTabDraft,
 };
-pub use claude_migration::{backup_pre_claude_first, migrate_state, CLAUDE_MIGRATION_NOTICE};
+pub use state_store::{PriorSession, StateStore};
 pub use state_types::{
-    window_matches, AppStateFile, ChainRef, LayoutState, Migrations, PipelineRun, RoleSnapshot,
-    claim_key, HandoffClaim, RunAutopilot, RunEvent, RunLane, RunStatus, StageGates, StageHandoff, StopReason,
-    ArchivedWindow, TabRecord, TabSessionRef, WindowRecord, MAIN_WINDOW_ID, MAX_DECIDED_TURNS,
-};
-pub use transcript_store::{
-    rotate_transcripts, truncate_transcript, RotationGuard, TranscriptFile, TranscriptStore,
+    claim_key, window_matches, AppStateFile, ArchivedWindow, ChainRef, HandoffClaim, LayoutState,
+    Migrations, PipelineRun, RoleSnapshot, RunAutopilot, RunEvent, RunLane, RunStatus, StageGates,
+    StageHandoff, StopReason, TabRecord, TabSessionRef, WindowRecord, MAIN_WINDOW_ID,
+    MAX_DECIDED_TURNS,
 };
 #[cfg(test)]
 pub(crate) use transcript_store::ROTATION_HOOK;
+pub use transcript_store::{
+    rotate_transcripts, truncate_transcript, RotationGuard, TranscriptFile, TranscriptStore,
+};
 pub use workspace_store::{Workspace, WorkspaceStore, WorkspaceTab};

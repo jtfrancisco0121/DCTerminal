@@ -160,7 +160,8 @@ fn request_quit(app: &AppHandle) -> QuitDecision {
 fn live_work(app: &AppHandle) -> LiveWork {
     count_live_work(
         app.try_state::<Mutex<crate::pty::PtyRegistry>>().as_deref(),
-        app.try_state::<Mutex<crate::commands::SessionRegistry>>().as_deref(),
+        app.try_state::<Mutex<crate::commands::SessionRegistry>>()
+            .as_deref(),
     )
 }
 
@@ -291,13 +292,7 @@ pub fn install_macos_menu(app: &tauri::App) -> tauri::Result<()> {
         app.manage(ReopenWindowItem(reopen_window));
         // Not the predefined Quit: that sends `terminate:`, which tao turns
         // straight into `RunEvent::Exit` with no chance to ask first.
-        let quit = MenuItem::with_id(
-            app,
-            QUIT_ITEM,
-            "Quit DCTerminal",
-            true,
-            Some("CmdOrCtrl+Q"),
-        )?;
+        let quit = MenuItem::with_id(app, QUIT_ITEM, "Quit DCTerminal", true, Some("CmdOrCtrl+Q"))?;
         let app_menu = Submenu::with_items(app, "DCTerminal", true, &[&quit])?;
         // The other `terminate:` senders (Dock icon, logout, AppleScript).
         crate::macos_terminate::install(app.handle());
@@ -345,13 +340,15 @@ pub fn install_macos_menu(app: &tauri::App) -> tauri::Result<()> {
 /// Ask the focused window to open the account picker. With no window, restore one.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn focused_label(app: &AppHandle) -> Option<String> {
-    app.webview_windows().into_iter().find_map(|(label, window)| {
-        window
-            .is_focused()
-            .ok()
-            .filter(|focused| *focused)
-            .map(|_| label)
-    })
+    app.webview_windows()
+        .into_iter()
+        .find_map(|(label, window)| {
+            window
+                .is_focused()
+                .ok()
+                .filter(|focused| *focused)
+                .map(|_| label)
+        })
 }
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -384,7 +381,8 @@ pub fn handle_run_event(app: &AppHandle, event: tauri::RunEvent) {
         } => on_window_destroyed(app, &label),
         #[cfg(target_os = "macos")]
         tauri::RunEvent::Reopen {
-            has_visible_windows, ..
+            has_visible_windows,
+            ..
         } if dock_reopen_creates_window(has_visible_windows) => {
             let _ = restore_a_window(app);
         }
@@ -413,7 +411,8 @@ fn shutdown_processes(app: &AppHandle) {
     agents
         .iter()
         .for_each(crate::process_tree::SharedProcess::terminate);
-    ptys.iter().for_each(crate::process_tree::PtyGroup::terminate);
+    ptys.iter()
+        .for_each(crate::process_tree::PtyGroup::terminate);
     if cfg!(unix) {
         let deadline = Instant::now() + STOP_GRACE;
         while Instant::now() < deadline
@@ -656,7 +655,12 @@ pub fn restore_a_window(app: &AppHandle) -> Result<(), String> {
             .try_state::<Mutex<StateStore>>()
             .ok_or_else(|| "state is not ready".to_string())?;
         let state = state.lock().map_err(|err| err.to_string())?;
-        if state.data.windows.iter().any(|window| window.id == MAIN_WINDOW) {
+        if state
+            .data
+            .windows
+            .iter()
+            .any(|window| window.id == MAIN_WINDOW)
+        {
             MAIN_WINDOW.to_string()
         } else {
             state
@@ -689,11 +693,7 @@ fn window_is_saved(app: &AppHandle, label: &str) -> bool {
     let Ok(state) = state.lock() else {
         return false;
     };
-    state
-        .data
-        .windows
-        .iter()
-        .any(|window| window.id == label)
+    state.data.windows.iter().any(|window| window.id == label)
 }
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -800,9 +800,11 @@ pub async fn open_account_window(app: AppHandle, account_id: String) -> Result<S
     };
     let app_for_build = app.clone();
     let label_for_build = label.clone();
-    tauri::async_runtime::spawn_blocking(move || build_window(&app_for_build, &label_for_build, &title))
-        .await
-        .map_err(|err| err.to_string())??;
+    tauri::async_runtime::spawn_blocking(move || {
+        build_window(&app_for_build, &label_for_build, &title)
+    })
+    .await
+    .map_err(|err| err.to_string())??;
     Ok(label)
 }
 
@@ -883,20 +885,27 @@ mod tests {
             panic!("nothing is running: no question")
         });
         assert!(now);
-        assert!(quitting.load(Ordering::SeqCst), "windows are not archived on this quit");
+        assert!(
+            quitting.load(Ordering::SeqCst),
+            "windows are not archived on this quit"
+        );
     }
 
     #[test]
     fn a_dock_quit_after_the_user_said_quit_terminates_now() {
         let (quitting, asking) = (AtomicBool::new(true), AtomicBool::new(false));
-        let now = terminate_now(TWO_LIVE, &quitting, &asking, |_| panic!("already confirmed"));
+        let now = terminate_now(TWO_LIVE, &quitting, &asking, |_| {
+            panic!("already confirmed")
+        });
         assert!(now);
     }
 
     #[test]
     fn a_second_dock_quit_while_the_question_is_open_neither_asks_nor_terminates() {
         let (quitting, asking) = (AtomicBool::new(false), AtomicBool::new(true));
-        let now = terminate_now(TWO_LIVE, &quitting, &asking, |_| panic!("one question at a time"));
+        let now = terminate_now(TWO_LIVE, &quitting, &asking, |_| {
+            panic!("one question at a time")
+        });
         assert!(!now);
     }
 
@@ -922,8 +931,14 @@ mod tests {
         let one = |terminals, agents| quit_message(LiveWork { terminals, agents });
         assert_eq!(one(1, 0), "1 running terminal will be stopped.");
         assert_eq!(one(0, 1), "1 running agent will be stopped.");
-        assert_eq!(one(2, 3), "2 running terminals and 3 running agents will be stopped.");
-        assert_eq!(one(1, 1), "1 running terminal and 1 running agent will be stopped.");
+        assert_eq!(
+            one(2, 3),
+            "2 running terminals and 3 running agents will be stopped."
+        );
+        assert_eq!(
+            one(1, 1),
+            "1 running terminal and 1 running agent will be stopped."
+        );
     }
 
     struct FakeRegistry(usize);
@@ -939,14 +954,26 @@ mod tests {
         let terminals = Mutex::new(FakeRegistry(2));
         let agents = Mutex::new(FakeRegistry(1));
         let live = count_live_work(Some(&terminals), Some(&agents));
-        assert_eq!(live, LiveWork { terminals: 2, agents: 1 });
+        assert_eq!(
+            live,
+            LiveWork {
+                terminals: 2,
+                agents: 1
+            }
+        );
         assert_eq!(live.total(), 3);
         // Both locks are free again before anyone is asked.
         assert!(terminals.try_lock().is_ok());
         assert!(agents.try_lock().is_ok());
         // A registry not set up yet counts nothing.
         let none = count_live_work::<FakeRegistry, FakeRegistry>(None, Some(&agents));
-        assert_eq!(none, LiveWork { terminals: 0, agents: 1 });
+        assert_eq!(
+            none,
+            LiveWork {
+                terminals: 0,
+                agents: 1
+            }
+        );
     }
 
     #[test]

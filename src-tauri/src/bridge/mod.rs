@@ -43,11 +43,13 @@ mod hook;
 pub mod launch;
 mod mcp;
 pub mod schema;
-pub mod watch;
 #[cfg(test)]
 mod tests;
+pub mod watch;
 
-pub use folder::{BridgeNeeds, BridgeTurn, NeedsSource, PlannedTask, ResultKind, RunTasks, StageMode, TurnOutcome};
+pub use folder::{
+    BridgeNeeds, BridgeTurn, NeedsSource, PlannedTask, ResultKind, RunTasks, StageMode, TurnOutcome,
+};
 pub use hook::{stop_decision, StopDecision};
 pub use launch::{BridgePlan, BridgeTag};
 
@@ -93,11 +95,18 @@ fn parse_cli(args: &[String]) -> Result<Cli, String> {
             "--event" => &mut event,
             other => return Err(format!("unknown argument {other:?}")),
         };
-        *slot = Some(iter.next().ok_or_else(|| format!("{flag} needs a value"))?.clone());
+        *slot = Some(
+            iter.next()
+                .ok_or_else(|| format!("{flag} needs a value"))?
+                .clone(),
+        );
     }
-    let need = |value: Option<String>, flag: &str| value.ok_or_else(|| format!("{flag} is required"));
+    let need =
+        |value: Option<String>, flag: &str| value.ok_or_else(|| format!("{flag} is required"));
     let mode = match mode {
-        Some("hook") => Mode::Hook { event: need(event, "--event")? },
+        Some("hook") => Mode::Hook {
+            event: need(event, "--event")?,
+        },
         Some("mcp") => Mode::Mcp,
         other => return Err(format!("expected `hook` or `mcp`, got {other:?}")),
     };

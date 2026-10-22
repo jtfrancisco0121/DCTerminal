@@ -190,7 +190,11 @@ pub fn plans_by_default(role_id: &str, stage_kind: Option<StageKind>) -> bool {
     match stage_kind {
         Some(kind) => kind == StageKind::Planner,
         None => matches!(
-            role_id.trim().to_ascii_lowercase().replace('-', "_").as_str(),
+            role_id
+                .trim()
+                .to_ascii_lowercase()
+                .replace('-', "_")
+                .as_str(),
             "role_planner" | "planner"
         ),
     }
@@ -281,11 +285,10 @@ pub fn provider_for_account(
     match id {
         ProviderId::Cursor => Arc::new(CursorProvider),
         ProviderId::Claude => {
-            let account_id = account_id.unwrap_or(crate::store::settings_store::DEFAULT_CLAUDE_ACCOUNT_ID);
-            let config = crate::store::settings_store::resolved_account_config(
-                &settings.claude,
-                account_id,
-            );
+            let account_id =
+                account_id.unwrap_or(crate::store::settings_store::DEFAULT_CLAUDE_ACCOUNT_ID);
+            let config =
+                crate::store::settings_store::resolved_account_config(&settings.claude, account_id);
             Arc::new(ClaudeProvider::with_config(&settings.claude, config))
         }
     }

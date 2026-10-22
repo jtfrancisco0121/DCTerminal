@@ -101,4 +101,3 @@ fn migrate_closed(closed: &mut ClosedTabRecord) {
         closed.provider_notice = Some(CLAUDE_MIGRATION_NOTICE.to_string());
     }
 }
-

@@ -660,7 +660,11 @@ mod tests {
         ];
         assert_eq!(
             resolve_existing(&root, &asked),
-            vec!["src/main.rs".to_string(), "./src/main.rs".into(), abs_inside]
+            vec![
+                "src/main.rs".to_string(),
+                "./src/main.rs".into(),
+                abs_inside
+            ]
         );
         let many: Vec<String> = (0..MAX_RESOLVE_PATHS + 5)
             .map(|_| "src/main.rs".to_string())
@@ -741,12 +745,33 @@ mod tests {
 
     #[test]
     fn markdown_image_paths_resolve_against_the_file_and_stay_in_the_root() {
-        assert_eq!(markdown_image_rel("docs/a.md", "img/x.png").unwrap(), "docs/img/x.png");
-        assert_eq!(markdown_image_rel("docs/a.md", "./x.png?raw=1#top").unwrap(), "docs/x.png");
-        assert_eq!(markdown_image_rel("docs/a.md", "../shot%20one.png").unwrap(), "shot one.png");
-        assert_eq!(markdown_image_rel("docs/a.md", "/assets/x.png").unwrap(), "assets/x.png");
+        assert_eq!(
+            markdown_image_rel("docs/a.md", "img/x.png").unwrap(),
+            "docs/img/x.png"
+        );
+        assert_eq!(
+            markdown_image_rel("docs/a.md", "./x.png?raw=1#top").unwrap(),
+            "docs/x.png"
+        );
+        assert_eq!(
+            markdown_image_rel("docs/a.md", "../shot%20one.png").unwrap(),
+            "shot one.png"
+        );
+        assert_eq!(
+            markdown_image_rel("docs/a.md", "/assets/x.png").unwrap(),
+            "assets/x.png"
+        );
         assert_eq!(markdown_image_rel("README.md", "x.png").unwrap(), "x.png");
-        for bad in ["../x.png", "../../etc/x.png", "%2e%2e/x.png", "https://e.com/x.png", "//e.com/x.png", "C:/x.png", r"..\x.png", ""] {
+        for bad in [
+            "../x.png",
+            "../../etc/x.png",
+            "%2e%2e/x.png",
+            "https://e.com/x.png",
+            "//e.com/x.png",
+            "C:/x.png",
+            r"..\x.png",
+            "",
+        ] {
             assert!(markdown_image_rel("README.md", bad).is_err(), "{bad}");
         }
         assert!(markdown_image_rel("../a.md", "x.png").is_err());
@@ -764,15 +789,20 @@ mod tests {
         std::fs::write(outside.join("secret.png"), "x").unwrap();
         let url = markdown_image(&root, "docs/a.md", "img/x.png").unwrap();
         assert_eq!(url, "data:image/png;base64,iVBORw==");
-        assert!(markdown_image(&root, "docs/a.md", "notes.txt").unwrap_err().contains("not an image"));
+        assert!(markdown_image(&root, "docs/a.md", "notes.txt")
+            .unwrap_err()
+            .contains("not an image"));
         assert!(markdown_image(&root, "docs/a.md", "missing.png").is_err());
         assert!(markdown_image(&root, "docs/a.md", "../.git/x.png").is_err());
         let big = std::fs::File::create(root.join("big.png")).unwrap();
         big.set_len(MAX_MARKDOWN_IMAGE_BYTES + 1).unwrap();
-        assert!(markdown_image(&root, "a.md", "big.png").unwrap_err().contains("too large"));
+        assert!(markdown_image(&root, "a.md", "big.png")
+            .unwrap_err()
+            .contains("too large"));
         #[cfg(unix)]
         {
-            std::os::unix::fs::symlink(outside.join("secret.png"), root.join("escape.png")).unwrap();
+            std::os::unix::fs::symlink(outside.join("secret.png"), root.join("escape.png"))
+                .unwrap();
             std::os::unix::fs::symlink(&outside, root.join("out")).unwrap();
             assert!(markdown_image(&root, "a.md", "escape.png").is_err());
             assert!(markdown_image(&root, "a.md", "out/secret.png").is_err());

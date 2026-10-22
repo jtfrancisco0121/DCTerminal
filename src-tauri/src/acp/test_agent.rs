@@ -194,7 +194,8 @@ impl Provider for FakeProvider {
         role_mode: &str,
         available: &[String],
     ) -> String {
-        self.inner.mode_for_role(role_id, stage_kind, role_mode, available)
+        self.inner
+            .mode_for_role(role_id, stage_kind, role_mode, available)
     }
     fn classify_request(&self, method: &str, params: &Value) -> AgentRequestKind {
         self.inner.classify_request(method, params)

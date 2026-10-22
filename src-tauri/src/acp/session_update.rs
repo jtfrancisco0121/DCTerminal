@@ -136,8 +136,13 @@ mod tests {
             } }
         });
         let evt = map_session_update("tab_1", "sess_1", &write).expect("event");
-        assert_eq!(evt.plan_path.as_deref(), Some("/Users/me/.claude-account2/plans/fix.md"));
-        assert!(serde_json::to_string(&evt).unwrap().contains("\"planPath\""));
+        assert_eq!(
+            evt.plan_path.as_deref(),
+            Some("/Users/me/.claude-account2/plans/fix.md")
+        );
+        assert!(serde_json::to_string(&evt)
+            .unwrap()
+            .contains("\"planPath\""));
         let chunk = json!({ "method": "session/update", "params": { "update": {
             "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": "/x/plans/a.md" } } } });
         let evt = map_session_update("tab_1", "sess_1", &chunk).expect("event");

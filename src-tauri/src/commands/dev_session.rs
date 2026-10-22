@@ -526,9 +526,14 @@ pub fn dev_session_cancel(
     let session = guard
         .get_mut(&tab_id)
         .ok_or_else(|| "no active session".to_string())?;
-    let pending: Vec<(RequestId, PendingPermission)> = session.pending_permissions.drain().collect();
+    let pending: Vec<(RequestId, PendingPermission)> =
+        session.pending_permissions.drain().collect();
     let plans: Vec<(RequestId, PendingPlan)> = session.pending_plans.drain().collect();
-    let questions: Vec<RequestId> = session.pending_questions.drain().map(|(id, _)| id).collect();
+    let questions: Vec<RequestId> = session
+        .pending_questions
+        .drain()
+        .map(|(id, _)| id)
+        .collect();
     let outbox = Arc::clone(&session.outbox);
     let cancel = Arc::clone(&session.cancel);
     drop(guard);

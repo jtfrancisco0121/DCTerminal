@@ -18,8 +18,8 @@ mod macos_terminate;
 mod models;
 mod orchestrator;
 mod paths;
-mod pipelines;
 mod permissions;
+mod pipelines;
 mod process_tree;
 pub mod provider;
 mod pty;
@@ -41,31 +41,33 @@ pub mod worktree;
 /// those scenario tests cannot be unit tests. Not used by the app.
 #[doc(hidden)]
 pub mod testing {
+    pub use crate::bridge::launch::{
+        bridged_command, launch_flags, prepare_stage, read_run_tasks, read_stage_turn, runs_root,
+        write_run_repos, BridgePlan, BridgeTag,
+    };
+    pub use crate::bridge::watch::{drain_inbox, InboxEvent};
+    pub use crate::bridge::{BridgeNeeds, BridgeTurn, NeedsSource, ResultKind, TurnOutcome};
     pub use crate::claude_session_log::reader::SessionLogReader;
     pub use crate::claude_session_log::{find_session_log, TerminalSessionLog, ToolCallStatus};
-    pub use crate::pty::session::{PtyOutput, PtySession, SpawnSpec};
-    pub use crate::pipelines::find as find_pipeline;
-    pub use crate::pipelines::autopilot::{decide, FindingReport, TurnReport};
-    pub use crate::pipelines::StageKind;
-    pub use crate::pipelines::recovery::{
-        reconcile_run, stop_stalled, current_stage_tabs, working, turn_key, Reconciled, StallObservation,
-        StallWatch,
-    };
-    pub use crate::store::{PipelineRun, RunStatus, StopReason};
-    pub use crate::bridge::launch::{
-        bridged_command, launch_flags, prepare_stage, read_run_tasks, read_stage_turn, runs_root, write_run_repos,
-        BridgePlan, BridgeTag,
-    };
     pub use crate::commands::pipeline::{fan_out, LaneInput};
-    pub use crate::bridge::watch::{drain_inbox, InboxEvent};
+    pub use crate::pipelines::autopilot::{decide, FindingReport, TurnReport};
+    pub use crate::pipelines::find as find_pipeline;
+    pub use crate::pipelines::recovery::{
+        current_stage_tabs, reconcile_run, stop_stalled, turn_key, working, Reconciled,
+        StallObservation, StallWatch,
+    };
+    pub use crate::pipelines::StageKind;
+    pub use crate::pipelines::{GateDef, GateResult};
     pub use crate::provider::claude::claude_terminal_args;
     pub use crate::provider::{ProgramArgs, TerminalKind, TerminalLaunch};
+    pub use crate::pty::session::{PtyOutput, PtySession, SpawnSpec};
     pub use crate::pty::{paste_bytes, RunMode};
-    pub use crate::bridge::{BridgeNeeds, BridgeTurn, NeedsSource, ResultKind, TurnOutcome};
-    pub use crate::run_actor::{ActorMsg, Host, RunActors, StageLaunch, UserAction, UserOutcome};
-    pub use crate::pipelines::{GateDef, GateResult};
     pub use crate::roles::Role;
-    pub use crate::store::{bundled_seed, AppStateFile, ChainRef, RepoEntry, StateStore, MAIN_WINDOW_ID};
+    pub use crate::run_actor::{ActorMsg, Host, RunActors, StageLaunch, UserAction, UserOutcome};
+    pub use crate::store::{
+        bundled_seed, AppStateFile, ChainRef, RepoEntry, StateStore, MAIN_WINDOW_ID,
+    };
+    pub use crate::store::{PipelineRun, RunStatus, StopReason};
 }
 #[cfg(test)]
 mod coverage_tests;
@@ -76,57 +78,57 @@ use acp::{probe_acp, probe_acp_handshake};
 use cli_detect::{cli_login_status, detect_cli};
 use commands::history_search;
 use commands::{
-    acp_set_effort, acp_set_model, get_claude_usage, check_working_folder, close_tab, create_execution_pipeline_tabs,
-    create_pipeline_tabs, open_github_tab, open_preview_tab, set_preview_url, cursor_approval_mode, get_pipeline_run,
-    pipeline_approve, pipeline_defs_list, pipeline_defs_save, pipeline_fan_out, pipeline_lane_status,
-    pipeline_turn_finished,
-    pipeline_run_gates,
-    pipeline_set_autopilot, pipeline_promote_plan, spawn_run_recovery,
-    pipeline_set_candidate_plan, pipeline_run_tasks, pipeline_actor_message,
-    autopilot_pending_stops, StartupStops,
-    dev_session_cancel, dev_session_live, dev_session_send, dev_session_start, dev_session_stop,
-    diagnostics_read_log, diagnostics_set_capture, diagnostics_status, get_app_state,
-    get_form_recall, get_layout, get_role, get_tab,
-    handoff_attach, handoff_bind_tab, handoff_get, handoff_list, handoff_save, list_claude_history,
-    list_cursor_cli_history, list_roles,
-    new_draft_tab, ack_provider_notice, chain_loop_back, open_chain_overview, set_tab_chain, start_eagle_eye,
-    open_in_cursor_cli, projects_list, projects_remember, projects_remove,
+    ack_provider_notice, acp_set_effort, acp_set_model, autopilot_pending_stops, chain_loop_back,
+    check_working_folder, close_tab, create_execution_pipeline_tabs, create_pipeline_tabs,
+    cursor_approval_mode, dev_session_cancel, dev_session_live, dev_session_send,
+    dev_session_start, dev_session_stop, diagnostics_read_log, diagnostics_set_capture,
+    diagnostics_status, export_text_file, get_app_state, get_claude_usage, get_form_recall,
+    get_layout, get_pipeline_run, get_role, get_tab, handoff_attach, handoff_bind_tab, handoff_get,
+    handoff_list, handoff_save, list_claude_history, list_cursor_cli_history, list_roles,
+    new_draft_tab, open_chain_overview, open_github_tab, open_in_cursor_cli, open_preview_tab,
+    pipeline_actor_message, pipeline_approve, pipeline_defs_list, pipeline_defs_save,
+    pipeline_fan_out, pipeline_lane_status, pipeline_promote_plan, pipeline_run_gates,
+    pipeline_run_tasks, pipeline_set_autopilot, pipeline_set_candidate_plan,
+    pipeline_turn_finished, projects_list, projects_remember, projects_remove,
     projects_toggle_favorite, reopen_closed_tab, reset_builtin_role, respond_permission_request,
-    respond_plan_request, respond_question_request, role_session_start, save_form_draft,
-    save_role, scratch_load, scratch_save, session_agent_logs,
-    select_active_tab, set_layout,
-    export_text_file, set_tab_color, set_tab_label, sync_active_tab_form, transcript_load,
-    transcript_save,
-    validate_and_preview, SessionRegistry,
+    respond_plan_request, respond_question_request, role_session_start, save_form_draft, save_role,
+    scratch_load, scratch_save, select_active_tab, session_agent_logs, set_layout, set_preview_url,
+    set_tab_chain, set_tab_color, set_tab_label, spawn_run_recovery, start_eagle_eye,
+    sync_active_tab_form, transcript_load, transcript_save, validate_and_preview, SessionRegistry,
+    StartupStops,
 };
 use commands::{
     activity_clear, activity_list, terminal_chat_entries, terminal_chat_unwatch,
     terminal_chat_watch, terminal_session_log,
 };
+use commands::{attachment_add, attachment_read_file, attachment_remove};
+use commands::{changes_file_diff, changes_list, changes_revert, changes_snapshot, ChangesRoot};
+use commands::{
+    claude_account_logins, get_provider_settings, set_provider_settings, set_tab_provider,
+};
 use commands::{clickup_status, clickup_test, clickup_token_clear, clickup_token_set};
+use commands::{
+    create_role, delete_role, duplicate_role, export_role, import_role, preview_role_template,
+};
+use commands::{first_run_complete, first_run_status, provider_status};
+use commands::{git_repo_info, worktree_tab_check, worktree_tab_new, worktree_tab_remove};
 use commands::{
     github_claim_notifications, github_feed, github_push_commits, github_save_filters,
     github_status,
 };
-use commands::{changes_file_diff, changes_list, changes_revert, changes_snapshot, ChangesRoot};
-use commands::{first_run_complete, first_run_status, provider_status};
-use commands::{startup_notices, storage_cleanup, storage_status};
-use commands::{create_role, delete_role, duplicate_role, export_role, import_role, preview_role_template};
-use commands::{
-    claude_account_logins, get_provider_settings, set_provider_settings, set_tab_provider,
-};
-use commands::{attachment_add, attachment_read_file, attachment_remove};
-use commands::{git_repo_info, worktree_tab_check, worktree_tab_new, worktree_tab_remove};
 use commands::{
     prompt_clear_recent, prompt_delete, prompt_library_get, prompt_mark_used, prompt_record_send,
     prompt_save,
 };
+use commands::{startup_notices, storage_cleanup, storage_status};
 use commands::{workspace_delete, workspace_open, workspace_save, workspaces_list};
-use files::{files_list, files_markdown_image, files_read, files_resolve, files_reveal, files_write};
+use files::{
+    files_list, files_markdown_image, files_read, files_resolve, files_reveal, files_write,
+};
 use models::{get_model_settings, list_models, set_model_settings, set_tab_model};
 use pty::{
-    get_terminal_settings, pty_detach, pty_input_state, pty_kill, pty_open, pty_resize, pty_running, pty_set_scheme, pty_stage_needs,
-    pty_write, role_terminal_start,
+    get_terminal_settings, pty_detach, pty_input_state, pty_kill, pty_open, pty_resize,
+    pty_running, pty_set_scheme, pty_stage_needs, pty_write, role_terminal_start,
     set_terminal_settings, shell_terminal_start, terminal_plan_file, PtyRegistry,
 };
 use std::sync::Mutex;

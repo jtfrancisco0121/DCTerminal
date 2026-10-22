@@ -29,8 +29,22 @@ use crate::roles::Role;
 use serde_json::Value;
 use std::collections::HashMap;
 
-const PLAN_KEYS: &[&str] = &["approvedPlan", "plan", "implementationPlan", "candidatePlan", "proposedPlan", "reviewedPlan"];
-const REQUEST_KEYS: &[&str] = &["description", "request", "originalTask", "originalRequest", "task", "requirements"];
+const PLAN_KEYS: &[&str] = &[
+    "approvedPlan",
+    "plan",
+    "implementationPlan",
+    "candidatePlan",
+    "proposedPlan",
+    "reviewedPlan",
+];
+const REQUEST_KEYS: &[&str] = &[
+    "description",
+    "request",
+    "originalTask",
+    "originalRequest",
+    "task",
+    "requirements",
+];
 const CONTEXT_KEYS: &[&str] = &["additionalContext", "context", "notes"];
 
 /// What a stage's values are built from.
@@ -70,7 +84,10 @@ pub struct StageValues {
 }
 
 fn answer(values: &HashMap<String, String>, key: &str) -> String {
-    values.get(key).map(|v| v.trim().to_string()).unwrap_or_default()
+    values
+        .get(key)
+        .map(|v| v.trim().to_string())
+        .unwrap_or_default()
 }
 
 fn has(role: &Role, key: &str) -> bool {
@@ -78,11 +95,18 @@ fn has(role: &Role, key: &str) -> bool {
 }
 
 fn slot(role: &Role, keys: &[&str]) -> Option<String> {
-    keys.iter().find(|key| has(role, key)).map(|key| key.to_string())
+    keys.iter()
+        .find(|key| has(role, key))
+        .map(|key| key.to_string())
 }
 
 fn join(parts: &[String]) -> String {
-    parts.iter().filter(|p| !p.trim().is_empty()).cloned().collect::<Vec<_>>().join("\n\n")
+    parts
+        .iter()
+        .filter(|p| !p.trim().is_empty())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 /// The step-1 request's parts.
@@ -121,7 +145,11 @@ impl Request {
             out.push(format!("Task type: {}", self.task_type));
         }
         if !self.request.is_empty() {
-            out.push(if out.is_empty() { self.request.clone() } else { format!("Request:\n{}", self.request) });
+            out.push(if out.is_empty() {
+                self.request.clone()
+            } else {
+                format!("Request:\n{}", self.request)
+            });
         }
         if !self.expected.is_empty() {
             out.push(format!("Expected behavior:\n{}", self.expected));
@@ -145,7 +173,11 @@ fn pick_option(options: &[String], wanted: &str) -> String {
     options
         .iter()
         .find(|o| o.to_ascii_lowercase() == lower)
-        .or_else(|| options.iter().find(|o| !lower.is_empty() && o.to_ascii_lowercase().contains(&lower)))
+        .or_else(|| {
+            options
+                .iter()
+                .find(|o| !lower.is_empty() && o.to_ascii_lowercase().contains(&lower))
+        })
         .or_else(|| options.iter().find(|o| o.as_str() == "Other"))
         .or_else(|| options.first())
         .cloned()
@@ -163,19 +195,32 @@ fn pull_request_context(prs: &Value) -> String {
                 .iter()
                 .map(|pr| {
                     let text = |key: &str| pr.get(key).and_then(Value::as_str).unwrap_or_default();
-                    let branch = Some(text("branch")).filter(|b| !b.is_empty()).map(|b| format!(" (branch `{b}`)")).unwrap_or_default();
-                    let title = Some(text("title")).filter(|t| !t.is_empty()).map(|t| format!(": {t}")).unwrap_or_default();
+                    let branch = Some(text("branch"))
+                        .filter(|b| !b.is_empty())
+                        .map(|b| format!(" (branch `{b}`)"))
+                        .unwrap_or_default();
+                    let title = Some(text("title"))
+                        .filter(|t| !t.is_empty())
+                        .map(|t| format!(": {t}"))
+                        .unwrap_or_default();
                     format!("- {}{branch}{title}", text("url"))
                 })
                 .collect()
         })
         .unwrap_or_default();
     if lines.len() == 1 {
-        parts.push(format!("Pull request: {}", lines[0].trim_start_matches("- ")));
+        parts.push(format!(
+            "Pull request: {}",
+            lines[0].trim_start_matches("- ")
+        ));
     } else if !lines.is_empty() {
         parts.push(format!("Pull requests:\n{}", lines.join("\n")));
     }
-    if let Some(summary) = prs.get("summary").and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
+    if let Some(summary) = prs
+        .get("summary")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+    {
         parts.push(format!("Implementation summary:\n{}", summary.trim()));
     }
     let checks: Vec<String> = prs
@@ -203,8 +248,14 @@ fn run_files_note(files: &[(String, String)]) -> String {
     if files.is_empty() {
         return String::new();
     }
-    let lines: Vec<String> = files.iter().map(|(what, path)| format!("- {what}: {path}")).collect();
-    format!("This run's hand-off files (read them for the full detail):\n{}", lines.join("\n"))
+    let lines: Vec<String> = files
+        .iter()
+        .map(|(what, path)| format!("- {what}: {path}"))
+        .collect();
+    format!(
+        "This run's hand-off files (read them for the full detail):\n{}",
+        lines.join("\n")
+    )
 }
 
 /// The values `role`'s terminal starts with. `reviewer`: the stage reviews
@@ -234,7 +285,11 @@ pub fn stage_values(role: &Role, reviewer: bool, src: &StageSources) -> StageVal
     }
     if let Some(field) = role.fields.iter().find(|f| f.key == "taskType") {
         let options = field.options.clone().unwrap_or_default();
-        let picked = if options.is_empty() { parts.task_type.clone() } else { pick_option(&options, &parts.task_type) };
+        let picked = if options.is_empty() {
+            parts.task_type.clone()
+        } else {
+            pick_option(&options, &parts.task_type)
+        };
         if !picked.is_empty() {
             values.insert("taskType".into(), picked);
         }
@@ -259,7 +314,8 @@ pub fn stage_values(role: &Role, reviewer: bool, src: &StageSources) -> StageVal
         }
     }
     if let Some(key) = slot(role, REQUEST_KEYS) {
-        let whole = key.to_ascii_lowercase().contains("original") || key.to_ascii_lowercase().contains("requirement");
+        let whole = key.to_ascii_lowercase().contains("original")
+            || key.to_ascii_lowercase().contains("requirement");
         let mut request = if whole {
             parts.composed()
         } else {
@@ -292,7 +348,11 @@ pub fn stage_values(role: &Role, reviewer: bool, src: &StageSources) -> StageVal
         if let Some(prs) = &src.prs {
             context.push(pull_request_context(prs));
         }
-        if let Some(previous) = src.previous_review.as_ref().filter(|p| !p.trim().is_empty()) {
+        if let Some(previous) = src
+            .previous_review
+            .as_ref()
+            .filter(|p| !p.trim().is_empty())
+        {
             context.push(format!(
                 "The previous round was sent back with these findings. Check each one is resolved and say which in your review:\n{}",
                 previous.trim()

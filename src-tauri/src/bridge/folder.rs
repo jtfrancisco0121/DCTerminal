@@ -287,7 +287,13 @@ pub struct BridgeNeeds {
 }
 
 impl BridgeNeeds {
-    pub fn new(info: &StageInfo, turn: &str, source: NeedsSource, tool: Option<String>, message: String) -> Self {
+    pub fn new(
+        info: &StageInfo,
+        turn: &str,
+        source: NeedsSource,
+        tool: Option<String>,
+        message: String,
+    ) -> Self {
         Self {
             schema: SCHEMA,
             run_id: info.run_id.clone(),
@@ -448,7 +454,12 @@ pub(crate) fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T
 }
 
 impl StageDir {
-    pub fn open(run_dir: &Path, run_id: &str, stage_key: &str, tab_id: &str) -> Result<Self, OpenError> {
+    pub fn open(
+        run_dir: &Path,
+        run_id: &str,
+        stage_key: &str,
+        tab_id: &str,
+    ) -> Result<Self, OpenError> {
         let invalid = |why: String| Err(OpenError::Invalid(why));
         if !valid_run_id(run_id) {
             return invalid(format!("not a run id: {run_id:?}"));
@@ -460,11 +471,19 @@ impl StageDir {
             return invalid(format!("not a tab id: {tab_id:?}"));
         }
         if run_dir.file_name().and_then(|name| name.to_str()) != Some(run_id) {
-            return invalid(format!("{} is not the folder of run {run_id}", run_dir.display()));
+            return invalid(format!(
+                "{} is not the folder of run {run_id}",
+                run_dir.display()
+            ));
         }
         match read_json::<RunMarker>(&run_dir.join(RUN_FILE)) {
             Some(marker) if marker.run_id == run_id => {}
-            _ => return invalid(format!("{} has no run.json for run {run_id}", run_dir.display())),
+            _ => {
+                return invalid(format!(
+                    "{} has no run.json for run {run_id}",
+                    run_dir.display()
+                ))
+            }
         }
         let dir = run_dir.join(STAGES_DIR).join(stage_key);
         let Some(info) = read_json::<StageInfo>(&dir.join(STAGE_FILE)) else {
@@ -543,7 +562,10 @@ impl StageDir {
     /// The repo names the Planner's tasks may use (`repos.json`); none when
     /// the app wrote no file (a run folder from before L1).
     pub fn repo_names(&self) -> Vec<String> {
-        read_repos(&self.run_dir).into_iter().map(|repo| repo.name).collect()
+        read_repos(&self.run_dir)
+            .into_iter()
+            .map(|repo| repo.name)
+            .collect()
     }
 
     /// An Implementer's pull requests at the run's top.
@@ -578,7 +600,11 @@ pub(crate) fn log_line(run_dir: &Path, line: &str) {
     if std::fs::metadata(&path).is_ok_and(|meta| meta.len() > MAX_LOG_BYTES) {
         return;
     }
-    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
         let _ = writeln!(file, "{} {line}", now());
     }
 }
@@ -618,7 +644,11 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 /// The app's side of a stage folder: what it writes at launch.
-pub(crate) fn write_stage(run_dir: &Path, info: &StageInfo, mode: StageMode) -> io::Result<PathBuf> {
+pub(crate) fn write_stage(
+    run_dir: &Path,
+    info: &StageInfo,
+    mode: StageMode,
+) -> io::Result<PathBuf> {
     let marker = RunMarker {
         schema: SCHEMA,
         run_id: info.run_id.clone(),
@@ -698,7 +728,9 @@ pub(crate) fn write_repos(run_dir: &Path, repos: &[RunRepo]) -> io::Result<()> {
 
 /// The run's `repos.json`; none when it has no such file.
 pub(crate) fn read_repos(run_dir: &Path) -> Vec<RunRepo> {
-    read_json::<RunRepos>(&run_dir.join(REPOS_FILE)).map(|file| file.repos).unwrap_or_default()
+    read_json::<RunRepos>(&run_dir.join(REPOS_FILE))
+        .map(|file| file.repos)
+        .unwrap_or_default()
 }
 
 /// The run's `tasks.json`, when its Planner handed a plan over.

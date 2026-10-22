@@ -177,8 +177,13 @@ mod tests {
         set_tab_chain_and_notify(&events, &mut store, &other, Some(chain("ee_2", 1)), None)
             .unwrap();
         events.take();
-        store.data.tabs.iter_mut().find(|t| t.id == other).unwrap().chain =
-            Some(chain("ee_1", 1));
+        store
+            .data
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == other)
+            .unwrap()
+            .chain = Some(chain("ee_1", 1));
         set_tab_chain_and_notify(&events, &mut store, &other, Some(chain("ee_2", 1)), None)
             .unwrap();
         assert_eq!(events.take(), vec!["ee_1", "ee_2"]);
@@ -200,7 +205,9 @@ mod tests {
         let loose = store
             .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
             .unwrap();
-        store.set_tab_chain(&planner, Some(chain("ee_3", 1)), None).unwrap();
+        store
+            .set_tab_chain(&planner, Some(chain("ee_3", 1)), None)
+            .unwrap();
         store
             .set_tab_chain(&reviewer, Some(chain("ee_3", 2)), Some("plan"))
             .unwrap();

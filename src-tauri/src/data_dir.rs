@@ -168,8 +168,7 @@ mod tests {
             assert_eq!(dir, PathBuf::from("/home/me/.local/share"));
             let xdg = platform_data_dir(Some(OsStr::new("/home/me")), Some(OsStr::new("/xdg")));
             assert_eq!(xdg.unwrap(), PathBuf::from("/xdg"));
-            let relative =
-                platform_data_dir(Some(OsStr::new("/home/me")), Some(OsStr::new("rel")));
+            let relative = platform_data_dir(Some(OsStr::new("/home/me")), Some(OsStr::new("rel")));
             assert_eq!(relative.unwrap(), PathBuf::from("/home/me/.local/share"));
         }
         assert_eq!(platform_data_dir(None, None), None);

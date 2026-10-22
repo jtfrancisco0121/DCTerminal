@@ -89,10 +89,7 @@ pub struct SaveRoleInput {
 }
 
 #[tauri::command]
-pub fn save_role(
-    input: SaveRoleInput,
-    store: State<Mutex<RolesStore>>,
-) -> Result<Role, String> {
+pub fn save_role(input: SaveRoleInput, store: State<Mutex<RolesStore>>) -> Result<Role, String> {
     let mut store = store.lock().map_err(|e| e.to_string())?;
     let updated = apply_role_edit(&mut store.data, input)?;
     store.save()?;
@@ -255,7 +252,12 @@ pub fn delete_role(
 ) -> Result<(), String> {
     let open_tab_roles: Vec<String> = {
         let state = state.lock().map_err(|e| e.to_string())?;
-        state.data.tabs.iter().map(|tab| tab.role_id.clone()).collect()
+        state
+            .data
+            .tabs
+            .iter()
+            .map(|tab| tab.role_id.clone())
+            .collect()
     };
     let mut store = store.lock().map_err(|e| e.to_string())?;
     editor::delete_role(&mut store.data, &role_id, &open_tab_roles)?;
@@ -434,7 +436,10 @@ mod tests {
         assert_eq!(saved.name, "Docs writer");
         assert_eq!(saved.color, "#3fb950");
         assert_eq!(saved.default_mode, "plan");
-        assert_eq!(saved.handoff_targets, Some(vec!["role_developer".to_string()]));
+        assert_eq!(
+            saved.handoff_targets,
+            Some(vec!["role_developer".to_string()])
+        );
         let keys: Vec<&str> = saved.fields.iter().map(|f| f.key.as_str()).collect();
         assert_eq!(keys, vec!["title", "notes"], "request dropped, notes added");
         assert_eq!(saved.template_version, 2);

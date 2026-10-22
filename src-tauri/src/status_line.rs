@@ -40,12 +40,20 @@ pub fn run_if_requested() -> bool {
         return false;
     }
     // Only ever a `status-line/<tab>.json` file (`file_for`), never another path.
-    let Some(out) = args.next().map(PathBuf::from).filter(|out| is_status_line_file(out)) else {
+    let Some(out) = args
+        .next()
+        .map(PathBuf::from)
+        .filter(|out| is_status_line_file(out))
+    else {
         return true;
     };
     let mut input = String::new();
     // intentionally silent: anything printed here would show in Claude's status line.
-    if std::io::stdin().take(MAX_INPUT_BYTES).read_to_string(&mut input).is_ok() {
+    if std::io::stdin()
+        .take(MAX_INPUT_BYTES)
+        .read_to_string(&mut input)
+        .is_ok()
+    {
         let _ = record(&input, &out, chrono::Utc::now().timestamp_millis());
     }
     true
@@ -96,7 +104,9 @@ pub fn record(input: &str, out: &Path, seen_at_ms: i64) -> Result<bool, String> 
     if windows.is_empty() {
         return Ok(false);
     }
-    let parent = out.parent().ok_or_else(|| "path has no parent".to_string())?;
+    let parent = out
+        .parent()
+        .ok_or_else(|| "path has no parent".to_string())?;
     std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     // Written on every render: no backup copy, just a rename over the last one.
     let tmp = out.with_extension(format!("{}.tmp", std::process::id()));
@@ -131,7 +141,11 @@ pub fn user_has_status_line(config_dir: &Path, cwd: &Path) -> bool {
         std::fs::read(path)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-            .is_some_and(|settings| settings.get("statusLine").is_some_and(|line| !line.is_null()))
+            .is_some_and(|settings| {
+                settings
+                    .get("statusLine")
+                    .is_some_and(|line| !line.is_null())
+            })
     })
 }
 
@@ -139,7 +153,13 @@ pub fn user_has_status_line(config_dir: &Path, cwd: &Path) -> bool {
 pub fn file_for(data_dir: &Path, tab_id: &str) -> PathBuf {
     let name: String = tab_id
         .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' { ch } else { '_' })
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+                ch
+            } else {
+                '_'
+            }
+        })
         .collect();
     data_dir.join(STATUS_LINE_DIR).join(format!("{name}.json"))
 }
@@ -155,7 +175,10 @@ fn is_status_line_file(path: &Path) -> bool {
         .and_then(|name| name.to_str())
         .and_then(|name| name.strip_suffix(".json"))
         .is_some_and(|stem| {
-            !stem.is_empty() && stem.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+            !stem.is_empty()
+                && stem
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
         });
     path.is_absolute() && in_folder && named
 }
@@ -212,25 +235,39 @@ mod tests {
     fn rate_limits_become_windows_and_the_first_render_has_none() {
         let windows = windows_from_input(&input(Some(limits())), 7);
         assert_eq!(windows.len(), 2);
-        let five = windows.iter().find(|w| w.rate_limit_type == "five_hour").unwrap();
+        let five = windows
+            .iter()
+            .find(|w| w.rate_limit_type == "five_hour")
+            .unwrap();
         assert_eq!(five.label, "5h");
         assert_eq!(five.utilization, Some(42.3));
         assert_eq!(five.resets_at, Some(1_791_538_800));
         assert_eq!(five.status, "allowed");
         assert_eq!(five.seen_at_ms, 7);
-        let seven = windows.iter().find(|w| w.rate_limit_type == "seven_day").unwrap();
-        assert_eq!((seven.label.as_str(), seven.status.as_str()), ("7d", "rejected"));
+        let seven = windows
+            .iter()
+            .find(|w| w.rate_limit_type == "seven_day")
+            .unwrap();
+        assert_eq!(
+            (seven.label.as_str(), seven.status.as_str()),
+            ("7d", "rejected")
+        );
 
         // First render: no rate_limits. Unknown, never 0%.
         assert!(windows_from_input(&input(None), 7).is_empty());
         assert!(windows_from_input("not json", 7).is_empty());
         // A window without a percent keeps it unknown, not 0.
         let partial = windows_from_input(
-            &input(Some(json!({ "five_hour": { "resets_at": 5 }, "seven_day": "junk" }))),
+            &input(Some(
+                json!({ "five_hour": { "resets_at": 5 }, "seven_day": "junk" }),
+            )),
             7,
         );
         assert_eq!(partial.len(), 1);
-        assert_eq!((partial[0].utilization, partial[0].resets_at), (None, Some(5)));
+        assert_eq!(
+            (partial[0].utilization, partial[0].resets_at),
+            (None, Some(5))
+        );
     }
 
     #[test]
@@ -259,9 +296,16 @@ mod tests {
         assert!(is_status_line_file(&out));
         assert!(is_status_line_file(&file_for(dir.path(), "tab_1")));
         assert!(!is_status_line_file(&dir.join("settings.json")));
-        assert!(!is_status_line_file(&dir.join(STATUS_LINE_DIR).join("x.txt")));
-        assert!(!is_status_line_file(Path::new("status-line/tab_1.json")), "relative");
-        assert!(!is_status_line_file(&dir.join(STATUS_LINE_DIR).join("..json")));
+        assert!(!is_status_line_file(
+            &dir.join(STATUS_LINE_DIR).join("x.txt")
+        ));
+        assert!(
+            !is_status_line_file(Path::new("status-line/tab_1.json")),
+            "relative"
+        );
+        assert!(!is_status_line_file(
+            &dir.join(STATUS_LINE_DIR).join("..json")
+        ));
     }
 
     #[test]
@@ -282,8 +326,11 @@ mod tests {
         assert!(user_has_status_line(config.path(), cwd.path()));
         std::fs::remove_file(config.join("settings.json")).unwrap();
         std::fs::create_dir_all(cwd.join(".claude")).unwrap();
-        std::fs::write(cwd.join(".claude/settings.local.json"), r#"{"statusLine":{"type":"command","command":"x"}}"#)
-            .unwrap();
+        std::fs::write(
+            cwd.join(".claude/settings.local.json"),
+            r#"{"statusLine":{"type":"command","command":"x"}}"#,
+        )
+        .unwrap();
         assert!(user_has_status_line(config.path(), cwd.path()));
     }
 
@@ -303,6 +350,9 @@ mod tests {
             );
         }
         let value: Value = serde_json::from_str(&settings(&cmd).to_string()).unwrap();
-        assert_eq!(value, json!({ "statusLine": { "type": "command", "command": cmd } }));
+        assert_eq!(
+            value,
+            json!({ "statusLine": { "type": "command", "command": cmd } })
+        );
     }
 }

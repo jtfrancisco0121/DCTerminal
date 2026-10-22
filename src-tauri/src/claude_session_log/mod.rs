@@ -81,11 +81,19 @@ pub struct OpenTool {
 /// Shown text that ties a permission dialog on screen to this call.
 fn tool_hint(call: &SessionToolCall) -> String {
     if let Some(path) = call.path.as_deref() {
-        return path.rsplit(['/', '\\']).next().unwrap_or_default().to_string();
+        return path
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or_default()
+            .to_string();
     }
     if let Some(url) = call.url.as_deref() {
         let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
-        return rest.split(['/', '?', '#']).next().unwrap_or_default().to_string();
+        return rest
+            .split(['/', '?', '#'])
+            .next()
+            .unwrap_or_default()
+            .to_string();
     }
     call.command
         .as_deref()
@@ -429,15 +437,26 @@ fn rate_limit_error(value: &Value, message: &Value) -> Option<String> {
     let text = text.trim();
     let flagged = value.get("error").and_then(Value::as_str) == Some("rate_limit");
     let lower = text.to_ascii_lowercase();
-    let said = ["usage limit", "limit reached", "hit your limit", "rate limit", "rate_limit", "error: 429"]
-        .iter()
-        .any(|needle| lower.contains(needle));
+    let said = [
+        "usage limit",
+        "limit reached",
+        "hit your limit",
+        "rate limit",
+        "rate_limit",
+        "error: 429",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
     // "Context limit reached" and the like are about the conversation, not usage.
     let about_context = lower.contains("context") && !lower.contains("usage");
     if !flagged && (!said || about_context) {
         return None;
     }
-    let shown = if text.is_empty() { "Claude reported a rate limit" } else { text };
+    let shown = if text.is_empty() {
+        "Claude reported a rate limit"
+    } else {
+        text
+    };
     Some(shown.chars().take(RATE_LIMIT_CHARS).collect())
 }
 
@@ -500,7 +519,12 @@ fn input_str<'a>(input: &'a Value, keys: &[&str]) -> Option<&'a str> {
         .find(|text| !text.is_empty())
 }
 
-pub(crate) fn describe_tool(id: String, name: String, input: &Value, at: Option<String>) -> SessionToolCall {
+pub(crate) fn describe_tool(
+    id: String,
+    name: String,
+    input: &Value,
+    at: Option<String>,
+) -> SessionToolCall {
     let kind = tool_kind(&name);
     let path = input_str(input, &["file_path", "notebook_path"]).map(str::to_string);
     let command = (kind == ToolCallKind::Execute)
@@ -737,7 +761,10 @@ mod tests {
             prompt("[Request interrupted by user]", "t3"),
         ]);
         assert!(log.turn_done);
-        assert!(log.interrupted, "autopilot must not read it as a finished turn");
+        assert!(
+            log.interrupted,
+            "autopilot must not read it as a finished turn"
+        );
         assert_eq!(log.last_reply, "Starting");
         assert_eq!(log.last_prompt_at.as_deref(), Some("t1"));
         // The next prompt starts a new turn; finishing it is not an interrupt.
@@ -956,7 +983,10 @@ mod tests {
     #[test]
     fn pending_tools_list_the_turns_unanswered_tools_oldest_first() {
         let ids = |log: &TerminalSessionLog| {
-            log.pending_tools.iter().map(|t| t.id.clone()).collect::<Vec<_>>()
+            log.pending_tools
+                .iter()
+                .map(|t| t.id.clone())
+                .collect::<Vec<_>>()
         };
         let parallel = parse(&[
             prompt("go", "t1"),
@@ -986,9 +1016,24 @@ mod tests {
     fn pending_tool_hints_name_what_the_dialog_shows() {
         let log = parse(&[
             prompt("go", "t1"),
-            tool("e1", "Edit", json!({ "file_path": "/repo/src/auth.ts" }), "t2"),
-            tool("w1", "WebFetch", json!({ "url": "https://docs.example.com/a?b=1" }), "t2"),
-            tool("b1", "Bash", json!({ "command": "npm test", "description": "Run tests" }), "t2"),
+            tool(
+                "e1",
+                "Edit",
+                json!({ "file_path": "/repo/src/auth.ts" }),
+                "t2",
+            ),
+            tool(
+                "w1",
+                "WebFetch",
+                json!({ "url": "https://docs.example.com/a?b=1" }),
+                "t2",
+            ),
+            tool(
+                "b1",
+                "Bash",
+                json!({ "command": "npm test", "description": "Run tests" }),
+                "t2",
+            ),
             tool("g1", "Grep", json!({ "pattern": "fn main" }), "t2"),
         ]);
         let hints: Vec<&str> = log.pending_tools.iter().map(|t| t.hint.as_str()).collect();
@@ -1011,7 +1056,11 @@ mod tests {
     fn a_rate_limit_error_ends_the_turn_and_is_named() {
         let limited = parse(&[
             prompt("Fix it", "t1"),
-            api_error("You've hit your limit · resets 3pm (Europe/London)", Some("rate_limit"), "t2"),
+            api_error(
+                "You've hit your limit · resets 3pm (Europe/London)",
+                Some("rate_limit"),
+                "t2",
+            ),
         ]);
         assert!(limited.turn_done);
         assert_eq!(
@@ -1023,10 +1072,17 @@ mod tests {
             prompt("Fix it", "t1"),
             api_error("Claude AI usage limit reached|1760000000", None, "t2"),
         ]);
-        assert_eq!(legacy.rate_limit.as_deref(), Some("Claude AI usage limit reached|1760000000"));
+        assert_eq!(
+            legacy.rate_limit.as_deref(),
+            Some("Claude AI usage limit reached|1760000000")
+        );
         let http = parse(&[
             prompt("Fix it", "t1"),
-            api_error("API Error: 429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\"}}", None, "t2"),
+            api_error(
+                "API Error: 429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\"}}",
+                None,
+                "t2",
+            ),
         ]);
         assert!(http.rate_limit.is_some());
     }
@@ -1040,18 +1096,30 @@ mod tests {
         assert_eq!(overloaded.rate_limit, None);
         let context = parse(&[
             prompt("Fix it", "t1"),
-            api_error("Context limit reached · /compact or /clear to continue", None, "t2"),
+            api_error(
+                "Context limit reached · /compact or /clear to continue",
+                None,
+                "t2",
+            ),
         ]);
         assert_eq!(context.rate_limit, None);
         let talk = parse(&[
             prompt("What is the usage limit?", "t1"),
-            text("The 5-hour usage limit reached 80% earlier; rate limit details are in docs.", Some("end_turn"), "t2"),
+            text(
+                "The 5-hour usage limit reached 80% earlier; rate limit details are in docs.",
+                Some("end_turn"),
+                "t2",
+            ),
         ]);
         assert_eq!(talk.rate_limit, None);
         // A new prompt starts a new turn: the error belonged to the last one.
         let next = parse(&[
             prompt("Fix it", "t1"),
-            api_error("You've hit your limit · resets 3pm", Some("rate_limit"), "t2"),
+            api_error(
+                "You've hit your limit · resets 3pm",
+                Some("rate_limit"),
+                "t2",
+            ),
             prompt("try again", "t3"),
             text("Done.", Some("end_turn"), "t4"),
         ]);

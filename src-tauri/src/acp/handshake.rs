@@ -57,7 +57,12 @@ pub fn probe_handshake(cwd: Option<PathBuf>) -> AcpHandshakeProbeResult {
         }
     };
 
-    match run_handshake(&mut conn, &crate::provider::CursorProvider, &work_dir, "agent") {
+    match run_handshake(
+        &mut conn,
+        &crate::provider::CursorProvider,
+        &work_dir,
+        "agent",
+    ) {
         Ok((session_id, mode_id, _models, _caps)) => {
             conn.kill();
             AcpHandshakeProbeResult {
