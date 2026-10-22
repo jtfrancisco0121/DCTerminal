@@ -174,6 +174,20 @@ pub enum UserAction {
         #[serde(default)]
         back: bool,
     },
+    /// **Continue** at a checkpoint story (L3) in `lane` (`None`: the run's
+    /// own Implementer): `story` is done with your `note`, which goes on to
+    /// the next story; `add` holds stories to add after it, one title per
+    /// line. The stage's session is resumed with the next story.
+    #[serde(rename = "storyContinue", rename_all = "camelCase")]
+    ContinueStory {
+        #[serde(default)]
+        lane: Option<String>,
+        story: String,
+        #[serde(default)]
+        note: Option<String>,
+        #[serde(default)]
+        add: Option<String>,
+    },
     /// Your answer to the `verify` gate the run waits on (L2), for
     /// `stage_id` in `lane`: **Mark verified** (`verified`) passes it and the
     /// run goes on as after a passed gate; **Failed** sends `note` back to

@@ -7,6 +7,8 @@
 //! An accepted result is written to `results/<turn>.json` for the turn in
 //! `turn.json` before the tool answers, so the Stop that follows finds it.
 //! An Implementer's also goes to the run's `prs.json` (`prs-<lane>.json`).
+//! An Implementer's result for a pull request built in stories (L3) must
+//! name the story in its stage's `story.json`.
 //! Rejected arguments get a tool error naming each problem; nothing is
 //! written. The stage folder is checked again on every call, so a tab that
 //! lost its stage to a newer one cannot report into it.
@@ -135,7 +137,13 @@ fn call(server: &Server, params: &Value) -> Value {
         }
     };
     let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
-    match schema::validate(dir.info.result, &args) {
+    // L3: an Implementer's result is also checked against the story its
+    // stage is on (`story.json`), so a result for another story is refused.
+    let checked = schema::validate(dir.info.result, &args).and_then(|result| match dir.info.result {
+        ResultKind::Implementer => schema::check_story(&result, dir.story().as_ref()).map(|()| result),
+        _ => Ok(result),
+    });
+    match checked {
         Err(problems) => tool_text(&schema::rejected_message(&problems), true),
         Ok(result) => {
             let stored = StoredResult {

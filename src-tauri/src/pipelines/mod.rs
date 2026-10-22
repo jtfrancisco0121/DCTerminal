@@ -18,6 +18,7 @@ pub mod autopilot;
 mod gates;
 pub mod lane_gates;
 pub mod verify;
+pub mod stories;
 pub mod recovery;
 #[cfg(test)]
 mod tests;

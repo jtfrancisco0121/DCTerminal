@@ -1471,3 +1471,179 @@ fn the_planners_prompt_lists_the_repos_only_when_there_are_some() {
         assert_eq!(schema::stage_instructions(kind, &repos), schema::result_instructions(kind), "{kind:?}");
     }
 }
+
+// ---- L3: stories in tasks, and a story's result -----------------------------
+
+const STORY_TASKS: &str = r#"{"tasks": [{"id": "pr1", "title": "Engine fixes", "summary": "R5 and the T14 fixes.", "stories": [
+  {"id": "S1", "title": "R5 instrumentation", "tickets": ["86c0r5"], "checkpoint": "Rerun the 7,839-file case on Windows and read the log"},
+  {"id": "s2", "title": "T14-4 log dedupe", "doneWhen": ["Each line is written once"], "plannedTests": ["TestLogDedupe"]},
+  {"id": "s3", "title": "T14-2 lock-file filter"},
+  {"id": "s4", "title": "T14-1 folder name", "tickets": ["QA-141"]}
+]}]}"#;
+
+#[test]
+fn a_task_may_list_stories_and_one_without_them_reads_as_before() {
+    let tasks = schema::planner_tasks(&plan_with(STORY_TASKS)).expect("stories are valid");
+    let stories = &tasks[0].stories;
+    let ids: Vec<&str> = stories.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(ids, ["s1", "s2", "s3", "s4"], "ids are lower-cased");
+    assert_eq!(stories[0].tickets, ["86c0r5"]);
+    assert_eq!(stories[0].checkpoint.as_deref(), Some("Rerun the 7,839-file case on Windows and read the log"));
+    assert_eq!(stories[1].done_when, ["Each line is written once"]);
+    assert_eq!(stories[1].planned_tests, ["TestLogDedupe"]);
+    assert!(stories[2].tickets.is_empty() && stories[2].checkpoint.is_none());
+    // tasks.json keeps them in camelCase; a task without stories has no field.
+    let saved = serde_json::to_value(&tasks[0]).unwrap();
+    assert_eq!(saved["stories"][1]["doneWhen"][0], "Each line is written once");
+    let plain = schema::planner_tasks(&plan_with(TWO_TASKS)).unwrap();
+    assert!(plain.iter().all(|t| t.stories.is_empty()));
+    assert!(serde_json::to_value(&plain[0]).unwrap().get("stories").is_none());
+    let empty = schema::planner_tasks(&plan_with(r#"{"tasks": [{"id": "pr1", "title": "T", "summary": "s", "stories": []}]}"#)).unwrap();
+    assert!(empty[0].stories.is_empty(), "[] is a task built in one turn");
+}
+
+#[test]
+fn story_problems_are_all_named_at_once() {
+    let many: Vec<String> = (1..=21).map(|n| format!(r#"{{"id": "s{n}", "title": "Story {n}"}}"#)).collect();
+    let plan = format!(
+        r#"{{"tasks": [
+          {{"id": "pr1", "title": "A", "summary": "a", "stories": [
+            {{"id": "s1", "title": "One", "owner": "jt"}},
+            {{"id": "s1", "title": "Again"}},
+            {{"id": "s 3", "title": ""}},
+            {{"title": "No id", "tickets": ["QA 12"], "doneWhen": "all of it"}},
+            {{"id": "s5", "title": "Last", "checkpoint": "Rerun it"}}
+          ]}},
+          {{"id": "pr2", "title": "B", "summary": "b", "manual": true, "stories": [{{"id": "s1", "title": "x"}}]}},
+          {{"id": "pr3", "title": "C", "summary": "c", "stories": [{}]}},
+          {{"id": "pr4", "title": "D", "summary": "d", "stories": "s1, s2"}}
+        ]}}"#,
+        many.join(", ")
+    );
+    let problems = schema::planner_tasks(&plan_with(&plan)).unwrap_err();
+    let text = problems.join("\n");
+    for expected in [
+        "`tasks[0].stories[0].owner` is not a field",
+        "story id \"s1\" is used twice in tasks[0]",
+        "`tasks[0].stories[2].id` \"s 3\" must be letters and digits",
+        "`tasks[0].stories[2].title` is empty",
+        "`tasks[0].stories[3].id` is missing",
+        "`tasks[0].stories[3].tickets` \"QA 12\" has spaces in it",
+        "`tasks[0].stories[3].doneWhen` must be a list of strings",
+        "`tasks[0].stories[4].checkpoint`: the last story has no next story",
+        "`tasks[1].stories`: a manual task is not built by an Implementer",
+        "`tasks[2].stories` has 21 items; at most 20",
+        "`tasks[3].stories` must be a list of stories",
+    ] {
+        assert!(text.contains(expected), "missing {expected:?} in:\n{text}");
+    }
+}
+
+#[test]
+fn story_tickets_must_be_in_the_runs_tickets_json_when_it_has_one() {
+    let known = vec!["86c0r5".to_string(), "QA-141".to_string()];
+    let ok = schema::planner_tasks_checked(&plan_with(STORY_TASKS), &[], Some(&known)).expect("both tickets are known");
+    assert_eq!(ok[0].stories[3].tickets, ["QA-141"]);
+    let unknown = STORY_TASKS.replace("QA-141", "QA-999");
+    let problems = schema::planner_tasks_checked(&plan_with(&unknown), &[], Some(&known)).unwrap_err();
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains("`tasks[0].stories[3].tickets` \"QA-999\" is not a ticket of this run's tickets.json (it has 86c0r5, QA-141)"),
+        "{}",
+        problems[0]
+    );
+    // Any case matches; with no tickets.json any id is taken.
+    let lower = STORY_TASKS.replace("QA-141", "qa-141");
+    assert!(schema::planner_tasks_checked(&plan_with(&lower), &[], Some(&known)).is_ok());
+    assert!(schema::planner_tasks_checked(&plan_with(&unknown), &[], None).is_ok());
+}
+
+#[test]
+fn the_planners_hook_checks_story_tickets_against_tickets_json() {
+    let stage = Stage::planner("bridge_plan_story_tickets", true);
+    stage.hook("UserPromptSubmit", prompt("p-1"));
+    std::fs::write(
+        stage.run_dir.join(folder::TICKETS_FILE),
+        r#"{"schema": 1, "tickets": [{"id": "86c0r5", "title": "R5"}, {"id": "86c0t1", "customId": "QA-141", "title": "T14-1"}]}"#,
+    )
+    .unwrap();
+    let reason = denial(&stage.hook("PreToolUse", exit_plan_mode("p-1", &plan_with(&STORY_TASKS.replace("QA-141", "QA-7")))));
+    assert!(reason.contains("\"QA-7\" is not a ticket of this run's tickets.json"), "{reason}");
+    let reason = denial(&stage.hook("PreToolUse", exit_plan_mode("p-1", &plan_with(STORY_TASKS))));
+    assert_eq!(reason, schema::PLAN_RECEIVED);
+    let tasks = launch::read_run_tasks(&stage.runs, RUN).expect("tasks.json");
+    assert_eq!(tasks.tasks[0].stories.len(), 4);
+}
+
+#[test]
+fn the_planner_is_told_it_may_split_a_pull_request_into_stories() {
+    let planner = schema::result_instructions(ResultKind::Planner);
+    assert!(planner.contains("`stories`") && planner.contains("tickets.json") && planner.contains("`checkpoint`"), "{planner}");
+    let implementer = schema::tool_definition(ResultKind::Implementer);
+    assert_eq!(implementer["inputSchema"]["properties"]["story"]["type"], "string");
+}
+
+fn story_mark(current: Option<&str>) -> folder::StoryMark {
+    folder::StoryMark {
+        schema: 1,
+        current: current.map(str::to_string),
+        current_title: current.map(|_| "T14-4 log dedupe".to_string()).unwrap_or_default(),
+        ids: ["s1", "s2", "s3", "s4"].map(str::to_string).to_vec(),
+    }
+}
+
+#[test]
+fn a_story_result_must_name_the_current_story_and_only_the_last_needs_a_pull_request() {
+    let story = |id: &str| json!({ "story": id, "prs": [], "summary": "Done." });
+    // The schema takes `story`, and with it `prs` may be [] or left out.
+    let checked = schema::validate(ResultKind::Implementer, &story("S2")).expect("a story's result");
+    assert_eq!((checked["story"].as_str(), checked["prs"].as_array().map(Vec::len)), (Some("s2"), Some(0)));
+    assert!(schema::validate(ResultKind::Implementer, &json!({ "story": "s2", "summary": "Done." })).is_ok());
+    let bad = schema::validate(ResultKind::Implementer, &json!({ "story": 2, "summary": "Done." })).unwrap_err();
+    assert!(bad[0].contains("`story` must be the id of the story"), "{bad:?}");
+    // Against the stage's story.json.
+    let on_s2 = story_mark(Some("s2"));
+    assert_eq!(schema::check_story(&story("s2"), Some(&on_s2)), Ok(()));
+    let wrong = schema::check_story(&story("s3"), Some(&on_s2)).unwrap_err();
+    assert_eq!(wrong.len(), 1);
+    assert!(
+        wrong[0].contains("`story` \"s3\" is not the current story: the current story is s2 (T14-4 log dedupe), 2 of 4"),
+        "{}",
+        wrong[0]
+    );
+    let missing = schema::check_story(&implemented(), Some(&on_s2)).unwrap_err();
+    assert!(missing[0].contains("`story` is missing: you are on story s2"), "{missing:?}");
+    let last = story_mark(Some("s4"));
+    let no_pr = schema::check_story(&story("s4"), Some(&last)).unwrap_err();
+    assert!(no_pr[0].contains("`prs` is empty: s4 is the last story"), "{no_pr:?}");
+    let mut with_pr = implemented();
+    with_pr["story"] = json!("s4");
+    assert_eq!(schema::check_story(&with_pr, Some(&last)), Ok(()));
+    // Every story done (a review round): no story, or the last one.
+    let done = story_mark(None);
+    assert_eq!(schema::check_story(&implemented(), Some(&done)), Ok(()));
+    assert_eq!(schema::check_story(&with_pr, Some(&done)), Ok(()));
+    assert!(schema::check_story(&story("s2"), Some(&done)).unwrap_err()[0].contains("every story of this pull request is done"));
+    // No stories: `story` is refused, and a plain result is as before.
+    assert!(schema::check_story(&story("s1"), None).unwrap_err()[0].contains("has no stories"));
+    assert_eq!(schema::check_story(&implemented(), None), Ok(()));
+}
+
+#[test]
+fn the_server_refuses_a_result_for_a_story_that_is_not_current() {
+    let stage = Stage::implementer("bridge_story_submit", None);
+    let stage_dir = stage.run_dir.join("stages").join("implementer");
+    folder::write_story(&stage_dir, Some(&story_mark(Some("s2")))).unwrap();
+    stage.hook("UserPromptSubmit", prompt("p-1"));
+    let reply = stage.submit(json!({ "story": "s3", "prs": [], "summary": "Skipped ahead." }));
+    assert_eq!(reply["isError"], true, "{reply}");
+    let text = reply["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("the current story is s2"), "{text}");
+    assert!(!stage.run_dir.join("prs.json").exists(), "nothing is saved");
+    let reply = stage.submit(json!({ "story": "s2", "prs": [], "summary": "Deduped the log lines." }));
+    assert_eq!(reply["isError"], false, "{reply}");
+    assert!(reply["content"][0]["text"].as_str().unwrap().contains("result for story s2: 0 pull request(s)"), "{reply}");
+    stage.hook("Stop", stop("p-1", false, "Story s2 is done."));
+    let turn = stage.inbox().pop().unwrap();
+    assert_eq!(turn.result.unwrap()["story"], "s2");
+}

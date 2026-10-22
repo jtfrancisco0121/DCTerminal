@@ -249,6 +249,8 @@ impl<H: Host> Actor<H> {
         if self.decided(&self.decision_key(&turn)) {
             return;
         }
+        // L3: a lane started outside the actor gets its story records here.
+        self.seed_stories(&placed);
         let verdict = bridge_verdict(review(&turn).and_then(|r| r.get("verdict")).and_then(Value::as_str), placed.revise());
         let (enabled, status, round, mine, held, held_by_verify) = {
             let mut store = lock(self.host.store());
@@ -404,7 +406,12 @@ impl<H: Host> Actor<H> {
             (folder, lane_repo)
         };
         let repo = lane_repo.and_then(|name| crate::store::repos_settings::find_repo(&repos, &name).cloned());
-        let planned = crate::pipelines::lane_gates::lane_gates(&placed.stage.gates, repo.as_ref());
+        let mut planned = crate::pipelines::lane_gates::lane_gates(&placed.stage.gates, repo.as_ref());
+        // L3: a story before the last runs the command checks only; its
+        // checks are running now.
+        if self.story_checks_start(placed, &turn) {
+            planned.retain(|gate| matches!(gate.gate, crate::pipelines::GateDef::Command { .. }));
+        }
         let prs = pr_urls(&turn);
         let host = self.host.clone();
         let me = self.me.clone();
@@ -640,6 +647,8 @@ impl<H: Host> Actor<H> {
 
     fn carry_out(&mut self, placed: &Placed, turn: &BridgeTurn, decision: &Decision, verdict: Option<&str>) {
         let fail = |actor: &mut Self, what: String| actor.fail(decision, Some(&placed.tab.id), &what);
+        // L3: the bridge learns the story the stage is on before it is sent.
+        self.sync_story_mark(placed);
         match decision.action.as_str() {
             // A late turn, one decided already, or a stale one: the ledger says which.
             "ignore" | "skip" => {}
@@ -655,7 +664,8 @@ impl<H: Host> Actor<H> {
                     }
                 }
             }
-            "retry" => {
+            // L3: the next story resumes the session the way a retry does.
+            "retry" | "nextStory" => {
                 let text = decision.message.clone().unwrap_or_default();
                 if !self.idle(&placed.tab) {
                     fail(self, format!("send to {}: the terminal is not open and idle.", placed.tab.label));
@@ -1161,10 +1171,17 @@ impl<H: Host> Actor<H> {
         values.insert("cwd".to_string(), cwd.display().to_string());
         // Settings › Repos (L1), for a Planner's prompt and `repos.json`.
         let repos = self.host.repos();
-        let instructions = plan
+        let mut instructions = plan
             .as_ref()
             .map(|plan| crate::bridge::schema::stage_instructions(plan.kind, &repos))
             .unwrap_or_default();
+        // L3: an Implementer whose task has stories gets their list.
+        if let Some(plan) = plan.as_ref() {
+            let section = self.launch_stories(plan);
+            if !section.is_empty() {
+                instructions = format!("{instructions}\n\n{section}");
+            }
+        }
         let preview = crate::template::merge_role_prompt_with(&role, &values, &instructions);
         if !preview.errors.is_empty() {
             let problems: Vec<String> = preview.errors.iter().map(|e| e.message.clone()).collect();
@@ -1221,6 +1238,7 @@ impl<H: Host> Actor<H> {
                     .ok_or("DCTerminal could not find its own executable for the pipeline bridge.")?;
                 let run_dir = prepare_stage(&self.host.runs_root(), plan, &tab_id)?;
                 write_run_repos(&run_dir, &repos)?;
+                self.write_story_mark(&plan.stage_key, plan.lane.as_deref());
                 Some(launch_flags(plan.kind, &program, &run_dir, &plan.run_id, &plan.stage_key, &tab_id))
             }
             None => None,
@@ -1321,6 +1339,182 @@ impl<H: Host> Actor<H> {
         }
     }
 
+    // ---- Stories (L3) ----
+
+    /// The run's story records for `placed`'s lane from `tasks.json`, when
+    /// it is an Implementer whose task has stories and none are recorded
+    /// yet (a lane started outside the actor); then its `story.json`.
+    fn seed_stories(&self, placed: &Placed) {
+        let Some(tag) = placed.tab.bridge.as_ref().filter(|_| placed.stage.kind() == StageKind::Implementer) else {
+            return;
+        };
+        let runs = self.host.runs_root();
+        let Some(tasks) = crate::bridge::folder::run_dir(&runs, &self.run_id).and_then(|dir| crate::bridge::folder::read_tasks(&dir)) else {
+            return;
+        };
+        let Some(task) = tasks.task_for(placed.lane.as_deref()).cloned() else {
+            return;
+        };
+        let seeded = {
+            let mut store = lock(self.host.store());
+            let Some(run) = store.pipeline_run_by_id_mut(&self.run_id) else {
+                return;
+            };
+            let seeded = crate::pipelines::stories::seed(run, placed.lane.as_deref(), &task);
+            if seeded {
+                if let Err(err) = store.save() {
+                    eprintln!("DCTerminal: run {}: stories not saved: {err}", self.run_id);
+                }
+            }
+            seeded
+        };
+        if seeded {
+            self.write_story_mark(&tag.stage, placed.lane.as_deref());
+            self.changed();
+        }
+    }
+
+    /// At an Implementer's launch: its stories recorded and the stories
+    /// section of its prompt ("" without stories).
+    fn launch_stories(&self, plan: &BridgePlan) -> String {
+        let runs = self.host.runs_root();
+        let mut store = lock(self.host.store());
+        let Some(run) = store.pipeline_run_by_id_mut(&self.run_id) else {
+            return String::new();
+        };
+        let (section, seeded) = crate::bridge::launch::launch_stories(&runs, run, plan);
+        if seeded {
+            if let Err(err) = store.save() {
+                eprintln!("DCTerminal: run {}: stories not saved: {err}", self.run_id);
+            }
+        }
+        section
+    }
+
+    /// Write `story.json` for `stage_key` from the run's records for `lane`.
+    fn write_story_mark(&self, stage_key: &str, lane: Option<&str>) {
+        let written = {
+            let store = lock(self.host.store());
+            match store.pipeline_run_by_id(&self.run_id) {
+                Some(run) => crate::bridge::launch::write_story_mark(&self.host.runs_root(), run, stage_key, lane),
+                None => Ok(()),
+            }
+        };
+        if let Err(err) = written {
+            eprintln!("DCTerminal: run {}: {err}", self.run_id);
+        }
+    }
+
+    /// [`Self::write_story_mark`] for `placed`'s own stage.
+    fn sync_story_mark(&self, placed: &Placed) {
+        if placed.stage.kind() != StageKind::Implementer {
+            return;
+        }
+        if let Some(tag) = placed.tab.bridge.as_ref() {
+            self.write_story_mark(&tag.stage, placed.lane.as_deref());
+        }
+    }
+
+    /// `turn` finished `placed`'s current story: it is checking now. True
+    /// when another story comes after it, so only its command checks run.
+    fn story_checks_start(&self, placed: &Placed, turn: &BridgeTurn) -> bool {
+        let Some(story) = implementer_text(turn, "story") else {
+            return false;
+        };
+        let lane = placed.lane.as_deref();
+        let mut store = lock(self.host.store());
+        let Some(run) = store.pipeline_run_by_id_mut(&self.run_id) else {
+            return false;
+        };
+        if !crate::pipelines::stories::is_current(run, lane, &story) {
+            return false;
+        }
+        crate::pipelines::stories::set_status(run, lane, &story, crate::store::StoryStatus::Checking);
+        let before_last = crate::pipelines::stories::before_last(run, lane, &story);
+        if let Err(err) = store.save() {
+            eprintln!("DCTerminal: run {}: story status not saved: {err}", self.run_id);
+        }
+        drop(store);
+        self.changed();
+        before_last
+    }
+
+    /// Your **Continue** at a checkpoint story (L3): the story is done with
+    /// your note, the stories you added go after it, and the stage's
+    /// session is resumed with the next story and your note. The turns
+    /// other stages finished meanwhile are decided next, checks first.
+    /// Refused, with nothing changed, when the run waits on no such
+    /// checkpoint, you took the stage over, or it is still working.
+    fn user_continue_story(&mut self, lane: Option<&str>, story: &str, note: Option<&str>, add: Option<&str>) -> Result<UserOutcome, String> {
+        let not_waiting = "The run is not waiting on that story's checkpoint any more. Reload the overview.";
+        let lane = lane.map(str::trim).filter(|id| !id.is_empty());
+        let (turn_key, stage_id) = {
+            let store = lock(self.host.store());
+            let run = store.pipeline_run_by_id(&self.run_id).ok_or("unknown pipeline run")?;
+            let wait = run
+                .autopilot
+                .as_ref()
+                .and_then(|a| a.story_wait.clone())
+                .filter(|_| run.status == RunStatus::Waiting && run.stop_reason == Some(StopReason::Checkpoint))
+                .filter(|wait| wait.lane.as_deref() == lane && wait.story == story)
+                .ok_or(not_waiting)?;
+            (wait.turn.ok_or(not_waiting)?, wait.stage_id)
+        };
+        let tab_id = turn_key.split('|').next().unwrap_or_default().to_string();
+        let (placed, _) = self.bridged_tab(&tab_id)?;
+        if placed.stage.id != stage_id {
+            return Err(not_waiting.into());
+        }
+        if self.taken_over(&tab_id) {
+            return Err(format!("You took {} over: hand it back first, then continue.", placed.tab.label));
+        }
+        let session = session_of(&placed.tab)
+            .ok_or_else(|| format!("{} has no saved Claude session to send the next story into.", placed.tab.label))?;
+        if self.host.terminal_live(&tab_id) && !self.idle(&placed.tab) {
+            return Err(format!("{} is still working. Continue when its turn ends.", placed.tab.label));
+        }
+        let added = add.map(crate::pipelines::stories::parse_added).unwrap_or_default();
+        // Checked on a copy first: a refused Continue changes nothing.
+        {
+            let store = lock(self.host.store());
+            let run = store.pipeline_run_by_id(&self.run_id).ok_or("unknown pipeline run")?;
+            crate::pipelines::stories::continue_after(&mut run.clone(), lane, story, note, &added)?;
+        }
+        // The D24 / hooks-off gate before anything is recorded.
+        let ready = self.resume_gate(&placed.tab, None, false)?;
+        let text = {
+            let mut store = lock(self.host.store());
+            let run = store.pipeline_run_by_id_mut(&self.run_id).ok_or("unknown pipeline run")?;
+            let next = crate::pipelines::stories::continue_after(run, lane, story, note, &added)?;
+            let tag = lane.and_then(|id| run.lane(id)).map(|l| format!("{}: ", l.title)).unwrap_or_default();
+            let noted = note.map(str::trim).filter(|n| !n.is_empty()).map(|n| format!(" Your note: {n}")).unwrap_or_default();
+            let more = if added.is_empty() { String::new() } else { format!(" You added {} stories after it.", added.len()) };
+            let summary = format!("{tag}You continued after story {story}'s checkpoint; story {next} goes to {}.{more}{noted}", placed.stage.title);
+            run.log_in_lane("note", Some(&placed.stage.id), None, lane, summary, None, Some("storyContinue".to_string()));
+            // Running again: the turns held meanwhile stay held, for the
+            // actor to decide below (not released to you).
+            let held = run.autopilot.as_mut().map(|a| std::mem::take(&mut a.held)).unwrap_or_default();
+            run.set_running();
+            if let Some(autopilot) = run.autopilot.as_mut() {
+                autopilot.held = held;
+            }
+            let text = crate::pipelines::stories::story_message(run, lane, &next);
+            store.save()?;
+            text
+        };
+        self.changed();
+        self.sync_story_mark(&placed);
+        if let Err(err) = self.resume_ready(&placed.tab, ready, &session, &text) {
+            self.stop_run(Some(&placed.stage.id), Some(&tab_id), &format!("Autopilot could not send the next story: {err}"), None);
+            return Err(err);
+        }
+        self.decide_held_turns(&tab_id);
+        Ok(UserOutcome {
+            tab_id: Some(tab_id),
+            ..UserOutcome::default()
+        })
+    }
+
     // ---- Your buttons ----
 
     fn on_user(&mut self, action: UserAction) -> Result<UserOutcome, String> {
@@ -1354,6 +1548,9 @@ impl<H: Host> Actor<H> {
             } => self.user_send_back(&source_tab_id, &target_role_id, &text, verdict, values, handoff_plan, force),
             UserAction::Approve { lane } => self.user_approve(lane.as_deref()),
             UserAction::Continue => self.user_continue(),
+            UserAction::ContinueStory { lane, story, note, add } => {
+                self.user_continue_story(lane.as_deref(), &story, note.as_deref(), add.as_deref())
+            }
             UserAction::TakeOver { tab_id } => self.user_take_over(&tab_id),
             UserAction::HandBack { tab_id } => self.user_hand_back(&tab_id),
             UserAction::Prefill {
@@ -1962,7 +2159,8 @@ struct VerifyAnswer {
 fn waits_on_verify(run: &PipelineRun) -> bool {
     run.status == RunStatus::Waiting
         && run.stop_reason == Some(StopReason::Checkpoint)
-        && run.autopilot.as_ref().is_some_and(|a| a.verify.is_some())
+        // L3: a checkpoint story's wait holds them the same way.
+        && run.autopilot.as_ref().is_some_and(|a| a.verify.is_some() || a.story_wait.is_some())
 }
 
 /// A turn of `tab_id` is held for your verify answer (L2): the run waits on
@@ -1976,8 +2174,12 @@ fn holds_for_verify(def: &PipelineDef, run: &PipelineRun, tab_id: &str) -> bool 
     let waiting_tab = run
         .autopilot
         .as_ref()
-        .and_then(|a| a.verify.as_ref())
-        .and_then(|wait| wait.turn.as_deref())
+        .and_then(|a| {
+            a.verify
+                .as_ref()
+                .and_then(|wait| wait.turn.as_deref())
+                .or_else(|| a.story_wait.as_ref().and_then(|wait| wait.turn.as_deref()))
+        })
         .and_then(|turn| turn.split('|').next())
         .unwrap_or_default();
     tab_id != waiting_tab
@@ -2069,7 +2271,17 @@ pub(super) fn turn_report(stage: &StageDef, turn: &BridgeTurn, usage: Option<u8>
         rate_limit: None,
         no_result: result.is_none(),
         blocked: blocked(turn),
+        // L3: the story an Implementer's turn finished, and what it said.
+        story: implementer_text(turn, "story"),
+        summary: implementer_text(turn, "summary"),
     }
+}
+
+/// A text field of an Implementer's accepted result (`story`, `summary`).
+fn implementer_text(turn: &BridgeTurn, key: &str) -> Option<String> {
+    let result = (turn.outcome == TurnOutcome::Result).then_some(turn.result.as_ref()).flatten()?;
+    result.get("prs")?;
+    result.get(key).and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty()).map(str::to_string)
 }
 
 /// Why a bridged Implementer is blocked (`submit_result` `blocked`, V2b):
@@ -2190,7 +2402,7 @@ fn taken_over_target(def: &PipelineDef, run: &PipelineRun, placed: &Placed, deci
             let stage = def.stage(decision.stage_id.as_deref()?)?;
             (loop_back_tab(def, run, placed, decision)?, stage.id.clone(), stage.title.clone())
         }
-        "retry" => (placed.tab.id.clone(), placed.stage.id.clone(), placed.stage.title.clone()),
+        "retry" | "nextStory" => (placed.tab.id.clone(), placed.stage.id.clone(), placed.stage.title.clone()),
         _ => return None,
     };
     run.taken_over.contains(&target.0).then_some(target)

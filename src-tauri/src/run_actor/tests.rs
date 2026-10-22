@@ -277,6 +277,7 @@ impl Fixture {
             manual: false,
             summary: "Refresh expired tokens.".into(),
             repo: None,
+            stories: vec![],
         }];
         let dir = self.stage_dir(&self.planner);
         dir.write_plan(
@@ -2159,5 +2160,248 @@ fn only_other_current_stages_are_held_during_a_verify_wait() {
         assert_eq!(skips.len(), 2, "{skips:?}");
         assert!(skips.iter().all(|s| s.contains("finished while the run is waiting for you")), "{skips:?}");
     });
+    crate::pipelines::unregister_for_test(id);
+}
+
+// ---- L3: the story loop -----------------------------------------------------
+
+fn planned_story(id: &str, title: &str, checkpoint: Option<&str>) -> crate::bridge::folder::PlannedStory {
+    crate::bridge::folder::PlannedStory {
+        id: id.into(),
+        title: title.into(),
+        checkpoint: checkpoint.map(str::to_string),
+        ..Default::default()
+    }
+}
+
+/// One task built in three stories; the first is a checkpoint story.
+fn story_task(id: &str) -> crate::bridge::PlannedTask {
+    crate::bridge::PlannedTask {
+        id: id.into(),
+        title: "Engine fixes".into(),
+        depends_on: vec![],
+        manual: false,
+        summary: "R5 and the log fixes.".into(),
+        repo: None,
+        stories: vec![
+            planned_story("s1", "R5 instrumentation", Some("Rerun the 7,839-file case on Windows")),
+            planned_story("s2", "Log dedupe", None),
+            planned_story("s3", "Folder name", None),
+        ],
+    }
+}
+
+/// A story's `submit_result`; the last one reports the pull request.
+fn story_result(id: &str, last: bool) -> Value {
+    let prs = if last {
+        json!([{ "url": "https://github.com/acme/engine/pull/5", "branch": "fix/engine", "title": "Engine fixes" }])
+    } else {
+        json!([])
+    };
+    json!({ "schema": 1, "story": id, "prs": prs, "summary": format!("{id} is built.") })
+}
+
+/// To the Implementer of a one-task plan whose task has stories.
+fn to_implementer_with_stories(fx: &mut Fixture) -> String {
+    let dir = fx.stage_dir(&fx.planner);
+    let tasks = RunTasks { schema: 1, run_id: RUN.into(), stage_key: "planner".into(), turn: "p-1".into(), at: "now".into(), tasks: vec![story_task("pr1")] };
+    dir.write_plan("# Plan\n1. R5, then the log fixes.", &tasks).unwrap();
+    let planner = fx.planner.clone();
+    let turn = fx.end_turn(&planner, "p-1", Some(json!({ "schema": 1, "tasks": [{ "id": "pr1" }] })), "Plan received.");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    let reviewer = fx.launches().last().expect("plan reviewer opened").tab_id.clone();
+    let turn = fx.end_turn(&reviewer, "r-1", review("APPROVED", json!([])), "Approved.");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    fx.user(UserAction::Send {
+        source_tab_id: reviewer,
+        target_role_id: "role_implementer".into(),
+        values: None,
+        handoff_plan: None,
+        handoff_text: None,
+        force: false,
+    })
+    .unwrap()
+    .tab_id
+    .expect("the Implementer opened")
+}
+
+fn story_mark_of(fx: &Fixture, stage_key: &str) -> Option<crate::bridge::folder::StoryMark> {
+    crate::bridge::folder::read_story(&fx.run_file("stages").join(stage_key))
+}
+
+fn story_states(fx: &Fixture, lane: Option<&str>) -> Vec<(String, crate::store::StoryStatus)> {
+    fx.run(|run| crate::pipelines::stories::of_lane(run, lane).iter().map(|s| (s.id.clone(), s.status)).collect())
+}
+
+/// L3 on the actor: the first prompt lists the stories; a checkpoint story
+/// waits once its command check passes and your Continue resumes the same
+/// session with the next story and your note; a failed check goes back
+/// for the same story; only the last story runs the pull-request gate, and
+/// then the PR Reviewer opens. `story.json` follows the current story.
+#[test]
+fn a_pull_request_in_stories_runs_each_story_in_the_same_session_then_goes_to_review() {
+    use crate::store::StoryStatus::{Active, Done, Pending, Waiting};
+    let mut fx = Fixture::new("stories");
+    let implementer = to_implementer_with_stories(&mut fx);
+    let first = fx.launches().last().cloned().unwrap();
+    assert!(first.prompt.contains("## Stories") && first.prompt.contains("Do story s1 now (1 of 3)"), "{}", first.prompt);
+    assert_eq!(story_states(&fx, None), [("s1".to_string(), Active), ("s2".into(), Pending), ("s3".into(), Pending)]);
+    assert_eq!(story_mark_of(&fx, "implementer").and_then(|m| m.current), Some("s1".into()));
+
+    // s1: its command check passes, and the run waits on its checkpoint.
+    fx.actor.handle(ActorMsg::Turn(fx.end_turn(&implementer, "i-1", Some(story_result("s1", false)), "s1 done.")));
+    fx.finish_gates();
+    assert!(fx.host.pr_gate_urls.lock().unwrap().is_empty(), "no pull-request gate before the last story");
+    fx.run(|run| {
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::Checkpoint)));
+        assert_eq!(run.autopilot.as_ref().unwrap().story_wait.as_ref().map(|w| w.story.as_str()), Some("s1"));
+    });
+    assert_eq!(story_states(&fx, None)[0], ("s1".to_string(), Waiting));
+    assert!(fx.resumes().is_empty(), "nothing is sent while the checkpoint waits");
+    let refused = fx.user(UserAction::ContinueStory { lane: None, story: "s2".into(), note: None, add: None }).unwrap_err();
+    assert!(refused.contains("not waiting on that story's checkpoint"), "{refused}");
+
+    // Continue with your finding: the same session gets s2 and the note.
+    let note = "JT's finding from the Windows rerun: the walk stalls 40 s on the lock file.";
+    let outcome = fx
+        .user(UserAction::ContinueStory { lane: None, story: "s1".into(), note: Some(note.into()), add: None })
+        .expect("continued");
+    assert_eq!(outcome.tab_id.as_deref(), Some(implementer.as_str()));
+    let resumes = fx.resumes();
+    assert_eq!(resumes.len(), 1);
+    assert_eq!((resumes[0].tab_id.as_str(), resumes[0].session_id.as_str()), (implementer.as_str(), first.session_id.as_str()));
+    assert!(resumes[0].prompt.starts_with("Story 2 of 3: Log dedupe"), "{}", resumes[0].prompt);
+    assert!(resumes[0].prompt.contains(note), "{}", resumes[0].prompt);
+    fx.run(|run| {
+        assert_eq!(run.status, RunStatus::Running);
+        assert!(run.autopilot.as_ref().unwrap().story_wait.is_none());
+        assert_eq!(run.stories[0].note.as_deref(), Some(note));
+        assert!(run.events.iter().any(|e| e.outcome.as_deref() == Some("storyContinue")));
+    });
+    assert_eq!(story_mark_of(&fx, "implementer").and_then(|m| m.current), Some("s2".into()));
+
+    // s2: its check fails once; the output goes back for s2, then it passes.
+    fx.host.gates.lock().unwrap().push_back(GateResult {
+        kind: "command".into(),
+        label: "npm run check".into(),
+        status: "failed".into(),
+        summary: "Exited with code 1.".into(),
+        output: "FAIL TestLogDedupe".into(),
+        duration_ms: 5,
+        optional: false,
+    });
+    fx.actor.handle(ActorMsg::Turn(fx.end_turn(&implementer, "i-2", Some(story_result("s2", false)), "s2 done.")));
+    fx.finish_gates();
+    let retry = fx.resumes().last().cloned().unwrap();
+    assert!(retry.prompt.contains("FAIL TestLogDedupe") && retry.prompt.contains("This is still story s2 (2 of 3)"), "{}", retry.prompt);
+    fx.run(|run| assert_eq!((run.stories[1].status, run.stories[1].attempt), (crate::store::StoryStatus::Failed, 1)));
+    fx.actor.handle(ActorMsg::Turn(fx.end_turn(&implementer, "i-3", Some(story_result("s2", false)), "s2 fixed.")));
+    fx.finish_gates();
+    let next = fx.resumes().last().cloned().unwrap();
+    assert!(next.prompt.starts_with("Story 3 of 3: Folder name") && next.prompt.contains("This is the last story"), "{}", next.prompt);
+    assert!(fx.host.pr_gate_urls.lock().unwrap().is_empty());
+
+    // s3, the last: every gate runs, then the PR Reviewer opens.
+    fx.actor.handle(ActorMsg::Turn(fx.end_turn(&implementer, "i-4", Some(story_result("s3", true)), "Opened the pull request.")));
+    fx.finish_gates();
+    assert_eq!(fx.host.pr_gate_urls.lock().unwrap().clone(), vec![vec!["https://github.com/acme/engine/pull/5".to_string()]]);
+    assert_eq!(fx.launches().last().unwrap().role_id, "role_pr_reviewer");
+    assert_eq!(story_states(&fx, None), [("s1".to_string(), Done), ("s2".into(), Done), ("s3".into(), Done)]);
+    assert_eq!(story_mark_of(&fx, "implementer").map(|m| m.current), Some(None), "every story is done");
+    // One session throughout, and one record per story with its summary.
+    assert!(fx.resumes().iter().all(|r| r.session_id == first.session_id && r.tab_id == implementer));
+    fx.run(|run| {
+        let summaries: Vec<Option<&str>> = run.stories.iter().map(|s| s.summary.as_deref()).collect();
+        assert_eq!(summaries, [Some("s1 is built."), Some("s2 is built."), Some("s3 is built.")]);
+        assert!(run.stories.iter().all(|s| s.turn.as_deref().is_some_and(|t| t.starts_with(&implementer))));
+    });
+    // A review round goes back to the same session as before; the stories
+    // are not started again, and its turn reports no story.
+    let reviewer = fx.launches().last().unwrap().tab_id.clone();
+    let findings = json!([{ "severity": "HIGH", "file": "walk.go:12", "summary": "The filter misses .lock~ files." }]);
+    fx.actor.handle(ActorMsg::Turn(fx.end_turn(&reviewer, "pr-1", review("CHANGES_REQUIRED", findings), "Changes.")));
+    let round = fx.resumes().last().cloned().unwrap();
+    assert_eq!((round.tab_id.as_str(), round.session_id.as_str()), (implementer.as_str(), first.session_id.as_str()));
+    assert!(round.prompt.starts_with("Review findings from the PR Reviewer (round 1)"), "{}", round.prompt);
+    let mut fixed = story_result("s3", true);
+    fixed.as_object_mut().unwrap().remove("story");
+    fx.actor.handle(ActorMsg::Turn(fx.end_turn(&implementer, "i-5", Some(fixed), "Fixed.")));
+    fx.finish_gates();
+    assert_eq!(fx.launches().last().unwrap().role_id, "role_pr_reviewer", "the next review round");
+    assert_eq!(story_states(&fx, None).len(), 3);
+}
+
+/// L3 with L2: a lane's story turn that ends while another lane waits on a
+/// verification is held like any turn; your answer decides it, its command
+/// check runs (no verify gate before its last story), and the next story
+/// goes to that lane's session. A checkpoint story's wait holds the other
+/// lane's turn the same way, and Continue decides it.
+#[test]
+fn story_turns_are_held_during_another_lanes_wait_and_a_story_wait_holds_theirs() {
+    let id = "verify_stories_l3";
+    crate::pipelines::register_for_test(verify_pipeline(id));
+    let mut fx = Fixture::with_pipeline("verify_stories", id, Vec::new());
+    let tasks = RunTasks {
+        schema: 1,
+        run_id: RUN.into(),
+        stage_key: "planner".into(),
+        turn: "p-1".into(),
+        at: "now".into(),
+        tasks: vec![
+            crate::bridge::PlannedTask { stories: vec![], ..story_task("pr1") },
+            crate::bridge::PlannedTask {
+                stories: vec![planned_story("s1", "Log dedupe", None), planned_story("s2", "R5", Some("Rerun on Windows")), planned_story("s3", "Fix", None)],
+                ..story_task("pr2")
+            },
+        ],
+    };
+    fx.stage_dir(&fx.planner).write_plan("# Plan", &tasks).unwrap();
+    let (impl1, impl2) = two_lanes_at_the_implementer(&mut fx);
+    // pr1 waits on its verification.
+    fx.actor.handle(ActorMsg::Turn(implemented(&fx, &impl1, "a-1")));
+    fx.finish_gates();
+    fx.run(|run| assert_eq!(run.autopilot.as_ref().unwrap().verify.as_ref().and_then(|w| w.lane.as_deref()), Some("pr1")));
+    // pr2's s1 ends meanwhile: recorded (its stories too) and held, not checked.
+    fx.actor.handle(ActorMsg::Turn(fx.end_turn(&impl2, "b-1", Some(story_result("s1", false)), "s1 done.")));
+    assert!(fx.gates_done.try_recv().is_err(), "held: no checks yet");
+    fx.run(|run| {
+        assert_eq!(run.autopilot.as_ref().unwrap().held.len(), 1);
+        assert_eq!(crate::pipelines::stories::of_lane(run, Some("pr2")).len(), 3);
+    });
+    assert_eq!(story_mark_of(&fx, "implementer@pr2").and_then(|m| m.current), Some("s1".into()));
+
+    // Mark verified: pr1 goes on, then pr2's s1 is checked (command only) and s2 sent.
+    fx.user(verify_in("pr1")).unwrap();
+    fx.finish_gates();
+    let sent = fx.resumes().into_iter().filter(|r| r.tab_id == impl2).collect::<Vec<_>>();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].prompt.starts_with("Story 2 of 3: R5"), "{}", sent[0].prompt);
+    fx.run(|run| {
+        let gates = &run.gates["implementer@pr2"].results;
+        assert!(gates.iter().all(|g| g.kind == "command"), "no verify gate before the last story: {gates:?}");
+        assert_eq!(run.status, RunStatus::Running, "{:?}", run.autopilot);
+    });
+
+    // pr2's s2 is a checkpoint: the run waits on it, and holds pr1's reviewer turn.
+    fx.actor.handle(ActorMsg::Turn(fx.end_turn(&impl2, "b-2", Some(story_result("s2", false)), "s2 done.")));
+    fx.finish_gates();
+    fx.run(|run| assert_eq!(run.autopilot.as_ref().unwrap().story_wait.as_ref().map(|w| w.story.as_str()), Some("s2")));
+    let reviewer1 = fx.launches().last().unwrap().tab_id.clone();
+    fx.actor.handle(ActorMsg::Turn(fx.end_turn(&reviewer1, "rv-1", review("APPROVED", json!([])), "Approved.")));
+    fx.run(|run| {
+        assert_eq!(run.autopilot.as_ref().unwrap().held.len(), 1, "pr1's review is held for your Continue");
+        assert_eq!(run.lane("pr1").unwrap().status, "active");
+    });
+    fx.user(UserAction::ContinueStory { lane: Some("pr2".into()), story: "s2".into(), note: Some("Clean on Windows.".into()), add: Some("Tidy the log text".into()) })
+        .expect("continued");
+    let last = fx.resumes().last().cloned().unwrap();
+    assert!(last.prompt.starts_with("Story 3 of 4: Tidy the log text") && last.prompt.contains("Clean on Windows."), "{}", last.prompt);
+    fx.run(|run| {
+        assert_eq!(run.lane("pr1").unwrap().status, "approved", "pr1's held review was decided");
+        let ids: Vec<&str> = crate::pipelines::stories::of_lane(run, Some("pr2")).iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["s1", "s2", "s4", "s3"], "the story you added goes right after s2");
+        assert!(run.autopilot.as_ref().unwrap().held.is_empty());
+    });
+    assert_eq!(story_mark_of(&fx, "implementer@pr2").and_then(|m| m.current), Some("s4".into()));
     crate::pipelines::unregister_for_test(id);
 }
