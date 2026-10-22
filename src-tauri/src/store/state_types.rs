@@ -559,16 +559,64 @@ pub struct RunAutopilot {
     /// The `verify` gate the run waits on (L2), while it does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verify: Option<VerifyWait>,
+    /// Other stages' turns that finished while the run waited on a
+    /// verification (L2), held for your answer. A successful answer decides
+    /// them; any other end of the wait gives each one the ledger's "hand it
+    /// on yourself" line ([`PipelineRun::release_held`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub held: Vec<HeldTurn>,
+}
+
+/// A turn held while the run waits on a verification (L2).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HeldTurn {
+    /// `tab|bridge|prompt`.
+    pub turn: String,
+    pub tab_id: String,
+    pub stage_id: String,
+    pub stage_title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lane: Option<String>,
 }
 
 /// Most decided turns autopilot remembers per run.
 pub const MAX_DECIDED_TURNS: usize = 100;
 
 impl PipelineRun {
+    /// Hold `turn` for your verify answer (L2), once.
+    pub fn hold_turn(&mut self, turn: HeldTurn) {
+        let held = &mut self.autopilot.get_or_insert_with(RunAutopilot::default).held;
+        if !held.iter().any(|seen| seen.turn == turn.turn) {
+            held.push(turn);
+        }
+    }
+
+    /// The verify wait ended with no answer (L2): each held turn gets the
+    /// line a turn finishing while the run waits for you always got, and
+    /// is yours to hand on. The list is cleared.
+    pub fn release_held(&mut self) {
+        let held = match self.autopilot.as_mut() {
+            Some(autopilot) => std::mem::take(&mut autopilot.held),
+            None => return,
+        };
+        for turn in held {
+            let lane = turn.lane.as_deref().filter(|id| self.lane(id).is_some());
+            let tag = lane.and_then(|id| self.lane(id)).map(|l| format!("{}: ", l.title)).unwrap_or_default();
+            let summary = format!(
+                "{tag}{} finished while the run waited on a verification, which ended without your answer. Hand it on yourself.",
+                turn.stage_title
+            );
+            let lane = lane.map(str::to_string);
+            self.log_in_lane("autopilot", Some(&turn.stage_id), None, lane.as_deref(), summary, None, Some("skip".to_string()));
+        }
+    }
+
     /// Autopilot stops for you: `waiting`, with the reason code and the
     /// sentence the overview shows. A complete run stays complete, and a run
     /// with autopilot off stays `stopped`: only autopilot waits for you.
     pub fn set_waiting(&mut self, reason: StopReason, why: impl Into<String>) {
+        self.release_held();
         let enabled = self.autopilot.as_ref().is_some_and(|a| a.enabled);
         if self.status == RunStatus::Complete || !enabled {
             return;
@@ -600,6 +648,10 @@ impl PipelineRun {
     /// waiting for. A complete run stays complete; a run with autopilot off
     /// stays stopped.
     pub fn set_running(&mut self) {
+        // L2: running again with no answer to a verify wait: its held turns are yours.
+        if self.autopilot.as_ref().is_some_and(|a| a.verify.is_some()) {
+            self.release_held();
+        }
         if let Some(autopilot) = self.autopilot.as_mut() {
             autopilot.waiting = None;
             autopilot.verify = None;
@@ -614,6 +666,11 @@ impl PipelineRun {
     /// You acted on the run (a hand-off, a send-back, an approval): a
     /// waiting run carries on from the next turn.
     pub fn resume_after_you(&mut self) {
+        // L2: your hand-on ends a verify wait with no answer: its held turns
+        // are yours. (A hand-off the actor makes after your answer is not.)
+        if self.autopilot.as_ref().is_some_and(|a| a.verify.is_some()) {
+            self.release_held();
+        }
         if let Some(autopilot) = self.autopilot.as_mut() {
             autopilot.waiting = None;
             autopilot.verify = None;
@@ -644,6 +701,7 @@ impl PipelineRun {
     /// Autopilot turned on (`running`) or off (`stopped`, paused by you).
     /// A complete run stays complete.
     pub fn set_autopilot_enabled(&mut self, enabled: bool) {
+        self.release_held();
         let autopilot = self.autopilot.get_or_insert_with(RunAutopilot::default);
         autopilot.enabled = enabled;
         autopilot.waiting = None;
@@ -664,6 +722,7 @@ impl PipelineRun {
     /// e.g. the run actor failed). Turning autopilot on again runs it. A
     /// complete run stays complete.
     pub fn set_stopped(&mut self, reason: StopReason) {
+        self.release_held();
         let autopilot = self.autopilot.get_or_insert_with(RunAutopilot::default);
         autopilot.enabled = false;
         autopilot.waiting = None;
@@ -677,6 +736,7 @@ impl PipelineRun {
 
     /// The run is done. Final.
     pub fn set_complete(&mut self) {
+        self.release_held();
         if let Some(autopilot) = self.autopilot.as_mut() {
             autopilot.waiting = None;
             autopilot.verify = None;

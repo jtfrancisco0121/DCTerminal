@@ -2848,34 +2848,8 @@ mod run_actor {
         );
     }
 
-    /// Review fix (L2): two independent lanes in a repo with verify steps.
-    /// Lane A waits on its verification; lane B's Implementer finishes
-    /// during that wait and is held, not decided. Once A is marked
-    /// verified, B's turn is taken up (its check runs), B waits on its own
-    /// verification, and only once that is marked verified does B go on to
-    /// its PR Reviewer.
-    #[test]
-    fn a_lane_that_finishes_during_another_lanes_verify_wait_gets_its_own_verification() {
-        let data = TempDir::new("actor_l2_two_data");
-        let home = FakeHome::new("actor_l2_two");
-        let parent = TempDir::new("actor_l2_two_repos");
-        let backend = repo(&parent, "backend");
-        let repos = vec![RepoEntry {
-            name: "backend".into(),
-            folder: backend.display().to_string(),
-            check: Some("echo 'ok server/session 0.2s'".into()),
-            verify: Some(BACKEND_VERIFY.into()),
-        }];
-        let scenarios = HashMap::from([
-            ("role_plan_reviewer".to_string(), VecDeque::from([reviewed("APPROVED", json!([]))])),
-            ("role_implementer".to_string(), VecDeque::new()),
-            ("role_pr_reviewer".to_string(), VecDeque::from([reviewed("APPROVED", json!([])), reviewed("APPROVED", json!([]))])),
-        ]);
-        let host = host_with(data, home, repos, scenarios);
-        assert!(host.home.config.path().starts_with(test_root()), "{}", host.home.config.path().display());
-        let actors = RunActors::new(host.clone());
-
-        // The Planner, with the two-lane plan.
+    /// The Planner of `plan_two_backend_lanes`, started with its run folder.
+    fn start_two_lane_planner(host: &FakeHost) {
         let cwd = host.home.cwd.path().display().to_string();
         let planner = {
             let mut store = host.store.lock().unwrap();
@@ -2922,6 +2896,36 @@ mod run_actor {
             ] }] }),
             false,
         );
+    }
+
+    /// Review fix (L2): two independent lanes in a repo with verify steps.
+    /// Lane A waits on its verification; lane B's Implementer finishes
+    /// during that wait and is held, not decided. Once A is marked
+    /// verified, B's turn is taken up (its check runs), B waits on its own
+    /// verification, and only once that is marked verified does B go on to
+    /// its PR Reviewer.
+    #[test]
+    fn a_lane_that_finishes_during_another_lanes_verify_wait_gets_its_own_verification() {
+        let data = TempDir::new("actor_l2_two_data");
+        let home = FakeHome::new("actor_l2_two");
+        let parent = TempDir::new("actor_l2_two_repos");
+        let backend = repo(&parent, "backend");
+        let repos = vec![RepoEntry {
+            name: "backend".into(),
+            folder: backend.display().to_string(),
+            check: Some("echo 'ok server/session 0.2s'".into()),
+            verify: Some(BACKEND_VERIFY.into()),
+        }];
+        let scenarios = HashMap::from([
+            ("role_plan_reviewer".to_string(), VecDeque::from([reviewed("APPROVED", json!([]))])),
+            ("role_implementer".to_string(), VecDeque::new()),
+            ("role_pr_reviewer".to_string(), VecDeque::from([reviewed("APPROVED", json!([])), reviewed("APPROVED", json!([]))])),
+        ]);
+        let host = host_with(data, home, repos, scenarios);
+        assert!(host.home.config.path().starts_with(test_root()), "{}", host.home.config.path().display());
+        let actors = RunActors::new(host.clone());
+
+        start_two_lane_planner(&host);
 
         let deadline = Instant::now() + Duration::from_secs(120);
         let mut lanes: Vec<(String, String, PathBuf)> = Vec::new();
@@ -3008,5 +3012,87 @@ mod run_actor {
         let reviewers = host.launches.lock().unwrap().iter().filter(|l| l.role_id == "role_pr_reviewer").count();
         assert_eq!(reviewers, 2, "{all}");
         assert_eq!(run.status, RunStatus::Complete);
+    }
+
+    /// Review fix (L2, M1): lane B's turn is held while A waits on its
+    /// verification; you then hand A on yourself instead of answering. The
+    /// wait ends with no answer, so B's held turn is not stranded: it gets
+    /// the "hand it on yourself" line and the held list is empty.
+    #[test]
+    fn a_verify_wait_you_hand_on_yourself_tells_you_about_the_held_turn() {
+        let data = TempDir::new("actor_l2_handon_data");
+        let home = FakeHome::new("actor_l2_handon");
+        let parent = TempDir::new("actor_l2_handon_repos");
+        let backend = repo(&parent, "backend");
+        let repos = vec![RepoEntry {
+            name: "backend".into(),
+            folder: backend.display().to_string(),
+            check: Some("echo ok".into()),
+            verify: Some(BACKEND_VERIFY.into()),
+        }];
+        let scenarios = HashMap::from([
+            ("role_plan_reviewer".to_string(), VecDeque::from([reviewed("APPROVED", json!([]))])),
+            ("role_implementer".to_string(), VecDeque::new()),
+            ("role_pr_reviewer".to_string(), VecDeque::from([reviewed("APPROVED", json!([]))])),
+        ]);
+        let host = host_with(data, home, repos, scenarios);
+        assert!(host.home.config.path().starts_with(test_root()), "{}", host.home.config.path().display());
+        let actors = RunActors::new(host.clone());
+        start_two_lane_planner(&host);
+
+        let deadline = Instant::now() + Duration::from_secs(90);
+        let mut lanes: Vec<(String, String, PathBuf)> = Vec::new();
+        let mut b_started = false;
+        loop {
+            drain_inbox(&host.runs, &mut |event| {
+                if let InboxEvent::Turn(turn) = event {
+                    let run_id = turn.run_id.clone();
+                    actors.send(&run_id, ActorMsg::Turn(turn));
+                }
+            });
+            let run = snapshot(&host);
+            let waiting_a = run.autopilot.as_ref().and_then(|a| a.verify.as_ref()).is_some_and(|w| w.lane.as_deref() == Some("pr1"));
+            let b_held = run.autopilot.as_ref().is_some_and(|a| a.held.iter().any(|h| h.lane.as_deref() == Some("pr2")));
+            if run.status == RunStatus::Waiting && lanes.is_empty() {
+                lanes = fan_out_two_backend_lanes(&host, &run, &actors, &backend);
+                let (lane, tab, wt) = &lanes[0];
+                start_lane_terminal(&host, lane, tab, wt, "8c3f5d21-2b3c-4d4e-9f50-000000000301");
+            } else if waiting_a && !b_started {
+                let (lane, tab, wt) = &lanes[1];
+                start_lane_terminal(&host, lane, tab, wt, "8c3f5d21-2b3c-4d4e-9f50-000000000302");
+                b_started = true;
+            } else if waiting_a && b_held {
+                break;
+            }
+            assert!(Instant::now() < deadline, "B was never held\nledger:\n{}\n{}", ledger(&run), host.screens());
+            std::thread::sleep(Duration::from_millis(30));
+        }
+
+        // You hand A on to its PR Reviewer yourself, without answering.
+        let a_tab = lanes[0].1.clone();
+        actors
+            .ask(
+                RUN,
+                UserAction::Send {
+                    source_tab_id: a_tab,
+                    target_role_id: "role_pr_reviewer".into(),
+                    values: None,
+                    handoff_plan: None,
+                    handoff_text: None,
+                    force: false,
+                },
+                Duration::from_secs(60),
+            )
+            .expect("your hand-on");
+        let run = snapshot(&host);
+        let all = ledger(&run);
+        let autopilot = run.autopilot.as_ref().unwrap();
+        assert!(autopilot.held.is_empty(), "{:?}", autopilot.held);
+        assert!(autopilot.verify.is_none());
+        let told = run.events.iter().find(|e| {
+            e.lane_id.as_deref() == Some("pr2") && e.outcome.as_deref() == Some("skip") && e.summary.ends_with("Hand it on yourself.")
+        });
+        assert!(told.is_some_and(|e| e.summary.starts_with("PR2 — Audit log: Implementer finished while the run waited")), "{all}");
+        assert!(run.verifications.is_empty(), "nothing was verified\n{all}");
     }
 }

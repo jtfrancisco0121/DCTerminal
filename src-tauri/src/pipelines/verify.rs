@@ -42,11 +42,16 @@ pub(super) fn wait_for_you(
         label: gate.label.clone(),
         steps: gate.summary.clone(),
         // The turn's own key, never a `#verify` one it was decided again under.
-        turn: turn.and_then(|turn| turn.split('#').next()).map(str::to_string),
+        turn: turn.map(plain_turn_key).map(str::to_string),
         prs: Vec::new(),
         at: chrono::Utc::now().to_rfc3339(),
     });
     decision
+}
+
+/// A decision key without the `#verify<n>` it may carry: the turn's own key.
+pub fn plain_turn_key(key: &str) -> &str {
+    key.rsplit_once("#verify").map_or(key, |(plain, _)| plain)
 }
 
 /// What a stage is told when you mark its verification failed.
@@ -151,7 +156,13 @@ pub fn answer(
         Some(wait.steps.clone()),
         Some(if verified { "verified" } else { "failed" }.to_string()),
     );
+    // Your answer ends the wait: its held turns stay held for the actor to
+    // decide (`decide_held_turns`), not released as yours.
+    let held = run.autopilot.as_mut().map(|a| std::mem::take(&mut a.held)).unwrap_or_default();
     run.set_running();
+    if let Some(autopilot) = run.autopilot.as_mut() {
+        autopilot.held = held;
+    }
     Ok(wait)
 }
 
@@ -176,7 +187,8 @@ pub fn manual_results(
             .gates
             .get(&key)
             .filter(|gates| gates.round == round)
-            .map(|gates| gates.results.iter().filter(|r| r.waiting_verify()).cloned().collect())
+            // Waiting and answered alike: your answers this round stand.
+            .map(|gates| gates.results.iter().filter(|r| r.kind == "verify").cloned().collect())
             .unwrap_or_default();
         results.extend(waiting);
         return results;

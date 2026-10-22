@@ -282,3 +282,96 @@ fn nothing_to_run_advice_names_go_mod_and_a_repo_check() {
     assert!(d.reason.contains("a Cargo.toml or a go.mod") && d.reason.contains("a check for its repo"), "{}", d.reason);
     assert!(d.reason.contains("in Settings › Repos"), "{}", d.reason);
 }
+
+fn held_b() -> crate::store::HeldTurn {
+    crate::store::HeldTurn {
+        turn: "tab_b|bridge|b1".into(),
+        tab_id: "tab_b".into(),
+        stage_id: "implementer".into(),
+        stage_title: "Implementer".into(),
+        lane: Some("pr2".into()),
+    }
+}
+
+/// A run waiting on lane pr1's verification with lane pr2's turn held.
+fn waiting_with_b_held() -> PipelineRun {
+    let mut r = run(true);
+    gates_waiting(&mut r, Some("pr1"), "backend verify");
+    decide(&eagle1(), &mut r, &report(Some("pr1"), "tab|bridge|t1"));
+    r.hold_turn(held_b());
+    r.hold_turn(held_b());
+    assert_eq!(r.autopilot.as_ref().unwrap().held.len(), 1, "held once");
+    r
+}
+
+fn told_b(r: &PipelineRun) -> bool {
+    r.events.iter().any(|e| {
+        e.lane_id.as_deref() == Some("pr2")
+            && e.outcome.as_deref() == Some("skip")
+            && e.summary == "PR2 — Client: Implementer finished while the run waited on a verification, which ended without your answer. Hand it on yourself."
+    })
+}
+
+/// Review fix (M1): every end of a verify wait other than your answer
+/// tells you about the held turns and empties the list; your answer keeps
+/// them for the actor to decide.
+#[test]
+fn held_turns_are_released_to_you_whenever_the_wait_ends_without_an_answer() {
+    let ends: Vec<(&str, Box<dyn Fn(&mut PipelineRun)>)> = vec![
+        ("hand on yourself", Box::new(|r| r.resume_after_you())),
+        ("autopilot off", Box::new(|r| r.set_autopilot_enabled(false))),
+        ("stopped", Box::new(|r| r.set_stopped(StopReason::CarryOutFailed))),
+        ("another stop", Box::new(|r| r.set_waiting(StopReason::Stalled, "It stalled."))),
+        ("running again", Box::new(|r| r.set_running())),
+        (
+            "a failed Run checks",
+            Box::new(|r| {
+                let mut failed = passed("backend check: go test ./...");
+                failed.status = "failed".into();
+                manual_results(r, "implementer", Some("pr1"), 1, vec![failed]);
+            }),
+        ),
+    ];
+    for (what, end) in ends {
+        let mut r = waiting_with_b_held();
+        end(&mut r);
+        assert!(r.autopilot.as_ref().unwrap().held.is_empty(), "{what}");
+        assert!(told_b(&r), "{what}: {:?}", r.events.last());
+    }
+    // Your answer keeps them, untold, for the actor.
+    let mut r = waiting_with_b_held();
+    answer(&mut r, "implementer", Some("pr1"), true, None, "now").unwrap();
+    assert_eq!(r.autopilot.as_ref().unwrap().held, [held_b()]);
+    assert!(!told_b(&r));
+    // A plain decision moving on (`set_running` with no wait) leaves them alone.
+    r.set_running();
+    assert_eq!(r.autopilot.as_ref().unwrap().held.len(), 1);
+}
+
+/// Review fix (L3): Run checks keeps this round's answered verify results too.
+#[test]
+fn run_checks_keeps_answered_verify_results_of_the_round() {
+    let mut r = run(false);
+    r.gates.insert(
+        "implementer".into(),
+        StageGates {
+            round: 1,
+            at: "now".into(),
+            results: vec![passed("npm run check"), GateResult { status: "passed".into(), ..waiting_verify("verify".into(), STEPS) }],
+        },
+    );
+    let kept = manual_results(&mut r, "implementer", None, 1, vec![passed("npm run check")]);
+    assert_eq!(kept.len(), 2);
+    assert_eq!((kept[1].kind.as_str(), kept[1].status.as_str()), ("verify", "passed"));
+    // An older round's are not.
+    assert_eq!(manual_results(&mut r, "implementer", None, 2, vec![passed("npm run check")]).len(), 1);
+}
+
+/// Review fix (L4): only the `#verify<n>` suffix is stripped.
+#[test]
+fn the_plain_turn_key_strips_only_the_verify_suffix() {
+    assert_eq!(plain_turn_key("tab|bridge|t1#verify2"), "tab|bridge|t1");
+    assert_eq!(plain_turn_key("tab|bridge|t#1"), "tab|bridge|t#1");
+    assert_eq!(plain_turn_key("tab|bridge|t#1#verify3"), "tab|bridge|t#1");
+    assert_eq!(plain_turn_key("tab|bridge|t1"), "tab|bridge|t1");
+}

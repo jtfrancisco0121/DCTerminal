@@ -268,7 +268,7 @@ impl<H: Host> Actor<H> {
                     run.round_for(placed.lane.as_deref()),
                     run.taken_over.iter().any(|id| id == &placed.tab.id),
                     run.status == RunStatus::Waiting && run.stop_reason == Some(StopReason::TakenOver),
-                    waits_on_verify(run),
+                    holds_for_verify(&placed.def, run, &placed.tab.id),
                 ),
                 None => return,
             }
@@ -293,10 +293,32 @@ impl<H: Host> Actor<H> {
         // L2: the same while the run waits on your verification (another
         // lane's): your answer decides this turn too, checks first.
         if held_by_verify {
-            self.note(Some(&placed.stage.id), &held_for_verify(&placed), false);
+            self.hold_for_verify(&placed, &turn);
             return;
         }
         self.take_up(&placed, turn, round, status);
+    }
+
+    /// Hold `turn` for your verify answer (L2): kept on the run
+    /// (`autopilot.held`) with a Timeline line, so it is decided after a
+    /// successful answer, or told to you as yours if the wait ends otherwise.
+    fn hold_for_verify(&mut self, placed: &Placed, turn: &BridgeTurn) {
+        {
+            let mut store = lock(self.host.store());
+            if let Some(run) = store.pipeline_run_by_id_mut(&self.run_id) {
+                run.hold_turn(crate::store::HeldTurn {
+                    turn: bridge_turn_key(&turn.tab_id, &turn.turn),
+                    tab_id: placed.tab.id.clone(),
+                    stage_id: placed.stage.id.clone(),
+                    stage_title: placed.stage.title.clone(),
+                    lane: placed.lane.clone(),
+                });
+                if let Err(err) = store.save() {
+                    eprintln!("DCTerminal: run {}: held turn not saved: {err}", self.run_id);
+                }
+            }
+        }
+        self.note(Some(&placed.stage.id), &held_for_verify(placed), false);
     }
 
     /// The key `turn` is decided under (L2): its own, or its `#verify` key
@@ -438,10 +460,12 @@ impl<H: Host> Actor<H> {
         // ran: your answer decides this turn, and runs its checks again.
         let held_by_verify = {
             let store = lock(self.host.store());
-            store.pipeline_run_by_id(&self.run_id).is_some_and(waits_on_verify)
+            store
+                .pipeline_run_by_id(&self.run_id)
+                .is_some_and(|run| holds_for_verify(&placed.def, run, &placed.tab.id))
         };
         if held_by_verify {
-            self.note(Some(&placed.stage.id), &held_for_verify(&placed), false);
+            self.hold_for_verify(&placed, &turn);
             return;
         }
         // The checks take a while: a turn started since is the stage's result now.
@@ -546,7 +570,7 @@ impl<H: Host> Actor<H> {
                 .as_mut()
                 .and_then(|a| a.verify.as_mut())
                 .filter(|wait| {
-                    wait.turn.is_some() && wait.turn.as_deref() == report.turn.as_deref().and_then(|t| t.split('#').next())
+                    wait.turn.is_some() && wait.turn.as_deref() == report.turn.as_deref().map(crate::pipelines::verify::plain_turn_key)
                 })
             {
                 wait.prs = pr_urls(turn);
@@ -1603,41 +1627,60 @@ impl<H: Host> Actor<H> {
         })
     }
 
-    /// After your verify answer (L2), while the run runs again: decide the
-    /// current stages' finished turns (other than `answered_tab`'s) that
-    /// were held while it waited, as Hand back does. A turn decided already
-    /// is left alone by `on_turn`.
+    /// After your verify answer (L2): decide the turns held while the run
+    /// waited (`autopilot.held`, other than `answered_tab`'s), checks first,
+    /// as Hand back does. The list is cleared as they are taken up. When the
+    /// run is not running (the answer's decision, or one of these, stopped
+    /// it), the rest get the "hand it on yourself" line instead.
     fn decide_held_turns(&mut self, answered_tab: &str) {
-        let others: Vec<String> = {
-            let store = lock(self.host.store());
-            let Some(run) = store.pipeline_run_by_id(&self.run_id).filter(|run| run.status == RunStatus::Running) else {
+        let mut held: std::collections::VecDeque<crate::store::HeldTurn> = {
+            let mut store = lock(self.host.store());
+            let Some(run) = store.pipeline_run_by_id_mut(&self.run_id) else {
                 return;
             };
-            let Some(def) = crate::pipelines::find(&run.kind) else {
-                return;
-            };
-            crate::pipelines::recovery::current_stage_tabs(&def, run)
-                .into_iter()
-                .map(|stage| stage.tab_id)
-                .filter(|id| id != answered_tab)
-                .collect()
+            let taken = run.autopilot.as_mut().map(|a| std::mem::take(&mut a.held)).unwrap_or_default();
+            if !taken.is_empty() {
+                if let Err(err) = store.save() {
+                    eprintln!("DCTerminal: run {}: held turns not saved: {err}", self.run_id);
+                }
+            }
+            taken.into()
         };
         let runs = self.host.runs_root();
-        for other in others {
-            // A decision for one may stop the run again (its own verify wait):
-            // the rest stay held for that answer.
+        while let Some(next) = held.pop_front() {
             let running = {
-                let store = lock(self.host.store());
-                store.pipeline_run_by_id(&self.run_id).is_some_and(|run| run.status == RunStatus::Running)
+                let mut store = lock(self.host.store());
+                match store.pipeline_run_by_id_mut(&self.run_id) {
+                    Some(run) if run.status == RunStatus::Running => true,
+                    Some(run) => {
+                        for turn in std::iter::once(next.clone()).chain(held.drain(..)) {
+                            run.hold_turn(turn);
+                        }
+                        run.release_held();
+                        if let Err(err) = store.save() {
+                            eprintln!("DCTerminal: run {}: held turns not released: {err}", self.run_id);
+                        }
+                        false
+                    }
+                    None => false,
+                }
             };
             if !running {
+                self.changed();
                 return;
+            }
+            if next.tab_id == answered_tab {
+                continue;
             }
             let tag = {
                 let store = lock(self.host.store());
-                store.tab_by_id(&other).and_then(|tab| tab.bridge.clone())
+                store.tab_by_id(&next.tab_id).and_then(|tab| tab.bridge.clone())
             };
-            if let Some(turn) = tag.and_then(|tag| read_stage_turn(&runs, &tag, &other)) {
+            // Only the turn that was held: a newer one is taken up on its own.
+            if let Some(turn) = tag
+                .and_then(|tag| read_stage_turn(&runs, &tag, &next.tab_id))
+                .filter(|turn| bridge_turn_key(&turn.tab_id, &turn.turn) == next.turn)
+            {
                 self.on_turn(turn, true);
             }
         }
@@ -1873,6 +1916,27 @@ fn waits_on_verify(run: &PipelineRun) -> bool {
     run.status == RunStatus::Waiting
         && run.stop_reason == Some(StopReason::Checkpoint)
         && run.autopilot.as_ref().is_some_and(|a| a.verify.is_some())
+}
+
+/// A turn of `tab_id` is held for your verify answer (L2): the run waits on
+/// a verification, and the tab is one of the current stages' other than
+/// the waiting one. A late turn from any other tab is decided as before
+/// (skipped while the run waits for you).
+fn holds_for_verify(def: &PipelineDef, run: &PipelineRun, tab_id: &str) -> bool {
+    if !waits_on_verify(run) {
+        return false;
+    }
+    let waiting_tab = run
+        .autopilot
+        .as_ref()
+        .and_then(|a| a.verify.as_ref())
+        .and_then(|wait| wait.turn.as_deref())
+        .and_then(|turn| turn.split('|').next())
+        .unwrap_or_default();
+    tab_id != waiting_tab
+        && crate::pipelines::recovery::current_stage_tabs(def, run)
+            .iter()
+            .any(|stage| stage.tab_id == tab_id)
 }
 
 /// The Timeline line for a turn held while the run waits on a verification.
