@@ -73,12 +73,12 @@ Each PR is a draft, stacked on its dependency's branch while that is unmerged. J
 
 ## Phase 0: spike (no app code)
 
-Live, on whichever account the window uses, in scratch clones. The answers go into this plan before any PR starts.
+Live, in scratch clones. **ClickUp checks run on JT's personal workspace only**, against a test parent ticket with a few subtasks created there; the work workspace is never called. The answers go into this plan before C2 starts.
 
 | # | Check | Pass when |
 |---|---|---|
-| P1 | ClickUp API with your token: fetch the epic `z8uq9m3gga` with subtasks, one task's comments, and the list's statuses | All three return. The epic's tickets and their priorities match the QA 1.2.8 doc |
-| P2 | Whether the ticket ids in the doc are ClickUp's own ids or custom task ids | We know which form the API needs (custom ids need `custom_task_ids=true` and the team id) |
+| P1 | ClickUp API with the personal token: fetch the test parent ticket with subtasks, one task's comments, and the list's statuses | All three return, with the subtasks, priorities and statuses you see in ClickUp |
+| P2 | Whether ticket ids like those in the QA doc are ClickUp's own ids or custom task ids (checked on the personal workspace's ids) | We know which form the API needs (custom ids need `custom_task_ids=true` and the team id) |
 | P3 | The rate limit your plan gets | We know the per-minute budget, so intake for 30 to 50 tickets stays inside it |
 | P4 | `cd server && go test ./...` (backend) and `go test ./...` (engine) as gate commands, run through `$SHELL -l -c` from the app | Both pass or fail as they do in your own terminal |
 | P5 | Two worktrees from two repos in one run, by hand | Both lanes build. Nothing in the run folder assumes one repo |
