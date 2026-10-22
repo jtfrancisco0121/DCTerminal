@@ -4,7 +4,7 @@
 use crate::provider::ProviderId;
 use crate::store::json_io::{read_json_or_recover, set_aside_other_version, write_json_atomic};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 pub const SETTINGS_SCHEMA_VERSION: u32 = 1;
@@ -517,6 +517,32 @@ impl Default for UiSettings {
     }
 }
 
+/// The ClickUp workspace one Claude account works in.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClickUpWorkspace {
+    pub team_id: String,
+    #[serde(default)]
+    pub team_name: String,
+}
+
+/// ClickUp, per Claude account id. The tokens are in the OS keychain, never
+/// in this file (`clickup::secret`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClickUpSettings {
+    #[serde(default)]
+    pub accounts: BTreeMap<String, ClickUpWorkspace>,
+}
+
+/// Other services the app talks to (Settings > Integrations).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct IntegrationsSettings {
+    #[serde(default)]
+    pub clickup: ClickUpSettings,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsFile {
@@ -535,6 +561,8 @@ pub struct SettingsFile {
     pub setup: SetupSettings,
     #[serde(default)]
     pub ui: UiSettings,
+    #[serde(default)]
+    pub integrations: IntegrationsSettings,
 }
 
 /// F8: first-run setup was finished or skipped.
@@ -558,6 +586,7 @@ impl Default for SettingsFile {
             notifications: NotificationSettings::default(),
             setup: SetupSettings::default(),
             ui: UiSettings::default(),
+            integrations: IntegrationsSettings::default(),
         }
     }
 }
@@ -804,6 +833,33 @@ impl SettingsStore {
             pad_hidden: next.pad_hidden,
             custom_colors: next.custom_colors.cleaned(),
         };
+        self.save()
+    }
+}
+
+impl SettingsStore {
+    /// The ClickUp workspace `account_id` uses, once Test has picked one.
+    pub fn clickup_workspace(&self, account_id: &str) -> Option<&ClickUpWorkspace> {
+        self.data.integrations.clickup.accounts.get(account_id)
+    }
+
+    /// Saves (or with `None`, forgets) `account_id`'s ClickUp workspace.
+    pub fn set_clickup_workspace(
+        &mut self,
+        account_id: &str,
+        workspace: Option<ClickUpWorkspace>,
+    ) -> Result<(), String> {
+        let accounts = &mut self.data.integrations.clickup.accounts;
+        match workspace {
+            Some(workspace) => {
+                accounts.insert(account_id.to_string(), workspace);
+            }
+            None => {
+                if accounts.remove(account_id).is_none() {
+                    return Ok(());
+                }
+            }
+        }
         self.save()
     }
 }
@@ -1139,6 +1195,37 @@ mod tests {
         assert_eq!(bare.notifications, NotificationSettings::default());
         let json = serde_json::to_value(&bare.notifications).unwrap();
         assert_eq!(json["toastWhenFocused"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn clickup_workspaces_are_per_account_and_old_files_load_without_them() {
+        let legacy: SettingsFile =
+            serde_json::from_str(include_str!("../../../fixtures/state/legacy-settings.json")).unwrap();
+        assert_eq!(legacy.integrations, IntegrationsSettings::default());
+        let partial: SettingsFile =
+            serde_json::from_str(r#"{"schemaVersion":1,"integrations":{}}"#).unwrap();
+        assert!(partial.integrations.clickup.accounts.is_empty());
+
+        let dir = crate::test_support::temp_path("dcterminal_clickup_settings");
+        let mut store = SettingsStore::open(&dir).unwrap();
+        let work = ClickUpWorkspace {
+            team_id: "9012345678".into(),
+            team_name: "Koneksi QA".into(),
+        };
+        store.set_clickup_workspace("default", Some(work.clone())).unwrap();
+        let again = SettingsStore::open(&dir).unwrap();
+        assert_eq!(again.clickup_workspace("default"), Some(&work));
+        assert_eq!(again.clickup_workspace("personal"), None);
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            json["integrations"]["clickup"]["accounts"]["default"],
+            serde_json::json!({ "teamId": "9012345678", "teamName": "Koneksi QA" })
+        );
+        store.set_clickup_workspace("default", None).unwrap();
+        store.set_clickup_workspace("default", None).unwrap();
+        assert_eq!(SettingsStore::open(&dir).unwrap().clickup_workspace("default"), None);
     }
 
     #[test]

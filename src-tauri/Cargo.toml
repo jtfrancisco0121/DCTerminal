@@ -37,6 +37,10 @@ base64 = "0.23.1"
 ignore = "0.4"
 uuid = { version = "1", features = ["v4"] }
 notify = "8"
+# ClickUp (src/clickup): blocking HTTPS on worker threads, since the app has
+# no async runtime of its own, and the token in the OS keychain.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+keyring = "4"
 
 # Already built through tao; used for `applicationShouldTerminate:` (src/macos_terminate.rs).
 [target.'cfg(target_os = "macos")'.dependencies]

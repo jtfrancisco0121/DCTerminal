@@ -10,6 +10,7 @@ const CATEGORIES = [
   "Roles",
   "Pipelines",
   "Providers",
+  "Integrations",
   "Models",
   "Appearance",
   "Terminal",
