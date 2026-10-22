@@ -163,6 +163,11 @@ pub struct IntakePreview {
     pub seen_statuses: Vec<String>,
     /// The tags the fetched tickets carry, for the tag filter.
     pub seen_tags: Vec<String>,
+    /// More tickets matched than one intake takes ([`MAX_TICKETS`]): how
+    /// many. `tickets` and `excluded` are then empty, and the seen statuses
+    /// and tags are there so you can narrow the filters (M1).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub over_cap: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -487,7 +492,15 @@ pub fn preview(
     let seen_tags = unique(fetched.tasks.iter().flat_map(|t| t.tags.iter().map(|tag| tag.name.clone())));
     let (kept, excluded) = split(fetched.tasks, filters);
     if kept.len() > MAX_TICKETS {
-        return Err(over_cap(kept.len()));
+        return Ok(IntakePreview {
+            parents: fetched.parents,
+            tickets: Vec::new(),
+            excluded: Vec::new(),
+            problems: fetched.problems,
+            seen_statuses,
+            seen_tags,
+            over_cap: Some(kept.len()),
+        });
     }
     Ok(IntakePreview {
         parents: fetched.parents,
@@ -496,6 +509,7 @@ pub fn preview(
         problems: fetched.problems,
         seen_statuses,
         seen_tags,
+        over_cap: None,
     })
 }
 
@@ -568,8 +582,17 @@ fn own_ref(id: &str) -> TaskRef {
 /// descriptions (seen live on 2026-10-22), so every ticket is fetched again
 /// on its own for its Markdown description and tags. A ticket ClickUp no
 /// longer finds keeps what the parent or list sent.
-fn in_full(client: &ClickUp, tasks: &[Task], limits: &Limits) -> Result<Vec<Ticket>, String> {
-    each_parallel(tasks, |task| -> Result<Ticket, String> {
+///
+/// The full read is filtered again (L2): a ticket closed since Fetch, or
+/// that no longer matches the filters, is excluded with its reason and
+/// gets no comment call.
+fn in_full(
+    client: &ClickUp,
+    tasks: &[Task],
+    filters: &IntakeFilters,
+    limits: &Limits,
+) -> Result<Vec<Result<Ticket, ExcludedTicket>>, String> {
+    each_parallel(tasks, |task| -> Result<Result<Ticket, ExcludedTicket>, String> {
         let mut full = match client.task(&own_ref(&task.id)) {
             Ok(full) => full,
             Err(ClickUpError::NotFound(_)) => task.clone(),
@@ -579,8 +602,11 @@ fn in_full(client: &ClickUp, tasks: &[Task], limits: &Limits) -> Result<Vec<Tick
         if full.parent.is_none() {
             full.parent = task.parent.clone();
         }
+        if let Some(reason) = exclusion(&full, filters) {
+            return Ok(Err(ExcludedTicket { ticket: row_of(&full), reason }));
+        }
         let comments = client.comments(&own_ref(&task.id)).map_err(String::from)?;
-        Ok(ticket_of(&full, &comments, limits))
+        Ok(Ok(ticket_of(&full, &comments, limits)))
     })
     .into_iter()
     .collect()
@@ -616,7 +642,16 @@ pub fn snapshot(
     if kept.len() > MAX_TICKETS {
         return Err(over_cap(kept.len()));
     }
-    let tickets = in_full(client, &kept, &LIMITS)?;
+    let mut tickets = Vec::new();
+    for read in in_full(client, &kept, filters, &LIMITS)? {
+        match read {
+            Ok(ticket) => tickets.push(ticket),
+            Err(left_out) => excluded.push(left_out),
+        }
+    }
+    if tickets.is_empty() {
+        return Err("None of the ticked tickets still match: ClickUp closed them or they changed since Fetch. Press Fetch again.".into());
+    }
     Ok((
         TicketsSnapshot {
             schema: TICKETS_SCHEMA,
@@ -1174,30 +1209,68 @@ mod tests {
 
     fn many_tasks(n: usize) -> String {
         let tasks: Vec<String> = (0..n)
-            .map(|i| format!(r#"{{"id":"t{i:05}","name":"Ticket {i}","status":{{"status":"to do","type":"open"}},"priority":{{"priority":"{}"}}}}"#, if i % 2 == 0 { "high" } else { "low" }))
+            .map(|i| {
+                let (status, tag) = if i % 2 == 0 { ("to do", "desktop") } else { ("qa failed", "web") };
+                format!(
+                    r#"{{"id":"t{i:05}","name":"Ticket {i}","status":{{"status":"{status}","type":"open"}},"tags":[{{"name":"{tag}"}}],"priority":{{"priority":"{}"}}}}"#,
+                    if i % 2 == 0 { "high" } else { "low" }
+                )
+            })
             .collect();
         format!(r#"{{"tasks":[{}],"last_page":true}}"#, tasks.join(","))
     }
 
     #[test]
-    fn more_than_a_hundred_kept_tickets_is_an_error_that_names_the_count() {
+    fn over_a_hundred_kept_tickets_the_preview_names_the_count_and_still_offers_the_filters() {
         let list = "/list/901800112299/task?page=0&subtasks=true&include_closed=true";
         let refs = [task_ref("list", "901800112299", 1)];
         let api = Recorded::default().on(list, ok(many_tasks(150)));
-        let err = with_client(&api, |c| preview(c, &refs, &IntakeFilters::default(), "w1")).unwrap_err();
+        let over = with_client(&api, |c| preview(c, &refs, &IntakeFilters::default(), "w1")).unwrap();
+        assert_eq!(over.over_cap, Some(150));
+        assert!(over.tickets.is_empty() && over.excluded.is_empty());
+        assert_eq!(over.seen_statuses, ["to do", "qa failed"]);
+        assert_eq!(over.seen_tags, ["desktop", "web"]);
+        assert_eq!(serde_json::to_value(&over).unwrap()["overCap"], 150);
+        // Start keeps the hard error, and makes no ticket or comment call.
+        let api = Recorded::default().on(list, ok(many_tasks(150)));
+        let err = with_client(&api, |c| snapshot(c, "default", "w1", &refs, &IntakeFilters::default(), None, "t")).unwrap_err();
         assert_eq!(
             err,
             "150 tickets match, more than the 100 one intake takes. Narrow the filters (priority, status or tags) or paste a smaller parent."
         );
+        assert_eq!(api.paths().len(), 1);
+        // Narrowed by a seen tag, it reads under the cap.
         let api = Recorded::default().on(list, ok(many_tasks(150)));
-        let err = with_client(&api, |c| snapshot(c, "default", "w1", &refs, &IntakeFilters::default(), None, "t")).unwrap_err();
-        assert!(err.starts_with("150 tickets match"), "{err}");
-        assert_eq!(api.paths().len(), 1, "no ticket or comment call over the cap");
-        // Narrowed under the cap, it reads.
-        let api = Recorded::default().on(list, ok(many_tasks(150)));
-        let high = IntakeFilters { priorities: vec!["high".into()], ..Default::default() };
-        let narrowed = with_client(&api, |c| preview(c, &refs, &high, "w1")).unwrap();
-        assert_eq!((narrowed.tickets.len(), narrowed.excluded.len()), (75, 75));
+        let web = IntakeFilters { tags: vec!["web".into()], ..Default::default() };
+        let narrowed = with_client(&api, |c| preview(c, &refs, &web, "w1")).unwrap();
+        assert_eq!((narrowed.over_cap, narrowed.tickets.len(), narrowed.excluded.len()), (None, 75, 75));
+        assert!(serde_json::to_value(&narrowed).unwrap().get("overCap").is_none());
+    }
+
+    #[test]
+    fn start_excludes_a_ticket_its_full_read_shows_closed_or_no_longer_matching() {
+        let closed = r#"{"id":"86b1aa001","name":"Sync stalls","status":{"status":"complete","type":"closed"}}"#;
+        let api = Recorded::default()
+            .on(EPIC, ok(fixture("task-with-subtasks.json")))
+            .on(&task_path("86b1aa001"), ok(closed.into()))
+            .on(&task_path("86b1aa002"), ok(fixture("task-86b1aa002.json")))
+            .on("/task/86b1aa002/comment", ok(r#"{"comments":[]}"#.into()));
+        let epic = [task_ref("task", "7xk2epic01", 1)];
+        let (snap, _) = with_client(&api, |c| snapshot(c, "default", "w1", &epic, &IntakeFilters::default(), None, "t")).unwrap();
+        let kept: Vec<&str> = snap.tickets.iter().map(|t| t.row.id.as_str()).collect();
+        assert_eq!(kept, ["86b1aa002"]);
+        let last = snap.excluded.last().unwrap();
+        assert_eq!((last.ticket.id.as_str(), last.reason.as_str()), ("86b1aa001", "Status is \"complete\" (closed)"));
+        assert!(!api.paths().contains(&"/task/86b1aa001/comment".to_string()), "no comment call for it");
+
+        // Retagged since Fetch: the tag filter drops it, and with none left Start says so.
+        let retagged = r#"{"id":"86b1aa001","name":"Sync stalls","status":{"status":"to do","type":"open"},"tags":[{"name":"web"}]}"#;
+        let api = Recorded::default()
+            .on(EPIC, ok(fixture("task-with-subtasks.json")))
+            .on(&task_path("86b1aa001"), ok(retagged.into()));
+        let desktop = IntakeFilters { tags: vec!["desktop".into()], ..Default::default() };
+        let err = with_client(&api, |c| snapshot(c, "default", "w1", &epic, &desktop, None, "t")).unwrap_err();
+        assert!(err.starts_with("None of the ticked tickets still match"), "{err}");
     }
 
     #[test]

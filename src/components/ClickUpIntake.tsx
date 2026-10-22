@@ -5,6 +5,7 @@ import {
   filterChoices,
   filtersOf,
   isCurrent,
+  overCapMessage,
   parsedDraft,
   previewSummary,
   togglePriority,
@@ -200,7 +201,8 @@ export function ClickUpIntake({ draftRef, onOpenIntegrations, disabled = false }
       {draft.fetched && !current && (
         <p className="hint">The links or filters changed since Fetch. Press Fetch again before Start.</p>
       )}
-      {preview && (
+      {current && overCapMessage(draft) && <InlineNotice tone="warning">{overCapMessage(draft)}</InlineNotice>}
+      {preview && !preview.overCap && (
         <div className="clickup-intake-preview">
           {preview.parents.length > 0 && (
             <p className="hint">

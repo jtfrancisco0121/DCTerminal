@@ -118,6 +118,33 @@ describe("Tickets from ClickUp (C2)", () => {
     );
   });
 
+  it("over the cap, says so, offers the filters and blocks Start until a Fetch is under it", async () => {
+    vi.mocked(clickupIntakeStatus).mockResolvedValue({ accountId: "default", accountName: "Work", configured: true });
+    vi.mocked(clickupIntakePreview).mockResolvedValueOnce({
+      ...preview,
+      tickets: [],
+      excluded: [],
+      problems: [],
+      seenTags: ["desktop", "web"],
+      overCap: 150,
+    });
+    vi.mocked(clickupIntakePreview).mockResolvedValueOnce({ ...preview, problems: [] });
+    const { draftRef } = renderBox();
+    fireEvent.change(await screen.findByRole("textbox", { name: /Tickets from ClickUp/ }), {
+      target: { value: "https://app.clickup.com/9012345678/v/li/901800112299" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Fetch" }));
+    expect(await screen.findByText(/150 tickets match, more than the 100/)).toBeTruthy();
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(intakeStart(draftRef.current).kind).toBe("blocked");
+    fireEvent.click(screen.getByRole("checkbox", { name: "web" }));
+    fireEvent.click(screen.getByRole("button", { name: "Fetch" }));
+    await screen.findByRole("table", { name: "Tickets to start with" });
+    expect(clickupIntakePreview).toHaveBeenLastCalledWith(expect.anything(), { priorities: [], statuses: [], tags: ["web"] });
+    expect(screen.queryByText(/150 tickets match/)).toBeNull();
+    expect(intakeStart(draftRef.current).kind).toBe("ready");
+  });
+
   it("asks again when the window comes back, so setting ClickUp up shows at once", async () => {
     vi.mocked(clickupIntakeStatus).mockResolvedValueOnce({ accountId: "default", accountName: "Work", configured: false });
     vi.mocked(clickupIntakeStatus).mockResolvedValue({ accountId: "default", accountName: "Work", configured: true });

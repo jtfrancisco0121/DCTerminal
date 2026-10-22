@@ -1205,6 +1205,11 @@ export type ClickUpIntakePreview = {
   seenStatuses: string[];
   /** The tags the fetched tickets carry, for the tag filter. */
   seenTags: string[];
+  /**
+   * More tickets matched than one intake takes (100): how many. `tickets`
+   * and `excluded` are then empty; narrow the filters and Fetch again.
+   */
+  overCap?: number;
 };
 
 /** A snapshot Start fetched, waiting for the start that passes its `intakeId`. */

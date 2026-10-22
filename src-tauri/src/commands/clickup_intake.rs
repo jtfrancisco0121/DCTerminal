@@ -275,6 +275,7 @@ pub(crate) fn intake_for_start(
         None => (intake::request_note(&snapshot), &[IntakeSlot::Request, IntakeSlot::Context][..], None),
     };
     let placed = place_intake_note(role, values, &note, slots);
+    let note = note.trim().to_string();
     IntakeLaunch { tail: if placed { String::new() } else { note.clone() }, write, note }
 }
 
@@ -774,6 +775,7 @@ mod tests {
             tab
         };
         let (from, to) = launch.without_run().expect("it had a file to write");
+        assert_eq!(from, from.trim(), "kept trimmed, as the form holds it (L3)");
         assert!(launch.write.is_none(), "no tickets.json now");
         assert!(launch.without_run().is_none(), "once");
         assert!(from.contains("tickets.json") && !to.contains("tickets.json"));

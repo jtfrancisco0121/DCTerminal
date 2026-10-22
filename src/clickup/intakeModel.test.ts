@@ -10,6 +10,7 @@ import {
   previewSummary,
   tickedTickets,
   filterChoices,
+  overCapMessage,
   togglePriority,
   toggleStatus,
   toggleTag,
@@ -84,6 +85,15 @@ describe("intake model (C2)", () => {
     expect(fetchKey([], { ...none, priorities: ["urgent"] })).not.toBe(fetchKey([], none));
     expect(fetchKey([], { ...none, statuses: ["to do"] })).not.toBe(fetchKey([], none));
     expect(fetchKey([], { ...none, tags: ["desktop"] })).not.toBe(fetchKey([], none));
+  });
+
+  it("blocks Start for a Fetch over the cap but still offers its statuses and tags", () => {
+    const draft = fetched("https://app.clickup.com/v/li/901800112299");
+    const over = { ...draft, fetched: { ...draft.fetched!, preview: { ...preview, tickets: [], excluded: [], overCap: 150 } } };
+    expect(overCapMessage(over)).toMatch(/^150 tickets match, more than the 100/);
+    expect(intakeStart(over)).toEqual({ kind: "blocked", message: overCapMessage(over) });
+    expect(filterChoices(over)).toEqual({ statuses: ["to do", "qa failed"], tags: ["desktop"] });
+    expect(overCapMessage(draft)).toBeNull();
   });
 
   it("offers the statuses and tags the last Fetch saw, and keeps ticked ones it no longer saw", () => {

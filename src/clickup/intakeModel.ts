@@ -118,6 +118,16 @@ export function filterChoices(draft: IntakeDraft): { statuses: string[]; tags: s
   };
 }
 
+/** The most tickets one intake takes (the core's `MAX_TICKETS`). */
+export const MAX_INTAKE_TICKETS = 100;
+
+/** Why a Fetch over the cap cannot start, or null when it is under it. */
+export function overCapMessage(draft: IntakeDraft): string | null {
+  const count = draft.fetched?.preview.overCap;
+  if (!count) return null;
+  return `${count} tickets match, more than the ${MAX_INTAKE_TICKETS} one intake takes. Narrow the filters (priority, status or tags) and Fetch again, or paste a smaller parent.`;
+}
+
 /** "2 of 3 tickets ticked · 1 excluded". */
 export function previewSummary(draft: IntakeDraft): string {
   const preview = draft.fetched?.preview;
@@ -145,6 +155,8 @@ export function intakeStart(draft: IntakeDraft): IntakeStart {
         : "Press Fetch to read the ClickUp tickets, then Start.",
     };
   }
+  const overCap = overCapMessage(draft);
+  if (overCap) return { kind: "blocked", message: overCap };
   const ticketIds = tickedTickets(draft).map((t) => t.id);
   if (ticketIds.length === 0) {
     return { kind: "blocked", message: "Tick at least one ticket, or clear the ClickUp box." };
