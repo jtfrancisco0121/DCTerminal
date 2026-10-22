@@ -119,6 +119,28 @@ describe("runLanes", () => {
     ]);
   });
 
+  it("L3: the next story and your Continue set the Implementer working again", () => {
+    const model = runLanes(
+      run([
+        ev(1, "handoff", { stageId: "implementer" }),
+        ev(4, "turn", { stageId: "implementer" }),
+        ev(5, "autopilot", { stageId: "implementer", outcome: "nextStory" }),
+        ev(8, "turn", { stageId: "implementer" }),
+        ev(9, "stop", { stageId: "implementer", summary: "story s2 passed its checks, and its checkpoint waits for you" }),
+        ev(12, "note", { stageId: "implementer", outcome: "storyContinue" }),
+      ]),
+      stages,
+      T0 + 20 * MIN,
+    );
+    const bars = turnsOf(model, "implementer");
+    expect(bars.map(span)).toEqual([
+      [1, 4],
+      [5, 8],
+      [12, 20],
+    ]);
+    expect(bars[2].open).toBe(true);
+  });
+
   it("a stop is a wait until the next step, or still open while autopilot waits", () => {
     const closed = runLanes(
       run([

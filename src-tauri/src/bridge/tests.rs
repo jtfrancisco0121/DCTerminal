@@ -1623,6 +1623,10 @@ fn a_story_result_must_name_the_current_story_and_only_the_last_needs_a_pull_req
     let done = story_mark(None);
     assert_eq!(schema::check_story(&implemented(), Some(&done)), Ok(()));
     assert_eq!(schema::check_story(&with_pr, Some(&done)), Ok(()));
+    // A review round never reports an empty list (review fix).
+    assert!(schema::check_story(&story("s4"), Some(&done)).unwrap_err()[0].contains("`prs` is empty: every story is done"));
+    let blocked = json!({ "story": "s4", "prs": [], "summary": "s", "blocked": "No access." });
+    assert_eq!(schema::check_story(&blocked, Some(&done)), Ok(()));
     assert!(schema::check_story(&story("s2"), Some(&done)).unwrap_err()[0].contains("every story of this pull request is done"));
     // No stories: `story` is refused, and a plain result is as before.
     assert!(schema::check_story(&story("s1"), None).unwrap_err()[0].contains("has no stories"));
@@ -1643,6 +1647,7 @@ fn the_server_refuses_a_result_for_a_story_that_is_not_current() {
     let reply = stage.submit(json!({ "story": "s2", "prs": [], "summary": "Deduped the log lines." }));
     assert_eq!(reply["isError"], false, "{reply}");
     assert!(reply["content"][0]["text"].as_str().unwrap().contains("result for story s2: 0 pull request(s)"), "{reply}");
+    assert!(!stage.run_dir.join("prs.json").exists(), "a story with no pull request keeps prs.json as it was");
     stage.hook("Stop", stop("p-1", false, "Story s2 is done."));
     let turn = stage.inbox().pop().unwrap();
     assert_eq!(turn.result.unwrap()["story"], "s2");

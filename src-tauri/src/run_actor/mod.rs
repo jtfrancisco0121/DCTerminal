@@ -188,6 +188,14 @@ pub enum UserAction {
         #[serde(default)]
         add: Option<String>,
     },
+    /// **Resend story** (L3): the run stopped mid-loop in `lane`; the
+    /// current story is sent to the Implementer's session again, and the
+    /// run runs.
+    #[serde(rename = "storyResend", rename_all = "camelCase")]
+    ResendStory {
+        #[serde(default)]
+        lane: Option<String>,
+    },
     /// Your answer to the `verify` gate the run waits on (L2), for
     /// `stage_id` in `lane`: **Mark verified** (`verified`) passes it and the
     /// run goes on as after a passed gate; **Failed** sends `note` back to

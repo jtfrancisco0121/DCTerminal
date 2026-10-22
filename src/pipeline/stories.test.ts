@@ -5,6 +5,8 @@ import {
   laneStories,
   parseAddedStories,
   pendingStoryCheckpoint,
+  resendableStory,
+  storyResendAction,
   storyContinueAction,
   storyContinueProblem,
   storyProgress,
@@ -48,6 +50,18 @@ describe("stories (L3)", () => {
     expect(storyProgress(run(), "pr1")).toBeNull();
   });
 
+  it("offers Resend story only for a run stopped mid-loop", () => {
+    const stopped = run({ status: "waiting", stopReason: "gate_failed", stories: stories(null), autopilot: { enabled: true } });
+    expect(resendableStory(stopped, null)?.id).toBe("s2");
+    expect(storyResendAction(null)).toEqual({ kind: "storyResend", lane: null });
+    expect(resendableStory({ ...stopped, status: "running" }, null)).toBeNull();
+    expect(resendableStory({ ...stopped, autopilot: { enabled: true, verify: { stageId: "implementer", label: "verify", steps: "x", at: "now" } } }, null)).toBeNull();
+    const skipped = { ...stopped, stories: stories(null).map((s) => ({ ...s, status: "skipped" as const })) };
+    expect(resendableStory(skipped, null)).toBeNull();
+    expect(storyProgress(skipped, null)).toBe("stories finished (4 skipped)");
+    expect(storyStatusText({ id: "s5", title: "x", status: "skipped" })).toBe("skipped");
+  });
+
   it("says where each story stands", () => {
     const [done, failed, pending, missing] = stories(null);
     expect([done, failed, pending, missing].map(storyStatusText)).toEqual([
@@ -74,11 +88,24 @@ describe("stories (L3)", () => {
     const pending = pendingStoryCheckpoint(waitingRun);
     expect(pending).toMatchObject({ lane: "pr1", laneTitle: "PR1 — Engine fixes", repo: "engine", number: 1, total: 4, checkpoint: "Rerun on Windows" });
     expect(pending?.next?.id).toBe("s2");
-    expect(storyWaitKey(waitingRun)).toBe("pr1@s1@2026-10-22T10:00:00Z");
-    expect(pendingStoryCheckpoint({ ...waitingRun, status: "running" })).toBeNull();
-    expect(storyWaitKey({ ...waitingRun, status: "running" })).toBe("");
+    expect(storyWaitKey(waitingRun)).toBe("pr1@s1@");
+    // The run's wait ended another way (autopilot off and on): s1 still
+    // waits on you, so Continue stays, with the story's own checkpoint text.
+    const toggled = { ...waitingRun, status: "running" as const, stopReason: null, autopilot: { enabled: true } };
+    expect(pendingStoryCheckpoint(toggled)).toMatchObject({ lane: "pr1", number: 1, checkpoint: "Rerun on Windows" });
+    const moved = { ...toggled, stories: stories("pr1").map((s) => ({ ...s, status: "pending" as const })) };
+    expect(pendingStoryCheckpoint(moved)).toBeNull();
+    expect(storyWaitKey(moved)).toBe("");
+    expect(pendingStoryCheckpoint({ ...waitingRun, status: "complete" })).toBeNull();
 
-    expect(parseAddedStories("- Fix the stall\n\n * Tidy the log \n")).toEqual(["Fix the stall", "Tidy the log"]);
+    expect(parseAddedStories("- Fix the stall\n\n * Tidy the log \n1. Numbered\n2) Also\n-flag stays\n2024 plan")).toEqual([
+      "Fix the stall",
+      "Tidy the log",
+      "Numbered",
+      "Also",
+      "-flag stays",
+      "2024 plan",
+    ]);
     expect(storyContinueAction(pending!, "  Stalls 40 s.  ", "- Fix the stall\n")).toEqual({
       kind: "storyContinue",
       lane: "pr1",

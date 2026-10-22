@@ -290,6 +290,7 @@ fn held_b() -> crate::store::HeldTurn {
         stage_id: "implementer".into(),
         stage_title: "Implementer".into(),
         lane: Some("pr2".into()),
+        for_story: false,
     }
 }
 

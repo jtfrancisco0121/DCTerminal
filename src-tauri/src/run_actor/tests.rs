@@ -2390,6 +2390,8 @@ fn story_turns_are_held_during_another_lanes_wait_and_a_story_wait_holds_theirs(
     fx.actor.handle(ActorMsg::Turn(fx.end_turn(&reviewer1, "rv-1", review("APPROVED", json!([])), "Approved.")));
     fx.run(|run| {
         assert_eq!(run.autopilot.as_ref().unwrap().held.len(), 1, "pr1's review is held for your Continue");
+        assert!(run.autopilot.as_ref().unwrap().held[0].for_story, "held for the story checkpoint");
+        assert!(run.events.iter().any(|e| e.summary.contains("finished while the run waits on a story checkpoint")), "the held line says why");
         assert_eq!(run.lane("pr1").unwrap().status, "active");
     });
     fx.user(UserAction::ContinueStory { lane: Some("pr2".into()), story: "s2".into(), note: Some("Clean on Windows.".into()), add: Some("Tidy the log text".into()) })
@@ -2404,4 +2406,136 @@ fn story_turns_are_held_during_another_lanes_wait_and_a_story_wait_holds_theirs(
     });
     assert_eq!(story_mark_of(&fx, "implementer@pr2").and_then(|m| m.current), Some("s4".into()));
     crate::pipelines::unregister_for_test(id);
+}
+
+/// L3 review fix: to the Implementer of [`story_task`], with s1's checks
+/// passed and the run waiting on its checkpoint.
+fn to_story_wait(fx: &mut Fixture) -> String {
+    let implementer = to_implementer_with_stories(fx);
+    fx.actor.handle(ActorMsg::Turn(fx.end_turn(&implementer, "i-1", Some(story_result("s1", false)), "s1 done.")));
+    fx.finish_gates();
+    fx.run(|run| assert!(run.autopilot.as_ref().unwrap().story_wait.is_some()));
+    implementer
+}
+
+fn failed_check() -> GateResult {
+    GateResult {
+        kind: "command".into(),
+        label: "npm run check".into(),
+        status: "failed".into(),
+        summary: "Exited with code 1.".into(),
+        output: "FAIL TestLogDedupe".into(),
+        duration_ms: 5,
+        optional: false,
+    }
+}
+
+/// L3 review fix (MEDIUM): turning autopilot off and on during a story
+/// checkpoint clears the run's wait, but s1 still waits on you: Continue
+/// still sends s2.
+#[test]
+fn continue_still_works_after_autopilot_is_turned_off_and_on_during_a_story_wait() {
+    let mut fx = Fixture::new("story_toggle");
+    let implementer = to_story_wait(&mut fx);
+    {
+        let mut store = fx.host.store.lock().unwrap();
+        let run = store.pipeline_run_by_id_mut(RUN).unwrap();
+        run.set_autopilot_enabled(false);
+        run.set_autopilot_enabled(true);
+        store.save().unwrap();
+    }
+    fx.run(|run| {
+        assert_eq!(run.status, RunStatus::Running);
+        assert!(run.autopilot.as_ref().unwrap().story_wait.is_none());
+        assert_eq!(run.stories[0].status, crate::store::StoryStatus::Waiting);
+    });
+    let outcome = fx
+        .user(UserAction::ContinueStory { lane: None, story: "s1".into(), note: Some("Clean rerun.".into()), add: None })
+        .expect("Continue still works");
+    assert_eq!(outcome.tab_id.as_deref(), Some(implementer.as_str()));
+    let sent = fx.resumes().last().cloned().unwrap();
+    assert!(sent.prompt.starts_with("Story 2 of 3: Log dedupe") && sent.prompt.contains("Clean rerun."), "{}", sent.prompt);
+    assert_eq!(story_mark_of(&fx, "implementer").and_then(|m| m.current), Some("s2".into()));
+}
+
+/// L3 review fix (MEDIUM): a story whose checks keep failing stops the run
+/// with `gate_failed`, naming Resend story; Resend story sends the same
+/// story to the same session again, with its retries started over.
+#[test]
+fn resend_story_sends_the_current_story_again_after_a_stop() {
+    let mut fx = Fixture::new("story_resend");
+    let implementer = to_story_wait(&mut fx);
+    fx.user(UserAction::ContinueStory { lane: None, story: "s1".into(), note: None, add: None }).unwrap();
+    let refused = fx.user(UserAction::ResendStory { lane: None }).unwrap_err();
+    assert!(refused.contains("not stopped"), "{refused}");
+    for n in 0..=crate::pipelines::autopilot::MAX_GATE_RETRIES {
+        fx.host.gates.lock().unwrap().push_back(failed_check());
+        fx.actor.handle(ActorMsg::Turn(fx.end_turn(&implementer, &format!("i-2-{n}"), Some(story_result("s2", false)), "s2.")));
+        fx.finish_gates();
+    }
+    fx.run(|run| {
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::GateFailed)));
+        assert!(run.autopilot.as_ref().unwrap().waiting.as_deref().unwrap().contains("press Resend story"), "{:?}", run.autopilot);
+        assert_eq!(run.stories[1].status, crate::store::StoryStatus::Failed);
+    });
+    let before = fx.resumes().len();
+    let outcome = fx.user(UserAction::ResendStory { lane: None }).expect("resent");
+    assert_eq!(outcome.tab_id.as_deref(), Some(implementer.as_str()));
+    let resumes = fx.resumes();
+    assert_eq!(resumes.len(), before + 1);
+    let sent = resumes.last().unwrap();
+    assert!(sent.prompt.starts_with("Story 2 of 3: Log dedupe"), "{}", sent.prompt);
+    assert_eq!(sent.session_id, resumes[0].session_id, "the same session");
+    fx.run(|run| {
+        assert_eq!(run.status, RunStatus::Running);
+        assert!(run.autopilot.as_ref().unwrap().gate_retries.is_empty(), "its retries start over");
+        assert_eq!(run.stories[1].status, crate::store::StoryStatus::Active);
+        assert!(run.events.iter().any(|e| e.outcome.as_deref() == Some("storyResend")));
+    });
+    // The resent story passes: on to s3.
+    fx.actor.handle(ActorMsg::Turn(fx.end_turn(&implementer, "i-3", Some(story_result("s2", false)), "s2 fixed.")));
+    fx.finish_gates();
+    assert!(fx.resumes().last().unwrap().prompt.starts_with("Story 3 of 3"));
+}
+
+/// L3 review fix (MEDIUM): handing an unfinished pull request on to its
+/// PR Reviewer marks the stories left skipped, with a Timeline line. The
+/// reviewer's round then goes back as a review round, never a story.
+#[test]
+fn handing_on_with_unfinished_stories_skips_them_and_a_review_round_is_not_a_story() {
+    let mut fx = Fixture::new("story_hand_on");
+    let implementer = to_story_wait(&mut fx);
+    fx.user(UserAction::ContinueStory { lane: None, story: "s1".into(), note: None, add: None }).unwrap();
+    // s2's turn ends (not decided yet), and you hand the stage on yourself.
+    let mut opened = story_result("s2", false);
+    opened["prs"] = json!([{ "url": "https://github.com/acme/engine/pull/5", "branch": "fix/engine", "title": "Engine fixes" }]);
+    fx.end_turn(&implementer, "i-2", Some(opened), "s2, and a draft pull request.");
+    fx.user(UserAction::Send {
+        source_tab_id: implementer.clone(),
+        target_role_id: "role_pr_reviewer".into(),
+        values: None,
+        handoff_plan: None,
+        handoff_text: None,
+        force: false,
+    })
+    .expect("your hand-on");
+    use crate::store::StoryStatus::{Done, Skipped};
+    assert_eq!(story_states(&fx, None), [("s1".to_string(), Done), ("s2".into(), Skipped), ("s3".into(), Skipped)]);
+    fx.run(|run| {
+        let line = run.events.iter().find(|e| e.outcome.as_deref() == Some("storySkipped")).expect("a Timeline line");
+        assert!(line.summary.contains("Stories s2, s3 were not done before the pull request went on to PR Reviewer"), "{}", line.summary);
+    });
+    assert_eq!(story_mark_of(&fx, "implementer").map(|m| m.current), Some(None));
+
+    let reviewer = fx.launches().last().unwrap().tab_id.clone();
+    let findings = json!([{ "severity": "HIGH", "summary": "Story s3 is missing." }]);
+    fx.actor.handle(ActorMsg::Turn(fx.end_turn(&reviewer, "pr-1", review("CHANGES_REQUIRED", findings), "Changes.")));
+    let round = fx.resumes().last().cloned().unwrap();
+    assert!(round.prompt.starts_with("Review findings from the PR Reviewer (round 1)"), "{}", round.prompt);
+    let mut fixed = story_result("s3", true);
+    fixed.as_object_mut().unwrap().remove("story");
+    fx.actor.handle(ActorMsg::Turn(fx.end_turn(&implementer, "i-3", Some(fixed), "Fixed.")));
+    fx.finish_gates();
+    assert_eq!(fx.launches().last().unwrap().role_id, "role_pr_reviewer", "the next review round");
+    fx.run(|run| assert!(!run.events.iter().any(|e| e.outcome.as_deref() == Some("nextStory")), "no story was sent"));
 }

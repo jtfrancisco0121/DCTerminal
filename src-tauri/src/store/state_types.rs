@@ -226,6 +226,8 @@ pub enum StoryStatus {
     /// A checkpoint story whose checks passed: the run waits for your Continue.
     Waiting,
     Done,
+    /// The pull request went on (your hand-on or approval) before it was done.
+    Skipped,
 }
 
 /// One story of a pull request built in stories (L3).
@@ -683,6 +685,9 @@ pub struct HeldTurn {
     pub stage_title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lane: Option<String>,
+    /// L3: held while the run waited on a checkpoint story, not a verification.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub for_story: bool,
 }
 
 /// Most decided turns autopilot remembers per run.
@@ -713,18 +718,18 @@ impl PipelineRun {
 
     /// [`release_held`](Self::release_held) with the reason given.
     pub fn release_held_because(&mut self, why: HeldEnd) {
-        let (held, story) = match self.autopilot.as_mut() {
-            Some(autopilot) => (std::mem::take(&mut autopilot.held), autopilot.story_wait.is_some()),
+        let held = match self.autopilot.as_mut() {
+            Some(autopilot) => std::mem::take(&mut autopilot.held),
             None => return,
         };
-        // L3: a checkpoint story's wait holds turns the same way.
-        let waited_on = if story { "a story checkpoint" } else { "a verification" };
         let because = match why {
             HeldEnd::Unanswered => "which ended without your answer",
             HeldEnd::Stopped => "and the run stopped before autopilot could act on it",
             HeldEnd::Unreadable => "and its turn could not be read again",
         };
         for turn in held {
+            // L3: each turn says which wait held it.
+            let waited_on = if turn.for_story { "a story checkpoint" } else { "a verification" };
             let lane = turn.lane.as_deref().filter(|id| self.lane(id).is_some());
             let tag = lane.and_then(|id| self.lane(id)).map(|l| format!("{}: ", l.title)).unwrap_or_default();
             let summary = format!(

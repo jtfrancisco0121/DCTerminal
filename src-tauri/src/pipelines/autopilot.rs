@@ -455,7 +455,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
         if let Some(now) = super::stories::current(run, lane) {
             let reported = report.story.as_deref().map(|id| format!("story {id}")).unwrap_or_else(|| "no story".to_string());
             let reason = format!(
-                "{} reported {reported}, but its pull request is on story {} ({}). Send it that story yourself, or hand the stage on.",
+                "{} reported {reported}, but its pull request is on story {} ({}). Press Resend story in the chain overview to send it that story again, or hand the stage on.",
                 stage.title, now.id, now.title
             );
             return stop(run, Some(&stage), StopReason::NoResult, reason);
@@ -498,9 +498,13 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             } else {
                 format!("The {} check failed {} times in a row. {}", gate.label, retries + 1, gate.summary)
             };
-            if let Some(id) = story.as_deref() {
-                super::stories::set_failed(run, lane, id, retries + 1);
-            }
+            let why = match story.as_deref() {
+                Some(id) => {
+                    super::stories::set_failed(run, lane, id, retries + 1);
+                    format!("{why} Once you have looked, press Resend story in the chain overview to send story {id} again.")
+                }
+                None => why,
+            };
             return stop(run, Some(&stage), StopReason::GateFailed, why);
         }
         autopilot(run).gate_retries.insert(key_of_stage.clone(), retries + 1);

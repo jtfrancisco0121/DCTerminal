@@ -85,7 +85,13 @@ describe("StoryCheckpointPanel (L3)", () => {
     await waitFor(() => expect(onNotice).toHaveBeenCalledWith("Next story not sent", expect.stringContaining("not waiting")));
     expect(pipelineActorMessage).toHaveBeenCalledWith("ee_s", { kind: "storyContinue", lane: null, story: "s1", note: null, add: null });
     unmount();
-    const running = { ...waitingRun(), status: "running" as const, stopReason: null };
+    const moved = waitingRun();
+    const running = {
+      ...moved,
+      status: "running" as const,
+      stopReason: null,
+      stories: moved.stories!.map((s) => ({ ...s, status: s.id === "s1" ? ("done" as const) : s.status })),
+    };
     const { container } = render(<StoryCheckpointPanel run={running} onDone={vi.fn()} onNotice={vi.fn()} />);
     expect(container.innerHTML).toBe("");
   });

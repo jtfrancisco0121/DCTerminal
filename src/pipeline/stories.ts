@@ -25,9 +25,14 @@ function statusOf(story: RunStory): StoryStatus {
   return story.status ?? "pending";
 }
 
-/** The story `lane` is on: the first one not done; null when all are done or it has none. */
+function finished(story: RunStory): boolean {
+  const status = statusOf(story);
+  return status === "done" || status === "skipped";
+}
+
+/** The story `lane` is on: the first one not done (or skipped); null when all are finished or it has none. */
 export function currentStory(run: PipelineRun, lane: string | null): RunStory | null {
-  return laneStories(run, lane).find((story) => statusOf(story) !== "done") ?? null;
+  return laneStories(run, lane).find((story) => !finished(story)) ?? null;
 }
 
 /** "story 2/4", "stories done (4)", or null for a pull request not built in stories. */
@@ -35,7 +40,10 @@ export function storyProgress(run: PipelineRun, lane: string | null): string | n
   const stories = laneStories(run, lane);
   if (stories.length === 0) return null;
   const now = currentStory(run, lane);
-  if (!now) return `stories done (${stories.length})`;
+  if (!now) {
+    const skipped = stories.filter((story) => statusOf(story) === "skipped").length;
+    return skipped ? `stories finished (${skipped} skipped)` : `stories done (${stories.length})`;
+  }
   return `story ${stories.indexOf(now) + 1}/${stories.length}`;
 }
 
@@ -54,6 +62,8 @@ export function storyStatusText(story: RunStory): string {
       return "waiting on you";
     case "done":
       return "done";
+    case "skipped":
+      return "skipped";
   }
 }
 
@@ -72,14 +82,33 @@ export type PendingStoryCheckpoint = {
   next: RunStory | null;
 };
 
-/** The checkpoint story `run` waits on, or null when it waits on none. */
+/** The lanes (null: the run's own) of `run` that have stories, in order. */
+function storyLanes(run: PipelineRun): (string | null)[] {
+  const lanes: (string | null)[] = [];
+  for (const story of run.stories ?? []) {
+    const lane = story.lane ?? null;
+    if (!lanes.includes(lane)) lanes.push(lane);
+  }
+  return lanes;
+}
+
+/**
+ * The checkpoint story `run` waits on, or null when it waits on none: the
+ * run's wait, or a current story still waiting on you after the run's wait
+ * ended another way (autopilot turned off and on), so Continue stays.
+ */
 export function pendingStoryCheckpoint(run: PipelineRun): PendingStoryCheckpoint | null {
+  if (run.status === "complete") return null;
   const wait = run.autopilot?.storyWait;
-  if (!wait || run.status !== "waiting" || run.stopReason !== "checkpoint") return null;
-  const lane = wait.lane ?? null;
+  const lane =
+    wait && run.status === "waiting" && run.stopReason === "checkpoint"
+      ? (wait.lane ?? null)
+      : storyLanes(run).find((id) => currentStory(run, id)?.status === "waiting");
+  if (lane === undefined) return null;
   const stories = laneStories(run, lane);
-  const at = stories.findIndex((story) => story.id === wait.story);
-  if (at < 0) return null;
+  const now = currentStory(run, lane);
+  if (!now || now.status !== "waiting") return null;
+  const at = stories.indexOf(now);
   const laneRecord = lane ? run.lanes?.find((l) => l.id === lane) : undefined;
   return {
     lane,
@@ -88,23 +117,40 @@ export function pendingStoryCheckpoint(run: PipelineRun): PendingStoryCheckpoint
     story: stories[at],
     number: at + 1,
     total: stories.length,
-    checkpoint: wait.checkpoint,
+    checkpoint: wait && (wait.lane ?? null) === lane && wait.story === now.id ? wait.checkpoint : (now.checkpoint ?? ""),
     next: stories[at + 1] ?? null,
   };
 }
 
 /** One wait from another; "" when the run waits on no checkpoint story. */
 export function storyWaitKey(run: PipelineRun): string {
-  const wait = run.autopilot?.storyWait;
-  if (!wait || !pendingStoryCheckpoint(run)) return "";
-  return `${wait.lane ?? ""}@${wait.story}@${wait.at}`;
+  const pending = pendingStoryCheckpoint(run);
+  if (!pending) return "";
+  return `${pending.lane ?? ""}@${pending.story.id}@${pending.story.at ?? ""}`;
+}
+
+/**
+ * The lane whose current story can be sent again (**Resend story**): the
+ * run stopped mid-loop (not running, not complete, not waiting on your
+ * answer) and the story is not waiting on its checkpoint. Null otherwise.
+ */
+export function resendableStory(run: PipelineRun, lane: string | null): RunStory | null {
+  if (run.status === "running" || run.status === "complete" || !run.status) return null;
+  if (run.autopilot?.verify || run.autopilot?.storyWait) return null;
+  const now = currentStory(run, lane);
+  return now && now.status !== "waiting" ? now : null;
+}
+
+/** The run actor message for Resend story. */
+export function storyResendAction(lane: string | null): ActorAction {
+  return { kind: "storyResend", lane };
 }
 
 /** The stories you typed to add, one per line (as the Rust side reads them). */
 export function parseAddedStories(text: string): string[] {
   return text
     .split("\n")
-    .map((line) => line.trim().replace(/^[-*•]+/, "").trim())
+    .map((line) => line.trim().replace(/^(?:[-*•] |\d+[.)] )/, "").trim())
     .filter((line) => line.length > 0);
 }
 

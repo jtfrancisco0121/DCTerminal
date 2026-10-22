@@ -405,6 +405,10 @@ pub fn check_story(result: &Value, mark: Option<&StoryMark>) -> Result<(), Vec<S
             Some(story) if Some(story) != last => Err(vec![format!(
                 "`story` {story:?}: every story of this pull request is done, so leave `story` out"
             )]),
+            // A review round reports the pull request, never an empty list.
+            _ if no_prs && !blocked => Err(vec![
+                "`prs` is empty: every story is done, so list the draft pull request (each with `url`, `branch` and `title`)".to_string(),
+            ]),
             _ => Ok(()),
         };
     };

@@ -47,10 +47,61 @@ pub fn of_lane<'a>(run: &'a PipelineRun, lane: Option<&str>) -> Vec<&'a RunStory
     run.stories.iter().filter(|story| story.lane.as_deref() == lane).collect()
 }
 
-/// The story `lane` is on: the first one not done. `None` once every story
-/// is done, or when it has none.
+/// The story `lane` is on: the first one not done (or skipped). `None` once
+/// every story is finished, or when it has none.
 pub fn current<'a>(run: &'a PipelineRun, lane: Option<&str>) -> Option<&'a RunStory> {
-    of_lane(run, lane).into_iter().find(|story| story.status != StoryStatus::Done)
+    of_lane(run, lane).into_iter().find(|story| !finished(story.status))
+}
+
+fn finished(status: StoryStatus) -> bool {
+    matches!(status, StoryStatus::Done | StoryStatus::Skipped)
+}
+
+/// `lane` is mid-loop: its current story is not its last, so only the
+/// command checks apply (the actor's checks and your Run checks alike).
+pub fn mid_loop(run: &PipelineRun, lane: Option<&str>) -> bool {
+    current(run, lane).is_some_and(|now| before_last(run, lane, &now.id))
+}
+
+/// A story whose result came in but whose checks were neither passed nor
+/// failed (the turn was skipped, held or stopped): active again.
+pub fn settle_checking(run: &mut PipelineRun, lane: Option<&str>) {
+    let at = now();
+    for story in run.stories.iter_mut().filter(|s| s.lane.as_deref() == lane && s.status == StoryStatus::Checking) {
+        story.status = StoryStatus::Active;
+        story.at = Some(at.clone());
+    }
+}
+
+/// The pull request goes on (your hand-on, or your approval) with stories
+/// not finished: each is marked skipped, so a later review round is never
+/// taken for a story. Returns their ids, for the Timeline line.
+pub fn skip_unfinished(run: &mut PipelineRun, lane: Option<&str>) -> Vec<String> {
+    let at = now();
+    let mut skipped = Vec::new();
+    for story in run.stories.iter_mut().filter(|s| s.lane.as_deref() == lane && !finished(s.status)) {
+        story.status = StoryStatus::Skipped;
+        story.at = Some(at.clone());
+        skipped.push(story.id.clone());
+    }
+    skipped
+}
+
+/// **Resend story** (L3): the current story of `lane`, sent again after the
+/// run stopped mid-loop. It is active again and its check retries start
+/// over. Returns its id; `Err` when there is no story to resend, or it
+/// waits on its checkpoint (that is Continue).
+pub fn resend(run: &mut PipelineRun, lane: Option<&str>, stage_key: &str) -> Result<String, String> {
+    let now_story = current(run, lane).ok_or("Every story of this pull request is finished: there is none to send again.")?;
+    if now_story.status == StoryStatus::Waiting {
+        return Err(format!("Story {} waits on its checkpoint: press Continue instead.", now_story.id));
+    }
+    let id = now_story.id.clone();
+    set_status(run, lane, &id, StoryStatus::Active);
+    if let Some(autopilot) = run.autopilot.as_mut() {
+        autopilot.gate_retries.remove(stage_key);
+    }
+    Ok(id)
 }
 
 /// `id` is the story `lane` is on now.
@@ -166,12 +217,32 @@ pub fn wait(stage_id: &str, lane: Option<&str>, story: &str, checkpoint: &str, t
 }
 
 /// The story titles you typed to add at a checkpoint, one per line.
+/// A list marker (`- `, `* `, `• `, `1. `, `1) `) is dropped; any other
+/// leading text, such as `-flag` or `2024 plan`, is kept.
 pub fn parse_added(text: &str) -> Vec<String> {
     text.lines()
-        .map(|line| line.trim().trim_start_matches(['-', '*', '•']).trim())
+        .map(|line| strip_marker(line.trim()).trim())
         .filter(|line| !line.is_empty())
         .map(str::to_string)
         .collect()
+}
+
+fn strip_marker(line: &str) -> &str {
+    for bullet in ["- ", "* ", "• "] {
+        if let Some(rest) = line.strip_prefix(bullet) {
+            return rest;
+        }
+    }
+    let digits = line.chars().take_while(char::is_ascii_digit).count();
+    if digits > 0 {
+        let rest = &line[digits..];
+        for end in [". ", ") "] {
+            if let Some(rest) = rest.strip_prefix(end) {
+                return rest;
+            }
+        }
+    }
+    line
 }
 
 /// Your **Continue** at `story`'s checkpoint in `lane`: the story is done
@@ -185,12 +256,10 @@ pub fn continue_after(
     note: Option<&str>,
     added: &[String],
 ) -> Result<String, String> {
-    let waiting = run
-        .autopilot
-        .as_ref()
-        .and_then(|a| a.story_wait.as_ref())
-        .is_some_and(|wait| wait.lane.as_deref() == lane && wait.story == story);
-    if !waiting || !is_current(run, lane, story) {
+    // The story record says it waits: the run's wait may have ended another
+    // way (autopilot turned off and on), and Continue still sends the next.
+    let waiting = current(run, lane).is_some_and(|now| now.id == story && now.status == StoryStatus::Waiting);
+    if !waiting {
         return Err("The run is not waiting on that story's checkpoint any more. Reload the overview.".into());
     }
     let note = note.map(str::trim).filter(|note| !note.is_empty());

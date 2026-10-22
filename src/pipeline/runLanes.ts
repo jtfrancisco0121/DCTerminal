@@ -103,7 +103,8 @@ function stageOfRoleIn(stages: readonly StageDef[], roleId: string | null | unde
   return stages.find((s) => s.roleId === roleId) ?? stages.find((s) => s.alsoReviewers?.includes(roleId)) ?? null;
 }
 
-const STARTS = new Set(["advance", "reask", "retry"]);
+/** L3: the next story, your Continue and your Resend story set the Implementer working too. */
+const STARTS = new Set(["advance", "reask", "retry", "nextStory", "storyContinue", "storyResend"]);
 /** "Round N sent back", or "Round N dealt with by you" (V5, D28: you revised the stage yourself). */
 const ROUND_SENT_BACK = /Round (\d+) (?:sent back|dealt with by you)/;
 
@@ -240,6 +241,7 @@ export function runLanes(run: PipelineRun, stages: readonly StageDef[], now: num
         break;
       }
       case "autopilot":
+      case "note":
         if (STARTS.has(event.outcome ?? "")) {
           const round = roundFor(event, lane);
           const current = open.get(key(stageId, lane));

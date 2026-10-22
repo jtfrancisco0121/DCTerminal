@@ -384,7 +384,7 @@ export type PipelineRun = {
 };
 
 /** L3: where a story stands. */
-export type StoryStatus = "pending" | "active" | "checking" | "failed" | "waiting" | "done";
+export type StoryStatus = "pending" | "active" | "checking" | "failed" | "waiting" | "done" | "skipped";
 
 /** L3: one story of a pull request built in stories, as the run records it. */
 export type RunStory = {
@@ -1488,7 +1488,9 @@ export type ActorAction =
   /** L2: answer the verify gate the run waits on: verified passes it; failed sends `note` back to the stage as a round. */
   | { kind: "verify"; stageId: string; lane: string | null; verified: boolean; note?: string | null }
   /** L3: Continue after a checkpoint story: `note` goes on to the next story; `add` holds stories to add after it, one per line. */
-  | { kind: "storyContinue"; lane: string | null; story: string; note?: string | null; add?: string | null };
+  | { kind: "storyContinue"; lane: string | null; story: string; note?: string | null; add?: string | null }
+  /** L3: send the current story again to a run stopped mid-loop. */
+  | { kind: "storyResend"; lane: string | null };
 
 /** What a button did on an engine-2 run. */
 export type ActorOutcome = {

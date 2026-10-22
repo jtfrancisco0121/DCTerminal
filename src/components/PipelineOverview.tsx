@@ -32,6 +32,7 @@ import { VerifyWaitPanel } from "./VerifyWaitPanel";
 import { verifyWaitKey } from "../pipeline/verify";
 import { StoryCheckpointPanel } from "./StoryCheckpointPanel";
 import { StoryList } from "./StoryList";
+import { StoryResendButton } from "./StoryResendButton";
 import { laneStories, storyProgress, storyWaitKey } from "../pipeline/stories";
 import {
   coalescedReload,
@@ -711,6 +712,7 @@ export function PipelineOverview({
         <section className="pipeline-stories" aria-label="Stories">
           <h3>Stories · {storyProgress(run, null)}</h3>
           <StoryList run={run} lane={null} label="Stories of the pull request" />
+          {autopilotOn && <StoryResendButton run={run} lane={null} onDone={reload} onNotice={onNotice} />}
         </section>
       )}
 
@@ -743,6 +745,7 @@ export function PipelineOverview({
                     {lane.dependsOn?.length ? ` · after ${lane.dependsOn.map((d) => d.toUpperCase()).join(", ")}` : ""}
                   </p>
                   <StoryList run={run} lane={lane.id} label={`Stories of ${lane.title}`} />
+                  {autopilotOn && <StoryResendButton run={run} lane={lane.id} onDone={reload} onNotice={onNotice} />}
                   <div className="button-row">
                     {tabsOfLane.map(({ roleId, tab }) => (
                       <button key={roleId} type="button" className="secondary-button" onClick={() => onJump(tab!.id)}>

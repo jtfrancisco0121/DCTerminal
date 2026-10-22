@@ -273,3 +273,51 @@ fn a_turn_that_names_no_current_story_mid_loop_stops_instead_of_handing_on() {
     let mut plain = run(None);
     assert_eq!(decide(&def, &mut plain, &report).action, "advance");
 }
+
+#[test]
+fn added_stories_drop_only_list_markers() {
+    let added = parse_added("- One\n* Two\n• Three\n1. Four\n12) Five\n-flag stays\n2024 plan\n**bold**\n\n");
+    assert_eq!(added, ["One", "Two", "Three", "Four", "Five", "-flag stays", "2024 plan", "**bold**"]);
+}
+
+#[test]
+fn skipped_stories_end_the_loop_and_a_story_left_checking_is_active_again() {
+    let mut r = run(None);
+    seed(&mut r, None, &plan5(false));
+    assert!(mid_loop(&r, None), "s1 of 4: command checks only");
+    set_status(&mut r, None, "s1", StoryStatus::Checking);
+    settle_checking(&mut r, None);
+    assert_eq!(r.stories[0].status, StoryStatus::Active);
+    r.stories[0].status = StoryStatus::Done;
+    assert_eq!(skip_unfinished(&mut r, None), ["s2", "s3", "s4"]);
+    assert!(current(&r, None).is_none() && !mid_loop(&r, None));
+    assert_eq!(mark(&r, None).unwrap().current, None);
+    assert!(skip_unfinished(&mut r, None).is_empty());
+    assert!(resend(&mut r, None, "implementer").unwrap_err().contains("finished"));
+}
+
+#[test]
+fn resend_makes_the_current_story_active_with_its_retries_started_over() {
+    let mut r = run(None);
+    seed(&mut r, None, &plan5(true));
+    set_failed(&mut r, None, "s1", 3);
+    r.autopilot.as_mut().unwrap().gate_retries.insert("implementer".into(), 2);
+    assert_eq!(resend(&mut r, None, "implementer").unwrap(), "s1");
+    assert_eq!(r.stories[0].status, StoryStatus::Active);
+    assert!(r.autopilot.as_ref().unwrap().gate_retries.is_empty());
+    r.stories[0].status = StoryStatus::Waiting;
+    assert!(resend(&mut r, None, "implementer").unwrap_err().contains("press Continue"));
+}
+
+#[test]
+fn continue_takes_a_waiting_story_even_after_the_runs_wait_ended() {
+    let def = eagle1();
+    let mut r = run(None);
+    seed(&mut r, None, &plan5(true));
+    let report = story_turn(&mut r, None, "s1", "t-1", "passed");
+    decide(&def, &mut r, &report);
+    r.set_autopilot_enabled(false);
+    r.set_autopilot_enabled(true);
+    assert!(r.autopilot.as_ref().unwrap().story_wait.is_none());
+    assert_eq!(continue_after(&mut r, None, "s1", Some("ok"), &[]).unwrap(), "s2");
+}

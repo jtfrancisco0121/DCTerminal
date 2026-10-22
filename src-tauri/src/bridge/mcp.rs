@@ -152,9 +152,13 @@ fn call(server: &Server, params: &Value) -> Value {
                 at: super::folder::now(),
                 result: result.clone(),
             };
+            // L3: a story's result with no pull request yet leaves prs.json
+            // (the pull request reported last) as it is.
+            let story_without_prs = result.get("story").is_some()
+                && result.get("prs").and_then(Value::as_array).is_none_or(Vec::is_empty);
             let saved = match dir.info.result {
                 // The run-level copy first: the result is what ends the turn.
-                ResultKind::Implementer => dir
+                ResultKind::Implementer if !story_without_prs => dir
                     .write_prs(&RunPrs {
                         schema: SCHEMA,
                         run_id: dir.info.run_id.clone(),

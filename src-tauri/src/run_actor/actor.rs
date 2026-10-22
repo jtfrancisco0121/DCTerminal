@@ -319,6 +319,7 @@ impl<H: Host> Actor<H> {
     /// command such as Run checks or Autopilot off changed the run outside
     /// the actor): the caller then takes the turn up as usual.
     fn hold_for_verify(&mut self, placed: &Placed, turn: &BridgeTurn) -> bool {
+        let for_story;
         {
             let mut store = lock(self.host.store());
             let Some(run) = store.pipeline_run_by_id_mut(&self.run_id) else {
@@ -327,6 +328,8 @@ impl<H: Host> Actor<H> {
             if !holds_for_verify(&placed.def, run, &placed.tab.id) {
                 return false;
             }
+            // L3: held for a checkpoint story's Continue, or for a verify answer.
+            for_story = run.autopilot.as_ref().is_some_and(|a| a.verify.is_none() && a.story_wait.is_some());
             {
                 run.hold_turn(crate::store::HeldTurn {
                     turn: bridge_turn_key(&turn.tab_id, &turn.turn),
@@ -334,13 +337,14 @@ impl<H: Host> Actor<H> {
                     stage_id: placed.stage.id.clone(),
                     stage_title: placed.stage.title.clone(),
                     lane: placed.lane.clone(),
+                    for_story,
                 });
                 if let Err(err) = store.save() {
                     eprintln!("DCTerminal: run {}: held turn not saved: {err}", self.run_id);
                 }
             }
         }
-        self.note(Some(&placed.stage.id), &held_for_verify(placed), false);
+        self.note(Some(&placed.stage.id), &held_for_verify(placed, for_story), false);
         true
     }
 
@@ -482,6 +486,7 @@ impl<H: Host> Actor<H> {
         self.changed();
         // You took the stage over while its checks ran: Hand back decides.
         if self.taken_over(&placed.tab.id) {
+            self.settle_story(&placed);
             return;
         }
         // L2: another lane's verification started to wait while these checks
@@ -493,6 +498,7 @@ impl<H: Host> Actor<H> {
                 .is_some_and(|run| holds_for_verify(&placed.def, run, &placed.tab.id))
         };
         if held_by_verify && self.hold_for_verify(&placed, &turn) {
+            self.settle_story(&placed);
             return;
         }
         // The checks take a while: a turn started since is the stage's result now.
@@ -506,6 +512,7 @@ impl<H: Host> Actor<H> {
                 "Skipped {}'s turn: {} got a newer prompt while its checks ran.",
                 placed.stage.title, placed.tab.label
             );
+            self.settle_story(&placed);
             self.note(Some(&placed.stage.id), &summary, false);
             return;
         }
@@ -591,6 +598,9 @@ impl<H: Host> Actor<H> {
                 ),
                 None => decide(&placed.def, &mut trial, &report),
             };
+            // L3: a story's turn decided without passing or failing its
+            // checks (skipped, stopped) does not stay `checking`.
+            crate::pipelines::stories::settle_checking(&mut trial, placed.lane.as_deref());
             // L2: a verify wait shows the pull requests this turn reported.
             if let Some(wait) = trial
                 .autopilot
@@ -829,6 +839,7 @@ impl<H: Host> Actor<H> {
         let stage_id = decision.stage_id.as_deref().ok_or("the decision names no stage")?;
         let target_index = placed.def.stage_index(stage_id).ok_or("that stage is not in the pipeline")?;
         let target = placed.def.stages[target_index].clone();
+        self.skip_unfinished_stories(placed, &target.title);
         let role = self.host.role(&target.role_id).ok_or_else(|| format!("unknown role {}", target.role_id))?;
         let sources = self.sources(placed, &target, Some(turn), None);
         let built = prompts::stage_values(&role, target.kind() == StageKind::Reviewer, &sources);
@@ -1439,6 +1450,124 @@ impl<H: Host> Actor<H> {
         before_last
     }
 
+    /// The pull request goes on to `onto` from `placed`'s Implementer with
+    /// stories not finished (your hand-on): they are marked skipped, with a
+    /// Timeline line, so a later review round is never taken for a story.
+    fn skip_unfinished_stories(&mut self, placed: &Placed, onto: &str) {
+        if placed.stage.kind() != StageKind::Implementer {
+            return;
+        }
+        let lane = placed.lane.as_deref();
+        let skipped = {
+            let mut store = lock(self.host.store());
+            let Some(run) = store.pipeline_run_by_id_mut(&self.run_id) else {
+                return;
+            };
+            let skipped = crate::pipelines::stories::skip_unfinished(run, lane);
+            if skipped.is_empty() {
+                return;
+            }
+            let tag = lane.and_then(|id| run.lane(id)).map(|l| format!("{}: ", l.title)).unwrap_or_default();
+            let summary = format!(
+                "{tag}Stories {} were not done before the pull request went on to {onto}; they are marked skipped.",
+                skipped.join(", ")
+            );
+            run.log_in_lane("note", Some(&placed.stage.id), None, lane, summary, None, Some("storySkipped".to_string()));
+            if let Err(err) = store.save() {
+                eprintln!("DCTerminal: run {}: skipped stories not saved: {err}", self.run_id);
+            }
+            skipped
+        };
+        if !skipped.is_empty() {
+            self.sync_story_mark(placed);
+            self.changed();
+        }
+    }
+
+    /// A story left `checking` by a turn whose checks were neither passed
+    /// nor failed (taken over, held, overtaken): active again.
+    fn settle_story(&self, placed: &Placed) {
+        let mut store = lock(self.host.store());
+        if let Some(run) = store.pipeline_run_by_id_mut(&self.run_id) {
+            let before = run.stories.clone();
+            crate::pipelines::stories::settle_checking(run, placed.lane.as_deref());
+            if run.stories != before {
+                if let Err(err) = store.save() {
+                    eprintln!("DCTerminal: run {}: story status not saved: {err}", self.run_id);
+                }
+            }
+        }
+    }
+
+    /// **Resend story** (L3): the run stopped mid-loop (its retries used up,
+    /// a usage pause, a turn that named no story). The current story is
+    /// active again, its retries start over, the run runs, and the
+    /// Implementer's session is resumed with the story's prompt. Refused,
+    /// with nothing changed, while the run waits on a verification or a
+    /// checkpoint story (answer those), runs already, or the stage works.
+    fn user_resend_story(&mut self, lane: Option<&str>) -> Result<UserOutcome, String> {
+        let lane = lane.map(str::trim).filter(|id| !id.is_empty());
+        let (tab_id, key) = {
+            let store = lock(self.host.store());
+            let run = store.pipeline_run_by_id(&self.run_id).ok_or("unknown pipeline run")?;
+            if run.status == RunStatus::Running || run.status == RunStatus::Complete {
+                return Err("Resend story is for a run that stopped mid-story; this one is not stopped.".into());
+            }
+            if run.autopilot.as_ref().is_some_and(|a| a.verify.is_some() || a.story_wait.is_some()) {
+                return Err("The run waits on your answer: mark the verification or continue the checkpoint story.".into());
+            }
+            let def = crate::pipelines::find(&run.kind).ok_or_else(|| format!("unknown pipeline {}", run.kind))?;
+            let stage = implementer_stage(&def).ok_or("this pipeline has no Implementer stage")?;
+            let key = stage_key(&stage.id, lane);
+            crate::pipelines::stories::resend(&mut run.clone(), lane, &key)?;
+            let tab_ids = match lane.and_then(|id| run.lane(id)) {
+                Some(l) => &l.tab_ids,
+                None => &run.tab_ids,
+            };
+            let tab_id = tab_ids.get(&stage.role_id).cloned().ok_or("the Implementer's tab is not on the run")?;
+            (tab_id, key)
+        };
+        let (placed, _) = self.bridged_tab(&tab_id)?;
+        if self.taken_over(&tab_id) {
+            return Err(format!("You took {} over: hand it back first, then resend the story.", placed.tab.label));
+        }
+        let session = session_of(&placed.tab)
+            .ok_or_else(|| format!("{} has no saved Claude session to send the story into.", placed.tab.label))?;
+        if self.host.terminal_live(&tab_id) && !self.idle(&placed.tab) {
+            return Err(format!("{} is still working. Resend the story when its turn ends.", placed.tab.label));
+        }
+        let ready = self.resume_gate(&placed.tab, None, false)?;
+        let text = {
+            let mut store = lock(self.host.store());
+            let run = store.pipeline_run_by_id_mut(&self.run_id).ok_or("unknown pipeline run")?;
+            let id = crate::pipelines::stories::resend(run, lane, &key)?;
+            let tag = lane.and_then(|l| run.lane(l)).map(|l| format!("{}: ", l.title)).unwrap_or_default();
+            run.log_in_lane(
+                "note",
+                Some(&placed.stage.id),
+                None,
+                lane,
+                format!("{tag}You sent story {id} to {} again.", placed.stage.title),
+                None,
+                Some("storyResend".to_string()),
+            );
+            run.set_running();
+            let text = crate::pipelines::stories::story_message(run, lane, &id);
+            store.save()?;
+            text
+        };
+        self.changed();
+        self.sync_story_mark(&placed);
+        if let Err(err) = self.resume_ready(&placed.tab, ready, &session, &text) {
+            self.stop_run(Some(&placed.stage.id), Some(&tab_id), &format!("Autopilot could not resend the story: {err}"), None);
+            return Err(err);
+        }
+        Ok(UserOutcome {
+            tab_id: Some(tab_id),
+            ..UserOutcome::default()
+        })
+    }
+
     /// Your **Continue** at a checkpoint story (L3): the story is done with
     /// your note, the stories you added go after it, and the stage's
     /// session is resumed with the next story and your note. The turns
@@ -1448,17 +1577,27 @@ impl<H: Host> Actor<H> {
     fn user_continue_story(&mut self, lane: Option<&str>, story: &str, note: Option<&str>, add: Option<&str>) -> Result<UserOutcome, String> {
         let not_waiting = "The run is not waiting on that story's checkpoint any more. Reload the overview.";
         let lane = lane.map(str::trim).filter(|id| !id.is_empty());
+        // The run's wait, or (when it ended another way, such as autopilot
+        // turned off and on) the story record that still waits.
         let (turn_key, stage_id) = {
             let store = lock(self.host.store());
             let run = store.pipeline_run_by_id(&self.run_id).ok_or("unknown pipeline run")?;
+            let record = crate::pipelines::stories::current(run, lane)
+                .filter(|now| now.id == story && now.status == crate::store::StoryStatus::Waiting)
+                .ok_or(not_waiting)?;
             let wait = run
                 .autopilot
                 .as_ref()
                 .and_then(|a| a.story_wait.clone())
-                .filter(|_| run.status == RunStatus::Waiting && run.stop_reason == Some(StopReason::Checkpoint))
-                .filter(|wait| wait.lane.as_deref() == lane && wait.story == story)
-                .ok_or(not_waiting)?;
-            (wait.turn.ok_or(not_waiting)?, wait.stage_id)
+                .filter(|wait| wait.lane.as_deref() == lane && wait.story == story);
+            let stage_id = match &wait {
+                Some(wait) => wait.stage_id.clone(),
+                None => crate::pipelines::find(&run.kind)
+                    .and_then(|def| implementer_stage(&def).map(|s| s.id.clone()))
+                    .ok_or(not_waiting)?,
+            };
+            let turn = wait.and_then(|w| w.turn).or_else(|| record.turn.clone()).ok_or(not_waiting)?;
+            (turn, stage_id)
         };
         let tab_id = turn_key.split('|').next().unwrap_or_default().to_string();
         let (placed, _) = self.bridged_tab(&tab_id)?;
@@ -1551,6 +1690,7 @@ impl<H: Host> Actor<H> {
             UserAction::ContinueStory { lane, story, note, add } => {
                 self.user_continue_story(lane.as_deref(), &story, note.as_deref(), add.as_deref())
             }
+            UserAction::ResendStory { lane } => self.user_resend_story(lane.as_deref()),
             UserAction::TakeOver { tab_id } => self.user_take_over(&tab_id),
             UserAction::HandBack { tab_id } => self.user_hand_back(&tab_id),
             UserAction::Prefill {
@@ -1679,6 +1819,8 @@ impl<H: Host> Actor<H> {
             Ok(key) => key,
             Err(outcome) => return Ok(outcome),
         };
+        // L3: your hand-on of an unfinished pull request skips its other stories.
+        self.skip_unfinished_stories(&placed, &target.title);
         let (values, plan, text) = match values {
             Some(values) => {
                 let text = handoff_text
@@ -1768,7 +1910,18 @@ impl<H: Host> Actor<H> {
     fn user_approve(&mut self, lane: Option<&str>) -> Result<UserOutcome, String> {
         let result = {
             let mut store = lock(self.host.store());
-            approve(&mut store, &self.run_id, lane)?
+            let result = approve(&mut store, &self.run_id, lane)?;
+            // L3: approving a pull request with stories not finished skips them.
+            if let Some(run) = store.pipeline_run_by_id_mut(&self.run_id) {
+                let skipped = crate::pipelines::stories::skip_unfinished(run, lane);
+                if !skipped.is_empty() {
+                    let tag = lane.and_then(|id| run.lane(id)).map(|l| format!("{}: ", l.title)).unwrap_or_default();
+                    let summary = format!("{tag}Stories {} were not done when you approved it; they are marked skipped.", skipped.join(", "));
+                    run.log_in_lane("note", None, None, lane, summary, None, Some("storySkipped".to_string()));
+                    store.save()?;
+                }
+            }
+            result
         };
         self.changed();
         let mut started = Vec::new();
@@ -2189,7 +2342,14 @@ fn holds_for_verify(def: &PipelineDef, run: &PipelineRun, tab_id: &str) -> bool 
 }
 
 /// The Timeline line for a turn held while the run waits on a verification.
-fn held_for_verify(placed: &Placed) -> String {
+fn held_for_verify(placed: &Placed, for_story: bool) -> String {
+    if for_story {
+        // L3: the wait is a checkpoint story's.
+        return format!(
+            "{} finished while the run waits on a story checkpoint. Autopilot acts on it, checks first, once you continue.",
+            placed.tab.label
+        );
+    }
     format!(
         "{} finished while the run waits on your verification. Autopilot acts on it, checks first, once you answer.",
         placed.tab.label
