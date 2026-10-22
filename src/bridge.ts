@@ -1813,6 +1813,79 @@ export async function pipelineRunRound(runId: string): Promise<RunRoundView | nu
   return invoke<RunRoundView | null>("pipeline_run_round", { runId });
 }
 
+/** R2: where a plan of a running round stands. */
+export type PlanRunState = "ready" | "running" | "done" | "stopped" | "parked" | "deferred";
+
+/** R2: one plan of a round and its run. */
+export type RoundPlanRun = {
+  planId: string;
+  title: string;
+  wave?: number | null;
+  state: PlanRunState;
+  runId?: string | null;
+  /** Why it stopped, or what its run waits for. */
+  note?: string | null;
+};
+
+/** R2: a QA round, as `state.json` lists it. */
+export type QaRound = {
+  id: string;
+  triageRunId: string;
+  title: string;
+  cwd: string;
+  windowId?: string | null;
+  /** The pipeline each plan runs. */
+  pipeline: string;
+  runsAtOnce: number;
+  commitUpToWave: number;
+  waves: number;
+  plans: RoundPlanRun[];
+  createdAt: string;
+  updatedAt?: string | null;
+};
+
+/** R2: a plan as the round view shows it. */
+export type RoundPlanView = RoundPlanRun & {
+  /** Why a ready plan has not started. */
+  waiting?: string | null;
+  tickets: string[];
+  repos: string[];
+};
+
+/** R2: a plan run waiting at its plan checkpoint; Approve is your Send to its actor. */
+export type PlanCheckpoint = {
+  planId: string;
+  runId: string;
+  stageTitle: string;
+  sourceTabId: string;
+  targetRoleId: string;
+  waiting: string;
+};
+
+/** R2: a round and what its view shows. */
+export type RoundView = {
+  round: QaRound;
+  plans: RoundPlanView[];
+  checkpoints: PlanCheckpoint[];
+};
+
+/** R2: a round button; the round runner carries it out. */
+export type RoundAction =
+  | { kind: "start"; triageRunId: string; pipeline?: string | null; runsAtOnce?: number | null; commitUpToWave?: number | null }
+  | { kind: "settings"; roundId: string; runsAtOnce?: number | null; commitUpToWave?: number | null }
+  | { kind: "unpark"; roundId: string; planId: string; wave?: number | null }
+  | { kind: "retry"; roundId: string; planId: string };
+
+/** R2: the round `key` names (its id, its Triage run or one of its plan runs); null when none. */
+export async function roundGet(key: string): Promise<RoundView | null> {
+  return invoke<RoundView | null>("round_get", { key });
+}
+
+/** R2: a round button, answered with the round as it is after it. */
+export async function roundAction(action: RoundAction): Promise<RoundView> {
+  return invoke<RoundView>("round_action", { action });
+}
+
 /** The core stopped a run by itself: a stall, or a turn that finished while the app was closed. */
 export type AutopilotStoppedEvent = {
   runId: string;

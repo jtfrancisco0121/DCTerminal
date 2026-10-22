@@ -45,6 +45,9 @@ pub struct AppStateFile {
     /// wait in `closed_tabs` for File > Reopen Closed Window.
     #[serde(default)]
     pub archived_windows: Vec<ArchivedWindow>,
+    /// QA rounds (R2): each one's settings and plan runs. Missing on old files.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rounds: Vec<crate::rounds::QaRound>,
 }
 
 /// One top-level window bound to a Claude account.
@@ -1237,6 +1240,7 @@ impl Default for AppStateFile {
             closed_tabs: Vec::new(),
             layout: LayoutState::default(),
             pipeline_runs: Vec::new(),
+            rounds: Vec::new(),
             // Nothing to migrate in a file we are creating now.
             migrations: Migrations {
                 claude_first: true,

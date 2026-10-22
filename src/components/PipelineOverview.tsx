@@ -6,6 +6,7 @@ import {
   exportTextFile,
   getPipelineRun,
   listenChainRunUpdated,
+  openChainOverview,
   pipelinePromotePlan,
   pipelineRunGates,
   pipelineRunTasks,
@@ -333,6 +334,17 @@ export function PipelineOverview({
     }
   };
 
+  /** R2: a plan run of this round, in its own overview tab. */
+  const openRun = async (id: string) => {
+    try {
+      const opened = await openChainOverview(id);
+      await onRefreshTabs();
+      onJump(opened.tabId);
+    } catch (err: unknown) {
+      onNotice("Run not opened", errorText(err));
+    }
+  };
+
   const exportReport = async () => {
     if (!run) return;
     try {
@@ -572,7 +584,14 @@ export function PipelineOverview({
           refreshKey={`${run.status ?? ""}|${run.verifications?.length ?? 0}|${run.updatedAt ?? ""}`}
         />
       )}
-      {(run.engine ?? 1) >= 2 && <RoundSummary runId={run.id} refreshKey={run.updatedAt ?? ""} />}
+      {(run.engine ?? 1) >= 2 && (
+        <RoundSummary
+          runId={run.id}
+          refreshKey={run.updatedAt ?? ""}
+          runComplete={run.status === "complete"}
+          onOpenRun={(id) => void openRun(id)}
+        />
+      )}
 
       <div className="pipeline-lanes">
         {stages.map((stage) => {

@@ -3,21 +3,26 @@ import { pipelineRunRound, type RunRoundView } from "../bridge";
 import { mergeOrderLines, roundCountText, roundRows } from "../pipeline/round";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { errorText, InlineNotice } from "./InlineNotice";
+import { RoundRunner } from "./RoundRunner";
 
 type Props = {
   runId: string;
   /** Changes when the run does, so a new round from Triage is read again. */
   refreshKey: string;
+  /** R2: the Triage run is complete (its round approved), so the round can start. */
+  runComplete?: boolean;
+  /** R2: open a plan run's overview. */
+  onOpenRun?: (runId: string) => void;
 };
 
 /**
  * A QA round on the chain overview (R1): the plans Triage grouped the
  * tickets into, with their tickets, repos, wave and status (and why a plan
  * is deferred or parked), the waves, the merge order per repo, the tickets
- * left out, and the round document (`round.md`). Renders nothing for a run
- * with no `round.json`.
+ * left out, and the round document (`round.md`), then the round runner
+ * (R2). Renders nothing for a run with no `round.json`.
  */
-export function RoundSummary({ runId, refreshKey }: Props) {
+export function RoundSummary({ runId, refreshKey, runComplete = false, onOpenRun }: Props) {
   const [view, setView] = useState<RunRoundView | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -103,6 +108,7 @@ export function RoundSummary({ runId, refreshKey }: Props) {
           ))}
         </ul>
       )}
+      <RoundRunner triageRunId={runId} runComplete={runComplete} waves={round.waves.length} onOpenRun={onOpenRun} />
       {view.markdown.trim() && (
         <details className="pipeline-round-document">
           <summary>Round document (round.md)</summary>

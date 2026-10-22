@@ -26,6 +26,8 @@ impl<R: Runtime> ChainEvents for AppHandle<R> {
             chain_id: chain_id.to_string(),
         };
         let _ = self.emit(CHAIN_RUN_UPDATED_EVENT, payload);
+        // R2: the round runner hears every run change (it only queues one).
+        crate::rounds::notify_run_changed(self, chain_id);
     }
 }
 
