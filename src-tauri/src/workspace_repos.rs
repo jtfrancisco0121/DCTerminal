@@ -195,7 +195,7 @@ pub fn implementer_folder_problem(workspace: bool, cwd: &Path) -> Option<String>
     }
     Some(format!(
         "{} is a workspace of repos, not a git repo, so the Implementer does not start there. \
-         Each pull request gets a worktree in its own repo: fan the plan out from the chain overview (a one-task plan too).",
+         Each pull request gets a worktree in its own repo: fan the plan out from the chain overview (a one-task plan too), or start the run in one of its repos.",
         cwd.display()
     ))
 }
@@ -385,6 +385,15 @@ mod tests {
         assert!(dir.join("app-side/.git").is_file());
         let found = child_repos(dir.path());
         assert_eq!(found.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["app-side"]);
+    }
+
+    #[test]
+    fn an_implementer_may_not_start_in_the_folder_of_repos_itself() {
+        let dir = workspace("w1_implementer_folder");
+        let problem = implementer_folder_problem(true, dir.path()).expect("refused");
+        assert!(problem.contains("is a workspace of repos, not a git repo"), "{problem}");
+        assert_eq!(implementer_folder_problem(true, &dir.join("koneksi-engine")), None, "a repo of it is fine");
+        assert_eq!(implementer_folder_problem(false, dir.path()), None, "not a workspace run: as before");
     }
 
     #[test]
