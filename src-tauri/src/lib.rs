@@ -51,7 +51,7 @@ pub mod testing {
         reconcile_run, stop_stalled, current_stage_tabs, working, turn_key, Reconciled, StallObservation,
         StallWatch,
     };
-    pub use crate::store::{PipelineRun, RunStatus, StopReason};
+    pub use crate::store::{PipelineRun, RunStatus, StopReason, StoryStatus};
     pub use crate::bridge::launch::{
         bridged_command, launch_flags, prepare_stage, read_run_tasks, read_stage_turn, runs_root, write_run_repos,
         BridgePlan, BridgeTag,
