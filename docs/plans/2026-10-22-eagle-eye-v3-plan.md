@@ -84,6 +84,18 @@ Live, in scratch clones. **ClickUp checks run on JT's personal workspace only**,
 | P5 | Two worktrees from two repos in one run, by hand | Both lanes build. Nothing in the run folder assumes one repo |
 | P6 | Whether ClickUp's GitHub integration links a PR from the task id in the branch or title | We know the id format to put in branch names |
 
+### Phase 0 results (2026-10-22, personal workspace, read-only except the test fixture)
+
+A test parent ticket with four subtasks was created in the personal DCTerminal › Tasks list for this ("[DCT test] Phase 0 intake parent", safe to delete).
+
+| # | Result |
+|---|---|
+| P1 | **Pass.** `GET /task/{id}?include_subtasks=true` returns every subtask, closed ones too, with status (and its type) and priority. Comments come from `GET /task/{id}/comment`. Statuses come from `GET /list/{id}`. Gotchas: list queries drop closed tasks unless `include_closed=true`, and the Markdown description needs `include_markdown_description=true` (otherwise use `text_content`) |
+| P2 | **Native ids.** The workspace has no custom task ids (`custom_id` is null), and work ids have the same shape. Custom-id support stays optional |
+| P3 | **100 requests a minute** for this token. The headers are `X-Ratelimit-Limit`, `-Remaining` and `-Reset` |
+| P4, P5 | Not run yet (no koneksi checkouts on this machine). L1 tests two repos with temporary git repos instead |
+| P6 | Not run yet |
+
 ## Track C: ClickUp
 
 | PR | What | Done when |
