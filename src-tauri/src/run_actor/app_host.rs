@@ -90,6 +90,12 @@ impl Host for AppHost {
         roles.role_by_id(role_id).cloned()
     }
 
+    fn repos(&self) -> Vec<crate::store::RepoEntry> {
+        let settings = self.app.state::<Mutex<SettingsStore>>();
+        let repos = settings.lock().map(|settings| settings.repos().to_vec()).unwrap_or_default();
+        repos
+    }
+
     fn bridge_gate(&self, run_id: &str, stage_key: &str, cwd: &Path) -> Result<bool, String> {
         crate::pty::actor_stage_gate(&self.app, run_id, stage_key, cwd)
     }

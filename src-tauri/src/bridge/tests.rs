@@ -1381,3 +1381,93 @@ fn a_chain_a_form_start_begins_plans_its_first_stage_as_an_engine_2_run() {
     assert_eq!(chain.total, 2);
     assert_eq!(launch::plan_for_new_run(&eagle2, &chain, "role_implementer").unwrap().kind, ResultKind::Implementer);
 }
+
+// ---- L1: a task names a repo from Settings › Repos --------------------------
+
+fn repos(names: &[&str]) -> Vec<String> {
+    names.iter().map(|name| name.to_string()).collect()
+}
+
+#[test]
+fn a_task_may_name_a_known_repo_in_any_case_and_keeps_its_settings_spelling() {
+    let block = r#"{"tasks": [
+      {"id": "pr1", "title": "API", "summary": "a", "repo": "Backend"},
+      {"id": "pr2", "title": "Client", "summary": "b", "dependsOn": ["pr1"], "repo": " engine "},
+      {"id": "pr3", "title": "Docs", "summary": "c", "repo": ""},
+      {"id": "pr4", "title": "Notes", "summary": "d", "repo": null}
+    ]}"#;
+    let tasks = schema::planner_tasks_with(&plan_with(block), &repos(&["backend", "engine"])).unwrap();
+    let named: Vec<Option<&str>> = tasks.iter().map(|t| t.repo.as_deref()).collect();
+    assert_eq!(named, [Some("backend"), Some("engine"), None, None]);
+    assert_eq!(tasks[1].depends_on, ["pr1"], "a dependency across repos is a plain dependency");
+    // Saved without `repo` when there is none, so tasks.json reads as before L1.
+    let saved = serde_json::to_value(&tasks[2]).unwrap();
+    assert!(saved.get("repo").is_none(), "{saved}");
+    assert_eq!(serde_json::to_value(&tasks[0]).unwrap()["repo"], "backend");
+}
+
+#[test]
+fn an_unknown_repo_is_rejected_with_the_valid_names_and_every_other_problem() {
+    let block = r#"{"tasks": [
+      {"id": "pr1", "title": "", "summary": "a", "repo": "web"},
+      {"id": "pr2", "title": "B", "summary": "b", "repo": 7}
+    ]}"#;
+    let problems = schema::planner_tasks_with(&plan_with(block), &repos(&["backend", "engine"])).unwrap_err();
+    let text = problems.join("\n");
+    for expected in [
+        "`tasks[0].title` is empty",
+        "`tasks[0].repo` \"web\" is not one of the repos in Settings › Repos (backend, engine)",
+        "`tasks[1].repo` must be a repo name such as \"backend\", not 7",
+    ] {
+        assert!(text.contains(expected), "missing {expected:?} in:\n{text}");
+    }
+    // No repos set up: a task that names one is told to leave it out.
+    let none = schema::planner_tasks(&plan_with(r#"{"tasks": [{"id": "pr1", "title": "A", "summary": "a", "repo": "backend"}]}"#))
+        .unwrap_err();
+    assert!(none[0].contains("none are set up in DCTerminal's Settings › Repos, so leave `repo` out"), "{none:?}");
+    // And a plan without `repo` reads exactly as before, with or without repos.
+    let old = schema::planner_tasks_with(&plan_with(TWO_TASKS), &repos(&["backend"])).unwrap();
+    assert_eq!(old, schema::planner_tasks(&plan_with(TWO_TASKS)).unwrap());
+    assert!(old.iter().all(|t| t.repo.is_none()));
+}
+
+#[test]
+fn the_planners_hook_checks_repos_against_the_run_folders_repos_json() {
+    let stage = Stage::planner("bridge_plan_repos", true);
+    stage.hook("UserPromptSubmit", prompt("p-1"));
+    let spans = r#"{"tasks": [
+      {"id": "pr1", "title": "API", "summary": "a", "repo": "backend"},
+      {"id": "pr2", "title": "Client", "summary": "b", "dependsOn": ["pr1"], "repo": "engine"}
+    ]}"#;
+    // Before the app wrote repos.json (a run folder from before L1): no repos.
+    let reason = denial(&stage.hook("PreToolUse", exit_plan_mode("p-1", &plan_with(spans))));
+    assert!(reason.contains("`tasks[0].repo` \"backend\" is not a repo: none are set up"), "{reason}");
+    assert_eq!(launch::read_run_tasks(&stage.runs, RUN), None);
+    // The app writes repos.json at launch; the bridge only reads it.
+    let entry = |name: &str| crate::store::RepoEntry { name: name.into(), folder: format!("/src/{name}") };
+    launch::write_run_repos(&stage.run_dir, &[entry("backend")]).unwrap();
+    let reason = denial(&stage.hook("PreToolUse", exit_plan_mode("p-1", &plan_with(spans))));
+    assert!(reason.contains("`tasks[1].repo` \"engine\" is not one of the repos in Settings › Repos (backend)"), "{reason}");
+    launch::write_run_repos(&stage.run_dir, &[entry("backend"), entry("engine")]).unwrap();
+    let reason = denial(&stage.hook("PreToolUse", exit_plan_mode("p-1", &plan_with(spans))));
+    assert_eq!(reason, schema::PLAN_RECEIVED);
+    let tasks = launch::read_run_tasks(&stage.runs, RUN).expect("tasks.json");
+    let named: Vec<Option<&str>> = tasks.tasks.iter().map(|t| t.repo.as_deref()).collect();
+    assert_eq!(named, [Some("backend"), Some("engine")]);
+    let file: Value = serde_json::from_str(&std::fs::read_to_string(stage.run_dir.join("repos.json")).unwrap()).unwrap();
+    assert_eq!(file["repos"][1], json!({ "name": "engine", "folder": "/src/engine" }));
+}
+
+#[test]
+fn the_planners_prompt_lists_the_repos_only_when_there_are_some() {
+    let entry = |name: &str, folder: &str| crate::store::RepoEntry { name: name.into(), folder: folder.into() };
+    let repos = [entry("backend", "/src/koneksi-backend"), entry("engine", "/src/koneksi-engine")];
+    let planner = schema::stage_instructions(ResultKind::Planner, &repos);
+    assert!(planner.starts_with(&schema::result_instructions(ResultKind::Planner)));
+    assert!(planner.contains("- `backend`: /src/koneksi-backend\n- `engine`: /src/koneksi-engine"), "{planner}");
+    assert!(planner.contains("add `repo` to each task") && planner.contains("\"repo\": \"backend\""), "{planner}");
+    assert_eq!(schema::stage_instructions(ResultKind::Planner, &[]), schema::result_instructions(ResultKind::Planner));
+    for kind in [ResultKind::Reviewer, ResultKind::Implementer] {
+        assert_eq!(schema::stage_instructions(kind, &repos), schema::result_instructions(kind), "{kind:?}");
+    }
+}

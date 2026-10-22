@@ -265,6 +265,12 @@ pub trait Host: Send + Sync + 'static {
     fn stopped(&self, run_id: &str, tab_id: Option<&str>, reason: StopReason, summary: &str);
     /// Something you should hear about (the run is complete).
     fn notice(&self, run_id: &str, title: &str, body: &str);
+    /// Settings › Repos now (L1): a Planner's prompt lists them, the run
+    /// folder's `repos.json` gets them, and a lane is started only while its
+    /// repo is still there. None by default (a host with no settings).
+    fn repos(&self) -> Vec<crate::store::RepoEntry> {
+        Vec::new()
+    }
 }
 
 type Senders = HashMap<String, Sender<ActorMsg>>;

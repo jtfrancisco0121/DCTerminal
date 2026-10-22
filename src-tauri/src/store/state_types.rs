@@ -353,6 +353,10 @@ pub struct RunLane {
     pub handoffs: HashMap<String, StageHandoff>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub verdicts: Vec<StageVerdict>,
+    /// The repo (a Settings › Repos name) the lane's worktree was made in
+    /// (L1). `None`: the run's own folder, as before L1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
 }
 
 impl PipelineRun {

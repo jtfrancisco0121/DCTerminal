@@ -52,8 +52,10 @@ pub mod testing {
     };
     pub use crate::store::{PipelineRun, RunStatus, StopReason};
     pub use crate::bridge::launch::{
-        bridged_command, launch_flags, prepare_stage, read_run_tasks, read_stage_turn, runs_root, BridgePlan, BridgeTag,
+        bridged_command, launch_flags, prepare_stage, read_run_tasks, read_stage_turn, runs_root, write_run_repos,
+        BridgePlan, BridgeTag,
     };
+    pub use crate::commands::pipeline::{fan_out, LaneInput};
     pub use crate::bridge::watch::{drain_inbox, InboxEvent};
     pub use crate::provider::claude::claude_terminal_args;
     pub use crate::provider::{ProgramArgs, TerminalKind, TerminalLaunch};
@@ -62,7 +64,7 @@ pub mod testing {
     pub use crate::run_actor::{ActorMsg, Host, RunActors, StageLaunch, UserAction, UserOutcome};
     pub use crate::pipelines::{GateDef, GateResult};
     pub use crate::roles::Role;
-    pub use crate::store::{bundled_seed, AppStateFile, ChainRef, StateStore, MAIN_WINDOW_ID};
+    pub use crate::store::{bundled_seed, AppStateFile, ChainRef, RepoEntry, StateStore, MAIN_WINDOW_ID};
 }
 #[cfg(test)]
 mod coverage_tests;
