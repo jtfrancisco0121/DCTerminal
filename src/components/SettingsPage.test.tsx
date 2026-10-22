@@ -142,6 +142,7 @@ describe("SettingsPage categories (U6)", () => {
     expect(within(nav).getAllByRole("button").map((button) => button.textContent)).toEqual([
       "Roles",
       "Pipelines",
+      "Repos",
       "Providers",
       "Models",
       "Appearance",
