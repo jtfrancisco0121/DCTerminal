@@ -4420,6 +4420,53 @@ mark.search-hit-current {
   margin: 0 0 0.3rem;
 }
 
+/* C3: ClickUp updates on the chain overview. */
+.clickup-updates h3 {
+  margin: 0 0 0.3rem;
+}
+
+.clickup-update-maps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.pipeline-intake ul.clickup-update-rows {
+  list-style: none;
+  padding-left: 0;
+}
+
+.clickup-update {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--border);
+}
+
+.clickup-update-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.clickup-update-head .secondary-button {
+  margin-left: auto;
+}
+
+.clickup-update textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: var(--text-sm);
+}
+
+.clickup-update-skipped {
+  opacity: 0.6;
+}
+
 .eagle-toggle {
   display: inline-flex;
   align-items: center;

@@ -533,6 +533,21 @@ pub struct ClickUpWorkspace {
 pub struct ClickUpSettings {
     #[serde(default)]
     pub accounts: BTreeMap<String, ClickUpWorkspace>,
+    /// C3: the status a verified ticket moves to, per Claude account id,
+    /// then per ClickUp list id. Set once per list from its real statuses.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub status_maps: BTreeMap<String, BTreeMap<String, ClickUpStatusMap>>,
+}
+
+/// One list's write-back mapping (C3): "verified" → `verified`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClickUpStatusMap {
+    /// ClickUp's own spelling of the status, e.g. `QA PASSED`.
+    pub verified: String,
+    /// The list's name when it was mapped, to show.
+    #[serde(default)]
+    pub list_name: String,
 }
 
 /// Other services the app talks to (Settings > Integrations).
@@ -861,6 +876,47 @@ impl SettingsStore {
             None => {
                 if accounts.remove(account_id).is_none() {
                     return Ok(());
+                }
+            }
+        }
+        self.save()
+    }
+
+    /// C3: `account_id`'s list mappings, by list id.
+    pub fn clickup_status_maps(&self, account_id: &str) -> BTreeMap<String, ClickUpStatusMap> {
+        self.data
+            .integrations
+            .clickup
+            .status_maps
+            .get(account_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// C3: saves (or with `None`, forgets) the "verified" status of
+    /// `account_id`'s list `list_id`.
+    pub fn set_clickup_status_map(
+        &mut self,
+        account_id: &str,
+        list_id: &str,
+        map: Option<ClickUpStatusMap>,
+    ) -> Result<(), String> {
+        let maps = &mut self.data.integrations.clickup.status_maps;
+        match map {
+            Some(map) => {
+                maps.entry(account_id.to_string())
+                    .or_default()
+                    .insert(list_id.to_string(), map);
+            }
+            None => {
+                let Some(lists) = maps.get_mut(account_id) else {
+                    return Ok(());
+                };
+                if lists.remove(list_id).is_none() {
+                    return Ok(());
+                }
+                if lists.is_empty() {
+                    maps.remove(account_id);
                 }
             }
         }
@@ -1230,6 +1286,42 @@ mod tests {
         store.set_clickup_workspace("default", None).unwrap();
         store.set_clickup_workspace("default", None).unwrap();
         assert_eq!(SettingsStore::open(&dir).unwrap().clickup_workspace("default"), None);
+    }
+
+    #[test]
+    fn clickup_status_maps_are_per_account_and_list_and_old_files_load_without_them() {
+        // C3: files from before write-back have no statusMaps.
+        let legacy: SettingsFile =
+            serde_json::from_str(include_str!("../../../fixtures/state/legacy-settings.json")).unwrap();
+        assert!(legacy.integrations.clickup.status_maps.is_empty());
+        let c2: SettingsFile = serde_json::from_str(
+            r#"{"schemaVersion":1,"integrations":{"clickup":{"accounts":{"default":{"teamId":"9"}}}}}"#,
+        )
+        .unwrap();
+        assert!(c2.integrations.clickup.status_maps.is_empty());
+        assert_eq!(c2.integrations.clickup.accounts["default"].team_id, "9");
+
+        let dir = crate::test_support::TempDir::new("dcterminal_clickup_status_maps");
+        let mut store = SettingsStore::open(dir.path()).unwrap();
+        let qa = ClickUpStatusMap {
+            verified: "QA PASSED".into(),
+            list_name: "QA 1.2.8".into(),
+        };
+        store.set_clickup_status_map("default", "901800112233", Some(qa.clone())).unwrap();
+        let again = SettingsStore::open(dir.path()).unwrap();
+        assert_eq!(again.clickup_status_maps("default").get("901800112233"), Some(&qa));
+        assert!(again.clickup_status_maps("personal").is_empty(), "per account");
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(
+            json["integrations"]["clickup"]["statusMaps"]["default"]["901800112233"],
+            serde_json::json!({ "verified": "QA PASSED", "listName": "QA 1.2.8" })
+        );
+        store.set_clickup_status_map("default", "901800112233", None).unwrap();
+        store.set_clickup_status_map("default", "901800112233", None).unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
+        assert!(json["integrations"]["clickup"].get("statusMaps").is_none());
     }
 
     #[test]

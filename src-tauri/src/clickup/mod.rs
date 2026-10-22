@@ -1,7 +1,8 @@
-//! Read-only ClickUp client. The app talks to ClickUp itself, never a stage's
+//! The ClickUp client. The app talks to ClickUp itself, never a stage's
 //! `claude` (plan decision E1): a token handed to a stage would end up in its
 //! prompt, transcript and session log, and an MCP server's write tools could
-//! not be blocked.
+//! not be blocked. It reads, and (C3) writes exactly two things, each one
+//! ticked by you: a comment on a task and a task's status (E4).
 //!
 //! Each Claude account has its own token and workspace (work and personal),
 //! and a window only ever uses its own account's.
@@ -13,20 +14,23 @@
 //! store, a log line, an error string, an IPC reply or a child process.
 //!
 //! - `secret`: the keychain behind [`SecretStore`], and the env override.
-//! - `transport`: one HTTPS GET with a deadline. Tests feed recorded replies.
-//! - `client`: the read calls, with at most 4 in flight and the rate limit.
+//! - `transport`: one HTTPS call with a deadline. Tests feed recorded replies.
+//! - `client`: the read calls and the two writes, with at most 4 in flight
+//!   and the rate limit.
 //! - `types`: ClickUp's JSON, as far as intake needs it.
 //! - `intake`: tickets in, the run's `tickets.json` out (C2).
+//! - `writeback`: proposals out, the run's `writeback.json` (C3).
 
 pub(crate) mod client;
 pub mod intake;
 pub mod secret;
 pub mod transport;
 pub mod types;
+pub mod writeback;
 
 pub use client::{ClickUp, ClickUpError, Clock, Gate, SystemClock, TaskRef, MAX_IN_FLIGHT};
 pub use secret::{KeychainStore, SecretStore, TokenSource};
-pub use transport::{NoReply, Reply, Transport, UreqTransport};
+pub use transport::{NoReply, Reply, Transport, UreqTransport, WriteMethod};
 
 use std::fmt;
 
