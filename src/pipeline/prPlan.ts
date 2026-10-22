@@ -17,6 +17,8 @@ export type PlannedPr = {
   manual: boolean;
   /** What it covers (from the Planner's tasks). */
   summary?: string;
+  /** L1: the Settings › Repos name its worktree is made in; absent for the run's own folder. */
+  repo?: string;
 };
 
 const HEADER = /^[ \t]*(?:[-*+]|\d+[.)])?[ \t]*`?\**[ \t]*PR[ \t]*(\d+)\**[ \t]*(?:[—–-]+|:)[ \t]*([^`:\n]*)/i;
@@ -92,6 +94,7 @@ export function lanesFromTasks(tasks: readonly PlannedTask[]): PlannedPr[] {
       dependsOn: [...task.dependsOn],
       manual: task.manual,
       summary: task.summary,
+      ...(task.repo?.trim() ? { repo: task.repo.trim() } : {}),
     })),
   );
 }
@@ -101,19 +104,30 @@ export function laneBranch(runId: string, laneId: string): string {
   return `${runId}-${laneId}`.replace(/[^A-Za-z0-9._/-]+/g, "-").replace(/^-+/, "");
 }
 
-/** The lane's own instructions, added to the Implementer's context. */
+/**
+ * The lane's own instructions, added to the Implementer's context. A lane
+ * in a repo (L1) says which; a dependency in another repo has no branch
+ * here to start from, so the note says where it was built instead.
+ */
 export function laneNote(lane: PlannedPr, all: readonly PlannedPr[], runId: string): string {
   const others = all.filter((pr) => pr.id !== lane.id).map((pr) => pr.title);
+  const repoOf = (pr: PlannedPr) => pr.repo?.trim() || null;
   const deps = all.filter((pr) => lane.dependsOn.includes(pr.id));
-  const branches = deps.map((pr) => `\`${laneBranch(runId, pr.id)}\``);
+  const here = deps.filter((pr) => repoOf(pr) === repoOf(lane));
+  const elsewhere = deps.filter((pr) => repoOf(pr) !== repoOf(lane));
+  const branches = here.map((pr) => `\`${laneBranch(runId, pr.id)}\``);
+  const where = (pr: PlannedPr) => (repoOf(pr) ? `the ${repoOf(pr)} repo` : "this run's own folder");
   return [
-    `This tab implements only ${lane.title}, in its own git worktree on branch \`${laneBranch(runId, lane.id)}\`.`,
+    `This tab implements only ${lane.title}, in its own git worktree on branch \`${laneBranch(runId, lane.id)}\`${repoOf(lane) ? ` of the ${repoOf(lane)} repo` : ""}.`,
     lane.summary?.trim() ? `Its scope: ${lane.summary.trim()}` : "",
     others.length
       ? `${others.join("; ")} ${others.length === 1 ? "is" : "are"} built in other tabs at the same time: do not implement ${others.length === 1 ? "it" : "them"} here.`
       : "",
-    deps.length
-      ? `It builds on ${deps.map((pr) => pr.title).join("; ")}, already approved: start from branch ${branches[0]}${branches.length > 1 ? ` and merge in ${branches.slice(1).join(", ")}` : ""} as the plan says.`
+    here.length
+      ? `It builds on ${here.map((pr) => pr.title).join("; ")}, already approved: start from branch ${branches[0]}${branches.length > 1 ? ` and merge in ${branches.slice(1).join(", ")}` : ""} as the plan says.`
+      : "",
+    elsewhere.length
+      ? `It builds on ${elsewhere.map((pr) => `${pr.title} (in ${where(pr)}, branch \`${laneBranch(runId, pr.id)}\`)`).join("; ")}, already approved: build against what ${elsewhere.length === 1 ? "it adds; its branch is" : "they add; their branches are"} not in this worktree's repo, so do not merge ${elsewhere.length === 1 ? "it" : "them"} here.`
       : "",
     "Open exactly one draft pull request for it, and report only that one under HANDOFF: Pull requests.",
   ]

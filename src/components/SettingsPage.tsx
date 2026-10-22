@@ -28,6 +28,7 @@ import { APP_VERSION } from "../workspaceView";
 import { errorText } from "./InlineNotice";
 import { RoleEditor } from "./RoleEditor";
 import { PipelinesSettings } from "./PipelinesSettings";
+import { ReposSettings } from "./ReposSettings";
 import { IntegrationsSettings } from "./IntegrationsSettings";
 import { useConfirm } from "./confirm";
 
@@ -71,6 +72,7 @@ type Props = {
 export const SETTINGS_CATEGORIES = [
   "Roles",
   "Pipelines",
+  "Repos",
   "Providers",
   "Integrations",
   "Models",
@@ -236,6 +238,7 @@ export function SettingsPage({
         <div className="settings-content">
           {category === "Roles" && <RoleEditor roles={roles} onRefreshRoles={onRefreshRoles} onDirtyChange={setRolesDirty} />}
           {category === "Pipelines" && <PipelinesSettings onSaved={onPipelinesChanged} onDirtyChange={setPipelinesDirty} />}
+          {category === "Repos" && <ReposSettings />}
           {category === "Providers" &&
             (providers ? (
               <ProvidersSettingsSection providers={providers} />

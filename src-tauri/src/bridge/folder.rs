@@ -1,7 +1,7 @@
 //! The run folder (`<app data>/runs/<runId>/`) and the files in it. The app
-//! writes `run.json`, `stages/<key>/stage.json` and `stages/<key>/mode` when
-//! it launches a stage, and `tickets.json` when a run starts from ClickUp
-//! tickets (C2), and the run actor writes each review round it sends
+//! writes `run.json`, `repos.json` (L1), `stages/<key>/stage.json` and
+//! `stages/<key>/mode` when it launches a stage, and `tickets.json` when a run
+//! starts from ClickUp tickets (C2), and the run actor writes each review round it sends
 //! back as `findings-<stage>-r<N>.json` (V4); the bridge writes the rest,
 //! including the run-level hand-off files: the Planner's `plan.md` and
 //! `tasks.json`, and each Implementer's `prs.json` (`prs-<lane>.json` in a lane). Every write is
@@ -34,6 +34,10 @@ pub const TASKS_FILE: &str = "tasks.json";
 /// The ClickUp intake snapshot (C2). The app writes it before the first
 /// stage starts and on Pull again; nothing else does.
 pub const TICKETS_FILE: &str = "tickets.json";
+/// The repos of Settings › Repos when a stage launched (L1). The bridge is a
+/// process of its own that sees only the run folder, so the app writes the
+/// names here for the Planner's tasks check; the bridge never writes it.
+pub const REPOS_FILE: &str = "repos.json";
 /// `bridge.log` stops growing past this; the bridge never needs more to be debugged.
 const MAX_LOG_BYTES: u64 = 256 * 1024;
 
@@ -318,6 +322,10 @@ pub struct PlannedTask {
     #[serde(default)]
     pub manual: bool,
     pub summary: String,
+    /// The repo (a name from Settings › Repos) the task's lane is made in
+    /// (L1). Left out: the run's own folder, as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
 }
 
 /// `tasks.json`: the tasks of the Planner's latest plan. Fan-out reads it
@@ -332,6 +340,23 @@ pub struct RunTasks {
     pub turn: String,
     pub at: String,
     pub tasks: Vec<PlannedTask>,
+}
+
+/// One repo of `repos.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunRepo {
+    pub name: String,
+    pub folder: String,
+}
+
+/// `repos.json`: Settings › Repos as the app saw it at the latest launch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunRepos {
+    pub schema: u32,
+    #[serde(default)]
+    pub repos: Vec<RunRepo>,
 }
 
 /// `prs.json` (`prs-<lane>.json`): what an Implementer reported last.
@@ -519,6 +544,12 @@ impl StageDir {
         write_json(&self.run_dir.join(TASKS_FILE), tasks)
     }
 
+    /// The repo names the Planner's tasks may use (`repos.json`); none when
+    /// the app wrote no file (a run folder from before L1).
+    pub fn repo_names(&self) -> Vec<String> {
+        read_repos(&self.run_dir).into_iter().map(|repo| repo.name).collect()
+    }
+
     /// An Implementer's pull requests at the run's top.
     pub fn write_prs(&self, prs: &RunPrs) -> io::Result<()> {
         write_json(&self.run_dir.join(prs_file_name(prs.lane.as_deref())), prs)
@@ -654,6 +685,24 @@ pub(crate) fn stage_dir_path(run_dir: &Path, stage_key: &str) -> Option<PathBuf>
 pub(crate) fn read_stage(stage_dir: &Path) -> Option<(StageInfo, Option<TurnState>)> {
     let info = read_json::<StageInfo>(&stage_dir.join(STAGE_FILE))?;
     Some((info, read_json(&stage_dir.join(TURN_FILE))))
+}
+
+/// The app's side of `repos.json`: Settings › Repos now.
+pub(crate) fn write_repos(run_dir: &Path, repos: &[RunRepo]) -> io::Result<()> {
+    std::fs::create_dir_all(run_dir)?;
+    let file = RunRepos {
+        schema: SCHEMA,
+        repos: repos.to_vec(),
+    };
+    if read_json::<RunRepos>(&run_dir.join(REPOS_FILE)).as_ref() == Some(&file) {
+        return Ok(());
+    }
+    write_json(&run_dir.join(REPOS_FILE), &file)
+}
+
+/// The run's `repos.json`; none when it has no such file.
+pub(crate) fn read_repos(run_dir: &Path) -> Vec<RunRepo> {
+    read_json::<RunRepos>(&run_dir.join(REPOS_FILE)).map(|file| file.repos).unwrap_or_default()
 }
 
 /// The run's `tasks.json`, when its Planner handed a plan over.

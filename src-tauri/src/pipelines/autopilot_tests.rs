@@ -371,6 +371,7 @@ fn lane(id: &str, depends_on: &[&str], status: &str, round: u32) -> crate::store
         tab_ids: HashMap::new(),
         handoffs: HashMap::new(),
         verdicts: Vec::new(),
+        repo: None,
     }
 }
 

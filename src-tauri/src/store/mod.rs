@@ -21,6 +21,7 @@ mod json_io;
 mod pipelines_store;
 pub(crate) mod preview_tabs;
 mod projects_store;
+pub(crate) mod repos_settings;
 #[cfg(test)]
 mod provider_tests;
 mod prompt_store;
@@ -49,6 +50,7 @@ pub use roles_store::{
     add_missing_builtin_roles, bundled_seed, docs_roles_dir, seed_output_path, write_seed_file,
     RolesStore,
 };
+pub use repos_settings::RepoEntry;
 pub use scratch_store::ScratchStore;
 pub use settings_store::{
     first_run_needed, get_notification_settings, get_ui_settings, set_notification_settings,

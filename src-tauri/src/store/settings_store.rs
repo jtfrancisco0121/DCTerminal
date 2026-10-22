@@ -561,6 +561,9 @@ pub struct SettingsFile {
     pub setup: SetupSettings,
     #[serde(default)]
     pub ui: UiSettings,
+    /// Settings › Repos (L1): named repos a plan's lanes can be made in.
+    #[serde(default, deserialize_with = "super::repos_settings::deserialize_repos")]
+    pub repos: Vec<super::repos_settings::RepoEntry>,
     #[serde(default)]
     pub integrations: IntegrationsSettings,
 }
@@ -586,6 +589,7 @@ impl Default for SettingsFile {
             notifications: NotificationSettings::default(),
             setup: SetupSettings::default(),
             ui: UiSettings::default(),
+            repos: Vec::new(),
             integrations: IntegrationsSettings::default(),
         }
     }

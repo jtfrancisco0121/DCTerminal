@@ -247,7 +247,8 @@ fn on_plan(dir: &StageDir, payload: &Value) -> Result<Option<Value>, String> {
         .pointer("/tool_input/plan")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let tasks = match schema::planner_tasks(plan) {
+    // A task's `repo` must be one the app wrote into `repos.json` (L1).
+    let tasks = match schema::planner_tasks_with(plan, &dir.repo_names()) {
         Ok(tasks) => tasks,
         Err(problems) => return Ok(Some(deny(&schema::plan_rejected_message(&problems)))),
     };

@@ -8,7 +8,7 @@ use super::{lock, ActorMsg, Host, Prefill, StageLaunch, UserAction, UserOutcome}
 use crate::bridge::folder::{read_json, RunFindings, RunPrs, TASKS_FILE};
 use crate::bridge::launch::{
     clear_stage_turn, launch_flags, plan_for, prepare_stage, read_stage_turn, relaunch_flags, restore_stage_turn,
-    set_stage_mode, BridgeFlags, BridgePlan,
+    set_stage_mode, write_run_repos, BridgeFlags, BridgePlan,
 };
 use crate::bridge::{BridgeTag, BridgeTurn, StageMode, TurnOutcome};
 use crate::commands::pipeline::{approve, note, set_lane_status, turn_finished};
@@ -1025,9 +1025,11 @@ impl<H: Host> Actor<H> {
         };
         let mut values = open.values.clone();
         values.insert("cwd".to_string(), cwd.display().to_string());
+        // Settings › Repos (L1), for a Planner's prompt and `repos.json`.
+        let repos = self.host.repos();
         let instructions = plan
             .as_ref()
-            .map(|plan| crate::bridge::schema::result_instructions(plan.kind))
+            .map(|plan| crate::bridge::schema::stage_instructions(plan.kind, &repos))
             .unwrap_or_default();
         let preview = crate::template::merge_role_prompt_with(&role, &values, &instructions);
         if !preview.errors.is_empty() {
@@ -1084,6 +1086,7 @@ impl<H: Host> Actor<H> {
                     .bridge_program()
                     .ok_or("DCTerminal could not find its own executable for the pipeline bridge.")?;
                 let run_dir = prepare_stage(&self.host.runs_root(), plan, &tab_id)?;
+                write_run_repos(&run_dir, &repos)?;
                 Some(launch_flags(plan.kind, &program, &run_dir, &plan.run_id, &plan.stage_key, &tab_id))
             }
             None => None,
@@ -1112,7 +1115,11 @@ impl<H: Host> Actor<H> {
 
     /// Start a waiting lane's stage in the tab fan-out prepared for it.
     /// `Ok(None)` when it was not waiting any more, or the run left engine 2.
+    /// A lane in a repo (L1) starts only while that repo is still in
+    /// Settings › Repos: removed since the plan was accepted, it is an
+    /// error naming the repo, and no folder is guessed.
     fn start_lane(&mut self, lane_id: &str) -> Result<Option<String>, String> {
+        let repos = self.host.repos();
         let (tab, role_id, title) = {
             let mut store = lock(self.host.store());
             let run = store.pipeline_run_by_id(&self.run_id).ok_or("the run is gone")?;
@@ -1121,6 +1128,14 @@ impl<H: Host> Actor<H> {
             // (manual, V2a): this lane waits for you to start it.
             if lane.status != "waiting" || run.engine < crate::bridge::launch::ENGINE_V2 {
                 return Ok(None);
+            }
+            if let Some(repo) = lane.repo.as_deref() {
+                if crate::store::repos_settings::find_repo(&repos, repo).is_none() {
+                    return Err(format!(
+                        "{} is made in the repo \"{repo}\", which is no longer in Settings › Repos. Add {repo} back there, then start the lane from the overview.",
+                        lane.title
+                    ));
+                }
             }
             let def = crate::pipelines::find(&run.kind).ok_or_else(|| format!("unknown pipeline {}", run.kind))?;
             let role_id = run
@@ -1831,8 +1846,10 @@ pub(super) fn github_pr_urls(text: &str) -> Vec<String> {
 fn lane_note(run_dir: Option<&std::path::Path>, lane: &str) -> Option<String> {
     let tasks: crate::bridge::RunTasks = read_json(&run_dir?.join(TASKS_FILE))?;
     let task = tasks.tasks.iter().find(|t| t.id == lane)?;
+    // L1: a lane made in another repo says which, so its stages know.
+    let repo = task.repo.as_deref().map(|repo| format!(" in the {repo} repo")).unwrap_or_default();
     Some(format!(
-        "This run ships as several pull requests. Implement only {} ({}): {}",
+        "This run ships as several pull requests. Implement only {} ({}){repo}: {}",
         task.id.to_uppercase(),
         task.title,
         task.summary

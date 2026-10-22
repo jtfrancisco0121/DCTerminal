@@ -275,6 +275,7 @@ impl Fixture {
             depends_on: vec![],
             manual: false,
             summary: "Refresh expired tokens.".into(),
+            repo: None,
         }];
         let dir = self.stage_dir(&self.planner);
         dir.write_plan(
@@ -1770,7 +1771,7 @@ fn a_turn_another_lane_finished_while_a_round_was_held_is_acted_on_at_hand_back(
         let mut store = fx.host.store.lock().unwrap();
         let lanes = ["pr1", "pr2"]
             .iter()
-            .map(|id| crate::commands::pipeline::LaneInput { id: id.to_string(), title: id.to_uppercase(), depends_on: vec![] })
+            .map(|id| crate::commands::pipeline::LaneInput { id: id.to_string(), title: id.to_uppercase(), depends_on: vec![], repo: None })
             .collect();
         crate::commands::pipeline::fan_out(&mut store, RUN, "implementer", lanes).unwrap();
         let run = store.pipeline_run_by_id_mut(RUN).unwrap();
@@ -1897,6 +1898,7 @@ fn lanes_after_a_gate_refusal_are_left_waiting_without_a_carry_out_failed_stop()
             id: id.into(),
             title: format!("PR {id}"),
             depends_on: deps.iter().map(|d| d.to_string()).collect(),
+            repo: None,
         };
         crate::commands::pipeline::fan_out(&mut store, RUN, "implementer", vec![lane("pr1", &[]), lane("pr2", &["pr1"]), lane("pr3", &["pr1"])])
             .unwrap();
@@ -1920,5 +1922,46 @@ fn lanes_after_a_gate_refusal_are_left_waiting_without_a_carry_out_failed_stop()
         assert_ne!(run.stop_reason, Some(StopReason::CarryOutFailed));
         let waiting = run.lanes.iter().filter(|l| l.status == "waiting").count();
         assert_eq!(waiting, 1, "the other lane waits for you: {:?}", run.lanes);
+    });
+}
+
+/// L1: a lane made in a repo that was removed from Settings › Repos after
+/// the plan was accepted is not started in some other folder. When the lane
+/// it waits on is approved, the run stops with `carry_out_failed` and says
+/// which repo is gone.
+#[test]
+fn a_lane_whose_repo_left_settings_stops_the_run_naming_the_repo() {
+    let mut fx = Fixture::new("lane_repo_removed");
+    {
+        let mut store = fx.host.store.lock().unwrap();
+        let lane = |id: &str, deps: &[&str], repo: &str| crate::commands::pipeline::LaneInput {
+            id: id.into(),
+            title: format!("{} — {repo}", id.to_uppercase()),
+            depends_on: deps.iter().map(|d| d.to_string()).collect(),
+            repo: Some(repo.into()),
+        };
+        crate::commands::pipeline::fan_out(&mut store, RUN, "implementer", vec![lane("pr1", &[], "backend"), lane("pr2", &["pr1"], "engine")])
+            .unwrap();
+        let run = store.pipeline_run_by_id_mut(RUN).unwrap();
+        assert_eq!(run.lane("pr2").unwrap().repo.as_deref(), Some("engine"), "the lane keeps its repo");
+        run.stage = "pr_reviewer".into();
+        run.lane_mut("pr1").unwrap().stage = "pr_reviewer".into();
+        store.save().unwrap();
+    }
+    let reviewer = fx.bridged_tab("role_pr_reviewer", "pr_reviewer", 4, Some("pr1"), ResultKind::Reviewer);
+    // The test host has no repos: `engine` is gone from Settings.
+    assert!(fx.host.repos().is_empty());
+    let launches = fx.launches().len();
+    let turn = fx.end_turn(&reviewer, "r-1", review("APPROVED", json!([])), "Approved.");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    assert_eq!(fx.launches().len(), launches, "PR2 is not opened anywhere");
+    let stops = fx.stops();
+    let (reason, summary) = stops.last().expect("the run stopped");
+    assert_eq!(*reason, StopReason::CarryOutFailed);
+    assert!(summary.contains("the repo \"engine\", which is no longer in Settings › Repos"), "{summary}");
+    fx.run(|run| {
+        assert_eq!(run.stop_reason, Some(StopReason::CarryOutFailed));
+        assert_eq!(run.lane("pr1").unwrap().status, "approved");
+        assert_eq!(run.lane("pr2").unwrap().status, "waiting", "left for you to start once the repo is back");
     });
 }

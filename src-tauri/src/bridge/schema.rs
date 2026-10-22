@@ -6,7 +6,8 @@
 //!
 //! The Planner has no tool: its tasks are a fenced JSON block inside the plan
 //! it hands to ExitPlanMode (D11), checked by [`planner_tasks`] with the same
-//! every-problem-at-once rule.
+//! every-problem-at-once rule. A task may name a `repo` from Settings ›
+//! Repos (L1); the names come from the run folder's `repos.json`.
 
 use super::folder::{PlannedTask, ResultKind, SCHEMA};
 use serde_json::{json, Map, Value};
@@ -35,7 +36,7 @@ const IMPLEMENTER_FIELDS: [&str; 5] = ["schema", "prs", "summary", "checks", "bl
 const PR_FIELDS: [&str; 4] = ["url", "branch", "title", "lane"];
 const CHECK_FIELDS: [&str; 2] = ["command", "passed"];
 const TASKS_FIELDS: [&str; 2] = ["schema", "tasks"];
-const TASK_FIELDS: [&str; 5] = ["id", "title", "dependsOn", "manual", "summary"];
+const TASK_FIELDS: [&str; 6] = ["id", "title", "dependsOn", "manual", "summary", "repo"];
 /// An Implementer's summary and a task's summary may be a paragraph or two.
 const MAX_LONG_TEXT_CHARS: usize = 4000;
 const MAX_CHECKS: usize = 50;
@@ -385,8 +386,15 @@ fn fenced_blocks(text: &str) -> Vec<(String, String)> {
 
 /// The tasks of the plan Claude handed to ExitPlanMode: its last fenced
 /// JSON block holding `tasks` (plan "Result schemas"). `Err` names each
-/// problem, for the deny reason that sends Claude back to fix it.
+/// problem, for the deny reason that sends Claude back to fix it. With no
+/// repos set up, a task that names a `repo` is a problem.
 pub fn planner_tasks(plan: &str) -> Result<Vec<PlannedTask>, Vec<String>> {
+    planner_tasks_with(plan, &[])
+}
+
+/// [`planner_tasks`], where a task's `repo` must be one of `repos` (the
+/// names in Settings › Repos, any case; kept as Settings spells it).
+pub fn planner_tasks_with(plan: &str, repos: &[String]) -> Result<Vec<PlannedTask>, Vec<String>> {
     if plan.trim().is_empty() {
         return Err(vec!["the plan is empty".to_string()]);
     }
@@ -412,10 +420,10 @@ pub fn planner_tasks(plan: &str) -> Result<Vec<PlannedTask>, Vec<String>> {
         ));
         return Err(problems);
     };
-    check_tasks(&value)
+    check_tasks(&value, repos)
 }
 
-fn check_tasks(value: &Value) -> Result<Vec<PlannedTask>, Vec<String>> {
+fn check_tasks(value: &Value, repos: &[String]) -> Result<Vec<PlannedTask>, Vec<String>> {
     let Some(object) = value.as_object() else {
         return Err(vec!["the tasks block must be a JSON object with `tasks`".to_string()]);
     };
@@ -443,7 +451,7 @@ fn check_tasks(value: &Value) -> Result<Vec<PlannedTask>, Vec<String>> {
     for (index, item) in items.iter().enumerate() {
         let at = format!("tasks[{index}]");
         let Some(task) = item.as_object() else {
-            problems.push(format!("`{at}` must be an object with `id`, `title`, `dependsOn`, `manual` and `summary`"));
+            problems.push(format!("`{at}` must be an object with `id`, `title`, `dependsOn`, `manual` and `summary` (and `repo` when the plan spans repos)"));
             continue;
         };
         let before = problems.len();
@@ -481,6 +489,7 @@ fn check_tasks(value: &Value) -> Result<Vec<PlannedTask>, Vec<String>> {
                 false
             }
         };
+        let repo = task_repo(task.get("repo"), &at, repos, &mut problems);
         if let Some(id) = id.clone().filter(|id| valid_task_id(id)) {
             linked.push((id, depends_on.clone()));
         }
@@ -491,6 +500,7 @@ fn check_tasks(value: &Value) -> Result<Vec<PlannedTask>, Vec<String>> {
                 depends_on,
                 manual,
                 summary: summary.unwrap_or_default(),
+                repo,
             });
         }
     }
@@ -516,6 +526,34 @@ fn check_tasks(value: &Value) -> Result<Vec<PlannedTask>, Vec<String>> {
         return Err(problems);
     }
     Ok(tasks)
+}
+
+/// A task's `repo` (L1): left out, `null` or `""` for the run's own folder;
+/// else a name from Settings › Repos, in any case, returned as Settings
+/// spells it. A name that is not there lists the ones that are, so Claude
+/// fixes the plan in the same turn.
+fn task_repo(value: Option<&Value>, at: &str, repos: &[String], problems: &mut Vec<String>) -> Option<String> {
+    let name = match value {
+        None | Some(Value::Null) => return None,
+        Some(Value::String(text)) if text.trim().is_empty() => return None,
+        Some(Value::String(text)) => text.trim(),
+        Some(other) => {
+            problems.push(format!("`{at}.repo` must be a repo name such as \"backend\", not {other}"));
+            return None;
+        }
+    };
+    if let Some(known) = repos.iter().find(|repo| repo.eq_ignore_ascii_case(name)) {
+        return Some(known.clone());
+    }
+    problems.push(if repos.is_empty() {
+        format!("`{at}.repo` {name:?} is not a repo: none are set up in DCTerminal's Settings › Repos, so leave `repo` out and the task is built in this run's folder")
+    } else {
+        format!(
+            "`{at}.repo` {name:?} is not one of the repos in Settings › Repos ({}); leave it out for this run's own folder",
+            list(&repos.iter().map(String::as_str).collect::<Vec<_>>())
+        )
+    });
+    None
 }
 
 fn valid_task_id(id: &str) -> bool {
@@ -700,6 +738,29 @@ pub fn result_instructions(kind: ResultKind) -> String {
              If the tool answers with an error, fix each problem it names and call it again. Call it again after each later round too. Still end your reply with the HANDOFF sections."
         ),
     }
+}
+
+/// [`result_instructions`] for a stage about to launch, with Settings ›
+/// Repos (L1): a Planner is told which repos a plan can span, by name and
+/// folder, and to set `repo` on each task when its plan spans them. With no
+/// repos, or on any other stage, exactly [`result_instructions`].
+pub fn stage_instructions(kind: ResultKind, repos: &[crate::store::RepoEntry]) -> String {
+    let base = result_instructions(kind);
+    if kind != ResultKind::Planner || repos.is_empty() {
+        return base;
+    }
+    let lines: Vec<String> = repos.iter().map(|repo| format!("- `{}`: {}", repo.name, repo.folder)).collect();
+    format!(
+        "{base}\n\n\
+         ### Repos\n\n\
+         This run's own folder is the home repo. These repos are set up in DCTerminal (Settings › Repos):\n\n{}\n\n\
+         When the plan spans repos, add `repo` to each task with the name of the repo its pull request is made in \
+         (for example `\"repo\": \"{}\"`); each such task gets its own worktree in that repo. \
+         Leave `repo` out for a task in this run's own folder. A task that builds on one in another repo lists it in `dependsOn` as usual, \
+         so the backend's pull request is approved before its clients start.",
+        lines.join("\n"),
+        repos[0].name
+    )
 }
 
 /// The Stop hook's block reason. It names the exact tool and arguments: a

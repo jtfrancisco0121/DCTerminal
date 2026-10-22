@@ -4975,6 +4975,28 @@ mark.search-hit-current {
   font-size: var(--text-sm);
 }
 
+/* Settings > Repos (L1): one row per repo, its buttons at the end. */
+.repos-list {
+  list-style: none;
+  margin: 0.5rem 0;
+  padding: 0;
+}
+
+.repos-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.repos-list li code {
+  flex: 1 1 12rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .settings-inline-field {
   display: grid;
   grid-template-columns: 11rem minmax(0, 20rem);

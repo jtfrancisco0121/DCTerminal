@@ -413,6 +413,8 @@ export type RunLane = {
   tabIds: Record<string, string>;
   handoffs?: Record<string, { text: string; at: string }>;
   verdicts?: { roleId: string; round: number; verdict?: string | null; at: string }[];
+  /** L1: the Settings › Repos name its worktree was made in; absent for the run's own folder. */
+  repo?: string | null;
 };
 
 export type RunEvent = {
@@ -1314,7 +1316,7 @@ export async function pipelineRunGates(
 export async function pipelineFanOut(
   runId: string,
   stageId: string,
-  lanes: { id: string; title: string; dependsOn: string[] }[],
+  lanes: { id: string; title: string; dependsOn: string[]; repo?: string | null }[],
 ): Promise<void> {
   return invoke("pipeline_fan_out", { runId, stageId, lanes });
 }
@@ -1450,6 +1452,8 @@ export type PlannedTask = {
   /** A release, deploy or config change, not a pull request. */
   manual: boolean;
   summary: string;
+  /** L1: a Settings › Repos name; absent for the run's own folder. */
+  repo?: string | null;
 };
 
 /** The Planner's result: the tasks the bridge took from its ExitPlanMode plan. */
@@ -2335,6 +2339,22 @@ export async function setNotificationSettings(
   notifications: NotificationSettings,
 ): Promise<NotificationSettings> {
   return invoke<NotificationSettings>("set_notification_settings", { notifications });
+}
+
+/** Settings › Repos (L1): a named git repo a plan's lanes can be made in. */
+export type RepoEntry = {
+  /** `backend`: letters, digits, `-` and `_`. */
+  name: string;
+  folder: string;
+};
+
+export async function getReposSettings(): Promise<RepoEntry[]> {
+  return invoke<RepoEntry[]>("get_repos_settings");
+}
+
+/** Checked in Rust (names, and each folder a git repo); rejects with the first problem. */
+export async function setReposSettings(repos: RepoEntry[]): Promise<RepoEntry[]> {
+  return invoke<RepoEntry[]>("set_repos_settings", { repos });
 }
 
 /** U7/U8: colour theme, optional shortcut bar, dismissed one-time tips. */

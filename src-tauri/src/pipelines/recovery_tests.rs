@@ -214,6 +214,7 @@ fn lanes_reconcile_their_active_stage_and_parallel_reviewers_key_on_the_stage_ro
         ]),
         handoffs: HashMap::new(),
         verdicts: Vec::new(),
+        repo: None,
     };
     run.lanes = vec![lane("pr1", "approved", "a"), lane("pr2", "active", "b")];
     let tabs = current_stage_tabs(&def, &run);

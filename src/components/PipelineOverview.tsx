@@ -36,6 +36,7 @@ import {
 import type { TabRuntime } from "../liveTabs";
 import { pipelineName, type PipelineKind } from "../pipeline/stages";
 import {
+  laneLabel,
   overviewStages,
   pullPlannerText,
   pullPlanReviewText,
@@ -686,7 +687,7 @@ export function PipelineOverview({
           <ul>
             {plannedPrs.map((pr) => (
               <li key={pr.id}>
-                {pr.title}
+                {laneLabel(pr)}
                 {pr.dependsOn.length > 0 && (
                   <span className="hint"> · after {pr.dependsOn.map((d) => d.toUpperCase()).join(", ")}</span>
                 )}
@@ -713,7 +714,7 @@ export function PipelineOverview({
               return (
                 <li key={lane.id} className={`pipeline-pr-lane pipeline-pr-lane-${lane.status}`} aria-label={lane.title}>
                   <div className="pipeline-lane-head">
-                    <strong>{lane.title}</strong>
+                    <strong>{laneLabel(lane)}</strong>
                     <span className={`pipeline-lane-status pipeline-pr-lane-status`}>{lane.status}</span>
                   </div>
                   <p className="hint">

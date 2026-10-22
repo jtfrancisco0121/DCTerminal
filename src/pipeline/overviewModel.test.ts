@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { PipelineRun, TabSummary, TerminalSessionLog } from "../bridge";
 import type { TabRuntime } from "../liveTabs";
-import { laneStatus, overviewStages, pullPlannerText, pullPlanReviewText } from "./overviewModel";
+import { laneLabel, laneStatus, overviewStages, pullPlannerText, pullPlanReviewText } from "./overviewModel";
 import type { TerminalReader } from "./terminalText";
 
 const tab = (partial: Partial<TabSummary>): TabSummary => ({
@@ -27,6 +27,14 @@ const reader: TerminalReader = {
   selection: () => "",
   planFile: async () => "",
 };
+
+describe("laneLabel (L1)", () => {
+  it("adds the lane's repo when it has one", () => {
+    expect(laneLabel({ title: "PR2 — Client", repo: "engine" })).toBe("PR2 — Client · engine");
+    expect(laneLabel({ title: "PR1 — API", repo: null })).toBe("PR1 — API");
+    expect(laneLabel({ title: "PR1 — API" })).toBe("PR1 — API");
+  });
+});
 
 describe("laneStatus with a terminal state", () => {
   const t = tab({});
