@@ -65,6 +65,7 @@ fn finding(severity: &str, summary: &str) -> FindingReport {
     FindingReport {
         severity: severity.into(),
         summary: summary.into(),
+        area: None,
     }
 }
 

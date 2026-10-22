@@ -132,6 +132,49 @@ pub(super) fn decide_report(run: &mut PipelineRun, stage: &StageDef, report: &Ar
     Some(decision)
 }
 
+/// F2: the finding areas that name a document, which the Planner cannot
+/// edit in plan mode (`area` on a reviewer's finding).
+pub const DOCUMENT_AREAS: [&str; 3] = ["brief", "prd", "architecture"];
+
+/// F2: a plan review (a reviewer whose round goes back to a Planner) asking
+/// for changes with a blocking finding tagged `brief`, `prd` or
+/// `architecture` stops at a checkpoint instead of looping back: the
+/// Planner runs in plan mode and cannot edit those documents. `None` when
+/// no such finding is at or above `threshold`, or the stage reviews no plan.
+pub(super) fn document_findings_stop(
+    def: &PipelineDef,
+    run: &mut PipelineRun,
+    stage: &StageDef,
+    lane: Option<&str>,
+    findings: &[(Option<super::Severity>, &super::autopilot::FindingReport)],
+    threshold: super::Severity,
+) -> Option<Decision> {
+    let back = stage.loop_back.as_ref()?;
+    if def.stage(&back.to)?.kind() != StageKind::Planner {
+        return None;
+    }
+    let on_documents: Vec<String> = findings
+        .iter()
+        .filter(|(sev, _)| sev.is_none_or(|s| s.at_least(threshold)))
+        .filter_map(|(sev, finding)| {
+            let area = finding.area.as_deref().map(str::trim).filter(|area| DOCUMENT_AREAS.contains(area))?;
+            Some(format!("[{}] ({area}) {}", sev.map(super::Severity::label).unwrap_or("?"), finding.summary.trim()))
+        })
+        .collect();
+    if on_documents.is_empty() {
+        return None;
+    }
+    let reason = format!(
+        "{} found problems in this run's documents, which the Planner cannot edit in plan mode: {}. \
+         Fix the document (or ask its stage to), then send the plan back to the Planner or hand it on yourself.",
+        stage.title,
+        on_documents.join("; ")
+    );
+    let mut decision = stop(run, Some(stage), lane, StopReason::Checkpoint, reason);
+    decision.lane = lane.map(str::to_string);
+    Some(decision)
+}
+
 /// Your answer to `wait`, checked: trimmed, at most [`MAX_ANSWER_CHARS`],
 /// and not empty for open questions (a blocked stage may go on with no note).
 pub fn checked_answer(wait: &ArtifactWait, text: Option<&str>) -> Result<String, String> {

@@ -204,3 +204,155 @@ fn the_documents_reported_are_the_runs_hand_off_files_in_stage_order() {
     assert!(docs[0].1.ends_with("brief.md"));
     assert_eq!(docs[1].0, "Planner document (partial, not complete)");
 }
+
+// ---- F2: Eagle-Eye L, the document roles, and findings on a document ----
+
+fn eagle_l() -> PipelineDef {
+    crate::pipelines::find("eagle-eye-l").expect("Eagle-Eye L is built in")
+}
+
+/// Eagle-Eye L validates as a pipeline (a copy of it does, with every seed
+/// role checked) and is engine 2: every stage reports through the bridge.
+#[test]
+fn eagle_eye_l_validates_with_the_seed_roles_and_is_engine_2() {
+    let def = eagle_l();
+    assert!(def.built_in && def.disabled.is_none());
+    let kinds: Vec<StageKind> = def.stages.iter().map(StageDef::kind).collect();
+    use StageKind::*;
+    assert_eq!(kinds, [Artifact, Artifact, Artifact, Planner, Reviewer, Implementer, Reviewer]);
+    assert_eq!(crate::bridge::launch::engine_for(&def), crate::bridge::launch::ENGINE_V2);
+    let mut copy = def.clone();
+    copy.id = "eagle_l_copy".into();
+    copy.built_in = false;
+    let roles: std::collections::HashSet<String> =
+        crate::store::bundled_seed().unwrap().roles.into_iter().map(|role| role.id).collect();
+    assert_eq!(crate::pipelines::validate_user_pipelines_with(&[copy], Some(&roles)), Ok(()));
+    // Its roles are artifact stages by their built-in ids too.
+    for id in ["role_analyst", "role_pm", "role_architect"] {
+        assert_eq!(StageKind::of_builtin_role(id), Some(Artifact), "{id}");
+    }
+}
+
+/// The three roles are in the seed as our own templates: each writes its
+/// file into the run folder, reports through `{{result_instructions}}`,
+/// merges with the values the actor fills, and no name says BMad.
+#[test]
+fn the_document_roles_are_in_the_seed_and_merge_from_their_fields() {
+    let seed = crate::store::bundled_seed().unwrap();
+    let work = crate::test_support::TempDir::new("document_roles_merge");
+    for (id, name, file) in [("role_analyst", "Analyst", "brief.md"), ("role_pm", "PM", "prd.md"), ("role_architect", "Architect", "architecture.md")] {
+        let role = seed.roles.iter().find(|r| r.id == id).unwrap_or_else(|| panic!("{id} in the seed"));
+        assert_eq!(role.name, name);
+        assert!(role.is_built_in);
+        assert!(role.template_text.contains("{{result_instructions}}"), "{id}");
+        assert!(role.template_text.contains(&format!("`{file}`")), "{id} writes {file}");
+        assert!(role.template_text.contains("`partial`") && role.template_text.contains("`blocked`"), "{id}");
+        let values: std::collections::HashMap<String, String> = role
+            .fields
+            .iter()
+            .map(|field| (field.key.clone(), format!("value of {}", field.key)))
+            .chain([("cwd".to_string(), work.path().display().to_string())])
+            .collect();
+        let merged = crate::template::merge_role_prompt_with(role, &values, "RESULT HERE");
+        assert!(merged.errors.is_empty(), "{id}: {:?}", merged.errors);
+        let text = merged.merged.unwrap().text;
+        assert!(text.contains("RESULT HERE") && !text.contains("{{"), "{id}:\n{text}");
+    }
+    for role in &seed.roles {
+        for text in [&role.id, &role.name, &role.template_text] {
+            assert!(!text.to_ascii_lowercase().contains("bmad"), "{}", role.id);
+        }
+    }
+    let analyst = seed.roles.iter().find(|r| r.id == "role_analyst").unwrap();
+    let keys: Vec<&str> = analyst.fields.iter().map(|f| f.key.as_str()).collect();
+    assert_eq!(keys, ["title", "request", "expectedBehavior", "additionalContext"], "what the Planner's form is filled from");
+}
+
+fn plan_review(findings: Vec<(&str, Option<&str>)>) -> TurnReport {
+    TurnReport {
+        stage_id: "plan_reviewer".into(),
+        verdict: Some("REQUIRES REVISION".into()),
+        findings: findings
+            .into_iter()
+            .map(|(severity, area)| crate::pipelines::autopilot::FindingReport {
+                severity: severity.into(),
+                summary: "FR3 contradicts the brief.".into(),
+                area: area.map(str::to_string),
+            })
+            .collect(),
+        findings_known: true,
+        turn: Some("r-1".into()),
+        ..TurnReport::default()
+    }
+}
+
+fn at_plan_review() -> PipelineRun {
+    let mut r = run();
+    r.kind = "eagle-eye-l".into();
+    r.stage = "plan_reviewer".into();
+    r
+}
+
+/// A blocking plan-review finding on the PRD or the architecture stops at a
+/// checkpoint; on the plan it goes back to the Planner as before; below the
+/// threshold it is a follow-up. A PR review's document finding still goes
+/// back to the Implementer.
+#[test]
+fn a_plan_review_finding_on_a_document_stops_instead_of_looping_back() {
+    let def = eagle_l();
+    for area in ["prd", "architecture", "brief"] {
+        let mut r = at_plan_review();
+        let d = decide(&def, &mut r, &plan_review(vec![("HIGH", Some(area))]));
+        assert_eq!((d.action.as_str(), d.stop_reason), ("stop", Some(StopReason::Checkpoint)), "{area}");
+        assert!(d.reason.contains(&format!("({area})")) && d.reason.contains("cannot edit"), "{}", d.reason);
+        assert!(r.claims.is_empty(), "no round claimed");
+    }
+    let mut r = at_plan_review();
+    let d = decide(&def, &mut r, &plan_review(vec![("HIGH", Some("plan")), ("MEDIUM", None)]));
+    assert_eq!((d.action.as_str(), d.stage_id.as_deref()), ("loopBack", Some("planner")));
+    let mut r = at_plan_review();
+    let d = decide(&def, &mut r, &plan_review(vec![("LOW", Some("prd"))]));
+    assert_eq!((d.action.as_str(), d.stage_id.as_deref()), ("stop", Some("implementer")), "below the threshold: on to the checkpoint");
+    assert!(d.follow_ups.is_empty() || d.follow_ups[0].contains("FR3"));
+    let mut r = at_plan_review();
+    r.stage = "pr_reviewer".into();
+    r.autopilot.as_mut().unwrap().passed_checkpoints.push("implementer".into());
+    let mut pr = plan_review(vec![("HIGH", Some("prd"))]);
+    pr.stage_id = "pr_reviewer".into();
+    pr.verdict = Some("REQUEST CHANGES".into());
+    let d = decide(&def, &mut r, &pr);
+    assert_eq!((d.action.as_str(), d.stage_id.as_deref()), ("loopBack", Some("implementer")));
+}
+
+#[test]
+fn a_finding_may_name_its_area_and_an_unknown_one_is_refused() {
+    use crate::bridge::schema;
+    let ok = schema::validate(
+        crate::bridge::ResultKind::Reviewer,
+        &json!({ "verdict": "CHANGES_REQUIRED", "findings": [{ "severity": "HIGH", "summary": "s", "area": "PRD" }] }),
+    )
+    .unwrap();
+    assert_eq!(ok["findings"][0]["area"], "prd");
+    let bad = schema::validate(
+        crate::bridge::ResultKind::Reviewer,
+        &json!({ "verdict": "APPROVED", "findings": [{ "severity": "LOW", "summary": "s", "area": "ux" }] }),
+    )
+    .unwrap_err()
+    .join("\n");
+    assert!(bad.contains("area") && bad.contains("architecture"), "{bad}");
+    assert!(schema::result_instructions(crate::bridge::ResultKind::Reviewer).contains("`area`"));
+}
+
+/// The Planner and a plan review are told what to do with the documents;
+/// no other stage, and no run without documents, gets the line.
+#[test]
+fn only_the_planner_and_a_plan_review_get_the_document_note() {
+    use crate::run_actor::prompts::document_note;
+    let docs = vec![("Analyst document".to_string(), "/runs/ee/brief.md".to_string()), ("PM document".to_string(), "/runs/ee/prd.md".to_string())];
+    let planner = document_note(&docs, true, false).unwrap();
+    assert!(planner.contains("brief.md, prd.md") && planner.contains("pull-request split"), "{planner}");
+    let review = document_note(&docs, false, true).unwrap();
+    assert!(review.contains("Check the plan against them") && review.contains("`area`"), "{review}");
+    assert!(document_note(&docs, false, false).is_none());
+    assert!(document_note(&[], true, false).is_none());
+}

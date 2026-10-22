@@ -788,6 +788,17 @@ impl<H: Host> Actor<H> {
             .and_then(|dir| read_json::<RunPrs>(&dir.join(crate::bridge::folder::prs_file_name(placed.lane.as_deref()))))
             .map(|prs| prs.result);
         let lane_note = placed.lane.as_deref().and_then(|lane| lane_note(run_dir.as_deref(), lane));
+        // F1: the documents artifact stages wrote; F2: what a Planner or a
+        // plan review does with them.
+        let documents = run_dir
+            .as_ref()
+            .map(|dir| crate::pipelines::artifacts::run_documents(dir, &placed.def))
+            .unwrap_or_default();
+        let document_note = prompts::document_note(
+            &documents,
+            target.kind() == StageKind::Planner,
+            reviews_plan(&placed.def, target),
+        );
         let run_files = run_dir
             .as_ref()
             .map(|dir| {
@@ -801,7 +812,7 @@ impl<H: Host> Actor<H> {
                 .map(|(what, name)| (what.to_string(), dir.join(name)))
                 .filter(|(_, path)| path.is_file())
                 .map(|(what, path)| (what, path.display().to_string()))
-                .chain(crate::pipelines::artifacts::run_documents(dir, &placed.def))
+                .chain(documents.iter().cloned())
                 .collect()
             })
             .unwrap_or_default();
@@ -846,6 +857,7 @@ impl<H: Host> Actor<H> {
             task_type: store.chain_task_type(&self.run_id),
             cwd: placed.tab.cwd.clone(),
             run_files,
+            document_note,
         }
     }
 
@@ -2552,6 +2564,8 @@ pub(super) fn turn_report(stage: &StageDef, turn: &BridgeTurn, usage: Option<u8>
                 .map(|f| FindingReport {
                     severity: f.get("severity").and_then(Value::as_str).unwrap_or_default().to_string(),
                     summary: f.get("summary").and_then(Value::as_str).unwrap_or_default().to_string(),
+                    // F2: a finding on a document stops a plan review for you.
+                    area: f.get("area").and_then(Value::as_str).map(str::to_string),
                 })
                 .collect()
         })

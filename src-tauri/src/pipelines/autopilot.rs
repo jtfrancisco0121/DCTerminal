@@ -24,6 +24,9 @@ pub struct FindingReport {
     pub severity: String,
     #[serde(default)]
     pub summary: String,
+    /// F2: what the finding is about (`prd`, `architecture`, …), when it says.
+    #[serde(default)]
+    pub area: Option<String>,
 }
 
 /// What the run actor read from the stage's finished turn (its bridged result).
@@ -650,6 +653,11 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
                 format!("{} asked for changes, but this stage has no loop-back.", stage.title),
             );
         };
+        // F2: a plan review that blames a document the Planner cannot edit
+        // in plan mode waits for you instead of going back to the Planner.
+        if let Some(decision) = super::artifacts::document_findings_stop(def, run, &stage, lane, &severities, threshold) {
+            return decision;
+        }
         // Rounds per loop-back edge: this reviewer's own rounds so far. With
         // no cap, rounds go back until the reviewer approves.
         let edge_round = review_round(run, lane, &stage);

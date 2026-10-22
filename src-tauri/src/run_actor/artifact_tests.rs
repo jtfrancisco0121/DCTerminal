@@ -111,6 +111,147 @@ fn a_partial_document_waits_for_your_answer_which_resumes_its_session_then_the_n
     assert!(launch.prompt.contains(&format!("Brief document: {brief_path}")), "the document is named:\n{}", launch.prompt);
 }
 
+/// F2: an Eagle-Eye L run on autopilot whose Analyst terminal (step 1) runs,
+/// bridged. `fx.planner` holds the Analyst's tab until the Planner opens.
+fn eagle_l(tag: &str) -> Fixture {
+    let dir = TempDir::new(&format!("run_actor_{tag}"));
+    let work = TempDir::new(&format!("run_actor_{tag}_work"));
+    let roles = crate::store::bundled_seed().expect("seed").roles;
+    let mut store = StateStore {
+        path: dir.join("state.json"),
+        data: AppStateFile::default(),
+        new_tab_provider: crate::provider::ProviderId::DEFAULT,
+        draft_window: MAIN_WINDOW_ID.to_string(),
+    };
+    let cwd = work.path().display().to_string();
+    let analyst_role = roles.iter().find(|r| r.id == "role_analyst").expect("the Analyst role is in the seed");
+    let analyst = store.create_draft_tab(analyst_role, &cwd, true, None).unwrap();
+    store.data.tabs.iter_mut().find(|t| t.id == analyst).unwrap().answers = HashMap::from([
+        ("cwd".into(), cwd.clone()),
+        ("title".into(), "Offline sync".into()),
+        ("request".into(), "Let field users keep working offline.".into()),
+        ("expectedBehavior".into(), "Edits made offline sync when the connection is back.".into()),
+    ]);
+    let chain = ChainRef { kind: "eagle-eye-l".into(), total: 7, ..chain(1, None) };
+    store.set_tab_chain(&analyst, Some(chain), None).unwrap();
+    {
+        let run = store.pipeline_run_by_id_mut(RUN).unwrap();
+        run.set_autopilot_enabled(true);
+        run.engine = crate::bridge::launch::engine_for(&crate::pipelines::find("eagle-eye-l").unwrap());
+    }
+    let runs = dir.join("runs");
+    let plan = BridgePlan {
+        run_id: RUN.into(),
+        stage_id: "analyst".into(),
+        role_id: "role_analyst".into(),
+        lane: None,
+        stage_key: "analyst".into(),
+        kind: ResultKind::Artifact,
+        autopilot: true,
+    };
+    prepare_stage(&runs, &plan, &analyst).unwrap();
+    store.set_tab_bridge(&analyst, Some(BridgeTag { run_id: RUN.into(), stage: "analyst".into() })).unwrap();
+    store.remember_claude_terminal_session(&analyst, PLANNER_SID).unwrap();
+    let host = Arc::new(TestHost {
+        store: Mutex::new(store),
+        runs,
+        roles,
+        launches: Mutex::new(Vec::new()),
+        resumes: Mutex::new(Vec::new()),
+        resume_error: Mutex::new(None),
+        pastes: Mutex::new(Vec::new()),
+        live: Mutex::new(HashSet::from([analyst.clone()])),
+        gates: Mutex::new(VecDeque::new()),
+        panic_on_usage: AtomicBool::new(false),
+        hold_usage: Mutex::new(None),
+        pr_gate_urls: Mutex::new(Vec::new()),
+        gate_open: AtomicBool::new(true),
+        rate_limits: Mutex::new(HashMap::new()),
+        stops: Mutex::new(Vec::new()),
+        notices: Mutex::new(Vec::new()),
+        _dir: dir,
+    });
+    let (me, gates_done) = channel();
+    let actor = Actor::new(RUN.to_string(), host.clone(), me);
+    Fixture { host, actor, gates_done, planner: analyst, work }
+}
+
+/// The document stage in `tab` wrote `file` and reported it complete (the
+/// bridge's files), and its turn reaches the actor.
+fn finish_document(fx: &mut Fixture, tab: &str, stage: &str, file: &str) {
+    std::fs::write(fx.run_file(file), format!("# {file}\n")).unwrap();
+    let role = fx.tab(tab).role_id;
+    fx.stage_dir(tab)
+        .write_artifacts(crate::bridge::folder::StageArtifacts {
+            stage_key: stage.into(),
+            stage_id: stage.into(),
+            role_id: role,
+            turn: format!("{stage}-1"),
+            at: "now".into(),
+            status: "complete".into(),
+            artifacts: vec![file.into()],
+        })
+        .unwrap();
+    let result = json!({ "schema": 1, "status": "complete", "artifacts": [file], "openQuestions": [], "summary": "Written." });
+    let turn = fx.end_turn(tab, &format!("{stage}-1"), Some(result), "Done.");
+    fx.actor.handle(ActorMsg::Turn(turn));
+}
+
+/// F2: a size-L run passes the brief, the PRD and the architecture on, so
+/// the Planner bases its plan on them and the Plan Reviewer checks the plan
+/// against them; a plan review that blames the PRD stops at a checkpoint
+/// instead of sending the round back to the Planner.
+#[test]
+fn eagle_eye_l_passes_the_three_documents_to_the_planner_and_the_plan_reviewer() {
+    let mut fx = eagle_l("eagle_l");
+    assert_eq!(fx.run(|run| run.engine), 2, "Eagle-Eye L is engine 2");
+    let analyst = fx.planner.clone();
+    let path = |fx: &Fixture, file: &str| fx.run_file(file).display().to_string();
+
+    finish_document(&mut fx, &analyst, "analyst", "brief.md");
+    let pm = fx.launches().last().cloned().expect("the PM opened");
+    assert_eq!(pm.role_id, "role_pm");
+    assert!(pm.prompt.contains("Let field users keep working offline."), "the request:\n{}", pm.prompt);
+    assert!(pm.prompt.contains(&format!("Analyst document: {}", path(&fx, "brief.md"))), "{}", pm.prompt);
+    assert!(pm.prompt.contains("prd.md") && pm.prompt.contains(&fx.host.runs.join(RUN).display().to_string()));
+
+    finish_document(&mut fx, &pm.tab_id, "pm", "prd.md");
+    let architect = fx.launches().last().cloned().expect("the Architect opened");
+    assert_eq!(architect.role_id, "role_architect");
+    assert!(architect.prompt.contains(&format!("PM document: {}", path(&fx, "prd.md"))), "{}", architect.prompt);
+
+    finish_document(&mut fx, &architect.tab_id, "architect", "architecture.md");
+    let planner = fx.launches().last().cloned().expect("the Planner opened");
+    assert_eq!(planner.role_id, "role_planner");
+    for file in ["brief.md", "prd.md", "architecture.md"] {
+        assert!(planner.prompt.contains(&path(&fx, file)), "the Planner sees {file}:\n{}", planner.prompt);
+    }
+    assert!(planner.prompt.contains("base the plan and its pull-request split on them"), "{}", planner.prompt);
+    assert!(planner.prompt.contains("Edits made offline sync"), "the expected behaviour reaches the Planner");
+
+    fx.planner = planner.tab_id.clone();
+    let turn = fx.planner_turn("p-1", "# Plan\n1. Queue offline edits in src/sync.ts.");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    let reviewer = fx.launches().last().cloned().expect("the Plan Reviewer opened");
+    assert_eq!(reviewer.role_id, "role_plan_reviewer");
+    for file in ["brief.md", "prd.md", "architecture.md"] {
+        assert!(reviewer.prompt.contains(&path(&fx, file)), "the Plan Reviewer sees {file}:\n{}", reviewer.prompt);
+    }
+    assert!(reviewer.prompt.contains("Check the plan against them") && reviewer.prompt.contains("`area`"), "{}", reviewer.prompt);
+
+    // A finding on the PRD stops for you; nothing goes back to the Planner.
+    let findings = json!([{ "severity": "HIGH", "area": "prd", "summary": "FR3 contradicts the brief's scope." }]);
+    let turn = fx.end_turn(&reviewer.tab_id, "r-1", review("CHANGES_REQUIRED", findings), "Changes required.");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    assert!(fx.resumes().is_empty(), "the Planner is not resumed: {:?}", fx.resumes());
+    fx.run(|run| {
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::Checkpoint)), "{:?}", run.events.last());
+        let why = run.autopilot.as_ref().unwrap().waiting.clone().unwrap_or_default();
+        assert!(why.contains("(prd) FR3 contradicts") && why.contains("cannot edit"), "{why}");
+        assert!(run.verdicts.is_empty(), "no round was sent back");
+    });
+}
+
 #[test]
 fn a_blocked_document_continues_with_your_note_or_with_none() {
     crate::pipelines::register_for_test(serde_json::from_value(json!({

@@ -1393,6 +1393,7 @@ mod eagle_eye_1 {
                         .map(|f| FindingReport {
                             severity: f["severity"].as_str().unwrap_or_default().to_string(),
                             summary: f["summary"].as_str().unwrap_or_default().to_string(),
+                            area: f["area"].as_str().map(str::to_string),
                         })
                         .collect()
                 })

@@ -11,6 +11,7 @@
  */
 import eagle1 from "../../docs/pipelines/eagle1.json";
 import eagle2 from "../../docs/pipelines/eagle2.json";
+import eagleL from "../../docs/pipelines/eagle-eye-l.json";
 
 export type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
 
@@ -74,6 +75,8 @@ export const DEFAULT_PAUSE_AT_USAGE_PERCENT = 90;
 export const BUILT_IN_PIPELINES: readonly PipelineDef[] = [
   { ...(eagle1 as PipelineDef), builtIn: true },
   { ...(eagle2 as PipelineDef), builtIn: true },
+  // F2: a brief, a PRD and an architecture first.
+  { ...(eagleL as PipelineDef), builtIn: true },
 ];
 
 let userPipelines: PipelineDef[] = [];
@@ -131,6 +134,10 @@ const BUILT_IN_BEHAVIOUR: Readonly<Record<string, RoleBehaviour>> = {
   role_plan_reviewer: "plan_reviewer",
   role_implementer: "implementer",
   role_pr_reviewer: "pr_reviewer",
+  // F2: the document roles write into the run folder.
+  role_analyst: "artifact",
+  role_pm: "artifact",
+  role_architect: "artifact",
 };
 
 const BUILT_IN_ROLE: Readonly<Record<Exclude<RoleBehaviour, "generic" | "artifact">, string>> = {
